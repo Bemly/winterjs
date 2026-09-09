@@ -49,4 +49,12 @@ pub enum Cmd {
         #[arg(long)]
         schema: bool,
     },
+    /// Print a shell completion script for the given shell
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Print roff manual pages to stdout (main page, then one per subcommand)
+    Man,
 }

@@ -8,7 +8,7 @@ mod settings;
 
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use cli::{Cli, Cmd};
 use error::Error;
 use settings::ColorChoice;
@@ -36,6 +36,8 @@ fn main() -> ExitCode {
     let result = dispatch(cli, &settings);
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        // 管道下游提前关闭（如 `winterjs man | head`）静默退出，不刷错误
+        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(err) => err.render(settings.log.color),
     }
 }
@@ -57,6 +59,28 @@ fn dispatch(cli: Cli, settings: &settings::Settings) -> Result<(), Error> {
                 println!("{}", serde_json::to_string_pretty(&schema)?);
             } else {
                 println!("{}", serde_json::to_string_pretty(settings)?);
+            }
+            Ok(())
+        }
+        Cmd::Completions { shell } => {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "winterjs", &mut std::io::stdout().lock());
+            Ok(())
+        }
+        Cmd::Man => {
+            use std::io::Write as _;
+
+            let mut cmd = Cli::command();
+            let main_man = clap_mangen::Man::new(cmd.clone()).title("WINTERJS");
+            let mut buf = Vec::new();
+            main_man.render(&mut buf)?;
+            std::io::stdout().write_all(&buf)?;
+            for sub in cmd.get_subcommands_mut() {
+                let sub_name = sub.get_name().to_uppercase();
+                let man = clap_mangen::Man::new(sub.clone()).title(format!("WINTERJS-{sub_name}"));
+                let mut buf = Vec::new();
+                man.render(&mut buf)?;
+                std::io::stdout().write_all(&buf)?;
             }
             Ok(())
         }

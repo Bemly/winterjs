@@ -45,6 +45,10 @@ pub enum Error {
     Other(String),
 
     #[error("{0}")]
+    #[diagnostic(code(winterjs::io))]
+    Io(#[from] std::io::Error),
+
+    #[error("{0}")]
     #[diagnostic(code(winterjs::json))]
     Json(#[from] serde_json::Error),
 }

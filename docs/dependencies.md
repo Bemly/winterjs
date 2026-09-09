@@ -51,11 +51,13 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 
 ## 2. 特性门控铁律（配错 feature 把 ✅ 变成 ⚠️/❌，由引入人负责在 CI 矩阵里证明）
 
-> 2026-09-10 按实测修订（批量引入时逐个核过上游 manifest 的 `[features]`）：
-> 修正 reqwest 0.13 特性改名、vergen 拆包两处失效描述；新增 self_update / sentry /
-> object_store / instant-acme / metrics-exporter-prometheus 五处
-> "便捷特性硬绑违禁后端"的门控。实测口径：`cargo tree -i aws-lc-rs / native-tls / openssl`
-> 必须为空（本轮已抽查 macA64/winX64/andA64/ohA64，其余目标由 CI 矩阵转正时证明）。
+> 2026-09-10 按实测修订（两轮）：第一轮批量引入时逐个核过上游 manifest 的 `[features]`，
+> 修正 reqwest 0.13 特性改名、vergen 拆包两处失效描述，新增 self_update / sentry /
+> object_store / instant-acme / metrics-exporter-prometheus 五处"便捷特性硬绑违禁后端"的门控；
+> 第二轮对全部原文门控做了 manifest 级复核（`links` 键 / `[build-dependencies]` /
+> build.rs 内容三层口径，config 另做 37-crate 闭包穷尽审计），**判决：7 条准确、2 条过时已修
+> （reqwest/vergen）、1 条乌龙（config 的 yaml）**。实测口径：`cargo tree -i aws-lc-rs /
+> native-tls / openssl` 必须为空（已抽查 macA64/winX64/andA64/ohA64，其余目标由 CI 转正证明）。
 
 - `reqwest`（0.13）：`default-features=false` + `rustls-no-provider` + 需要的协议特性
   （`http2/charset/json/stream/gzip/brotli/deflate`）。0.13 删了旧的 `rustls-tls` 特性；
@@ -64,14 +66,23 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
   `rustls`（ring）提供，TLS 首次使用前须 install_default（Phase 3 接线时落实）。
 - `rustls` / `tokio-rustls`：`default-features=false` + `ring`——0.23 / 0.26 的默认
   provider 是 aws-lc-rs，必须显式换掉。
-- `config`：禁 `yaml` 特性（→`serde_yaml`→`unsafe-libyaml` 的 C）；TOML/JSON/INI 足够。
+- `config`：**yaml 判乌龙并启用**（2026-09-10 用户拍板）。原文"禁 yaml（→`serde_yaml`→
+  `unsafe-libyaml` 的 C）"两头不成立：0.15 的 `yaml = ["dep:yaml-rust2"]`（纯 Rust，与 §3
+  直引同库，config 钉 ^0.11 故与直引 0.12 双版本共存——已接受）；且 `unsafe-libyaml` 本身是
+  libyaml 的 Rust 转写，非 C。37-crate 启用闭包穷尽审计（links/build-deps/build.rs 三层）
+  无任何 C。TOML/JSON/INI/YAML。
   0.15 没有 `env` 特性（`Environment` 源内建）；嵌套 env 键要显式 `.prefix_separator("_")`，
   否则跟随 `separator`（AGENTS.md §4.4）。
 - `cookie_store`：PSL 特性名是 `public_suffix`（纯 Rust 数据表，已在 default 里），
   不是 `publicsuffix`。
 - `tower-http`：只开 `fs/cors/compression-gzip,br/trace`；禁 `compression-zstd`。
 - `async-compression`：`default-features=false` + `gzip/br/deflate`。
-- `zip`：`default-features=false` + `deflate`（禁 `bzip2` 的 C 后端）。
+  若将来开 `bzip2`：compression-codecs 用的 0.6.1 默认已是纯 Rust `libbz2-rs-sys`
+  （C 是 `bzip2-sys` 特性 opt-in），届时禁它只剩"npm 不用"的范围策略，非纯度。
+- `zip`：`default-features=false` + `deflate`（自带 `deflate-zopfli`，zopfli 0.8 纯 Rust，
+  已实测在 lock 内）。`bzip2` 禁令**对 zip 成立**：zip 2.4.2 的可选 bzip2 是 ^0.5 线，
+  **默认 C 后端**（`bzip2-sys`），纯 Rust 要显式开 `libbz2-rs-sys`（0.6 起才默认纯，
+  届时可复议）。
 - `flate2`：默认特性（`miniz_oxide` 纯 Rust），禁 `zlib`/`zlib-ng`。
 - `hickory-resolver`：默认特性（`dnssec-ring` 不开）。
 - `turso`：`default-features=false` + `pure-rust-crypto`（禁 `mimalloc`，远程 `sync` 先不开——
@@ -91,6 +102,11 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
   特性都拖 aws-lc，禁。
 - `metrics-exporter-prometheus`：`default-features=false` + `http-listener`；
   `push-gateway` 硬绑 `hyper-rustls/aws-lc-rs`，禁。
+- 审计附记（lock 内的"意外住客"，均实测不违规）：`openssl-probe` 0.2.1（经
+  `rustls-native-certs` ← platform-verifier 进来）0 依赖/无 links，纯 Rust 的证书路径探测，
+  不链 OpenSSL；`jni` 0.22 / `ndk-context`（hickory `system-config` 的 android 分支）
+  纯 Rust（jni 无 links，build.rs 只设 cfg 标志），桌面构建惰性；`libz-sys`（links=z，C）
+  唯一来源是 `mozjs_sys` 引擎自身（§12 特许），不是 flate2 引入。
 - `gluesql` 系已移除（§9 改 turso），`sled` 存储不选。
 
 ## 3. Phase 0 — 底座：引擎/错误/日志/异步/序列化/内存/并发原语/二进制
@@ -138,7 +154,7 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 | 序列化 | `serde` | 1.0.229 | 2014-12-05 | 2026-07-18 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | JSON | `serde_json` | 1.0.151 | 2015-08-07 | 2026-07-20 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | JSON 快路径（可选） | `simd-json` | 0.18.1 | 2019-04-15 | 2026-08-23 | ✅（intrinsics） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 统一配置 | `config` | 0.15.25 | 2015-04-16 | 2026-06-26 | ✅（§2 禁 yaml） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 统一配置 | `config` | 0.15.25 | 2015-04-16 | 2026-06-26 | ✅（yaml 已审计启用） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | YAML 按需 | `yaml-rust2` | 0.12.0 | 2024-02-08 | 2026-08-18 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 配置 schema | `schemars` | 1.2.2 | 2019-08-08 | 2026-07-27 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 内容哈希 | `blake3` | 1.8.7 | 2019-09-17 | 2026-08-20 | ✅（SIMD） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -162,6 +178,8 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 `dashmap` 用 6 系（7 在 rc）；`smallvec` 用 1 系（2 在 alpha）；`zerocopy` 用 0.8 系（0.9 在 alpha）。
 `simd-json` x86_64 用 AVX2/SSE4.2、aarch64 用 NEON，其余标量回退。
 `memmap2` 的 OHOS 格待验证。`config` 替代已停更的 `dotenvy`。
+`yaml-rust2` 直引 0.12 作独立 YAML 按需解析；config 的 yaml 特性另带 ^0.11（同库
+双版本共存，2026-09-10 用户拍板接受；两者皆纯 Rust，整树审计过）。
 `binrw` 写 bundle trailer 等二进制格式；`postcard` 写缓存 blob；`zerocopy` 做零拷贝解析。
 
 ## 4. CLI / 终端 / 自升级 / 脚手架
@@ -246,7 +264,8 @@ OHOS 因 `target_os="linux"` 命中同一分支；`simd-json` 加速门控只看
 解码走 `StreamingDecoder`，编码走 `ruzstd::encoding::{compress,compress_to_vec}`，
 serve 静态预压缩用 `Fastest`/`Default`；流式编码按 `FrameEncoder` 在实施时确认。
 侦查教训：crates.io 一句话描述（"A decoder…"）是 stale 的，以上游 README 为准。
-`cookie_store` 开 `publicsuffix` 特性即带 PSL（纯 Rust 数据表），无需另引 `psl`。
+`cookie_store` 开 `public_suffix` 特性即带 PSL（纯 Rust 数据表，已在 default 里），
+无需另引 `psl`。（2026-09-10 勘误：特性名是 `public_suffix`，原文写的 `publicsuffix` 不存在。）
 `encoding_rs` x86/x64 多版本 SIMD 分发、aarch64 NEON，其余标量。
 移动端根证书策略实施时定（三选一：platform-verifier / 系统 store / 内嵌 webpki-roots）。
 `serde_urlencoded` 4 年未动但它是 url 团队的冻结小桥，接受。

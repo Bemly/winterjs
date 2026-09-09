@@ -1,0 +1,13 @@
+[package]
+name = "winterjs"
+version = "0.1.0"
+edition = "2024"
+description = "A Bun-like JS runtime on Mozilla SpiderMonkey (via servo/mozjs)"
+license = "MPL-2.0"
+
+[dependencies]
+# 铁律：mozjs 永远钉死精确版本，只跟随 servo 的 release 手动升级，
+# 绝不 cargo update -p mozjs（会浮到 servo main HEAD 当场炸）。
+mozjs = "=0.26.0"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }

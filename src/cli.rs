@@ -43,4 +43,10 @@ pub enum Cmd {
         /// The code to evaluate
         code: String,
     },
+    /// Show resolved settings (or their JSON Schema with --schema)
+    Config {
+        /// Print the JSON Schema of the settings file instead
+        #[arg(long)]
+        schema: bool,
+    },
 }

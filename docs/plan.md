@@ -2,7 +2,8 @@
 
 > 版本 `26.9.0`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 0 进行中（`run`/`eval` 已可用）。
+> 当前状态：Phase 0 进行中（`run`/`eval` 已可用；依赖于 2026-09-10 按用户拍板全量引入，
+> 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
 ## Phase 0 — 底座收尾（进行中）
 

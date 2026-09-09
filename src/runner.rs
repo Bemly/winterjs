@@ -4,7 +4,6 @@
 use std::ffi::CString;
 use std::ptr;
 
-use anyhow::Result;
 use mozjs::conversions::{ConversionResult, FromJSValConvertible};
 use mozjs::jsapi::OnNewGlobalHookOption;
 use mozjs::jsval::UndefinedValue;
@@ -16,10 +15,12 @@ use mozjs::rust::{
     evaluate_script, JSEngine, Runtime,
 };
 
+use crate::error::Error;
+
 /// Evaluate `source` (named `filename`) and print its completion value.
-pub fn run(source: &str, filename: &str) -> Result<()> {
+pub fn run(source: &str, filename: &str) -> Result<(), Error> {
     // JS engine handle must outlive every Runtime.
-    let engine = JSEngine::init().map_err(|_| anyhow::anyhow!("failed to init JS engine"))?;
+    let engine = JSEngine::init().map_err(|_| Error::Other("failed to init JS engine".into()))?;
     let mut rt = Runtime::new(engine.handle());
 
     let options = RealmOptions::default();
@@ -55,14 +56,14 @@ pub fn run(source: &str, filename: &str) -> Result<()> {
             // 否则 PendingExceptionStackInfo 内的 JSAPI 因无 current realm 直接 SEGV。
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
             match error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
-                Some(info) => anyhow::bail!(
-                    "{}:{}:{}: {}",
-                    info.filename,
+                Some(info) => Err(Error::script(
+                    filename,
+                    source,
                     info.line,
                     info.col,
-                    info.message
-                ),
-                None => anyhow::bail!("uncaught JS exception (no stack info)"),
+                    info.message,
+                )),
+                None => Err(Error::Other("uncaught JS exception (no stack info)".into())),
             }
         }
     }

@@ -14,7 +14,7 @@ use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use crate::settings::{ColorChoice, LogSettings};
+use crate::settings::ColorChoice;
 
 pub struct LogOptions {
     /// `-v` 计数（0=warn, 1=info, 2=debug, ≥3=trace）

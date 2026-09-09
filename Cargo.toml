@@ -5,9 +5,270 @@ edition = "2024"
 description = "A Bun-like JS runtime on Mozilla SpiderMonkey (via servo/mozjs)"
 license = "MPL-2.0"
 
+# 依赖来源：docs/dependencies.md（已批准采购单，2026-09-10 起全量引入）。
+# §2 特性门控为红线：配错 feature 会把 ✅ 变成 ⚠️/❌（native-tls/openssl、
+# aws-lc、bzip2、yaml、zstd(C) 一律禁）。代码按 Phase 接线使用。
+
 [dependencies]
 # 铁律：mozjs 永远钉死精确版本，只跟随 servo 的 release 手动升级，
 # 绝不 cargo update -p mozjs（会浮到 servo main HEAD 当场炸）。
 mozjs = "=0.26.0"
+
+# ── §3 Phase 0 底座：错误/日志/异步/序列化/内存/并发原语 ────────────────
 anyhow = "1"
+thiserror = "2"
+derive_more = { version = "2", features = ["full"] }
+strum = { version = "0.28", features = ["derive"] }
+derive_builder = "0.20"
+bitflags = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+tracing-log = "0.2"
+tracing-error = "0.2"
+miette = { version = "7", features = ["fancy"] }
+human-panic = "2"
+talc = "5"                                   # 移动端（android/ohos）回退分配器
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync", "io-util", "net", "fs", "process", "signal"] }
+futures = "0.3"
+tokio-util = "0.7"
+async-stream = "0.3"
+pin-project-lite = "0.2"
+crossbeam-channel = "0.5"
+crossbeam-utils = "0.8"
+rayon = "1"
+parking_lot = "0.12"
+dashmap = "6"
+lru = "0.18"
+indexmap = "2"
+rustc-hash = "2"
+smallvec = "1"
+smol_str = "0.3"
+camino = "1"
+bytes = "1"
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+simd-json = "0.18"
+config = { version = "0.15", default-features = false, features = ["toml", "json", "ini"] }  # §2 禁 yaml；Environment 源内建无需特性
+yaml-rust2 = "0.12"
+schemars = "1"
+blake3 = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3", "xxh64"] }
+const-hex = "1"
+zerocopy = { version = "0.8", features = ["derive"] }
+binrw = "0.15"
+postcard = { version = "1", features = ["use-std"] }
+serde_bytes = "0.11"
+serde_path_to_error = "0.1"
+dyn-clone = "1"
+ouroboros = "0.18"
+slotmap = "1"
+arc-swap = "1"
+itertools = "0.15"
+memmap2 = "0.9"
+
+# 桌面主分配器（smmalloc 无 android/ohos 支持代码，见 §3 备注/§16）
+[target.'cfg(not(any(target_os = "android", target_os = "ohos")))'.dependencies]
+smmalloc = "7"
+
+# ── §4 CLI / 终端 / 自升级 ─────────────────────────────────────────────
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+clap_mangen = "0.3"
+console = "0.16"
+indicatif = "0.18"
+dialoguer = "0.12"
+rustyline = "18"
+shlex = "2"
+shellexpand = "3"
+unicode-width = "0.2"
+humantime = "2"
+bytesize = "2"
+askama = "0.16"
+# §2：zip 用 deflate 禁 bzip2（C）；不开 "rustls" 特性（它映射 reqwest 0.13 的 aws-lc），
+# TLS 由全图统一的 reqwest/rustls-no-provider + 顶层 rustls/ring provider 提供
+self_update = { version = "1", default-features = false, features = ["reqwest", "archive-zip", "compression-zip-deflate"] }
+
+# ── §5 loader + 转译 + 编译期注册 + 内嵌资源 ───────────────────────────
+oxc_resolver = "11"
+oxc = { version = "0.149", default-features = false, features = ["semantic", "codegen", "transformer", "mangler", "minifier"] }
+jsonc-parser = "0.33"
+sourcemap = "9"
+linkme = "0.3"
+paste = "1"
+phf = { version = "0.14", features = ["macros"] }
+petgraph = "0.8"
+string-interner = "0.20"
+toml_edit = "0.25"
+target-lexicon = "0.13"
+include_dir = "0.7"
+
+# ── §6 Web API：fetch / 编码 / WebSocket / 重试 / Cookie / TLS ─────────
+# §2：default-features=false，rustls-no-provider（provider 由顶层 rustls/ring 提供，reqwest 0.13 的
+# "rustls" 特性硬绑 aws-lc 禁用）；不开 zstd（C），压缩走 gzip/br/deflate
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "charset", "json", "stream", "gzip", "brotli", "deflate"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+rustls-platform-verifier = "0.7"
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+hickory-resolver = "0.26"
+backon = "1"
+url = "2"
+data-url = "0.3"
+base64 = "0.23"
+percent-encoding = "2"
+form_urlencoded = "1"
+serde_urlencoded = "0.7"
+encoding_rs = "0.8"
+cookie_store = { version = "0.22", features = ["public_suffix"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+async-compression = { version = "0.4", default-features = false, features = ["gzip", "brotli", "deflate"] }
+flate2 = "1"        # 默认后端 miniz_oxide（纯 Rust），禁 zlib/zlib-ng
+brotli = "9"
+ruzstd = "0.9"
+ipnet = "2"
+regex = "1"
+memchr = "2"
+
+# ── §7 加密全家（WebCrypto + node:crypto）──────────────────────────────
+sha1 = "0.11"
+sha2 = "0.11"
+sha3 = "0.12"
+blake2 = "0.11"
+md-5 = "0.11"
+hmac = "0.13"
+hkdf = "0.13"
+pbkdf2 = "0.13"
+scrypt = "0.12"
+argon2 = "0.6"
+aes = "0.9"
+cbc = "0.2"
+ctr = "0.10"
+des = "0.9"
+blowfish = "0.10"
+aes-gcm = "0.11"
+chacha20poly1305 = "0.11"
+ed25519-dalek = "3"
+x25519-dalek = "3"
+p256 = "0.14"
+p384 = "0.14"
+p521 = "0.14"
+k256 = "0.14"
+crypto-bigint = "0.7"
+dsa = "0.7"
+rsa = "0.9"
+der = "0.8"
+pem-rfc7468 = "1"
+pkcs8 = "0.11"
+spki = "0.8"
+x509-cert = "0.3"
+rcgen = "0.14"       # 默认即 ring，禁 aws-lc/fips 特性
+secrecy = "0.10"
+getrandom = "0.4"
+rand = "0.10"
+uuid = { version = "1", features = ["v4"] }
+
+# ── §8 fs / os / 包管理工具链 ──────────────────────────────────────────
+dunce = "1"
+pathdiff = "0.2"
+normpath = "1"
+cap-std = "4"
+which = "8"
+walkdir = "2"
+glob = "0.3"
+ignore = "0.4"
+notify = "8.2"       # §8 钉 8 系（9 在 rc）
+notify-debouncer-mini = "0.7"
+dirs = "7"
+sysinfo = "0.39"
+if-addrs = "0.15"
+mac_address = "1"
+uzers = "0.12"
+sys-locale = "0.3"
+fs-err = "3"
+remove_dir_all = "1"
+jiff = "0.2"
+semver = "1"
+deno_semver = "0.10"
+spdx = "0.13"
+rust-ini = "0.21"
+gix = "0.87"
+russh = { version = "0.63", default-features = false, features = ["ring"] }  # §2 选 ring 禁 aws-lc
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }    # §2 禁 bzip2
+reflink-copy = "0.1"
+ssri = "9"
+fs4 = "1"
+filetime = "0.2"
+libloading = "0.9"
+webbrowser = "1"
+oauth2 = { version = "5", default-features = false, features = ["rustls-tls"] }
+# sentry 上游 transport 特性硬绑 native-tls（§2 禁），此处只装 rustls-no-provider 传输依赖，
+# Transport 接线到 Phase 8 自带 reqwest 客户端实现；sentry 默认关闭零成本（§8）
+sentry = { version = "0.49", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls-no-provider"] }
+keyring = "4"
+# http 特性硬绑 aws-lc（§2 禁），先只进 fs 后端；远程 http 后端待上游 no-provider 变体（§16）
+object_store = { version = "0.14", default-features = false }
+
+# ── §9 内建 DB：turso ──────────────────────────────────────────────────
+# 2026-09-10 实测：turso 0.7 全线（turso_core 0.7.0/0.7.1/0.7.2）非可选依赖
+# icu_locale/icu_collator ^2.2.0，与 mozjs_sys =153.0.0-1 钉死的 icu_capi =2.1.2
+# （icu_locale ~2.1.1）死锁，暂无法与 mozjs 同图构建——已移出，待定夺见
+# docs/dependencies.md §16。turso 0.8 稳定线或 mozjs 升 icu 后再引入。
+
+# ── §10 serve（HTTP 服务）──────────────────────────────────────────────
+axum = "0.8"
+axum-extra = "0.12"
+tower = "0.5"
+# §2：只开 fs/cors/compression-gzip,br/trace，禁 compression-zstd
+tower-http = { version = "0.7", default-features = false, features = ["fs", "cors", "compression-gzip", "compression-br", "trace"] }
+headers = "0.4"
+mime_guess = "2"
+cookie = "0.18"
+httpdate = "1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+governor = "0.10"
+metrics = "0.24"
+# push-gateway 特性硬绑 hyper-rustls/aws-lc-rs（§2 禁），只开 http-listener（/metrics 自托管）
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
+console-subscriber = "0.5"
+local-ip-address = "0.6"
+netstat2 = "0.11"
+# default 硬绑 aws-lc-rs（§2 禁）；hyper-rustls 特性同样拖 aws-lc，先只进 ring 类型层，
+# ACME HTTP 客户端到 Phase 6 随 tokio-rustls/ring 一起接线
+instant-acme = { version = "0.8", default-features = false, features = ["ring"] }
+qrcode = "0.14"
+wide = "1"
+
+# ── 平台专用行（§8 矩阵 ❌ 的按 cfg 门控）───────────────────────────────
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["process", "signal", "fs"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+systemd = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"
+junction = "2"
+
+# ── §11 dev 依赖（只跑在 host）─────────────────────────────────────────
+[dev-dependencies]
+similar = "3"
+insta = "1"
+assert_cmd = "2"
+assert_fs = "1"
+tempfile = "3"
+serial_test = "4"
+rstest = "0.27"
+pretty_assertions = "1"
+criterion = "0.8"
+iai-callgrind = "0.16"
+dhat = "0.3"
+proptest = "1"
+
+[build-dependencies]
+# §2：vergen 10 起 git 支持拆到独立 crate vergen-gitcl（调 git CLI，禁 git2 的 C）
+vergen-gitcl = { version = "10", features = ["build"] }

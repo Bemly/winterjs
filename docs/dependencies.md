@@ -51,18 +51,45 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 
 ## 2. 特性门控铁律（配错 feature 把 ✅ 变成 ⚠️/❌，由引入人负责在 CI 矩阵里证明）
 
-- `reqwest`：`default-features=false`，只开 `rustls-tls`（ring 后端）+ 需要的协议特性。
-  禁 `default-tls`（→`native-tls`→`openssl-sys`，Linux 要装 OpenSSL，Windows 走 VCPKG 地狱）。
-- `config`：禁 `yaml` 特性（→`serde_yaml`→`unsafe-libyaml` 的 C）；TOML/JSON/INI/ENV 足够。
+> 2026-09-10 按实测修订（批量引入时逐个核过上游 manifest 的 `[features]`）：
+> 修正 reqwest 0.13 特性改名、vergen 拆包两处失效描述；新增 self_update / sentry /
+> object_store / instant-acme / metrics-exporter-prometheus 五处
+> "便捷特性硬绑违禁后端"的门控。实测口径：`cargo tree -i aws-lc-rs / native-tls / openssl`
+> 必须为空（本轮已抽查 macA64/winX64/andA64/ohA64，其余目标由 CI 矩阵转正时证明）。
+
+- `reqwest`（0.13）：`default-features=false` + `rustls-no-provider` + 需要的协议特性
+  （`http2/charset/json/stream/gzip/brotli/deflate`）。0.13 删了旧的 `rustls-tls` 特性；
+  `rustls` 特性硬绑 aws-lc-rs，禁；`native-tls*` 禁（→`openssl-sys`，Linux 要装
+  OpenSSL，Windows 走 VCPKG 地狱）；`zstd` 禁（C 后端）。TLS provider 由顶层
+  `rustls`（ring）提供，TLS 首次使用前须 install_default（Phase 3 接线时落实）。
+- `rustls` / `tokio-rustls`：`default-features=false` + `ring`——0.23 / 0.26 的默认
+  provider 是 aws-lc-rs，必须显式换掉。
+- `config`：禁 `yaml` 特性（→`serde_yaml`→`unsafe-libyaml` 的 C）；TOML/JSON/INI 足够。
+  0.15 没有 `env` 特性（`Environment` 源内建）；嵌套 env 键要显式 `.prefix_separator("_")`，
+  否则跟随 `separator`（AGENTS.md §4.4）。
+- `cookie_store`：PSL 特性名是 `public_suffix`（纯 Rust 数据表，已在 default 里），
+  不是 `publicsuffix`。
 - `tower-http`：只开 `fs/cors/compression-gzip,br/trace`；禁 `compression-zstd`。
 - `async-compression`：`default-features=false` + `gzip/br/deflate`。
 - `zip`：`default-features=false` + `deflate`（禁 `bzip2` 的 C 后端）。
 - `flate2`：默认特性（`miniz_oxide` 纯 Rust），禁 `zlib`/`zlib-ng`。
 - `hickory-resolver`：默认特性（`dnssec-ring` 不开）。
 - `turso`：`default-features=false` + `pure-rust-crypto`（禁 `mimalloc`，远程 `sync` 先不开）。
+  2026-09-10 起暂时移出构建图（与 mozjs 的 icu 死锁，§9/§16），复入时仍按此门控。
 - `russh`：选 ring 后端，禁 `aws-lc`（cmake 重）。
 - `rcgen`：默认即 ring 后端，禁 `aws-lc-rs`/`fips` 特性。
-- `vergen`：开 `gitcl`（调 git CLI 取 commit），禁 `git`（→`git2` 的 C）。
+- `vergen` → `vergen-gitcl`：10 系起 git 支持拆到独立 crate；build-dependency 引
+  `vergen-gitcl`（调 git CLI 取 commit），禁 `git`（→`git2` 的 C）。
+- `self_update`：`default-features=false` + `reqwest/archive-zip/compression-zip-deflate`。
+  禁它的 `rustls` 特性（映射 reqwest 0.13 的 aws-lc）与 `native-tls`；
+  TLS 走全图统一的 `rustls-no-provider` + 顶层 ring。
+- `sentry`：禁 `transport`（硬绑 native-tls）；开
+  `backtrace/contexts/panic/reqwest/rustls-no-provider`，Transport 到 Phase 8 自实现。
+- `object_store`：只进默认 `fs`；`http`/`aws`/`azure`/`gcp` 全部硬绑 aws-lc，禁。
+- `instant-acme`：`default-features=false` + `ring`；`default` 和 `hyper-rustls`
+  特性都拖 aws-lc，禁。
+- `metrics-exporter-prometheus`：`default-features=false` + `http-listener`；
+  `push-gateway` 硬绑 `hyper-rustls/aws-lc-rs`，禁。
 - `gluesql` 系已移除（§9 改 turso），`sled` 存储不选。
 
 ## 3. Phase 0 — 底座：引擎/错误/日志/异步/序列化/内存/并发原语/二进制

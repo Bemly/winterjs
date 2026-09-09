@@ -70,10 +70,6 @@ arc-swap = "1"
 itertools = "0.15"
 memmap2 = "0.9"
 
-# 桌面主分配器（smmalloc 无 android/ohos 支持代码，见 §3 备注/§16）
-[target.'cfg(not(any(target_os = "android", target_os = "ohos")))'.dependencies]
-smmalloc = "7"
-
 # ── §4 CLI / 终端 / 自升级 ─────────────────────────────────────────────
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
@@ -253,6 +249,10 @@ systemd = "0.10"
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
 junction = "2"
+
+# 桌面主分配器（smmalloc 无 android/ohos 支持代码，见 §3 备注/§16）
+[target.'cfg(not(any(target_os = "android", target_os = "ohos")))'.dependencies]
+smmalloc = "7"
 
 # ── §11 dev 依赖（只跑在 host）─────────────────────────────────────────
 [dev-dependencies]

@@ -74,8 +74,9 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 - `zip`：`default-features=false` + `deflate`（禁 `bzip2` 的 C 后端）。
 - `flate2`：默认特性（`miniz_oxide` 纯 Rust），禁 `zlib`/`zlib-ng`。
 - `hickory-resolver`：默认特性（`dnssec-ring` 不开）。
-- `turso`：`default-features=false` + `pure-rust-crypto`（禁 `mimalloc`，远程 `sync` 先不开）。
-  2026-09-10 起暂时移出构建图（与 mozjs 的 icu 死锁，§9/§16），复入时仍按此门控。
+- `turso`：`default-features=false` + `pure-rust-crypto`（禁 `mimalloc`，远程 `sync` 先不开——
+  0.6 的 `sync` 特性还硬绑 hyper-tls/native-tls，双保险）。0.7 全线 icu 死锁，2026-09-10
+  用户拍板钉 `=0.6.1` 复入构建图（无 icu，实测同图通过、图中无 mimalloc）。
 - `russh`：选 ring 后端，禁 `aws-lc`（cmake 重）。
 - `rcgen`：默认即 ring 后端，禁 `aws-lc-rs`/`fips` 特性。
 - `vergen` → `vergen-gitcl`：10 系起 git 支持拆到独立 crate；build-dependency 引
@@ -360,9 +361,10 @@ serve `--cert` 只收 PEM（`rustls-pemfile`+`x509-cert`），PFX 暂不支持�
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 内建 DB | `turso` | 0.7.2 | 2025-07-01 | 2026-07-30 | ✅（§2 门控） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
 
-决策记录（2026-09-10）：定 `turso`，用 0.7.2 稳定线（不追 0.8.0-pre）。
-`default-features=false` + `pure-rust-crypto`（禁 `mimalloc`，远程 `sync` 先不开；
-`sync` 的 SDK kit 随带但不开远程即零成本）。
+决策记录（2026-09-10，二改）：**钉 `=0.6.1`**（用户拍板）。0.7 全线非可选依赖
+`icu_locale ^2.2.0`，与 `mozjs_sys` 钉死的 `icu_capi =2.1.2`（icu_locale ~2.1.1）死锁，
+无法同图构建；0.6.1 无 icu，实测通过。0.6 的 `sync` 特性硬绑 hyper-tls（继续不开）。
+偏离 caret 政策属刻意钉版（icu 地雷系列），待上游解冲突后回 caret。
 落选（无技术否决，只是不选）：`redb`（KV 无 SQL）、`gluesql+redb-storage`（SQL 可但生态小于 turso）、
 `fjall`（LSM 备选）、`rusqlite` bundled（含 C）。
 `turso` 行名库龄不足一年（2025-07）、移动端（尤其 OHOS）待 CI 转正，见 §16。
@@ -489,8 +491,8 @@ multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 ax
    （2026-09-10 实测：33 GiB alloc → null，`tests/alloc_probe.rs --ignored` 已钉案；
    JS 侧超大 ArrayBuffer 建议届时在 JSAPI 边界显式检查或走回退分配器）；③ 作者明示无安全加固；
    ④ 移动端无支持代码（已定 talc 回退）。License 可选 MIT（`MIT OR Apache-2.0 OR TGPPL-1.0`），与 MPL-2.0 兼容。
-2. `turso` 用 0.7.2 稳定线（2026-07-30），pre 线不追；行名库龄不足一年；
-   `sync` 的 SDK kit 随带但不开远程即零成本；OHOS 待 CI。
+2. `turso` **已了结（2026-09-10 用户拍板）：钉 `=0.6.1`，0.7 的 icu 死锁绕开**；
+   库龄不足一年、`sync` 硬绑 native-tls（不开）、OHOS 待 CI。
 3. TLS 豁免已记录（§1/§12）：`reqwest`/`rustls`/`tokio-rustls`/`platform-verifier`/
    `oauth2`/`sentry`/`self_update`/`object_store`/`rcgen`/`russh` 的 ring 后端不再标 ⚠️ 理由，
    但 §2 的后端选择门控继续有效（禁 aws-lc/cmake、禁 native-tls）。

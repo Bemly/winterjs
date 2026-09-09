@@ -210,10 +210,12 @@ keyring = "4"
 object_store = { version = "0.14", default-features = false }
 
 # ── §9 内建 DB：turso ──────────────────────────────────────────────────
-# 2026-09-10 实测：turso 0.7 全线（turso_core 0.7.0/0.7.1/0.7.2）非可选依赖
-# icu_locale/icu_collator ^2.2.0，与 mozjs_sys =153.0.0-1 钉死的 icu_capi =2.1.2
-# （icu_locale ~2.1.1）死锁，暂无法与 mozjs 同图构建——已移出，待定夺见
-# docs/dependencies.md §16。turso 0.8 稳定线或 mozjs 升 icu 后再引入。
+# §2：default-features=false + pure-rust-crypto（禁 mimalloc，远程 sync 先不开——0.6 的 sync 特性
+# 还硬绑 hyper-tls/native-tls）。
+# 2026-09-10 用户拍板：钉 =0.6.1。0.7 全线非可选依赖 icu_locale ^2.2.0，与 mozjs_sys 钉死的
+# icu_capi =2.1.2 死锁（见 docs/dependencies.md §9/§16）；0.6.1 无 icu。此处偏离 caret 政策
+# 属刻意钉版（icu 地雷系列），待上游解冲突后回 caret。
+turso = { version = "=0.6.1", default-features = false, features = ["pure-rust-crypto"] }
 
 # ── §10 serve（HTTP 服务）──────────────────────────────────────────────
 axum = "0.8"

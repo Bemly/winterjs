@@ -16,7 +16,7 @@
 - `mozjs = "=0.26.0"`（Gecko 153，crates.io 最新发布版），`Cargo.lock` 入库。
 - Rust stable 最新（现 1.98），edition 2024（即 stable 最新；2027 尚不存在）。
 - 版本号用 CalVer `YY.MM.PATCH`（如 `26.9.0`，cargo 可解析；`^26.9.0` 即年内自动升）。
-  依赖清单与 11-target 矩阵见 `docs/dependencies.md`。
+  依赖清单与 10-target 矩阵见 `docs/dependencies.md`。
 - 无 `rust-toolchain` pin、无 spiderfire/ion 依赖、无 server/request_handlers。
 - CLI：`winterjs run <file>` / `winterjs eval <code>`，见 `src/main.rs`。
 

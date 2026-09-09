@@ -7,7 +7,8 @@ license = "MPL-2.0"
 
 # 依赖来源：docs/dependencies.md（已批准采购单，2026-09-10 起全量引入）。
 # §2 特性门控为红线：配错 feature 会把 ✅ 变成 ⚠️/❌（native-tls/openssl、
-# aws-lc、bzip2、yaml、zstd(C) 一律禁）。代码按 Phase 接线使用。
+# aws-lc、bzip2(zip 0.5 默认 C)、zstd(C) 一律禁；config 的 yaml 经纯度审计已启用）。
+# 代码按 Phase 接线使用。
 
 [dependencies]
 # 铁律：mozjs 永远钉死精确版本，只跟随 servo 的 release 手动升级，
@@ -52,7 +53,7 @@ http-body-util = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 simd-json = "0.18"
-config = { version = "0.15", default-features = false, features = ["toml", "json", "ini"] }  # §2 禁 yaml；Environment 源内建无需特性
+config = { version = "0.15", default-features = false, features = ["toml", "json", "ini", "yaml"] }  # yaml 实测纯 Rust（yaml-rust2 链，2026-09-10 审计启用）；Environment 源内建无需特性
 yaml-rust2 = "0.12"
 schemars = "1"
 blake3 = "1"

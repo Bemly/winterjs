@@ -135,3 +135,21 @@ fn settings_toml_is_loaded() {
         "settings file should override default"
     );
 }
+
+#[test]
+fn settings_yaml_is_loaded() {
+    // config 的 yaml 特性（yaml-rust2 链，2026-09-10 纯度审计后启用）
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("winterjs.yaml"),
+        "log:\n  color: \"never\"\n",
+    )
+    .unwrap();
+    let out = stdout_of(&mut winterjs().arg("config").current_dir(tmp.path()));
+    let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+    pretty_assertions::assert_eq!(
+        value["log"]["color"].as_str().unwrap(),
+        "never",
+        "yaml settings file should override default"
+    );
+}

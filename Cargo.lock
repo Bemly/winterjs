@@ -1608,6 +1608,7 @@ dependencies = [
  "serde_json",
  "toml 1.1.5+spec-1.1.0",
  "winnow 1.0.4",
+ "yaml-rust2 0.11.1",
 ]
 
 [[package]]
@@ -4465,6 +4466,15 @@ dependencies = [
  "allocator-api2 0.2.21",
  "equivalent",
  "foldhash 0.2.0",
+]
+
+[[package]]
+name = "hashlink"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "824e001ac4f3012dd16a264bec811403a67ca9deb6c102fc5049b32c4574b35f"
+dependencies = [
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -12467,7 +12477,7 @@ dependencies = [
  "x25519-dalek",
  "x509-cert",
  "xxhash-rust",
- "yaml-rust2",
+ "yaml-rust2 0.12.0",
  "zerocopy",
  "zip 2.4.2",
 ]
@@ -12586,13 +12596,24 @@ checksum = "aee1b19627c7c60102ab80d3a9cbe18de90bfe03bfa6c3715447681f0e8c8af6"
 
 [[package]]
 name = "yaml-rust2"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b36710ce3a279cfce8465dbab826f161675a262950b922cb2c3663852dfe9eb0"
+dependencies = [
+ "arraydeque",
+ "encoding_rs",
+ "hashlink 0.11.1",
+]
+
+[[package]]
+name = "yaml-rust2"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6edb26322e610d4f04b7cd34478317685d24d0999437e551fb97c5441151041"
 dependencies = [
  "arraydeque",
  "encoding_rs",
- "hashlink",
+ "hashlink 0.12.2",
 ]
 
 [[package]]

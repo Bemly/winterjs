@@ -1,7 +1,7 @@
-//! 配置加载：config crate（TOML/JSON/INI + `WINTERJS_` 前缀环境变量覆盖），
+//! 配置加载：config crate（TOML/JSON/INI/YAML + `WINTERJS_` 前缀环境变量覆盖），
 //! JSON Schema 输出用 schemars，取值枚举用 strum。
-//! 文件：cwd 下 `winterjs.toml` / `winterjs.json` / `winterjs.ini`（config 按扩展名探测，
-//! 缺省不存在也可；yaml 特性按 §2 禁用，`.yaml` 不会被读取）。
+//! 文件：cwd 下 `winterjs.toml` / `winterjs.json` / `winterjs.ini` / `winterjs.yaml`
+//! （config 按扩展名探测，缺省不存在也可；yaml 特性 2026-09-10 经纯度审计启用）。
 //! 环境变量嵌套键用 `__` 分隔，如 `WINTERJS_LOG__FILTER=debug`。
 
 use std::path::PathBuf;

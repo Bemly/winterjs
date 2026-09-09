@@ -14,6 +14,10 @@ use error::Error;
 use settings::ColorChoice;
 
 fn main() -> ExitCode {
+    // panic 美化：release 下 panic 走 human-panic 报告（debug 下该宏自动 no-op，
+    // RUST_BACKTRACE=1 时自动回退标准 panic 输出，不吞调试信息）
+    human_panic::setup_panic!();
+
     let cli = Cli::parse();
 
     let settings = match settings::Settings::load() {

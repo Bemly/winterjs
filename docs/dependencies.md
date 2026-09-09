@@ -205,13 +205,16 @@ OHOS 因 `target_os="linux"` 命中同一分支；`simd-json` 加速门控只看
 | 流式压缩 | `async-compression` | 0.4.46 | 2019-05-14 | 2026-09-09 | ✅（§2 门控） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 压缩 | `flate2` | 1.1.10 | 2014-11-11 | 2026-08-28 | ✅（默认后端） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 压缩 | `brotli` | 9.0.0 | 2015-11-30 | 2026-09-02 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| zstd 解码 | `ruzstd` | 0.9.0 | 2019-11-04 | 2026-07-26 | ✅（只解码） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| zstd 编解码 | `ruzstd` | 0.9.0 | 2019-11-04 | 2026-07-26 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | CIDR 匹配 | `ipnet` | 2.12.2 | 2017-08-14 | 2026-09-06 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 正则 | `regex` | 1.13.1 | 2014-12-13 | 2026-07-15 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 内存查找 | `memchr` | 2.8.3 | 2015-06-11 | 2026-07-08 | ✅（SIMD） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-备注：`ruzstd` 经确认为纯解码器（官方描述 "A decoder for the zstd compression format"），
-zstd 编码暂不支持：请求头不主动要 zstd，serve 端只发 gzip/br。
+备注：`ruzstd` 经 GitHub README 核实是**完整** zstd 实现（decode 全量＋encode 五档：
+`Fastest`≈level1、`Default`≈3、`Better`≈7、`Best`≈11，另有 checksum；字典暂不开）。
+解码走 `StreamingDecoder`，编码走 `ruzstd::encoding::{compress,compress_to_vec}`，
+serve 静态预压缩用 `Fastest`/`Default`；流式编码按 `FrameEncoder` 在实施时确认。
+侦查教训：crates.io 一句话描述（"A decoder…"）是 stale 的，以上游 README 为准。
 `cookie_store` 开 `publicsuffix` 特性即带 PSL（纯 Rust 数据表），无需另引 `psl`。
 `encoding_rs` x86/x64 多版本 SIMD 分发、aarch64 NEON，其余标量。
 移动端根证书策略实施时定（三选一：platform-verifier / 系统 store / 内嵌 webpki-roots）。
@@ -294,7 +297,9 @@ serve `--cert` 只收 PEM（`rustls-pemfile`+`x509-cert`），PFX 暂不支持�
 | git 依赖 | `gix` | 0.87.1 | 2023-02-10 | 2026-08-24 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | git+ssh（后期） | `russh` | 0.63.3 | 2022-03-13 | 2026-09-09 | ⚠️（ring/aws-lc 二选一，选 ring） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 解包 tgz | `tar` | 0.4.46 | 2014-11-11 | 2026-05-18 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 解包 zip | `zip` | 2.4.2 | 2014-11-21 | 长期维护 | ✅（见备注） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 解包 zip | `zip` | 2.4.2 | 2014-11-21 | 长期维护 | ✅（见备注） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 跨卷拷贝 | `reflink-copy` | 0.1.30 | 2023-07-10 | 2026-06-18 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Win 链接 | `junction` | 2.0.0 | 2019-05-14 | 2026-05-01 | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | 完整性校验 | `ssri` | 9.2.0 | 2019-05-19 | 2023-07-18 | ✅（冻结） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 文件锁 | `fs4` | 1.1.0 | 2021-12-31 | 2026-04-28 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
 | 时间戳保持 | `filetime` | 0.2.29 | 2015-05-04 | 2026-05-12 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -305,6 +310,7 @@ serve `--cert` 只收 PEM（`rustls-pemfile`+`x509-cert`），PFX 暂不支持�
 | 开浏览器 | `webbrowser` | 1.2.4 | 2015-12-08 | 2026-08-05 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | OAuth 登录（后期） | `oauth2` | 5.0.0 | 2014-12-16 | 2025-01-21 | ✅（TLS 豁免） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 可选上报（后期） | `sentry` | 0.49.2 | 2016-05-20 | 2026-08-26 | ✅（TLS 豁免，默认关闭零成本） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| 令牌保管（后期） | `keyring` | 4.2.0 | 2016-02-10 | 2026-08-29 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | 远程缓存（后期） | `object_store` | 0.14.1 | 2022-05-13 | 2026-07-15 | ✅（TLS 豁免） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
 
 备注：`zip` 用 2 系稳定（9 在 pre），且 `default-features=false` 只开 `deflate`，
@@ -350,6 +356,8 @@ serve `--cert` 只收 PEM（`rustls-pemfile`+`x509-cert`），PFX 暂不支持�
 | Prometheus | `metrics-exporter-prometheus` | 0.18.3 | 2020-06-17 | 2026-04-30 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 事件循环观测 | `console-subscriber` | 0.5.0 | 2021-12-16 | 2025-10-30 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 本机 IP | `local-ip-address` | 0.6.13 | 2021-06-15 | 2026-05-19 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
+| 端口占用 | `netstat2` | 0.11.2 | 2020-02-09 | 2025-08-14 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
+| 自动证书（后期） | `instant-acme` | 0.8.5 | 2022-05-12 | 2026-02-24 | ✅（TLS 豁免） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
 | 局域网二维码 | `qrcode` | 0.14.1 | 2014-11-28 | 2024-07-05 | ✅（冻结） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 手写 SIMD | `wide` | 1.7.0 | 2019-09-21 | 2026-08-27 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
@@ -396,7 +404,10 @@ multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 ax
 - npm registry 客户端胶水（传输归 `reqwest`，寻址归 `deno_semver`，校验归 `ssri`，
   缓存布局归 `dirs`+`blake3`+`fs4`，解包归 `tar`+`flate2`，并发归 `futures`+`rayon`）。
 - URLPattern 路由匹配（`url` 之上的小状态机；serve 内部路由直接用 axum）。
-- SSE（axum 内建）；`bin` 链接（symlink 约 20 行）；
+- SSE（axum 内建）；`bin` 链接（unix symlink + Windows `junction`，约 20 行）；
+  子进程树杀掉（`nix` killpg + Windows Job Objects，手写，约 80 行，无可信轮子）；
+  Windows CLI 通配符展开（`glob` 之上约 15 行，不引停更的 `wild`）；
+  命令回显转义（`shlex::quote` 若缺则手写约 15 行，不引已死的 `shell-escape`）；
   NO_COLOR/TTY 判断（`std::io::IsTerminal`，稳定，无需依赖）；
   Cache API 的 freshness 计算（`headers`+`httpdate` 之上约 80 行）。
 
@@ -414,6 +425,8 @@ multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 ax
 - `wasmtime`（WASM 由 SpiderMonkey 引擎自己执行，不需要第二个运行时）。
 - `openssl`/`native-tls`/`tokio-native-tls`/`hyper-tls`（全线 rustls，躲开 VCPKG/OpenSSL 地狱）。
 - `async-trait`（原生 async trait 已稳定）、`tokio-tar`（`spawn_blocking`+`tar` 足够）、
+  `fs_extra`（3 年半停更，walkdir+glob+remove_dir_all 顶掉）、
+  `wild`（2 年半停更，见 §13 手写 15 行）、`shell-escape`（6 年已死，见 §13）、
   `jsonwebtoken`（用户态需求）、`opentelemetry`（过重，`metrics`+tracing 足够）、
   `daemonize`（容器时代跑前台）、`termimad`（clap+miette 足够）。
 - 模板只留 `askama`（`tera`/`handlebars`/`minijinja` 不引）；

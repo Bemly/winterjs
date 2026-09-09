@@ -3,7 +3,6 @@
 
 use assert_cmd::Command;
 use assert_fs::prelude::*;
-use predicates::prelude::*;
 use rstest::rstest;
 
 fn winterjs() -> Command {
@@ -12,7 +11,11 @@ fn winterjs() -> Command {
 
 fn stdout_of(cmd: &mut Command) -> String {
     let out = cmd.output().expect("binary runs");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8(out.stdout).expect("utf8 stdout")
 }
 
@@ -22,35 +25,28 @@ fn stdout_of(cmd: &mut Command) -> String {
 #[case("Math.max(3, 9)", "9\n")]
 #[case("undefined", "")]
 fn eval_completion_value(#[case] code: &str, #[case] expected: &str) {
-    winterjs()
-        .args(["eval", code])
-        .assert()
-        .success()
-        .stdout(expected.to_string());
+    assert_eq!(stdout_of(&mut winterjs().args(["eval", code])), expected);
 }
 
 #[test]
 fn eval_uncaught_exception_exit_1_with_plain_format() {
     // AGENTS.md §3 验收格式：Error: eval.js:1:7: boom，exit=1（非 TTY）
-    winterjs()
+    let out = winterjs()
         .args(["eval", "throw new Error(\"boom\")"])
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(predicates::str::contains("Error: eval.js:1:7: boom"));
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Error: eval.js:1:7: boom"), "stderr: {stderr}");
 }
 
 #[test]
 fn run_missing_file_reports_chain() {
-    winterjs()
-        .args(["run", "/nope/such.js"])
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(
-            predicates::str::contains("Error: failed to read /nope/such.js")
-                .and(predicates::str::contains("Caused by:")),
-        );
+    let out = winterjs().args(["run", "/nope/such.js"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Error: failed to read /nope/such.js"), "stderr: {stderr}");
+    assert!(stderr.contains("Caused by:"), "stderr: {stderr}");
 }
 
 #[test]
@@ -59,12 +55,10 @@ fn run_file_from_tempdir() {
     let script = dir.child("app.js");
     script.write_str("1 + 41").unwrap();
 
-    winterjs()
-        .arg("run")
-        .arg(script.path())
-        .assert()
-        .success()
-        .stdout("42\n");
+    assert_eq!(
+        stdout_of(&mut winterjs().arg("run").arg(script.path())),
+        "42\n"
+    );
     dir.close().unwrap();
 }
 
@@ -75,29 +69,25 @@ fn run_script_in_tempdir_workdir() {
     let path = tmp.path().join("rel.js");
     std::fs::write(&path, "'ok'").unwrap();
 
-    winterjs()
-        .arg("run")
-        .arg("rel.js")
-        .current_dir(tmp.path())
-        .assert()
-        .success()
-        .stdout("ok\n");
+    assert_eq!(
+        stdout_of(&mut winterjs().arg("run").arg("rel.js").current_dir(tmp.path())),
+        "ok\n"
+    );
 }
 
 #[test]
 fn version_contains_pkg_version() {
-    winterjs()
-        .arg("--version")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains(env!("CARGO_PKG_VERSION")));
+    let out = stdout_of(&mut winterjs().arg("--version"));
+    assert!(out.contains(env!("CARGO_PKG_VERSION")), "version: {out}");
+    // vergen gitcl 元数据也应嵌进来（git 仓库内构建时）
+    assert!(out.contains("built "), "version: {out}");
 }
 
 #[test]
 fn config_outputs_resolved_settings_json() {
     let out = stdout_of(&mut winterjs().args(["config"]));
     let value: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
-    assert!(value["log"].is_object(), "log section present");
+    assert!(value["log"].is_object(), "log section present: {out}");
 
     // 环境变量覆盖（WINTERJS_LOG__COLOR）优先于缺省
     let out = stdout_of(&mut winterjs().env("WINTERJS_LOG__COLOR", "always").args(["config"]));
@@ -117,11 +107,8 @@ fn config_schema_is_valid_json_schema() {
 
 #[test]
 fn completions_bash_script() {
-    winterjs()
-        .args(["completions", "bash"])
-        .assert()
-        .success()
-        .stdout(predicates::str::starts_with("_winterjs()"));
+    let out = stdout_of(&mut winterjs().args(["completions", "bash"]));
+    assert!(out.starts_with("_winterjs()"), "completions: {out}");
 }
 
 #[test]

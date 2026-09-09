@@ -457,8 +457,10 @@ multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 ax
 ## 16. 待定夺事项（证据已列，请拍板）
 
 1. `smmalloc` 四风险：① crates.io 首发 2026-01（名下库龄不足一年，965 下载，
-   但 GitHub 525 commits 在持续开发）；② 单次 alloc 上限 2GiB，超限返回空指针**无回退**
-   （JS 侧超大 ArrayBuffer 的理论风险，建议首版即加超大分配测试）；③ 作者明示无安全加固；
+   但 GitHub 525 commits 在持续开发）；② 单次 alloc 上限为最大 size class
+   （smallest slot 4B × 32 类 ≈ 8 GiB），超限返回空指针**无回退**
+   （2026-09-10 实测：33 GiB alloc → null，`tests/alloc_probe.rs --ignored` 已钉案；
+   JS 侧超大 ArrayBuffer 建议届时在 JSAPI 边界显式检查或走回退分配器）；③ 作者明示无安全加固；
    ④ 移动端无支持代码（已定 talc 回退）。License 可选 MIT（`MIT OR Apache-2.0 OR TGPPL-1.0`），与 MPL-2.0 兼容。
 2. `turso` 用 0.7.2 稳定线（2026-07-30），pre 线不追；行名库龄不足一年；
    `sync` 的 SDK kit 随带但不开远程即零成本；OHOS 待 CI。

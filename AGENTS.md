@@ -23,7 +23,9 @@
 - 版本号用 CalVer `YY.MM.PATCH`（如 `26.9.0`，cargo 可解析；`^26.9.0` 即年内自动升）。
   依赖清单与 10-target 矩阵见 `docs/dependencies.md`。
 - 无 `rust-toolchain` pin、无 spiderfire/ion 依赖、无 server/request_handlers。
-- CLI：`winterjs run <file>` / `winterjs eval <code>`，见 `src/main.rs`。
+- CLI：`winterjs run <file>` / `winterjs eval <code>` / `winterjs config [--schema]` /
+  `winterjs completions <shell>` / `winterjs man`，见 `src/`（cli/runner/error/logging/settings/alloc 模块）。
+- 依赖 2026-09-10 起全量入库（docs/dependencies.md 头部决策记录），代码按 Phase 接线。
 
 ## 2. 依赖铁律
 
@@ -43,7 +45,8 @@ cargo build
 
 - `mozjs_sys` 走预构建 `libjs_static.a`，debug 全量约 25 秒，不用怕。
 - 验证：`./target/debug/winterjs eval '40 + 2'` → `42`；
-  `./target/debug/winterjs eval 'throw new Error("boom")'` → `Error: eval.js:1:7: boom`，exit=1。
+  `./target/debug/winterjs eval 'throw new Error("boom")'` → 非 TTY 下
+  `Error: eval.js:1:7: boom`，exit=1（TTY 下由 miette 图形渲染，带代码框，语义同）。
 
 ## 4. 踩坑记录
 
@@ -69,6 +72,27 @@ cargo build
 ### 4.3 shell 小坑：zsh 的 `=cmd` 展开（2026-09-09）
 
 - `echo ===` 这类以 `=` 开头的词会被 zsh 当命令路径展开而报错，脚本里要加引号。
+
+### 4.4 config 0.15 的 prefix 分隔符默认跟随 separator（2026-09-10）
+
+- 症状：`WINTERJS_LOG__COLOR=always` 环境变量覆盖配置永远不生效。
+- 根因：`Environment::with_prefix("WINTERJS").separator("__")` 时，prefix 分隔符
+  **默认跟随 separator**，即前缀变成 `WINTERJS__`，`WINTERJS_` 开头的变量全部被跳过。
+- 修法：显式 `.prefix_separator("_").separator("__")`（src/settings.rs）。
+
+### 4.5 集成测试不继承 bin 的 `#[global_allocator]`（2026-09-10）
+
+- 症状：超大分配探针在 `tests/` 里永远"通过"，以为 smmalloc 没问题。
+- 根因：`tests/*.rs` 是独立 crate，链接的是 System 分配器，src 里的
+  `#[global_allocator]` 对它不可见。
+- 修法：探针测试文件里自己声明 `#[global_allocator] static ALLOC: smmalloc::Smalloc`。
+
+### 4.6 tracing-subscriber 的 `init()` 已内建 log 桥接（2026-09-10）
+
+- 症状：进程启动即 panic `failed to set global default subscriber: SetLoggerError(())`。
+- 根因：`SubscriberInitExt::init()`（tracing-log 特性启用时）内部就会装 log 桥；
+  再显式调 `tracing_log::LogTracer::init()` 抢占 `log::set_logger` 即冲突。
+- 修法：二选一，用 `init()` 就不要再调 LogTracer（src/logging.rs 取前者）。
 
 ## 5. 路线图（按序）
 

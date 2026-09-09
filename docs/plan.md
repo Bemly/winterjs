@@ -8,13 +8,28 @@
 ## Phase 0 — 底座收尾（进行中）
 
 - 目标：可分发、可观测、可测试的骨架。
-- 引入依赖：`tracing`+`tracing-subscriber`、`miette`、`human-panic`、`vergen`（gitcl）、
+- 引入依赖：`tracing`+`tracing-subscriber`、`miette`、`human-panic`、`vergen`（gitcl→vergen-gitcl）、
   `clap_complete`+`clap_mangen`、`config`+`schemars`、`smmalloc`（桌面）/`talc`（移动回退）、
   dev 全套（`assert_cmd`/`insta`/`criterion`）。
 - 做：`--version`（vergen 信息）、报错渲染（miette）、panic 美化、配置文件加载、
   分配器切换＋超大分配测试、6-target CI、CLI 黑盒测试。
 - 验收：`cargo build` 全绿；`winterjs --version` 含 commit；`cargo test` 全绿。
 - 完成标准：新人 clone 后按 AGENTS.md §3 一次构建成功。
+
+- [x] 2026-09-10：`--version` 带 commit/describe/build 时间（vergen-gitcl，git 缺失降级 unknown）
+- [x] 2026-09-10：tracing 家族接线（`-v` 计数 / `WINTERJS_LOG` / `WINTERJS_LOG_FILE`，
+      非 TTY 无 ANSI；log 桥接走 subscriber 内建）
+- [x] 2026-09-10：`winterjs config [--schema]`（config TOML/JSON/INI + `WINTERJS_*` 环境变量
+      覆盖；schemars 出 JSON Schema；strum 解析取值枚举）
+- [x] 2026-09-10：错误模型 thiserror + miette（TTY 图形渲染带代码框；非 TTY 保持
+      AGENTS §3 的一行格式 + `Caused by` 链，脚本/测试依赖不变）
+- [x] 2026-09-10：human-panic（`setup_panic!`，release 生效）
+- [x] 2026-09-10：`completions <shell>` + `man`（clap_complete/clap_mangen；EPIPE 静默）
+- [x] 2026-09-10：分配器切换（桌面 smmalloc / 移动 talc+System 源）＋超大分配探针
+      （`tests/alloc_probe.rs`，§16 风险②实测：33GiB→null 无回退，上限≈8GiB）
+- [x] 2026-09-10：CLI 黑盒测试 14 例（eval/run/config/completions/man/环境变量覆盖）
+- [ ] 6-target CI 矩阵（待立 CI 时做）
+- 依赖全量引入（2026-09-10 用户拍板）见 `docs/dependencies.md` 头部；turso 因 icu 死锁暂缓。
 
 ## Phase 1 — console / timers / microtask
 

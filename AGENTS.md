@@ -69,3 +69,13 @@ cargo build
 2. Promise job queue（microtask drain，直连 `JSContext`，禁 `&mut` 别名，见 winterjs-old §7.9 教训）
 3. ESM loader（resolve/fetch/compile/link）
 4. `fs` / `path` / `process`（Node 兼容垫片起点）
+
+## 6. 架构原则：runtime 纯 Rust，mozjs 是墙（2026-09-09 决策）
+
+- 引擎本体（C++，经 `mozjs_sys` 编译）不算本项目代码，它只是依赖。
+  本项目自己的代码（CLI、event loop、builtins、loader、Node 垫片）**全部纯 Rust**。
+- `unsafe` 只允许出现在 mozjs 边界（rooting、`AutoRealm`、FFI 调用），
+  业务逻辑层禁 `unsafe`；新增 `unsafe` 必须在注释写清前置条件。
+- 线程模型：`JSContext` 是 `!Send`，JS 永远跑在独占线程（tokio `LocalSet`），
+  Rust 侧多线程只通过消息队列与 JS 线程通信，绝不跨线程共享 `&mut JSContext`
+ （winterjs-old §7.9 的 aliasing-UB 教训）。

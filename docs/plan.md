@@ -48,18 +48,32 @@
   （microtask 顺序/三跳链/顶层 await/interval/嵌套 microtask/clone/rejection/count+time）；
   踩坑回写 AGENTS §4.7–4.9。
 
-## Phase 2 — ESM loader
+## Phase 2 — ESM loader（开工 2026-09-10，切片 a 进行中）
 
 - 目标：`import` 能跑，TS 能进。
 - 引入依赖：`oxc_resolver`、`oxc`、`jsonc-parser`、`sourcemap`、`linkme`、`petgraph`、
   `string-interner`+`smol_str`、`slotmap`、`fs-err`、`normpath`、`pathdiff`、
   `glob`+`ignore`、`include_dir`、`target-lexicon`、`camino`、`dunce`。
+  （已全量入库，按需接线；切片 a 只用 `oxc`+`url`+`fs-err`+`data-url`。）
 - 做：resolve（node 语义＋tsconfig）→ fetch（file/http/data:）→ oxc 转译 →
   compile/link/instantiate → import.meta；循环依赖按 spec 行为；转译缓存
   （`blake3` key + `postcard` blob + `lru` 内存层）。
 - 验收：`winterjs run app.ts`（含 npm 风格裸导入报错信息友好，miette 渲染）；
   循环 import 不死锁；`insta` 快照全绿。
 - 完成标准：criterion 给 resolve/transpile 建性能基线。
+- 引擎路线（2026-09-10 调研结论）：Gecko153 用新模块 API——`CompileModule1` +
+  `LoadRequestedModules`（回调版，同步）→ `ModuleLink` → `ModuleEvaluate`；
+  依赖边由 `SetModuleLoadHook`（HostLoadImportedModule）+ `FinishLoadingImportedModule`
+  驱动；`usePromise` 按 payload 是否 Promise 区分动/静；referrer URL 经
+  `SetModulePrivate`（string）→ hook 的 hostDefined 传递；`import.meta.url` 经
+  `SetModuleMetadataHook` 补。
+- [x] 切片 a（2026-09-10）：file:/data: + 相对导入（含后缀探测）+ oxc TS 转译 +
+  循环（spec 序）+ import.meta.url + 动态 import + 入口 TLA 重试 +
+  裸导入/http 友好报错；`tests/cli.rs` 8 例全绿（总 32）；0 警告保持。
+  引擎细节：referrer 定位走脚本文件名（§4.11）；动态分支内嵌 load 再 link。
+  附带修 Phase 0 遗留：`WINTERJS_LOG` 被 config 误收（§4.10）。
+- [ ] 切片 b：`oxc_resolver`（node_modules/tsconfig）+ 转译缓存（blake3/postcard/lru）+
+  `insta` 快照 + criterion 基线 + sourcemap。
 
 ## Phase 3 — Web API（WinterCG 兼容层）
 

@@ -127,6 +127,26 @@ cargo build
   `thisObj` 传 null 会 SEGV，必须传有效对象（用 global）
   （`src/builtins/clone.rs`）。
 
+### 4.10 `WINTERJS_LOG` 被 config 误收导致启动失败（2026-09-10）
+
+- 症状：`WINTERJS_LOG=winterjs=debug …` 启动即
+  `failed to load settings: invalid type: string …, expected struct LogSettings`。
+- 根因：`WINTERJS_LOG` 按 `WINTERJS_` 前缀规则被收进 `log` 表（string 覆盖 struct）；
+  它本是日志运行时的直读变量（`logging.rs` 直接读 EnvFilter），不经 config。
+- 修法：`Settings::load` 期间暂存并移出 `WINTERJS_LOG`/`WINTERJS_LOG_FILE`，
+  构建完原样恢复（启动期单线程）；回归测试 `winterjs_log_filter_does_not_break_config`。
+
+### 4.11 模块 hook 的 referrer 定位：走脚本文件名，不走私有值（2026-09-10）
+
+- 症状：`SetModulePrivate` + `SetScriptPrivate` 写入 URL 字符串后，
+  load hook 的 hostDefined 仍为 undefined，相对导入 base 丢失。
+- 根因：153 下 GC 字符串私有值送不到 hook（机制只适合 `PrivateValue` + ref hooks）。
+- 修法：hook 内用 `JS_GetScriptFilename(referrer)` 取文件名
+  （CompileOptions 写入的即模块 URL）作 base；`SetScriptPrivate` 整段删除。
+- 附带：`ModuleLink` 要求先走完加载态，直接 link 报
+  `module record has unexpected status: New`——动态 import 分支内嵌
+  `load_dependencies` 再 link（`src/modules.rs` `ensure_subgraph`）。
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

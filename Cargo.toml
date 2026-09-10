@@ -138,6 +138,10 @@ memchr = "2"
 # ── §7 加密全家（WebCrypto + node:crypto）──────────────────────────────
 sha1 = "0.11"
 sha2 = "0.11"
+# c-4（2026-09-10 用户拍板）：rsa 0.9 的签名/填充接口绑 digest 0.10，
+# 直引 sha2 0.11 的哈希类型传不进去；加改名直引 sha2_010（纯 RustCrypto，
+# 0.10 已由 oauth2 在传递闭包内，双版本先例同 yaml-rust2 0.11+0.12）。
+sha2_010 = { package = "sha2", version = "0.10" }
 sha3 = "0.12"
 blake2 = "0.11"
 md-5 = "0.11"
@@ -155,9 +159,11 @@ aes-gcm = "0.11"
 chacha20poly1305 = "0.11"
 ed25519-dalek = "3"
 x25519-dalek = "3"
-p256 = "0.14"
-p384 = "0.14"
-p521 = "0.14"
+# c-4（2026-09-10 用户拍板）：ecdh/pkcs8 显式声明。之前靠 russh→ssh-key 的
+# 传递特性 unify 硬撑（能编过但上游一变就断），此处写明防变卦；全员纯 Rust。
+p256 = { version = "0.14", features = ["ecdh", "pkcs8"] }
+p384 = { version = "0.14", features = ["ecdh", "pkcs8"] }
+p521 = { version = "0.14", features = ["ecdh", "pkcs8"] }
 k256 = "0.14"
 crypto-bigint = "0.7"
 dsa = "0.7"

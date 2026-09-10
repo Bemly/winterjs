@@ -316,6 +316,14 @@ serve 静态预压缩用 `Fastest`/`Default`；流式编码按 `FrameEncoder` �
 `crypto-bigint` 给 `DiffieHellman` 的 MODP 模幂；`rcgen` 默认即 ring 后端（禁 `aws-lc` 系特性）；
 serve `--cert` 只收 PEM（`rustls-pemfile`+`x509-cert`），PFX 暂不支持。
 其余 legacy 对称算法（rc2/idea/cast5/seed 等）按需再补。
+c-4 增补（2026-09-10 用户拍板）：`sha2_010`（sha2 0.10 改名直引，纯 Rust；
+`rsa` 0.9 的签名/填充接口绑 `digest` 0.10，直引 sha2 0.11 的类型传不进去，
+0.10 已由 `oauth2` 在传递闭包内，双版本先例同 `yaml-rust2` 0.11+0.12）；
+`p256`/`p384`/`p521` 显式加 `ecdh,pkcs8` 特性（之前靠 `russh→ssh-key`
+传递特性 unify 硬撑，显式声明防上游变卦）。`rsa::rand_core`/`signature`/
+`pkcs8` 重导出直用，不另引 `rand_core` 0.6/`signature`（§0.5 零新增）；`ecdsa`
+经 `digest` 0.11 与直引 sha2 0.11 互通，用 `sign_prehash`/`verify_prehash`
+避开版本面。
 
 ## 8. fs / os / 包管理工具链
 

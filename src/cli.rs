@@ -95,4 +95,10 @@ pub enum Cmd {
         #[arg(long)]
         oauth: bool,
     },
+    /// Self-upgrade winterjs (Phase 5d; needs WINTERJS_UPDATE_GITHUB=owner/repo)
+    Upgrade {
+        /// Only report the current version and channel, do not upgrade
+        #[arg(long)]
+        dry_run: bool,
+    },
 }

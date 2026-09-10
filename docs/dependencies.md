@@ -92,7 +92,8 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 - `rcgen`：默认即 ring 后端，禁 `aws-lc-rs`/`fips` 特性。
 - `vergen` → `vergen-gitcl`：10 系起 git 支持拆到独立 crate；build-dependency 引
   `vergen-gitcl`（调 git CLI 取 commit），禁 `git`（→`git2` 的 C）。
-- `self_update`：`default-features=false` + `reqwest/archive-zip/compression-zip-deflate`。
+- `self_update`：`default-features=false` + `reqwest/archive-zip/compression-zip-deflate`
+  （5d-d4 加 `github` 后端开关：纯 flag，无新增传递依赖，已验 `cargo tree`）。
   禁它的 `rustls` 特性（映射 reqwest 0.13 的 aws-lc）与 `native-tls`；
   TLS 走全图统一的 `rustls-no-provider` + 顶层 ring。
 - `sentry`：禁 `transport`（硬绑 native-tls）；开

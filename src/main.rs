@@ -119,6 +119,7 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             let reg = pm::effective_registry(&cwd, registry.as_deref());
             pm::publish::login(&reg, token.as_deref(), oauth).await
         }
+        Cmd::Upgrade { dry_run } => pm::upgrade::upgrade(dry_run).await,
         Cmd::Man => {            use std::io::Write as _;
 
             let mut cmd = Cli::command();

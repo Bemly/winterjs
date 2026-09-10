@@ -91,8 +91,9 @@ humantime = "2"
 bytesize = "2"
 askama = "0.16"
 # §2：zip 用 deflate 禁 bzip2（C）；不开 "rustls" 特性（它映射 reqwest 0.13 的 aws-lc），
-# TLS 由全图统一的 reqwest/rustls-no-provider + 顶层 rustls/ring provider 提供
-self_update = { version = "1", default-features = false, features = ["reqwest", "archive-zip", "compression-zip-deflate"] }
+# TLS 由全图统一的 reqwest/rustls-no-provider + 顶层 rustls/ring provider 提供；
+# "github" 为纯开关（无新增传递依赖，5d-d4 自升级用）
+self_update = { version = "1", default-features = false, features = ["reqwest", "archive-zip", "compression-zip-deflate", "github"] }
 
 # ── §5 loader + 转译 + 编译期注册 + 内嵌资源 ───────────────────────────
 oxc_resolver = "11"

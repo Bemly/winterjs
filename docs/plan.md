@@ -2,9 +2,9 @@
 
 > 版本 `26.9.0`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 5c 已完工（2026-09-10，`cargo test` 21+96 全绿，0 警告，
-> 缓存二次零回源 + lifecycle 按序 + 残留自愈验收通过）；
-> 下一步 Phase 5d（git/publish/upgrade/npmrc，顺延）。
+> 当前状态：Phase 5 完工（2026-09-10，`cargo test` 33+111 全绿，0 警告，
+> npmrc/git/publish dry-run/login/upgrade 干跑验收通过，冒烟 5/5）；
+> 下一步 Phase 6 serve（HTTP 服务）。
 > 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
@@ -233,7 +233,14 @@
     `{registry}/oauth/authorize` URL + `webbrowser` 试开，code 交换顺延）。
     CLI 新增 `publish`/`login`（man 7→9）。模块单测 4 例 + 黑盒 4 例
     （dry-run/缺名坏 license/token 落盘/oauth URL）；`cargo test` 32+108 全绿，0 警告。
-  - [ ] d4 upgrade（`self_update` 干跑）。
+  - [x] d4 upgrade：`src/pm/upgrade.rs`（渠道 `WINTERJS_UPDATE_GITHUB=owner/repo`；
+    dry-run 打印当前版 + 渠道不碰网络；真升有渠道走 `Update::update()`，
+    无渠道报顺延错；`self_update` 加 `github` 纯开关特性，`cargo tree` 复核
+    aws-lc/native-tls/openssl 仍为空）。CLI 新增 `upgrade`（man 9→10）。
+    模块单测 1 例 + 黑盒 3 例（dry-run/无渠道报错/渠道回显）；
+    `cargo test` 33+111 全绿，0 警告。
+- Phase 5 完工（2026-09-10）：install/dry-run/真装/缓存/lifecycle/续传/npmrc/git/
+  publish dry-run/login/upgrade 干跑，`cargo test` 33+111 全绿，0 警告，冒烟 5/5。
 
 ## Phase 6 — serve（HTTP 服务）
 

@@ -10,6 +10,7 @@ pub mod publish;
 pub mod registry;
 pub mod resolve;
 pub mod spec;
+pub mod upgrade;
 
 use crate::error::Error;
 

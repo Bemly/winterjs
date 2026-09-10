@@ -101,6 +101,14 @@ pub enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Run test files (Phase 7)
+    Test {
+        /// Test files or directories (default: discover under cwd)
+        paths: Vec<PathBuf>,
+        /// Only run files matching this glob (matched against relative path or file name)
+        #[arg(long)]
+        filter: Option<String>,
+    },
     /// Serve a directory over HTTP (Phase 6)
     Serve {
         /// Directory to serve

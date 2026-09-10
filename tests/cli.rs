@@ -132,7 +132,7 @@ fn completions_bash_script() {
 #[test]
 fn man_pages_render_roff() {
     let out = stdout_of(&mut winterjs().arg("man"));
-    assert_eq!(out.matches(".TH").count(), 11, "main + 10 subcommand pages");
+    assert_eq!(out.matches(".TH").count(), 12, "main + 11 subcommand pages");
 }
 
 #[test]
@@ -2480,5 +2480,67 @@ fn phase6_serve_tls_bad_pem() {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("bad --cert"), "stderr: {stderr}");
+    dir.close().unwrap();
+}
+
+/// 测试 fixture：一个过、一个挂、一个非测试文件（不应被跑）。
+fn test_fixture() -> assert_fs::TempDir {
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("a.test.js")
+        .write_str("import { test } from \"node:test\";\ntest(\"adds\", () => { if (1 + 1 !== 2) throw new Error(\"math\"); });\ntest(\"fails\", () => { throw new Error(\"boom\"); });\n")
+        .unwrap();
+    dir.child("helper.js").write_str("console.log(\"helper\");\n").unwrap();
+    dir
+}
+
+#[test]
+fn phase7_test_mixed_files() {
+    // 正常：子测试 TAP 行透出 + runner 行 + 汇总，有挂则 exit=1。
+    let dir = test_fixture();
+    let out = winterjs()
+        .args(["test", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("not ok - fails"), "stdout:\n{stdout}");
+    assert!(stdout.contains("not ok - a.test.js (exit 1)"), "stdout:\n{stdout}");
+    assert!(stdout.contains("# pass 0, fail 1"), "stdout:\n{stdout}");
+    assert!(!stdout.contains("helper"), "non-test file must not run:\n{stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase7_test_all_pass() {
+    // 正常：全过则 exit=0 + `ok -` 行。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("o.test.js")
+        .write_str("import { test } from \"node:test\";\ntest(\"ok\", () => {});\n")
+        .unwrap();
+    let out = stdout_of(winterjs().args(["test", "."]).current_dir(dir.path()));
+    assert!(out.contains("ok - o.test.js"), "stdout:\n{out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase7_test_filter() {
+    // 边界：--filter 只跑命中文件（此处零命中 → exit 0 提示行）。
+    let dir = test_fixture();
+    let out = stdout_of(
+        winterjs().args(["test", ".", "--filter", "zzz*"]).current_dir(dir.path()),
+    );
+    assert!(out.contains("no test files found"), "stdout:\n{out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase7_test_bad_path() {
+    // 报错：不存在的路径 exit=1 且可读。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = winterjs().args(["test", "no-such-dir"]).current_dir(dir.path()).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no such test path"), "stderr: {stderr}");
     dir.close().unwrap();
 }

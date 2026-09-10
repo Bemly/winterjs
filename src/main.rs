@@ -12,6 +12,7 @@ mod modules;
 mod pm;
 mod runtime;
 mod serve;
+mod testrun;
 mod settings;
 mod state;
 
@@ -121,6 +122,11 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             pm::publish::login(&reg, token.as_deref(), oauth).await
         }
         Cmd::Upgrade { dry_run } => pm::upgrade::upgrade(dry_run).await,
+        Cmd::Test { paths, filter } => {
+            let cwd = std::env::current_dir()
+                .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+            testrun::run_tests(&cwd, &testrun::TestOpts { paths, filter }).await
+        }
         Cmd::Serve { dir, host, port, limit_rps, cert, key } => {
             serve::serve(&serve::ServeOpts { dir, host, port, limit_rps, cert, key }).await
         }

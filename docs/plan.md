@@ -295,6 +295,13 @@
   FFI（dlopen 直通，unsafe 审计从严）。
 - 验收：REPL 多行粘贴可用；test 输出格式对标（diff 着色）。
 - 完成标准：FFI 每个导出的函数都有 safety 注释＋测试。
+- [x] 切片 e1（2026-09-10）：`winterjs test [paths...] [--filter <glob>]`
+  （`src/testrun.rs`：`ignore` walk 尊重 gitignore 跳过
+  node_modules/target/.git，`*.test.*`/`test-*` 两模式，glob 按相对路径或
+  文件名过滤；每文件独立 `runtime::run` 天然隔离；TAP 对齐
+  `ok/not ok` + `# pass, fail` 汇总；空列表 exit 0）。CLI 新增 `test`
+  （man 11→12）。模块单测 3 例 + 黑盒 4 例（混合 exit1/全过/filter/坏路径）；
+  `cargo test` 42+127 全绿，0 警告，冒烟 5/5。
 
 ## Phase 8 — polish（lint/权限/远程缓存/上报）
 

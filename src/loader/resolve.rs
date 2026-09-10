@@ -210,6 +210,9 @@ pub fn resolve(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
             "http" | "https" => Err(Error::Other(format!(
                 "remote module '{specifier}' needs Phase 3 (fetch); file:/data: only for now"
             ))),
+            "node" => Err(Error::Other(format!(
+                "'{specifier}' builtin needs Phase 4 (Node compat); file:/data: only for now"
+            ))),
             s => Err(Error::Other(format!(
                 "unsupported module scheme '{s}:': {specifier}"
             ))),

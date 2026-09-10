@@ -26,6 +26,16 @@ pub struct LoadedSource {
     pub is_module: bool,
 }
 
+impl std::fmt::Debug for LoadedSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedSource")
+            .field("js_bytes", &self.js.len())
+            .field("imports", &self.imports)
+            .field("is_module", &self.is_module)
+            .finish()
+    }
+}
+
 fn is_ts_like(path: &Path) -> bool {
     matches!(
         path.extension()
@@ -147,4 +157,46 @@ fn load_js_uncached(text: &str, filename: &str, path: &Path) -> Result<LoadedSou
         "source loaded"
     );
     Ok(LoadedSource { js, imports, is_module })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(name: &str) -> String {
+        let dir = env!("CARGO_MANIFEST_DIR");
+        std::fs::read_to_string(format!("{dir}/tests/fixtures/{name}")).unwrap()
+    }
+
+    #[test]
+    fn snap_ts_transpile_output() {
+        let ts = fixture("loader_sample.ts");
+        let loaded = load_js_uncached(&ts, "loader_sample.ts", Path::new("loader_sample.ts")).unwrap();
+        assert!(loaded.is_module);
+        insta::assert_snapshot!(loaded.js);
+    }
+
+    #[test]
+    fn snap_ts_import_extraction() {
+        let ts = fixture("loader_sample.ts");
+        let loaded = load_js_uncached(&ts, "loader_sample.ts", Path::new("loader_sample.ts")).unwrap();
+        // type-only 整包请求被过滤（config.js/types.js 不在内），其余保留
+        insta::assert_debug_snapshot!(loaded.imports);
+    }
+
+    #[test]
+    fn snap_js_passthrough_meta_and_dynamic() {
+        let js = "console.log(import.meta.url);\nconst m = await import(\"./lazy.js\");\n";
+        let loaded = load_js_uncached(js, "m.js", Path::new("m.js")).unwrap();
+        assert!(loaded.is_module);
+        assert_eq!(loaded.js, js);
+        insta::assert_debug_snapshot!(loaded.imports);
+    }
+
+    #[test]
+    fn syntax_error_has_location() {
+        let err = load_js_uncached("const = 1;\n", "bad.js", Path::new("bad.js")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("bad.js:1:7"), "location: {msg}");
+    }
 }

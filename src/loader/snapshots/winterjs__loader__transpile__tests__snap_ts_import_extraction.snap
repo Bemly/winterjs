@@ -1,0 +1,10 @@
+---
+source: src/loader/transpile.rs
+expression: loaded.imports
+---
+[
+    "node:fs",
+    "./helper.js",
+    "./other.js",
+    "./reexport.js",
+]

@@ -1,0 +1,21 @@
+---
+source: src/loader/transpile.rs
+expression: loaded.js
+---
+export function add(a, b) {
+	return a + b;
+}
+import { readFile } from "node:fs";
+import { helper } from "./helper.js";
+import def, * as ns from "./other.js";
+export { helper as util };
+export * from "./reexport.js";
+export async function load(path) {
+	const meta = import.meta.url;
+	const lazy = await import("./lazy.js");
+	return `${meta}:${lazy}`;
+}
+const _cfg = null;
+const _rf = readFile;
+const _d = def;
+const _n = ns;

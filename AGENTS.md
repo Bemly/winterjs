@@ -12,9 +12,12 @@
 3. **踩坑必记**：新坑追加到 §4，写清症状 → 根因 → 修法 → 复现命令。
 4. **依赖随缘更新**：除 `mozjs` 必须精确钉死外（§2 铁律），其余依赖不锁上限（caret），
    `cargo update` 随便跑；跑坏了就地修，并回写 `docs/dependencies.md`。
-5. **新工具先找轮子**：每次想要新手写工具/模块时，不许直接手写；
+5. **新工具先找轮子**：每次想要新手写工具/模块/新功能时，不许直接手写；
    先去 crates.io 找依赖，符合标准就记入 `docs/dependencies.md`，
    然后**停下来问用户**等拍板，用户点头后才引入。
+6. **能 safe 不 unsafe**：新增 `unsafe` 前必须先证伪 safe 路线
+   （safe 写法、已有 crate、`unsafe` 构造器 + safe 访问器模式，见 §6）；
+   存量 `unsafe` 只减不增，重构顺手收敛调用点。
 
 ## 1. 基线（2026-09-09）
 
@@ -137,6 +140,16 @@ cargo build
   本项目自己的代码（CLI、event loop、builtins、loader、Node 垫片）**全部纯 Rust**。
 - `unsafe` 只允许出现在 mozjs 边界（rooting、`AutoRealm`、FFI 调用），
   业务逻辑层禁 `unsafe`；新增 `unsafe` 必须在注释写清前置条件。
+- 新增 `unsafe` 三问（按序证伪，答完才写）：① 有 safe 写法或已有 crate 代替吗
+  （先走 §0.5 找轮子）？② 能把 `unsafe` 收敛进构造器、对外只暴露 safe 访问器吗
+  （`Frame` 模式：`from_raw` unsafe，`arg`/`set_rval` safe + 越界断言）？
+  ③ 前置条件写进注释了吗？
+- 存量基线（2026-09-10 实数 78 处）：`unsafe extern "C"` 22（文本值，宏展开 27，
+  C ABI 强制，不可去）；`unsafe impl Traceable` 2（GC 协议，不可去）；
+  `unsafe{}` 块 48 个，其中 `frame.arg`(14)+`set_rval`(18)=32 处调用点可转 safe
+  （待 `Frame` 重构）；`wrap_cx`(17)维持 unsafe（`from_ptr` 本质 unsafe）；
+  其余 FFI 体（`JS_GetProperty`/`JS_CallFunctionValue`/`evaluate_script`/
+  `RunJobs` 等）不可去——mozjs 本身就是选定的轮子，没有更上层的 safe 运行时可选。
 - 线程模型：`JSContext` 是 `!Send`，JS 永远跑在独占线程（tokio `LocalSet`），
   Rust 侧多线程只通过消息队列与 JS 线程通信，绝不跨线程共享 `&mut JSContext`
  （winterjs-old §7.9 的 aliasing-UB 教训）。

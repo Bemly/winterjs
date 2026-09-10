@@ -2,9 +2,9 @@
 
 > 版本 `26.9.0`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 7 完工（2026-09-11，sqlite/repl/test/watch/init/FFI 全落地，
-> `cargo test` 55+141 全绿，0 警告，冒烟 5/5）；下一步 Phase 8 polish
-> （lint/fmt、cap-std 权限、sentry 上报）。
+> 当前状态：Phase 0–8 代码切片全部完工（2026-09-11，`cargo test` 67+147 全绿，
+> 0 警告，冒烟 5/5）。剩验收项（发 `27.x` 前置）：6-target CI 矩阵立起 +
+> android/ohos 列转正 + §1 ⚠️ 清零或书面理由（需 CI 环境，见 Phase 0/8 完成标准）。
 > 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
@@ -213,7 +213,7 @@
   `tests/cli.rs` 4 例（二次命中零回源/order 序/失败中断/残留自愈）+
   模块单测 7 例（key/往返/原子/order/env/失败/缺脚本）；
   `cargo test` 21+96 全绿，0 警告。
-- [ ] 切片 d（进行中 2026-09-10）：git 依赖 + publish/login + upgrade + 镜像/npmrc。
+- [x] 切片 d（2026-09-10 完工，d1-d4 见下）：git 依赖 + publish/login + upgrade + 镜像/npmrc。
   - [x] d1 镜像/npmrc：`src/pm/npmrc.rs`（手写行解析，`rust-ini` 实测不适合见
     `dependencies.md` 附记）+ 优先级 flag > env `NPM_CONFIG_REGISTRY` >
     `<cwd>/.npmrc` > `$HOME/.npmrc` > 默认 + token 按 host 透传（值永不进日志）。

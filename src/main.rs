@@ -56,6 +56,7 @@ fn main() {
     // 已知问题（AGENTS §4.8）：引擎/运行时析构期 StoreBuffer 悬垂边 SEGV。
     // 结果（含错误渲染）就绪后直接 process::exit 跳过 teardown，由 dispatch 返回退出码。
     let code = tokio_rt.block_on(dispatch(cli, &settings));
+    tracing::debug!(target: "winterjs", code, "finished");
     std::process::exit(code);
 }
 

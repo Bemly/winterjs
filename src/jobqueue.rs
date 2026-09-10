@@ -35,6 +35,8 @@ unsafe extern "C" fn get_host_defined_global(
 
 /// SAFETY: 引擎在 JS::RunJobs 里回调；此处排空 microtask 队列直到为空。
 unsafe extern "C" fn run_jobs(cx: *mut mozjs::jsapi::JSContext) {
+    let mut drained: u64 = 0;
+    let mut swallowed: u64 = 0;
     loop {
         let task: JSVal = PeekNextMicroTask(cx);
         if task.is_null_or_undefined() {
@@ -50,9 +52,12 @@ unsafe extern "C" fn run_jobs(cx: *mut mozjs::jsapi::JSContext) {
                 // 微任务内抛异常：状态留在 pending exception，由上层 rejection/错误
                 // 路径处理；继续排空避免队列阻塞。
                 mozjs::jsapi::JS_ClearPendingException(cx);
+                swallowed += 1;
             }
+            drained += 1;
         }
     }
+    tracing::trace!(target: "winterjs::jobqueue", drained, swallowed, "microtasks drained");
 }
 
 /// SAFETY: 引擎 GC 时回调；追踪队列里以 JS::Value 存放的非 JS microtask。

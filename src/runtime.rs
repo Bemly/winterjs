@@ -32,7 +32,7 @@ use crate::error::Error;
 use crate::jsapi_glue::{exc_name_is, get_prop_string, get_prop_u32, pending_exception_error, raw_handle, raw_handle_mut, value_to_string};
 use crate::state;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Mode {
     /// 文件脚本：求值完成值，事件循环跑完 timers/microtasks 后退出
     Script,
@@ -40,7 +40,7 @@ pub enum Mode {
     Eval,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum WrapKind {
     /// `return (code);` —— 单表达式/以 await 表达式为主的场景，完成值 = await 值；行偏移 2
     Return,
@@ -70,6 +70,7 @@ fn eval_await_failure(msg: &str) -> bool {
 
 /// 求值 `source`（名 `filename`）并打印完成值；事件循环排空 timers/microtasks。
 pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> {
+    tracing::info!(target: "winterjs::runtime", filename, source_len = source.len(), ?mode, "run start");
     // JS engine handle must outlive every Runtime.
     let engine = JSEngine::init().map_err(|_| Error::Other("failed to init JS engine".into()))?;
     let mut rt = Runtime::new(engine.handle());
@@ -229,6 +230,7 @@ async fn eval_syntax_fallback(
 
     // 先试 return 包装（保住完成值），纯语句序列再退普通包装
     for (kind, adjust) in [(WrapKind::Return, 2u32), (WrapKind::Plain, 1u32)] {
+        tracing::debug!(target: "winterjs::runtime", ?kind, adjust, "eval fallback trying wrap");
         state::set_line_adjust(adjust);
         let wrapped = eval_wrap(source, kind);
         let c_filename = CString::new(filename).unwrap_or_else(|_| c"eval.js".into());
@@ -281,12 +283,15 @@ async fn event_loop(
     source: &str,
     filename: &str,
 ) -> Result<(), Error> {
+    let mut iterations: u64 = 0;
+    let mut timers_fired: usize = 0;
     loop {
         {
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
             // SAFETY: realm 内排空内部 job queue
             unsafe { RunJobs((&mut realm).raw_cx()) };
         }
+        iterations += 1;
 
         let Some(at) = timers::next_deadline() else {
             break;
@@ -298,9 +303,10 @@ async fn event_loop(
 
         {
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
-            timers::fire_due(&mut realm, global.get(), source, filename)?;
+            timers_fired += timers::fire_due(&mut realm, global.get(), source, filename)?;
         }
     }
+    tracing::info!(target: "winterjs::runtime", iterations, timers_fired, "event loop drained");
 
     // 未处理 rejection 收尾上报（Node 式 fatal）：挂捕获 reactions → 再排空一轮
     let unhandled = state::with_rooted(|s| {
@@ -310,6 +316,7 @@ async fn event_loop(
             .collect::<Vec<*mut JSObject>>()
     });
     if !unhandled.is_empty() {
+        tracing::warn!(target: "winterjs::runtime", count = unhandled.len(), "unhandled rejections detected");
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         let (on_fulfilled, on_rejected) = state::capture_native_values();
         for promise_obj in unhandled {
@@ -351,9 +358,11 @@ unsafe extern "C" fn rejection_tracker(
         PromiseRejectionHandlingState::Unhandled => {
             let mut heap = mozjs::jsapi::Heap::default();
             heap.set(promise.get());
+            tracing::debug!(target: "winterjs::promise", promise = ?promise.get(), "rejection unhandled");
             state::with_rooted(|s| s.unhandled.push(heap));
         }
         PromiseRejectionHandlingState::Handled => {
+            tracing::trace!(target: "winterjs::promise", promise = ?promise.get(), "rejection handled");
             state::with_rooted(|s| s.unhandled.retain(|h| h.get() != promise.get()));
         }
     }

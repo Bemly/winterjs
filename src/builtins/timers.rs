@@ -50,6 +50,7 @@ fn register_timer(cx: &mut JSContext, frame: &Frame, interval: bool) -> bool {
             interval: interval.then_some(delay),
         });
     });
+    tracing::debug!(target: "winterjs::timers", id, delay_ms, interval, "timer registered");
     frame.set_rval(Int32Value(id as i32));
     true
 }
@@ -97,15 +98,19 @@ pub unsafe extern "C" fn clear_timeout(
     };
     // 注册表里直接摘除；触发中的定时器不在注册表里，用 cleared_during_fire 记账，
     // fire 循环据此不重排 interval。未知 id 一并记账：id 单调不复用，残留无害。
-    state::with_plain(|p| {
+    let removed = state::with_plain(|p| {
         state::with_rooted(|s| {
             let before = s.timers.len();
             s.timers.retain(|t| t.id != id);
             if s.timers.len() == before {
                 p.cleared_during_fire.insert(id);
+                false
+            } else {
+                true
             }
-        });
+        })
     });
+    tracing::debug!(target: "winterjs::timers", id, removed, "timer cleared");
     frame.set_rval(UndefinedValue());
     true
 }
@@ -115,14 +120,14 @@ pub fn next_deadline() -> Option<Instant> {
     state::with_rooted(|s| s.timers.iter().map(|t| t.at).min())
 }
 
-/// 触发所有到期定时器。回调未捕获异常 → Error::Script（Node 式 fatal）。
+/// 触发所有到期定时器（返回实际触发数）。回调未捕获异常 → Error::Script（Node 式 fatal）。
 /// 前置条件：cx 已进入 global 所属 realm。
 pub fn fire_due(
     cx: &mut JSContext,
     global: *mut JSObject,
     source: &str,
     filename: &str,
-) -> Result<(), Error> {
+) -> Result<usize, Error> {
     // 快照到期 id（回调里可能再注册/清除，不能持借用调 JS）
     let due: Vec<u32> = state::with_rooted(|s| {
         let now = Instant::now();
@@ -136,10 +141,12 @@ pub fn fire_due(
         ids
     });
 
+    let mut fired: usize = 0;
     for id in due {
         // 摘除条目（回调期间 clear 不必再摘），值复制进 rooted 栈槽
         let entry = state::with_rooted(|s| s.timers.iter().position(|t| t.id == id).map(|i| s.timers.remove(i)));
         let Some(entry) = entry else { continue };
+        tracing::debug!(target: "winterjs::timers", id, "timer fired");
         let (cb, args) = (entry.callback.get(), entry.args.get());
         let interval = entry.interval;
         let scheduled_at = entry.at;
@@ -167,6 +174,7 @@ pub fn fire_due(
             state::with_plain(|p| p.cleared_during_fire.clear());
             return Err(pending_exception_error(cx, global, source, filename));
         }
+        fired += 1;
 
         // interval：漂移校正重排（scheduled_at + interval）；触发期间被 clear 的不再排
         let cleared = state::with_plain(|p| p.cleared_during_fire.remove(&id));
@@ -181,7 +189,8 @@ pub fn fire_due(
                     interval,
                 });
             });
+            tracing::trace!(target: "winterjs::timers", id, "interval rescheduled");
         }
     }
-    Ok(())
+    Ok(fired)
 }

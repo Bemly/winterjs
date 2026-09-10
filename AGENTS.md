@@ -150,6 +150,14 @@ cargo build
   （待 `Frame` 重构）；`wrap_cx`(17)维持 unsafe（`from_ptr` 本质 unsafe）；
   其余 FFI 体（`JS_GetProperty`/`JS_CallFunctionValue`/`evaluate_script`/
   `RunJobs` 等）不可去——mozjs 本身就是选定的轮子，没有更上层的 safe 运行时可选。
+- 可观测性（2026-09-10）：所有功能模块必须带分级 `tracing` 埋点（Phase 0 已接线），
+  分级：INFO=阶段里程碑（run/eval 起止、事件循环退出）；DEBUG=状态变迁
+  （timer 注册/触发/取消、fallback 路径选择、rejection 捕获）；TRACE=热路径逐条
+  （microtask 出队计数）；WARN=降级/可疑（非常规但可恢复）。
+  纪律：禁把用户脚本原文打进日志（只记长度等元信息）；禁在 `console.*` 内打日志
+  （用户输出通道，避免刷屏/递归）；热路径昂贵构造先用 `tracing::enabled!` 守卫。
+  调试：`winterjs -vv …` / `WINTERJS_LOG=winterjs=debug …` /
+  `WINTERJS_LOG_FILE=…`（子 target `winterjs::xxx` 自动被 `winterjs=<level>` 覆盖）。
 - 线程模型：`JSContext` 是 `!Send`，JS 永远跑在独占线程（tokio `LocalSet`），
   Rust 侧多线程只通过消息队列与 JS 线程通信，绝不跨线程共享 `&mut JSContext`
  （winterjs-old §7.9 的 aliasing-UB 教训）。

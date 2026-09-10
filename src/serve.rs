@@ -23,6 +23,29 @@ pub struct ServeOpts {
     pub dir: PathBuf,
     pub host: String,
     pub port: u16,
+    /// 每秒请求上限（0 = 不限；`governor` 全局限流）。
+    pub limit_rps: u32,
+}
+
+/// 指标名（named 指标文档见 `docs/metrics.md`）。
+pub const METRIC_REQUESTS: &str = "winterjs_serve_requests_total";
+pub const METRIC_DURATION: &str = "winterjs_serve_request_duration_seconds";
+pub const METRIC_IN_FLIGHT: &str = "winterjs_serve_in_flight";
+
+/// RPS → 配额（0 表关闭；否则每 `1/rps` 秒补 1，burst=1）。
+/// 纯函数，单测覆盖。
+pub fn quota_for(rps: u32) -> Option<governor::Quota> {
+    if rps == 0 {
+        return None;
+    }
+    std::time::Duration::from_secs(1)
+        .checked_div(rps)
+        .and_then(governor::Quota::with_period)
+}
+
+/// 等待时长 → `Retry-After` 秒（向上取整，最小 1）。纯函数，单测覆盖。
+pub fn retry_after_secs(wait: std::time::Duration) -> u64 {
+    wait.as_secs().saturating_add(1).max(1)
 }
 
 /// 目录校验（存在 + 是目录；返回规范绝对路径，日志/banner 用）。
@@ -81,7 +104,14 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
         }
     }
     tracing::info!(target: "winterjs::serve", %addr, dir = %root.display(), "serving");
-    // 层（后调用者居外，即外→内：CORS → 压缩 → 追踪 → 静态文件）。
+    // Prometheus 注册为全局 recorder（同进程只许一次；双 serve 本就撞端口）。
+    let metrics = metrics_exporter_prometheus::PrometheusBuilder::new()
+        .install_recorder()
+        .map_err(|e| Error::Other(format!("cannot install metrics recorder: {e}")))?;
+    let limiter = quota_for(opts.limit_rps).map(|q| {
+        std::sync::Arc::new(governor::RateLimiter::direct(q))
+    });
+    // 层（后调用者居外，即外→内：CORS → 压缩 → 观测 → 追踪 → 路由）。
     // CORS 取 permissive（本地静态 dev 服务；上线反代后由网关收紧，文档记录）。
     // 追踪回调手写 target（默认回调打 `tower_http::trace`，会被默认 filter
     // `winterjs=<level>` 静默，见 §4.19）。
@@ -115,7 +145,10 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
             },
         );
     let app = Router::new()
+        .route("/metrics", axum::routing::get(metrics_handler))
         .fallback_service(ServeDir::new(root))
+        .layer(axum::middleware::from_fn_with_state(limiter, observe))
+        .with_state(metrics)
         .layer(trace)
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive());
@@ -125,6 +158,49 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
         .map_err(|e| Error::Other(format!("serve failed: {e}")))?;
     tracing::info!(target: "winterjs::serve", "stopped");
     Ok(())
+}
+
+/// 共享限流器（`None` = 不限流；`governor` 直接式，全局统一配额）。
+type SharedLimiter = Option<std::sync::Arc<governor::DefaultDirectRateLimiter>>;
+
+/// 观测中间件：限流（429）→ in-flight gauge → 计数/耗时指标。
+/// 指标无全局 recorder 时为 no-op（单测/嵌入场景安全）。
+async fn observe(
+    axum::extract::State(limiter): axum::extract::State<SharedLimiter>,
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(lim) = &limiter {
+        if let Err(wait) = lim.check() {
+            use governor::clock::Clock as _;
+            let secs = retry_after_secs(wait.wait_time_from(lim.clock().now()));
+            tracing::debug!(target: "winterjs::serve", "rate limited");
+            return axum::response::Response::builder()
+                .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
+                .header("retry-after", secs.to_string())
+                .body(axum::body::Body::from("rate limited\n"))
+                .expect("static 429 builds");
+        }
+    }
+    let method = req.method().to_string();
+    let path = req.uri().path().to_owned();
+    let gauge = metrics::gauge!(METRIC_IN_FLIGHT);
+    gauge.increment(1.0);
+    let start = std::time::Instant::now();
+    let res = next.run(req).await;
+    gauge.decrement(1.0);
+    let status = res.status().as_u16().to_string();
+    metrics::counter!(METRIC_REQUESTS, "method" => method.clone(), "path" => path.clone(), "status" => status).increment(1);
+    metrics::histogram!(METRIC_DURATION, "method" => method, "path" => path)
+        .record(start.elapsed().as_secs_f64());
+    res
+}
+
+/// `/metrics`（Prometheus 文本；`docs/metrics.md` 有 named 指标文档）。
+async fn metrics_handler(
+    axum::extract::State(handle): axum::extract::State<metrics_exporter_prometheus::PrometheusHandle>,
+) -> ([(&'static str, &'static str); 1], String) {
+    ([("content-type", "text/plain; version=0.0.4")], handle.render())
 }
 
 /// SIGINT（Ctrl-C）或 SIGTERM（unix）到即返回；注册失败则只等 Ctrl-C。
@@ -182,6 +258,17 @@ mod tests {
         if let Some(addr) = lan_addr(1234) {
             assert_eq!(addr.port(), 1234);
         }
+    }
+
+    #[test]
+    fn quota_and_retry_table() {
+        assert!(quota_for(0).is_none());
+        assert!(quota_for(10).is_some());
+        // u32::MAX 下 `1s / rps` 下溢为 0 → None（不断言 panic，只断言不炸）。
+        let _ = quota_for(u32::MAX);
+        assert_eq!(retry_after_secs(std::time::Duration::from_millis(0)), 1);
+        assert_eq!(retry_after_secs(std::time::Duration::from_millis(1001)), 2);
+        assert_eq!(retry_after_secs(std::time::Duration::from_secs(5)), 6);
     }
 
     #[test]

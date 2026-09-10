@@ -121,8 +121,8 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             pm::publish::login(&reg, token.as_deref(), oauth).await
         }
         Cmd::Upgrade { dry_run } => pm::upgrade::upgrade(dry_run).await,
-        Cmd::Serve { dir, host, port } => {
-            serve::serve(&serve::ServeOpts { dir, host, port }).await
+        Cmd::Serve { dir, host, port, limit_rps } => {
+            serve::serve(&serve::ServeOpts { dir, host, port, limit_rps }).await
         }
         Cmd::Man => {            use std::io::Write as _;
 

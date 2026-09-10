@@ -2108,12 +2108,17 @@ impl Drop for ServeGuard {
     }
 }
 
-/// 起 `winterjs serve . --port <free>`，轮询到 connect 成功（5s 超时）。
+/// 起 `winterjs serve . --port <free> [extra]`，轮询到 connect 成功（5s 超时）。
 fn spawn_serve(root: &std::path::Path) -> ServeGuard {
+    spawn_serve_args(root, &[])
+}
+
+fn spawn_serve_args(root: &std::path::Path, extra: &[&str]) -> ServeGuard {
     let port = free_port();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
         .args(["serve", ".", "--port"])
         .arg(port.to_string())
+        .args(extra)
         .current_dir(root)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -2336,5 +2341,43 @@ fn phase6_serve_request_trace() {
     child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
     assert!(stderr.contains("method=GET") && stderr.contains("uri=/app.js"), "stderr:\n{stderr}");
     assert!(stderr.contains("status=200"), "stderr:\n{stderr}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase6_serve_metrics() {
+    // 正常：打 2 个请求后 /metrics 含三指标，且计数行精确递增。
+    let dir = serve_fixture();
+    let srv = spawn_serve(dir.path());
+    let (st, _, _) = http_get(srv.port, "/app.js", &[]);
+    assert_eq!(st, 200);
+    let (st, _, _) = http_get(srv.port, "/app.js", &[]);
+    assert_eq!(st, 200);
+    let (st, h, body) = http_get(srv.port, "/metrics", &[]);
+    assert_eq!(st, 200);
+    assert!(h.get("content-type").is_some_and(|v| v.contains("text/plain")), "headers: {h:?}");
+    let text = String::from_utf8_lossy(&body).into_owned();
+    assert!(text.contains("winterjs_serve_request_duration_seconds"), "metrics:\n{text}");
+    assert!(text.contains("winterjs_serve_in_flight"), "metrics:\n{text}");
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("winterjs_serve_requests_total{method=\"GET\",path=\"/app.js\",status=\"200\"}"))
+        .expect("counter line present");
+    let count: f64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
+    assert!(count >= 2.0, "counter line: {line}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase6_serve_rate_limit() {
+    // 边界：`--limit-rps 1` 下连打两请求，第二个 429 + Retry-After。
+    // （burst=1，第一发必过、第二发必限，时序确定；/metrics 本身也耗配额故不用它断言。）
+    let dir = serve_fixture();
+    let srv = spawn_serve_args(dir.path(), &["--limit-rps", "1"]);
+    let (st1, _, _) = http_get(srv.port, "/app.js", &[]);
+    let (st2, h2, body2) = http_get(srv.port, "/app.js", &[]);
+    assert_eq!((st1, st2), (200, 429), "burst then limit");
+    assert!(h2.contains_key("retry-after"), "headers: {h2:?}");
+    assert_eq!(body2, b"rate limited\n");
     dir.close().unwrap();
 }

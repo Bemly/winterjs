@@ -112,5 +112,8 @@ pub enum Cmd {
         /// Port to bind (0 = ephemeral, actual port printed on stdout)
         #[arg(long, default_value_t = 3000)]
         port: u16,
+        /// Requests per second limit, 0 = unlimited
+        #[arg(long, default_value_t = 0)]
+        limit_rps: u32,
     },
 }

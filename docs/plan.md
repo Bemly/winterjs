@@ -266,6 +266,12 @@
   `winterjs::serve` 回调；压缩小 body 跳过属轮子行为，黑盒用大文件）。
   模块单测 +1（QR 形状），黑盒 +3（gzip roundtrip/CORS 头/追踪日志行）；
   `cargo test` 37+118 全绿，0 警告，冒烟 5/5。
+- [x] 切片 d3（2026-09-10）：`/metrics`（`metrics` 全局 recorder +
+  自服路由，`docs/metrics.md` 有 named 指标文档：requests counter /
+  duration histogram / in-flight gauge）+ 全局限流（`governor`，
+  `--limit-rps N`，burst=1，429 + `Retry-After`，429 本身不计数）。
+  CLI 加 `--limit-rps`。模块单测 +1（配额/retry 表），黑盒 +2
+  （metrics 精确计数/限流 200→429）；`cargo test` 38+120 全绿，0 警告，冒烟 5/5。
 
 ## Phase 7 — runtime 补齐（sqlite/REPL/test/watch/FFI）
 

@@ -25,9 +25,11 @@ use mozjs::rust::{
 };
 use mozjs::rust::wrappers2::JS_NewGlobalObject;
 
+use url::Url;
+
 use crate::builtins;
 use crate::builtins::timers;
-use crate::error::Error;
+use crate::modules;use crate::error::Error;
 use crate::jsapi_glue::{exc_name_is, get_prop_string, get_prop_u32, pending_exception_error, raw_handle, raw_handle_mut, value_to_string};
 use crate::state;
 
@@ -67,6 +69,108 @@ fn eval_await_failure(msg: &str) -> bool {
     msg.contains("await is only valid")
 }
 
+/// 文件入口是否走模块求值：`.ts/.tsx/.mts/.cts/.mjs` 强制；`.js/.jsx` 嗅探 ESM 语法。
+/// 解析失败/未知后缀 → None（回落经典路径）。
+fn sniff_module(filename: &str, source: &str) -> Option<Url> {
+    let url = crate::loader::resolve::entry_url(std::path::Path::new(filename)).ok()?;
+    if url.scheme() != "file" {
+        return None;
+    }
+    let path = url.to_file_path().ok()?;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    let forced = matches!(ext.as_deref(), Some("ts" | "mts" | "cts" | "tsx" | "mjs"));
+    if !forced {
+        if !matches!(ext.as_deref(), Some("js" | "jsx")) {
+            return None;
+        }
+        let loaded = crate::loader::load_js(source, filename, &path).ok()?;
+        if !loaded.is_module {
+            return None;
+        }
+    }
+    tracing::info!(target: "winterjs::runtime", url = url.as_str(), "module detected");
+    Some(url)
+}
+
+/// 模块入口全流程：compile → load deps → link → evaluate → 事件循环 → 完成值打印。
+async fn run_module(
+    rt: &mut Runtime,
+    global: &RootedGuard<'_, *mut JSObject>,
+    url: &Url,
+) -> Result<(), Error> {
+    use mozjs::rust::wrappers2::{ModuleEvaluate, ModuleLink};
+
+    tracing::info!(target: "winterjs::runtime", url = url.as_str(), "module run start");
+    rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
+    {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        rooted!(&in(&mut realm) let mut entry: *mut JSObject = std::ptr::null_mut());
+        let record = modules::compile_entry(&mut realm, url)?;
+        entry.set(record);
+        modules::load_dependencies(&mut realm, entry.get())?;
+        // SAFETY: entry 为有效 rooted 记录；realm 内同步 link/evaluate
+        if !unsafe { ModuleLink(&mut realm, entry.handle()) } {
+            return Err(pending_exception_error(&mut realm, global.get(), url.as_str(), url.as_str()));
+        }
+        if !unsafe { ModuleEvaluate(&mut realm, entry.handle(), rval.handle_mut()) } {
+            return Err(pending_exception_error(&mut realm, global.get(), url.as_str(), url.as_str()));
+        }
+    }
+
+    event_loop(rt, global, url.as_str(), url.as_str()).await?;
+
+    // TLA：rval 为 promise 时挂专用捕获再排空一轮后收割（与通用捕获隔离）。
+    let entry_promise = {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        rooted!(&in(&mut realm) let rv = rval.get());
+        if !rv.is_object() {
+            None
+        } else {
+            let obj = rv.to_object();
+            rooted!(&in(&mut realm) let obj_root: *mut JSObject = obj);
+            // SAFETY: obj_root 为有效 rooted 对象
+            if unsafe { mozjs::jsapi::IsPromiseObject(raw_handle(obj_root.as_ptr())) } {
+                Some(obj_root.get())
+            } else {
+                None
+            }
+        }
+    };
+    if let Some(promise_obj) = entry_promise {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        let (fulfilled, rejected) = state::entry_native_values();
+        rooted!(&in(&mut realm) let promise = promise_obj);
+        rooted!(&in(&mut realm) let ful_obj: *mut JSObject = fulfilled.to_object());
+        rooted!(&in(&mut realm) let rej_obj: *mut JSObject = rejected.to_object());
+        // SAFETY: promise/回调均为有效 rooted 函数对象；指针直拷标记位置
+        unsafe {
+            let _ = AddPromiseReactions(
+                (&mut realm).raw_cx(),
+                raw_handle(promise.as_ptr()),
+                raw_handle(ful_obj.as_ptr()),
+                raw_handle(rej_obj.as_ptr()),
+            );
+            RunJobs((&mut realm).raw_cx());
+        }
+        let (fulfillment, rejection) =
+            state::with_plain(|p| (p.entry_fulfillment.take(), p.entry_rejection.take()));
+        if let Some(reason) = rejection {
+            return Err(Error::Other(format!("unhandled rejection: {reason}")));
+        }
+        if let Some(s) = fulfillment {
+            // 脚本语义对齐：决议 undefined 不打印
+            if s != "undefined" {
+                println!("{s}");
+            }
+            return Ok(());
+        }
+    }
+    print_completion(rt, global, rval.get())
+}
+
 /// 求值 `source`（名 `filename`）并打印完成值；事件循环排空 timers/microtasks。
 pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> {
     tracing::info!(target: "winterjs::runtime", filename, source_len = source.len(), ?mode, "run start");
@@ -76,6 +180,7 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
     let _cx = rt.cx();
     // TLS 状态必须先于引擎销毁（见 state::shutdown 文档）
     let _state_guard = state::StateGuard;
+    modules::install_hooks(&rt);
 
     // SAFETY: 引擎初始化后、首段脚本前启用内部 job queue（JS shell 同款），
     // Promise 微任务由此排队，RunJobs 排空。
@@ -152,6 +257,17 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
         }
     }
 
+    // 模块嗅探（仅 Script；Eval 保持经典语义，import 即 SyntaxError）。
+    // 解析失败 → 回落经典（经典求值会给出它自己的报错）。
+    if mode == Mode::Script {
+        if let Some(url) = sniff_module(filename, source) {
+            let r = run_module(&mut rt, &global, &url).await;
+            // §4.8：跳过引擎/运行时析构
+            forget_engine(rt, engine);
+            return r;
+        }
+    }
+
     // 用户脚本求值
     {
         let c_filename = CString::new(filename).unwrap_or_else(|_| c"script.js".into());
@@ -165,9 +281,19 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
                 forget_engine(rt, engine);
                 return r;
             }
-            let r = pending_exception_error(rt.cx(), global.get(), source, filename);
+            let err = pending_exception_error(rt.cx(), global.get(), source, filename);
+            // TLA 重试：顶层 await 的脚本改走模块求值（Node 同行为；嗅探覆盖不到纯 await 文件）
+            let retry_module = matches!(&err, Error::Script { message, .. } if eval_await_failure(message));
+            if retry_module {
+                if let Ok(url) = crate::loader::resolve::entry_url(std::path::Path::new(filename)) {
+                    tracing::info!(target: "winterjs::runtime", url = url.as_str(), "top-level await, retrying as module");
+                    let r = run_module(&mut rt, &global, &url).await;
+                    forget_engine(rt, engine);
+                    return r;
+                }
+            }
             forget_engine(rt, engine);
-            return Err(r);
+            return Err(err);
         }
     }
 

@@ -30,6 +30,19 @@ unsafe impl Traceable for TimerEntry {
     }}
 }
 
+/// 一个已编译的模块：URL（spec 键）+ 跨 GC 保活的模块记录。
+pub struct ModuleEntry {
+    pub url: String,
+    pub record: Heap<*mut JSObject>,
+}
+
+// SAFETY: 只追踪 record（URL 无 GC 指针）。
+unsafe impl Traceable for ModuleEntry {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
+        self.record.trace(trc);
+    }}
+}
+
 /// 全部跨 GC 存活的 JS 值。
 #[derive(Default)]
 pub struct RootedState {
@@ -39,6 +52,9 @@ pub struct RootedState {
     pub entries_fn: Heap<JSVal>,             // prelude 的 __wjs_entries(v)
     pub on_fulfilled: Heap<JSVal>,           // rejection 捕获用 native
     pub on_rejected: Heap<JSVal>,
+    pub entry_fulfilled: Heap<JSVal>, // 模块入口 TLA 决议捕获用 native
+    pub entry_rejected: Heap<JSVal>,
+    pub modules: Vec<ModuleEntry>, // URL → 已编译模块记录（循环/去重，spec 同结果）
 }
 
 // SAFETY: 同 TimerEntry，全字段 Traceable 或无 GC 指针。
@@ -50,6 +66,9 @@ unsafe impl Traceable for RootedState {
         self.entries_fn.trace(trc);
         self.on_fulfilled.trace(trc);
         self.on_rejected.trace(trc);
+        self.entry_fulfilled.trace(trc);
+        self.entry_rejected.trace(trc);
+        self.modules.trace(trc);
     }}
 }
 
@@ -62,6 +81,11 @@ pub struct PlainState {
     pub console_times: HashMap<String, Instant>,
     pub console_indent: usize,
     pub rejection_reasons: Vec<String>,
+    /// 模块入口 TLA 决议（`entry_*_native` 记录，`runtime` 收割，与通用捕获隔离）。
+    pub entry_fulfillment: Option<String>,
+    pub entry_rejection: Option<String>,
+    /// 模块加载 hook 暂存的友好错误（hook 返回 false，中断加载后由外层取出上报）。
+    pub module_load_error: Option<crate::error::Error>,
     /// eval 包装（async IIFE）引入的行偏移，报错行号统一校正。
     pub line_adjust: u32,
     /// 全局对象裸指针。前置条件：run() 里的 rooted! global 活过整个事件循环，
@@ -115,11 +139,33 @@ pub fn init(cx: &mut JSContext) {
                 0,
                 c"__wjs_onRejected".as_ptr(),
             );
-            assert!(!on_fulfilled.is_null() && !on_rejected.is_null(), "capture natives");
+            let entry_fulfilled = JS_NewFunction(
+                rcx,
+                Some(entry_fulfilled_native),
+                1,
+                0,
+                c"__wjs_entryFulfilled".as_ptr(),
+            );
+            let entry_rejected = JS_NewFunction(
+                rcx,
+                Some(entry_rejected_native),
+                1,
+                0,
+                c"__wjs_entryRejected".as_ptr(),
+            );
+            assert!(
+                !on_fulfilled.is_null()
+                    && !on_rejected.is_null()
+                    && !entry_fulfilled.is_null()
+                    && !entry_rejected.is_null(),
+                "capture natives"
+            );
             {
                 let s = boxed.borrow_mut();
                 s.on_fulfilled.set(ObjectValue(JS_GetFunctionObject(on_fulfilled)));
                 s.on_rejected.set(ObjectValue(JS_GetFunctionObject(on_rejected)));
+                s.entry_fulfilled.set(ObjectValue(JS_GetFunctionObject(entry_fulfilled)));
+                s.entry_rejected.set(ObjectValue(JS_GetFunctionObject(entry_rejected)));
             }
         }
         *slot = Some(boxed);
@@ -204,6 +250,46 @@ unsafe extern "C" fn on_rejected_native(
 pub fn capture_native_values() -> (JSVal, JSVal) {
     with_rooted(|s| (s.on_fulfilled.get(), s.on_rejected.get()))
 }
+
+/// 供 runtime 把入口 TLA promise 的决议收割到专用槽（与通用捕获隔离）。
+pub fn entry_native_values() -> (JSVal, JSVal) {
+    with_rooted(|s| (s.entry_fulfilled.get(), s.entry_rejected.get()))
+}
+
+// ── 模块入口 TLA 决议捕获 natives ────────────────────────────────────────
+
+/// SAFETY: 由引擎以有效调用帧调用；arg0 为 resolution 值。
+unsafe extern "C" fn entry_fulfilled_native(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool { unsafe {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = JSContext::from_ptr(std::ptr::NonNull::new_unchecked(cx_raw));
+    let frame = Frame::from_raw(vp, argc);
+    if argc > 0 {
+        let s = value_to_string(&mut cx, frame.arg(0));
+        with_plain(|p| p.entry_fulfillment = Some(s));
+    }
+    frame.set_rval(UndefinedValue());
+    true
+}}
+
+/// SAFETY: 同上；arg0 为 rejection reason。
+unsafe extern "C" fn entry_rejected_native(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool { unsafe {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = JSContext::from_ptr(std::ptr::NonNull::new_unchecked(cx_raw));
+    let frame = Frame::from_raw(vp, argc);
+    let reason = if argc > 0 { frame.arg(0) } else { UndefinedValue() };
+    let s = value_to_string(&mut cx, reason);
+    with_plain(|p| p.entry_rejection = Some(s));
+    frame.set_rval(UndefinedValue());
+    true
+}}
 
 /// console 计数等纯 Rust 状态访问（builtins 用）。
 pub fn console_state<R>(f: impl FnOnce(&mut PlainState) -> R) -> R {

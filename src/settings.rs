@@ -40,9 +40,22 @@ pub enum ColorChoice {
     Never,
 }
 
+/// 日志运行时的直读变量（`logging.rs` 直接读，不经 config）；见 `Settings::load`。
+const RUNTIME_LOG_VARS: &[&str] = &["WINTERJS_LOG", "WINTERJS_LOG_FILE"];
+
 impl Settings {
     pub fn load() -> Result<Self, config::ConfigError> {
-        Config::builder()
+        // §4.10：`WINTERJS_LOG` / `WINTERJS_LOG_FILE` 是日志运行时的直读变量，
+        // 按前缀规则会被 config 误收进 `log` 表导致反序列化失败；加载期间暂存移出，完后恢复
+        let stash: Vec<(String, std::ffi::OsString)> = RUNTIME_LOG_VARS
+            .iter()
+            .filter_map(|k| std::env::var_os(k).map(|v| (k.to_string(), v)))
+            .collect();
+        for (k, _) in &stash {
+            // SAFETY: 进程启动期主线程独占（尚未 spawn 线程）；返回前全部恢复
+            unsafe { std::env::remove_var(k) };
+        }
+        let built = Config::builder()
             .add_source(File::with_name("winterjs").required(false))
             // 显式 prefix_separator("_")：config 会把 prefix 分隔符默认成 separator（"__"），
             // 不显式给的话 WINTERJS_ 前缀永远匹配不上（WINTERJS__LOG__COLOR 才行）
@@ -51,7 +64,11 @@ impl Settings {
                     .prefix_separator("_")
                     .separator("__"),
             )
-            .build()?
-            .try_deserialize()
+            .build();
+        for (k, v) in stash {
+            // SAFETY: 同上
+            unsafe { std::env::set_var(k, v) };
+        }
+        built?.try_deserialize()
     }
 }

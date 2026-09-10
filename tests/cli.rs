@@ -106,6 +106,24 @@ fn config_schema_is_valid_json_schema() {
 }
 
 #[test]
+fn winterjs_log_filter_does_not_break_config() {
+    // AGENTS §4.10 回归：WINTERJS_LOG=<EnvFilter> 是日志直读变量，不得被 config 误收
+    let out = winterjs()
+        .env("WINTERJS_LOG", "winterjs=debug")
+        .args(["config"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert!(value["log"].is_object(), "log section present: {stdout}");
+}
+
+#[test]
 fn completions_bash_script() {
     let out = stdout_of(&mut winterjs().args(["completions", "bash"]));
     assert!(out.starts_with("_winterjs()"), "completions: {out}");
@@ -223,4 +241,99 @@ fn phase1_console_count_and_time() {
         "console.count('a'); console.count('a'); console.time('t'); console.timeLog('t'); console.timeEnd('t')"]));
     assert!(out.contains("a: 1") && out.contains("a: 2"), "count: {out}");
     assert!(out.contains("t: ") && out.matches("t: ").count() == 2, "time: {out}");
+}
+
+// ── Phase 2 切片 a：ESM loader ────────────────────────────────────────────
+
+/// 搭一个临时模块目录：files 为 (name, content)，返回 dir（调用方持有）+ 入口路径。
+fn mod_dir(files: &[(&str, &str)], entry: &str) -> (assert_fs::TempDir, std::path::PathBuf) {
+    let dir = assert_fs::TempDir::new().unwrap();
+    for (name, content) in files {
+        dir.child(name).write_str(content).unwrap();
+    }
+    let path = dir.child(entry).path().to_path_buf();
+    (dir, path)
+}
+
+#[test]
+fn phase2_relative_import() {
+    let (_dir, entry) = mod_dir(
+        &[
+            ("lib.js", "export const x = 40 + 2;\n"),
+            ("app.js", "import { x } from \"./lib.js\";\nconsole.log(x);\n"),
+        ],
+        "app.js",
+    );
+    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "42\n");
+}
+
+#[test]
+fn phase2_typescript_transpile() {
+    let (_dir, entry) = mod_dir(
+        &[
+            ("math.ts", "export function add(a: number, b: number): number { return a + b; }\n"),
+            ("app.ts", "import { add } from \"./math\";\nconsole.log(add(40, 2));\n"),
+        ],
+        "app.ts",
+    );
+    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "42\n");
+}
+
+#[test]
+fn phase2_circular_import_no_deadlock() {
+    let (_dir, entry) = mod_dir(
+        &[
+            ("a.js", "import \"./b.js\";\nconsole.log(\"a\");\n"),
+            ("b.js", "import \"./a.js\";\nconsole.log(\"b\");\n"),
+        ],
+        "a.js",
+    );
+    // spec 求值序：b 先于 a，不死锁
+    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "b\na\n");
+}
+
+#[test]
+fn phase2_import_meta_url() {
+    let (_dir, entry) = mod_dir(&[("meta.js", "console.log(import.meta.url);\n")], "meta.js");
+    let out = stdout_of(&mut winterjs().arg("run").arg(&entry));
+    assert!(out.starts_with("file://") && out.trim_end().ends_with("/meta.js"), "meta url: {out}");
+}
+
+#[test]
+fn phase2_bare_specifier_friendly_error() {
+    let (_dir, entry) = mod_dir(&[("bare.js", "import \"left-pad\";\n")], "bare.js");
+    let out = winterjs().arg("run").arg(&entry).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("bare specifier 'left-pad'"), "stderr: {stderr}");
+}
+
+#[test]
+fn phase2_dynamic_import() {
+    let (_dir, entry) = mod_dir(
+        &[
+            ("lib.js", "export const x = 40 + 2;\n"),
+            ("dyn.js", "const m = await import(\"./lib.js\");\nconsole.log(m.x);\n"),
+        ],
+        "dyn.js",
+    );
+    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "42\n");
+}
+
+#[test]
+fn phase2_top_level_await_entry() {
+    let (_dir, entry) = mod_dir(
+        &[("tla.js", "await new Promise(r=>setTimeout(()=>r(7),5)).then(v=>console.log(\"tla\",v));\n")],
+        "tla.js",
+    );
+    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "tla 7\n");
+}
+
+#[test]
+fn phase2_data_url_import() {
+    let (_dir, entry) = mod_dir(
+        &[("data.js", "import x from \"data:text/javascript,export default 99\";\nconsole.log(x);\n")],
+        "data.js",
+    );
+    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "99\n");
 }

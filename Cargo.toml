@@ -217,8 +217,9 @@ filetime = "0.2"
 libloading = "0.9"
 webbrowser = "1"
 oauth2 = { version = "5", default-features = false, features = ["rustls-tls"] }
-# sentry 上游 transport 特性硬绑 native-tls（§2 禁），此处只装 rustls-no-provider 传输依赖，
-# Transport 接线到 Phase 8 自带 reqwest 客户端实现；sentry 默认关闭零成本（§8）
+# sentry：§2 禁 "transport" 捆绑特性（拖 native-tls）；但 ReqwestHttpTransport 本体
+# 只门控在 "reqwest" 特性（实测 sentry 0.49 transports/mod.rs），配 rustls-no-provider
+# + 全图 ring provider 直接可用，无需自实现 transport；默认关闭零成本（§8）
 sentry = { version = "0.49", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls-no-provider"] }
 keyring = "4"
 # http 特性硬绑 aws-lc（§2 禁），先只进 fs 后端；远程 http 后端待上游 no-provider 变体（§16）

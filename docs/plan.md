@@ -401,6 +401,18 @@
   批准单内后续可用。模块单测 5 例（语义/拒绝/路径包含/env-run 匹配/CLI 解析，
   serial）+ 黑盒 3 例（fs 四态/env+run/sqlite+ffi）；`cargo test` 60+144 全绿，
   0 警告，冒烟 5/5。
+- [x] 切片 c（2026-09-11）：sentry 崩溃上报（`src/sentry_report.rs`，opt-in）。
+  开关 `WINTERJS_SENTRY_DSN`（未设/空 = 不初始化零成本；坏 DSN stderr 告警后继续）。
+  实现勘误后大幅简化：无需自实现 transport（dependencies §2 勘误）——
+  `sentry::init` 内部 `apply_defaults` 自动装 PanicIntegration/Context/
+  stacktrace 集成 + DefaultTransportFactory（reqwest 特性下 ReqwestHttpTransport，
+  自带后台 tokio 线程与 JS 线程零交互）；ring provider 在 init 提前 install_default
+  （fetch 懒装可能更晚）。退出顺序：panic 路径自身 flush(None)（发完才 unwind →
+  human-panic/标准 hook 链），main 的 process::exit 前防御性 flush(2s)（§4.8 兼容）。
+  上报是旁路：不可达端点/任何 sentry 失败绝不影响 CLI（黑盒钉住）。
+  模块单测 3 例（stub server 信封 e2e：POST /api/<proj>/envelope/ +
+  X-Sentry-Auth + 消息内容 / panic hook 链真路 / DSN 门控）+ 黑盒 1 例
+  （坏 DSN/不可达/未设 三态）；`cargo test` 67+147 全绿，0 警告，冒烟 5/5。
 
 ## 全局纪律
 

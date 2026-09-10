@@ -15,6 +15,7 @@ mod pm;
 mod permissions;
 mod repl;
 mod runtime;
+mod sentry_report;
 mod serve;
 mod testrun;
 mod settings;
@@ -48,6 +49,9 @@ fn main() {
     let version = &*cli::VERSION_TEXT;
     tracing::debug!(target: "winterjs", %version, "starting");
 
+    // 崩溃上报 opt-in（WINTERJS_SENTRY_DSN；未设零成本，plan Phase 8-c）
+    sentry_report::init();
+
     // JS 跑在独占线程（AGENTS §6）：CLI 生命周期内主线程即 JS 线程，
     // tokio current-thread 只负责驱动 timers 的睡眠与 fetch 的 socket IO。
     let tokio_rt = match tokio::runtime::Builder::new_current_thread()
@@ -67,6 +71,8 @@ fn main() {
     // 结果（含错误渲染）就绪后直接 process::exit 跳过 teardown，由 dispatch 返回退出码。
     let code = tokio_rt.block_on(dispatch(cli, &settings));
     tracing::debug!(target: "winterjs", code, "finished");
+    // §4.8：process::exit 跳过 teardown；上报事件先排空（panic 路径自身已 flush）
+    sentry_report::flush();
     std::process::exit(code);
 }
 

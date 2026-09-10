@@ -96,8 +96,13 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
   （5d-d4 加 `github` 后端开关：纯 flag，无新增传递依赖，已验 `cargo tree`）。
   禁它的 `rustls` 特性（映射 reqwest 0.13 的 aws-lc）与 `native-tls`；
   TLS 走全图统一的 `rustls-no-provider` + 顶层 ring。
-- `sentry`：禁 `transport`（硬绑 native-tls）；开
-  `backtrace/contexts/panic/reqwest/rustls-no-provider`，Transport 到 Phase 8 自实现。
+- `sentry`：禁 `transport`（捆绑包拖 native-tls，维持）；开
+  `backtrace/contexts/panic/reqwest/rustls-no-provider`。
+  勘误（2026-09-11 实测，Phase 8-c）：原记"Transport 到 Phase 8 自实现"不成立——
+  `ReqwestHttpTransport` 只门控在 `reqwest` 特性（transports/mod.rs `#[cfg(feature = "reqwest")]`），
+  TLS 走 reqwest-no-provider + 全图 ring `install_default` 即可用，无需自实现；
+  `sentry::init` 内部 `apply_defaults` 自动装默认集成（panic/context/stacktrace）
+  与 DefaultTransportFactory。
 - `object_store`：只进默认 `fs`；`http`/`aws`/`azure`/`gcp` 全部硬绑 aws-lc，禁。
 - `instant-acme`：`default-features=false` + `ring`；`default` 和 `hyper-rustls`
   特性都拖 aws-lc，禁。

@@ -112,8 +112,15 @@
 - [x] 切片 c-1（2026-09-10）：`subtle.digest`（SHA-1/256/384/512，
   同步 native + prelude async 包裹；标准向量钉住）。
   `tests/cli.rs` 2 例；`cargo test` 53+5 全绿，0 警告。
-  切片 c-2：streams（引擎上实现）+ fetch `Response.body` 对接。
-  切片 c-3：SubtleCrypto 其余算法 + WebSocket。
+  切片 c-2（2026-09-10 完工）：streams 纯 prelude 实现（Readable/Writable/Transform，
+  默认 reader + asyncIterator + pipe/tee；BYOB 顺延）+ fetch `Response.body` 对接
+  （同一性缓存）。`tests/cli.rs` 2 例。
+  切片 c-3（2026-09-10 完工）：SubtleCrypto 对称子集（AES-GCM 128/256 + HMAC，
+  prelude 密钥 + JWK oct；192-bit/非对称顺延 c-4）+ WebSocket client
+  （tokio-tungstenite，`on*` 回调，事件循环三路 select + `ws_open` 存活计数）。
+  `tests/cli.rs` 4 例（含本机回环 echo/close 握手）；`cargo test` 59+5 全绿，0 警告。
+- [ ] 切片 c-4：SubtleCrypto 非对称（RSA/ECDSA/ECDH，pkcs8/spki）+ wss 测试 +
+  `Response.body` 流式（fetch 边下边吐）+ in-flight abort。
 
 ## Phase 4 — Node 兼容垫片
 

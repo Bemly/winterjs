@@ -8,6 +8,7 @@
 
 use std::ffi::CString;
 use std::ptr;
+use std::sync::OnceLock;
 
 use mozjs::conversions::{ConversionResult, FromJSValConvertible as _};
 use mozjs::gc::RootedGuard;
@@ -21,7 +22,7 @@ use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::{
     CompileOptionsWrapper, RealmOptions, SIMPLE_GLOBAL_CLASS, error_info_from_exception_stack,
-    evaluate_script, JSEngine, Runtime,
+    evaluate_script, JSEngine, JSEngineHandle, Runtime,
 };
 use mozjs::rust::wrappers2::JS_NewGlobalObject;
 
@@ -205,14 +206,14 @@ pub async fn run(source: &str, filename: &str, mode: Mode, extra_args: &[String]
     }
 }
 
-/// 内层（引擎生命周期；`forget_engine` 在各返回点执行，见 §4.8）。
+/// 内层（引擎生命周期；`end_session` 在各返回点收尾，见 §4.8/§4.24）。
 /// 初始化好的会话（引擎 + realm + 内建 + 通道接收端）。
 /// `global_ptr` 为裸指针：调用方必须在任何 JSAPI 调用前立即重 root
 /// （`rooted!`），中间不得有 await/JSAPI（无 GC 间隙），见调用点 SAFETY。
 /// `state_guard` 必须与 `rt` 同寿（TLS 状态先于引擎销毁，见 `state`）。
 struct SessionInit {
     rt: Runtime,
-    engine: JSEngine,
+    engine: JSEngineHandle,
     global_ptr: *mut JSObject,
     state_guard: state::StateGuard,
     fetch_rx: tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchMsg>,
@@ -221,12 +222,29 @@ struct SessionInit {
     child_rx: tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::child::ChildEvent>,
 }
 
+/// 进程级引擎单例：`JSEngine::init()` 每进程只能成功一次（第二次起
+/// `AlreadyInitialized`），而 test runner 多文件 / test --watch 都要在同进程
+/// 反复 `runtime::run`。本体 init 一次后刻意泄漏（永不 shutdown，§4.8），
+/// handle（Clone）给每次 run 复用（§4.24）。
+fn engine_handle() -> Result<JSEngineHandle, Error> {
+    static HANDLE: OnceLock<JSEngineHandle> = OnceLock::new();
+    if let Some(h) = HANDLE.get() {
+        return Ok(h.clone());
+    }
+    let engine = JSEngine::init().map_err(|_| Error::Other("failed to init JS engine".into()))?;
+    let handle = engine.handle();
+    let _ = HANDLE.set(handle.clone());
+    // 本体 forget：Drop 会触发 JS_ShutDown，之后引擎在本进程不可再用（§4.8）。
+    std::mem::forget(engine);
+    Ok(handle)
+}
+
 /// 会话初始化（引擎/realm/内建/prelude/通道；`run` 与 `repl` 共用）。
 /// 同步函数：内部无 await（prelude 求值全同步），返回即交接，无 GC 间隙。
 fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
-    // JS engine handle must outlive every Runtime.
-    let engine = JSEngine::init().map_err(|_| Error::Other("failed to init JS engine".into()))?;
-    let mut rt = Runtime::new(engine.handle());
+    // JS engine handle 进程级单例（见 `engine_handle`；每次 run 复用同一引擎）。
+    let engine = engine_handle()?;
+    let mut rt = Runtime::new(engine.clone());
     // TLS 状态必须先于引擎销毁（见 state::shutdown 文档）
     let state_guard = state::StateGuard;
     modules::install_hooks(&rt);
@@ -372,9 +390,9 @@ async fn run_inner(
         Mode::Eval => std::iter::once(exe).chain(extra_args.iter().cloned()).collect(),
     };
     let init = init_session(argv)?;
-    // 声明顺序即 drop 逆序：`engine` 必须先于 `rt` 声明，否则报错早退
-    // （`?` 跳过 `forget_engine`）时 engine 先 drop 而 rt 仍持有 handle，
-    // `JSEngine::drop` 的 outstanding 断言必炸（实测：unhandled rejection）。
+    // 声明顺序即 drop 逆序：`rt` 若先于 `engine` drop（`?` 早退路径），Runtime
+    // 的 Drop 会走引擎析构（StoreBuffer 悬垂，§4.8 SEGV）。两值在各返回点都经
+    // `end_session` 泄漏；handle 本体泄漏无害（进程级单例，见 `engine_handle`）。
     let engine = init.engine;
     let mut rt = init.rt;
     let _state_guard = init.state_guard;
@@ -394,7 +412,7 @@ async fn run_inner(
         if let Some(url) = sniff_module(filename, source) {
             let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx).await;
             // §4.8：跳过引擎/运行时析构
-            forget_engine(rt, engine);
+            end_session(rt, engine);
             return r;
         }
     }
@@ -422,15 +440,15 @@ async fn run_inner(
                             None => Error::Other("uncaught JS exception (no stack info)".into()),
                         }
                     };
-                    forget_engine(rt, engine);
+                    end_session(rt, engine);
                     return Err(err);
                 }
                 event_loop(&mut rt, &global, ErrorSource::Script { source: &main_src, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx).await?;
-                forget_engine(rt, engine);
+                end_session(rt, engine);
                 return Ok(());
             }
             Err(e) => {
-                forget_engine(rt, engine);
+                end_session(rt, engine);
                 return Err(e);
             }
         }
@@ -444,7 +462,7 @@ async fn run_inner(
             if mode == Mode::Eval {
                 let r = eval_syntax_fallback(&mut rt, &global, source, filename, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx).await;
                 // §4.8：跳过引擎/运行时析构（StoreBuffer 悬垂边在 destroyRuntime 的小 GC 里 SEGV）
-                forget_engine(rt, engine);
+                end_session(rt, engine);
                 return r;
             }
             // 模块重试：经典 SyntaxError 且能按模块解析 → 改走模块求值。
@@ -465,14 +483,14 @@ async fn run_inner(
             {
                 tracing::info!(target: "winterjs::runtime", url = url.as_str(), "retrying as module");
                 let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx).await;
-                forget_engine(rt, engine);
+                end_session(rt, engine);
                 return r;
             }
             let err = match info_opt {
                 Some(info) => Error::script(filename, source, info.line.max(1), info.col, info.message),
                 None => Error::Other("uncaught JS exception (no stack info)".into()),
             };
-            forget_engine(rt, engine);
+            end_session(rt, engine);
             return Err(err);
         }
     }
@@ -483,15 +501,45 @@ async fn run_inner(
     let r = print_completion(&mut rt, &global, rval.get());
     // §4.8：跳过引擎/运行时析构（带 timer 的路径在 JS_DestroyContext 里 SEGV）。
     // CLI 进程即将退出，内存由 OS 回收；见 AGENTS §4.8。
-    forget_engine(rt, engine);
+    end_session(rt, engine);
     r
 }
 
-/// # Safety / 泄漏说明
-/// 刻意泄漏 Runtime 与 JSEngine（不含 `Drop` 清理），见 §4.8。
-fn forget_engine(rt: Runtime, engine: JSEngine) {
+/// 会话收尾（各返回点调用）：刻意泄漏 Runtime 与 engine handle（§4.8 —— 正常
+/// drop 在带 timer/microtask 残留的路径上，JS_DestroyContext 的收尾 GC 即 SEGV，
+/// 实测复现）。多 run 进程（test runner 多文件 / test --watch）的隔离靠
+/// `run_isolated` 的每文件独立线程：CONTEXT TLS 随线程消亡，下一次
+/// `Runtime::new` 不受影响（§4.24 —— 单线程内建第二个 Runtime 会直接炸）。
+fn end_session(rt: Runtime, engine: JSEngineHandle) {
     std::mem::forget(rt);
     std::mem::forget(engine);
+}
+
+/// 独立线程跑一段脚本（test runner 用，§4.24）：JS 线程私有的 CONTEXT TLS /
+/// state TLS 全随线程生灭，Runtime 照 §4.8 泄漏。同步接口：调用方阻塞等结果
+/// （与 sqlite worker 同哲学）。栈给 16MB（引擎 STACK_QUOTA 按主线程量级假设，
+/// 线程默认栈远不够）。
+pub fn run_isolated(source: String, filename: String, extra_args: Vec<String>) -> Result<(), Error> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("winterjs-test-file".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let tokio_rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = tx.send(Err(Error::Other(format!("cannot start async runtime: {e}"))));
+                    return;
+                }
+            };
+            let outcome = tokio::task::LocalSet::new().block_on(&tokio_rt, async {
+                run(&source, &filename, Mode::Script, &extra_args).await
+            });
+            // Runtime 已在 end_session 泄漏；线程退出即清 CONTEXT TLS（§4.24）。
+            let _ = tx.send(outcome);
+        });
+    spawned.map_err(|e| Error::Other(format!("cannot spawn test thread: {e}")))?;
+    rx.recv().unwrap_or_else(|_| Err(Error::Other("test file thread died".into())))
 }
 
 
@@ -933,7 +981,7 @@ pub async fn repl() -> Result<(), Error> {
             Ok(st) => st,
             Err(e) => {
                 if let Some(code) = state::with_plain(|p| p.process_exited) {
-                    forget_engine(rt, engine);
+                    end_session(rt, engine);
                     return Err(Error::Exit(code));
                 }
                 eprintln!("{e}");
@@ -942,7 +990,7 @@ pub async fn repl() -> Result<(), Error> {
         };
         if st.exited {
             let code = state::with_plain(|p| p.process_exited).unwrap_or(0);
-            forget_engine(rt, engine);
+            end_session(rt, engine);
             return Err(Error::Exit(code));
         }
         // 每轮收割 unhandled rejection（Node 式打印，继续不退出）。
@@ -970,7 +1018,7 @@ pub async fn repl() -> Result<(), Error> {
                         match repl_eval(&mut rt, &global, &text).await {
                             ReplStep::Done => {}
                             ReplStep::Exited(code) => {
-                                forget_engine(rt, engine);
+                                end_session(rt, engine);
                                 return Err(Error::Exit(code));
                             }
                         }
@@ -983,7 +1031,7 @@ pub async fn repl() -> Result<(), Error> {
         }
     }
     tracing::info!(target: "winterjs::runtime", "repl done");
-    forget_engine(rt, engine);
+    end_session(rt, engine);
     Ok(())
 }
 

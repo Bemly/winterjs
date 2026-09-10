@@ -130,10 +130,10 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             initpkg::init(&cwd, name.as_deref(), yes).await
         }
         Cmd::Repl => runtime::repl().await,
-        Cmd::Test { paths, filter } => {
+        Cmd::Test { paths, filter, watch } => {
             let cwd = std::env::current_dir()
                 .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
-            testrun::run_tests(&cwd, &testrun::TestOpts { paths, filter }).await
+            testrun::run_tests(&cwd, &testrun::TestOpts { paths, filter, watch }).await
         }
         Cmd::Serve { dir, host, port, limit_rps, cert, key } => {
             serve::serve(&serve::ServeOpts { dir, host, port, limit_rps, cert, key }).await

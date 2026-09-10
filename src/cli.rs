@@ -118,6 +118,9 @@ pub enum Cmd {
         /// Only run files matching this glob (matched against relative path or file name)
         #[arg(long)]
         filter: Option<String>,
+        /// Re-run tests when watched files change (Ctrl-C to stop)
+        #[arg(long)]
+        watch: bool,
     },
     /// Serve a directory over HTTP (Phase 6)
     Serve {

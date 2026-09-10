@@ -325,7 +325,7 @@ async fn metrics_handler(
 }
 
 /// SIGINT（Ctrl-C）或 SIGTERM（unix）到即返回；注册失败则只等 Ctrl-C。
-async fn shutdown_signal() {
+pub(crate) async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };

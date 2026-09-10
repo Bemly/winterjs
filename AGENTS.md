@@ -281,6 +281,32 @@ cargo build
   `Object.create` 造的（内部类/状态后置挂的）一律 WeakMap 自由函数
  （URL/Headers/fetch 系既有类全走此路，与此一致）。
 
+### 4.24 同进程多次 `runtime::run`：引擎单例 + 每文件独立线程（2026-09-11）
+
+- 症状：`winterjs test` 多文件第二个文件起全报 `failed to init JS engine`
+  （e1 起就坏，黑盒只放一文件没抓到；test --watch 把它显性化）。修引擎单例后
+  又暴露第二层：`js::NewContext` 里 EXC_BAD_ACCESS（同线程建第二个 Runtime）；
+  再改成 run 结束正常 drop Runtime，带 timer/microtask 残留的路径 SEGV（§4.8
+  所记 teardown 问题如实复现，139 例黑盒掉 30+）。
+- 根因（三层）：① `JSEngine::init()` 每进程只能成功一次（二次
+  `AlreadyInitialized`）；② mozjs 的 CONTEXT TLS 断言一线程一 context，
+  `Runtime::create` 前就炸（SEGV 在 `js::NewContext` C++ 侧，非 rust assert）；
+  ③ `Runtime::drop` 的收尾 GC 在事件循环未完全排空（timer/rejection 残留）时
+  必炸——§4.8 的 process::exit 就是为躲它。
+- 修法（`src/runtime.rs`）：① `engine_handle()` 进程级单例——JSEngine::init
+  一次后本体 `mem::forget`（永不 shutdown），handle（Clone）给每次 run；
+  ② `run_isolated(source, filename, args)`：每文件独立 OS 线程（16MB 栈——
+  引擎 STACK_QUOTA 按主线程量级假设，线程默认栈不够）内起 current-thread
+  tokio + LocalSet 跑 `run`，Runtime 照 §4.8 泄漏，线程退出即清 CONTEXT/state
+  TLS（隔离边界 = 线程生灭）；③ `end_session` 维持 forget 泄漏语义（曾试图改
+  正常 drop，实证炸 timer 路径后回退）。
+- 复现：两个 `console.log` 的 `*.test.js` 跑 `winterjs test`（修前 exit=1
+  第二个 `failed to init JS engine`）；修后全过 exit=0。
+- 推广为铁律：凡"单 run 进程"假设的代码（runtime::run 内部多处）、要在同进程
+  再跑一次 JS 的（test/watch/未来并行），一律走 `run_isolated` 新线程，
+  禁在同一线程叠建 Runtime、禁改 `end_session` 为 drop。多 run 功能的黑盒
+  必须含 ≥2 文件/≥2 轮的用例（e1 的教训：单文件用例漏掉整层回归）。
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

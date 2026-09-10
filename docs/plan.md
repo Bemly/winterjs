@@ -2,8 +2,8 @@
 
 > 版本 `26.9.0`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 7 进行中（e1 test / e2 init / e3 repl / e4 sqlite 完工，
-> `cargo test` 52+138 全绿，0 警告，冒烟 5/5）；下一步 watch 模式 / FFI。
+> 当前状态：Phase 7 进行中（e1-e5 完工；剩 FFI；
+> `cargo test` 53+139 全绿，0 警告，冒烟 5/5）。
 > 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
@@ -328,6 +328,18 @@
   turso 双 `Params` 附记见 dependencies §9。模块单测 4 例 + 黑盒 3 例
   （内存 roundtrip/文件持久化+报错三件/未知 spec 报可用列表）；
   `cargo test` 52+138 全绿，0 警告，冒烟 5/5。
+- [x] 切片 e5（2026-09-11）：`winterjs test --watch`（notify-debouncer-mini 300ms 防抖，
+  变更即重跑；SIGINT/SIGTERM 优雅退出 exit=0（复用 serve `shutdown_signal`）；
+  watchable 过滤 node_modules/.git/target/点文件，只认代码/JSON 后缀——防测试自写
+  db/产物触发无限循环；重跑前重发现文件，新增/删除即生效）。偏差：变更后全量重跑
+  （Bun 按导入图受影响文件，按需顺延）；重跑轮的 leaked Runtime 随次数累积
+  （dev 工具可接受，文档记录）。附带修 e1 遗留 bug（§4.24）：`JSEngine::init`
+  二次调用 `AlreadyInitialized` + 同线程建第二 Runtime 炸 —— test runner 多文件
+  修前第二个文件起全挂（e1 黑盒只放了一文件没抓到，已补两文件回归）。
+  修法：引擎进程级单例（`engine_handle`，本体泄漏永不 shutdown）+ `run_isolated`
+  每文件独立线程（CONTEXT/state TLS 随线程生灭，16MB 栈）。模块单测 +1
+  （watchable 过滤表）+ 黑盒 +2（watch 重跑+SIGINT e2e / 两文件全过回归）；
+  `cargo test` 53+139 全绿，0 警告，冒烟 5/5。
 
 ## Phase 8 — polish（lint/权限/远程缓存/上报）
 

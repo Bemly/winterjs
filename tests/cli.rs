@@ -132,7 +132,7 @@ fn completions_bash_script() {
 #[test]
 fn man_pages_render_roff() {
     let out = stdout_of(&mut winterjs().arg("man"));
-    assert_eq!(out.matches(".TH").count(), 6, "main + 5 subcommand pages");
+    assert_eq!(out.matches(".TH").count(), 7, "main + 6 subcommand pages");
 }
 
 #[test]
@@ -1302,4 +1302,97 @@ fn phase4_spawn_async_exit_close_kill() {
     let out = stdout_of(&mut winterjs().args(["eval",
         r#"const { spawn } = await import("node:child_process"); const log = []; const c = spawn("sleep", ["30"]); c.on("exit", (e) => log.push("exit:" + e.signal)); c.on("close", () => { log.push("close"); console.log(log.join("|")); }); setTimeout(() => console.log("killed:", c.kill()), 100);"#]));
     assert_eq!(out, "killed: true\nexit:SIGTERM|close\n", "kill: {out}");
+}
+
+/// 本地 stub registry（packument JSON；tarball URL 指回本端口，5b 用）。
+fn serve_registry() -> u16 {
+    let holder = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let held = holder.clone();
+    let port = serve_http(8, move |head, _body| {
+        let line = head.lines().next().unwrap_or("").to_owned();
+        let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+        let port = held.lock().unwrap().unwrap_or(0);
+        let pack = |name: &str, versions: serde_json::Value, tags: serde_json::Value| {
+            serde_json::json!({ "name": name, "dist-tags": tags, "versions": versions }).to_string()
+        };
+        let ver = |tarball: String, deps: serde_json::Value| {
+            serde_json::json!({ "dist": { "tarball": tarball, "integrity": "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==" }, "dependencies": deps })
+        };
+        let body = if path == "/left-pad" {
+            pack(
+                "left-pad",
+                serde_json::json!({
+                    "1.2.0": ver(format!("http://127.0.0.1:{port}/left-pad/-/left-pad-1.2.0.tgz"), serde_json::json!({})),
+                    "1.3.0": ver(format!("http://127.0.0.1:{port}/left-pad/-/left-pad-1.3.0.tgz"), serde_json::json!({})),
+                }),
+                serde_json::json!({ "latest": "1.3.0" }),
+            )
+        } else if path == "/app" {
+            pack(
+                "app",
+                serde_json::json!({
+                    "1.0.0": ver(format!("http://127.0.0.1:{port}/app/-/app-1.0.0.tgz"), serde_json::json!({ "lib": "^2.0.0" })),
+                }),
+                serde_json::json!({ "latest": "1.0.0" }),
+            )
+        } else if path == "/lib" {
+            pack(
+                "lib",
+                serde_json::json!({
+                    "2.0.0": ver(format!("http://127.0.0.1:{port}/lib/-/lib-2.0.0.tgz"), serde_json::json!({})),
+                    "2.1.0": ver(format!("http://127.0.0.1:{port}/lib/-/lib-2.1.0.tgz"), serde_json::json!({})),
+                }),
+                serde_json::json!({ "latest": "2.1.0" }),
+            )
+        } else {
+            return (404, vec![], b"nope".to_vec());
+        };
+        (200, vec![("content-type", "application/json".into())], body.into_bytes())
+    });
+    *holder.lock().unwrap() = Some(port);
+    port
+}
+
+#[test]
+fn phase5_install_dry_run_stub_registry() {
+    // 单包精确解 + 传递解（app→lib^2 取最大 2.1.0）；只打印不落地。
+    let port = serve_registry();
+    let reg = format!("http://127.0.0.1:{port}");
+    let out = stdout_of(
+        winterjs()
+            .args(["install", "left-pad@^1.0.0", "--dry-run", "--registry"])
+            .arg(&reg),
+    );
+    assert_eq!(
+        out,
+        format!("left-pad@1.3.0 http://127.0.0.1:{port}/left-pad/-/left-pad-1.3.0.tgz\n"),
+        "dry-run single: {out}"
+    );
+    let out = stdout_of(
+        winterjs().args(["install", "app", "--dry-run", "--registry"]).arg(&reg),
+    );
+    assert_eq!(
+        out,
+        format!(
+            "app@1.0.0 http://127.0.0.1:{port}/app/-/app-1.0.0.tgz\nlib@2.1.0 http://127.0.0.1:{port}/lib/-/lib-2.1.0.tgz\n"
+        ),
+        "dry-run tree: {out}"
+    );
+}
+
+#[test]
+fn phase5_install_errors() {
+    // 空包列表 / 未知包 / 无满足版本，皆 exit=1 且可读。
+    let out = winterjs().args(["install", "--dry-run"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let port = serve_registry();
+    let reg = format!("http://127.0.0.1:{port}");
+    let out = winterjs().args(["install", "no-such-pkg-xyz", "--dry-run", "--registry"]).arg(&reg).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("not found"), "stderr: {stderr}");
+    let out = winterjs().args(["install", "left-pad@^9.0.0", "--dry-run", "--registry"]).arg(&reg).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no version"), "stderr: {stderr}");
 }

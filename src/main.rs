@@ -9,6 +9,7 @@ mod jsapi_glue;
 mod loader;
 mod logging;
 mod modules;
+mod pm;
 mod runtime;
 mod settings;
 mod state;
@@ -103,8 +104,10 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             clap_complete::generate(shell, &mut cmd, "winterjs", &mut std::io::stdout().lock());
             Ok(())
         }
-        Cmd::Man => {
-            use std::io::Write as _;
+        Cmd::Install { packages, dry_run, registry } => {
+            pm::install(&packages, dry_run, registry.as_deref()).await
+        }
+        Cmd::Man => {            use std::io::Write as _;
 
             let mut cmd = Cli::command();
             let main_man = clap_mangen::Man::new(cmd.clone()).title("WINTERJS");

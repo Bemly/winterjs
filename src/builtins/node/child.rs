@@ -687,7 +687,7 @@ mod tests {
         let _ = default_shell();
         let out = run_command(
             {
-                let mut c = std::process::Command::new("definitely-missing-binary-xyz");
+                let c = std::process::Command::new("definitely-missing-binary-xyz");
                 c
             },
             &SpawnOpts::default(),

@@ -2,8 +2,9 @@
 
 > 版本 `26.9.0`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 3 已完工（2026-09-10，`cargo test` 71+5 全绿，0 警告，
-> 非对称/wss/流式/abort + §4.18 循环修复）；下一步 Phase 4 Node 垫片（切片 a 进行中）。
+> 当前状态：Phase 4 已完工（2026-09-10，`cargo test` 89+10 全绿，0 警告，
+> node:/process/path/os/fs/child_process/require/watch LOCAL 验收通过）；
+> 下一步 Phase 5 包管理（切片 a 进行中）。
 > 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
@@ -175,18 +176,31 @@
   `.cjs`）；spawn stdio pipe 流、`before/after` 钩子；`fs.watch` 无防抖；孙进程
   win 组杀；RSA-PSS/Ed25519（c-4x）；Buffer 全局；fs 流。
 
-## Phase 5 — 包管理（install/publish/upgrade）
+## Phase 5 — 包管理（install/publish/upgrade，开工 2026-09-10，切片 a 进行中）
 
 - 目标：`winterjs install <pkg>` 端到端。
 - 引入依赖：`semver`+`deno_semver`、`tar`+`zip`（§2 门控）+`flate2`、`ssri`、
   `fs4`、`dirs`、`gix`（git 依赖）、`indicatif`+`dialoguer`+`console`、
   `spdx`+`rust-ini`（npmrc）、`self_update`、`remove_dir_all`、`reflink-copy`、
   `junction`（Win）、`memmap2`、`rayon`+`futures`（并发下载）。
+  （已全量入库，按需接线；包管理代码进 `src/pm/`。）
 - 做：packument 拉取→版本求解→完整性校验→缓存（`blake3` 布局）→解包→bin 链接→
   lifecycle 脚本（`shlex`+tokio process+进程组杀树）；lockfile（JSON）读写；
   `publish`（`oauth2`+`webbrowser`，后期）、`upgrade`（`self_update`）。
 - 验收：空目录装下 `left-pad` 级别包并可 `run`；二次安装全命中缓存。
 - 完成标准：中断后续传不 corrupt（kill -9 测试）。
+- 路线（2026-09-10）：registry 默认 `https://registry.npmjs.org`（npmrc/镜像覆盖
+  顺延）；先 `--dry-run` 只求解不落地；网络测试走本地 stub registry（回环，
+  与 fetch/ws 测试同构），不碰外网。
+- [x] 切片 a（2026-09-10）：包 spec 解析（`name@range` + scope）+ packument 拉取
+  （reqwest ring 门控复用）+ 版本求解（deno_semver tag 先分流/range 匹配 +
+  semver 取最大 + 垃圾版跳过 + BFS 传递闭包）+ `install --dry-run` 打印解树
+  （本地 stub registry 验收，不碰外网）。附带：`man` 页计数 6→7。
+  `tests/cli.rs` 2 例 + 模块单测 4 例；`cargo test` 91+14 全绿，0 警告。
+- [ ] 切片 b：tarball 下载 + ssri 校验 + 解包进 `node_modules` + bin 链接 +
+  lockfile 读写 + 真装（本地 stub 验收）。
+- [ ] 切片 c：缓存（blake3 布局 + 二次命中）+ lifecycle 脚本 + 中断续传。
+- [ ] 切片 d（顺延）：git 依赖 + publish/login + upgrade + 镜像/npmrc。
 
 ## Phase 6 — serve（HTTP 服务）
 

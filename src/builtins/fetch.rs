@@ -56,7 +56,7 @@ fn arg_string(cx: &mut JSContext, frame: &Frame, i: u32, what: &str) -> Option<S
 }
 
 /// 调单参函数 `fun(arg)`（this=global；返回 rval；失败清场并 None）。
-fn call_one(
+pub(crate) fn call_one(
     cx: &mut JSContext,
     global: *mut JSObject,
     fun: JSVal,
@@ -122,7 +122,7 @@ fn helpers() -> Option<(JSVal, JSVal)> {
 }
 
 /// 由字节建 Uint8Array（1 个边界 `unsafe`，见 §6 审计）。
-fn uint8_array(cx: &mut JSContext, bytes: &[u8]) -> Option<*mut JSObject> {
+pub(crate) fn uint8_array(cx: &mut JSContext, bytes: &[u8]) -> Option<*mut JSObject> {
     rooted!(&in(cx) let mut obj: *mut JSObject = std::ptr::null_mut());
     // SAFETY: realm 内创建；obj 为 rooted 出参；bytes 存活到调用返回
     let ok = unsafe {

@@ -491,3 +491,126 @@ fn phase3_crypto_random() {
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
 }
+
+// ── Phase 3b：fetch / Headers / Request / Response ─────────────────────────
+
+/// 起一个只 serving N 个请求的本机 HTTP 服务器（ephemeral 端口，hermetic）。
+/// handler 收完整请求头（+ POST body），回包由闭包定。
+fn serve_http(n: usize, handler: impl Fn(String, Vec<u8>) -> (u16, Vec<(&'static str, String)>, Vec<u8>) + Send + 'static) -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for _ in 0..n {
+            let Ok((mut s, _)) = listener.accept() else { return };
+            let mut head = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                let Ok(k) = s.read(&mut buf) else { break };
+                if k == 0 { break; }
+                head.extend_from_slice(&buf[..k]);
+                if head.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+            }
+            let head_end = head.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4).unwrap_or(head.len());
+            let head_str = String::from_utf8_lossy(&head[..head_end]).into_owned();
+            let body_len = head_str
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:").or_else(|| l.strip_prefix("Content-Length:")))
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            let mut body = head[head_end..].to_vec();
+            while body.len() < body_len {
+                let Ok(k) = s.read(&mut buf) else { break };
+                if k == 0 { break; }
+                body.extend_from_slice(&buf[..k]);
+            }
+            body.truncate(body_len);
+            let (status, headers, resp_body) = handler(head_str, body);
+            let reason = if status == 200 { "OK" } else { "Error" };
+            let mut resp = format!("HTTP/1.1 {status} {reason}\r\ncontent-length: {}\r\nconnection: close\r\n", resp_body.len());
+            for (k, v) in headers {
+                resp.push_str(&format!("{k}: {v}\r\n"));
+            }
+            resp.push_str("\r\n");
+            let _ = s.write_all(resp.as_bytes());
+            let _ = s.write_all(&resp_body);
+        }
+    });
+    port
+}
+
+#[test]
+fn phase3_fetch_http_get() {
+    let port = serve_http(1, |_head, _body| {
+        (200, vec![("x-echo", "yes".into())], b"hello-http".to_vec())
+    });
+    let code = format!(
+        r#"const r = await fetch("http://127.0.0.1:{port}/p?q=1"); console.log(r.status, r.ok, r.url, await r.text(), r.headers.get("x-echo"));"#
+    );
+    assert_eq!(
+        stdout_of(&mut winterjs().args(["eval", &code])),
+        format!("200 true http://127.0.0.1:{port}/p?q=1 hello-http yes\n")
+    );
+}
+
+#[test]
+fn phase3_fetch_http_post_echo() {
+    let port = serve_http(1, |head, body| {
+        let ct = head.lines().find(|l| l.to_lowercase().starts_with("content-type:")).unwrap_or("").to_owned();
+        let mut echo = b"got:".to_vec();
+        echo.extend_from_slice(&body);
+        (200, vec![("x-ct", ct)], echo)
+    });
+    let code = format!(
+        r#"const r = await fetch("http://127.0.0.1:{port}/echo", {{method: "POST", body: "a=1&b=2", headers: {{"content-type": "text/plain"}}}}); console.log(r.status, await r.text(), r.headers.get("x-ct"));"#
+    );
+    let out = stdout_of(&mut winterjs().args(["eval", &code]));
+    assert!(out.starts_with("200 got:a=1&b=2 content-type: text/plain"), "post: {out}");
+}
+
+#[test]
+fn phase3_fetch_data_and_file() {
+    assert_eq!(
+        stdout_of(&mut winterjs().args(["eval",
+            r#"const r = await fetch("data:text/plain,hello-fetch"); console.log(r.status, r.ok, await r.text());"#])),
+        "200 true hello-fetch\n"
+    );
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("f.txt").write_str("hello-file").unwrap();
+    let url = format!("file://{}", dir.child("f.txt").path().display());
+    let code = format!(r#"console.log(await (await fetch("{url}")).text());"#);
+    assert_eq!(stdout_of(&mut winterjs().args(["eval", &code])), "hello-file\n");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase3_fetch_errors_are_rejections() {
+    // 不支持的 scheme 与连不上的地址都以 rejection 呈现（catch 可接住）
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"console.log(await fetch("blob:xyz").then(() => "no", () => "blob-err"))"#]));
+    assert_eq!(out, "blob-err\n", "blob: {out}");
+    // 保证关闭的端口：bind 后立刻 drop
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let code = format!(
+        r#"console.log(await fetch("http://127.0.0.1:{port}/").then(() => "no", (e) => String(e).includes("fetch failed") ? "net-err" : "other:" + e))"#
+    );
+    assert_eq!(stdout_of(&mut winterjs().args(["eval", &code])), "net-err\n");
+}
+
+#[test]
+fn phase3_headers_request_response_classes() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const h = new Headers([["X-A", "1"], ["x-a", "2"]]); console.log(h.get("x-a"), [...h.keys()].join(",")); const r = new Response("hi", { status: 201 }); console.log(r.status, r.ok, await r.text()); const q = new Request("https://ex.com/a", { method: "post", body: "x" }); console.log(q.method, q.url, await q.text());"#]));
+    assert_eq!(out, "1, 2 x-a,x-a
+201 true hi
+POST https://ex.com/a x
+", "classes: {out}");
+}
+
+#[test]
+fn phase3_abort_signal_pre_abort() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const c = new AbortController(); c.abort(); console.log(await fetch("http://127.0.0.1:9/x", { signal: c.signal }).then(() => 'no', () => 'abort-ok'));"#]));
+    assert_eq!(out, "abort-ok
+", "abort: {out}");
+}

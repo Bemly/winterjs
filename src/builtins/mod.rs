@@ -6,6 +6,7 @@ pub mod clone;
 pub mod console;
 pub mod crypto;
 pub mod encoding;
+pub mod fetch;
 pub mod timers;
 pub mod url;
 
@@ -204,6 +205,204 @@ globalThis.crypto = {
   getRandomValues(view) { __wjs_fill_random(view); return view; },
   randomUUID() { return __wjs_random_uuid(); },
 };
+// ---- Phase 3b: Headers / Request / Response / fetch ----
+const __wjs_abortState = new WeakMap();
+function __wjs_abortFire(signal, reason) {
+  const st = __wjs_abortState.get(signal);
+  if (!st || st.aborted) return;
+  st.aborted = true;
+  st.reason = reason === undefined ? new Error("AbortError: signal aborted") : reason;
+}
+globalThis.AbortSignal = class AbortSignal {
+  constructor() { __wjs_abortState.set(this, { aborted: false, reason: undefined }); }
+  get aborted() { return __wjs_abortState.get(this).aborted; }
+  get reason() { return __wjs_abortState.get(this).reason; }
+  throwIfAborted() {
+    const st = __wjs_abortState.get(this);
+    if (st.aborted) throw st.reason;
+  }
+  static abort(reason) {
+    const s = new AbortSignal();
+    __wjs_abortFire(s, reason);
+    return s;
+  }
+};
+globalThis.AbortController = class AbortController {
+  #signal;
+  constructor() { this.#signal = new AbortSignal(); }
+  get signal() { return this.#signal; }
+  abort(reason) { __wjs_abortFire(this.#signal, reason); }
+};
+globalThis.Headers = class Headers {
+  #pairs;
+  constructor(init) {
+    this.#pairs = [];
+    if (init === undefined) return;
+    if (init instanceof Headers) { for (const [k, v] of init) this.append(k, v); }
+    else if (Array.isArray(init)) { for (const [k, v] of init) this.append(String(k), String(v)); }
+    else if (typeof init === "object" && init !== null) {
+      for (const [k, v] of Object.entries(init)) this.append(k, String(v));
+    } else throw new TypeError("Headers: unsupported init");
+  }
+  static #norm(n) { return String(n).trim().toLowerCase(); }
+  append(n, v) { this.#pairs.push([Headers.#norm(n), String(v).trim()]); }
+  delete(n) { n = Headers.#norm(n); this.#pairs = this.#pairs.filter((p) => p[0] !== n); }
+  get(n) {
+    n = Headers.#norm(n);
+    const vs = this.#pairs.filter((p) => p[0] === n).map((p) => p[1]);
+    return vs.length ? vs.join(", ") : null;
+  }
+  getSetCookie() {
+    return this.#pairs.filter((p) => p[0] === "set-cookie").map((p) => p[1]);
+  }
+  has(n) { n = Headers.#norm(n); return this.#pairs.some((p) => p[0] === n); }
+  set(n, v) {
+    n = Headers.#norm(n); v = String(v).trim();
+    let found = false;
+    this.#pairs = this.#pairs.filter((p) => {
+      if (p[0] !== n) return true;
+      if (!found) { p[1] = v; found = true; return true; }
+      return false;
+    });
+    if (!found) this.#pairs.push([n, v]);
+  }
+  *keys() { for (const [k] of this.#sorted()) yield k; }
+  *values() { for (const [, v] of this.#sorted()) yield v; }
+  *entries() { for (const p of this.#sorted()) yield p; }
+  [Symbol.iterator]() { return this.entries(); }
+  forEach(cb, thisArg) { for (const [k, v] of this.#sorted()) cb.call(thisArg, v, k, this); }
+  #sorted() { return [...this.#pairs].sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0); }
+};
+const __wjs_respState = new WeakMap();
+function __wjs_respInit(resp, s) {
+  __wjs_respState.set(resp, {
+    status: s.status, statusText: s.statusText ?? "", headers: s.headers,
+    url: s.url ?? "", bodyU8: s.bodyU8 ?? null, bodyUsed: false,
+  });
+}
+function __wjs_takeBody(resp, what) {
+  const st = __wjs_respState.get(resp);
+  if (st.bodyUsed) throw new TypeError(`${what}: body already used`);
+  st.bodyUsed = true;
+  return st.bodyU8;
+}
+function __wjs_normBody(body, what) {
+  if (body === undefined || body === null) return null;
+  if (typeof body === "string") return new TextEncoder().encode(body);
+  if (body instanceof URLSearchParams) return new TextEncoder().encode(body.toString());
+  if (body instanceof Uint8Array) return body.slice();
+  if (body instanceof ArrayBuffer) return new Uint8Array(body.slice(0));
+  throw new TypeError(`${what}: unsupported body type`);
+}
+function __wjs_fillHeaders(headers, init) {
+  if (init === undefined) return;
+  if (init instanceof Headers) { for (const [k, v] of init) headers.append(k, v); }
+  else if (Array.isArray(init)) { for (const [k, v] of init) headers.append(String(k), String(v)); }
+  else if (typeof init === "object" && init !== null) {
+    for (const [k, v] of Object.entries(init)) headers.append(k, String(v));
+  } else throw new TypeError("Headers: unsupported init");
+}
+globalThis.Response = class Response {
+  constructor(body, init = {}) {
+    const bytes = __wjs_normBody(body, "Response");
+    const status = init.status === undefined ? 200 : Number(init.status);
+    if (!Number.isInteger(status) || status < 200 || status > 599) {
+      throw new RangeError("Response status must be 200-599");
+    }
+    const headers = new Headers();
+    __wjs_fillHeaders(headers, init.headers);
+    __wjs_respInit(this, {
+      status, headers, url: "",
+      statusText: init.statusText === undefined ? "" : String(init.statusText),
+      bodyU8: bytes,
+    });
+  }
+  get status() { return __wjs_respState.get(this).status; }
+  get statusText() { return __wjs_respState.get(this).statusText; }
+  get headers() { return __wjs_respState.get(this).headers; }
+  get url() { return __wjs_respState.get(this).url; }
+  get ok() { const s = this.status; return s >= 200 && s < 300; }
+  get bodyUsed() { return __wjs_respState.get(this).bodyUsed; }
+  async text() { const b = __wjs_takeBody(this, "Response.text"); return b ? new TextDecoder().decode(b) : ""; }
+  async json() { return JSON.parse(await this.text()); }
+  async arrayBuffer() { const b = __wjs_takeBody(this, "Response.arrayBuffer"); return b ? b.slice().buffer : new ArrayBuffer(0); }
+  async bytes() { const b = __wjs_takeBody(this, "Response.bytes"); return b ? b.slice() : new Uint8Array(0); }
+  static error() {
+    const r = new Response(null);
+    __wjs_respInit(r, { status: 0, statusText: "", headers: new Headers(), url: "", bodyU8: null });
+    return r;
+  }
+  static redirect(url, status = 302) {
+    if (![301, 302, 303, 307, 308].includes(status)) throw new RangeError("redirect status must be 301/302/303/307/308");
+    const h = new Headers();
+    h.set("location", String(url));
+    return new Response(null, { status, headers: h });
+  }
+};
+const __wjs_reqState = new WeakMap();
+function __wjs_takeReqBody(req) {
+  const st = __wjs_reqState.get(req);
+  if (st.bodyUsed) throw new TypeError("Request body already used");
+  st.bodyUsed = true;
+  return st.bodyU8;
+}
+globalThis.Request = class Request {
+  constructor(input, init = {}) {
+    let url, method = "GET", headers = new Headers(), bodyU8 = null, signal = null;
+    if (input instanceof Request) {
+      const s = __wjs_reqState.get(input);
+      url = s.url; method = s.method;
+      for (const [k, v] of s.headers) headers.append(k, v);
+      bodyU8 = s.bodyU8 ? s.bodyU8.slice() : null; signal = s.signal;
+    } else if (typeof input === "string" || input instanceof URL) {
+      url = String(input);
+    } else throw new TypeError("Request: unsupported input");
+    if (init.method !== undefined) method = String(init.method).toUpperCase();
+    if (["CONNECT", "TRACE", "TRACK"].includes(method)) throw new TypeError(`Request: forbidden method ${method}`);
+    if (init.headers !== undefined) { headers = new Headers(); __wjs_fillHeaders(headers, init.headers); }
+    if (init.body !== undefined && init.body !== null) bodyU8 = __wjs_normBody(init.body, "Request");
+    if ((method === "GET" || method === "HEAD") && bodyU8) {
+      throw new TypeError("Request with GET/HEAD method cannot have body");
+    }
+    if (init.signal !== undefined && init.signal !== null) signal = init.signal;
+    try { url = String(new URL(url)); } catch { throw new TypeError(`Request: Invalid URL: ${url}`); }
+    __wjs_reqState.set(this, { url, method, headers, bodyU8, signal, bodyUsed: false });
+  }
+  get url() { return __wjs_reqState.get(this).url; }
+  get method() { return __wjs_reqState.get(this).method; }
+  get headers() { return __wjs_reqState.get(this).headers; }
+  get signal() { return __wjs_reqState.get(this).signal; }
+  get bodyUsed() { return __wjs_reqState.get(this).bodyUsed; }
+  async text() { const b = __wjs_takeReqBody(this); return b ? new TextDecoder().decode(b) : ""; }
+  async json() { return JSON.parse(await this.text()); }
+  async arrayBuffer() { const b = __wjs_takeReqBody(this); return b ? b.slice().buffer : new ArrayBuffer(0); }
+};
+globalThis.__wjs_make_response = (metaJson, bodyU8) => {
+  const meta = JSON.parse(metaJson);
+  const headers = new Headers();
+  for (const [k, v] of meta.headers) headers.append(k, v);
+  const resp = new Response(null);
+  __wjs_respInit(resp, {
+    status: meta.status, statusText: meta.statusText, headers,
+    url: meta.url, bodyU8: bodyU8 ?? null,
+  });
+  return resp;
+};
+globalThis.__wjs_make_fetch_error = (msg) => new Error(String(msg));
+globalThis.fetch = (input, init = {}) => {
+  const req = new Request(input, init);
+  const st = __wjs_reqState.get(req);
+  if (st.signal && st.signal.aborted) {
+    const reason = st.signal.reason !== undefined
+      ? st.signal.reason
+      : __wjs_make_fetch_error("AbortError: fetch aborted");
+    return Promise.reject(reason);
+  }
+  const headersJson = JSON.stringify([...st.headers]);
+  return new Promise((resolve, reject) => {
+    __wjs_fetch_start(st.url, st.method, headersJson, st.bodyU8 ?? undefined, resolve, reject);
+  });
+};
 "#;
 
 /// 在 global 上定义全部 native（prelude 求值之前）。
@@ -242,6 +441,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_td_decode", Some(encoding::td_decode), 4),
             ("__wjs_fill_random", Some(crypto::fill_random), 1),
             ("__wjs_random_uuid", Some(crypto::random_uuid), 0),
+            ("__wjs_fetch_start", Some(fetch::fetch_start), 6),
         ];
         for (name, native, nargs) in web {
             let cname = CString::new(*name).expect("no NUL");

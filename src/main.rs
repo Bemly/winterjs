@@ -42,9 +42,10 @@ fn main() {
     tracing::debug!(target: "winterjs", %version, "starting");
 
     // JS 跑在独占线程（AGENTS §6）：CLI 生命周期内主线程即 JS 线程，
-    // tokio current-thread 只负责驱动 timers 的睡眠。
+    // tokio current-thread 只负责驱动 timers 的睡眠与 fetch 的 socket IO。
     let tokio_rt = match tokio::runtime::Builder::new_current_thread()
         .enable_time()
+        .enable_io()
         .build()
     {
         Ok(rt) => rt,

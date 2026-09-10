@@ -26,7 +26,7 @@ fn set_rval_string(cx: &mut JSContext, frame: &Frame, s: &str) {
 }
 
 /// Uint8Array 实参 → 字节拷贝（共享内存/非 Uint8 视图一律 TypeError，切片 a 范围）。
-fn view_bytes(cx: &mut JSContext, v: JSVal, what: &str) -> Option<Vec<u8>> {
+pub(crate) fn view_bytes(cx: &mut JSContext, v: JSVal, what: &str) -> Option<Vec<u8>> {
     if !v.is_object() {
         report_error(cx, &format!("TypeError: {what} requires a Uint8Array"));
         return None;

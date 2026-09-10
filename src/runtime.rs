@@ -30,7 +30,7 @@ use url::Url;
 use crate::builtins;
 use crate::builtins::timers;
 use crate::modules;use crate::error::Error;
-use crate::jsapi_glue::{exc_name_is, get_prop_string, get_prop_u32, pending_exception_error, raw_handle, raw_handle_mut, value_to_string};
+use crate::jsapi_glue::{exc_name_is, get_prop_string, get_prop_u32, raw_handle, raw_handle_mut, value_to_string};
 use crate::state;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -64,11 +64,6 @@ fn eval_wrap(code: &str, kind: WrapKind) -> String {
     s
 }
 
-fn eval_await_failure(msg: &str) -> bool {
-    // SpiderMonkey 顶层 await 的 SyntaxError 文案
-    msg.contains("await is only valid")
-}
-
 /// 文件入口是否走模块求值：`.ts/.tsx/.mts/.cts/.mjs` 强制；`.js/.jsx` 嗅探 ESM 语法。
 /// 解析失败/未知后缀 → None（回落经典路径）。
 fn sniff_module(filename: &str, source: &str) -> Option<Url> {
@@ -100,6 +95,7 @@ async fn run_module(
     rt: &mut Runtime,
     global: &RootedGuard<'_, *mut JSObject>,
     url: &Url,
+    fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchResult>,
 ) -> Result<(), Error> {
     use mozjs::rust::wrappers2::{ModuleEvaluate, ModuleLink};
 
@@ -142,7 +138,7 @@ async fn run_module(
         }
     }
 
-    event_loop(rt, global, ErrorSource::Module { url: url.as_str() }).await?;
+    event_loop(rt, global, ErrorSource::Module { url: url.as_str() }, fetch_rx).await?;
 
     // 收割入口决议（事件循环的排空已驱动捕获回调）。
     let (fulfillment, rejection) =
@@ -226,8 +222,13 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
             ));
         }
 
-        // 缓存 prelude 辅助函数值（timers 触发与 structuredClone 枚举要用）
-        for (prop, idx) in [(c"__wjs_call", 0u8), (c"__wjs_entries", 1u8)] {
+        // 缓存 prelude 辅助函数值（timers/structuredClone/fetch 交付要用）
+        for (prop, idx) in [
+            (c"__wjs_call", 0u8),
+            (c"__wjs_entries", 1u8),
+            (c"__wjs_make_response", 2u8),
+            (c"__wjs_make_fetch_error", 3u8),
+        ] {
             rooted!(&in(&mut realm) let mut v = UndefinedValue());
             // SAFETY: global 为有效 rooted 对象
             let ok = unsafe {
@@ -242,16 +243,22 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
             let got = v.get();
             state::with_rooted(|s| match idx {
                 0 => s.call_fn.set(got),
-                _ => s.entries_fn.set(got),
+                1 => s.entries_fn.set(got),
+                2 => s.make_response_fn.set(got),
+                _ => s.make_fetch_error_fn.set(got),
             });
         }
     }
+
+    // fetch 驱动端点：发送端进 TLS，接收端由本次 run 持有并传给事件循环
+    let (fetch_tx, mut fetch_rx) = tokio::sync::mpsc::unbounded_channel();
+    state::with_plain(|p| p.fetch_tx = Some(fetch_tx));
 
     // 模块嗅探（仅 Script；Eval 保持经典语义，import 即 SyntaxError）。
     // 解析失败 → 回落经典（经典求值会给出它自己的报错）。
     if mode == Mode::Script {
         if let Some(url) = sniff_module(filename, source) {
-            let r = run_module(&mut rt, &global, &url).await;
+            let r = run_module(&mut rt, &global, &url, &mut fetch_rx).await;
             // §4.8：跳过引擎/运行时析构
             forget_engine(rt, engine);
             return r;
@@ -266,22 +273,36 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
         let res = evaluate_script(rt.cx(), global.handle(), source, rval.handle_mut(), options);
         if res.is_err() {
             if mode == Mode::Eval {
-                let r = eval_syntax_fallback(&mut rt, &global, source, filename).await;
+                let r = eval_syntax_fallback(&mut rt, &global, source, filename, &mut fetch_rx).await;
                 // §4.8：跳过引擎/运行时析构（StoreBuffer 悬垂边在 destroyRuntime 的小 GC 里 SEGV）
                 forget_engine(rt, engine);
                 return r;
             }
-            let err = pending_exception_error(rt.cx(), global.get(), source, filename);
-            // TLA 重试：顶层 await 的脚本改走模块求值（Node 同行为；嗅探覆盖不到纯 await 文件）
-            let retry_module = matches!(&err, Error::Script { message, .. } if eval_await_failure(message));
-            if retry_module {
-                if let Ok(url) = crate::loader::resolve::entry_url(std::path::Path::new(filename)) {
-                    tracing::info!(target: "winterjs::runtime", url = url.as_str(), "top-level await, retrying as module");
-                    let r = run_module(&mut rt, &global, &url).await;
-                    forget_engine(rt, engine);
-                    return r;
-                }
+            // 模块重试：经典 SyntaxError 且能按模块解析 → 改走模块求值。
+            // （`await` 在参数位置按标识符解析，报的不是 await 错而是 missing-paren，
+            // 故不能只认 await 文案；真语法错误则保留原始经典报错。见 §4.17。）
+            let (info_opt, is_syntax) = {
+                let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+                rooted!(&in(&mut realm) let mut exc = UndefinedValue());
+                // SAFETY: realm 内读取 pending exception（消费异常值）
+                let info = error_info_from_exception_stack(&mut realm, exc.handle_mut());
+                let is_syntax = exc_name_is(&mut realm, exc.get(), "SyntaxError");
+                (info, is_syntax)
+            };
+            if is_syntax
+                && let Ok(url) = crate::loader::resolve::entry_url(std::path::Path::new(filename))
+                && let Ok(path) = url.to_file_path()
+                && crate::loader::load_js(source, filename, &path).is_ok()
+            {
+                tracing::info!(target: "winterjs::runtime", url = url.as_str(), "retrying as module");
+                let r = run_module(&mut rt, &global, &url, &mut fetch_rx).await;
+                forget_engine(rt, engine);
+                return r;
             }
+            let err = match info_opt {
+                Some(info) => Error::script(filename, source, info.line.max(1), info.col, info.message),
+                None => Error::Other("uncaught JS exception (no stack info)".into()),
+            };
             forget_engine(rt, engine);
             return Err(err);
         }
@@ -289,7 +310,7 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
 
     // 未包装成功的场景（含全部 Script 与无顶层 await 的 Eval）：
     // 完成值就是 rval（老行为）；仅 async IIFE 包装路径才读 __wjs_value。
-    event_loop(&mut rt, &global, ErrorSource::Script { source, filename }).await?;
+    event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx).await?;
     let r = print_completion(&mut rt, &global, rval.get());
     // §4.8：跳过引擎/运行时析构（带 timer 的路径在 JS_DestroyContext 里 SEGV）。
     // CLI 进程即将退出，内存由 OS 回收；见 AGENTS §4.8。
@@ -305,24 +326,24 @@ fn forget_engine(rt: Runtime, engine: JSEngine) {
 }
 
 
-/// eval 首次求值失败：若为顶层 await 的 SyntaxError，用 async IIFE 重包一次。
+/// eval 首次求值失败：若为 SyntaxError，用 async IIFE 重包一次。
+/// （触发条件放宽到一切 SyntaxError：`await` 在参数位置报的不是 await 错，见 §4.17；
+/// 包装也解不出的真语法错误回落原始报错。）
 async fn eval_syntax_fallback(
     rt: &mut Runtime,
     global: &RootedGuard<'_, *mut JSObject>,
     source: &str,
     filename: &str,
+    fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchResult>,
 ) -> Result<(), Error> {
-    {
+    let original = {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         rooted!(&in(&mut realm) let mut exc = UndefinedValue());
         // realm 内读取 pending exception（会消费异常值）
         let info = error_info_from_exception_stack(&mut realm, exc.handle_mut());
-        let is_await = info
-            .as_ref()
-            .map(|i| eval_await_failure(&i.message))
-            .unwrap_or(false);
-        if !is_await {
-            // 非 await 错误：直接用已捕获的信息报错（异常已被消费，勿再取）
+        let is_syntax = exc_name_is(&mut realm, exc.get(), "SyntaxError");
+        if !is_syntax {
+            // 非语法错误：直接用已捕获的信息报错（异常已被消费，勿再取）
             return match info {
                 Some(info) => Err(Error::script(
                     filename,
@@ -336,7 +357,17 @@ async fn eval_syntax_fallback(
         }
         // SAFETY: 首次失败发生在解析期（无副作用），清除后重跑包装版
         unsafe { JS_ClearPendingException((&mut realm).raw_cx()) };
-    }
+        info.map(|info| {
+            Error::script(
+                filename,
+                source,
+                info.line.saturating_sub(state::line_adjust()).max(1),
+                info.col,
+                info.message,
+            )
+        })
+        .unwrap_or_else(|| Error::Other("uncaught JS exception (no stack info)".into()))
+    };
 
     // 先试 return 包装（保住完成值），纯语句序列再退普通包装
     for (kind, adjust) in [(WrapKind::Return, 2u32), (WrapKind::Plain, 1u32)] {
@@ -349,7 +380,7 @@ async fn eval_syntax_fallback(
         // 同 run()；包装版行号偏移经 line_adjust 校正
         let res = evaluate_script(rt.cx(), global.handle(), &wrapped, wrapped_rval.handle_mut(), options);
         if res.is_ok() {
-            event_loop(rt, global, ErrorSource::Script { source, filename }).await?;
+            event_loop(rt, global, ErrorSource::Script { source, filename }, fetch_rx).await?;
             let r = extract_eval_result(rt, global, source, filename);
             // engine/rt 由外层 run() 统一 forget（见 §4.8）
             return r;
@@ -380,7 +411,8 @@ async fn eval_syntax_fallback(
             };
         }
     }
-    Err(Error::Other("eval fallback exhausted".into()))
+    // 包装也解不出：回落首次的原始报错（而非 exhausted，保住定位）。
+    Err(original)
 }
 
 /// 事件循环错误源：脚本（源码直给）或模块（按异常文件名查调试信息回映射）。
@@ -390,14 +422,25 @@ pub(crate) enum ErrorSource<'a> {
     Module { url: &'a str },
 }
 
-/// 事件循环：RunJobs 排空微任务 → 睡到最近定时器 → 触发到期定时器，直到两者皆空。
+/// 事件循环：RunJobs 排空微任务 → 等（最近定时器 / fetch 完成先到者）→
+/// 结算 fetch → 触发到期定时器，直到定时器与未决 fetch 皆空。
 async fn event_loop(
     rt: &mut Runtime,
     global: &RootedGuard<'_, *mut JSObject>,
     err: ErrorSource<'_>,
+    fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchResult>,
 ) -> Result<(), Error> {
+    use crate::builtins::fetch;
     let mut iterations: u64 = 0;
     let mut timers_fired: usize = 0;
+    let mut fetches_settled: usize = 0;
+    macro_rules! settle_one {
+        ($msg:expr) => {{
+            let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+            fetch::settle(&mut realm, global.get(), $msg, err)?;
+            fetches_settled += 1;
+        }};
+    }
     loop {
         {
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
@@ -406,12 +449,33 @@ async fn event_loop(
         }
         iterations += 1;
 
-        let Some(at) = timers::next_deadline() else {
+        // 已完成的 fetch 先结算（不阻塞）
+        while let Ok(msg) = fetch_rx.try_recv() {
+            settle_one!(msg);
+        }
+
+        let timers_empty = timers::next_deadline().is_none();
+        if timers_empty && state::fetch_pending() == 0 {
             break;
-        };
-        let tokio_at = tokio::time::Instant::from_std(at);
-        if tokio_at > tokio::time::Instant::now() {
-            tokio::time::sleep_until(tokio_at).await;
+        }
+        match timers::next_deadline() {
+            Some(at) => {
+                let tokio_at = tokio::time::Instant::from_std(at);
+                tokio::select! {
+                    _ = tokio::time::sleep_until(tokio_at) => {}
+                    msg = fetch_rx.recv() => {
+                        if let Some(msg) = msg {
+                            settle_one!(msg);
+                        }
+                    }
+                }
+            }
+            // 无定时器但有未决 fetch：睡到有完成为止
+            None => {
+                if let Some(msg) = fetch_rx.recv().await {
+                    settle_one!(msg);
+                }
+            }
         }
 
         {
@@ -419,7 +483,7 @@ async fn event_loop(
             timers_fired += timers::fire_due(&mut realm, global.get(), err)?;
         }
     }
-    tracing::info!(target: "winterjs::runtime", iterations, timers_fired, "event loop drained");
+    tracing::info!(target: "winterjs::runtime", iterations, timers_fired, fetches_settled, "event loop drained");
 
     // 未处理 rejection 收尾上报（Node 式 fatal）：挂捕获 reactions → 再排空一轮
     let unhandled = state::with_rooted(|s| {

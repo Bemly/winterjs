@@ -54,6 +54,21 @@ pub struct ModuleDebug {
     pub map: Option<String>,
 }
 
+/// 一个未决 fetch 的 resolve/reject（事件循环结算时取出并移除）。
+pub struct FetchCallback {
+    pub id: u64,
+    pub resolve: Heap<JSVal>,
+    pub reject: Heap<JSVal>,
+}
+
+// SAFETY: 只追踪两个回调值（id 无 GC 指针）。
+unsafe impl Traceable for FetchCallback {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
+        self.resolve.trace(trc);
+        self.reject.trace(trc);
+    }}
+}
+
 /// 全部跨 GC 存活的 JS 值。
 #[derive(Default)]
 pub struct RootedState {
@@ -66,6 +81,9 @@ pub struct RootedState {
     pub entry_fulfilled: Heap<JSVal>, // 模块入口 TLA 决议捕获用 native
     pub entry_rejected: Heap<JSVal>,
     pub modules: Vec<ModuleEntry>, // URL → 已编译模块记录（循环/去重，spec 同结果）
+    pub fetch_callbacks: Vec<FetchCallback>, // 未决 fetch 的 resolve/reject（按 id 取出）
+    pub make_response_fn: Heap<JSVal>, // prelude 的 __wjs_make_response
+    pub make_fetch_error_fn: Heap<JSVal>, // prelude 的 __wjs_make_fetch_error
 }
 
 // SAFETY: 同 TimerEntry，全字段 Traceable 或无 GC 指针。
@@ -80,6 +98,9 @@ unsafe impl Traceable for RootedState {
         self.entry_fulfilled.trace(trc);
         self.entry_rejected.trace(trc);
         self.modules.trace(trc);
+        self.fetch_callbacks.trace(trc);
+        self.make_response_fn.trace(trc);
+        self.make_fetch_error_fn.trace(trc);
     }}
 }
 
@@ -99,6 +120,10 @@ pub struct PlainState {
     pub module_debug: HashMap<String, ModuleDebug>,
     /// 模块加载 hook 暂存的友好错误（hook 返回 false，中断加载后由外层取出上报）。
     pub module_load_error: Option<crate::error::Error>,
+    /// fetch 驱动端点（`run()` 初始化；接收端由事件循环持有，无 JS 值，可跨 await）。
+    pub fetch_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::fetch::FetchResult>>,
+    pub fetch_next_id: u64,
+    pub fetch_pending: usize,
     /// eval 包装（async IIFE）引入的行偏移，报错行号统一校正。
     pub line_adjust: u32,
     /// 全局对象裸指针。前置条件：run() 里的 rooted! global 活过整个事件循环，
@@ -267,6 +292,51 @@ pub fn capture_native_values() -> (JSVal, JSVal) {
 /// 供 runtime 把入口 TLA promise 的决议收割到专用槽（与通用捕获隔离）。
 pub fn entry_native_values() -> (JSVal, JSVal) {
     with_rooted(|s| (s.entry_fulfilled.get(), s.entry_rejected.get()))
+}
+
+/// 存入一组 fetch 回调（调用方已分配 id）。
+pub fn push_fetch_callback(id: u64, resolve: JSVal, reject: JSVal) {
+    with_rooted(|s| {
+        let resolve_h = Heap::default();
+        resolve_h.set(resolve);
+        let reject_h = Heap::default();
+        reject_h.set(reject);
+        s.fetch_callbacks.push(FetchCallback { id, resolve: resolve_h, reject: reject_h });
+    });
+}
+
+/// 取出并移除一组 fetch 回调（结算用；未知 id 返回 None）。
+pub fn take_fetch_callback(id: u64) -> Option<(JSVal, JSVal)> {
+    with_rooted(|s| {
+        s.fetch_callbacks
+            .iter()
+            .position(|c| c.id == id)
+            .map(|i| {
+                let c = s.fetch_callbacks.remove(i);
+                (c.resolve.get(), c.reject.get())
+            })
+    })
+}
+
+/// 分配 fetch id 并计数（调用方随后 spawn 任务；失败路径须配套 `fetch_unpend`）。
+pub fn fetch_alloc() -> Option<(u64, tokio::sync::mpsc::UnboundedSender<crate::builtins::fetch::FetchResult>)> {
+    with_plain(|p| {
+        let tx = p.fetch_tx.clone()?;
+        p.fetch_next_id += 1;
+        let id = p.fetch_next_id;
+        p.fetch_pending += 1;
+        Some((id, tx))
+    })
+}
+
+/// fetch 计数减一（结算/建任务失败时调用）。
+pub fn fetch_unpend() {
+    with_plain(|p| p.fetch_pending = p.fetch_pending.saturating_sub(1));
+}
+
+/// 未决 fetch 数（事件循环退出条件用）。
+pub fn fetch_pending() -> usize {
+    with_plain(|p| p.fetch_pending)
 }
 
 // ── 模块入口 TLA 决议捕获 natives ────────────────────────────────────────

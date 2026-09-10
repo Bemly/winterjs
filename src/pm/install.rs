@@ -3,7 +3,7 @@
 //! - 5c 缓存：`cache` 内容寻址（有 integrity 按内容，无则按 URL），命中跳过下载；
 //!   落盘 `tmp + rename` 原子，读损坏即驱逐当 miss。
 //! - 5c 中断续传：暂存 `.staging-*` 同盘 `rename` 原子提交，kill -9 只留孤儿暂存，
-//!   下次 `install_tree` 开头清掉；`node_modules` 内坏包永不以正式名可见；
+//!   下次 `install_all` 开头清掉；`node_modules` 内坏包永不以正式名可见；
 //!   lockfile/cache 同样原子写；`fs4` 独占锁串行化并发安装。
 //! - 5c lifecycle：落地后按 `preinstall/install/postinstall` 跑 shell（见 `lifecycle`）。
 
@@ -15,8 +15,12 @@ use crate::pm::resolve::Resolved;
 /// lockfile 名（工程根）。
 pub const LOCKFILE: &str = "winterjs-lock.json";
 
-/// 安装一棵解树到 `root/node_modules`（顺序执行；并发由 `fs4` 锁串行化）。
-pub async fn install_tree(root: &Path, tree: &[Resolved]) -> Result<(), Error> {
+/// registry 树 + git 包一次装完（锁只持一次；lockfile 合并写）。
+pub async fn install_all(
+    root: &Path,
+    tree: &[Resolved],
+    git_specs: &[crate::pm::spec::GitSpec],
+) -> Result<(), Error> {
     let nm = root.join("node_modules");
     std::fs::create_dir_all(&nm).map_err(|e| Error::Other(format!("cannot create node_modules: {e}")))?;
     cleanup_staging(&nm);
@@ -27,7 +31,13 @@ pub async fn install_tree(root: &Path, tree: &[Resolved]) -> Result<(), Error> {
         install_one(&nm, &nm_bin, r).await?;
         println!("added {}@{}", r.name, r.version);
     }
-    write_lockfile(root, tree)?;
+    let mut git_locked: Vec<(String, String, String)> = Vec::with_capacity(git_specs.len());
+    for g in git_specs {
+        let (name, commit) = super::git::install_one_git(&nm, &nm_bin, g, root).await?;
+        println!("added {name}@git+{}#{}", g.url, commit.chars().take(12).collect::<String>());
+        git_locked.push((name, commit, g.url.clone()));
+    }
+    write_lockfile(root, tree, &git_locked)?;
     Ok(())
 }
 
@@ -175,7 +185,8 @@ fn unpack_tgz(bytes: &[u8], staging: &Path) -> Result<PathBuf, String> {
 }
 
 /// bin 链接（`node_modules/.bin/<name>` → `../<pkg>/<file>`；unix symlink，win 退拷贝）。
-fn link_bins(nm: &Path, name: &str, dest: &Path) -> Result<(), Error> {
+/// `pub(crate)`：git 包落地复用（`git.rs`）。
+pub(crate) fn link_bins(nm: &Path, name: &str, dest: &Path) -> Result<(), Error> {
     let text = std::fs::read_to_string(dest.join("package.json")).unwrap_or_default();
     let pkg: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     let bins: Vec<(String, String)> = match pkg.get("bin") {
@@ -220,7 +231,12 @@ fn link_bins(nm: &Path, name: &str, dest: &Path) -> Result<(), Error> {
 }
 
 /// lockfile 写（`{version:1, packages:{name:{version,resolved,integrity}}}`，原子）。
-fn write_lockfile(root: &Path, tree: &[Resolved]) -> Result<(), Error> {
+/// git 行：`version` 记 commit 全 hex，`resolved` 记 `git+<url>#<commit>`，无 integrity。
+fn write_lockfile(
+    root: &Path,
+    tree: &[Resolved],
+    git: &[(String, String, String)],
+) -> Result<(), Error> {
     let mut packages = serde_json::Map::new();
     for r in tree {
         packages.insert(
@@ -229,6 +245,16 @@ fn write_lockfile(root: &Path, tree: &[Resolved]) -> Result<(), Error> {
                 "version": r.version,
                 "resolved": r.tarball,
                 "integrity": r.integrity,
+            }),
+        );
+    }
+    for (name, commit, url) in git {
+        packages.insert(
+            name.clone(),
+            serde_json::json!({
+                "version": commit,
+                "resolved": format!("git+{url}#{commit}"),
+                "integrity": serde_json::Value::Null,
             }),
         );
     }

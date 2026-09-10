@@ -219,7 +219,12 @@
     `<cwd>/.npmrc` > `$HOME/.npmrc` > 默认 + token 按 host 透传（值永不进日志）。
     模块单测 4 例 + 黑盒 4 例（镜像/坏源报错/flag 覆盖/env 覆盖）；
     `cargo test` 25+100 全绿，0 警告。
-  - [ ] d2 git 依赖（`gix`，spec 扩展 + 本地 file:// 验收）。
+  - [x] d2 git 依赖：`spec` 扩展（`[<name>@]git+<url>[#<rev>]`，`github:` 缩写报错指路）+
+    `src/pm/git.rs`（本地 `file://`/路径走 `gix` open+rev-parse+worktree 拷贝，
+    远端走 `git` CLI 浅克隆——`gix` 默认特性无网络客户端，补特性拖 transport，
+    见 `dependencies.md` 附记；落地后 bin 链接 + lifecycle 与 tarball 同待遇，
+    lockfile 记 `git+<url>#<commit>`）。模块单测 7 例 + 黑盒 4 例
+    （dry-run/未知 rev/裸名读包/真装 require）；`cargo test` 28+104 全绿，0 警告。
   - [ ] d3 publish/login（`oauth2`+`webbrowser` 干跑 + `spdx` 许可证校验）。
   - [ ] d4 upgrade（`self_update` 干跑）。
 

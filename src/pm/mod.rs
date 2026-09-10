@@ -2,6 +2,7 @@
 //! 切片 a 只求解不落地（`install --dry-run`）；网络测试走本地 stub registry。
 
 pub mod cache;
+pub mod git;
 pub mod install;
 pub mod lifecycle;
 pub mod npmrc;
@@ -29,21 +30,36 @@ pub async fn install(packages: &[String], dry_run: bool, registry: Option<&str>)
         .or_else(|| home.auth_token_for(&registry))
         .is_some();
     tracing::debug!(target: "winterjs::pm", source = src, registry = registry.as_str(), has_auth, "registry resolved");
-    let mut specs = Vec::with_capacity(packages.len());
+    // 请求分流（registry 走 packument 求解；git 走 rev 解析，各自独立）。
+    let mut reg_specs = Vec::with_capacity(packages.len());
+    let mut git_specs = Vec::new();
     for pkg in packages {
-        specs.push(spec::parse(pkg).map_err(Error::Other)?);
+        match spec::parse_request(pkg).map_err(Error::Other)? {
+            spec::Request::Registry(s) => reg_specs.push(s),
+            spec::Request::Git(g) => git_specs.push(g),
+        }
     }
-    let tree = resolve::solve_tree(&specs, |name: String| {
+    if reg_specs.is_empty() && git_specs.is_empty() {
+        return Err(Error::Other("nothing to install".into()));
+    }
+    let tree = resolve::solve_tree(&reg_specs, |name: String| {
         let registry = registry.clone();
         async move { registry::fetch_packument(&registry, &name).await.map_err(|e| e.to_string()) }
     })
     .await
     .map_err(Error::Other)?;
+    let mut git_shown = Vec::with_capacity(git_specs.len());
+    for g in &git_specs {
+        git_shown.push(git::resolve_for_dry_run(g, &cwd).map_err(Error::Other)?);
+    }
     if dry_run {
         for r in &tree {
             println!("{}@{} {}", r.name, r.version, r.tarball);
         }
+        for d in &git_shown {
+            println!("{}@git+{}#{}", d.name, d.url, d.rev);
+        }
         return Ok(());
     }
-    install::install_tree(&cwd, &tree).await
+    install::install_all(&cwd, &tree, &git_specs).await
 }

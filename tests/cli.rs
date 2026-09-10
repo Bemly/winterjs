@@ -1494,6 +1494,128 @@ fn phase5_npm_config_registry_env_overrides_npmrc() {
     home.close().unwrap();
 }
 
+/// 现场建 git 仓（`git` CLI；`user.*` 经 `-c` 注入，不碰全局配置；返回仓目录）。
+/// 含 `package.json(name/index.js)` + 一个 commit + 可选 tag。
+fn make_git_repo(name: &str, tagged: bool) -> assert_fs::TempDir {
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let mut c = std::process::Command::new("git");
+        c.args(args).current_dir(dir).env("GIT_CONFIG_NOSYSTEM", "1");
+        let out = c.output().expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    let dir = assert_fs::TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        format!(r#"{{"name":"{name}","version":"0.1.0","main":"index.js"}}"#),
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("index.js"), b"exports.add = (a, b) => a + b;\n").unwrap();
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    git(dir.path(), &["add", "-A"]);
+    git(dir.path(), &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"]);
+    if tagged {
+        git(dir.path(), &["tag", "v1.0.0"]);
+    }
+    dir
+}
+
+#[test]
+fn phase5_git_dry_run_local() {
+    // 正常：`git+file://` dry-run 解析出 commit（40 hex），不落地。
+    let repo = make_git_repo("git-pkg", true);
+    let url = format!("file://{}", repo.path().display());
+    let home = assert_fs::TempDir::new().unwrap();
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = stdout_of(
+        winterjs()
+            .args(["install", &format!("git-pkg@git+{url}#v1.0.0"), "--dry-run"])
+            .env("HOME", home.path())
+            .env_remove("NPM_CONFIG_REGISTRY")
+            .env_remove("npm_config_registry")
+            .current_dir(dir.path()),
+    );
+    assert!(out.starts_with(&format!("git-pkg@git+{url}#")), "dry-run: {out}");
+    let commit = out.trim().rsplit('#').next().unwrap();
+    assert_eq!(commit.len(), 40, "commit hex: {out}");
+    dir.close().unwrap();
+    home.close().unwrap();
+}
+
+#[test]
+fn phase5_git_unknown_rev_errors() {
+    // 报错：未知 rev，exit=1 且可读。
+    let repo = make_git_repo("git-pkg", false);
+    let url = format!("file://{}", repo.path().display());
+    let home = assert_fs::TempDir::new().unwrap();
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = winterjs()
+        .args(["install", &format!("git-pkg@git+{url}#no-such-ref"), "--dry-run"])
+        .env("HOME", home.path())
+        .env_remove("NPM_CONFIG_REGISTRY")
+        .env_remove("npm_config_registry")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no-such-ref"), "stderr: {stderr}");
+    dir.close().unwrap();
+    home.close().unwrap();
+}
+
+#[test]
+fn phase5_git_bare_spec_reads_name() {
+    // 边界：裸 `git+…` 无显式名，从源 package.json 读名。
+    let repo = make_git_repo("bare-pkg", false);
+    let url = format!("file://{}", repo.path().display());
+    let home = assert_fs::TempDir::new().unwrap();
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = stdout_of(
+        winterjs()
+            .args(["install", &format!("git+{url}"), "--dry-run"])
+            .env("HOME", home.path())
+            .env_remove("NPM_CONFIG_REGISTRY")
+            .env_remove("npm_config_registry")
+            .current_dir(dir.path()),
+    );
+    assert!(out.starts_with(&format!("bare-pkg@git+{url}#")), "bare name: {out}");
+    dir.close().unwrap();
+    home.close().unwrap();
+}
+
+#[test]
+fn phase5_git_end_to_end_local() {
+    // 真装闭环：本地 git 装完 `require` 可跑 + lockfile 记 `git+…#commit`。
+    let repo = make_git_repo("git-e2e", false);
+    let url = format!("file://{}", repo.path().display());
+    let home = assert_fs::TempDir::new().unwrap();
+    let cache = assert_fs::TempDir::new().unwrap();
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = winterjs()
+        .arg("install")
+        .arg(format!("git+{url}"))
+        .env("HOME", home.path())
+        .env("WINTERJS_CACHE", cache.path())
+        .env_remove("NPM_CONFIG_REGISTRY")
+        .env_remove("npm_config_registry")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(dir.path().join("node_modules/git-e2e/package.json").is_file());
+    assert!(!dir.path().join("node_modules/git-e2e/.git").exists(), ".git must not land");
+    let lock = std::fs::read_to_string(dir.path().join("winterjs-lock.json")).unwrap();
+    assert!(lock.contains("\"git-e2e\"") && lock.contains(&format!("git+{url}#")), "lock: {lock}");
+    let app = dir.child("app.cjs");
+    app.write_str("const t = require(\"git-e2e\");\nconsole.log(t.add(19, 23));\n").unwrap();
+    let out = winterjs().arg("run").arg(app.path()).current_dir(dir.path()).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "42\n");
+    dir.close().unwrap();
+    home.close().unwrap();
+    cache.close().unwrap();
+}
+
 /// 现场造 tgz（`package/` 包裹；`files` 为包内路径→内容）。
 fn make_tgz(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut tar_data = Vec::new();

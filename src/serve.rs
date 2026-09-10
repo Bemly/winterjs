@@ -25,6 +25,80 @@ pub struct ServeOpts {
     pub port: u16,
     /// 每秒请求上限（0 = 不限；`governor` 全局限流）。
     pub limit_rps: u32,
+    /// TLS 证书/私钥（PEM；必须同给同缺，见 `load_tls`）。
+    pub cert: Option<PathBuf>,
+    pub key: Option<PathBuf>,
+}
+
+/// TLS 配置加载（PEM 解析；`rustls-pemfile` 轮子；`ring` provider）。
+/// 纯 IO，单测覆盖坏输入。
+pub fn load_tls(cert_path: &Path, key_path: &Path) -> Result<rustls::ServerConfig, Error> {
+    use std::io::BufReader;
+    let cert_file = std::fs::File::open(cert_path)
+        .map_err(|e| Error::Other(format!("cannot read --cert '{}': {e}", cert_path.display())))?;
+    let certs: Vec<rustls::pki_types::CertificateDer<'static>> =
+        rustls_pemfile::certs(&mut BufReader::new(cert_file))
+            .collect::<Result<_, _>>()
+            .map_err(|e| Error::Other(format!("bad --cert PEM '{}': {e}", cert_path.display())))?;
+    if certs.is_empty() {
+        return Err(Error::Other(format!("bad --cert PEM '{}': no certificate found", cert_path.display())));
+    }
+    let key_file = std::fs::File::open(key_path)
+        .map_err(|e| Error::Other(format!("cannot read --key '{}': {e}", key_path.display())))?;
+    let key = rustls_pemfile::private_key(&mut BufReader::new(key_file))
+        .map_err(|e| Error::Other(format!("bad --key PEM '{}': {e}", key_path.display())))?
+        .ok_or_else(|| Error::Other(format!("bad --key PEM '{}': no private key found", key_path.display())))?;
+    // provider 与 fetch 侧同源（顶层 ring；重复 install 无害，见 §2 门控）。
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| Error::Other(format!("cannot build TLS config: {e}")))
+}
+
+/// axum `Listener` 的 TLS 实现（TCP accept 后做服务端握手；握手失败记 warn
+/// 并继续 accept——trait 签名无 Result 通道，只能内部消化）。
+struct TlsListener {
+    tcp: tokio::net::TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
+}
+
+impl axum::serve::Listener for TlsListener {
+    type Io = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            let (tcp, addr) = match self.tcp.accept().await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(target: "winterjs::serve", "accept failed: {e}");
+                    continue;
+                }
+            };
+            match self.acceptor.accept(tcp).await {
+                Ok(tls) => return (tls, addr),
+                Err(e) => {
+                    tracing::warn!(target: "winterjs::serve", "TLS handshake failed: {e}");
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.tcp.local_addr()
+    }
+}
+
+/// systemd 就绪通知（仅 linux；非 systemd 环境/失败一律忽略，只记 debug）。
+#[cfg(target_os = "linux")]
+fn notify_ready() {
+    let state = [(systemd::daemon::STATE_READY.to_owned(), "1".to_owned())];
+    match systemd::daemon::notify(false, state.iter()) {
+        Ok(true) => tracing::debug!(target: "winterjs::serve", "systemd READY notified"),
+        Ok(false) => tracing::debug!(target: "winterjs::serve", "not running under systemd"),
+        Err(e) => tracing::debug!(target: "winterjs::serve", "systemd notify failed: {e}"),
+    }
 }
 
 /// 指标名（named 指标文档见 `docs/metrics.md`）。
@@ -63,9 +137,9 @@ pub fn validate_dir(dir: &Path) -> Result<PathBuf, Error> {
         .map_err(|e| Error::Other(format!("cannot serve '{}': {e}", dir.display())))
 }
 
-/// 就绪行（纯函数，单测覆盖；黑盒用此前缀解析实际端口）。
-pub fn ready_line(root: &Path, addr: &SocketAddr) -> String {
-    format!("serving {} on http://{addr}", root.display())
+/// 就绪行（纯函数，单测覆盖；TLS 时 scheme 为 `https`）。
+pub fn ready_line_scheme(root: &Path, scheme: &str, addr: &SocketAddr) -> String {
+    format!("serving {} on {scheme}://{addr}", root.display())
 }
 
 /// LAN 地址（best-effort；拿不到返回 `None`，不中断服务）。
@@ -88,22 +162,35 @@ pub fn qr_block(url: &str) -> Option<String> {
 /// 启动并跑到信号到来。调用方（main）已在 tokio runtime 内。
 pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     let root = validate_dir(&opts.dir)?;
-    let listener = tokio::net::TcpListener::bind((opts.host.as_str(), opts.port))
+    // `--cert/--key` 必须同给同缺（单给即报，不静默降级为明文）。
+    let tls = match (&opts.cert, &opts.key) {
+        (Some(c), Some(k)) => Some(load_tls(c, k)?),
+        (None, None) => None,
+        _ => {
+            return Err(Error::Other(
+                "--cert and --key must be given together (PEM files)".into(),
+            ));
+        }
+    };
+    let scheme = if tls.is_some() { "https" } else { "http" };
+    let tcp = tokio::net::TcpListener::bind((opts.host.as_str(), opts.port))
         .await
         .map_err(|e| {
             Error::Other(format!("cannot bind {}:{}: {e}", opts.host, opts.port))
         })?;
-    let addr = listener
+    let addr = tcp
         .local_addr()
         .map_err(|e| Error::Other(format!("cannot read bound address: {e}")))?;
-    println!("{}", ready_line(&root, &addr));
+    println!("{}", ready_line_scheme(&root, scheme, &addr));
     if let Some(lan) = lan_addr(addr.port()) {
-        println!("lan: http://{lan}");
-        if let Some(qr) = qr_block(&format!("http://{lan}")) {
+        println!("lan: {scheme}://{lan}");
+        if let Some(qr) = qr_block(&format!("{scheme}://{lan}")) {
             println!("{qr}");
         }
     }
-    tracing::info!(target: "winterjs::serve", %addr, dir = %root.display(), "serving");
+    #[cfg(target_os = "linux")]
+    notify_ready();
+    tracing::info!(target: "winterjs::serve", %addr, scheme, dir = %root.display(), "serving");
     // Prometheus 注册为全局 recorder（同进程只许一次；双 serve 本就撞端口）。
     let metrics = metrics_exporter_prometheus::PrometheusBuilder::new()
         .install_recorder()
@@ -152,12 +239,46 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
         .layer(trace)
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive());
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|e| Error::Other(format!("serve failed: {e}")))?;
+    // `axum::serve` 返回类型随 Listener 而异，两分支各自收尾（逻辑同构）。
+    if let Some(cfg) = tls {
+        let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(cfg));
+        axum::serve(TlsListener { tcp, acceptor }, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .map_err(|e| Error::Other(format!("serve failed: {e}")))?;
+    } else {
+        axum::serve(PlainListener { tcp }, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await
+            .map_err(|e| Error::Other(format!("serve failed: {e}")))?;
+    }
     tracing::info!(target: "winterjs::serve", "stopped");
     Ok(())
+}
+
+/// 明文 listener（与 `TlsListener` 同构，使 serve 尾部类型统一）。
+struct PlainListener {
+    tcp: tokio::net::TcpListener,
+}
+
+impl axum::serve::Listener for PlainListener {
+    type Io = tokio::net::TcpStream;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.tcp.accept().await {
+                Ok(t) => return t,
+                Err(e) => {
+                    tracing::warn!(target: "winterjs::serve", "accept failed: {e}");
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.tcp.local_addr()
+    }
 }
 
 /// 共享限流器（`None` = 不限流；`governor` 直接式，全局统一配额）。
@@ -236,8 +357,14 @@ mod tests {
     #[test]
     fn ready_line_shape() {
         let addr: SocketAddr = "127.0.0.1:3000".parse().unwrap();
-        let line = ready_line(Path::new("/tmp/site"), &addr);
-        assert_eq!(line, "serving /tmp/site on http://127.0.0.1:3000");
+        assert_eq!(
+            ready_line_scheme(Path::new("/tmp/site"), "http", &addr),
+            "serving /tmp/site on http://127.0.0.1:3000"
+        );
+        assert_eq!(
+            ready_line_scheme(Path::new("/tmp/site"), "https", &addr),
+            "serving /tmp/site on https://127.0.0.1:3000"
+        );
     }
 
     #[test]
@@ -258,6 +385,20 @@ mod tests {
         if let Some(addr) = lan_addr(1234) {
             assert_eq!(addr.port(), 1234);
         }
+    }
+
+    #[test]
+    fn tls_rejects_bad_pem() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("c.pem");
+        let key = dir.path().join("k.pem");
+        std::fs::write(&cert, b"not a pem\n").unwrap();
+        std::fs::write(&key, b"not a pem\n").unwrap();
+        // 坏 cert / 空 cert / 缺 key 三件（纯 IO，不碰网络）。
+        assert!(load_tls(&cert, &key).is_err());
+        std::fs::write(&cert, b"").unwrap();
+        assert!(load_tls(&cert, &key).unwrap_err().to_string().contains("no certificate"));
+        assert!(load_tls(&dir.path().join("missing.pem"), &key).is_err());
     }
 
     #[test]

@@ -2,9 +2,9 @@
 
 > 版本 `26.9.0`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 5 完工（2026-09-10，`cargo test` 33+111 全绿，0 警告，
-> npmrc/git/publish dry-run/login/upgrade 干跑验收通过，冒烟 5/5）；
-> 下一步 Phase 6 serve（HTTP 服务）。
+> 当前状态：Phase 6 完工（2026-09-10，`cargo test` 39+123 全绿，0 警告，
+> 静态/中间件/指标限流/TLS 验收通过，200 并发零失败，冒烟 5/5）；
+> 下一步 Phase 7 runtime 补齐（sqlite/REPL/test/watch/FFI）。
 > 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
@@ -272,6 +272,17 @@
   `--limit-rps N`，burst=1，429 + `Retry-After`，429 本身不计数）。
   CLI 加 `--limit-rps`。模块单测 +1（配额/retry 表），黑盒 +2
   （metrics 精确计数/限流 200→429）；`cargo test` 38+120 全绿，0 警告，冒烟 5/5。
+- [x] 切片 d4（2026-09-10）：TLS 终止（`--cert/--key` PEM，`tokio-rustls` +
+  手写 axum `Listener`，单给即报错不降级；握手失败 warn 后继续 accept）+
+  systemd READY 通知（仅 linux，失败忽略）。模块单测 +1（坏 PEM 三件），
+  黑盒 +3（rcgen 自签真握手 e2e/半参报错/坏 PEM 报错）；200 并发零失败
+  （wrk 缺席，python 10×20 替代，计数精确 200）。顺延（书面理由）：
+  `instant-acme`（需真实域名）、Win 服务（mac 无法验证，留 CI 编译）、
+  `console-subscriber`（开发期，需 `tokio_unstable`）、`netstat2`
+  （bind 错误已可读，预检有 TOCTOU，不用）。
+  `cargo test` 39+123 全绿，0 警告，冒烟 5/5。
+- Phase 6 完工（2026-09-10）：serve/中间件/指标限流/TLS，`cargo test` 39+123
+  全绿，0 警告，冒烟 5/5，200 并发零失败。
 
 ## Phase 7 — runtime 补齐（sqlite/REPL/test/watch/FFI）
 

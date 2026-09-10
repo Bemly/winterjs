@@ -115,5 +115,11 @@ pub enum Cmd {
         /// Requests per second limit, 0 = unlimited
         #[arg(long, default_value_t = 0)]
         limit_rps: u32,
+        /// TLS certificate (PEM, must come with --key)
+        #[arg(long)]
+        cert: Option<PathBuf>,
+        /// TLS private key (PEM, must come with --cert)
+        #[arg(long)]
+        key: Option<PathBuf>,
     },
 }

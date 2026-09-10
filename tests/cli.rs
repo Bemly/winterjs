@@ -2154,6 +2154,11 @@ fn http_get(port: u16, path: &str, extra: &[(&str, &str)]) -> (u16, std::collect
     s.write_all(req.as_bytes()).unwrap();
     let mut raw = Vec::new();
     s.read_to_end(&mut raw).unwrap();
+    parse_response(&raw)
+}
+
+/// 原始 HTTP 响应解析（明文/TLS 共用）。
+fn parse_response(raw: &[u8]) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -2379,5 +2384,101 @@ fn phase6_serve_rate_limit() {
     assert_eq!((st1, st2), (200, 429), "burst then limit");
     assert!(h2.contains_key("retry-after"), "headers: {h2:?}");
     assert_eq!(body2, b"rate limited\n");
+    dir.close().unwrap();
+}
+
+/// rcgen 自签证书（SAN 127.0.0.1；返回 cert/key 路径 + 信任用 DER）。
+fn make_self_signed(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf, rustls::pki_types::CertificateDer<'static>) {
+    let key = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
+    let cert_pem = key.cert.pem();
+    let key_pem = key.signing_key.serialize_pem();
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    std::fs::write(&cert_path, &cert_pem).unwrap();
+    std::fs::write(&key_path, &key_pem).unwrap();
+    (cert_path, key_path, key.cert.der().clone())
+}
+
+/// TLS GET（rustls client 信任自签根； noble negotiates http/1.1 by default）。
+fn https_get(
+    port: u16,
+    path: &str,
+    trust: &rustls::pki_types::CertificateDer<'static>,
+) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(trust.clone()).unwrap();
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector =
+            tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+        let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+        let mut tls = connector.connect(name, tcp).await.unwrap();
+        tls.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut raw = Vec::new();
+        tls.read_to_end(&mut raw).await.unwrap();
+        parse_response(&raw)
+    })
+}
+
+#[test]
+fn phase6_serve_tls() {
+    // 正常：自签 PEM 起 https，真握手后静态 + /metrics 皆 200。
+    let dir = serve_fixture();
+    let (cert, key, trust) = make_self_signed(dir.path());
+    let srv = spawn_serve_args(
+        dir.path(),
+        &["--cert", cert.to_str().unwrap(), "--key", key.to_str().unwrap()],
+    );
+    let (st, _, body) = https_get(srv.port, "/", &trust);
+    assert_eq!(st, 200);
+    assert_eq!(body, b"<h1>hi</h1>");
+    let (st, _, _) = https_get(srv.port, "/metrics", &trust);
+    assert_eq!(st, 200);
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase6_serve_tls_half_args() {
+    // 报错：只给 --cert 不给 --key，exit=1 且指路（不静默降级明文）。
+    let dir = serve_fixture();
+    let (cert, _, _) = make_self_signed(dir.path());
+    let out = winterjs()
+        .args(["serve", ".", "--port", "18098", "--cert"])
+        .arg(&cert)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--cert and --key"), "stderr: {stderr}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase6_serve_tls_bad_pem() {
+    // 报错：坏 PEM exit=1 且可读（cert/key 双给但内容非法）。
+    let dir = serve_fixture();
+    let cert = dir.path().join("c.pem");
+    let key = dir.path().join("k.pem");
+    std::fs::write(&cert, b"not a pem\n").unwrap();
+    std::fs::write(&key, b"not a pem\n").unwrap();
+    let out = winterjs()
+        .args(["serve", ".", "--port", "18097", "--cert"])
+        .arg(&cert)
+        .args(["--key"])
+        .arg(&key)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("bad --cert"), "stderr: {stderr}");
     dir.close().unwrap();
 }

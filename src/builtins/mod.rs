@@ -1462,6 +1462,13 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_sqlite_rows", Some(bun::sqlite::sqlite_rows), 4),
             ("__wjs_sqlite_txn", Some(bun::sqlite::sqlite_txn), 1),
             ("__wjs_sqlite_close", Some(bun::sqlite::sqlite_close), 1),
+            // Phase 7-e6: bun:ffi（动态调用引擎见 ffi.rs 头注；UNSAFE-BOUNDARY 密集区）
+            ("__wjs_ffi_dlopen", Some(bun::ffi::ffi_dlopen), 2),
+            ("__wjs_ffi_ptr_str", Some(bun::ffi::ffi_ptr_str), 1),
+            ("__wjs_ffi_ptr_view", Some(bun::ffi::ffi_ptr_view), 1),
+            ("__wjs_ffi_call", Some(bun::ffi::ffi_call), 2),
+            ("__wjs_ffi_cstring", Some(bun::ffi::ffi_cstring), 1),
+            ("__wjs_ffi_bytes", Some(bun::ffi::ffi_bytes), 2),
         ];
         for (name, native, nargs) in web {
             let cname = CString::new(*name).expect("no NUL");

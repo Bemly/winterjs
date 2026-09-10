@@ -483,6 +483,10 @@ multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 ax
 - REPL 高亮（手写扫描器约 60 行；不引 `syntect`/`tree-sitter`）。
   偏差（2026-09-10 实测）：`oxc_parser::lexer::Lexer::new` 非公开（`pub(super)`），
   词法结果直染走不通，改手写关键字/字符串/数字/注释四类染色（`src/repl.rs`）。
+- bun:ffi 动态调用引擎（2026-09-11 调研：`libffi`/`dyncall` 皆 C，纯 Rust 无轮子；
+  落法 = build.rs 按参数 INTEGER/SSE 分类生成中转 shim ~380 个——
+  `extern "C" fn(target, a0..an) -> R` 对目标函数 ABI 透明，运行时按
+  (元数, f64 掩码, 返回类别) 查表；`src/builtins/bun/ffi.rs` + `build.rs`）。
 - npm registry 客户端胶水（传输归 `reqwest`，寻址归 `deno_semver`，校验归 `ssri`，
   缓存布局归 `dirs`+`blake3`+`fs4`，解包归 `tar`+`flate2`，并发归 `futures`+`rayon`）。
 - URLPattern 路由匹配（`url` 之上的小状态机；serve 内部路由直接用 axum）。

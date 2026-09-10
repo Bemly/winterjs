@@ -2,8 +2,9 @@
 
 > 版本 `26.9.0`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 7 进行中（e1-e5 完工；剩 FFI；
-> `cargo test` 53+139 全绿，0 警告，冒烟 5/5）。
+> 当前状态：Phase 7 完工（2026-09-11，sqlite/repl/test/watch/init/FFI 全落地，
+> `cargo test` 55+141 全绿，0 警告，冒烟 5/5）；下一步 Phase 8 polish
+> （lint/fmt、cap-std 权限、sentry 上报）。
 > 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
@@ -340,6 +341,25 @@
   每文件独立线程（CONTEXT/state TLS 随线程生灭，16MB 栈）。模块单测 +1
   （watchable 过滤表）+ 黑盒 +2（watch 重跑+SIGINT e2e / 两文件全过回归）；
   `cargo test` 53+139 全绿，0 警告，冒烟 5/5。
+- [x] 切片 e6（2026-09-11）：`bun:ffi`（libloading 之上，`src/builtins/bun/ffi.rs`
+  + build.rs 生成调用 shim）。动态调用引擎无 libffi 落法（调研：libffi/dyncall
+  皆 C，纯 Rust 无轮子，§13 记手写件）：C ABI 按参数独立分类（INTEGER/SSE
+  寄存器），`extern "C" fn(target, a0..an) -> R` 中转对目标函数完全 ABI 透明
+  （编译器完成收/发两侧搬移，含栈参），build.rs 按 (元数≤6, f64 位置掩码,
+  返回 I/D/F) 生成 ~380 shim + `invoke` 查表派发，零新依赖。
+  支持：标量参数（整数系/bool/ptr/f64）+ 返回（整数系/f64/f32/void）、
+  `ptr()`（字符串零结尾拷贝 Box::leak / TypedArray 数据裸地址
+  `GetUint8ArrayLengthAndData` / 数值直通；同步调用期间调用帧保活）、
+  `CString`、`toBuffer/toArrayBuffer`（拷贝，偏差记录）、`suffix`。
+  不支持（模块头注记录）：结构体按值传参/返回、变参、f32 参数、元数>6、
+  `JSCallback`、`close()`；Library 泄漏永不 dlclose（地址稳定）。
+  UNSAFE-BOUNDARY 6 处（dlopen/ptr_str/ptr_view/call/cstring/bytes）各带
+  前置条件与覆盖测试名（完成标准：每个导出都有 safety 注释＋测试 ✓）。
+  黑盒 2 例（unix 门控，cc 现编测试 dylib：全类型矩阵 + 指针写回可见性 +
+  报错九件）+ 模块单测 2 例（shim 全类别 roundtrip / 分类表）；
+  `cargo test` 55+141 全绿，0 警告，冒烟 5/5。
+- Phase 7 完工（2026-09-11）：sqlite/REPL/test/init/watch/FFI，
+  `cargo test` 55+141 全绿，0 警告，冒烟 5/5。
 
 ## Phase 8 — polish（lint/权限/远程缓存/上报）
 

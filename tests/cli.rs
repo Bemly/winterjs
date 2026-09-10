@@ -2839,3 +2839,123 @@ fn phase7_test_watch_reruns_on_change() {
     let status = child.wait().unwrap();
     assert!(status.success(), "watch must exit 0 on SIGINT, got {status}");
 }
+
+// ── Phase 7-e6: bun:ffi（libloading 之上的纯 Rust 动态调用引擎）──────────────
+
+#[cfg(unix)]
+fn build_ffi_dylib(dir: &assert_fs::TempDir) -> String {
+    let c = dir.child("ffitest.c");
+    c.write_str(
+        r#"
+#include <stdint.h>
+int32_t ffi_add(int32_t a, int32_t b) { return a + b; }
+int64_t ffi_mul64(int64_t a, int64_t b) { return a * b; }
+double ffi_mix(int32_t a, double b) { return a + b; }
+double ffi_sum3(double a, double b, double c) { return a + b + c; }
+uint8_t ffi_is_even(uint32_t n) { return (n % 2) == 0; }
+void ffi_fill(uint8_t *buf, int32_t len, uint8_t v) { for (int32_t i = 0; i < len; i++) buf[i] = v; }
+int32_t ffi_count_zeros(const uint8_t *buf, int32_t len) { int32_t n = 0; for (int32_t i = 0; i < len; i++) if (buf[i] == 0) n++; return n; }
+const char *ffi_hello(void) { return "hi from c"; }
+float ffi_f32ret(double x) { return (float)(x * 2.0); }
+"#,
+    )
+    .unwrap();
+    let name = if cfg!(target_os = "macos") { "libffitest.dylib" } else { "libffitest.so" };
+    let out = dir.child(name);
+    let mut cmd = std::process::Command::new("cc");
+    if cfg!(target_os = "macos") {
+        cmd.arg("-dynamiclib");
+    } else {
+        cmd.args(["-shared", "-fPIC"]);
+    }
+    let status = cmd.arg("-o").arg(out.path()).arg(c.path()).status().expect("cc must be available");
+    assert!(status.success(), "cc failed");
+    name.to_string()
+}
+
+#[cfg(unix)]
+#[test]
+fn phase7_ffi_dylib() {
+    // 正常：整数/混合类别/void+指针写回（零拷贝语义）/u8/f32 返回/CString/toBuffer。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let libname = build_ffi_dylib(&dir);
+    let file = dir.child("ffi.mjs");
+    file.write_str(&format!(
+        r#"
+import {{ dlopen, FFIType as T, suffix, ptr, CString, toBuffer }} from "bun:ffi";
+if (suffix !== "{suffix}") throw new Error("bad suffix: " + suffix);
+const lib = dlopen("./{libname}", {{
+  ffi_add: {{ args: [T.i32, T.i32], returns: T.i32 }},
+  ffi_mul64: {{ args: [T.i64, T.i64], returns: T.i64 }},
+  ffi_mix: {{ args: [T.i32, T.f64], returns: T.f64 }},
+  ffi_sum3: {{ args: [T.f64, T.f64, T.f64], returns: T.f64 }},
+  ffi_is_even: {{ args: [T.u32], returns: T.u8 }},
+  ffi_fill: {{ args: [T.ptr, T.i32, T.u8], returns: T.void }},
+  ffi_count_zeros: {{ args: [T.ptr, T.i32], returns: T.i32 }},
+  ffi_hello: {{ returns: T.ptr }},
+  ffi_f32ret: {{ args: [T.f64], returns: T.f32 }},
+}});
+console.log(lib.symbols.ffi_add(2, 3), lib.symbols.ffi_mul64(3, 4));
+console.log(lib.symbols.ffi_mix(1, 0.5), lib.symbols.ffi_sum3(1, 2, 3.5));
+console.log(lib.symbols.ffi_is_even(10), lib.symbols.ffi_is_even(7));
+const buf = new Uint8Array(4);
+console.log(lib.symbols.ffi_fill(ptr(buf), 4, 0xab) === undefined, buf[0] === 0xab && buf[3] === 0xab);
+console.log(lib.symbols.ffi_count_zeros(ptr(new Uint8Array([1, 0, 2, 0, 0])), 5));
+console.log(lib.symbols.ffi_count_zeros(ptr("abc"), 4));
+const cs = new CString(lib.symbols.ffi_hello());
+console.log(cs.toString(), cs.ptr !== 0, cs.length);
+console.log(lib.symbols.ffi_f32ret(21));
+const tb = toBuffer(ptr(new Uint8Array([7, 8])), 2);
+console.log(tb instanceof Uint8Array, tb[0], tb.length);
+console.log(typeof lib.symbols.ffi_add);
+"#,
+        suffix = if cfg!(target_os = "macos") { ".dylib" } else { ".so" },
+        libname = libname,
+    ))
+    .unwrap();
+    let out = winterjs().arg("run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let so = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        so,
+        "5 12\n1.5 6.5\n1 0\ntrue true\n3\n1\nhi from c true 9\n42\ntrue 7 2\nfunction\n",
+        "ffi: {so}"
+    );
+    dir.close().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn phase7_ffi_errors() {
+    // 报错三件：坏路径/缺符号/arity 不匹配/f32 参数/未知类型/null CString。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let libname = build_ffi_dylib(&dir);
+    let file = dir.child("err.mjs");
+    file.write_str(&format!(
+        r#"
+import {{ dlopen, FFIType as T, suffix, ptr, CString }} from "bun:ffi";
+try {{ dlopen("/nonexistent-ffi-xyz/libnope" + suffix, {{}}); }} catch (e) {{ console.log("load:", String(e.message).includes("nonexistent-ffi-xyz")); }}
+try {{ dlopen("./{libname}", {{ nope: T.i32 }}); }} catch (e) {{ console.log("symbol:", String(e.message).includes("nope")); }}
+const lib = dlopen("./{libname}", {{ ffi_add: {{ args: [T.i32, T.i32], returns: T.i32 }} }});
+try {{ lib.symbols.ffi_add(1); }} catch (e) {{ console.log("arity:", e.message.startsWith("FFI call 'ffi_add'")); }}
+try {{ lib.symbols.ffi_add(1, "x"); }} catch (e) {{ console.log("argtype:", String(e.message).includes("must be a number")); }}
+try {{ dlopen("./{libname}", {{ bad: {{ args: [T.f32], returns: T.void }} }}); }} catch (e) {{ console.log("f32arg:", e.name, String(e.message).includes("f32")); }}
+try {{ dlopen("./{libname}", {{ bad: T.nope }}); }} catch (e) {{ console.log("type:", e.name); }}
+try {{ dlopen("./{libname}", {{ bad: {{ args: "nope", returns: T.void }} }}); }} catch (e) {{ console.log("argsfmt:", e.name); }}
+try {{ ptr({{}}); }} catch (e) {{ console.log("ptrtype:", e.name); }}
+try {{ new CString(0); }} catch (e) {{ console.log("nullptr:", String(e.message)); }}
+console.log("done");
+"#,
+        libname = libname,
+    ))
+    .unwrap();
+    let out = winterjs().arg("run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let so = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        so,
+        "load: true\nsymbol: true\narity: true\nargtype: true\nf32arg: TypeError true\ntype: TypeError\nargsfmt: TypeError\nptrtype: TypeError\nnullptr: RangeError: CString: null pointer\ndone\n",
+        "ffi errors: {so}"
+    );
+    dir.close().unwrap();
+}

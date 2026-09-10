@@ -260,6 +260,12 @@
   复用 current-thread runtime，无 JS 线程冲突）。CLI 新增 `serve`（man 10→11）。
   模块单测 3 例 + 黑盒 4 例（静态+etag/range/坏目录/traversal 隔离）；
   `cargo test` 36+115 全绿，0 警告，冒烟 5/5。
+- [x] 切片 d2（2026-09-10）：中间件（CORS permissive + gzip/br 压缩 +
+  逐请求追踪，层序 CORS→压缩→追踪→文件）+ LAN 二维码 banner（`qrcode` 矩阵 +
+  内建 unicode 渲染）。附带修 §4.19 追踪 target 静默坑（手写
+  `winterjs::serve` 回调；压缩小 body 跳过属轮子行为，黑盒用大文件）。
+  模块单测 +1（QR 形状），黑盒 +3（gzip roundtrip/CORS 头/追踪日志行）；
+  `cargo test` 37+118 全绿，0 警告，冒烟 5/5。
 
 ## Phase 7 — runtime 补齐（sqlite/REPL/test/watch/FFI）
 

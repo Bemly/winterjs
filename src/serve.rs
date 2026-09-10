@@ -11,7 +11,10 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use axum::Router;
+use tower_http::compression::CompressionLayer;
+use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
+use tower_http::trace::TraceLayer;
 
 use crate::error::Error;
 
@@ -48,6 +51,17 @@ pub fn lan_addr(port: u16) -> Option<SocketAddr> {
     format!("{ip}:{port}").parse().ok()
 }
 
+/// LAN URL 的终端二维码（纯函数，单测覆盖；`qrcode` 只做矩阵，渲染内建 unicode）。
+pub fn qr_block(url: &str) -> Option<String> {
+    let code = qrcode::QrCode::new(url.as_bytes()).ok()?;
+    Some(
+        code.render::<qrcode::render::unicode::Dense1x2>()
+            .quiet_zone(false)
+            .module_dimensions(2, 1)
+            .build(),
+    )
+}
+
 /// 启动并跑到信号到来。调用方（main）已在 tokio runtime 内。
 pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     let root = validate_dir(&opts.dir)?;
@@ -62,9 +76,49 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     println!("{}", ready_line(&root, &addr));
     if let Some(lan) = lan_addr(addr.port()) {
         println!("lan: http://{lan}");
+        if let Some(qr) = qr_block(&format!("http://{lan}")) {
+            println!("{qr}");
+        }
     }
     tracing::info!(target: "winterjs::serve", %addr, dir = %root.display(), "serving");
-    let app = Router::new().fallback_service(ServeDir::new(root));
+    // 层（后调用者居外，即外→内：CORS → 压缩 → 追踪 → 静态文件）。
+    // CORS 取 permissive（本地静态 dev 服务；上线反代后由网关收紧，文档记录）。
+    // 追踪回调手写 target（默认回调打 `tower_http::trace`，会被默认 filter
+    // `winterjs=<level>` 静默，见 §4.19）。
+    let trace = TraceLayer::new_for_http()
+        .on_request(|req: &http::Request<axum::body::Body>, _span: &tracing::Span| {
+            tracing::debug!(
+                target: "winterjs::serve",
+                method = %req.method(),
+                uri = %req.uri(),
+                "request"
+            );
+        })
+        .on_response(
+            |res: &http::Response<axum::body::Body>, latency: std::time::Duration, _span: &tracing::Span| {
+                tracing::debug!(
+                    target: "winterjs::serve",
+                    status = res.status().as_u16(),
+                    latency_ms = latency.as_millis() as u64,
+                    "response"
+                );
+            },
+        )
+        .on_failure(
+            |err: tower_http::classify::ServerErrorsFailureClass, latency: std::time::Duration, _span: &tracing::Span| {
+                tracing::warn!(
+                    target: "winterjs::serve",
+                    %err,
+                    latency_ms = latency.as_millis() as u64,
+                    "request failed"
+                );
+            },
+        );
+    let app = Router::new()
+        .fallback_service(ServeDir::new(root))
+        .layer(trace)
+        .layer(CompressionLayer::new())
+        .layer(CorsLayer::permissive());
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -128,5 +182,13 @@ mod tests {
         if let Some(addr) = lan_addr(1234) {
             assert_eq!(addr.port(), 1234);
         }
+    }
+
+    #[test]
+    fn qr_block_shape() {
+        // 纯函数确定性：多行块字符，含深色模块。
+        let qr = qr_block("http://192.168.1.5:3000").expect("qr renders");
+        assert!(qr.lines().count() > 5, "qr:\n{qr}");
+        assert!(qr.contains('█') || qr.contains('▀') || qr.contains('▄'), "qr:\n{qr}");
     }
 }

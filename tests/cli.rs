@@ -2170,7 +2170,37 @@ fn http_get(port: u16, path: &str, extra: &[(&str, &str)]) -> (u16, std::collect
             headers.insert(k.trim().to_lowercase(), v.trim().to_owned());
         }
     }
+    // 压缩响应走 chunked（tower-http 默认），此处解帧再返回。
+    let body = if headers
+        .get("transfer-encoding")
+        .is_some_and(|v| v.contains("chunked"))
+    {
+        dechunk(&body)
+    } else {
+        body
+    };
     (status, headers, body)
+}
+
+/// 解 HTTP chunked 帧（测试 helper；非法帧即 panic，属测试失败）。
+fn dechunk(mut body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let end = body
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .expect("chunk size line");
+        let size_line = std::str::from_utf8(&body[..end]).expect("chunk size utf8");
+        let size = usize::from_str_radix(size_line.split(';').next().unwrap().trim(), 16)
+            .expect("chunk size hex");
+        body = &body[end + 2..];
+        if size == 0 {
+            break;
+        }
+        out.extend_from_slice(&body[..size]);
+        body = &body[size + 2..];
+    }
+    out
 }
 
 fn serve_fixture() -> assert_fs::TempDir {
@@ -2239,5 +2269,72 @@ fn phase6_serve_traversal_blocked() {
     assert_ne!(st, 200, "traversal must not succeed");
     assert!(!body.windows(9).any(|w| w == b"topsecret"), "secret leaked");
     let _ = std::fs::remove_file(&secret);
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase6_serve_gzip() {
+    // 正常：大文件 + Accept-Encoding: gzip → content-encoding: gzip，解压一致。
+    // （小 body 被轮子默认 predicate 跳过，见 §4.19，故用 5KB。）
+    let dir = assert_fs::TempDir::new().unwrap();
+    let payload: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(dir.path().join("data.bin"), &payload).unwrap();
+    let srv = spawn_serve(dir.path());
+    let (st, h, body) = http_get(srv.port, "/data.bin", &[("Accept-Encoding", "gzip")]);
+    assert_eq!(st, 200);
+    assert_eq!(h.get("content-encoding").map(String::as_str), Some("gzip"), "headers: {h:?}");
+    let decoded = {
+        use std::io::Read;
+        let mut d = flate2::read::GzDecoder::new(&body[..]);
+        let mut out = Vec::new();
+        d.read_to_end(&mut out).unwrap();
+        out
+    };
+    assert_eq!(decoded, payload);
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase6_serve_cors() {
+    // 正常：带 Origin 请求 → access-control-allow-origin: *。
+    let dir = serve_fixture();
+    let srv = spawn_serve(dir.path());
+    let (st, h, _) = http_get(srv.port, "/app.js", &[("Origin", "http://example.com")]);
+    assert_eq!(st, 200);
+    assert_eq!(h.get("access-control-allow-origin").map(String::as_str), Some("*"), "headers: {h:?}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase6_serve_request_trace() {
+    // 正常：WINTERJS_LOG=winterjs=debug 下 stderr 有逐请求 method/uri/status 行。
+    use std::io::Read;
+    let dir = serve_fixture();
+    let port = free_port();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+        .args(["serve", ".", "--port"])
+        .arg(port.to_string())
+        .env("WINTERJS_LOG", "winterjs=debug")
+        .current_dir(dir.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("serve spawns");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "serve never came up");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let (st, _, _) = http_get(port, "/app.js", &[]);
+    assert_eq!(st, 200);
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut stderr = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    assert!(stderr.contains("method=GET") && stderr.contains("uri=/app.js"), "stderr:\n{stderr}");
+    assert!(stderr.contains("status=200"), "stderr:\n{stderr}");
     dir.close().unwrap();
 }

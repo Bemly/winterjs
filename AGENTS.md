@@ -225,6 +225,19 @@ cargo build
   promise + 仅靠旗退出）。修法：旗检查一律放 `RunJobs` **之后**。
   教训：`with_plain` 写本身无辜——二分时曾误判它，实为检查点顺序问题。
 
+### 4.19 tower-http 默认追踪打错 target，会被默认 filter 静默（2026-09-10）
+
+- 症状：`WINTERJS_LOG=winterjs=debug` 下 serve 有起停 INFO，但无逐请求日志。
+- 根因：`TraceLayer::new_for_http()` 默认回调打 `tower_http::trace::*` target；
+  默认 filter `winterjs=<level>`（`src/logging.rs`，依赖库保持安静）把它过滤。
+  另：`CompressionLayer` 默认 predicate 跳过小 body（16B 无 content-encoding，
+  5KB 才有），属轮子正常行为非 bug。
+- 修法：`on_request/on_response/on_failure` 手写回调，用
+  `tracing::debug!/warn!(target: "winterjs::serve", …)` 只记 method/uri/status/
+  latency（不记 body/头）；压缩黑盒用大文件测（`src/serve.rs`）。
+- 推广为铁律：凡引入打日志的轮子，先确认其事件 target 是否在默认 filter 内；
+  不在就用回调/适配转进 `winterjs::*`，禁为此放宽默认 filter（依赖噪音）。
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

@@ -164,7 +164,7 @@ pub unsafe extern "C" fn structured_clone(
 ) -> bool {
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = wrap_cx(cx_raw);
-    let frame = Frame { vp, argc };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
     if argc < 1 {
         report_error(&mut cx, "TypeError: structuredClone requires an argument");
         return false;

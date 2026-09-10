@@ -179,7 +179,7 @@ unsafe extern "C" fn on_fulfilled_native(
 ) -> bool {
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper（JS 线程单实例）
     let mut cx = JSContext::from_ptr(std::ptr::NonNull::new_unchecked(cx_raw));
-    let frame = Frame { vp, argc };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
     frame.set_rval(UndefinedValue());
     let _ = &mut cx;
     true
@@ -193,7 +193,7 @@ unsafe extern "C" fn on_rejected_native(
 ) -> bool {
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = JSContext::from_ptr(std::ptr::NonNull::new_unchecked(cx_raw));
-    let frame = Frame { vp, argc };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
     let reason = if argc > 0 { frame.arg(0) } else { UndefinedValue() };
     let s = value_to_string(&mut cx, reason);
     with_plain(|p| p.rejection_reasons.push(s));

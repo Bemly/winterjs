@@ -41,22 +41,38 @@ pub unsafe fn wrap_cx(cx_raw: *mut mozjs::jsapi::JSContext) -> JSContext {
 }
 
 /// JSNative 调用帧布局（JSAPI 约定）：vp[0]=callee/返回值槽（复用），vp[1]=this，vp[2..]=实参。
+/// 不变式由 `from_raw` 一次性确立，之后 `arg`/`set_rval` 均为 safe 访问器。
 #[derive(Clone, Copy)]
 pub struct Frame {
-    pub vp: *mut JSVal,
-    pub argc: u32,
+    vp: *mut JSVal,
+    argc: u32,
 }
 
 impl Frame {
-    /// SAFETY: i < argc 且 vp 指向引擎提供的调用帧。
-    pub unsafe fn arg(&self, i: u32) -> JSVal {
-        debug_assert!(i < self.argc, "arg index out of range");
-        *self.vp.add(2 + i as usize)
+    /// # Safety
+    /// `vp` 必须指向引擎提供的有效 JSNative 调用帧（至少 `2 + argc` 个槽位），
+    /// 且该帧在 `Frame` 存活期内不被 GC 移动/回收（引擎回调期间恒成立）。
+    pub unsafe fn from_raw(vp: *mut JSVal, argc: u32) -> Self {
+        Frame { vp, argc }
     }
 
-    /// SAFETY: vp 指向引擎提供的调用帧（写入即设置返回值）。
-    pub unsafe fn set_rval(&self, v: JSVal) {
-        *self.vp = v;
+    pub fn argc(&self) -> u32 {
+        self.argc
+    }
+
+    /// 越界时 debug 断言；调用方须用 `argc()` 守卫（既有调用点均已守卫）。
+    pub fn arg(&self, i: u32) -> JSVal {
+        debug_assert!(i < self.argc, "arg index out of range");
+        // SAFETY: from_raw 的不变式 + 上方断言保证 `2 + i` 下标有效
+        unsafe { *self.vp.add(2 + i as usize) }
+    }
+
+    /// 写入即设置返回值。
+    pub fn set_rval(&self, v: JSVal) {
+        // SAFETY: from_raw 的不变式保证 vp[0] 可写
+        unsafe {
+            *self.vp = v;
+        }
     }
 }
 

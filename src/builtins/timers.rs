@@ -25,9 +25,9 @@ fn clamp_delay(ms: f64) -> f64 {
 
 fn register_timer(cx: &mut JSContext, frame: &Frame, interval: bool) -> bool {
     // 前置条件：prelude 已做类型检查并打包实参；此处防御式再查
-    let cb = unsafe { frame.arg(0) };
-    let ms = unsafe { frame.arg(1) };
-    let args = unsafe { frame.arg(2) };
+    let cb = frame.arg(0);
+    let ms = frame.arg(1);
+    let args = frame.arg(2);
     if !cb.is_object() || !args.is_object() {
         report_error(cx, "TypeError: invalid timer arguments");
         return false;
@@ -50,7 +50,7 @@ fn register_timer(cx: &mut JSContext, frame: &Frame, interval: bool) -> bool {
             interval: interval.then_some(delay),
         });
     });
-    unsafe { frame.set_rval(Int32Value(id as i32)) };
+    frame.set_rval(Int32Value(id as i32));
     true
 }
 
@@ -62,7 +62,7 @@ pub unsafe extern "C" fn set_timeout(
 ) -> bool {
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = wrap_cx(cx_raw);
-    let frame = Frame { vp, argc };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
     register_timer(&mut cx, &frame, false)
 }
 
@@ -74,7 +74,7 @@ pub unsafe extern "C" fn set_interval(
 ) -> bool {
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = wrap_cx(cx_raw);
-    let frame = Frame { vp, argc };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
     register_timer(&mut cx, &frame, true)
 }
 
@@ -86,7 +86,7 @@ pub unsafe extern "C" fn clear_timeout(
 ) -> bool {
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = wrap_cx(cx_raw);
-    let frame = Frame { vp, argc };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
     let _ = &mut cx;
     let id_v = if argc > 0 { frame.arg(0) } else { UndefinedValue() };
     let id = if id_v.is_number() {

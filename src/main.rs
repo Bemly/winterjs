@@ -9,6 +9,7 @@ mod jsapi_glue;
 mod loader;
 mod logging;
 mod modules;
+mod initpkg;
 mod pm;
 mod runtime;
 mod serve;
@@ -122,6 +123,11 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             pm::publish::login(&reg, token.as_deref(), oauth).await
         }
         Cmd::Upgrade { dry_run } => pm::upgrade::upgrade(dry_run).await,
+        Cmd::Init { name, yes } => {
+            let cwd = std::env::current_dir()
+                .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+            initpkg::init(&cwd, name.as_deref(), yes).await
+        }
         Cmd::Test { paths, filter } => {
             let cwd = std::env::current_dir()
                 .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;

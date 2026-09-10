@@ -302,6 +302,11 @@
   `ok/not ok` + `# pass, fail` 汇总；空列表 exit 0）。CLI 新增 `test`
   （man 11→12）。模块单测 3 例 + 黑盒 4 例（混合 exit1/全过/filter/坏路径）；
   `cargo test` 42+127 全绿，0 警告，冒烟 5/5。
+- [x] 切片 e2（2026-09-10）：`winterjs init [name] [--yes]`（`src/initpkg.rs`，
+  `askama` 内联三模板：package.json + index.js + hello.test.js，init 后
+  `test` 即绿闭环；已存在不覆盖整体报错；缺名取目录名；非 TTY 缺 `--yes`
+  即错）。CLI 新增 `init`（man 12→13）。模块单测 2 例 + 黑盒 4 例
+  （闭环/坏名/冲突/非TTY）；`cargo test` 44+131 全绿，0 警告，冒烟 5/5。
 
 ## Phase 8 — polish（lint/权限/远程缓存/上报）
 

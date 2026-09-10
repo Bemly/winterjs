@@ -238,6 +238,24 @@ cargo build
 - 推广为铁律：凡引入打日志的轮子，先确认其事件 target 是否在默认 filter 内；
   不在就用回调/适配转进 `winterjs::*`，禁为此放宽默认 filter（依赖噪音）。
 
+### 4.20 写文件命令的手工实测必须先 `cd` 进 probe 目录（2026-09-10）
+
+- 症状：本机验证 `init` 时在仓库根直接跑，把 `package.json/index.js/hello.test.js`
+  写进了 winterjs 仓库（差点污染提交）。
+- 根因：`init`/`test` 这类以 cwd 为作用域的命令，实测 shell 的 cwd 即作用域；
+  肌肉记忆 `./target/debug/winterjs …` 让人忘了先 `cd`。
+- 修法：删掉误建文件并 `git status` 确认干净；此后凡实测写文件命令，
+  一律 `mkdir -p /tmp/wjs-*-probe && cd` 进去再跑。
+- 推广为铁律：黑盒测试不受影响（assert_cmd 设了 `current_dir`），只约束手工实测。
+
+### 4.21 同一文件的 edit 与 append 禁并行（2026-09-10）
+
+- 症状：给 `tests/cli.rs` 同时发 edit（改 man 计数）与 bash heredoc append
+  （加 4 个 init 测试），append 的内容全部丢失，测试数 127 不增。
+- 根因：两工具调用并行执行，edit 基于旧内容写回，覆盖了 append 的写入。
+- 修法：补回 append；此后同一文件的多次变更一律串行（不同文件可并行）。
+- 推广为铁律：工具并行只用于无依赖的不同文件；同文件操作串行排队。
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

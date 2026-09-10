@@ -101,6 +101,14 @@ pub enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Scaffold a new package (Phase 7)
+    Init {
+        /// Package name (default: current directory name)
+        name: Option<String>,
+        /// Skip the confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
     /// Run test files (Phase 7)
     Test {
         /// Test files or directories (default: discover under cwd)

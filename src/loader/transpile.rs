@@ -24,6 +24,8 @@ pub struct LoadedSource {
     pub imports: Vec<String>,
     /// 是否走模块求值（import/export、`import.meta`、动态 `import()` 任一）。
     pub is_module: bool,
+    /// TS 转译的 sourcemap JSON（JS 源为 None；报错回映射用）。
+    pub map: Option<String>,
 }
 
 impl std::fmt::Debug for LoadedSource {
@@ -89,6 +91,7 @@ pub fn load_js(text: &str, filename: &str, path: &Path) -> Result<LoadedSource, 
             js: hit.js,
             imports: hit.imports,
             is_module: hit.is_module,
+            map: hit.map,
         });
     }
     let loaded = load_js_uncached(text, filename, path)?;
@@ -99,7 +102,7 @@ pub fn load_js(text: &str, filename: &str, path: &Path) -> Result<LoadedSource, 
             js: loaded.js.clone(),
             imports: loaded.imports.clone(),
             is_module: loaded.is_module,
-            map: None,
+            map: loaded.map.clone(),
         },
     );
     Ok(loaded)
@@ -136,7 +139,7 @@ fn load_js_uncached(text: &str, filename: &str, path: &Path) -> Result<LoadedSou
         || !ret.module_record.import_metas.is_empty()
         || !ret.module_record.dynamic_imports.is_empty();
 
-    let js = if is_ts_like(path) {
+    let (js, map) = if is_ts_like(path) {
         let scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
         let options = TransformOptions::default();
         let tret = Transformer::new(&allocator, path, &options)
@@ -144,9 +147,15 @@ fn load_js_uncached(text: &str, filename: &str, path: &Path) -> Result<LoadedSou
         if tret.diagnostics.has_errors() {
             return Err(first_diagnostic(text, filename, tret.diagnostics.into_vec()));
         }
-        Codegen::new().build(&program).code
+        let ret = Codegen::new()
+            .with_options(oxc::codegen::CodegenOptions {
+                source_map_path: Some(path.to_path_buf()),
+                ..Default::default()
+            })
+            .build(&program);
+        (ret.code, ret.map.map(|m| m.to_json_string()))
     } else {
-        text.to_owned()
+        (text.to_owned(), None)
     };
     tracing::debug!(
         target: "winterjs::loader",
@@ -154,9 +163,10 @@ fn load_js_uncached(text: &str, filename: &str, path: &Path) -> Result<LoadedSou
         is_module,
         deps = imports.len(),
         js_bytes = js.len(),
+        has_map = map.is_some(),
         "source loaded"
     );
-    Ok(LoadedSource { js, imports, is_module })
+    Ok(LoadedSource { js, imports, is_module, map })
 }
 
 #[cfg(test)]

@@ -125,8 +125,7 @@ pub fn next_deadline() -> Option<Instant> {
 pub fn fire_due(
     cx: &mut JSContext,
     global: *mut JSObject,
-    source: &str,
-    filename: &str,
+    err: crate::runtime::ErrorSource<'_>,
 ) -> Result<usize, Error> {
     // 快照到期 id（回调里可能再注册/清除，不能持借用调 JS）
     let due: Vec<u32> = state::with_rooted(|s| {
@@ -172,7 +171,14 @@ pub fn fire_due(
         if !ok {
             // 清掉本轮回合的记账，进程即将退出
             state::with_plain(|p| p.cleared_during_fire.clear());
-            return Err(pending_exception_error(cx, global, source, filename));
+            return Err(match err {
+                crate::runtime::ErrorSource::Script { source, filename } => {
+                    pending_exception_error(cx, global, source, filename)
+                }
+                crate::runtime::ErrorSource::Module { url } => {
+                    crate::modules::module_error(cx, url)
+                }
+            });
         }
         fired += 1;
 

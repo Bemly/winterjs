@@ -384,3 +384,20 @@ fn phase2_data_url_import() {
     );
     assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "99\n");
 }
+
+#[test]
+fn phase2_ts_runtime_error_location() {
+    // TS 报错行号经 sourcemap 回映射到原文（转译行会漂移，断言原文行）
+    let (_dir, entry) = mod_dir(
+        &[(
+            "e.ts",
+            "interface Big {\n  a: string;\n}\nconst o: Big = { a: \"x\" };\nconsole.log(o.a);\nboom_ts();\n",
+        )],
+        "e.ts",
+    );
+    let out = winterjs().arg("run").arg(&entry).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("e.ts:6:1"), "stderr: {stderr}");
+    assert!(stderr.contains("boom_ts is not defined"), "stderr: {stderr}");
+}

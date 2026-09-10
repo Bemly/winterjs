@@ -113,60 +113,50 @@ async fn run_module(
         modules::load_dependencies(&mut realm, entry.get())?;
         // SAFETY: entry 为有效 rooted 记录；realm 内同步 link/evaluate
         if !unsafe { ModuleLink(&mut realm, entry.handle()) } {
-            return Err(pending_exception_error(&mut realm, global.get(), url.as_str(), url.as_str()));
+            return Err(modules::module_error(&mut realm, url.as_str()));
         }
         if !unsafe { ModuleEvaluate(&mut realm, entry.handle(), rval.handle_mut()) } {
-            return Err(pending_exception_error(&mut realm, global.get(), url.as_str(), url.as_str()));
+            return Err(modules::module_error(&mut realm, url.as_str()));
         }
-    }
-
-    event_loop(rt, global, url.as_str(), url.as_str()).await?;
-
-    // TLA：rval 为 promise 时挂专用捕获再排空一轮后收割（与通用捕获隔离）。
-    let entry_promise = {
-        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
-        rooted!(&in(&mut realm) let rv = rval.get());
-        if !rv.is_object() {
-            None
-        } else {
-            let obj = rv.to_object();
+        // 入口 promise 先挂专用捕获（事件循环前挂载，否则收尾会被当未处理 rejection 误报）。
+        if rval.is_object() {
+            let obj = rval.to_object();
             rooted!(&in(&mut realm) let obj_root: *mut JSObject = obj);
             // SAFETY: obj_root 为有效 rooted 对象
             if unsafe { mozjs::jsapi::IsPromiseObject(raw_handle(obj_root.as_ptr())) } {
-                Some(obj_root.get())
-            } else {
-                None
+                let (fulfilled, rejected) = state::entry_native_values();
+                rooted!(&in(&mut realm) let promise = obj_root.get());
+                rooted!(&in(&mut realm) let ful_obj: *mut JSObject = fulfilled.to_object());
+                rooted!(&in(&mut realm) let rej_obj: *mut JSObject = rejected.to_object());
+                // SAFETY: promise/回调均为有效 rooted 函数对象；指针直拷标记位置
+                unsafe {
+                    let _ = AddPromiseReactions(
+                        (&mut realm).raw_cx(),
+                        raw_handle(promise.as_ptr()),
+                        raw_handle(ful_obj.as_ptr()),
+                        raw_handle(rej_obj.as_ptr()),
+                    );
+                }
+                tracing::debug!(target: "winterjs::runtime", "entry promise capture attached");
             }
         }
-    };
-    if let Some(promise_obj) = entry_promise {
-        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
-        let (fulfilled, rejected) = state::entry_native_values();
-        rooted!(&in(&mut realm) let promise = promise_obj);
-        rooted!(&in(&mut realm) let ful_obj: *mut JSObject = fulfilled.to_object());
-        rooted!(&in(&mut realm) let rej_obj: *mut JSObject = rejected.to_object());
-        // SAFETY: promise/回调均为有效 rooted 函数对象；指针直拷标记位置
-        unsafe {
-            let _ = AddPromiseReactions(
-                (&mut realm).raw_cx(),
-                raw_handle(promise.as_ptr()),
-                raw_handle(ful_obj.as_ptr()),
-                raw_handle(rej_obj.as_ptr()),
-            );
-            RunJobs((&mut realm).raw_cx());
+    }
+
+    event_loop(rt, global, ErrorSource::Module { url: url.as_str() }).await?;
+
+    // 收割入口决议（事件循环的排空已驱动捕获回调）。
+    let (fulfillment, rejection) =
+        state::with_plain(|p| (p.entry_fulfillment.take(), p.entry_rejection.take()));
+    if let Some(reason) = rejection {
+        // 入口决议串自带位置（`file:line:col: message`）或为值串，直接上报
+        return Err(Error::Other(reason));
+    }
+    if let Some(s) = fulfillment {
+        // 脚本语义对齐：决议 undefined 不打印
+        if s != "undefined" {
+            println!("{s}");
         }
-        let (fulfillment, rejection) =
-            state::with_plain(|p| (p.entry_fulfillment.take(), p.entry_rejection.take()));
-        if let Some(reason) = rejection {
-            return Err(Error::Other(format!("unhandled rejection: {reason}")));
-        }
-        if let Some(s) = fulfillment {
-            // 脚本语义对齐：决议 undefined 不打印
-            if s != "undefined" {
-                println!("{s}");
-            }
-            return Ok(());
-        }
+        return Ok(());
     }
     print_completion(rt, global, rval.get())
 }
@@ -299,7 +289,7 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
 
     // 未包装成功的场景（含全部 Script 与无顶层 await 的 Eval）：
     // 完成值就是 rval（老行为）；仅 async IIFE 包装路径才读 __wjs_value。
-    event_loop(&mut rt, &global, source, filename).await?;
+    event_loop(&mut rt, &global, ErrorSource::Script { source, filename }).await?;
     let r = print_completion(&mut rt, &global, rval.get());
     // §4.8：跳过引擎/运行时析构（带 timer 的路径在 JS_DestroyContext 里 SEGV）。
     // CLI 进程即将退出，内存由 OS 回收；见 AGENTS §4.8。
@@ -359,7 +349,7 @@ async fn eval_syntax_fallback(
         // 同 run()；包装版行号偏移经 line_adjust 校正
         let res = evaluate_script(rt.cx(), global.handle(), &wrapped, wrapped_rval.handle_mut(), options);
         if res.is_ok() {
-            event_loop(rt, global, source, filename).await?;
+            event_loop(rt, global, ErrorSource::Script { source, filename }).await?;
             let r = extract_eval_result(rt, global, source, filename);
             // engine/rt 由外层 run() 统一 forget（见 §4.8）
             return r;
@@ -393,12 +383,18 @@ async fn eval_syntax_fallback(
     Err(Error::Other("eval fallback exhausted".into()))
 }
 
+/// 事件循环错误源：脚本（源码直给）或模块（按异常文件名查调试信息回映射）。
+#[derive(Clone, Copy)]
+pub(crate) enum ErrorSource<'a> {
+    Script { source: &'a str, filename: &'a str },
+    Module { url: &'a str },
+}
+
 /// 事件循环：RunJobs 排空微任务 → 睡到最近定时器 → 触发到期定时器，直到两者皆空。
 async fn event_loop(
     rt: &mut Runtime,
     global: &RootedGuard<'_, *mut JSObject>,
-    source: &str,
-    filename: &str,
+    err: ErrorSource<'_>,
 ) -> Result<(), Error> {
     let mut iterations: u64 = 0;
     let mut timers_fired: usize = 0;
@@ -420,7 +416,7 @@ async fn event_loop(
 
         {
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
-            timers_fired += timers::fire_due(&mut realm, global.get(), source, filename)?;
+            timers_fired += timers::fire_due(&mut realm, global.get(), err)?;
         }
     }
     tracing::info!(target: "winterjs::runtime", iterations, timers_fired, "event loop drained");

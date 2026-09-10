@@ -28,6 +28,7 @@ use crate::jsapi_glue::{raw_handle, report_error, value_to_string, wrap_cx};
 use crate::loader::fetch::fetch;
 use crate::loader::load_js;
 use crate::loader::resolve::resolve;
+use crate::loader::sourcemap::remap_location;
 use crate::state;
 
 // ── registry ─────────────────────────────────────────────────────────────
@@ -64,15 +65,17 @@ fn module_path(url: &Url) -> Result<PathBuf, Error> {
 }
 
 struct Prepared {
+    original: String,
     js: String,
     imports: Vec<String>,
+    map: Option<String>,
 }
 
 fn prepare(url: &Url) -> Result<Prepared, Error> {
     let fetched = fetch(url)?;
     let path = module_path(url)?;
     let loaded = load_js(&fetched.text, url.as_str(), &path)?;
-    Ok(Prepared { js: loaded.js, imports: loaded.imports })
+    Ok(Prepared { original: fetched.text, js: loaded.js, imports: loaded.imports, map: loaded.map })
 }
 
 // ── 编译（registry 命中直接返回；同时返回静态 imports 供子图遍历）─────────
@@ -103,13 +106,49 @@ fn compile_url(cx: &mut JSContext, url: &Url) -> Result<(*mut JSObject, Vec<Stri
     let prepared = prepare(url)?;
     let record = compile_source(cx, url.as_str(), &prepared.js)?;
     register_module(url.as_str().to_owned(), record);
-    tracing::debug!(target: "winterjs::modules", url = url.as_str(), deps = prepared.imports.len(), "module compiled");
-    Ok((record, prepared.imports))
+    let Prepared { original, js: _, imports, map } = prepared;
+    tracing::debug!(target: "winterjs::modules", url = url.as_str(), deps = imports.len(), "module compiled");
+    let debug = state::ModuleDebug { original, map };
+    state::with_plain(|p| {
+        p.module_debug.insert(url.as_str().to_owned(), debug);
+    });
+    Ok((record, imports))
 }
 
 /// 入口编译（给 `runtime` 用；imports 不需要）。
 pub fn compile_entry(cx: &mut JSContext, url: &Url) -> Result<*mut JSObject, Error> {
     compile_url(cx, url).map(|(r, _)| r)
+}
+
+// ── 报错回映射 ───────────────────────────────────────────────────────────
+
+/// 模块求值错误：pending 转定位错误，按异常文件名找回源文件，TS 经 sourcemap 回映射。
+/// 前置条件：刚失败且 pending exception 存在（link/evaluate/定时器回调失败点）。
+pub fn module_error(cx: &mut JSContext, fallback_url: &str) -> Error {
+    rooted!(&in(cx) let mut exc = UndefinedValue());
+    let Some(info) = mozjs::rust::error_info_from_exception_stack(cx, exc.handle_mut()) else {
+        return Error::Other("uncaught module exception (no stack info)".into());
+    };
+    let filename = if info.filename.is_empty() {
+        fallback_url.to_owned()
+    } else {
+        info.filename.clone()
+    };
+    let debug = state::with_plain(|p| p.module_debug.get(&filename).cloned());
+    match debug {
+        Some(d) => {
+            let (line, col) =
+                remap_location(d.map.as_deref(), info.line.max(1), info.col.max(1));
+            Error::script(&filename, &d.original, line, col, info.message)
+        }
+        None => Error::script(
+            &filename,
+            fallback_url,
+            info.line.max(1),
+            info.col.max(1),
+            info.message,
+        ),
+    }
 }
 
 // ── hooks ────────────────────────────────────────────────────────────────

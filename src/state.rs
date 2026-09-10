@@ -10,8 +10,10 @@ use mozjs::context::JSContext;
 use mozjs::gc::{RootedTraceableBox, Traceable};
 use mozjs::jsapi::{Heap, JS_GetFunctionObject, JS_NewFunction, JSObject, JSTracer};
 use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
+use mozjs::rooted;
 
-use crate::jsapi_glue::{Frame, value_to_string};
+use crate::jsapi_glue::{Frame, get_prop_string, get_prop_u32, value_to_string};
+use crate::loader::sourcemap::remap_location;
 
 /// 一个已注册的定时器。`at` 为触发时刻（interval 为上次触发 + 间隔，漂移校正）。
 pub struct TimerEntry {
@@ -41,6 +43,15 @@ unsafe impl Traceable for ModuleEntry {
     unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
         self.record.trace(trc);
     }}
+}
+
+/// 模块调试信息（纯 Rust，无 GC 指针）：报错时按文件名找回原始源码回映射。
+#[derive(Default, Clone)]
+pub struct ModuleDebug {
+    /// 转译前源码（.ts 原文；.js 即求值源码本身）。
+    pub original: String,
+    /// sourcemap JSON（TS 转译产物；JS 源为 None）。
+    pub map: Option<String>,
 }
 
 /// 全部跨 GC 存活的 JS 值。
@@ -84,6 +95,8 @@ pub struct PlainState {
     /// 模块入口 TLA 决议（`entry_*_native` 记录，`runtime` 收割，与通用捕获隔离）。
     pub entry_fulfillment: Option<String>,
     pub entry_rejection: Option<String>,
+    /// 模块调试信息（URL → 原始源码/转译产物/sourcemap；报错回映射用）。
+    pub module_debug: HashMap<String, ModuleDebug>,
     /// 模块加载 hook 暂存的友好错误（hook 返回 false，中断加载后由外层取出上报）。
     pub module_load_error: Option<crate::error::Error>,
     /// eval 包装（async IIFE）引入的行偏移，报错行号统一校正。
@@ -275,7 +288,8 @@ unsafe extern "C" fn entry_fulfilled_native(
     true
 }}
 
-/// SAFETY: 同上；arg0 为 rejection reason。
+/// SAFETY: 同上；arg0 为 rejection reason。Error 对象提 file/line/col（TS 回映射），
+/// 非对象值退化 ToString（无位置）。
 unsafe extern "C" fn entry_rejected_native(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -285,11 +299,32 @@ unsafe extern "C" fn entry_rejected_native(
     let mut cx = JSContext::from_ptr(std::ptr::NonNull::new_unchecked(cx_raw));
     let frame = Frame::from_raw(vp, argc);
     let reason = if argc > 0 { frame.arg(0) } else { UndefinedValue() };
-    let s = value_to_string(&mut cx, reason);
+    // 先算串再进 with_plain：entry_reason_string 内部查 module_debug 也走 with_plain，嵌套即 panic
+    let s = entry_reason_string(&mut cx, reason);
     with_plain(|p| p.entry_rejection = Some(s));
     frame.set_rval(UndefinedValue());
     true
 }}
+
+/// rejection reason → `file:line:col: message`（无位置信息时退化为值串）。
+fn entry_reason_string(cx: &mut JSContext, reason: JSVal) -> String {
+    if !reason.is_object() {
+        return value_to_string(cx, reason);
+    }
+    let obj = reason.to_object();
+    rooted!(&in(cx) let obj_root: *mut JSObject = obj);
+    let message =
+        get_prop_string(cx, obj_root.get(), c"message").unwrap_or_else(|| value_to_string(cx, reason));
+    let file = get_prop_string(cx, obj_root.get(), c"fileName").unwrap_or_default();
+    if file.is_empty() {
+        return message;
+    }
+    let line = get_prop_u32(cx, obj_root.get(), c"lineNumber").unwrap_or(1).max(1);
+    let col = get_prop_u32(cx, obj_root.get(), c"columnNumber").unwrap_or(1).max(1);
+    let map = with_plain(|p| p.module_debug.get(&file).and_then(|d| d.map.clone()));
+    let (line, col) = remap_location(map.as_deref(), line, col);
+    format!("{file}:{line}:{col}: {message}")
+}
 
 /// console 计数等纯 Rust 状态访问（builtins 用）。
 pub fn console_state<R>(f: impl FnOnce(&mut PlainState) -> R) -> R {

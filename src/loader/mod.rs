@@ -4,6 +4,7 @@
 pub mod cache;
 pub mod fetch;
 pub mod resolve;
+pub mod sourcemap;
 pub mod transpile;
 
 pub use transpile::load_js;

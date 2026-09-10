@@ -5,7 +5,7 @@ use mozjs::conversions::ToJSValConvertible as _;
 use mozjs::jsapi::JSObject;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
-use mozjs::typedarray::TypedArray;
+use mozjs::typedarray::{CreateWith, TypedArray, Uint8};
 
 use crate::jsapi_glue::{report_error, wrap_cx, Frame};
 use crate::jsapi_glue::value_to_string;
@@ -105,5 +105,60 @@ pub unsafe extern "C" fn random_uuid(
     rooted!(&in(cx) let mut v = UndefinedValue());
     s.to_jsval(&mut cx, v.handle_mut());
     frame.set_rval(v.get());
+    true
+}
+
+/// `__wjs_subtle_digest(alg, view)` → Uint8Array（SHA-1/256/384/512；`sha1`/`sha2` 轮子）。
+/// prelude 包一层 async 即得规范的 Promise 返回（计算本身同步，无需事件循环改动）。
+pub unsafe extern "C" fn subtle_digest(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: digest requires an algorithm and data");
+        return false;
+    }
+    let alg = value_to_string(&mut cx, frame.arg(0));
+    let data = frame.arg(1);
+    let bytes = match super::encoding::view_bytes(&mut cx, data, "digest data") {
+        Some(b) => b,
+        None => return false,
+    };
+    let out: Vec<u8> = match alg.trim().to_ascii_lowercase().as_str() {
+        "sha-1" => {
+            use sha1::Digest as _;
+            sha1::Sha1::digest(&bytes).to_vec()
+        }
+        "sha-256" => {
+            use sha2::Digest as _;
+            sha2::Sha256::digest(&bytes).to_vec()
+        }
+        "sha-384" => {
+            use sha2::Digest as _;
+            sha2::Sha384::digest(&bytes).to_vec()
+        }
+        "sha-512" => {
+            use sha2::Digest as _;
+            sha2::Sha512::digest(&bytes).to_vec()
+        }
+        other => {
+            report_error(&mut cx, &format!("NotSupportedError: unsupported digest algorithm '{other}'"));
+            return false;
+        }
+    };
+    rooted!(&in(cx) let mut obj: *mut JSObject = std::ptr::null_mut());
+    // SAFETY: realm 内创建；obj 为 rooted 出参；out 存活到调用返回（§6 审计：边界调用）
+    let ok = unsafe {
+        TypedArray::<Uint8, *mut JSObject>::create(&mut cx, CreateWith::Slice(&out), obj.handle_mut())
+    };
+    if ok.is_err() || obj.is_null() {
+        report_error(&mut cx, "RangeError: cannot allocate digest output");
+        return false;
+    }
+    frame.set_rval(mozjs::jsval::ObjectValue(obj.get()));
     true
 }

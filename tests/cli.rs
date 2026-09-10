@@ -614,3 +614,25 @@ fn phase3_abort_signal_pre_abort() {
     assert_eq!(out, "abort-ok
 ", "abort: {out}");
 }
+
+#[test]
+fn phase3_subtle_digest_vectors() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const hex = async (a, d) => [...new Uint8Array(await crypto.subtle.digest(a, new TextEncoder().encode(d)))].map((b) => b.toString(16).padStart(2, "0")).join(""); console.log(await hex("SHA-256", "abc")); console.log(await hex("SHA-1", "abc"));"#]));
+    assert_eq!(
+        out,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\na9993e364706816aba3e25717850c26c9cd0d89d\n",
+        "digest: {out}"
+    );
+}
+
+#[test]
+fn phase3_subtle_digest_unsupported() {
+    let out = winterjs()
+        .args(["eval", r#"await crypto.subtle.digest("MD5", new Uint8Array(1))"#])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("NotSupportedError"), "stderr: {stderr}");
+}

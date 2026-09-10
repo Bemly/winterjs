@@ -204,6 +204,18 @@ globalThis.TextDecoder = class TextDecoder {
 globalThis.crypto = {
   getRandomValues(view) { __wjs_fill_random(view); return view; },
   randomUUID() { return __wjs_random_uuid(); },
+  subtle: {
+    async digest(algorithm, data) {
+      const name = typeof algorithm === "string" ? algorithm : String(algorithm?.name ?? algorithm);
+      let view = data;
+      if (view instanceof ArrayBuffer) view = new Uint8Array(view);
+      else if (ArrayBuffer.isView(view) && !(view instanceof Uint8Array)) {
+        view = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+      }
+      const out = __wjs_subtle_digest(name, view);
+      return out.buffer;
+    },
+  },
 };
 // ---- Phase 3b: Headers / Request / Response / fetch ----
 const __wjs_abortState = new WeakMap();
@@ -441,6 +453,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_td_decode", Some(encoding::td_decode), 4),
             ("__wjs_fill_random", Some(crypto::fill_random), 1),
             ("__wjs_random_uuid", Some(crypto::random_uuid), 0),
+            ("__wjs_subtle_digest", Some(crypto::subtle_digest), 2),
             ("__wjs_fetch_start", Some(fetch::fetch_start), 6),
         ];
         for (name, native, nargs) in web {

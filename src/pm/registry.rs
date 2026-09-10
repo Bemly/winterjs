@@ -37,7 +37,7 @@ pub struct Dist {
     pub shasum: Option<String>,
 }
 
-fn client() -> &'static reqwest::Client {
+pub(crate) fn client() -> &'static reqwest::Client {
     static C: OnceLock<reqwest::Client> = OnceLock::new();
     C.get_or_init(|| {
         // TLS provider 与 fetch 同源（顶层 ring；reqwest 侧 no-provider，见 §2 门控）。

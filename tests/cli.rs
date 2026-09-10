@@ -1396,3 +1396,89 @@ fn phase5_install_errors() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no version"), "stderr: {stderr}");
 }
+
+/// 现场造 tgz（`package/` 包裹；`files` 为包内路径→内容）。
+fn make_tgz(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut tar_data = Vec::new();
+    {
+        let mut ar = tar::Builder::new(&mut tar_data);
+        for (name, data) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(format!("package/{name}")).unwrap();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            ar.append(&header, *data).unwrap();
+        }
+        ar.finish().unwrap();
+    }
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write as _;
+    let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(&tar_data).unwrap();
+    enc.finish().unwrap()
+}
+
+#[test]
+fn phase5_install_end_to_end_stub() {
+    // 造包→装包→require 可跑→lockfile：真装闭环（tarball 经同一 stub 下发）。
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let tgz = make_tgz(&[
+        ("package.json", br#"{"name":"tiny-pkg","version":"1.0.0","main":"index.js","bin":{"tiny-bin":"cli.js"}}"#),
+        ("index.js", b"exports.add = (a, b) => a + b;\n"),
+        ("cli.js", b"console.log(\"bin-ok\");\n"),
+    ]);
+    let integrity = format!("sha512-{}", base64::engine::general_purpose::STANDARD.encode(sha2::Sha512::digest(&tgz)));
+    let tgz_holder = std::sync::Arc::new(tgz);
+    let int_holder = std::sync::Arc::new(integrity);
+    let port = serve_http(2, move |head, _body| {
+        let line = head.lines().next().unwrap_or("").to_owned();
+        let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+        let port = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Host:").or_else(|| l.strip_prefix("host:")))
+            .and_then(|v| v.trim().split(':').nth(1))
+            .unwrap_or("")
+            .to_owned();
+        if path == "/tiny-pkg" {
+            let body = serde_json::json!({
+                "name": "tiny-pkg",
+                "dist-tags": { "latest": "1.0.0" },
+                "versions": {
+                    "1.0.0": {
+                        "dist": {
+                            "tarball": format!("http://127.0.0.1:{port}/tiny-pkg/-/tiny-pkg-1.0.0.tgz"),
+                            "integrity": *int_holder,
+                        },
+                        "dependencies": {},
+                    },
+                },
+            })
+            .to_string();
+            return (200, vec![("content-type", "application/json".into())], body.into_bytes());
+        }
+        if path == "/tiny-pkg/-/tiny-pkg-1.0.0.tgz" {
+            return (200, vec![("content-type", "application/octet-stream".into())], (*tgz_holder).clone());
+        }
+        (404, vec![], b"nope".to_vec())
+    });
+    let reg = format!("http://127.0.0.1:{port}");
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = winterjs().arg("install").arg("tiny-pkg").arg("--registry").arg(&reg).current_dir(dir.path()).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("added tiny-pkg@1.0.0"));
+    // 落地断言：包文件 + bin 链接 + lockfile。
+    assert!(dir.path().join("node_modules/tiny-pkg/package.json").is_file());
+    assert!(dir.path().join("node_modules/.bin/tiny-bin").exists());
+    let lock = std::fs::read_to_string(dir.path().join("winterjs-lock.json")).unwrap();
+    assert!(lock.contains("\"tiny-pkg\"") && lock.contains("1.0.0") && lock.contains("sha512-"), "lock: {lock}");
+    // 装完即跑（裸导入走 node_modules 解析）。
+    let app = dir.child("app.cjs");
+    app.write_str("const t = require(\"tiny-pkg\");\nconsole.log(t.add(19, 23));\n").unwrap();
+    let out = winterjs().arg("run").arg(app.path()).current_dir(dir.path()).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "42\n");
+    dir.close().unwrap();
+}

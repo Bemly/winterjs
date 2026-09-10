@@ -1,6 +1,7 @@
 //! 包管理（plan Phase 5）：spec 解析 + registry 拉取 + 版本求解。
 //! 切片 a 只求解不落地（`install --dry-run`）；网络测试走本地 stub registry。
 
+pub mod install;
 pub mod registry;
 pub mod resolve;
 pub mod spec;
@@ -33,5 +34,6 @@ pub async fn install(packages: &[String], dry_run: bool, registry: Option<&str>)
         }
         return Ok(());
     }
-    Err(Error::Other("install without --dry-run needs slice 5b (unpack)".into()))
+    let root = std::env::current_dir().map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+    install::install_tree(&root, &tree).await
 }

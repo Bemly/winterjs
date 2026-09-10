@@ -197,8 +197,11 @@
   semver 取最大 + 垃圾版跳过 + BFS 传递闭包）+ `install --dry-run` 打印解树
   （本地 stub registry 验收，不碰外网）。附带：`man` 页计数 6→7。
   `tests/cli.rs` 2 例 + 模块单测 4 例；`cargo test` 91+14 全绿，0 警告。
-- [ ] 切片 b：tarball 下载 + ssri 校验 + 解包进 `node_modules` + bin 链接 +
-  lockfile 读写 + 真装（本地 stub 验收）。
+- [x] 切片 b（2026-09-10）：tarball 下载 + ssri/shasum 校验 + 暂存解包
+  （`package/` 剥离 + 越界拒绝 + 父目录自建）→ `node_modules` 落地 → bin 链接
+  （unix symlink + 可执行位，win 退拷贝）→ lockfile 读写 + 真装闭环
+  （stub 下发包，装完 `require` 可跑）。`tests/cli.rs` 1 例；
+  `cargo test` 92+14 全绿，0 警告。
 - [ ] 切片 c：缓存（blake3 布局 + 二次命中）+ lifecycle 脚本 + 中断续传。
 - [ ] 切片 d（顺延）：git 依赖 + publish/login + upgrade + 镜像/npmrc。
 

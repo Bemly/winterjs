@@ -206,19 +206,29 @@ pub async fn run(source: &str, filename: &str, mode: Mode, extra_args: &[String]
 }
 
 /// 内层（引擎生命周期；`forget_engine` 在各返回点执行，见 §4.8）。
-async fn run_inner(
-    source: &str,
-    filename: &str,
-    mode: Mode,
-    extra_args: &[String],
-) -> Result<(), Error> {
-    tracing::info!(target: "winterjs::runtime", filename, source_len = source.len(), ?mode, "run start");
+/// 初始化好的会话（引擎 + realm + 内建 + 通道接收端）。
+/// `global_ptr` 为裸指针：调用方必须在任何 JSAPI 调用前立即重 root
+/// （`rooted!`），中间不得有 await/JSAPI（无 GC 间隙），见调用点 SAFETY。
+/// `state_guard` 必须与 `rt` 同寿（TLS 状态先于引擎销毁，见 `state`）。
+struct SessionInit {
+    rt: Runtime,
+    engine: JSEngine,
+    global_ptr: *mut JSObject,
+    state_guard: state::StateGuard,
+    fetch_rx: tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchMsg>,
+    ws_rx: tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsEvent>,
+    watch_rx: tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::fs::WatchEvent>,
+    child_rx: tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::child::ChildEvent>,
+}
+
+/// 会话初始化（引擎/realm/内建/prelude/通道；`run` 与 `repl` 共用）。
+/// 同步函数：内部无 await（prelude 求值全同步），返回即交接，无 GC 间隙。
+fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
     // JS engine handle must outlive every Runtime.
     let engine = JSEngine::init().map_err(|_| Error::Other("failed to init JS engine".into()))?;
     let mut rt = Runtime::new(engine.handle());
-    let _cx = rt.cx();
     // TLS 状态必须先于引擎销毁（见 state::shutdown 文档）
-    let _state_guard = state::StateGuard;
+    let state_guard = state::StateGuard;
     modules::install_hooks(&rt);
 
     // SAFETY: 引擎初始化后、首段脚本前启用内部 job queue（JS shell 同款），
@@ -233,7 +243,6 @@ async fn run_inner(
             &*options,
         )
     });
-    rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
 
     // §4.1：进入 global realm 后再做 JSAPI 初始化（内建、prelude、rejection 追踪器）
     {
@@ -244,17 +253,6 @@ async fn run_inner(
         state::init(&mut realm);
         state::set_global(global.get());
         state::set_line_adjust(0);
-        // process.argv（prelude 求值前就绪；execPath 失败回退名）。
-        let exe = std::env::current_exe()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "winterjs".into());
-        let argv: Vec<String> = match mode {
-            Mode::Script => std::iter::once(exe)
-                .chain(std::iter::once(filename.to_owned()))
-                .chain(extra_args.iter().cloned())
-                .collect(),
-            Mode::Eval => std::iter::once(exe).chain(extra_args.iter().cloned()).collect(),
-        };
         state::set_argv(argv);
         builtins::define_all(&mut realm, global.get())?;
 
@@ -337,16 +335,55 @@ async fn run_inner(
             });
         }
     }
+    let global_ptr = global.get();
 
-    // fetch/ws 驱动端点：发送端进 TLS，接收端由本次 run 持有并传给事件循环
-    let (fetch_tx, mut fetch_rx) = tokio::sync::mpsc::unbounded_channel();
+    // fetch/ws 驱动端点：发送端进 TLS，接收端由调用方持有并传给事件循环
+    let (fetch_tx, fetch_rx) = tokio::sync::mpsc::unbounded_channel();
     state::with_plain(|p| p.fetch_tx = Some(fetch_tx));
-    let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (ws_tx, ws_rx) = tokio::sync::mpsc::unbounded_channel();
     state::with_plain(|p| p.ws_tx = Some(ws_tx));
-    let (watch_tx, mut watch_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (watch_tx, watch_rx) = tokio::sync::mpsc::unbounded_channel();
     state::with_plain(|p| p.watch_tx = Some(watch_tx));
-    let (child_tx, mut child_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (child_tx, child_rx) = tokio::sync::mpsc::unbounded_channel();
     state::with_plain(|p| p.child_tx = Some(child_tx));
+
+    Ok(SessionInit { rt, engine, global_ptr, state_guard, fetch_rx, ws_rx, watch_rx, child_rx })
+}
+
+async fn run_inner(
+    source: &str,
+    filename: &str,
+    mode: Mode,
+    extra_args: &[String],
+) -> Result<(), Error> {
+    tracing::info!(target: "winterjs::runtime", filename, source_len = source.len(), ?mode, "run start");
+    // process.argv（prelude 求值前就绪；execPath 失败回退名）。
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "winterjs".into());
+    let argv: Vec<String> = match mode {
+        Mode::Script => std::iter::once(exe)
+            .chain(std::iter::once(filename.to_owned()))
+            .chain(extra_args.iter().cloned())
+            .collect(),
+        Mode::Eval => std::iter::once(exe).chain(extra_args.iter().cloned()).collect(),
+    };
+    let init = init_session(argv)?;
+    // 声明顺序即 drop 逆序：`engine` 必须先于 `rt` 声明，否则报错早退
+    // （`?` 跳过 `forget_engine`）时 engine 先 drop 而 rt 仍持有 handle，
+    // `JSEngine::drop` 的 outstanding 断言必炸（实测：unhandled rejection）。
+    let engine = init.engine;
+    let mut rt = init.rt;
+    let _state_guard = init.state_guard;
+    // SAFETY: `init_session` 返回到此重 root 之间无任何 JSAPI 调用（无 GC 间隙），
+    // 裸指针回 rooted guard 安全；此后 `global` 与 `rt` 同作用域存活。
+    rooted!(&in(rt.cx()) let global = init.global_ptr);
+    let mut fetch_rx = init.fetch_rx;
+    let mut ws_rx = init.ws_rx;
+    let mut watch_rx = init.watch_rx;
+    let mut child_rx = init.child_rx;
+
+    rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
 
     // 模块嗅探（仅 Script；Eval 保持经典语义，import 即 SyntaxError）。
     // 解析失败 → 回落经典（经典求值会给出它自己的报错）。
@@ -554,6 +591,80 @@ pub(crate) enum ErrorSource<'a> {
     Module { url: &'a str },
 }
 
+/// 单轮推进统计（`pump_once` 返回；调用方累加记数）。
+#[derive(Default)]
+struct PumpStats {
+    /// `process.exit` 已调（调用方收尾退出，见 §4.18 检查点顺序）。
+    exited: bool,
+    /// 本轮结算过（§4.18：结算后必须再跑一轮 RunJobs，不可直接退）。
+    progressed: bool,
+    timers: usize,
+    fetch: usize,
+    ws: usize,
+    watch: usize,
+    child: usize,
+}
+
+/// 事件循环单轮推进：RunJobs 排空 → exit 检查 → 同步结算 → 到期 timer 触发。
+/// park/等待由调用方做（`event_loop` 跑到 idle，`repl` 回 select 等输入）。
+async fn pump_once(
+    rt: &mut Runtime,
+    global: &RootedGuard<'_, *mut JSObject>,
+    err: ErrorSource<'_>,
+    fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchMsg>,
+    ws_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsEvent>,
+    watch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::fs::WatchEvent>,
+    child_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::child::ChildEvent>,
+) -> Result<PumpStats, Error> {
+    use crate::builtins::{fetch, node::child as node_child, node::fs as node_fs, ws};
+    let mut st = PumpStats::default();
+    {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        // SAFETY: realm 内排空内部 job queue
+        unsafe { RunJobs((&mut realm).raw_cx()) };
+    }
+    // process.exit() 被 catch 后的兜底：检查点照退（`run` 外层转 Exit）。
+    // 注意顺序：必须在 RunJobs 之后——抛错的 job 会截断当轮排空，
+    // 反应 job 留到下一轮；检查放排空前即饿死它们（实测：模块顶层 exit 必发）。
+    if state::with_plain(|p| p.process_exited.is_some()) {
+        st.exited = true;
+        return Ok(st);
+    }
+
+    // 已完成的 fetch/ws 先结算（不阻塞）。结算会同步决议 promise（排队 microtask），
+    // 故本轮结算过就不能直接退——必须再跑一轮 RunJobs 排空（§4.18）。
+    while let Ok(msg) = fetch_rx.try_recv() {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        fetch::settle(&mut realm, global.get(), msg, err)?;
+        st.fetch += 1;
+        st.progressed = true;
+    }
+    while let Ok(ev) = ws_rx.try_recv() {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        ws::dispatch(&mut realm, global.get(), ev, err)?;
+        st.ws += 1;
+        st.progressed = true;
+    }
+    while let Ok(ev) = watch_rx.try_recv() {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        node_fs::dispatch(&mut realm, global.get(), ev, err)?;
+        st.watch += 1;
+        st.progressed = true;
+    }
+    while let Ok(ev) = child_rx.try_recv() {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        node_child::dispatch(&mut realm, global.get(), ev, err)?;
+        st.child += 1;
+        st.progressed = true;
+    }
+
+    {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        st.timers = timers::fire_due(&mut realm, global.get(), err)?;
+    }
+    Ok(st)
+}
+
 /// 事件循环：RunJobs 排空微任务 → 等（最近定时器 / fetch / ws 先到者）→
 /// 结算完成项 → 触发到期定时器，直到定时器、未决 fetch、存活 ws 皆空。
 async fn event_loop(
@@ -601,38 +712,20 @@ async fn event_loop(
         }};
     }
     loop {
-        {
-            let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
-            // SAFETY: realm 内排空内部 job queue
-            unsafe { RunJobs((&mut realm).raw_cx()) };
-        }
-        // process.exit() 被 catch 后的兜底：检查点照退（`run` 外层转 Exit）。
-        // 注意顺序：必须在 RunJobs 之后——抛错的 job 会截断当轮排空，
-        // 反应 job 留到下一轮；检查放排空前即饿死它们（实测：模块顶层 exit 必发）。
-        if state::with_plain(|p| p.process_exited.is_some()) {
+        // 单轮推进与 `repl` 共用（§4.18 检查点顺序在内保持）。
+        let st = pump_once(rt, global, err, fetch_rx, ws_rx, watch_rx, child_rx).await?;
+        if st.exited {
             return Ok(());
         }
         iterations += 1;
-
-        // 已完成的 fetch/ws 先结算（不阻塞）。结算会同步决议 promise（排队 microtask），
-        // 故本轮结算过就不能直接退——必须再跑一轮 RunJobs 排空（§4.18）。
-        let mut progressed = false;
-        while let Ok(msg) = fetch_rx.try_recv() {
-            settle_fetch!(msg);
-            progressed = true;
-        }
-        while let Ok(ev) = ws_rx.try_recv() {
-            settle_ws!(ev);
-            progressed = true;
-        }
-        while let Ok(ev) = watch_rx.try_recv() {
-            settle_watch!(ev);
-            progressed = true;
-        }
-        while let Ok(ev) = child_rx.try_recv() {
-            settle_child!(ev);
-            progressed = true;
-        }
+        timers_fired += st.timers;
+        fetches_settled += st.fetch;
+        ws_settled += st.ws;
+        watches_settled += st.watch;
+        children_settled += st.child;
+        // timer 触发同样排队 microtask（回调内决议 promise），必须算 progress，
+        // 否则 idle 检查提前退出、反应 job 被丢（§4.18 同类，TLA 必挂）。
+        let progressed = st.progressed || st.timers > 0;
 
         let timers_empty = timers::next_deadline().is_none();
         let idle = timers_empty
@@ -700,15 +793,18 @@ async fn event_loop(
                 }
             }
         }
-
-        {
-            let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
-            timers_fired += timers::fire_due(&mut realm, global.get(), err)?;
-        }
     }
     tracing::info!(target: "winterjs::runtime", iterations, timers_fired, fetches_settled, ws_settled, watches_settled, children_settled, "event loop drained");
 
-    // 未处理 rejection 收尾上报（Node 式 fatal）：挂捕获 reactions → 再排空一轮
+    report_unhandled_rejections(rt, global)
+}
+
+/// 未处理 rejection 收尾上报（Node 式 fatal）：挂捕获 reactions → 再排空一轮。
+/// `event_loop` 尾与 `repl` 每轮共用；REPL 侧出错只打印不退出（调用方定）。
+fn report_unhandled_rejections(
+    rt: &mut Runtime,
+    global: &RootedGuard<'_, *mut JSObject>,
+) -> Result<(), Error> {
     let unhandled = state::with_rooted(|s| {
         s.unhandled
             .iter()
@@ -743,6 +839,148 @@ async fn event_loop(
             )));
         }
     }
+    Ok(())
+}
+
+/// REPL 单步结果（求值永不抛错：错误打印后继续；只有 `process.exit` 跳出）。
+enum ReplStep {
+    Done,
+    Exited(i32),
+}
+
+/// REPL 单行求值：经典脚本求值 + 完成值打印（顶层 await 暂不支持，见内注）。
+async fn repl_eval(
+    rt: &mut Runtime,
+    global: &RootedGuard<'_, *mut JSObject>,
+    line: &str,
+) -> ReplStep {
+    let exited = || state::with_plain(|p| p.process_exited);
+    let c_filename = CString::new("repl.js").expect("no NUL");
+    rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
+    let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
+    let res = evaluate_script(rt.cx(), global.handle(), line, rval.handle_mut(), options);
+    if res.is_err() {
+        // exit 优先于一切错误（哨兵被用户 catch 也照退，见 `run`）。
+        if let Some(code) = exited() {
+            return ReplStep::Exited(code);
+        }
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        rooted!(&in(&mut realm) let mut exc = UndefinedValue());
+        // SAFETY: realm 内读取 pending exception（消费异常值）
+        match error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
+            Some(info) => {
+                eprintln!("repl.js:{}:{}: {}", info.line.max(1), info.col, info.message);
+                if exc_name_is(&mut realm, exc.get(), "SyntaxError") && line.contains("await") {
+                    eprintln!("hint: top-level await is not supported in repl yet (wrap in an async function)");
+                }
+            }
+            None => eprintln!("uncaught JS exception (no stack info)"),
+        }
+        return ReplStep::Done;
+    }
+    if let Some(code) = exited() {
+        return ReplStep::Exited(code);
+    }
+    if let Err(e) = print_completion(rt, global, rval.get()) {
+        if let Some(code) = exited() {
+            return ReplStep::Exited(code);
+        }
+        eprintln!("{e}");
+    }
+    ReplStep::Done
+}
+
+/// 交互式 REPL（plan Phase 7-e3）：持久会话（`init_session`）+ 行编辑/历史/
+ /// 高亮/括号续行（`repl` 模块，readline 独占线程经 channel 投递）+ 事件泵。
+/// 输入等待用 5ms 短轮询（不 park）：timers/fetch 照常推进且永不饿死输入；
+/// timer 回调抛错打印后继续；stdin 非 TTY 时退化逐行读（照跑，无 ANSI）。
+pub async fn repl() -> Result<(), Error> {
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "winterjs".into());
+    let init = init_session(vec![exe])?;
+    // 声明顺序即 drop 逆序（`engine` 先，见 `run_inner` 处注释，§4.22）。
+    let engine = init.engine;
+    let mut rt = init.rt;
+    let _state_guard = init.state_guard;
+    // SAFETY: 返回到此重 root 之间无 JSAPI 调用（无 GC 间隙）。
+    rooted!(&in(rt.cx()) let global = init.global_ptr);
+    let mut fetch_rx = init.fetch_rx;
+    let mut ws_rx = init.ws_rx;
+    let mut watch_rx = init.watch_rx;
+    let mut child_rx = init.child_rx;
+
+    let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<Option<String>>();
+    let hist = crate::repl::history_path();
+    // readline 是阻塞 IO，独占线程跑（`Editor` 不出线程，无跨线程共享）。
+    std::thread::spawn(move || crate::repl::readline_loop(line_tx, hist));
+    println!("winterjs repl (type .exit to quit)");
+    // stdout 管道时块缓冲：banner 立即刷出，否则与 stderr 行错序（实测）。
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
+    tracing::info!(target: "winterjs::runtime", "repl start");
+
+    let err_src = ErrorSource::Script { source: "", filename: "repl.js" };
+    loop {
+        let st = match pump_once(
+            &mut rt, &global, err_src, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx,
+        )
+        .await
+        {
+            Ok(st) => st,
+            Err(e) => {
+                if let Some(code) = state::with_plain(|p| p.process_exited) {
+                    forget_engine(rt, engine);
+                    return Err(Error::Exit(code));
+                }
+                eprintln!("{e}");
+                continue;
+            }
+        };
+        if st.exited {
+            let code = state::with_plain(|p| p.process_exited).unwrap_or(0);
+            forget_engine(rt, engine);
+            return Err(Error::Exit(code));
+        }
+        // 每轮收割 unhandled rejection（Node 式打印，继续不退出）。
+        if let Err(e) = report_unhandled_rejections(&mut rt, &global) {
+            eprintln!("{e}");
+        }
+        tokio::select! {
+            line = line_rx.recv() => {
+                match line {
+                    // EOF（Ctrl-D）或 readline 线程结束。
+                    None | Some(None) => break,
+                    Some(Some(text)) => {
+                        if text.trim().is_empty() {
+                            continue;
+                        }
+                        match crate::repl::dot_command(&text) {
+                            crate::repl::Dot::Exit => break,
+                            crate::repl::Dot::Help => {
+                                println!(".exit  quit the repl");
+                                println!(".help  show this help");
+                                continue;
+                            }
+                            crate::repl::Dot::Code => {}
+                        }
+                        match repl_eval(&mut rt, &global, &text).await {
+                            ReplStep::Done => {}
+                            ReplStep::Exited(code) => {
+                                forget_engine(rt, engine);
+                                return Err(Error::Exit(code));
+                            }
+                        }
+                    }
+                }
+            }
+            // 短轮询：只做唤醒，工作全在顶部的 pump（channel 无 peek，
+            // select 直收会吞掉 fetch/ws 消息，见设计注记）。
+            _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
+        }
+    }
+    tracing::info!(target: "winterjs::runtime", "repl done");
+    forget_engine(rt, engine);
     Ok(())
 }
 
@@ -851,6 +1089,9 @@ fn print_completion(
         Ok(ConversionResult::Success(s)) => println!("{s}"),
         _ => println!("<non-stringifiable result>"),
     }
+    // 同上：REPL 管道下完成值行立即刷出（`run`/`eval` 单次进程无感，顺手）。
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
     Ok(())
 }
 

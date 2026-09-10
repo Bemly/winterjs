@@ -306,7 +306,15 @@
   `askama` 内联三模板：package.json + index.js + hello.test.js，init 后
   `test` 即绿闭环；已存在不覆盖整体报错；缺名取目录名；非 TTY 缺 `--yes`
   即错）。CLI 新增 `init`（man 12→13）。模块单测 2 例 + 黑盒 4 例
-  （闭环/坏名/冲突/非TTY）；`cargo test` 44+131 全绿，0 警告，冒烟 5/5。
+  （闭环/坏名/冲突/非TTY）；  `cargo test` 44+131 全绿，0 警告，冒烟 5/5。
+- [x] 切片 e3（2026-09-10）：`winterjs repl`（`src/repl.rs` + `runtime.rs::repl`：
+  `init_session/pump_once` 抽共用（`run` 零回归 44+131），持久会话 +
+  rustyline 行编辑/历史/括号续行 + 手写高亮（oxc Lexer 私有，见依赖附记）+
+  `.exit/.help` + 5ms 短轮询事件泵（channel 无 peek，select 直收会吞消息）+
+  stdout 刷序修复）。顶层 await 暂报 SyntaxError 指引（已知局限）。
+  TTY 实测：续行/高亮 ANSI/42；非 TTY：无 ANSI。CLI 新增 `repl`
+  （man 13→14）。模块单测 3 例 + 黑盒 4 例（持久/报错恢复/无 ANSI/语法续行）；
+  `cargo test` 47+135 全绿，0 警告，冒烟 5/5。
 
 ## Phase 8 — polish（lint/权限/远程缓存/上报）
 

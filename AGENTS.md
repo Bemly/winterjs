@@ -256,6 +256,17 @@ cargo build
 - 修法：补回 append；此后同一文件的多次变更一律串行（不同文件可并行）。
 - 推广为铁律：工具并行只用于无依赖的不同文件；同文件操作串行排队。
 
+### 4.22 `rt`/`engine` 声明顺序即 drop 逆序，搬代码别搬反（2026-09-10）
+
+- 症状：抽 `init_session` 后 `Promise.reject(...)` 报
+  `There are outstanding JS engine handles` panic（exit=101），而非 exit=1 可读错。
+- 根因：重构把 `let mut rt` 写到了 `let engine` 前面，`?` 早退（跳过
+  `forget_engine`）时 engine 先 drop，rt 仍持有 handle，`JSEngine::drop`
+  的 outstanding 断言必炸；成功路径因双双 forget 被掩盖，只有报错路径暴露。
+- 修法：`engine` 先声明、`rt` 后声明（`run_inner` 注释已钉住顺序）。
+- 推广为铁律：凡涉及 `§4.8 forget_engine` 的重构，成功/报错双路径都要跑
+  （报错路径用 rejection/timer-error 用例覆盖）。
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

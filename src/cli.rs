@@ -109,6 +109,8 @@ pub enum Cmd {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+    /// Start an interactive REPL (Phase 7)
+    Repl,
     /// Run test files (Phase 7)
     Test {
         /// Test files or directories (default: discover under cwd)

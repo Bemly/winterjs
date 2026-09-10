@@ -11,6 +11,7 @@ mod logging;
 mod modules;
 mod initpkg;
 mod pm;
+mod repl;
 mod runtime;
 mod serve;
 mod testrun;
@@ -128,6 +129,7 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
                 .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
             initpkg::init(&cwd, name.as_deref(), yes).await
         }
+        Cmd::Repl => runtime::repl().await,
         Cmd::Test { paths, filter } => {
             let cwd = std::env::current_dir()
                 .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;

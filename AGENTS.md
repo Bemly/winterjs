@@ -18,6 +18,11 @@
 6. **能 safe 不 unsafe**：新增 `unsafe` 前必须先证伪 safe 路线
    （safe 写法、已有 crate、`unsafe` 构造器 + safe 访问器模式，见 §6）；
    存量 `unsafe` 只减不增，重构顺手收敛调用点。
+7. **测试三件套随功能落地**：新功能必须同时带三层测试，完工标准含三绿——
+   模块测试（`src/` 内 `#[cfg(test)]`，覆盖纯 Rust 可测逻辑：解析/转译/状态机/编解码）、
+   黑盒测试（`tests/cli.rs`，经 CLI 断言用户可见行为，每个新 API 必含正常 + 报错 +
+   边界三件；`UNSAFE-BOUNDARY` 新增必须配 panic 路径用例）、
+   冒烟（§3 探针命令，构建后必跑，不过不提交）。
 
 ## 1. 基线（2026-09-09）
 
@@ -50,6 +55,16 @@ cargo build
 - 验证：`./target/debug/winterjs eval '40 + 2'` → `42`；
   `./target/debug/winterjs eval 'throw new Error("boom")'` → 非 TTY 下
   `Error: eval.js:1:7: boom`，exit=1（TTY 下由 miette 图形渲染，带代码框，语义同）。
+
+### 冒烟（每次构建后必跑，不过不提交）
+
+```bash
+./target/debug/winterjs eval '40 + 2'                                                    # → 42
+./target/debug/winterjs eval 'await new Promise(r=>setTimeout(()=>r(1),10))'              # → 1
+./target/debug/winterjs eval 'new URL("https://ex.com/?a=1").search'                     # → ?a=1
+./target/debug/winterjs eval 'new TextEncoder().encode("hi").length'                     # → 2
+./target/debug/winterjs eval 'await (await fetch("data:text/plain,x")).text()'         # → x
+```
 
 ## 4. 踩坑记录
 
@@ -206,6 +221,10 @@ cargo build
   本项目自己的代码（CLI、event loop、builtins、loader、Node 垫片）**全部纯 Rust**。
 - `unsafe` 只允许出现在 mozjs 边界（rooting、`AutoRealm`、FFI 调用），
   业务逻辑层禁 `unsafe`；新增 `unsafe` 必须在注释写清前置条件。
+- 收敛铁律：除 hooks（`modules.rs`）/jobqueue/`state.rs` 的引擎协议代码外，
+  裸 JSAPI 调用一律收敛进 `src/jsapi_glue.rs`（唯一的集中边界模块）；
+  新增收敛函数必须带 `UNSAFE-BOUNDARY` 标签（前置条件 + 覆盖测试名），
+  黑盒测试重点回归这些标签（§0.7）。
 - 新增 `unsafe` 三问（按序证伪，答完才写）：① 有 safe 写法或已有 crate 代替吗
   （先走 §0.5 找轮子）？② 能把 `unsafe` 收敛进构造器、对外只暴露 safe 访问器吗
   （`Frame` 模式：`from_raw` unsafe，`arg`/`set_rval` safe + 越界断言）？

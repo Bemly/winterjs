@@ -2,8 +2,9 @@
 
 > 版本 `26.9.0`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 1 已完工（2026-09-10，`cargo test` 23+1 全绿，验收样例通过）；
-> 下一步 Phase 2 ESM loader。依赖于 2026-09-10 按用户拍板全量引入，
+> 当前状态：Phase 2 已完工（2026-09-10，`cargo test` 36+5 全绿，0 警告，
+> 基线 transpile≈5.4µs/resolve≈345ns）；下一步 Phase 3 Web API。
+> 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
 ## Phase 0 — 底座收尾（进行中）
@@ -48,7 +49,7 @@
   （microtask 顺序/三跳链/顶层 await/interval/嵌套 microtask/clone/rejection/count+time）；
   踩坑回写 AGENTS §4.7–4.9。
 
-## Phase 2 — ESM loader（开工 2026-09-10，切片 a 进行中）
+## Phase 2 — ESM loader（已完工 2026-09-10）
 
 - 目标：`import` 能跑，TS 能进。
 - 引入依赖：`oxc_resolver`、`oxc`、`jsonc-parser`、`sourcemap`、`linkme`、`petgraph`、
@@ -64,16 +65,22 @@
 - 引擎路线（2026-09-10 调研结论）：Gecko153 用新模块 API——`CompileModule1` +
   `LoadRequestedModules`（回调版，同步）→ `ModuleLink` → `ModuleEvaluate`；
   依赖边由 `SetModuleLoadHook`（HostLoadImportedModule）+ `FinishLoadingImportedModule`
-  驱动；`usePromise` 按 payload 是否 Promise 区分动/静；referrer URL 经
-  `SetModulePrivate`（string）→ hook 的 hostDefined 传递；`import.meta.url` 经
+  驱动；`usePromise` 按 payload 是否 Promise 区分动/静；referrer 定位走脚本文件名
+  （§4.11，私有值通道在 153 下收不到 GC 字符串）；`import.meta.url` 经
   `SetModuleMetadataHook` 补。
 - [x] 切片 a（2026-09-10）：file:/data: + 相对导入（含后缀探测）+ oxc TS 转译 +
   循环（spec 序）+ import.meta.url + 动态 import + 入口 TLA 重试 +
   裸导入/http 友好报错；`tests/cli.rs` 8 例全绿（总 32）；0 警告保持。
   引擎细节：referrer 定位走脚本文件名（§4.11）；动态分支内嵌 load 再 link。
   附带修 Phase 0 遗留：`WINTERJS_LOG` 被 config 误收（§4.10）。
-- [ ] 切片 b：`oxc_resolver`（node_modules/tsconfig）+ 转译缓存（blake3/postcard/lru）+
-  `insta` 快照 + criterion 基线 + sourcemap。
+- [x] 切片 b（2026-09-10）：`oxc_resolver`（node_modules/tsconfig 别名/后缀别名，
+  `resolve_file` 生效见 §4.13；canonicalize 见 §4.12）+ 转译缓存
+  （blake3 key + postcard blob + lru 内存 128 + 磁盘 `$WINTERJS_CACHE`/系统缓存；
+  IO 失败当 miss）+ `insta` 快照 3 例（转译输出/import 表/直通）+ criterion 基线
+  （transpile≈5.4µs、resolve≈345ns，本机值，退化即红）+ sourcemap 生成与 TS
+  报错回映射（入口 rejection 带位置见 §4.15；`harness=false` 见 §4.16）。
+  `cargo test` 36+5 全绿，0 警告保持。未接线轮子（jsonc-parser/linkme/petgraph 等）
+  按需顺延，不为用而用。
 
 ## Phase 3 — Web API（WinterCG 兼容层）
 

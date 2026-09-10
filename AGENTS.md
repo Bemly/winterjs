@@ -147,6 +147,43 @@ cargo build
   `module record has unexpected status: New`——动态 import 分支内嵌
   `load_dependencies` 再 link（`src/modules.rs` `ensure_subgraph`）。
 
+### 4.12 file URL 必须规范化，否则同一模块判重失效（2026-09-10）
+
+- 症状：循环 a↔b 跑出 `a b a`（模块被求值两次），而非 spec 序 `b a`。
+- 根因：macOS `/var` 是到 `/private/var` 的 symlink，两边拼出的 URL 字符串不同，
+  注册表按 URL 去重即失效。
+- 修法：resolve 返回前一律 `canonicalize`（`src/loader/resolve.rs` `canonical_file_url`）；
+  复现：`phase2_circular_import_no_deadlock`。
+
+### 4.13 `TsconfigDiscovery::Auto` 只对 `resolve_file` 生效（2026-09-10）
+
+- 症状：tsconfig `paths` 别名（如 `@lib/*`）报 `Cannot find module`。
+- 根因：上游文档注明 Auto 发现只走 `resolve_file`，`resolve` 不读 tsconfig。
+- 修法：有真实发起文件走 `resolve_file`，cwd 锚点才走 `resolve`
+  （`src/loader/resolve.rs` `caller_file`/`resolve_with`）；
+  复现：`phase2_tsconfig_paths_alias`。
+
+### 4.14 `with_rooted`/`with_plain` 不可嵌套（2026-09-10）
+
+- 症状：TS 报错路径 abort（`RefCell already borrowed`，non-unwinding panic，经 microtask 回调炸）。
+- 根因：在 `with_plain` 闭包内调了同样走 `with_plain` 的函数（`entry_reason_string` 查 `module_debug`）。
+- 修法：先算串再进 `with_plain`；推广为铁律：TLS 访问闭包内只做纯数据操作，
+  不调同样走 TLS 的函数（`src/state.rs`）。
+
+### 4.15 入口 promise 捕获必须在事件循环前挂载（2026-09-10）
+
+- 症状：模块顶层抛错被报成无位置的 `unhandled rejection: ...`。
+- 根因：`ModuleEvaluate` 的 rejection 在事件循环收尾被通用 unhandled 路径先收走，
+  事后挂专用捕获已晚。
+- 修法：`ModuleEvaluate` 成功后、进 `event_loop` 前即挂 `entry_*` 捕获，
+  循环后只收割（`src/runtime.rs` `run_module`）。
+
+### 4.16 criterion bench 须 `harness = false`（2026-09-10）
+
+- 症状：`cargo bench` 只跑出 `running 0 tests`。
+- 根因：bench target 默认 libtest harness，把 criterion main 当测试跑。
+- 修法：`Cargo.toml` 加 `[[bench]] harness = false`。
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

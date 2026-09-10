@@ -2,13 +2,214 @@
 //! 全 safe（读/写均经 `as_*_slice_safe` + `NoGC` 令牌）；BigInt 视图暂不支持。
 
 use mozjs::conversions::ToJSValConvertible as _;
+use mozjs::context::JSContext;
 use mozjs::jsapi::JSObject;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 use mozjs::typedarray::{CreateWith, TypedArray, Uint8};
 
-use crate::jsapi_glue::{report_error, wrap_cx, Frame};
-use crate::jsapi_glue::value_to_string;
+use super::encoding::view_bytes;
+use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
+
+/// `__wjs_aesgcm_encrypt(keyU8, ivU8, aadU8?, plainU8)` → Uint8Array(ct‖tag)。
+/// 仅 128-bit tag（JWK 常用线）；其余抛 NotSupportedError。
+pub unsafe extern "C" fn aesgcm_encrypt(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: AES-GCM encrypt needs key, iv, aad and data");
+        return false;
+    }
+    let (k, iv, aad, plain) = (frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3));
+    let (Some(key), Some(iv), Some(aad), Some(plain)) = (
+        view_bytes(&mut cx, k, "AES-GCM key"),
+        view_bytes(&mut cx, iv, "AES-GCM iv"),
+        opt_view_bytes(&mut cx, aad, "AES-GCM aad"),
+        view_bytes(&mut cx, plain, "AES-GCM data"),
+    ) else {
+        return false;
+    };
+    if iv.len() != 12 {
+        report_error(&mut cx, "OperationError: AES-GCM iv must be 12 bytes");
+        return false;
+    }
+    let aad_ref = aad.as_deref().unwrap_or(&[]);
+    let out = if key.len() == 16 {
+        encrypt_with::<aes_gcm::Aes128Gcm>(&key, &iv, aad_ref, &plain)
+    } else if key.len() == 32 {
+        encrypt_with::<aes_gcm::Aes256Gcm>(&key, &iv, aad_ref, &plain)
+    } else {
+        report_error(&mut cx, "OperationError: AES-GCM key must be 16 or 32 bytes (192-bit needs c-4)");
+        return false;
+    };
+    match out {
+        Ok(ct) => set_rval_bytes(&mut cx, &frame, &ct),
+        Err(e) => {
+            report_error(&mut cx, &format!("OperationError: AES-GCM encrypt failed: {e}"));
+            false
+        }
+    }
+}
+
+fn encrypt_with<A>(key: &[u8], iv: &[u8], aad: &[u8], plain: &[u8]) -> Result<Vec<u8>, String>
+where
+    A: aes_gcm::aead::KeyInit + aes_gcm::aead::Aead,
+{
+    use aes_gcm::aead::Payload;
+    let cipher = A::new_from_slice(key).map_err(|e| e.to_string())?;
+    let nonce =
+        aes_gcm::aead::Nonce::<A>::try_from(iv).map_err(|_| "bad nonce".to_string())?;
+    cipher
+        .encrypt(&nonce, Payload { msg: plain, aad })
+        .map_err(|e| e.to_string())
+}
+
+/// `__wjs_aesgcm_decrypt(keyU8, ivU8, aadU8?, dataU8)` → Uint8Array（认证失败抛 OperationError）。
+pub unsafe extern "C" fn aesgcm_decrypt(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: AES-GCM decrypt needs key, iv, aad and data");
+        return false;
+    }
+    let (k, iv, aad, data) = (frame.arg(0), frame.arg(1), frame.arg(2), frame.arg(3));
+    let (Some(key), Some(iv), Some(aad), Some(data)) = (
+        view_bytes(&mut cx, k, "AES-GCM key"),
+        view_bytes(&mut cx, iv, "AES-GCM iv"),
+        opt_view_bytes(&mut cx, aad, "AES-GCM aad"),
+        view_bytes(&mut cx, data, "AES-GCM data"),
+    ) else {
+        return false;
+    };
+    if iv.len() != 12 {
+        report_error(&mut cx, "OperationError: AES-GCM iv must be 12 bytes");
+        return false;
+    }
+    let aad_ref = aad.as_deref().unwrap_or(&[]);
+    let out = if key.len() == 16 {
+        decrypt_with::<aes_gcm::Aes128Gcm>(&key, &iv, aad_ref, &data)
+    } else if key.len() == 32 {
+        decrypt_with::<aes_gcm::Aes256Gcm>(&key, &iv, aad_ref, &data)
+    } else {
+        report_error(&mut cx, "OperationError: AES-GCM key must be 16 or 32 bytes (192-bit needs c-4)");
+        return false;
+    };
+    match out {
+        Ok(pt) => set_rval_bytes(&mut cx, &frame, &pt),
+        Err(_) => {
+            report_error(&mut cx, "OperationError: AES-GCM decrypt failed (bad key/iv/tag?)");
+            false
+        }
+    }
+}
+
+fn decrypt_with<A>(key: &[u8], iv: &[u8], aad: &[u8], data: &[u8]) -> Result<Vec<u8>, String>
+where
+    A: aes_gcm::aead::KeyInit + aes_gcm::aead::Aead,
+{
+    use aes_gcm::aead::Payload;
+    let cipher = A::new_from_slice(key).map_err(|e| e.to_string())?;
+    let nonce =
+        aes_gcm::aead::Nonce::<A>::try_from(iv).map_err(|_| "bad nonce".to_string())?;
+    cipher
+        .decrypt(&nonce, Payload { msg: data, aad })
+        .map_err(|e| e.to_string())
+}
+
+macro_rules! hmac_with {
+    ($hash:ty, $key:expr, $data:expr) => {{
+        use hmac::{Hmac, Mac as _, digest::KeyInit as _};
+        let mut mac =
+            Hmac::<$hash>::new_from_slice($key).map_err(|e| format!("OperationError: {e}"))?;
+        mac.update($data);
+        mac.finalize().into_bytes().to_vec()
+    }};
+}
+
+fn hmac_bytes(hash: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
+    match hash {
+        "SHA-1" => Ok(hmac_with!(sha1::Sha1, key, data)),
+        "SHA-256" => Ok(hmac_with!(sha2::Sha256, key, data)),
+        "SHA-384" => Ok(hmac_with!(sha2::Sha384, key, data)),
+        "SHA-512" => Ok(hmac_with!(sha2::Sha512, key, data)),
+        other => Err(format!("NotSupportedError: unsupported HMAC hash '{other}'")),
+    }
+}
+
+/// `__wjs_hmac_sign(hash, keyU8, dataU8)` → Uint8Array。
+pub unsafe extern "C" fn hmac_sign(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: HMAC sign needs hash, key and data");
+        return false;
+    }
+    let hash = value_to_string(&mut cx, frame.arg(0));
+    let (Some(key), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(1), "HMAC key"),
+        view_bytes(&mut cx, frame.arg(2), "HMAC data"),
+    ) else {
+        return false;
+    };
+    match hmac_bytes(&hash, &key, &data) {
+        Ok(tag) => set_rval_bytes(&mut cx, &frame, &tag),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_hmac_verify(hash, keyU8, sigU8, dataU8)` → boolean。
+pub unsafe extern "C" fn hmac_verify(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: HMAC verify needs hash, key, signature and data");
+        return false;
+    }
+    let hash = value_to_string(&mut cx, frame.arg(0));
+    let (Some(key), Some(sig), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(1), "HMAC key"),
+        view_bytes(&mut cx, frame.arg(2), "HMAC signature"),
+        view_bytes(&mut cx, frame.arg(3), "HMAC data"),
+    ) else {
+        return false;
+    };
+    match hmac_bytes(&hash, &key, &data) {
+        Ok(tag) => {
+            // 定长比较（长度先行，内容恒时由 Vec 比较短路程度可忽略的侧信道面）
+            let ok = tag.len() == sig.len()
+                && tag.iter().zip(sig.iter()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0;
+            frame.set_rval(mozjs::jsval::BooleanValue(ok));
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
 
 /// 上限 64KiB（规范 QuotaExceededError）。
 const MAX_BYTES: usize = 65536;
@@ -161,4 +362,27 @@ pub unsafe extern "C" fn subtle_digest(
     }
     frame.set_rval(mozjs::jsval::ObjectValue(obj.get()));
     true
+}
+
+/// 同上模式的 Uint8Array 返回（AES/HMAC 共用）。
+fn set_rval_bytes(cx: &mut JSContext, frame: &Frame, out: &[u8]) -> bool {
+    rooted!(&in(cx) let mut obj: *mut JSObject = std::ptr::null_mut());
+    // SAFETY: 同上（§6 审计：边界调用）
+    let ok = unsafe {
+        TypedArray::<Uint8, *mut JSObject>::create(cx, CreateWith::Slice(out), obj.handle_mut())
+    };
+    if ok.is_err() || obj.is_null() {
+        report_error(cx, "RangeError: cannot allocate output");
+        return false;
+    }
+    frame.set_rval(mozjs::jsval::ObjectValue(obj.get()));
+    true
+}
+
+/// 实参 Uint8Array（`what` 用于报错）；undefined/null → None（无 aad 时用）。
+fn opt_view_bytes(cx: &mut JSContext, v: JSVal, what: &str) -> Option<Option<Vec<u8>>> {
+    if v.is_undefined() || v.is_null() {
+        return Some(None);
+    }
+    view_bytes(cx, v, what).map(Some)
 }

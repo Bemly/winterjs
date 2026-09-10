@@ -201,6 +201,60 @@ globalThis.TextDecoder = class TextDecoder {
     return __wjs_td_decode(this.#label, this.#fatal ? 1 : 0, this.#ignoreBOM ? 1 : 0, view);
   }
 };
+const __wjs_keyState = new WeakMap();
+function NotSupportedError_(what) { return new Error(`NotSupportedError: unsupported ${what}`); }
+function __wjs_normHash(h) {
+  const s = typeof h === "string" ? h : String(h?.name ?? "");
+  const up = s.trim().toUpperCase();
+  const map = { "SHA-1": "SHA-1", "SHA1": "SHA-1", "SHA-256": "SHA-256", "SHA256": "SHA-256", "SHA-384": "SHA-384", "SHA384": "SHA-384", "SHA-512": "SHA-512", "SHA512": "SHA-512" };
+  if (!map[up]) throw new Error(`NotSupportedError: unsupported hash '${s}'`);
+  return map[up];
+}
+function __wjs_makeKey(alg, material, usages, extractable) {
+  const k = Object.create(CryptoKey.prototype);
+  __wjs_keyState.set(k, { alg, material, usages, extractable });
+  return k;
+}
+function __wjs_keyBytes(v) {
+  if (v instanceof ArrayBuffer) return new Uint8Array(v);
+  if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+  throw new TypeError("key data must be a BufferSource");
+}
+function __wjs_dataBytes(v) {
+  if (typeof v === "string") return new TextEncoder().encode(v);
+  return __wjs_keyBytes(v);
+}
+function __wjs_needUsage(st, op) {
+  if (!st.usages.includes(op)) throw new Error(`InvalidAccessError: key cannot be used to ${op}`);
+}
+function __wjs_aesParams(algorithm) {
+  const iv = __wjs_dataBytes(algorithm?.iv ?? new Uint8Array(0));
+  if (iv.length !== 12) throw new Error("OperationError: AES-GCM iv must be 12 bytes");
+  const aad = algorithm?.additionalData === undefined ? undefined : __wjs_dataBytes(algorithm.additionalData);
+  const tagLength = algorithm?.tagLength === undefined ? 128 : Number(algorithm.tagLength);
+  if (tagLength !== 128) throw new Error("NotSupportedError: only 128-bit AES-GCM tags for now");
+  return { iv, aad };
+}
+function __wjs_b64urlEncode(u8) {
+  let s = "";
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function __wjs_b64urlDecode(str) {
+  str = String(str).replace(/-/g, "+").replace(/_/g, "/");
+  while (str.length % 4) str += "=";
+  const bin = atob(str);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+globalThis.CryptoKey = class CryptoKey {
+  constructor() { throw new TypeError("Illegal constructor"); }
+  get algorithm() { return { ...__wjs_keyState.get(this)?.alg }; }
+  get extractable() { return !!__wjs_keyState.get(this)?.extractable; }
+  get type() { return "secret"; }
+  get usages() { return [...(__wjs_keyState.get(this)?.usages ?? [])]; }
+};
 globalThis.crypto = {
   getRandomValues(view) { __wjs_fill_random(view); return view; },
   randomUUID() { return __wjs_random_uuid(); },
@@ -214,6 +268,91 @@ globalThis.crypto = {
       }
       const out = __wjs_subtle_digest(name, view);
       return out.buffer;
+    },
+    async generateKey(alg, extractable, usages) {
+      const name = typeof alg === "string" ? alg.toUpperCase() : String(alg?.name ?? "").toUpperCase();
+      usages = [...(usages ?? [])].map(String);
+      if (name === "AES-GCM") {
+        const length = Number(alg?.length ?? 256);
+        if (![128, 256].includes(length)) throw new Error("NotSupportedError: AES-GCM length must be 128/256 (192-bit needs c-4)");
+        const bytes = new Uint8Array(length / 8);
+        crypto.getRandomValues(bytes);
+        return __wjs_makeKey({ name: "AES-GCM", length }, bytes, usages, !!extractable);
+      }
+      if (name === "HMAC") {
+        const hash = __wjs_normHash(alg?.hash);
+        let length = alg?.length === undefined ? null : Number(alg.length);
+        const outLen = { "SHA-1": 160, "SHA-256": 256, "SHA-384": 384, "SHA-512": 512 }[hash];
+        if (length === null) length = outLen;
+        if (!Number.isInteger(length) || length <= 0 || length > 1024 * 1024) {
+          throw new Error("NotSupportedError: bad HMAC length");
+        }
+        const bytes = new Uint8Array(Math.ceil(length / 8));
+        crypto.getRandomValues(bytes);
+        return __wjs_makeKey({ name: "HMAC", hash, length }, bytes, usages, !!extractable);
+      }
+      throw new Error(`NotSupportedError: generateKey ${name} needs Phase 3 c-4`);
+    },
+    async importKey(format, keyData, alg, extractable, usages) {
+      const name = typeof alg === "string" ? alg.toUpperCase() : String(alg?.name ?? "").toUpperCase();
+      usages = [...(usages ?? [])].map(String);
+      const needHash = name === "HMAC" ? __wjs_normHash(alg?.hash) : undefined;
+      let bytes;
+      if (format === "raw") {
+        bytes = __wjs_keyBytes(keyData);
+      } else if (format === "jwk") {
+        if (!keyData || keyData.kty !== "oct" || typeof keyData.k !== "string") {
+          throw new Error("NotSupportedError: only oct JWK keys for now");
+        }
+        bytes = __wjs_b64urlDecode(keyData.k);
+      } else throw new Error(`NotSupportedError: importKey ${format} needs Phase 3 c-4`);
+      if (name === "AES-GCM") {
+        if (![16, 32].includes(bytes.length)) throw new TypeError("AES-GCM raw key must be 16/32 bytes (192-bit needs c-4)");
+        return __wjs_makeKey({ name, length: bytes.length * 8 }, bytes, usages, !!extractable);
+      }
+      if (name === "HMAC") {
+        return __wjs_makeKey({ name, hash: needHash, length: bytes.length * 8 }, bytes, usages, !!extractable);
+      }
+      throw new Error(`NotSupportedError: importKey ${name} needs Phase 3 c-4`);
+    },
+    async exportKey(format, key) {
+      const st = __wjs_keyState.get(key);
+      if (!st) throw new TypeError("exportKey: not a CryptoKey");
+      if (!st.extractable) throw new Error("InvalidAccessError: key is not extractable");
+      if (format === "raw") return st.material.slice().buffer;
+      if (format === "jwk") {
+        return { kty: "oct", k: __wjs_b64urlEncode(st.material), alg: st.alg.name === "AES-GCM" ? `A${st.alg.length}GCM` : `HS${st.alg.hash.split("-")[1]}`, ext: true };
+      }
+      throw new Error(`NotSupportedError: exportKey ${format} needs Phase 3 c-4`);
+    },
+    async encrypt(algorithm, key, data) {
+      const st = __wjs_keyState.get(key);
+      if (!st || st.alg.name !== "AES-GCM") throw new TypeError("encrypt: not an AES-GCM key");
+      __wjs_needUsage(st, "encrypt");
+      const p = __wjs_aesParams(algorithm);
+      const out = __wjs_aesgcm_encrypt(st.material, p.iv, p.aad, __wjs_dataBytes(data));
+      return out.buffer;
+    },
+    async decrypt(algorithm, key, data) {
+      const st = __wjs_keyState.get(key);
+      if (!st || st.alg.name !== "AES-GCM") throw new TypeError("decrypt: not an AES-GCM key");
+      __wjs_needUsage(st, "decrypt");
+      const p = __wjs_aesParams(algorithm);
+      const out = __wjs_aesgcm_decrypt(st.material, p.iv, p.aad, __wjs_dataBytes(data));
+      return out.buffer;
+    },
+    async sign(algorithm, key, data) {
+      const st = __wjs_keyState.get(key);
+      if (!st || st.alg.name !== "HMAC") throw new TypeError("sign: not an HMAC key");
+      __wjs_needUsage(st, "sign");
+      const out = __wjs_hmac_sign(st.alg.hash, st.material, __wjs_dataBytes(data));
+      return out.buffer;
+    },
+    async verify(algorithm, key, signature, data) {
+      const st = __wjs_keyState.get(key);
+      if (!st || st.alg.name !== "HMAC") throw new TypeError("verify: not an HMAC key");
+      __wjs_needUsage(st, "verify");
+      return __wjs_hmac_verify(st.alg.hash, st.material, __wjs_dataBytes(signature), __wjs_dataBytes(data));
     },
   },
 };
@@ -777,6 +916,10 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_fill_random", Some(crypto::fill_random), 1),
             ("__wjs_random_uuid", Some(crypto::random_uuid), 0),
             ("__wjs_subtle_digest", Some(crypto::subtle_digest), 2),
+            ("__wjs_aesgcm_encrypt", Some(crypto::aesgcm_encrypt), 4),
+            ("__wjs_aesgcm_decrypt", Some(crypto::aesgcm_decrypt), 4),
+            ("__wjs_hmac_sign", Some(crypto::hmac_sign), 3),
+            ("__wjs_hmac_verify", Some(crypto::hmac_verify), 4),
             ("__wjs_fetch_start", Some(fetch::fetch_start), 6),
         ];
         for (name, native, nargs) in web {

@@ -72,6 +72,21 @@ struct Prepared {
 }
 
 fn prepare(url: &Url) -> Result<Prepared, Error> {
+    // node: 内建：内嵌源直给（仍走 load_js 统一转译/提 imports；源内禁 TS）。
+    if url.scheme() == "node" {
+        let Some(text) = crate::builtins::node::source(url.as_str()) else {
+            return Err(Error::Other(format!(
+                "'{}' is not a builtin (available: {})",
+                url.as_str(),
+                crate::builtins::node::available().join(", ")
+            )));
+        };
+        let text = text.to_owned();
+        let path = PathBuf::from(format!("{}.js", url.as_str().replace(':', "_")));
+        let loaded = load_js(&text, url.as_str(), &path)?;
+        tracing::debug!(target: "winterjs::modules", url = url.as_str(), "builtin module prepared");
+        return Ok(Prepared { original: text, js: loaded.js, imports: loaded.imports, map: loaded.map });
+    }
     let fetched = fetch(url)?;
     let path = module_path(url)?;
     let loaded = load_js(&fetched.text, url.as_str(), &path)?;

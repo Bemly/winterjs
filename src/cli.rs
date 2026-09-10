@@ -37,6 +37,9 @@ pub enum Cmd {
     Run {
         /// Path to the JS file
         path: PathBuf,
+        /// Script arguments (as `process.argv.slice(2)`)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Evaluate inline JS code
     Eval {

@@ -69,6 +69,8 @@ async fn dispatch(cli: Cli, settings: &settings::Settings) -> i32 {
         Ok(()) => 0,
         // 管道下游提前关闭（如 `winterjs man | head`）静默退出，不刷错误
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
+        // process.exit/exitCode：静默以指定码退出
+        Err(Error::Exit(code)) => *code,
         Err(err) => {
             let _ = err.render(settings.log.color);
             1
@@ -78,15 +80,15 @@ async fn dispatch(cli: Cli, settings: &settings::Settings) -> i32 {
 
 async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), Error> {
     match cli.cmd {
-        Cmd::Run { path } => {
+        Cmd::Run { path, args } => {
             let source = std::fs::read_to_string(&path).map_err(|source| Error::IoRead {
                 path: path.clone(),
                 source,
             })?;
             let filename = path.to_string_lossy().into_owned();
-            runtime::run(&source, &filename, runtime::Mode::Script).await
+            runtime::run(&source, &filename, runtime::Mode::Script, &args).await
         }
-        Cmd::Eval { code } => runtime::run(&code, "eval.js", runtime::Mode::Eval).await,
+        Cmd::Eval { code } => runtime::run(&code, "eval.js", runtime::Mode::Eval, &[]).await,
         Cmd::Config { schema } => {
             if schema {
                 let schema = schemars::schema_for!(settings::Settings);

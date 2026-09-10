@@ -2,8 +2,8 @@
 
 > 版本 `26.9.0`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 2 已完工（2026-09-10，`cargo test` 36+5 全绿，0 警告，
-> 基线 transpile≈5.4µs/resolve≈345ns）；下一步 Phase 3 Web API。
+> 当前状态：Phase 3 已完工（2026-09-10，`cargo test` 71+5 全绿，0 警告，
+> 非对称/wss/流式/abort + §4.18 循环修复）；下一步 Phase 4 Node 垫片（切片 a 进行中）。
 > 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
@@ -134,17 +134,32 @@
   `tests/cli.rs` 6 例；`cargo test` 71+5 全绿，0 警告。
   RSA-PSS/Ed25519/X25519（c-4x，按需排）。
 
-## Phase 4 — Node 兼容垫片
+## Phase 4 — Node 兼容垫片（开工 2026-09-10，切片 a 进行中）
 
 - 目标：`node:fs/path/os/process/child_process` 跑起来。
 - 引入依赖：`sysinfo`+`if-addrs`+`mac_address`+`uzers`+`sys-locale`、`which`、
   `shlex`、`shellexpand`、`jiff`、`walkdir`、`normpath`（沙箱 join）、`fs-err`、
   `filetime`、`humantime`+`bytesize`（flag 解析）。
+  （已全量入库，按需接线；`node:` 表走 `src/builtins/node/`，源内嵌 JS ESM。）
 - 做：fs 全量（stat/read/write/watch 复用 `notify`）、path、process（argv/env/exit）、
   os（cpus/mem/netif/user/locale）、child_process（stdio 管道＋进程组杀树，见 §13）、
   `node:test` 起步（reporter 用 `similar`+`unicode-width`）。
 - 验收：跑通一个真实小项目的脚本子集（如 lint 脚本）。
 - 完成标准：`process.exitCode` 语义与 Node 一致（退出码测试入库）。
+- 路线（2026-09-10）：`node:X` 在 `resolve()` 截获→规范 `node:` URL→`prepare()`
+  取内嵌源（`load_js` 统一转译/提 imports）；`process` 另放全局（`NODE_PRELUDE`，
+  与模块源同 natives）；`process.exit` 经 `__wjs_exit:<code>` 哨兵错逐层转
+  `Error::Exit`（静默退出码，无渲染）；`exitCode` 存 Rust 侧、收尾映射。
+- [x] 切片 a（2026-09-10）：`node:` 接线（resolve 截获→规范 URL→内嵌源；
+  `fs` 与 `node:fs` 同一模块）+ `process` 全局（argv/env Proxy/cwd/exit/
+  exitCode/platform/stdout.write/nextTick 等）+ `node:path`（纯 JS posix+win32）
+  + `node:os`（sysinfo/if-addrs/uzers/sys-locale）+ `run` 透传 args +
+  `Error::Exit` 静默退出。附带修：模块顶层 exit 的检查点顺序（§4.18 追补）。
+  `tests/cli.rs` 6 例 + 模块单测 3 例；`cargo test` 77+8 全绿，0 警告。
+- [ ] 切片 b：`node:fs` 同步核心 + `fs/promises`（readFile/writeFile/stat/mkdir/
+  rm/readdir/rename/copyFile/appendFile/existsSync + constants）。
+- [ ] 切片 c：`child_process` 同步（execSync/spawnSync）+ `node:test`/`node:assert` 起步。
+- [ ] 切片 d（顺延）：`fs.watch`（notify 进事件循环）+ 异步 spawn + `require()`。
 
 ## Phase 5 — 包管理（install/publish/upgrade）
 

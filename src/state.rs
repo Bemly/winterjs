@@ -170,6 +170,12 @@ pub struct PlainState {
     /// 全局对象裸指针。前置条件：run() 里的 rooted! global 活过整个事件循环，
     /// 本指针只是它的借用副本，绝不在此之外解引用。
     pub global: *mut JSObject,
+    /// `process.argv` 全量（含 execPath/脚本位；prelude 经 JSON 桥读）。
+    pub argv: Vec<String>,
+    /// `process.exitCode`（None=未设→0；收尾映射 `Error::Exit`）。
+    pub exit_code: Option<i32>,
+    /// `process.exit()` 已调用（哨兵码；哨兵错被用户 catch 也照退，检查点强制）。
+    pub process_exited: Option<i32>,
 }
 
 thread_local! {
@@ -657,4 +663,21 @@ fn entry_reason_string(cx: &mut JSContext, reason: JSVal) -> String {
 /// console 计数等纯 Rust 状态访问（builtins 用）。
 pub fn console_state<R>(f: impl FnOnce(&mut PlainState) -> R) -> R {
     with_plain(f)
+}
+
+// ── process 状态（argv/exitCode/exit，见 plan Phase 4）──────────────────────
+
+/// run() 入口存 argv（`[execPath, script, ...extras]`；eval 为 `[execPath, ...extras]`）。
+pub fn set_argv(argv: Vec<String>) {
+    with_plain(|p| p.argv = argv);
+}
+
+/// `process.exitCode` 读（None→0 口径由调用方定；此处原样返回）。
+pub fn exit_code() -> Option<i32> {
+    with_plain(|p| p.exit_code)
+}
+
+/// `process.exitCode = n`（截断 i32；Node 要求整数，此处由 prelude 校验）。
+pub fn set_exit_code(code: i32) {
+    with_plain(|p| p.exit_code = Some(code));
 }

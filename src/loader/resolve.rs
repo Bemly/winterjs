@@ -149,9 +149,13 @@ fn path_to_file_url(p: PathBuf) -> Result<Url, Error> {
     Url::from_file_path(&p).map_err(|_| Error::Other(format!("bad file path: {}", p.display())))
 }
 
-/// 裸导入：node_modules + tsconfig（paths）+ exports 条件。
+/// 裸导入：node 内建优先 → node_modules + tsconfig（paths）+ exports 条件。
 fn resolve_bare(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
-    if matches!(base.map(|u| u.scheme()), Some("data")) {
+    // node 内建优先于 node_modules（与 Node 一致；`fs` 与 `node:fs` 同一模块）。
+    if let Some(canonical) = crate::builtins::node::normalize_spec(specifier) {
+        tracing::debug!(target: "winterjs::loader", specifier, canonical, "builtin module");
+        return Url::parse(canonical).map_err(|e| Error::Other(format!("bad builtin URL: {e}")));
+    }    if matches!(base.map(|u| u.scheme()), Some("data")) {
         return Err(Error::Other(format!(
             "cannot resolve bare specifier '{specifier}' from a data: module"
         )));
@@ -210,9 +214,16 @@ pub fn resolve(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
             "http" | "https" => Err(Error::Other(format!(
                 "remote module '{specifier}' needs Phase 3 (fetch); file:/data: only for now"
             ))),
-            "node" => Err(Error::Other(format!(
-                "'{specifier}' builtin needs Phase 4 (Node compat); file:/data: only for now"
-            ))),
+            "node" => match crate::builtins::node::normalize_spec(specifier) {
+                Some(canonical) => {
+                    tracing::debug!(target: "winterjs::loader", specifier, canonical, "builtin module");
+                    Url::parse(canonical).map_err(|e| Error::Other(format!("bad builtin URL: {e}")))
+                }
+                None => Err(Error::Other(format!(
+                    "'{specifier}' is not a builtin (available: {})",
+                    crate::builtins::node::available().join(", ")
+                ))),
+            },
             s => Err(Error::Other(format!(
                 "unsupported module scheme '{s}:': {specifier}"
             ))),

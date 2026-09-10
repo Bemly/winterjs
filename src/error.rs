@@ -44,6 +44,12 @@ pub enum Error {
     #[diagnostic(code(winterjs::internal))]
     Other(String),
 
+    /// `process.exit(code)` / `exitCode` 收尾：静默以 code 退出（不渲染）。
+    /// 由 `process.exit` 哨兵错逐层转换（见 `runtime::exit_code_from_message`）。
+    #[error("process exit({0})")]
+    #[diagnostic(code(winterjs::process::exit))]
+    Exit(i32),
+
     #[error("{0}")]
     #[diagnostic(code(winterjs::io))]
     Io(#[from] std::io::Error),

@@ -158,8 +158,56 @@ async fn run_module(
     print_completion(rt, global, rval.get())
 }
 
+/// `process.exit` 哨兵错识别（native 报 `__wjs_exit:<code>`，见 `node/process_.rs`）。
+/// 覆盖裸消息与 `unhandled rejection: …` 单因包装。
+pub fn exit_code_from_message(msg: &str) -> Option<i32> {
+    if let Some(code) = msg.strip_prefix("__wjs_exit:") {
+        return code.trim().parse().ok();
+    }
+    if let Some(reason) = msg.strip_prefix("unhandled rejection: ") {
+        return exit_code_from_message(reason.trim());
+    }
+    None
+}
+
+/// 哨兵优先：错误消息带哨兵即转静默退出（`process.exit` 被 catch 也由旗兜底，见 `run`）。
+fn map_exit_sentinel(err: Error) -> Error {
+    let message = match &err {
+        Error::Script { message, .. } => Some(message.clone()),
+        Error::Other(message) => Some(message.clone()),
+        _ => None,
+    };
+    match message.and_then(|m| exit_code_from_message(&m)) {
+        Some(code) => Error::Exit(code),
+        None => err,
+    }
+}
+
 /// 求值 `source`（名 `filename`）并打印完成值；事件循环排空 timers/microtasks。
-pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> {
+/// `extra_args` 进 `process.argv`（Script：`[exec, filename, ...]`；Eval：`[exec, ...]`）。
+pub async fn run(source: &str, filename: &str, mode: Mode, extra_args: &[String]) -> Result<(), Error> {
+    let r = run_inner(source, filename, mode, extra_args).await;
+    // exit 优先于一切错误（哨兵被用户 catch 也照退，靠 `process_exited` 旗）。
+    if let Some(code) = state::with_plain(|p| p.process_exited) {
+        return Err(Error::Exit(code));
+    }
+    match r {
+        Err(e) => Err(map_exit_sentinel(e)),
+        Ok(()) => match state::exit_code() {
+            // exitCode 非零即静默退出（Node 语义；0 照常 Ok）。
+            Some(code) if code != 0 => Err(Error::Exit(code)),
+            _ => Ok(()),
+        },
+    }
+}
+
+/// 内层（引擎生命周期；`forget_engine` 在各返回点执行，见 §4.8）。
+async fn run_inner(
+    source: &str,
+    filename: &str,
+    mode: Mode,
+    extra_args: &[String],
+) -> Result<(), Error> {
     tracing::info!(target: "winterjs::runtime", filename, source_len = source.len(), ?mode, "run start");
     // JS engine handle must outlive every Runtime.
     let engine = JSEngine::init().map_err(|_| Error::Other("failed to init JS engine".into()))?;
@@ -192,6 +240,18 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
         state::init(&mut realm);
         state::set_global(global.get());
         state::set_line_adjust(0);
+        // process.argv（prelude 求值前就绪；execPath 失败回退名）。
+        let exe = std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "winterjs".into());
+        let argv: Vec<String> = match mode {
+            Mode::Script => std::iter::once(exe)
+                .chain(std::iter::once(filename.to_owned()))
+                .chain(extra_args.iter().cloned())
+                .collect(),
+            Mode::Eval => std::iter::once(exe).chain(extra_args.iter().cloned()).collect(),
+        };
+        state::set_argv(argv);
         builtins::define_all(&mut realm, global.get())?;
 
         // SAFETY: realm 内；追踪器仅在 JS 线程被引擎回调
@@ -219,6 +279,27 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
                 &mut realm,
                 builtins::PRELUDE,
                 "__wjs_prelude.js",
+                0,
+            ));
+        }
+
+        // Phase 4a：node 全局（process；同“语法必然正确”约定，失败即内部错）。
+        let node_prelude = crate::builtins::node::node_prelude();
+        let node_filename = CString::new("__wjs_node_prelude.js").expect("no NUL");
+        let node_options = CompileOptionsWrapper::new(&realm, node_filename, 1);
+        rooted!(&in(&mut realm) let mut node_rval = UndefinedValue());
+        let ok = evaluate_script(
+            &mut realm,
+            global.handle(),
+            &node_prelude,
+            node_rval.handle_mut(),
+            node_options,
+        );
+        if ok.is_err() {
+            return Err(pending_error_in_realm(
+                &mut realm,
+                &node_prelude,
+                "__wjs_node_prelude.js",
                 0,
             ));
         }
@@ -462,6 +543,12 @@ async fn event_loop(
             // SAFETY: realm 内排空内部 job queue
             unsafe { RunJobs((&mut realm).raw_cx()) };
         }
+        // process.exit() 被 catch 后的兜底：检查点照退（`run` 外层转 Exit）。
+        // 注意顺序：必须在 RunJobs 之后——抛错的 job 会截断当轮排空，
+        // 反应 job 留到下一轮；检查放排空前即饿死它们（实测：模块顶层 exit 必发）。
+        if state::with_plain(|p| p.process_exited.is_some()) {
+            return Ok(());
+        }
         iterations += 1;
 
         // 已完成的 fetch/ws 先结算（不阻塞）。结算会同步决议 promise（排队 microtask），
@@ -672,4 +759,29 @@ fn print_completion(
         _ => println!("<non-stringifiable result>"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_sentinel_parse() {
+        assert_eq!(exit_code_from_message("__wjs_exit:3"), Some(3));
+        assert_eq!(exit_code_from_message("__wjs_exit: 0"), Some(0));
+        assert_eq!(exit_code_from_message("unhandled rejection: __wjs_exit:2"), Some(2));
+        assert_eq!(exit_code_from_message("__wjs_exit:abc"), None);
+        assert_eq!(exit_code_from_message("plain-boom"), None);
+        assert_eq!(exit_code_from_message(""), None);
+        // 位置前缀不误判（收割串自带位置时由旗兜底，此处只认裸哨兵）。
+        assert_eq!(exit_code_from_message("a.mjs:1:1: __wjs_exit:3"), None);
+    }
+
+    #[test]
+    fn exit_sentinel_map() {
+        let err = Error::Other("__wjs_exit:9".into());
+        assert!(matches!(map_exit_sentinel(err), Error::Exit(9)));
+        let err = Error::Other("boom".into());
+        assert!(matches!(map_exit_sentinel(err), Error::Other(_)));
+    }
 }

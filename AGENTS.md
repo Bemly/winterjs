@@ -219,6 +219,11 @@ cargo build
   `select` 的 None 臂遇全 idle 直接 `continue`（只剩 microtask，不 park，否则永睡）。
   复现：`tests/cli.rs::phase3_fetch_body_streams_chunks`（修前必挂）。
   推广为铁律：任何同步决议 JS promise 的结算点之后，必须保证至少一轮 `RunJobs`。
+- 追补（2026-09-10，模块顶层 `process.exit` 必发 `[object Promise]` 案）：
+  抛错的 job 会截断当轮 `RunJobs` 排空，入口捕获的反应 job 留到下一轮；
+  若退出旗检查放在排空**前**，下一轮直接返回，反应永不触发（收割 None → 误打印
+  promise + 仅靠旗退出）。修法：旗检查一律放 `RunJobs` **之后**。
+  教训：`with_plain` 写本身无辜——二分时曾误判它，实为检查点顺序问题。
 
 ## 5. 路线图（按序）
 

@@ -7,6 +7,7 @@ pub mod console;
 pub mod crypto;
 pub mod encoding;
 pub mod fetch;
+pub mod node;
 pub mod timers;
 pub mod url;
 pub mod ws;
@@ -1393,6 +1394,35 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_fetch_start", Some(fetch::fetch_start), 6),
             ("__wjs_fetch_abort", Some(fetch::fetch_abort), 1),
             ("__wjs_fetch_pull", Some(fetch::fetch_pull), 3),
+            // Phase 4a: node:os / process（path 纯 JS，见 node/）
+            ("__wjs_os_platform", Some(node::os::os_platform), 0),
+            ("__wjs_os_arch", Some(node::os::os_arch), 0),
+            ("__wjs_os_info", Some(node::os::os_info), 0),
+            ("__wjs_os_cpus", Some(node::os::os_cpus), 0),
+            ("__wjs_os_mem", Some(node::os::os_mem), 0),
+            ("__wjs_os_net", Some(node::os::os_net), 0),
+            ("__wjs_os_user", Some(node::os::os_user), 0),
+            ("__wjs_os_uptime", Some(node::os::os_uptime), 0),
+            ("__wjs_os_load", Some(node::os::os_load), 0),
+            ("__wjs_os_locale", Some(node::os::os_locale), 0),
+            ("__wjs_argv_json", Some(node::process_::argv_json), 0),
+            ("__wjs_env_get", Some(node::process_::env_get), 1),
+            ("__wjs_env_set", Some(node::process_::env_set), 2),
+            ("__wjs_env_del", Some(node::process_::env_del), 1),
+            ("__wjs_env_keys", Some(node::process_::env_keys), 0),
+            ("__wjs_cwd", Some(node::process_::cwd), 0),
+            ("__wjs_chdir", Some(node::process_::chdir), 1),
+            ("__wjs_process_exit", Some(node::process_::process_exit), 1),
+            ("__wjs_exit_code_get", Some(node::process_::exit_code_get), 0),
+            ("__wjs_exit_code_set", Some(node::process_::exit_code_set), 1),
+            ("__wjs_exec_path", Some(node::process_::exec_path), 0),
+            ("__wjs_pid", Some(node::process_::pid), 0),
+            ("__wjs_uptime", Some(node::process_::uptime), 0),
+            ("__wjs_hrtime_ns", Some(node::process_::hrtime_ns), 0),
+            ("__wjs_memory_usage", Some(node::process_::memory_usage), 0),
+            ("__wjs_stdout_write", Some(node::process_::stdout_write), 1),
+            ("__wjs_stderr_write", Some(node::process_::stderr_write), 1),
+            ("__wjs_stdio_istty", Some(node::process_::stdio_istty), 1),
             ("__wjs_ws_connect", Some(ws::ws_connect), 3),
             ("__wjs_ws_send", Some(ws::ws_send), 3),
             ("__wjs_ws_close", Some(ws::ws_close), 3),

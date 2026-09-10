@@ -958,3 +958,124 @@ fn phase3_fetch_body_mid_stream_abort() {
         "abc\nstream-aborted:true\n"
     );
 }
+
+/// node: 测试脚手架（tempdir 单文件模块；`run` 执行）。
+fn run_node_file(dir: &assert_fs::TempDir, name: &str, source: &str) -> std::process::Output {
+    let file = dir.child(name);
+    file.write_str(source).unwrap();
+    winterjs().arg("run").arg(file.path()).output().unwrap()
+}
+
+#[test]
+fn phase4_node_path_basic() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(&dir, "p.mjs", r#"
+import path, { join, basename, extname, dirname, normalize, relative, isAbsolute, sep, parse } from "node:path";
+import { win32, posix } from "node:path";
+console.log(join("a", "b", "..", "c"));
+console.log(basename("/x/y.ts"), extname("a.d.ts"), extname(".gitignore"), dirname("/x/y/z"));
+console.log(normalize("a//b/./c/"), isAbsolute("/x"), isAbsolute("x"), sep);
+console.log(relative("/a/b/c", "/a/d"), JSON.stringify(parse("/x/y.ts")).length > 0);
+console.log(path.sep === (globalThis.process.platform === "win32" ? win32.sep : posix.sep) ? "ns-ok" : "ns-bad");
+console.log(win32.join("C:\\a", "b"), win32.basename("C:\\x\\y.txt"), win32.sep);
+console.log(posix.join("a", "b"));
+"#);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "a/c\ny.ts .ts  /x/y\n" .to_string()
+            + "a/b/c/ true false /\n"
+            + "../../d true\n"
+            + "ns-ok\n"
+            + "C:\\a\\b y.txt \\\n"
+            + "a/b\n"
+    );
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase4_node_os_basic() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const os = await import("node:os"); console.log([os.platform(), os.arch()].join(",")); console.log(os.EOL.length, os.hostname().length > 0, os.tmpdir().length > 0, os.totalmem() > 0, os.freemem() >= 0, os.cpus().length > 0, typeof os.cpus()[0].model, Object.keys(os.networkInterfaces()).length > 0, os.userInfo().username.length >= 0, os.uptime() >= 0, os.loadavg().length, os.release().length >= 0);"#]));
+    let mut lines = out.lines();
+    let pa = lines.next().unwrap_or("");
+    assert!(
+        ["darwin", "linux", "win32", "android"].contains(&pa.split(',').next().unwrap_or("")),
+        "platform: {pa}"
+    );
+    assert!(
+        ["arm64", "x64", "arm"].contains(&pa.split(',').nth(1).unwrap_or("")),
+        "arch: {pa}"
+    );
+    assert_eq!(
+        lines.next().unwrap_or(""),
+        "1 true true true true true string true true true 3 true",
+        "os: {out}"
+    );
+}
+
+#[test]
+fn phase4_node_process_argv_env() {
+    // argv 透传 + env 读写删查（Proxy 活视图）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("argv.mjs");
+    file.write_str(r#"console.log(process.argv.length, process.argv[2], process.execPath.length > 0, process.pid > 0);"#).unwrap();
+    let out = winterjs().arg("run").arg(file.path()).arg("hello").arg("--flag").output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8(out.stdout).unwrap().starts_with("4 hello true true\n"), "argv");
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"process.env.WINTERJS_T4 = "v1"; console.log(process.env.WINTERJS_T4, "WINTERJS_T4" in process.env, Object.keys(process.env).includes("WINTERJS_T4")); delete process.env.WINTERJS_T4; console.log(process.env.WINTERJS_T4, "WINTERJS_T4" in process.env);"#]));
+    assert_eq!(out, "v1 true true\nundefined false\n", "env: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase4_process_exit_codes() {
+    // 正常/显式/默认/模块顶层/异步后设码，全走静默退出（无 stderr）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let run = |name: &str, src: &str| {
+        let f = dir.child(name);
+        f.write_str(src).unwrap();
+        winterjs().arg("run").arg(f.path()).output().unwrap()
+    };
+    let out = run("e3.mjs", "process.exit(3);");
+    assert_eq!(out.status.code(), Some(3));
+    assert!(out.stderr.is_empty(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = run("e0.mjs", "process.exit();");
+    assert_eq!(out.status.code(), Some(0));
+    let out = run("c7.mjs", "process.exitCode = 7;");
+    assert_eq!(out.status.code(), Some(7));
+    assert!(out.stderr.is_empty());
+    let out = run("t.mjs", "setTimeout(() => { process.exitCode = 5; }, 10);");
+    assert_eq!(out.status.code(), Some(5));
+    // exit 被 catch 也照退（Node 同 outcome；此处验证退出码，不断言抛）。
+    let out = run("caught.mjs", "try { process.exit(4); } catch (e) {}\n");
+    assert_eq!(out.status.code(), Some(4));
+    assert!(out.stderr.is_empty());
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase4_process_stdio_nexttick_cwd() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"process.stdout.write("out-direct"); const order = []; process.nextTick(() => order.push("tick")); Promise.resolve().then(() => order.push("promise")); await new Promise((r) => setTimeout(r, 20)); console.log("|" + order.join(","), process.cwd().length > 0, typeof process.uptime(), typeof process.hrtime.bigint(), process.memoryUsage().rss > 0, process.versions.winterjs.length > 0);"#]));
+    assert!(out.starts_with("out-direct|"), "stdio: {out}");
+    assert!(out.contains("tick,promise true number bigint true true\n"), "order: {out}");
+}
+
+#[test]
+fn phase4_node_errors() {
+    // 未知内建（静态/动态）给可用列表；exitCode 非整数 TypeError。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(&dir, "bad.mjs", "import x from \"node:nope\";\nconsole.log(x);\n");
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("node:nope") && stderr.contains("node:path"), "stderr: {stderr}");
+    let out = winterjs().args(["eval", "await import(\"node:nope\")"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let out = winterjs().args(["eval", "process.exitCode = 1.5;"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("integer"), "stderr: {stderr}");
+    dir.close().unwrap();
+}

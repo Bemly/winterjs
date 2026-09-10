@@ -1,6 +1,11 @@
-//! 真装（plan Phase 5b）：下载 → ssri 校验 → 暂存解包 → `node_modules` 落地 →
-//! bin 链接 → lockfile。失败止于 rename 之前（坏包不进 `node_modules`）；
-//! 中断续传/缓存命中顺延 5c（此处每次全量重下，文档记录）。
+//! 真装（plan Phase 5b/5c）：下载 → ssri 校验 → 暂存解包 → `node_modules` 落地 →
+//! bin 链接 → lifecycle → lockfile。
+//! - 5c 缓存：`cache` 内容寻址（有 integrity 按内容，无则按 URL），命中跳过下载；
+//!   落盘 `tmp + rename` 原子，读损坏即驱逐当 miss。
+//! - 5c 中断续传：暂存 `.staging-*` 同盘 `rename` 原子提交，kill -9 只留孤儿暂存，
+//!   下次 `install_tree` 开头清掉；`node_modules` 内坏包永不以正式名可见；
+//!   lockfile/cache 同样原子写；`fs4` 独占锁串行化并发安装。
+//! - 5c lifecycle：落地后按 `preinstall/install/postinstall` 跑 shell（见 `lifecycle`）。
 
 use std::path::{Path, PathBuf};
 
@@ -10,26 +15,73 @@ use crate::pm::resolve::Resolved;
 /// lockfile 名（工程根）。
 pub const LOCKFILE: &str = "winterjs-lock.json";
 
-/// 安装一棵解树到 `root/node_modules`（顺序执行；并发顺延 5c）。
+/// 安装一棵解树到 `root/node_modules`（顺序执行；并发由 `fs4` 锁串行化）。
 pub async fn install_tree(root: &Path, tree: &[Resolved]) -> Result<(), Error> {
     let nm = root.join("node_modules");
     std::fs::create_dir_all(&nm).map_err(|e| Error::Other(format!("cannot create node_modules: {e}")))?;
+    cleanup_staging(&nm);
+    // 并发串行化（`fs4` 独占锁；守卫持到函数尾，drop 即解锁）。
+    let _lock = acquire_install_lock(&nm)?;
+    let nm_bin = nm.join(".bin");
     for r in tree {
-        install_one(&nm, r).await?;
+        install_one(&nm, &nm_bin, r).await?;
         println!("added {}@{}", r.name, r.version);
     }
     write_lockfile(root, tree)?;
     Ok(())
 }
 
-/// 单包：下载 → 校验 → 暂存解包 → 搬家 → bin。
-async fn install_one(nm: &Path, r: &Resolved) -> Result<(), Error> {
+/// 开头清孤儿暂存（上次 kill -9 残留；只删 `.staging-*`，正式包不动）。
+fn cleanup_staging(nm: &Path) {
+    let Ok(entries) = std::fs::read_dir(nm) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(".staging-") {
+            let p = entry.path();
+            if p.is_dir() {
+                let _ = std::fs::remove_dir_all(&p);
+            } else {
+                let _ = std::fs::remove_file(&p);
+            }
+            tracing::debug!(target: "winterjs::pm", staging = name.as_str(), "cleaned stale staging");
+        }
+        // 缓存/锁的 tmp 残留（`.tmp-*`）同样清理，防堆积。
+        if name.starts_with(".tmp-") || name.ends_with(".tmp") {
+            let p = entry.path();
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+}
+
+/// `node_modules/.install.lock` 独占锁（阻塞等；失败只记 warn 不中断，单机多装极罕见）。
+fn acquire_install_lock(nm: &Path) -> Result<std::fs::File, Error> {
+    let path = nm.join(".install.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| Error::Other(format!("cannot open install lock: {e}")))?;
+    // 文件锁轮子用 `fs4`（与 std::fs::File::lock 同源 flock/LockFileEx，此处显式走 fs4）。
+    if let Err(e) = fs4::FileExt::lock(&file) {
+        tracing::warn!(target: "winterjs::pm", "install lock busy, proceeding without: {e}");
+    } else {
+        tracing::debug!(target: "winterjs::pm", "install lock acquired");
+    }
+    Ok(file)
+}
+
+/// 单包：缓存命中则跳下载 → 校验 → 暂存解包 → 搬家 → bin → lifecycle。
+async fn install_one(nm: &Path, nm_bin: &Path, r: &Resolved) -> Result<(), Error> {
     tracing::info!(target: "winterjs::pm", package = r.name.as_str(), version = r.version.as_str(), "installing");
-    let bytes = download(&r.tarball).await?;
-    verify_bytes(r.integrity.as_deref(), &bytes)
+    let bytes = fetch_bytes(r).await?;
+    crate::pm::cache::verify_bytes(r.integrity.as_deref(), &bytes)
         .map_err(|e| Error::Other(format!("integrity check failed for {}@{}: {e}", r.name, r.version)))?;
     let dest = nm.join(&r.name);
-    // 暂存目录（同盘 rename；`install-<pid>-<rand>` 避并发撞名，5c 再收编）。
+    // 暂存目录（同盘 rename；`install-<pid>-<rand>` 避并发撞名）。
     let mut rand = [0u8; 4];
     getrandom::fill(&mut rand)
         .map_err(|e| Error::Other(format!("cannot get random values: {e}")))?;
@@ -57,7 +109,22 @@ async fn install_one(nm: &Path, r: &Resolved) -> Result<(), Error> {
         .map_err(|e| Error::Other(format!("cannot move into node_modules: {e}")))?;
     let _ = std::fs::remove_dir_all(&staging);
     link_bins(nm, &r.name, &dest)?;
+    crate::pm::lifecycle::run_package_scripts(&dest, &r.name, &r.version, nm_bin).await?;
     Ok(())
+}
+
+/// 缓存优先取字节（有 integrity 才查缓存；命中即返；miss 则下载后回填）。
+async fn fetch_bytes(r: &Resolved) -> Result<Vec<u8>, Error> {
+    if r.integrity.is_some()
+        && let Some(hit) = crate::pm::cache::get(&r.tarball, r.integrity.as_deref())
+    {
+        return Ok(hit);
+    }
+    tracing::debug!(target: "winterjs::pm", package = r.name.as_str(), "tarball cache miss");
+    let bytes = download(&r.tarball).await?;
+    // 回填失败吞掉（cache 侧已记 trace），不中断安装。
+    crate::pm::cache::put(&r.tarball, r.integrity.as_deref(), &bytes);
+    Ok(bytes)
 }
 
 /// tarball 下载（registry 同源 client；状态码非 2xx 即错）。
@@ -68,30 +135,6 @@ async fn download(url: &str) -> Result<Vec<u8>, Error> {
         return Err(Error::Other(format!("download returned {status} for '{url}'")));
     }
     resp.bytes().await.map(|b| b.to_vec()).map_err(|e| Error::Other(format!("download failed for '{url}': {e}")))
-}
-
-/// 完整性校验（integrity 优先 ssri；退 shasum sha1；皆无即错）。
-fn verify_bytes(integrity: Option<&str>, bytes: &[u8]) -> Result<(), String> {
-    match integrity {
-        Some(sri) if sri.starts_with("sha") => {
-            let parsed: ssri::Integrity = sri.parse().map_err(|e| format!("bad integrity '{sri}': {e}"))?;
-            ssri::IntegrityChecker::new(parsed)
-                .chain(bytes)
-                .result()
-                .map(|_| ())
-                .map_err(|e| format!("integrity mismatch: {e}"))
-        }
-        Some(shasum) => {
-            use sha1::Digest as _;
-            let hex = const_hex::encode(sha1::Sha1::digest(bytes));
-            if hex.eq_ignore_ascii_case(shasum.trim()) {
-                Ok(())
-            } else {
-                Err("shasum mismatch".into())
-            }
-        }
-        _ => Err("no integrity metadata (needs slice 5b strict)".into()),
-    }
 }
 
 /// tgz 解包到暂存（`package/` 包裹剥离；越界条目拒绝；返回包根）。
@@ -176,7 +219,7 @@ fn link_bins(nm: &Path, name: &str, dest: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// lockfile 写（`{version:1, packages:{name:{version,resolved,integrity}}}`）。
+/// lockfile 写（`{version:1, packages:{name:{version,resolved,integrity}}}`，原子）。
 fn write_lockfile(root: &Path, tree: &[Resolved]) -> Result<(), Error> {
     let mut packages = serde_json::Map::new();
     for r in tree {
@@ -191,6 +234,7 @@ fn write_lockfile(root: &Path, tree: &[Resolved]) -> Result<(), Error> {
     }
     let lock = serde_json::json!({ "version": 1, "packages": packages });
     let text = serde_json::to_string_pretty(&lock).map_err(Error::Json)?;
-    std::fs::write(root.join(LOCKFILE), text).map_err(|e| Error::Other(format!("cannot write lockfile: {e}")))?;
+    crate::pm::cache::atomic_write(&root.join(LOCKFILE), text.as_bytes())
+        .map_err(Error::Other)?;
     Ok(())
 }

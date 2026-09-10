@@ -2,9 +2,9 @@
 
 > 版本 `26.9.0`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 4 已完工（2026-09-10，`cargo test` 89+10 全绿，0 警告，
-> node:/process/path/os/fs/child_process/require/watch LOCAL 验收通过）；
-> 下一步 Phase 5 包管理（切片 a 进行中）。
+> 当前状态：Phase 5c 已完工（2026-09-10，`cargo test` 21+96 全绿，0 警告，
+> 缓存二次零回源 + lifecycle 按序 + 残留自愈验收通过）；
+> 下一步 Phase 5d（git/publish/upgrade/npmrc，顺延）。
 > 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
@@ -202,7 +202,17 @@
   （unix symlink + 可执行位，win 退拷贝）→ lockfile 读写 + 真装闭环
   （stub 下发包，装完 `require` 可跑）。`tests/cli.rs` 1 例；
   `cargo test` 92+14 全绿，0 警告。
-- [ ] 切片 c：缓存（blake3 布局 + 二次命中）+ lifecycle 脚本 + 中断续传。
+- [x] 切片 c（2026-09-10）：缓存（`src/pm/cache.rs`，有 integrity 按内容
+  `blake3(integrity)` 跨 registry 命中、无则按 URL；`$WINTERJS_CACHE/pkgs` >
+  系统缓存；命中复验防投毒 + `tmp+rename` 原子）+ lifecycle 脚本
+  （`src/pm/lifecycle.rs`，`preinstall/install/postinstall` 按序，cwd 包目录，
+  unix `/bin/sh -c`/win `cmd /C`，stdio 继承 + `kill_on_drop` + unix setsid 组长，
+  `npm_package_*` + PATH 前置 `.bin`；非零即失败）+ 中断续传
+  （暂存同盘 rename 提交 + 开头清 `.staging-*` 孤儿 + lockfile/cache 原子写 +
+  `fs4` 独占锁串行化；kill -9 只留孤儿暂存，下次自愈）。
+  `tests/cli.rs` 4 例（二次命中零回源/order 序/失败中断/残留自愈）+
+  模块单测 7 例（key/往返/原子/order/env/失败/缺脚本）；
+  `cargo test` 21+96 全绿，0 警告。
 - [ ] 切片 d（顺延）：git 依赖 + publish/login + upgrade + 镜像/npmrc。
 
 ## Phase 6 — serve（HTTP 服务）

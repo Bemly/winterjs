@@ -1482,3 +1482,276 @@ fn phase5_install_end_to_end_stub() {
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "42\n");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase5_cache_second_install_hits_cache() {
+    // 二次安装全命中缓存：tarball 只下一次，第二次删 node_modules 重装仍成功，
+    // 此时 stub 的 tarball 端点已翻为 404（若回源必败），证明走缓存。
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let tgz = make_tgz(&[
+        ("package.json", br#"{"name":"cached-pkg","version":"1.0.0","main":"index.js"}"#),
+        ("index.js", b"exports.v = 1;\n"),
+    ]);
+    let integrity = format!("sha512-{}", base64::engine::general_purpose::STANDARD.encode(sha2::Sha512::digest(&tgz)));
+    let tgz_holder = std::sync::Arc::new(tgz);
+    let int_holder = std::sync::Arc::new(integrity);
+    let tarball_hits = std::sync::Arc::new(AtomicUsize::new(0));
+    let hits = tarball_hits.clone();
+    // 首次 2 请求（packument+tarball），二次 1 请求（packument，tarball 必须零回源）。
+    let port = serve_http(3, move |head, _body| {
+        let line = head.lines().next().unwrap_or("").to_owned();
+        let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+        let port = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Host:").or_else(|| l.strip_prefix("host:")))
+            .and_then(|v| v.trim().split(':').nth(1))
+            .unwrap_or("")
+            .to_owned();
+        if path == "/cached-pkg" {
+            let body = serde_json::json!({
+                "name": "cached-pkg",
+                "dist-tags": { "latest": "1.0.0" },
+                "versions": { "1.0.0": {
+                    "dist": {
+                        "tarball": format!("http://127.0.0.1:{port}/cached-pkg/-/cached-pkg-1.0.0.tgz"),
+                        "integrity": *int_holder,
+                    },
+                    "dependencies": {},
+                } },
+            })
+            .to_string();
+            return (200, vec![("content-type", "application/json".into())], body.into_bytes());
+        }
+        if path == "/cached-pkg/-/cached-pkg-1.0.0.tgz" {
+            let n = hits.fetch_add(1, Ordering::SeqCst);
+            if n >= 1 {
+                return (404, vec![], b"gone".to_vec());
+            }
+            return (200, vec![("content-type", "application/octet-stream".into())], (*tgz_holder).clone());
+        }
+        (404, vec![], b"nope".to_vec())
+    });
+    let reg = format!("http://127.0.0.1:{port}");
+    let dir = assert_fs::TempDir::new().unwrap();
+    let cache = assert_fs::TempDir::new().unwrap();
+    let out = winterjs()
+        .arg("install")
+        .arg("cached-pkg")
+        .arg("--registry")
+        .arg(&reg)
+        .env("WINTERJS_CACHE", cache.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "first: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(tarball_hits.load(Ordering::SeqCst), 1);
+    // 缓存文件已落（pkgs/*.tgz）。
+    let cached: Vec<_> = std::fs::read_dir(cache.path().join("pkgs")).unwrap().collect();
+    assert_eq!(cached.len(), 1, "cache dir should hold one tgz");
+    // 删 node_modules 模拟二次安装（缓存保留）。
+    std::fs::remove_dir_all(dir.path().join("node_modules")).unwrap();
+    let out = winterjs()
+        .arg("install")
+        .arg("cached-pkg")
+        .arg("--registry")
+        .arg(&reg)
+        .env("WINTERJS_CACHE", cache.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "second (cache hit): {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(tarball_hits.load(Ordering::SeqCst), 1, "tarball must not be re-downloaded");
+    assert!(dir.path().join("node_modules/cached-pkg/package.json").is_file());
+    dir.close().unwrap();
+    cache.close().unwrap();
+}
+
+#[test]
+fn phase5_lifecycle_runs_in_order() {
+    // preinstall → install → postinstall 按序跑，cwd 即包目录。
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let tgz = make_tgz(&[
+        (
+            "package.json",
+            br#"{"name":"life-pkg","version":"1.0.0","scripts":{"preinstall":"printf '%s' pre >> order.txt","install":"printf '%s' \"$npm_lifecycle_event\" >> order.txt","postinstall":"printf '%s' post >> order.txt"}}"#,
+        ),
+        ("index.js", b"exports.v = 1;\n"),
+    ]);
+    let integrity = format!("sha512-{}", base64::engine::general_purpose::STANDARD.encode(sha2::Sha512::digest(&tgz)));
+    let tgz_holder = std::sync::Arc::new(tgz);
+    let int_holder = std::sync::Arc::new(integrity);
+    let port = serve_http(2, move |head, _body| {
+        let line = head.lines().next().unwrap_or("").to_owned();
+        let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+        let port = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Host:").or_else(|| l.strip_prefix("host:")))
+            .and_then(|v| v.trim().split(':').nth(1))
+            .unwrap_or("")
+            .to_owned();
+        if path == "/life-pkg" {
+            let body = serde_json::json!({
+                "name": "life-pkg",
+                "dist-tags": { "latest": "1.0.0" },
+                "versions": { "1.0.0": {
+                    "dist": {
+                        "tarball": format!("http://127.0.0.1:{port}/life-pkg/-/life-pkg-1.0.0.tgz"),
+                        "integrity": *int_holder,
+                    },
+                    "dependencies": {},
+                } },
+            })
+            .to_string();
+            return (200, vec![("content-type", "application/json".into())], body.into_bytes());
+        }
+        if path == "/life-pkg/-/life-pkg-1.0.0.tgz" {
+            return (200, vec![("content-type", "application/octet-stream".into())], (*tgz_holder).clone());
+        }
+        (404, vec![], b"nope".to_vec())
+    });
+    let reg = format!("http://127.0.0.1:{port}");
+    let dir = assert_fs::TempDir::new().unwrap();
+    let cache = assert_fs::TempDir::new().unwrap();
+    let out = winterjs()
+        .arg("install")
+        .arg("life-pkg")
+        .arg("--registry")
+        .arg(&reg)
+        .env("WINTERJS_CACHE", cache.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let order = std::fs::read_to_string(dir.path().join("node_modules/life-pkg/order.txt")).unwrap();
+    assert_eq!(order, "preinstallpost", "lifecycle order: {order}");
+    dir.close().unwrap();
+    cache.close().unwrap();
+}
+
+#[test]
+fn phase5_lifecycle_failure_breaks_install() {
+    // lifecycle 非零退出即安装失败（可读错误）。
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let tgz = make_tgz(&[
+        ("package.json", br#"{"name":"badlife","version":"1.0.0","scripts":{"postinstall":"exit 3"}}"#),
+        ("index.js", b"exports.v = 1;\n"),
+    ]);
+    let integrity = format!("sha512-{}", base64::engine::general_purpose::STANDARD.encode(sha2::Sha512::digest(&tgz)));
+    let tgz_holder = std::sync::Arc::new(tgz);
+    let int_holder = std::sync::Arc::new(integrity);
+    let port = serve_http(2, move |head, _body| {
+        let line = head.lines().next().unwrap_or("").to_owned();
+        let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+        let port = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Host:").or_else(|| l.strip_prefix("host:")))
+            .and_then(|v| v.trim().split(':').nth(1))
+            .unwrap_or("")
+            .to_owned();
+        if path == "/badlife" {
+            let body = serde_json::json!({
+                "name": "badlife",
+                "dist-tags": { "latest": "1.0.0" },
+                "versions": { "1.0.0": {
+                    "dist": {
+                        "tarball": format!("http://127.0.0.1:{port}/badlife/-/badlife-1.0.0.tgz"),
+                        "integrity": *int_holder,
+                    },
+                    "dependencies": {},
+                } },
+            })
+            .to_string();
+            return (200, vec![("content-type", "application/json".into())], body.into_bytes());
+        }
+        if path == "/badlife/-/badlife-1.0.0.tgz" {
+            return (200, vec![("content-type", "application/octet-stream".into())], (*tgz_holder).clone());
+        }
+        (404, vec![], b"nope".to_vec())
+    });
+    let reg = format!("http://127.0.0.1:{port}");
+    let dir = assert_fs::TempDir::new().unwrap();
+    let cache = assert_fs::TempDir::new().unwrap();
+    let out = winterjs()
+        .arg("install")
+        .arg("badlife")
+        .arg("--registry")
+        .arg(&reg)
+        .env("WINTERJS_CACHE", cache.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("postinstall"), "stderr: {stderr}");
+    dir.close().unwrap();
+    cache.close().unwrap();
+}
+
+#[test]
+fn phase5_stale_staging_recovered() {
+    // kill -9 模拟：孤儿 `.staging-*` + 半写 tmp 残留，下次安装自愈且不 corrupt。
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let tgz = make_tgz(&[
+        ("package.json", br#"{"name":"stale-pkg","version":"1.0.0","main":"index.js"}"#),
+        ("index.js", b"exports.v = 1;\n"),
+    ]);
+    let integrity = format!("sha512-{}", base64::engine::general_purpose::STANDARD.encode(sha2::Sha512::digest(&tgz)));
+    let tgz_holder = std::sync::Arc::new(tgz);
+    let int_holder = std::sync::Arc::new(integrity);
+    let port = serve_http(2, move |head, _body| {
+        let line = head.lines().next().unwrap_or("").to_owned();
+        let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+        let port = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Host:").or_else(|| l.strip_prefix("host:")))
+            .and_then(|v| v.trim().split(':').nth(1))
+            .unwrap_or("")
+            .to_owned();
+        if path == "/stale-pkg" {
+            let body = serde_json::json!({
+                "name": "stale-pkg",
+                "dist-tags": { "latest": "1.0.0" },
+                "versions": { "1.0.0": {
+                    "dist": {
+                        "tarball": format!("http://127.0.0.1:{port}/stale-pkg/-/stale-pkg-1.0.0.tgz"),
+                        "integrity": *int_holder,
+                    },
+                    "dependencies": {},
+                } },
+            })
+            .to_string();
+            return (200, vec![("content-type", "application/json".into())], body.into_bytes());
+        }
+        if path == "/stale-pkg/-/stale-pkg-1.0.0.tgz" {
+            return (200, vec![("content-type", "application/octet-stream".into())], (*tgz_holder).clone());
+        }
+        (404, vec![], b"nope".to_vec())
+    });
+    let reg = format!("http://127.0.0.1:{port}");
+    let dir = assert_fs::TempDir::new().unwrap();
+    let cache = assert_fs::TempDir::new().unwrap();
+    // 预埋孤儿暂存（模拟上次中断）。
+    let nm = dir.path().join("node_modules");
+    std::fs::create_dir_all(nm.join(".staging-999-deadbeef/package")).unwrap();
+    std::fs::write(nm.join(".staging-999-deadbeef/package/junk.txt"), b"half").unwrap();
+    let out = winterjs()
+        .arg("install")
+        .arg("stale-pkg")
+        .arg("--registry")
+        .arg(&reg)
+        .env("WINTERJS_CACHE", cache.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(!nm.join(".staging-999-deadbeef").exists(), "stale staging must be cleaned");
+    assert!(nm.join("stale-pkg/package.json").is_file(), "real package must land");
+    assert!(!nm.join("stale-pkg/junk.txt").exists(), "orphan junk must not leak into package");
+    dir.close().unwrap();
+    cache.close().unwrap();
+}

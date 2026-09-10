@@ -36,13 +36,13 @@ fn join_args(cx: &mut JSContext, frame: &Frame) -> String {
 /// SAFETY: 由引擎以有效调用帧调用（JSNative 约定）。
 macro_rules! console_sink {
     ($name:ident, $stderr:expr) => {
-        pub unsafe extern "C" fn $name(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool {
+        pub unsafe extern "C" fn $name(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool { unsafe {
             let mut cx = wrap_cx(cx_raw);
-            let frame = unsafe { Frame::from_raw(vp, argc) };
+            let frame = Frame::from_raw(vp, argc);
             emit($stderr, &join_args(&mut cx, &frame));
             frame.set_rval(UndefinedValue());
             true
-        }
+        }}
     };
 }
 
@@ -54,14 +54,14 @@ console_sink!(warn, true);
 console_sink!(error, true);
 
 /// console.trace：Phase 1 无栈信息，退化为 stderr 输出（文档已注明）。
-pub unsafe extern "C" fn trace(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub unsafe extern "C" fn trace(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool { unsafe {
     let mut cx = wrap_cx(cx_raw);
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     let joined = join_args(&mut cx, &frame);
     emit(true, &format!("Trace: {joined}"));
     frame.set_rval(UndefinedValue());
     true
-}
+}}
 
 /// JS 真值判定（console.assert 用）。
 fn truthy(cx: &mut JSContext, v: JSVal) -> bool {
@@ -80,9 +80,9 @@ fn truthy(cx: &mut JSContext, v: JSVal) -> bool {
 }
 
 /// console.assert(cond, ...rest)：条件为假时输出（不抛，规范行为）。
-pub unsafe extern "C" fn assert(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub unsafe extern "C" fn assert(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool { unsafe {
     let mut cx = wrap_cx(cx_raw);
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     let cond = if argc > 0 { frame.arg(0) } else { UndefinedValue() };
     if !truthy(&mut cx, cond) {
         let rest = if argc > 1 {
@@ -98,11 +98,11 @@ pub unsafe extern "C" fn assert(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32,
     }
     frame.set_rval(UndefinedValue());
     true
-}
+}}
 
-pub unsafe extern "C" fn count(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub unsafe extern "C" fn count(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool { unsafe {
     let mut cx = wrap_cx(cx_raw);
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     let label = if argc > 0 {
         value_to_string(&mut cx, frame.arg(0))
     } else {
@@ -116,11 +116,11 @@ pub unsafe extern "C" fn count(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, 
     emit(false, &format!("{label}: {n}"));
     frame.set_rval(UndefinedValue());
     true
-}
+}}
 
-pub unsafe extern "C" fn count_reset(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub unsafe extern "C" fn count_reset(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool { unsafe {
     let mut cx = wrap_cx(cx_raw);
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     let label = if argc > 0 {
         value_to_string(&mut cx, frame.arg(0))
     } else {
@@ -131,11 +131,11 @@ pub unsafe extern "C" fn count_reset(cx_raw: *mut mozjs::jsapi::JSContext, argc:
     });
     frame.set_rval(UndefinedValue());
     true
-}
+}}
 
-pub unsafe extern "C" fn time(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub unsafe extern "C" fn time(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool { unsafe {
     let mut cx = wrap_cx(cx_raw);
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     let label = if argc > 0 {
         value_to_string(&mut cx, frame.arg(0))
     } else {
@@ -146,11 +146,11 @@ pub unsafe extern "C" fn time(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, v
     });
     frame.set_rval(UndefinedValue());
     true
-}
+}}
 
-pub unsafe extern "C" fn time_log(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub unsafe extern "C" fn time_log(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool { unsafe {
     let mut cx = wrap_cx(cx_raw);
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     let label = if argc > 0 {
         value_to_string(&mut cx, frame.arg(0))
     } else {
@@ -163,11 +163,11 @@ pub unsafe extern "C" fn time_log(cx_raw: *mut mozjs::jsapi::JSContext, argc: u3
     }
     frame.set_rval(UndefinedValue());
     true
-}
+}}
 
-pub unsafe extern "C" fn time_end(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub unsafe extern "C" fn time_end(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool { unsafe {
     let mut cx = wrap_cx(cx_raw);
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     let label = if argc > 0 {
         value_to_string(&mut cx, frame.arg(0))
     } else {
@@ -180,11 +180,11 @@ pub unsafe extern "C" fn time_end(cx_raw: *mut mozjs::jsapi::JSContext, argc: u3
     }
     frame.set_rval(UndefinedValue());
     true
-}
+}}
 
-pub unsafe extern "C" fn group(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool {
+pub unsafe extern "C" fn group(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool { unsafe {
     let mut cx = wrap_cx(cx_raw);
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     let joined = join_args(&mut cx, &frame);
     if !joined.is_empty() {
         emit(false, &joined);
@@ -192,7 +192,7 @@ pub unsafe extern "C" fn group(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, 
     state::console_state(|p| p.console_indent += 1);
     frame.set_rval(UndefinedValue());
     true
-}
+}}
 
 pub unsafe extern "C" fn group_end(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let _ = cx_raw;

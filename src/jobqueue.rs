@@ -34,7 +34,7 @@ unsafe extern "C" fn get_host_defined_global(
 }
 
 /// SAFETY: 引擎在 JS::RunJobs 里回调；此处排空 microtask 队列直到为空。
-unsafe extern "C" fn run_jobs(cx: *mut mozjs::jsapi::JSContext) {
+unsafe extern "C" fn run_jobs(cx: *mut mozjs::jsapi::JSContext) { unsafe {
     let mut drained: u64 = 0;
     let mut swallowed: u64 = 0;
     loop {
@@ -58,15 +58,15 @@ unsafe extern "C" fn run_jobs(cx: *mut mozjs::jsapi::JSContext) {
         }
     }
     tracing::trace!(target: "winterjs::jobqueue", drained, swallowed, "microtasks drained");
-}
+}}
 
 /// SAFETY: 引擎 GC 时回调；追踪队列里以 JS::Value 存放的非 JS microtask。
-unsafe extern "C" fn trace_non_gc_thing_micro_task(trc: *mut JSTracer, value_ptr: *mut JSVal) {
+unsafe extern "C" fn trace_non_gc_thing_micro_task(trc: *mut JSTracer, value_ptr: *mut JSVal) { unsafe {
     // CallValueTracer 的 C++ 形参是 JS::Heap<Value>*；glue 侧 vtable 传的是同一槽位的
     // JS::Value*（布局一致），按 servo 的用法原地转交
     let heap_ptr = value_ptr as *mut mozjs::jsapi::Heap<JSVal>;
     CallValueTracer(trc, heap_ptr, c"winterjs-microtask".as_ptr());
-}
+}}
 
 static JOB_QUEUE_TRAPS: JobQueueTraps = JobQueueTraps {
     getHostDefinedData: Some(get_host_defined_data),
@@ -79,8 +79,8 @@ static JOB_QUEUE_TRAPS: JobQueueTraps = JobQueueTraps {
 ///
 /// # Safety
 /// cx 必须是当前线程活跃的引擎 context，且首段脚本求值前调用。
-pub unsafe fn install(cx: *mut mozjs::jsapi::JSContext) {
+pub unsafe fn install(cx: *mut mozjs::jsapi::JSContext) { unsafe {
     let queue = CreateJobQueue(&JOB_QUEUE_TRAPS);
     assert!(!queue.is_null(), "CreateJobQueue failed");
     SetJobQueue(cx, queue as *mut mozjs::jsapi::JobQueue);
-}
+}}

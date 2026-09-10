@@ -8,9 +8,8 @@ use std::time::{Duration, Instant};
 
 use mozjs::context::JSContext;
 use mozjs::gc::{RootedTraceableBox, Traceable};
-use mozjs::jsapi::{Heap, JSFunction, JS_GetFunctionObject, JS_NewFunction, JSObject, JSTracer};
+use mozjs::jsapi::{Heap, JS_GetFunctionObject, JS_NewFunction, JSObject, JSTracer};
 use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
-use mozjs::rooted;
 
 use crate::jsapi_glue::{Frame, value_to_string};
 
@@ -25,10 +24,10 @@ pub struct TimerEntry {
 
 // SAFETY: 只追踪 GC 字段；Instant/Duration/u32 无 GC 指针。
 unsafe impl Traceable for TimerEntry {
-    unsafe fn trace(&self, trc: *mut JSTracer) {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
         self.callback.trace(trc);
         self.args.trace(trc);
-    }
+    }}
 }
 
 /// 全部跨 GC 存活的 JS 值。
@@ -44,14 +43,14 @@ pub struct RootedState {
 
 // SAFETY: 同 TimerEntry，全字段 Traceable 或无 GC 指针。
 unsafe impl Traceable for RootedState {
-    unsafe fn trace(&self, trc: *mut JSTracer) {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
         self.timers.trace(trc);
         self.unhandled.trace(trc);
         self.call_fn.trace(trc);
         self.entries_fn.trace(trc);
         self.on_fulfilled.trace(trc);
         self.on_rejected.trace(trc);
-    }
+    }}
 }
 
 /// 不含 GC 指针的状态。
@@ -118,7 +117,7 @@ pub fn init(cx: &mut JSContext) {
             );
             assert!(!on_fulfilled.is_null() && !on_rejected.is_null(), "capture natives");
             {
-                let mut s = boxed.borrow_mut();
+                let s = boxed.borrow_mut();
                 s.on_fulfilled.set(ObjectValue(JS_GetFunctionObject(on_fulfilled)));
                 s.on_rejected.set(ObjectValue(JS_GetFunctionObject(on_rejected)));
             }
@@ -176,40 +175,34 @@ unsafe extern "C" fn on_fulfilled_native(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
     vp: *mut JSVal,
-) -> bool {
+) -> bool { unsafe {
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper（JS 线程单实例）
     let mut cx = JSContext::from_ptr(std::ptr::NonNull::new_unchecked(cx_raw));
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     frame.set_rval(UndefinedValue());
     let _ = &mut cx;
     true
-}
+}}
 
 /// SAFETY: 同上；arg0 为 rejection reason。
 unsafe extern "C" fn on_rejected_native(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
     vp: *mut JSVal,
-) -> bool {
+) -> bool { unsafe {
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = JSContext::from_ptr(std::ptr::NonNull::new_unchecked(cx_raw));
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     let reason = if argc > 0 { frame.arg(0) } else { UndefinedValue() };
     let s = value_to_string(&mut cx, reason);
     with_plain(|p| p.rejection_reasons.push(s));
     frame.set_rval(UndefinedValue());
     true
-}
+}}
 
 /// 供 runtime 在事件循环收尾把捕获 natives 挂到未处理 promise 上。
 pub fn capture_native_values() -> (JSVal, JSVal) {
     with_rooted(|s| (s.on_fulfilled.get(), s.on_rejected.get()))
-}
-
-/// `JSFunction*` → JS 值（调试/初始化辅助）。
-pub fn function_value(fun: *mut JSFunction) -> JSVal {
-    // SAFETY: fun 来自 JS_NewFunction 的有效返回
-    unsafe { ObjectValue(JS_GetFunctionObject(fun)) }
 }
 
 /// console 计数等纯 Rust 状态访问（builtins 用）。

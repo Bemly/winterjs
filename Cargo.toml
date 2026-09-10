@@ -5,6 +5,11 @@ edition = "2024"
 description = "A Bun-like JS runtime on Mozilla SpiderMonkey (via servo/mozjs)"
 license = "MPL-2.0"
 
+# rustc 的 check-cfg 尚不认识 ohos（src/alloc.rs 移动端门控用）：此处声明为预期值，
+# unexpected_cfgs 继续对拼写错误生效。
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("ohos"))'] }
+
 # 依赖来源：docs/dependencies.md（已批准采购单，2026-09-10 起全量引入）。
 # §2 特性门控为红线：配错 feature 会把 ✅ 变成 ⚠️/❌（native-tls/openssl、
 # aws-lc、bzip2(zip 0.5 默认 C)、zstd(C) 一律禁；config 的 yaml 经纯度审计已启用）。

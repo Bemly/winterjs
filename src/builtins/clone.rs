@@ -4,7 +4,6 @@
 //! NaN/±Infinity → DataCloneError（JSON 无法表示）。
 
 use mozjs::context::JSContext;
-use mozjs::gc::ValueArray;
 use mozjs::jsapi::{HandleValueArray, JS_GetElement, JS_ParseJSON, JSObject};
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
@@ -46,7 +45,7 @@ fn to_json(cx: &mut JSContext, v: JSVal, depth: usize) -> Result<serde_json::Val
     }
     if v.is_object() {
         // SAFETY: is_object 已判定；to_object 返回引擎对象指针
-        let obj = unsafe { v.to_object() };
+        let obj = v.to_object();
         rooted!(&in(cx) let obj_root: *mut JSObject = obj);
         rooted!(&in(cx) let val_root = v);
 
@@ -109,7 +108,7 @@ fn to_json(cx: &mut JSContext, v: JSVal, depth: usize) -> Result<serde_json::Val
         if !ok || !pair_rval.is_object() {
             return Err("entries enumeration failed".into());
         }
-        let entries_obj = unsafe { pair_rval.to_object() };
+        let entries_obj = pair_rval.to_object();
         rooted!(&in(cx) let entries_root: *mut JSObject = entries_obj);
         let mut len = 0u32;
         // SAFETY: entries_root 有效
@@ -128,7 +127,7 @@ fn to_json(cx: &mut JSContext, v: JSVal, depth: usize) -> Result<serde_json::Val
             if !ok || !pair.is_object() {
                 return Err("entry pair failed".into());
             }
-            let pair_obj = unsafe { pair.to_object() };
+            let pair_obj = pair.to_object();
             rooted!(&in(cx) let pair_root: *mut JSObject = pair_obj);
             rooted!(&in(cx) let mut key_v = UndefinedValue());
             rooted!(&in(cx) let mut val_v = UndefinedValue());
@@ -161,10 +160,10 @@ pub unsafe extern "C" fn structured_clone(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
     vp: *mut JSVal,
-) -> bool {
+) -> bool { unsafe {
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = wrap_cx(cx_raw);
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     if argc < 1 {
         report_error(&mut cx, "TypeError: structuredClone requires an argument");
         return false;
@@ -188,13 +187,11 @@ pub unsafe extern "C" fn structured_clone(
     let utf16: Vec<u16> = text.encode_utf16().collect();
 
     rooted!(&in(cx) let mut out = UndefinedValue());
-    // SAFETY: utf16 存活到调用返回；out 为 rooted 出参
-    let ok = unsafe {
-        JS_ParseJSON(cx.raw_cx(), utf16.as_ptr(), utf16.len() as u32, raw_handle_mut(out.as_ptr()))
-    };
+    // SAFETY: utf16 存活到调用返回；out 为 rooted 出参（外层 unsafe fn 体覆盖）
+    let ok = JS_ParseJSON(cx.raw_cx(), utf16.as_ptr(), utf16.len() as u32, raw_handle_mut(out.as_ptr()));
     if !ok {
         return false; // ParseJSON 已置异常
     }
     frame.set_rval(out.get());
     true
-}
+}}

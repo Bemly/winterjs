@@ -36,9 +36,9 @@ fn register_timer(cx: &mut JSContext, frame: &Frame, interval: bool) -> bool {
     let delay = Duration::from_secs_f64(clamp_delay(delay_ms) / 1e3);
     let id = state::next_timer_id();
 
-    let mut callback = Heap::default();
+    let callback = Heap::default();
     callback.set(cb);
-    let mut args_heap = Heap::default();
+    let args_heap = Heap::default();
     args_heap.set(args);
 
     state::with_rooted(|s| {
@@ -60,34 +60,34 @@ pub unsafe extern "C" fn set_timeout(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
     vp: *mut JSVal,
-) -> bool {
+) -> bool { unsafe {
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = wrap_cx(cx_raw);
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     register_timer(&mut cx, &frame, false)
-}
+}}
 
 /// SAFETY: 同 set_timeout。
 pub unsafe extern "C" fn set_interval(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
     vp: *mut JSVal,
-) -> bool {
+) -> bool { unsafe {
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = wrap_cx(cx_raw);
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     register_timer(&mut cx, &frame, true)
-}
+}}
 
 /// SAFETY: 由引擎以有效调用帧调用；arg0 为数值 id。
 pub unsafe extern "C" fn clear_timeout(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
     vp: *mut JSVal,
-) -> bool {
+) -> bool { unsafe {
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = wrap_cx(cx_raw);
-    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let frame = Frame::from_raw(vp, argc);
     let _ = &mut cx;
     let id_v = if argc > 0 { frame.arg(0) } else { UndefinedValue() };
     let id = if id_v.is_number() {
@@ -113,7 +113,7 @@ pub unsafe extern "C" fn clear_timeout(
     tracing::debug!(target: "winterjs::timers", id, removed, "timer cleared");
     frame.set_rval(UndefinedValue());
     true
-}
+}}
 
 /// 事件循环里最近的触发时刻。
 pub fn next_deadline() -> Option<Instant> {

@@ -36,9 +36,9 @@ use crate::state;
 ///
 /// # Safety
 /// `cx_raw` 必须是引擎回调给出的有效指针，且仅在 JS 线程使用。
-pub unsafe fn wrap_cx(cx_raw: *mut mozjs::jsapi::JSContext) -> JSContext {
+pub unsafe fn wrap_cx(cx_raw: *mut mozjs::jsapi::JSContext) -> JSContext { unsafe {
     JSContext::from_ptr(std::ptr::NonNull::new_unchecked(cx_raw))
-}
+}}
 
 /// JSNative 调用帧布局（JSAPI 约定）：vp[0]=callee/返回值槽（复用），vp[1]=this，vp[2..]=实参。
 /// 不变式由 `from_raw` 一次性确立，之后 `arg`/`set_rval` 均为 safe 访问器。
@@ -80,7 +80,7 @@ impl Frame {
 /// （console.log 的参数转换不应让脚本爆炸，Phase 1 简化处理）。
 pub fn value_to_string(cx: &mut JSContext, v: JSVal) -> String {
     rooted!(&in(cx) let val = v);
-    match unsafe { String::from_jsval(cx, val.handle(), ()) } {
+    match String::from_jsval(cx, val.handle(), ()) {
         Ok(ConversionResult::Success(s)) => s,
         Ok(ConversionResult::Failure(_)) => "<unstringifiable>".into(),
         Err(_) => {
@@ -153,7 +153,7 @@ pub fn exc_name_is(cx: &mut JSContext, exc: JSVal, name: &str) -> bool {
         return false;
     }
     // SAFETY: is_object 已判定
-    let obj = unsafe { exc.to_object() };
+    let obj = exc.to_object();
     match get_prop_string(cx, obj, c"name") {
         Some(n) => n == name,
         None => false,
@@ -175,9 +175,7 @@ pub fn pending_exception_error(
         unsafe { mozjs::gc::Handle::from_marked_location(&global) },
     );
     rooted!(&in(&mut realm) let mut exc = mozjs::jsval::UndefinedValue());
-    match unsafe {
-        mozjs::rust::error_info_from_exception_stack(&mut realm, exc.handle_mut())
-    } {
+    match mozjs::rust::error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
         Some(info) => {
             let line = info.line.saturating_sub(state::line_adjust());
             Error::script(filename, source, line, info.col, info.message)

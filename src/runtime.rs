@@ -8,7 +8,6 @@
 
 use std::ffi::CString;
 use std::ptr;
-use std::time::Instant;
 
 use mozjs::conversions::{ConversionResult, FromJSValConvertible as _};
 use mozjs::gc::RootedGuard;
@@ -74,7 +73,7 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
     // JS engine handle must outlive every Runtime.
     let engine = JSEngine::init().map_err(|_| Error::Other("failed to init JS engine".into()))?;
     let mut rt = Runtime::new(engine.handle());
-    let cx = rt.cx();
+    let _cx = rt.cx();
     // TLS 状态必须先于引擎销毁（见 state::shutdown 文档）
     let _state_guard = state::StateGuard;
 
@@ -115,16 +114,14 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
         let prelude_filename = CString::new("__wjs_prelude.js").expect("no NUL");
         let prelude_options = CompileOptionsWrapper::new(&realm, prelude_filename, 1);
         rooted!(&in(&mut realm) let mut prelude_rval = UndefinedValue());
-        // SAFETY: prelude 是项目自带常量脚本，语法必然正确
-        let ok = unsafe {
-            evaluate_script(
-                &mut realm,
-                global.handle(),
-                builtins::PRELUDE,
-                prelude_rval.handle_mut(),
-                prelude_options,
-            )
-        };
+        // prelude 是项目自带常量脚本，语法必然正确
+        let ok = evaluate_script(
+            &mut realm,
+            global.handle(),
+            builtins::PRELUDE,
+            prelude_rval.handle_mut(),
+            prelude_options,
+        );
         if ok.is_err() {
             return Err(pending_error_in_realm(
                 &mut realm,
@@ -159,10 +156,8 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
     {
         let c_filename = CString::new(filename).unwrap_or_else(|_| c"script.js".into());
         let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
-        // SAFETY: evaluate_script 内部自进 realm；rval 为 rooted 出参，跨事件循环存活
-        let res = unsafe {
-            evaluate_script(rt.cx(), global.handle(), source, rval.handle_mut(), options)
-        };
+        // evaluate_script 内部自进 realm；rval 为 rooted 出参，跨事件循环存活
+        let res = evaluate_script(rt.cx(), global.handle(), source, rval.handle_mut(), options);
         if res.is_err() {
             if mode == Mode::Eval {
                 let r = eval_syntax_fallback(&mut rt, &global, source, filename).await;
@@ -204,9 +199,8 @@ async fn eval_syntax_fallback(
     {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         rooted!(&in(&mut realm) let mut exc = UndefinedValue());
-        // SAFETY: realm 内读取 pending exception（会消费异常值）
-        let info =
-            unsafe { error_info_from_exception_stack(&mut realm, exc.handle_mut()) };
+        // realm 内读取 pending exception（会消费异常值）
+        let info = error_info_from_exception_stack(&mut realm, exc.handle_mut());
         let is_await = info
             .as_ref()
             .map(|i| eval_await_failure(&i.message))
@@ -236,10 +230,8 @@ async fn eval_syntax_fallback(
         let c_filename = CString::new(filename).unwrap_or_else(|_| c"eval.js".into());
         let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
         rooted!(&in(rt.cx()) let mut wrapped_rval = UndefinedValue());
-        // SAFETY: 同 run()；包装版行号偏移经 line_adjust 校正
-        let res = unsafe {
-            evaluate_script(rt.cx(), global.handle(), &wrapped, wrapped_rval.handle_mut(), options)
-        };
+        // 同 run()；包装版行号偏移经 line_adjust 校正
+        let res = evaluate_script(rt.cx(), global.handle(), &wrapped, wrapped_rval.handle_mut(), options);
         if res.is_ok() {
             event_loop(rt, global, source, filename).await?;
             let r = extract_eval_result(rt, global, source, filename);
@@ -250,9 +242,8 @@ async fn eval_syntax_fallback(
         let (info, is_syntax) = {
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
             rooted!(&in(&mut realm) let mut exc = UndefinedValue());
-            // SAFETY: realm 内读取 pending exception（消费异常值）
-            let info =
-                unsafe { error_info_from_exception_stack(&mut realm, exc.handle_mut()) };
+            // realm 内读取 pending exception（消费异常值）
+            let info = error_info_from_exception_stack(&mut realm, exc.handle_mut());
             let is_syntax = exc_name_is(&mut realm, exc.get(), "SyntaxError");
             if is_syntax {
                 // SAFETY: 解析期失败无副作用，清除后重试
@@ -356,7 +347,7 @@ unsafe extern "C" fn rejection_tracker(
 ) {
     match state_ {
         PromiseRejectionHandlingState::Unhandled => {
-            let mut heap = mozjs::jsapi::Heap::default();
+            let heap = mozjs::jsapi::Heap::default();
             heap.set(promise.get());
             tracing::debug!(target: "winterjs::promise", promise = ?promise.get(), "rejection unhandled");
             state::with_rooted(|s| s.unhandled.push(heap));
@@ -376,8 +367,8 @@ fn pending_error_in_realm(
     line_adjust: u32,
 ) -> Error {
     rooted!(&in(realm) let mut exc = UndefinedValue());
-    // SAFETY: realm 内读取 pending exception
-    match unsafe { error_info_from_exception_stack(realm, exc.handle_mut()) } {
+    // realm 内读取 pending exception
+    match error_info_from_exception_stack(realm, exc.handle_mut()) {
         Some(info) => Error::script(
             filename,
             source,
@@ -405,7 +396,7 @@ fn extract_eval_result(
     if ok && !err.is_undefined() {
         // Error 对象读 message/lineNumber/columnNumber；非对象值退化为 ToString
         let (message, line, col) = if err.is_object() {
-            let obj = unsafe { err.to_object() };
+            let obj = err.to_object();
             rooted!(&in(&mut realm) let obj_root: *mut JSObject = obj);
             let message = get_prop_string(&mut realm, obj_root.get(), c"message")
                 .unwrap_or_default();
@@ -447,7 +438,7 @@ fn print_completion(
     }
     let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
     rooted!(&in(&mut realm) let rv = rval);
-    match unsafe { String::from_jsval(&mut realm, rv.handle(), ()) } {
+    match String::from_jsval(&mut realm, rv.handle(), ()) {
         Ok(ConversionResult::Success(s)) => println!("{s}"),
         _ => println!("<non-stringifiable result>"),
     }

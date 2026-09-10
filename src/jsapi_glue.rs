@@ -1,13 +1,17 @@
 //! JSNative 调用帧与常用 JSAPI 便捷封装。
-//! 本模块属 mozjs 边界（AGENTS §6 允许 unsafe 的区域）；每处 unsafe 注明前置条件。
+//! 本模块是项目的 unsafe 集中地（AGENTS §6）：除 hooks/jobqueue/state 的引擎协议
+//! 代码外，所有裸 JSAPI 调用必须收敛到本模块的封装函数；每处 unsafe 注明前置条件，
+//! 并用 `UNSAFE-BOUNDARY` 标签登记覆盖测试（黑盒重点）。
 
 use std::ffi::{CStr, CString};
 
 use mozjs::conversions::{ConversionResult, FromJSValConvertible as _};
 use mozjs::context::JSContext;
-use mozjs::jsapi::JSObject;
-use mozjs::jsval::JSVal;
+use mozjs::gc::ValueArray;
+use mozjs::jsapi::{HandleValueArray, JS_CallFunctionValue, JSObject};
+use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
+use mozjs::typedarray::{CreateWith, TypedArray, Uint8};
 
 /// rust Handle 指针位置 → 裸 jsapi Handle（同一标记位置直拷）。
 ///
@@ -181,5 +185,113 @@ pub fn pending_exception_error(
             Error::script(filename, source, line, info.col, info.message)
         }
         None => Error::Other("uncaught JS exception (no stack info)".into()),
+    }
+}
+
+// ── 集中边界调用（UNSAFE-BOUNDARY 登记区）─────────────────────────────────
+// 规则：业务模块禁直接调本节之外的裸 JSAPI；新增收敛函数必须带
+// `UNSAFE-BOUNDARY` 标签（前置条件 + 覆盖测试名），供黑盒重点回归。
+
+/// UNSAFE-BOUNDARY: 调单参函数 `fun(arg)`（this=global；返回 rval；失败 None）。
+/// 前置：cx 在 realm 内；fun 为可调用；调用后 pending exception 由调用方处理。
+/// 覆盖：`phase3_fetch_http_get`、`phase3_fetch_errors_are_rejections`、
+/// `phase3_websocket_echo_and_close`（经 fetch/ws dispatch）。
+pub fn call_one(
+    cx: &mut JSContext,
+    global: *mut JSObject,
+    fun: JSVal,
+    arg: JSVal,
+) -> Option<JSVal> {
+    rooted!(&in(cx) let fun_root = fun);
+    rooted!(&in(cx) let arg_root = arg);
+    rooted!(&in(cx) let mut rval = UndefinedValue());
+    // SAFETY: 单实参直构（§4.9）；fun/arg 为有效 rooted 值；rval 为 rooted 出参
+    let args = HandleValueArray::from(unsafe { raw_handle(arg_root.as_ptr()) });
+    let ok = unsafe {
+        JS_CallFunctionValue(
+            cx.raw_cx(),
+            raw_handle(&global),
+            raw_handle(fun_root.as_ptr()),
+            &args,
+            raw_handle_mut(rval.as_ptr()),
+        )
+    };
+    if ok { Some(rval.get()) } else { None }
+}
+
+/// UNSAFE-BOUNDARY: 调双参函数 `fun(a, b)`（fire_due 的 ValueArray 模式）。
+/// 前置：cx 在 realm 内；仅事件循环上下文可用（native 内禁 `Rooted<ValueArray>`，§4.9）。
+/// 覆盖：`phase3_fetch_http_get`、`phase3_fetch_data_and_file`（经 fetch deliver）。
+pub fn call_two(
+    cx: &mut JSContext,
+    global: *mut JSObject,
+    fun: JSVal,
+    a: JSVal,
+    b: JSVal,
+) -> Option<JSVal> {
+    rooted!(&in(cx) let fun_root = fun);
+    rooted!(&in(cx) let argv = ValueArray::new([a, b]));
+    rooted!(&in(cx) let mut rval = UndefinedValue());
+    let args_array = HandleValueArray {
+        length_: 2,
+        // SAFETY: argv 为栈上 Rooted 槽，存活到调用返回，元素被 GC 追踪
+        elements_: argv.as_ptr().cast(),
+    };
+    // SAFETY: cx/global/fun 均有效；rval 为 rooted 出参
+    let ok = unsafe {
+        JS_CallFunctionValue(
+            cx.raw_cx(),
+            raw_handle(&global),
+            raw_handle(fun_root.as_ptr()),
+            &args_array,
+            raw_handle_mut(rval.as_ptr()),
+        )
+    };
+    if ok { Some(rval.get()) } else { None }
+}
+
+/// UNSAFE-BOUNDARY: 由字节建 Uint8Array。
+/// 前置：cx 在 realm 内；bytes 存活到调用返回。
+/// 覆盖：`phase3_text_encoder_decoder`、`phase3_subtle_digest_vectors`、
+/// `phase3_aes_gcm_roundtrip`、`phase3_fetch_data_and_file`、
+/// `phase3_websocket_echo_and_close`（二进制消息）。
+pub fn uint8_array(cx: &mut JSContext, bytes: &[u8]) -> Option<*mut JSObject> {
+    rooted!(&in(cx) let mut obj: *mut JSObject = std::ptr::null_mut());
+    // SAFETY: realm 内创建；obj 为 rooted 出参；bytes 存活到调用返回
+    let ok = unsafe {
+        TypedArray::<Uint8, *mut JSObject>::create(cx, CreateWith::Slice(bytes), obj.handle_mut())
+    };
+    if ok.is_err() || obj.is_null() {
+        None
+    } else {
+        Some(obj.get())
+    }
+}
+
+/// UNSAFE-BOUNDARY: Uint8Array 实参 → 字节拷贝（safe 读，无裸指针）。
+/// 非 Uint8 视图/共享内存/detached 一律 TypeError（切片行为见各调用方文档）。
+/// 覆盖：`phase3_text_decoder_fatal`、`phase3_crypto_random`（配额/类型错）、
+/// `phase3_aes_gcm_roundtrip`、`phase3_hmac_sign_verify`、`phase3_fetch_http_post_echo`。
+pub fn view_bytes(cx: &mut JSContext, v: JSVal, what: &str) -> Option<Vec<u8>> {
+    if !v.is_object() {
+        report_error(cx, &format!("TypeError: {what} requires a Uint8Array"));
+        return None;
+    }
+    // SAFETY: is_object 已判定（to_object/from/as_slice_safe 均为 safe API）
+    let obj = v.to_object();
+    let Ok(arr) = TypedArray::<Uint8, *mut JSObject>::from(obj) else {
+        report_error(cx, &format!("TypeError: {what} requires a Uint8Array"));
+        return None;
+    };
+    if arr.is_shared() {
+        report_error(cx, &format!("TypeError: {what} does not accept SharedArrayBuffer views yet"));
+        return None;
+    }
+    match arr.as_slice_safe(cx.no_gc()) {
+        Some(s) => Some(s.to_vec()),
+        None => {
+            report_error(cx, &format!("TypeError: {what} view is detached"));
+            None
+        }
     }
 }

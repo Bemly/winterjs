@@ -8,8 +8,8 @@ use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 use mozjs::typedarray::{CreateWith, TypedArray, Uint8};
 
-use super::encoding::view_bytes;
-use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
+
+use crate::jsapi_glue::{report_error, value_to_string, view_bytes, wrap_cx, Frame};
 
 /// `__wjs_aesgcm_encrypt(keyU8, ivU8, aadU8?, plainU8)` → Uint8Array(ct‖tag)。
 /// 仅 128-bit tag（JWK 常用线）；其余抛 NotSupportedError。
@@ -325,7 +325,7 @@ pub unsafe extern "C" fn subtle_digest(
     }
     let alg = value_to_string(&mut cx, frame.arg(0));
     let data = frame.arg(1);
-    let bytes = match super::encoding::view_bytes(&mut cx, data, "digest data") {
+    let bytes = match view_bytes(&mut cx, data, "digest data") {
         Some(b) => b,
         None => return false,
     };

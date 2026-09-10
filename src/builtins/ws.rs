@@ -17,10 +17,10 @@ use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 
-use crate::builtins::encoding::view_bytes;
-use crate::builtins::fetch::uint8_array;
+
+
 use crate::error::Error;
-use crate::jsapi_glue::{raw_handle, raw_handle_mut, report_error, value_to_string, wrap_cx, Frame};
+use crate::jsapi_glue::{raw_handle, raw_handle_mut, report_error, uint8_array, value_to_string, view_bytes, wrap_cx, Frame};
 use crate::state;
 
 /// 读任务 → 事件循环（纯数据）。

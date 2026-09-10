@@ -9,7 +9,7 @@ use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::typedarray::{CreateWith, TypedArray, Uint8};
 
-use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
+use crate::jsapi_glue::{report_error, value_to_string, view_bytes, wrap_cx, Frame};
 
 fn arg_string(cx: &mut JSContext, frame: &Frame, i: u32, what: &str) -> Option<String> {
     if frame.argc() <= i {
@@ -23,31 +23,6 @@ fn set_rval_string(cx: &mut JSContext, frame: &Frame, s: &str) {
     rooted!(&in(cx) let mut v = UndefinedValue());
     s.to_jsval(cx, v.handle_mut());
     frame.set_rval(v.get());
-}
-
-/// Uint8Array 实参 → 字节拷贝（共享内存/非 Uint8 视图一律 TypeError，切片 a 范围）。
-pub(crate) fn view_bytes(cx: &mut JSContext, v: JSVal, what: &str) -> Option<Vec<u8>> {
-    if !v.is_object() {
-        report_error(cx, &format!("TypeError: {what} requires a Uint8Array"));
-        return None;
-    }
-    // SAFETY: is_object 已判定
-    let obj = v.to_object();
-    let Ok(arr) = TypedArray::<Uint8, *mut JSObject>::from(obj) else {
-        report_error(cx, &format!("TypeError: {what} requires a Uint8Array"));
-        return None;
-    };
-    if arr.is_shared() {
-        report_error(cx, &format!("TypeError: {what} does not accept SharedArrayBuffer views yet"));
-        return None;
-    }
-    match arr.as_slice_safe(cx.no_gc()) {
-        Some(s) => Some(s.to_vec()),
-        None => {
-            report_error(cx, &format!("TypeError: {what} view is detached"));
-            None
-        }
-    }
 }
 
 /// `__wjs_btoa(s)`：Latin-1 → base64；超界抛 InvalidCharacterError。

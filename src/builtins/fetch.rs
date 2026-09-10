@@ -10,15 +10,12 @@ use std::time::Duration;
 
 use mozjs::context::JSContext;
 use mozjs::conversions::ToJSValConvertible as _;
-use mozjs::gc::ValueArray;
-use mozjs::jsapi::{HandleValueArray, JS_CallFunctionValue, JSObject};
+use mozjs::jsapi::JSObject;
 use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
-use mozjs::typedarray::{CreateWith, TypedArray, Uint8};
 
-use crate::builtins::encoding::view_bytes;
 use crate::error::Error;
-use crate::jsapi_glue::{raw_handle, raw_handle_mut, report_error, value_to_string, wrap_cx, Frame};
+use crate::jsapi_glue::{call_one, call_two, report_error, uint8_array, value_to_string, view_bytes, wrap_cx, Frame};
 use crate::state;
 
 /// 任务 → 事件循环的完成包（纯数据，可跨 await）。
@@ -55,59 +52,6 @@ fn arg_string(cx: &mut JSContext, frame: &Frame, i: u32, what: &str) -> Option<S
     Some(value_to_string(cx, frame.arg(i)))
 }
 
-/// 调单参函数 `fun(arg)`（this=global；返回 rval；失败清场并 None）。
-pub(crate) fn call_one(
-    cx: &mut JSContext,
-    global: *mut JSObject,
-    fun: JSVal,
-    arg: JSVal,
-) -> Option<JSVal> {
-    rooted!(&in(cx) let fun_root = fun);
-    rooted!(&in(cx) let arg_root = arg);
-    rooted!(&in(cx) let mut rval = UndefinedValue());
-    // SAFETY: 单实参直构（§4.9）；fun/arg 为有效 rooted 值；rval 为 rooted 出参
-    let args = HandleValueArray::from(unsafe { raw_handle(arg_root.as_ptr()) });
-    let ok = unsafe {
-        JS_CallFunctionValue(
-            cx.raw_cx(),
-            raw_handle(&global),
-            raw_handle(fun_root.as_ptr()),
-            &args,
-            raw_handle_mut(rval.as_ptr()),
-        )
-    };
-    if ok { Some(rval.get()) } else { None }
-}
-
-/// 调双参函数 `fun(a, b)`（fire_due 的 ValueArray 模式；事件循环上下文可用）。
-fn call_two(
-    cx: &mut JSContext,
-    global: *mut JSObject,
-    fun: JSVal,
-    a: JSVal,
-    b: JSVal,
-) -> Option<JSVal> {
-    rooted!(&in(cx) let fun_root = fun);
-    rooted!(&in(cx) let argv = ValueArray::new([a, b]));
-    rooted!(&in(cx) let mut rval = UndefinedValue());
-    let args_array = HandleValueArray {
-        length_: 2,
-        // SAFETY: argv 为栈上 Rooted 槽，存活到调用返回，元素被 GC 追踪
-        elements_: argv.as_ptr().cast(),
-    };
-    // SAFETY: cx/global/fun 均有效；rval 为 rooted 出参
-    let ok = unsafe {
-        JS_CallFunctionValue(
-            cx.raw_cx(),
-            raw_handle(&global),
-            raw_handle(fun_root.as_ptr()),
-            &args_array,
-            raw_handle_mut(rval.as_ptr()),
-        )
-    };
-    if ok { Some(rval.get()) } else { None }
-}
-
 /// prelude 辅助函数取值（init 时已缓存，见 `runtime.rs`）。
 fn helpers() -> Option<(JSVal, JSVal)> {
     state::with_rooted(|s| {
@@ -119,20 +63,6 @@ fn helpers() -> Option<(JSVal, JSVal)> {
             Some((a, b))
         }
     })
-}
-
-/// 由字节建 Uint8Array（1 个边界 `unsafe`，见 §6 审计）。
-pub(crate) fn uint8_array(cx: &mut JSContext, bytes: &[u8]) -> Option<*mut JSObject> {
-    rooted!(&in(cx) let mut obj: *mut JSObject = std::ptr::null_mut());
-    // SAFETY: realm 内创建；obj 为 rooted 出参；bytes 存活到调用返回
-    let ok = unsafe {
-        TypedArray::<Uint8, *mut JSObject>::create(cx, CreateWith::Slice(bytes), obj.handle_mut())
-    };
-    if ok.is_err() || obj.is_null() {
-        None
-    } else {
-        Some(obj.get())
-    }
 }
 
 /// 交付：调 resolve(Response) 或 reject(Error)。前置：realm 内。

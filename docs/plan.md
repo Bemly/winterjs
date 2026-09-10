@@ -361,14 +361,36 @@
 - Phase 7 完工（2026-09-11）：sqlite/REPL/test/init/watch/FFI，
   `cargo test` 55+141 全绿，0 警告，冒烟 5/5。
 
-## Phase 8 — polish（lint/权限/远程缓存/上报）
+## Phase 8 — polish（lint/权限/远程缓存/上报，开工 2026-09-11，权限先行）
 
 - 目标：发布前收尾。
 - 引入依赖：oxc 自带 linter/formatter（开特性）、`cap-std`（权限模型）、
   `object_store`（远程缓存，后期）、`sentry`（默认关闭，后期）、`russh`（私有仓，后期）。
 - 做：`winterjs lint/fmt`、权限开关（`--allow-*`，cap-std 打底）、崩溃上报 opt-in。
-- 验收：默认权限拒绝越界 fs 访问并给出可读错误。
+- 验收：沙箱模式下越界 fs 访问默认拒绝并给出可读错误（权限为 opt-in：
+  不传 `--allow-*` 行为不变，Bun 同款；传任一 `--allow-*` 即进沙箱，
+  未授权类默认拒绝）。
 - 完成标准：发 `27.x` 前全矩阵 CI（含 android/ohos）转正，§1 的 ⚠️ 清零或有书面理由。
+- [x] lint/fmt 顺延（2026-09-11，书面理由）：计划所写"oxc 开特性"不成立——
+  oxc 门面 crate 无 linter/formatter 特性，且 `oxc_linter` 从未发布到 crates.io、
+  `oxc_formatter` 是 2023 年 0.0.0 占位；git vendor 需拖未发布 workspace，
+  与"crates.io 有版本才引"惯例相悖。上游发布后回 caret 引入。
+- [x] 切片 b（2026-09-11）：权限开关 `--allow-*`（`src/permissions.rs`，opt-in 沙箱：
+  不传旗标行为不变（141 例存量黑盒零回归），传任一 `--allow-*`/`--allow-all` 即进沙箱，
+  未授权类默认拒绝，错误 `PermissionError: ...`（可读、可 catch、fs/sqlite 包装层直通不转形）。
+  旗标：`--allow-read[=path,...]`/`--allow-write[=...]`/`--allow-env[=VAR,...]`/
+  `--allow-run[=cmd,...]`/`--allow-ffi`/`--allow-all`（Run/Eval/Test 三子命令 flatten；
+  裸旗标=该类全开，`=a,b` 清单，require_equals 防吞位置参数）。授权模型：Grant
+  {None=未授, Some(空)=全开, Some(清单)}；路径清单 canonicalize 后前缀包含
+  （不存在目标归一化到最近存在祖先，防 symlink 逃逸）；env 按键名、run 按首词
+  basename、ffi 布尔。强制点：fs 全 native（arg_path_checked 类别显式）+ fs.exists +
+  env 四 native + 枚举专用检查 + child_process 三入口 + sqlite open（:memory: 豁免，
+  文件库读+写双查）+ ffi dlopen。
+  偏差（书面记录）：cap-std ambient-authority Dir 化未采用——需重构 15+ 个 fs
+  native，与收益不成比；落法为边界校验（canonicalize + 前缀），cap-std 依赖保留
+  批准单内后续可用。模块单测 5 例（语义/拒绝/路径包含/env-run 匹配/CLI 解析，
+  serial）+ 黑盒 3 例（fs 四态/env+run/sqlite+ffi）；`cargo test` 60+144 全绿，
+  0 警告，冒烟 5/5。
 
 ## 全局纪律
 

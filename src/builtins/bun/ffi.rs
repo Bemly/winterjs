@@ -74,6 +74,10 @@ pub unsafe extern "C" fn ffi_dlopen(
     }
     let path = value_to_string(&mut cx, frame.arg(0));
     let names_json = value_to_string(&mut cx, frame.arg(1));
+    if let Err(msg) = crate::permissions::check_ffi() {
+        report_error(&mut cx, &msg);
+        return false;
+    }
     let Ok(names) = serde_json::from_str::<Vec<String>>(&names_json) else {
         report_error(&mut cx, "TypeError: dlopen: bad names JSON");
         return false;

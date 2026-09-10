@@ -241,6 +241,13 @@ pub unsafe extern "C" fn sqlite_open(
     let Some(path) = arg_string(&mut cx, &frame, 0, "sqlite open") else {
         return false;
     };
+    if path != ":memory:" {
+        // 文件库要读 + 写（WAL/journal）；只授读不足以安全打开
+        if let Err(msg) = crate::permissions::check_read(&path).and_then(|_| crate::permissions::check_write(&path)) {
+            report_error(&mut cx, &msg);
+            return false;
+        }
+    }
     match open_worker(path) {
         Ok(worker) => {
             let id = state::sqlite_add(worker);
@@ -477,6 +484,12 @@ function __wjs_sqlite_args(args) {
 function __wjs_sqlite_wrap(fn) {
   try { return fn(); } catch (e) {
     const m = String((e && e.message) || e);
+    // 权限拒绝直通（不转 SqliteError；fs 同款）
+    if (m.startsWith("PermissionError:")) {
+      const perr = new Error(m.slice("PermissionError: ".length));
+      perr.name = "PermissionError";
+      throw perr;
+    }
     throw new SqliteError(m.startsWith("SqliteError: ") ? m.slice("SqliteError: ".length) : m);
   }
 }

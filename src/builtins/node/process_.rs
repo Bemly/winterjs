@@ -52,6 +52,10 @@ pub unsafe extern "C" fn env_get(
         return false;
     }
     let key = value_to_string(&mut cx, frame.arg(0));
+    if let Err(msg) = crate::permissions::check_env(&key) {
+        report_error(&mut cx, &msg);
+        return false;
+    }
     match std::env::var_os(&key) {
         Some(v) => set_rval_str(&mut cx, &frame, &v.to_string_lossy()),
         None => frame.set_rval(UndefinedValue()),
@@ -73,6 +77,10 @@ pub unsafe extern "C" fn env_set(
         return false;
     }
     let (key, val) = (value_to_string(&mut cx, frame.arg(0)), value_to_string(&mut cx, frame.arg(1)));
+    if let Err(msg) = crate::permissions::check_env(&key) {
+        report_error(&mut cx, &msg);
+        return false;
+    }
     // SAFETY: 全进程环境表；写入只发生在 JS 独占线程，启动期配置读取早已完成，
     // 其余并发读（tokio 任务）与写不同 key；同 key 竞争语义与 Node 等价（后写赢）。
     unsafe { std::env::set_var(&key, &val) };
@@ -94,6 +102,10 @@ pub unsafe extern "C" fn env_del(
         return false;
     }
     let key = value_to_string(&mut cx, frame.arg(0));
+    if let Err(msg) = crate::permissions::check_env(&key) {
+        report_error(&mut cx, &msg);
+        return false;
+    }
     // SAFETY: 同上
     unsafe { std::env::remove_var(&key) };
     frame.set_rval(UndefinedValue());
@@ -109,6 +121,10 @@ pub unsafe extern "C" fn env_keys(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
+    if let Err(msg) = crate::permissions::check_env_keys() {
+        report_error(&mut cx, &msg);
+        return false;
+    }
     let keys: Vec<String> = std::env::vars_os().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
     set_rval_str(&mut cx, &frame, &serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into()));
     true

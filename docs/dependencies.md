@@ -523,6 +523,10 @@ multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 ax
   `pkcs12`（serve 只收 PEM）、`users`（→`uzers`）、`hex`（→`const-hex`）、
   `tree-sitter*`（→`oxc`）、`syntect`（→手写高亮）、`rental`/`owning_ref`（停更，用 `ouroboros`）、
   `qcell`（aliasing 靠架构纪律，不引 GhostCell）、`redb` 的其他包装（无）。
+- `oxc_linter`/`oxc_formatter`（2026-09-11 实测顺延，非否决）：oxc 门面无
+  linter/formatter 特性；`oxc_linter` 未发布 crates.io，`oxc_formatter` 为
+  2023 年 0.0.0 占位。git vendor 需拖未发布 workspace，不入表；上游发布后
+  按 caret 引入（`winterjs lint/fmt` 随之落地，见 plan Phase 8）。
 - 打包器（rolldown 级）与 HTML/CSS 工具链（`lol-html`/`lightningcss`/`html5ever`）：
   Phase 待定，用时再验再入表。
 

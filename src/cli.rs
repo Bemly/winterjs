@@ -31,6 +31,31 @@ pub struct Cli {
     pub cmd: Cmd,
 }
 
+/// `--allow-*` 权限旗标（Phase 8-b；任一出现即进沙箱，Bun 同款 opt-in）。
+/// 旗标无值 = 该类全开；`=a,b` 或重复出现 = 允许清单。
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct PermissionArgs {
+    /// Allow filesystem reads (optionally: --allow-read=<path>[,<path>...])
+    #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
+    pub allow_read: Option<Vec<String>>,
+    /// Allow filesystem writes (optionally: --allow-write=<path>[,<path>...])
+    #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
+    pub allow_write: Option<Vec<String>>,
+    /// Allow environment variable access (optionally: --allow-env=<VAR>[,<VAR>...])
+    #[arg(long, value_name = "VAR", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
+    pub allow_env: Option<Vec<String>>,
+    /// Allow spawning child processes (optionally: --allow-run=<cmd>[,<cmd>...])
+    #[arg(long, value_name = "CMD", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
+    pub allow_run: Option<Vec<String>>,
+    /// Allow FFI (dlopen of native libraries)
+    #[arg(long)]
+    pub allow_ffi: bool,
+    /// Allow everything (no sandbox)
+    #[arg(long)]
+    pub allow_all: bool,
+}
+
+
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
     /// Run a JS file and print its completion value
@@ -40,11 +65,15 @@ pub enum Cmd {
         /// Script arguments (as `process.argv.slice(2)`)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+        #[command(flatten)]
+        perms: PermissionArgs,
     },
     /// Evaluate inline JS code
     Eval {
         /// The code to evaluate
         code: String,
+        #[command(flatten)]
+        perms: PermissionArgs,
     },
     /// Show resolved settings (or their JSON Schema with --schema)
     Config {
@@ -121,6 +150,8 @@ pub enum Cmd {
         /// Re-run tests when watched files change (Ctrl-C to stop)
         #[arg(long)]
         watch: bool,
+        #[command(flatten)]
+        perms: PermissionArgs,
     },
     /// Serve a directory over HTTP (Phase 6)
     Serve {

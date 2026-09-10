@@ -11,6 +11,7 @@ mod logging;
 mod modules;
 mod initpkg;
 mod pm;
+mod permissions;
 mod repl;
 mod runtime;
 mod serve;
@@ -68,6 +69,20 @@ fn main() {
     std::process::exit(code);
 }
 
+/// CLI 旗标 → 权限集（沙箱 opt-in：任一 `--allow-*` 出现即启用）。
+fn install_permissions(perms: &cli::PermissionArgs) {
+    let p = permissions::Permissions {
+        read: permissions::grant_from_values(perms.allow_read.clone()),
+        write: permissions::grant_from_values(perms.allow_write.clone()),
+        env: permissions::grant_from_values(perms.allow_env.clone()),
+        run: permissions::grant_from_values(perms.allow_run.clone()),
+        ffi: perms.allow_ffi,
+        allow_all: perms.allow_all,
+    };
+    tracing::debug!(target: "winterjs::permissions", sandbox = p.sandboxed(), "installed");
+    permissions::install(p);
+}
+
 async fn dispatch(cli: Cli, settings: &settings::Settings) -> i32 {
     let r = dispatch_inner(cli, settings).await;
     match &r {
@@ -85,7 +100,8 @@ async fn dispatch(cli: Cli, settings: &settings::Settings) -> i32 {
 
 async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), Error> {
     match cli.cmd {
-        Cmd::Run { path, args } => {
+        Cmd::Run { path, args, perms } => {
+            install_permissions(&perms);
             let source = std::fs::read_to_string(&path).map_err(|source| Error::IoRead {
                 path: path.clone(),
                 source,
@@ -93,7 +109,10 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             let filename = path.to_string_lossy().into_owned();
             runtime::run(&source, &filename, runtime::Mode::Script, &args).await
         }
-        Cmd::Eval { code } => runtime::run(&code, "eval.js", runtime::Mode::Eval, &[]).await,
+        Cmd::Eval { code, perms } => {
+            install_permissions(&perms);
+            runtime::run(&code, "eval.js", runtime::Mode::Eval, &[]).await
+        }
         Cmd::Config { schema } => {
             if schema {
                 let schema = schemars::schema_for!(settings::Settings);
@@ -130,7 +149,8 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             initpkg::init(&cwd, name.as_deref(), yes).await
         }
         Cmd::Repl => runtime::repl().await,
-        Cmd::Test { paths, filter, watch } => {
+        Cmd::Test { paths, filter, watch, perms } => {
+            install_permissions(&perms);
             let cwd = std::env::current_dir()
                 .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
             testrun::run_tests(&cwd, &testrun::TestOpts { paths, filter, watch }).await

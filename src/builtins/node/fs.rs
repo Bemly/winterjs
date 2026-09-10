@@ -44,6 +44,32 @@ pub fn io_code(e: &std::io::Error) -> &'static str {
     }
 }
 
+/// 权限类别（Phase 8-b）：native 对路径的访问方式，边界检查用。
+enum PermClass {
+    Read,
+    Write,
+}
+
+/// 路径实参 + 权限检查（`--allow-*` 沙箱；拒绝即上报并返回 None）。
+fn arg_path_checked(
+    cx: &mut mozjs::context::JSContext,
+    frame: &Frame,
+    i: u32,
+    what: &str,
+    class: PermClass,
+) -> Option<String> {
+    let path = arg_path(cx, frame, i, what)?;
+    let result = match class {
+        PermClass::Read => crate::permissions::check_read(&path),
+        PermClass::Write => crate::permissions::check_write(&path),
+    };
+    if let Err(msg) = result {
+        report_error(cx, &msg);
+        return None;
+    }
+    Some(path)
+}
+
 /// 路径实参（string|URL；`file:` URL 转本地路径；BufferSource 拒之）。
 fn arg_path(cx: &mut mozjs::context::JSContext, frame: &Frame, i: u32, what: &str) -> Option<String> {
     if frame.argc() <= i {
@@ -125,7 +151,7 @@ pub unsafe extern "C" fn fs_read_file(
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(path) = arg_path(&mut cx, &frame, 0, "readFile") else {
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "readFile", PermClass::Read) else {
         return false;
     };
     match fs_err::read(&path) {
@@ -147,7 +173,7 @@ pub unsafe extern "C" fn fs_write_file(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
     let (Some(path), Some(data)) = (
-        arg_path(&mut cx, &frame, 0, "writeFile"),
+        arg_path_checked(&mut cx, &frame, 0, "writeFile", PermClass::Write),
         arg_bytes(&mut cx, &frame, 1, "writeFile"),
     ) else {
         return false;
@@ -185,7 +211,7 @@ pub unsafe extern "C" fn fs_append_file(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
     let (Some(path), Some(data)) = (
-        arg_path(&mut cx, &frame, 0, "appendFile"),
+        arg_path_checked(&mut cx, &frame, 0, "appendFile", PermClass::Write),
         arg_bytes(&mut cx, &frame, 1, "appendFile"),
     ) else {
         return false;
@@ -248,7 +274,7 @@ pub unsafe extern "C" fn fs_stat(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(path) = arg_path(&mut cx, &frame, 0, "stat") else {
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "stat", PermClass::Read) else {
         return false;
     };
     let follow = frame.argc() < 2 || frame.arg(1) == mozjs::jsval::BooleanValue(true);
@@ -274,7 +300,7 @@ pub unsafe extern "C" fn fs_mkdir(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(path) = arg_path(&mut cx, &frame, 0, "mkdir") else {
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "mkdir", PermClass::Write) else {
         return false;
     };
     let recursive = frame.argc() > 1 && frame.arg(1).to_boolean();
@@ -300,7 +326,7 @@ pub unsafe extern "C" fn fs_rm(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(path) = arg_path(&mut cx, &frame, 0, "rm") else {
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "rm", PermClass::Write) else {
         return false;
     };
     let argb = |i: u32| frame.argc() > i && frame.arg(i).to_boolean();
@@ -350,7 +376,7 @@ pub unsafe extern "C" fn fs_readdir(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(path) = arg_path(&mut cx, &frame, 0, "readdir") else {
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "readdir", PermClass::Read) else {
         return false;
     };
     let with_types = frame.argc() > 1 && frame.arg(1).to_boolean();
@@ -409,8 +435,8 @@ pub unsafe extern "C" fn fs_rename(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
     let (Some(old), Some(new)) = (
-        arg_path(&mut cx, &frame, 0, "rename"),
-        arg_path(&mut cx, &frame, 1, "rename"),
+        arg_path_checked(&mut cx, &frame, 0, "rename", PermClass::Read),
+        arg_path_checked(&mut cx, &frame, 1, "rename", PermClass::Write),
     ) else {
         return false;
     };
@@ -436,8 +462,8 @@ pub unsafe extern "C" fn fs_copy_file(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
     let (Some(src), Some(dst)) = (
-        arg_path(&mut cx, &frame, 0, "copyFile"),
-        arg_path(&mut cx, &frame, 1, "copyFile"),
+        arg_path_checked(&mut cx, &frame, 0, "copyFile", PermClass::Read),
+        arg_path_checked(&mut cx, &frame, 1, "copyFile", PermClass::Write),
     ) else {
         return false;
     };
@@ -465,7 +491,12 @@ pub unsafe extern "C" fn fs_exists(
     let exists = if frame.argc() < 1 || !frame.arg(0).is_string() {
         false
     } else {
-        std::path::Path::new(&value_to_string(&mut cx, frame.arg(0))).exists()
+        let p = value_to_string(&mut cx, frame.arg(0));
+        if let Err(msg) = crate::permissions::check_read(&p) {
+            report_error(&mut cx, &msg);
+            return false;
+        }
+        std::path::Path::new(&p).exists()
     };
     frame.set_rval(mozjs::jsval::BooleanValue(exists));
     true
@@ -480,7 +511,7 @@ pub unsafe extern "C" fn fs_realpath(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(path) = arg_path(&mut cx, &frame, 0, "realpath") else {
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "realpath", PermClass::Read) else {
         return false;
     };
     match std::fs::canonicalize(&path) {
@@ -504,7 +535,7 @@ pub unsafe extern "C" fn fs_mkdtemp(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(prefix) = arg_path(&mut cx, &frame, 0, "mkdtemp") else {
+    let Some(prefix) = arg_path_checked(&mut cx, &frame, 0, "mkdtemp", PermClass::Write) else {
         return false;
     };
     for _ in 0..8 {
@@ -572,7 +603,7 @@ pub unsafe extern "C" fn watch_start(
         return false;
     }
     let (Some(path), recursive, persistent, listener) = (
-        arg_path(&mut cx, &frame, 0, "watch"),
+        arg_path_checked(&mut cx, &frame, 0, "watch", PermClass::Read),
         frame.argc() > 1 && frame.arg(1) == mozjs::jsval::BooleanValue(true),
         frame.argc() <= 2 || frame.arg(2) != mozjs::jsval::BooleanValue(false),
         frame.arg(3),
@@ -700,7 +731,7 @@ pub unsafe extern "C" fn fs_unlink(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(path) = arg_path(&mut cx, &frame, 0, "unlink") else {
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "unlink", PermClass::Write) else {
         return false;
     };
     match fs_err::remove_file(&path) {
@@ -724,7 +755,7 @@ pub unsafe extern "C" fn fs_rmdir(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(path) = arg_path(&mut cx, &frame, 0, "rmdir") else {
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "rmdir", PermClass::Write) else {
         return false;
     };
     let recursive = frame.argc() > 1 && frame.arg(1) == mozjs::jsval::BooleanValue(true);
@@ -763,6 +794,13 @@ mod tests {
 pub const SOURCE: &str = r#"
 function __fsErr(e, syscall, path) {
   const m = String((e && e.message) || e);
+  // 权限拒绝直通（不套 io 形状；Deno NotCapable 同款可读错）
+  if (m.startsWith("PermissionError:")) {
+    const perr = new Error(m.slice("PermissionError: ".length));
+    perr.name = "PermissionError";
+    perr.path = path;
+    throw perr;
+  }
   const code = (m.match(/^([A-Z_]+): /) || [])[1] || "UNKNOWN";
   const rest = m.replace(/^[A-Z_]+: /, "");
   const err = new Error(`${code}: ${syscall} '${path}' ${rest}`.trim());

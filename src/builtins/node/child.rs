@@ -216,6 +216,10 @@ pub unsafe extern "C" fn cp_exec(
         return false;
     }
     let cmd_str = value_to_string(&mut cx, frame.arg(0));
+    if let Err(msg) = crate::permissions::check_run(&cmd_str) {
+        report_error(&mut cx, &msg);
+        return false;
+    }
     let Some(opts) = parse_opts(&mut cx, &frame, 1) else {
         return false;
     };
@@ -294,6 +298,10 @@ pub unsafe extern "C" fn spawn_start(
         return false;
     };
     let args: Vec<String> = serde_json::from_str(&args_s).unwrap_or_default();
+    if let Err(msg) = crate::permissions::check_run(&[file.clone(), args.first().cloned().unwrap_or_default()].join(" ")) {
+        report_error(&mut cx, &msg);
+        return false;
+    }
     let mut opts = if frame.argc() > 2 {
         match parse_opts(&mut cx, &frame, 2) {
             Some(o) => o,
@@ -484,6 +492,10 @@ pub unsafe extern "C" fn cp_spawn(
     let file = value_to_string(&mut cx, frame.arg(0));
     let args_s = value_to_string(&mut cx, frame.arg(1));
     let args: Vec<String> = serde_json::from_str(&args_s).unwrap_or_default();
+    if let Err(msg) = crate::permissions::check_run(&[file.clone(), args.first().cloned().unwrap_or_default()].join(" ")) {
+        report_error(&mut cx, &msg);
+        return false;
+    }
     let Some(opts) = parse_opts(&mut cx, &frame, 2) else {
         return false;
     };

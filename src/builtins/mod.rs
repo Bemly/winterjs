@@ -9,6 +9,7 @@ pub mod encoding;
 pub mod fetch;
 pub mod timers;
 pub mod url;
+pub mod ws;
 
 use std::ffi::CString;
 
@@ -551,6 +552,87 @@ globalThis.__wjs_make_response = (metaJson, bodyU8) => {
   return resp;
 };
 globalThis.__wjs_make_fetch_error = (msg) => new Error(String(msg));
+globalThis.__wjs_make_ws_event = (kind, json, binU8, target) => {
+  const meta = JSON.parse(json);
+  if (kind === "open") return { type: "open", target, protocol: meta.protocol ?? "" };
+  if (kind === "message-text") return { type: "message", target, data: meta.text };
+  if (kind === "message-bin") return { type: "message", target, data: binU8.buffer };
+  if (kind === "close") {
+    return { type: "close", target, code: meta.code, reason: meta.reason, wasClean: !!meta.clean };
+  }
+  return { type: "error", target, message: meta.message };
+};
+const __wjs_wsObjs = new Map();
+globalThis.__wjs_ws_emit = (id, prop, kind, json, binU8) => {
+  const t = __wjs_wsObjs.get(id);
+  if (!t) return;
+  const st = __wjs_wskState.get(t);
+  const event = globalThis.__wjs_make_ws_event(kind, json, binU8, t);
+  if (prop === "onopen") {
+    st.readyState = 1;
+    if (event.protocol) st.protocol = event.protocol;
+  }
+  if (prop === "onclose") {
+    st.readyState = 3;
+    __wjs_wsObjs.delete(id);
+  }
+  const h = t[prop];
+  if (typeof h === "function") h.call(t, event);
+};
+const __wjs_wskState = new WeakMap();
+globalThis.WebSocket = class WebSocket {
+  static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+  constructor(url, protocols) {
+    let protos = [];
+    if (protocols !== undefined) {
+      protos = Array.isArray(protocols) ? protocols.map(String) : [String(protocols)];
+    }
+    const href = String(url instanceof URL ? url.href : url);
+    __wjs_wskState.set(this, {
+      url: href, protocol: "", readyState: 0, binaryType: "arraybuffer",
+      bufferedAmount: 0, onopen: null, onmessage: null, onclose: null, onerror: null,
+    });
+    const id = __wjs_ws_connect(href, JSON.stringify(protos), this);
+    __wjs_wskState.get(this).id = id;
+    __wjs_wsObjs.set(id, this);
+  }
+  get url() { return __wjs_wskState.get(this).url; }
+  get protocol() { return __wjs_wskState.get(this).protocol; }
+  get readyState() { return __wjs_wskState.get(this).readyState; }
+  get bufferedAmount() { return 0; }
+  get binaryType() { return __wjs_wskState.get(this).binaryType; }
+  set binaryType(v) {
+    if (v !== "blob" && v !== "arraybuffer") throw new TypeError("binaryType must be 'blob' or 'arraybuffer'");
+    __wjs_wskState.get(this).binaryType = v;
+  }
+  get onopen() { return __wjs_wskState.get(this).onopen; }
+  set onopen(v) { __wjs_wskState.get(this).onopen = v; }
+  get onmessage() { return __wjs_wskState.get(this).onmessage; }
+  set onmessage(v) { __wjs_wskState.get(this).onmessage = v; }
+  get onclose() { return __wjs_wskState.get(this).onclose; }
+  set onclose(v) { __wjs_wskState.get(this).onclose = v; }
+  get onerror() { return __wjs_wskState.get(this).onerror; }
+  set onerror(v) { __wjs_wskState.get(this).onerror = v; }
+  send(data) {
+    const st = __wjs_wskState.get(this);
+    if (st.readyState === 0) throw new Error("InvalidStateError: WebSocket is not open");
+    if (st.readyState !== 1) return;
+    if (typeof data === "string") __wjs_ws_send(st.id, 0, data);
+    else if (data instanceof Uint8Array) __wjs_ws_send(st.id, 1, data);
+    else if (data instanceof ArrayBuffer) __wjs_ws_send(st.id, 1, new Uint8Array(data));
+    else if (ArrayBuffer.isView(data)) __wjs_ws_send(st.id, 1, new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+    else throw new TypeError("WebSocket send: unsupported data type");
+  }
+  close(code = 1005, reason = "") {
+    const st = __wjs_wskState.get(this);
+    if (code !== 1005 && (!Number.isInteger(code) || code < 1000 || code > 4999 || [1004, 1005, 1006, 1015].includes(code))) {
+      throw new Error("InvalidAccessError: bad WebSocket close code");
+    }
+    if (st.readyState === 3) return;
+    st.readyState = 2;
+    __wjs_ws_close(st.id, code, String(reason));
+  }
+};
 // ---- Phase 3c-2: streams（纯 prelude 内存实现；默认 reader，非 BYOB）----
 const __wjs_rsState = new WeakMap();
 function __wjs_rsPull(st) {
@@ -921,6 +1003,9 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_hmac_sign", Some(crypto::hmac_sign), 3),
             ("__wjs_hmac_verify", Some(crypto::hmac_verify), 4),
             ("__wjs_fetch_start", Some(fetch::fetch_start), 6),
+            ("__wjs_ws_connect", Some(ws::ws_connect), 3),
+            ("__wjs_ws_send", Some(ws::ws_send), 3),
+            ("__wjs_ws_close", Some(ws::ws_close), 3),
         ];
         for (name, native, nargs) in web {
             let cname = CString::new(*name).expect("no NUL");

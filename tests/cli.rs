@@ -664,3 +664,59 @@ fn phase3_hmac_sign_verify() {
         r#"const hk = await crypto.subtle.importKey("raw", new TextEncoder().encode("k"), { name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]); const sig = await crypto.subtle.sign("HMAC", hk, new TextEncoder().encode("m")); console.log(new Uint8Array(sig).length, await crypto.subtle.verify("HMAC", hk, sig, new TextEncoder().encode("m")), await crypto.subtle.verify("HMAC", hk, sig, new TextEncoder().encode("x")), (await crypto.subtle.exportKey("jwk", hk)).kty);"#]));
     assert_eq!(out, "32 true false oct\n", "hmac: {out}");
 }
+
+#[test]
+fn phase3_websocket_echo_and_close() {
+    // 本机回显服务器（tokio，ephemeral 端口）：文本/二进制原样返回。
+    // std listener 主线程建好后移交线程——backlog 接住先到的 SYN，无需轮询等待。
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    std_listener.set_nonblocking(true).unwrap();
+    let port = std_listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                use futures::{SinkExt as _, StreamExt as _};
+                while let Some(msg) = ws.next().await {
+                    let Ok(msg) = msg else { break };
+                    if msg.is_text() || msg.is_binary() {
+                        if ws.send(msg).await.is_err() {
+                            break;
+                        }
+                    } else if msg.is_close() {
+                        // 回 close 帧完成握手，再排空到对端 FIN（避免 RST 竞态）
+                        let _ = ws.send(tokio_tungstenite::tungstenite::Message::Close(None)).await;
+                        while ws.next().await.is_some() {}
+                        break;
+                    }
+                }
+            });
+    });
+    let code = format!(
+        r#"const log = []; const ws = new WebSocket("ws://127.0.0.1:{port}/c"); ws.onopen = () => ws.send("ping"); ws.onmessage = (e) => {{ if (typeof e.data === "string") {{ log.push(e.data); ws.send(new Uint8Array([7, 8])); }} else {{ log.push("bin:" + new Uint8Array(e.data).join(",")); ws.close(1000, "bye"); }} }}; ws.onclose = (e) => console.log(log.join("|") + "|close:" + e.code + ":" + e.wasClean); undefined;"#
+    );
+    assert_eq!(
+        stdout_of(&mut winterjs().args(["eval", &code])),
+        "ping|bin:7,8|close:1000:true\n"
+    );
+}
+
+#[test]
+fn phase3_websocket_bad_url_and_send_while_connecting() {
+    // 非 ws scheme 直接抛；CONNECTING 时 send 抛（连不上的端口测 readyState 报错面）
+    let out = winterjs().args(["eval", r#"new WebSocket("http://x/")"#]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let code = format!(
+        r#"const ws = new WebSocket("ws://127.0.0.1:{port}/"); try {{ ws.send("early"); console.log("no-throw"); }} catch (e) {{ console.log("send-while-connecting-throws"); }}"#
+    );
+    assert_eq!(
+        stdout_of(&mut winterjs().args(["eval", &code])),
+        "send-while-connecting-throws\n"
+    );
+}

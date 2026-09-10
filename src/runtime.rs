@@ -96,6 +96,7 @@ async fn run_module(
     global: &RootedGuard<'_, *mut JSObject>,
     url: &Url,
     fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchResult>,
+    ws_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsEvent>,
 ) -> Result<(), Error> {
     use mozjs::rust::wrappers2::{ModuleEvaluate, ModuleLink};
 
@@ -138,7 +139,7 @@ async fn run_module(
         }
     }
 
-    event_loop(rt, global, ErrorSource::Module { url: url.as_str() }, fetch_rx).await?;
+    event_loop(rt, global, ErrorSource::Module { url: url.as_str() }, fetch_rx, ws_rx).await?;
 
     // 收割入口决议（事件循环的排空已驱动捕获回调）。
     let (fulfillment, rejection) =
@@ -222,12 +223,13 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
             ));
         }
 
-        // 缓存 prelude 辅助函数值（timers/structuredClone/fetch 交付要用）
+        // 缓存 prelude 辅助函数值（timers/structuredClone/fetch/ws 交付要用）
         for (prop, idx) in [
             (c"__wjs_call", 0u8),
             (c"__wjs_entries", 1u8),
             (c"__wjs_make_response", 2u8),
             (c"__wjs_make_fetch_error", 3u8),
+            (c"__wjs_ws_emit", 4u8),
         ] {
             rooted!(&in(&mut realm) let mut v = UndefinedValue());
             // SAFETY: global 为有效 rooted 对象
@@ -245,20 +247,23 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
                 0 => s.call_fn.set(got),
                 1 => s.entries_fn.set(got),
                 2 => s.make_response_fn.set(got),
-                _ => s.make_fetch_error_fn.set(got),
+                3 => s.make_fetch_error_fn.set(got),
+                _ => s.ws_emit_fn.set(got),
             });
         }
     }
 
-    // fetch 驱动端点：发送端进 TLS，接收端由本次 run 持有并传给事件循环
+    // fetch/ws 驱动端点：发送端进 TLS，接收端由本次 run 持有并传给事件循环
     let (fetch_tx, mut fetch_rx) = tokio::sync::mpsc::unbounded_channel();
     state::with_plain(|p| p.fetch_tx = Some(fetch_tx));
+    let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
+    state::with_plain(|p| p.ws_tx = Some(ws_tx));
 
     // 模块嗅探（仅 Script；Eval 保持经典语义，import 即 SyntaxError）。
     // 解析失败 → 回落经典（经典求值会给出它自己的报错）。
     if mode == Mode::Script {
         if let Some(url) = sniff_module(filename, source) {
-            let r = run_module(&mut rt, &global, &url, &mut fetch_rx).await;
+            let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx).await;
             // §4.8：跳过引擎/运行时析构
             forget_engine(rt, engine);
             return r;
@@ -273,7 +278,7 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
         let res = evaluate_script(rt.cx(), global.handle(), source, rval.handle_mut(), options);
         if res.is_err() {
             if mode == Mode::Eval {
-                let r = eval_syntax_fallback(&mut rt, &global, source, filename, &mut fetch_rx).await;
+                let r = eval_syntax_fallback(&mut rt, &global, source, filename, &mut fetch_rx, &mut ws_rx).await;
                 // §4.8：跳过引擎/运行时析构（StoreBuffer 悬垂边在 destroyRuntime 的小 GC 里 SEGV）
                 forget_engine(rt, engine);
                 return r;
@@ -295,7 +300,7 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
                 && crate::loader::load_js(source, filename, &path).is_ok()
             {
                 tracing::info!(target: "winterjs::runtime", url = url.as_str(), "retrying as module");
-                let r = run_module(&mut rt, &global, &url, &mut fetch_rx).await;
+                let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx).await;
                 forget_engine(rt, engine);
                 return r;
             }
@@ -310,7 +315,7 @@ pub async fn run(source: &str, filename: &str, mode: Mode) -> Result<(), Error> 
 
     // 未包装成功的场景（含全部 Script 与无顶层 await 的 Eval）：
     // 完成值就是 rval（老行为）；仅 async IIFE 包装路径才读 __wjs_value。
-    event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx).await?;
+    event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx).await?;
     let r = print_completion(&mut rt, &global, rval.get());
     // §4.8：跳过引擎/运行时析构（带 timer 的路径在 JS_DestroyContext 里 SEGV）。
     // CLI 进程即将退出，内存由 OS 回收；见 AGENTS §4.8。
@@ -335,6 +340,7 @@ async fn eval_syntax_fallback(
     source: &str,
     filename: &str,
     fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchResult>,
+    ws_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsEvent>,
 ) -> Result<(), Error> {
     let original = {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
@@ -380,7 +386,7 @@ async fn eval_syntax_fallback(
         // 同 run()；包装版行号偏移经 line_adjust 校正
         let res = evaluate_script(rt.cx(), global.handle(), &wrapped, wrapped_rval.handle_mut(), options);
         if res.is_ok() {
-            event_loop(rt, global, ErrorSource::Script { source, filename }, fetch_rx).await?;
+            event_loop(rt, global, ErrorSource::Script { source, filename }, fetch_rx, ws_rx).await?;
             let r = extract_eval_result(rt, global, source, filename);
             // engine/rt 由外层 run() 统一 forget（见 §4.8）
             return r;
@@ -422,23 +428,32 @@ pub(crate) enum ErrorSource<'a> {
     Module { url: &'a str },
 }
 
-/// 事件循环：RunJobs 排空微任务 → 等（最近定时器 / fetch 完成先到者）→
-/// 结算 fetch → 触发到期定时器，直到定时器与未决 fetch 皆空。
+/// 事件循环：RunJobs 排空微任务 → 等（最近定时器 / fetch / ws 先到者）→
+/// 结算完成项 → 触发到期定时器，直到定时器、未决 fetch、存活 ws 皆空。
 async fn event_loop(
     rt: &mut Runtime,
     global: &RootedGuard<'_, *mut JSObject>,
     err: ErrorSource<'_>,
     fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchResult>,
+    ws_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsEvent>,
 ) -> Result<(), Error> {
-    use crate::builtins::fetch;
+    use crate::builtins::{fetch, ws};
     let mut iterations: u64 = 0;
     let mut timers_fired: usize = 0;
     let mut fetches_settled: usize = 0;
-    macro_rules! settle_one {
+    let mut ws_settled: usize = 0;
+    macro_rules! settle_fetch {
         ($msg:expr) => {{
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
             fetch::settle(&mut realm, global.get(), $msg, err)?;
             fetches_settled += 1;
+        }};
+    }
+    macro_rules! settle_ws {
+        ($ev:expr) => {{
+            let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+            ws::dispatch(&mut realm, global.get(), $ev, err)?;
+            ws_settled += 1;
         }};
     }
     loop {
@@ -449,13 +464,16 @@ async fn event_loop(
         }
         iterations += 1;
 
-        // 已完成的 fetch 先结算（不阻塞）
+        // 已完成的 fetch/ws 先结算（不阻塞）
         while let Ok(msg) = fetch_rx.try_recv() {
-            settle_one!(msg);
+            settle_fetch!(msg);
+        }
+        while let Ok(ev) = ws_rx.try_recv() {
+            settle_ws!(ev);
         }
 
         let timers_empty = timers::next_deadline().is_none();
-        if timers_empty && state::fetch_pending() == 0 {
+        if timers_empty && state::fetch_pending() == 0 && state::ws_open() == 0 {
             break;
         }
         match timers::next_deadline() {
@@ -465,15 +483,29 @@ async fn event_loop(
                     _ = tokio::time::sleep_until(tokio_at) => {}
                     msg = fetch_rx.recv() => {
                         if let Some(msg) = msg {
-                            settle_one!(msg);
+                            settle_fetch!(msg);
+                        }
+                    }
+                    ev = ws_rx.recv() => {
+                        if let Some(ev) = ev {
+                            settle_ws!(ev);
                         }
                     }
                 }
             }
-            // 无定时器但有未决 fetch：睡到有完成为止
+            // 无定时器但有未决项：睡到有完成为止
             None => {
-                if let Some(msg) = fetch_rx.recv().await {
-                    settle_one!(msg);
+                tokio::select! {
+                    msg = fetch_rx.recv() => {
+                        if let Some(msg) = msg {
+                            settle_fetch!(msg);
+                        }
+                    }
+                    ev = ws_rx.recv() => {
+                        if let Some(ev) = ev {
+                            settle_ws!(ev);
+                        }
+                    }
                 }
             }
         }
@@ -483,7 +515,7 @@ async fn event_loop(
             timers_fired += timers::fire_due(&mut realm, global.get(), err)?;
         }
     }
-    tracing::info!(target: "winterjs::runtime", iterations, timers_fired, fetches_settled, "event loop drained");
+    tracing::info!(target: "winterjs::runtime", iterations, timers_fired, fetches_settled, ws_settled, "event loop drained");
 
     // 未处理 rejection 收尾上报（Node 式 fatal）：挂捕获 reactions → 再排空一轮
     let unhandled = state::with_rooted(|s| {

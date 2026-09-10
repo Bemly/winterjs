@@ -300,12 +300,59 @@ fn phase2_import_meta_url() {
 }
 
 #[test]
-fn phase2_bare_specifier_friendly_error() {
-    let (_dir, entry) = mod_dir(&[("bare.js", "import \"left-pad\";\n")], "bare.js");
+fn phase2_bare_specifier_missing_friendly_error() {
+    let (_dir, entry) = mod_dir(&[("bare.js", "import \"left-pad-xyz-absent\";\n")], "bare.js");
     let out = winterjs().arg("run").arg(&entry).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("bare specifier 'left-pad'"), "stderr: {stderr}");
+    assert!(stderr.contains("cannot resolve 'left-pad-xyz-absent'"), "stderr: {stderr}");
+}
+
+#[test]
+fn phase2_bare_specifier_node_modules() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("node_modules/left-pad/package.json")
+        .write_str("{\"name\":\"left-pad\",\"version\":\"1.0.0\",\"main\":\"index.js\"}")
+        .unwrap();
+    dir.child("node_modules/left-pad/index.js")
+        .write_str("export default \"pad!\";\n")
+        .unwrap();
+    dir.child("nm.js")
+        .write_str("import pad from \"left-pad\";\nconsole.log(pad);\n")
+        .unwrap();
+    let entry = dir.child("nm.js").path().to_path_buf();
+    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "pad!\n");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase2_tsconfig_paths_alias() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("tsconfig.json")
+        .write_str("{\"compilerOptions\":{\"baseUrl\":\".\",\"paths\":{\"@lib/*\":[\"src/*\"]}}}")
+        .unwrap();
+    dir.child("src/add.ts")
+        .write_str("export const add = (a: number, b: number): number => a + b;\n")
+        .unwrap();
+    dir.child("app.ts")
+        .write_str("import { add } from \"@lib/add\";\nconsole.log(add(1, 2));\n")
+        .unwrap();
+    let entry = dir.child("app.ts").path().to_path_buf();
+    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "3\n");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase2_ts_js_extension_alias() {
+    // TS 约定：`./foo.js` 指向 `./foo.ts` 源码
+    let (_dir, entry) = mod_dir(
+        &[
+            ("foo.ts", "export const v: number = 7;\n"),
+            ("app.ts", "import { v } from \"./foo.js\";\nconsole.log(v);\n"),
+        ],
+        "app.ts",
+    );
+    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "7\n");
 }
 
 #[test]

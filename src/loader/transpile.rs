@@ -69,6 +69,33 @@ fn first_diagnostic(text: &str, filename: &str, diags: Vec<oxc::diagnostics::Oxc
 
 /// 解析 +（TS 系）转译。`filename` 只用于报错展示（取 URL 字符串）。
 pub fn load_js(text: &str, filename: &str, path: &Path) -> Result<LoadedSource, Error> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if let Some(hit) = super::cache::get(text, &ext) {
+        return Ok(LoadedSource {
+            js: hit.js,
+            imports: hit.imports,
+            is_module: hit.is_module,
+        });
+    }
+    let loaded = load_js_uncached(text, filename, path)?;
+    super::cache::put(
+        text,
+        &ext,
+        &super::cache::Cached {
+            js: loaded.js.clone(),
+            imports: loaded.imports.clone(),
+            is_module: loaded.is_module,
+            map: None,
+        },
+    );
+    Ok(loaded)
+}
+
+fn load_js_uncached(text: &str, filename: &str, path: &Path) -> Result<LoadedSource, Error> {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(path)
         .map_err(|_| Error::Other(format!("unsupported module extension: {}", path.display())))?

@@ -141,7 +141,9 @@ sha2 = "0.11"
 # c-4（2026-09-10 用户拍板）：rsa 0.9 的签名/填充接口绑 digest 0.10，
 # 直引 sha2 0.11 的哈希类型传不进去；加改名直引 sha2_010（纯 RustCrypto，
 # 0.10 已由 oauth2 在传递闭包内，双版本先例同 yaml-rust2 0.11+0.12）。
-sha2_010 = { package = "sha2", version = "0.10" }
+# oid 特性必开：rsa 的 SigningKey::new 要 D: AssociatedOid（DigestInfo 前缀），
+# sha2 0.10 的 OidSha* 实现门控在该特性后（缺之即 E0599）。
+sha2_010 = { package = "sha2", version = "0.10", features = ["oid"] }
 sha3 = "0.12"
 blake2 = "0.11"
 md-5 = "0.11"

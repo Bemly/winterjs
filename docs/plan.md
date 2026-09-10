@@ -119,8 +119,15 @@
   prelude 密钥 + JWK oct；192-bit/非对称顺延 c-4）+ WebSocket client
   （tokio-tungstenite，`on*` 回调，事件循环三路 select + `ws_open` 存活计数）。
   `tests/cli.rs` 4 例（含本机回环 echo/close 握手）；`cargo test` 59+5 全绿，0 警告。
-- [ ] 切片 c-4：SubtleCrypto 非对称（RSA/ECDSA/ECDH，pkcs8/spki）+ wss 测试 +
-  `Response.body` 流式（fetch 边下边吐）+ in-flight abort。
+- [x] 切片 c-4a（2026-09-10）：SubtleCrypto 非对称（RSASSA-PKCS1-v1_5 签验 +
+  RSA-OAEP 加解密 + ECDSA P-256/384/521 + ECDH deriveBits/deriveKey；
+  generateKey 返回 CryptoKeyPair；import/export pkcs8/spki/jwk/raw(EC公钥)；
+  RSA-PSS/Ed25519/X25519 明确顺延 c-4x）。轮子：`sha2_010` 改名直引（digest 0.10
+  互通）+ p 曲线 `ecdh,pkcs8` 显式特性（用户拍板，见 dependencies §7）；
+  `rsa::rand_core/signature/pkcs8` 重导出零新增；密钥存 DER、私钥 PKCS#8/公钥 SPKI；
+  ECDSA 裸 r‖s 口径。`tests/cli.rs` 6 例；`cargo test` 65+5 全绿，0 警告。
+- [ ] 切片 c-4b：wss 测试 + `Response.body` 流式（fetch 边下边吐）+ in-flight abort。
+  RSA-PSS/Ed25519/X25519（c-4x，按需排）。
 
 ## Phase 4 — Node 兼容垫片
 

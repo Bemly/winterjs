@@ -381,6 +381,11 @@ c-4 增补（2026-09-10 用户拍板）：`sha2_010`（sha2 0.10 改名直引，
 `normpath` 做 `--allow-read` 沙箱前的路径归一；`cap-std` 是权限模型的后期轮子。
 `oauth2`（publish 登录）/`sentry`（崩溃上报）/`object_store`（远程缓存）/`russh`（私有仓 SSH）
 都是后期，届时再引入。
+npmrc 附记（2026-09-10 实测）：`rust-ini` 把 `:` 也当键值分隔符
+（`parse_str_until(&[Some('='), Some(':')])`），会从冒号处切断 npmrc 的
+`//<host>/:_authToken` 与 `@<scope>:registry` 键，不适合解析 npmrc；
+`src/pm/npmrc.rs` 改手写行解析（首个 `=` 切分，约 20 行），`rust-ini`
+依赖保留（批准单内其他 INI 场景备用），此处记偏离。
 
 ## 9. 内建 DB：turso（定版，其他不用）
 

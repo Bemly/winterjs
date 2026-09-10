@@ -4,6 +4,7 @@
 pub mod cache;
 pub mod install;
 pub mod lifecycle;
+pub mod npmrc;
 pub mod registry;
 pub mod resolve;
 pub mod spec;
@@ -11,19 +12,27 @@ pub mod spec;
 use crate::error::Error;
 
 /// `winterjs install [pkgs...] [--dry-run] [--registry URL]`。
-/// 切片 a：空包列表报错（读 package.json 顺延 5b）；非 dry-run 报顺延错。
+/// registry 优先级（5d-d1）：flag > `NPM_CONFIG_REGISTRY` env > `<cwd>/.npmrc` >
+/// `$HOME/.npmrc` > 内建默认（见 `npmrc`）。
 pub async fn install(packages: &[String], dry_run: bool, registry: Option<&str>) -> Result<(), Error> {
     if packages.is_empty() {
         return Err(Error::Other(
             "install with no packages needs package.json (slice 5b)".into(),
         ));
     }
-    let registry = registry.unwrap_or(registry::DEFAULT_REGISTRY);
+    let cwd = std::env::current_dir().map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+    let (project, home) = npmrc::load_cwd_and_home(&cwd);
+    let (src, registry) = npmrc::resolve_registry(registry, &project, &home);
+    // auth token 只查有无（值永不进日志；5d-d3 publish 才真正使用）。
+    let has_auth = project
+        .auth_token_for(&registry)
+        .or_else(|| home.auth_token_for(&registry))
+        .is_some();
+    tracing::debug!(target: "winterjs::pm", source = src, registry = registry.as_str(), has_auth, "registry resolved");
     let mut specs = Vec::with_capacity(packages.len());
     for pkg in packages {
         specs.push(spec::parse(pkg).map_err(Error::Other)?);
     }
-    let registry = registry.to_owned();
     let tree = resolve::solve_tree(&specs, |name: String| {
         let registry = registry.clone();
         async move { registry::fetch_packument(&registry, &name).await.map_err(|e| e.to_string()) }
@@ -36,6 +45,5 @@ pub async fn install(packages: &[String], dry_run: bool, registry: Option<&str>)
         }
         return Ok(());
     }
-    let root = std::env::current_dir().map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
-    install::install_tree(&root, &tree).await
+    install::install_tree(&cwd, &tree).await
 }

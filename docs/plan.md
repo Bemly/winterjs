@@ -213,7 +213,15 @@
   `tests/cli.rs` 4 例（二次命中零回源/order 序/失败中断/残留自愈）+
   模块单测 7 例（key/往返/原子/order/env/失败/缺脚本）；
   `cargo test` 21+96 全绿，0 警告。
-- [ ] 切片 d（顺延）：git 依赖 + publish/login + upgrade + 镜像/npmrc。
+- [ ] 切片 d（进行中 2026-09-10）：git 依赖 + publish/login + upgrade + 镜像/npmrc。
+  - [x] d1 镜像/npmrc：`src/pm/npmrc.rs`（手写行解析，`rust-ini` 实测不适合见
+    `dependencies.md` 附记）+ 优先级 flag > env `NPM_CONFIG_REGISTRY` >
+    `<cwd>/.npmrc` > `$HOME/.npmrc` > 默认 + token 按 host 透传（值永不进日志）。
+    模块单测 4 例 + 黑盒 4 例（镜像/坏源报错/flag 覆盖/env 覆盖）；
+    `cargo test` 25+100 全绿，0 警告。
+  - [ ] d2 git 依赖（`gix`，spec 扩展 + 本地 file:// 验收）。
+  - [ ] d3 publish/login（`oauth2`+`webbrowser` 干跑 + `spdx` 许可证校验）。
+  - [ ] d4 upgrade（`self_update` 干跑）。
 
 ## Phase 6 — serve（HTTP 服务）
 

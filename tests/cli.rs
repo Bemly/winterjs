@@ -1397,6 +1397,103 @@ fn phase5_install_errors() {
     assert!(stderr.contains("no version"), "stderr: {stderr}");
 }
 
+#[test]
+fn phase5_npmrc_registry_mirror() {
+    // 正常：项目 `.npmrc` 的 registry 生效（不传 --registry 也命中 stub）。
+    let port = serve_registry();
+    let reg = format!("http://127.0.0.1:{port}");
+    let dir = assert_fs::TempDir::new().unwrap();
+    let home = assert_fs::TempDir::new().unwrap();
+    dir.child(".npmrc").write_str(&format!("registry={reg}/\n")).unwrap();
+    let out = stdout_of(
+        winterjs()
+            .args(["install", "left-pad@^1.0.0", "--dry-run"])
+            .env("HOME", home.path())
+            .env_remove("NPM_CONFIG_REGISTRY")
+            .env_remove("npm_config_registry")
+            .current_dir(dir.path()),
+    );
+    assert_eq!(
+        out,
+        format!("left-pad@1.3.0 http://127.0.0.1:{port}/left-pad/-/left-pad-1.3.0.tgz\n"),
+        "npmrc mirror: {out}"
+    );
+    dir.close().unwrap();
+    home.close().unwrap();
+}
+
+#[test]
+fn phase5_npmrc_bad_registry_errors() {
+    // 报错：`.npmrc` 指向连不上的 registry，exit=1 且可读（不碰外网，9 端口必拒）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let home = assert_fs::TempDir::new().unwrap();
+    dir.child(".npmrc").write_str("registry=http://127.0.0.1:9/\n").unwrap();
+    let out = winterjs()
+        .args(["install", "left-pad@^1.0.0", "--dry-run"])
+        .env("HOME", home.path())
+        .env_remove("NPM_CONFIG_REGISTRY")
+        .env_remove("npm_config_registry")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("registry"), "stderr: {stderr}");
+    dir.close().unwrap();
+    home.close().unwrap();
+}
+
+#[test]
+fn phase5_registry_flag_overrides_npmrc() {
+    // 边界：`--registry` flag 覆盖坏掉的 `.npmrc`（优先级 flag > npmrc）。
+    let port = serve_registry();
+    let reg = format!("http://127.0.0.1:{port}");
+    let dir = assert_fs::TempDir::new().unwrap();
+    let home = assert_fs::TempDir::new().unwrap();
+    dir.child(".npmrc").write_str("registry=http://127.0.0.1:9/\n").unwrap();
+    let out = stdout_of(
+        winterjs()
+            .args(["install", "left-pad@^1.0.0", "--dry-run", "--registry"])
+            .arg(&reg)
+            .env("HOME", home.path())
+            .env_remove("NPM_CONFIG_REGISTRY")
+            .env_remove("npm_config_registry")
+            .current_dir(dir.path()),
+    );
+    assert_eq!(
+        out,
+        format!("left-pad@1.3.0 http://127.0.0.1:{port}/left-pad/-/left-pad-1.3.0.tgz\n"),
+        "flag override: {out}"
+    );
+    dir.close().unwrap();
+    home.close().unwrap();
+}
+
+#[test]
+fn phase5_npm_config_registry_env_overrides_npmrc() {
+    // 边界：`NPM_CONFIG_REGISTRY` env 覆盖坏掉的 `.npmrc`（优先级 env > npmrc）。
+    let port = serve_registry();
+    let reg = format!("http://127.0.0.1:{port}");
+    let dir = assert_fs::TempDir::new().unwrap();
+    let home = assert_fs::TempDir::new().unwrap();
+    dir.child(".npmrc").write_str("registry=http://127.0.0.1:9/\n").unwrap();
+    let out = stdout_of(
+        winterjs()
+            .args(["install", "left-pad@^1.0.0", "--dry-run"])
+            .env("HOME", home.path())
+            .env("NPM_CONFIG_REGISTRY", &reg)
+            .env_remove("npm_config_registry")
+            .current_dir(dir.path()),
+    );
+    assert_eq!(
+        out,
+        format!("left-pad@1.3.0 http://127.0.0.1:{port}/left-pad/-/left-pad-1.3.0.tgz\n"),
+        "env override: {out}"
+    );
+    dir.close().unwrap();
+    home.close().unwrap();
+}
+
 /// 现场造 tgz（`package/` 包裹；`files` 为包内路径→内容）。
 fn make_tgz(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut tar_data = Vec::new();

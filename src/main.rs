@@ -1,20 +1,22 @@
 #![allow(non_upper_case_globals, non_camel_case_types, non_snake_case)]
 
 mod alloc;
+mod builtins;
 mod cli;
 mod error;
+mod jobqueue;
+mod jsapi_glue;
 mod logging;
-mod runner;
+mod runtime;
 mod settings;
-
-use std::process::ExitCode;
+mod state;
 
 use clap::{CommandFactory, Parser};
 use cli::{Cli, Cmd};
 use error::Error;
 use settings::ColorChoice;
 
-fn main() -> ExitCode {
+fn main() {
     // panic 美化：release 下 panic 走 human-panic 报告（debug 下该宏自动 no-op，
     // RUST_BACKTRACE=1 时自动回退标准 panic 输出，不吞调试信息）
     human_panic::setup_panic!();
@@ -23,7 +25,10 @@ fn main() -> ExitCode {
 
     let settings = match settings::Settings::load() {
         Ok(settings) => settings,
-        Err(source) => return Error::Config { source }.render(ColorChoice::Auto),
+        Err(source) => {
+            let _ = Error::Config { source }.render(ColorChoice::Auto);
+            std::process::exit(1);
+        }
     };
     logging::init(logging::LogOptions {
         verbosity: cli.verbose,
@@ -34,16 +39,40 @@ fn main() -> ExitCode {
     let version = &*cli::VERSION_TEXT;
     tracing::debug!(target: "winterjs", %version, "starting");
 
-    let result = dispatch(cli, &settings);
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
+    // JS 跑在独占线程（AGENTS §6）：CLI 生命周期内主线程即 JS 线程，
+    // tokio current-thread 只负责驱动 timers 的睡眠。
+    let tokio_rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            let err = Error::Other(format!("failed to start tokio runtime: {e}"));
+            let _ = err.render(settings.log.color);
+            std::process::exit(1);
+        }
+    };
+
+    // 已知问题（AGENTS §4.8）：引擎/运行时析构期 StoreBuffer 悬垂边 SEGV。
+    // 结果（含错误渲染）就绪后直接 process::exit 跳过 teardown，由 dispatch 返回退出码。
+    let code = tokio_rt.block_on(dispatch(cli, &settings));
+    std::process::exit(code);
+}
+
+async fn dispatch(cli: Cli, settings: &settings::Settings) -> i32 {
+    let r = dispatch_inner(cli, settings).await;
+    match &r {
+        Ok(()) => 0,
         // 管道下游提前关闭（如 `winterjs man | head`）静默退出，不刷错误
-        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-        Err(err) => err.render(settings.log.color),
+        Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
+        Err(err) => {
+            let _ = err.render(settings.log.color);
+            1
+        }
     }
 }
 
-fn dispatch(cli: Cli, settings: &settings::Settings) -> Result<(), Error> {
+async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), Error> {
     match cli.cmd {
         Cmd::Run { path } => {
             let source = std::fs::read_to_string(&path).map_err(|source| Error::IoRead {
@@ -51,9 +80,9 @@ fn dispatch(cli: Cli, settings: &settings::Settings) -> Result<(), Error> {
                 source,
             })?;
             let filename = path.to_string_lossy().into_owned();
-            runner::run(&source, &filename)
+            runtime::run(&source, &filename, runtime::Mode::Script).await
         }
-        Cmd::Eval { code } => runner::run(&code, "eval.js"),
+        Cmd::Eval { code } => runtime::run(&code, "eval.js", runtime::Mode::Eval).await,
         Cmd::Config { schema } => {
             if schema {
                 let schema = schemars::schema_for!(settings::Settings);

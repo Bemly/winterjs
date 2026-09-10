@@ -109,7 +109,11 @@
   回调存 RootedState）；data:/file: 同步直给（仍走 promise 语义）。
   附带修：`await` 参数位置解析坑（§4.17，重试触发放宽 + 原始报错保留）。
   `tests/cli.rs` 6 例（含本机回环 http）；`cargo test` 51+5 全绿，0 警告。
-- [ ] 切片 c：streams（引擎实现）+ SubtleCrypto 全算法 + WebSocket。
+- [x] 切片 c-1（2026-09-10）：`subtle.digest`（SHA-1/256/384/512，
+  同步 native + prelude async 包裹；标准向量钉住）。
+  `tests/cli.rs` 2 例；`cargo test` 53+5 全绿，0 警告。
+  切片 c-2：streams（引擎上实现）+ fetch `Response.body` 对接。
+  切片 c-3：SubtleCrypto 其余算法 + WebSocket。
 
 ## Phase 4 — Node 兼容垫片
 

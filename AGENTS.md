@@ -211,9 +211,9 @@ cargo build
   （`Frame` 模式：`from_raw` unsafe，`arg`/`set_rval` safe + 越界断言）？
   ③ 前置条件写进注释了吗？
 - 存量基线（2026-09-10 实数，`rg` 文本值；`console_sink!` 宏展开后更多）：
-  `unsafe extern "C"` 42（C ABI 强制，不可去；Phase 3a 起每新增 native +1）、
+  `unsafe extern "C"` 43（C ABI 强制，不可去；Phase 3a 起每新增 native +1）、
   `unsafe impl Traceable` 2（GC 协议，不可去）；
-  `unsafe{}` 块 113，其中每个 JSNative 入口固定 2 个边界块
+  `unsafe{}` 块 116，其中每个 JSNative 入口固定 2 个边界块
   （`wrap_cx` + `Frame::from_raw`，随 native 数线性增长，结构性不可去）；
   `wrap_cx` 维持 unsafe（`from_ptr` 本质 unsafe）；
   其余 FFI 体（`JS_GetProperty`/`JS_CallFunctionValue`/`evaluate_script`/

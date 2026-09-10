@@ -8,12 +8,14 @@ pub mod fs;
 pub mod os;
 pub mod path;
 pub mod process_;
+pub mod require;
 pub mod testmod;
 
 /// 全局 `process` 等启动期求值的 JS（`runtime` 在主 PRELUDE 后求值）。
 /// 版本占位 `26.9.0` 在求值前替换为 `CARGO_PKG_VERSION`（发版不漂移）。
 pub fn node_prelude() -> String {
-    process_::PROCESS_PRELUDE.replace("26.9.0", env!("CARGO_PKG_VERSION"))
+    let base = process_::PROCESS_PRELUDE.replace("26.9.0", env!("CARGO_PKG_VERSION"));
+    format!("{base}\n{}", require::REQUIRE_PRELUDE)
 }
 
 /// 内建源表（规范名 → ESM 源；源内只用全局 natives，不互引）。

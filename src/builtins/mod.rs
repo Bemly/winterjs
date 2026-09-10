@@ -1438,9 +1438,19 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_fs_rmdir", Some(node::fs::fs_rmdir), 2),
             ("__wjs_fs_realpath", Some(node::fs::fs_realpath), 1),
             ("__wjs_fs_mkdtemp", Some(node::fs::fs_mkdtemp), 1),
+            ("__wjs_watch_start", Some(node::fs::watch_start), 4),
+            ("__wjs_watch_close", Some(node::fs::watch_close), 1),
             // Phase 4c: child_process
             ("__wjs_cp_exec", Some(node::child::cp_exec), 2),
             ("__wjs_cp_spawn", Some(node::child::cp_spawn), 3),
+            // Phase 4d: 异步 spawn
+            ("__wjs_spawn_start", Some(node::child::spawn_start), 5),
+            ("__wjs_child_kill", Some(node::child::child_kill), 2),
+            ("__wjs_child_pid", Some(node::child::child_pid), 1),
+            // Phase 4d: require（裸 native，直调保调用方定位；附属见 NODE_PRELUDE）
+            ("require", Some(node::require::require_native), 1),
+            ("__wjs_require_resolve", Some(node::require::require_resolve), 1),
+            ("__wjs_require_main_url", Some(node::require::require_main_url), 0),
             ("__wjs_ws_connect", Some(ws::ws_connect), 3),
             ("__wjs_ws_send", Some(ws::ws_send), 3),
             ("__wjs_ws_close", Some(ws::ws_close), 3),

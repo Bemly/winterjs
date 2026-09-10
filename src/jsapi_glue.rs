@@ -5,7 +5,7 @@
 
 use std::ffi::{CStr, CString};
 
-use mozjs::conversions::{ConversionResult, FromJSValConvertible as _};
+use mozjs::conversions::{ConversionResult, FromJSValConvertible as _, ToJSValConvertible as _};
 use mozjs::context::JSContext;
 use mozjs::gc::ValueArray;
 use mozjs::jsapi::{HandleValueArray, JS_CallFunctionValue, JSObject};
@@ -116,6 +116,50 @@ pub fn get_prop_string(
     } else {
         None
     }
+}
+
+/// UNSAFE-BOUNDARY: 读对象属性值（含 undefined 值也 Some；API 失败 None，pending 由调用方处理）。
+/// 前置：cx 在 realm 内；obj 为有效对象。
+/// 覆盖：`phase4_require_cjs`、`phase4_require_json`（经 require 取 exports/default）。
+pub fn get_prop_value(cx: &mut JSContext, obj: *mut JSObject, name: &CStr) -> Option<JSVal> {
+    rooted!(&in(cx) let mut v = mozjs::jsval::UndefinedValue());
+    // SAFETY: cx 为有效 wrapper；标记位置指针直拷；raw 调用不触发 GC
+    let ok = unsafe {
+        mozjs::jsapi::JS_GetProperty(
+            cx.raw_cx(),
+            raw_handle(&obj),
+            name.as_ptr(),
+            raw_handle_mut(v.as_ptr()),
+        )
+    };
+    if ok { Some(v.get()) } else { None }
+}
+
+/// UNSAFE-BOUNDARY: `JSON.parse(text)`（失败 None，pending 由调用方处理）。
+/// 前置：cx 在 realm 内；global 为有效全局。
+/// 覆盖：`phase4_require_json`（经 require 读 `.json`）。
+pub fn parse_json(cx: &mut JSContext, global: *mut JSObject, text: &str) -> Option<JSVal> {
+    rooted!(&in(cx) let mut json_v = mozjs::jsval::UndefinedValue());
+    // SAFETY: global 为有效 rooted 对象（调用方 rooted）；raw 调用不触发 GC
+    let ok = unsafe {
+        mozjs::jsapi::JS_GetProperty(
+            cx.raw_cx(),
+            raw_handle(&global),
+            c"JSON".as_ptr(),
+            raw_handle_mut(json_v.as_ptr()),
+        )
+    };
+    if !ok || !json_v.is_object() {
+        return None;
+    }
+    let json_obj = json_v.to_object();
+    let parse = get_prop_value(cx, json_obj, c"parse")?;
+    if !parse.is_object() {
+        return None;
+    }
+    rooted!(&in(cx) let mut text_v = UndefinedValue());
+    text.to_jsval(cx, text_v.handle_mut());
+    call_one(cx, global, parse, text_v.get())
 }
 
 /// 读数值属性（u32 口径；不存在/非数返回 None）。

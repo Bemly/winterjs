@@ -97,6 +97,8 @@ async fn run_module(
     url: &Url,
     fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchMsg>,
     ws_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsEvent>,
+    watch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::fs::WatchEvent>,
+    child_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::child::ChildEvent>,
 ) -> Result<(), Error> {
     use mozjs::rust::wrappers2::{ModuleEvaluate, ModuleLink};
 
@@ -115,6 +117,8 @@ async fn run_module(
         if !unsafe { ModuleEvaluate(&mut realm, entry.handle(), rval.handle_mut()) } {
             return Err(modules::module_error(&mut realm, url.as_str()));
         }
+        // 求值标记（`require(node:)` 复用时跳过二次求值）。
+        state::set_module_evaluated(url.as_str().to_owned());
         // 入口 promise 先挂专用捕获（事件循环前挂载，否则收尾会被当未处理 rejection 误报）。
         if rval.is_object() {
             let obj = rval.to_object();
@@ -139,7 +143,7 @@ async fn run_module(
         }
     }
 
-    event_loop(rt, global, ErrorSource::Module { url: url.as_str() }, fetch_rx, ws_rx).await?;
+    event_loop(rt, global, ErrorSource::Module { url: url.as_str() }, fetch_rx, ws_rx, watch_rx, child_rx).await?;
 
     // 收割入口决议（事件循环的排空已驱动捕获回调）。
     let (fulfillment, rejection) =
@@ -339,19 +343,58 @@ async fn run_inner(
     state::with_plain(|p| p.fetch_tx = Some(fetch_tx));
     let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
     state::with_plain(|p| p.ws_tx = Some(ws_tx));
+    let (watch_tx, mut watch_rx) = tokio::sync::mpsc::unbounded_channel();
+    state::with_plain(|p| p.watch_tx = Some(watch_tx));
+    let (child_tx, mut child_rx) = tokio::sync::mpsc::unbounded_channel();
+    state::with_plain(|p| p.child_tx = Some(child_tx));
 
     // 模块嗅探（仅 Script；Eval 保持经典语义，import 即 SyntaxError）。
     // 解析失败 → 回落经典（经典求值会给出它自己的报错）。
     if mode == Mode::Script {
         if let Some(url) = sniff_module(filename, source) {
-            let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx).await;
+            let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx).await;
             // §4.8：跳过引擎/运行时析构
             forget_engine(rt, engine);
             return r;
         }
     }
 
-    // 用户脚本求值
+    // 用户脚本求值（`.cjs` 经 require 主模块起，不打印 exports；见 node/require.rs）。
+    if mode == Mode::Script && std::path::Path::new(filename).extension().is_some_and(|e| e == "cjs" || e == "cts") {
+        let url = crate::loader::resolve::entry_url(std::path::Path::new(filename));
+        match url {
+            Ok(url) => {
+                state::set_main_module(url.as_str().to_owned());
+                let main_src = format!(
+                    "__wjs_require_main({})",
+                    serde_json::to_string(url.as_str()).unwrap_or_else(|_| "\"\"".into())
+                );
+                let c_filename = CString::new(filename).unwrap_or_else(|_| c"main.cjs".into());
+                let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
+                let res = evaluate_script(rt.cx(), global.handle(), &main_src, rval.handle_mut(), options);
+                if res.is_err() {
+                    let err = {
+                        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+                        rooted!(&in(&mut realm) let mut exc = UndefinedValue());
+                        // SAFETY: realm 内读取 pending exception（消费异常值）
+                        match error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
+                            Some(info) => Error::script(filename, &main_src, info.line.max(1), info.col, info.message),
+                            None => Error::Other("uncaught JS exception (no stack info)".into()),
+                        }
+                    };
+                    forget_engine(rt, engine);
+                    return Err(err);
+                }
+                event_loop(&mut rt, &global, ErrorSource::Script { source: &main_src, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx).await?;
+                forget_engine(rt, engine);
+                return Ok(());
+            }
+            Err(e) => {
+                forget_engine(rt, engine);
+                return Err(e);
+            }
+        }
+    }
     {
         let c_filename = CString::new(filename).unwrap_or_else(|_| c"script.js".into());
         let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
@@ -359,7 +402,7 @@ async fn run_inner(
         let res = evaluate_script(rt.cx(), global.handle(), source, rval.handle_mut(), options);
         if res.is_err() {
             if mode == Mode::Eval {
-                let r = eval_syntax_fallback(&mut rt, &global, source, filename, &mut fetch_rx, &mut ws_rx).await;
+                let r = eval_syntax_fallback(&mut rt, &global, source, filename, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx).await;
                 // §4.8：跳过引擎/运行时析构（StoreBuffer 悬垂边在 destroyRuntime 的小 GC 里 SEGV）
                 forget_engine(rt, engine);
                 return r;
@@ -381,7 +424,7 @@ async fn run_inner(
                 && crate::loader::load_js(source, filename, &path).is_ok()
             {
                 tracing::info!(target: "winterjs::runtime", url = url.as_str(), "retrying as module");
-                let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx).await;
+                let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx).await;
                 forget_engine(rt, engine);
                 return r;
             }
@@ -396,7 +439,7 @@ async fn run_inner(
 
     // 未包装成功的场景（含全部 Script 与无顶层 await 的 Eval）：
     // 完成值就是 rval（老行为）；仅 async IIFE 包装路径才读 __wjs_value。
-    event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx).await?;
+    event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx).await?;
     let r = print_completion(&mut rt, &global, rval.get());
     // §4.8：跳过引擎/运行时析构（带 timer 的路径在 JS_DestroyContext 里 SEGV）。
     // CLI 进程即将退出，内存由 OS 回收；见 AGENTS §4.8。
@@ -422,6 +465,8 @@ async fn eval_syntax_fallback(
     filename: &str,
     fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchMsg>,
     ws_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsEvent>,
+    watch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::fs::WatchEvent>,
+    child_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::child::ChildEvent>,
 ) -> Result<(), Error> {
     let original = {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
@@ -467,7 +512,7 @@ async fn eval_syntax_fallback(
         // 同 run()；包装版行号偏移经 line_adjust 校正
         let res = evaluate_script(rt.cx(), global.handle(), &wrapped, wrapped_rval.handle_mut(), options);
         if res.is_ok() {
-            event_loop(rt, global, ErrorSource::Script { source, filename }, fetch_rx, ws_rx).await?;
+            event_loop(rt, global, ErrorSource::Script { source, filename }, fetch_rx, ws_rx, watch_rx, child_rx).await?;
             let r = extract_eval_result(rt, global, source, filename);
             // engine/rt 由外层 run() 统一 forget（见 §4.8）
             return r;
@@ -517,12 +562,16 @@ async fn event_loop(
     err: ErrorSource<'_>,
     fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchMsg>,
     ws_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsEvent>,
+    watch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::fs::WatchEvent>,
+    child_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::child::ChildEvent>,
 ) -> Result<(), Error> {
-    use crate::builtins::{fetch, ws};
+    use crate::builtins::{fetch, node::child as node_child, node::fs as node_fs, ws};
     let mut iterations: u64 = 0;
     let mut timers_fired: usize = 0;
     let mut fetches_settled: usize = 0;
     let mut ws_settled: usize = 0;
+    let mut watches_settled: usize = 0;
+    let mut children_settled: usize = 0;
     macro_rules! settle_fetch {
         ($msg:expr) => {{
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
@@ -535,6 +584,20 @@ async fn event_loop(
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
             ws::dispatch(&mut realm, global.get(), $ev, err)?;
             ws_settled += 1;
+        }};
+    }
+    macro_rules! settle_child {
+        ($ev:expr) => {{
+            let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+            node_child::dispatch(&mut realm, global.get(), $ev, err)?;
+            children_settled += 1;
+        }};
+    }
+    macro_rules! settle_watch {
+        ($ev:expr) => {{
+            let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+            node_fs::dispatch(&mut realm, global.get(), $ev, err)?;
+            watches_settled += 1;
         }};
     }
     loop {
@@ -562,12 +625,22 @@ async fn event_loop(
             settle_ws!(ev);
             progressed = true;
         }
+        while let Ok(ev) = watch_rx.try_recv() {
+            settle_watch!(ev);
+            progressed = true;
+        }
+        while let Ok(ev) = child_rx.try_recv() {
+            settle_child!(ev);
+            progressed = true;
+        }
 
         let timers_empty = timers::next_deadline().is_none();
         let idle = timers_empty
             && state::fetch_pending() == 0
             && state::ws_open() == 0
-            && state::stream_pending() == 0;
+            && state::stream_pending() == 0
+            && state::watch_open() == 0
+            && state::child_open() == 0;
         if idle && !progressed {
             break;
         }
@@ -584,6 +657,16 @@ async fn event_loop(
                     ev = ws_rx.recv() => {
                         if let Some(ev) = ev {
                             settle_ws!(ev);
+                        }
+                    }
+                    wev = watch_rx.recv() => {
+                        if let Some(wev) = wev {
+                            settle_watch!(wev);
+                        }
+                    }
+                    cev = child_rx.recv() => {
+                        if let Some(cev) = cev {
+                            settle_child!(cev);
                         }
                     }
                 }
@@ -604,6 +687,16 @@ async fn event_loop(
                             settle_ws!(ev);
                         }
                     }
+                    wev = watch_rx.recv() => {
+                        if let Some(wev) = wev {
+                            settle_watch!(wev);
+                        }
+                    }
+                    cev = child_rx.recv() => {
+                        if let Some(cev) = cev {
+                            settle_child!(cev);
+                        }
+                    }
                 }
             }
         }
@@ -613,7 +706,7 @@ async fn event_loop(
             timers_fired += timers::fire_due(&mut realm, global.get(), err)?;
         }
     }
-    tracing::info!(target: "winterjs::runtime", iterations, timers_fired, fetches_settled, ws_settled, "event loop drained");
+    tracing::info!(target: "winterjs::runtime", iterations, timers_fired, fetches_settled, ws_settled, watches_settled, children_settled, "event loop drained");
 
     // 未处理 rejection 收尾上报（Node 式 fatal）：挂捕获 reactions → 再排空一轮
     let unhandled = state::with_rooted(|s| {

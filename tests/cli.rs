@@ -1228,3 +1228,78 @@ fn phase4_node_test_runner() {
     assert!(stdout.contains("# pass 1, fail 1, skip 1, todo 0"), "summary: {stdout}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase4_require_cjs_builtin_relative_json() {
+    // CJS 文件 + 内建 + JSON + 相对路径 + require.main（经 .cjs 入口）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let lib = dir.child("lib/util.cjs");
+    lib.write_str("const path = require(\"node:path\");\nmodule.exports = { joined: path.join(\"a\", \"b\") };\n").unwrap();
+    let data = dir.child("lib/data.json");
+    data.write_str("{\"answer\": 42}").unwrap();
+    let main = dir.child("main.cjs");
+    main.write_str("const u = require(\"./lib/util.cjs\");\nconst d = require(\"./lib/data.json\");\nconsole.log(\"main:\", u.joined, d.answer, __filename.endsWith(\"main.cjs\"), require.main.filename.endsWith(\"main.cjs\"));\n").unwrap();
+    let out = winterjs().arg("run").arg(main.path()).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(stdout, "main: a/b 42 true true\n", "require: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase4_require_cycle_partial_exports() {
+    // 循环引用见半成品（Node 语义）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("b.cjs").write_str("const a = require(\"./a.cjs\");\nmodule.exports = { b: 2, aVal: (a.a || 0) + 10 };\n").unwrap();
+    dir.child("a.cjs").write_str("const b = require(\"./b.cjs\");\nmodule.exports = { a: 1, bVal: (b.b || 0) + 100 };\n").unwrap();
+    let main = dir.child("main.cjs");
+    main.write_str("const a = require(\"./a.cjs\");\nconsole.log(\"cycle:\", a.a, a.bVal);\n").unwrap();
+    let out = winterjs().arg("run").arg(main.path()).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "cycle: 1 102\n");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase4_require_errors() {
+    // 缺失模块 / ESM 拒绝 / resolve 直给。
+    let out = winterjs().args(["eval", "try { require(\"node:nope-xyz\"); } catch (e) { console.log(e.message.slice(0, 30)); }"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("Cannot find module"), "missing: {stdout}");
+    let dir = assert_fs::TempDir::new().unwrap();
+    let mod_ = dir.child("m.mjs");
+    mod_.write_str("export const x = 1;\n").unwrap();
+    let code = format!("try {{ require({:?}); }} catch (e) {{ console.log(e.message.slice(0, 30)); }}", mod_.path().to_string_lossy());
+    let out = winterjs().args(["eval", &code]).output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("require() of ES Module"), "esm: {stdout}");
+    let out = stdout_of(&mut winterjs().args(["eval", "console.log(require.resolve(\"node:path\"));"]));
+    assert_eq!(out, "node:path\n", "resolve: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase4_fs_watch_fires_and_closes() {
+    // 写文件触发 rename 事件；close 后进程即退（persistent 续命验证）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let watchdir = dir.child("watched");
+    std::fs::create_dir(watchdir.path()).unwrap();
+    let file = dir.child("watch.mjs");
+    file.write_str("import fs from \"node:fs\";\nconst w = fs.watch(\"watched\", (ev, file) => { console.log(\"ev:\", ev, file); w.close(); });\nsetTimeout(() => fs.writeFileSync(\"watched/n.txt\", \"x\"), 100);\n").unwrap();
+    let out = winterjs().arg("run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "ev: rename n.txt\n");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase4_spawn_async_exit_close_kill() {
+    // exit+close 双调 + kill 中断（SIGTERM 形）。
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const { spawn } = await import("node:child_process"); const log = []; const c = spawn("echo", ["async-hi"], { stdio: "ignore" }); console.log("pid:", c.pid > 0, "killed:", c.killed); c.on("exit", (e) => log.push("exit:" + e.status)); c.on("close", () => { log.push("close"); console.log(log.join("|")); });"#]));
+    assert_eq!(out, "pid: true killed: false\nexit:0|close\n", "spawn: {out}");
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const { spawn } = await import("node:child_process"); const log = []; const c = spawn("sleep", ["30"]); c.on("exit", (e) => log.push("exit:" + e.signal)); c.on("close", () => { log.push("close"); console.log(log.join("|")); }); setTimeout(() => console.log("killed:", c.kill()), 100);"#]));
+    assert_eq!(out, "killed: true\nexit:SIGTERM|close\n", "kill: {out}");
+}

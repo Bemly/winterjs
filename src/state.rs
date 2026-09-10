@@ -45,6 +45,45 @@ unsafe impl Traceable for ModuleEntry {
     }}
 }
 
+/// 一个已加载的 CJS 模块：URL + 跨 GC 保活的 `module.exports`（循环引用 prefab）。
+pub struct CjsEntry {
+    pub url: String,
+    pub exports: Heap<JSVal>,
+}
+
+// SAFETY: 只追踪 exports（URL 无 GC 指针）。
+unsafe impl Traceable for CjsEntry {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
+        self.exports.trace(trc);
+    }}
+}
+
+/// 一路 `fs.watch` 的 JS 监听（事件循环分发时取出，**保留**注册，多次触发）。
+pub struct WatchCallback {
+    pub id: u64,
+    pub listener: Heap<JSVal>,
+}
+
+// SAFETY: 只追踪 listener（id 无 GC 指针）。
+unsafe impl Traceable for WatchCallback {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
+        self.listener.trace(trc);
+    }}
+}
+
+/// 一个异步子进程的 JS 目标对象（`onexit/onclose/onerror` 走属性读；close 前保留）。
+pub struct ChildTarget {
+    pub id: u64,
+    pub target: Heap<JSVal>,
+}
+
+// SAFETY: 只追踪 target（id 无 GC 指针）。
+unsafe impl Traceable for ChildTarget {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
+        self.target.trace(trc);
+    }}
+}
+
 /// 模块调试信息（纯 Rust，无 GC 指针）：报错时按文件名找回原始源码回映射。
 #[derive(Default, Clone)]
 pub struct ModuleDebug {
@@ -111,6 +150,9 @@ pub struct RootedState {
     pub entry_fulfilled: Heap<JSVal>, // 模块入口 TLA 决议捕获用 native
     pub entry_rejected: Heap<JSVal>,
     pub modules: Vec<ModuleEntry>, // URL → 已编译模块记录（循环/去重，spec 同结果）
+    pub cjs_modules: Vec<CjsEntry>, // URL → CJS `module.exports`（执行前预注册，循环可见半成品）
+    pub watch_listeners: Vec<WatchCallback>, // fs.watch 监听（close 前保留，多次分发）
+    pub child_targets: Vec<ChildTarget>, // 异步子进程目标（exit/close 后摘除）
     pub fetch_callbacks: Vec<FetchCallback>, // 未决 fetch 的 resolve/reject（按 id 取出）
     pub fetch_streams: Vec<FetchStreamState>, // 流式 body（chunk 泵；cancel/终态时移除）
     pub make_response_fn: Heap<JSVal>, // prelude 的 __wjs_make_response
@@ -130,6 +172,9 @@ unsafe impl Traceable for RootedState {
         self.entry_fulfilled.trace(trc);
         self.entry_rejected.trace(trc);
         self.modules.trace(trc);
+        self.cjs_modules.trace(trc);
+        self.watch_listeners.trace(trc);
+        self.child_targets.trace(trc);
         self.fetch_callbacks.trace(trc);
         self.fetch_streams.trace(trc);
         self.make_response_fn.trace(trc);
@@ -160,6 +205,18 @@ pub struct PlainState {
     pub fetch_pending: usize,
     /// 未决 fetch 的任务句柄（`fetch_abort` 取消用；结算/取消时移除，不参与计数）。
     pub fetch_tasks: HashMap<u64, tokio::task::AbortHandle>,
+    /// fs.watch 驱动端点（接收端由事件循环持有；watcher 本体同表保活）。
+    pub watch_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::fs::WatchEvent>>,
+    pub watch_next_id: u64,
+    /// 存活 watch 数（仅 persistent 计数；事件循环退出条件用）。
+    pub watch_open: usize,
+    pub watch_drivers: HashMap<u64, (notify::RecommendedWatcher, bool)>,
+    /// 异步子进程驱动端点（接收端由事件循环持有；Child 本体同表保活供 kill）。
+    pub child_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::child::ChildEvent>>,
+    pub child_next_id: u64,
+    /// 存活子进程数（exit/close 结算时减；事件循环退出条件用）。
+    pub child_open: usize,
+    pub child_procs: HashMap<u64, ChildEntry>,
     /// WebSocket 驱动端点（同上）+ 发送端表 + 存活计数（事件循环退出条件用）。
     pub ws_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::ws::WsEvent>>,
     pub ws_next_id: u64,
@@ -176,6 +233,10 @@ pub struct PlainState {
     pub exit_code: Option<i32>,
     /// `process.exit()` 已调用（哨兵码；哨兵错被用户 catch 也照退，检查点强制）。
     pub process_exited: Option<i32>,
+    /// 已求值的 ESM（`require(node:)` 复用时跳过二次求值；入口求值后也记）。
+    pub evaluated_modules: HashSet<String>,
+    /// 主模块 URL（`.cjs` 入口经 require 起；`require.main` 用）。
+    pub main_module: Option<String>,
 }
 
 thread_local! {
@@ -666,7 +727,6 @@ pub fn console_state<R>(f: impl FnOnce(&mut PlainState) -> R) -> R {
 }
 
 // ── process 状态（argv/exitCode/exit，见 plan Phase 4）──────────────────────
-
 /// run() 入口存 argv（`[execPath, script, ...extras]`；eval 为 `[execPath, ...extras]`）。
 pub fn set_argv(argv: Vec<String>) {
     with_plain(|p| p.argv = argv);
@@ -680,4 +740,201 @@ pub fn exit_code() -> Option<i32> {
 /// `process.exitCode = n`（截断 i32；Node 要求整数，此处由 prelude 校验）。
 pub fn set_exit_code(code: i32) {
     with_plain(|p| p.exit_code = Some(code));
+}
+
+// ── CJS 缓存 / ESM 求值集 / 主模块（`require` 用，见 plan Phase 4d）─────────
+/// CJS 导出命中（clone 出值；调用方 rooted 化）。
+pub fn cjs_find(url: &str) -> Option<JSVal> {
+    with_rooted(|s| s.cjs_modules.iter().find(|m| m.url == url).map(|m| m.exports.get()))
+}
+
+/// CJS 预注册（执行前占位，循环可见半成品；重复注册保留首个）。
+pub fn cjs_register(url: String, exports: JSVal) {
+    with_rooted(|s| {
+        if !s.cjs_modules.iter().any(|m| m.url == url) {
+            let heap = Heap::default();
+            heap.set(exports);
+            s.cjs_modules.push(CjsEntry { url, exports: heap });
+        }
+    });
+}
+
+/// CJS 移除（执行失败清场，Node 同语义）。
+pub fn cjs_remove(url: &str) {
+    with_rooted(|s| {
+        s.cjs_modules.retain(|m| m.url != url);
+    });
+}
+
+/// ESM 已求值查询/标记（`require(node:)` 跳过二次求值用）。
+pub fn module_evaluated(url: &str) -> bool {
+    with_plain(|p| p.evaluated_modules.contains(url))
+}
+
+/// ESM 求值标记。
+pub fn set_module_evaluated(url: String) {
+    with_plain(|p| {
+        p.evaluated_modules.insert(url);
+    });
+}
+
+/// 主模块登记/读取（`.cjs` 入口；`require.main` 用）。
+pub fn set_main_module(url: String) {
+    with_plain(|p| p.main_module = Some(url));
+}
+
+/// 主模块 URL（无则 None）。
+pub fn main_module() -> Option<String> {
+    with_plain(|p| p.main_module.clone())
+}
+
+// ── fs.watch 驱动（`notify` 线程 → channel → 事件循环，见 node/fs.rs）────────
+
+/// 分配 watch id（调用方随后建 watcher；失败路径无需配套调用，尚未计数）。
+pub fn watch_alloc() -> Option<(
+    u64,
+    tokio::sync::mpsc::UnboundedSender<crate::builtins::node::fs::WatchEvent>,
+)> {
+    with_plain(|p| {
+        let tx = p.watch_tx.clone()?;
+        p.watch_next_id += 1;
+        Some((p.watch_next_id, tx))
+    })
+}
+
+/// 登记驱动 + 监听（persistent 计存活；非 persistent 只收事件不续命）。
+pub fn watch_add(
+    id: u64,
+    driver: notify::RecommendedWatcher,
+    listener: JSVal,
+    persistent: bool,
+) {
+    let heap = Heap::default();
+    heap.set(listener);
+    with_rooted(|s| s.watch_listeners.push(WatchCallback { id, listener: heap }));
+    with_plain(|p| {
+        p.watch_drivers.insert(id, (driver, persistent));
+        if persistent {
+            p.watch_open += 1;
+        }
+    });
+}
+
+/// 取监听（分发用；保留注册，close 前一直有效）。
+pub fn watch_listener(id: u64) -> Option<JSVal> {
+    with_rooted(|s| s.watch_listeners.iter().find(|w| w.id == id).map(|w| w.listener.get()))
+}
+
+/// 关闭一路 watch（幂等；残留事件落空）。
+pub fn watch_remove(id: u64) {
+    with_rooted(|s| {
+        s.watch_listeners.retain(|w| w.id != id);
+    });
+    with_plain(|p| {
+        if let Some((_, persistent)) = p.watch_drivers.remove(&id) {
+            if persistent {
+                p.watch_open = p.watch_open.saturating_sub(1);
+            }
+        }
+    });
+}
+
+/// 存活 watch 数（persistent；事件循环退出条件用）。
+pub fn watch_open() -> usize {
+    with_plain(|p| p.watch_open)
+}
+
+// ── 异步子进程驱动（task → channel → 事件循环，见 node/child.rs）────────────
+
+/// 子进程表项（kill 用；`detached` 决定组杀）。
+pub struct ChildEntry {
+    pub child: tokio::process::Child,
+    pub detached: bool,
+}
+
+/// 分配子进程 id（调用方随后 spawn + 登记；失败路径无需配套调用）。
+pub fn child_alloc() -> Option<(
+    u64,
+    tokio::sync::mpsc::UnboundedSender<crate::builtins::node::child::ChildEvent>,
+)> {
+    with_plain(|p| {
+        let tx = p.child_tx.clone()?;
+        p.child_next_id += 1;
+        Some((p.child_next_id, tx))
+    })
+}
+
+/// 登记进程本体 + JS 目标（target 为 prelude ChildProcess 对象）。
+pub fn child_add(id: u64, child: tokio::process::Child, detached: bool, target: JSVal) {
+    let heap = Heap::default();
+    heap.set(target);
+    with_rooted(|s| s.child_targets.push(ChildTarget { id, target: heap }));
+    with_plain(|p| {
+        p.child_procs.insert(id, ChildEntry { child, detached });
+        p.child_open += 1;
+    });
+}
+
+/// 取 JS 目标（分发用；保留注册，终态时摘除）。
+pub fn child_target(id: u64) -> Option<JSVal> {
+    with_rooted(|s| s.child_targets.iter().find(|c| c.id == id).map(|c| c.target.get()))
+}
+
+/// 终态记账（target + 本体移除 + 存活减一；kill 后残留事件落空）。
+pub fn child_remove(id: u64) {
+    with_rooted(|s| {
+        s.child_targets.retain(|c| c.id != id);
+    });
+    with_plain(|p| {
+        p.child_procs.remove(&id);
+        p.child_open = p.child_open.saturating_sub(1);
+    });
+}
+
+/// 发信号（`SIGKILL`/`SIGTERM`/数字；detached 走组杀，unix；win 直接杀）。
+/// 返回是否作用到存活进程（未知 id/已退出为 false）。
+pub fn child_kill(id: u64, sig: &str) -> bool {
+    with_plain(|p| {
+        let Some(entry) = p.child_procs.get_mut(&id) else {
+            return false;
+        };
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+            let pid = entry.child.id().unwrap_or(0) as i32;
+            if pid <= 0 {
+                return false;
+            }
+            let signal = match sig.trim().to_ascii_uppercase().as_str() {
+                "SIGKILL" | "KILL" | "9" => Signal::SIGKILL,
+                _ => Signal::SIGTERM,
+            };
+            let target = if entry.detached { Pid::from_raw(-pid) } else { Pid::from_raw(pid) };
+            if kill(target, signal).is_ok() {
+                return true;
+            }
+            // 组杀失败回退直杀（如已非组长）。
+            if entry.detached && kill(Pid::from_raw(pid), signal).is_ok() {
+                return true;
+            }
+            // 同步杀不动则置异步杀（task 侧收尾；此处报 false 由调用方定）。
+            entry.child.start_kill().is_ok()
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = sig;
+            entry.child.start_kill().is_ok()
+        }
+    })
+}
+
+/// 存活子进程数（事件循环退出条件用）。
+pub fn child_open() -> usize {
+    with_plain(|p| p.child_open)
+}
+
+/// 非阻塞收尸（`try_wait` 到即收，无僵尸；返回原始状态，映射由调用方做）。
+pub fn child_try_wait(id: u64) -> Option<std::process::ExitStatus> {
+    with_plain(|p| p.child_procs.get_mut(&id)?.child.try_wait().ok()?)
 }

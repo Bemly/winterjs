@@ -1,16 +1,19 @@
-//! `node:child_process` 同步子集（`execSync`/`spawnSync`；`std::process` 阻塞跑）。
-//! 超时只杀直系子进程（孙进程组杀树顺延 4d，文档记录）；shell 拼串经 `shlex::quote`。
-//! 结果走 JSON 桥（二进制 base64）；错误形状由 prelude 组装（`.status/.signal/`…
-//! 见 SOURCE）。
+//! `node:child_process` 同步子集 + 异步 `spawn`（plan Phase 4d）。
+//! 同步经 `std::process` 阻塞跑；异步经 `tokio::process` + 事件循环分发
+//! `exit/close/error`（stdio 仅 inherit/ignore，pipe 流顺延，文档记录）。
+//! `detached:true` 在 unix 起 setsid 组长，kill 走组杀（`nix` 轮子；win 回退直杀）。
+//! 结果走 JSON 桥（二进制 base64）；错误形状由 prelude 组装（见 SOURCE）。
 
 use std::io::{Read as _, Write as _};
 use std::time::{Duration, Instant};
 
 use mozjs::conversions::ToJSValConvertible as _;
+use mozjs::jsapi::JSObject;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
+use crate::state;
 
 /// spawn 选项（prelude 传 JSON；`None` 表缺省）。
 #[derive(Debug, Default, serde::Deserialize)]
@@ -21,6 +24,8 @@ struct SpawnOpts {
     env: Option<std::collections::HashMap<String, String>>,
     /// 超时毫秒（0/缺省=无限；超时杀直系，`signal="SIGKILL"`）。
     timeout_ms: u64,
+    /// detached 组长化（unix setsid；kill 走组杀，见 `make_detached`）。
+    detached: bool,
     /// shell（exec 由调用方拼好；spawn 经 shlex 拼）。
     shell: bool,
     /// stdin 输入（base64；None=null）。
@@ -32,6 +37,20 @@ struct SpawnOpts {
 /// 默认 shell（unix `/bin/sh`；win `cmd.exe`）。
 fn default_shell() -> &'static str {
     if cfg!(windows) { "cmd.exe" } else { "/bin/sh" }
+}
+
+/// `detached` 组长化（unix setsid；`pre_exec` 只调 async-signal-safe 的 setsid）。
+#[cfg(unix)]
+fn make_detached(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt as _;
+    // SAFETY: pre_exec 闭包跑在 fork 后 exec 前，只调 setsid（async-signal-safe），
+    // 不触 Rust 运行时/锁/堆；setsid 失败忽略（退化普通子进程，kill 回退直杀）。
+    unsafe {
+        cmd.pre_exec(|| {
+            let _ = nix::unistd::setsid();
+            Ok(())
+        });
+    }
 }
 
 /// 退出状态 → `(status|null, signal|null)`（Node 形状；unix 取信号名常用集）。
@@ -76,6 +95,10 @@ fn run_command(
     if let Some(dir) = &opts.cwd {
         cmd.current_dir(dir);
     }
+    #[cfg(unix)]
+    if opts.detached {
+        make_detached(&mut cmd);
+    }
     if let Some(env) = &opts.env {
         cmd.env_clear();
         cmd.envs(env);
@@ -112,7 +135,15 @@ fn run_command(
             Err(_) => break false,
         }
         if deadline.is_some_and(|d| Instant::now() >= d) {
-            // 超时杀直系（组杀顺延 4d；见头注）。
+            // 超时杀（detached 组杀，unix；其余直杀；组杀顺延见头注）。
+            #[cfg(unix)]
+            if opts.detached {
+                let pid = child.id();
+                use nix::sys::signal::{kill, Signal};
+                use nix::unistd::Pid;
+                let _ = kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL)
+                    .or_else(|_| kill(Pid::from_raw(pid as i32), Signal::SIGKILL));
+            }
             let _ = child.kill();
             let _ = child.wait();
             break true;
@@ -223,8 +254,221 @@ pub unsafe extern "C" fn cp_exec(
     true
 }
 
-/// `__wjs_cp_spawn(fileStr, argsJson, optsJson)` → 结果 JSON。
-/// `shell:true` 时经 `shlex::quote` 拼串（unix；win 按空格拼，文档记录）。
+// ── 异步 spawn（`tokio::process` + 事件循环；stdio 仅 inherit/ignore）────────
+// 所有权模型：`Child` 本体常驻 state 表（kill 经 `start_kill`/nix 同步调）；
+// task 只轮询 `try_wait`（收尸一步到位，无二次 wait 竞态）。
+
+/// task → 事件循环（纯数据）。
+pub struct ChildEvent {
+    pub id: u64,
+    pub kind: ChildKind,
+}
+
+pub enum ChildKind {
+    /// 正常退出/被信号杀（含超时杀；spawn 失败走同步报错，不进事件）。
+    Exited { status: Option<i32>, signal: Option<String> },
+}
+
+fn arg_string(cx: &mut mozjs::context::JSContext, frame: &Frame, i: u32, what: &str) -> Option<String> {
+    if frame.argc() <= i {
+        report_error(cx, &format!("TypeError: {what} requires an argument"));
+        return None;
+    }
+    Some(value_to_string(cx, frame.arg(i)))
+}
+
+/// `__wjs_spawn_start(file, argsJson, optsJson, target, stdioStr)` → id。
+/// target 为 prelude ChildProcess 对象（存 RootedState，事件读其 `on*` 属性）。
+pub unsafe extern "C" fn spawn_start(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let (Some(file), Some(args_s)) = (
+        arg_string(&mut cx, &frame, 0, "spawn"),
+        arg_string(&mut cx, &frame, 1, "spawn"),
+    ) else {
+        return false;
+    };
+    let args: Vec<String> = serde_json::from_str(&args_s).unwrap_or_default();
+    let mut opts = if frame.argc() > 2 {
+        match parse_opts(&mut cx, &frame, 2) {
+            Some(o) => o,
+            None => return false,
+        }
+    } else {
+        SpawnOpts::default()
+    };
+    if frame.argc() < 4 || !frame.arg(3).is_object() {
+        report_error(&mut cx, "TypeError: spawn internals missing target");
+        return false;
+    }
+    let target = frame.arg(3);
+    // stdio（inherit/ignore；pipe 顺延，明确拒绝）。
+    let stdio = if frame.argc() > 4 && frame.arg(4).is_string() {
+        value_to_string(&mut cx, frame.arg(4))
+    } else {
+        "inherit".to_string()
+    };
+    if stdio != "inherit" && stdio != "ignore" {
+        report_error(&mut cx, "NotSupportedError: spawn stdio only supports inherit/ignore (pipe needs follow-up)");
+        return false;
+    }
+    let Some((id, tx)) = state::child_alloc() else {
+        report_error(&mut cx, "failed to load settings: child driver not installed");
+        return false;
+    };
+    let handle = tokio::runtime::Handle::try_current();
+    let Ok(handle) = handle else {
+        report_error(&mut cx, "OperationError: no async runtime for spawn");
+        return false;
+    };
+    let mut cmd = tokio::process::Command::new(&file);
+    cmd.args(&args);
+    cmd.stdin(std::process::Stdio::null());
+    if stdio == "ignore" {
+        cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    }
+    if let Some(dir) = &opts.cwd {
+        cmd.current_dir(dir);
+    }
+    if let Some(env) = opts.env.take() {
+        cmd.env_clear();
+        cmd.envs(&env);
+    }
+    #[cfg(unix)]
+    if opts.detached {
+        make_detached(cmd.as_std_mut());
+    }
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            use crate::builtins::node::fs::io_code;
+            report_error(&mut cx, &format!("{}: spawn {file}: {e}", io_code(&e)));
+            return false;
+        }
+    };
+    let timeout_ms = opts.timeout_ms;
+    let detached = opts.detached;
+    state::child_add(id, child, detached, target);
+    tracing::info!(target: "winterjs::child", id, file = file.as_str(), "spawned");
+    handle.spawn(async move {
+        if timeout_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
+            // 超时杀（组杀优先；进程已退则无操作，见 `child_kill` 幂等）。
+            state::child_kill(id, "SIGKILL");
+        }
+        loop {
+            if let Some(exit) = state::child_try_wait(id) {
+                let (status, signal) = status_parts(exit);
+                let _ = tx.send(ChildEvent { id, kind: ChildKind::Exited { status, signal } });
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    });
+    frame.set_rval(mozjs::jsval::Int32Value(id as i32));
+    true
+}
+
+/// `__wjs_child_kill(id, signal)` → boolean（存活即作用）。
+pub unsafe extern "C" fn child_kill(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 || !frame.arg(0).is_number() {
+        report_error(&mut cx, "TypeError: kill needs a numeric id");
+        return false;
+    }
+    let sig = if frame.argc() > 1 { value_to_string(&mut cx, frame.arg(1)) } else { "SIGTERM".into() };
+    let ok = state::child_kill(frame.arg(0).to_number() as u64, &sig);
+    frame.set_rval(mozjs::jsval::BooleanValue(ok));
+    true
+}
+
+/// `__wjs_child_pid(id)` → pid｜-1。
+pub unsafe extern "C" fn child_pid(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 仅读状态（无 cx 上的 JSAPI 调用）
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let _ = cx_raw;
+    let pid = if frame.argc() > 0 && frame.arg(0).is_number() {
+        state::with_plain(|p| {
+            p.child_procs
+                .get(&(frame.arg(0).to_number() as u64))
+                .and_then(|e| e.child.id())
+                .map(|id| id as i32)
+                .unwrap_or(-1)
+        })
+    } else {
+        -1
+    };
+    frame.set_rval(mozjs::jsval::Int32Value(pid));
+    true
+}
+
+/// 事件循环分发一条子进程事件（读 target 的 `onexit/onclose/onerror`；终态摘除）。
+/// exit 与 close 同事件双调（Node 紧随语义，此处同 tick，文档记录）。
+/// 前置条件：cx 已进入 global 所属 realm（事件循环上下文）。
+pub fn dispatch(
+    cx: &mut mozjs::context::JSContext,
+    global: *mut JSObject,
+    ev: ChildEvent,
+    err: crate::runtime::ErrorSource<'_>,
+) -> Result<(), crate::error::Error> {
+    use crate::jsapi_glue::{call_one, get_prop_value, parse_json};
+    let failed = |cx: &mut mozjs::context::JSContext| match err {
+        crate::runtime::ErrorSource::Script { source, filename } => {
+            crate::jsapi_glue::pending_exception_error(cx, global, source, filename)
+        }
+        crate::runtime::ErrorSource::Module { url } => crate::modules::module_error(cx, url),
+    };
+    let ChildKind::Exited { status, signal } = &ev.kind;
+    let json = serde_json::json!({ "status": status, "signal": signal }).to_string();
+    let Some(target_v) = state::child_target(ev.id) else {
+        state::child_remove(ev.id);
+        return Ok(());
+    };
+    if !target_v.is_object() {
+        state::child_remove(ev.id);
+        return Ok(());
+    }
+    rooted!(&in(cx) let target_root: *mut JSObject = target_v.to_object());
+    let mut ok = true;
+    // exit 与 close 同事件双调（`onerror` 永不触发：spawn 失败走同步抛错）。
+    for name in [c"onexit", c"onclose"] {
+        let Some(handler) = get_prop_value(cx, target_root.get(), name) else {
+            state::child_remove(ev.id);
+            return Err(failed(cx));
+        };
+        if handler.is_undefined() || handler.is_null() || !handler.is_object() {
+            continue;
+        }
+        let event_obj = match parse_json(cx, global, &json) {
+            Some(o) => o,
+            None => {
+                state::child_remove(ev.id);
+                return Err(failed(cx));
+            }
+        };
+        ok &= call_one(cx, global, handler, event_obj).is_some();
+    }
+    state::child_remove(ev.id);
+    if ok { Ok(()) } else { Err(failed(cx)) }
+}
+
+/// `__wjs_cp_spawn(fileStr, argsJson, optsJson)` → 结果 JSON（同步版）。
+/// `shell:true` 时经 `shlex::try_quote` 拼串（拼不出退单引号包裹，文档记录）。
 pub unsafe extern "C" fn cp_spawn(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -378,7 +622,59 @@ export function spawnSync(file, args, opts) {
   }
   return out;
 }
-export default { execSync, spawnSync };
+export class ChildProcess {
+  #id = 0;
+  #killed = false;
+  __init(id) { this.#id = id; return this; }
+  get pid() { return __wjs_child_pid(this.#id); }
+  get killed() { return this.#killed; }
+  kill(signal) {
+    const ok = __wjs_child_kill(this.#id, signal === undefined ? "SIGTERM" : String(signal));
+    if (ok) this.#killed = true;
+    return ok;
+  }
+  on(event, cb) {
+    if (typeof cb !== "function") throw new TypeError("listener must be a function");
+    if (event === "exit") this.onexit = cb;
+    else if (event === "close") this.onclose = cb;
+    else if (event === "error") this.onerror = cb;
+    else if (event === "spawn") this.onspawn = cb;
+    else throw new Error(`NotSupportedError: ChildProcess event '${event}' (exit/close/error/spawn)`);
+    return this;
+  }
+  get connected() { return false; }
+  unref() { return this; }
+  ref() { return this; }
+}
+function __normSpawnAsyncOpts(opts) {
+  const o = { cwd: null, env: null, detached: false, stdio: "inherit", timeoutMs: 0 };
+  if (opts === undefined || opts === null) return o;
+  if (opts.cwd !== undefined) o.cwd = String(opts.cwd);
+  if (opts.env !== undefined) o.env = { ...opts.env };
+  if (opts.detached !== undefined) o.detached = !!opts.detached;
+  if (opts.stdio !== undefined) {
+    if (typeof opts.stdio === "string") {
+      if (!["inherit", "ignore"].includes(opts.stdio)) {
+        throw new Error("NotSupportedError: spawn stdio only supports inherit/ignore (pipe needs follow-up)");
+      }
+      o.stdio = opts.stdio;
+    } else {
+      throw new Error("NotSupportedError: spawn stdio array form needs follow-up");
+    }
+  }
+  if (opts.timeout !== undefined) o.timeoutMs = Number(opts.timeout);
+  return o;
+}
+export function spawn(file, args, opts) {
+  if (args !== undefined && !Array.isArray(args)) { opts = args; args = []; }
+  const o = __normSpawnAsyncOpts(opts);
+  const proc = new ChildProcess();
+  const id = __wjs_spawn_start(String(file), JSON.stringify([...(args || [])].map(String)), JSON.stringify({
+    cwd: o.cwd, env: o.env, detached: o.detached, timeout_ms: o.timeoutMs,
+  }), proc, o.stdio);
+  return proc.__init(id);
+}
+export default { execSync, spawnSync, spawn, ChildProcess };
 "#;
 
 #[cfg(test)]

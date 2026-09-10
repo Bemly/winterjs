@@ -4,10 +4,13 @@
 //! （底层同步实现，文档记录；lint 脚本量级无感）。
 
 use mozjs::conversions::ToJSValConvertible as _;
+use mozjs::context::JSContext;
+use mozjs::jsapi::JSObject;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 
 use crate::jsapi_glue::{report_error, value_to_string, view_bytes, wrap_cx, Frame};
+use crate::state;
 
 /// `io::Error` → Node 码（raw_os_error 优先，Kind 兜底；纯函数，单元测试覆盖）。
 pub fn io_code(e: &std::io::Error) -> &'static str {
@@ -532,6 +535,162 @@ pub unsafe extern "C" fn fs_mkdtemp(
     false
 }
 
+// ── fs.watch（`notify` 线程 → channel → 事件循环；无防抖，文档记录）─────────
+
+/// notify 线程 → 事件循环（纯数据；`kind` 为 `rename`/`change`）。
+pub struct WatchEvent {
+    pub id: u64,
+    pub kind: WatchKind,
+}
+
+pub enum WatchKind {
+    Fired { event: String, file: Option<String> },
+    Failed(String),
+}
+
+/// notify 事件 → Node `rename`/`change`（Access/Other 忽略，返回 None）。
+fn watch_classify(kind: &notify::EventKind) -> Option<&'static str> {
+    match kind {
+        notify::EventKind::Create(_) | notify::EventKind::Remove(_) => Some("rename"),
+        notify::EventKind::Modify(_) => Some("change"),
+        _ => None,
+    }
+}
+
+/// `__wjs_watch_start(path, recursiveBool, persistentBool, listener)` → id。
+/// 路径不存在即报（`watch` 前置校验；`notify` 自身错误走 Failed 事件）。
+pub unsafe extern "C" fn watch_start(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 || !frame.arg(3).is_object() {
+        report_error(&mut cx, "TypeError: watch needs path, flags and listener");
+        return false;
+    }
+    let (Some(path), recursive, persistent, listener) = (
+        arg_path(&mut cx, &frame, 0, "watch"),
+        frame.argc() > 1 && frame.arg(1) == mozjs::jsval::BooleanValue(true),
+        frame.argc() <= 2 || frame.arg(2) != mozjs::jsval::BooleanValue(false),
+        frame.arg(3),
+    ) else {
+        return false;
+    };
+    if !std::path::Path::new(&path).exists() {
+        report_error(&mut cx, &format!("ENOENT: watch '{path}'"));
+        return false;
+    }
+    let Some((id, tx)) = state::watch_alloc() else {
+        report_error(&mut cx, "failed to load settings: watch driver not installed");
+        return false;
+    };
+    let mode = if recursive {
+        notify::RecursiveMode::Recursive
+    } else {
+        notify::RecursiveMode::NonRecursive
+    };
+    let watched = path.clone();
+    let build: Result<notify::RecommendedWatcher, String> = (|| {
+        use notify::Watcher as _;
+        let mut watcher =
+            notify::RecommendedWatcher::new(move |res: Result<notify::Event, notify::Error>| {
+                match res {
+                    Ok(ev) => {
+                        let Some(kind) = watch_classify(&ev.kind) else {
+                            return;
+                        };
+                        let file = ev.paths.first().and_then(|p| {
+                            p.file_name().map(|n| n.to_string_lossy().into_owned())
+                        });
+                        let _ =
+                            tx.send(WatchEvent { id, kind: WatchKind::Fired { event: kind.to_string(), file } });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(WatchEvent { id, kind: WatchKind::Failed(e.to_string()) });
+                    }
+                }
+            }, notify::Config::default())
+            .map_err(|e| e.to_string())?;
+        watcher.watch(std::path::Path::new(&watched), mode).map_err(|e| e.to_string())?;
+        Ok(watcher)
+    })();
+    match build {
+        Ok(driver) => {
+            state::watch_add(id, driver, listener, persistent);
+            tracing::info!(target: "winterjs::watch", id, path = path.as_str(), recursive, "watch started");
+            frame.set_rval(mozjs::jsval::Int32Value(id as i32));
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &format!("OperationError: watch failed: {e}"));
+            false
+        }
+    }
+}
+
+/// `__wjs_watch_close(id)`（幂等；残留事件落空）。
+pub unsafe extern "C" fn watch_close(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 || !frame.arg(0).is_number() {
+        report_error(&mut cx, "TypeError: watch close needs a numeric id");
+        return false;
+    }
+    state::watch_remove(frame.arg(0).to_number() as u64);
+    frame.set_rval(UndefinedValue());
+    true
+}
+
+/// 事件循环分发一条 watch 事件（监听保留，多次触发；失败摘除并 WARN）。
+/// 前置条件：cx 已进入 global 所属 realm（事件循环上下文，`call_two` 合规）。
+pub fn dispatch(
+    cx: &mut JSContext,
+    global: *mut JSObject,
+    ev: WatchEvent,
+    err: crate::runtime::ErrorSource<'_>,
+) -> Result<(), crate::error::Error> {
+    use crate::jsapi_glue::call_two;
+    let failed = |cx: &mut JSContext| match err {
+        crate::runtime::ErrorSource::Script { source, filename } => {
+            crate::jsapi_glue::pending_exception_error(cx, global, source, filename)
+        }
+        crate::runtime::ErrorSource::Module { url } => crate::modules::module_error(cx, url),
+    };
+    match ev.kind {
+        WatchKind::Fired { event, file } => {
+            let Some(listener) = state::watch_listener(ev.id) else {
+                return Ok(());
+            };
+            rooted!(&in(cx) let mut event_v = UndefinedValue());
+            event.to_jsval(cx, event_v.handle_mut());
+            rooted!(&in(cx) let mut file_v = UndefinedValue());
+            match file {
+                Some(f) => f.to_jsval(cx, file_v.handle_mut()),
+                None => mozjs::jsval::NullValue().to_jsval(cx, file_v.handle_mut()),
+            }
+            if call_two(cx, global, listener, event_v.get(), file_v.get()).is_some() {
+                Ok(())
+            } else {
+                Err(failed(cx))
+            }
+        }
+        WatchKind::Failed(message) => {
+            // 溢出类错误：摘除该路（监听不再触发），WARN 留痕后继续循环。
+            state::watch_remove(ev.id);
+            tracing::warn!(target: "winterjs::watch", id = ev.id, message = message.as_str(), "watch failed, removed");
+            Ok(())
+        }
+    }
+}
+
 /// `__wjs_fs_unlink(path)`（`rm` 子集，单文件）。
 pub unsafe extern "C" fn fs_unlink(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -765,7 +924,22 @@ export const constants = {
   S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFLNK: 40960,
   COPYFILE_EXCL: 1, COPYFILE_FICLONE: 2, COPYFILE_FICLONE_FORCE: 4,
 };
-const __api = { readFileSync, writeFileSync, appendFileSync, statSync, lstatSync, existsSync, mkdirSync, rmSync, rmdirSync, unlinkSync, readdirSync, renameSync, copyFileSync, realpathSync, mkdtempSync, constants };
+class __FSWatcher {
+  #id;
+  constructor(id) { this.#id = id; }
+  close() { __wjs_watch_close(this.#id); }
+  get closed() { return false; }
+}
+export function watch(p, opts, listener) {
+  if (typeof opts === "function") { listener = opts; opts = {}; }
+  if (typeof listener !== "function") throw new TypeError("watch: listener must be a function");
+  p = __fsPath(p, "watch");
+  const recursive = !!(opts && opts.recursive);
+  const persistent = !(opts && opts.persistent === false);
+  const id = __fsCall("watch", p, () => __wjs_watch_start(p, recursive, persistent, listener));
+  return new __FSWatcher(id);
+}
+const __api = { readFileSync, writeFileSync, appendFileSync, statSync, lstatSync, existsSync, mkdirSync, rmSync, rmdirSync, unlinkSync, readdirSync, renameSync, copyFileSync, realpathSync, mkdtempSync, watch, constants };
 export default __api;
 "#;
 

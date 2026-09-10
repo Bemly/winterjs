@@ -166,7 +166,14 @@
   `node:assert` 起步（ok/equal/strict/deep/throws/rejects/match + AssertionError）
   + `node:test` 起步（test/describe/it/skip/todo/only，串行泵 + 小结 + exitCode）。
   `tests/cli.rs` 4 例 + 状态映射单测；`cargo test` 84+10 全绿，0 警告。
-- [ ] 切片 d（顺延）：`fs.watch`（notify 进事件循环）+ 异步 spawn + `require()`。
+- [x] 切片 d（2026-09-10）：`require()` CJS（node: 经 namespace/`default` 回落、
+  文件经柯里化包装执行 + 预注册循环半成品 + JSON + `.cjs` 入口 + require.main/
+  resolve；ESM 报 ERR_REQUIRE_ESM）+ `fs.watch`（notify 进事件循环，persistent
+  续命）+ 异步 `spawn`（exit/close 双调 + kill + detached 组杀 unix）。
+  `tests/cli.rs` 5 例；`cargo test` 89+10 全绿，0 警告。
+- 已知缺口（后 Phase 按需排）：`require` 不读 package.json type（`.js` 内 CJS 要改
+  `.cjs`）；spawn stdio pipe 流、`before/after` 钩子；`fs.watch` 无防抖；孙进程
+  win 组杀；RSA-PSS/Ed25519（c-4x）；Buffer 全局；fs 流。
 
 ## Phase 5 — 包管理（install/publish/upgrade）
 

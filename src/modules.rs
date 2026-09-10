@@ -210,7 +210,8 @@ fn fail_load(cx: &mut JSContext, err: Error, dynamic: bool) -> bool {
 /// 子图全编译 + 引擎加载 + link（动态 import 用：引擎不遍历后代，host 负责整图；
 /// 注意 ModuleLink 要求先走完加载态（直接 link 报 `unexpected status: New`），
 /// 故内嵌一次 `load_dependencies`（边经 hook 从注册表命中，循环由引擎处理）。
-fn ensure_subgraph(cx: &mut JSContext, root: &Url) -> Result<*mut JSObject, Error> {
+/// `require(node:)` 复用同一入口（pub(crate)）。
+pub(crate) fn ensure_subgraph(cx: &mut JSContext, root: &Url) -> Result<*mut JSObject, Error> {
     use mozjs::rust::wrappers2::ModuleLink;
 
     let mut seen: HashSet<String> = HashSet::new();

@@ -132,7 +132,7 @@ fn completions_bash_script() {
 #[test]
 fn man_pages_render_roff() {
     let out = stdout_of(&mut winterjs().arg("man"));
-    assert_eq!(out.matches(".TH").count(), 7, "main + 6 subcommand pages");
+    assert_eq!(out.matches(".TH").count(), 9, "main + 8 subcommand pages");
 }
 
 #[test]
@@ -1614,6 +1614,79 @@ fn phase5_git_end_to_end_local() {
     dir.close().unwrap();
     home.close().unwrap();
     cache.close().unwrap();
+}
+
+#[test]
+fn phase5_publish_dry_run_ok() {
+    // 正常：`publish --dry-run` 打印名@版/registry/files，不碰网络。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("package.json")
+        .write_str(r#"{"name":"pub-pkg","version":"1.2.3","license":"MIT"}"#)
+        .unwrap();
+    dir.child("index.js").write_str("exports.v = 1;\n").unwrap();
+    let out = stdout_of(
+        winterjs()
+            .args(["publish", "--dry-run", "--registry", "http://127.0.0.1:9/"])
+            .current_dir(dir.path()),
+    );
+    assert!(out.contains("pub-pkg@1.2.3"), "summary: {out}");
+    assert!(out.contains("registry: http://127.0.0.1:9/"), "summary: {out}");
+    assert!(out.contains("files:"), "summary: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase5_publish_manifest_errors() {
+    // 报错：缺名 / 坏 license，皆 exit=1 且可读。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("package.json").write_str(r#"{"version":"1.0.0"}"#).unwrap();
+    let out = winterjs().args(["publish", "--dry-run"]).current_dir(dir.path()).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no name"), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    dir.child("package.json")
+        .write_str(r#"{"name":"p","version":"1.0.0","license":"Not-A-License!!"}"#)
+        .unwrap();
+    let out = winterjs().args(["publish", "--dry-run"]).current_dir(dir.path()).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("license"), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase5_login_token_writes_npmrc() {
+    // 正常：`login --token` 把 token 行写进 `$HOME/.npmrc`（其他行保留）。
+    let home = assert_fs::TempDir::new().unwrap();
+    home.child(".npmrc").write_str("registry=http://127.0.0.1:4873/\n").unwrap();
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = winterjs()
+        .args(["login", "--token", "sekret", "--registry", "http://127.0.0.1:4873/"])
+        .env("HOME", home.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let npmrc = std::fs::read_to_string(home.path().join(".npmrc")).unwrap();
+    assert!(npmrc.contains("//127.0.0.1/:_authToken=sekret"), "npmrc: {npmrc}");
+    assert!(npmrc.contains("registry=http://127.0.0.1:4873/"), "npmrc: {npmrc}");
+    dir.close().unwrap();
+    home.close().unwrap();
+}
+
+#[test]
+fn phase5_login_oauth_prints_url() {
+    // 边界：`login --oauth` 打印授权 URL（headless 下浏览器打不开也不失败）。
+    let home = assert_fs::TempDir::new().unwrap();
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = stdout_of(
+        winterjs()
+            .args(["login", "--oauth", "--registry", "http://127.0.0.1:4873/"])
+            .env("HOME", home.path())
+            .current_dir(dir.path()),
+    );
+    assert!(out.contains("http://127.0.0.1:4873/oauth/authorize?"), "url: {out}");
+    assert!(out.contains("--token"), "hint: {out}");
+    dir.close().unwrap();
+    home.close().unwrap();
 }
 
 /// 现场造 tgz（`package/` 包裹；`files` 为包内路径→内容）。

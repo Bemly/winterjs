@@ -107,6 +107,18 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
         Cmd::Install { packages, dry_run, registry } => {
             pm::install(&packages, dry_run, registry.as_deref()).await
         }
+        Cmd::Publish { dry_run, registry, tag } => {
+            let cwd = std::env::current_dir()
+                .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+            let reg = pm::effective_registry(&cwd, registry.as_deref());
+            pm::publish::publish(&cwd, dry_run, &reg, &tag).await
+        }
+        Cmd::Login { token, registry, oauth } => {
+            let cwd = std::env::current_dir()
+                .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+            let reg = pm::effective_registry(&cwd, registry.as_deref());
+            pm::publish::login(&reg, token.as_deref(), oauth).await
+        }
         Cmd::Man => {            use std::io::Write as _;
 
             let mut cmd = Cli::command();

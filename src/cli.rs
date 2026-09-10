@@ -71,4 +71,28 @@ pub enum Cmd {
         #[arg(long)]
         registry: Option<String>,
     },
+    /// Publish the current package (Phase 5d; dry-run validates only)
+    Publish {
+        /// Validate and print what would be published, do not upload
+        #[arg(long)]
+        dry_run: bool,
+        /// Registry base URL (npmrc/env fallback, see `install`)
+        #[arg(long)]
+        registry: Option<String>,
+        /// Dist-tag to publish under
+        #[arg(long, default_value = "latest")]
+        tag: String,
+    },
+    /// Log in to a registry (Phase 5d; stores a token in ~/.npmrc)
+    Login {
+        /// Auth token to store (prompted on TTY when omitted)
+        #[arg(long)]
+        token: Option<String>,
+        /// Registry base URL (npmrc/env fallback, see `install`)
+        #[arg(long)]
+        registry: Option<String>,
+        /// Print an OAuth authorization URL instead (code exchange deferred)
+        #[arg(long)]
+        oauth: bool,
+    },
 }

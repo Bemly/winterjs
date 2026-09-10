@@ -225,7 +225,14 @@
     见 `dependencies.md` 附记；落地后 bin 链接 + lifecycle 与 tarball 同待遇，
     lockfile 记 `git+<url>#<commit>`）。模块单测 7 例 + 黑盒 4 例
     （dry-run/未知 rev/裸名读包/真装 require）；`cargo test` 28+104 全绿，0 警告。
-  - [ ] d3 publish/login（`oauth2`+`webbrowser` 干跑 + `spdx` 许可证校验）。
+  - [x] d3 publish/login：`src/pm/publish.rs`（`publish --dry-run` 本地校验：
+    名/版本（`semver`）/license（`spdx`，缺失 WARN/非法错）/`files` 表，
+    打印摘要不碰网络，真 PUT 顺延；`login --token` upsert
+    `//<host>/:_authToken` 进 `$HOME/.npmrc`（原子，值永不进日志），
+    TTY 缺 token 走 `dialoguer` 密码提示；`login --oauth` 经 `oauth2` 拼
+    `{registry}/oauth/authorize` URL + `webbrowser` 试开，code 交换顺延）。
+    CLI 新增 `publish`/`login`（man 7→9）。模块单测 4 例 + 黑盒 4 例
+    （dry-run/缺名坏 license/token 落盘/oauth URL）；`cargo test` 32+108 全绿，0 警告。
   - [ ] d4 upgrade（`self_update` 干跑）。
 
 ## Phase 6 — serve（HTTP 服务）

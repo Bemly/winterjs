@@ -6,11 +6,22 @@ pub mod git;
 pub mod install;
 pub mod lifecycle;
 pub mod npmrc;
+pub mod publish;
 pub mod registry;
 pub mod resolve;
 pub mod spec;
 
 use crate::error::Error;
+
+/// 生效 registry（5d-d1 优先级；打 DEBUG 日志；token 有无只记布尔）。
+pub fn effective_registry(cwd: &std::path::Path, cli: Option<&str>) -> String {
+    let (project, home) = npmrc::load_cwd_and_home(cwd);
+    let (src, url) = npmrc::resolve_registry(cli, &project, &home);
+    // auth token 只查有无（值永不进日志；5d-d3 publish 才真正使用）。
+    let has_auth = project.auth_token_for(&url).or_else(|| home.auth_token_for(&url)).is_some();
+    tracing::debug!(target: "winterjs::pm", source = src, registry = url.as_str(), has_auth, "registry resolved");
+    url
+}
 
 /// `winterjs install [pkgs...] [--dry-run] [--registry URL]`。
 /// registry 优先级（5d-d1）：flag > `NPM_CONFIG_REGISTRY` env > `<cwd>/.npmrc` >
@@ -22,14 +33,7 @@ pub async fn install(packages: &[String], dry_run: bool, registry: Option<&str>)
         ));
     }
     let cwd = std::env::current_dir().map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
-    let (project, home) = npmrc::load_cwd_and_home(&cwd);
-    let (src, registry) = npmrc::resolve_registry(registry, &project, &home);
-    // auth token 只查有无（值永不进日志；5d-d3 publish 才真正使用）。
-    let has_auth = project
-        .auth_token_for(&registry)
-        .or_else(|| home.auth_token_for(&registry))
-        .is_some();
-    tracing::debug!(target: "winterjs::pm", source = src, registry = registry.as_str(), has_auth, "registry resolved");
+    let registry = effective_registry(&cwd, registry);
     // 请求分流（registry 走 packument 求解；git 走 rev 解析，各自独立）。
     let mut reg_specs = Vec::with_capacity(packages.len());
     let mut git_specs = Vec::new();

@@ -113,7 +113,8 @@ fn strip_one_quote(v: &str) -> &str {
 }
 
 /// registry URL 的 host（`url` 轮子；解析失败回落简易切分，仍失败则 None）。
-fn registry_host(registry_url: &str) -> Option<String> {
+/// `pub(crate)`：login 落盘复用。
+pub(crate) fn registry_host(registry_url: &str) -> Option<String> {
     if let Ok(u) = url::Url::parse(registry_url) {
         if let Some(h) = u.host_str() {
             return Some(h.to_owned());

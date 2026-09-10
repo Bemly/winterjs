@@ -6,6 +6,7 @@ mod cli;
 mod error;
 mod jobqueue;
 mod jsapi_glue;
+mod lintfmt;
 mod loader;
 mod logging;
 mod modules;
@@ -143,6 +144,8 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             pm::publish::login(&reg, token.as_deref(), oauth).await
         }
         Cmd::Upgrade { dry_run } => pm::upgrade::upgrade(dry_run).await,
+        Cmd::Lint { args } => lintfmt::run("oxlint", &args),
+        Cmd::Fmt { args } => lintfmt::run("oxfmt", &args),
         Cmd::Init { name, yes } => {
             let cwd = std::env::current_dir()
                 .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;

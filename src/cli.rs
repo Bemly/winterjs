@@ -153,6 +153,18 @@ pub enum Cmd {
         #[command(flatten)]
         perms: PermissionArgs,
     },
+    /// Forward to the project's oxlint (passthrough; args go to oxlint verbatim)
+    Lint {
+        /// Arguments forwarded to oxlint verbatim
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Forward to the project's oxfmt (passthrough; args go to oxfmt verbatim)
+    Fmt {
+        /// Arguments forwarded to oxfmt verbatim
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Serve a directory over HTTP (Phase 6)
     Serve {
         /// Directory to serve

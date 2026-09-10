@@ -371,10 +371,20 @@
   不传 `--allow-*` 行为不变，Bun 同款；传任一 `--allow-*` 即进沙箱，
   未授权类默认拒绝）。
 - 完成标准：发 `27.x` 前全矩阵 CI（含 android/ohos）转正，§1 的 ⚠️ 清零或有书面理由。
-- [x] lint/fmt 顺延（2026-09-11，书面理由）：计划所写"oxc 开特性"不成立——
-  oxc 门面 crate 无 linter/formatter 特性，且 `oxc_linter` 从未发布到 crates.io、
-  `oxc_formatter` 是 2023 年 0.0.0 占位；git vendor 需拖未发布 workspace，
-  与"crates.io 有版本才引"惯例相悖。上游发布后回 caret 引入。
+- [x] lint/fmt 命令穿透（2026-09-11 用户拍板，`src/lintfmt.rs`）：原"oxc 开特性"
+  不成立（`oxc_linter` 未发布 crates.io、`oxc_formatter` 是 0.0.0 占位，顺延
+  记录见 dependencies §14）——改走外部 CLI 转发：`winterjs lint ...` → `oxlint ...`、
+  `winterjs fmt ...` → `oxfmt ...`，参数原样转发（trailing passthrough，首参
+  flag 也在内）、stdout/stderr 继承、退出码透传（`Error::Exit` 静默），语义
+  完全归上游（oxfmt 默认写回、`--check` CI 检查）。查找：node_modules/.bin
+  从 cwd 逐级向上（monorepo 命中根）→ PATH（`which` 轮子，Windows 尊重
+  PATHEXT）→ 可读指引（`winterjs install oxlint` / `npm install -D oxlint`，
+  不静默按需安装——CI/离线/lockfile 可预测）。零新依赖；外部二进制先例：
+  远端 git 克隆走 git CLI、vergen-gitcl。平台注记：oxc 上游 android/ohos 只出
+  N-API binding 无 standalone CLI（release workflow `!android && !ohos`），
+  移动 target 上查找落空报可读错（桌面开发期工具）。CLI 新增 lint/fmt
+  （man 14→16）。模块单测 4 例 + 黑盒 2 例（假脚本：转发/stderr 直出/
+  向上查找/退出码透传/未找到指引）；`cargo test` 64+146 全绿，0 警告，冒烟 5/5。
 - [x] 切片 b（2026-09-11）：权限开关 `--allow-*`（`src/permissions.rs`，opt-in 沙箱：
   不传旗标行为不变（141 例存量黑盒零回归），传任一 `--allow-*`/`--allow-all` 即进沙箱，
   未授权类默认拒绝，错误 `PermissionError: ...`（可读、可 catch、fs/sqlite 包装层直通不转形）。

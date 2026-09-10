@@ -335,6 +335,17 @@ globalThis.Response = class Response {
   get url() { return __wjs_respState.get(this).url; }
   get ok() { const s = this.status; return s >= 200 && s < 300; }
   get bodyUsed() { return __wjs_respState.get(this).bodyUsed; }
+  get body() {
+    const st = __wjs_respState.get(this);
+    if (st.bodyUsed) return null;
+    if (!st.bodyStream) {
+      const bytes = st.bodyU8 ? st.bodyU8.slice() : new Uint8Array(0);
+      st.bodyStream = new ReadableStream({
+        start(c) { if (bytes.length) c.enqueue(bytes); c.close(); },
+      });
+    }
+    return st.bodyStream;
+  }
   async text() { const b = __wjs_takeBody(this, "Response.text"); return b ? new TextDecoder().decode(b) : ""; }
   async json() { return JSON.parse(await this.text()); }
   async arrayBuffer() { const b = __wjs_takeBody(this, "Response.arrayBuffer"); return b ? b.slice().buffer : new ArrayBuffer(0); }
@@ -401,6 +412,318 @@ globalThis.__wjs_make_response = (metaJson, bodyU8) => {
   return resp;
 };
 globalThis.__wjs_make_fetch_error = (msg) => new Error(String(msg));
+// ---- Phase 3c-2: streams（纯 prelude 内存实现；默认 reader，非 BYOB）----
+const __wjs_rsState = new WeakMap();
+function __wjs_rsPull(st) {
+  if (!st.reader || st.closed || st.error !== undefined || st.pulling) return;
+  if (st.queue.length >= st.hwm) return;
+  st.pulling = true;
+  try {
+    const r = st.source.pull ? st.source.pull(st.controller) : undefined;
+    Promise.resolve(r).then(() => { st.pulling = false; __wjs_rsPump(st); }, (e) => {
+      st.pulling = false; __wjs_rsError(st, e);
+    });
+  } catch (e) { st.pulling = false; __wjs_rsError(st, e); }
+}
+function __wjs_rsPump(st) {
+  while (st.pending.length && (st.queue.length || st.closed || st.error !== undefined)) {
+    const { resolve, reject } = st.pending.shift();
+    if (st.error !== undefined) { reject(st.error); continue; }
+    if (st.queue.length) {
+      const v = st.queue.shift();
+      resolve({ value: v, done: false });
+    } else { resolve({ value: undefined, done: true }); }
+  }
+  if (!st.closed && st.error === undefined) __wjs_rsPull(st);
+}
+function __wjs_rsError(st, e) {
+  if (st.closed || st.error !== undefined) return;
+  st.error = e;
+  st.queue.length = 0;
+  __wjs_rsPump(st);
+}
+function __wjs_rsController(stream, st) {
+  return {
+    get desiredSize() { return st.hwm - st.queue.length; },
+    enqueue(chunk) {
+      if (st.closed || st.error !== undefined) throw new TypeError("stream is not readable");
+      if (chunk === undefined) throw new TypeError("chunk must not be undefined");
+      st.queue.push(chunk);
+      __wjs_rsPump(st);
+    },
+    close() {
+      if (st.closed || st.error !== undefined) throw new TypeError("stream is not readable");
+      st.closed = true;
+      __wjs_rsPump(st);
+    },
+    error(e) { __wjs_rsError(st, e); },
+  };
+}
+globalThis.ReadableStream = class ReadableStream {
+  constructor(underlyingSource = {}, strategy) {
+    const hwm = strategy && strategy.highWaterMark !== undefined ? Number(strategy.highWaterMark) : 1;
+    const st = {
+      queue: [], pending: [], closed: false, error: undefined,
+      reader: null, pulling: false, hwm: Number.isNaN(hwm) ? 1 : hwm,
+      source: underlyingSource, controller: null,
+    };
+    st.controller = __wjs_rsController(this, st);
+    __wjs_rsState.set(this, st);
+    try {
+      const r = underlyingSource.start ? underlyingSource.start(st.controller) : undefined;
+      Promise.resolve(r).catch((e) => __wjs_rsError(st, e));
+    } catch (e) { __wjs_rsError(st, e); }
+  }
+  get locked() { return !!__wjs_rsState.get(this).reader; }
+  cancel(reason) {
+    const st = __wjs_rsState.get(this);
+    if (st.reader) throw new TypeError("stream is locked");
+    st.queue.length = 0; st.closed = true;
+    const c = st.source.cancel ? st.source.cancel(reason) : undefined;
+    __wjs_rsPump(st);
+    return Promise.resolve(c).then(() => undefined);
+  }
+  getReader() {
+    const st = __wjs_rsState.get(this);
+    if (st.reader) throw new TypeError("stream is locked");
+    const stream = this;
+    const reader = {
+      get closed() {
+        return new Promise((resolve, reject) => {
+          if (st.error !== undefined) reject(st.error);
+          else if (st.closed && !st.queue.length) resolve(undefined);
+          else st.pending.push({ resolve: () => resolve(undefined), reject });
+        });
+      },
+      read() {
+        return new Promise((resolve, reject) => {
+          if (st.error !== undefined) { reject(st.error); return; }
+          if (st.queue.length) {
+            const v = st.queue.shift();
+            resolve({ value: v, done: false });
+            __wjs_rsPull(st);
+            return;
+          }
+          if (st.closed) { resolve({ value: undefined, done: true }); return; }
+          st.pending.push({ resolve, reject });
+          __wjs_rsPull(st);
+        });
+      },
+      releaseLock() { if (st.reader === reader) st.reader = null; },
+      cancel(reason) {
+        st.queue.length = 0; st.closed = true;
+        const c = st.source.cancel ? st.source.cancel(reason) : undefined;
+        if (st.reader === reader) st.reader = null;
+        __wjs_rsPump(st);
+        return Promise.resolve(c).then(() => undefined);
+      },
+    };
+    st.reader = reader;
+    return reader;
+  }
+  pipeThrough(t, options) {
+    this.pipeTo(t.writable, options);
+    return t.readable;
+  }
+  async pipeTo(dest, options = {}) {
+    const preventClose = !!(options && options.preventClose);
+    const reader = this.getReader();
+    const writer = dest.getWriter();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        await writer.write(value);
+      }
+      if (!preventClose) await writer.close();
+    } finally {
+      reader.releaseLock();
+      writer.releaseLock();
+    }
+  }
+  tee() {
+    const st = __wjs_rsState.get(this);
+    if (st.reader) throw new TypeError("stream is locked");
+    // 简化 tee：顺序读源，两分支各收一份（引用共享；无背压，见文档）。
+    const q1 = [], q2 = [];
+    const mkBranch = (q) => new ReadableStream({
+      pull(c) {
+        if (q.length) { c.enqueue(q.shift()); return; }
+        if (done) { c.close(); return; }
+        if (failed !== undefined) { c.error(failed); return; }
+        waiters.push(() => {
+          if (q.length) { try { c.enqueue(q.shift()); } catch {} return; }
+          if (done) { try { c.close(); } catch {} return; }
+          if (failed !== undefined) { try { c.error(failed); } catch {} }
+        });
+      },
+      cancel() {},
+    });
+    let done = false, failed;
+    const waiters = [];
+    const wake = () => { for (const w of waiters.splice(0)) w(); };
+    const r1 = mkBranch(q1), r2 = mkBranch(q2);
+    const src = this.getReader();
+    st.reader = null;
+    const loop = () => src.read().then(({ value, done: d }) => {
+      if (d) { done = true; wake(); return; }
+      q1.push(value); q2.push(value);
+      wake();
+      loop();
+    }, (e) => { failed = e; wake(); });
+    loop();
+    return [r1, r2];
+  }
+  async *[Symbol.asyncIterator]() {
+    const reader = this.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        yield value;
+      }
+    } finally { reader.releaseLock(); }
+  }
+};
+const __wjs_wsState = new WeakMap();
+globalThis.WritableStream = class WritableStream {
+  constructor(underlyingSink = {}, strategy) {
+    const hwm = strategy && strategy.highWaterMark !== undefined ? Number(strategy.highWaterMark) : 1;
+    const st = {
+      queue: [], writing: false, closed: false, errored: false, error: undefined,
+      writer: null, hwm: Number.isNaN(hwm) ? 1 : hwm, sink: underlyingSink,
+      closeReq: null,
+    };
+    __wjs_wsState.set(this, st);
+    const stream = this;
+    st.controller = { error(e) { __wjs_wsError(stream, e); } };
+    try {
+      const r = underlyingSink.start ? underlyingSink.start(st.controller) : undefined;
+      Promise.resolve(r).catch((e) => __wjs_wsError(this, e));
+    } catch (e) { __wjs_wsError(this, e); }
+  }
+  get locked() { return !!__wjs_wsState.get(this).writer; }
+  abort(reason) {
+    const st = __wjs_wsState.get(this);
+    if (st.writer) throw new TypeError("stream is locked");
+    const a = st.sink.abort ? st.sink.abort(reason) : undefined;
+    __wjs_wsError(this, reason);
+    return Promise.resolve(a).then(() => undefined);
+  }
+  close() {
+    const st = __wjs_wsState.get(this);
+    if (st.writer) throw new TypeError("stream is locked");
+    return __wjs_wsCloseReq(this);
+  }
+  getWriter() {
+    const st = __wjs_wsState.get(this);
+    if (st.writer) throw new TypeError("stream is locked");
+    const stream = this;
+    const writer = {
+      get closed() {
+        return new Promise((resolve, reject) => {
+          if (st.errored) reject(st.error);
+          else if (st.closed) resolve(undefined);
+          else st.closeWaiters.push({ resolve, reject });
+        });
+      },
+      get desiredSize() { return st.hwm - st.queue.length; },
+      get ready() { return Promise.resolve(); },
+      write(chunk) {
+        if (chunk === undefined) return Promise.reject(new TypeError("chunk must not be undefined"));
+        if (st.errored) return Promise.reject(st.error);
+        if (st.closed) return Promise.reject(new TypeError("stream is closed"));
+        return new Promise((resolve, reject) => {
+          st.queue.push({ chunk, resolve, reject });
+          __wjs_wsPump(stream);
+        });
+      },
+      close() { return __wjs_wsCloseReq(stream); },
+      abort(reason) {
+        const a = st.sink.abort ? st.sink.abort(reason) : undefined;
+        __wjs_wsError(stream, reason);
+        return Promise.resolve(a).then(() => undefined);
+      },
+      releaseLock() { if (st.writer === writer) st.writer = null; },
+    };
+    st.closeWaiters = st.closeWaiters || [];
+    st.writer = writer;
+    return writer;
+  }
+};
+function __wjs_wsError(stream, e) {
+  const st = __wjs_wsState.get(stream);
+  if (st.errored) return;
+  st.errored = true;
+  st.error = e;
+  for (const q of st.queue.splice(0)) q.reject(e);
+  if (st.closeReq) { const c = st.closeReq; st.closeReq = null; c.reject(e); }
+  for (const w of (st.closeWaiters || []).splice(0)) w.reject(e);
+}
+function __wjs_wsCloseReq(stream) {
+  const st = __wjs_wsState.get(stream);
+  return new Promise((resolve, reject) => { st.closeReq = { resolve, reject }; __wjs_wsPump(stream); });
+}
+function __wjs_wsPump(stream) {
+  const st = __wjs_wsState.get(stream);
+  if (st.writing || st.errored) return;
+  const item = st.queue.shift();
+  if (!item) {
+    if (st.closeReq && !st.writing) {
+      const c = st.closeReq; st.closeReq = null;
+      const done = () => { st.closed = true; c.resolve(undefined); for (const w of (st.closeWaiters || []).splice(0)) w.resolve(undefined); };
+      try {
+        Promise.resolve(st.sink.close ? st.sink.close() : undefined).then(done, (e) => { __wjs_wsError(stream, e); });
+      } catch (e) { __wjs_wsError(stream, e); }
+    }
+    return;
+  }
+  st.writing = true;
+  try {
+    Promise.resolve(st.sink.write ? st.sink.write(item.chunk, st.controller) : undefined).then(
+      () => { st.writing = false; item.resolve(undefined); __wjs_wsPump(stream); },
+      (e) => { st.writing = false; item.reject(e); __wjs_wsError(stream, e); __wjs_wsPump(stream); },
+    );
+  } catch (e) { st.writing = false; item.reject(e); __wjs_wsError(stream, e); }
+}
+globalThis.TransformStream = class TransformStream {
+  constructor(transformer = {}, writableStrategy, readableStrategy) {
+    let rsCtrl;
+    const readable = new ReadableStream({
+      start(c) { rsCtrl = c; },
+    }, readableStrategy);
+    const writable = new WritableStream({
+      write: (chunk, c) => transformer.transform
+        ? transformer.transform(chunk, {
+            enqueue: (out) => rsCtrl.enqueue(out),
+            get desiredSize() { return rsCtrl.desiredSize; },
+            terminate() { rsCtrl.close(); },
+          })
+        : rsCtrl.enqueue(chunk),
+      close: () => {
+        if (transformer.flush) {
+          return Promise.resolve(transformer.flush({
+            enqueue: (out) => rsCtrl.enqueue(out),
+            get desiredSize() { return rsCtrl.desiredSize; },
+            terminate() { rsCtrl.close(); },
+          })).then(() => rsCtrl.close());
+        }
+        rsCtrl.close();
+      },
+      abort: (r) => rsCtrl.error(r),
+    }, writableStrategy);
+    try {
+      const r = transformer.start ? transformer.start({
+        enqueue: (out) => rsCtrl.enqueue(out),
+        get desiredSize() { return rsCtrl.desiredSize; },
+        terminate() { rsCtrl.close(); },
+      }) : undefined;
+      Promise.resolve(r).catch((e) => rsCtrl.error(e));
+    } catch (e) { rsCtrl.error(e); }
+    this.readable = readable;
+    this.writable = writable;
+  }
+};
 globalThis.fetch = (input, init = {}) => {
   const req = new Request(input, init);
   const st = __wjs_reqState.get(req);

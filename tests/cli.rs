@@ -636,3 +636,17 @@ fn phase3_subtle_digest_unsupported() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("NotSupportedError"), "stderr: {stderr}");
 }
+
+#[test]
+fn phase3_streams_basic() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const rs = new ReadableStream({ start(c) { c.enqueue("a"); c.enqueue("b"); c.close(); } }); const out = []; for await (const x of rs) out.push(x); console.log(out.join(",")); const t = new TransformStream({ transform(c, ctl) { ctl.enqueue(String(c).toUpperCase()); } }); const w = t.writable.getWriter(); w.write("hi"); w.close(); const r = t.readable.getReader(); console.log((await r.read()).value, (await r.read()).done);"#]));
+    assert_eq!(out, "a,b\nHI true\n", "streams: {out}");
+}
+
+#[test]
+fn phase3_streams_pipe_tee_body() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const rs = new ReadableStream({ start(c) { c.enqueue("x"); c.close(); } }); const ts = new TransformStream({ transform(c, ctl) { ctl.enqueue(c + "!"); } }); const out = []; await rs.pipeThrough(ts).pipeTo(new WritableStream({ write(c) { out.push(c); } })); console.log(out.join(",")); const [a, b] = new ReadableStream({ start(c) { c.enqueue(1); c.close(); } }).tee(); console.log(await a.getReader().read().then((x) => x.value), await b.getReader().read().then((x) => x.value)); const r = new Response("stream-me"); console.log(r.body === r.body, (await r.body.getReader().read()).value.length);"#]));
+    assert_eq!(out, "x!\n1 1\ntrue 9\n", "pipe: {out}");
+}

@@ -1079,3 +1079,96 @@ fn phase4_node_errors() {
     assert!(stderr.contains("integer"), "stderr: {stderr}");
     dir.close().unwrap();
 }
+
+/// node:fs 脚手架（workdir 内跑模块；返回 stdout）。
+fn run_fs_file(dir: &assert_fs::TempDir, name: &str, source: &str) -> String {
+    let file = dir.child(name);
+    file.write_str(source).unwrap();
+    let out = winterjs().arg("run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn phase4_fs_read_write_roundtrip() {
+    // 文本/二进制/追加 + stat 字段 + exists。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(&dir, "rw.mjs", r#"
+import fs from "node:fs";
+fs.writeFileSync("a.txt", "hello");
+fs.appendFileSync("a.txt", " world");
+console.log(fs.readFileSync("a.txt", "utf8"));
+const bin = new Uint8Array([0, 1, 2, 250]);
+fs.writeFileSync("b.bin", bin);
+const back = fs.readFileSync("b.bin");
+console.log(back.length, back[3], back instanceof Uint8Array);
+const st = fs.statSync("a.txt");
+console.log(st.size, st.isFile(), st.isDirectory(), st.mtime instanceof Date, st.mtimeMs > 0);
+console.log(fs.existsSync("a.txt"), fs.existsSync("missing-xyz"), fs.existsSync(123));
+"#);
+    assert_eq!(out, "hello world\n4 250 true\n11 true false true true\ntrue false false\n", "fs rw: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase4_fs_dirs_and_moves() {
+    // mkdir -p + readdir(+types) + rename + copy + rm -rf + realpath + mkdtemp.
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(&dir, "dirs.mjs", r#"
+import fs from "node:fs";
+import path from "node:path";
+fs.mkdirSync("d/sub/deep", { recursive: true });
+fs.writeFileSync("d/sub/deep/f.txt", "x");
+fs.writeFileSync("d/top.txt", "y");
+console.log(fs.readdirSync("d").join(","), fs.readdirSync("d/sub").join(","));
+const typed = fs.readdirSync("d", { withFileTypes: true });
+console.log(typed.map((e) => e.name + ":" + e.isDirectory() + ":" + e.isFile()).join(","));
+fs.renameSync("d/top.txt", "d/renamed.txt");
+fs.copyFileSync("d/renamed.txt", "d/copied.txt");
+console.log(fs.readdirSync("d").join(","));
+console.log(fs.realpathSync("d").endsWith("d"));
+const tmp = fs.mkdtempSync(path.join(fs.realpathSync("."), "pre-"));
+console.log(tmp.includes("pre-"), fs.statSync(tmp).isDirectory());
+fs.rmSync("d", { recursive: true, force: true });
+console.log(fs.existsSync("d"));
+fs.rmSync("missing-xyz", { force: true });
+console.log("force-ok");
+"#);
+    assert_eq!(
+        out,
+        "sub,top.txt deep\nsub:true:false,top.txt:false:true\ncopied.txt,renamed.txt,sub\ntrue\ntrue true\nfalse\nforce-ok\n",
+        "fs dirs: {out}"
+    );
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase4_fs_promises_and_errors() {
+    // promises 对等 + ENOENT 三件（code/syscall/path）+ lstat 链接 + file: URL 路径。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(&dir, "p.mjs", r#"
+import fsp from "node:fs/promises";
+import fs from "node:fs";
+await fsp.writeFile("p.txt", "via-promises");
+console.log(await fsp.readFile("p.txt", "utf8"), (await fsp.stat("p.txt")).size);
+try {
+  fs.readFileSync("definitely-missing-xyz");
+  console.log("no-throw");
+} catch (e) {
+  console.log(e.code, e.syscall, e.path, e instanceof Error);
+}
+try {
+  await fsp.readFile("definitely-missing-xyz");
+  console.log("no-throw");
+} catch (e) {
+  console.log("async-" + e.code);
+}
+console.log(fs.readFileSync(new URL("file://" + process.cwd() + "/p.txt"), "utf8"));
+"#);
+    assert_eq!(
+        out,
+        "via-promises 12\nENOENT open definitely-missing-xyz true\nasync-ENOENT\nvia-promises\n",
+        "fs promises: {out}"
+    );
+    dir.close().unwrap();
+}

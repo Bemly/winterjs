@@ -2,6 +2,7 @@
 //! resolve 规范名为 `node:X` URL（`fs` 与 `node:fs` 同一模块，见 `normalize_spec`）；
 //! `prepare()` 取源走 `source()`，不经过 fetch。
 
+pub mod fs;
 pub mod os;
 pub mod path;
 pub mod process_;
@@ -17,6 +18,8 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:path", path::SOURCE),
     ("node:os", os::SOURCE),
     ("node:process", process_::SOURCE),
+    ("node:fs", fs::SOURCE),
+    ("node:fs/promises", fs::PROMISES_SOURCE),
 ];
 
 /// spec 规范化（`node:` 前缀可选；未知返回 None，调用方报可用列表）。
@@ -26,6 +29,8 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "path" => Some("node:path"),
         "os" => Some("node:os"),
         "process" => Some("node:process"),
+        "fs" => Some("node:fs"),
+        "fs/promises" => Some("node:fs/promises"),
         _ => None,
     }
 }
@@ -52,12 +57,20 @@ mod tests {
         assert_eq!(normalize_spec("os"), Some("node:os"));
         assert_eq!(normalize_spec("node:process"), Some("node:process"));
         assert_eq!(normalize_spec("process"), Some("node:process"));
-        assert_eq!(normalize_spec("node:fs"), None);
-        assert_eq!(normalize_spec("fs"), None);
+        assert_eq!(normalize_spec("node:fs"), Some("node:fs"));
+        assert_eq!(normalize_spec("fs"), Some("node:fs"));
+        assert_eq!(normalize_spec("node:fs/promises"), Some("node:fs/promises"));
+        assert_eq!(normalize_spec("fs/promises"), Some("node:fs/promises"));
+        assert_eq!(normalize_spec("node:child_process"), None);
         assert_eq!(normalize_spec("node:"), None);
         assert_eq!(normalize_spec(""), None);
         assert!(source("node:path").is_some());
-        assert!(source("node:fs").is_none());
-        assert_eq!(available(), vec!["node:path", "node:os", "node:process"]);
+        assert!(source("node:fs").is_some());
+        assert!(source("node:fs/promises").is_some());
+        assert!(source("node:child_process").is_none());
+        assert_eq!(
+            available(),
+            vec!["node:path", "node:os", "node:process", "node:fs", "node:fs/promises"]
+        );
     }
 }

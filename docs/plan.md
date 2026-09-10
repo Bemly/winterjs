@@ -156,8 +156,11 @@
   + `node:os`（sysinfo/if-addrs/uzers/sys-locale）+ `run` 透传 args +
   `Error::Exit` 静默退出。附带修：模块顶层 exit 的检查点顺序（§4.18 追补）。
   `tests/cli.rs` 6 例 + 模块单测 3 例；`cargo test` 77+8 全绿，0 警告。
-- [ ] 切片 b：`node:fs` 同步核心 + `fs/promises`（readFile/writeFile/stat/mkdir/
-  rm/readdir/rename/copyFile/appendFile/existsSync + constants）。
+- [x] 切片 b（2026-09-10）：`node:fs` 同步核心（read/write/append/stat/lstat/
+  exists/mkdir/rm/rmdir/unlink/readdir/rename/copyFile/realpath/mkdtemp +
+  `fs/promises` async 包裹（同步底层，文档记录）+ Node 形错误
+  `.code/.syscall/.path`）。`tests/cli.rs` 3 例 + `io_code` 单测；
+  `cargo test` 80+9 全绿，0 警告。
 - [ ] 切片 c：`child_process` 同步（execSync/spawnSync）+ `node:test`/`node:assert` 起步。
 - [ ] 切片 d（顺延）：`fs.watch`（notify 进事件循环）+ 异步 spawn + `require()`。
 

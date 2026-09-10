@@ -1438,6 +1438,9 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_fs_rmdir", Some(node::fs::fs_rmdir), 2),
             ("__wjs_fs_realpath", Some(node::fs::fs_realpath), 1),
             ("__wjs_fs_mkdtemp", Some(node::fs::fs_mkdtemp), 1),
+            // Phase 4c: child_process
+            ("__wjs_cp_exec", Some(node::child::cp_exec), 2),
+            ("__wjs_cp_spawn", Some(node::child::cp_spawn), 3),
             ("__wjs_ws_connect", Some(ws::ws_connect), 3),
             ("__wjs_ws_send", Some(ws::ws_send), 3),
             ("__wjs_ws_close", Some(ws::ws_close), 3),

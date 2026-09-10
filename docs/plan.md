@@ -161,7 +161,11 @@
   `fs/promises` async 包裹（同步底层，文档记录）+ Node 形错误
   `.code/.syscall/.path`）。`tests/cli.rs` 3 例 + `io_code` 单测；
   `cargo test` 80+9 全绿，0 警告。
-- [ ] 切片 c：`child_process` 同步（execSync/spawnSync）+ `node:test`/`node:assert` 起步。
+- [x] 切片 c（2026-09-10）：`child_process` 同步（execSync/spawnSync：cwd/env/
+  input/timeout 直杀/maxBuffer/shlex 拼串 + pid/status/signal/err 形状）+
+  `node:assert` 起步（ok/equal/strict/deep/throws/rejects/match + AssertionError）
+  + `node:test` 起步（test/describe/it/skip/todo/only，串行泵 + 小结 + exitCode）。
+  `tests/cli.rs` 4 例 + 状态映射单测；`cargo test` 84+10 全绿，0 警告。
 - [ ] 切片 d（顺延）：`fs.watch`（notify 进事件循环）+ 异步 spawn + `require()`。
 
 ## Phase 5 — 包管理（install/publish/upgrade）

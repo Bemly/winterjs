@@ -1172,3 +1172,59 @@ console.log(fs.readFileSync(new URL("file://" + process.cwd() + "/p.txt"), "utf8
     );
     dir.close().unwrap();
 }
+
+#[test]
+fn phase4_cp_exec_spawn_sync() {
+    // 回显/管道输入/env/cwd + 非零抛错形状 + spawn 缺失命令。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(&dir, "cp.mjs", r#"
+import { execSync, spawnSync } from "node:child_process";
+console.log(execSync("echo hi").trim());
+console.log(execSync("cat", { input: "piped" }).trim());
+const r = spawnSync("echo", ["a", "b"], { env: { PATH: process.env.PATH } });
+console.log(r.status, r.signal, r.stdout.trim(), r.pid > 0, r.error);
+const e = spawnSync("definitely-missing-binary-xyz", []);
+console.log(e.status, e.error.code);
+try {
+  execSync("exit 3");
+  console.log("no-throw");
+} catch (err) {
+  console.log("code:", err.status, err.signal);
+}
+"#);
+    assert_eq!(
+        out,
+        "hi\npiped\n0 null a b true undefined\nnull ENOENT\ncode: 3 null\n",
+        "child_process: {out}"
+    );
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase4_cp_timeout_and_shell() {
+    // 超时杀直系（SIGKILL 形）+ shell:false 直跑。
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const { spawnSync, execSync } = await import("node:child_process"); const r = spawnSync("sleep", ["5"], { timeout: 200 }); console.log(r.signal, !!r.error); console.log(execSync("echo noshell", { shell: false }).trim());"#]));
+    assert_eq!(out, "SIGKILL true\nnoshell\n", "timeout: {out}");
+}
+
+#[test]
+fn phase4_node_assert_subset() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const assert = (await import("node:assert")).default; assert.ok(1); assert.strictEqual(1, 1); assert.notStrictEqual(1, "1"); assert.deepStrictEqual({ a: [1, 2] }, { a: [1, 2] }); assert.equal(1, "1"); assert.throws(() => { throw new TypeError("x"); }, TypeError); assert.throws(() => { throw new Error("boom"); }, /boom/); await assert.rejects(async () => { throw new Error("r"); }); assert.match("foobar", /^foo/); assert.ifError(null); console.log("assert-ok"); try { assert.strictEqual(1, 2); } catch (e) { console.log(e.code, e.operator, e.actual, e.expected); }"#]));
+    assert_eq!(out, "assert-ok\nERR_ASSERTION strictEqual 1 2\n", "assert: {out}");
+}
+
+#[test]
+fn phase4_node_test_runner() {
+    // 通过/失败/跳过计数 + 小结 + 失败 exitCode=1。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("t.mjs");
+    file.write_str("import { test, describe } from \"node:test\";\nimport assert from \"node:assert\";\ndescribe(\"math\", () => {\n  test(\"adds\", () => assert.strictEqual(1 + 1, 2));\n  test(\"fails\", () => assert.strictEqual(1, 2));\n  test.skip(\"skipped\", () => {});\n});\n").unwrap();
+    let out = winterjs().arg("run").arg(file.path()).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("not ok - math > fails"), "runner: {stdout}");
+    assert!(stdout.contains("# pass 1, fail 1, skip 1, todo 0"), "summary: {stdout}");
+    dir.close().unwrap();
+}

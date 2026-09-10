@@ -435,6 +435,11 @@ multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 ax
 | 堆分析 | `dhat` | 0.3.3 | 2020-12-08 | 2024-02-04 | 冻结，配分配器故事 |
 | 属性测试 | `proptest` | 1.11.0 | 2017-06-18 | 2026-03-24 | resolver/module-graph 随机用例 |
 
+备注（2026-09-10 实测）：`cargo build` 本仓 0 警告；唯一残留是传递闭包里
+`iai-callgrind → proc-macro-error2@2.0.1` 的 future-incompat 报告（E0365，
+`pub use proc_macro` 将在未来 Rust 变硬错误）。上游最新即 2.0.1，无修复版可升，
+且仅影响 dev 依赖的编译报告、不影响构建成功——接受现状，待上游修后随 caret 自动消。
+
 ## 12. 含 C/C++ 依赖说明（特许＋豁免＋门控禁掉之后，只剩注释）
 
 - `mozjs`（C++ 引擎，⚠️ 唯一特许）：预构建，无需本地编译，见 AGENTS.md §6。

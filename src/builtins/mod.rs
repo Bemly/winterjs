@@ -11,6 +11,7 @@ pub mod node;
 pub mod timers;
 pub mod url;
 pub mod ws;
+pub mod bun;
 
 use std::ffi::CString;
 
@@ -1454,6 +1455,13 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_ws_connect", Some(ws::ws_connect), 3),
             ("__wjs_ws_send", Some(ws::ws_send), 3),
             ("__wjs_ws_close", Some(ws::ws_close), 3),
+            // Phase 7-e4: bun:sqlite（同步语义，worker 线程见 bun/sqlite.rs）
+            ("__wjs_sqlite_open", Some(bun::sqlite::sqlite_open), 1),
+            ("__wjs_sqlite_exec", Some(bun::sqlite::sqlite_exec), 2),
+            ("__wjs_sqlite_run", Some(bun::sqlite::sqlite_run), 4),
+            ("__wjs_sqlite_rows", Some(bun::sqlite::sqlite_rows), 4),
+            ("__wjs_sqlite_txn", Some(bun::sqlite::sqlite_txn), 1),
+            ("__wjs_sqlite_close", Some(bun::sqlite::sqlite_close), 1),
         ];
         for (name, native, nargs) in web {
             let cname = CString::new(*name).expect("no NUL");

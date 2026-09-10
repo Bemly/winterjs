@@ -402,6 +402,12 @@ npmrc 附记（2026-09-10 实测）：`rust-ini` 把 `:` 也当键值分隔符
 `icu_locale ^2.2.0`，与 `mozjs_sys` 钉死的 `icu_capi =2.1.2`（icu_locale ~2.1.1）死锁，
 无法同图构建；0.6.1 无 icu，实测通过。0.6 的 `sync` 特性硬绑 hyper-tls（继续不开）。
 偏离 caret 政策属刻意钉版（icu 地雷系列），待上游解冲突后回 caret。
+接线附记（2026-09-11 实测）：0.6.1 有两个 `Params` —— `turso::Params`（lib.rs 导出，
+**无** `IntoParams` 实现，不能作 `query/execute` 实参）与 `turso::params::Params`
+（doc-hidden 但 pub，带 `IntoParams`；`Named` 的键须带 `$`/`:`/`@` 前缀直传）；
+`bun:sqlite` 接线用后者（钉 =0.6.1 下无漂移风险，见 AGENTS §4 无新增坑）。
+`Connection` 全 async（`execute_batch`/`execute`/`query`；仅 `is_autocommit`/
+`last_insert_rowid` 是同步 fn），异步落法见 plan Phase 7-e4 worker 线程模式。
 落选（无技术否决，只是不选）：`redb`（KV 无 SQL）、`gluesql+redb-storage`（SQL 可但生态小于 turso）、
 `fjall`（LSM 备选）、`rusqlite` bundled（含 C）。
 `turso` 行名库龄不足一年（2025-07）、移动端（尤其 OHOS）待 CI 转正，见 §16。

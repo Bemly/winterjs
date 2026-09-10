@@ -2,9 +2,8 @@
 
 > 版本 `26.9.0`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 6 完工（2026-09-10，`cargo test` 39+123 全绿，0 警告，
-> 静态/中间件/指标限流/TLS 验收通过，200 并发零失败，冒烟 5/5）；
-> 下一步 Phase 7 runtime 补齐（sqlite/REPL/test/watch/FFI）。
+> 当前状态：Phase 7 进行中（e1 test / e2 init / e3 repl / e4 sqlite 完工，
+> `cargo test` 52+138 全绿，0 警告，冒烟 5/5）；下一步 watch 模式 / FFI。
 > 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
@@ -315,6 +314,20 @@
   TTY 实测：续行/高亮 ANSI/42；非 TTY：无 ANSI。CLI 新增 `repl`
   （man 13→14）。模块单测 3 例 + 黑盒 4 例（持久/报错恢复/无 ANSI/语法续行）；
   `cargo test` 47+135 全绿，0 警告，冒烟 5/5。
+- [x] 切片 e4（2026-09-11）：`bun:sqlite` 兼容层（turso 0.6.1 之上，`src/builtins/bun/`，
+  resolve `bun:` scheme 截获 + prepare 内嵌源）。同步语义的落法：Bun API 全同步、
+  turso 全 async —— 每 Database 一条专用 worker 线程（自带 current-thread tokio
+  runtime），native 经 crossbeam 阻塞往返（open 握手在构造期报错；`init_session`
+  清表回收上一会话 worker）。Database（exec/run 返 this/query 按 SQL 缓存/
+  prepare/transaction（抛错回滚，嵌套走 SAVEPOINT）/close 幂等/inTransaction）
+  + Statement（get/all/values/iterate/run 返 changes 信息/as object|array|raw
+  （raw=array 别名）/finalize）+ SqliteError；参数 positional + named（键须带
+  $/:/@ 前缀）+ blob 经 `$blob` b64 JSON 桥（Uint8Array 进出）。偏差记模块头注
+  （2^53 精度损失、readonly/create 忽略、non-finite 拒绑）。附带：§4.23 踩坑
+  （`Object.create` 实例无私有方法 brand 槽，prelude 内部类改 WeakMap + 自由函数）；
+  turso 双 `Params` 附记见 dependencies §9。模块单测 4 例 + 黑盒 3 例
+  （内存 roundtrip/文件持久化+报错三件/未知 spec 报可用列表）；
+  `cargo test` 52+138 全绿，0 警告，冒烟 5/5。
 
 ## Phase 8 — polish（lint/权限/远程缓存/上报）
 

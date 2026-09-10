@@ -224,6 +224,16 @@ pub fn resolve(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
                     crate::builtins::node::available().join(", ")
                 ))),
             },
+            "bun" => match crate::builtins::bun::normalize_spec(specifier) {
+                Some(canonical) => {
+                    tracing::debug!(target: "winterjs::loader", specifier, canonical, "builtin module");
+                    Url::parse(canonical).map_err(|e| Error::Other(format!("bad builtin URL: {e}")))
+                }
+                None => Err(Error::Other(format!(
+                    "'{specifier}' is not a builtin (available: {})",
+                    crate::builtins::bun::available().join(", ")
+                ))),
+            },
             s => Err(Error::Other(format!(
                 "unsupported module scheme '{s}:': {specifier}"
             ))),

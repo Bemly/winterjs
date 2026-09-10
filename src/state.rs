@@ -222,6 +222,9 @@ pub struct PlainState {
     pub ws_next_id: u64,
     pub ws_open: usize,
     pub ws_sinks: HashMap<u64, tokio::sync::mpsc::UnboundedSender<crate::builtins::ws::WsOut>>,
+    /// bun:sqlite worker 表（每 Database 一条线程；req/resp channel，见 bun/sqlite.rs）。
+    pub sqlite_next_id: u64,
+    pub sqlite_workers: HashMap<u64, crate::builtins::bun::sqlite::SqliteWorker>,
     /// eval 包装（async IIFE）引入的行偏移，报错行号统一校正。
     pub line_adjust: u32,
     /// 全局对象裸指针。前置条件：run() 里的 rooted! global 活过整个事件循环，
@@ -662,6 +665,41 @@ pub fn ws_remove(id: u64) {
 /// 存活 WebSocket 数（事件循环退出条件用）。
 pub fn ws_open() -> usize {
     with_plain(|p| p.ws_open)
+}
+
+// ── bun:sqlite worker 表（natives 阻塞往返，见 bun/sqlite.rs）───────────────
+
+/// 登记 worker 并分配 id。
+pub fn sqlite_add(worker: crate::builtins::bun::sqlite::SqliteWorker) -> u64 {
+    with_plain(|p| {
+        p.sqlite_next_id += 1;
+        let id = p.sqlite_next_id;
+        p.sqlite_workers.insert(id, worker);
+        id
+    })
+}
+
+/// 取 worker 端点（Clone 出用；channel 均可 Clone，不持 TLS 借用做阻塞 IO）。
+pub fn sqlite_worker(id: u64) -> Option<crate::builtins::bun::sqlite::SqliteWorker> {
+    with_plain(|p| p.sqlite_workers.get(&id).map(|w| crate::builtins::bun::sqlite::SqliteWorker {
+        req_tx: w.req_tx.clone(),
+        resp_rx: w.resp_rx.clone(),
+    }))
+}
+
+/// 摘除 worker（close 调用；drop 掉的 req_tx 让线程自退）。
+pub fn sqlite_remove(id: u64) {
+    with_plain(|p| {
+        p.sqlite_workers.remove(&id);
+    });
+}
+
+/// 会话重置（`init_session` 调用）：上一会话的 worker 端点全数 drop，
+/// 线程在 channel 断开后自退（PlainState 跨 run 复用，见本文件头注）。
+pub fn sqlite_reset() {
+    with_plain(|p| {
+        p.sqlite_workers.clear();
+    });
 }
 
 // ── 模块入口 TLA 决议捕获 natives ────────────────────────────────────────

@@ -267,6 +267,20 @@ cargo build
 - 推广为铁律：凡涉及 `§4.8 forget_engine` 的重构，成功/报错双路径都要跑
   （报错路径用 rejection/timer-error 用例覆盖）。
 
+### 4.23 `Object.create(prototype)` 实例无私有方法 brand 槽（2026-09-11）
+
+- 症状：`bun:sqlite` 的 Statement 经 `Object.create(Statement.prototype)` 造
+  （构造器要抛 Illegal constructor，故不能 new），调 `get #st()` 私有访问器即报
+  `can't access private field or method: object is not the right class`。
+- 根因：私有方法/访问器在实例上装 brand，`Object.create` 造的对象没有构造器的
+  brand 槽，brand 检查必炸（私有 `#` 字段同理；原型上挂 WeakMap 查不到这个问题）。
+- 修法：prelude 内部类若实例走 `Object.create` 造，状态一律 WeakMap + 自由函数，
+  禁用 `#` 私有成员（`src/builtins/bun/sqlite.rs` SOURCE）。
+- 复现：`await import("bun:sqlite")` 后 `db.run("CREATE TABLE t (x)")`（修前必炸）。
+- 推广为铁律：prelude 新类先定实例制造方式——能 `new` 才可用 `#` 私有成员；
+  `Object.create` 造的（内部类/状态后置挂的）一律 WeakMap 自由函数
+ （URL/Headers/fetch 系既有类全走此路，与此一致）。
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

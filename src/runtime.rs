@@ -254,6 +254,9 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
         state::set_global(global.get());
         state::set_line_adjust(0);
         state::set_argv(argv);
+        // PlainState 跨 run 复用（test runner 同进程多文件）：上一会话的
+        // sqlite worker 端点全部摘除，线程在 channel 断开后自退。
+        state::sqlite_reset();
         builtins::define_all(&mut realm, global.get())?;
 
         // SAFETY: realm 内；追踪器仅在 JS 线程被引擎回调

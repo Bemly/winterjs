@@ -72,13 +72,18 @@ struct Prepared {
 }
 
 fn prepare(url: &Url) -> Result<Prepared, Error> {
-    // node: 内建：内嵌源直给（仍走 load_js 统一转译/提 imports；源内禁 TS）。
-    if url.scheme() == "node" {
-        let Some(text) = crate::builtins::node::source(url.as_str()) else {
+    // node:/bun: 内建：内嵌源直给（仍走 load_js 统一转译/提 imports；源内禁 TS）。
+    if url.scheme() == "node" || url.scheme() == "bun" {
+        let table = if url.scheme() == "node" {
+            (crate::builtins::node::source(url.as_str()), crate::builtins::node::available())
+        } else {
+            (crate::builtins::bun::source(url.as_str()), crate::builtins::bun::available())
+        };
+        let Some(text) = table.0 else {
             return Err(Error::Other(format!(
                 "'{}' is not a builtin (available: {})",
                 url.as_str(),
-                crate::builtins::node::available().join(", ")
+                table.1.join(", ")
             )));
         };
         let text = text.to_owned();

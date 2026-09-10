@@ -126,7 +126,12 @@
   互通）+ p 曲线 `ecdh,pkcs8` 显式特性（用户拍板，见 dependencies §7）；
   `rsa::rand_core/signature/pkcs8` 重导出零新增；密钥存 DER、私钥 PKCS#8/公钥 SPKI；
   ECDSA 裸 r‖s 口径。`tests/cli.rs` 6 例；`cargo test` 65+5 全绿，0 警告。
-- [ ] 切片 c-4b：wss 测试 + `Response.body` 流式（fetch 边下边吐）+ in-flight abort。
+- [x] 切片 c-4b（2026-09-10）：wss 测试（`WINTERJS_TEST_CA_PEMFILE` 接缝 + rcgen
+  自签回显，生产默认链不变）+ `Response.body` 流式（http(s) 边下边吐：head 即给
+  Response + chunk 通道 + pull 泵；快照路径 data:/file:/构造体不变）+
+  in-flight abort（signal 最小监听 + `fetch_abort` 取消任务/拒绝排队 pull/流中
+  后继 read 拒 AbortError）。附带修事件循环退出 race（§4.18 progressed 轮不退）。
+  `tests/cli.rs` 6 例；`cargo test` 71+5 全绿，0 警告。
   RSA-PSS/Ed25519/X25519（c-4x，按需排）。
 
 ## Phase 4 — Node 兼容垫片

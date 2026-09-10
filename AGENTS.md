@@ -208,6 +208,18 @@ cargo build
   eval 侧触发放宽到一切 `SyntaxError`，包装解不出回落原始报错（非 `exhausted`）。
   复现：`console.log(await Promise.resolve(5))`（`src/runtime.rs`）。
 
+### 4.18 结算后退出的循环顶排空 race：progressed 轮不退（2026-09-10）
+
+- 症状：流式 body 第三个 `read()` 永不决议（时序一变则进程 0 退出但丢输出）。
+- 根因：`settle`（循环顶 `try_recv` 非阻塞排空）同步决议 promise，只排队
+  microtask；随后退出检查全零即 `break`，掉队 microtask 等不到下一轮 `RunJobs`。
+  旧缓冲实现罕发（单消息多在 `select` 臂内结算，次轮 `RunJobs` 兜住），流式多消息
+  必发（chunk/Done 堆在顶排空）。
+- 修法：本轮结算过（`progressed`）即使全 idle 也不退，回顶再 `RunJobs`；
+  `select` 的 None 臂遇全 idle 直接 `continue`（只剩 microtask，不 park，否则永睡）。
+  复现：`tests/cli.rs::phase3_fetch_body_streams_chunks`（修前必挂）。
+  推广为铁律：任何同步决议 JS promise 的结算点之后，必须保证至少一轮 `RunJobs`。
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

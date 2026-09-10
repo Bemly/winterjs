@@ -779,3 +779,182 @@ fn phase3_asymmetric_errors() {
         r#"const k = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]); try { await crypto.subtle.sign("ECDSA", k.publicKey, new Uint8Array(1)); console.log("no-throw"); } catch (e) { console.log(String(e).includes("private key") ? "sign-needs-private" : e); }"#]));
     assert_eq!(ok, "sign-needs-private\n", "usage: {ok}");
 }
+
+#[test]
+fn phase3_websocket_wss_self_signed() {
+    // rcgen 自签 127.0.0.1 → tokio-rustls wss 回显服务；客户端经
+    // WINTERJS_TEST_CA_PEMFILE 接缝信任（生产默认链不变，见 src/builtins/ws.rs）。
+    use base64::Engine as _;
+    let certified = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
+    let cert_der = certified.cert.der().to_vec();
+    let key_der = certified.signing_key.serialize_der();
+    let pem = format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        base64::engine::general_purpose::STANDARD.encode(&cert_der)
+    );
+    let dir = assert_fs::TempDir::new().unwrap();
+    let ca_file = dir.child("test-ca.pem");
+    ca_file.write_str(&pem).unwrap();
+    let ca_path = ca_file.path().to_owned();
+
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    std_listener.set_nonblocking(true).unwrap();
+    let port = std_listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let server_config = rustls::ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(
+                        vec![rustls::pki_types::CertificateDer::from(cert_der)],
+                        rustls::pki_types::PrivateKeyDer::Pkcs8(
+                            rustls::pki_types::PrivatePkcs8KeyDer::from(key_der),
+                        ),
+                    )
+                    .unwrap();
+                let acceptor =
+                    tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server_config));
+                let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+                let (stream, _) = listener.accept().await.unwrap();
+                let tls = acceptor.accept(stream).await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(tls).await.unwrap();
+                use futures::{SinkExt as _, StreamExt as _};
+                while let Some(msg) = ws.next().await {
+                    let Ok(msg) = msg else { break };
+                    if msg.is_text() || msg.is_binary() {
+                        if ws.send(msg).await.is_err() {
+                            break;
+                        }
+                    } else if msg.is_close() {
+                        let _ = ws.send(tokio_tungstenite::tungstenite::Message::Close(None)).await;
+                        while ws.next().await.is_some() {}
+                        break;
+                    }
+                }
+            });
+    });
+    let code = format!(
+        r#"const log = []; const ws = new WebSocket("wss://127.0.0.1:{port}/c"); ws.onopen = () => ws.send("secure-ping"); ws.onmessage = (e) => {{ log.push(e.data); ws.close(1000, "bye"); }}; ws.onclose = (e) => console.log(log.join("|") + "|close:" + e.code + ":" + e.wasClean); undefined;"#
+    );
+    let out = winterjs()
+        .env("WINTERJS_TEST_CA_PEMFILE", &ca_path)
+        .args(["eval", &code])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "secure-ping|close:1000:true\n"
+    );
+}
+
+#[test]
+fn phase3_fetch_in_flight_abort() {
+    // 5s 才回的服务，50ms abort：拒绝带 AbortError，进程不等 5s（超时即挂）。
+    let port = serve_http(1, |_head, _body| {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        (200, vec![], b"too-late".to_vec())
+    });
+    let code = format!(
+        r#"const c = new AbortController(); const p = fetch("http://127.0.0.1:{port}/slow", {{ signal: c.signal }}); setTimeout(() => c.abort(), 50); try {{ await p; console.log("no-throw"); }} catch (e) {{ console.log("aborted:" + String(e && e.message || e).includes("AbortError")); }}"#
+    );
+    assert_eq!(
+        stdout_of(&mut winterjs().args(["eval", &code])),
+        "aborted:true\n"
+    );
+}
+
+#[test]
+fn phase3_fetch_abort_reason_and_late_abort_noop() {
+    // 自定义 reason 原样透出；已决议后 abort 不翻转结果。
+    let port = serve_http(1, |_head, _body| {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        (200, vec![], b"too-late".to_vec())
+    });
+    let code = format!(
+        r#"const c = new AbortController(); const p = fetch("http://127.0.0.1:{port}/slow", {{ signal: c.signal }}); setTimeout(() => c.abort(new Error("custom-stop")), 50); try {{ await p; console.log("no-throw"); }} catch (e) {{ console.log(e.message); }}"#
+    );
+    assert_eq!(
+        stdout_of(&mut winterjs().args(["eval", &code])),
+        "custom-stop\n"
+    );
+    let ok = stdout_of(&mut winterjs().args(["eval",
+        r#"const c = new AbortController(); const r = await fetch("data:text/plain,settled", { signal: c.signal }); c.abort(); console.log(await r.text());"#]));
+    assert_eq!(ok, "settled\n", "late abort: {ok}");
+}
+
+/// 分半写的 hang 服务器（先吐 "abc"，200ms 后吐 "def"，content-length 6）。
+fn serve_split() -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for _ in 0..8 {
+            let Ok((mut s, _)) = listener.accept() else { return };
+            let mut head = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                let Ok(k) = s.read(&mut buf) else { break };
+                if k == 0 { break; }
+                head.extend_from_slice(&buf[..k]);
+                if head.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+            }
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 6\r\nconnection: close\r\n\r\nabc");
+            let _ = s.flush();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let _ = s.write_all(b"def");
+        }
+    });
+    port
+}
+
+#[test]
+fn phase3_fetch_body_streams_chunks() {
+    // 首个 read 在第二个半包到达前即返回 "abc"（整包缓冲实现会给出 "abcdef"）。
+    let port = serve_split();
+    let code = format!(
+        r#"const r = await fetch("http://127.0.0.1:{port}/split"); const rd = r.body.getReader(); const a = await rd.read(); const b = await rd.read(); const c = await rd.read(); console.log(new TextDecoder().decode(a.value), new TextDecoder().decode(b.value), c.done);"#
+    );
+    assert_eq!(
+        stdout_of(&mut winterjs().args(["eval", &code])),
+        "abc def true\n"
+    );
+}
+
+#[test]
+fn phase3_fetch_body_stream_text_and_cancel() {
+    // text() 照常拼装流式 body；读一半 cancel 照常退出。
+    let port = serve_split();
+    let code = format!(
+        r#"const r = await fetch("http://127.0.0.1:{port}/split"); console.log(await r.text());"#
+    );
+    assert_eq!(stdout_of(&mut winterjs().args(["eval", &code])), "abcdef\n");
+    let port = serve_split();
+    let code = format!(
+        r#"const r = await fetch("http://127.0.0.1:{port}/split"); const rd = r.body.getReader(); const a = await rd.read(); console.log(new TextDecoder().decode(a.value)); await rd.cancel(); console.log("cancelled");"#
+    );
+    assert_eq!(
+        stdout_of(&mut winterjs().args(["eval", &code])),
+        "abc\ncancelled\n"
+    );
+}
+
+#[test]
+fn phase3_fetch_body_mid_stream_abort() {
+    // 流中 abort：已读 chunk 保留，后继 read 以 AbortError 拒绝（非静默 done）。
+    let port = serve_split();
+    let code = format!(
+        r#"const c = new AbortController(); const r = await fetch("http://127.0.0.1:{port}/split", {{ signal: c.signal }}); const rd = r.body.getReader(); const a = await rd.read(); console.log(new TextDecoder().decode(a.value)); c.abort(); try {{ await rd.read(); console.log("no-throw"); }} catch (e) {{ console.log("stream-aborted:" + String(e.message || e).includes("Abort")); }}"#
+    );
+    assert_eq!(
+        stdout_of(&mut winterjs().args(["eval", &code])),
+        "abc\nstream-aborted:true\n"
+    );
+}

@@ -633,14 +633,26 @@ function __wjs_abortFire(signal, reason) {
   if (!st || st.aborted) return;
   st.aborted = true;
   st.reason = reason === undefined ? new Error("AbortError: signal aborted") : reason;
+  // 最小事件：只支持 "abort" 监听（无 Event 对象，回调 this=signal；抛错吞掉不上报给 abort() 调用方）。
+  for (const cb of st.listeners.splice(0)) {
+    try { cb.call(signal); } catch {}
+  }
 }
 globalThis.AbortSignal = class AbortSignal {
-  constructor() { __wjs_abortState.set(this, { aborted: false, reason: undefined }); }
+  constructor() { __wjs_abortState.set(this, { aborted: false, reason: undefined, listeners: [] }); }
   get aborted() { return __wjs_abortState.get(this).aborted; }
   get reason() { return __wjs_abortState.get(this).reason; }
   throwIfAborted() {
     const st = __wjs_abortState.get(this);
     if (st.aborted) throw st.reason;
+  }
+  addEventListener(type, cb) {
+    if (type === "abort" && typeof cb === "function") __wjs_abortState.get(this).listeners.push(cb);
+  }
+  removeEventListener(type, cb) {
+    if (type !== "abort") return;
+    const st = __wjs_abortState.get(this);
+    st.listeners = st.listeners.filter((f) => f !== cb);
   }
   static abort(reason) {
     const s = new AbortSignal();
@@ -698,7 +710,7 @@ const __wjs_respState = new WeakMap();
 function __wjs_respInit(resp, s) {
   __wjs_respState.set(resp, {
     status: s.status, statusText: s.statusText ?? "", headers: s.headers,
-    url: s.url ?? "", bodyU8: s.bodyU8 ?? null, bodyUsed: false,
+    url: s.url ?? "", bodyU8: s.bodyU8 ?? null, streamId: s.streamId ?? null, bodyUsed: false,
   });
 }
 function __wjs_takeBody(resp, what) {
@@ -706,6 +718,66 @@ function __wjs_takeBody(resp, what) {
   if (st.bodyUsed) throw new TypeError(`${what}: body already used`);
   st.bodyUsed = true;
   return st.bodyU8;
+}
+// 流式/快照统一建流（body getter 与 text 系共用；bodyUsed 由调用方维护）。
+function __wjs_respStream(resp) {
+  const st = __wjs_respState.get(resp);
+  if (!st.bodyStream) {
+    if (st.streamId !== null && st.streamId !== undefined) {
+      const sid = st.streamId;
+      st.bodyStream = new ReadableStream({
+        pull(c) {
+          return new Promise((resolve, reject) => {
+            // 中止后 pull 直接拒绝（Rust 状态已摘，不再进 native）。
+            if (__wjs_abortedFetch.has(sid)) {
+              reject(new Error("AbortError: fetch aborted"));
+              return;
+            }
+            __wjs_fetch_pull(sid,
+              (chunk) => {
+                if (chunk === null || chunk === undefined) {
+                  try { c.close(); } catch {}
+                  __wjs_fetchCleanup(sid);
+                  resolve();
+                  return;
+                }
+                try { c.enqueue(chunk); } catch (e) { reject(e); return; }
+                resolve();
+              },
+              (e) => reject(e));
+          });
+        },
+        cancel() { __wjs_fetchCleanup(sid); __wjs_fetch_abort(sid); },
+      });
+    } else {
+      const bytes = st.bodyU8 ? st.bodyU8.slice() : new Uint8Array(0);
+      st.bodyStream = new ReadableStream({
+        start(c) { if (bytes.length) c.enqueue(bytes); c.close(); },
+      });
+    }
+  }
+  return st.bodyStream;
+}
+// 取全量字节（流式即读完流；快照即原路径；读即标记 disturbed）。
+async function __wjs_respStreamBytes(resp, what) {
+  const st = __wjs_respState.get(resp);
+  if (st.streamId !== null && st.streamId !== undefined) {
+    if (st.bodyUsed) throw new TypeError(`${what}: body already used`);
+    st.bodyUsed = true;
+    const chunks = [];
+    let total = 0;
+    for await (const c of __wjs_respStream(resp)) {
+      const u8 = c instanceof Uint8Array ? c : new Uint8Array(c);
+      chunks.push(u8);
+      total += u8.length;
+    }
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const u8 of chunks) { out.set(u8, off); off += u8.length; }
+    return out;
+  }
+  const b = __wjs_takeBody(resp, what);
+  return b ? b.slice() : new Uint8Array(0);
 }
 function __wjs_normBody(body, what) {
   if (body === undefined || body === null) return null;
@@ -747,18 +819,12 @@ globalThis.Response = class Response {
   get body() {
     const st = __wjs_respState.get(this);
     if (st.bodyUsed) return null;
-    if (!st.bodyStream) {
-      const bytes = st.bodyU8 ? st.bodyU8.slice() : new Uint8Array(0);
-      st.bodyStream = new ReadableStream({
-        start(c) { if (bytes.length) c.enqueue(bytes); c.close(); },
-      });
-    }
-    return st.bodyStream;
+    return __wjs_respStream(this);
   }
-  async text() { const b = __wjs_takeBody(this, "Response.text"); return b ? new TextDecoder().decode(b) : ""; }
+  async text() { return new TextDecoder().decode(await __wjs_respStreamBytes(this, "Response.text")); }
   async json() { return JSON.parse(await this.text()); }
-  async arrayBuffer() { const b = __wjs_takeBody(this, "Response.arrayBuffer"); return b ? b.slice().buffer : new ArrayBuffer(0); }
-  async bytes() { const b = __wjs_takeBody(this, "Response.bytes"); return b ? b.slice() : new Uint8Array(0); }
+  async arrayBuffer() { const b = await __wjs_respStreamBytes(this, "Response.arrayBuffer"); return b.slice().buffer; }
+  async bytes() { return __wjs_respStreamBytes(this, "Response.bytes"); }
   static error() {
     const r = new Response(null);
     __wjs_respInit(r, { status: 0, statusText: "", headers: new Headers(), url: "", bodyU8: null });
@@ -817,6 +883,7 @@ globalThis.__wjs_make_response = (metaJson, bodyU8) => {
   __wjs_respInit(resp, {
     status: meta.status, statusText: meta.statusText, headers,
     url: meta.url, bodyU8: bodyU8 ?? null,
+    streamId: meta.streamId === undefined ? null : meta.streamId,
   });
   return resp;
 };
@@ -1225,9 +1292,42 @@ globalThis.fetch = (input, init = {}) => {
   }
   const headersJson = JSON.stringify([...st.headers]);
   return new Promise((resolve, reject) => {
-    __wjs_fetch_start(st.url, st.method, headersJson, st.bodyU8 ?? undefined, resolve, reject);
+    // 监听留到流结束：head 结算只 resolve（流式 body 的 abort 还靠它）；
+    // head 失败或 abort 触发或流终结时经 `__wjs_fetchCleanup` 摘除。
+    let onAbort = null;
+    const cleanup = () => {
+      if (onAbort && st.signal) st.signal.removeEventListener("abort", onAbort);
+      onAbort = null;
+    };
+    const id = __wjs_fetch_start(
+      st.url, st.method, headersJson, st.bodyU8 ?? undefined,
+      (v) => resolve(v),
+      (e) => { if (id) __wjs_fetchCleanup(id); else cleanup(); reject(e); },
+    );
+    if (st.signal && id) {
+      onAbort = () => {
+        // Rust 侧取消任务 + 拒绝排队 pull（AbortError）；外层按原始 reason 拒绝。
+        __wjs_abortedFetch.add(id);
+        __wjs_fetch_abort(id);
+        __wjs_fetchCleanup(id);
+        reject(st.signal.reason);
+      };
+      st.signal.addEventListener("abort", onAbort);
+      __wjs_fetchCleanups.set(id, cleanup);
+    }
   });
 };
+// 已中止的流 id 集（pull 侧直接拒绝，不再进 Rust 状态）。
+const __wjs_abortedFetch = new Set();
+// 待摘的 abort 监听（流终结/取消时清理，长 signal 不堆积）。
+const __wjs_fetchCleanups = new Map();
+function __wjs_fetchCleanup(sid) {
+  const fn = __wjs_fetchCleanups.get(sid);
+  if (fn) {
+    __wjs_fetchCleanups.delete(sid);
+    try { fn(); } catch {}
+  }
+}
 "#;
 
 /// 在 global 上定义全部 native（prelude 求值之前）。
@@ -1291,6 +1391,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_ec_import_priv", Some(crypto::ec_import_priv), 2),
             ("__wjs_ec_import_pub", Some(crypto::ec_import_pub), 3),
             ("__wjs_fetch_start", Some(fetch::fetch_start), 6),
+            ("__wjs_fetch_abort", Some(fetch::fetch_abort), 1),
+            ("__wjs_fetch_pull", Some(fetch::fetch_pull), 3),
             ("__wjs_ws_connect", Some(ws::ws_connect), 3),
             ("__wjs_ws_send", Some(ws::ws_send), 3),
             ("__wjs_ws_close", Some(ws::ws_close), 3),

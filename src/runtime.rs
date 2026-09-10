@@ -95,7 +95,7 @@ async fn run_module(
     rt: &mut Runtime,
     global: &RootedGuard<'_, *mut JSObject>,
     url: &Url,
-    fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchResult>,
+    fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchMsg>,
     ws_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsEvent>,
 ) -> Result<(), Error> {
     use mozjs::rust::wrappers2::{ModuleEvaluate, ModuleLink};
@@ -339,7 +339,7 @@ async fn eval_syntax_fallback(
     global: &RootedGuard<'_, *mut JSObject>,
     source: &str,
     filename: &str,
-    fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchResult>,
+    fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchMsg>,
     ws_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsEvent>,
 ) -> Result<(), Error> {
     let original = {
@@ -434,7 +434,7 @@ async fn event_loop(
     rt: &mut Runtime,
     global: &RootedGuard<'_, *mut JSObject>,
     err: ErrorSource<'_>,
-    fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchResult>,
+    fetch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::fetch::FetchMsg>,
     ws_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsEvent>,
 ) -> Result<(), Error> {
     use crate::builtins::{fetch, ws};
@@ -464,16 +464,24 @@ async fn event_loop(
         }
         iterations += 1;
 
-        // 已完成的 fetch/ws 先结算（不阻塞）
+        // 已完成的 fetch/ws 先结算（不阻塞）。结算会同步决议 promise（排队 microtask），
+        // 故本轮结算过就不能直接退——必须再跑一轮 RunJobs 排空（§4.18）。
+        let mut progressed = false;
         while let Ok(msg) = fetch_rx.try_recv() {
             settle_fetch!(msg);
+            progressed = true;
         }
         while let Ok(ev) = ws_rx.try_recv() {
             settle_ws!(ev);
+            progressed = true;
         }
 
         let timers_empty = timers::next_deadline().is_none();
-        if timers_empty && state::fetch_pending() == 0 && state::ws_open() == 0 {
+        let idle = timers_empty
+            && state::fetch_pending() == 0
+            && state::ws_open() == 0
+            && state::stream_pending() == 0;
+        if idle && !progressed {
             break;
         }
         match timers::next_deadline() {
@@ -493,8 +501,11 @@ async fn event_loop(
                     }
                 }
             }
-            // 无定时器但有未决项：睡到有完成为止
+            // 无定时器但有未决项：睡到有完成为止（全 idle 只剩 microtask 时回顶排空，不 park）。
             None => {
+                if idle {
+                    continue;
+                }
                 tokio::select! {
                     msg = fetch_rx.recv() => {
                         if let Some(msg) = msg {

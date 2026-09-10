@@ -87,11 +87,33 @@ pub unsafe extern "C" fn ws_connect(
         return false;
     };
     let url_owned = parsed.to_string();
+    let use_tls = parsed.scheme() == "wss";
     handle.spawn(async move {
-        run_socket(id, &url_owned, protocols, tx, out_rx).await;
+        run_socket(id, &url_owned, protocols, tx, out_rx, use_tls).await;
     });
     frame.set_rval(mozjs::jsval::Int32Value(id as i32));
     true
+}
+
+/// 测试接缝（仅 `WINTERJS_TEST_CA_PEMFILE` 置位时）：给自签 CA 用的 rustls 连接器。
+/// 生产行为（未置位）保持 `connect_async` 默认（webpki roots），不受影响。
+/// 前置：tokio 任务内（读文件用 `tokio::fs`）。
+async fn test_connector() -> Option<tokio_tungstenite::Connector> {
+    let path = std::env::var("WINTERJS_TEST_CA_PEMFILE").ok()?;
+    let pem = tokio::fs::read(&path).await.ok()?;
+    let mut roots = rustls::RootCertStore::empty();
+    // 系统根（`rustls-native-certs` 直引轮子）+ 自签 CA（`rustls-pemfile` 解析）。
+    let native = rustls_native_certs::load_native_certs();
+    let (added, _) = roots.add_parsable_certificates(native.certs);
+    tracing::debug!(target: "winterjs::ws", added, path, "test CA seam: native roots loaded");
+    let mut cursor = std::io::Cursor::new(pem);
+    let extra: Vec<_> = rustls_pemfile::certs(&mut cursor).collect::<Result<_, _>>().ok()?;
+    roots.add_parsable_certificates(extra);
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    tracing::info!(target: "winterjs::ws", path, "test CA seam active (wss self-signed)");
+    Some(tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(config)))
 }
 
 async fn run_socket(
@@ -100,6 +122,7 @@ async fn run_socket(
     protocols: Vec<String>,
     tx: tokio::sync::mpsc::UnboundedSender<WsEvent>,
     mut out_rx: tokio::sync::mpsc::UnboundedReceiver<WsOut>,
+    use_tls: bool,
 ) {
     let mut req = match url.into_client_request() {
         Ok(r) => r,
@@ -114,7 +137,15 @@ async fn run_socket(
             req.headers_mut().insert("Sec-WebSocket-Protocol", v);
         }
     }
-    let (stream, resp) = match tokio_tungstenite::connect_async(req).await {
+    let (stream, resp) = match tokio_tungstenite::connect_async_tls_with_config(
+        req,
+        None,
+        false,
+        // wss 且测试接缝置位才给自定义连接器；其余（ws/生产 wss）走默认。
+        if use_tls { test_connector().await } else { None },
+    )
+    .await
+    {
         Ok(s) => s,
         Err(e) => {
             let _ = tx.send(WsEvent { id, kind: WsKind::Failed(format!("websocket error: {e}")) });

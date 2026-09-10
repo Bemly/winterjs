@@ -82,7 +82,7 @@
   `cargo test` 36+5 全绿，0 警告保持。未接线轮子（jsonc-parser/linkme/petgraph 等）
   按需顺延，不为用而用。
 
-## Phase 3 — Web API（WinterCG 兼容层）
+## Phase 3 — Web API（WinterCG 兼容层，开工 2026-09-10，切片 a 进行中）
 
 - 目标：fetch/编码/流/加密可用。
 - 引入依赖：`reqwest`（§2 门控）、`url`+`data-url`、`base64`+`percent-encoding`+
@@ -94,7 +94,17 @@
   Headers/Request/Response、URL/URLSearchParams、TextEncoder/Decoder、
   streams（引擎上实现）、SubtleCrypto 全算法、`crypto.getRandomValues`。
 - 验收：对标 WinterCG 兼容测试 excitement：26 路由全绿（抄 winterjs-old test-suite 思路）。
-- 完成标准：无 `unsafe` 新增（§6 审计）。
+- 完成标准：§6 审计口径——无业务层 `unsafe` 新增、无裸指针新用法
+  （边界入口块随 native 数增长如实计数，不算违规）。
+- 路线（2026-09-10）：类实例状态只用保留槽存 JS 值（href 字符串等，可被 GC 追踪），
+  不用裸指针 private + finalizer；`searchParams` 活视图靠双向槽链接。
+- [x] 切片 a（2026-09-10）：URL/URLSearchParams（含双向活视图）+ TextEncoder/Decoder
+  （`encoding_rs`，流式顺延）+ atob/btoa + `crypto.getRandomValues`/`randomUUID`。
+  prelude 真类 + 纯字符串 native（复杂值走 JSON 桥）；新增 `unsafe` 仅 1 处
+  （`te_encode` 的 `TypedArray::create`，边界调用）；`tests/cli.rs` 9 例；
+  `cargo test` 45+5 全绿，0 警告。
+- [ ] 切片 b：fetch + Headers/Request/Response（`reqwest` §2 门控）。
+  切片 c：streams（引擎实现）+ SubtleCrypto 全算法 + WebSocket。
 
 ## Phase 4 — Node 兼容垫片
 

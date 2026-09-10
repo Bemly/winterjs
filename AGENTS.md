@@ -201,12 +201,17 @@ cargo build
   （先走 §0.5 找轮子）？② 能把 `unsafe` 收敛进构造器、对外只暴露 safe 访问器吗
   （`Frame` 模式：`from_raw` unsafe，`arg`/`set_rval` safe + 越界断言）？
   ③ 前置条件写进注释了吗？
-- 存量基线（2026-09-10 实数 78 处）：`unsafe extern "C"` 22（文本值，宏展开 27，
-  C ABI 强制，不可去）；`unsafe impl Traceable` 2（GC 协议，不可去）；
-  `unsafe{}` 块 48 个，其中 `frame.arg`(14)+`set_rval`(18)=32 处调用点可转 safe
-  （待 `Frame` 重构）；`wrap_cx`(17)维持 unsafe（`from_ptr` 本质 unsafe）；
+- 存量基线（2026-09-10 实数，`rg` 文本值；`console_sink!` 宏展开后更多）：
+  `unsafe extern "C"` 41（C ABI 强制，不可去；Phase 3a 起每新增 native +1）、
+  `unsafe impl Traceable` 2（GC 协议，不可去）；
+  `unsafe{}` 块 106，其中每个 JSNative 入口固定 2 个边界块
+  （`wrap_cx` + `Frame::from_raw`，随 native 数线性增长，结构性不可去）；
+  `wrap_cx` 维持 unsafe（`from_ptr` 本质 unsafe）；
   其余 FFI 体（`JS_GetProperty`/`JS_CallFunctionValue`/`evaluate_script`/
-  `RunJobs` 等）不可去——mozjs 本身就是选定的轮子，没有更上层的 safe 运行时可选。
+  `RunJobs`/`TypedArray::create` 等）不可去——mozjs 本身就是选定的轮子，
+  没有更上层的 safe 运行时可选。
+  审计口径：禁业务层 `unsafe`、禁裸指针新用法（状态一律走保留槽/JSON 桥/TypedArray
+  safe 读）；边界入口块如实计数，不算违规。
 - 可观测性（2026-09-10）：所有功能模块必须带分级 `tracing` 埋点（Phase 0 已接线），
   分级：INFO=阶段里程碑（run/eval 起止、事件循环退出）；DEBUG=状态变迁
   （timer 注册/触发/取消、fallback 路径选择、rejection 捕获）；TRACE=热路径逐条

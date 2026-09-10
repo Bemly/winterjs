@@ -94,6 +94,36 @@ cargo build
   再显式调 `tracing_log::LogTracer::init()` 抢占 `log::set_logger` 即冲突。
 - 修法：二选一，用 `init()` 就不要再调 LogTracer（src/logging.rs 取前者）。
 
+### 4.7 `UseInternalJobQueues` 在 153 下 SEGV，改 RustJobQueue glue（2026-09-10）
+
+- 症状：最小 Runtime 下调 `js::UseInternalJobQueues` 即 SEGV，realm 内外皆崩。
+- 根因：原因未深究（记坑）。
+- 修法：用 `mozjs_sys` 自带 RustJobQueue glue（servo 同款）：`CreateJobQueue` +
+  `SetJobQueue`，traps 的 `runJobs` 用 MicroTask 朋友 API 排空
+  （`PeekNextMicroTask` / `DequeueNextRegularMicroTask` / `RunJSMicroTask`），
+  首段脚本前在 realm 内 `install`；不装则 `RunJobs` 无队列可用同样 SEGV
+  （`src/jobqueue.rs`，`src/runtime.rs`）。
+
+### 4.8 引擎/运行时析构期 StoreBuffer 悬垂边 SEGV（2026-09-10）
+
+- 症状：`Runtime` / `JSEngine` 正常 drop 时在 `JS_DestroyContext` / destroyRuntime
+  的小 GC 里 SEGV（含带 timer 路径）；`RootedTraceableBox` 的 TLS 析构晚于引擎
+  同样会 SEGV/abort。
+- 根因：`Runtime` 的 StoreBuffer 记有指向 `RootedState` Heap 槽位的边，
+  先 drop 槽位再销毁引擎即悬垂。
+- 修法：结果就绪后 `process::exit` 跳过 teardown（`src/main.rs` `dispatch` 返回
+  退出码）；`Runtime`/`JSEngine` 经 `forget_engine` 刻意泄漏（`src/runtime.rs`）；
+  `RootedState` 经 `StateGuard` 在引擎存活期内从 TLS 摘除并 `mem::forget`
+  （`src/state.rs`，进程退出由 OS 回收）。
+
+### 4.9 native 内 `Rooted<ValueArray>` 注册会 SEGV（2026-09-10）
+
+- 症状：native 回调内用 `Rooted<ValueArray>` 传参即 SEGV。
+- 根因：其根注册路径在 native 内调用时有问题（未深究，记坑）。
+- 修法：单实参用 `HandleValueArray::from(raw_handle(已 rooted 值))` 直构；
+  `thisObj` 传 null 会 SEGV，必须传有效对象（用 global）
+  （`src/builtins/clone.rs`）。
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

@@ -2,7 +2,8 @@
 
 > 版本 `26.9.0`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 0 进行中（`run`/`eval` 已可用；依赖于 2026-09-10 按用户拍板全量引入，
+> 当前状态：Phase 1 已完工（2026-09-10，`cargo test` 23+1 全绿，验收样例通过）；
+> 下一步 Phase 2 ESM loader。依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
 ## Phase 0 — 底座收尾（进行中）
@@ -31,7 +32,7 @@
 - [ ] 6-target CI 矩阵（待立 CI 时做）
 - 依赖全量引入（2026-09-10 用户拍板）见 `docs/dependencies.md` 头部；turso 因 icu 死锁暂缓。
 
-## Phase 1 — console / timers / microtask
+## Phase 1 — console / timers / microtask（已完工 2026-09-10）
 
 - 目标：同步 JS 跑通，异步地基打好。
 - 引入依赖：无新增（`tokio` time + 自研 drain）。
@@ -41,6 +42,11 @@
 - 验收：`winterjs eval 'await new Promise(r=>setTimeout(()=>r(1),10))'` → `1`；
   `probe` 链（then 三跳、嵌套 microtask）全绿。
 - 完成标准：事件循环空转不饿死、不早退（regression 探针入库）。
+- [x] 2026-09-10：`src/runtime.rs` + `src/state.rs` + `src/jobqueue.rs` +
+  `src/jsapi_glue.rs` + `src/builtins/`（console/timers/clone+prelude）；
+  `runner.rs` 由 `runtime.rs` 接替；`tests/cli.rs` 8 例 Phase 1 用例全绿
+  （microtask 顺序/三跳链/顶层 await/interval/嵌套 microtask/clone/rejection/count+time）；
+  踩坑回写 AGENTS §4.7–4.9。
 
 ## Phase 2 — ESM loader
 

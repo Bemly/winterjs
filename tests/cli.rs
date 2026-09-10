@@ -132,7 +132,7 @@ fn completions_bash_script() {
 #[test]
 fn man_pages_render_roff() {
     let out = stdout_of(&mut winterjs().arg("man"));
-    assert_eq!(out.matches(".TH").count(), 10, "main + 9 subcommand pages");
+    assert_eq!(out.matches(".TH").count(), 11, "main + 10 subcommand pages");
 }
 
 #[test]
@@ -2082,4 +2082,162 @@ fn phase5_stale_staging_recovered() {
     assert!(!nm.join("stale-pkg/junk.txt").exists(), "orphan junk must not leak into package");
     dir.close().unwrap();
     cache.close().unwrap();
+}
+
+// ── Phase 6-d1：serve 静态文件 ─────────────────────────────────────────────
+
+/// 空闲端口（bind :0 取号即放；被抢概率极低，抢了则 connect 轮询超时即红）。
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// 存活 serve 子进程（Drop 即 kill + wait，不泄漏）。
+struct ServeGuard {
+    child: std::process::Child,
+    port: u16,
+}
+
+impl Drop for ServeGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// 起 `winterjs serve . --port <free>`，轮询到 connect 成功（5s 超时）。
+fn spawn_serve(root: &std::path::Path) -> ServeGuard {
+    let port = free_port();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+        .args(["serve", ".", "--port"])
+        .arg(port.to_string())
+        .current_dir(root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("serve spawns");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return ServeGuard { child, port };
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("serve on :{port} never came up");
+        }
+        // 子进程早退（如 bind 失败）直接把 stderr 捞出来当失败信息。
+        if let Ok(Some(st)) = child.try_wait() {
+            panic!("serve exited early: {st}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// 裸 socket GET（hermetic，不依赖外部 client；`extra` 为附加请求头）。
+fn http_get(port: u16, path: &str, extra: &[(&str, &str)]) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    let mut req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
+    for (k, v) in extra {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    s.write_all(req.as_bytes()).unwrap();
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw).unwrap();
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("http response has head");
+    let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+    let body = raw[split + 4..].to_vec();
+    let mut lines = head.lines();
+    let status: u16 = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut headers = std::collections::HashMap::new();
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            headers.insert(k.trim().to_lowercase(), v.trim().to_owned());
+        }
+    }
+    (status, headers, body)
+}
+
+fn serve_fixture() -> assert_fs::TempDir {
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("index.html").write_str("<h1>hi</h1>").unwrap();
+    dir.child("app.js").write_str("console.log(1);\n").unwrap();
+    std::fs::write(dir.path().join("big.bin"), b"0123456789abcdef").unwrap();
+    dir
+}
+
+#[test]
+fn phase6_serve_static_file() {
+    // 正常：`/` 落到 index.html（content-type + etag），子路径按 mime，缺失 404。
+    let dir = serve_fixture();
+    let srv = spawn_serve(dir.path());
+    let (st, h, body) = http_get(srv.port, "/", &[]);
+    assert_eq!(st, 200);
+    assert_eq!(body, b"<h1>hi</h1>");
+    assert!(h.get("content-type").is_some_and(|v| v.contains("text/html")), "headers: {h:?}");
+    assert!(h.contains_key("etag"), "etag missing: {h:?}");
+    let (st, h, body) = http_get(srv.port, "/app.js", &[]);
+    assert_eq!(st, 200);
+    assert_eq!(body, b"console.log(1);\n");
+    assert!(h.get("content-type").is_some_and(|v| v.contains("javascript")), "headers: {h:?}");
+    let (st, _, _) = http_get(srv.port, "/nope.txt", &[]);
+    assert_eq!(st, 404);
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase6_serve_range() {
+    // 正常：Range → 206 + Content-Range + 切片 body。
+    let dir = serve_fixture();
+    let srv = spawn_serve(dir.path());
+    let (st, h, body) = http_get(srv.port, "/big.bin", &[("Range", "bytes=0-3")]);
+    assert_eq!(st, 206);
+    assert_eq!(body, b"0123");
+    assert_eq!(h.get("content-range").map(String::as_str), Some("bytes 0-3/16"), "headers: {h:?}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase6_serve_bad_dir_errors() {
+    // 报错：不存在的目录 exit=1 且可读。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = winterjs()
+        .args(["serve", "no-such-dir", "--port", "18099"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no-such-dir"), "stderr: {stderr}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase6_serve_traversal_blocked() {
+    // 边界：`/../` 越界读不到 root 之外的文件（非 200 且不泄露内容）。
+    let dir = serve_fixture();
+    let secret_name = format!("wjs-outside-secret-{}.txt", std::process::id());
+    let secret = dir.path().join("..").join(&secret_name);
+    std::fs::write(&secret, b"topsecret").unwrap();
+    let srv = spawn_serve(dir.path());
+    let (st, _, body) = http_get(srv.port, &format!("/../{secret_name}"), &[]);
+    assert_ne!(st, 200, "traversal must not succeed");
+    assert!(!body.windows(9).any(|w| w == b"topsecret"), "secret leaked");
+    let _ = std::fs::remove_file(&secret);
+    dir.close().unwrap();
 }

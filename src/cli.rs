@@ -101,4 +101,16 @@ pub enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Serve a directory over HTTP (Phase 6)
+    Serve {
+        /// Directory to serve
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// Interface to bind
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Port to bind (0 = ephemeral, actual port printed on stdout)
+        #[arg(long, default_value_t = 3000)]
+        port: u16,
+    },
 }

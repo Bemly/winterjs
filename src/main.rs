@@ -11,6 +11,7 @@ mod logging;
 mod modules;
 mod pm;
 mod runtime;
+mod serve;
 mod settings;
 mod state;
 
@@ -120,6 +121,9 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             pm::publish::login(&reg, token.as_deref(), oauth).await
         }
         Cmd::Upgrade { dry_run } => pm::upgrade::upgrade(dry_run).await,
+        Cmd::Serve { dir, host, port } => {
+            serve::serve(&serve::ServeOpts { dir, host, port }).await
+        }
         Cmd::Man => {            use std::io::Write as _;
 
             let mut cmd = Cli::command();

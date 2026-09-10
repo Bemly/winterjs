@@ -254,6 +254,12 @@
   TLS 终止（PEM）、优雅停机、`/metrics`、systemd/Win 服务集成、启动 banner。
 - 验收：wrk 压测不丢请求；SIGTERM 优雅退出不断连接。
 - 完成标准：metrics 有 named 指标文档。
+- [x] 切片 d1（2026-09-10）：`winterjs serve [dir] [--host] [--port]`
+  （`src/serve.rs`，`ServeDir` 直服：mime/etag/range 全由轮子；
+  `--port 0` 回显实际端口；SIGINT/SIGTERM 即停 exit=0，实测验证；
+  复用 current-thread runtime，无 JS 线程冲突）。CLI 新增 `serve`（man 10→11）。
+  模块单测 3 例 + 黑盒 4 例（静态+etag/range/坏目录/traversal 隔离）；
+  `cargo test` 36+115 全绿，0 警告，冒烟 5/5。
 
 ## Phase 7 — runtime 补齐（sqlite/REPL/test/watch/FFI）
 

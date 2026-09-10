@@ -103,8 +103,13 @@
   prelude 真类 + 纯字符串 native（复杂值走 JSON 桥）；新增 `unsafe` 仅 1 处
   （`te_encode` 的 `TypedArray::create`，边界调用）；`tests/cli.rs` 9 例；
   `cargo test` 45+5 全绿，0 警告。
-- [ ] 切片 b：fetch + Headers/Request/Response（`reqwest` §2 门控）。
-  切片 c：streams（引擎实现）+ SubtleCrypto 全算法 + WebSocket。
+- [x] 切片 b（2026-09-10）：fetch + Headers/Request/Response（`reqwest` §2 门控，
+  ring provider 本模块安装）+ 最小 AbortController（无事件；in-flight 中断顺延）。
+  并发：native 解析 + spawn，channel 回事件循环 `select` 结算（发送端活 TLS，
+  回调存 RootedState）；data:/file: 同步直给（仍走 promise 语义）。
+  附带修：`await` 参数位置解析坑（§4.17，重试触发放宽 + 原始报错保留）。
+  `tests/cli.rs` 6 例（含本机回环 http）；`cargo test` 51+5 全绿，0 警告。
+- [ ] 切片 c：streams（引擎实现）+ SubtleCrypto 全算法 + WebSocket。
 
 ## Phase 4 — Node 兼容垫片
 

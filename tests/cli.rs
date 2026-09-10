@@ -401,3 +401,93 @@ fn phase2_ts_runtime_error_location() {
     assert!(stderr.contains("e.ts:6:1"), "stderr: {stderr}");
     assert!(stderr.contains("boom_ts is not defined"), "stderr: {stderr}");
 }
+
+// ── Phase 3a：URL / 编码 / crypto ──────────────────────────────────────────
+
+#[test]
+fn phase3_url_components() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const u = new URL("https://user:pass@example.com:8080/p?q=1#h"); console.log([u.href, u.protocol, u.host, u.hostname, u.port, u.pathname, u.search, u.hash, u.origin].join("|"))"#]));
+    assert_eq!(
+        out,
+        "https://user:pass@example.com:8080/p?q=1#h|https:|example.com:8080|example.com|8080|/p|?q=1|#h|https://example.com:8080
+",
+        "url: {out}"
+    );
+}
+
+#[test]
+fn phase3_url_relative_and_can_parse() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"console.log(new URL("/p", "https://h.org/x").href, URL.canParse(':::'), URL.canParse('https://a.b'))"#]));
+    assert_eq!(out, "https://h.org/p false true\n", "url base: {out}");
+}
+
+#[test]
+fn phase3_url_invalid_throws() {
+    let out = winterjs().args(["eval", "new URL(':::')"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Invalid URL"), "stderr: {stderr}");
+}
+
+#[test]
+fn phase3_usp_live_view() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const u = new URL("https://ex.com/?b=2"); const sp = u.searchParams; sp.append("c", "3"); console.log(u.search, sp === u.searchParams); u.search = "?x=9"; console.log(sp.toString())"#]));
+    assert_eq!(out, "?b=2&c=3 true
+x=9
+", "live view: {out}");
+}
+
+#[test]
+fn phase3_usp_ops() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const s = new URLSearchParams("z=1&a=2&a=3"); s.sort(); console.log(s.toString(), s.get("a"), s.getAll("a").length, s.size)"#]));
+    assert_eq!(out, "a=2&a=3&z=1 2 2 3
+", "usp: {out}");
+}
+
+#[test]
+fn phase3_text_encoder_decoder() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const e = new TextEncoder(); console.log(e.encoding, e.encode("hi").length, JSON.stringify(new TextEncoder().encodeInto("hello", new Uint8Array(3)))); console.log(new TextDecoder().decode(new Uint8Array([104, 105])), new TextDecoder("utf-16le").decode(new Uint8Array([104, 0, 105, 0])));"#]));
+    assert_eq!(out, "utf-8 2 {\"read\":3,\"written\":3}\nhi hi\n", "codec: {out}");
+}
+
+#[test]
+fn phase3_text_decoder_fatal() {
+    let out = winterjs()
+        .args(["eval", "new TextDecoder('utf-8', {fatal:true}).decode(new Uint8Array([0xff]))"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let out = stdout_of(&mut winterjs().args(["eval",
+        "console.log(new TextDecoder('utf-8').decode(new Uint8Array([0xff])).length)"]));
+    assert_eq!(out, "1
+");
+}
+
+#[test]
+fn phase3_base64_roundtrip() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        "console.log(btoa('hello'), atob('aGVsbG8='))"]));
+    assert_eq!(out, "aGVsbG8= hello
+", "base64: {out}");
+    let out = winterjs().args(["eval", "btoa('€')"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn phase3_crypto_random() {
+    let out = stdout_of(&mut winterjs().args(["eval",
+        r#"const v = new Uint8Array(16); console.log(crypto.getRandomValues(v) === v, v.length); const a = crypto.randomUUID(), b = crypto.randomUUID(); console.log(a.length, a !== b, /^[0-9a-f-]{36}$/.test(a))"#]));
+    assert_eq!(out, "true 16
+36 true true
+", "crypto: {out}");
+    let out = winterjs()
+        .args(["eval", "crypto.getRandomValues(new Uint8Array(70000))"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+}

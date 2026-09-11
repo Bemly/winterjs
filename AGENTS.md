@@ -20,8 +20,10 @@
    存量 `unsafe` 只减不增，重构顺手收敛调用点。
 7. **测试三件套随功能落地**：新功能必须同时带三层测试，完工标准含三绿——
    模块测试（`src/` 内 `#[cfg(test)]`，覆盖纯 Rust 可测逻辑：解析/转译/状态机/编解码）、
-   黑盒测试（`tests/cli.rs`，经 CLI 断言用户可见行为，每个新 API 必含正常 + 报错 +
-   边界三件；`UNSAFE-BOUNDARY` 新增必须配 panic 路径用例）、
+   黑盒测试（`tests/`，经 CLI 断言用户可见行为；**文件按 src 对齐**：
+   `cli/builtins/crypto/fetch/ws/loader/node/pm/serve/acme/testrun/initpkg/repl/bun/permissions/lintfmt/sentry_report.rs`，
+   共享 helper 进 `tests/common/mod.rs`（`use common::*;`），新 API 的黑盒进对应域文件，
+   每个新 API 必含正常 + 报错 + 边界三件；`UNSAFE-BOUNDARY` 新增必须配 panic 路径用例）、
    冒烟（§3 探针命令，构建后必跑，不过不提交）。
 8. **CLI 全 flag 规范**：无裸子命令、无裸位置参数——所有动作一律 `-x/--xxx`
    显式 flag（如 `-r/--run <FILE>`、`-a/--add <PKG>`、`-i/--install <PKG>`）；
@@ -223,7 +225,7 @@ cargo build
   必发（chunk/Done 堆在顶排空）。
 - 修法：本轮结算过（`progressed`）即使全 idle 也不退，回顶再 `RunJobs`；
   `select` 的 None 臂遇全 idle 直接 `continue`（只剩 microtask，不 park，否则永睡）。
-  复现：`tests/cli.rs::phase3_fetch_body_streams_chunks`（修前必挂）。
+  复现：`tests/fetch.rs::phase3_fetch_body_streams_chunks`（修前必挂；2026-09-12 拆分前在 tests/cli.rs）。
   推广为铁律：任何同步决议 JS promise 的结算点之后，必须保证至少一轮 `RunJobs`。
 - 追补（2026-09-10，模块顶层 `process.exit` 必发 `[object Promise]` 案）：
   抛错的 job 会截断当轮 `RunJobs` 排空，入口捕获的反应 job 留到下一轮；
@@ -386,7 +388,7 @@ cargo build
 - 修法：`ServeDir` 外包最内层 `from_fn` 中间件，`ts/mts/cts/tsx/jsx`
   （大小写不敏感）成功响应改 `text/javascript`（Vite 对等），404 不动
   （`src/serve.rs` `rewrite_ts_mime` + `ts_family_js_mime`）。
-- 复现：`tests/cli.rs::phase6_serve_ts_mime_as_javascript`（修前 content-type 含 video）。
+- 复现：`tests/serve.rs::phase6_serve_ts_mime_as_javascript`（修前 content-type 含 video；2026-09-12 拆分前在 tests/cli.rs）。
 - 取舍：扩展名本身有歧义（TypeScript 源码 vs MPEG-TS 视频，共用 `.ts`），静态服务器
   从后缀无法知道作者意图——与 Vite 一样按 Web 开发上下文判 JS 源码。
   真要服 MPEG-TS 视频请用 `.m2ts`/`.m2t` 后缀（同表，无歧义），不要用 `.ts`。

@@ -2242,6 +2242,23 @@ fn phase6_serve_static_file() {
 }
 
 #[test]
+fn phase6_serve_ts_mime_as_javascript() {
+    // 正常：`.ts` 等 TS 家族按 JS MIME（Vite 对等），否则浏览器拒载模块；
+    // 边界：不存在的 `.ts` 路径仍 404（重写只动成功响应）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("main.ts").write_str("export const x: number = 1;\n").unwrap();
+    let srv = spawn_serve(dir.path());
+    let (st, h, body) = http_get(srv.port, "/main.ts", &[]);
+    assert_eq!(st, 200);
+    assert_eq!(body, b"export const x: number = 1;\n");
+    assert!(h.get("content-type").is_some_and(|v| v.contains("javascript")), "headers: {h:?}");
+    assert!(!h.get("content-type").is_some_and(|v| v.contains("video")), "headers: {h:?}");
+    let (st, _, _) = http_get(srv.port, "/nope.ts", &[]);
+    assert_eq!(st, 404);
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase6_serve_range() {
     // 正常：Range → 206 + Content-Range + 切片 body。
     let dir = serve_fixture();

@@ -468,6 +468,10 @@ npmrc 附记（2026-09-10 实测）：`rust-ini` 把 `:` 也当键值分隔符
 备注：静态文件/CORS/压缩/追踪全用 `tower-http`（压缩后端复用 §6 的 flate2/brotli/ruzstd 解码）；
 multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 axum 内建。
 `mime_guess`/`httpdate`/`qrcode` 是冻结型小库（MIME 表/HTTP 日期/QR 规范不变），接受。
+偏离（2026-09-12 实测）：`ServeDir`（tower-http 0.7）写死 `mime_guess::from_path` 且无
+覆盖接口；`.ts`/`.mts` 撞 MPEG-TS 被判视频流（`jsx` 在 2.0.4 表里还是 `text/jscript`），
+TS 家族（`ts/mts/cts/tsx/jsx`）MIME 由自有 `from_fn` 中间件覆盖为 `text/javascript`
+（`src/serve.rs`，见 AGENTS §4.30）。
 `console-subscriber` 是开发期观测工具（2026-09-11 已接为 cargo feature `tokio-console` =
 `dep:console-subscriber` + `tokio/tracing`，`Cargo.toml [features]` 本仓首个；默认关闭零成本；
 启用必须 `RUSTFLAGS="--cfg tokio_unstable" cargo build --features tokio-console`，缺之编译期

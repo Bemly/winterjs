@@ -375,6 +375,19 @@ cargo build
   修法：插入序 Vec，同键只留首事件并刷新 deadline，刷出按到达序
   （首事件赢，与无防抖时的先到先得一致）（`fs.rs debounce_loop`）。
 
+### 4.30 `mime_guess` 把 `.ts` 当 MPEG 视频流，`serve` 须自改 MIME（2026-09-12）
+
+- 症状：Vue 工程经 `winterjs serve` 起静态，浏览器拒载 `/src/main.ts`：
+  `使用了不允许的 MIME 类型（"video/vnd.dlna.mpeg-tts"）`。
+- 根因：`.ts` 与 MPEG-TS 同扩展名，`mime_guess`（冻结表，`ts/mts` 双中招；
+  `jsx` 在 2.0.4 表里还是非法的 `text/jscript`）判错；`tower-http 0.7` 的
+  `ServeDir` 写死 `mime_guess::from_path`，无覆盖接口（`append_mime_override`
+  不存在，翻轮子源码确认）。
+- 修法：`ServeDir` 外包最内层 `from_fn` 中间件，`ts/mts/cts/tsx/jsx`
+  （大小写不敏感）成功响应改 `text/javascript`（Vite 对等），404 不动
+  （`src/serve.rs` `rewrite_ts_mime` + `ts_family_js_mime`）。
+- 复现：`tests/cli.rs::phase6_serve_ts_mime_as_javascript`（修前 content-type 含 video）。
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

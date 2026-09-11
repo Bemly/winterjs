@@ -204,6 +204,36 @@ pub fn qr_block(url: &str) -> Option<String> {
     )
 }
 
+/// TS/JSX 家族 → JS MIME 判定（Vite 对等；`mime_guess` 把 `.ts`/`.mts`
+/// 当 MPEG-TS 视频流，且 `tower-http 0.7` 无覆盖接口，见 §4.30）。
+/// 命中返回 `text/javascript`，其余（无扩展/尾点/后缀非末尾）返回 `None`。
+pub fn ts_family_js_mime(path: &str) -> Option<&'static str> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if !name.contains('.') || name.ends_with('.') {
+        return None;
+    }
+    match name.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+        "ts" | "mts" | "cts" | "tsx" | "jsx" => Some("text/javascript"),
+        _ => None,
+    }
+}
+
+/// TS 家族 MIME 重写（`ServeDir` 之后最内层；只改成功响应，404 等不动）。
+async fn rewrite_ts_mime(
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let want = ts_family_js_mime(req.uri().path()).is_some();
+    let mut res = next.run(req).await;
+    if want && res.status().is_success() {
+        res.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/javascript"),
+        );
+    }
+    res
+}
+
 /// 启动并跑到信号到来。调用方（main）已在 tokio runtime 内。
 pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     let root = validate_dir(&opts.dir)?;
@@ -281,6 +311,7 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     let app = Router::new()
         .route("/metrics", axum::routing::get(metrics_handler))
         .fallback_service(ServeDir::new(root))
+        .layer(axum::middleware::from_fn(rewrite_ts_mime))
         .layer(axum::middleware::from_fn_with_state(limiter, observe))
         .with_state(metrics)
         .layer(trace)
@@ -477,6 +508,18 @@ mod tests {
         assert_eq!(retry_after_secs(std::time::Duration::from_millis(0)), 1);
         assert_eq!(retry_after_secs(std::time::Duration::from_millis(1001)), 2);
         assert_eq!(retry_after_secs(std::time::Duration::from_secs(5)), 6);
+    }
+
+    #[test]
+    fn ts_family_mime_table() {
+        // 正常：TS 家族全命中（含大写，Vite 对等）。
+        for p in ["/src/main.ts", "/a/b.TS", "/x.mts", "/x.cts", "/x.tsx", "/x.jsx"] {
+            assert_eq!(ts_family_js_mime(p), Some("text/javascript"), "{p}");
+        }
+        // 边界：普通文件/无扩展/尾点/后缀非末尾/根与指标路径一律不碰。
+        for p in ["/app.js", "/index.html", "/noext", "/a.", "/main.ts.bak", "/metrics", "/"] {
+            assert_eq!(ts_family_js_mime(p), None, "{p}");
+        }
     }
 
     #[test]

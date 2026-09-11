@@ -97,6 +97,17 @@ arg:
   key:
     help: "TLS private key (PEM, must come with --cert)"
     value: "KEY"
+  acme_domain:
+    help: "ACME domain for automatic certificates (default winterjs.bemly.moe; needs --acme-email)"
+    value: "DOMAIN"
+  acme_email:
+    help: "ACME account email (mailto contact for Let's Encrypt)"
+    value: "EMAIL"
+  acme_cache:
+    help: "ACME cache directory (default system cache)"
+    value: "DIR"
+  acme_production:
+    help: "Use Let's Encrypt production (default staging, safe against rate limits)"
   schema:
     help: "Print the JSON Schema of the settings file instead"
   allow_read:

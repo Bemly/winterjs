@@ -25,9 +25,11 @@ pub struct ServeOpts {
     pub port: u16,
     /// 每秒请求上限（0 = 不限；`governor` 全局限流）。
     pub limit_rps: u32,
-    /// TLS 证书/私钥（PEM；必须同给同缺，见 `load_tls`）。
+    /// TLS 证书/私钥（PEM；必须同给同缺，见 `load_tls`；与 `acme` 互斥）。
     pub cert: Option<PathBuf>,
     pub key: Option<PathBuf>,
+    /// ACME 自动证书（启用时签发/复用后转为内存 TLS；见 `acme`）。
+    pub acme: Option<crate::acme::AcmeOpts>,
 }
 
 /// TLS 配置加载（PEM 解析；`rustls-pemfile` 轮子；`ring` provider）。
@@ -49,6 +51,23 @@ pub fn load_tls(cert_path: &Path, key_path: &Path) -> Result<rustls::ServerConfi
         .map_err(|e| Error::Other(format!("bad --key PEM '{}': {e}", key_path.display())))?
         .ok_or_else(|| Error::Other(format!("bad --key PEM '{}': no private key found", key_path.display())))?;
     // provider 与 fetch 侧同源（顶层 ring；重复 install 无害，见 §2 门控）。
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| Error::Other(format!("cannot build TLS config: {e}")))
+}
+
+/// ACME 证书转内存 TLS（`ensure_cert` 的 PEM 对 → `ServerConfig`；与 `load_tls` 同 provider）。
+async fn load_tls_acme(acme: &crate::acme::AcmeOpts) -> Result<rustls::ServerConfig, Error> {
+    use std::io::BufReader;
+    let (cert_pem, key_pem) = crate::acme::ensure_cert(acme).await?;
+    let certs = rustls_pemfile::certs(&mut BufReader::new(cert_pem.as_slice()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| Error::Other(format!("bad ACME cert PEM: {e}")))?;
+    let key = rustls_pemfile::private_key(&mut BufReader::new(key_pem.as_slice()))
+        .map_err(|e| Error::Other(format!("bad ACME key PEM: {e}")))?
+        .ok_or_else(|| Error::Other("bad ACME key PEM: no private key found".into()))?;
     let _ = rustls::crypto::ring::default_provider().install_default();
     rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -188,13 +207,15 @@ pub fn qr_block(url: &str) -> Option<String> {
 /// 启动并跑到信号到来。调用方（main）已在 tokio runtime 内。
 pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     let root = validate_dir(&opts.dir)?;
-    // `--cert/--key` 必须同给同缺（单给即报，不静默降级为明文）。
-    let tls = match (&opts.cert, &opts.key) {
-        (Some(c), Some(k)) => Some(load_tls(c, k)?),
-        (None, None) => None,
+    // `--cert/--key` 必须同给同缺（单给即报，不静默降级为明文）；ACME 与之互斥
+    //（dispatch 已拦，此处双保险）；ACME 命中即内存 TLS（无文件落地，只有缓存）。
+    let tls = match (&opts.cert, &opts.key, &opts.acme) {
+        (Some(c), Some(k), None) => Some(load_tls(c, k)?),
+        (None, None, None) => None,
+        (None, None, Some(acme)) => Some(load_tls_acme(acme).await?),
         _ => {
             return Err(Error::Other(
-                "--cert and --key must be given together (PEM files)".into(),
+                "--cert and --key must be given together (PEM files), and not with --acme-*".into(),
             ));
         }
     };

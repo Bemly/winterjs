@@ -173,6 +173,22 @@ pub struct Cli {
     #[arg(long)]
     pub key: Option<PathBuf>,
 
+    /// ACME domain for automatic certificates (default winterjs.bemly.moe; needs --acme-email)
+    #[arg(long, value_name = "DOMAIN")]
+    pub acme_domain: Option<String>,
+
+    /// ACME account email (mailto contact for Let's Encrypt)
+    #[arg(long, value_name = "EMAIL")]
+    pub acme_email: Option<String>,
+
+    /// ACME cache directory (default system cache)
+    #[arg(long, value_name = "DIR")]
+    pub acme_cache: Option<PathBuf>,
+
+    /// Use Let's Encrypt production (default staging, safe against rate limits)
+    #[arg(long)]
+    pub acme_production: bool,
+
     /// Print the JSON Schema of the settings file instead
     #[arg(long)]
     pub schema: bool,

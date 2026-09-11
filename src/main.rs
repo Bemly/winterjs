@@ -1,5 +1,6 @@
 #![allow(non_upper_case_globals, non_camel_case_types, non_snake_case)]
 
+mod acme;
 mod alloc;
 mod builtins;
 mod cli;
@@ -229,6 +230,27 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
     if let Some(dir) = cli.serve {
         // `--serve` 裸 flag 走 default_missing_value(".")；`--dir` 显式给则覆盖
         let dir = if dir != "." { std::path::PathBuf::from(dir) } else { cli.dir };
+        // ACME 自动证书（与 --cert/--key 互斥；--dry-run 只校验打印，见 acme）。
+        let acme = acme::AcmeOpts {
+            domain: cli.acme_domain,
+            email: cli.acme_email,
+            cache_dir: cli.acme_cache,
+            production: cli.acme_production,
+        };
+        if acme.enabled() {
+            if cli.cert.is_some() || cli.key.is_some() {
+                return Err(Error::Other("--acme-* cannot be combined with --cert/--key".into()));
+            }
+            if cli.dry_run {
+                let root = acme::cache_root(acme.cache_dir.as_deref())?;
+                println!("acme dry-run: domain={} email={} directory={} cache={}",
+                    acme.effective_domain(),
+                    acme.email.as_deref().unwrap_or("(none)"),
+                    acme.directory_url(),
+                    root.display());
+                return Ok(());
+            }
+        }
         return serve::serve(&serve::ServeOpts {
             dir,
             host: cli.host,
@@ -236,6 +258,7 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             limit_rps: cli.limit_rps,
             cert: cli.cert,
             key: cli.key,
+            acme: Some(acme).filter(|a| a.enabled()),
         })
         .await;
     }

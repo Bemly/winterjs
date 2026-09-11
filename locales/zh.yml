@@ -97,6 +97,17 @@ arg:
   key:
     help: "TLS 私钥（PEM，必须与 --cert 同给）"
     value: "密钥"
+  acme_domain:
+    help: "ACME 自动证书域名（默认 winterjs.bemly.moe；需配 --acme-email）"
+    value: "域名"
+  acme_email:
+    help: "ACME 账户邮箱（Let's Encrypt 的 mailto 联系人）"
+    value: "邮箱"
+  acme_cache:
+    help: "ACME 缓存目录（默认系统缓存）"
+    value: "目录"
+  acme_production:
+    help: "用 Let's Encrypt 生产环境（默认 staging，防限流误触）"
   schema:
     help: "改为打印配置文件的 JSON Schema"
   allow_read:

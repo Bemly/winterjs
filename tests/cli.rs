@@ -760,14 +760,13 @@ fn phase3_ecdh_derive_and_key() {
 
 #[test]
 fn phase3_asymmetric_errors() {
-    // RSA-PSS/Ed25519 明确顺延；坏曲线/错用途/非私钥 derive 进报错面。
+    // c-4x 已收官：RSA-PSS 可生成（详见 subtle_c4x_*）；坏曲线/错用途/非私钥 derive 进报错面。
     let out = winterjs()
-        .args(["--eval", r#"await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign"])"#])
+        .args(["--eval", r#"const k = await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign"]); console.log(k.publicKey.algorithm.name);"#])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("NotSupportedError"), "stderr: {stderr}");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "RSA-PSS\n");
     let out = winterjs()
         .args(["--eval", r#"await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-192" }, true, ["sign"])"#])
         .output()

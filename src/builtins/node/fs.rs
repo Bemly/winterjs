@@ -18,6 +18,7 @@ pub fn io_code(e: &std::io::Error) -> &'static str {
         return match errno {
             1 => "EPERM",
             2 => "ENOENT",
+            9 => "EBADF",
             13 => "EACCES",
             17 => "EEXIST",
             18 => "EXDEV",
@@ -252,7 +253,28 @@ fn stat_json(md: &std::fs::Metadata, path: &str) -> String {
     #[cfg(not(unix))]
     let mode = if md.is_dir() { 0o777 } else { 0o666 };
     let _ = path;
-    serde_json::json!({
+    // 9c: unix 元字段（MetadataExt/FileTypeExt 全 std；非 unix 归零记档）
+    #[cfg(unix)]
+    let extra = {
+        use std::os::unix::fs::FileTypeExt as _;
+        use std::os::unix::fs::MetadataExt as _;
+        serde_json::json!({
+            "dev": md.dev(), "ino": md.ino(), "nlink": md.nlink(),
+            "uid": md.uid(), "gid": md.gid(), "rdev": md.rdev(),
+            "blksize": md.blksize(), "blocks": md.blocks(),
+            "isFifo": md.file_type().is_fifo(),
+            "isSocket": md.file_type().is_socket(),
+            "isBlock": md.file_type().is_block_device(),
+            "isChar": md.file_type().is_char_device(),
+        })
+    };
+    #[cfg(not(unix))]
+    let extra = serde_json::json!({
+        "dev": 0, "ino": 0, "nlink": 1, "uid": 0, "gid": 0, "rdev": 0,
+        "blksize": 4096, "blocks": 0,
+        "isFifo": false, "isSocket": false, "isBlock": false, "isChar": false,
+    });
+    let mut v = serde_json::json!({
         "size": md.len(),
         "mtimeMs": ms(md.modified()),
         "atimeMs": ms(md.accessed()),
@@ -261,8 +283,13 @@ fn stat_json(md: &std::fs::Metadata, path: &str) -> String {
         "isDirectory": md.is_dir(),
         "isSymlink": md.is_symlink(),
         "mode": mode,
-    })
-    .to_string()
+    });
+    if let Some(obj) = extra.as_object() {
+        for (k, val) in obj {
+            v[k.as_str()] = val.clone();
+        }
+    }
+    v.to_string()
 }
 
 /// `__wjs_fs_stat(path, followLinksBool)` → 元 JSON（stat/lstat 由 prelude 分流）。
@@ -564,6 +591,587 @@ pub unsafe extern "C" fn fs_mkdtemp(
     }
     report_error(&mut cx, "OperationError: mkdtemp failed (collisions)");
     false
+}
+
+// ── Phase 9c：同步面增补（fd 表 + link/symlink/readlink/truncate/utimes/chmod/
+// access/open/close/read/write/fstat/fchmod/futimes/fsync）——全 std，无新 crate
+//（dependencies2.md §9c 口径：fs-err + std + tokio fs）。
+// 记档偏差：fd 为本运行时合成号（自 3 起单调，不复用最小号）；access 的 X_OK
+// 近似为 mode 搜索位判定；write with O_APPEND 走 cursor 写。
+
+/// fd 表（合成 fd → File；进程级静态，进程退出由 OS 回收，§4.8 同口径）。
+fn fd_table() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<i32, std::fs::File>> {
+    static TABLE: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<i32, std::fs::File>>> =
+        std::sync::OnceLock::new();
+    TABLE
+        .get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
+        .lock()
+        .unwrap()
+}
+
+static FD_NEXT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(3);
+
+fn fd_num(cx: &mut mozjs::context::JSContext, frame: &Frame, i: u32, what: &str) -> Option<i32> {
+    if frame.argc() <= i {
+        report_error(cx, &format!("TypeError: {what} needs a file descriptor"));
+        return None;
+    }
+    let v = frame.arg(i);
+    if !v.is_number() {
+        report_error(cx, &format!("TypeError: {what}: fd must be a number"));
+        return None;
+    }
+    Some(v.to_number() as i32)
+}
+
+/// 数字实参（可选，缺省回默认值）。
+fn opt_f64(frame: &Frame, i: u32) -> Option<f64> {
+    let v = frame.arg(i);
+    if v.is_number() { Some(v.to_number()) } else { None }
+}
+
+fn bad_fd(cx: &mut mozjs::context::JSContext, syscall: &str) {
+    report_error(cx, &format!("EBADF: {syscall}: bad file descriptor"));
+}
+
+/// `__wjs_fs_read_link(path)` → 目标字符串。
+pub unsafe extern "C" fn fs_read_link(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "readlink", PermClass::Read) else {
+        return false;
+    };
+    match fs_err::read_link(&path) {
+        Ok(t) => {
+            set_rval_str(&mut cx, &frame, &t.to_string_lossy());
+            true
+        }
+        Err(e) => {
+            report_io(&mut cx, "readlink", &path, e);
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_link(src, dst)` → 硬链接。
+pub unsafe extern "C" fn fs_link(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(src) = arg_path_checked(&mut cx, &frame, 0, "link", PermClass::Read) else {
+        return false;
+    };
+    let Some(dst) = arg_path_checked(&mut cx, &frame, 1, "link", PermClass::Write) else {
+        return false;
+    };
+    match fs_err::hard_link(&src, &dst) {
+        Ok(()) => true,
+        Err(e) => {
+            report_io(&mut cx, "link", &dst, e);
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_symlink(target, path)` → 符号链接（type 参数 unix 忽略，Node 同款）。
+pub unsafe extern "C" fn fs_symlink(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(target) = arg_path(&mut cx, &frame, 0, "symlink") else {
+        return false;
+    };
+    let Some(path) = arg_path_checked(&mut cx, &frame, 1, "symlink", PermClass::Write) else {
+        return false;
+    };
+    match std::os::unix::fs::symlink(&target, &path) {
+        Ok(()) => true,
+        Err(e) => {
+            report_io(&mut cx, "symlink", &path, e);
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_truncate(path, len)` → 截断到 len（缺省 0）。
+pub unsafe extern "C" fn fs_truncate(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "truncate", PermClass::Write) else {
+        return false;
+    };
+    let len = opt_f64(&frame, 1).unwrap_or(0.0).max(0.0) as u64;
+    let open = std::fs::OpenOptions::new().write(true).open(&path);
+    match open {
+        Ok(f) => match f.set_len(len) {
+            Ok(()) => true,
+            Err(e) => {
+                report_io(&mut cx, "truncate", &path, e);
+                false
+            }
+        },
+        Err(e) => {
+            report_io(&mut cx, "open", &path, e);
+            false
+        }
+    }
+}
+
+fn ms_to_system_time(ms: f64) -> std::time::SystemTime {
+    use std::time::{Duration, UNIX_EPOCH};
+    if ms <= 0.0 {
+        UNIX_EPOCH
+    } else {
+        UNIX_EPOCH + Duration::from_secs_f64(ms / 1000.0)
+    }
+}
+
+/// `__wjs_fs_utimes(path, atimeMs, mtimeMs)` → File::set_times（std 1.75+）。
+pub unsafe extern "C" fn fs_utimes(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "utimes", PermClass::Write) else {
+        return false;
+    };
+    let atime = opt_f64(&frame, 1).unwrap_or(0.0);
+    let mtime = opt_f64(&frame, 2).unwrap_or(atime);
+    let open = std::fs::OpenOptions::new().write(true).open(&path);
+    match open {
+        Ok(f) => {
+            let times = std::fs::FileTimes::new()
+                .set_accessed(ms_to_system_time(atime))
+                .set_modified(ms_to_system_time(mtime));
+            match f.set_times(times) {
+                Ok(()) => true,
+                Err(e) => {
+                    report_io(&mut cx, "utimes", &path, e);
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            report_io(&mut cx, "open", &path, e);
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_chmod(path, mode)` → set_permissions（PermissionsExt mode 位）。
+pub unsafe extern "C" fn fs_chmod(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "chmod", PermClass::Write) else {
+        return false;
+    };
+    let mode = opt_f64(&frame, 1).unwrap_or(0o644 as f64) as u32;
+    match fs_err::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(mode)) {
+        Ok(()) => true,
+        Err(e) => {
+            report_io(&mut cx, "chmod", &path, e);
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_access(path, mode)` → 可达性判定（X_OK 近似 mode 搜索位，记档）。
+pub unsafe extern "C" fn fs_access(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "access", PermClass::Read) else {
+        return false;
+    };
+    let mode = opt_f64(&frame, 1).unwrap_or(0.0) as i32;
+    let md = match fs_err::metadata(&path) {
+        Ok(m) => m,
+        Err(e) => {
+            report_io(&mut cx, "access", &path, e);
+            return false;
+        }
+    };
+    // R_OK/W_OK：试探打开（不创建），PermissionDenied 即 EACCES
+    if mode & 4 != 0 {
+        if let Err(e) = std::fs::OpenOptions::new().read(true).open(&path) {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                report_error(&mut cx, &format!("EACCES: access '{path}': permission denied"));
+                return false;
+            }
+        }
+    }
+    if mode & 2 != 0 {
+        if let Err(e) = std::fs::OpenOptions::new().write(true).open(&path) {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                report_error(&mut cx, &format!("EACCES: access '{path}': permission denied"));
+                return false;
+            }
+        }
+    }
+    if mode & 1 != 0 {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            if md.permissions().mode() & 0o111 == 0 {
+                report_error(&mut cx, &format!("EACCES: access '{path}': permission denied"));
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// open flags JSON：{read,write,append,truncate,create,createNew}（JS 层解析 flags 字符串）。
+#[derive(serde::Deserialize)]
+struct OpenFlags {
+    #[serde(default)]
+    read: bool,
+    #[serde(default)]
+    write: bool,
+    #[serde(default)]
+    append: bool,
+    #[serde(default)]
+    truncate: bool,
+    #[serde(default)]
+    create: bool,
+    #[serde(default, rename = "createNew")]
+    create_new: bool,
+}
+
+/// `__wjs_fs_open(path, flagsJson)` → 合成 fd。
+pub unsafe extern "C" fn fs_open(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(path) = arg_path(&mut cx, &frame, 0, "open") else {
+        return false;
+    };
+    let flags_s = value_to_string(&mut cx, frame.arg(1));
+    let Ok(flags) = serde_json::from_str::<OpenFlags>(&flags_s) else {
+        report_error(&mut cx, "TypeError: open: bad flags JSON");
+        return false;
+    };
+    // 权限口径：读意图 check_read、写意图 check_write（读写双开则双查）
+    if flags.read {
+        if let Err(msg) = crate::permissions::check_read(&path) {
+            report_error(&mut cx, &msg);
+            return false;
+        }
+    }
+    if flags.write || flags.append {
+        if let Err(msg) = crate::permissions::check_write(&path) {
+            report_error(&mut cx, &msg);
+            return false;
+        }
+    }
+    let mut o = std::fs::OpenOptions::new();
+    o.read(flags.read);
+    o.write(flags.write || flags.append);
+    o.append(flags.append);
+    if flags.truncate && !flags.append {
+        o.truncate(true);
+    }
+    if flags.create {
+        o.create(true);
+    }
+    if flags.create_new {
+        o.create_new(true);
+    }
+    match o.open(&path) {
+        Ok(f) => {
+            let fd = FD_NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            fd_table().insert(fd, f);
+            set_rval_str(&mut cx, &frame, &fd.to_string());
+            true
+        }
+        Err(e) => {
+            report_io(&mut cx, "open", &path, e);
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_close(fd)`。
+pub unsafe extern "C" fn fs_close(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(fd) = fd_num(&mut cx, &frame, 0, "close") else {
+        return false;
+    };
+    match fd_table().remove(&fd) {
+        Some(_) => true,
+        None => {
+            bad_fd(&mut cx, "close");
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_read_fd(fd, length, positionMs)` → Uint8Array（新视图；position -1 = cursor）。
+pub unsafe extern "C" fn fs_read_fd(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(fd) = fd_num(&mut cx, &frame, 0, "read") else {
+        return false;
+    };
+    let length = opt_f64(&frame, 1).unwrap_or(0.0).max(0.0) as usize;
+    let position = opt_f64(&frame, 2).map(|p| p.max(-1.0) as i64);
+    let mut buf = vec![0u8; length];
+    {
+        let mut table = fd_table();
+        let Some(f) = table.get_mut(&fd) else {
+            bad_fd(&mut cx, "read");
+            return false;
+        };
+        use std::io::Read as _;
+        let n = match position {
+            Some(p) if p >= 0 => {
+                // pread 语义：不动 cursor（unix read_at；记档：windows seek_read）
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::FileExt as _;
+                    f.read_at(&mut buf, p as u64)
+                }
+                #[cfg(not(unix))]
+                {
+                    use std::io::Seek as _;
+                    let _ = f.seek(std::io::SeekFrom::Start(p as u64));
+                    f.read(&mut buf)
+                }
+            }
+            _ => f.read(&mut buf),
+        };
+        match n {
+            Ok(n) => {
+                buf.truncate(n);
+            }
+            Err(e) => {
+                report_io(&mut cx, "read", "", e);
+                return false;
+            }
+        }
+    }
+    set_rval_bytes(&mut cx, &frame, &buf)
+}
+
+/// `__wjs_fs_write_fd(fd, dataBytes, positionMs)` → 写入字节数（position -1 = cursor）。
+pub unsafe extern "C" fn fs_write_fd(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(fd) = fd_num(&mut cx, &frame, 0, "write") else {
+        return false;
+    };
+    let Some(data) = arg_bytes(&mut cx, &frame, 1, "write") else {
+        return false;
+    };
+    let position = opt_f64(&frame, 2).map(|p| p.max(-1.0) as i64);
+    let mut table = fd_table();
+    let Some(f) = table.get_mut(&fd) else {
+        bad_fd(&mut cx, "write");
+        return false;
+    };
+    use std::io::Write as _;
+    let n = match position {
+        Some(p) if p >= 0 => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileExt as _;
+                f.write_at(&data, p as u64)
+            }
+            #[cfg(not(unix))]
+            {
+                use std::io::Seek as _;
+                let _ = f.seek(std::io::SeekFrom::Start(p as u64));
+                f.write(&data)
+            }
+        }
+        _ => f.write(&data),
+    };
+    match n {
+        Ok(n) => {
+            set_rval_str(&mut cx, &frame, &n.to_string());
+            true
+        }
+        Err(e) => {
+            report_io(&mut cx, "write", "", e);
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_ftruncate(fd, len)`。
+pub unsafe extern "C" fn fs_ftruncate(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(fd) = fd_num(&mut cx, &frame, 0, "ftruncate") else {
+        return false;
+    };
+    let len = opt_f64(&frame, 1).unwrap_or(0.0).max(0.0) as u64;
+    let mut table = fd_table();
+    let Some(f) = table.get_mut(&fd) else {
+        bad_fd(&mut cx, "ftruncate");
+        return false;
+    };
+    match f.set_len(len) {
+        Ok(()) => true,
+        Err(e) => {
+            report_io(&mut cx, "ftruncate", "", e);
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_fstat(fd)` → 元 JSON（stat_json 复用）。
+pub unsafe extern "C" fn fs_fstat(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(fd) = fd_num(&mut cx, &frame, 0, "fstat") else {
+        return false;
+    };
+    let table = fd_table();
+    let Some(f) = table.get(&fd) else {
+        bad_fd(&mut cx, "fstat");
+        return false;
+    };
+    match f.metadata() {
+        Ok(md) => {
+            set_rval_str(&mut cx, &frame, &stat_json(&md, ""));
+            true
+        }
+        Err(e) => {
+            report_io(&mut cx, "fstat", "", e);
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_fchmod(fd, mode)` → File::set_permissions。
+pub unsafe extern "C" fn fs_fchmod(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(fd) = fd_num(&mut cx, &frame, 0, "fchmod") else {
+        return false;
+    };
+    let mode = opt_f64(&frame, 1).unwrap_or(0o644 as f64) as u32;
+    let mut table = fd_table();
+    let Some(f) = table.get_mut(&fd) else {
+        bad_fd(&mut cx, "fchmod");
+        return false;
+    };
+    match f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(mode)) {
+        Ok(()) => true,
+        Err(e) => {
+            report_io(&mut cx, "fchmod", "", e);
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_futimes(fd, atimeMs, mtimeMs)` → File::set_times。
+pub unsafe extern "C" fn fs_futimes(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(fd) = fd_num(&mut cx, &frame, 0, "futimes") else {
+        return false;
+    };
+    let atime = opt_f64(&frame, 1).unwrap_or(0.0);
+    let mtime = opt_f64(&frame, 2).unwrap_or(atime);
+    let mut table = fd_table();
+    let Some(f) = table.get_mut(&fd) else {
+        bad_fd(&mut cx, "futimes");
+        return false;
+    };
+    let times = std::fs::FileTimes::new()
+        .set_accessed(ms_to_system_time(atime))
+        .set_modified(ms_to_system_time(mtime));
+    match f.set_times(times) {
+        Ok(()) => true,
+        Err(e) => {
+            report_io(&mut cx, "futimes", "", e);
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_fsync(fd, datasyncBool)` → sync_all/sync_data。
+pub unsafe extern "C" fn fs_fsync(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(fd) = fd_num(&mut cx, &frame, 0, "fsync") else {
+        return false;
+    };
+    let datasync = frame.argc() > 1 && frame.arg(1).to_boolean();
+    let mut table = fd_table();
+    let Some(f) = table.get_mut(&fd) else {
+        bad_fd(&mut cx, "fsync");
+        return false;
+    };
+    let r = if datasync { f.sync_data() } else { f.sync_all() };
+    match r {
+        Ok(()) => true,
+        Err(e) => {
+            report_io(&mut cx, "fsync", "", e);
+            false
+        }
+    }
 }
 
 // ── fs.watch（`notify` 线程 → 防抖线程 → 事件循环；300ms 静默窗，与 test --watch 同值）
@@ -891,6 +1499,8 @@ mod tests {
             io_code(&std::io::Error::from_raw_os_error(39)),
             "ENOTEMPTY"
         );
+        // 9c：fd 系读写路径报错面（EBADF）
+        assert_eq!(io_code(&std::io::Error::from_raw_os_error(9)), "EBADF");
         assert_eq!(io_code(&std::io::Error::from_raw_os_error(9999)), "UNKNOWN");
     }
 }
@@ -955,25 +1565,39 @@ function __fsDecode(bytes, encoding, what) {
 }
 class __Stats {
   constructor(j) {
-    this.size = j.size;
-    this.mtimeMs = j.mtimeMs;
-    this.atimeMs = j.atimeMs;
-    this.birthtimeMs = j.birthtimeMs;
+    this.dev = j.dev ?? 0;
+    this.ino = j.ino ?? 0;
     this.mode = j.mode;
+    this.nlink = j.nlink ?? 1;
+    this.uid = j.uid ?? 0;
+    this.gid = j.gid ?? 0;
+    this.rdev = j.rdev ?? 0;
+    this.size = j.size;
+    this.blksize = j.blksize ?? 4096;
+    this.blocks = j.blocks ?? 0;
+    this.atimeMs = j.atimeMs;
+    this.mtimeMs = j.mtimeMs;
+    this.ctimeMs = j.mtimeMs;
+    this.birthtimeMs = j.birthtimeMs;
+    this.atime = new Date(j.atimeMs);
+    this.mtime = new Date(j.mtimeMs);
+    this.ctime = new Date(j.mtimeMs);
+    this.birthtime = new Date(j.birthtimeMs);
     this.__f = j.isFile;
     this.__d = j.isDirectory;
     this.__l = j.isSymlink;
-    this.mtime = new Date(j.mtimeMs);
-    this.atime = new Date(j.atimeMs);
-    this.birthtime = new Date(j.birthtimeMs);
+    this.__fifo = j.isFifo;
+    this.__sock = j.isSocket;
+    this.__blk = j.isBlock;
+    this.__chr = j.isChar;
   }
   isFile() { return this.__f; }
   isDirectory() { return this.__d; }
   isSymbolicLink() { return this.__l; }
-  isBlockDevice() { return false; }
-  isCharacterDevice() { return false; }
-  isFIFO() { return false; }
-  isSocket() { return false; }
+  isFIFO() { return !!this.__fifo; }
+  isSocket() { return !!this.__sock; }
+  isBlockDevice() { return !!this.__blk; }
+  isCharacterDevice() { return !!this.__chr; }
 }
 class __Dirent {
   constructor(name, isDir, isFile, isLink) {
@@ -990,14 +1614,73 @@ class __Dirent {
   isFIFO() { return false; }
   isSocket() { return false; }
 }
+// flags 字符串 → OpenFlags JSON（Node 口径子集；`s` 后缀忽略；数字只认本运行时
+// constants 暴露的位值，O_CREAT/O_EXCL/O_TRUNC/O_APPEND 用 Linux 位值，记档）。
+function __fsFlags(flag, what) {
+  if (typeof flag === "number") {
+    const rd = (flag & 3) !== 1;
+    const wr = (flag & 3) !== 0;
+    return JSON.stringify({
+      read: rd, write: wr, append: (flag & 1024) !== 0,
+      truncate: (flag & 512) !== 0, create: (flag & 64) !== 0, createNew: (flag & 128) !== 0,
+    });
+  }
+  let f = String(flag ?? "r").replace(/s/g, "");
+  const base = {
+    r: { read: true },
+    "r+": { read: true, write: true },
+    w: { write: true, truncate: true, create: true },
+    "w+": { read: true, write: true, truncate: true, create: true },
+    a: { write: true, append: true, create: true },
+    "a+": { read: true, write: true, append: true, create: true },
+    wx: { write: true, truncate: true, createNew: true },
+    "wx+": { read: true, write: true, truncate: true, createNew: true },
+    ax: { write: true, append: true, createNew: true },
+    "ax+": { read: true, write: true, append: true, createNew: true },
+  };
+  if (!base[f]) throw new TypeError(`${what}: invalid flag '${flag}'`);
+  return JSON.stringify(base[f]);
+}
+function __fsReadWhole(p, flag) {
+  if (flag === undefined || flag === "r") return __wjs_fs_read_file(p);
+  const fd = __wjs_fs_open(p, __fsFlags(flag, "readFile"));
+  try {
+    const parts = [];
+    while (true) {
+      const chunk = __wjs_fs_read_fd(fd, 1 << 20, -1);
+      if (chunk.length === 0) break;
+      parts.push(chunk);
+    }
+    const out = new Uint8Array(parts.reduce((a, c) => a + c.length, 0));
+    let off = 0;
+    for (const c of parts) { out.set(c, off); off += c.length; }
+    return out;
+  } finally {
+    __wjs_fs_close(fd);
+  }
+}
 export function readFileSync(p, opts) {
   p = __fsPath(p, "readFile");
   const enc = __fsEncoding(opts);
-  return __fsCall("open", p, () => __fsDecode(__wjs_fs_read_file(p), enc, "readFile"));
+  const flag = opts && typeof opts === "object" ? opts.flag : undefined;
+  return __fsCall("open", p, () => __fsDecode(__fsReadWhole(p, flag), enc, "readFile"));
 }
 export function writeFileSync(p, data, opts) {
   p = __fsPath(p, "writeFile");
-  __fsCall("open", p, () => __wjs_fs_write_file(p, __fsData(data, "writeFile"), __fsMode(opts)));
+  const flag = opts && typeof opts === "object" ? opts.flag : undefined;
+  const bytes = __fsData(data, "writeFile");
+  __fsCall("open", p, () => {
+    if (flag === undefined || flag === "w") {
+      __wjs_fs_write_file(p, bytes, __fsMode(opts));
+      return;
+    }
+    const fd = __wjs_fs_open(p, __fsFlags(flag, "writeFile"));
+    try { __wjs_fs_write_fd(fd, bytes, flag.startsWith("a") ? -1 : 0); }
+    finally { __wjs_fs_close(fd); }
+  });
+  // mode 语义：仅新建文件时应用（存在性预判，记档近似）
+  const mode = __fsMode(opts);
+  if (mode > 0 && !existsSync(p)) chmodSync(p, mode);
 }
 export function appendFileSync(p, data, opts) {
   p = __fsPath(p, "appendFile");
@@ -1063,6 +1746,7 @@ export function mkdtempSync(prefix) {
   return __fsCall("mkdir", String(prefix), () => __wjs_fs_mkdtemp(String(prefix)));
 }
 export const constants = {
+  F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
   O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2, O_CREAT: 64, O_EXCL: 128, O_TRUNC: 512, O_APPEND: 1024,
   S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFLNK: 40960,
   COPYFILE_EXCL: 1, COPYFILE_FICLONE: 2, COPYFILE_FICLONE_FORCE: 4,
@@ -1127,27 +1811,363 @@ export function createWriteStream(p, opts) {
     },
   });
 }
-const __api = { readFileSync, writeFileSync, appendFileSync, statSync, lstatSync, existsSync, mkdirSync, rmSync, rmdirSync, unlinkSync, readdirSync, renameSync, copyFileSync, realpathSync, mkdtempSync, watch, constants, createReadStream, createWriteStream };
+// ---- Phase 9c：同步面增补（link 系/时间戳/权限/access/fd 系/cp/opendir）----
+function __fsTimeMs(t, what) {
+  if (t instanceof Date) return t.getTime();
+  if (typeof t === "number") return t;
+  if (typeof t === "string") { const n = Number(t); if (Number.isFinite(n)) return n; }
+  throw new TypeError(`${what}: time must be a number, string or Date`);
+}
+function __fsModeNum(mode) {
+  if (typeof mode === "string") {
+    const n = parseInt(mode, 8);
+    if (!Number.isInteger(n) || n < 0) throw new TypeError("chmod: invalid mode");
+    return n;
+  }
+  const n = Number(mode);
+  if (!Number.isInteger(n) || n < 0) throw new TypeError("chmod: mode must be an integer");
+  return n;
+}
+export function accessSync(p, mode = 0) {
+  p = __fsPath(p, "access");
+  __fsCall("access", p, () => __wjs_fs_access(p, mode));
+}
+export function truncateSync(p, len) {
+  p = __fsPath(p, "truncate");
+  __fsCall("truncate", p, () => __wjs_fs_truncate(p, len ?? 0));
+}
+export function utimesSync(p, atime, mtime) {
+  p = __fsPath(p, "utimes");
+  __fsCall("utimes", p, () => __wjs_fs_utimes(p, __fsTimeMs(atime, "utimes"), __fsTimeMs(mtime, "utimes")));
+}
+export function chmodSync(p, mode) {
+  p = __fsPath(p, "chmod");
+  __fsCall("chmod", p, () => __wjs_fs_chmod(p, __fsModeNum(mode)));
+}
+export function linkSync(a, b) {
+  a = __fsPath(a, "link");
+  b = __fsPath(b, "link");
+  __fsCall("link", a, () => __wjs_fs_link(a, b));
+}
+export function symlinkSync(target, p) {
+  target = __fsPath(target, "symlink");
+  p = __fsPath(p, "symlink");
+  __fsCall("symlink", p, () => __wjs_fs_symlink(target, p));
+}
+export function readlinkSync(p) {
+  p = __fsPath(p, "readlink");
+  return __fsCall("readlink", p, () => __wjs_fs_read_link(p));
+}
+export function cpSync(src, dst, opts = {}) {
+  src = __fsPath(src, "cp");
+  dst = __fsPath(dst, "cp");
+  const force = opts.force ?? true;
+  const errorOnExist = opts.errorOnExist ?? false;
+  const recursive = opts.recursive ?? false;
+  const st = statSync(src);
+  if (st.isDirectory()) {
+    if (!recursive) throw new Error(`ERR_FS_EISDIR: cp '${src}': is a directory (recursive required)`);
+    __fsCall("cp", dst, () => __wjs_fs_mkdir(dst, true));
+    for (const e of readdirSync(src, { withFileTypes: true })) {
+      cpSync(src.replace(/\/$/, "") + "/" + e.name, dst.replace(/\/$/, "") + "/" + e.name, opts);
+    }
+    return;
+  }
+  if (existsSync(dst)) {
+    if (errorOnExist) __fsErr(new Error("EEXIST: file already exists"), "cp", dst);
+    if (!force) return;
+  }
+  __fsCall("copyfile", src, () => __wjs_fs_copy_file(src, dst));
+}
+// fd 系（openSync 合成 fd，自 3 起单调，不复用最小号，记档）
+export function openSync(p, flags, mode) {
+  p = __fsPath(p, "open");
+  return __fsCall("open", p, () => Number(__wjs_fs_open(p, __fsFlags(flags, "open"))));
+}
+export function closeSync(fd) {
+  __fsCall("close", "", () => __wjs_fs_close(fd));
+}
+export function readSync(fd, buffer, offset, length, position) {
+  offset ??= 0;
+  length ??= buffer.length - offset;
+  const chunk = __fsCall("read", "", () =>
+    __wjs_fs_read_fd(fd, length, typeof position === "number" ? position : -1));
+  buffer.set(chunk, offset);
+  return chunk.length;
+}
+export function writeSync(fd, buffer, offset, length, position) {
+  let data;
+  let pos = -1;
+  if (typeof buffer === "string") {
+    pos = typeof offset === "number" ? offset : -1;
+    data = __fsData(buffer, "write");
+  } else {
+    offset ??= 0;
+    const u8 = __fsData(buffer, "write");
+    length ??= u8.length - offset;
+    data = u8.subarray(offset, offset + length);
+    pos = typeof position === "number" ? position : -1;
+  }
+  return __fsCall("write", "", () => __wjs_fs_write_fd(fd, data, pos));
+}
+export function ftruncateSync(fd, len) {
+  __fsCall("ftruncate", "", () => __wjs_fs_ftruncate(fd, len ?? 0));
+}
+export function fsyncSync(fd) {
+  __fsCall("fsync", "", () => __wjs_fs_fsync(fd, false));
+}
+export function fdatasyncSync(fd) {
+  __fsCall("fsync", "", () => __wjs_fs_fsync(fd, true));
+}
+export function fstatSync(fd) {
+  return new __Stats(JSON.parse(__fsCall("fstat", "", () => __wjs_fs_fstat(fd))));
+}
+export function fchmodSync(fd, mode) {
+  __fsCall("fchmod", "", () => __wjs_fs_fchmod(fd, __fsModeNum(mode)));
+}
+export function futimesSync(fd, atime, mtime) {
+  __fsCall("futimes", "", () => __wjs_fs_futimes(fd, __fsTimeMs(atime, "futimes"), __fsTimeMs(mtime, "futimes")));
+}
+// ---- 9c：opendir / Dir（惰性游标，readdir 底座，记档非真流式）----
+export class Dir {
+  #entries;
+  #cursor = 0;
+  constructor(path) {
+    this.path = path;
+    this.#entries = readdirSync(path, { withFileTypes: true });
+  }
+  readSync() { return this.#cursor < this.#entries.length ? this.#entries[this.#cursor++] : null; }
+  read() { return Promise.resolve(this.readSync()); }
+  closeSync() {}
+  close() { return Promise.resolve(); }
+  [Symbol.iterator]() {
+    const self = this;
+    return {
+      next() {
+        const d = self.readSync();
+        return d === null ? { done: true } : { value: d, done: false };
+      },
+    };
+  }
+  [Symbol.asyncIterator]() {
+    const it = this[Symbol.iterator]();
+    return { next: (v) => Promise.resolve(it.next(v)) };
+  }
+}
+export function opendirSync(p) {
+  p = __fsPath(p, "opendir");
+  return __fsCall("opendir", p, () => new Dir(p));
+}
+// ---- 9c：FileHandle + fs.promises（promises 挂 node:fs 本体，fs/promises 反向
+// re-export 免环；底层同步实现，文档口径不变）----
+export class FileHandle {
+  constructor(fd) { this.fd = fd; }
+  close() {
+    const fd = this.fd;
+    return Promise.resolve().then(() => __fsCall("close", "", () => __wjs_fs_close(fd)));
+  }
+  read(buffer, offset, length, position) {
+    return Promise.resolve().then(() => readSync(this.fd, buffer, offset, length, position));
+  }
+  write(buffer, offset, length, position) {
+    return Promise.resolve().then(() => {
+      if (typeof buffer === "string") {
+        const n = writeSync(this.fd, buffer, offset);
+        return { bytesWritten: n, buffer };
+      }
+      const n = writeSync(this.fd, buffer, offset, length, position);
+      return { bytesWritten: n, buffer };
+    });
+  }
+  stat() { return Promise.resolve().then(() => fstatSync(this.fd)); }
+  truncate(len) { return Promise.resolve().then(() => ftruncateSync(this.fd, len ?? 0)); }
+  chmod(mode) { return Promise.resolve().then(() => fchmodSync(this.fd, mode)); }
+  utimes(atime, mtime) { return Promise.resolve().then(() => futimesSync(this.fd, atime, mtime)); }
+  sync() { return Promise.resolve().then(() => fsyncSync(this.fd)); }
+  datasync() { return Promise.resolve().then(() => fdatasyncSync(this.fd)); }
+  readFile(opts) {
+    return Promise.resolve().then(() => {
+      const enc = __fsEncoding(opts);
+      const parts = [];
+      while (true) {
+        const chunk = __fsCall("read", "", () => __wjs_fs_read_fd(this.fd, 1 << 20, -1));
+        if (chunk.length === 0) break;
+        parts.push(chunk);
+      }
+      const out = new Uint8Array(parts.reduce((a, c) => a + c.length, 0));
+      let off = 0;
+      for (const c of parts) { out.set(c, off); off += c.length; }
+      return __fsDecode(out, enc, "readFile");
+    });
+  }
+  writeFile(data) {
+    const bytes = __fsData(data, "writeFile");
+    return Promise.resolve().then(() => __fsCall("write", "", () => __wjs_fs_write_fd(this.fd, bytes, 0)));
+  }
+  appendFile(data) {
+    const bytes = __fsData(data, "appendFile");
+    return Promise.resolve().then(() => {
+      const size = fstatSync(this.fd).size;
+      __fsCall("write", "", () => __wjs_fs_write_fd(this.fd, bytes, size));
+    });
+  }
+}
+const __as = (fn) => function (...args) { return Promise.resolve().then(() => fn(...args)); };
+export const promises = {
+  access: __as(accessSync),
+  appendFile: __as(appendFileSync),
+  chmod: __as(chmodSync),
+  close: __as(closeSync),
+  constants,
+  copyFile: __as(copyFileSync),
+  cp: __as(cpSync),
+  FileHandle,
+  lstat: __as(lstatSync),
+  link: __as(linkSync),
+  mkdir: __as(mkdirSync),
+  mkdtemp: __as(mkdtempSync),
+  open: (...args) => Promise.resolve().then(() => new FileHandle(openSync(...args))),
+  opendir: __as(opendirSync),
+  readFile: __as(readFileSync),
+  readdir: __as(readdirSync),
+  readlink: __as(readlinkSync),
+  realpath: __as(realpathSync),
+  rename: __as(renameSync),
+  rm: __as(rmSync),
+  rmdir: __as(rmdirSync),
+  stat: __as(statSync),
+  symlink: __as(symlinkSync),
+  truncate: __as(truncateSync),
+  unlink: __as(unlinkSync),
+  utimes: __as(utimesSync),
+  writeFile: __as(writeFileSync),
+};
+// ---- 9c：回调全家（err-first；promise 底座经 queueMicrotask 派发）----
+function __nodeify(p, cb) {
+  if (typeof cb !== "function") throw new TypeError("Callback must be a function");
+  p.then(
+    (v) => queueMicrotask(() => cb(null, v)),
+    (e) => queueMicrotask(() => cb(e)),
+  );
+}
+const __cb1 = (syncFn, name, before) => function (...args) {
+  let cb = args[args.length - 1];
+  if (typeof cb !== "function") throw new TypeError(`fs.${name}: callback must be a function`);
+  const rest = args.slice(0, -1);
+  __nodeify(Promise.resolve().then(() => syncFn(...before(rest))), cb);
+};
+const __id = (a) => a;
+export const readFile = __cb1(readFileSync, "readFile", __id);
+export const writeFile = __cb1(writeFileSync, "writeFile", __id);
+export const appendFile = __cb1(appendFileSync, "appendFile", __id);
+export const stat = __cb1(statSync, "stat", __id);
+export const lstat = __cb1(lstatSync, "lstat", __id);
+export const mkdir = __cb1(mkdirSync, "mkdir", __id);
+export const rmdir = __cb1(rmdirSync, "rmdir", __id);
+export const rm = __cb1(rmSync, "rm", __id);
+export const unlink = __cb1(unlinkSync, "unlink", __id);
+export const readdir = __cb1(readdirSync, "readdir", __id);
+export const rename = __cb1(renameSync, "rename", __id);
+export const copyFile = __cb1(copyFileSync, "copyFile", __id);
+export const realpath = __cb1(realpathSync, "realpath", __id);
+export const mkdtemp = __cb1(mkdtempSync, "mkdtemp", __id);
+export const access = __cb1(accessSync, "access", __id);
+export const truncate = __cb1(truncateSync, "truncate", __id);
+export const utimes = __cb1(utimesSync, "utimes", __id);
+export const chmod = __cb1(chmodSync, "chmod", __id);
+export const link = __cb1(linkSync, "link", __id);
+export const symlink = __cb1(symlinkSync, "symlink", __id);
+export const readlink = __cb1(readlinkSync, "readlink", __id);
+export const opendir = __cb1(opendirSync, "opendir", __id);
+export const cp = __cb1(cpSync, "cp", __id);
+export const open = __cb1(openSync, "open", __id);
+export const close = __cb1(closeSync, "close", __id);
+export function exists(p, cb) {
+  if (typeof cb !== "function") throw new TypeError("fs.exists: callback must be a function");
+  queueMicrotask(() => cb(existsSync(p)));
+}
+export function read(fd, buffer, offset, length, position, cb) {
+  if (typeof position === "function") { cb = position; position = null; }
+  Promise.resolve().then(() => readSync(fd, buffer, offset, length, position))
+    .then(
+      (n) => queueMicrotask(() => cb(null, n, buffer)),
+      (e) => queueMicrotask(() => cb(e)),
+    );
+}
+export function write(fd, buffer, offset, length, position, cb) {
+  if (typeof buffer === "string") {
+    if (typeof offset === "function") { cb = offset; offset = null; }
+    else if (typeof length === "function") { cb = length; }
+    else if (typeof position === "function") { cb = position; }
+    const pos = typeof offset === "number" ? offset : null;
+    Promise.resolve().then(() => writeSync(fd, buffer, pos))
+      .then(
+        (n) => queueMicrotask(() => cb(null, n, buffer)),
+        (e) => queueMicrotask(() => cb(e)),
+      );
+    return;
+  }
+  if (typeof offset === "function") { cb = offset; offset = 0; length = undefined; position = null; }
+  else if (typeof length === "function") { cb = length; length = undefined; }
+  else if (typeof position === "function") { cb = position; position = null; }
+  Promise.resolve().then(() => writeSync(fd, buffer, offset ?? 0, length, position))
+    .then(
+      (n) => queueMicrotask(() => cb(null, n, buffer)),
+      (e) => queueMicrotask(() => cb(e)),
+    );
+}
+
+const __api = {
+  // 同步（Phase 4 基础面）
+  readFileSync, writeFileSync, appendFileSync, statSync, lstatSync, existsSync,
+  mkdirSync, rmSync, rmdirSync, unlinkSync, readdirSync, renameSync, copyFileSync,
+  realpathSync, mkdtempSync, watch, constants, createReadStream, createWriteStream,
+  // 同步（Phase 9c 增补）
+  accessSync, truncateSync, utimesSync, chmodSync, linkSync, symlinkSync, readlinkSync,
+  cpSync, opendirSync, openSync, closeSync, readSync, writeSync, ftruncateSync,
+  fstatSync, fchmodSync, futimesSync, fsyncSync, fdatasyncSync,
+  // 回调面（Phase 9c）
+  readFile, writeFile, appendFile, stat, lstat, exists, mkdir, rmdir, rm, unlink,
+  readdir, rename, copyFile, realpath, mkdtemp, access, truncate, utimes, chmod,
+  link, symlink, readlink, open, close, read, write, opendir, cp,
+  // 类 + promises
+  Stats: __Stats, Dirent: __Dirent, Dir, FileHandle, promises,
+};
 export default __api;
+export { __Stats as Stats, __Dirent as Dirent };
 "#;
 
 /// 内嵌 ESM 源（`node:fs/promises`；同步底层 async 包裹，见头注）。
 pub const PROMISES_SOURCE: &str = r#"
-import { readFileSync, writeFileSync, appendFileSync, statSync, lstatSync, mkdirSync, rmSync, rmdirSync, unlinkSync, readdirSync, renameSync, copyFileSync, realpathSync, mkdtempSync, constants } from "node:fs";
-export async function readFile(p, opts) { return readFileSync(p, opts); }
-export async function writeFile(p, data, opts) { return writeFileSync(p, data, opts); }
-export async function appendFile(p, data, opts) { return appendFileSync(p, data, opts); }
-export async function stat(p) { return statSync(p); }
-export async function lstat(p) { return lstatSync(p); }
-export async function mkdir(p, opts) { return mkdirSync(p, opts); }
-export async function rm(p, opts) { return rmSync(p, opts); }
-export async function rmdir(p, opts) { return rmdirSync(p, opts); }
-export async function unlink(p) { return unlinkSync(p); }
-export async function readdir(p, opts) { return readdirSync(p, opts); }
-export async function rename(a, b) { return renameSync(a, b); }
-export async function copyFile(src, dst) { return copyFileSync(src, dst); }
-export async function realpath(p) { return realpathSync(p); }
-export async function mkdtemp(prefix) { return mkdtempSync(prefix); }
-export { constants };
-export default { readFile, writeFile, appendFile, stat, lstat, mkdir, rm, rmdir, unlink, readdir, rename, copyFile, realpath, mkdtemp, constants };
+// node:fs/promises——re-export node:fs 本体的 promises 面（9c 起 promises 挂
+// node:fs，反向引用免环；default = promises 对象）。
+import fs from "node:fs";
+export const access = fs.promises.access;
+export const appendFile = fs.promises.appendFile;
+export const chmod = fs.promises.chmod;
+export const close = fs.promises.close;
+export const copyFile = fs.promises.copyFile;
+export const cp = fs.promises.cp;
+export const lstat = fs.promises.lstat;
+export const link = fs.promises.link;
+export const mkdir = fs.promises.mkdir;
+export const mkdtemp = fs.promises.mkdtemp;
+export const open = fs.promises.open;
+export const opendir = fs.promises.opendir;
+export const readFile = fs.promises.readFile;
+export const readdir = fs.promises.readdir;
+export const readlink = fs.promises.readlink;
+export const realpath = fs.promises.realpath;
+export const rename = fs.promises.rename;
+export const rm = fs.promises.rm;
+export const rmdir = fs.promises.rmdir;
+export const stat = fs.promises.stat;
+export const symlink = fs.promises.symlink;
+export const truncate = fs.promises.truncate;
+export const unlink = fs.promises.unlink;
+export const utimes = fs.promises.utimes;
+export const writeFile = fs.promises.writeFile;
+export const constants = fs.constants;
+export const FileHandle = fs.FileHandle;
+export default fs.promises;
 "#;

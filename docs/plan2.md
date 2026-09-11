@@ -103,5 +103,6 @@
 
 ## §4 v1 明确不做
 
-`wasi`、`v8` 口径、`sea`、napi、quic（轮子待定顺延）。
+`wasi`、`v8` 口径、`sea`、napi、quic（轮子已定：`quinn` 必选；
+引入与接线顺延到 9f，v1 不验收）。
 `cluster`/`domain`/`repl` 口径补齐顺延到 v1 之后（deno 侧 ❌ 的三项不列入验收）。

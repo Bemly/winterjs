@@ -406,7 +406,8 @@ git 附记（2026-09-10 实测）：`gix` 默认特性无网络客户端（`bloc
 `Cargo.toml` 移除（构建图不再含；§8 表格行保留备查）——`object_store` 只剩 fs 与
 `cache.rs` 重复、`russh` 被 git CLI 全覆盖、`keyring` 与 npm 明文口径冲突、
 `netstat2` 有 TOCTOU（见 plan Phase 5/6/8 尾“不再做”）；`cap-std`/`console-subscriber`
-保留（前者权限模型后续可用，后者 dev 手动 `RUSTFLAGS` 接）。
+保留（前者权限模型后续可用，已 `optional` 化经 `--features cap-std` 按需启用，
+默认零成本；后者 dev 手动 `RUSTFLAGS` 接，经 `--features tokio-console` 启用）。
 `oauth2`（publish 登录）/`sentry`（崩溃上报）已接线。
 npmrc 附记（2026-09-10 实测）：`rust-ini` 把 `:` 也当键值分隔符
 （`parse_str_until(&[Some('='), Some(':')])`），会从冒号处切断 npmrc 的

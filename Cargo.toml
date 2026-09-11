@@ -16,14 +16,18 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("ohos"))
 # aws-lc、bzip2(zip 0.5 默认 C)、zstd(C) 一律禁；config 的 yaml 经纯度审计已启用）。
 # 代码按 Phase 接线使用。
 
-# 本仓首个 cargo feature（2026-09-11）：`tokio-console` 按需启用 tokio-console 观测
-#（`dep:console-subscriber` + `tokio/tracing`）。默认关闭零成本；启用必须
-# `RUSTFLAGS="--cfg tokio_unstable" cargo build --features tokio-console`（tokio
-# 的实验埋点门控在该 cfg，不在 cargo feature 内；缺之编译期直接报错，见
-# docs/dependencies.md §10；实测上游 console 在运行时 assert 同一条）。
+# 本仓 cargo features（2026-09-11）：
+# - `tokio-console`：按需启用 tokio-console 观测（`dep:console-subscriber` + `tokio/tracing`）。
+#   默认关闭零成本；启用必须 `RUSTFLAGS="--cfg tokio_unstable" cargo build --features tokio-console`
+#  （tokio 的实验埋点门控在该 cfg，不在 cargo feature 内；缺之编译期直接报错，
+#   见 docs/dependencies.md §10；实测上游 console 在运行时 assert 同一条）。
+# - `cap-std`：按需启用能力化 fs 底座（`dep:cap-std`，权限模型后续可用）。
+#   默认关闭零成本；当前 `--allow-*` 走边界校验（`src/permissions.rs`），不依赖它，
+#   留作后期 Dir 化重构时启用（见 docs/dependencies.md §8）。
 [features]
 default = []
 tokio-console = ["dep:console-subscriber", "tokio/tracing"]
+cap-std = ["dep:cap-std"]
 
 [dependencies]
 # 铁律：mozjs 永远钉死精确版本，只跟随 servo 的 release 手动升级，
@@ -199,7 +203,7 @@ uuid = { version = "1", features = ["v4"] }
 dunce = "1"
 pathdiff = "0.2"
 normpath = "1"
-cap-std = "4"
+cap-std = { version = "4", optional = true }  # feature `cap-std` 按需启用，默认零成本（见顶部 [features]）
 which = "8"
 walkdir = "2"
 glob = "0.3"

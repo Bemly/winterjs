@@ -387,6 +387,9 @@ cargo build
   （大小写不敏感）成功响应改 `text/javascript`（Vite 对等），404 不动
   （`src/serve.rs` `rewrite_ts_mime` + `ts_family_js_mime`）。
 - 复现：`tests/cli.rs::phase6_serve_ts_mime_as_javascript`（修前 content-type 含 video）。
+- 取舍：扩展名本身有歧义（TypeScript 源码 vs MPEG-TS 视频，共用 `.ts`），静态服务器
+  从后缀无法知道作者意图——与 Vite 一样按 Web 开发上下文判 JS 源码。
+  真要服 MPEG-TS 视频请用 `.m2ts`/`.m2t` 后缀（同表，无歧义），不要用 `.ts`。
 
 ## 5. 路线图（按序）
 

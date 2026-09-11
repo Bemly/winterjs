@@ -4581,7 +4581,7 @@ try { qs.unescape("%E0%A4%A"); } catch (e) { console.log("catch-fallback"); }
     assert!(out.contains(r#"{"a":"1","b":["x y","2"],"c":""}"#), "out: {out}");
     assert!(out.contains("a=x%20y&b=1&b=2"), "out: {out}");
     assert!(out.contains("%C3%A4%20b ä+b"), "out: {out}");
-    assert!(out.contains(r#"{"a":"1"} {"a":"2"}"#) || out.contains(r#"{"a":"2"}"#), "out: {out}");
+    assert!(out.contains(r#"{"a":["1","2"]}"#), "out: {out}");
     assert!(out.contains("2"), "out: {out}");
     assert!(out.contains(r#"{"a":"%20"}"#), "out: {out}");
     assert!(out.contains("{} {}"), "out: {out}");

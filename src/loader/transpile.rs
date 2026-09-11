@@ -110,7 +110,16 @@ pub fn load_js(text: &str, filename: &str, path: &Path) -> Result<LoadedSource, 
 
 fn load_js_uncached(text: &str, filename: &str, path: &Path) -> Result<LoadedSource, Error> {
     let allocator = Allocator::default();
+    // 无扩展名入口（`type: module` 包的 extensionless bin）按 `.js` 解析；
+    // 模块/经典由调用方定（此处只定语法方言，`with_module(true)` 统一）。
     let source_type = SourceType::from_path(path)
+        .or_else(|_| {
+            if path.extension().is_none() {
+                SourceType::from_path("module.js")
+            } else {
+                SourceType::from_path(path)
+            }
+        })
         .map_err(|_| Error::Other(format!("unsupported module extension: {}", path.display())))?
         .with_module(true);
     let ret = Parser::new(&allocator, text, source_type).parse();

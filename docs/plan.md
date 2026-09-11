@@ -184,7 +184,9 @@
   续命）+ 异步 `spawn`（exit/close 双调 + kill + detached 组杀 unix）。
    `tests/cli.rs` 5 例；`cargo test` 89+10 全绿，0 警告。
 - [x] 顺延收官（2026-09-11，批1/批2）：`require` 读 package.json type
-  （module 一律 ERR_REQUIRE_ESM，其余强制 CJS）+ spawn pipe 流（stdin/out/err
+  （module 一律 ERR_REQUIRE_ESM，其余强制 CJS）+ 入口同口径（`type: module`
+  包的 extensionless bin 走模块，无扩展名按 `.js` 解析；无 type 即经典，
+  Node 口径）+ spawn pipe 流（stdin/out/err
   live 流，残留先达再 Exited）+ `before/after/beforeEach/afterEach` 钩子 +
   `--test-name-pattern` 名过滤 + `fs.watch` 共享防抖线程（kind 保留，300ms）+
   Buffer 全局（Uint8Array 子类，hex/b64/utf8 等）+ fs 流（createRead/WriteStream，
@@ -256,6 +258,15 @@
     project > home；cli/env 仍最高）+ token 按生效 registry 逐包透传 +
     lifecycle 加 `prepare`（发包事件不跑，无远端发布流程）。
     模块单测 +5（scope 精确/优先级/github 表）。
+  - [x] d5 可选依赖（2026-09-11）：`optionalDependencies` + `os`/`cpu` 平台过滤
+    （npm 口径：缺省全平台、`!` 排除、双字段都过；仅可选边可达记 optional，
+    必需边命中升级；求解/平台跳过静默，安装期失败 warn 跳过不记 lockfile）。
+    附带修真 bug（§4.29）：`dist-tags`/`optionalDependencies` 缺 rename 被
+    serde 静默丢弃——`pkg@latest` tag 安装一直是坏的，无报错；逐个显式改名 +
+    真实线名回归测试。模块 +9（platform 表/求解三态/线名）+ 黑盒 1
+    （仿 oxlint 形：命中装上/异平台跳过/packument 404 容忍/tarball 404 跳过/
+    .bin 可跑）。真 oxlint 1.82.0 实装验证：`--install oxlint` 只装
+    darwin-arm64 binding（余 19 平台跳过），见 Phase 8 真验证。
 - Phase 5 完工（2026-09-10；顺延 2026-09-11 收官）：install/dry-run/真装/缓存/
   lifecycle/续传/npmrc/git/publish 真 PUT/login（含 OAuth 交换）/upgrade 干跑，
   `cargo test` 全绿，0 警告，冒烟 5/5。
@@ -429,6 +440,12 @@
   新增 `Resolved::Npx` + `command_for`（.cmd 经 `cmd /C`，win 同路）。
   模块 5 + 黑盒 3（假 npx 验 `--yes oxlint@latest` 参数形 + 透传；真 npx e2e
   本机无 node 未覆盖，属 npx 自身行为）。
+- [x] 真验证（2026-09-11，GitHub apps_v1.82.0 standalone 实测）：`winterjs
+  --lint` → 真 oxlint（no-debugger/no-unused-vars 警告逐行透传）；
+  `--deny-warnings` exit=1 透传；`--fmt` 真写回（`const   x=1` → `const x = 1;`）。
+  边界书面记录：npm 版 oxlint 的 bin 是 JS + `.node`（napi），无 node 的机器跑
+  不了——standalone 二进制或 npx 环境二选一；`.node` 加载是 napi 级工程，
+  不在本次范围（`require('module')` 之类缺口同理，报可读错）。
 - [x] 切片 b（2026-09-11）：权限开关 `--allow-*`（`src/permissions.rs`，opt-in 沙箱：
   不传旗标行为不变（141 例存量黑盒零回归），传任一 `--allow-*`/`--allow-all` 即进沙箱，
   未授权类默认拒绝，错误 `PermissionError: ...`（可读、可 catch、fs/sqlite 包装层直通不转形）。

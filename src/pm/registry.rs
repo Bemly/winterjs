@@ -13,7 +13,9 @@ pub const DEFAULT_REGISTRY: &str = "https://registry.npmjs.org";
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct Packument {
     pub name: String,
-    #[serde(default)]
+    // npm 线名含 `-`/驼峰，serde 缺省按 Rust 名匹配会静默丢字段（`dist-tags`/
+    // `optionalDependencies` 曾因此全空：tag 安装与可选依赖双双失效，见 §4 记）。
+    #[serde(rename = "dist-tags", default)]
     pub dist_tags: HashMap<String, String>,
     #[serde(default)]
     pub versions: HashMap<String, VersionMeta>,
@@ -25,6 +27,14 @@ pub struct VersionMeta {
     pub dist: Dist,
     #[serde(default)]
     pub dependencies: HashMap<String, String>,
+    /// 可选依赖（失败容忍，见 `resolve`；oxlint 类平台二进制全在此列）。
+    #[serde(rename = "optionalDependencies", default)]
+    pub optional_dependencies: HashMap<String, String>,
+    /// 平台限定（`os`/`cpu` 数组；缺省表全平台，见 `platform`）。
+    #[serde(default)]
+    pub os: Option<Vec<String>>,
+    #[serde(default)]
+    pub cpu: Option<Vec<String>>,
 }
 
 /// 分发信息（integrity 优先，shasum 兜底；皆无则 5b 拒绝）。
@@ -80,4 +90,29 @@ pub async fn fetch_packument(
     resp.json::<Packument>().await.map_err(|e| {
         Error::Other(format!("bad packument for '{name}': {e}"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn npm_field_names_deserialize() {
+        // 回归：`dist-tags`（kebab）/`optionalDependencies`（驼峰）必须落进结构体；
+        // 缺 rename 即静默全空（tag 安装与可选依赖双双失效，曾实发）。
+        let v: Packument = serde_json::from_str(
+            r#"{"name":"p","dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{
+                "dist":{"tarball":"https://r/p.tgz"},
+                "dependencies":{"a":"^1.0.0"},
+                "optionalDependencies":{"b":"*"},
+                "os":["darwin"],"cpu":["arm64"]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(v.dist_tags.get("latest").map(String::as_str), Some("1.0.0"));
+        let m = v.versions.get("1.0.0").unwrap();
+        assert_eq!(m.dependencies.get("a").map(String::as_str), Some("^1.0.0"));
+        assert_eq!(m.optional_dependencies.get("b").map(String::as_str), Some("*"));
+        assert_eq!(m.os.as_deref(), Some(["darwin".to_string()].as_slice()));
+        assert_eq!(m.cpu.as_deref(), Some(["arm64".to_string()].as_slice()));
+    }
 }

@@ -175,7 +175,8 @@ fn require_cjs_file(
 /// 最近 `package.json` 的 `type` 字段（`module`/`commonjs`/缺省）。
 /// 纯 fs + 宽容 JSON：坏文件/无清单一律当缺省（`None`）；找到最近一份即停。
 /// 纯函数（除 fs 外），单测覆盖判定表（用 tempfile 搭清单树）。
-fn nearest_pkg_type(path: &std::path::Path) -> Option<String> {
+/// `pub(crate)`：入口 ESM 判定（`runtime::sniff_module`）复用同一口径。
+pub(crate) fn nearest_pkg_type(path: &std::path::Path) -> Option<String> {
     let mut dir = path.parent();
     while let Some(d) = dir {
         let cand = d.join("package.json");

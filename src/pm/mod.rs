@@ -6,6 +6,7 @@ pub mod git;
 pub mod install;
 pub mod lifecycle;
 pub mod npmrc;
+pub mod platform;
 pub mod publish;
 pub mod registry;
 pub mod resolve;

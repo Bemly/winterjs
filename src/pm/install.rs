@@ -6,6 +6,8 @@
 //!   下次 `install_all` 开头清掉；`node_modules` 内坏包永不以正式名可见；
 //!   lockfile/cache 同样原子写；`fs4` 独占锁串行化并发安装。
 //! - 5c lifecycle：落地后按 `preinstall/install/postinstall` 跑 shell（见 `lifecycle`）。
+//! - optional（`optionalDependencies`，oxlint 平台二进制）：下载/校验/解包任一
+//!   失败即 warn 跳过（npm 口径；lockfile 只记装上的，偏差文档记录）。
 
 use std::path::{Path, PathBuf};
 
@@ -27,9 +29,20 @@ pub async fn install_all(
     // 并发串行化（`fs4` 独占锁；守卫持到函数尾，drop 即解锁）。
     let _lock = acquire_install_lock(&nm)?;
     let nm_bin = nm.join(".bin");
+    // 落地成功的才进 lockfile（optional 跳过的不记，见头注偏差）。
+    let mut landed: Vec<Resolved> = Vec::with_capacity(tree.len());
     for r in tree {
-        install_one(&nm, &nm_bin, r).await?;
-        println!("added {}@{}", r.name, r.version);
+        match install_one(&nm, &nm_bin, r).await {
+            Ok(()) => {
+                println!("added {}@{}", r.name, r.version);
+                landed.push(r.clone());
+            }
+            Err(e) if r.optional => {
+                tracing::warn!(target: "winterjs::pm", package = r.name.as_str(), "optional install failed, skipping: {e}");
+                println!("skipped optional {}@{} ({e})", r.name, r.version);
+            }
+            Err(e) => return Err(e),
+        }
     }
     let mut git_locked: Vec<(String, String, String)> = Vec::with_capacity(git_specs.len());
     for g in git_specs {
@@ -37,7 +50,7 @@ pub async fn install_all(
         println!("added {name}@git+{}#{}", g.url, commit.chars().take(12).collect::<String>());
         git_locked.push((name, commit, g.url.clone()));
     }
-    write_lockfile(root, tree, &git_locked)?;
+    write_lockfile(root, &landed, &git_locked)?;
     Ok(())
 }
 

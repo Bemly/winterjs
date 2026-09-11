@@ -3867,3 +3867,186 @@ fn loader_http_errors() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("404"), "stderr:\n{err}");
 }
+
+#[test]
+fn run_entry_respects_package_json_type() {
+    // 入口与 require() 同口径：`type: module` 包的 extensionless bin 走模块；
+    // 无 type 即经典（Node 口径）；`type: commonjs` 的 ESM 语法自然报 SyntaxError。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("package.json").write_str(r#"{"type":"module"}"#).unwrap();
+    dir.child("lib.mjs").write_str("export const x = 1;\n").unwrap();
+    dir.child("bin-noext").write_str("import \"./lib.mjs\";\nconsole.log(\"esm-entry-ok\");\n").unwrap();
+    let out = winterjs().arg("--run").arg(dir.path().join("bin-noext")).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "esm-entry-ok\n");
+    // 无 type：同内容走经典，import 即 SyntaxError（exit=1，可读）。
+    let dir2 = assert_fs::TempDir::new().unwrap();
+    dir2.child("bin-noext").write_str("import \"./lib.mjs\";\n").unwrap();
+    let out = winterjs().arg("--run").arg(dir2.path().join("bin-noext")).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    dir.close().unwrap();
+    dir2.close().unwrap();
+}
+
+#[test]
+fn pm_optional_deps_platform_and_tolerance() {
+    // 仿 oxlint 形：tool-pkg（bin + 4 个 optional）→ 本平台命中装上、
+    // 异平台跳过、packument 404 容忍、tarball 404 安装期容忍（skipped 行）；
+    // .bin 链接可用；exit 0。
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    // 当前平台的 npm 名（与 src/pm/platform.rs 转译表同口径）。
+    let npm_os = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        other => other,
+    };
+    let npm_cpu = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        "x86" => "ia32",
+        other => other,
+    };
+    let mk = |pkg: &str| {
+        let tgz = make_tgz(&[
+            ("package.json", format!(r#"{{"name":"{pkg}","version":"1.0.0"}}"#).as_bytes()),
+            ("index.js", b"exports.v = 1;\n"),
+        ]);
+        let integrity =
+            format!("sha512-{}", base64::engine::general_purpose::STANDARD.encode(sha2::Sha512::digest(&tgz)));
+        (std::sync::Arc::new(tgz), std::sync::Arc::new(integrity))
+    };
+    let tool_tgz = make_tgz(&[
+        ("package.json", br#"{"name":"tool-pkg","version":"1.0.0","main":"index.js","bin":{"tool-bin":"cli.js"}}"#),
+        ("index.js", b"exports.v = 1;\n"),
+        ("cli.js", b"console.log(\"tool-bin-ok\");\n"),
+    ]);
+    let tool_int =
+        format!("sha512-{}", base64::engine::general_purpose::STANDARD.encode(sha2::Sha512::digest(&tool_tgz)));
+    let (ok_tgz, ok_int) = mk("tool-bind-ok");
+    let (_nope_tgz, nope_int_c) = mk("tool-bind-nope");
+    let (_bad_tgz, bad_int_c) = mk("tool-bind-badtar");
+    let tool_tgz = std::sync::Arc::new(tool_tgz);
+    let tool_int = std::sync::Arc::new(tool_int);
+    let port = serve_http(8, move |head, _body| {
+        let line = head.lines().next().unwrap_or("").to_owned();
+        let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+        let port = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Host:").or_else(|| l.strip_prefix("host:")))
+            .and_then(|v| v.trim().split(':').nth(1))
+            .unwrap_or("")
+            .to_owned();
+        let pack = |name: &str, ver: serde_json::Value| {
+            serde_json::json!({ "name": name, "dist-tags": { "latest": "1.0.0" }, "versions": { "1.0.0": ver } })
+                .to_string()
+        };
+        let ver = |tarball: String, integrity: &str, extra: serde_json::Value| {
+            let mut v = serde_json::json!({
+                "dist": { "tarball": tarball, "integrity": integrity },
+                "dependencies": {},
+            });
+            for (k, val) in extra.as_object().unwrap() {
+                v[k] = val.clone();
+            }
+            v
+        };
+        let tgz_of = |holder: &std::sync::Arc<Vec<u8>>| {
+            (200, vec![("content-type", "application/octet-stream".into())], (**holder).clone())
+        };
+        if path == "/tool-pkg" {
+            let body = pack(
+                "tool-pkg",
+                ver(
+                    format!("http://127.0.0.1:{port}/tool-pkg/-/tool-pkg-1.0.0.tgz"),
+                    &tool_int,
+                    serde_json::json!({
+                        "optionalDependencies": {
+                            "tool-bind-ok": "*",
+                            "tool-bind-nope": "*",
+                            "tool-bind-404": "*",
+                            "tool-bind-badtar": "*",
+                        },
+                    }),
+                ),
+            );
+            return (200, vec![("content-type", "application/json".into())], body.into_bytes());
+        }
+        if path == "/tool-pkg/-/tool-pkg-1.0.0.tgz" {
+            return tgz_of(&tool_tgz);
+        }
+        if path == "/tool-bind-ok" {
+            let body = pack(
+                "tool-bind-ok",
+                ver(
+                    format!("http://127.0.0.1:{port}/tool-bind-ok/-/tool-bind-ok-1.0.0.tgz"),
+                    &ok_int,
+                    serde_json::json!({ "os": [npm_os], "cpu": [npm_cpu] }),
+                ),
+            );
+            return (200, vec![("content-type", "application/json".into())], body.into_bytes());
+        }
+        if path == "/tool-bind-ok/-/tool-bind-ok-1.0.0.tgz" {
+            return tgz_of(&ok_tgz);
+        }
+        if path == "/tool-bind-nope" {
+            let body = pack(
+                "tool-bind-nope",
+                ver(
+                    format!("http://127.0.0.1:{port}/tool-bind-nope/-/tool-bind-nope-1.0.0.tgz"),
+                    &nope_int_c,
+                    serde_json::json!({ "os": ["nonexistent-os"] }),
+                ),
+            );
+            return (200, vec![("content-type", "application/json".into())], body.into_bytes());
+        }
+        if path == "/tool-bind-badtar" {
+            // packument 过、tarball 404 → 安装期容忍（skipped 行）。
+            let body = pack(
+                "tool-bind-badtar",
+                ver(
+                    format!("http://127.0.0.1:{port}/tool-bind-badtar/-/tool-bind-badtar-1.0.0.tgz"),
+                    &bad_int_c,
+                    serde_json::json!({}),
+                ),
+            );
+            return (200, vec![("content-type", "application/json".into())], body.into_bytes());
+        }
+        // tool-bind-nope/-badtar 的 tarball 不应被请求（前者平台跳过）；
+        // tool-bind-404 的 packument 直接 404。
+        (404, vec![], b"nope".to_vec())
+    });
+    let reg = format!("http://127.0.0.1:{port}");
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = winterjs()
+        .arg("--add")
+        .arg("tool-pkg")
+        .arg("--registry")
+        .arg(&reg)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("added tool-pkg@1.0.0"), "stdout: {stdout}");
+    assert!(stdout.contains("added tool-bind-ok@1.0.0"), "stdout: {stdout}");
+    assert!(stdout.contains("skipped optional tool-bind-badtar"), "stdout: {stdout}");
+    // 落地断言：命中装上（含 .bin 链）、异平台/404/坏包缺席、lockfile 只记装上的。
+    assert!(dir.path().join("node_modules/tool-bind-ok/package.json").is_file());
+    assert!(!dir.path().join("node_modules/tool-bind-nope").exists());
+    assert!(!dir.path().join("node_modules/tool-bind-404").exists());
+    assert!(!dir.path().join("node_modules/tool-bind-badtar").exists());
+    assert!(dir.path().join("node_modules/.bin/tool-bin").exists());
+    let lock = std::fs::read_to_string(dir.path().join("winterjs-lock.json")).unwrap();
+    assert!(lock.contains("tool-bind-ok") && !lock.contains("tool-bind-nope"), "lock: {lock}");
+    // 装完即跑（bin 链可用）。
+    let out = winterjs()
+        .arg("--run")
+        .arg(dir.path().join("node_modules/tool-pkg/cli.js"))
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "tool-bin-ok\n");
+    dir.close().unwrap();
+}

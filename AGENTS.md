@@ -346,6 +346,18 @@ cargo build
 - 推广为铁律：绝不发送无参数/空参数的工具调用；同文件 edit 串行且每次验落盘；
   大改动每完成一文件即 `git add`（不 commit 也先进 index，丢了能从 index 找回）。
 
+### 4.29 serde 缺 rename 即静默丢字段（2026-09-11）
+
+- 症状：`optionalDependencies` 装不上（求解树里根本没出现），且 `pkg@latest`
+  之类 tag 安装也一直是坏的——两者都静默通过，无任何报错。
+- 根因：serde 缺省按 Rust 字段名精确匹配；npm 线名是 kebab/驼峰
+  （`dist-tags`/`optionalDependencies`），对不上即当未知字段忽略 +
+  `#[serde(default)]` 补空，全程无声。
+- 修法：`#[serde(rename = "...")]` 逐个显式改名（`registry.rs` Packument/
+  VersionMeta）；回归测试反序列化真实线名（`npm_field_names_deserialize`）。
+- 推广为铁律：凡对接外部 JSON（registry/npmrc/各类 API），单测必须用真实线名
+  断言 roundtrip；`#[serde(default)]` + 外部源组合出现时先查 rename。
+
 ### 4.27 增量解码两阶段 + BYOB 三坑（2026-09-11）
 
 - `decode_to_string` 的 `InputEmpty + read=0` 是"截断已缓存、等下次 feed"，

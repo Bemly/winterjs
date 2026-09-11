@@ -79,7 +79,17 @@ fn sniff_module(filename: &str, source: &str) -> Option<Url> {
         .map(|e| e.to_ascii_lowercase());
     let forced = matches!(ext.as_deref(), Some("ts" | "mts" | "cts" | "tsx" | "mjs"));
     if !forced {
-        if !matches!(ext.as_deref(), Some("js" | "jsx")) {
+        // `.js` 跟最近 package.json type（`require()` 同口径）；无扩展名同理
+        //（`type: module` 包的 extensionless bin，如 oxlint；无 type 即经典）。
+        let check_type = matches!(ext.as_deref(), Some("js" | "jsx") | None);
+        if !check_type {
+            return None;
+        }
+        if crate::builtins::node::require::nearest_pkg_type(&path).as_deref() == Some("module") {
+            tracing::info!(target: "winterjs::runtime", url = url.as_str(), "module detected (package.json type)");
+            return Some(url);
+        }
+        if ext.is_none() {
             return None;
         }
         let loaded = crate::loader::load_js(source, filename, &path).ok()?;

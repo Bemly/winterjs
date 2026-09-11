@@ -1,0 +1,78 @@
+//! `node:internal/*` 共享小件（plan2 §9a 前置，Bun `src/js/internal/` 词典命名）：
+//! errors / validators / fixed_queue / util / util:inspect / util:types /
+//! events:abort_listener / events:symbols / event_target。
+//!
+//! 口径：
+//! - 源为 Node `lib/internal/*` 的 ESM 移植（MIT 头保留在模块头注），primordials
+//!   解构一律还原为直接调用（无防篡改硬化，bun-compat.md §4.1 记录的偏差）。
+//! - `node:internal/*` 只供内建模块互引（绝对 `node:` URL 不依赖 base，见
+//!   loader/resolve.rs）；不进 `available()` 报错列表（mod.rs 过滤），
+//!   用户直引行为未定义（Node 直接拒绝，此处宽松，偏差记录）。
+//! - 引擎能力差异处（栈整形、Promise 内态）以偏差注释就地记录。
+
+pub mod abort_listener;
+pub mod errors;
+pub mod event_target;
+pub mod fixed_queue;
+pub mod inspect;
+pub mod symbols;
+pub mod types;
+pub mod util;
+pub mod validators;
+
+/// internal 表（`node:internal/*` → 源；顺序即 `available()` 过滤无关）。
+pub const INTERNALS: &[(&str, &str)] = &[
+    ("node:internal/errors", errors::SOURCE),
+    ("node:internal/validators", validators::SOURCE),
+    ("node:internal/fixed_queue", fixed_queue::SOURCE),
+    ("node:internal/util", util::SOURCE),
+    ("node:internal/util/inspect", inspect::SOURCE),
+    ("node:internal/util/types", types::SOURCE),
+    ("node:internal/events/abort_listener", abort_listener::SOURCE),
+    ("node:internal/events/symbols", symbols::SOURCE),
+    ("node:internal/event_target", event_target::SOURCE),
+];
+
+/// internal 规范名（`internal/errors` 与 `node:internal/errors` 皆收 → `node:internal/errors`；
+/// 非 internal 返回 None）。
+pub fn normalize_internal(spec: &str) -> Option<&'static str> {
+    let rest = spec
+        .strip_prefix("node:")
+        .and_then(|s| s.strip_prefix("internal/"))
+        .or_else(|| spec.strip_prefix("internal/"))?;
+    INTERNALS
+        .iter()
+        .find(|(name, _)| name.strip_prefix("node:internal/") == Some(rest))
+        .map(|(name, _)| *name)
+}
+
+/// internal 源。
+pub fn source(canonical: &str) -> Option<&'static str> {
+    INTERNALS.iter().find(|(name, _)| *name == canonical).map(|(_, src)| *src)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internal_spec_table() {
+        assert_eq!(normalize_internal("internal/errors"), Some("node:internal/errors"));
+        assert_eq!(normalize_internal("internal/util"), Some("node:internal/util"));
+        assert_eq!(normalize_internal("internal/util/inspect"), Some("node:internal/util/inspect"));
+        assert_eq!(normalize_internal("internal/util/types"), Some("node:internal/util/types"));
+        assert_eq!(
+            normalize_internal("internal/events/abort_listener"),
+            Some("node:internal/events/abort_listener")
+        );
+        assert_eq!(normalize_internal("internal/nope"), None);
+        assert_eq!(normalize_internal("errors"), None);
+        assert_eq!(normalize_internal("node:internal/errors"), Some("node:internal/errors"));
+        assert_eq!(INTERNALS.len(), 9);
+        for (name, src) in INTERNALS {
+            assert!(source(name).is_some(), "{name} missing");
+            assert!(!src.is_empty(), "{name} empty source");
+            assert!(src.contains("export") || src.contains("module.exports"), "{name} no exports");
+        }
+    }
+}

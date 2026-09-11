@@ -4174,3 +4174,242 @@ fn pm_release_binary_runs() {
     assert_eq!(String::from_utf8(status.stdout).unwrap(), "fake-tool ok\n");
     dir.close().unwrap();
 }
+
+// ── Phase 9a（plan2）：node:events / node:async_hooks / internal 小件 ────────
+// 断言口径：Node test/parallel 原文语义按需转写（test-events.js / test-event-emitter*
+// / test-async-hooks*），不整目录拉取；消息格式逐字。
+
+#[test]
+fn phase9a_events_basic_emit_on_off() {
+    // test-events.js: emit 返回值/once/移除后不触发/eventNames
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("e.mjs");
+    file.write_str(
+        r#"import EE from "node:events";
+const ee = new EE();
+let calls = [];
+function fn1() { calls.push("f1"); }
+ee.on("x", fn1);
+console.log(ee.emit("x"), ee.emit("nope"));
+ee.once("y", () => calls.push("once"));
+ee.emit("y"); ee.emit("y");
+ee.removeListener("x", fn1);
+console.log(calls.join(","), ee.listenerCount("x"), ee.emit("x"));
+ee.on("z", () => {});
+console.log(ee.eventNames().map(String).join(","));
+"#,
+    )
+    .unwrap();
+    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("true false"), "out: {out}");
+    assert!(out.contains("f1,once"), "out: {out}");
+    assert!(out.contains("z"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9a_events_unhandled_error_throws_original() {
+    // test-events.js: 无 error 监听时 emit('error', er) 重抛原 Error（非包裹）
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("u.mjs");
+    file.write_str(
+        r#"import EE from "node:events";
+const ee = new EE();
+try { ee.emit("error", new TypeError("boom")); } catch (e) {
+  console.log(e instanceof TypeError, e.message, "code" in e && e.code === undefined);
+}
+// 非 Error 实参 → ERR_UNHANDLED_ERROR 包裹
+try { ee.emit("error", "str"); } catch (e) {
+  console.log(e.code, e.message.startsWith("Unhandled error."));
+}
+"#,
+    )
+    .unwrap();
+    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("true boom false"), "out: {out}");
+    assert!(out.contains("ERR_UNHANDLED_ERROR true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9a_events_error_monitor_capture_rejections() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("c.mjs");
+    file.write_str(
+        r#"import EE from "node:events";
+// errorMonitor: errorMonitor 监听在无 error 监听时也不抛（先于 doError 判定）
+const em = new EE();
+let seen = 0;
+em.on(EE.errorMonitor, () => seen++);
+try { em.emit("error", new Error("no-handler")); } catch {}
+console.log("mon", seen);
+// captureRejections: rejected listener 走 [captureRejectionSymbol] 而非 error
+const cap = new EE({ captureRejections: true });
+let handled = 0;
+cap.on("x", async () => { throw new Error("rej"); });
+cap[EE.captureRejectionSymbol] = (err, type) => { handled++; console.log("cap", type, err.message); };
+cap.emit("x");
+await new Promise((r) => setTimeout(r, 10));
+console.log("handled", handled);
+"#,
+    )
+    .unwrap();
+    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("mon 1"), "out: {out}");
+    assert!(out.contains("cap x rej") && out.contains("handled 1"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9a_events_max_listeners_warning_and_validation() {
+    // test-event-emitter-max-listeners.js: 泄漏警告 + warning 事件；参数校验消息逐字
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("m.mjs");
+    file.write_str(
+        r#"import EE from "node:events";
+const warnings = [];
+process.on("warning", (w) => warnings.push(w));
+const ee = new EE();
+for (let i = 0; i < 12; i++) ee.on("l", () => {});
+console.log("warned", warnings.length, warnings[0]?.name, warnings[0]?.count);
+// Node 原文消息格式（test-events-common 断言口径）
+try { ee.once("x", 42); } catch (e) {
+  console.log(e.code, e.message);
+}
+try { EE.setMaxListeners(-1); } catch (e) {
+  console.log(e.code, e.constructor.name);
+}
+"#,
+    )
+    .unwrap();
+    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("warned 1 MaxListenersExceededWarning 11"), "out: {out}");
+    assert!(
+        out.contains(
+            "ERR_INVALID_ARG_TYPE The \"listener\" argument must be of type function. Received type number (42)"
+        ),
+        "out: {out}"
+    );
+    assert!(out.contains("ERR_OUT_OF_RANGE RangeError"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9a_events_once_and_on_iterator() {
+    // test-events-on.js + test-events-on-async-iterator.js 语义子集
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("i.mjs");
+    file.write_str(
+        r#"import EE, { once, on } from "node:events";
+const ee = new EE();
+setTimeout(() => ee.emit("tick", 7, "s"), 5);
+const [n, s] = await once(ee, "tick");
+console.log("once", n, s);
+// 异步迭代器 + close 事件
+const src = new EE();
+setTimeout(() => { src.emit("data", "a"); src.emit("data", "b"); src.emit("end"); }, 5);
+const got = [];
+for await (const [v] of on(src, "data", { close: ["end"] })) got.push(v);
+console.log("iter", got.join(""));
+// once + AbortSignal（已中止即 AbortError）
+try {
+  await once(new EE(), "x", { signal: AbortSignal.abort(new Error("why")) });
+} catch (e) { console.log("abort", e.code, e.cause?.message); }
+"#,
+    )
+    .unwrap();
+    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("once 7 s") && out.contains("iter ab"), "out: {out}");
+    assert!(out.contains("abort ABORT_ERR why"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9a_events_require_and_error_boundary() {
+    // require('node:events') CJS 面 + 非法 emitter 报可读错（边界三件之一）
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("r.cjs");
+    file.write_str(
+        r#"const { EventEmitter, getEventListeners } = require("node:events");
+const ee = new EventEmitter();
+ee.on("a", () => 1);
+console.log(require("node:events").EventEmitter === EventEmitter, getEventListeners(ee, "a").length);
+try { getEventListeners(42, "a"); } catch (e) { console.log(e.code); }
+"#,
+    )
+    .unwrap();
+    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("true 1") && out.contains("ERR_INVALID_ARG_TYPE"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9a_async_hooks_als_and_async_resource() {
+    // test-async-local-storage* 子集（同步链路）+ AsyncResource runInAsyncScope
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("a.mjs");
+    file.write_str(
+        r#"import { AsyncLocalStorage, AsyncResource, createHook, executionAsyncId } from "node:async_hooks";
+const als = new AsyncLocalStorage();
+als.run({ id: 42 }, () => {
+  console.log("store", als.getStore().id);
+  const res = new AsyncResource("TEST");
+  res.runInAsyncScope(() => console.log("in-res", als.getStore().id, executionAsyncId() > 1));
+  console.log("bind", als.bind(() => als.getStore()?.id ?? "none")(), als.getStore()?.id ?? "none");
+});
+console.log("outside", als.getStore());
+// snapshot
+const snap = als.run({ s: 1 }, () => als.snapshot());
+snap(() => console.log("snapshot", als.getStore()?.s));
+// AsyncResource.bind 静态 + emitDestroy
+const bound = AsyncResource.bind(() => executionAsyncId() > 1, "BOUND");
+console.log("static-bind", bound(), AsyncResource.AsyncResource === AsyncResource);
+const hook = createHook({ init() {} }).enable();
+console.log("hook", typeof hook.disable);
+"#,
+    )
+    .unwrap();
+    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("store 42") && out.contains("in-res 42 true"), "out: {out}");
+    assert!(out.contains("bind 42 42") && out.contains("outside undefined"), "out: {out}");
+    assert!(out.contains("snapshot 1") && out.contains("static-bind true true"), "out: {out}");
+    assert!(out.contains("hook function"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9a_async_hooks_stub_and_validation_boundary() {
+    // stub 口径边界：createHook 非法回调 → ERR_ASYNC_CALLBACK；ALS 非法 callback → TypeError
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("b.mjs");
+    file.write_str(
+        r#"import { createHook, AsyncResource, AsyncLocalStorage } from "node:async_hooks";
+try { createHook({ init: 1 }); } catch (e) { console.log("h", e.code); }
+try { new AsyncResource(42); } catch (e) { console.log("t", e.code, e.message.includes("must be of type string")); }
+try { new AsyncLocalStorage().run({}, "nope"); } catch (e) { console.log("r", e instanceof TypeError); }
+try { new AsyncResource("X", { triggerAsyncId: "no" }); } catch (e) { console.log("o", e.code); }
+"#,
+    )
+    .unwrap();
+    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("h ERR_ASYNC_CALLBACK"), "out: {out}");
+    assert!(out.contains("t ERR_INVALID_ARG_TYPE true"), "out: {out}");
+    assert!(out.contains("r true") && out.contains("o ERR_INVALID_ARG_TYPE"), "out: {out}");
+    dir.close().unwrap();
+}

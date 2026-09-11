@@ -431,6 +431,45 @@ globalThis.process = {
     if (typeof cb !== "function") throw new TypeError("nextTick: callback must be a function");
     queueMicrotask(() => cb(...args));
   },
+  // Phase 9a（node:events MaxListenersExceededWarning 路径）：warning 监听 + emitWarning。
+  // Node 语义收敛：string → 包 Error（name=type||'Warning'，code/detail 挂载）；
+  // Error 原样；第二参可 string（type）或 { type, code, detail }；有监听走监听，
+  // 否则 stderr 默认打印 `(node:<pid>) [code] Name: message`。
+  __wjs_warningListeners: [],
+  on(type, cb) {
+    if (type === "warning" && typeof cb === "function") process.__wjs_warningListeners.push(cb);
+    return process;
+  },
+  emitWarning(warning, typeOrOptions, code, _ctor) {
+    let type, detail;
+    if (typeof typeOrOptions === "object" && typeOrOptions !== null) {
+      type = typeOrOptions.type; code = typeOrOptions.code; detail = typeOrOptions.detail;
+    } else {
+      type = typeOrOptions;
+    }
+    if (typeof warning === "string") {
+      warning = new Error(warning);
+      warning.name = String(type || "Warning");
+      if (code) warning.code = String(code);
+      if (detail) warning.detail = String(detail);
+    } else if (warning !== null && typeof warning === "object") {
+      if (type && !warning.name) warning.name = String(type);
+      if (code && !warning.code) warning.code = String(code);
+    } else {
+      throw new TypeError("warning must be a string or an Error");
+    }
+    const listeners = process.__wjs_warningListeners;
+    if (listeners.length > 0) {
+      for (const l of listeners) {
+        try { l.call(process, warning); } catch {}
+      }
+    } else {
+      const codePart = warning.code ? `[${warning.code}] ` : "";
+      const line = `(node:${__wjs_pid()}) ${codePart}${warning.name}: ${warning.message}`;
+      __wjs_stderr_write(line + "\n");
+      if (warning.detail) __wjs_stderr_write(warning.detail + "\n");
+    }
+  },
 };
 "#;
 

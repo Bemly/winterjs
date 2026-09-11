@@ -4571,7 +4571,7 @@ console.log(JSON.stringify(p));
 // 边界：非字符串入参 → 空对象；maxKeys=1 截断
 console.log(JSON.stringify(qs.parse(null)), JSON.stringify(qs.parse("")));
 console.log(typeof qs.parse("a=1&b=2", null, null, { maxKeys: 1 }).a);
-try { qs.unescape("%E0%A4%A"); } catch (e) { console.log("catch-fallback"); }
+console.log("fallback", qs.unescape("%E0%A4%A").includes("%"), qs.unescapeBuffer("a+b", true).toString());
 "#,
     )
     .unwrap();
@@ -4585,7 +4585,7 @@ try { qs.unescape("%E0%A4%A"); } catch (e) { console.log("catch-fallback"); }
     assert!(out.contains("2"), "out: {out}");
     assert!(out.contains(r#"{"a":"%20"}"#), "out: {out}");
     assert!(out.contains("{} {}"), "out: {out}");
-    assert!(out.contains("catch-fallback"), "out: {out}");
+    assert!(out.contains("fallback true a b"), "out: {out}");
     dir.close().unwrap();
 }
 

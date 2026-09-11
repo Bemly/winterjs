@@ -38,8 +38,9 @@
 
 ### 9d 网络栈
 
-- 做：`net` → `dns` → `http`/`https` → `http2` → `tls` → `dgram` → `zlib`。
-- 底座全在树内（见 `dependencies2.md`）；h2 服务端实现选型留到开工（待定）。
+- 做：`net` → `dns` → `http`/`https` → `http2`（`hyper` 必选，2026-09-12 拍板；
+  `h2` 直驱/`httparse` 手写仅作条件 fallback）→ `tls` → `dgram` → `zlib`。
+- 底座全在树内（见 `dependencies2.md`）；`hyper` 行级增补（已在闭包）。
 - 验收：`test-net-*.js`、`test-http-*.js`、`test-dns-*.js` 子集；
   本机回环 hermetic（fetch/ws 测试同构，不碰外网）。
 

@@ -39,9 +39,11 @@
 
 备注：`hyper` 用法 `default-features=false` + `server,http2`
 （`http2` 拉 `h2`；禁 `client`/`ffi`/`capi`；`tracing` 按需）——§2 同款门控写法，
-定夺时照抄；`MSRV 1.63` 远低于本仓。`h2` 直驱要手管连接/流控，
- 只在 `hyper` 的 server 语义与 `node:http2` 兼容细节冲突时 fallback。
- `httparse`（零依赖/`no_std`，SIMD 仅 cfg 检测）是手写 h2/h1 解析的保底件，
+定夺时照抄；`MSRV 1.63` 远低于本仓。
+定夺（2026-09-12 用户拍板）：**`hyper` 必选**；`h2` 仅当 `hyper` 的 server
+语义与 `node:http2` 兼容细节冲突、需手管连接/流控时启用；`httparse` 仅当前
+两者都不行时启用（手写基线）。三者中 `hyper`/`h2` 已在闭包，行级增补即可。
+`httparse`（零依赖/`no_std`，SIMD 仅 cfg 检测）是手写 h2/h1 解析的保底件，
  非首选。`axum` 组合已在树内但它是 Web 框架层，做 `node:http2` 外形仍需
  二选一引擎，故 devoted 表只列引擎。
 
@@ -68,6 +70,10 @@
 但它是 P2P 栈（公钥拨号/中继/打洞），`node:quic` 要的是裸传输——真用只会
 取其内层 `noq`（quinn fork），不如直引 `quinn`，故不引。
 `msquic` 另撞两条：beta + 2025-07 后无维护（库龄规则双杀）。
+定夺（2026-09-12 用户拍板）：**`quinn` 必选**（用法
+`default-features=false` + `runtime-tokio,rustls-ring,ring`，
+禁 `rustls-aws-lc-rs*`；`optional` 经 `--features quinn` 按需，默认零成本，
+`cap-std` 同款）；其余 quic 一律不要。
 `neqo` 在 crates.io 无可用包（404 实测）且 NSS 即 C，双杀。
 
 ## 测试资产（非依赖，仓库外按需取）

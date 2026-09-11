@@ -9,6 +9,7 @@
 pub mod assert;
 pub mod async_hooks;
 pub mod child;
+pub mod diagnostics_channel;
 pub mod events;
 pub mod fs;
 pub mod internal;
@@ -20,6 +21,8 @@ pub mod querystring;
 pub mod require;
 pub mod string_decoder;
 pub mod testmod;
+pub mod trace_events;
+pub mod tty;
 pub mod util;
 pub mod util_types;
 
@@ -50,6 +53,9 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:querystring", querystring::SOURCE),
     ("node:punycode", punycode::SOURCE),
     ("node:string_decoder", string_decoder::SOURCE),
+    ("node:diagnostics_channel", diagnostics_channel::SOURCE),
+    ("node:trace_events", trace_events::SOURCE),
+    ("node:tty", tty::SOURCE),
 ];
 
 /// spec 规范化（`node:` 前缀可选；internal 走 `internal::normalize_internal`；
@@ -75,6 +81,9 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "querystring" => Some("node:querystring"),
         "punycode" => Some("node:punycode"),
         "string_decoder" => Some("node:string_decoder"),
+        "diagnostics_channel" => Some("node:diagnostics_channel"),
+        "trace_events" => Some("node:trace_events"),
+        "tty" => Some("node:tty"),
         _ => None,
     }
 }
@@ -132,6 +141,12 @@ mod tests {
         assert!(source("node:querystring").is_some());
         assert!(source("node:punycode").is_some());
         assert!(source("node:string_decoder").is_some());
+        assert_eq!(normalize_spec("diagnostics_channel"), Some("node:diagnostics_channel"));
+        assert_eq!(normalize_spec("node:trace_events"), Some("node:trace_events"));
+        assert_eq!(normalize_spec("tty"), Some("node:tty"));
+        assert!(source("node:diagnostics_channel").is_some());
+        assert!(source("node:trace_events").is_some());
+        assert!(source("node:tty").is_some());
         assert!(source("node:internal/querystring").is_some());
         // internal：可解析、可取源，但不在 available()
         assert_eq!(normalize_spec("node:internal/errors"), Some("node:internal/errors"));

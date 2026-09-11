@@ -191,6 +191,22 @@ class AsyncLocalStorage {
     };
   }
 
+  // Node 私有面（diagnostics_channel RunStoresScope 用）：
+  // 作用域内设置 store，dispose 时恢复原值。
+  __wjsWithScope(store) {
+    const SymbolDispose = Symbol.dispose ?? Symbol.for('Symbol.dispose');
+    const als = this;
+    const prev = currentContext.get(als);
+    if (store !== undefined) currentContext.set(als, store);
+    else currentContext.delete(als);
+    return {
+      [SymbolDispose]() {
+        if (prev !== undefined) currentContext.set(als, prev);
+        else currentContext.delete(als);
+      },
+    };
+  }
+
   static bind(fn, type, thisArg) {
     return AsyncResource.bind(fn, type, thisArg);
   }

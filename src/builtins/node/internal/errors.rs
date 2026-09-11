@@ -293,6 +293,8 @@ E('ERR_INVALID_ARG_VALUE', (name, value, reason = 'is invalid') => {
   const type = name.includes('.') ? 'property' : 'argument';
   return `The ${type} '${name}' ${reason}. Received ${inspected}`;
 }, TypeError, HideStackFramesError);
+E('ERR_INVALID_FD', '"fd" must be a positive integer: %s', RangeError);
+E('ERR_TRACE_EVENTS_CATEGORY_REQUIRED', 'At least one category must be enabled', TypeError);
 E('ERR_INVALID_ASYNC_ID', 'Invalid %s value: %s', RangeError);
 E('ERR_INVALID_THIS', 'Value of "this" must be of type %s', TypeError, HideStackFramesError);
 E('ERR_INVALID_URI', 'URI malformed', URIError);

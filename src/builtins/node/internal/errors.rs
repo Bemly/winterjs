@@ -295,6 +295,8 @@ E('ERR_INVALID_ARG_VALUE', (name, value, reason = 'is invalid') => {
 }, TypeError, HideStackFramesError);
 E('ERR_INVALID_ASYNC_ID', 'Invalid %s value: %s', RangeError);
 E('ERR_INVALID_THIS', 'Value of "this" must be of type %s', TypeError, HideStackFramesError);
+E('ERR_INVALID_URI', 'URI malformed', URIError);
+E('ERR_UNKNOWN_ENCODING', 'Unknown encoding: %s', TypeError, HideStackFramesError);
 E('ERR_OUT_OF_RANGE',
   (str, range, input, replaceDefaultBoolean = false) => {
     if (!range) throw new TypeError('Missing "range" argument');

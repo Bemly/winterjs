@@ -15,6 +15,7 @@ pub mod errors;
 pub mod event_target;
 pub mod fixed_queue;
 pub mod inspect;
+pub mod querystring;
 pub mod symbols;
 pub mod types;
 pub mod util;
@@ -28,6 +29,7 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/util", util::SOURCE),
     ("node:internal/util/inspect", inspect::SOURCE),
     ("node:internal/util/types", types::SOURCE),
+    ("node:internal/querystring", querystring::SOURCE),
     ("node:internal/events/abort_listener", abort_listener::SOURCE),
     ("node:internal/events/symbols", symbols::SOURCE),
     ("node:internal/event_target", event_target::SOURCE),
@@ -68,7 +70,7 @@ mod tests {
         assert_eq!(normalize_internal("internal/nope"), None);
         assert_eq!(normalize_internal("errors"), None);
         assert_eq!(normalize_internal("node:internal/errors"), Some("node:internal/errors"));
-        assert_eq!(INTERNALS.len(), 9);
+        assert_eq!(INTERNALS.len(), 10);
         for (name, src) in INTERNALS {
             assert!(source(name).is_some(), "{name} missing");
             assert!(!src.is_empty(), "{name} empty source");

@@ -4550,3 +4550,125 @@ try { types.isUint8Array(42) === false; console.log("num-ok"); } catch (e) { con
     assert!(out.contains("num-ok"), "out: {out}");
     dir.close().unwrap();
 }
+
+// ── Phase 9a-3：node:querystring / node:punycode / node:string_decoder ─────
+
+#[test]
+fn phase9a_querystring_roundtrip() {
+    // test-querystring.js 命名子集
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("q.mjs");
+    file.write_str(
+        r#"import qs from "node:querystring";
+console.log(JSON.stringify(qs.parse("a=1&b=x%20y&b=2&c")));
+console.log(qs.stringify({ a: "x y", b: [1, 2] }));
+console.log(qs.escape("ä b"), qs.unescape("%C3%A4+b"));
+console.log(JSON.stringify(qs.parse("a=1;a=2", ";", "=")));
+console.log(Object.keys(qs.parse("a=1&b=2&c=3", null, null, { maxKeys: 2 })).length);
+// 自定义 enc/dec
+const p = qs.parse("a=%20", null, null, { decodeURIComponent: (s) => s });
+console.log(JSON.stringify(p));
+// 边界：非字符串入参 → 空对象；maxKeys=1 截断
+console.log(JSON.stringify(qs.parse(null)), JSON.stringify(qs.parse("")));
+console.log(typeof qs.parse("a=1&b=2", null, null, { maxKeys: 1 }).a);
+try { qs.unescape("%E0%A4%A"); } catch (e) { console.log("catch-fallback"); }
+"#,
+    )
+    .unwrap();
+    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains(r#"{"a":"1","b":["x y","2"],"c":""}"#), "out: {out}");
+    assert!(out.contains("a=x%20y&b=1&b=2"), "out: {out}");
+    assert!(out.contains("%C3%A4%20b ä+b"), "out: {out}");
+    assert!(out.contains(r#"{"a":"1"} {"a":"2"}"#) || out.contains(r#"{"a":"2"}"#), "out: {out}");
+    assert!(out.contains("2"), "out: {out}");
+    assert!(out.contains(r#"{"a":"%20"}"#), "out: {out}");
+    assert!(out.contains("{} {}"), "out: {out}");
+    assert!(out.contains("catch-fallback"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9a_punycode_rfc3492() {
+    // test-punycode.js 命名子集（RFC 3492 向量 + 域名 + ucs2）
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("p.mjs");
+    file.write_str(
+        r#"import punycode from "node:punycode";
+console.log(punycode.encode("bücher"), punycode.decode("bcher-kva"));
+console.log(punycode.toASCII("münchen.de"), punycode.toUnicode("xn--mnchen-3ya.de"));
+console.log(punycode.toASCII("日本"), punycode.toUnicode("xn--wgv71a"));
+console.log(punycode.ucs2.encode([0x1D306]) === "\u{1D306}", punycode.ucs2.decode("a\u{1D306}b").length);
+console.log(punycode.toASCII("foo@bücher.de").split("@")[1]);
+try { punycode.decode("!!!!!"); } catch (e) { console.log("err", e instanceof RangeError); }
+"#,
+    )
+    .unwrap();
+    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("bcher-kva bücher"), "out: {out}");
+    assert!(out.contains("xn--mnchen-3ya.de münchen.de"), "out: {out}");
+    assert!(out.contains("xn--wgv71a 日本"), "out: {out}");
+    assert!(out.contains("true 3"), "out: {out}");
+    assert!(out.contains("xn--bcher-kva.de"), "out: {out}");
+    assert!(out.contains("err true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9a_string_decoder_encodings() {
+    // test-string-decoder.js 命名子集：截断续读/end flush/全编码
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("s.mjs");
+    file.write_str(
+        r#"import { StringDecoder } from "node:string_decoder";
+const utf8 = new StringDecoder("utf8");
+let out = "";
+out += utf8.write(Buffer.from([0xE4, 0xB8]));
+out += utf8.write(Buffer.from([0xAD, "e".charCodeAt(0)]));
+out += utf8.end();
+console.log("utf8", out);
+// invalid 序列 → FFFD 继续
+const bad = new StringDecoder("utf8");
+console.log("bad", bad.write(Buffer.from([0xFF, 0x41])).includes("\uFFFD"), bad.write(Buffer.from([0x42])));
+const u16 = new StringDecoder("utf16le");
+let o2 = u16.write(Buffer.from([0x61, 0]));
+o2 += u16.write(Buffer.from([0x62]));
+o2 += u16.end();
+console.log("utf16", o2.length, o2.charCodeAt(1) === 0xFFFD);
+const hex = new StringDecoder("hex");
+console.log("hex", hex.write(Buffer.from([0xDE, 0xAD])), hex.end());
+const b64 = new StringDecoder("base64");
+let o3 = b64.write(Buffer.from("foobarb"));
+o3 += b64.write(Buffer.from("az"));
+o3 += b64.end();
+console.log("b64", o3 === Buffer.from("foobarbaz").toString("base64"));
+const latin = new StringDecoder("latin1");
+console.log("latin1", latin.write(Buffer.from([0xE9, 0x41])), latin.end().length);
+const ascii = new StringDecoder("ascii");
+console.log("ascii", ascii.write(Buffer.from([0x80, 0x41])).length, ascii.write(Buffer.from([0x41])));
+console.log("default", new StringDecoder().encoding, typeof utf8.lastChar, utf8.lastNeed === 0);
+console.log("string-in", new StringDecoder().write("direct"));
+try { new StringDecoder("nope"); } catch (e) { console.log("e1", e.code); }
+try { new StringDecoder("utf8").write(42); } catch (e) { console.log("e2", e.code); }
+try { new StringDecoder("utf8").write.call({ __wjsId: undefined }, Buffer.alloc(1)); } catch (e) { console.log("e3", e.code); }
+"#,
+    )
+    .unwrap();
+    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("utf8 中e"), "out: {out}");
+    assert!(out.contains("bad true B"), "out: {out}");
+    assert!(out.contains("utf16 2 true"), "out: {out}");
+    assert!(out.contains("hex dead"), "out: {out}");
+    assert!(out.contains("b64 true"), "out: {out}");
+    assert!(out.contains("latin1 éA 0"), "out: {out}");
+    assert!(out.contains("ascii 2 A"), "out: {out}");
+    assert!(out.contains("default utf8 object true"), "out: {out}");
+    assert!(out.contains("string-in direct"), "out: {out}");
+    assert!(out.contains("e1 ERR_UNKNOWN_ENCODING") && out.contains("e2 ERR_INVALID_ARG_TYPE"), "out: {out}");
+    dir.close().unwrap();
+}

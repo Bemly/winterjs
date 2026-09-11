@@ -15,7 +15,10 @@ pub mod internal;
 pub mod os;
 pub mod path;
 pub mod process_;
+pub mod punycode;
+pub mod querystring;
 pub mod require;
+pub mod string_decoder;
 pub mod testmod;
 pub mod util;
 pub mod util_types;
@@ -44,6 +47,9 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:events", events::SOURCE),
     ("node:util", util::SOURCE),
     ("node:util/types", util_types::SOURCE),
+    ("node:querystring", querystring::SOURCE),
+    ("node:punycode", punycode::SOURCE),
+    ("node:string_decoder", string_decoder::SOURCE),
 ];
 
 /// spec 规范化（`node:` 前缀可选；internal 走 `internal::normalize_internal`；
@@ -66,6 +72,9 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "events" => Some("node:events"),
         "util" => Some("node:util"),
         "util/types" => Some("node:util/types"),
+        "querystring" => Some("node:querystring"),
+        "punycode" => Some("node:punycode"),
+        "string_decoder" => Some("node:string_decoder"),
         _ => None,
     }
 }
@@ -117,6 +126,13 @@ mod tests {
         assert_eq!(normalize_spec("util/types"), Some("node:util/types"));
         assert!(source("node:util").is_some());
         assert!(source("node:util/types").is_some());
+        assert_eq!(normalize_spec("querystring"), Some("node:querystring"));
+        assert_eq!(normalize_spec("node:punycode"), Some("node:punycode"));
+        assert_eq!(normalize_spec("node:string_decoder"), Some("node:string_decoder"));
+        assert!(source("node:querystring").is_some());
+        assert!(source("node:punycode").is_some());
+        assert!(source("node:string_decoder").is_some());
+        assert!(source("node:internal/querystring").is_some());
         // internal：可解析、可取源，但不在 available()
         assert_eq!(normalize_spec("node:internal/errors"), Some("node:internal/errors"));
         assert_eq!(normalize_spec("internal/errors"), Some("node:internal/errors"));

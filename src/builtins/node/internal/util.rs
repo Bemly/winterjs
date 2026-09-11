@@ -80,6 +80,47 @@ function setOwnProperty(obj, key, value) {
 
 const kEmptyObject = Object.freeze({ __proto__: null });
 
-export { normalizeEncoding, spliceOne, setOwnProperty, kEmptyObject };
-export default { normalizeEncoding, spliceOne, setOwnProperty, kEmptyObject };
+
+// ── Phase 9b：streams 系所需（once/sleep/assignFunctionName 逐字，promisify 面）──
+// Node internal/util 的 promisify 在 streams 域只取 { custom }（符号与 node:util 同注册表）。
+const promisify = { custom: Symbol.for('nodejs.util.promisify.custom') };
+
+function once(callback, { preserveReturnValue = false } = {}) {
+  let called = false;
+  let returnValue;
+  return function(...args) {
+    if (called) return returnValue;
+    called = true;
+    const result = Reflect.apply(callback, this, args);
+    returnValue = preserveReturnValue ? result : undefined;
+    return result;
+  };
+}
+
+// Node _sleep 的阻塞实现（Atomics.wait）；运行时主线程禁用，恒 no-op（记档）。
+function sleep(msec) {
+  // Sync sleep unavailable on main thread in winterjs; no-op (deviation).
+}
+
+function assignFunctionName(name, fn, descriptor = {}) {
+  if (typeof name !== 'string') {
+    const symbolDescription = name.description;
+    if (symbolDescription === undefined) {
+      throw new Error('Attempted to name function after descriptionless Symbol');
+    }
+    name = `[${symbolDescription}]`;
+  }
+  return Object.defineProperty(fn, 'name', {
+    __proto__: null,
+    writable: false,
+    enumerable: false,
+    configurable: true,
+    ...Object.getOwnPropertyDescriptor(fn, 'name'),
+    ...descriptor,
+    value: name,
+  });
+}
+
+export { normalizeEncoding, spliceOne, setOwnProperty, kEmptyObject, promisify, once, sleep, assignFunctionName };
+export default { normalizeEncoding, spliceOne, setOwnProperty, kEmptyObject, promisify, once, sleep, assignFunctionName };
 "#;

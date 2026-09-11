@@ -333,6 +333,54 @@ E('ERR_UNHANDLED_ERROR',
   }, Error);
 E('ERR_UNKNOWN_SIGNAL', 'Unknown signal: %s', TypeError, HideStackFramesError);
 
+// ── Phase 9b：streams 系错误码（定义逐字自 node internal/errors.js）────────
+E('ERR_ILLEGAL_CONSTRUCTOR', 'Illegal constructor', TypeError);
+E('ERR_INVALID_RETURN_VALUE', (input, name, value) => {
+  const type = determineSpecificType(value);
+  return `Expected ${input} to be returned from the "${name}"` +
+         ` function but got ${type}.`;
+}, TypeError, RangeError);
+E('ERR_METHOD_NOT_IMPLEMENTED', 'The %s method is not implemented', Error);
+E('ERR_MISSING_ARGS',
+  (...args) => {
+    if (args.length === 0) throw new TypeError('At least one arg needs to be specified');
+    let msg = 'The ';
+    const len = args.length;
+    const wrap = (a) => `"${a}"`;
+    args = args.map((a) => (Array.isArray(a) ? a.map(wrap).join(' or ') : wrap(a)));
+    msg += `${formatList(args)} argument${len > 1 ? 's' : ''}`;
+    return `${msg} must be specified`;
+  }, TypeError);
+E('ERR_MULTIPLE_CALLBACK', 'Callback called multiple times', Error);
+E('ERR_STREAM_ALREADY_FINISHED',
+  'Cannot call %s after a stream was finished',
+  Error);
+E('ERR_STREAM_CANNOT_PIPE', 'Cannot pipe, not readable', Error);
+E('ERR_STREAM_DESTROYED', 'Cannot call %s after a stream was destroyed', Error);
+E('ERR_STREAM_ITER_MISSING_FLAG',
+  'The stream/iter API requires the --experimental-stream-iter flag', TypeError);
+E('ERR_STREAM_NULL_VALUES', 'May not write null values to stream', TypeError);
+E('ERR_STREAM_PREMATURE_CLOSE', 'Premature close', Error);
+E('ERR_STREAM_PUSH_AFTER_EOF', 'stream.push() after EOF', Error);
+E('ERR_STREAM_UNABLE_TO_PIPE', 'Cannot pipe to a closed or destroyed stream', Error);
+E('ERR_STREAM_UNSHIFT_AFTER_END_EVENT',
+  'stream.unshift() after end event', Error);
+E('ERR_STREAM_WRITE_AFTER_END', 'write after end', Error);
+
+// errors.js:172 同款（AggregateError 聚合；errors.errors 已是聚合体则吸收）
+const aggregateTwoErrors = (innerError, outerError) => {
+  if (innerError && outerError && innerError !== outerError) {
+    if (Array.isArray(outerError.errors)) {
+      outerError.errors.push(innerError);
+      return outerError;
+    }
+    const err = new AggregateError([outerError, innerError], outerError.message);
+    err.code = outerError.code;
+    return err;
+  }
+  return innerError || outerError;
+};
+
 export {
   AbortError,
   genericNodeError,
@@ -343,7 +391,8 @@ export {
   formatList,
   hideStackFrames,
   addNumericalSeparator,
+  aggregateTwoErrors,
   kEnhanceStackBeforeInspector,
 };
-export default { AbortError, genericNodeError, codes, determineSpecificType, E, getMessage, formatList, hideStackFrames, addNumericalSeparator, kEnhanceStackBeforeInspector };
+export default { AbortError, genericNodeError, codes, determineSpecificType, E, getMessage, formatList, hideStackFrames, addNumericalSeparator, aggregateTwoErrors, kEnhanceStackBeforeInspector };
 "#;

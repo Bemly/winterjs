@@ -8,6 +8,7 @@
 
 pub mod assert;
 pub mod async_hooks;
+pub mod buffer;
 pub mod child;
 pub mod diagnostics_channel;
 pub mod events;
@@ -19,8 +20,13 @@ pub mod process_;
 pub mod punycode;
 pub mod querystring;
 pub mod require;
+pub mod stream;
+pub mod stream_consumers;
+pub mod stream_promises;
+pub mod stream_web;
 pub mod string_decoder;
 pub mod testmod;
+pub mod timers_promises;
 pub mod trace_events;
 pub mod tty;
 pub mod util;
@@ -53,6 +59,13 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:querystring", querystring::SOURCE),
     ("node:punycode", punycode::SOURCE),
     ("node:string_decoder", string_decoder::SOURCE),
+    // Phase 9b
+    ("node:buffer", buffer::SOURCE),
+    ("node:stream", stream::SOURCE),
+    ("node:stream/promises", stream_promises::SOURCE),
+    ("node:stream/consumers", stream_consumers::SOURCE),
+    ("node:stream/web", stream_web::SOURCE),
+    ("node:timers/promises", timers_promises::SOURCE),
     ("node:diagnostics_channel", diagnostics_channel::SOURCE),
     ("node:trace_events", trace_events::SOURCE),
     ("node:tty", tty::SOURCE),
@@ -84,6 +97,13 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "diagnostics_channel" => Some("node:diagnostics_channel"),
         "trace_events" => Some("node:trace_events"),
         "tty" => Some("node:tty"),
+        // Phase 9b
+        "buffer" => Some("node:buffer"),
+        "stream" => Some("node:stream"),
+        "stream/promises" => Some("node:stream/promises"),
+        "stream/consumers" => Some("node:stream/consumers"),
+        "stream/web" => Some("node:stream/web"),
+        "timers/promises" => Some("node:timers/promises"),
         _ => None,
     }
 }
@@ -147,6 +167,20 @@ mod tests {
         assert!(source("node:diagnostics_channel").is_some());
         assert!(source("node:trace_events").is_some());
         assert!(source("node:tty").is_some());
+        // Phase 9b
+        assert_eq!(normalize_spec("buffer"), Some("node:buffer"));
+        assert_eq!(normalize_spec("node:stream"), Some("node:stream"));
+        assert_eq!(normalize_spec("stream/promises"), Some("node:stream/promises"));
+        assert_eq!(normalize_spec("node:stream/web"), Some("node:stream/web"));
+        assert_eq!(normalize_spec("timers/promises"), Some("node:timers/promises"));
+        assert_eq!(normalize_spec("node:internal/streams/readable"), Some("node:internal/streams/readable"));
+        assert!(source("node:buffer").is_some());
+        assert!(source("node:stream").is_some());
+        assert!(source("node:stream/promises").is_some());
+        assert!(source("node:stream/consumers").is_some());
+        assert!(source("node:stream/web").is_some());
+        assert!(source("node:timers/promises").is_some());
+        assert!(source("node:internal/streams/readable").is_some());
         assert!(source("node:internal/querystring").is_some());
         // internal：可解析、可取源，但不在 available()
         assert_eq!(normalize_spec("node:internal/errors"), Some("node:internal/errors"));

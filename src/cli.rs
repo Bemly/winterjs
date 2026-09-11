@@ -64,27 +64,27 @@ pub struct Cli {
     #[arg(short = 'i', long = "install", value_name = "PKG", num_args = 1..)]
     pub install: Vec<String>,
 
-    /// Publish the current package (Phase 5d; dry-run validates only)
+    /// Publish the current package (dry-run validates only)
     #[arg(short = 'p', long = "publish")]
     pub publish: bool,
 
-    /// Log in to a registry (Phase 5d; stores a token in ~/.npmrc)
+    /// Log in to a registry (stores a token in ~/.npmrc)
     #[arg(long = "login")]
     pub login: bool,
 
-    /// Self-upgrade winterjs (Phase 5d; needs WINTERJS_UPDATE_GITHUB=owner/repo)
+    /// Self-upgrade winterjs (needs WINTERJS_UPDATE_GITHUB=owner/repo)
     #[arg(short = 'u', long = "upgrade")]
     pub upgrade: bool,
 
-    /// Scaffold a new package (Phase 7)
+    /// Scaffold a new package
     #[arg(long = "init", value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
     pub init: Option<String>,
 
-    /// Start an interactive REPL (Phase 7)
+    /// Start an interactive REPL
     #[arg(long = "repl")]
     pub repl: bool,
 
-    /// Run test files (Phase 7)
+    /// Run test files
     #[arg(short = 't', long = "test", value_name = "PATH", num_args = 0..)]
     pub test: Option<Vec<String>>,
 
@@ -96,7 +96,7 @@ pub struct Cli {
     #[arg(short = 'f', long = "fmt", value_name = "ARGS", num_args = 0.., allow_hyphen_values = true)]
     pub fmt: Option<Vec<String>>,
 
-    /// Serve a directory over HTTP (Phase 6)
+    /// Serve a directory over HTTP
     #[arg(short = 's', long = "serve", value_name = "DIR", num_args = 0..=1, default_missing_value = ".")]
     pub serve: Option<String>,
 
@@ -197,7 +197,7 @@ pub struct Cli {
     pub perms: PermissionArgs,
 }
 
-/// `--allow-*` 权限旗标（Phase 8-b；任一出现即进沙箱，Bun 同款 opt-in）。
+/// `--allow-*` 权限旗标（任一出现即进沙箱，Bun 同款 opt-in）。
 /// 旗标无值 = 该类全开；`=a,b` 或重复出现 = 允许清单。
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PermissionArgs {

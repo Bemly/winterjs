@@ -26,18 +26,18 @@ arg:
     help: "全局安装软件包（共享数据目录）"
     value: "包"
   publish:
-    help: "发布当前软件包（Phase 5d；dry-run 仅校验）"
+    help: "发布当前软件包（dry-run 仅校验）"
   login:
-    help: "登录 registry（Phase 5d；令牌存入 ~/.npmrc）"
+    help: "登录 registry（令牌存入 ~/.npmrc）"
   upgrade:
-    help: "自升级 winterjs（Phase 5d；需要 WINTERJS_UPDATE_GITHUB=owner/repo）"
+    help: "自升级 winterjs（需要 WINTERJS_UPDATE_GITHUB=owner/repo）"
   init:
-    help: "新建软件包脚手架（Phase 7）"
+    help: "新建软件包脚手架"
     value: "名称"
   repl:
-    help: "启动交互式 REPL（Phase 7）"
+    help: "启动交互式 REPL"
   test:
-    help: "运行测试文件（Phase 7）"
+    help: "运行测试文件"
     value: "路径"
   lint:
     help: "转发给项目自带的 oxlint（透传；参数原样交给 oxlint）"
@@ -46,7 +46,7 @@ arg:
     help: "转发给项目自带的 oxfmt（透传；参数原样交给 oxfmt）"
     value: "参数"
   serve:
-    help: "通过 HTTP 提供目录服务（Phase 6）"
+    help: "通过 HTTP 提供目录服务"
     value: "目录"
   args:
     help: "传给 --run 的脚本参数（即 `process.argv.slice(2)`）"

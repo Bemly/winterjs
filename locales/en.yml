@@ -26,18 +26,18 @@ arg:
     help: "Install packages globally (shared data directory)"
     value: "PKG"
   publish:
-    help: "Publish the current package (Phase 5d; dry-run validates only)"
+    help: "Publish the current package (dry-run validates only)"
   login:
-    help: "Log in to a registry (Phase 5d; stores a token in ~/.npmrc)"
+    help: "Log in to a registry (stores a token in ~/.npmrc)"
   upgrade:
-    help: "Self-upgrade winterjs (Phase 5d; needs WINTERJS_UPDATE_GITHUB=owner/repo)"
+    help: "Self-upgrade winterjs (needs WINTERJS_UPDATE_GITHUB=owner/repo)"
   init:
-    help: "Scaffold a new package (Phase 7)"
+    help: "Scaffold a new package"
     value: "NAME"
   repl:
-    help: "Start an interactive REPL (Phase 7)"
+    help: "Start an interactive REPL"
   test:
-    help: "Run test files (Phase 7)"
+    help: "Run test files"
     value: "PATH"
   lint:
     help: "Forward to the project's oxlint (passthrough; args go to oxlint verbatim)"
@@ -46,7 +46,7 @@ arg:
     help: "Forward to the project's oxfmt (passthrough; args go to oxfmt verbatim)"
     value: "ARGS"
   serve:
-    help: "Serve a directory over HTTP (Phase 6)"
+    help: "Serve a directory over HTTP"
     value: "DIR"
   args:
     help: "Script arguments for --run (as `process.argv.slice(2)`)"

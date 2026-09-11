@@ -91,7 +91,7 @@
   `cargo test` 36+5 全绿，0 警告保持。未接线轮子（jsonc-parser/linkme/petgraph 等）
   按需顺延，不为用而用。
 
-## Phase 3 — Web API（WinterCG 兼容层，开工 2026-09-10，切片 a 进行中）
+## Phase 3 — Web API（WinterCG 兼容层，已完工 2026-09-11）
 
 - 目标：fetch/编码/流/加密可用。
 - 引入依赖：`reqwest`（§2 门控）、`url`+`data-url`、`base64`+`percent-encoding`+
@@ -147,7 +147,7 @@
   byobRequest；字节流纯按需 pull）+ loader http(s)（批5：绝对直通/远端相对
   join/独立线程 reqwest，黑盒 2 例）。c-4x 前的“顺延”字样作废。
 
-## Phase 4 — Node 兼容垫片（开工 2026-09-10，切片 a 进行中）
+## Phase 4 — Node 兼容垫片（已完工 2026-09-11）
 
 - 目标：`node:fs/path/os/process/child_process` 跑起来。
 - 引入依赖：`sysinfo`+`if-addrs`+`mac_address`+`uzers`+`sys-locale`、`which`、
@@ -193,7 +193,7 @@
   Buffer 全局（Uint8Array 子类，hex/b64/utf8 等）+ fs 流（createRead/WriteStream，
   Web 流外形）。“已知缺口”段作废；孙进程 win 组杀留 CI（mac 无法验证）。
 
-## Phase 5 — 包管理（install/publish/upgrade，开工 2026-09-10，切片 a 进行中）
+## Phase 5 — 包管理（install/publish/upgrade，已完工 2026-09-11）
 
 - 目标：`winterjs add -a <pkg>`（工程本地）/ `winterjs install -a <pkg>`（全局）端到端。
 - 引入依赖：`semver`+`deno_semver`、`tar`+`zip`（§2 门控）+`flate2`、`ssri`、
@@ -410,7 +410,7 @@
 - Phase 7 完工（2026-09-11）：sqlite/REPL/test/init/watch/FFI，
   `cargo test` 55+141 全绿，0 警告，冒烟 5/5。
 
-## Phase 8 — polish（lint/权限/远程缓存/上报，开工 2026-09-11，权限先行）
+## Phase 8 — polish（lint/权限/远程缓存/上报，已完工 2026-09-11）
 
 - 目标：发布前收尾。
 - 引入依赖：`winterjs lint/fmt` 走外部 CLI 穿透（oxc 门面无 linter/formatter 特性，

@@ -555,8 +555,30 @@
   记档缺口（非 9b）：全局 setTimeout 返回裸 number（无 Timeout 对象
   refresh/unref/ref）、全局 setImmediate 缺失（process/timers 全局面）。
   黑盒 +7（buffer 六编码+报错三件/Blob/RW 核心/duplex-transform-pipeline/
-  from-iterator/web+consumers/timers-promises）；`cargo test` 102+201 全绿，
+  from-iterator/web+consumers/timers-promises）；`cargo test` 102+202 全绿，
   冒烟 5/5。踩坑记 AGENTS §4.32。
+- [x] 9c fs 补齐（2026-09-12 完工）：
+  native +16（read_link/link/symlink/truncate/utimes/chmod/access/open/close/
+  read_fd/write_fd/ftruncate/fstat/fchmod/futimes/fsync），**全 std 零新 crate**
+  （dependencies2.md §9c 口径：fs-err + std + tokio fs；utimes 走 File::set_times、
+  chmod 走 PermissionsExt、stat unix 元字段走 MetadataExt/FileTypeExt）；
+  fd 表为进程级合成号（自 3 起单调不复用，记档；EBADF 入 io_code）；
+  `read(fd,…)` 经 native 返回新 Uint8Array + JS 层 `.set()` 写回用户 buffer——
+  零新 UNSAFE-BOUNDARY（§0.6 证伪路线）；access 的 X_OK 近似 mode 搜索位（记档）。
+  JS 面：同步增补（accessSync/truncateSync/utimesSync/chmodSync/linkSync/
+  symlinkSync/readlinkSync/cpSync 递归/opendirSync）、fd 系（openSync 返回数字 fd/
+  readSync/writeSync/closeSync/fstatSync/ftruncateSync/fchmodSync/futimesSync/
+  fsyncSync/fdatasyncSync）、flags 字符串全表（r/r+/w/wx/w+/a/ax/a+/ax+；数字
+  位值取 Linux 口径，记档）、__Stats 补 dev/ino/nlink/uid/gid/rdev/blksize/blocks +
+  FIFO/socket/block/char 判定、`Stats`/`Dirent`/`Dir`（惰性游标 + 同步/异步迭代器，
+  记档非真流式）、`FileHandle`（read/write/stat/truncate/chmod/utimes/sync/datasync/
+  readFile/writeFile/appendFile/close）、**回调全家 28 API**（err-first，queueMicrotask
+  派发，util.promisify 互操作）、`fs.promises` 挂 node:fs 本体、fs/promises 反向
+  re-export 免环；writeFileSync/readFileSync 支持 `flag`；writeFile `mode` 仅新建
+  应用（记档近似）。记档不做：chown/lchmod/lutimes/statfs/watchFile（std 无
+  syscall 底座，验收子集不含）。
+  黑盒 +3（同步 extras/FileHandle+promises/回调全家）；`cargo test` 102+205 全绿，
+  冒烟 5/5。踩坑记 AGENTS §4.33。
 
 ## 全局纪律
 

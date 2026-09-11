@@ -432,6 +432,23 @@ cargo build
 - 复现：`tests/node.rs::phase9b_stream_duplex_transform_pipeline`
   （compose Duplex 分支修前报 `Duplex is not a constructor`）。
 
+### 4.33 fs 补齐三坑（2026-09-12，Phase 9c）
+
+- 症状一：`openSync(p, "wx")` 对不存在文件报 ENOENT（应创建）。根因：JS 侧
+  flags JSON 发 `createNew`，Rust `OpenFlags` 结构体字段 `create_new` 按
+  serde 默认名匹配不上 → 静默 false → 无 O_CREAT（§4.29 二进宫：跨 JS/Rust
+  JSON 边界一律 camelCase 线名 + `#[serde(rename)]`，新结构先写 roundtrip 测）。
+- 症状二：`openSync` 返回值传 `readSync` 报 `fd must be a number`。根因：native
+  经 `set_rval_str` 返回的 fd 是**字符串**，JS 侧忘了 `Number()` 包装。教训：
+  本仓 native 数值返回统一走字符串，JS 层负责转数。
+- 症状三：fd 写入报 `UNKNOWN`。根因：`io_code` errno 表缺 9 → EBADF。教训：
+  新增 syscall 面（fd 系）前先对照 `io_code` 码表补 errno 映射。
+- 探针侧：回调 API 黑盒里相互独立的异步链会交错执行，内容断言全脆——
+  修法：严格嵌套链 + 内容断言只放链内确定点；另核实三个"断言错、实现对"：
+  `"hello!"` 是 6 字节、`statSync` 对 symlink `isSymbolicLink()` 为 false（跟随
+  语义，Node 同款）、readFile ENOENT 的 `err.syscall` 是 `"open"`。
+- 复现：`tests/node.rs::phase9c_fs_sync_extras`（wx 修前 ENOENT）。
+
 
 ## 5. 路线图（按序）
 

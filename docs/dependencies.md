@@ -88,7 +88,7 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 - `turso`：`default-features=false` + `pure-rust-crypto`（禁 `mimalloc`，远程 `sync` 先不开——
   0.6 的 `sync` 特性还硬绑 hyper-tls/native-tls，双保险）。0.7 全线 icu 死锁，2026-09-10
   用户拍板钉 `=0.6.1` 复入构建图（无 icu，实测同图通过、图中无 mimalloc）。
-- `russh`：选 ring 后端，禁 `aws-lc`（cmake 重）。
+- `russh`（已移除备查，2026-09-11）：在图时选 ring 后端，禁 `aws-lc`（cmake 重）。
 - `rcgen`：默认即 ring 后端，禁 `aws-lc-rs`/`fips` 特性。
 - `vergen` → `vergen-gitcl`：10 系起 git 支持拆到独立 crate；build-dependency 引
   `vergen-gitcl`（调 git CLI 取 commit），禁 `git`（→`git2` 的 C）。
@@ -103,7 +103,7 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
   TLS 走 reqwest-no-provider + 全图 ring `install_default` 即可用，无需自实现；
   `sentry::init` 内部 `apply_defaults` 自动装默认集成（panic/context/stacktrace）
   与 DefaultTransportFactory。
-- `object_store`：只进默认 `fs`；`http`/`aws`/`azure`/`gcp` 全部硬绑 aws-lc，禁。
+- `object_store`（已移除备查，2026-09-11）：在图时只进默认 `fs`；`http`/`aws`/`azure`/`gcp` 全部硬绑 aws-lc，禁。
 - `instant-acme`：`default-features=false` + `ring`；`default` 和 `hyper-rustls`
   特性都拖 aws-lc，禁。接线附记（2026-09-11 实测）：`hyper-rustls` 禁后
   `Account::builder()`（同特性门控）不可用——改 `builder_with_http` +
@@ -499,7 +499,7 @@ multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 ax
 ## 12. 含 C/C++ 依赖说明（特许＋豁免＋门控禁掉之后，只剩注释）
 
 - `mozjs`（C++ 引擎，⚠️ 唯一特许）：预构建，无需本地编译，见 AGENTS.md §6。
-- TLS 链已豁免：`ring`（C+asm，经 `rustls`/`rcgen`/`russh` 间接）是 Rust 生态无纯实现环节的最轻选项
+- TLS 链已豁免：`ring`（C+asm，经 `rustls`/`rcgen` 间接）是 Rust 生态无纯实现环节的最轻选项
   （经 cc、无 cmake，比 `aws-lc` 轻一个量级）。
 - `mimalloc`（C）：只出现在 `turso` 默认特性里，§2 门控禁掉，不进构建。
 - `zstd`/`rusqlite` bundled/`tikv-jemallocator` 的 C 已随换轮子出局（§3/§6/§9）。
@@ -594,5 +594,5 @@ multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 ax
 2. `turso` **已了结（2026-09-10 用户拍板）：钉 `=0.6.1`，0.7 的 icu 死锁绕开**；
    库龄不足一年、`sync` 硬绑 native-tls（不开）、OHOS 待 CI。
 3. TLS 豁免已记录（§1/§12）：`reqwest`/`rustls`/`tokio-rustls`/`platform-verifier`/
-   `oauth2`/`sentry`/`self_update`/`object_store`/`rcgen`/`russh` 的 ring 后端不再标 ⚠️ 理由，
+   `oauth2`/`sentry`/`self_update`/`rcgen` 的 ring 后端不再标 ⚠️ 理由，
    但 §2 的后端选择门控继续有效（禁 aws-lc/cmake、禁 native-tls）。

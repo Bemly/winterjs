@@ -402,8 +402,12 @@ git 附记（2026-09-10 实测）：`gix` 默认特性无网络客户端（`bloc
 （构建期 vergen-gitcl 同款前例；缺二进制即报可读错），本地 `file://`/路径走
 `gix` open + rev-parse（无需 git 二进制）；特性门控维持现状，不为远端克隆加特性。
 `normpath` 做 `--allow-read` 沙箱前的路径归一；`cap-std` 是权限模型的后期轮子。
-`oauth2`（publish 登录）/`sentry`（崩溃上报）/`object_store`（远程缓存）/`russh`（私有仓 SSH）
-都是后期，届时再引入。
+偏离（2026-09-11 用户拍板）：`object_store`/`russh`/`keyring`/`netstat2` 四个已从
+`Cargo.toml` 移除（构建图不再含；§8 表格行保留备查）——`object_store` 只剩 fs 与
+`cache.rs` 重复、`russh` 被 git CLI 全覆盖、`keyring` 与 npm 明文口径冲突、
+`netstat2` 有 TOCTOU（见 plan Phase 5/6/8 尾“不再做”）；`cap-std`/`console-subscriber`
+保留（前者权限模型后续可用，后者 dev 手动 `RUSTFLAGS` 接）。
+`oauth2`（publish 登录）/`sentry`（崩溃上报）已接线。
 npmrc 附记（2026-09-10 实测）：`rust-ini` 把 `:` 也当键值分隔符
 （`parse_str_until(&[Some('='), Some(':')])`），会从冒号处切断 npmrc 的
 `//<host>/:_authToken` 与 `@<scope>:registry` 键，不适合解析 npmrc；

@@ -391,6 +391,20 @@ cargo build
   从后缀无法知道作者意图——与 Vite 一样按 Web 开发上下文判 JS 源码。
   真要服 MPEG-TS 视频请用 `.m2ts`/`.m2t` 后缀（同表，无歧义），不要用 `.ts`。
 
+### 4.31 Node CJS → ESM 移植三坑（2026-09-12，Phase 9a）
+
+- 症状一：`import { codes: { X } } from 'm'` 报 `Expected ',' or '}'`——import 绑定
+  不支持嵌套解构（CJS `const { codes: { X } } = require(...)` 的习惯带进 ESM）。
+  修法：`import errors from 'm'` 后再解构（node/internal 四处）。
+- 症状二：`return { [Symbol.dispose]() { ...this.end / currentContext.set(this, ...) } }`
+  里的 `this` 指向**返回的对象字面量本身**，不是外层通道/ALS——静默错绑不报错
+  （BoundedChannel.withScope 报 undefined、ALS.__wjsWithScope 静默污染，两次踩中）。
+  修法：`const self = this` 闭包捕获。
+- 症状三：`dc.subscribe` 不返回退订函数（Node 同款返回 undefined），黑盒想当然存
+  返回值致退订恒 false。教训：黑盒设计前先核对 Node 套件原文断言，勿凭记忆。
+- 复现：phase9a_diagnostics_channel_surface（修前 `outside [object Object]`）。
+
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

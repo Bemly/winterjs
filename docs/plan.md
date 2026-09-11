@@ -490,6 +490,43 @@
   收尾计数（2026-09-11 实测）：`cargo test` 100（单测）+176（黑盒）全绿
   （另 alloc 探针 1 过 1 忽略）；`cargo build` 0 警告；冒烟 5/5。
 
+## Phase 9 — node: 落地（plan2.md，2026-09-12 立项）
+
+- 目标：node: 兼容先到 deno 高度（全 23 + 半 16），终局全实现（除 plan2 §4 不做项）。
+  切片/对标矩阵/依赖映射见 `docs/plan2.md` + `docs/dependencies2.md`
+  （9a–9e 全部轮子已在闭包内，零新 crate；hyper/quinn 已拍板未引入）。
+- 架构变化：node: 内嵌源经**绝对 `node:` URL 互引**（resolve 不依赖 base）；
+  `node:internal/*` 共享小件入表但**不进 `available()`**（只供互引）。
+- [x] 9a 纯 JS 先行（2026-09-12 完工）：
+  `node:events`（全语义：errorMonitor/captureRejections/kEmitting 可变数组快照/
+  shapeMode/once+AbortSignal/on 异步迭代器水位+close/静态面（Node module.exports 同款）/
+  EventEmitterAsyncResource）；
+  `node:async_hooks`（ALS/AsyncResource 实做：构造期上下文快照 + runInAsyncScope 传播 +
+  bind/snapshot；createHook/executionAsyncId stub 口径；**跨 await 传播不支持**——
+  引擎无 async_hooks 原语，记档）；
+  `node:util`（format 占位符逐字/promisify(custom+DEP0174)/callbackify(falsy 包裹)/
+  inherits/deprecate/isDeepStrictEqual(严格面务实重写：循环 memo/无序 Map/Set/
+  TypedArray 内容/原型同一性)/toUSVString/convertProcessSignalToExitCode/debuglog/
+  styleText(最小表)/legacy is*(DEP0044-57)；parseArgs/parseEnv/MIME/getSystemError*
+  顺延记档）+ `node:util/types`；
+  `node:querystring`（escape/unescape/stringify/parse 逐字）+ internal/querystring；
+  `node:punycode`（punycode.js 2.1.0 逐字，RFC 3492 向量过）；
+  `node:string_decoder`（纯 JS：utf8 经 TextDecoder 流式 + lastChar 预扫描/
+  utf16 奇尾 FFFD flush/base64 组缓存/hex/latin1/ascii；legacy lastNeed/lastTotal 面保持）；
+  `node:diagnostics_channel`（惰性激活原型切换/publish/bindStore/runStores(ALS 集成)/
+  TracingChannel traceSync/tracePromise/traceCallback 五窗口；using/DisposableStack →
+  手动 dispose、WeakRefMap → Map，记档）；
+  `node:trace_events`（JS 侧类别集；native CategorySet 面记档）；
+  `node:tty`（薄面：isatty 走既有 stdio native、setRawMode 标志位、基座 EventEmitter，
+  net 未落地记档）。
+  `node:internal/*` 九件（errors E 机制+消息逐字/validators/fixed_queue 逐字/util/
+  util/inspect(format 逐字+inspect 务实重写)/util/types/events:abort_listener/
+  events:symbols/event_target）；primordials 还原直调，引擎差异实测
+  （`Error.captureStackTrace`+`stackTraceLimit` 可用，hideStackFrames 保真），
+  偏差逐条记模块头注。process prelude 补 `emitWarning`+`on('warning')`。
+  黑盒 +18（Node 套件命名子集断言、消息逐字）；`cargo test` 102+194 全绿，
+  0 警告，冒烟 5/5。踩坑记 AGENTS §4.31。
+
 ## 全局纪律
 
 - 每 Phase 开工前更新本计划对应节；完工打钩并 commit。

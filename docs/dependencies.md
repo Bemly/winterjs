@@ -196,7 +196,7 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 补全脚本 | `clap_complete` | 4.6.9 | 2021-12-31 | 2026-08-06 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | man 手册 | `clap_mangen` | 0.3.3 | 2022-02-08 | 2026-08-12 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 版本信息 | `vergen` | 10.0.3 | 2015-02-12 | 2026-08-24 | ✅（§2 门控） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 版本信息 | `vergen-gitcl` | 10.0.3 | 2015-02-12 | 2026-08-24 | ✅（§2 门控） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 终端样式 | `console` | 0.16.4 | 2017-05-09 | 2026-07-01 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 进度条 | `indicatif` | 0.18.6 | 2017-04-26 | 2026-07-01 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 交互问答 | `dialoguer` | 0.12.0 | 2017-05-11 | 2025-08-23 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -211,7 +211,7 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 | CLI 双语 | `rust-i18n` | 4.2.2 | 2021 | 2026 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 备注：`rustyline`/`self_update` 的移动端格是“功能不需要”（REPL/自升级是桌面功能，
-模块可 cfg 门控），不是编不过。`vergen` 开 `gitcl`（调 git CLI），禁 `git`（→`git2` 的 C）。
+模块可 cfg 门控），不是编不过。`vergen-gitcl` 开 `build`（调 git CLI），禁 `git`（→`git2` 的 C）。
 `shlex` 做 `bunx` 式参数透传的 shell 切词；`humantime`/`bytesize` 解析 `--timeout 30s`/`--max-old-space 512MB`；
 `askama`（编译期模板）做 `winterjs init` 脚手架。
 `rust-i18n` 审计（2026-09-11，用户拍板引入）：longbridge 出品（2021 起，4.2.2），MIT；
@@ -242,8 +242,9 @@ OHOS 因 `target_os="linux"` 命中同一分支；`simd-json` 加速门控只看
 `linkme` 做 builtin 分布式注册（各 builtin 文件自注册，杀掉中央手写清单）；
 `phf` 做 op 名/状态码等静态表；`petgraph` 做模块图的环检测＋拓扑序；
 `target-lexicon` 给 `--target` 交叉构建参数用；`include_dir` 把 JS builtin 打进二进制。
-转译错误经 `miette` 渲染；快照用 `insta`（§11）；`oxc` 系自带 linter/formatter，
-`winterjs lint/fmt` 按需开特性，不另引轮子。
+转译错误经 `miette` 渲染；快照用 `insta`（§11）；`oxc` 门面无 linter/formatter
+特性（`oxc_linter` 未发布、`oxc_formatter` 占位，见 §14），`winterjs lint/fmt`
+走外部 CLI 穿透（`src/lintfmt.rs`），不另引轮子。
 
 ## 6. Web API：fetch / 编码 / WebSocket / 重试 / Cookie / TLS 文件
 
@@ -352,7 +353,7 @@ c-4 增补（2026-09-10 用户拍板）：`sha2_010`（sha2 0.10 改名直引，
 | 路径规范化 | `dunce` | 1.0.5 | 2017-11-22 | 2024-08-04 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 相对路径 | `pathdiff` | 0.2.3 | 2017-09-20 | 2024-11-25 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 沙箱 join | `normpath` | 1.5.1 | 2020-11-09 | 2026-05-05 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 能力 fs（后期） | `cap-std` | 4.0.3 | 2020-06-25 | 2026-08-20 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
+| 能力 fs（后期，optional） | `cap-std` | 4.0.3 | 2020-06-25 | 2026-08-20 | ✅（optional，`cap-std` 开关） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
 | 可执行查找 | `which` | 8.0.6 | 2015-10-06 | 2026-08-26 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 目录遍历 | `walkdir` | 2.5.0 | 2015-09-27 | 2024-03-01 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | glob 展开 | `glob` | 0.3.4 | 2014-11-11 | 2026-07-21 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -559,6 +560,9 @@ multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 ax
   下载/`build=false`/默认只 `libc`），但 `notify` 不处理 `@` 抽象套接字
   （直 `connect(path)`，测试也只盖文件路径），真 systemd 默认形态即回归；
   现 30 行手写（`src/serve.rs`，`@` 专测钉住）更正确，留用。
+- `process-wrap`（2026-09-11 用户拍板不用）：watchexec 进程组包装（`command-group`
+  血统），底细干净但只替 spawn wrapper（组长/JobObject），进程表/超时/pipe
+  照样手写；双路径重构 + Win 语义 mac 上验不到，收益兑现不了，维持手写。
 - `oxc_linter`/`oxc_formatter`（2026-09-11 顺延，非否决）：oxc 门面无
   linter/formatter 特性；`oxc_linter` 未发布 crates.io，`oxc_formatter` 为
   2023 年 0.0.0 占位。git vendor 需拖未发布 workspace，不入表。`winterjs

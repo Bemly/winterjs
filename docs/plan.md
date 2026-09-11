@@ -334,9 +334,9 @@
 
 - 目标：对标 Bun 的单体体验。
 - 引入依赖：`turso`（§2 门控）、`rustyline`、`notify`+`notify-debouncer-mini`、
-  `libloading`（bun:ffi）、`similar`（prod reporter）、`askama`（init 模板）、
-  `keyring`（后期 login 令牌）。
-- 做：`bun:sqlite` 兼容层（turso 之上）、REPL（含 oxc 高亮，§13）、
+  `libloading`（bun:ffi）、`similar`（prod reporter）、`askama`（init 模板）。
+  `keyring` 已移除（npm 明文口径，见 §5 尾）。
+- 做：`bun:sqlite` 兼容层（turso 之上）、REPL（手写高亮，oxc Lexer 私有，§13）、
   `winterjs test`（watch 模式、`--filter` glob）、`winterjs init`、
   FFI（dlopen 直通，unsafe 审计从严）。
 - 验收：REPL 多行粘贴可用；test 输出格式对标（diff 着色）。
@@ -413,9 +413,10 @@
 ## Phase 8 — polish（lint/权限/远程缓存/上报，开工 2026-09-11，权限先行）
 
 - 目标：发布前收尾。
-- 引入依赖：oxc 自带 linter/formatter（开特性）、`cap-std`（权限模型）、
-  `object_store`（远程缓存，后期）、`sentry`（默认关闭，后期）、`russh`（私有仓，后期）。
-- 做：`winterjs lint/fmt`、权限开关（`--allow-*`，cap-std 打底）、崩溃上报 opt-in。
+- 引入依赖：`winterjs lint/fmt` 走外部 CLI 穿透（oxc 门面无 linter/formatter 特性，
+  见 dependencies §14）、`cap-std`（权限模型，`optional` feature 按需）、
+  `sentry`（默认关闭 opt-in）。`object_store`/`russh` 已移除（见 §5 尾）。
+- 做：`winterjs lint/fmt`、权限开关（`--allow-*`，边界校验打底，`cap-std` 后续可用）、崩溃上报 opt-in。
 - 验收：沙箱模式下越界 fs 访问默认拒绝并给出可读错误（权限为 opt-in：
   不传 `--allow-*` 行为不变，Bun 同款；传任一 `--allow-*` 即进沙箱，
   未授权类默认拒绝）。

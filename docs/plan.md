@@ -178,7 +178,7 @@
 
 ## Phase 5 — 包管理（install/publish/upgrade，开工 2026-09-10，切片 a 进行中）
 
-- 目标：`winterjs install <pkg>` 端到端。
+- 目标：`winterjs add -a <pkg>`（工程本地）/ `winterjs install -a <pkg>`（全局）端到端。
 - 引入依赖：`semver`+`deno_semver`、`tar`+`zip`（§2 门控）+`flate2`、`ssri`、
   `fs4`、`dirs`、`gix`（git 依赖）、`indicatif`+`dialoguer`+`console`、
   `spdx`+`rust-ini`（npmrc）、`self_update`、`remove_dir_all`、`reflink-copy`、

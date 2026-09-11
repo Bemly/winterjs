@@ -11,8 +11,10 @@ cmd:
     about: "打印指定 shell 的补全脚本"
   man:
     about: "打印 roff 手册页到标准输出（主页 + 每个子命令一页）"
+  add:
+    about: "给当前工程添加软件包（本地 node_modules）"
   install:
-    about: "从 npm registry 安装软件包（Phase 5；先用 dry-run）"
+    about: "全局安装软件包（共享数据目录）"
   publish:
     about: "发布当前软件包（Phase 5d；dry-run 仅校验）"
   login:
@@ -88,10 +90,19 @@ arg:
     shell:
       help: "要生成补全脚本的 shell"
       value: "Shell"
+  add:
+    packages:
+      help: "软件包 spec（`name[@range]`、`@scope/name[@range]`）"
+      value: "包"
+    dry_run:
+      help: "只求解并打印依赖树，不写任何文件"
+    registry:
+      help: "Registry 基地址（默认 https://registry.npmjs.org）"
+      value: "注册表地址"
   install:
     packages:
-      help: "软件包 spec（`name[@range]`、`@scope/name[@range]`）；留空则读 package.json（5b）"
-      value: "软件包"
+      help: "软件包 spec（`name[@range]`、`@scope/name[@range]`）"
+      value: "包"
     dry_run:
       help: "只求解并打印依赖树，不写任何文件"
     registry:

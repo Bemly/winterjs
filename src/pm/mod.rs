@@ -24,17 +24,32 @@ pub fn effective_registry(cwd: &std::path::Path, cli: Option<&str>) -> String {
     url
 }
 
-/// `winterjs install [pkgs...] [--dry-run] [--registry URL]`。
-/// registry 优先级（5d-d1）：flag > `NPM_CONFIG_REGISTRY` env > `<cwd>/.npmrc` >
-/// `$HOME/.npmrc` > 内建默认（见 `npmrc`）。
-pub async fn install(packages: &[String], dry_run: bool, registry: Option<&str>) -> Result<(), Error> {
-    if packages.is_empty() {
-        return Err(Error::Other(
-            "install with no packages needs package.json (slice 5b)".into(),
-        ));
+/// 全局安装根：`WINTERJS_GLOBAL_ROOT`（测试隔离/用户覆盖）> 系统数据目录
+///（`dirs::data_dir/winterjs/global`；macOS 下即 `~/Library/Application Support/...`）。
+pub fn global_root() -> Result<std::path::PathBuf, Error> {
+    if let Ok(v) = std::env::var("WINTERJS_GLOBAL_ROOT")
+        && !v.trim().is_empty()
+    {
+        return Ok(std::path::PathBuf::from(v));
     }
-    let cwd = std::env::current_dir().map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
-    let registry = effective_registry(&cwd, registry);
+    let base = dirs::data_dir().ok_or_else(|| Error::Other("cannot find data directory".into()))?;
+    Ok(base.join("winterjs").join("global"))
+}
+
+/// `winterjs add -a <pkgs> [--dry-run] [--registry URL]`（工程本地，root=cwd）与
+/// `winterjs install -a <pkgs> ...`（全局，root=`global_root()`）共用体。
+/// registry 优先级（5d-d1）：flag > `NPM_CONFIG_REGISTRY` env > `<root>/.npmrc` >
+/// `$HOME/.npmrc` > 内建默认（见 `npmrc`）。
+pub async fn install_to(
+    root: &std::path::Path,
+    packages: &[String],
+    dry_run: bool,
+    registry: Option<&str>,
+) -> Result<(), Error> {
+    if packages.is_empty() {
+        return Err(Error::Other("specify packages with -a/--add".into()));
+    }
+    let registry = effective_registry(root, registry);
     // 请求分流（registry 走 packument 求解；git 走 rev 解析，各自独立）。
     let mut reg_specs = Vec::with_capacity(packages.len());
     let mut git_specs = Vec::new();
@@ -55,7 +70,7 @@ pub async fn install(packages: &[String], dry_run: bool, registry: Option<&str>)
     .map_err(Error::Other)?;
     let mut git_shown = Vec::with_capacity(git_specs.len());
     for g in &git_specs {
-        git_shown.push(git::resolve_for_dry_run(g, &cwd).map_err(Error::Other)?);
+        git_shown.push(git::resolve_for_dry_run(g, root).map_err(Error::Other)?);
     }
     if dry_run {
         for r in &tree {
@@ -66,5 +81,5 @@ pub async fn install(packages: &[String], dry_run: bool, registry: Option<&str>)
         }
         return Ok(());
     }
-    install::install_all(&cwd, &tree, &git_specs).await
+    install::install_all(root, &tree, &git_specs).await
 }

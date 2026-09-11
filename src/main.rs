@@ -147,8 +147,22 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             clap_complete::generate(shell, &mut cmd, "winterjs", &mut std::io::stdout().lock());
             Ok(())
         }
+        Cmd::Add { packages, dry_run, registry } => {
+            let cwd = std::env::current_dir()
+                .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+            pm::install_to(&cwd, &packages, dry_run, registry.as_deref()).await
+        }
         Cmd::Install { packages, dry_run, registry } => {
-            pm::install(&packages, dry_run, registry.as_deref()).await
+            let root = pm::global_root()?;
+            pm::install_to(&root, &packages, dry_run, registry.as_deref()).await?;
+            if !dry_run {
+                println!("global root: {}", root.display());
+                println!(
+                    "add {} to PATH to use installed bins",
+                    root.join("node_modules").join(".bin").display()
+                );
+            }
+            Ok(())
         }
         Cmd::Publish { dry_run, registry, tag } => {
             let cwd = std::env::current_dir()

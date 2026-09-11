@@ -94,9 +94,22 @@ pub enum Cmd {
     },
     /// Print roff manual pages to stdout (main page, then one per subcommand)
     Man,
-    /// Install packages from the npm registry (Phase 5; dry-run first)
+    /// Add packages to the current project (local node_modules)
+    Add {
+        /// Package specs (`name[@range]`, `@scope/name[@range]`)
+        #[arg(short = 'a', long = "add", value_name = "PKG")]
+        packages: Vec<String>,
+        /// Only resolve and print the tree, do not write anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Registry base URL (default https://registry.npmjs.org)
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Install packages globally (shared data directory)
     Install {
-        /// Package specs (`name[@range]`, `@scope/name[@range]`); empty reads package.json (5b)
+        /// Package specs (`name[@range]`, `@scope/name[@range]`)
+        #[arg(short = 'a', long = "add", value_name = "PKG")]
         packages: Vec<String>,
         /// Only resolve and print the tree, do not write anything
         #[arg(long)]

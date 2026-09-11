@@ -25,14 +25,14 @@ fn stdout_of(cmd: &mut Command) -> String {
 #[case("Math.max(3, 9)", "9\n")]
 #[case("undefined", "")]
 fn eval_completion_value(#[case] code: &str, #[case] expected: &str) {
-    assert_eq!(stdout_of(&mut winterjs().args(["eval", code])), expected);
+    assert_eq!(stdout_of(&mut winterjs().args(["--eval", code])), expected);
 }
 
 #[test]
 fn eval_uncaught_exception_exit_1_with_plain_format() {
     // AGENTS.md §3 验收格式：Error: eval.js:1:7: boom，exit=1（非 TTY）
     let out = winterjs()
-        .args(["eval", "throw new Error(\"boom\")"])
+        .args(["--eval", "throw new Error(\"boom\")"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -42,7 +42,7 @@ fn eval_uncaught_exception_exit_1_with_plain_format() {
 
 #[test]
 fn run_missing_file_reports_chain() {
-    let out = winterjs().args(["run", "/nope/such.js"]).output().unwrap();
+    let out = winterjs().args(["--run", "/nope/such.js"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Error: failed to read /nope/such.js"), "stderr: {stderr}");
@@ -56,7 +56,7 @@ fn run_file_from_tempdir() {
     script.write_str("1 + 41").unwrap();
 
     assert_eq!(
-        stdout_of(&mut winterjs().arg("run").arg(script.path())),
+        stdout_of(&mut winterjs().arg("--run").arg(script.path())),
         "42\n"
     );
     dir.close().unwrap();
@@ -70,7 +70,7 @@ fn run_script_in_tempdir_workdir() {
     std::fs::write(&path, "'ok'").unwrap();
 
     assert_eq!(
-        stdout_of(&mut winterjs().arg("run").arg("rel.js").current_dir(tmp.path())),
+        stdout_of(&mut winterjs().arg("--run").arg("rel.js").current_dir(tmp.path())),
         "ok\n"
     );
 }
@@ -85,19 +85,19 @@ fn version_contains_pkg_version() {
 
 #[test]
 fn config_outputs_resolved_settings_json() {
-    let out = stdout_of(&mut winterjs().args(["config"]));
+    let out = stdout_of(&mut winterjs().args(["--config"]));
     let value: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
     assert!(value["log"].is_object(), "log section present: {out}");
 
     // 环境变量覆盖（WINTERJS_LOG__COLOR）优先于缺省
-    let out = stdout_of(&mut winterjs().env("WINTERJS_LOG__COLOR", "always").args(["config"]));
+    let out = stdout_of(&mut winterjs().env("WINTERJS_LOG__COLOR", "always").args(["--config"]));
     let value: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(value["log"]["color"], "always");
 }
 
 #[test]
 fn config_schema_is_valid_json_schema() {
-    let out = stdout_of(&mut winterjs().args(["config", "--schema"]));
+    let out = stdout_of(&mut winterjs().args(["--config", "--schema"]));
     let value: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(
         value["$schema"],
@@ -110,7 +110,7 @@ fn winterjs_log_filter_does_not_break_config() {
     // AGENTS §4.10 回归：WINTERJS_LOG=<EnvFilter> 是日志直读变量，不得被 config 误收
     let out = winterjs()
         .env("WINTERJS_LOG", "winterjs=debug")
-        .args(["config"])
+        .args(["--config"])
         .output()
         .unwrap();
     assert!(
@@ -125,14 +125,14 @@ fn winterjs_log_filter_does_not_break_config() {
 
 #[test]
 fn completions_bash_script() {
-    let out = stdout_of(&mut winterjs().args(["completions", "bash"]));
+    let out = stdout_of(&mut winterjs().args(["--completions", "bash"]));
     assert!(out.starts_with("_winterjs()"), "completions: {out}");
 }
 
 #[test]
 fn man_pages_render_roff() {
-    let out = stdout_of(&mut winterjs().arg("man"));
-    assert_eq!(out.matches(".TH").count(), 17, "main + 16 subcommand pages (add 拆分新增)");
+    let out = stdout_of(&mut winterjs().arg("--man"));
+    assert_eq!(out.matches(".TH").count(), 1, "single man page (flag CLI has no subcommands)");
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn settings_toml_is_loaded() {
         "[log]\ncolor = \"never\"\n",
     )
     .unwrap();
-    let out = stdout_of(&mut winterjs().arg("config").current_dir(tmp.path()));
+    let out = stdout_of(&mut winterjs().arg("--config").current_dir(tmp.path()));
     let value: serde_json::Value = serde_json::from_str(&out).unwrap();
     // pretty_assertions：比对失败时输出可读 diff
     pretty_assertions::assert_eq!(
@@ -163,7 +163,7 @@ fn settings_yaml_is_loaded() {
         "log:\n  color: \"never\"\n",
     )
     .unwrap();
-    let out = stdout_of(&mut winterjs().arg("config").current_dir(tmp.path()));
+    let out = stdout_of(&mut winterjs().arg("--config").current_dir(tmp.path()));
     let value: serde_json::Value = serde_json::from_str(&out).unwrap();
     pretty_assertions::assert_eq!(
         value["log"]["color"].as_str().unwrap(),
@@ -177,14 +177,14 @@ fn settings_yaml_is_loaded() {
 #[test]
 fn phase1_microtask_order_before_timer() {
     // 规范顺序：同步 → 微任务（FIFO）→ 宏任务
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         "console.log('1'); setTimeout(()=>console.log('4'),0); Promise.resolve().then(()=>console.log('3')); queueMicrotask(()=>console.log('2'))"]));
     assert_eq!(out, "1\n3\n2\n4\n", "microtask/timer ordering: {out}");
 }
 
 #[test]
 fn phase1_promise_chain_three_hops() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         "Promise.resolve(1).then(v=>v+1).then(v=>v+1).then(v=>console.log('chain:',v))"]));
     assert!(out.contains("chain: 3"), "chain: {out}");
 }
@@ -193,7 +193,7 @@ fn phase1_promise_chain_three_hops() {
 fn phase1_top_level_await_acceptance() {
     // docs/plan.md Phase 1 验收样例
     assert_eq!(
-        stdout_of(&mut winterjs().args(["eval",
+        stdout_of(&mut winterjs().args(["--eval",
             "await new Promise(r=>setTimeout(()=>r(1),10))"])),
         "1\n"
     );
@@ -201,35 +201,35 @@ fn phase1_top_level_await_acceptance() {
 
 #[test]
 fn phase1_interval_until_cleared() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         "let n=0; const id=setInterval(()=>{n++; console.log('tick',n); if(n>=3) clearInterval(id)},5)"]));
     assert_eq!(out, "tick 1\ntick 2\ntick 3\n", "interval: {out}");
 }
 
 #[test]
 fn phase1_nested_microtasks() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         "async function f(){ for(let i=0;i<3;i++){ await Promise.resolve(); console.log('micro',i);} } f()"]));
     assert_eq!(out, "micro 0\nmicro 1\nmicro 2\n[object Promise]\n", "nested: {out}");
 }
 
 #[test]
 fn phase1_structured_clone_json_values() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         "const a={x:1,y:[1,2,{z:'s'}]}; const b=structuredClone(a); console.log(JSON.stringify(b), b===a)"]));
     assert_eq!(
         out,
         "{\"x\":1,\"y\":[1,2,{\"z\":\"s\"}]} false\n",
         "clone object: {out}"
     );
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         "console.log(JSON.stringify([structuredClone(42), structuredClone('s'), structuredClone(null)]))"]));
     assert_eq!(out, "[42,\"s\",null]\n");
 }
 
 #[test]
 fn phase1_unhandled_rejection_is_fatal() {
-    let out = winterjs().args(["eval", "Promise.reject(new Error('nope'))"]).output().unwrap();
+    let out = winterjs().args(["--eval", "Promise.reject(new Error('nope'))"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1), "unhandled rejection must be fatal");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("unhandled rejection"), "stderr: {stderr}");
@@ -237,7 +237,7 @@ fn phase1_unhandled_rejection_is_fatal() {
 
 #[test]
 fn phase1_console_count_and_time() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         "console.count('a'); console.count('a'); console.time('t'); console.timeLog('t'); console.timeEnd('t')"]));
     assert!(out.contains("a: 1") && out.contains("a: 2"), "count: {out}");
     assert!(out.contains("t: ") && out.matches("t: ").count() == 2, "time: {out}");
@@ -264,7 +264,7 @@ fn phase2_relative_import() {
         ],
         "app.js",
     );
-    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "42\n");
+    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "42\n");
 }
 
 #[test]
@@ -276,7 +276,7 @@ fn phase2_typescript_transpile() {
         ],
         "app.ts",
     );
-    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "42\n");
+    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "42\n");
 }
 
 #[test]
@@ -289,20 +289,20 @@ fn phase2_circular_import_no_deadlock() {
         "a.js",
     );
     // spec 求值序：b 先于 a，不死锁
-    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "b\na\n");
+    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "b\na\n");
 }
 
 #[test]
 fn phase2_import_meta_url() {
     let (_dir, entry) = mod_dir(&[("meta.js", "console.log(import.meta.url);\n")], "meta.js");
-    let out = stdout_of(&mut winterjs().arg("run").arg(&entry));
+    let out = stdout_of(&mut winterjs().arg("--run").arg(&entry));
     assert!(out.starts_with("file://") && out.trim_end().ends_with("/meta.js"), "meta url: {out}");
 }
 
 #[test]
 fn phase2_bare_specifier_missing_friendly_error() {
     let (_dir, entry) = mod_dir(&[("bare.js", "import \"left-pad-xyz-absent\";\n")], "bare.js");
-    let out = winterjs().arg("run").arg(&entry).output().unwrap();
+    let out = winterjs().arg("--run").arg(&entry).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("cannot resolve 'left-pad-xyz-absent'"), "stderr: {stderr}");
@@ -321,7 +321,7 @@ fn phase2_bare_specifier_node_modules() {
         .write_str("import pad from \"left-pad\";\nconsole.log(pad);\n")
         .unwrap();
     let entry = dir.child("nm.js").path().to_path_buf();
-    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "pad!\n");
+    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "pad!\n");
     dir.close().unwrap();
 }
 
@@ -338,7 +338,7 @@ fn phase2_tsconfig_paths_alias() {
         .write_str("import { add } from \"@lib/add\";\nconsole.log(add(1, 2));\n")
         .unwrap();
     let entry = dir.child("app.ts").path().to_path_buf();
-    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "3\n");
+    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "3\n");
     dir.close().unwrap();
 }
 
@@ -352,7 +352,7 @@ fn phase2_ts_js_extension_alias() {
         ],
         "app.ts",
     );
-    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "7\n");
+    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "7\n");
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn phase2_dynamic_import() {
         ],
         "dyn.js",
     );
-    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "42\n");
+    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "42\n");
 }
 
 #[test]
@@ -373,7 +373,7 @@ fn phase2_top_level_await_entry() {
         &[("tla.js", "await new Promise(r=>setTimeout(()=>r(7),5)).then(v=>console.log(\"tla\",v));\n")],
         "tla.js",
     );
-    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "tla 7\n");
+    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "tla 7\n");
 }
 
 #[test]
@@ -382,7 +382,7 @@ fn phase2_data_url_import() {
         &[("data.js", "import x from \"data:text/javascript,export default 99\";\nconsole.log(x);\n")],
         "data.js",
     );
-    assert_eq!(stdout_of(&mut winterjs().arg("run").arg(&entry)), "99\n");
+    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "99\n");
 }
 
 #[test]
@@ -395,7 +395,7 @@ fn phase2_ts_runtime_error_location() {
         )],
         "e.ts",
     );
-    let out = winterjs().arg("run").arg(&entry).output().unwrap();
+    let out = winterjs().arg("--run").arg(&entry).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("e.ts:6:1"), "stderr: {stderr}");
@@ -406,7 +406,7 @@ fn phase2_ts_runtime_error_location() {
 
 #[test]
 fn phase3_url_components() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const u = new URL("https://user:pass@example.com:8080/p?q=1#h"); console.log([u.href, u.protocol, u.host, u.hostname, u.port, u.pathname, u.search, u.hash, u.origin].join("|"))"#]));
     assert_eq!(
         out,
@@ -418,14 +418,14 @@ fn phase3_url_components() {
 
 #[test]
 fn phase3_url_relative_and_can_parse() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"console.log(new URL("/p", "https://h.org/x").href, URL.canParse(':::'), URL.canParse('https://a.b'))"#]));
     assert_eq!(out, "https://h.org/p false true\n", "url base: {out}");
 }
 
 #[test]
 fn phase3_url_invalid_throws() {
-    let out = winterjs().args(["eval", "new URL(':::')"]).output().unwrap();
+    let out = winterjs().args(["--eval", "new URL(':::')"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("Invalid URL"), "stderr: {stderr}");
@@ -433,7 +433,7 @@ fn phase3_url_invalid_throws() {
 
 #[test]
 fn phase3_usp_live_view() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const u = new URL("https://ex.com/?b=2"); const sp = u.searchParams; sp.append("c", "3"); console.log(u.search, sp === u.searchParams); u.search = "?x=9"; console.log(sp.toString())"#]));
     assert_eq!(out, "?b=2&c=3 true
 x=9
@@ -442,7 +442,7 @@ x=9
 
 #[test]
 fn phase3_usp_ops() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const s = new URLSearchParams("z=1&a=2&a=3"); s.sort(); console.log(s.toString(), s.get("a"), s.getAll("a").length, s.size)"#]));
     assert_eq!(out, "a=2&a=3&z=1 2 2 3
 ", "usp: {out}");
@@ -450,7 +450,7 @@ fn phase3_usp_ops() {
 
 #[test]
 fn phase3_text_encoder_decoder() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const e = new TextEncoder(); console.log(e.encoding, e.encode("hi").length, JSON.stringify(new TextEncoder().encodeInto("hello", new Uint8Array(3)))); console.log(new TextDecoder().decode(new Uint8Array([104, 105])), new TextDecoder("utf-16le").decode(new Uint8Array([104, 0, 105, 0])));"#]));
     assert_eq!(out, "utf-8 2 {\"read\":3,\"written\":3}\nhi hi\n", "codec: {out}");
 }
@@ -458,11 +458,11 @@ fn phase3_text_encoder_decoder() {
 #[test]
 fn phase3_text_decoder_fatal() {
     let out = winterjs()
-        .args(["eval", "new TextDecoder('utf-8', {fatal:true}).decode(new Uint8Array([0xff]))"])
+        .args(["--eval", "new TextDecoder('utf-8', {fatal:true}).decode(new Uint8Array([0xff]))"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         "console.log(new TextDecoder('utf-8').decode(new Uint8Array([0xff])).length)"]));
     assert_eq!(out, "1
 ");
@@ -470,23 +470,23 @@ fn phase3_text_decoder_fatal() {
 
 #[test]
 fn phase3_base64_roundtrip() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         "console.log(btoa('hello'), atob('aGVsbG8='))"]));
     assert_eq!(out, "aGVsbG8= hello
 ", "base64: {out}");
-    let out = winterjs().args(["eval", "btoa('€')"]).output().unwrap();
+    let out = winterjs().args(["--eval", "btoa('€')"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
 }
 
 #[test]
 fn phase3_crypto_random() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const v = new Uint8Array(16); console.log(crypto.getRandomValues(v) === v, v.length); const a = crypto.randomUUID(), b = crypto.randomUUID(); console.log(a.length, a !== b, /^[0-9a-f-]{36}$/.test(a))"#]));
     assert_eq!(out, "true 16
 36 true true
 ", "crypto: {out}");
     let out = winterjs()
-        .args(["eval", "crypto.getRandomValues(new Uint8Array(70000))"])
+        .args(["--eval", "crypto.getRandomValues(new Uint8Array(70000))"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -548,7 +548,7 @@ fn phase3_fetch_http_get() {
         r#"const r = await fetch("http://127.0.0.1:{port}/p?q=1"); console.log(r.status, r.ok, r.url, await r.text(), r.headers.get("x-echo"));"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["eval", &code])),
+        stdout_of(&mut winterjs().args(["--eval", &code])),
         format!("200 true http://127.0.0.1:{port}/p?q=1 hello-http yes\n")
     );
 }
@@ -564,14 +564,14 @@ fn phase3_fetch_http_post_echo() {
     let code = format!(
         r#"const r = await fetch("http://127.0.0.1:{port}/echo", {{method: "POST", body: "a=1&b=2", headers: {{"content-type": "text/plain"}}}}); console.log(r.status, await r.text(), r.headers.get("x-ct"));"#
     );
-    let out = stdout_of(&mut winterjs().args(["eval", &code]));
+    let out = stdout_of(&mut winterjs().args(["--eval", &code]));
     assert!(out.starts_with("200 got:a=1&b=2 content-type: text/plain"), "post: {out}");
 }
 
 #[test]
 fn phase3_fetch_data_and_file() {
     assert_eq!(
-        stdout_of(&mut winterjs().args(["eval",
+        stdout_of(&mut winterjs().args(["--eval",
             r#"const r = await fetch("data:text/plain,hello-fetch"); console.log(r.status, r.ok, await r.text());"#])),
         "200 true hello-fetch\n"
     );
@@ -579,14 +579,14 @@ fn phase3_fetch_data_and_file() {
     dir.child("f.txt").write_str("hello-file").unwrap();
     let url = format!("file://{}", dir.child("f.txt").path().display());
     let code = format!(r#"console.log(await (await fetch("{url}")).text());"#);
-    assert_eq!(stdout_of(&mut winterjs().args(["eval", &code])), "hello-file\n");
+    assert_eq!(stdout_of(&mut winterjs().args(["--eval", &code])), "hello-file\n");
     dir.close().unwrap();
 }
 
 #[test]
 fn phase3_fetch_errors_are_rejections() {
     // 不支持的 scheme 与连不上的地址都以 rejection 呈现（catch 可接住）
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"console.log(await fetch("blob:xyz").then(() => "no", () => "blob-err"))"#]));
     assert_eq!(out, "blob-err\n", "blob: {out}");
     // 保证关闭的端口：bind 后立刻 drop
@@ -594,12 +594,12 @@ fn phase3_fetch_errors_are_rejections() {
     let code = format!(
         r#"console.log(await fetch("http://127.0.0.1:{port}/").then(() => "no", (e) => String(e).includes("fetch failed") ? "net-err" : "other:" + e))"#
     );
-    assert_eq!(stdout_of(&mut winterjs().args(["eval", &code])), "net-err\n");
+    assert_eq!(stdout_of(&mut winterjs().args(["--eval", &code])), "net-err\n");
 }
 
 #[test]
 fn phase3_headers_request_response_classes() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const h = new Headers([["X-A", "1"], ["x-a", "2"]]); console.log(h.get("x-a"), [...h.keys()].join(",")); const r = new Response("hi", { status: 201 }); console.log(r.status, r.ok, await r.text()); const q = new Request("https://ex.com/a", { method: "post", body: "x" }); console.log(q.method, q.url, await q.text());"#]));
     assert_eq!(out, "1, 2 x-a,x-a
 201 true hi
@@ -609,7 +609,7 @@ POST https://ex.com/a x
 
 #[test]
 fn phase3_abort_signal_pre_abort() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const c = new AbortController(); c.abort(); console.log(await fetch("http://127.0.0.1:9/x", { signal: c.signal }).then(() => 'no', () => 'abort-ok'));"#]));
     assert_eq!(out, "abort-ok
 ", "abort: {out}");
@@ -617,7 +617,7 @@ fn phase3_abort_signal_pre_abort() {
 
 #[test]
 fn phase3_subtle_digest_vectors() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const hex = async (a, d) => [...new Uint8Array(await crypto.subtle.digest(a, new TextEncoder().encode(d)))].map((b) => b.toString(16).padStart(2, "0")).join(""); console.log(await hex("SHA-256", "abc")); console.log(await hex("SHA-1", "abc"));"#]));
     assert_eq!(
         out,
@@ -629,7 +629,7 @@ fn phase3_subtle_digest_vectors() {
 #[test]
 fn phase3_subtle_digest_unsupported() {
     let out = winterjs()
-        .args(["eval", r#"await crypto.subtle.digest("MD5", new Uint8Array(1))"#])
+        .args(["--eval", r#"await crypto.subtle.digest("MD5", new Uint8Array(1))"#])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -639,28 +639,28 @@ fn phase3_subtle_digest_unsupported() {
 
 #[test]
 fn phase3_streams_basic() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const rs = new ReadableStream({ start(c) { c.enqueue("a"); c.enqueue("b"); c.close(); } }); const out = []; for await (const x of rs) out.push(x); console.log(out.join(",")); const t = new TransformStream({ transform(c, ctl) { ctl.enqueue(String(c).toUpperCase()); } }); const w = t.writable.getWriter(); w.write("hi"); w.close(); const r = t.readable.getReader(); console.log((await r.read()).value, (await r.read()).done);"#]));
     assert_eq!(out, "a,b\nHI true\n", "streams: {out}");
 }
 
 #[test]
 fn phase3_streams_pipe_tee_body() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const rs = new ReadableStream({ start(c) { c.enqueue("x"); c.close(); } }); const ts = new TransformStream({ transform(c, ctl) { ctl.enqueue(c + "!"); } }); const out = []; await rs.pipeThrough(ts).pipeTo(new WritableStream({ write(c) { out.push(c); } })); console.log(out.join(",")); const [a, b] = new ReadableStream({ start(c) { c.enqueue(1); c.close(); } }).tee(); console.log(await a.getReader().read().then((x) => x.value), await b.getReader().read().then((x) => x.value)); const r = new Response("stream-me"); console.log(r.body === r.body, (await r.body.getReader().read()).value.length);"#]));
     assert_eq!(out, "x!\n1 1\ntrue 9\n", "pipe: {out}");
 }
 
 #[test]
 fn phase3_aes_gcm_roundtrip() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const iv = new Uint8Array(12); const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode("secret")); const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); console.log(ct.byteLength, new TextDecoder().decode(pt));"#]));
     assert_eq!(out, "22 secret\n", "aes: {out}");
 }
 
 #[test]
 fn phase3_hmac_sign_verify() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const hk = await crypto.subtle.importKey("raw", new TextEncoder().encode("k"), { name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]); const sig = await crypto.subtle.sign("HMAC", hk, new TextEncoder().encode("m")); console.log(new Uint8Array(sig).length, await crypto.subtle.verify("HMAC", hk, sig, new TextEncoder().encode("m")), await crypto.subtle.verify("HMAC", hk, sig, new TextEncoder().encode("x")), (await crypto.subtle.exportKey("jwk", hk)).kty);"#]));
     assert_eq!(out, "32 true false oct\n", "hmac: {out}");
 }
@@ -701,7 +701,7 @@ fn phase3_websocket_echo_and_close() {
         r#"const log = []; const ws = new WebSocket("ws://127.0.0.1:{port}/c"); ws.onopen = () => ws.send("ping"); ws.onmessage = (e) => {{ if (typeof e.data === "string") {{ log.push(e.data); ws.send(new Uint8Array([7, 8])); }} else {{ log.push("bin:" + new Uint8Array(e.data).join(",")); ws.close(1000, "bye"); }} }}; ws.onclose = (e) => console.log(log.join("|") + "|close:" + e.code + ":" + e.wasClean); undefined;"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["eval", &code])),
+        stdout_of(&mut winterjs().args(["--eval", &code])),
         "ping|bin:7,8|close:1000:true\n"
     );
 }
@@ -709,28 +709,28 @@ fn phase3_websocket_echo_and_close() {
 #[test]
 fn phase3_websocket_bad_url_and_send_while_connecting() {
     // 非 ws scheme 直接抛；CONNECTING 时 send 抛（连不上的端口测 readyState 报错面）
-    let out = winterjs().args(["eval", r#"new WebSocket("http://x/")"#]).output().unwrap();
+    let out = winterjs().args(["--eval", r#"new WebSocket("http://x/")"#]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let code = format!(
         r#"const ws = new WebSocket("ws://127.0.0.1:{port}/"); try {{ ws.send("early"); console.log("no-throw"); }} catch (e) {{ console.log("send-while-connecting-throws"); }}"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["eval", &code])),
+        stdout_of(&mut winterjs().args(["--eval", &code])),
         "send-while-connecting-throws\n"
     );
 }
 
 #[test]
 fn phase3_rsa_pkcs1v15_sign_verify() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const {publicKey, privateKey} = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]); console.log(publicKey.type, privateKey.type, privateKey.algorithm.modulusLength); const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", privateKey, new TextEncoder().encode("m")); console.log(new Uint8Array(sig).length, await crypto.subtle.verify("RSASSA-PKCS1-v1_5", publicKey, sig, new TextEncoder().encode("m")), await crypto.subtle.verify("RSASSA-PKCS1-v1_5", publicKey, sig, new TextEncoder().encode("x")));"#]));
     assert_eq!(out, "public private 2048\n256 true false\n", "rsa-pkcs1v15: {out}");
 }
 
 #[test]
 fn phase3_rsa_oaep_roundtrip() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const {publicKey, privateKey} = await crypto.subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["encrypt", "decrypt"]); const ct = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, new TextEncoder().encode("secret")); const pt = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, privateKey, ct); console.log(ct.byteLength, new TextDecoder().decode(pt)); const spki = await crypto.subtle.exportKey("spki", publicKey); console.log(new Uint8Array(spki).length);"#]));
     assert_eq!(out, "256 secret\n294\n", "rsa-oaep: {out}");
 }
@@ -738,14 +738,14 @@ fn phase3_rsa_oaep_roundtrip() {
 #[test]
 fn phase3_rsa_jwk_roundtrip() {
     // 私钥 JWK 来回（n/e/d 进，p/q 恢复）+ 公钥 JWK 进；签名跨导入验证。
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const {publicKey, privateKey} = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]); const jwk = await crypto.subtle.exportKey("jwk", privateKey); console.log(jwk.kty, typeof jwk.dp, typeof jwk.qi); const priv2 = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["sign"]); console.log(priv2.type); const pubJwk = await crypto.subtle.exportKey("jwk", publicKey); const pub2 = await crypto.subtle.importKey("jwk", pubJwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["verify"]); const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", priv2, new TextEncoder().encode("m")); console.log(await crypto.subtle.verify("RSASSA-PKCS1-v1_5", pub2, sig, new TextEncoder().encode("m")));"#]));
     assert_eq!(out, "RSA string string\nprivate\ntrue\n", "rsa-jwk: {out}");
 }
 
 #[test]
 fn phase3_ecdsa_p256_roundtrip() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const {publicKey, privateKey} = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]); console.log(publicKey.type, privateKey.algorithm.namedCurve); const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, privateKey, new TextEncoder().encode("hello")); console.log(new Uint8Array(sig).length, await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, publicKey, sig, new TextEncoder().encode("hello")), await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, publicKey, sig, new TextEncoder().encode("bye")));"#]));
     assert_eq!(out, "public P-256\n64 true false\n", "ecdsa: {out}");
 }
@@ -753,7 +753,7 @@ fn phase3_ecdsa_p256_roundtrip() {
 #[test]
 fn phase3_ecdh_derive_and_key() {
     // 共享秘密对称 + deriveKey 出 AES-GCM 可加解密；P-384 JWK/spki/raw 来回。
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const a = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits", "deriveKey"]); const b = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]); const s1 = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: b.publicKey }, a.privateKey, 256)); const s2 = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: a.publicKey }, b.privateKey, 256)); console.log(s1.length, s1.join(",") === s2.join(",")); const dk = await crypto.subtle.deriveKey({ name: "ECDH", public: b.publicKey }, a.privateKey, { name: "AES-GCM", length: 128 }, false, ["encrypt"]); console.log(dk.type, dk.algorithm.length, dk.extractable); const kp = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]); const raw = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey)); console.log(raw.length, raw[0]); const imp = await crypto.subtle.importKey("spki", await crypto.subtle.exportKey("spki", kp.publicKey), { name: "ECDSA", namedCurve: "P-384" }, true, ["verify"]); console.log(imp.type);"#]));
     assert_eq!(out, "32 true\nsecret 128 false\n97 4\npublic\n", "ecdh: {out}");
 }
@@ -762,20 +762,20 @@ fn phase3_ecdh_derive_and_key() {
 fn phase3_asymmetric_errors() {
     // RSA-PSS/Ed25519 明确顺延；坏曲线/错用途/非私钥 derive 进报错面。
     let out = winterjs()
-        .args(["eval", r#"await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign"])"#])
+        .args(["--eval", r#"await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign"])"#])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("NotSupportedError"), "stderr: {stderr}");
     let out = winterjs()
-        .args(["eval", r#"await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-192" }, true, ["sign"])"#])
+        .args(["--eval", r#"await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-192" }, true, ["sign"])"#])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("NotSupportedError"), "stderr: {stderr}");
-    let ok = stdout_of(&mut winterjs().args(["eval",
+    let ok = stdout_of(&mut winterjs().args(["--eval",
         r#"const k = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]); try { await crypto.subtle.sign("ECDSA", k.publicKey, new Uint8Array(1)); console.log("no-throw"); } catch (e) { console.log(String(e).includes("private key") ? "sign-needs-private" : e); }"#]));
     assert_eq!(ok, "sign-needs-private\n", "usage: {ok}");
 }
@@ -841,7 +841,7 @@ fn phase3_websocket_wss_self_signed() {
     );
     let out = winterjs()
         .env("WINTERJS_TEST_CA_PEMFILE", &ca_path)
-        .args(["eval", &code])
+        .args(["--eval", &code])
         .output()
         .unwrap();
     assert!(
@@ -866,7 +866,7 @@ fn phase3_fetch_in_flight_abort() {
         r#"const c = new AbortController(); const p = fetch("http://127.0.0.1:{port}/slow", {{ signal: c.signal }}); setTimeout(() => c.abort(), 50); try {{ await p; console.log("no-throw"); }} catch (e) {{ console.log("aborted:" + String(e && e.message || e).includes("AbortError")); }}"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["eval", &code])),
+        stdout_of(&mut winterjs().args(["--eval", &code])),
         "aborted:true\n"
     );
 }
@@ -882,10 +882,10 @@ fn phase3_fetch_abort_reason_and_late_abort_noop() {
         r#"const c = new AbortController(); const p = fetch("http://127.0.0.1:{port}/slow", {{ signal: c.signal }}); setTimeout(() => c.abort(new Error("custom-stop")), 50); try {{ await p; console.log("no-throw"); }} catch (e) {{ console.log(e.message); }}"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["eval", &code])),
+        stdout_of(&mut winterjs().args(["--eval", &code])),
         "custom-stop\n"
     );
-    let ok = stdout_of(&mut winterjs().args(["eval",
+    let ok = stdout_of(&mut winterjs().args(["--eval",
         r#"const c = new AbortController(); const r = await fetch("data:text/plain,settled", { signal: c.signal }); c.abort(); console.log(await r.text());"#]));
     assert_eq!(ok, "settled\n", "late abort: {ok}");
 }
@@ -923,7 +923,7 @@ fn phase3_fetch_body_streams_chunks() {
         r#"const r = await fetch("http://127.0.0.1:{port}/split"); const rd = r.body.getReader(); const a = await rd.read(); const b = await rd.read(); const c = await rd.read(); console.log(new TextDecoder().decode(a.value), new TextDecoder().decode(b.value), c.done);"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["eval", &code])),
+        stdout_of(&mut winterjs().args(["--eval", &code])),
         "abc def true\n"
     );
 }
@@ -935,13 +935,13 @@ fn phase3_fetch_body_stream_text_and_cancel() {
     let code = format!(
         r#"const r = await fetch("http://127.0.0.1:{port}/split"); console.log(await r.text());"#
     );
-    assert_eq!(stdout_of(&mut winterjs().args(["eval", &code])), "abcdef\n");
+    assert_eq!(stdout_of(&mut winterjs().args(["--eval", &code])), "abcdef\n");
     let port = serve_split();
     let code = format!(
         r#"const r = await fetch("http://127.0.0.1:{port}/split"); const rd = r.body.getReader(); const a = await rd.read(); console.log(new TextDecoder().decode(a.value)); await rd.cancel(); console.log("cancelled");"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["eval", &code])),
+        stdout_of(&mut winterjs().args(["--eval", &code])),
         "abc\ncancelled\n"
     );
 }
@@ -954,7 +954,7 @@ fn phase3_fetch_body_mid_stream_abort() {
         r#"const c = new AbortController(); const r = await fetch("http://127.0.0.1:{port}/split", {{ signal: c.signal }}); const rd = r.body.getReader(); const a = await rd.read(); console.log(new TextDecoder().decode(a.value)); c.abort(); try {{ await rd.read(); console.log("no-throw"); }} catch (e) {{ console.log("stream-aborted:" + String(e.message || e).includes("Abort")); }}"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["eval", &code])),
+        stdout_of(&mut winterjs().args(["--eval", &code])),
         "abc\nstream-aborted:true\n"
     );
 }
@@ -963,7 +963,7 @@ fn phase3_fetch_body_mid_stream_abort() {
 fn run_node_file(dir: &assert_fs::TempDir, name: &str, source: &str) -> std::process::Output {
     let file = dir.child(name);
     file.write_str(source).unwrap();
-    winterjs().arg("run").arg(file.path()).output().unwrap()
+    winterjs().arg("--run").arg(file.path()).output().unwrap()
 }
 
 #[test]
@@ -995,7 +995,7 @@ console.log(posix.join("a", "b"));
 
 #[test]
 fn phase4_node_os_basic() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const os = await import("node:os"); console.log([os.platform(), os.arch()].join(",")); console.log(os.EOL.length, os.hostname().length > 0, os.tmpdir().length > 0, os.totalmem() > 0, os.freemem() >= 0, os.cpus().length > 0, typeof os.cpus()[0].model, Object.keys(os.networkInterfaces()).length > 0, os.userInfo().username.length >= 0, os.uptime() >= 0, os.loadavg().length, os.release().length >= 0);"#]));
     let mut lines = out.lines();
     let pa = lines.next().unwrap_or("");
@@ -1020,10 +1020,10 @@ fn phase4_node_process_argv_env() {
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("argv.mjs");
     file.write_str(r#"console.log(process.argv.length, process.argv[2], process.execPath.length > 0, process.pid > 0);"#).unwrap();
-    let out = winterjs().arg("run").arg(file.path()).arg("hello").arg("--flag").output().unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).arg("hello").arg("--flag").output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8(out.stdout).unwrap().starts_with("4 hello true true\n"), "argv");
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"process.env.WINTERJS_T4 = "v1"; console.log(process.env.WINTERJS_T4, "WINTERJS_T4" in process.env, Object.keys(process.env).includes("WINTERJS_T4")); delete process.env.WINTERJS_T4; console.log(process.env.WINTERJS_T4, "WINTERJS_T4" in process.env);"#]));
     assert_eq!(out, "v1 true true\nundefined false\n", "env: {out}");
     dir.close().unwrap();
@@ -1036,7 +1036,7 @@ fn phase4_process_exit_codes() {
     let run = |name: &str, src: &str| {
         let f = dir.child(name);
         f.write_str(src).unwrap();
-        winterjs().arg("run").arg(f.path()).output().unwrap()
+        winterjs().arg("--run").arg(f.path()).output().unwrap()
     };
     let out = run("e3.mjs", "process.exit(3);");
     assert_eq!(out.status.code(), Some(3));
@@ -1057,7 +1057,7 @@ fn phase4_process_exit_codes() {
 
 #[test]
 fn phase4_process_stdio_nexttick_cwd() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"process.stdout.write("out-direct"); const order = []; process.nextTick(() => order.push("tick")); Promise.resolve().then(() => order.push("promise")); await new Promise((r) => setTimeout(r, 20)); console.log("|" + order.join(","), process.cwd().length > 0, typeof process.uptime(), typeof process.hrtime.bigint(), process.memoryUsage().rss > 0, process.versions.winterjs.length > 0);"#]));
     assert!(out.starts_with("out-direct|"), "stdio: {out}");
     assert!(out.contains("tick,promise true number bigint true true\n"), "order: {out}");
@@ -1071,9 +1071,9 @@ fn phase4_node_errors() {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("node:nope") && stderr.contains("node:path"), "stderr: {stderr}");
-    let out = winterjs().args(["eval", "await import(\"node:nope\")"]).output().unwrap();
+    let out = winterjs().args(["--eval", "await import(\"node:nope\")"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
-    let out = winterjs().args(["eval", "process.exitCode = 1.5;"]).output().unwrap();
+    let out = winterjs().args(["--eval", "process.exitCode = 1.5;"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("integer"), "stderr: {stderr}");
@@ -1084,7 +1084,7 @@ fn phase4_node_errors() {
 fn run_fs_file(dir: &assert_fs::TempDir, name: &str, source: &str) -> String {
     let file = dir.child(name);
     file.write_str(source).unwrap();
-    let out = winterjs().arg("run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).current_dir(dir.path()).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8(out.stdout).unwrap()
 }
@@ -1203,14 +1203,14 @@ try {
 #[test]
 fn phase4_cp_timeout_and_shell() {
     // 超时杀直系（SIGKILL 形）+ shell:false 直跑。
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const { spawnSync, execSync } = await import("node:child_process"); const r = spawnSync("sleep", ["5"], { timeout: 200 }); console.log(r.signal, !!r.error); console.log(execSync("echo noshell", { shell: false }).trim());"#]));
     assert_eq!(out, "SIGKILL true\nnoshell\n", "timeout: {out}");
 }
 
 #[test]
 fn phase4_node_assert_subset() {
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const assert = (await import("node:assert")).default; assert.ok(1); assert.strictEqual(1, 1); assert.notStrictEqual(1, "1"); assert.deepStrictEqual({ a: [1, 2] }, { a: [1, 2] }); assert.equal(1, "1"); assert.throws(() => { throw new TypeError("x"); }, TypeError); assert.throws(() => { throw new Error("boom"); }, /boom/); await assert.rejects(async () => { throw new Error("r"); }); assert.match("foobar", /^foo/); assert.ifError(null); console.log("assert-ok"); try { assert.strictEqual(1, 2); } catch (e) { console.log(e.code, e.operator, e.actual, e.expected); }"#]));
     assert_eq!(out, "assert-ok\nERR_ASSERTION strictEqual 1 2\n", "assert: {out}");
 }
@@ -1221,7 +1221,7 @@ fn phase4_node_test_runner() {
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("t.mjs");
     file.write_str("import { test, describe } from \"node:test\";\nimport assert from \"node:assert\";\ndescribe(\"math\", () => {\n  test(\"adds\", () => assert.strictEqual(1 + 1, 2));\n  test(\"fails\", () => assert.strictEqual(1, 2));\n  test.skip(\"skipped\", () => {});\n});\n").unwrap();
-    let out = winterjs().arg("run").arg(file.path()).output().unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("not ok - math > fails"), "runner: {stdout}");
@@ -1239,7 +1239,7 @@ fn phase4_require_cjs_builtin_relative_json() {
     data.write_str("{\"answer\": 42}").unwrap();
     let main = dir.child("main.cjs");
     main.write_str("const u = require(\"./lib/util.cjs\");\nconst d = require(\"./lib/data.json\");\nconsole.log(\"main:\", u.joined, d.answer, __filename.endsWith(\"main.cjs\"), require.main.filename.endsWith(\"main.cjs\"));\n").unwrap();
-    let out = winterjs().arg("run").arg(main.path()).output().unwrap();
+    let out = winterjs().arg("--run").arg(main.path()).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert_eq!(stdout, "main: a/b 42 true true\n", "require: {stdout}");
@@ -1254,7 +1254,7 @@ fn phase4_require_cycle_partial_exports() {
     dir.child("a.cjs").write_str("const b = require(\"./b.cjs\");\nmodule.exports = { a: 1, bVal: (b.b || 0) + 100 };\n").unwrap();
     let main = dir.child("main.cjs");
     main.write_str("const a = require(\"./a.cjs\");\nconsole.log(\"cycle:\", a.a, a.bVal);\n").unwrap();
-    let out = winterjs().arg("run").arg(main.path()).output().unwrap();
+    let out = winterjs().arg("--run").arg(main.path()).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "cycle: 1 102\n");
     dir.close().unwrap();
@@ -1263,7 +1263,7 @@ fn phase4_require_cycle_partial_exports() {
 #[test]
 fn phase4_require_errors() {
     // 缺失模块 / ESM 拒绝 / resolve 直给。
-    let out = winterjs().args(["eval", "try { require(\"node:nope-xyz\"); } catch (e) { console.log(e.message.slice(0, 30)); }"]).output().unwrap();
+    let out = winterjs().args(["--eval", "try { require(\"node:nope-xyz\"); } catch (e) { console.log(e.message.slice(0, 30)); }"]).output().unwrap();
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("Cannot find module"), "missing: {stdout}");
@@ -1271,10 +1271,10 @@ fn phase4_require_errors() {
     let mod_ = dir.child("m.mjs");
     mod_.write_str("export const x = 1;\n").unwrap();
     let code = format!("try {{ require({:?}); }} catch (e) {{ console.log(e.message.slice(0, 30)); }}", mod_.path().to_string_lossy());
-    let out = winterjs().args(["eval", &code]).output().unwrap();
+    let out = winterjs().args(["--eval", &code]).output().unwrap();
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("require() of ES Module"), "esm: {stdout}");
-    let out = stdout_of(&mut winterjs().args(["eval", "console.log(require.resolve(\"node:path\"));"]));
+    let out = stdout_of(&mut winterjs().args(["--eval", "console.log(require.resolve(\"node:path\"));"]));
     assert_eq!(out, "node:path\n", "resolve: {out}");
     dir.close().unwrap();
 }
@@ -1287,7 +1287,7 @@ fn phase4_fs_watch_fires_and_closes() {
     std::fs::create_dir(watchdir.path()).unwrap();
     let file = dir.child("watch.mjs");
     file.write_str("import fs from \"node:fs\";\nconst w = fs.watch(\"watched\", (ev, file) => { console.log(\"ev:\", ev, file); w.close(); });\nsetTimeout(() => fs.writeFileSync(\"watched/n.txt\", \"x\"), 100);\n").unwrap();
-    let out = winterjs().arg("run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).current_dir(dir.path()).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "ev: rename n.txt\n");
     dir.close().unwrap();
@@ -1296,10 +1296,10 @@ fn phase4_fs_watch_fires_and_closes() {
 #[test]
 fn phase4_spawn_async_exit_close_kill() {
     // exit+close 双调 + kill 中断（SIGTERM 形）。
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const { spawn } = await import("node:child_process"); const log = []; const c = spawn("echo", ["async-hi"], { stdio: "ignore" }); console.log("pid:", c.pid > 0, "killed:", c.killed); c.on("exit", (e) => log.push("exit:" + e.status)); c.on("close", () => { log.push("close"); console.log(log.join("|")); });"#]));
     assert_eq!(out, "pid: true killed: false\nexit:0|close\n", "spawn: {out}");
-    let out = stdout_of(&mut winterjs().args(["eval",
+    let out = stdout_of(&mut winterjs().args(["--eval",
         r#"const { spawn } = await import("node:child_process"); const log = []; const c = spawn("sleep", ["30"]); c.on("exit", (e) => log.push("exit:" + e.signal)); c.on("close", () => { log.push("close"); console.log(log.join("|")); }); setTimeout(() => console.log("killed:", c.kill()), 100);"#]));
     assert_eq!(out, "killed: true\nexit:SIGTERM|close\n", "kill: {out}");
 }
@@ -1360,7 +1360,7 @@ fn phase5_install_dry_run_stub_registry() {
     let reg = format!("http://127.0.0.1:{port}");
     let out = stdout_of(
         winterjs()
-            .args(["add", "-a", "left-pad@^1.0.0", "--dry-run", "--registry"])
+            .args(["--add", "left-pad@^1.0.0", "--dry-run", "--registry"])
             .arg(&reg),
     );
     assert_eq!(
@@ -1369,7 +1369,7 @@ fn phase5_install_dry_run_stub_registry() {
         "dry-run single: {out}"
     );
     let out = stdout_of(
-        winterjs().args(["add", "-a", "app", "--dry-run", "--registry"]).arg(&reg),
+        winterjs().args(["--add", "app", "--dry-run", "--registry"]).arg(&reg),
     );
     assert_eq!(
         out,
@@ -1382,16 +1382,18 @@ fn phase5_install_dry_run_stub_registry() {
 
 #[test]
 fn phase5_install_errors() {
-    // 空包列表 / 未知包 / 无满足版本，皆 exit=1 且可读。
-    let out = winterjs().args(["add", "--dry-run"]).output().unwrap();
-    assert_eq!(out.status.code(), Some(1));
+    // 空包列表（clap 拦：--add 至少 1 值）/ 未知包 / 无满足版本，皆非零且可读。
+    let out = winterjs().args(["--add", "--dry-run"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--add"), "stderr:\n{err}");
     let port = serve_registry();
     let reg = format!("http://127.0.0.1:{port}");
-    let out = winterjs().args(["add", "-a", "no-such-pkg-xyz", "--dry-run", "--registry"]).arg(&reg).output().unwrap();
+    let out = winterjs().args(["--add", "no-such-pkg-xyz", "--dry-run", "--registry"]).arg(&reg).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("not found"), "stderr: {stderr}");
-    let out = winterjs().args(["add", "-a", "left-pad@^9.0.0", "--dry-run", "--registry"]).arg(&reg).output().unwrap();
+    let out = winterjs().args(["--add", "left-pad@^9.0.0", "--dry-run", "--registry"]).arg(&reg).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no version"), "stderr: {stderr}");
@@ -1407,7 +1409,7 @@ fn phase5_npmrc_registry_mirror() {
     dir.child(".npmrc").write_str(&format!("registry={reg}/\n")).unwrap();
     let out = stdout_of(
         winterjs()
-            .args(["add", "-a", "left-pad@^1.0.0", "--dry-run"])
+            .args(["--add", "left-pad@^1.0.0", "--dry-run"])
             .env("HOME", home.path())
             .env_remove("NPM_CONFIG_REGISTRY")
             .env_remove("npm_config_registry")
@@ -1429,7 +1431,7 @@ fn phase5_npmrc_bad_registry_errors() {
     let home = assert_fs::TempDir::new().unwrap();
     dir.child(".npmrc").write_str("registry=http://127.0.0.1:9/\n").unwrap();
     let out = winterjs()
-        .args(["add", "-a", "left-pad@^1.0.0", "--dry-run"])
+        .args(["--add", "left-pad@^1.0.0", "--dry-run"])
         .env("HOME", home.path())
         .env_remove("NPM_CONFIG_REGISTRY")
         .env_remove("npm_config_registry")
@@ -1453,7 +1455,7 @@ fn phase5_registry_flag_overrides_npmrc() {
     dir.child(".npmrc").write_str("registry=http://127.0.0.1:9/\n").unwrap();
     let out = stdout_of(
         winterjs()
-            .args(["add", "-a", "left-pad@^1.0.0", "--dry-run", "--registry"])
+            .args(["--add", "left-pad@^1.0.0", "--dry-run", "--registry"])
             .arg(&reg)
             .env("HOME", home.path())
             .env_remove("NPM_CONFIG_REGISTRY")
@@ -1479,7 +1481,7 @@ fn phase5_npm_config_registry_env_overrides_npmrc() {
     dir.child(".npmrc").write_str("registry=http://127.0.0.1:9/\n").unwrap();
     let out = stdout_of(
         winterjs()
-            .args(["add", "-a", "left-pad@^1.0.0", "--dry-run"])
+            .args(["--add", "left-pad@^1.0.0", "--dry-run"])
             .env("HOME", home.path())
             .env("NPM_CONFIG_REGISTRY", &reg)
             .env_remove("npm_config_registry")
@@ -1528,7 +1530,7 @@ fn phase5_git_dry_run_local() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = stdout_of(
         winterjs()
-            .args(["add", "-a", &format!("git-pkg@git+{url}#v1.0.0"), "--dry-run"])
+            .args(["--add", &format!("git-pkg@git+{url}#v1.0.0"), "--dry-run"])
             .env("HOME", home.path())
             .env_remove("NPM_CONFIG_REGISTRY")
             .env_remove("npm_config_registry")
@@ -1549,7 +1551,7 @@ fn phase5_git_unknown_rev_errors() {
     let home = assert_fs::TempDir::new().unwrap();
     let dir = assert_fs::TempDir::new().unwrap();
     let out = winterjs()
-        .args(["add", "-a", &format!("git-pkg@git+{url}#no-such-ref"), "--dry-run"])
+        .args(["--add", &format!("git-pkg@git+{url}#no-such-ref"), "--dry-run"])
         .env("HOME", home.path())
         .env_remove("NPM_CONFIG_REGISTRY")
         .env_remove("npm_config_registry")
@@ -1572,7 +1574,7 @@ fn phase5_git_bare_spec_reads_name() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = stdout_of(
         winterjs()
-            .args(["add", "-a", &format!("git+{url}"), "--dry-run"])
+            .args(["--add", &format!("git+{url}"), "--dry-run"])
             .env("HOME", home.path())
             .env_remove("NPM_CONFIG_REGISTRY")
             .env_remove("npm_config_registry")
@@ -1592,7 +1594,7 @@ fn phase5_git_end_to_end_local() {
     let cache = assert_fs::TempDir::new().unwrap();
     let dir = assert_fs::TempDir::new().unwrap();
     let out = winterjs()
-        .arg("add").arg("-a")
+        .arg("--add")
         .arg(format!("git+{url}"))
         .env("HOME", home.path())
         .env("WINTERJS_CACHE", cache.path())
@@ -1608,7 +1610,7 @@ fn phase5_git_end_to_end_local() {
     assert!(lock.contains("\"git-e2e\"") && lock.contains(&format!("git+{url}#")), "lock: {lock}");
     let app = dir.child("app.cjs");
     app.write_str("const t = require(\"git-e2e\");\nconsole.log(t.add(19, 23));\n").unwrap();
-    let out = winterjs().arg("run").arg(app.path()).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().arg("--run").arg(app.path()).current_dir(dir.path()).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "42\n");
     dir.close().unwrap();
@@ -1626,7 +1628,7 @@ fn phase5_publish_dry_run_ok() {
     dir.child("index.js").write_str("exports.v = 1;\n").unwrap();
     let out = stdout_of(
         winterjs()
-            .args(["publish", "--dry-run", "--registry", "http://127.0.0.1:9/"])
+            .args(["--publish", "--dry-run", "--registry", "http://127.0.0.1:9/"])
             .current_dir(dir.path()),
     );
     assert!(out.contains("pub-pkg@1.2.3"), "summary: {out}");
@@ -1640,13 +1642,13 @@ fn phase5_publish_manifest_errors() {
     // 报错：缺名 / 坏 license，皆 exit=1 且可读。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("package.json").write_str(r#"{"version":"1.0.0"}"#).unwrap();
-    let out = winterjs().args(["publish", "--dry-run"]).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().args(["--publish", "--dry-run"]).current_dir(dir.path()).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("no name"), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     dir.child("package.json")
         .write_str(r#"{"name":"p","version":"1.0.0","license":"Not-A-License!!"}"#)
         .unwrap();
-    let out = winterjs().args(["publish", "--dry-run"]).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().args(["--publish", "--dry-run"]).current_dir(dir.path()).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("license"), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     dir.close().unwrap();
@@ -1659,7 +1661,7 @@ fn phase5_login_token_writes_npmrc() {
     home.child(".npmrc").write_str("registry=http://127.0.0.1:4873/\n").unwrap();
     let dir = assert_fs::TempDir::new().unwrap();
     let out = winterjs()
-        .args(["login", "--token", "sekret", "--registry", "http://127.0.0.1:4873/"])
+        .args(["--login", "--token", "sekret", "--registry", "http://127.0.0.1:4873/"])
         .env("HOME", home.path())
         .current_dir(dir.path())
         .output()
@@ -1677,7 +1679,7 @@ fn phase5_upgrade_dry_run_reports_version() {
     // 正常：`upgrade --dry-run` 打印当前版 + 渠道，不碰网络。
     let out = stdout_of(
         winterjs()
-            .args(["upgrade", "--dry-run"])
+            .args(["--upgrade", "--dry-run"])
             .env_remove("WINTERJS_UPDATE_GITHUB"),
     );
     assert!(out.contains(env!("CARGO_PKG_VERSION")), "version: {out}");
@@ -1688,7 +1690,7 @@ fn phase5_upgrade_dry_run_reports_version() {
 fn phase5_upgrade_no_channel_errors() {
     // 报错：无渠道真升，exit=1 且指路（不碰网络）。
     let out = winterjs()
-        .arg("upgrade")
+        .arg("--upgrade")
         .env_remove("WINTERJS_UPDATE_GITHUB")
         .output()
         .unwrap();
@@ -1702,7 +1704,7 @@ fn phase5_upgrade_dry_run_shows_channel() {
     // 边界：设了渠道时 dry-run 回显渠道，仍不碰网络。
     let out = stdout_of(
         winterjs()
-            .args(["upgrade", "--dry-run"])
+            .args(["--upgrade", "--dry-run"])
             .env("WINTERJS_UPDATE_GITHUB", "someowner/somerepo"),
     );
     assert!(out.contains("github:someowner/somerepo"), "channel: {out}");
@@ -1715,7 +1717,7 @@ fn phase5_login_oauth_prints_url() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = stdout_of(
         winterjs()
-            .args(["login", "--oauth", "--registry", "http://127.0.0.1:4873/"])
+            .args(["--login", "--oauth", "--registry", "http://127.0.0.1:4873/"])
             .env("HOME", home.path())
             .current_dir(dir.path()),
     );
@@ -1794,7 +1796,7 @@ fn phase5_install_end_to_end_stub() {
     });
     let reg = format!("http://127.0.0.1:{port}");
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs().arg("add").arg("-a").arg("tiny-pkg").arg("--registry").arg(&reg).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().arg("--add").arg("tiny-pkg").arg("--registry").arg(&reg).current_dir(dir.path()).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stdout).contains("added tiny-pkg@1.0.0"));
     // 落地断言：包文件 + bin 链接 + lockfile。
@@ -1805,7 +1807,7 @@ fn phase5_install_end_to_end_stub() {
     // 装完即跑（裸导入走 node_modules 解析）。
     let app = dir.child("app.cjs");
     app.write_str("const t = require(\"tiny-pkg\");\nconsole.log(t.add(19, 23));\n").unwrap();
-    let out = winterjs().arg("run").arg(app.path()).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().arg("--run").arg(app.path()).current_dir(dir.path()).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "42\n");
     dir.close().unwrap();
@@ -1865,7 +1867,7 @@ fn phase5_cache_second_install_hits_cache() {
     let dir = assert_fs::TempDir::new().unwrap();
     let cache = assert_fs::TempDir::new().unwrap();
     let out = winterjs()
-        .arg("add").arg("-a")
+        .arg("--add")
         .arg("cached-pkg")
         .arg("--registry")
         .arg(&reg)
@@ -1881,7 +1883,7 @@ fn phase5_cache_second_install_hits_cache() {
     // 删 node_modules 模拟二次安装（缓存保留）。
     std::fs::remove_dir_all(dir.path().join("node_modules")).unwrap();
     let out = winterjs()
-        .arg("add").arg("-a")
+        .arg("--add")
         .arg("cached-pkg")
         .arg("--registry")
         .arg(&reg)
@@ -1944,7 +1946,7 @@ fn phase5_lifecycle_runs_in_order() {
     let dir = assert_fs::TempDir::new().unwrap();
     let cache = assert_fs::TempDir::new().unwrap();
     let out = winterjs()
-        .arg("add").arg("-a")
+        .arg("--add")
         .arg("life-pkg")
         .arg("--registry")
         .arg(&reg)
@@ -2004,7 +2006,7 @@ fn phase5_lifecycle_failure_breaks_install() {
     let dir = assert_fs::TempDir::new().unwrap();
     let cache = assert_fs::TempDir::new().unwrap();
     let out = winterjs()
-        .arg("add").arg("-a")
+        .arg("--add")
         .arg("badlife")
         .arg("--registry")
         .arg(&reg)
@@ -2068,7 +2070,7 @@ fn phase5_stale_staging_recovered() {
     std::fs::create_dir_all(nm.join(".staging-999-deadbeef/package")).unwrap();
     std::fs::write(nm.join(".staging-999-deadbeef/package/junk.txt"), b"half").unwrap();
     let out = winterjs()
-        .arg("add").arg("-a")
+        .arg("--add")
         .arg("stale-pkg")
         .arg("--registry")
         .arg(&reg)
@@ -2116,7 +2118,7 @@ fn spawn_serve(root: &std::path::Path) -> ServeGuard {
 fn spawn_serve_args(root: &std::path::Path, extra: &[&str]) -> ServeGuard {
     let port = free_port();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
-        .args(["serve", ".", "--port"])
+        .args(["--serve", ".", "--port"])
         .arg(port.to_string())
         .args(extra)
         .current_dir(root)
@@ -2257,7 +2259,7 @@ fn phase6_serve_bad_dir_errors() {
     // 报错：不存在的目录 exit=1 且可读。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = winterjs()
-        .args(["serve", "no-such-dir", "--port", "18099"])
+        .args(["--serve", "no-such-dir", "--port", "18099"])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -2322,7 +2324,7 @@ fn phase6_serve_request_trace() {
     let dir = serve_fixture();
     let port = free_port();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
-        .args(["serve", ".", "--port"])
+        .args(["--serve", ".", "--port"])
         .arg(port.to_string())
         .env("WINTERJS_LOG", "winterjs=debug")
         .current_dir(dir.path())
@@ -2450,7 +2452,7 @@ fn phase6_serve_tls_half_args() {
     let dir = serve_fixture();
     let (cert, _, _) = make_self_signed(dir.path());
     let out = winterjs()
-        .args(["serve", ".", "--port", "18098", "--cert"])
+        .args(["--serve", ".", "--port", "18098", "--cert"])
         .arg(&cert)
         .current_dir(dir.path())
         .output()
@@ -2470,7 +2472,7 @@ fn phase6_serve_tls_bad_pem() {
     std::fs::write(&cert, b"not a pem\n").unwrap();
     std::fs::write(&key, b"not a pem\n").unwrap();
     let out = winterjs()
-        .args(["serve", ".", "--port", "18097", "--cert"])
+        .args(["--serve", ".", "--port", "18097", "--cert"])
         .arg(&cert)
         .args(["--key"])
         .arg(&key)
@@ -2498,7 +2500,7 @@ fn phase7_test_mixed_files() {
     // 正常：子测试 TAP 行透出 + runner 行 + 汇总，有挂则 exit=1。
     let dir = test_fixture();
     let out = winterjs()
-        .args(["test", "."])
+        .args(["--test", "."])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -2520,7 +2522,7 @@ fn phase7_test_all_pass() {
         .write_str("import { test } from \"node:test\";\ntest(\"ok\", () => {});\n")
         .unwrap();
     dir.child("o2.test.js").write_str("console.log(\"two\");\n").unwrap();
-    let out = stdout_of(winterjs().args(["test", "."]).current_dir(dir.path()));
+    let out = stdout_of(winterjs().args(["--test", "."]).current_dir(dir.path()));
     assert!(out.contains("ok - o.test.js"), "stdout:\n{out}");
     assert!(out.contains("ok - o2.test.js"), "stdout:\n{out}");
     assert!(out.contains("# pass 2, fail 0"), "stdout:\n{out}");
@@ -2532,7 +2534,7 @@ fn phase7_test_filter() {
     // 边界：--filter 只跑命中文件（此处零命中 → exit 0 提示行）。
     let dir = test_fixture();
     let out = stdout_of(
-        winterjs().args(["test", ".", "--filter", "zzz*"]).current_dir(dir.path()),
+        winterjs().args(["--test", ".", "--filter", "zzz*"]).current_dir(dir.path()),
     );
     assert!(out.contains("no test files found"), "stdout:\n{out}");
     dir.close().unwrap();
@@ -2542,7 +2544,7 @@ fn phase7_test_filter() {
 fn phase7_test_bad_path() {
     // 报错：不存在的路径 exit=1 且可读。
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs().args(["test", "no-such-dir"]).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().args(["--test", "no-such-dir"]).current_dir(dir.path()).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no such test path"), "stderr: {stderr}");
@@ -2553,11 +2555,11 @@ fn phase7_test_bad_path() {
 fn phase7_init_closed_loop() {
     // 正常：init 三件 + 内容含名 + 紧接着 `test` 即绿（闭环）。
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = stdout_of(winterjs().args(["init", "my-pkg", "--yes"]).current_dir(dir.path()));
+    let out = stdout_of(winterjs().args(["--init", "my-pkg", "--yes"]).current_dir(dir.path()));
     assert!(out.contains("created package.json") && out.contains("created hello.test.js"), "init:\n{out}");
     let pkg = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
     assert!(pkg.contains("\"my-pkg\""), "package.json:\n{pkg}");
-    let out = winterjs().arg("test").arg(".").current_dir(dir.path()).output().unwrap();
+    let out = winterjs().arg("--test").arg(".").current_dir(dir.path()).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stdout).contains("ok - hello.test.js"));
     dir.close().unwrap();
@@ -2567,7 +2569,7 @@ fn phase7_init_closed_loop() {
 fn phase7_init_bad_name() {
     // 报错：非法名 exit=1 且可读。
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs().args(["init", "Bad Name!", "--yes"]).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().args(["--init", "Bad Name!", "--yes"]).current_dir(dir.path()).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("bad package name"), "stderr: {stderr}");
@@ -2578,9 +2580,9 @@ fn phase7_init_bad_name() {
 fn phase7_init_conflict() {
     // 边界：已存在文件不覆盖，第二次 init exit=1 且一个不写。
     let dir = assert_fs::TempDir::new().unwrap();
-    assert!(winterjs().args(["init", "p", "--yes"]).current_dir(dir.path()).output().unwrap().status.success());
+    assert!(winterjs().args(["--init", "p", "--yes"]).current_dir(dir.path()).output().unwrap().status.success());
     std::fs::write(dir.path().join("index.js"), b"mine\n").unwrap();
-    let out = winterjs().args(["init", "p", "--yes"]).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().args(["--init", "p", "--yes"]).current_dir(dir.path()).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("refusing to overwrite"));
     assert_eq!(std::fs::read(dir.path().join("index.js")).unwrap(), b"mine\n");
@@ -2591,7 +2593,7 @@ fn phase7_init_conflict() {
 fn phase7_init_needs_yes_without_tty() {
     // 边界：非 TTY 缺 --yes 即报可读错（不挂起等输入）。
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs().args(["init", "p"]).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().args(["--init", "p"]).current_dir(dir.path()).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("--yes"));
     assert!(!dir.path().join("package.json").exists(), "nothing must be written");
@@ -2604,7 +2606,7 @@ fn repl_session(input: &str) -> (String, String, i32) {
     use std::io::Write;
     let home = assert_fs::TempDir::new().unwrap();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
-        .arg("repl")
+        .arg("--repl")
         .env("HOME", home.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -2668,7 +2670,7 @@ fn phase7_repl_syntax_continues() {
 fn run_sqlite_file(dir: &assert_fs::TempDir, name: &str, source: &str) -> String {
     let file = dir.child(name);
     file.write_str(source).unwrap();
-    let out = winterjs().arg("run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).current_dir(dir.path()).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8(out.stdout).unwrap()
 }
@@ -2756,7 +2758,7 @@ s.finalize();
 try { s.get(); } catch (e) { console.log("fin:", e.name); }
 console.log("done");
 "#).unwrap();
-    let out3 = winterjs().arg("run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    let out3 = winterjs().arg("--run").arg(file.path()).current_dir(dir.path()).output().unwrap();
     assert!(out3.status.success(), "stderr: {}", String::from_utf8_lossy(&out3.stderr));
     let so = String::from_utf8(out3.stdout).unwrap();
     assert_eq!(
@@ -2774,13 +2776,13 @@ fn phase7_sqlite_unknown_spec() {
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("c.mjs");
     file.write_str("import \"bun:nosuch\";\n").unwrap();
-    let out = winterjs().arg("run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).current_dir(dir.path()).output().unwrap();
     assert!(!out.status.success(), "expected failure");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("bun:sqlite"), "stderr: {err}");
     let ok = dir.child("d.mjs");
     ok.write_str("const { Database } = await import(\"bun:sqlite\");\nconsole.log(typeof Database);\n").unwrap();
-    let out2 = winterjs().arg("run").arg(ok.path()).current_dir(dir.path()).output().unwrap();
+    let out2 = winterjs().arg("--run").arg(ok.path()).current_dir(dir.path()).output().unwrap();
     assert!(out2.status.success(), "stderr: {}", String::from_utf8_lossy(&out2.stderr));
     assert_eq!(String::from_utf8(out2.stdout).unwrap(), "function\n");
     dir.close().unwrap();
@@ -2792,7 +2794,7 @@ fn phase7_test_watch_reruns_on_change() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("a.test.js").write_str("console.log(\"v1\");\n").unwrap();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
-        .args(["test", "--watch"])
+        .args(["--test", "--watch"])
         .current_dir(dir.path())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -2913,7 +2915,7 @@ console.log(typeof lib.symbols.ffi_add);
         libname = libname,
     ))
     .unwrap();
-    let out = winterjs().arg("run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).current_dir(dir.path()).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let so = String::from_utf8(out.stdout).unwrap();
     assert_eq!(
@@ -2949,7 +2951,7 @@ console.log("done");
         libname = libname,
     ))
     .unwrap();
-    let out = winterjs().arg("run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).current_dir(dir.path()).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let so = String::from_utf8(out.stdout).unwrap();
     assert_eq!(
@@ -2980,7 +2982,7 @@ fn phase8_permissions_fs() {
     // 默认（无旗标）= 全开放，行为不变
     let file = dir.child("d.mjs");
     file.write_str("console.log(require(\"node:fs\").readFileSync(\"in/a.txt\", \"utf8\"));\n").unwrap();
-    let (ok, out, err) = wjs(&["run", file.path().to_str().unwrap()], &dir);
+    let (ok, out, err) = wjs(&["--run", file.path().to_str().unwrap()], &dir);
     assert!(ok, "default open: {err}");
     assert_eq!(out, "hi\n");
 
@@ -2990,7 +2992,7 @@ const fs = require("node:fs");
 console.log(fs.readFileSync("in/a.txt", "utf8"));
 try { fs.writeFileSync("out.txt", "x"); console.log("WRITE-OK"); } catch (e) { console.log(e.name); }
 "#).unwrap();
-    let (ok, out, err) = wjs(&["run", "--allow-read", file.path().to_str().unwrap()], &dir);
+    let (ok, out, err) = wjs(&["--run", file.path().to_str().unwrap(), "--allow-read"], &dir);
     assert!(ok, "allow-read: {err}");
     assert_eq!(out, "hi\nPermissionError\n");
 
@@ -3001,7 +3003,7 @@ try { fs.readFileSync("in/a.txt"); console.log("IN-OK"); } catch (e) { console.l
 try { fs.readFileSync("/etc/hosts"); console.log("OUT-OK"); } catch (e) { console.log("OUT-FAIL", e.name); }
 try { fs.readFileSync("/nonexistent-perm-xyz/f"); } catch (e) { console.log("MISS:", String(e.message).includes("--allow-read")); }
 "#).unwrap();
-    let (ok, out, err) = wjs(&["run", "--allow-read=in", file.path().to_str().unwrap()], &dir);
+    let (ok, out, err) = wjs(&["--run", file.path().to_str().unwrap(), "--allow-read=in"], &dir);
     assert!(ok, "allow-list: {err}");
     assert_eq!(out, "IN-OK\nOUT-FAIL PermissionError\nMISS: true\n");
 
@@ -3011,7 +3013,7 @@ const fs = require("node:fs");
 fs.writeFileSync("out2.txt", "z");
 console.log(fs.readFileSync("out2.txt", "utf8"));
 "#).unwrap();
-    let (ok, out, err) = wjs(&["run", "--allow-all", file.path().to_str().unwrap()], &dir);
+    let (ok, out, err) = wjs(&["--run", file.path().to_str().unwrap(), "--allow-all"], &dir);
     assert!(ok, "allow-all: {err}");
     assert_eq!(out, "z\n");
     dir.close().unwrap();
@@ -3028,7 +3030,7 @@ console.log(process.env.WJS_TEST_VAR === undefined);
 try { console.log(typeof process.env.HOME); } catch (e) { console.log("HOME:", e.name); }
 try { Object.keys(process.env); console.log("KEYS-OK"); } catch (e) { console.log("KEYS:", String(e.message).includes("PermissionError")); }
 "#).unwrap();
-    let (ok, out, err) = wjs(&["run", "--allow-env=WJS_TEST_VAR,HOME", file.path().to_str().unwrap()], &dir);
+    let (ok, out, err) = wjs(&["--run", file.path().to_str().unwrap(), "--allow-env=WJS_TEST_VAR,HOME"], &dir);
     assert!(ok, "env: {err}");
     assert!(out.contains("true"), "out: {out}");
     assert!(out.contains("string"), "out: {out}");
@@ -3040,7 +3042,7 @@ const { execSync } = require("node:child_process");
 try { console.log(execSync("echo run-ok").toString().trim()); } catch (e) { console.log("ECHO:", e.name); }
 try { execSync("ls ."); } catch (e) { console.log("LS:", String(e.message).includes("allow-run")); }
 "#).unwrap();
-    let (ok, out, err) = wjs(&["run", "--allow-run=echo", file.path().to_str().unwrap()], &dir);
+    let (ok, out, err) = wjs(&["--run", file.path().to_str().unwrap(), "--allow-run=echo"], &dir);
     assert!(ok, "run: {err}");
     assert!(out.contains("run-ok"), "out: {out}");
     assert!(out.contains("LS: true"), "out: {out}");
@@ -3059,10 +3061,10 @@ fn phase8_permissions_sqlite_ffi() {
 const { Database } = await import("bun:sqlite");
 try { new Database("kv.db"); console.log("DB-OK"); } catch (e) { console.log("DB:", e.name); }
 "#).unwrap();
-    let (ok, out, err) = wjs(&["run", "--allow-env", file.path().to_str().unwrap()], &dir);
+    let (ok, out, err) = wjs(&["--run", file.path().to_str().unwrap(), "--allow-env"], &dir);
     assert!(ok, "sandbox via env: {err}");
     assert!(out.contains("DB: PermissionError"), "out: {out}");
-    let (ok, out, err) = wjs(&["run", "--allow-read", "--allow-write", file.path().to_str().unwrap()], &dir);
+    let (ok, out, err) = wjs(&["--run", file.path().to_str().unwrap(), "--allow-read", "--allow-write"], &dir);
     assert!(ok, "sqlite allowed: {err}");
     assert!(out.contains("DB-OK"), "out: {out}");
 
@@ -3074,10 +3076,10 @@ try {{ dlopen("./{libname}", {{ ffi_add: {{ args: [T.i32, T.i32], returns: T.i32
 "#,
         libname = libname,
     )).unwrap();
-    let (ok, out, err) = wjs(&["run", "--allow-read", file.path().to_str().unwrap()], &dir);
+    let (ok, out, err) = wjs(&["--run", file.path().to_str().unwrap(), "--allow-read"], &dir);
     assert!(ok, "ffi denied run: {err}");
     assert!(out.contains("FFI: Error true"), "out: {out}");
-    let (ok, out, err) = wjs(&["run", "--allow-ffi", file.path().to_str().unwrap()], &dir);
+    let (ok, out, err) = wjs(&["--run", file.path().to_str().unwrap(), "--allow-ffi"], &dir);
     assert!(ok, "ffi allowed: {err}");
     assert!(out.contains("FFI-OK"), "out: {out}");
     dir.close().unwrap();
@@ -3108,16 +3110,16 @@ fn phase8_lintfmt_passthrough() {
         &dir,
         "#!/bin/sh\necho \"fake-oxlint args: $@\"\necho \"lint-stderr\" >&2\nexit 0\n",
     );
-    let (ok, out, err) = wjs(&["lint", "src", "--write"], &dir);
+    let (ok, out, err) = wjs(&["--lint", "src", "--write"], &dir);
     assert!(ok, "lint run: {err}");
     assert!(out.contains("fake-oxlint args: src --write"), "out: {out}");
     assert!(err.contains("lint-stderr"), "stderr must pass through: {err}");
     // monorepo：子目录里跑，向上命中根安装的工具
-    let (ok, out, err) = wjs(&["lint", "."], &dir);
+    let (ok, out, err) = wjs(&["--lint", "."], &dir);
     assert!(ok, "subdir: {err}");
     assert!(out.contains("fake-oxlint args: ."), "out: {out}");
     // fmt 完全透传（oxfmt 默认写回、--check 为 CI 检查，均上游语义）
-    let (ok, out, err) = wjs(&["fmt", "--check", "src"], &dir);
+    let (ok, out, err) = wjs(&["--fmt", "--check", "src"], &dir);
     assert!(ok, "fmt: {err}");
     assert!(out.contains("fake-oxfmt got: --check src"), "out: {out}");
     dir.close().unwrap();
@@ -3131,14 +3133,14 @@ fn phase8_lintfmt_exit_and_notfound() {
     make_tool_repo(&dir, "#!/bin/sh\nexit 3\n");
     let file = dir.child("l.mjs");
     let _ = file;
-    let out = winterjs().args(["lint", "src"]).current_dir(dir.path()).output().unwrap();
+    let out = winterjs().args(["--lint", "src"]).current_dir(dir.path()).output().unwrap();
     assert_eq!(out.status.code(), Some(3), "exit code must forward");
     assert!(out.stdout.is_empty(), "Error::Exit is silent");
 
     // 未找到：清 PATH（env 清空 + 本地无工具），报两种安装指引
     let empty = assert_fs::TempDir::new().unwrap();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
-        .args(["lint"])
+        .args(["--lint"])
         .current_dir(empty.path())
         .env("PATH", "")
         .output()
@@ -3161,7 +3163,7 @@ fn phase8_sentry_optin_never_breaks_cli() {
 
     // 坏 DSN：stderr 告警 + 继续正常执行
     let out = winterjs()
-        .args(["eval", "40 + 2"])
+        .args(["--eval", "40 + 2"])
         .env("WINTERJS_SENTRY_DSN", "not-a-valid-dsn")
         .current_dir(dir.path())
         .output()
@@ -3173,7 +3175,7 @@ fn phase8_sentry_optin_never_breaks_cli() {
 
     // 不可达端点：CLI 照常（transport 后台线程吞错，主流程无感）
     let out = winterjs()
-        .args(["eval", "40 + 2"])
+        .args(["--eval", "40 + 2"])
         .env("WINTERJS_SENTRY_DSN", "http://key@127.0.0.1:9/42")
         .current_dir(dir.path())
         .output()
@@ -3183,7 +3185,7 @@ fn phase8_sentry_optin_never_breaks_cli() {
 
     // 未设置：无任何告警（默认关闭零成本）
     let out = winterjs()
-        .args(["eval", "40 + 2"])
+        .args(["--eval", "40 + 2"])
         .env_remove("WINTERJS_SENTRY_DSN")
         .current_dir(dir.path())
         .output()
@@ -3203,12 +3205,14 @@ fn i18n_help_zh() {
     let out = stdout_of(&mut winterjs().args(["-l", "zh", "--help"]));
     assert!(out.contains("运行 JS 文件"), "zh top help:\n{out}");
     assert!(out.contains("帮助文本语言"), "zh lang flag:\n{out}");
-    let out = stdout_of(&mut winterjs().args(["run", "-l", "zh", "--help"]));
-    assert!(out.contains("JS 文件路径"), "zh sub help:\n{out}");
+    // flag 世界：动作的值必须紧贴（--run 后直接跟别的 flag 会被当缺值）；
+    // 跨 flag 写法是 -l 前置 + 动作给值（--help 短路只展示不执行；扁平 CLI 无 per-action 页）
+    let out = stdout_of(&mut winterjs().args(["-l", "zh", "--run", "dummy.js", "--help"]));
+    assert!(out.contains("--run") && out.contains("运行 JS 文件"), "zh run flag:\n{out}");
     assert!(out.contains("允许文件系统读取"), "zh flattened perms:\n{out}");
     // `--lang=` 连写
-    let out = stdout_of(&mut winterjs().args(["--lang=zh", "eval", "--help"]));
-    assert!(out.contains("要求值的代码"), "zh eval help:\n{out}");
+    let out = stdout_of(&mut winterjs().args(["--lang=zh", "--help"]));
+    assert!(out.contains("求值内联 JS 代码"), "zh eval flag:\n{out}");
 }
 
 #[test]
@@ -3296,7 +3300,7 @@ fn pm_install_global_lands_in_global_root() {
     let groot = assert_fs::TempDir::new().unwrap();
     // 长 flag `--add` 覆盖（短 flag `-a` 已在迁移用例里全覆盖）
     let out = winterjs()
-        .args(["install", "--add", "g-pkg", "--registry", &reg])
+        .args(["--install", "g-pkg", "--registry", &reg])
         .env("WINTERJS_GLOBAL_ROOT", groot.path())
         .current_dir(dir.path())
         .output()
@@ -3322,7 +3326,7 @@ fn pm_install_global_dry_run_writes_nothing() {
     let groot = assert_fs::TempDir::new().unwrap();
     let target = groot.child("should-not-exist");
     let out = winterjs()
-        .args(["install", "-a", "left-pad@^1.0.0", "--dry-run", "--registry", &reg])
+        .args(["--install", "left-pad@^1.0.0", "--dry-run", "--registry", &reg])
         .env("WINTERJS_GLOBAL_ROOT", target.path())
         .output()
         .unwrap();
@@ -3334,9 +3338,25 @@ fn pm_install_global_dry_run_writes_nothing() {
 
 #[test]
 fn pm_add_requires_packages_flag() {
-    // 报错+边界：空包列表给可读错（不再读 package.json）
-    let out = winterjs().args(["add", "--dry-run"]).output().unwrap();
+    // 边界：--add 无值被 clap 直接拦（exit=2），到不了 pm
+    let out = winterjs().args(["--add", "--dry-run"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--add"), "stderr:\n{err}");
+}
+
+#[test]
+fn cli_flag_spec_single_action() {
+    // 正常：短 flag 全套（-r/-e/-a/-i）与子命令等价
+    assert_eq!(stdout_of(&mut winterjs().args(["-e", "40 + 2"])), "42\n");
+    // 报错：多动作互斥（exit=1，可读）
+    let out = winterjs().args(["--run", "a.js", "--eval", "1"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("exactly one action"), "stderr:\n{err}");
+    // 报错：无动作裸奔指路 --help
+    let out = winterjs().args(["--dry-run"]).output().unwrap();
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("-a/--add"), "stderr:\n{err}");
+    assert!(err.contains("--help"), "stderr:\n{err}");
 }

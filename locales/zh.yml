@@ -1,189 +1,112 @@
 app:
   about: "类 Bun 的 JS 运行时（基于 SpiderMonkey）"
-cmd:
-  run:
-    about: "运行 JS 文件并打印其完成值"
-  eval:
-    about: "求值内联 JS 代码"
-  config:
-    about: "显示解析后的配置（加 --schema 显示其 JSON Schema）"
-  completions:
-    about: "打印指定 shell 的补全脚本"
-  man:
-    about: "打印 roff 手册页到标准输出（主页 + 每个子命令一页）"
-  add:
-    about: "给当前工程添加软件包（本地 node_modules）"
-  install:
-    about: "全局安装软件包（共享数据目录）"
-  publish:
-    about: "发布当前软件包（Phase 5d；dry-run 仅校验）"
-  login:
-    about: "登录 registry（Phase 5d；令牌存入 ~/.npmrc）"
-  upgrade:
-    about: "自升级 winterjs（Phase 5d；需要 WINTERJS_UPDATE_GITHUB=owner/repo）"
-  init:
-    about: "新建软件包脚手架（Phase 7）"
-  repl:
-    about: "启动交互式 REPL（Phase 7）"
-  test:
-    about: "运行测试文件（Phase 7）"
-  lint:
-    about: "转发给项目自带的 oxlint（透传；参数原样交给 oxlint）"
-  fmt:
-    about: "转发给项目自带的 oxfmt（透传；参数原样交给 oxfmt）"
-  serve:
-    about: "通过 HTTP 提供目录服务（Phase 6）"
 arg:
-  app:
-    verbose:
-      help: "提高日志详细程度（-v：info，-vv：debug，-vvv：trace）"
-    lang:
-      help: "帮助文本语言（en 英文 / zh 中文，默认跟随系统语言）"
-      value: "语言"
+  verbose:
+    help: "提高日志详细程度（-v：info，-vv：debug，-vvv：trace）"
+  lang:
+    help: "帮助文本语言（en 英文 / zh 中文，默认跟随系统语言）"
+    value: "语言"
   run:
-    path:
-      help: "JS 文件路径"
-      value: "路径"
-    args:
-      help: "脚本参数（即 `process.argv.slice(2)`）"
-      value: "参数"
-    allow_read:
-      help: "允许文件系统读取（可选：--allow-read=<路径>[,<路径>...]）"
-      value: "路径"
-    allow_write:
-      help: "允许文件系统写入（可选：--allow-write=<路径>[,<路径>...]）"
-      value: "路径"
-    allow_env:
-      help: "允许访问环境变量（可选：--allow-env=<变量名>[,<变量名>...]）"
-      value: "变量名"
-    allow_run:
-      help: "允许派生子进程（可选：--allow-run=<命令>[,<命令>...]）"
-      value: "命令"
-    allow_ffi:
-      help: "允许 FFI（dlopen 本地库）"
-    allow_all:
-      help: "允许一切（关闭沙箱）"
+    help: "运行 JS 文件并打印其完成值"
+    value: "文件"
   eval:
-    code:
-      help: "要求值的代码"
-      value: "代码"
-    allow_read:
-      help: "允许文件系统读取（可选：--allow-read=<路径>[,<路径>...]）"
-      value: "路径"
-    allow_write:
-      help: "允许文件系统写入（可选：--allow-write=<路径>[,<路径>...]）"
-      value: "路径"
-    allow_env:
-      help: "允许访问环境变量（可选：--allow-env=<变量名>[,<变量名>...]）"
-      value: "变量名"
-    allow_run:
-      help: "允许派生子进程（可选：--allow-run=<命令>[,<命令>...]）"
-      value: "命令"
-    allow_ffi:
-      help: "允许 FFI（dlopen 本地库）"
-    allow_all:
-      help: "允许一切（关闭沙箱）"
+    help: "求值内联 JS 代码"
+    value: "代码"
   config:
-    schema:
-      help: "改为打印配置文件的 JSON Schema"
+    help: "显示解析后的配置（加 --schema 显示其 JSON Schema）"
   completions:
-    shell:
-      help: "要生成补全脚本的 shell"
-      value: "Shell"
+    help: "打印指定 shell 的补全脚本"
+    value: "Shell"
+  man:
+    help: "打印 roff 手册页到标准输出"
   add:
-    packages:
-      help: "软件包 spec（`name[@range]`、`@scope/name[@range]`）"
-      value: "包"
-    dry_run:
-      help: "只求解并打印依赖树，不写任何文件"
-    registry:
-      help: "Registry 基地址（默认 https://registry.npmjs.org）"
-      value: "注册表地址"
+    help: "给当前工程添加软件包（本地 node_modules）"
+    value: "包"
   install:
-    packages:
-      help: "软件包 spec（`name[@range]`、`@scope/name[@range]`）"
-      value: "包"
-    dry_run:
-      help: "只求解并打印依赖树，不写任何文件"
-    registry:
-      help: "Registry 基地址（默认 https://registry.npmjs.org）"
-      value: "注册表地址"
+    help: "全局安装软件包（共享数据目录）"
+    value: "包"
   publish:
-    dry_run:
-      help: "校验并打印将要发布的内容，不上传"
-    registry:
-      help: "Registry 基地址（npmrc/env 回退，见 `install`）"
-      value: "注册表地址"
-    tag:
-      help: "发布时使用的 dist-tag"
-      value: "标签"
+    help: "发布当前软件包（Phase 5d；dry-run 仅校验）"
   login:
-    token:
-      help: "要保存的认证令牌（TTY 下缺省会提示输入）"
-      value: "令牌"
-    registry:
-      help: "Registry 基地址（npmrc/env 回退，见 `install`）"
-      value: "注册表地址"
-    oauth:
-      help: "改为打印 OAuth 授权 URL（code 交换顺延）"
+    help: "登录 registry（Phase 5d；令牌存入 ~/.npmrc）"
   upgrade:
-    dry_run:
-      help: "只报告当前版本与渠道，不升级"
+    help: "自升级 winterjs（Phase 5d；需要 WINTERJS_UPDATE_GITHUB=owner/repo）"
   init:
-    name:
-      help: "软件包名（默认取当前目录名）"
-      value: "名称"
-    yes:
-      help: "跳过确认提示"
+    help: "新建软件包脚手架（Phase 7）"
+    value: "名称"
+  repl:
+    help: "启动交互式 REPL（Phase 7）"
   test:
-    paths:
-      help: "测试文件或目录（默认在 cwd 下发现）"
-      value: "路径"
-    filter:
-      help: "只运行匹配该 glob 的文件（按相对路径或文件名匹配）"
-      value: "过滤条件"
-    watch:
-      help: "文件变化时重跑测试（Ctrl-C 停止）"
-    allow_read:
-      help: "允许文件系统读取（可选：--allow-read=<路径>[,<路径>...]）"
-      value: "路径"
-    allow_write:
-      help: "允许文件系统写入（可选：--allow-write=<路径>[,<路径>...]）"
-      value: "路径"
-    allow_env:
-      help: "允许访问环境变量（可选：--allow-env=<变量名>[,<变量名>...]）"
-      value: "变量名"
-    allow_run:
-      help: "允许派生子进程（可选：--allow-run=<命令>[,<命令>...]）"
-      value: "命令"
-    allow_ffi:
-      help: "允许 FFI（dlopen 本地库）"
-    allow_all:
-      help: "允许一切（关闭沙箱）"
+    help: "运行测试文件（Phase 7）"
+    value: "路径"
   lint:
-    args:
-      help: "原样转发给 oxlint 的参数"
-      value: "参数"
+    help: "转发给项目自带的 oxlint（透传；参数原样交给 oxlint）"
+    value: "参数"
   fmt:
-    args:
-      help: "原样转发给 oxfmt 的参数"
-      value: "参数"
+    help: "转发给项目自带的 oxfmt（透传；参数原样交给 oxfmt）"
+    value: "参数"
   serve:
-    dir:
-      help: "要提供服务的目录"
-      value: "目录"
-    host:
-      help: "绑定的网卡地址"
-      value: "主机"
-    port:
-      help: "绑定的端口（0 表示临时端口，实际端口打印到标准输出）"
-      value: "端口"
-    limit_rps:
-      help: "每秒请求数限制，0 表示不限"
-      value: "限流值"
-    cert:
-      help: "TLS 证书（PEM，必须与 --key 同给）"
-      value: "证书"
-    key:
-      help: "TLS 私钥（PEM，必须与 --cert 同给）"
-      value: "密钥"
+    help: "通过 HTTP 提供目录服务（Phase 6）"
+    value: "目录"
+  args:
+    help: "传给 --run 的脚本参数（即 `process.argv.slice(2)`）"
+    value: "参数"
+  dry_run:
+    help: "只求解并打印依赖树，不写任何文件（add/install/upgrade）"
+  registry:
+    help: "Registry 基地址（默认 https://registry.npmjs.org）"
+    value: "注册表地址"
+  tag:
+    help: "发布时使用的 dist-tag"
+    value: "标签"
+  token:
+    help: "要保存的认证令牌（TTY 下缺省会提示输入）"
+    value: "令牌"
+  oauth:
+    help: "改为打印 OAuth 授权 URL（code 交换顺延）"
+  name:
+    help: "--init 用的软件包名（默认取当前目录名）"
+    value: "名称"
+  yes:
+    help: "跳过确认提示"
+  filter:
+    help: "只运行匹配该 glob 的文件（按相对路径或文件名匹配）"
+    value: "过滤条件"
+  watch:
+    help: "文件变化时重跑测试（Ctrl-C 停止）"
+  dir:
+    help: "要提供服务的目录"
+    value: "目录"
+  host:
+    help: "绑定的网卡地址"
+    value: "主机"
+  port:
+    help: "绑定的端口（0 表示临时端口，实际端口打印到标准输出）"
+    value: "端口"
+  limit_rps:
+    help: "每秒请求数限制，0 表示不限"
+    value: "限流值"
+  cert:
+    help: "TLS 证书（PEM，必须与 --key 同给）"
+    value: "证书"
+  key:
+    help: "TLS 私钥（PEM，必须与 --cert 同给）"
+    value: "密钥"
+  schema:
+    help: "改为打印配置文件的 JSON Schema"
+  allow_read:
+    help: "允许文件系统读取（可选：--allow-read=<路径>[,<路径>...]）"
+    value: "路径"
+  allow_write:
+    help: "允许文件系统写入（可选：--allow-write=<路径>[,<路径>...]）"
+    value: "路径"
+  allow_env:
+    help: "允许访问环境变量（可选：--allow-env=<变量名>[,<变量名>...]）"
+    value: "变量名"
+  allow_run:
+    help: "允许派生子进程（可选：--allow-run=<命令>[,<命令>...]）"
+    value: "命令"
+  allow_ffi:
+    help: "允许 FFI（dlopen 本地库）"
+  allow_all:
+    help: "允许一切（关闭沙箱）"

@@ -26,7 +26,7 @@ mod state;
 rust_i18n::i18n!("locales", fallback = "en");
 
 use clap::FromArgMatches;
-use cli::{Cli, Cmd};
+use cli::Cli;
 use error::Error;
 use settings::ColorChoice;
 
@@ -107,7 +107,7 @@ async fn dispatch(cli: Cli, settings: &settings::Settings) -> i32 {
     let r = dispatch_inner(cli, settings).await;
     match &r {
         Ok(()) => 0,
-        // 管道下游提前关闭（如 `winterjs man | head`）静默退出，不刷错误
+        // 管道下游提前关闭（如 `winterjs --man | head`）静默退出，不刷错误
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
         // process.exit/exitCode：静默以指定码退出
         Err(Error::Exit(code)) => *code,
@@ -119,96 +119,120 @@ async fn dispatch(cli: Cli, settings: &settings::Settings) -> i32 {
 }
 
 async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), Error> {
-    match cli.cmd {
-        Cmd::Run { path, args, perms } => {
-            install_permissions(&perms);
-            let source = std::fs::read_to_string(&path).map_err(|source| Error::IoRead {
-                path: path.clone(),
-                source,
-            })?;
-            let filename = path.to_string_lossy().into_owned();
-            runtime::run(&source, &filename, runtime::Mode::Script, &args).await
-        }
-        Cmd::Eval { code, perms } => {
-            install_permissions(&perms);
-            runtime::run(&code, "eval.js", runtime::Mode::Eval, &[]).await
-        }
-        Cmd::Config { schema } => {
-            if schema {
-                let schema = schemars::schema_for!(settings::Settings);
-                println!("{}", serde_json::to_string_pretty(&schema)?);
-            } else {
-                println!("{}", serde_json::to_string_pretty(settings)?);
-            }
-            Ok(())
-        }
-        Cmd::Completions { shell } => {
-            let mut cmd = cli::localized_command();
-            clap_complete::generate(shell, &mut cmd, "winterjs", &mut std::io::stdout().lock());
-            Ok(())
-        }
-        Cmd::Add { packages, dry_run, registry } => {
-            let cwd = std::env::current_dir()
-                .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
-            pm::install_to(&cwd, &packages, dry_run, registry.as_deref()).await
-        }
-        Cmd::Install { packages, dry_run, registry } => {
-            let root = pm::global_root()?;
-            pm::install_to(&root, &packages, dry_run, registry.as_deref()).await?;
-            if !dry_run {
-                println!("global root: {}", root.display());
-                println!(
-                    "add {} to PATH to use installed bins",
-                    root.join("node_modules").join(".bin").display()
-                );
-            }
-            Ok(())
-        }
-        Cmd::Publish { dry_run, registry, tag } => {
-            let cwd = std::env::current_dir()
-                .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
-            let reg = pm::effective_registry(&cwd, registry.as_deref());
-            pm::publish::publish(&cwd, dry_run, &reg, &tag).await
-        }
-        Cmd::Login { token, registry, oauth } => {
-            let cwd = std::env::current_dir()
-                .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
-            let reg = pm::effective_registry(&cwd, registry.as_deref());
-            pm::publish::login(&reg, token.as_deref(), oauth).await
-        }
-        Cmd::Upgrade { dry_run } => pm::upgrade::upgrade(dry_run).await,
-        Cmd::Lint { args } => lintfmt::run("oxlint", &args),
-        Cmd::Fmt { args } => lintfmt::run("oxfmt", &args),
-        Cmd::Init { name, yes } => {
-            let cwd = std::env::current_dir()
-                .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
-            initpkg::init(&cwd, name.as_deref(), yes).await
-        }
-        Cmd::Repl => runtime::repl().await,
-        Cmd::Test { paths, filter, watch, perms } => {
-            install_permissions(&perms);
-            let cwd = std::env::current_dir()
-                .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
-            testrun::run_tests(&cwd, &testrun::TestOpts { paths, filter, watch }).await
-        }
-        Cmd::Serve { dir, host, port, limit_rps, cert, key } => {
-            serve::serve(&serve::ServeOpts { dir, host, port, limit_rps, cert, key }).await
-        }
-        Cmd::Man => {            use std::io::Write as _;
-
-            let mut cmd = cli::localized_command();
-            let main_man = clap_mangen::Man::new(cmd.clone()).title("WINTERJS");
-            let mut buf = Vec::new();
-            main_man.render(&mut buf)?;
-            std::io::stdout().write_all(&buf)?;
-            for sub in cmd.get_subcommands_mut() {
-                let sub_name = sub.get_name().to_uppercase();
-                let man = clap_mangen::Man::new(sub.clone()).title(format!("WINTERJS-{sub_name}"));
-                let mut buf = Vec::new();
-                man.render(&mut buf)?;
-                std::io::stdout().write_all(&buf)?;
-            }
-            Ok(())
-        }
+    // 全 flag 规范（AGENTS §0.8）：一次恰好一个动作。0 个时 `arg_required_else_help`
+    // 已提前打印 help，只有透传 `args` 残留能到这里，照样报错指路。
+    let actions = cli.actions_present();
+    if actions.len() > 1 {
+        return Err(Error::Other(format!(
+            "specify exactly one action, got: {} (see --help)",
+            actions.join(", ")
+        )));
     }
+    if let Some(path) = cli.run {
+        install_permissions(&cli.perms);
+        let source = std::fs::read_to_string(&path).map_err(|source| Error::IoRead {
+            path: path.clone(),
+            source,
+        })?;
+        let filename = path.to_string_lossy().into_owned();
+        return runtime::run(&source, &filename, runtime::Mode::Script, &cli.args).await;
+    }
+    if let Some(code) = cli.eval {
+        install_permissions(&cli.perms);
+        return runtime::run(&code, "eval.js", runtime::Mode::Eval, &[]).await;
+    }
+    if cli.config {
+        if cli.schema {
+            let schema = schemars::schema_for!(settings::Settings);
+            println!("{}", serde_json::to_string_pretty(&schema)?);
+        } else {
+            println!("{}", serde_json::to_string_pretty(settings)?);
+        }
+        return Ok(());
+    }
+    if let Some(shell) = cli.completions {
+        let mut cmd = cli::localized_command();
+        clap_complete::generate(shell, &mut cmd, "winterjs", &mut std::io::stdout().lock());
+        return Ok(());
+    }
+    if cli.man {
+        use std::io::Write as _;
+
+        let cmd = cli::localized_command();
+        let man = clap_mangen::Man::new(cmd).title("WINTERJS");
+        let mut buf = Vec::new();
+        man.render(&mut buf)?;
+        std::io::stdout().write_all(&buf)?;
+        return Ok(());
+    }
+    if !cli.add.is_empty() {
+        let cwd = std::env::current_dir()
+            .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+        return pm::install_to(&cwd, &cli.add, cli.dry_run, cli.registry.as_deref()).await;
+    }
+    if !cli.install.is_empty() {
+        let root = pm::global_root()?;
+        pm::install_to(&root, &cli.install, cli.dry_run, cli.registry.as_deref()).await?;
+        if !cli.dry_run {
+            println!("global root: {}", root.display());
+            println!(
+                "add {} to PATH to use installed bins",
+                root.join("node_modules").join(".bin").display()
+            );
+        }
+        return Ok(());
+    }
+    if cli.publish {
+        let cwd = std::env::current_dir()
+            .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+        let reg = pm::effective_registry(&cwd, cli.registry.as_deref());
+        return pm::publish::publish(&cwd, cli.dry_run, &reg, &cli.tag).await;
+    }
+    if cli.login {
+        let cwd = std::env::current_dir()
+            .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+        let reg = pm::effective_registry(&cwd, cli.registry.as_deref());
+        return pm::publish::login(&reg, cli.token.as_deref(), cli.oauth).await;
+    }
+    if cli.upgrade {
+        return pm::upgrade::upgrade(cli.dry_run).await;
+    }
+    if let Some(args) = cli.lint {
+        return lintfmt::run("oxlint", &args);
+    }
+    if let Some(args) = cli.fmt {
+        return lintfmt::run("oxfmt", &args);
+    }
+    if let Some(name) = cli.init {
+        let cwd = std::env::current_dir()
+            .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+        // `--init` 裸 flag（无值，经 default_missing_value 得空串）取目录名
+        let name = if name.is_empty() { None } else { Some(name) };
+        return initpkg::init(&cwd, name.as_deref(), cli.yes).await;
+    }
+    if cli.repl {
+        return runtime::repl().await;
+    }
+    if let Some(paths) = cli.test {
+        install_permissions(&cli.perms);
+        let cwd = std::env::current_dir()
+            .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+        let paths = paths.into_iter().map(std::path::PathBuf::from).collect();
+        let opts = testrun::TestOpts { paths, filter: cli.filter, watch: cli.watch };
+        return testrun::run_tests(&cwd, &opts).await;
+    }
+    if let Some(dir) = cli.serve {
+        // `--serve` 裸 flag 走 default_missing_value(".")；`--dir` 显式给则覆盖
+        let dir = if dir != "." { std::path::PathBuf::from(dir) } else { cli.dir };
+        return serve::serve(&serve::ServeOpts {
+            dir,
+            host: cli.host,
+            port: cli.port,
+            limit_rps: cli.limit_rps,
+            cert: cli.cert,
+            key: cli.key,
+        })
+        .await;
+    }
+    Err(Error::Other("specify an action (see --help)".into()))
 }

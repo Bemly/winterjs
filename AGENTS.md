@@ -23,6 +23,11 @@
    黑盒测试（`tests/cli.rs`，经 CLI 断言用户可见行为，每个新 API 必含正常 + 报错 +
    边界三件；`UNSAFE-BOUNDARY` 新增必须配 panic 路径用例）、
    冒烟（§3 探针命令，构建后必跑，不过不提交）。
+8. **CLI 全 flag 规范**：无裸子命令、无裸位置参数——所有动作一律 `-x/--xxx`
+   显式 flag（如 `-r/--run <FILE>`、`-a/--add <PKG>`、`-i/--install <PKG>`）；
+   一次恰好一个动作，多给即错；动作的必需值必须紧贴其 flag（`--run` 后直接跟
+   别的 flag 会被判缺值）；修饰 flag（`--dry-run/--registry/--port` 等）只在对应
+   动作下生效。help/补全/man 全由同一套 flag 生成（`localized_command`）。
 
 ## 1. 基线（2026-09-09）
 
@@ -31,8 +36,9 @@
 - 版本号用 CalVer `YY.MM.PATCH`（如 `26.9.0`，cargo 可解析；`^26.9.0` 即年内自动升）。
   依赖清单与 10-target 矩阵见 `docs/dependencies.md`。
 - 无 `rust-toolchain` pin、无 spiderfire/ion 依赖、无 server/request_handlers。
-- CLI：`winterjs run <file>` / `winterjs eval <code>` / `winterjs config [--schema]` /
-  `winterjs completions <shell>` / `winterjs man`，见 `src/`（cli/runner/error/logging/settings/alloc 模块）。
+- CLI（全 flag，§0.8）：`winterjs --run <file>` / `winterjs --eval <code>` /
+  `winterjs --config [--schema]` / `winterjs --completions <shell>` / `winterjs --man` 等，
+  见 `src/`（cli/runner/error/logging/settings/alloc 模块）。
 - 依赖 2026-09-10 起全量入库（docs/dependencies.md 头部决策记录），代码按 Phase 接线。
 
 ## 2. 依赖铁律
@@ -52,18 +58,18 @@ cargo build
 ```
 
 - `mozjs_sys` 走预构建 `libjs_static.a`，debug 全量约 25 秒，不用怕。
-- 验证：`./target/debug/winterjs eval '40 + 2'` → `42`；
-  `./target/debug/winterjs eval 'throw new Error("boom")'` → 非 TTY 下
+- 验证：`./target/debug/winterjs --eval '40 + 2'` → `42`；
+  `./target/debug/winterjs --eval 'throw new Error("boom")'` → 非 TTY 下
   `Error: eval.js:1:7: boom`，exit=1（TTY 下由 miette 图形渲染，带代码框，语义同）。
 
 ### 冒烟（每次构建后必跑，不过不提交）
 
 ```bash
-./target/debug/winterjs eval '40 + 2'                                                    # → 42
-./target/debug/winterjs eval 'await new Promise(r=>setTimeout(()=>r(1),10))'              # → 1
-./target/debug/winterjs eval 'new URL("https://ex.com/?a=1").search'                     # → ?a=1
-./target/debug/winterjs eval 'new TextEncoder().encode("hi").length'                     # → 2
-./target/debug/winterjs eval 'await (await fetch("data:text/plain,x")).text()'         # → x
+./target/debug/winterjs --eval '40 + 2'                                                    # → 42
+./target/debug/winterjs --eval 'await new Promise(r=>setTimeout(()=>r(1),10))'              # → 1
+./target/debug/winterjs --eval 'new URL("https://ex.com/?a=1").search'                     # → ?a=1
+./target/debug/winterjs --eval 'new TextEncoder().encode("hi").length'                     # → 2
+./target/debug/winterjs --eval 'await (await fetch("data:text/plain,x")).text()'         # → x
 ```
 
 ## 4. 踩坑记录
@@ -319,6 +325,15 @@ cargo build
   零泄漏且英文输出逐字节不变）（`src/cli.rs` `localized_command`）。
 - 附带：`rust-i18n` 的 `t!` 接受变量 key（运行时查表正常；扫不到的只是
   `cargo i18n` 提取工具——key 全在 yml 里，无需提取）。
+
+### 4.26 全 flag CLI 的两条铁律（2026-09-11）
+
+- 动作的必需值必须紧贴其 flag：`--run`（`num_args(1)`）后直接跟别的 flag
+  即判缺值（`--run -l zh --help` 炸）。写法是值前置（`-l zh --run f.js --help`），
+  测试里 9 处 `wjs(&["--run", <flags>, file])` 全因此调序。
+- 机械改名脚本会误伤非 winterjs 调用：`&["init", "-q", ...]`（git helper）
+  撞上 `["init", ` 模式。修法：脚本断言计数 + 事后按命令名复核 bare 残留；
+  跨工具同名（git init）逐个手改（`src/cli.rs` 全 flag 重写，`tests/cli.rs`）。
 
 ## 5. 路线图（按序）
 

@@ -94,6 +94,9 @@ askama = "0.16"
 # TLS 由全图统一的 reqwest/rustls-no-provider + 顶层 rustls/ring provider 提供；
 # "github" 为纯开关（无新增传递依赖，5d-d4 自升级用）
 self_update = { version = "1", default-features = false, features = ["reqwest", "archive-zip", "compression-zip-deflate", "github"] }
+# CLI 中英文双语：locales/*.yml 编译期打进二进制；YAML 解析只在 build/proc-macro（host 侧），
+# binary 新增仅 arc-swap（已在树内）/base62/siphasher/triomphe/smallvec（已在树内），全纯 Rust（见 §4 备注）
+rust-i18n = "4"
 
 # ── §5 loader + 转译 + 编译期注册 + 内嵌资源 ───────────────────────────
 oxc_resolver = "11"
@@ -261,8 +264,7 @@ wide = "1"
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["process", "signal", "fs"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-systemd = "0.10"
+
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"

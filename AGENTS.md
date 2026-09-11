@@ -307,6 +307,19 @@ cargo build
   禁在同一线程叠建 Runtime、禁改 `end_session` 为 drop。多 run 功能的黑盒
   必须含 ≥2 文件/≥2 轮的用例（e1 的教训：单文件用例漏掉整层回归）。
 
+### 4.25 clap builder 的 by-value 改造 + `value_name` 只要 `&'static str`（2026-09-11）
+
+- 症状：`cmd.about(x)` 报 `cannot move out of *cmd`（E0507）；`a.value_name(String)`
+  报 `Str: From<String> 未实现`（E0277）；`get_value_names()` 回的是 `Option` 不是切片。
+- 根因：`Command::about/mut_arg` 是 `mut self -> Self`（by-value，非 `&mut`），
+  `&mut` 引用上调即 E0507；`value_name` 只收 `&'static str`。
+- 修法：顶层用 `cmd = cmd.about(..)` 串联；子命令经 `get_subcommands_mut` +
+  `mem::replace` 占位换回；译文 `value_name` 经 `Box::leak` 给 `'static`
+  （中文 locale 下约 60 短串，进程生命期，注释写明；英文 locale 译文==原文直接跳过，
+  零泄漏且英文输出逐字节不变）（`src/cli.rs` `localized_command`）。
+- 附带：`rust-i18n` 的 `t!` 接受变量 key（运行时查表正常；扫不到的只是
+  `cargo i18n` 提取工具——key 全在 yml 里，无需提取）。
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

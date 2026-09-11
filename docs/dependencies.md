@@ -206,11 +206,17 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 | 容量参数 | `bytesize` | 2.7.0 | 2015-04-19 | 2026-08-02 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 初始化模板 | `askama` | 0.16.1 | 2017-02-15 | 2026-09-04 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 自升级 | `self_update` | 1.3.0 | 2017-07-25 | 2026-09-02 | ✅（TLS 豁免） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| CLI 双语 | `rust-i18n` | 4.2.2 | 2021 | 2026 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 备注：`rustyline`/`self_update` 的移动端格是“功能不需要”（REPL/自升级是桌面功能，
 模块可 cfg 门控），不是编不过。`vergen` 开 `gitcl`（调 git CLI），禁 `git`（→`git2` 的 C）。
 `shlex` 做 `bunx` 式参数透传的 shell 切词；`humantime`/`bytesize` 解析 `--timeout 30s`/`--max-old-space 512MB`；
 `askama`（编译期模板）做 `winterjs init` 脚手架。
+`rust-i18n` 审计（2026-09-11，用户拍板引入）：longbridge 出品（2021 起，4.2.2），MIT；
+normal 依赖仅 `rust-i18n-support`（默认特性无 codegen，只剩 `arc-swap`/`base62`/`siphasher`/`triomphe`，
+全纯 Rust；`arc-swap` 本就在树内）+ `rust-i18n-macro`（proc-macro，host）+ `smallvec`（已在树内）；
+YAML/JSON/TOML 解析（`serde-saphyr` 等纯 Rust）只在 build-dependencies/proc-macro（host 侧），不进 binary；
+无 `links`，`build.rs` 只打 `locales/**` 的 `rerun-if-changed`。`locales/*.yml` 编译期打进二进制（`fallback="en"`）。
 
 ## 5. loader + 转译 + 编译期注册 + 内嵌资源
 
@@ -384,6 +390,10 @@ c-4 增补（2026-09-10 用户拍板）：`sha2_010`（sha2 0.10 改名直引，
 `tzdb` 内嵌特性实施时确认，可解）。
 `nix` 是 unix-only（Windows ❌，用 tokio/标准库顶）；`windows-service`/`systemd`
 分别是 Windows/Linux 专用行。`gix` 约 50 个子 crate，全纯 Rust，PM 的 git 依赖就它了。
+偏离（2026-09-11 实测）：`systemd` crate 已移除（`src/serve.rs` 手写 sd_notify 约 30 行：
+`$NOTIFY_SOCKET` 数据报直写，含 `@` 抽象套接字；`Cargo.toml` 的 linux 专用行同步删除）——
+`systemd` 经 pkg-config 链 C（`libsystemd-sys`），挡死交叉编译矩阵（§15），协议本身适用 §13
+手写件口径；§8 表格行保留备查。
 git 附记（2026-09-10 实测）：`gix` 默认特性无网络客户端（`blocking-network-client`
 拖 `gix-transport` + async 运行时），远端 `https/ssh` 克隆走 `git` CLI
 （构建期 vergen-gitcl 同款前例；缺二进制即报可读错），本地 `file://`/路径走

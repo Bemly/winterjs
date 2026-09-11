@@ -91,12 +91,38 @@ impl axum::serve::Listener for TlsListener {
 }
 
 /// systemd 就绪通知（仅 linux；非 systemd 环境/失败一律忽略，只记 debug）。
+/// sd_notify 协议直写（`$NOTIFY_SOCKET` 数据报，含 `@` 抽象套接字），替代
+/// `systemd` crate —— 后者的 pkg-config + C 链接挡死交叉编译矩阵，协议本身
+/// 约 30 行（§13 手写件，2026-09-11 记偏离，dependencies §8 同步）。
 #[cfg(target_os = "linux")]
-fn notify_ready() {
-    let state = [(systemd::daemon::STATE_READY.to_owned(), "1".to_owned())];
-    match systemd::daemon::notify(false, state.iter()) {
-        Ok(true) => tracing::debug!(target: "winterjs::serve", "systemd READY notified"),
-        Ok(false) => tracing::debug!(target: "winterjs::serve", "not running under systemd"),
+pub(crate) fn notify_ready() {
+    use std::os::linux::net::SocketAddrExt as _;
+    use std::os::unix::net::{SocketAddr, UnixDatagram};
+    let Some(raw) = std::env::var_os("NOTIFY_SOCKET") else {
+        tracing::debug!(target: "winterjs::serve", "not running under systemd (no NOTIFY_SOCKET)");
+        return;
+    };
+    let raw = raw.to_string_lossy().into_owned();
+    let addr = if let Some(name) = raw.strip_prefix('@') {
+        // 抽象命名空间套接字（systemd 默认形态）
+        match SocketAddr::from_abstract_name(name.as_bytes()) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::debug!(target: "winterjs::serve", "systemd notify: bad abstract socket: {e}");
+                return;
+            }
+        }
+    } else {
+        match SocketAddr::from_pathname(std::path::Path::new(&raw)) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::debug!(target: "winterjs::serve", "systemd notify: bad socket path: {e}");
+                return;
+            }
+        }
+    };
+    match UnixDatagram::unbound().and_then(|sock| sock.send_to_addr(b"READY=1", &addr)) {
+        Ok(_) => tracing::debug!(target: "winterjs::serve", "systemd READY notified"),
         Err(e) => tracing::debug!(target: "winterjs::serve", "systemd notify failed: {e}"),
     }
 }
@@ -352,6 +378,26 @@ pub(crate) async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
+    // sd_notify 属 linux 运行面（mac 无 std::os::linux），本测试仅在 linux 上编译运行
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial]
+    fn sd_notify_ready_sends_to_abstract_socket() {
+        // 抽象套接字收 READY=1（@ 前缀路径与 systemd 默认形态一致）
+        use std::os::linux::net::SocketAddrExt as _;
+        use std::os::unix::net::UnixDatagram;
+        let name = format!("winterjs-test-{}", std::process::id());
+        let rx = UnixDatagram::bind_addr(&std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes()).unwrap()).unwrap();
+        // SAFETY: #[serial] 防并行；进程级 env 仅本测试读写
+        unsafe { std::env::set_var("NOTIFY_SOCKET", format!("@{name}")) };
+        super::notify_ready();
+        // SAFETY: 同上
+        unsafe { std::env::remove_var("NOTIFY_SOCKET") };
+        let mut buf = [0u8; 16];
+        let (n, _) = rx.recv_from(&mut buf).expect("READY datagram");
+        assert_eq!(&buf[..n], b"READY=1");
+    }
+
     use super::*;
 
     #[test]

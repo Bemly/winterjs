@@ -1,0 +1,178 @@
+app:
+  about: "Bun-like JS runtime on SpiderMonkey"
+cmd:
+  run:
+    about: "Run a JS file and print its completion value"
+  eval:
+    about: "Evaluate inline JS code"
+  config:
+    about: "Show resolved settings (or their JSON Schema with --schema)"
+  completions:
+    about: "Print a shell completion script for the given shell"
+  man:
+    about: "Print roff manual pages to stdout (main page, then one per subcommand)"
+  install:
+    about: "Install packages from the npm registry (Phase 5; dry-run first)"
+  publish:
+    about: "Publish the current package (Phase 5d; dry-run validates only)"
+  login:
+    about: "Log in to a registry (Phase 5d; stores a token in ~/.npmrc)"
+  upgrade:
+    about: "Self-upgrade winterjs (Phase 5d; needs WINTERJS_UPDATE_GITHUB=owner/repo)"
+  init:
+    about: "Scaffold a new package (Phase 7)"
+  repl:
+    about: "Start an interactive REPL (Phase 7)"
+  test:
+    about: "Run test files (Phase 7)"
+  lint:
+    about: "Forward to the project's oxlint (passthrough; args go to oxlint verbatim)"
+  fmt:
+    about: "Forward to the project's oxfmt (passthrough; args go to oxfmt verbatim)"
+  serve:
+    about: "Serve a directory over HTTP (Phase 6)"
+arg:
+  app:
+    verbose:
+      help: "Increase log verbosity (-v: info, -vv: debug, -vvv: trace)"
+    lang:
+      help: "Language for help text (en/zh; defaults to the system language)"
+      value: "LANG"
+  run:
+    path:
+      help: "Path to the JS file"
+      value: "PATH"
+    args:
+      help: "Script arguments (as `process.argv.slice(2)`)"
+      value: "ARGS"
+    allow_read:
+      help: "Allow filesystem reads (optionally: --allow-read=<path>[,<path>...])"
+      value: "PATH"
+    allow_write:
+      help: "Allow filesystem writes (optionally: --allow-write=<path>[,<path>...])"
+      value: "PATH"
+    allow_env:
+      help: "Allow environment variable access (optionally: --allow-env=<VAR>[,<VAR>...])"
+      value: "VAR"
+    allow_run:
+      help: "Allow spawning child processes (optionally: --allow-run=<cmd>[,<cmd>...])"
+      value: "CMD"
+    allow_ffi:
+      help: "Allow FFI (dlopen of native libraries)"
+    allow_all:
+      help: "Allow everything (no sandbox)"
+  eval:
+    code:
+      help: "The code to evaluate"
+      value: "CODE"
+    allow_read:
+      help: "Allow filesystem reads (optionally: --allow-read=<path>[,<path>...])"
+      value: "PATH"
+    allow_write:
+      help: "Allow filesystem writes (optionally: --allow-write=<path>[,<path>...])"
+      value: "PATH"
+    allow_env:
+      help: "Allow environment variable access (optionally: --allow-env=<VAR>[,<VAR>...])"
+      value: "VAR"
+    allow_run:
+      help: "Allow spawning child processes (optionally: --allow-run=<cmd>[,<cmd>...])"
+      value: "CMD"
+    allow_ffi:
+      help: "Allow FFI (dlopen of native libraries)"
+    allow_all:
+      help: "Allow everything (no sandbox)"
+  config:
+    schema:
+      help: "Print the JSON Schema of the settings file instead"
+  completions:
+    shell:
+      help: "Shell to generate completions for"
+      value: "SHELL"
+  install:
+    packages:
+      help: "Package specs (`name[@range]`, `@scope/name[@range]`); empty reads package.json (5b)"
+      value: "PACKAGES"
+    dry_run:
+      help: "Only resolve and print the tree, do not write anything"
+    registry:
+      help: "Registry base URL (default https://registry.npmjs.org)"
+      value: "REGISTRY"
+  publish:
+    dry_run:
+      help: "Validate and print what would be published, do not upload"
+    registry:
+      help: "Registry base URL (npmrc/env fallback, see `install`)"
+      value: "REGISTRY"
+    tag:
+      help: "Dist-tag to publish under"
+      value: "TAG"
+  login:
+    token:
+      help: "Auth token to store (prompted on TTY when omitted)"
+      value: "TOKEN"
+    registry:
+      help: "Registry base URL (npmrc/env fallback, see `install`)"
+      value: "REGISTRY"
+    oauth:
+      help: "Print an OAuth authorization URL instead (code exchange deferred)"
+  upgrade:
+    dry_run:
+      help: "Only report the current version and channel, do not upgrade"
+  init:
+    name:
+      help: "Package name (default: current directory name)"
+      value: "NAME"
+    yes:
+      help: "Skip the confirmation prompt"
+  test:
+    paths:
+      help: "Test files or directories (default: discover under cwd)"
+      value: "PATHS"
+    filter:
+      help: "Only run files matching this glob (matched against relative path or file name)"
+      value: "FILTER"
+    watch:
+      help: "Re-run tests when watched files change (Ctrl-C to stop)"
+    allow_read:
+      help: "Allow filesystem reads (optionally: --allow-read=<path>[,<path>...])"
+      value: "PATH"
+    allow_write:
+      help: "Allow filesystem writes (optionally: --allow-write=<path>[,<path>...])"
+      value: "PATH"
+    allow_env:
+      help: "Allow environment variable access (optionally: --allow-env=<VAR>[,<VAR>...])"
+      value: "VAR"
+    allow_run:
+      help: "Allow spawning child processes (optionally: --allow-run=<cmd>[,<cmd>...])"
+      value: "CMD"
+    allow_ffi:
+      help: "Allow FFI (dlopen of native libraries)"
+    allow_all:
+      help: "Allow everything (no sandbox)"
+  lint:
+    args:
+      help: "Arguments forwarded to oxlint verbatim"
+      value: "ARGS"
+  fmt:
+    args:
+      help: "Arguments forwarded to oxfmt verbatim"
+      value: "ARGS"
+  serve:
+    dir:
+      help: "Directory to serve"
+      value: "DIR"
+    host:
+      help: "Interface to bind"
+      value: "HOST"
+    port:
+      help: "Port to bind (0 = ephemeral, actual port printed on stdout)"
+      value: "PORT"
+    limit_rps:
+      help: "Requests per second limit, 0 = unlimited"
+      value: "LIMIT_RPS"
+    cert:
+      help: "TLS certificate (PEM, must come with --key)"
+      value: "CERT"
+    key:
+      help: "TLS private key (PEM, must come with --cert)"
+      value: "KEY"

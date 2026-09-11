@@ -3193,3 +3193,54 @@ fn phase8_sentry_optin_never_breaks_cli() {
     assert!(!String::from_utf8_lossy(&out.stderr).contains("Sentry"), "no sentry noise");
     dir.close().unwrap();
 }
+
+// ── CLI 双语（-l/--lang > WINTERJS_LANG > 系统 > en）────────────────────────────
+// 本机系统语言可能是中文，所有用例显式定语言，保证任何机器上确定性。
+
+#[test]
+fn i18n_help_zh() {
+    // 正常：`-l zh` 顶层 help 全中；flag 放子命令后也认（预扫全 argv）
+    let out = stdout_of(&mut winterjs().args(["-l", "zh", "--help"]));
+    assert!(out.contains("运行 JS 文件"), "zh top help:\n{out}");
+    assert!(out.contains("帮助文本语言"), "zh lang flag:\n{out}");
+    let out = stdout_of(&mut winterjs().args(["run", "-l", "zh", "--help"]));
+    assert!(out.contains("JS 文件路径"), "zh sub help:\n{out}");
+    assert!(out.contains("允许文件系统读取"), "zh flattened perms:\n{out}");
+    // `--lang=` 连写
+    let out = stdout_of(&mut winterjs().args(["--lang=zh", "eval", "--help"]));
+    assert!(out.contains("要求值的代码"), "zh eval help:\n{out}");
+}
+
+#[test]
+fn i18n_help_en_pinned() {
+    // 正常：`-l en` 在中文系统上也强制英文
+    let out = stdout_of(&mut winterjs().args(["-l", "en", "--help"]));
+    assert!(out.contains("Run a JS file"), "en top help:\n{out}");
+    assert!(!out.contains("运行 JS 文件"), "must not leak zh:\n{out}");
+}
+
+#[test]
+fn i18n_lang_env_and_precedence() {
+    // 正常：无 flag 时 WINTERJS_LANG 生效；有 flag 时 flag 赢
+    let out = stdout_of(&mut winterjs().args(["--help"]).env("WINTERJS_LANG", "zh"));
+    assert!(out.contains("运行 JS 文件"), "env zh:\n{out}");
+    let out = stdout_of(&mut winterjs().args(["-l", "en", "--help"]).env("WINTERJS_LANG", "zh"));
+    assert!(out.contains("Run a JS file"), "flag beats env:\n{out}");
+}
+
+#[test]
+fn i18n_invalid_lang_rejected() {
+    // 报错：非法值走 clap 报错（exit=2，英文，clap 自带词不汉化）
+    let out = winterjs().args(["-l", "fr", "--help"]).output().unwrap();
+    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("invalid value"), "clap error:\n{err}");
+}
+
+#[test]
+fn i18n_unknown_env_falls_back_to_en() {
+    // 边界：未知 env 值回退英文（不炸）；`--` 后的 `-l` 不认（脚本参数）
+    let out = stdout_of(&mut winterjs().args(["--help"]).env("WINTERJS_LANG", "fr"));
+    assert!(out.contains("Run a JS file"), "fallback en:\n{out}");
+}

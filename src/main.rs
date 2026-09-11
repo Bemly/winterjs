@@ -4,6 +4,7 @@ mod alloc;
 mod builtins;
 mod cli;
 mod error;
+mod i18n;
 mod jobqueue;
 mod jsapi_glue;
 mod lintfmt;
@@ -21,7 +22,10 @@ mod testrun;
 mod settings;
 mod state;
 
-use clap::{CommandFactory, Parser};
+// 双语 help 文案：`locales/*.yml` 编译期打进二进制，缺译文回英文（`src/i18n.rs`）。
+rust_i18n::i18n!("locales", fallback = "en");
+
+use clap::FromArgMatches;
 use cli::{Cli, Cmd};
 use error::Error;
 use settings::ColorChoice;
@@ -31,7 +35,16 @@ fn main() {
     // RUST_BACKTRACE=1 时自动回退标准 panic 输出，不吞调试信息）
     human_panic::setup_panic!();
 
-    let cli = Cli::parse();
+    // 双语：先定 locale（-l > WINTERJS_LANG > 系统 > en），再解析本地化 Command。
+    // 两遍 argv 扫描（`i18n::prescan` 定语言 + clap 正式解析）是刻意设计：
+    // clap 的 help 文本在解析前就要定死，不存在单遍解法。
+    i18n::init_from_argv();
+    let cli = {
+        let m = cli::localized_command()
+            .try_get_matches_from(std::env::args_os())
+            .unwrap_or_else(|e| e.exit());
+        Cli::from_arg_matches(&m).unwrap_or_else(|e| e.exit())
+    };
 
     let settings = match settings::Settings::load() {
         Ok(settings) => settings,
@@ -130,7 +143,7 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             Ok(())
         }
         Cmd::Completions { shell } => {
-            let mut cmd = Cli::command();
+            let mut cmd = cli::localized_command();
             clap_complete::generate(shell, &mut cmd, "winterjs", &mut std::io::stdout().lock());
             Ok(())
         }
@@ -169,7 +182,7 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
         }
         Cmd::Man => {            use std::io::Write as _;
 
-            let mut cmd = Cli::command();
+            let mut cmd = cli::localized_command();
             let main_man = clap_mangen::Man::new(cmd.clone()).title("WINTERJS");
             let mut buf = Vec::new();
             main_man.render(&mut buf)?;

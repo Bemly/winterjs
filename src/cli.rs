@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 pub static VERSION_TEXT: LazyLock<String> = LazyLock::new(|| {
     let sha = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
@@ -26,6 +26,11 @@ pub struct Cli {
     /// Increase log verbosity (-v: info, -vv: debug, -vvv: trace)
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
+
+    /// Language for help text (en/zh; defaults to the system language)
+    #[arg(short = 'l', long = "lang", global = true, value_name = "LANG",
+        value_parser = clap::builder::PossibleValuesParser::new(["en", "zh"]))]
+    pub lang: Option<String>,
 
     #[command(subcommand)]
     pub cmd: Cmd,
@@ -186,4 +191,106 @@ pub enum Cmd {
         #[arg(long)]
         key: Option<PathBuf>,
     },
+}
+
+/// 双语 Command 构造器：derive 生成的是英文骨架，这里按当前 locale
+///（`i18n::init_from_argv` 已在 `main` 起点定好）把 about/help/value_name
+/// 换成 `t!` 查表。key 规则：`app.about` / `cmd.{sub}.about` /
+/// `arg.{scope}.{id}.help`（+`.value`）；scoped 缺 key 先回 `arg.app.{id}`
+///（全局 flag 在各子命令 help 里复用文案），再缺保留原文 → 英文输出逐字节不变。
+/// 已知局限：clap 自带词（Usage/Commands/Options）与 clap 自动报错保持英文。
+pub fn localized_command() -> clap::Command {
+    let cmd = Cli::command();
+    let cmd = with_about(cmd, "app.about");
+    let mut cmd = with_localized_args(cmd, "app");
+    // 子命令只能 `&mut` 访问（无 by-value take），用 mem::replace 原位换回；
+    // 占位 dummy 只活一个语句，零行为影响。
+    for sub in cmd.get_subcommands_mut() {
+        let name = sub.get_name().to_string();
+        let tmp = std::mem::replace(sub, clap::Command::new("winterjs-placeholder"));
+        let tmp = with_about(tmp, &format!("cmd.{name}.about"));
+        *sub = with_localized_args(tmp, &name);
+    }
+    cmd
+}
+
+fn with_about(cmd: clap::Command, key: &str) -> clap::Command {
+    match cmd.get_about().map(|s| s.to_string()) {
+        Some(orig) => cmd.about(tr_or(key, &orig)),
+        None => cmd,
+    }
+}
+
+fn with_localized_args(mut cmd: clap::Command, scope: &str) -> clap::Command {
+    // 先收 id（`mut_arg` 要 `&mut`，不能边遍历边改）
+    let ids: Vec<String> = cmd.get_arguments().map(|a| a.get_id().to_string()).collect();
+    for id in &ids {
+        // 不可变借用下算好译文；与原文相同则回 None（英文 locale 零改动，
+        // 保证英文输出逐字节不变，也省掉 `value_name` 的泄漏）。
+        let (new_help, new_value): (Option<String>, Option<String>) = match cmd
+            .get_arguments()
+            .find(|a| a.get_id().to_string() == *id)
+        {
+            Some(a) => {
+                let h = a.get_help().and_then(|s| {
+                    let o = s.to_string();
+                    let t = tr_fallback(
+                        &format!("arg.{scope}.{id}.help"),
+                        &format!("arg.app.{id}.help"),
+                        &o,
+                    );
+                    (t != o).then_some(t)
+                });
+                let v = a.get_value_names().and_then(|names| names.first()).and_then(|s| {
+                    let o = s.to_string();
+                    let t = tr_fallback(
+                        &format!("arg.{scope}.{id}.value"),
+                        &format!("arg.app.{id}.value"),
+                        &o,
+                    );
+                    (t != o).then_some(t)
+                });
+                (h, v)
+            }
+            None => (None, None),
+        };
+        if new_help.is_none() && new_value.is_none() {
+            continue;
+        }
+        // `mut_arg` 是 by-value builder（`mut self -> Self`），闭包内用 shadowing 串联。
+        cmd = cmd.mut_arg(id.as_str(), |a| {
+            let a = match new_help {
+                // `help` 收 owned String，无泄漏
+                Some(h) => a.help(h),
+                None => a,
+            };
+            match new_value {
+                // `value_name` 只收 `&'static str`（`Str` 无 `From<String>`）：
+                // 译文泄漏一次，进程生命周期内有效（中文 locale 下约 60 个短串，可接受，见注释）。
+                Some(v) => {
+                    let leaked: &'static str = Box::leak(v.into_boxed_str());
+                    a.value_name(leaked)
+                }
+                None => a,
+            }
+        });
+    }
+    cmd
+}
+
+/// 查表命中即译文；缺 key（`t!` 回显 key 本身）则回原文。
+fn tr_or(key: &str, original: &str) -> String {
+    let hit = rust_i18n::t!(key).to_string();
+    if hit == key { original.to_string() } else { hit }
+}
+
+/// scoped 命中即用，否则回 app 级（全局 flag 复用），再缺回原文。
+fn tr_fallback(scoped: &str, app_level: &str, original: &str) -> String {
+    for k in [scoped, app_level] {
+        let hit = rust_i18n::t!(k).to_string();
+        if hit != k {
+            return hit;
+        }
+    }
+    original.to_string()
 }

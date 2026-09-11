@@ -219,6 +219,196 @@ globalThis.TextDecoder = class TextDecoder {
     return __wjs_td_decode(this.#label, this.#fatal ? 1 : 0, this.#ignoreBOM ? 1 : 0, view);
   }
 };
+// ---- Buffer 全局（Node 子集；Uint8Array 子类，见头注口径）----
+// 口径（文档记录）：from/alloc/concat/isBuffer/byteLength/toString(hex/base64/
+// base64url/utf8/latin1/ascii/utf16le)；其余 TypedArray 行为全部继承；
+// allocUnsafe 为零填（无未初始化内存暴露）；inspect 自定义；pool 概念无（直接分配）。
+function __wjs_bufFromBytes(u8) {
+  const b = new Buffer(u8.length);
+  b.set(u8);
+  return b;
+}
+function __wjs_bufDecode(str, enc) {
+  enc = String(enc || "utf8").toLowerCase().replace(/[-_]/g, "");
+  if (enc === "utf8" || enc === "utf-8") return new TextEncoder().encode(str);
+  if (enc === "hex") {
+    const s = String(str).replace(/\s+/g, "");
+    if (s.length % 2 !== 0) throw new TypeError("Invalid hex string");
+    const out = new Uint8Array(s.length / 2);
+    for (let i = 0; i < out.length; i++) {
+      const v = parseInt(s.slice(i * 2, i * 2 + 2), 16);
+      if (Number.isNaN(v)) throw new TypeError("Invalid hex string");
+      out[i] = v;
+    }
+    return out;
+  }
+  if (enc === "base64" || enc === "base64url") {
+    let s = String(str).replace(/-/g, "+").replace(/_/g, "/");
+    while (s.length % 4) s += "=";
+    const bin = atob(s);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  if (enc === "latin1" || enc === "binary") {
+    const s = String(str);
+    const out = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 255;
+    return out;
+  }
+  if (enc === "ascii") {
+    const s = String(str);
+    const out = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 127;
+    return out;
+  }
+  if (enc === "ucs2" || enc === "utf16le" || enc === "utf16") {
+    const s = String(str);
+    const out = new Uint8Array(s.length * 2);
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      out[i * 2] = c & 255; out[i * 2 + 1] = (c >> 8) & 255;
+    }
+    return out;
+  }
+  throw new TypeError(`Unknown encoding: ${enc}`);
+}
+function __wjs_bufEncode(u8, enc) {
+  enc = String(enc || "utf8").toLowerCase().replace(/[-_]/g, "");
+  if (enc === "utf8" || enc === "utf-8") return new TextDecoder().decode(u8);
+  if (enc === "hex") return [...u8].map((x) => x.toString(16).padStart(2, "0")).join("");
+  if (enc === "base64") {
+    let s = "";
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  if (enc === "base64url") {
+    let s = "";
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  if (enc === "latin1" || enc === "binary") {
+    let s = "";
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+    return s;
+  }
+  if (enc === "ascii") {
+    let s = "";
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+    return s;
+  }
+  if (enc === "ucs2" || enc === "utf16le" || enc === "utf16") {
+    let s = "";
+    for (let i = 0; i + 1 < u8.length; i += 2) s += String.fromCharCode(u8[i] | (u8[i + 1] << 8));
+    return s;
+  }
+  throw new TypeError(`Unknown encoding: ${enc}`);
+}
+globalThis.Buffer = class Buffer extends Uint8Array {
+  static isBuffer(v) { return v instanceof Buffer; }
+  static byteLength(s, enc) {
+    if (typeof s === "string") return __wjs_bufDecode(s, enc).length;
+    if (s instanceof ArrayBuffer) return s.byteLength;
+    if (ArrayBuffer.isView(s)) return s.byteLength;
+    throw new TypeError("byteLength: string or BufferSource required");
+  }
+  static from(v, enc) {
+    if (typeof v === "string") return __wjs_bufFromBytes(__wjs_bufDecode(v, enc));
+    if (Array.isArray(v)) return __wjs_bufFromBytes(new Uint8Array(v));
+    if (v instanceof ArrayBuffer) return __wjs_bufFromBytes(new Uint8Array(v.slice(0)));
+    if (ArrayBuffer.isView(v)) return __wjs_bufFromBytes(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+    throw new TypeError("Buffer.from: string/array/BufferSource required");
+  }
+  static alloc(size, fill, enc) {
+    const n = Number(size);
+    if (!Number.isInteger(n) || n < 0) throw new RangeError("Buffer.alloc: bad size");
+    const b = new Buffer(n);
+    if (fill !== undefined) {
+      if (typeof fill === "string") {
+        const pat = __wjs_bufDecode(fill, enc);
+        if (pat.length) for (let i = 0; i < n; i++) b[i] = pat[i % pat.length];
+      } else if (typeof fill === "number") {
+        b.fill(fill & 255);
+      } else if (fill instanceof Uint8Array || ArrayBuffer.isView(fill)) {
+        const pat = new Uint8Array(fill.buffer, fill.byteOffset, fill.byteLength);
+        if (pat.length) for (let i = 0; i < n; i++) b[i] = pat[i % pat.length];
+      }
+    }
+    return b;
+  }
+  static allocUnsafe(size) {
+    // 零填（无未初始化内存暴露，见头注）
+    const n = Number(size);
+    if (!Number.isInteger(n) || n < 0) throw new RangeError("Buffer.allocUnsafe: bad size");
+    return new Buffer(n);
+  }
+  static allocUnsafeSlow(size) { return Buffer.allocUnsafe(size); }
+  static concat(list, total) {
+    if (!Array.isArray(list)) throw new TypeError("Buffer.concat: list must be an array");
+    const parts = list.map((p) => {
+      if (p instanceof Uint8Array) return p;
+      if (ArrayBuffer.isView(p)) return new Uint8Array(p.buffer, p.byteOffset, p.byteLength);
+      throw new TypeError("Buffer.concat: list must be Buffers");
+    });
+    const want = total === undefined ? parts.reduce((a, p) => a + p.length, 0) : Number(total);
+    if (!Number.isInteger(want) || want < 0) throw new RangeError("Buffer.concat: bad totalLength");
+    const out = new Buffer(Math.min(want, parts.reduce((a, p) => a + p.length, 0)));
+    let off = 0;
+    for (const p of parts) {
+      if (off >= want) break;
+      const n = Math.min(p.length, want - off);
+      out.set(p.subarray(0, n), off);
+      off += n;
+    }
+    return out;
+  }
+  static compare(a, b) {
+    const x = Buffer.from(a), y = Buffer.from(b);
+    const n = Math.min(x.length, y.length);
+    for (let i = 0; i < n; i++) { if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1; }
+    return x.length === y.length ? 0 : (x.length < y.length ? -1 : 1);
+  }
+  toString(enc, start, end) {
+    const s = start === undefined ? 0 : Number(start);
+    const e = end === undefined ? this.length : Number(end);
+    return __wjs_bufEncode(this.subarray(s, e), enc);
+  }
+  subarray(begin, end) {
+    // 保持 Buffer 类型（Node 口径），底层仍共享
+    const v = super.subarray(begin, end);
+    Object.setPrototypeOf(v, Buffer.prototype);
+    return v;
+  }
+  slice(begin, end) { return this.subarray(begin, end); }
+  write(str, offset, length, enc) {
+    if (typeof offset === "string") { enc = offset; offset = 0; length = this.length; }
+    else if (typeof length === "string") { enc = length; length = this.length; }
+    offset = offset === undefined ? 0 : Number(offset);
+    const src = __wjs_bufDecode(String(str), enc);
+    const n = Math.min(src.length, length === undefined ? this.length - offset : Number(length), this.length - offset);
+    if (offset < 0 || n < 0) throw new RangeError("Buffer.write: out of bounds");
+    this.set(src.subarray(0, Math.max(0, n)), offset);
+    return Math.max(0, n);
+  }
+  copy(target, tStart, sStart, sEnd) {
+    if (!(target instanceof Uint8Array)) throw new TypeError("Buffer.copy: target must be a Buffer");
+    tStart = tStart === undefined ? 0 : Number(tStart);
+    sStart = sStart === undefined ? 0 : Number(sStart);
+    sEnd = sEnd === undefined ? this.length : Number(sEnd);
+    const n = Math.min(sEnd - sStart, target.length - tStart);
+    if (n <= 0) return 0;
+    target.set(this.subarray(sStart, sStart + n), tStart);
+    return n;
+  }
+  equals(other) {
+    const o = other instanceof Uint8Array ? other : Buffer.from(other);
+    if (this.length !== o.length) return false;
+    for (let i = 0; i < this.length; i++) if (this[i] !== o[i]) return false;
+    return true;
+  }
+  compare(other) { return Buffer.compare(this, other); }
+  toJSON() { return { type: "Buffer", data: [...this] }; }
+};
 const __wjs_keyState = new WeakMap();
 function NotSupportedError_(what) { return new Error(`NotSupportedError: unsupported ${what}`); }
 function __wjs_normHash(h) {

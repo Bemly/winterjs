@@ -3600,3 +3600,92 @@ console.log("byob-ok");
 "#;
     assert_eq!(stdout_of(&mut winterjs().args(["--eval", code])), "byob-ok\n");
 }
+
+#[test]
+fn node_buffer_global() {
+    // 正常：from/toString(hex/base64/utf8)/concat/alloc/byteLength；报错：坏hex/未知编码；
+    // 边界：allocUnsafe零填/subarray保持Buffer/compare/equals/copy/write/toJSON。
+    let code = r#"const b = Buffer.from("hello");
+if (b.toString("hex") !== "68656c6c6f" || b.toString("base64") !== "aGVsbG8=") throw new Error("basic failed");
+if (!Buffer.isBuffer(b) || Buffer.isBuffer(new Uint8Array(1))) throw new Error("isBuffer failed");
+if (Buffer.byteLength("€") !== 3) throw new Error("byteLength failed");
+if (Buffer.concat([Buffer.from("a"), Buffer.from("b")]).toString() !== "ab") throw new Error("concat failed");
+if (Buffer.alloc(4, "ab").toString() !== "abab") throw new Error("alloc fill failed");
+if (Buffer.from([104, 105]).toString() !== "hi") throw new Error("array failed");
+if (Buffer.from("ff", "hex")[0] !== 255) throw new Error("hex failed");
+if (Buffer.from("aGVsbG8=", "base64").toString() !== "hello") throw new Error("b64 failed");
+const z = Buffer.allocUnsafe(8);
+if (z.length !== 8 || ![...z].every((x) => x === 0)) throw new Error("allocUnsafe must be zeroed");
+const s = b.subarray(1, 3);
+if (!(s instanceof Buffer) || s.toString() !== "el") throw new Error("subarray failed");
+if (Buffer.compare(Buffer.from("a"), Buffer.from("b")) >= 0) throw new Error("compare failed");
+if (!b.equals(Buffer.from("hello"))) throw new Error("equals failed");
+const t = Buffer.alloc(5);
+if (b.copy(t, 1) !== 4 || t.slice(1).toString() !== "hell") throw new Error("copy failed");
+const w = Buffer.alloc(8);
+if (w.write("hi", 2) !== 2 || w.slice(2, 4).toString() !== "hi") throw new Error("write failed");
+if (JSON.parse(JSON.stringify(b)).type !== "Buffer") throw new Error("toJSON failed");
+// fs 互操作：Buffer 进出 writeFile/readFile
+try { Buffer.from("zz", "hex"); throw new Error("must throw"); }
+catch (e) { if (!String(e.message).includes("hex")) throw e; }
+try { Buffer.from("x", "nope-enc"); throw new Error("must throw"); }
+catch (e) { if (!String(e.message).includes("encoding")) throw e; }
+console.log("buffer-ok");
+"#;
+    assert_eq!(stdout_of(&mut winterjs().args(["--eval", code])), "buffer-ok\n");
+}
+
+#[test]
+fn node_fs_streams() {
+    // createReadStream 分块 + createWriteStream 落盘/追加。
+    let dir = assert_fs::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("in.txt"), b"hello-fs-stream").unwrap();
+    let code = r#"import fs from "node:fs";
+const rs = fs.createReadStream("in.txt", { highWaterMark: 4 });
+let s = "";
+for await (const c of rs) s += new TextDecoder().decode(c);
+if (s !== "hello-fs-stream") throw new Error("read failed: " + s);
+const ws = fs.createWriteStream("out.txt");
+const w = ws.getWriter();
+await w.write(new TextEncoder().encode("ab"));
+await w.write(new TextEncoder().encode("cd"));
+await w.close();
+if (fs.readFileSync("out.txt", "utf8") !== "abcd") throw new Error("write failed");
+const wa = fs.createWriteStream("out.txt", { flags: "a" });
+const w2 = wa.getWriter();
+await w2.write("ef");
+await w2.close();
+if (fs.readFileSync("out.txt", "utf8") !== "abcdef") throw new Error("append failed: " + fs.readFileSync("out.txt", "utf8"));
+console.log("fs-stream-ok");
+"#;
+    std::fs::write(dir.path().join("t.mjs"), code).unwrap();
+    let out = stdout_of(&mut winterjs().arg("--run").arg(dir.path().join("t.mjs")).current_dir(dir.path()));
+    assert_eq!(out, "fs-stream-ok\n", "fs streams: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn node_spawn_pipe_streams() {
+    // pipe：echo 回环 + cat stdin 写/关 + exit/close（--eval 经动态 import，见既有 spawn 用例）。
+    // 注意：close 监听必须在 read 之前注册（echo 退出快，否则分发时无监听即摘除，后续 await 永挂）。
+    let code = r#"const { spawn } = await import("node:child_process");
+const c = spawn("/bin/echo", ["hi-echo"], { stdio: ["ignore", "pipe", "ignore"] });
+const closed = new Promise((res) => c.on("close", res));
+const x = await c.stdout.getReader().read();
+if (new TextDecoder().decode(x.value).trim() !== "hi-echo") throw new Error("echo failed");
+await closed;
+const c2 = spawn("cat", [], { stdio: "pipe" });
+const closed2 = new Promise((res) => c2.on("close", res));
+const w = c2.stdin.getWriter();
+await w.write("hi-stdin");
+await w.close();
+let out = "";
+const r = c2.stdout.getReader();
+for (;;) { const y = await r.read(); if (y.done) break; out += new TextDecoder().decode(y.value); }
+if (out !== "hi-stdin") throw new Error("cat failed: " + JSON.stringify(out));
+await closed2;
+console.log("pipe-ok");
+"#;
+    assert_eq!(stdout_of(&mut winterjs().args(["--eval", code])), "pipe-ok\n");
+}

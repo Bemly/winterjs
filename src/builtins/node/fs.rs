@@ -1077,7 +1077,52 @@ export function watch(p, opts, listener) {
   const id = __fsCall("watch", p, () => __wjs_watch_start(p, recursive, persistent, listener));
   return new __FSWatcher(id);
 }
-const __api = { readFileSync, writeFileSync, appendFileSync, statSync, lstatSync, existsSync, mkdirSync, rmSync, rmdirSync, unlinkSync, readdirSync, renameSync, copyFileSync, realpathSync, mkdtempSync, watch, constants };
+// ---- fs 流（同步底层 + Web 流外形；口径见头注）----
+// 口径（文档记录）：createReadStream 返回 Web ReadableStream（整文件读入后按
+// highWaterMark 切块；async 迭代/getReader 可用；Node 的 .on('data') 事件式
+// 接口不在此列，用 for await 替代）；createWriteStream 返回 Web WritableStream
+//（块先攒，close 时一次性落盘；flags `a` 表追加，其余覆盖）。
+export function createReadStream(p, opts) {
+  p = __fsPath(p, "createReadStream");
+  const hwm = opts && opts.highWaterMark !== undefined ? Number(opts.highWaterMark) : 65536;
+  const bytes = __fsCall("open", p, () => __wjs_fs_read_file(p));
+  const size = Number.isFinite(hwm) && hwm > 0 ? Math.floor(hwm) : 65536;
+  let off = 0;
+  return new ReadableStream({
+    pull(c) {
+      if (off >= bytes.length) { c.close(); return; }
+      const end = Math.min(bytes.length, off + size);
+      c.enqueue(bytes.slice(off, end));
+      off = end;
+      if (off >= bytes.length) c.close();
+    },
+    cancel() {},
+  });
+}
+export function createWriteStream(p, opts) {
+  p = __fsPath(p, "createWriteStream");
+  const append = !!(opts && (opts.flags === "a" || opts.flags === "a+"));
+  const chunks = [];
+  let total = 0;
+  return new WritableStream({
+    write(chunk) {
+      const u8 = __fsData(chunk, "createWriteStream");
+      chunks.push(u8);
+      total += u8.length;
+    },
+    close() {
+      const out = new Uint8Array(total);
+      let off = 0;
+      for (const c of chunks) { out.set(c, off); off += c.length; }
+      if (append && __fsCall("stat", p, () => { try { __wjs_fs_stat(p, true); return true; } catch { return false; } })) {
+        __fsCall("open", p, () => __wjs_fs_append_file(p, out, 0));
+      } else {
+        __fsCall("open", p, () => __wjs_fs_write_file(p, out, 0));
+      }
+    },
+  });
+}
+const __api = { readFileSync, writeFileSync, appendFileSync, statSync, lstatSync, existsSync, mkdirSync, rmSync, rmdirSync, unlinkSync, readdirSync, renameSync, copyFileSync, realpathSync, mkdtempSync, watch, constants, createReadStream, createWriteStream };
 export default __api;
 "#;
 

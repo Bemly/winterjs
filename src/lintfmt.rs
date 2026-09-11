@@ -7,9 +7,11 @@
 //!
 //! 查找顺序：① 项目本地 `node_modules/.bin/`——从 cwd 逐级向上（monorepo：
 //! 在 packages/foo 里跑也能命中 repo 根安装的工具）→ ② PATH（`which` 轮子，
-//! Windows 尊重 PATHEXT）→ ③ 可读错误（不静默按需安装：CI/离线/lockfile 行为
-//! 可预测；指引 `winterjs install oxlint` 或 `npm install -D oxlint`）。
-//! Windows 命名候选 `.exe`/`.cmd`（.cmd 经 `cmd /C` 起子进程）。
+//! Windows 尊重 PATHEXT）→ ③ `npx --yes <pkg>@latest` 回退（stderr 明示，
+//! 非静默；项目无安装、PATH 无命中时才走网络，lockfile 不受影响）→
+//! ④ 可读错误（npx 也不存在时；指引本地安装）。
+//! Windows 命名候选 `.exe`/`.cmd`（.cmd 经 `cmd /C` 起子进程；npx 本身就是
+//! .cmd，走同一条路）。
 //!
 //! 平台注记：oxc 上游为 android/ohos 只出 N-API binding、无 standalone CLI
 //! （release workflow 明确 `!android && !ohos` 才构建二进制），故 lint/fmt 在
@@ -18,6 +20,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::Error;
+
+/// npx 回退的版本（`@latest`；本地有安装时永远不用它，版本锁定靠本地安装）。
+pub const NPX_TAG: &str = "latest";
 
 /// Windows/Unix 的 bin 候选名（node_modules/.bin 内）。
 fn bin_candidates(name: &str) -> Vec<String> {
@@ -50,8 +55,17 @@ fn find_local_from(base: &Path, name: &str) -> Option<PathBuf> {
     }
 }
 
-/// 解析工具可执行文件（本地 → PATH；找不到给可读指引）。
-fn resolve(tool: &str, path_lookup: impl Fn(&str) -> Option<PathBuf>) -> Result<PathBuf, Error> {
+/// 解析结果：直调本地二进制，或经 npx 回退。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolved {
+    /// 直接可执行文件。
+    Direct(PathBuf),
+    /// `npx --yes <pkg>@latest`（npx 路径 + 包名，参数稍后拼）。
+    Npx { npx: PathBuf, pkg: String },
+}
+
+/// 解析工具可执行文件（本地 → PATH → npx 回退；全落空给可读指引）。
+fn resolve(tool: &str, path_lookup: impl Fn(&str) -> Option<PathBuf>) -> Result<Resolved, Error> {
     let cwd = std::env::current_dir()
         .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
     resolve_in(&cwd, tool, path_lookup)
@@ -62,37 +76,78 @@ fn resolve_in(
     base: &std::path::Path,
     tool: &str,
     path_lookup: impl Fn(&str) -> Option<PathBuf>,
-) -> Result<PathBuf, Error> {
+) -> Result<Resolved, Error> {
     if let Some(p) = find_local_from(base, tool) {
         tracing::debug!(target: "winterjs::lintfmt", tool, exe = %p.display(), "local bin");
-        return Ok(p);
+        return Ok(Resolved::Direct(p));
     }
     if let Some(p) = path_lookup(tool) {
         tracing::debug!(target: "winterjs::lintfmt", tool, exe = %p.display(), "PATH bin");
-        return Ok(p);
+        return Ok(Resolved::Direct(p));
+    }
+    // npx 回退（`npx oxlint@latest` 上游即发 npm 包；stderr 明示，非静默）。
+    if let Some(npx) = path_lookup("npx") {
+        tracing::info!(target: "winterjs::lintfmt", tool, exe = %npx.display(), "npx fallback");
+        return Ok(Resolved::Npx { npx, pkg: format!("{tool}@{NPX_TAG}") });
     }
     Err(Error::Other(format!(
-        "{tool} was not found (looked in node_modules/.bin up the directory tree, then PATH).\n\
+        "{tool} was not found (looked in node_modules/.bin up the directory tree, then PATH, then npx).\n\
          Install it with:\n  winterjs install {tool}\nor:\n  npm install -D {tool}"
     )))
 }
 
-/// 转发一条外部工具调用（同步：CLI 生命周期内独占，无并发 JS）。
-/// stdout/stderr 继承（用户终端直出）；退出码透传。
-pub fn run(tool: &str, args: &[String]) -> Result<(), Error> {
-    let exe = resolve(tool, which_real)?;
-    tracing::info!(target: "winterjs::lintfmt", tool, exe = %exe.display(), argc = args.len(), "forwarding");
-    let status = if cfg!(windows) && exe.extension().is_some_and(|e| e == "cmd" || e == "bat") {
-        // .cmd/.bat 无法直接 exec，经 cmd /C 起子进程
-        std::process::Command::new("cmd")
-            .args(["/C"])
-            .arg(&exe)
-            .args(args)
-            .status()
-    } else {
-        std::process::Command::new(&exe).args(args).status()
+/// 由 `Resolved` 组装 `Command`（`.cmd/.bat` 经 `cmd /C`；npx 拼 `--yes <pkg>@latest`）。
+fn command_for(resolved: &Resolved, args: &[String]) -> std::process::Command {
+    // Windows 的 .cmd/.bat（含 npx.cmd）无法直接 exec，经 cmd /C 起子进程
+    #[cfg(windows)]
+    fn via_cmd(exe: &Path, extra: &[&str], args: &[String]) -> std::process::Command {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C"]).arg(exe).args(extra).args(args);
+        c
     }
-    .map_err(|e| Error::Other(format!("failed to run '{}': {e}", exe.display())))?;
+    match resolved {
+        Resolved::Direct(exe) => {
+            #[cfg(windows)]
+            if exe.extension().is_some_and(|e| e == "cmd" || e == "bat") {
+                return via_cmd(exe, &[], args);
+            }
+            let mut c = std::process::Command::new(exe);
+            c.args(args);
+            c
+        }
+        Resolved::Npx { npx, pkg } => {
+            // `--yes` 跳过 npx 首装确认（非 TTY/CI 必备）；用户参数原样透传
+            #[cfg(windows)]
+            if npx.extension().is_some_and(|e| e == "cmd" || e == "bat") {
+                return via_cmd(npx, &["--yes", pkg], args);
+            }
+            let mut c = std::process::Command::new(npx);
+            c.args(["--yes", pkg]).args(args);
+            c
+        }
+    }
+}
+
+/// 转发一条外部工具调用（同步：CLI 生命周期内独占，无并发 JS）。
+/// stdout/stderr 继承（用户终端直出）；退出码透传；npx 回退时 stderr 明示一行。
+pub fn run(tool: &str, args: &[String]) -> Result<(), Error> {
+    let resolved = resolve(tool, which_real)?;
+    match &resolved {
+        Resolved::Direct(exe) => {
+            tracing::info!(target: "winterjs::lintfmt", tool, exe = %exe.display(), argc = args.len(), "forwarding");
+        }
+        Resolved::Npx { pkg, .. } => {
+            eprintln!("winterjs: {tool} not found locally, falling back to `npx --yes {pkg}` (install locally for pinned versions)");
+            tracing::info!(target: "winterjs::lintfmt", tool, pkg = pkg.as_str(), argc = args.len(), "npx fallback");
+        }
+    }
+    let exe_label = match &resolved {
+        Resolved::Direct(exe) => exe.display().to_string(),
+        Resolved::Npx { npx, pkg } => format!("{} --yes {pkg}", npx.display()),
+    };
+    let status = command_for(&resolved, args)
+        .status()
+        .map_err(|e| Error::Other(format!("failed to run '{exe_label}': {e}")))?;
     let code = status.code().unwrap_or(-1);
     tracing::info!(target: "winterjs::lintfmt", tool, code, "forwarded exit");
     match status.code() {
@@ -150,26 +205,48 @@ mod tests {
         let (dir, sub) = make_repo("oxfmt");
         let marker = dir.path().join("from-path");
         let r = resolve_in(&sub, "oxfmt", |_| Some(marker.clone())).unwrap();
-        assert!(r.ends_with("node_modules/.bin/oxfmt"));
+        assert!(matches!(r, Resolved::Direct(p) if p.ends_with("node_modules/.bin/oxfmt")));
         drop(dir);
     }
 
     #[test]
-    fn resolve_falls_back_to_path_then_readable_error() {
+    fn resolve_falls_back_to_path_then_npx_then_readable_error() {
         let dir = tempfile::tempdir().unwrap();
-        // PATH 命中
+        // PATH 命中（Direct）
         let marker = dir.path().join("pathhit");
         let r = resolve_in(dir.path(), "oxlint", |n| {
             (n == "oxlint").then(|| marker.clone())
         })
         .unwrap();
-        assert_eq!(r, marker);
-        // 双双落空 → 可读指引（含两种安装方式）
+        assert_eq!(r, Resolved::Direct(marker));
+        // 本地+PATH 双落空 → npx 回退（包名带 @latest）
+        let npx = dir.path().join("npx");
+        let r = resolve_in(dir.path(), "oxlint", |n| {
+            (n == "npx").then(|| npx.clone())
+        })
+        .unwrap();
+        assert_eq!(r, Resolved::Npx { npx: npx.clone(), pkg: "oxlint@latest".into() });
+        // npx 也无 → 可读指引（含两种安装方式）
         let err = resolve_in(dir.path(), "oxlint", |_| None).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("oxlint was not found"), "{msg}");
         assert!(msg.contains("winterjs install oxlint"), "{msg}");
         assert!(msg.contains("npm install -D oxlint"), "{msg}");
         drop(dir);
+    }
+
+    #[test]
+    fn command_for_shapes() {
+        // Direct 原样透传参数
+        let c = command_for(&Resolved::Direct(PathBuf::from("/bin/oxlint")), &["a".into()]);
+        assert_eq!(c.get_program(), "/bin/oxlint");
+        assert_eq!(c.get_args().collect::<Vec<_>>(), ["a"]);
+        // Npx 拼 --yes <pkg>@latest 在前
+        let c = command_for(
+            &Resolved::Npx { npx: PathBuf::from("/bin/npx"), pkg: "oxlint@latest".into() },
+            &["--check".into()],
+        );
+        assert_eq!(c.get_program(), "/bin/npx");
+        assert_eq!(c.get_args().collect::<Vec<_>>(), ["--yes", "oxlint@latest", "--check"]);
     }
 }

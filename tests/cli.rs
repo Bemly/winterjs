@@ -3153,6 +3153,33 @@ fn phase8_lintfmt_exit_and_notfound() {
     empty.close().unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn phase8_lintfmt_npx_fallback() {
+    // npx 回退：本地+PATH 无 oxlint 但有 npx → `npx --yes oxlint@latest <args>`；
+    // stderr 明示回退；退出码透传。
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = assert_fs::TempDir::new().unwrap();
+    let bindir = dir.child("fakebin");
+    bindir.create_dir_all().unwrap();
+    let npx = bindir.child("npx");
+    npx.write_str("#!/bin/sh\necho \"fake-npx got: $@\"\nexit 0\n").unwrap();
+    std::fs::set_permissions(npx.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:/usr/bin:/bin", bindir.path().display());
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+        .args(["--lint", "src", "--write"])
+        .current_dir(dir.path())
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("fake-npx got: --yes oxlint@latest src --write"), "stdout: {stdout}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("falling back to `npx --yes oxlint@latest`"), "stderr notice: {err}");
+    dir.close().unwrap();
+}
+
 // ── Phase 8-c: sentry 崩溃上报（opt-in）─────────────────────────────────────
 
 #[test]

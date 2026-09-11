@@ -335,6 +335,19 @@ cargo build
   撞上 `["init", ` 模式。修法：脚本断言计数 + 事后按命令名复核 bare 残留；
   跨工具同名（git init）逐个手改（`src/cli.rs` 全 flag 重写，`tests/cli.rs`）。
 
+### 4.27 增量解码两阶段 + BYOB 三坑（2026-09-11）
+
+- `decode_to_string` 的 `InputEmpty + read=0` 是"截断已缓存、等下次 feed"，
+  不是"继续"——当继续写 loop 即 busy-loop（现象是超时无输出，`cargo test`
+  也会被卡死；实测 `[E2]` 回 `(InputEmpty, read=1)`，`[] last=true` 才吐 `�`）。
+  修法：排空（`last=false`）+ 收尾空调（`last=true`）两阶段；收尾零推进则置空
+  输入再调一次落定（`encoding.rs stream_decode_chunk`，模块单测秒级验终止）。
+- pump 里无条件 ByteToQueue 会提前搬空 byteQ，BYOB 永见 `byteLen 0`。
+  修法：只在 default 读等待（`wantValue` 标记，closed 等待不算）时搬。
+- 无关闭、无释放的 reader + 无条件 pull = prefetch 空转，进程退不出。
+  修法：字节流纯按需 pull（BYOB 排队或 default 读等待才拉）；
+  default 老路径不动（§4.18 时序敏感）。
+
 ## 5. 路线图（按序）
 
 1. `console` / timers（含 `queueMicrotask`）

@@ -3490,3 +3490,113 @@ console.log("aes192-ok");
 "#;
     assert_eq!(stdout_of(&mut winterjs().args(["--eval", code])), "aes192-ok\n");
 }
+
+// ── Web 流收官：TextDecoder 流式 / Abort 事件 / BYOB ──────────────────────────
+
+#[test]
+fn streams_text_decoder_streaming() {
+    // 正常：多字节跨片（€ 切两半不提前 FFFD）+ 多片 hello + BOM 跨片 + 空片 flush；
+    // 报错：fatal 非法字节；边界：gbk 跨片 + 一次性路径不受影响。
+    let code = r#"const d = new TextDecoder();
+if (d.decode(new Uint8Array([0xE2]), { stream: true }) !== "") throw new Error("split head must buffer");
+if (d.decode(new Uint8Array([0x82, 0xAC]), { stream: true }) !== "€") throw new Error("split tail must emit €");
+if (d.decode() !== "") throw new Error("flush must be empty");
+const h = new TextDecoder();
+const parts = ["hel", "lo, ", "stream"].map(s => new TextEncoder().encode(s));
+if (parts.map(p => h.decode(p, { stream: true })).join("") + h.decode() !== "hello, stream") throw new Error("hello split failed");
+const b = new TextDecoder();
+if (b.decode(new Uint8Array([0xEF]), { stream: true }) !== "") throw new Error("BOM head must buffer");
+if (b.decode(new Uint8Array([0xBB, 0xBF, 0x68, 0x69])) !== "hi") throw new Error("BOM split failed");
+const g = new TextDecoder("gbk");
+if (g.decode(new Uint8Array([0xC4]), { stream: true }) !== "" || g.decode(new Uint8Array([0xE3])) !== "你") throw new Error("gbk split failed");
+const f = new TextDecoder("utf-8", { fatal: true });
+f.decode(new Uint8Array([0xE2]), { stream: true });
+try { f.decode(new Uint8Array([0x28])); throw new Error("must throw"); }
+catch (e) { if (!String(e.message).includes("not valid")) throw e; }
+// 一次性路径不变：截断直接 FFFD
+if (new TextDecoder().decode(new Uint8Array([0xE2])) !== "�") throw new Error("one-shot changed");
+if (new TextEncoder().encode("hi", { stream: true }).length !== 2) throw new Error("encoder stream opt");
+console.log("td-stream-ok");
+"#;
+    assert_eq!(stdout_of(&mut winterjs().args(["--eval", code])), "td-stream-ok\n");
+}
+
+#[test]
+fn streams_abort_events() {
+    // 正常：listener 收事件对象（type/target）+ onabort + dispatchEvent；
+    // timeout/any；边界：abort 后再加监听不触发（已消费）。
+    let code = r#"const c = new AbortController();
+let got = null;
+c.signal.addEventListener("abort", function (e) { got = e.type + ":" + (e.target === c.signal) + ":" + (this === c.signal); });
+let on = null;
+c.signal.onabort = (e) => { on = e.type; };
+c.abort();
+if (got !== "abort:true:true" || on !== "abort") throw new Error("event object failed: " + got + "/" + on);
+let late = 0;
+c.signal.addEventListener("abort", () => { late++; });
+if (late !== 0) throw new Error("late listener must not fire");
+const c2 = new AbortController();
+if (c2.signal.dispatchEvent({ type: "abort" }) !== true || !c2.signal.aborted) throw new Error("dispatchEvent failed");
+if (c2.signal.dispatchEvent({ type: "click" }) !== true) throw new Error("dispatchEvent non-abort");
+const t = AbortSignal.timeout(5);
+await new Promise(r => setTimeout(r, 30));
+if (!t.aborted) throw new Error("timeout failed");
+const pre = AbortSignal.abort("early");
+const a1 = AbortSignal.any([pre]);
+if (!a1.aborted || String(a1.reason) !== "early") throw new Error("any pre-aborted failed");
+const c3 = new AbortController();
+const a2 = AbortSignal.any([c3.signal]);
+c3.abort("zzz");
+if (!a2.aborted || String(a2.reason) !== "zzz") throw new Error("any follow failed");
+try { AbortSignal.any([{}]); throw new Error("must throw"); }
+catch (e) { if (!String(e.message).includes("AbortSignal")) throw e; }
+console.log("abort-ev-ok");
+"#;
+    assert_eq!(stdout_of(&mut winterjs().args(["--eval", code])), "abort-ev-ok\n");
+}
+
+#[test]
+fn streams_byob() {
+    // 正常：enqueue 跨片 + read(view) 部分填充 + 读空 done + byobRequest/respond；
+    // 报错：非字节流开 BYOB、非 view、空 view；边界：default reader 照读字节流。
+    let code = r#"const rs = new ReadableStream({ type: "bytes", start(c) {
+  c.enqueue(new Uint8Array([1, 2, 3]));
+  c.enqueue(new Uint8Array([4, 5]));
+  c.close();
+} });
+const r = rs.getReader({ mode: "byob" });
+const r1 = await r.read(new Uint8Array(4));
+if (r1.done || [...r1.value].join(",") !== "1,2,3,4") throw new Error("byob1 failed");
+const r2 = await r.read(new Uint8Array(4));
+if (r2.done || [...r2.value].join(",") !== "5") throw new Error("byob2 failed");
+const r3 = await r.read(new Uint8Array(4));
+if (!r3.done) throw new Error("byob done failed");
+// pull + byobRequest/respond
+const rs2 = new ReadableStream({ type: "bytes", pull(c) {
+  const q = c.byobRequest;
+  if (q) { const v = new Uint8Array(q.view.buffer, q.view.byteOffset, 2); v[0] = 7; v[1] = 8; q.respond(2); }
+} });
+const rr = rs2.getReader({ mode: "byob" });
+const x = await rr.read(new Uint8Array(8));
+if ([...x.value].join(",") !== "7,8") throw new Error("byobRequest failed");
+rr.releaseLock(); await rs2.cancel();
+// 报错面
+try { new ReadableStream().getReader({ mode: "byob" }); throw new Error("must throw"); }
+catch (e) { if (!String(e.message).includes("byte stream")) throw e; }
+const rs3 = new ReadableStream({ type: "bytes" });
+const r4 = rs3.getReader({ mode: "byob" });
+try { await r4.read([1, 2]); throw new Error("must throw"); }
+catch (e) { if (!String(e.message).includes("view")) throw e; }
+try { await r4.read(new Uint8Array(0)); throw new Error("must throw"); }
+catch (e) { if (!String(e.message).includes("empty")) throw e; }
+try { new ReadableStream({ type: "stream" }); throw new Error("must throw"); }
+catch (e) { if (!String(e.message).includes("'bytes'")) throw e; }
+r4.releaseLock(); await rs3.cancel();
+// 边界：default reader 照读字节流（整块）
+const rs5 = new ReadableStream({ type: "bytes", start(c) { c.enqueue(new Uint8Array([9])); c.close(); } });
+const d5 = await rs5.getReader().read();
+if (d5.done || [...d5.value].join(",") !== "9") throw new Error("default-on-bytes failed");
+console.log("byob-ok");
+"#;
+    assert_eq!(stdout_of(&mut winterjs().args(["--eval", code])), "byob-ok\n");
+}

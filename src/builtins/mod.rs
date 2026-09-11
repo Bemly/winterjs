@@ -182,25 +182,40 @@ globalThis.TextEncoder = class TextEncoder {
   encodeInto(s, dest) { return JSON.parse(__wjs_te_encode_into(String(s), dest)); }
 };
 globalThis.TextDecoder = class TextDecoder {
-  #label; #fatal; #ignoreBOM;
+  #label; #fatal; #ignoreBOM; #streamId;
   constructor(label = "utf-8", options) {
     this.#label = __wjs_td_canonical(String(label));
     this.#fatal = !!(options && options.fatal);
     this.#ignoreBOM = !!(options && options.ignoreBOM);
+    this.#streamId = undefined;
   }
   get encoding() { return this.#label; }
   get fatal() { return this.#fatal; }
   get ignoreBOM() { return this.#ignoreBOM; }
   decode(input, options) {
-    if (options && options.stream) throw new Error("TextDecoder streaming decode needs Phase 3b");
     let view = input;
-    if (view === undefined) return __wjs_td_decode(this.#label, 0, 0, undefined);
-    if (view instanceof ArrayBuffer) view = new Uint8Array(view);
+    if (view === undefined) view = undefined;
+    else if (view instanceof ArrayBuffer) view = new Uint8Array(view);
     else if (typeof SharedArrayBuffer !== "undefined" && view instanceof SharedArrayBuffer) {
       throw new TypeError("TextDecoder.decode does not accept SharedArrayBuffer views yet");
     } else if (ArrayBuffer.isView(view) && !(view instanceof Uint8Array)) {
       view = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
     }
+    if (options && options.stream) {
+      // 流式：有状态解码器攒截断序列（跨片多字节/stateful 编码正确）；
+      // 中途 view 缺省视为空片（只推进状态，不收尾）。
+      if (this.#streamId === undefined) {
+        this.#streamId = __wjs_td_stream_open(this.#label, this.#fatal ? 1 : 0, this.#ignoreBOM ? 1 : 0);
+      }
+      return __wjs_td_stream_feed(this.#streamId, view, 0);
+    }
+    if (this.#streamId !== undefined) {
+      // 非流式调用即收尾（含攒下的截断序列），id 自动回收
+      const out = __wjs_td_stream_feed(this.#streamId, view, 1);
+      this.#streamId = undefined;
+      return out;
+    }
+    if (view === undefined) return __wjs_td_decode(this.#label, 0, 0, undefined);
     return __wjs_td_decode(this.#label, this.#fatal ? 1 : 0, this.#ignoreBOM ? 1 : 0, view);
   }
 };
@@ -763,15 +778,21 @@ function __wjs_abortFire(signal, reason) {
   if (!st || st.aborted) return;
   st.aborted = true;
   st.reason = reason === undefined ? new Error("AbortError: signal aborted") : reason;
-  // 最小事件：只支持 "abort" 监听（无 Event 对象，回调 this=signal；抛错吞掉不上报给 abort() 调用方）。
+  // 事件对象（最小 Event 口径：type/target；无 Event 类，不做捕获冒泡）。
+  const event = { type: "abort", target: signal, currentTarget: signal, bubbles: false, cancelable: false };
   for (const cb of st.listeners.splice(0)) {
-    try { cb.call(signal); } catch {}
+    try { cb.call(signal, event); } catch {}
+  }
+  if (typeof st.onabort === "function") {
+    try { st.onabort.call(signal, event); } catch {}
   }
 }
 globalThis.AbortSignal = class AbortSignal {
-  constructor() { __wjs_abortState.set(this, { aborted: false, reason: undefined, listeners: [] }); }
+  constructor() { __wjs_abortState.set(this, { aborted: false, reason: undefined, listeners: [], onabort: null }); }
   get aborted() { return __wjs_abortState.get(this).aborted; }
   get reason() { return __wjs_abortState.get(this).reason; }
+  get onabort() { return __wjs_abortState.get(this).onabort; }
+  set onabort(cb) { __wjs_abortState.get(this).onabort = typeof cb === "function" ? cb : null; }
   throwIfAborted() {
     const st = __wjs_abortState.get(this);
     if (st.aborted) throw st.reason;
@@ -784,10 +805,32 @@ globalThis.AbortSignal = class AbortSignal {
     const st = __wjs_abortState.get(this);
     st.listeners = st.listeners.filter((f) => f !== cb);
   }
+  dispatchEvent(event) {
+    if (!event || event.type !== "abort") return true;
+    __wjs_abortFire(this, undefined);
+    return true;
+  }
   static abort(reason) {
     const s = new AbortSignal();
     __wjs_abortFire(s, reason);
     return s;
+  }
+  static timeout(ms) {
+    const c = new AbortController();
+    const t = Number(ms);
+    if (!Number.isFinite(t) || t < 0) throw new TypeError("AbortSignal.timeout needs a non-negative delay");
+    setTimeout(() => c.abort(new Error("TimeoutError: signal timed out")), t);
+    return c.signal;
+  }
+  static any(signals) {
+    const list = [...(signals ?? [])];
+    const c = new AbortController();
+    for (const s of list) {
+      if (!(s instanceof AbortSignal)) throw new TypeError("AbortSignal.any needs AbortSignals");
+      if (s.aborted) { c.abort(s.reason); break; }
+      s.addEventListener("abort", () => c.abort(s.reason), { once: true });
+    }
+    return c.signal;
   }
 };
 globalThis.AbortController = class AbortController {
@@ -1099,20 +1142,102 @@ globalThis.WebSocket = class WebSocket {
     __wjs_ws_close(st.id, code, String(reason));
   }
 };
-// ---- Phase 3c-2: streams（纯 prelude 内存实现；默认 reader，非 BYOB）----
+// ---- Phase 3c-2: streams（纯 prelude 内存实现；默认 reader + BYOB）----
+// BYOB 口径：`new ReadableStream({ type: "bytes", ... })` + `getReader({ mode: "byob" })`；
+// `read(view)` 按 view 类型回同类前缀视图；`byobRequest.respond/respondWithNewView` 完整；
+// 简化（文档记录）：done 时 value 为 undefined（非空视图）；respond 非元素对齐截断丢余量；
+// 无 autoAllocateChunkSize；default reader 照常读字节流（Uint8Array 块）。
 const __wjs_rsState = new WeakMap();
+function __wjs_rsViewPrefix(r, n) {
+  // 取 view 前 n 字节（元素对齐由调用方保证；DataView 按字节）。
+  if (r.viewCtor === DataView) return new DataView(r.view.buffer, r.view.byteOffset, n);
+  return new r.viewCtor(r.view.buffer, r.view.byteOffset, n / r.viewElem);
+}
+function __wjs_rsByobFill(st) {
+  // 用 byteQ 填充排队的 BYOB 读；closed/出错同样结算
+  while (st.byobReads.length) {
+    const r = st.byobReads[0];
+    try { new Uint8Array(r.view.buffer, 0, 0); }
+    catch { st.byobReads.shift(); r.reject(new TypeError("BYOB view is detached")); continue; }
+    if (st.error !== undefined) { st.byobReads.shift(); r.reject(st.error); continue; }
+    if (st.byteLen === 0) {
+      if (st.closed) { st.byobReads.shift(); r.resolve({ value: undefined, done: true }); continue; }
+      break;
+    }
+    const n = Math.min(r.view.byteLength, st.byteLen);
+    const take = n - (n % r.viewElem);
+    if (take === 0) break;
+    let off = take;
+    for (const q of st.byteQ) {
+      if (off === 0) break;
+      const c = Math.min(q.length - q._off, off);
+      new Uint8Array(r.view.buffer, r.view.byteOffset + (take - off), c).set(q.subarray(q._off, q._off + c));
+      q._off += c; off -= c;
+    }
+    while (st.byteQ.length && st.byteQ[0]._off >= st.byteQ[0].length) st.byteQ.shift();
+    st.byteLen -= take;
+    st.byobReads.shift();
+    r.resolve({ value: __wjs_rsViewPrefix(r, take), done: false });
+  }
+}
+function __wjs_rsByobReq(st) {
+  const r = st.byobReads[0];
+  if (!r) return null;
+  return {
+    get view() { return r.view; },
+    respond(n) {
+      n = Number(n);
+      if (!Number.isInteger(n) || n < 0 || n > r.view.byteLength) throw new RangeError("respond: bad byte count");
+      if (st.byobReads[0] !== r || st.byobReq === null) throw new TypeError("respond: request is not active");
+      st.byobReads.shift();
+      st.byobReq = null;
+      // 非元素对齐截断（余量丢弃，见头注）
+      const take = n - (n % r.viewElem);
+      r.resolve({ value: __wjs_rsViewPrefix(r, take), done: false });
+      __wjs_rsPump(st);
+    },
+    respondWithNewView(v) {
+      if (!ArrayBuffer.isView(v)) throw new TypeError("respondWithNewView needs a view");
+      if (st.byobReads[0] !== r || st.byobReq === null) throw new TypeError("respondWithNewView: request is not active");
+      r.view = v; r.viewCtor = v.constructor; r.viewElem = v.BYTES_PER_ELEMENT ?? 1;
+    },
+  };
+}
+function __wjs_rsByteToQueue(st) {
+  // default reader 读字节流：整块搬运（有 _off 余量的半块留给 BYOB，不拆）
+  while (st.byteQ.length && st.byteQ[0]._off === 0) {
+    const q = st.byteQ.shift();
+    st.byteLen -= q.length;
+    st.queue.push(q);
+  }
+}
 function __wjs_rsPull(st) {
   if (!st.reader || st.closed || st.error !== undefined || st.pulling) return;
-  if (st.queue.length >= st.hwm) return;
+  if (st.isBytes) {
+    // 字节流纯按需：BYOB 读排队，或 default 读等待（搬运后仍无整块）才 pull；
+    // 无人等就 prefetch 会在"持有 reader + 永不关闭"时空转，进程退不出。
+    //（default/非字节流沿 legacy eager，原样不动。）
+    if (!st.queue.length) __wjs_rsByteToQueue(st);
+    const demand = st.byobReads.length > 0 || st.pending.some((p) => p.wantValue);
+    if (!demand) return;
+  } else if (st.queue.length >= st.hwm) {
+    return;
+  }
   st.pulling = true;
+  // BYOB 读排队时带 byobRequest 进 pull（source 可直接写 view + respond）
+  if (st.isBytes && st.byobReads.length && !st.byobReq) st.byobReq = __wjs_rsByobReq(st);
   try {
     const r = st.source.pull ? st.source.pull(st.controller) : undefined;
-    Promise.resolve(r).then(() => { st.pulling = false; __wjs_rsPump(st); }, (e) => {
-      st.pulling = false; __wjs_rsError(st, e);
+    Promise.resolve(r).then(() => { st.pulling = false; st.byobReq = null; __wjs_rsPump(st); }, (e) => {
+      st.pulling = false; st.byobReq = null; __wjs_rsError(st, e);
     });
-  } catch (e) { st.pulling = false; __wjs_rsError(st, e); }
+  } catch (e) { st.pulling = false; st.byobReq = null; __wjs_rsError(st, e); }
 }
 function __wjs_rsPump(st) {
+  __wjs_rsByobFill(st);
+  // default reader 读字节流：仅当有读等待（wantValue）才整块搬运；
+  // closed 等待不搬，否则会饿死后来的 BYOB 读
+  if (st.isBytes && st.pending.some((p) => p.wantValue)) __wjs_rsByteToQueue(st);
   while (st.pending.length && (st.queue.length || st.closed || st.error !== undefined)) {
     const { resolve, reject } = st.pending.shift();
     if (st.error !== undefined) { reject(st.error); continue; }
@@ -1127,9 +1252,32 @@ function __wjs_rsError(st, e) {
   if (st.closed || st.error !== undefined) return;
   st.error = e;
   st.queue.length = 0;
+  st.byteQ.length = 0; st.byteLen = 0;
+  __wjs_rsByobFill(st);
   __wjs_rsPump(st);
 }
 function __wjs_rsController(stream, st) {
+  if (st.isBytes) {
+    return {
+      get desiredSize() { return st.hwm - st.byteLen; },
+      get byobRequest() { return st.byobReq; },
+      enqueue(chunk) {
+        if (st.closed || st.error !== undefined) throw new TypeError("stream is not readable");
+        if (!ArrayBuffer.isView(chunk)) throw new TypeError("byte stream chunk must be a view");
+        const v = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+        v._off = 0;
+        st.byteQ.push(v);
+        st.byteLen += v.length;
+        __wjs_rsPump(st);
+      },
+      close() {
+        if (st.closed || st.error !== undefined) throw new TypeError("stream is not readable");
+        st.closed = true;
+        __wjs_rsPump(st);
+      },
+      error(e) { __wjs_rsError(st, e); },
+    };
+  }
   return {
     get desiredSize() { return st.hwm - st.queue.length; },
     enqueue(chunk) {
@@ -1149,10 +1297,13 @@ function __wjs_rsController(stream, st) {
 globalThis.ReadableStream = class ReadableStream {
   constructor(underlyingSource = {}, strategy) {
     const hwm = strategy && strategy.highWaterMark !== undefined ? Number(strategy.highWaterMark) : 1;
+    const utype = underlyingSource ? underlyingSource.type : undefined;
+    if (utype !== undefined && utype !== "bytes") throw new TypeError("ReadableStream type must be 'bytes'");
     const st = {
       queue: [], pending: [], closed: false, error: undefined,
       reader: null, pulling: false, hwm: Number.isNaN(hwm) ? 1 : hwm,
       source: underlyingSource, controller: null,
+      isBytes: utype === "bytes", byteQ: [], byteLen: 0, byobReads: [], byobReq: null,
     };
     st.controller = __wjs_rsController(this, st);
     __wjs_rsState.set(this, st);
@@ -1166,25 +1317,66 @@ globalThis.ReadableStream = class ReadableStream {
     const st = __wjs_rsState.get(this);
     if (st.reader) throw new TypeError("stream is locked");
     st.queue.length = 0; st.closed = true;
+    st.byteQ.length = 0; st.byteLen = 0;
     const c = st.source.cancel ? st.source.cancel(reason) : undefined;
     __wjs_rsPump(st);
     return Promise.resolve(c).then(() => undefined);
   }
-  getReader() {
+  getReader(options) {
     const st = __wjs_rsState.get(this);
     if (st.reader) throw new TypeError("stream is locked");
+    const mode = options ? options.mode : undefined;
+    if (mode !== undefined && mode !== "byob") throw new TypeError(`Unknown reader mode '${mode}'`);
     const stream = this;
+    if (mode === "byob") {
+      if (!st.isBytes) throw new TypeError("getReader({ mode: 'byob' }) needs a byte stream");
+      const reader = {
+        get closed() {
+          return new Promise((resolve, reject) => {
+            if (st.error !== undefined) reject(st.error);
+            else if (st.closed && !st.byteLen) resolve(undefined);
+            else st.pending.push({ resolve: () => resolve(undefined), reject, wantValue: false });
+          });
+        },
+        read(view) {
+          return new Promise((resolve, reject) => {
+            if (!ArrayBuffer.isView(view)) { reject(new TypeError("BYOB read needs a view")); return; }
+            try { new Uint8Array(view.buffer, 0, 0); }
+            catch { reject(new TypeError("BYOB view is detached")); return; }
+            if (view.byteLength === 0) { reject(new TypeError("BYOB view must not be empty")); return; }
+            if (st.error !== undefined) { reject(st.error); return; }
+            st.byobReads.push({
+              view, viewCtor: view.constructor, viewElem: view.BYTES_PER_ELEMENT ?? 1,
+              resolve, reject,
+            });
+            __wjs_rsByobFill(st);
+            __wjs_rsPull(st);
+          });
+        },
+        releaseLock() { if (st.reader === reader) st.reader = null; },
+        cancel(reason) {
+          st.byteQ.length = 0; st.byteLen = 0; st.closed = true;
+          const c = st.source.cancel ? st.source.cancel(reason) : undefined;
+          if (st.reader === reader) st.reader = null;
+          __wjs_rsPump(st);
+          return Promise.resolve(c).then(() => undefined);
+        },
+      };
+      st.reader = reader;
+      return reader;
+    }
     const reader = {
       get closed() {
         return new Promise((resolve, reject) => {
           if (st.error !== undefined) reject(st.error);
           else if (st.closed && !st.queue.length) resolve(undefined);
-          else st.pending.push({ resolve: () => resolve(undefined), reject });
+          else st.pending.push({ resolve: () => resolve(undefined), reject, wantValue: false });
         });
       },
       read() {
         return new Promise((resolve, reject) => {
           if (st.error !== undefined) { reject(st.error); return; }
+          if (st.isBytes) __wjs_rsByteToQueue(st);
           if (st.queue.length) {
             const v = st.queue.shift();
             resolve({ value: v, done: false });
@@ -1192,13 +1384,14 @@ globalThis.ReadableStream = class ReadableStream {
             return;
           }
           if (st.closed) { resolve({ value: undefined, done: true }); return; }
-          st.pending.push({ resolve, reject });
+          st.pending.push({ resolve, reject, wantValue: true });
           __wjs_rsPull(st);
         });
       },
       releaseLock() { if (st.reader === reader) st.reader = null; },
       cancel(reason) {
         st.queue.length = 0; st.closed = true;
+        st.byteQ.length = 0; st.byteLen = 0;
         const c = st.source.cancel ? st.source.cancel(reason) : undefined;
         if (st.reader === reader) st.reader = null;
         __wjs_rsPump(st);
@@ -1494,6 +1687,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_te_encode_into", Some(encoding::te_encode_into), 2),
             ("__wjs_td_canonical", Some(encoding::td_canonical), 1),
             ("__wjs_td_decode", Some(encoding::td_decode), 4),
+            ("__wjs_td_stream_open", Some(encoding::td_stream_open), 3),
+            ("__wjs_td_stream_feed", Some(encoding::td_stream_feed), 3),
             ("__wjs_fill_random", Some(crypto::fill_random), 1),
             ("__wjs_random_uuid", Some(crypto::random_uuid), 0),
             ("__wjs_subtle_digest", Some(crypto::subtle_digest), 2),

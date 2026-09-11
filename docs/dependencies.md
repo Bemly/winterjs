@@ -258,6 +258,7 @@ OHOS 因 `target_os="linux"` 命中同一分支；`simd-json` 加速门控只看
 | 重试退避 | `backon` | 1.6.0 | 2022-04-12 | 2025-10-18 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | URL | `url` | 2.5.8 | 2014-11-14 | 2026-01-05 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | data: URL | `data-url` | 0.3.2 | 2018-02-02 | 2025-08-21 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| URLPattern | `urlpattern` | 0.6.0 | 2021-09-07 | 2026-02-12 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | base64 | `base64` | 0.23.1 | 2015-12-04 | 2026-08-04 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 百分号编码 | `percent-encoding` | 2.3.2 | 2017-06-13 | 2025-08-21 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 表单编码 | `form_urlencoded` | 1.2.2 | 2020-06-19 | 2025-08-21 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -283,6 +284,10 @@ serve 静态预压缩用 `Fastest`/`Default`；流式编码按 `FrameEncoder` �
 `encoding_rs` x86/x64 多版本 SIMD 分发、aarch64 NEON，其余标量。
 移动端根证书策略实施时定（三选一：platform-verifier / 系统 store / 内嵌 webpki-roots）。
 `serde_urlencoded` 4 年未动但它是 url 团队的冻结小桥，接受。
+`urlpattern`（2026-09-11 引入，用户拍板）：Deno 官方 URLPattern 实现（`url`+
+`regex`+`serde`+`icu_properties`，全已在树内；`icu_properties ^2` 与 `mozjs`
+的 2.1.2 可统一，无 turso 式 icu 死锁；`build=false` 无 C；`rust-toolchain.toml`
+仅为其自身 CI 用，不约束本仓）；JS `URLPattern` 接线时直接用，不手写状态机。
 
 ## 7. 加密全家（WebCrypto + node:crypto，一次引全，免得逐个踩坑；全员纯 Rust）
 
@@ -515,7 +520,8 @@ multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 ax
   (元数, f64 掩码, 返回类别) 查表；`src/builtins/bun/ffi.rs` + `build.rs`）。
 - npm registry 客户端胶水（传输归 `reqwest`，寻址归 `deno_semver`，校验归 `ssri`，
   缓存布局归 `dirs`+`blake3`+`fs4`，解包归 `tar`+`flate2`，并发归 `futures`+`rayon`）。
-- URLPattern 路由匹配（`url` 之上的小状态机；serve 内部路由直接用 axum）。
+- URLPattern（2026-09-11 改轮子）：JS `URLPattern` 用 `urlpattern`（Deno 官方，
+  §6 已入库）；serve 内部路由直接用 axum，不用它。
 - SSE（axum 内建）；`bin` 链接（unix symlink + Windows `junction`，约 20 行）；
   子进程树杀掉（`nix` killpg + Windows Job Objects，手写，约 80 行，无可信轮子）；
   Windows CLI 通配符展开（`glob` 之上约 15 行，不引停更的 `wild`）；
@@ -549,6 +555,10 @@ multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 ax
   `pkcs12`（serve 只收 PEM）、`users`（→`uzers`）、`hex`（→`const-hex`）、
   `tree-sitter*`（→`oxc`）、`syntect`（→手写高亮）、`rental`/`owning_ref`（停更，用 `ouroboros`）、
   `qcell`（aliasing 靠架构纪律，不引 GhostCell）、`redb` 的其他包装（无）。
+- `sd-notify`（2026-09-11 已考察、不引）：元信息过关（2019 建库/2026-03 维护/12M
+  下载/`build=false`/默认只 `libc`），但 `notify` 不处理 `@` 抽象套接字
+  （直 `connect(path)`，测试也只盖文件路径），真 systemd 默认形态即回归；
+  现 30 行手写（`src/serve.rs`，`@` 专测钉住）更正确，留用。
 - `oxc_linter`/`oxc_formatter`（2026-09-11 顺延，非否决）：oxc 门面无
   linter/formatter 特性；`oxc_linter` 未发布 crates.io，`oxc_formatter` 为
   2023 年 0.0.0 占位。git vendor 需拖未发布 workspace，不入表。`winterjs

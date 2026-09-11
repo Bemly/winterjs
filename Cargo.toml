@@ -138,6 +138,7 @@ hickory-resolver = "0.26"
 backon = "1"
 url = "2"
 data-url = "0.3"
+urlpattern = "0.6"  # Deno 官方 URLPattern 实现（2026-09-11 引入，代替手写状态机；icu 可统一无死锁，见 §6 备注）
 base64 = "0.23"
 percent-encoding = "2"
 form_urlencoded = "1"

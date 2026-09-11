@@ -9,9 +9,10 @@
 > android/ohos 列转正 + §1 ⚠️ 清零或书面理由（需 CI 环境，见 Phase 0/8 完成标准）。
 > 不再做的（书面理由见各 Phase 尾）：object_store 远端（§2 禁 aws-lc 后只剩 fs，
 > 与既有缓存重复）、russh（远端 git 含 ssh 全走 git CLI，覆盖）、
-> console-subscriber（dev 手动 RUSTFLAGS，非接线）、Win 服务（mac 无法验证，留 CI）、
+> Win 服务（mac 无法验证，留 CI）、
 > netstat2（TOCTOU，不用）、oxc linter（上游未发布，穿透保留）、
 > watch 导入图（全量重跑，偏差接受）。
+> console-subscriber 已于 2026-09-11 接为 cargo feature `tokio-console`（默认关闭，dev 按需）。
 > 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
@@ -282,7 +283,7 @@
   `mime_guess`+`httpdate`+`cookie`、`tokio-rustls`、`governor`、`metrics`+
   `metrics-exporter-prometheus`、`tracing-appender`、`nix`+`systemd`+
   `windows-service`、`local-ip-address`+`qrcode`、`netstat2`、
-  `instant-acme`（后期）、`console-subscriber`（开发期）。
+  `instant-acme`（后期）、`console-subscriber`（2026-09-11 接为 `tokio-console` feature）。
 - 做：静态文件（ServeDir＋range＋etag）/路由/中间件（cors/压缩/限流/追踪）、
   TLS 终止（PEM）、优雅停机、`/metrics`、systemd/Win 服务集成、启动 banner。
 - 验收：wrk 压测不丢请求；SIGTERM 优雅退出不断连接。
@@ -311,7 +312,7 @@
   黑盒 +3（rcgen 自签真握手 e2e/半参报错/坏 PEM 报错）；200 并发零失败
   （wrk 缺席，python 10×20 替代，计数精确 200）。顺延（书面理由）：
   `instant-acme`（需真实域名）、Win 服务（mac 无法验证，留 CI 编译）、
-  `console-subscriber`（开发期，需 `tokio_unstable`）、`netstat2`
+  `console-subscriber`（当时顺延，2026-09-11 已接为 `tokio-console` feature）、`netstat2`
   （bind 错误已可读，预检有 TOCTOU，不用）。
   `cargo test` 39+123 全绿，0 警告，冒烟 5/5。
 - [x] 切片 d5 ACME（2026-09-11，批4）：`--acme-domain`（缺省
@@ -325,8 +326,9 @@
 - Phase 6 完工（2026-09-10；ACME 2026-09-11 收官）：serve/中间件/指标限流/
   TLS/ACME，`cargo test` 全绿，0 警告，冒烟 5/5，200 并发零失败。
 - 不再做（书面理由）：Win 服务（mac 无法验证，留 CI 编译）、
-  `console-subscriber`（开发期，需 `tokio_unstable`，dev 手动 RUSTFLAGS 接）、
   `netstat2`（bind 错误已可读，预检有 TOCTOU，不用）。
+  `console-subscriber` 已于 2026-09-11 接为 cargo feature `tokio-console`
+ （`RUSTFLAGS="--cfg tokio_unstable" cargo build --features tokio-console`）。
 
 ## Phase 7 — runtime 补齐（sqlite/REPL/test/watch/FFI）
 

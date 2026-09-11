@@ -447,7 +447,7 @@ npmrc 附记（2026-09-10 实测）：`rust-ini` 把 `:` 也当键值分隔符
 | 限流 | `governor` | 0.10.4 | 2019-11-15 | 2025-12-16 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 可观测 | `metrics` | 0.24.6 | 2015-09-03 | 2026-05-13 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Prometheus | `metrics-exporter-prometheus` | 0.18.3 | 2020-06-17 | 2026-04-30 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 事件循环观测 | `console-subscriber` | 0.5.0 | 2021-12-16 | 2025-10-30 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 事件循环观测 | `console-subscriber` | 0.5.0 | 2021-12-16 | 2025-10-30 | ✅（optional，`tokio-console` 开关） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 本机 IP | `local-ip-address` | 0.6.13 | 2021-06-15 | 2026-05-19 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
 | 端口占用 | `netstat2` | 0.11.2 | 2020-02-09 | 2025-08-14 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
 | 自动证书（后期） | `instant-acme` | 0.8.5 | 2022-05-12 | 2026-02-24 | ✅（TLS 豁免） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
@@ -457,7 +457,10 @@ npmrc 附记（2026-09-10 实测）：`rust-ini` 把 `:` 也当键值分隔符
 备注：静态文件/CORS/压缩/追踪全用 `tower-http`（压缩后端复用 §6 的 flate2/brotli/ruzstd 解码）；
 multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 axum 内建。
 `mime_guess`/`httpdate`/`qrcode` 是冻结型小库（MIME 表/HTTP 日期/QR 规范不变），接受。
-`console-subscriber` 是开发期观测工具（需 `tokio_unstable` cfg）。
+`console-subscriber` 是开发期观测工具（2026-09-11 已接为 cargo feature `tokio-console` =
+`dep:console-subscriber` + `tokio/tracing`，`Cargo.toml [features]` 本仓首个；默认关闭零成本；
+启用必须 `RUSTFLAGS="--cfg tokio_unstable" cargo build --features tokio-console`，缺之编译期
+直接报错；`src/logging.rs::init` 二选一，启用时替代默认 fmt 层）。
 `local-ip-address` 的 OHOS 格待验证；`qrcode` 只负责矩阵生成，终端渲染手写约 20 行。
 
 ## 11. dev 依赖（只跑在 host，不占 target 矩阵）

@@ -1,21 +1,33 @@
 //! 日志：tracing 家族接线。
+//! 默认走 fmt 层；`--features tokio-console` 时改走 console 观测（dev 按需，见 Cargo 注释）。
 //! 过滤优先级：`WINTERJS_LOG`（EnvFilter 语法）> 配置文件 `log.filter` > `-v` 计数
 //! （0=warn, 1=info, 2=debug, ≥3=trace）。
 //! 输出：stderr（stdout 留给程序输出）；日志文件取 `WINTERJS_LOG_FILE` > 配置文件 `log.file`。
 //! `SubscriberInitExt::init()` 在 tracing-log 特性启用时会把 log crate 记录桥接进 tracing。
 
-use std::env;
-use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
-
-use tracing_error::ErrorLayer;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
+use std::path::PathBuf;
 
 use crate::settings::ColorChoice;
 
+#[cfg(not(feature = "tokio-console"))]
+use std::env;
+#[cfg(not(feature = "tokio-console"))]
+use std::io::IsTerminal;
+#[cfg(not(feature = "tokio-console"))]
+use std::path::Path;
+
+#[cfg(not(feature = "tokio-console"))]
+use tracing_error::ErrorLayer;
+#[cfg(not(feature = "tokio-console"))]
+use tracing_subscriber::EnvFilter;
+#[cfg(not(feature = "tokio-console"))]
+use tracing_subscriber::fmt;
+#[cfg(not(feature = "tokio-console"))]
+use tracing_subscriber::layer::SubscriberExt;
+#[cfg(not(feature = "tokio-console"))]
+use tracing_subscriber::util::SubscriberInitExt;
+
+#[cfg_attr(feature = "tokio-console", allow(dead_code))]
 pub struct LogOptions {
     /// `-v` 计数（0=warn, 1=info, 2=debug, ≥3=trace）
     pub verbosity: u8,
@@ -26,6 +38,21 @@ pub struct LogOptions {
     pub file: Option<PathBuf>,
 }
 
+/// `tokio-console` 开关启用时：用 console 的 subscriber 替代默认 fmt 层
+///（`tokio=trace,runtime=trace` 由它自动带上）。必须
+/// `RUSTFLAGS="--cfg tokio_unstable" cargo build --features tokio-console`，
+/// 否则编译期直接报错（上游 console 在运行时 assert 同一条，不如提前拦）。
+#[cfg(feature = "tokio-console")]
+#[cfg(not(tokio_unstable))]
+compile_error!("feature `tokio-console` requires RUSTFLAGS=\"--cfg tokio_unstable\"");
+
+#[cfg(feature = "tokio-console")]
+#[cfg(tokio_unstable)]
+pub fn init(_opts: LogOptions) {
+    console_subscriber::init();
+}
+
+#[cfg(not(feature = "tokio-console"))]
 pub fn init(opts: LogOptions) {
     let ansi = match opts.color {
         ColorChoice::Always => true,
@@ -48,6 +75,7 @@ pub fn init(opts: LogOptions) {
     }
 }
 
+#[cfg(not(feature = "tokio-console"))]
 fn env_filter(verbosity: u8, configured: Option<String>) -> EnvFilter {
     if let Ok(spec) = env::var("WINTERJS_LOG") {
         if let Ok(filter) = EnvFilter::try_new(&spec) {
@@ -69,6 +97,7 @@ fn env_filter(verbosity: u8, configured: Option<String>) -> EnvFilter {
     EnvFilter::new(format!("winterjs={level}"))
 }
 
+#[cfg(not(feature = "tokio-console"))]
 fn file_appender(path: &Path) -> tracing_appender::rolling::RollingFileAppender {
     let dir = path
         .parent()

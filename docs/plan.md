@@ -432,14 +432,10 @@
   移动 target 上查找落空报可读错（桌面开发期工具）。CLI 新增 lint/fmt
   （man 14→16）。模块单测 4 例 + 黑盒 2 例（假脚本：转发/stderr 直出/
   向上查找/退出码透传/未找到指引）；`cargo test` 64+146 全绿，0 警告，冒烟 5/5。
-- [x] npx 回退（2026-09-11，用户指出 `npx oxlint@latest` 本来可用；crates.io
-  复核：`oxlint`/`oxc_linter` 均未发布，直引仍不可行，穿透保留）：本地 +
-  PATH 双落空且有 npx 时走 `npx --yes <pkg>@latest`（stderr 明示，非静默；
-  本地有安装时永远不用它，版本锁定靠本地安装；`winterjs install oxlint`
-  装全局后需按提示把 global `.bin` 加进 PATH 才会被命中）。`src/lintfmt.rs`
-  新增 `Resolved::Npx` + `command_for`（.cmd 经 `cmd /C`，win 同路）。
-  模块 5 + 黑盒 3（假 npx 验 `--yes oxlint@latest` 参数形 + 透传；真 npx e2e
-  本机无 node 未覆盖，属 npx 自身行为）。
+- [x] npx 回退的引入与删除（2026-09-11）：用户指出 `npx oxlint@latest` 本来
+  可用后曾加入回退（本地+PATH 落空→`npx --yes <pkg>@latest`）；同日用户拍板
+  删除——npx 必须跟 node 一起装，与零 node 目标冲突。现查找链：本地 →
+  PATH → 可读错（指引 `release:` 形装 standalone，不再提 npm/npx）。
 - [x] release 二进制安装（2026-09-11，无 node 机器开箱用）：
   `[<name>@]release:github/<owner>/<repo>@<tag>/<prefix>`（tag 必显式）→
   GitHub API 取 asset 表 → 按平台挑包（`{prefix}-{arch}-{os}` 惯例，linux
@@ -452,8 +448,9 @@
   --lint` → 真 oxlint（no-debugger/no-unused-vars 警告逐行透传）；
   `--deny-warnings` exit=1 透传；`--fmt` 真写回（`const   x=1` → `const x = 1;`）。
   边界书面记录：npm 版 oxlint 的 bin 是 JS + `.node`（napi），无 node 的机器跑
-  不了——standalone 二进制或 npx 环境二选一；`.node` 加载是 napi 级工程，
-  不在本次范围（`require('module')` 之类缺口同理，报可读错）。
+  不了——standalone 二进制（`release:` 形安装）是唯一零 node 路径；`.node`
+  加载是 napi 级工程，不在本次范围（`require('module')` 之类缺口同理，
+  报可读错）。
 - [x] 切片 b（2026-09-11）：权限开关 `--allow-*`（`src/permissions.rs`，opt-in 沙箱：
   不传旗标行为不变（141 例存量黑盒零回归），传任一 `--allow-*`/`--allow-all` 即进沙箱，
   未授权类默认拒绝，错误 `PermissionError: ...`（可读、可 catch、fs/sqlite 包装层直通不转形）。

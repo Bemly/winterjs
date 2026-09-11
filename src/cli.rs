@@ -88,11 +88,11 @@ pub struct Cli {
     #[arg(short = 't', long = "test", value_name = "PATH", num_args = 0..)]
     pub test: Option<Vec<String>>,
 
-    /// Forward to the project's oxlint (passthrough; args go to oxlint verbatim, npx fallback)
+    /// Forward to the project's oxlint (passthrough; args go to oxlint verbatim)
     #[arg(long = "lint", value_name = "ARGS", num_args = 0.., allow_hyphen_values = true)]
     pub lint: Option<Vec<String>>,
 
-    /// Forward to the project's oxfmt (passthrough; args go to oxfmt verbatim, npx fallback)
+    /// Forward to the project's oxfmt (passthrough; args go to oxfmt verbatim)
     #[arg(short = 'f', long = "fmt", value_name = "ARGS", num_args = 0.., allow_hyphen_values = true)]
     pub fmt: Option<Vec<String>>,
 

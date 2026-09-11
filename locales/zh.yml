@@ -40,10 +40,10 @@ arg:
     help: "运行测试文件（Phase 7）"
     value: "路径"
   lint:
-    help: "转发给项目自带的 oxlint（透传；参数原样交给 oxlint，缺失回退 npx）"
+    help: "转发给项目自带的 oxlint（透传；参数原样交给 oxlint）"
     value: "参数"
   fmt:
-    help: "转发给项目自带的 oxfmt（透传；参数原样交给 oxfmt，缺失回退 npx）"
+    help: "转发给项目自带的 oxfmt（透传；参数原样交给 oxfmt）"
     value: "参数"
   serve:
     help: "通过 HTTP 提供目录服务（Phase 6）"

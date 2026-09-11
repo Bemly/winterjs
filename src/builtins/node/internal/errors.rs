@@ -226,6 +226,7 @@ const genericNodeError = hideStackFrames(function genericNodeError(message, erro
 // ── codes（9a 按需全集；后续模块按需在此追加，保持字母序）─────────────────
 E('ERR_ASYNC_CALLBACK', '%s must be a function', TypeError);
 E('ERR_ASYNC_TYPE', 'Invalid name for async "type": %s', TypeError);
+E('ERR_FALSY_VALUE_REJECTION', 'A promise was rejected with a falsy value', Error, HideStackFramesError);
 E('ERR_INVALID_ARG_TYPE',
   (name, expected, actual) => {
     if (typeof name !== 'string') throw new TypeError("'name' must be a string");

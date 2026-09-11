@@ -15,11 +15,12 @@ function tagOf(value) {
 }
 
 function isDataView(value) {
-  return ArrayBuffer.isView(value) && value[Symbol.toStringTag] === undefined;
+  // V8 internalBinding 语义：DataView 非 TypedArray（isDataView true / isTypedArray false）
+  return ArrayBuffer.isView(value) && value instanceof DataView;
 }
 
 function isTypedArray(value) {
-  return value[Symbol.toStringTag] !== undefined && ArrayBuffer.isView(value) && !(value instanceof DataView);
+  return ArrayBuffer.isView(value) && !(value instanceof DataView);
 }
 
 const typedTags = [

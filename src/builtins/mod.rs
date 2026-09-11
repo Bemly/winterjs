@@ -273,6 +273,20 @@ function __wjs_rsaPubExp(v) {
   }
   return Number(v);
 }
+function __wjs_x_bits(algorithm, st, length) {
+  const pubKey = algorithm?.public;
+  const pst = __wjs_keyState.get(pubKey);
+  if (!pst || pst.alg.name !== "X25519" || pst.kind === "private") {
+    throw new TypeError("deriveBits: algorithm.public must be an X25519 public key");
+  }
+  const secret = __wjs_x_derive(st.material, pst.material);
+  if (length === undefined || length === null) return secret.buffer;
+  const bits = Number(length);
+  if (!Number.isInteger(bits) || bits < 0 || bits > secret.length * 8 || bits % 8 !== 0) {
+    throw new Error("OperationError: bad X25519 deriveBits length");
+  }
+  return secret.slice(0, bits / 8).buffer;
+}
 function __wjs_ecdh_bits(algorithm, st, length) {
   const pubKey = algorithm?.public;
   const pst = __wjs_keyState.get(pubKey);
@@ -307,7 +321,7 @@ globalThis.crypto = {
       usages = [...(usages ?? [])].map(String);
       if (name === "AES-GCM") {
         const length = Number(alg?.length ?? 256);
-        if (![128, 256].includes(length)) throw new Error("NotSupportedError: AES-GCM length must be 128/256 (192-bit needs c-4)");
+        if (![128, 192, 256].includes(length)) throw new Error("NotSupportedError: AES-GCM length must be 128/192/256");
         const bytes = new Uint8Array(length / 8);
         crypto.getRandomValues(bytes);
         return __wjs_makeKey({ name: "AES-GCM", length }, bytes, usages, !!extractable);
@@ -324,7 +338,7 @@ globalThis.crypto = {
         crypto.getRandomValues(bytes);
         return __wjs_makeKey({ name: "HMAC", hash, length }, bytes, usages, !!extractable);
       }
-      if (name === "RSASSA-PKCS1-V1_5" || name === "RSA-OAEP") {
+      if (name === "RSASSA-PKCS1-V1_5" || name === "RSA-OAEP" || name === "RSA-PSS") {
         const length = Number(alg?.modulusLength ?? 2048);
         if (![2048, 3072, 4096].includes(length)) throw new Error("NotSupportedError: RSA modulusLength must be 2048/3072/4096");
         const e = __wjs_rsaPubExp(alg?.publicExponent);
@@ -346,8 +360,22 @@ globalThis.crypto = {
         const mkPriv = __wjs_makeKey({ name, namedCurve: curve }, privDer, usages, !!extractable, "private");
         return { publicKey: mkPub, privateKey: mkPriv };
       }
-      if (name === "RSA-PSS" || name === "ED25519" || name === "X25519" || name === "ED448") {
-        throw new Error(`NotSupportedError: generateKey ${name} needs follow-up (c-4x)`);
+      if (name === "ED25519") {
+        const seed = __wjs_ed_generate();
+        const pub = __wjs_ed_public(seed);
+        const mkPub = __wjs_makeKey({ name, namedCurve: "Ed25519" }, pub, usages, !!extractable, "public");
+        const mkPriv = __wjs_makeKey({ name, namedCurve: "Ed25519" }, seed, usages, !!extractable, "private");
+        return { publicKey: mkPub, privateKey: mkPriv };
+      }
+      if (name === "X25519") {
+        const priv = __wjs_x_generate();
+        const pub = __wjs_x_public(priv);
+        const mkPub = __wjs_makeKey({ name, namedCurve: "X25519" }, pub, usages, !!extractable, "public");
+        const mkPriv = __wjs_makeKey({ name, namedCurve: "X25519" }, priv, usages, !!extractable, "private");
+        return { publicKey: mkPub, privateKey: mkPriv };
+      }
+      if (name === "ED448") {
+        throw new Error(`NotSupportedError: generateKey ${name} needs follow-up`);
       }
       throw new Error(`NotSupportedError: generateKey ${name} needs Phase 3 c-4`);
     },
@@ -355,7 +383,7 @@ globalThis.crypto = {
       const name = typeof alg === "string" ? alg.toUpperCase() : String(alg?.name ?? "").toUpperCase();
       usages = [...(usages ?? [])].map(String);
       const needHash = name === "HMAC" ? __wjs_normHash(alg?.hash) : undefined;
-      if (name === "RSASSA-PKCS1-V1_5" || name === "RSA-OAEP") {
+      if (name === "RSASSA-PKCS1-V1_5" || name === "RSA-OAEP" || name === "RSA-PSS") {
         const hash = __wjs_normHash(alg?.hash ?? "SHA-256");
         if (format === "jwk") {
           if (!keyData || keyData.kty !== "RSA" || typeof keyData.n !== "string" || typeof keyData.e !== "string") {
@@ -435,6 +463,43 @@ globalThis.crypto = {
         }
         throw new Error(`NotSupportedError: importKey ${format} for EC needs jwk/pkcs8/spki/raw`);
       }
+      if (name === "ED25519" || name === "X25519") {
+        // JWK crv 用混合大小写（RFC 8037；内部 name 全大写，不外泄）。
+        const crv = name === "ED25519" ? "Ed25519" : "X25519";
+        const keyAlg = { name, namedCurve: crv };
+        if (format === "jwk") {
+          if (!keyData || keyData.kty !== "OKP" || keyData.crv !== crv
+            || typeof keyData.x !== "string") {
+            throw new Error("DataError: bad OKP JWK (kty/crv/x)");
+          }
+          const x = __wjs_b64urlDecode(keyData.x);
+          if (x.length !== 32) throw new Error("DataError: bad OKP JWK (x length)");
+          if (typeof keyData.d === "string") {
+            const seed = __wjs_b64urlDecode(keyData.d);
+            if (seed.length !== 32) throw new Error("DataError: bad OKP JWK (d length)");
+            // 私钥一致性：JWK 的 x 须与 d 对应（防混入）。
+            const expect = name === "ED25519" ? __wjs_ed_public(seed) : __wjs_x_public(seed);
+            const same = expect.length === 32 && expect.every((b, i) => b === x[i]);
+            if (!same) throw new Error("DataError: OKP JWK x does not match d");
+            return __wjs_makeKey(keyAlg, seed, usages, !!extractable, "private");
+          }
+          return __wjs_makeKey(keyAlg, x, usages, !!extractable, "public");
+        }
+        if (format === "raw") {
+          const v = __wjs_keyBytes(keyData);
+          if (v.length !== 32) throw new Error("DataError: OKP raw key must be 32 bytes");
+          return __wjs_makeKey(keyAlg, v, usages, !!extractable, "public");
+        }
+        if (format === "pkcs8") {
+          const seed = __wjs_okp_seed_from_pkcs8(name, __wjs_keyBytes(keyData));
+          return __wjs_makeKey(keyAlg, seed, usages, !!extractable, "private");
+        }
+        if (format === "spki") {
+          const publ = __wjs_okp_pub_from_spki(name, __wjs_keyBytes(keyData));
+          return __wjs_makeKey(keyAlg, publ, usages, !!extractable, "public");
+        }
+        throw new Error(`NotSupportedError: importKey ${format} for OKP needs jwk/raw/pkcs8/spki`);
+      }
       let bytes;
       if (format === "raw") {
         bytes = __wjs_keyBytes(keyData);
@@ -445,7 +510,7 @@ globalThis.crypto = {
         bytes = __wjs_b64urlDecode(keyData.k);
       } else throw new Error(`NotSupportedError: importKey ${format} needs Phase 3 c-4`);
       if (name === "AES-GCM") {
-        if (![16, 32].includes(bytes.length)) throw new TypeError("AES-GCM raw key must be 16/32 bytes (192-bit needs c-4)");
+        if (![16, 24, 32].includes(bytes.length)) throw new TypeError("AES-GCM raw key must be 16/24/32 bytes");
         return __wjs_makeKey({ name, length: bytes.length * 8 }, bytes, usages, !!extractable);
       }
       if (name === "HMAC") {
@@ -458,7 +523,7 @@ globalThis.crypto = {
       if (!st) throw new TypeError("exportKey: not a CryptoKey");
       if (!st.extractable) throw new Error("InvalidAccessError: key is not extractable");
       const aname = st.alg.name;
-      if (aname === "RSASSA-PKCS1-V1_5" || aname === "RSA-OAEP") {
+      if (aname === "RSASSA-PKCS1-V1_5" || aname === "RSA-OAEP" || aname === "RSA-PSS") {
         const hash = st.alg.hash ?? "SHA-256";
         const isPriv = st.kind === "private";
         const privDer = isPriv ? st.material : null;
@@ -478,7 +543,9 @@ globalThis.crypto = {
           if (isPriv) { jwk.d = parts.d; jwk.p = parts.p; jwk.q = parts.q; jwk.dp = parts.dp; jwk.dq = parts.dq; jwk.qi = parts.qi; }
           jwk.alg = aname === "RSASSA-PKCS1-V1_5"
             ? { "SHA-256": "RS256", "SHA-384": "RS384", "SHA-512": "RS512" }[hash] ?? "RS256"
-            : { "SHA-256": "RSA-OAEP", "SHA-384": "RSA-OAEP-384", "SHA-512": "RSA-OAEP-512" }[hash] ?? "RSA-OAEP";
+            : aname === "RSA-PSS"
+              ? { "SHA-256": "PS256", "SHA-384": "PS384", "SHA-512": "PS512" }[hash] ?? "PS256"
+              : { "SHA-256": "RSA-OAEP", "SHA-384": "RSA-OAEP-384", "SHA-512": "RSA-OAEP-512" }[hash] ?? "RSA-OAEP";
           jwk.ext = true;
           return jwk;
         }
@@ -513,6 +580,32 @@ globalThis.crypto = {
           return out.buffer;
         }
         throw new Error(`NotSupportedError: exportKey ${format} for EC needs pkcs8/spki/jwk/raw`);
+      }
+      if (aname === "ED25519" || aname === "X25519") {
+        const isPriv = st.kind === "private";
+        const pubBytes = isPriv
+          ? (aname === "ED25519" ? __wjs_ed_public(st.material) : __wjs_x_public(st.material))
+          : st.material;
+        if (format === "pkcs8") {
+          if (!isPriv) throw new Error("InvalidAccessError: not a private key");
+          return __wjs_okp_pkcs8_from_seed(aname, st.material).buffer;
+        }
+        if (format === "spki") {
+          return __wjs_okp_spki_from_pub(aname, pubBytes).buffer;
+        }
+        if (format === "jwk") {
+          const jwk = { kty: "OKP", crv: aname === "ED25519" ? "Ed25519" : "X25519", x: __wjs_b64urlEncode(pubBytes) };
+          if (isPriv) jwk.d = __wjs_b64urlEncode(st.material);
+          // JWA 只给 Ed25519 定义了 "EdDSA"；X25519 无 alg（与 Node 一致，省略）。
+          if (aname === "ED25519") jwk.alg = "EdDSA";
+          jwk.ext = true;
+          return jwk;
+        }
+        if (format === "raw") {
+          if (isPriv) throw new Error("InvalidAccessError: raw export needs a public key");
+          return pubBytes.slice().buffer;
+        }
+        throw new Error(`NotSupportedError: exportKey ${format} for OKP needs pkcs8/spki/jwk/raw`);
       }
       if (format === "raw") return st.material.slice().buffer;
       if (format === "jwk") {
@@ -570,6 +663,21 @@ globalThis.crypto = {
         const out = __wjs_rsa_sign(hash, st.material, __wjs_dataBytes(data));
         return out.buffer;
       }
+      if (st.alg.name === "RSA-PSS") {
+        if (st.kind !== "private") throw new TypeError("sign: not an RSA private key");
+        const hash = __wjs_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
+        // 缺省 saltLength = digest 长度（WebCrypto 口径）。
+        const defSalt = { "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[hash];
+        const salt = algorithm?.saltLength === undefined ? defSalt : Number(algorithm.saltLength);
+        if (!Number.isInteger(salt) || salt < 0) throw new Error("OperationError: bad RSA-PSS saltLength");
+        const out = __wjs_pss_sign(hash, salt, st.material, __wjs_dataBytes(data));
+        return out.buffer;
+      }
+      if (st.alg.name === "ED25519") {
+        if (st.kind !== "private") throw new TypeError("sign: not an Ed25519 private key");
+        const out = __wjs_ed_sign(st.material, __wjs_dataBytes(data));
+        return out.buffer;
+      }
       if (st.alg.name === "ECDSA") {
         if (st.kind !== "private") throw new TypeError("sign: not an EC private key");
         const hash = __wjs_normHash(algorithm?.hash ?? "SHA-256");
@@ -590,6 +698,18 @@ globalThis.crypto = {
         const hash = __wjs_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
         return __wjs_rsa_verify(hash, st.material, __wjs_dataBytes(signature), __wjs_dataBytes(data));
       }
+      if (st.alg.name === "RSA-PSS") {
+        if (st.kind === "private") throw new TypeError("verify: not an RSA public key");
+        const hash = __wjs_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
+        const defSalt = { "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[hash];
+        const salt = algorithm?.saltLength === undefined ? defSalt : Number(algorithm.saltLength);
+        if (!Number.isInteger(salt) || salt < 0) throw new Error("OperationError: bad RSA-PSS saltLength");
+        return __wjs_pss_verify(hash, salt, st.material, __wjs_dataBytes(signature), __wjs_dataBytes(data));
+      }
+      if (st.alg.name === "ED25519") {
+        if (st.kind === "private") throw new TypeError("verify: not an Ed25519 public key");
+        return __wjs_ed_verify(st.material, __wjs_dataBytes(signature), __wjs_dataBytes(data));
+      }
       if (st.alg.name === "ECDSA") {
         if (st.kind === "private") throw new TypeError("verify: not an EC public key");
         const hash = __wjs_normHash(algorithm?.hash ?? "SHA-256");
@@ -599,28 +719,36 @@ globalThis.crypto = {
     },
     async deriveBits(algorithm, baseKey, length) {
       const st = __wjs_keyState.get(baseKey);
-      if (!st || st.alg.name !== "ECDH") throw new TypeError("deriveBits: not an ECDH key");
-      if (st.kind !== "private") throw new TypeError("deriveBits: needs an ECDH private key");
+      if (!st || (st.alg.name !== "ECDH" && st.alg.name !== "X25519")) {
+        throw new TypeError("deriveBits: not an ECDH/X25519 key");
+      }
+      if (st.kind !== "private") throw new TypeError("deriveBits: needs a private key");
       __wjs_needUsage(st, "deriveBits");
+      if (st.alg.name === "X25519") return __wjs_x_bits(algorithm, st, length);
       return __wjs_ecdh_bits(algorithm, st, length);
     },
     async deriveKey(algorithm, baseKey, derivedKeyAlg, extractable, usages) {
       const st = __wjs_keyState.get(baseKey);
-      if (!st || st.alg.name !== "ECDH") throw new TypeError("deriveKey: not an ECDH key");
-      if (st.kind !== "private") throw new TypeError("deriveKey: needs an ECDH private key");
+      if (!st || (st.alg.name !== "ECDH" && st.alg.name !== "X25519")) {
+        throw new TypeError("deriveKey: not an ECDH/X25519 key");
+      }
+      if (st.kind !== "private") throw new TypeError("deriveKey: needs a private key");
       __wjs_needUsage(st, "deriveKey");
+      const bitsOf = (length) => st.alg.name === "X25519"
+        ? __wjs_x_bits(algorithm, st, length)
+        : __wjs_ecdh_bits(algorithm, st, length);
       const dname = String(derivedKeyAlg?.name ?? "").toUpperCase();
       let bytes;
       if (dname === "AES-GCM") {
         const length = Number(derivedKeyAlg?.length ?? 256);
-        if (![128, 256].includes(length)) throw new Error("NotSupportedError: derived AES-GCM length must be 128/256");
-        bytes = new Uint8Array(__wjs_ecdh_bits(algorithm, st, length));
+        if (![128, 192, 256].includes(length)) throw new Error("NotSupportedError: derived AES-GCM length must be 128/192/256");
+        bytes = new Uint8Array(bitsOf(length));
         return __wjs_makeKey({ name: "AES-GCM", length }, bytes, [...(usages ?? [])].map(String), !!extractable);
       }
       if (dname === "HMAC") {
         const hash = __wjs_normHash(derivedKeyAlg?.hash);
         let length = derivedKeyAlg?.length === undefined ? null : Number(derivedKeyAlg.length);
-        bytes = new Uint8Array(__wjs_ecdh_bits(algorithm, st, length));
+        bytes = new Uint8Array(bitsOf(length));
         if (length === null) length = bytes.length * 8;
         return __wjs_makeKey({ name: "HMAC", hash, length }, bytes, [...(usages ?? [])].map(String), !!extractable);
       }
@@ -1392,6 +1520,20 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_ec_jwk_pub", Some(crypto::ec_jwk_pub), 2),
             ("__wjs_ec_import_priv", Some(crypto::ec_import_priv), 2),
             ("__wjs_ec_import_pub", Some(crypto::ec_import_pub), 3),
+            // Phase c-4x：RSA-PSS / Ed25519 / X25519
+            ("__wjs_pss_sign", Some(crypto::pss_sign), 4),
+            ("__wjs_pss_verify", Some(crypto::pss_verify), 5),
+            ("__wjs_ed_generate", Some(crypto::ed_generate), 0),
+            ("__wjs_ed_public", Some(crypto::ed_public), 1),
+            ("__wjs_ed_sign", Some(crypto::ed_sign), 2),
+            ("__wjs_ed_verify", Some(crypto::ed_verify), 3),
+            ("__wjs_x_generate", Some(crypto::x_generate), 0),
+            ("__wjs_x_public", Some(crypto::x_public), 1),
+            ("__wjs_x_derive", Some(crypto::x_derive), 2),
+            ("__wjs_okp_pkcs8_from_seed", Some(crypto::okp_pkcs8_from_seed), 2),
+            ("__wjs_okp_spki_from_pub", Some(crypto::okp_spki_from_pub), 2),
+            ("__wjs_okp_seed_from_pkcs8", Some(crypto::okp_seed_from_pkcs8), 2),
+            ("__wjs_okp_pub_from_spki", Some(crypto::okp_pub_from_spki), 2),
             ("__wjs_fetch_start", Some(fetch::fetch_start), 6),
             ("__wjs_fetch_abort", Some(fetch::fetch_abort), 1),
             ("__wjs_fetch_pull", Some(fetch::fetch_pull), 3),

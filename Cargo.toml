@@ -164,7 +164,7 @@ blowfish = "0.10"
 aes-gcm = "0.11"
 chacha20poly1305 = "0.11"
 ed25519-dalek = "3"
-x25519-dalek = "3"
+x25519-dalek = { version = "3", features = ["static_secrets"] }  # c-4x：按值 secret（from>+diffie_hellman），纯 Rust 特性门
 # c-4（2026-09-10 用户拍板）：ecdh/pkcs8 显式声明。之前靠 russh→ssh-key 的
 # 传递特性 unify 硬撑（能编过但上游一变就断），此处写明防变卦；全员纯 Rust。
 p256 = { version = "0.14", features = ["ecdh", "pkcs8"] }

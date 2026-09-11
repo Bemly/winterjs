@@ -39,12 +39,15 @@ pub unsafe extern "C" fn aesgcm_encrypt(
         return false;
     }
     let aad_ref = aad.as_deref().unwrap_or(&[]);
+    type Aes192Gcm = aes_gcm::AesGcm<aes::Aes192, aes_gcm::aead::consts::U12>;
     let out = if key.len() == 16 {
         encrypt_with::<aes_gcm::Aes128Gcm>(&key, &iv, aad_ref, &plain)
+    } else if key.len() == 24 {
+        encrypt_with::<Aes192Gcm>(&key, &iv, aad_ref, &plain)
     } else if key.len() == 32 {
         encrypt_with::<aes_gcm::Aes256Gcm>(&key, &iv, aad_ref, &plain)
     } else {
-        report_error(&mut cx, "OperationError: AES-GCM key must be 16 or 32 bytes (192-bit needs c-4)");
+        report_error(&mut cx, "OperationError: AES-GCM key must be 16, 24 or 32 bytes");
         return false;
     };
     match out {
@@ -96,12 +99,15 @@ pub unsafe extern "C" fn aesgcm_decrypt(
         return false;
     }
     let aad_ref = aad.as_deref().unwrap_or(&[]);
+    type Aes192Gcm = aes_gcm::AesGcm<aes::Aes192, aes_gcm::aead::consts::U12>;
     let out = if key.len() == 16 {
         decrypt_with::<aes_gcm::Aes128Gcm>(&key, &iv, aad_ref, &data)
+    } else if key.len() == 24 {
+        decrypt_with::<Aes192Gcm>(&key, &iv, aad_ref, &data)
     } else if key.len() == 32 {
         decrypt_with::<aes_gcm::Aes256Gcm>(&key, &iv, aad_ref, &data)
     } else {
-        report_error(&mut cx, "OperationError: AES-GCM key must be 16 or 32 bytes (192-bit needs c-4)");
+        report_error(&mut cx, "OperationError: AES-GCM key must be 16, 24 or 32 bytes");
         return false;
     };
     match out {
@@ -1498,5 +1504,533 @@ pub unsafe extern "C" fn ec_import_pub(
             report_error(&mut cx, &e);
             false
         }
+    }
+}
+
+// ── Phase c-4x：RSA-PSS / Ed25519 / X25519 / AES-192 ─────────────────────
+// 边界惯例同文件头：每 native 固定 `wrap_cx` + `Frame::from_raw` 两块
+//（UNSAFE-BOUNDARY，结构性计数；黑盒见 tests/cli.rs `subtle_c4x_*`）。
+// AES-192 经泛型 `AesGcm<Aes192, U12>`（aes-gcm 只给 128/256 起别名，无新依赖）。
+
+/// `__wjs_pss_sign(hash, saltLen, privDer, data)` → 签名（RSA-PSS，salt 随机）。
+pub unsafe extern "C" fn pss_sign(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 || !frame.arg(1).is_number() {
+        report_error(&mut cx, "TypeError: RSA-PSS sign needs hash, saltLength, key and data");
+        return false;
+    }
+    let hash = value_to_string(&mut cx, frame.arg(0));
+    let salt = frame.arg(1).to_number();
+    if !salt.is_finite() || salt < 0.0 || salt > 512.0 || salt.fract() != 0.0 {
+        report_error(&mut cx, "OperationError: bad RSA-PSS saltLength");
+        return false;
+    }
+    let (Some(der), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(2), "RSA private key"),
+        view_bytes(&mut cx, frame.arg(3), "RSA data"),
+    ) else {
+        return false;
+    };
+    let priv_key = match rsa_priv_from_der(&der) {
+        Ok(k) => k,
+        Err(e) => {
+            report_error(&mut cx, &e);
+            return false;
+        }
+    };
+    let out: Result<Vec<u8>, String> = rsa_hash_dispatch!(hash.as_str(), D, {
+        use rsa::signature::{RandomizedSigner as _, SignatureEncoding as _};
+        let sk = rsa::pss::SigningKey::<D>::new_with_salt_len(priv_key, salt as usize);
+        sk.try_sign_with_rng(&mut SystemRng, &data)
+            .map(|s| s.to_vec())
+            .map_err(|e| format!("OperationError: RSA-PSS sign failed: {e}"))
+    });
+    match out {
+        Ok(sig) => set_rval_bytes(&mut cx, &frame, &sig),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_pss_verify(hash, saltLen, pubDer, sig, data)` → boolean。
+pub unsafe extern "C" fn pss_verify(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 5 || !frame.arg(1).is_number() {
+        report_error(&mut cx, "TypeError: RSA-PSS verify needs hash, saltLength, key, signature and data");
+        return false;
+    }
+    let hash = value_to_string(&mut cx, frame.arg(0));
+    let salt = frame.arg(1).to_number();
+    if !salt.is_finite() || salt < 0.0 || salt > 512.0 || salt.fract() != 0.0 {
+        report_error(&mut cx, "OperationError: bad RSA-PSS saltLength");
+        return false;
+    }
+    let (Some(der), Some(sig), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(2), "RSA public key"),
+        view_bytes(&mut cx, frame.arg(3), "RSA signature"),
+        view_bytes(&mut cx, frame.arg(4), "RSA data"),
+    ) else {
+        return false;
+    };
+    let pub_key = match rsa_pub_from_der(&der) {
+        Ok(k) => k,
+        Err(e) => {
+            report_error(&mut cx, &e);
+            return false;
+        }
+    };
+    let out: Result<bool, String> = rsa_hash_dispatch!(hash.as_str(), D, {
+        use rsa::signature::Verifier as _;
+        let vk = rsa::pss::VerifyingKey::<D>::new_with_salt_len(pub_key, salt as usize);
+        match rsa::pss::Signature::try_from(sig.as_slice()) {
+            Ok(s) => Ok(vk.verify(&data, &s).is_ok()),
+            Err(_) => Err("OperationError: bad RSA-PSS signature length".to_string()),
+        }
+    });
+    match out {
+        Ok(ok) => {
+            frame.set_rval(mozjs::jsval::BooleanValue(ok));
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// RFC 8410 定长 DER 编解码（Ed25519 oid …70 / X25519 …6e；纯函数，可单测）。
+/// PKCS#8: `30 2E 02 01 00 30 05 06 03 2B 65 OID 04 22 04 20 <32B>`；
+/// SPKI: `30 2A 30 05 06 03 2B 65 OID 03 21 00 <32B>`。
+fn okp_oid_byte(kind: &str) -> Result<u8, String> {
+    // prelude 统一传大写名（generateKey 内 `toUpperCase`）；此处按大写匹配
+    match kind.to_ascii_uppercase().as_str() {
+        "ED25519" => Ok(0x70),
+        "X25519" => Ok(0x6E),
+        _ => Err(format!("NotSupportedError: unsupported OKP key '{kind}'")),
+    }
+}
+
+fn okp_wrap_pkcs8(kind: &str, seed: &[u8]) -> Result<Vec<u8>, String> {
+    let oid = okp_oid_byte(kind)?;
+    if seed.len() != 32 {
+        return Err(format!("DataError: bad {kind} seed (must be 32 bytes)"));
+    }
+    let mut v = vec![
+        0x30, 0x2E, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x04, 0x22,
+        0x04, 0x20,
+    ];
+    v.extend_from_slice(seed);
+    Ok(v)
+}
+
+fn okp_wrap_spki(kind: &str, publ: &[u8]) -> Result<Vec<u8>, String> {
+    let oid = okp_oid_byte(kind)?;
+    if publ.len() != 32 {
+        return Err(format!("DataError: bad {kind} public key (must be 32 bytes)"));
+    }
+    let mut v = vec![0x30, 0x2A, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x03, 0x21, 0x00];
+    v.extend_from_slice(publ);
+    Ok(v)
+}
+
+fn okp_unwrap_pkcs8(kind: &str, der: &[u8]) -> Result<[u8; 32], String> {
+    let oid = okp_oid_byte(kind)?;
+    let mut want = vec![
+        0x30, 0x2E, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x04, 0x22,
+        0x04, 0x20,
+    ];
+    want.extend_from_slice(&[0u8; 32]);
+    if der.len() != 48 || der[..16] != want[..16] {
+        return Err(format!("DataError: bad {kind} private key (PKCS#8)"));
+    }
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&der[16..]);
+    Ok(seed)
+}
+
+fn okp_unwrap_spki(kind: &str, der: &[u8]) -> Result<[u8; 32], String> {
+    let oid = okp_oid_byte(kind)?;
+    let prefix = [0x30, 0x2A, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x03, 0x21, 0x00];
+    if der.len() != 44 || der[..12] != prefix {
+        return Err(format!("DataError: bad {kind} public key (SPKI)"));
+    }
+    let mut publ = [0u8; 32];
+    publ.copy_from_slice(&der[12..]);
+    Ok(publ)
+}
+
+fn okp_kind_arg(cx: &mut JSContext, frame: &Frame, idx: u32) -> Option<String> {
+    let kind = value_to_string(cx, frame.arg(idx));
+    match okp_oid_byte(&kind) {
+        Ok(_) => Some(kind),
+        Err(e) => {
+            report_error(cx, &e);
+            None
+        }
+    }
+}
+
+/// `__wjs_okp_pkcs8_from_seed(kind, seedU8)` → PKCS#8 DER。
+pub unsafe extern "C" fn okp_pkcs8_from_seed(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: OKP export needs kind and seed");
+        return false;
+    }
+    let (Some(kind), Some(seed)) = (
+        okp_kind_arg(&mut cx, &frame, 0),
+        view_bytes(&mut cx, frame.arg(1), "OKP seed"),
+    ) else {
+        return false;
+    };
+    match okp_wrap_pkcs8(&kind, &seed) {
+        Ok(der) => set_rval_bytes(&mut cx, &frame, &der),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_okp_spki_from_pub(kind, pubU8)` → SPKI DER。
+pub unsafe extern "C" fn okp_spki_from_pub(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: OKP export needs kind and public key");
+        return false;
+    }
+    let (Some(kind), Some(publ)) = (
+        okp_kind_arg(&mut cx, &frame, 0),
+        view_bytes(&mut cx, frame.arg(1), "OKP public key"),
+    ) else {
+        return false;
+    };
+    match okp_wrap_spki(&kind, &publ) {
+        Ok(der) => set_rval_bytes(&mut cx, &frame, &der),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_okp_seed_from_pkcs8(kind, derU8)` → 32B seed。
+pub unsafe extern "C" fn okp_seed_from_pkcs8(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: OKP import needs kind and key bytes");
+        return false;
+    }
+    let (Some(kind), Some(der)) = (
+        okp_kind_arg(&mut cx, &frame, 0),
+        view_bytes(&mut cx, frame.arg(1), "OKP private key"),
+    ) else {
+        return false;
+    };
+    match okp_unwrap_pkcs8(&kind, &der) {
+        Ok(seed) => set_rval_bytes(&mut cx, &frame, &seed),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_okp_pub_from_spki(kind, derU8)` → 32B pub。
+pub unsafe extern "C" fn okp_pub_from_spki(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: OKP import needs kind and key bytes");
+        return false;
+    }
+    let (Some(kind), Some(der)) = (
+        okp_kind_arg(&mut cx, &frame, 0),
+        view_bytes(&mut cx, frame.arg(1), "OKP public key"),
+    ) else {
+        return false;
+    };
+    match okp_unwrap_spki(&kind, &der) {
+        Ok(publ) => set_rval_bytes(&mut cx, &frame, &publ),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_ed_generate()` → 32B seed。
+pub unsafe extern "C" fn ed_generate(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if !rng_probe(&mut cx) {
+        return false;
+    }
+    let mut seed = [0u8; 32];
+    if getrandom::fill(&mut seed).is_err() {
+        report_error(&mut cx, "OperationError: cannot get random values");
+        return false;
+    }
+    tracing::debug!(target: "winterjs::crypto", "Ed25519 key generated");
+    set_rval_bytes(&mut cx, &frame, &seed)
+}
+
+/// `__wjs_ed_public(seedU8)` → 32B pub。
+pub unsafe extern "C" fn ed_public(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 {
+        report_error(&mut cx, "TypeError: Ed25519 public needs a seed");
+        return false;
+    }
+    let Some(seed) = view_bytes(&mut cx, frame.arg(0), "Ed25519 seed") else {
+        return false;
+    };
+    let Ok(seed) = <[u8; 32]>::try_from(seed.as_slice()) else {
+        report_error(&mut cx, "DataError: bad Ed25519 seed (must be 32 bytes)");
+        return false;
+    };
+    let publ = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    set_rval_bytes(&mut cx, &frame, &publ)
+}
+
+/// `__wjs_ed_sign(seedU8, dataU8)` → 64B 签名。
+pub unsafe extern "C" fn ed_sign(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: Ed25519 sign needs seed and data");
+        return false;
+    }
+    let (Some(seed), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "Ed25519 seed"),
+        view_bytes(&mut cx, frame.arg(1), "Ed25519 data"),
+    ) else {
+        return false;
+    };
+    let Ok(seed) = <[u8; 32]>::try_from(seed.as_slice()) else {
+        report_error(&mut cx, "DataError: bad Ed25519 seed (must be 32 bytes)");
+        return false;
+    };
+    use ed25519_dalek::Signer as _;
+    let sig = ed25519_dalek::SigningKey::from_bytes(&seed).sign(&data);
+    set_rval_bytes(&mut cx, &frame, &sig.to_bytes())
+}
+
+/// `__wjs_ed_verify(pubU8, sigU8, dataU8)` → boolean。
+pub unsafe extern "C" fn ed_verify(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: Ed25519 verify needs key, signature and data");
+        return false;
+    }
+    let (Some(publ), Some(sig), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "Ed25519 public key"),
+        view_bytes(&mut cx, frame.arg(1), "Ed25519 signature"),
+        view_bytes(&mut cx, frame.arg(2), "Ed25519 data"),
+    ) else {
+        return false;
+    };
+    let (Ok(publ), Ok(sig)) = (
+        <[u8; 32]>::try_from(publ.as_slice()),
+        <[u8; 64]>::try_from(sig.as_slice()),
+    ) else {
+        report_error(&mut cx, "DataError: bad Ed25519 key/signature length");
+        return false;
+    };
+    let ok = (|| {
+        use ed25519_dalek::Verifier as _;
+        let vk = ed25519_dalek::VerifyingKey::from_bytes(&publ).ok()?;
+        let sig = ed25519_dalek::Signature::try_from(sig.as_slice()).ok()?;
+        vk.verify(&data, &sig).is_ok().then_some(true)
+    })();
+    match ok {
+        Some(true) => {
+            frame.set_rval(mozjs::jsval::BooleanValue(true));
+            true
+        }
+        // 非法点/验签失败一律 false（WebCrypto 口径：verify 不抛，只回布尔）
+        _ => {
+            frame.set_rval(mozjs::jsval::BooleanValue(false));
+            true
+        }
+    }
+}
+
+/// `__wjs_x_generate()` → 32B 私钥。
+pub unsafe extern "C" fn x_generate(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if !rng_probe(&mut cx) {
+        return false;
+    }
+    let mut privb = [0u8; 32];
+    if getrandom::fill(&mut privb).is_err() {
+        report_error(&mut cx, "OperationError: cannot get random values");
+        return false;
+    }
+    tracing::debug!(target: "winterjs::crypto", "X25519 key generated");
+    set_rval_bytes(&mut cx, &frame, &privb)
+}
+
+/// `__wjs_x_public(privU8)` → 32B pub。
+pub unsafe extern "C" fn x_public(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 {
+        report_error(&mut cx, "TypeError: X25519 public needs a private key");
+        return false;
+    }
+    let Some(privb) = view_bytes(&mut cx, frame.arg(0), "X25519 private key") else {
+        return false;
+    };
+    let Ok(privb) = <[u8; 32]>::try_from(privb.as_slice()) else {
+        report_error(&mut cx, "DataError: bad X25519 private key (must be 32 bytes)");
+        return false;
+    };
+    let publ = x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(privb));
+    set_rval_bytes(&mut cx, &frame, publ.as_bytes())
+}
+
+/// `__wjs_x_derive(privU8, pubU8)` → 32B 共享秘密（u 坐标原样，WebCrypto 口径）。
+pub unsafe extern "C" fn x_derive(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: X25519 derive needs private and public keys");
+        return false;
+    }
+    let (Some(privb), Some(publ)) = (
+        view_bytes(&mut cx, frame.arg(0), "X25519 private key"),
+        view_bytes(&mut cx, frame.arg(1), "X25519 public key"),
+    ) else {
+        return false;
+    };
+    let (Ok(privb), Ok(publ)) = (
+        <[u8; 32]>::try_from(privb.as_slice()),
+        <[u8; 32]>::try_from(publ.as_slice()),
+    ) else {
+        report_error(&mut cx, "DataError: bad X25519 key length");
+        return false;
+    };
+    let secret = x25519_dalek::StaticSecret::from(privb)
+        .diffie_hellman(&x25519_dalek::PublicKey::from(publ));
+    set_rval_bytes(&mut cx, &frame, secret.as_bytes())
+}
+
+#[cfg(test)]
+mod c4x_tests {
+    use super::{okp_unwrap_pkcs8, okp_unwrap_spki, okp_wrap_pkcs8, okp_wrap_spki};
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    // openssl 生成的独立向量（ED_SEED/ED_PUB/XA_*，见 plan c-4x）。
+    const ED_SEED: &str = "b12d94858bb317baa5d40f669a784aa878bb17ad25e149e89594d7d9855b58a0";
+    const ED_PUB: &str = "a9a53ddffd0e9b2d2b83eb442fac6a95391d07160fe1926f51386d31e786c869";
+    const ED_PKCS8: &str = "302e020100300506032b657004220420b12d94858bb317baa5d40f669a784aa878bb17ad25e149e89594d7d9855b58a0";
+    const ED_SPKI: &str = "302a300506032b6570032100a9a53ddffd0e9b2d2b83eb442fac6a95391d07160fe1926f51386d31e786c869";
+    const XA_PRIV: &str = "a0e63ac582ee05d53337ba21c948389dc4e3bc0825fd506e2fa0719e038cc84d";
+    const XA_PUB: &str = "8751eff746df600cb3f29b4e608b76d4c7cf6f08311f294bc9d0160af4354936";
+    const XA_PKCS8: &str = "302e020100300506032b656e04220420a0e63ac582ee05d53337ba21c948389dc4e3bc0825fd506e2fa0719e038cc84d";
+    const XA_SPKI: &str = "302a300506032b656e0321008751eff746df600cb3f29b4e608b76d4c7cf6f08311f294bc9d0160af4354936";
+
+    #[test]
+    fn okp_der_matches_openssl_fixtures() {
+        assert_eq!(okp_wrap_pkcs8("Ed25519", &hex(ED_SEED)).unwrap(), hex(ED_PKCS8));
+        assert_eq!(okp_wrap_spki("Ed25519", &hex(ED_PUB)).unwrap(), hex(ED_SPKI));
+        assert_eq!(okp_unwrap_pkcs8("Ed25519", &hex(ED_PKCS8)).unwrap(), hex(ED_SEED).as_slice());
+        assert_eq!(okp_unwrap_spki("Ed25519", &hex(ED_SPKI)).unwrap(), hex(ED_PUB).as_slice());
+        assert_eq!(okp_wrap_pkcs8("X25519", &hex(XA_PRIV)).unwrap(), hex(XA_PKCS8));
+        assert_eq!(okp_wrap_spki("X25519", &hex(XA_PUB)).unwrap(), hex(XA_SPKI));
+        assert_eq!(okp_unwrap_pkcs8("X25519", &hex(XA_PKCS8)).unwrap(), hex(XA_PRIV).as_slice());
+        assert_eq!(okp_unwrap_spki("X25519", &hex(XA_SPKI)).unwrap(), hex(XA_PUB).as_slice());
+    }
+
+    #[test]
+    fn okp_der_rejects_wrong_oid_and_truncation() {
+        // Ed 的 DER 喂给 X 解析：OID 对不上即 DataError
+        assert!(okp_unwrap_pkcs8("X25519", &hex(ED_PKCS8)).is_err());
+        assert!(okp_unwrap_spki("X25519", &hex(ED_SPKI)).is_err());
+        // 截断/未知 kind
+        assert!(okp_unwrap_pkcs8("Ed25519", &hex(ED_PKCS8)[..40]).is_err());
+        assert!(okp_unwrap_spki("Ed25519", &hex(ED_SPKI)[..40]).is_err());
+        assert!(okp_wrap_pkcs8("ED448", &[0u8; 32]).is_err());
+        assert!(okp_wrap_pkcs8("Ed25519", &[0u8; 31]).is_err());
     }
 }

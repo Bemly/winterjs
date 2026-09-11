@@ -440,6 +440,14 @@
   新增 `Resolved::Npx` + `command_for`（.cmd 经 `cmd /C`，win 同路）。
   模块 5 + 黑盒 3（假 npx 验 `--yes oxlint@latest` 参数形 + 透传；真 npx e2e
   本机无 node 未覆盖，属 npx 自身行为）。
+- [x] release 二进制安装（2026-09-11，无 node 机器开箱用）：
+  `[<name>@]release:github/<owner>/<repo>@<tag>/<prefix>`（tag 必显式）→
+  GitHub API 取 asset 表 → 按平台挑包（`{prefix}-{arch}-{os}` 惯例，linux
+  优先 gnu）→ 下载解包落 `node_modules/.bin/<name>`（unix `+x`）→ lockfile
+  记 `github-release:…` + sha512。`GITHUB_API` 可覆盖（stub 回环 hermetic）。
+  真验证：`--add 'oxlint@release:github/oxc-project/oxc@apps_v1.82.0/oxlint'`
+  落 12MB 真二进制，随后 `--lint` 即出真警告（闭环）。
+  模块 9 + 黑盒 2（dry-run 选包/真装落盘+lockfile/落盘可执行）。
 - [x] 真验证（2026-09-11，GitHub apps_v1.82.0 standalone 实测）：`winterjs
   --lint` → 真 oxlint（no-debugger/no-unused-vars 警告逐行透传）；
   `--deny-warnings` exit=1 透传；`--fmt` 真写回（`const   x=1` → `const x = 1;`）。

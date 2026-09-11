@@ -17,11 +17,13 @@ use crate::pm::resolve::Resolved;
 /// lockfile 名（工程根）。
 pub const LOCKFILE: &str = "winterjs-lock.json";
 
-/// registry 树 + git 包一次装完（锁只持一次；lockfile 合并写）。
+/// registry 树 + git 包 + release 二进制一次装完（锁只持一次；lockfile 合并写）。
+/// `releases` 为已落盘项（name, tag, resolved, integrity），只合并进 lockfile。
 pub async fn install_all(
     root: &Path,
     tree: &[Resolved],
     git_specs: &[crate::pm::spec::GitSpec],
+    releases: &[(String, String, String, Option<String>)],
 ) -> Result<(), Error> {
     let nm = root.join("node_modules");
     std::fs::create_dir_all(&nm).map_err(|e| Error::Other(format!("cannot create node_modules: {e}")))?;
@@ -50,7 +52,7 @@ pub async fn install_all(
         println!("added {name}@git+{}#{}", g.url, commit.chars().take(12).collect::<String>());
         git_locked.push((name, commit, g.url.clone()));
     }
-    write_lockfile(root, &landed, &git_locked)?;
+    write_lockfile(root, &landed, &git_locked, releases)?;
     Ok(())
 }
 
@@ -249,6 +251,7 @@ fn write_lockfile(
     root: &Path,
     tree: &[Resolved],
     git: &[(String, String, String)],
+    releases: &[(String, String, String, Option<String>)],
 ) -> Result<(), Error> {
     let mut packages = serde_json::Map::new();
     for r in tree {
@@ -268,6 +271,16 @@ fn write_lockfile(
                 "version": commit,
                 "resolved": format!("git+{url}#{commit}"),
                 "integrity": serde_json::Value::Null,
+            }),
+        );
+    }
+    for (name, tag, resolved, integrity) in releases {
+        packages.insert(
+            name.clone(),
+            serde_json::json!({
+                "version": tag,
+                "resolved": resolved,
+                "integrity": integrity,
             }),
         );
     }

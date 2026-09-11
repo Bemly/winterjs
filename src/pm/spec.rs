@@ -21,11 +21,12 @@ pub struct GitSpec {
     pub rev: Option<String>,
 }
 
-/// 安装请求（registry 包或 git 包；见 `parse_request`）。
+/// 安装请求（registry 包、git 包或 GitHub release 二进制；见 `parse_request`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Registry(Spec),
     Git(GitSpec),
+    Release(ReleaseSpec),
 }
 
 /// 解析 spec（见头注规则）。
@@ -101,8 +102,67 @@ fn finish_git(name: Option<String>, rest: &str, orig: &str) -> Result<GitSpec, S
     Ok(GitSpec { name, url: url.to_string(), rev })
 }
 
-/// 解析安装请求（先试 git 形、`github:` 缩写，否则走 registry 解析）。
+/// GitHub release 二进制 spec（`[<name>@]release:github/<owner>/<repo>@<tag>/<prefix>`）。
+/// 例：`oxlint@release:github/oxc-project/oxc@apps_v1.82.0/oxlint`
+///（`name` 缺省取 `prefix`；`tag` 必须显式，锁定可复现）。
+/// asset 名平台相关（如 `oxlint-aarch64-apple-darwin.tar.gz`），由 `release`
+/// 按当前平台挑选（见 `pick_asset`），spec 里只写前缀。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseSpec {
+    /// 安装后的 bin 名（`None` 表取 `prefix`）。
+    pub name: Option<String>,
+    pub owner: String,
+    pub repo: String,
+    pub tag: String,
+    pub prefix: String,
+}
+
+/// `release:` 形解析（`[<name>@]release:github/<owner>/<repo>@<tag>/<prefix>`）。
+/// 纯函数，单元测试覆盖。`tag` 必须显式（锁定可复现，不跟 latest 漂）。
+pub fn parse_release(spec: &str) -> Option<Result<ReleaseSpec, String>> {
+    let spec = spec.trim();
+    // 具名形 `<name>@release:…`（`@release:` 不在首位）。
+    let (name, rest) = match spec.find("@release:") {
+        Some(i) if i > 0 => (Some(spec[..i].to_string()), &spec[i + 1..]),
+        _ if spec.starts_with("release:") => (None, spec),
+        _ => return None,
+    };
+    if let Some(n) = &name
+        && (n.is_empty() || n.contains('/') || n.contains('@'))
+    {
+        return Some(Err(format!("bad release package name in '{spec}'")));
+    }
+    let rest = &rest["release:".len()..];
+    // 目前只支持 github（host 位留扩展）。
+    let rest = match rest.strip_prefix("github/") {
+        Some(r) => r,
+        None => return Some(Err(format!("bad release spec '{spec}' (want release:github/<owner>/<repo>@<tag>/<prefix>)"))),
+    };
+    let mut parts = rest.splitn(3, '/');
+    let (owner, repo_tag, prefix) =
+        (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    if owner.is_empty() || prefix.is_empty() {
+        return Some(Err(format!("bad release spec '{spec}' (want release:github/<owner>/<repo>@<tag>/<prefix>)")));
+    }
+    let (repo, tag) = match repo_tag.split_once('@') {
+        Some((r, t)) if !r.is_empty() && !t.is_empty() => (r, t),
+        _ => {
+            return Some(Err(format!("bad release spec '{spec}' (tag is required: <repo>@<tag>)")));
+        }
+    };
+    Some(Ok(ReleaseSpec {
+        name,
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+        tag: tag.to_string(),
+        prefix: prefix.to_string(),
+    }))
+}
 pub fn parse_request(spec: &str) -> Result<Request, String> {
+    // 解析顺序：release 形 → git 形 → `github:` 缩写 → registry（先精确后宽泛）。
+    if let Some(rel) = parse_release(spec) {
+        return rel.map(Request::Release);
+    }
     if let Some(git) = parse_git(spec) {
         return git.map(Request::Git);
     }
@@ -240,5 +300,39 @@ mod tests {
         assert!(parse_request("github:user/a/b").is_err());
         // registry 形不受影响。
         assert!(matches!(parse_request("left-pad@^1.0.0").unwrap(), Request::Registry(_)));
+    }
+
+    #[test]
+    fn release_spec_table() {
+        assert_eq!(
+            parse_request("oxlint@release:github/oxc-project/oxc@apps_v1.82.0/oxlint").unwrap(),
+            Request::Release(ReleaseSpec {
+                name: Some("oxlint".into()),
+                owner: "oxc-project".into(),
+                repo: "oxc".into(),
+                tag: "apps_v1.82.0".into(),
+                prefix: "oxlint".into(),
+            })
+        );
+        // 名缺省取 prefix。
+        assert_eq!(
+            parse_request("release:github/oxc-project/oxc@apps_v1.82.0/oxfmt").unwrap(),
+            Request::Release(ReleaseSpec {
+                name: None,
+                owner: "oxc-project".into(),
+                repo: "oxc".into(),
+                tag: "apps_v1.82.0".into(),
+                prefix: "oxfmt".into(),
+            })
+        );
+        // 报错：缺 tag / 非 github host / 坏名。
+        assert!(parse_request("release:github/o/r/prefix").is_err());
+        assert!(parse_request("release:gitlab/o/r@t/p").is_err());
+        assert!(parse_request("release:github/o/r@/p").is_err());
+        assert!(parse_request("release:github//r@t/p").is_err());
+        assert!(parse_request("release:github/o/r@t/").is_err());
+        // registry/git 形不受影响。
+        assert!(matches!(parse_request("left-pad@^1.0.0").unwrap(), Request::Registry(_)));
+        assert!(matches!(parse_request("pkg@git+https://h/r.git").unwrap(), Request::Git(_)));
     }
 }

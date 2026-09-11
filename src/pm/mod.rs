@@ -8,6 +8,7 @@ pub mod lifecycle;
 pub mod npmrc;
 pub mod platform;
 pub mod publish;
+pub mod release;
 pub mod registry;
 pub mod resolve;
 pub mod spec;
@@ -55,16 +56,18 @@ pub async fn install_to(
     let env_reg = std::env::var("NPM_CONFIG_REGISTRY")
         .or_else(|_| std::env::var("npm_config_registry"))
         .ok();
-    // 请求分流（registry 走 packument 求解；git 走 rev 解析，各自独立）。
+    // 请求分流（registry 走 packument 求解；git 走 rev 解析；release 走 GitHub API）。
     let mut reg_specs = Vec::with_capacity(packages.len());
     let mut git_specs = Vec::new();
+    let mut rel_specs = Vec::new();
     for pkg in packages {
         match spec::parse_request(pkg).map_err(Error::Other)? {
             spec::Request::Registry(s) => reg_specs.push(s),
             spec::Request::Git(g) => git_specs.push(g),
+            spec::Request::Release(r) => rel_specs.push(r),
         }
     }
-    if reg_specs.is_empty() && git_specs.is_empty() {
+    if reg_specs.is_empty() && git_specs.is_empty() && rel_specs.is_empty() {
         return Err(Error::Other("nothing to install".into()));
     }
     let tree = resolve::solve_tree(&reg_specs, |name: String| {
@@ -88,6 +91,11 @@ pub async fn install_to(
     for g in &git_specs {
         git_shown.push(git::resolve_for_dry_run(g, root).map_err(Error::Other)?);
     }
+    let mut rel_shown = Vec::with_capacity(rel_specs.len());
+    for r in &rel_specs {
+        let (asset, url) = release::resolve_release(r).await?;
+        rel_shown.push((release::bin_name(r).to_owned(), asset, url));
+    }
     if dry_run {
         for r in &tree {
             println!("{}@{} {}", r.name, r.version, r.tarball);
@@ -95,7 +103,17 @@ pub async fn install_to(
         for d in &git_shown {
             println!("{}@git+{}#{}", d.name, d.url, d.rev);
         }
+        for (name, asset, url) in &rel_shown {
+            println!("{name}@release ({asset} {url})");
+        }
         return Ok(());
     }
-    install::install_all(root, &tree, &git_specs).await
+    // release 二进制先落 `.bin`（与 registry/git 树独立；失败即整单失败，
+    // 显式要的二进制无“容忍”语义——optional 只适用于传递依赖）。
+    let nm_bin = root.join("node_modules").join(".bin");
+    let mut rel_locked = Vec::with_capacity(rel_specs.len());
+    for r in &rel_specs {
+        rel_locked.push(release::install_one_release(&nm_bin, r).await?);
+    }
+    install::install_all(root, &tree, &git_specs, &rel_locked).await
 }

@@ -112,3 +112,46 @@ winterjs 侧仅 `fs/promises` 有，其余随主表。
 - 永不：`v8`（引擎口径）、`wasi`（§14 已否决）、`sea`（无对等需求）。
 - napi（`.node` 原生插件，如 rolldown binding）不在本表——Bun 跑
   `node:` 自家面也不需要 napi；napi 是第三方原生包的事，另案评估。
+
+## 4. 三源对照（node × Bun × deno，2026-09-12）
+
+> 拉取：`/tmp/wjs-node`（nodejs/node，sparse 取 `lib/`）、
+> `/tmp/wjs-deno`（denoland/deno，sparse 取 `ext/node/`），与 §0 同法，
+> 仓库内不留第三方源码。
+
+### 4.1 落点总表
+
+| 概念 | node | Bun | deno | winterjs 对位 |
+|---|---|---|---|---|
+| 模块正文 | `lib/<mod>.js`（CJS） | `src/js/node/<mod>.ts`（TS） | `ext/node/polyfills/<mod>.ts` + `_<mod>.mjs` 实作 | `src/builtins/node/<mod>.rs` 内嵌 ESM（现有模式） |
+| 内部件 | `lib/internal/*` | `src/js/internal/*`（同名居多） | 散在 polyfills（`_utils.ts` 等） | 手写小件（validators/ERR 码/队列） |
+| native 调用 | `internalBinding`（C++） | `$*` 全局 + `Bun.*` | `op_*`（`ext/node/ops/*.rs`） | natives 经 `jsapi_glue`（现有模式，§6） |
+| 防篡改 | `primordials`（宿主注入） | `internal/primordials.js` | `__bootstrap` 快照（IIFE 包裹） | 手写最小表或文档注明（单测防全局污染另算） |
+| 装载 | CJS `internal/` | `require("internal/")` | `ext:` scheme | `linkme` 内嵌源（现有模式） |
+| 测试资产 | `test/parallel/test-<mod>-*.js` | Node 套件直跑 | `tests/unit_node/` + `tests/node_compat/` | 断言原文黑盒入库（按需单文件取，不整目录拉） |
+
+### 4.2 实例：events 三栏（行数 1256 / 1016 / 1343+17）
+
+- node `lib/events.js`：`primordials` 解构 + `internal/util`、
+  `internal/util/inspect`（懒）、`internal/errors`、`internal/validators`、
+  `internal/events/abort_listener`，懒 `internal/event_target`、
+  `internal/fixed_queue`、`internal/events/symbols`。
+- Bun `src/js/node/events.ts`：上表**几乎逐项同名**
+ （`internal/validators`、`internal/abort_listener`、`internal/shared`、
+  `node:util/types`，懒 `internal/util/inspect`、`internal/fixed_queue`），
+  另吃 `node:async_hooks`——“翻译词典”现成：Bun 文件名即 Node 文件名。
+- deno `ext/node/polyfills/events.ts`（17 行壳）→ `_<mod>.mjs` 实作，
+  IIFE + `__bootstrap`（`core, primordials`）注入。
+- winterjs 映射：6 处内部 import 逐一落地——validators/ERR 复用手写件、
+  abort 用现有 AbortSignal、shared/fixed_queue 手写约 30 行、
+  `util/types` 等 `util`（N1）先行、async_hooks 取 stub（Bun 同款“只 ALS 实”）。
+
+### 4.3 取用优先级
+
+1. **语义原文看 node**（`lib/` 最干净，无宿主私货）。
+2. **“离 Node  runtime 之外怎么活”看 Bun**（它已解过一次 internal/ 重映射，
+   文件名 1:1，直接当词典）。
+3. **分层照抄看 deno**（`op_*` Rust 底 + TS 壳 = winterjs 的
+   `jsapi_glue` + prelude 的镜像；`ext/node/ops/` 按模块列 Rust 文件，
+   找底座对位最快）。
+4. License：三家文件头 MIT（Joyent/Deno/Bun）vendoring 时原样保留。

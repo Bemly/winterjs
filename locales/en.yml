@@ -69,9 +69,14 @@ arg:
     value: "NAME"
   yes:
     help: "Skip the confirmation prompt"
+  force:
+    help: "Overwrite conflicting files instead of failing"
   filter:
     help: "Only run files matching this glob (matched against relative path or file name)"
     value: "FILTER"
+  test_name_pattern:
+    help: "Only run tests whose full name matches (substring or /regex/flags)"
+    value: "PATTERN"
   watch:
     help: "Re-run tests when watched files change (Ctrl-C to stop)"
   dir:

@@ -101,17 +101,51 @@ fn finish_git(name: Option<String>, rest: &str, orig: &str) -> Result<GitSpec, S
     Ok(GitSpec { name, url: url.to_string(), rev })
 }
 
-/// 解析安装请求（先试 git 形，否则走 registry 解析；`github:` 缩写顺延，报错指路）。
+/// 解析安装请求（先试 git 形、`github:` 缩写，否则走 registry 解析）。
 pub fn parse_request(spec: &str) -> Result<Request, String> {
     if let Some(git) = parse_git(spec) {
         return git.map(Request::Git);
     }
-    if spec.trim().starts_with("github:") {
-        return Err(format!(
-            "'{spec}' uses github: shorthand (deferred); use '<name>@git+https://github.com/<user>/<repo>.git#<rev>'"
-        ));
+    if let Some(git) = parse_github(spec) {
+        return git.map(Request::Git);
     }
     parse(spec).map(Request::Registry)
+}
+
+/// `github:` 缩写 → git 依赖（`[<name>@]github:<user>/<repo>[#<rev>]`；
+/// 名缺省从包读，URL 固定 `https://github.com/<user>/<repo>.git`）。
+/// 纯函数，单元测试覆盖。
+pub fn parse_github(spec: &str) -> Option<Result<GitSpec, String>> {
+    let spec = spec.trim();
+    // 具名形 `<name>@github:…`（`@github:` 不在首位）。
+    let (name, rest) = match spec.find("@github:") {
+        Some(i) if i > 0 => (Some(spec[..i].to_string()), &spec[i + 1..]),
+        _ if spec.starts_with("github:") => (None, spec),
+        _ => return None,
+    };
+    let rest = &rest["github:".len()..];
+    let (path, rev) = match rest.split_once('#') {
+        Some((p, r)) => {
+            if r.is_empty() {
+                return Some(Err(format!("empty revision in '{spec}'")));
+            }
+            (p, Some(r.to_string()))
+        }
+        None => (rest, None),
+    };
+    let mut parts = path.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(user), Some(repo), None) if !user.is_empty() && !repo.is_empty() => {
+            // `.git` 后缀有则保留、无则补（git CLI 两可，统一补齐便缓存键稳定）。
+            let repo = repo.strip_suffix(".git").unwrap_or(repo);
+            Some(Ok(GitSpec {
+                name,
+                url: format!("https://github.com/{user}/{repo}.git"),
+                rev,
+            }))
+        }
+        _ => Some(Err(format!("bad github shorthand '{spec}' (want github:<user>/<repo>[#<rev>])"))),
+    }
 }
 
 #[cfg(test)]
@@ -169,9 +203,42 @@ mod tests {
         );
         // registry 形不受影响（含 ssh 形包名巧合也不误判：无 `@git+` 分隔即 registry）。
         assert!(matches!(parse_request("left-pad@^1.0.0").unwrap(), Request::Registry(_)));
-        // 报错三件：空 URL / 空 rev / github 缩写指路。
+        // 报错三件：空 URL / 空 rev。
         assert!(parse_request("pkg@git+#main").is_err());
         assert!(parse_request("pkg@git+https://h/r.git#").is_err());
-        assert!(parse_request("github:user/repo").unwrap_err().contains("git+https"));
+    }
+
+    #[test]
+    fn github_shorthand_table() {
+        assert_eq!(
+            parse_request("github:user/repo").unwrap(),
+            Request::Git(GitSpec {
+                name: None,
+                url: "https://github.com/user/repo.git".into(),
+                rev: None,
+            })
+        );
+        assert_eq!(
+            parse_request("pkg@github:user/repo#v1.0.0").unwrap(),
+            Request::Git(GitSpec {
+                name: Some("pkg".into()),
+                url: "https://github.com/user/repo.git".into(),
+                rev: Some("v1.0.0".into()),
+            })
+        );
+        // `.git` 后缀归一 + 空 rev/坏形报错。
+        assert_eq!(
+            parse_request("github:user/repo.git").unwrap(),
+            Request::Git(GitSpec {
+                name: None,
+                url: "https://github.com/user/repo.git".into(),
+                rev: None,
+            })
+        );
+        assert!(parse_request("github:user/repo#").is_err());
+        assert!(parse_request("github:user").is_err());
+        assert!(parse_request("github:user/a/b").is_err());
+        // registry 形不受影响。
+        assert!(matches!(parse_request("left-pad@^1.0.0").unwrap(), Request::Registry(_)));
     }
 }

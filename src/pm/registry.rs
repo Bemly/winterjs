@@ -51,11 +51,21 @@ pub(crate) fn client() -> &'static reqwest::Client {
 }
 
 /// 拉取 packument（`{registry}/{name}`；name 含 scope 即原样拼）。
-pub async fn fetch_packument(registry: &str, name: &str) -> Result<Packument, Error> {
+/// `token` 为 npmrc `_authToken`（按 registry host 匹配到来）时带
+/// `Authorization: Bearer`（npm 私有仓口径；无则匿名）。
+pub async fn fetch_packument(
+    registry: &str,
+    name: &str,
+    token: Option<&str>,
+) -> Result<Packument, Error> {
     let base = registry.trim_end_matches('/');
     let url = format!("{base}/{name}");
-    tracing::info!(target: "winterjs::pm", url = url.as_str(), "fetching packument");
-    let resp = client().get(&url).header("Accept", "application/json").send().await.map_err(|e| {
+    tracing::info!(target: "winterjs::pm", url = url.as_str(), has_auth = token.is_some(), "fetching packument");
+    let mut req = client().get(&url).header("Accept", "application/json");
+    if let Some(t) = token.filter(|s| !s.trim().is_empty()) {
+        req = req.header("Authorization", format!("Bearer {}", t.trim()));
+    }
+    let resp = req.send().await.map_err(|e| {
         Error::Other(format!("registry request failed for '{name}': {e}"))
     })?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {

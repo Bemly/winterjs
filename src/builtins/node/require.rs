@@ -1,8 +1,11 @@
-//! `require()` CJS（plan Phase 4d-1）：
+//! `require()` CJS（plan Phase 4d-1/c-4x）：
 //! - `require("node:X")`：ESM 子图求值（幂等标记）+ `default` 导出（缺省回 namespace）。
 //! - `require("./rel")`：调用方定位（`describe_scripted_caller`）→ `.json` 解析 /
 //!   `.cjs` 包装执行（`exports` 预注册，循环可见半成品；失败清场）/ ESM 报
 //!   `ERR_REQUIRE_ESM` 用 `import`。
+//! - `.js` 读最近 `package.json` 的 `type`（Node 口径）：`module` → 一律
+//!   `ERR_REQUIRE_ESM`；其余（`commonjs`/缺省/无清单）强制 CJS（ESM 语法自然
+//!   报 SyntaxError，不再走嗅探误判）。
 //! - 调用传参用柯里化 `call_one` 链（§4.9：native 内禁 `Rooted<ValueArray>`）。
 //! - 入口 `.cjs` 经 prelude `__wjs_require_main` 起（`run` 不打印其 exports）。
 
@@ -169,6 +172,24 @@ fn require_cjs_file(
     }
 }
 
+/// 最近 `package.json` 的 `type` 字段（`module`/`commonjs`/缺省）。
+/// 纯 fs + 宽容 JSON：坏文件/无清单一律当缺省（`None`）；找到最近一份即停。
+/// 纯函数（除 fs 外），单测覆盖判定表（用 tempfile 搭清单树）。
+fn nearest_pkg_type(path: &std::path::Path) -> Option<String> {
+    let mut dir = path.parent();
+    while let Some(d) = dir {
+        let cand = d.join("package.json");
+        if let Ok(text) = std::fs::read_to_string(&cand) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                return v.get("type").and_then(|t| t.as_str()).map(|s| s.to_string());
+            }
+            return None;
+        }
+        dir = d.parent();
+    }
+    None
+}
+
 /// spec → 值（node:/file: 分流；调用方 base 定位相对路径）。
 fn require_value(
     cx: &mut mozjs::context::JSContext,
@@ -210,10 +231,18 @@ fn require_value(
                 let text = std::fs::read_to_string(&path).map_err(|e| {
                     Error::Other(format!("Cannot find module '{spec}' ({e})"))
                 })?;
+                // `.js` 的 Node 口径：最近 type==module 一律 ERR_REQUIRE_ESM；
+                // 其余强制 CJS（ESM 语法在包装执行期自然报 SyntaxError）。
+                if ext == "js" && nearest_pkg_type(&path).as_deref() == Some("module") {
+                    return Err(Error::Other(format!(
+                        "require() of ES Module '{spec}' is not supported; use import instead"
+                    )));
+                }
                 let loaded = load_js(&text, url.as_str(), &path).map_err(|e| {
                     Error::Other(format!("Cannot load '{spec}' ({e})"))
                 })?;
-                if loaded.is_module {
+                let force_cjs = ext == "js";
+                if loaded.is_module && !force_cjs {
                     return Err(Error::Other(format!(
                         "require() of ES Module '{spec}' is not supported; use import instead"
                     )));
@@ -329,5 +358,31 @@ pub unsafe extern "C" fn require_main_url(
             frame.set_rval(UndefinedValue());
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nearest_pkg_type;
+
+    #[test]
+    fn nearest_pkg_type_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub/deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        let f = sub.join("a.js");
+        // 无清单 → 缺省
+        assert_eq!(nearest_pkg_type(&f), None);
+        // 最近清单赢（子目录覆盖根）
+        std::fs::write(dir.path().join("package.json"), r#"{"type":"commonjs"}"#).unwrap();
+        std::fs::write(sub.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        assert_eq!(nearest_pkg_type(&f).as_deref(), Some("module"));
+        assert_eq!(
+            nearest_pkg_type(&dir.path().join("b.js")).as_deref(),
+            Some("commonjs")
+        );
+        // 坏 JSON 当缺省且不再上找（最近清单即决）
+        std::fs::write(sub.join("package.json"), r#"{"type": "#).unwrap();
+        assert_eq!(nearest_pkg_type(&f), None);
     }
 }

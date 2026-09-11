@@ -1213,17 +1213,11 @@ function __wjs_rsByteToQueue(st) {
 }
 function __wjs_rsPull(st) {
   if (!st.reader || st.closed || st.error !== undefined || st.pulling) return;
-  if (st.isBytes) {
-    // 字节流纯按需：BYOB 读排队，或 default 读等待（搬运后仍无整块）才 pull；
-    // 无人等就 prefetch 会在"持有 reader + 永不关闭"时空转，进程退不出。
-    //（default/非字节流沿 legacy eager，原样不动。）
-    if (!st.queue.length) __wjs_rsByteToQueue(st);
-    const demand = st.byobReads.length > 0 || st.pending.some((p) => p.wantValue);
-    if (!demand) return;
-  } else if (st.queue.length >= st.hwm) {
-    return;
-  }
+  // pull 触发面（防微任务空转饿死事件循环，见 §4.27 追补）：
+  // 只在新需求到达（read 推入等待）或有进展且需求还在（pump 尾）时调；
+  // 无 pull 方法的源 + 挂起的读，eager 重拉即无限微任务链。
   st.pulling = true;
+  st.pullProgress = false;
   // BYOB 读排队时带 byobRequest 进 pull（source 可直接写 view + respond）
   if (st.isBytes && st.byobReads.length && !st.byobReq) st.byobReq = __wjs_rsByobReq(st);
   try {
@@ -1246,7 +1240,12 @@ function __wjs_rsPump(st) {
       resolve({ value: v, done: false });
     } else { resolve({ value: undefined, done: true }); }
   }
-  if (!st.closed && st.error === undefined) __wjs_rsPull(st);
+  // pump 尾再拉：仅当需求还在且本轮有进展（enqueue/close/error 置 pullProgress）；
+  // 干 pull（无进展）不再重拉——新需求到达时 read() 会拉。
+  if (!st.closed && st.error === undefined && !st.pulling) {
+    const demand = st.byobReads.length > 0 || st.pending.some((p) => p.wantValue);
+    if (demand && st.pullProgress) { st.pullProgress = false; __wjs_rsPull(st); }
+  }
 }
 function __wjs_rsError(st, e) {
   if (st.closed || st.error !== undefined) return;
@@ -1268,11 +1267,13 @@ function __wjs_rsController(stream, st) {
         v._off = 0;
         st.byteQ.push(v);
         st.byteLen += v.length;
+        st.pullProgress = true;
         __wjs_rsPump(st);
       },
       close() {
         if (st.closed || st.error !== undefined) throw new TypeError("stream is not readable");
         st.closed = true;
+        st.pullProgress = true;
         __wjs_rsPump(st);
       },
       error(e) { __wjs_rsError(st, e); },
@@ -1284,11 +1285,13 @@ function __wjs_rsController(stream, st) {
       if (st.closed || st.error !== undefined) throw new TypeError("stream is not readable");
       if (chunk === undefined) throw new TypeError("chunk must not be undefined");
       st.queue.push(chunk);
+      st.pullProgress = true;
       __wjs_rsPump(st);
     },
     close() {
       if (st.closed || st.error !== undefined) throw new TypeError("stream is not readable");
       st.closed = true;
+      st.pullProgress = true;
       __wjs_rsPump(st);
     },
     error(e) { __wjs_rsError(st, e); },
@@ -1301,7 +1304,7 @@ globalThis.ReadableStream = class ReadableStream {
     if (utype !== undefined && utype !== "bytes") throw new TypeError("ReadableStream type must be 'bytes'");
     const st = {
       queue: [], pending: [], closed: false, error: undefined,
-      reader: null, pulling: false, hwm: Number.isNaN(hwm) ? 1 : hwm,
+      reader: null, pulling: false, pullProgress: false, hwm: Number.isNaN(hwm) ? 1 : hwm,
       source: underlyingSource, controller: null,
       isBytes: utype === "bytes", byteQ: [], byteLen: 0, byobReads: [], byobReq: null,
     };
@@ -1781,10 +1784,12 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             // Phase 4c: child_process
             ("__wjs_cp_exec", Some(node::child::cp_exec), 2),
             ("__wjs_cp_spawn", Some(node::child::cp_spawn), 3),
-            // Phase 4d: 异步 spawn
+            // Phase 4d: 异步 spawn（c-4x 加 pipe：stdin 写/关 natives）
             ("__wjs_spawn_start", Some(node::child::spawn_start), 5),
             ("__wjs_child_kill", Some(node::child::child_kill), 2),
             ("__wjs_child_pid", Some(node::child::child_pid), 1),
+            ("__wjs_child_stdin_write", Some(node::child::child_stdin_write), 2),
+            ("__wjs_child_stdin_close", Some(node::child::child_stdin_close), 1),
             // Phase 4d: require（裸 native，直调保调用方定位；附属见 NODE_PRELUDE）
             ("require", Some(node::require::require_native), 1),
             ("__wjs_require_resolve", Some(node::require::require_resolve), 1),

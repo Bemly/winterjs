@@ -884,10 +884,14 @@ pub fn watch_open() -> usize {
 
 // ── 异步子进程驱动（task → channel → 事件循环，见 node/child.rs）────────────
 
-/// 子进程表项（kill 用；`detached` 决定组杀）。
+/// 子进程表项（kill 用；`detached` 决定组杀；`stdin_tx` 供 pipe 写/关，无则 None；
+/// `pipes_expected/done` 保证残留输出先于 Exited 送达，见 child.rs）。
 pub struct ChildEntry {
     pub child: tokio::process::Child,
     pub detached: bool,
+    pub stdin_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::child::StdinCmd>>,
+    pub pipes_expected: u8,
+    pub pipes_done: u8,
 }
 
 /// 分配子进程 id（调用方随后 spawn + 登记；失败路径无需配套调用）。
@@ -902,15 +906,53 @@ pub fn child_alloc() -> Option<(
     })
 }
 
-/// 登记进程本体 + JS 目标（target 为 prelude ChildProcess 对象）。
-pub fn child_add(id: u64, child: tokio::process::Child, detached: bool, target: JSVal) {
+/// 登记进程本体 + JS 目标（target 为 prelude ChildProcess 对象；pipe 时带 stdin 通道
+/// 与期望落定的 pipe 泵数）。
+pub fn child_add(
+    id: u64,
+    child: tokio::process::Child,
+    detached: bool,
+    target: JSVal,
+    stdin_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::child::StdinCmd>>,
+    pipes_expected: u8,
+) {
     let heap = Heap::default();
     heap.set(target);
     with_rooted(|s| s.child_targets.push(ChildTarget { id, target: heap }));
     with_plain(|p| {
-        p.child_procs.insert(id, ChildEntry { child, detached });
+        p.child_procs.insert(id, ChildEntry { child, detached, stdin_tx, pipes_expected, pipes_done: 0 });
         p.child_open += 1;
     });
+}
+
+/// stdin 写/关（pipe 专用；子进程已走即 false，调用方转流错误）。
+pub fn child_stdin_send(id: u64, cmd: crate::builtins::node::child::StdinCmd) -> bool {
+    with_plain(|p| {
+        p.child_procs
+            .get(&id)
+            .and_then(|e| e.stdin_tx.as_ref())
+            .is_some_and(|tx| tx.send(cmd).is_ok())
+    })
+}
+
+/// pipe 泵落定记数（EOF/错皆记；返回是否全部落定）。泵 task 退出路径必调。
+pub fn child_pipe_done(id: u64) -> bool {
+    with_plain(|p| {
+        let Some(e) = p.child_procs.get_mut(&id) else {
+            return true;
+        };
+        e.pipes_done = e.pipes_done.saturating_add(1);
+        e.pipes_done >= e.pipes_expected
+    })
+}
+
+/// pipe 是否全部落定（等待 task 发 Exited 前查；表项已摘除也算落定）。
+pub fn child_pipes_flushed(id: u64) -> bool {
+    with_plain(|p| {
+        p.child_procs
+            .get(&id)
+            .is_none_or(|e| e.pipes_done >= e.pipes_expected)
+    })
 }
 
 /// 取 JS 目标（分发用；保留注册，终态时摘除）。

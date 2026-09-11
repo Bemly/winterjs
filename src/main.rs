@@ -208,7 +208,7 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
         // `--init` 裸 flag（无值，经 default_missing_value 得空串）取目录名
         let name = if name.is_empty() { None } else { Some(name) };
-        return initpkg::init(&cwd, name.as_deref(), cli.yes).await;
+        return initpkg::init(&cwd, name.as_deref(), cli.yes, cli.force).await;
     }
     if cli.repl {
         return runtime::repl().await;
@@ -218,7 +218,12 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
         let cwd = std::env::current_dir()
             .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
         let paths = paths.into_iter().map(std::path::PathBuf::from).collect();
-        let opts = testrun::TestOpts { paths, filter: cli.filter, watch: cli.watch };
+        let opts = testrun::TestOpts {
+            paths,
+            filter: cli.filter,
+            test_name_pattern: cli.test_name_pattern,
+            watch: cli.watch,
+        };
         return testrun::run_tests(&cwd, &opts).await;
     }
     if let Some(dir) = cli.serve {

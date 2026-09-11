@@ -1,12 +1,11 @@
-//! npmrc 解析（plan Phase 5d-d1）：镜像覆盖 + auth 透传。
+//! npmrc 解析（plan Phase 5d-d1/d2）：镜像覆盖 + auth 透传。
 //!
-//! - 格式：`rust-ini` 轮子读 `key=value`（无 section 即 general 区）；
-//!   解析失败当空文件（WARN，不中断，registry 回落默认）。
-//! - 支持键（最小子集，其余忽略，文档记录）：
-//!   `registry=<url>`（全局镜像）；`//<host>/...:_authToken=<tok>`（私有仓 token）。
-//!   `@scope:registry=` 作用域镜像顺延 5d-d2（此处忽略，DEBUG 记一笔）。
+//! - 格式：手写行解析（首个 `=` 切分，见 `parse`）。
+//! - 支持键：`registry=<url>`（全局镜像）；`@<scope>:registry=<url>`（作用域镜像，
+//!   精确匹配 `@scope`，project 优先于 home）；`//<host>/...:_authToken=<tok>`
+//!   （私有仓 token，按 packument 请求的 registry host 透传 `Bearer`）。
 //! - 优先级：`--registry` flag > `NPM_CONFIG_REGISTRY`/`npm_config_registry` env >
-//!   `<cwd>/.npmrc` > `$HOME/.npmrc` > 内建默认。
+//!   作用域镜像（project > home）> `<cwd>/.npmrc` > `$HOME/.npmrc` > 内建默认。
 //! - 安全：token 值永不进日志（只记有无）；auth 查询只按 registry host 匹配。
 
 use std::path::Path;
@@ -90,11 +89,20 @@ impl Npmrc {
         })
     }
 
-    /// 是否含作用域镜像键（顺延提示用；不生效）。
+    /// 是否含作用域镜像键（提示用；`scoped_registry_for` 做精确匹配）。
     pub fn has_scoped_registry(&self) -> bool {
         self.entries.iter().any(|(k, _)| {
             let k = k.trim();
             k.starts_with('@') && k.contains(":registry")
+        })
+    }
+
+    /// 作用域镜像（`@scope:registry=<url>` 精确匹配；后写覆盖先写）。
+    /// `scope` 为 `@scope` 全形（含 `@`）。
+    pub fn scoped_registry_for(&self, scope: &str) -> Option<String> {
+        let want = format!("{scope}:registry");
+        self.entries.iter().rev().find_map(|(k, v)| {
+            (k.trim() == want).then(|| v.trim().to_owned()).filter(|s| !s.is_empty())
         })
     }
 }
@@ -162,17 +170,49 @@ pub fn resolve_registry(
     resolve_registry_with_env(cli, env.as_deref(), project, home)
 }
 
-/// cwd + home 的 npmrc 加载（失败当空；scoped 键仅 DEBUG 提示）。
+/// 按包决策（含作用域镜像；`name` 如 `@scope/pkg`）。
+/// 优先级：cli > env > 作用域（project > home）> project 全局 > home 全局 > 默认。
+/// 返回 (来源, url)；来源串供 DEBUG/测试断言。
+pub fn resolve_registry_for_package(
+    cli: Option<&str>,
+    env: Option<&str>,
+    project: &Npmrc,
+    home: &Npmrc,
+    name: &str,
+) -> (&'static str, String) {
+    if let Some(u) = cli.filter(|s| !s.trim().is_empty()) {
+        return ("cli", u.to_owned());
+    }
+    if let Some(u) = env.filter(|s| !s.trim().is_empty()) {
+        return ("env", u.trim().to_owned());
+    }
+    if let Some(scope) = name.strip_prefix('@').and_then(|r| r.split_once('/').map(|(s, _)| s)) {
+        let scoped = format!("@{scope}");
+        if let Some(u) = project.scoped_registry_for(&scoped) {
+            return ("project-scoped", u);
+        }
+        if let Some(u) = home.scoped_registry_for(&scoped) {
+            return ("home-scoped", u);
+        }
+    }
+    if let Some(u) = project.registry() {
+        return ("project-npmrc", u);
+    }
+    if let Some(u) = home.registry() {
+        return ("home-npmrc", u);
+    }
+    ("default", super::registry::DEFAULT_REGISTRY.to_owned())
+}
+
+/// cwd + home 的 npmrc 加载（失败当空；scoped 键计数进 DEBUG）。
 pub fn load_cwd_and_home(cwd: &Path) -> (Npmrc, Npmrc) {
     let project = Npmrc::load(&cwd.join(".npmrc"));
     let home = dirs::home_dir().map(|h| Npmrc::load(&h.join(".npmrc"))).unwrap_or_default();
-    if project.has_scoped_registry() || home.has_scoped_registry() {
-        tracing::debug!(target: "winterjs::pm", "scoped registry keys ignored (deferred to 5d-d2)");
-    }
     tracing::debug!(
         target: "winterjs::pm",
         has_project_registry = project.registry().is_some(),
         has_home_registry = home.registry().is_some(),
+        has_scoped = project.has_scoped_registry() || home.has_scoped_registry(),
         "npmrc loaded"
     );
     (project, home)
@@ -210,6 +250,35 @@ mod tests {
         assert!(n.has_scoped_registry());
         // 全局 registry 仍无（作用域键不污染全局决策）。
         assert!(n.registry().is_none());
+    }
+
+    #[test]
+    fn scoped_registry_exact_match() {
+        let n = Npmrc::parse("@my:registry=https://a/\n@my:registry=https://b/\n@other:registry=https://c/\n");
+        // 后写覆盖先写；精确匹配 scope。
+        assert_eq!(n.scoped_registry_for("@my").as_deref(), Some("https://b/"));
+        assert_eq!(n.scoped_registry_for("@other").as_deref(), Some("https://c/"));
+        assert!(n.scoped_registry_for("@missing").is_none());
+        // 前缀不算数（@myx ≠ @my）。
+        assert!(n.scoped_registry_for("@myx").is_none());
+    }
+
+    #[test]
+    fn for_package_priority() {
+        let proj = Npmrc::parse("@acme:registry=https://scoped.example/\nregistry=https://proj.example/\n");
+        let home = Npmrc::parse("@acme:registry=https://home-scoped.example/\n");
+        // cli/env 最高（作用域也压不住）。
+        let (src, _) = resolve_registry_for_package(Some("https://cli.example/"), None, &proj, &home, "@acme/pkg");
+        assert_eq!(src, "cli");
+        let (src, _) = resolve_registry_for_package(None, Some("https://env.example/"), &proj, &home, "@acme/pkg");
+        assert_eq!(src, "env");
+        // 作用域：project 赢 home；非 scope 包走全局。
+        let (src, url) = resolve_registry_for_package(None, None, &proj, &home, "@acme/pkg");
+        assert_eq!((src, url.as_str()), ("project-scoped", "https://scoped.example/"));
+        let (src, url) = resolve_registry_for_package(None, None, &Npmrc::empty(), &home, "@acme/pkg");
+        assert_eq!((src, url.as_str()), ("home-scoped", "https://home-scoped.example/"));
+        let (src, url) = resolve_registry_for_package(None, None, &proj, &home, "plain-pkg");
+        assert_eq!((src, url.as_str()), ("project-npmrc", "https://proj.example/"));
     }
 
     #[test]

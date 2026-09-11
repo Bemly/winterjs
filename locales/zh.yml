@@ -69,9 +69,14 @@ arg:
     value: "名称"
   yes:
     help: "跳过确认提示"
+  force:
+    help: "覆盖冲突文件而非报错"
   filter:
     help: "只运行匹配该 glob 的文件（按相对路径或文件名匹配）"
     value: "过滤条件"
+  test_name_pattern:
+    help: "只运行全名命中的测试（子串或 /正则/flags）"
+    value: "匹配串"
   watch:
     help: "文件变化时重跑测试（Ctrl-C 停止）"
   dir:

@@ -1,6 +1,7 @@
-//! lifecycle 脚本（plan Phase 5c）：`preinstall → install → postinstall`。
+//! lifecycle 脚本（plan Phase 5c/5d）：`preinstall → install → postinstall` + `prepare`。
 //!
 //! - 时机：单包 `node_modules/<pkg>` 落地 + bin 链接**之后**，cwd 即包目录。
+//!   `prepare` 跑在最后（npm 口径：本地/git 依赖装完构建；发包时另由 publish 干跑校验）。
 //! - 执行：unix `/bin/sh -c <script>`，win `cmd.exe /C <script>`；
 //!   stdio 继承（用户可见，与 npm 行为一致）；`kill_on_drop(true)` 防孤儿。
 //! - 组杀：unix 起 setsid 组长（`nix` 轮子复用 child 侧模式），失败回退普通子进程；
@@ -14,8 +15,9 @@ use std::path::Path;
 
 use crate::error::Error;
 
-/// 按序执行的 lifecycle 事件（npm 子集；其余事件顺延 5d）。
-pub const STAGES: &[&str] = &["preinstall", "install", "postinstall"];
+/// 按序执行的 lifecycle 事件（npm 子集；`prepublishOnly` 等发包事件不跑——
+/// publish 只有 dry-run 校验，无远端发布流程）。
+pub const STAGES: &[&str] = &["preinstall", "install", "postinstall", "prepare"];
 
 /// 读包的 scripts 表（缺失/非法一律当空，不中断）。
 fn scripts_of(pkg_dir: &Path) -> serde_json::Map<String, serde_json::Value> {
@@ -114,7 +116,7 @@ mod tests {
 
     #[test]
     fn stages_order_pinned() {
-        assert_eq!(STAGES, &["preinstall", "install", "postinstall"]);
+        assert_eq!(STAGES, &["preinstall", "install", "postinstall", "prepare"]);
     }
 
     #[test]
@@ -133,14 +135,15 @@ mod tests {
             r#"{"name":"x","version":"1.0.0","scripts":{
                 "preinstall": "printf '%s' pre >> order.txt",
                 "install": "printf '%s' \"$npm_lifecycle_event\" >> order.txt",
-                "postinstall": "printf '%s' post >> order.txt"
+                "postinstall": "printf '%s' post >> order.txt",
+                "prepare": "printf '%s' prep >> order.txt"
             }}"#,
         )
         .unwrap();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(run_package_scripts(dir.path(), "x", "1.0.0", dir.path())).unwrap();
         let order = std::fs::read_to_string(dir.path().join("order.txt")).unwrap();
-        assert_eq!(order, "preinstallpost");
+        assert_eq!(order, "preinstallpostprep");
     }
 
     #[test]

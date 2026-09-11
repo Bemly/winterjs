@@ -19,9 +19,14 @@ use crate::runtime;
 pub struct TestOpts {
     pub paths: Vec<PathBuf>,
     pub filter: Option<String>,
+    /// `--test-name-pattern`（名级过滤；经 env 传入 node:test harness，见下）。
+    pub test_name_pattern: Option<String>,
     /// `--watch`（Phase 7-e5）：受监视文件变更即重跑，SIGINT/SIGTERM 退出。
     pub watch: bool,
 }
+
+/// 名过滤 env 键（`node:test` prelude 读取；子串或 `/re/flags`）。
+pub const TEST_NAME_PATTERN_ENV: &str = "WINTERJS_TEST_NAME_PATTERN";
 
 /// 可测后缀（`name.test.<ext>` / `test-name.<ext>` 的 `<ext>` 部）。
 const EXTS: &[&str] = &["js", "mjs", "cjs", "ts", "mts", "cts"];
@@ -136,10 +141,23 @@ async fn run_once(root: &Path, opts: &TestOpts) -> Result<(u32, u32), Error> {
                 continue;
             }
         };
+        // 名过滤经 env 传入 harness（各文件顺序跑，设/恢复配对，无并行竞态）。
+        // SAFETY: 单轮循环内同步设置（run_isolated 内部是多线程，但 env 读写只在
+        // 本线程串行点发生；并行跑文件尚未引入，引入时改传参）。
+        let saved = std::env::var(TEST_NAME_PATTERN_ENV).ok();
+        match &opts.test_name_pattern {
+            Some(p) => unsafe { std::env::set_var(TEST_NAME_PATTERN_ENV, p) },
+            None => unsafe { std::env::remove_var(TEST_NAME_PATTERN_ENV) },
+        }
+        let r = runtime::run_isolated(source, f.to_string_lossy().into_owned(), Vec::new());
+        match saved {
+            Some(v) => unsafe { std::env::set_var(TEST_NAME_PATTERN_ENV, v) },
+            None => unsafe { std::env::remove_var(TEST_NAME_PATTERN_ENV) },
+        }
         // 文件名传绝对串（模块 hook 按文件名定位 referrer，见 §4.11）。
         // 每文件独立线程跑（run_isolated，§4.24：同线程建第二个 Runtime 会炸，
         // Runtime 又必须泄漏 —— 线程生灭就是隔离边界）。
-        match runtime::run_isolated(source, f.to_string_lossy().into_owned(), Vec::new()) {
+        match r {
             Ok(()) => {
                 pass += 1;
                 println!("ok - {rel}");

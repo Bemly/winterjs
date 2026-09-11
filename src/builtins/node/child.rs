@@ -1,6 +1,9 @@
-//! `node:child_process` 同步子集 + 异步 `spawn`（plan Phase 4d）。
+//! `node:child_process` 同步子集 + 异步 `spawn`（plan Phase 4d/c-4x）。
 //! 同步经 `std::process` 阻塞跑；异步经 `tokio::process` + 事件循环分发
-//! `exit/close/error`（stdio 仅 inherit/ignore，pipe 流顺延，文档记录）。
+//! `exit/close/error`；stdio 支持 `inherit`/`ignore`/`pipe`（字符串三同或三元数组）。
+//! pipe 口径（文档记录）：stdout/stderr 为 live `ReadableStream`（出的块序 = 进程
+//! 出序；exit 前必先送达残留数据再调 onexit/onclose）；stdin 为 `WritableStream`
+//!（write 满即发，close 关写端；子进程已走即写失败）；无 max_buffer 上限（流式消费）。
 //! `detached:true` 在 unix 起 setsid 组长，kill 走组杀（`nix` 轮子；win 回退直杀）。
 //! 结果走 JSON 桥（二进制 base64）；错误形状由 prelude 组装（见 SOURCE）。
 
@@ -258,9 +261,10 @@ pub unsafe extern "C" fn cp_exec(
     true
 }
 
-// ── 异步 spawn（`tokio::process` + 事件循环；stdio 仅 inherit/ignore）────────
+// ── 异步 spawn（`tokio::process` + 事件循环；stdio inherit/ignore/pipe）──────
 // 所有权模型：`Child` 本体常驻 state 表（kill 经 `start_kill`/nix 同步调）；
-// task 只轮询 `try_wait`（收尸一步到位，无二次 wait 竞态）。
+// 等待 task 轮询 `try_wait`；pipe 泵独立 task 按块发事件；顺序保证：等待 task
+// 见到退出后等 pipe 泵全部落定（state 计数器）才发 Exited，残留数据必先送达。
 
 /// task → 事件循环（纯数据）。
 pub struct ChildEvent {
@@ -271,6 +275,22 @@ pub struct ChildEvent {
 pub enum ChildKind {
     /// 正常退出/被信号杀（含超时杀；spawn 失败走同步报错，不进事件）。
     Exited { status: Option<i32>, signal: Option<String> },
+    /// pipe stdout 一块（base64；exit 前必先送达，见等待 task 的合流）。
+    Stdout { data_b64: String },
+    /// pipe stderr 一块（同上）。
+    Stderr { data_b64: String },
+}
+
+/// stdin 写端命令（prelude WritableStream → 写 task；Orders 按序执行）。
+pub enum StdinCmd {
+    Write(Vec<u8>),
+    Close,
+}
+
+/// pipe 读端句柄（二选一进泵 task）。
+enum PipeHandle {
+    Out(tokio::process::ChildStdout),
+    Err(tokio::process::ChildStderr),
 }
 
 fn arg_string(cx: &mut mozjs::context::JSContext, frame: &Frame, i: u32, what: &str) -> Option<String> {
@@ -315,16 +335,19 @@ pub unsafe extern "C" fn spawn_start(
         return false;
     }
     let target = frame.arg(3);
-    // stdio（inherit/ignore；pipe 顺延，明确拒绝）。
-    let stdio = if frame.argc() > 4 && frame.arg(4).is_string() {
-        value_to_string(&mut cx, frame.arg(4))
+    // stdio（prelude 已归一为三元 JSON 数组；每项 inherit/ignore/pipe）。
+    let stdio: Vec<String> = if frame.argc() > 4 && frame.arg(4).is_string() {
+        match serde_json::from_str::<Vec<String>>(&value_to_string(&mut cx, frame.arg(4))) {
+            Ok(v) if v.len() == 3 && v.iter().all(|s| matches!(s.as_str(), "inherit" | "ignore" | "pipe")) => v,
+            _ => {
+                report_error(&mut cx, "TypeError: spawn stdio must be inherit/ignore/pipe");
+                return false;
+            }
+        }
     } else {
-        "inherit".to_string()
+        vec!["inherit".to_string(); 3]
     };
-    if stdio != "inherit" && stdio != "ignore" {
-        report_error(&mut cx, "NotSupportedError: spawn stdio only supports inherit/ignore (pipe needs follow-up)");
-        return false;
-    }
+    let (pipe_in, pipe_out, pipe_err) = (stdio[0] == "pipe", stdio[1] == "pipe", stdio[2] == "pipe");
     let Some((id, tx)) = state::child_alloc() else {
         report_error(&mut cx, "failed to load settings: child driver not installed");
         return false;
@@ -334,12 +357,20 @@ pub unsafe extern "C" fn spawn_start(
         report_error(&mut cx, "OperationError: no async runtime for spawn");
         return false;
     };
+    use std::process::Stdio;
     let mut cmd = tokio::process::Command::new(&file);
     cmd.args(&args);
-    cmd.stdin(std::process::Stdio::null());
-    if stdio == "ignore" {
-        cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    }
+    cmd.stdin(if pipe_in { Stdio::piped() } else { Stdio::null() });
+    cmd.stdout(match stdio[1].as_str() {
+        "ignore" => Stdio::null(),
+        "pipe" => Stdio::piped(),
+        _ => Stdio::inherit(),
+    });
+    cmd.stderr(match stdio[2].as_str() {
+        "ignore" => Stdio::null(),
+        "pipe" => Stdio::piped(),
+        _ => Stdio::inherit(),
+    });
     if let Some(dir) = &opts.cwd {
         cmd.current_dir(dir);
     }
@@ -351,7 +382,7 @@ pub unsafe extern "C" fn spawn_start(
     if opts.detached {
         make_detached(cmd.as_std_mut());
     }
-    let child = match cmd.spawn() {
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             use crate::builtins::node::fs::io_code;
@@ -359,10 +390,81 @@ pub unsafe extern "C" fn spawn_start(
             return false;
         }
     };
+    // pipe 泵（落定必记数，EOF/错皆记，见 child_pipe_done）。
+    // stdin 写 task：handle 与 rx 此处齐备，随 child_add 登记 tx（写端 drop 即 EOF）。
+    let stdin_tx = if pipe_in {
+        match child.stdin.take() {
+            Some(h) => {
+                let (wtx, mut wrx) = tokio::sync::mpsc::unbounded_channel::<StdinCmd>();
+                handle.spawn(async move {
+                    use tokio::io::AsyncWriteExt as _;
+                    let mut h = h;
+                    while let Some(cmd) = wrx.recv().await {
+                        match cmd {
+                            StdinCmd::Write(data) => {
+                                if h.write_all(&data).await.is_err() {
+                                    break;
+                                }
+                            }
+                            StdinCmd::Close => break,
+                        }
+                    }
+                });
+                Some(wtx)
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    let mut pipes_expected: u8 = 0;
+    for (piped, take) in [
+        (pipe_out, true),
+        (pipe_err, false),
+    ] {
+        if !piped {
+            continue;
+        }
+        let handle_opt = if take { child.stdout.take().map(PipeHandle::Out) } else { child.stderr.take().map(PipeHandle::Err) };
+        let Some(handle_h) = handle_opt else {
+            continue;
+        };
+        pipes_expected += 1;
+        let txc = tx.clone();
+        handle.spawn(async move {
+            use tokio::io::AsyncReadExt as _;
+            let mut buf = [0u8; 8192];
+            match handle_h {
+                PipeHandle::Out(mut h) => loop {
+                    match h.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if txc.send(ChildEvent { id, kind: ChildKind::Stdout { data_b64: b64(&buf[..n]) } }).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                },
+                PipeHandle::Err(mut h) => loop {
+                    match h.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if txc.send(ChildEvent { id, kind: ChildKind::Stderr { data_b64: b64(&buf[..n]) } }).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                },
+            }
+            state::child_pipe_done(id);
+        });
+    }
     let timeout_ms = opts.timeout_ms;
     let detached = opts.detached;
-    state::child_add(id, child, detached, target);
-    tracing::info!(target: "winterjs::child", id, file = file.as_str(), "spawned");
+    state::child_add(id, child, detached, target, stdin_tx, pipes_expected);
+    tracing::info!(target: "winterjs::child", id, file = file.as_str(), pipe_in, pipe_out, pipe_err, "spawned");
     handle.spawn(async move {
         if timeout_ms > 0 {
             tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
@@ -371,9 +473,12 @@ pub unsafe extern "C" fn spawn_start(
         }
         loop {
             if let Some(exit) = state::child_try_wait(id) {
-                let (status, signal) = status_parts(exit);
-                let _ = tx.send(ChildEvent { id, kind: ChildKind::Exited { status, signal } });
-                return;
+                // 残留输出先落定再发 Exited（泵记数，见 child_pipes_flushed）。
+                if state::child_pipes_flushed(id) {
+                    let (status, signal) = status_parts(exit);
+                    let _ = tx.send(ChildEvent { id, kind: ChildKind::Exited { status, signal } });
+                    return;
+                }
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -398,6 +503,47 @@ pub unsafe extern "C" fn child_kill(
     let sig = if frame.argc() > 1 { value_to_string(&mut cx, frame.arg(1)) } else { "SIGTERM".into() };
     let ok = state::child_kill(frame.arg(0).to_number() as u64, &sig);
     frame.set_rval(mozjs::jsval::BooleanValue(ok));
+    true
+}
+
+/// `__wjs_child_stdin_write(id, b64)` → boolean（入队即 true；子进程已走/非 pipe 即 false，
+/// prelude 转 `ERR_STREAM_DESTROYED`）。
+pub unsafe extern "C" fn child_stdin_write(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 || !frame.arg(0).is_number() || !frame.arg(1).is_string() {
+        report_error(&mut cx, "TypeError: stdin write needs id and base64 data");
+        return false;
+    }
+    use base64::Engine as _;
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(value_to_string(&mut cx, frame.arg(1)))
+        .unwrap_or_default();
+    let ok = state::child_stdin_send(frame.arg(0).to_number() as u64, StdinCmd::Write(data));
+    frame.set_rval(mozjs::jsval::BooleanValue(ok));
+    true
+}
+
+/// `__wjs_child_stdin_close(id)`（幂等；写端关即子进程见 EOF）。
+pub unsafe extern "C" fn child_stdin_close(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 || !frame.arg(0).is_number() {
+        report_error(&mut cx, "TypeError: stdin close needs a numeric id");
+        return false;
+    }
+    state::child_stdin_send(frame.arg(0).to_number() as u64, StdinCmd::Close);
+    frame.set_rval(UndefinedValue());
     true
 }
 
@@ -427,6 +573,8 @@ pub unsafe extern "C" fn child_pid(
 
 /// 事件循环分发一条子进程事件（读 target 的 `onexit/onclose/onerror`；终态摘除）。
 /// exit 与 close 同事件双调（Node 紧随语义，此处同 tick，文档记录）。
+/// pipe 块经 target 的 `__pushOut/__pushErr` 进流；Exited 先关流再调回调
+///（块序在前由等待 task 的落定计数保证，见 spawn_start）。
 /// 前置条件：cx 已进入 global 所属 realm（事件循环上下文）。
 pub fn dispatch(
     cx: &mut mozjs::context::JSContext,
@@ -441,38 +589,95 @@ pub fn dispatch(
         }
         crate::runtime::ErrorSource::Module { url } => crate::modules::module_error(cx, url),
     };
-    let ChildKind::Exited { status, signal } = &ev.kind;
-    let json = serde_json::json!({ "status": status, "signal": signal }).to_string();
+    // target 缺失（已摘除）：残留事件落空（Exited 顺带记账）。
     let Some(target_v) = state::child_target(ev.id) else {
-        state::child_remove(ev.id);
+        if matches!(ev.kind, ChildKind::Exited { .. }) {
+            state::child_remove(ev.id);
+        }
         return Ok(());
     };
     if !target_v.is_object() {
-        state::child_remove(ev.id);
+        if matches!(ev.kind, ChildKind::Exited { .. }) {
+            state::child_remove(ev.id);
+        }
         return Ok(());
     }
     rooted!(&in(cx) let target_root: *mut JSObject = target_v.to_object());
-    let mut ok = true;
-    // exit 与 close 同事件双调（`onerror` 永不触发：spawn 失败走同步抛错）。
-    for name in [c"onexit", c"onclose"] {
-        let Some(handler) = get_prop_value(cx, target_root.get(), name) else {
+    match &ev.kind {
+        ChildKind::Stdout { data_b64 } => {
+            push_pipe_chunk(cx, global, target_root.get(), c"__pushOut", data_b64)
+        }
+        ChildKind::Stderr { data_b64 } => {
+            push_pipe_chunk(cx, global, target_root.get(), c"__pushErr", data_b64)
+        }
+        ChildKind::Exited { status, signal } => {
+            // 先关流（残留块已送达），再走原 exit/close 双调
+            push_pipe_close(cx, global, target_root.get());
+            let json = serde_json::json!({ "status": status, "signal": signal }).to_string();
+            let mut ok = true;
+            // exit 与 close 同事件双调（`onerror` 永不触发：spawn 失败走同步抛错）。
+            for name in [c"onexit", c"onclose"] {
+                let Some(handler) = get_prop_value(cx, target_root.get(), name) else {
+                    state::child_remove(ev.id);
+                    return Err(failed(cx));
+                };
+                if handler.is_undefined() || handler.is_null() || !handler.is_object() {
+                    continue;
+                }
+                let event_obj = match parse_json(cx, global, &json) {
+                    Some(o) => o,
+                    None => {
+                        state::child_remove(ev.id);
+                        return Err(failed(cx));
+                    }
+                };
+                ok &= call_one(cx, global, handler, event_obj).is_some();
+            }
             state::child_remove(ev.id);
-            return Err(failed(cx));
+            if ok { Ok(()) } else { Err(failed(cx)) }
+        }
+    }
+}
+
+/// pipe 块推进流（`__pushOut/__pushErr` 缺失即非 pipe，忽略；钩子抛错吞掉，
+/// 流控制器抛错 prelude 侧已吞——块丢失好过事件循环炸）。
+fn push_pipe_chunk(
+    cx: &mut mozjs::context::JSContext,
+    global: *mut JSObject,
+    target: *mut JSObject,
+    name: &std::ffi::CStr,
+    data_b64: &str,
+) -> Result<(), crate::error::Error> {
+    use crate::jsapi_glue::{call_one, get_prop_value};
+    let Some(hook) = get_prop_value(cx, target, name) else {
+        return Ok(());
+    };
+    if hook.is_undefined() || hook.is_null() || !hook.is_object() {
+        return Ok(());
+    }
+    rooted!(&in(cx) let mut v = UndefinedValue());
+    data_b64.to_jsval(cx, v.handle_mut());
+    let _ = call_one(cx, global, hook, v.get());
+    Ok(())
+}
+
+/// 关 pipe 流（`__closeOut/__closeErr` 缺失即忽略）。
+fn push_pipe_close(
+    cx: &mut mozjs::context::JSContext,
+    global: *mut JSObject,
+    target: *mut JSObject,
+) {
+    use crate::jsapi_glue::{call_one, get_prop_value};
+    for name in [c"__closeOut", c"__closeErr"] {
+        let Some(hook) = get_prop_value(cx, target, name) else {
+            continue;
         };
-        if handler.is_undefined() || handler.is_null() || !handler.is_object() {
+        if hook.is_undefined() || hook.is_null() || !hook.is_object() {
             continue;
         }
-        let event_obj = match parse_json(cx, global, &json) {
-            Some(o) => o,
-            None => {
-                state::child_remove(ev.id);
-                return Err(failed(cx));
-            }
-        };
-        ok &= call_one(cx, global, handler, event_obj).is_some();
+        rooted!(&in(cx) let v = UndefinedValue());
+        let _ = call_one(cx, global, hook, v.get());
     }
-    state::child_remove(ev.id);
-    if ok { Ok(()) } else { Err(failed(cx)) }
 }
 
 /// `__wjs_cp_spawn(fileStr, argsJson, optsJson)` → 结果 JSON（同步版）。
@@ -637,7 +842,36 @@ export function spawnSync(file, args, opts) {
 export class ChildProcess {
   #id = 0;
   #killed = false;
-  __init(id) { this.#id = id; return this; }
+  __init(id, stdio) {
+    this.#id = id;
+    // pipe 口径：stdout/stderr 为 live ReadableStream（Rust 泵按块 enqueue，
+    // exit 前残留必达，见 dispatch）；stdin 为 WritableStream（写失败即子进程已走）。
+    const mkOut = (push, close) => {
+      let ctl = null;
+      const stream = new ReadableStream({ start(c) { ctl = c; }, cancel() {} });
+      this[push] = (b64) => { try { ctl.enqueue(__b64dec(b64)); } catch {} };
+      this[close] = () => { try { ctl.close(); } catch {} };
+      return stream;
+    };
+    if (stdio[1] === "pipe") this.stdout = mkOut("__pushOut", "__closeOut");
+    else this.stdout = null;
+    if (stdio[2] === "pipe") this.stderr = mkOut("__pushErr", "__closeErr");
+    else this.stderr = null;
+    if (stdio[0] === "pipe") {
+      const id2 = id;
+      this.stdin = new WritableStream({
+        write(chunk) {
+          const b = typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk;
+          const u8 = b instanceof Uint8Array ? b : new Uint8Array(b);
+          if (!__wjs_child_stdin_write(id2, __b64enc(u8))) {
+            throw Object.assign(new Error("ERR_STREAM_DESTROYED: stdin is closed"), { code: "ERR_STREAM_DESTROYED" });
+          }
+        },
+        close() { __wjs_child_stdin_close(id2); },
+      });
+    } else this.stdin = null;
+    return this;
+  }
   get pid() { return __wjs_child_pid(this.#id); }
   get killed() { return this.#killed; }
   kill(signal) {
@@ -659,19 +893,25 @@ export class ChildProcess {
   ref() { return this; }
 }
 function __normSpawnAsyncOpts(opts) {
-  const o = { cwd: null, env: null, detached: false, stdio: "inherit", timeoutMs: 0 };
+  const o = { cwd: null, env: null, detached: false, stdio: ["inherit", "inherit", "inherit"], timeoutMs: 0 };
   if (opts === undefined || opts === null) return o;
   if (opts.cwd !== undefined) o.cwd = String(opts.cwd);
   if (opts.env !== undefined) o.env = { ...opts.env };
   if (opts.detached !== undefined) o.detached = !!opts.detached;
   if (opts.stdio !== undefined) {
-    if (typeof opts.stdio === "string") {
-      if (!["inherit", "ignore"].includes(opts.stdio)) {
-        throw new Error("NotSupportedError: spawn stdio only supports inherit/ignore (pipe needs follow-up)");
+    const one = (s) => {
+      if (!["inherit", "ignore", "pipe"].includes(s)) {
+        throw new Error(`NotSupportedError: spawn stdio '${s}' (inherit/ignore/pipe)`);
       }
-      o.stdio = opts.stdio;
+      return s;
+    };
+    if (typeof opts.stdio === "string") o.stdio = [one(opts.stdio), one(opts.stdio), one(opts.stdio)];
+    else if (Array.isArray(opts.stdio)) {
+      // 三元数组（缺省补 inherit；Node 的复杂组合如 fd 重定向不在此列，文档记录）
+      if (opts.stdio.length > 3) throw new Error("NotSupportedError: spawn stdio array takes at most 3 entries");
+      o.stdio = [0, 1, 2].map((i) => opts.stdio[i] === undefined ? "inherit" : one(opts.stdio[i]));
     } else {
-      throw new Error("NotSupportedError: spawn stdio array form needs follow-up");
+      throw new Error("NotSupportedError: spawn stdio must be a string or array");
     }
   }
   if (opts.timeout !== undefined) o.timeoutMs = Number(opts.timeout);
@@ -683,8 +923,8 @@ export function spawn(file, args, opts) {
   const proc = new ChildProcess();
   const id = __wjs_spawn_start(String(file), JSON.stringify([...(args || [])].map(String)), JSON.stringify({
     cwd: o.cwd, env: o.env, detached: o.detached, timeout_ms: o.timeoutMs,
-  }), proc, o.stdio);
-  return proc.__init(id);
+  }), proc, JSON.stringify(o.stdio));
+  return proc.__init(id, o.stdio);
 }
 export default { execSync, spawnSync, spawn, ChildProcess };
 "#;

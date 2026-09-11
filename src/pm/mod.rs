@@ -38,8 +38,9 @@ pub fn global_root() -> Result<std::path::PathBuf, Error> {
 
 /// `winterjs add -a <pkgs> [--dry-run] [--registry URL]`（工程本地，root=cwd）与
 /// `winterjs install -a <pkgs> ...`（全局，root=`global_root()`）共用体。
-/// registry 优先级（5d-d1）：flag > `NPM_CONFIG_REGISTRY` env > `<root>/.npmrc` >
-/// `$HOME/.npmrc` > 内建默认（见 `npmrc`）。
+/// registry 优先级：flag > `NPM_CONFIG_REGISTRY` env > 作用域镜像
+/// （`<root>/.npmrc` > `$HOME/.npmrc` 的 `@scope:registry`）> `<root>/.npmrc` >
+/// `$HOME/.npmrc` > 内建默认（见 `npmrc`）；token 按生效 registry host 透传。
 pub async fn install_to(
     root: &std::path::Path,
     packages: &[String],
@@ -49,7 +50,10 @@ pub async fn install_to(
     if packages.is_empty() {
         return Err(Error::Other("specify packages with -a/--add".into()));
     }
-    let registry = effective_registry(root, registry);
+    let (project, home) = npmrc::load_cwd_and_home(root);
+    let env_reg = std::env::var("NPM_CONFIG_REGISTRY")
+        .or_else(|_| std::env::var("npm_config_registry"))
+        .ok();
     // 请求分流（registry 走 packument 求解；git 走 rev 解析，各自独立）。
     let mut reg_specs = Vec::with_capacity(packages.len());
     let mut git_specs = Vec::new();
@@ -63,8 +67,19 @@ pub async fn install_to(
         return Err(Error::Other("nothing to install".into()));
     }
     let tree = resolve::solve_tree(&reg_specs, |name: String| {
-        let registry = registry.clone();
-        async move { registry::fetch_packument(&registry, &name).await.map_err(|e| e.to_string()) }
+        // 逐包决策（作用域镜像）+ 逐 registry 取 token（token 值永不进日志）。
+        let (src, url) = npmrc::resolve_registry_for_package(
+            registry,
+            env_reg.as_deref(),
+            &project,
+            &home,
+            &name,
+        );
+        tracing::debug!(target: "winterjs::pm", package = name.as_str(), source = src, registry = url.as_str(), "registry resolved");
+        let token = project
+            .auth_token_for(&url)
+            .or_else(|| home.auth_token_for(&url));
+        async move { registry::fetch_packument(&url, &name, token.as_deref()).await.map_err(|e| e.to_string()) }
     })
     .await
     .map_err(Error::Other)?;

@@ -133,9 +133,17 @@ pub struct Cli {
     #[arg(long, short = 'y')]
     pub yes: bool,
 
+    /// Overwrite conflicting files instead of failing
+    #[arg(long)]
+    pub force: bool,
+
     /// Only run files matching this glob (matched against relative path or file name)
     #[arg(long)]
     pub filter: Option<String>,
+
+    /// Only run tests whose full name matches (substring or /regex/flags)
+    #[arg(long, value_name = "PATTERN")]
+    pub test_name_pattern: Option<String>,
 
     /// Re-run tests when watched files change (Ctrl-C to stop)
     #[arg(long)]

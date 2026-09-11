@@ -1,9 +1,9 @@
-//! 脚手架（plan Phase 7-e2）：`winterjs init [name] [--yes]`。
+//! 脚手架（plan Phase 7-e2/c-4x）：`winterjs --init [name] [--yes] [--force]`。
 //!
 //! - 模板经 `askama` 内联渲染（单体二进制，不另建模板目录）。
 //! - 生成三件：`package.json` + `index.js` + `hello.test.js`
 //!   （init 后 `winterjs test` 即绿，闭环验收）。
-//! - 已存在文件不覆盖，冲突即整体报错（删了重来；`--force` 顺延，文档记录）。
+//! - 已存在文件默认不覆盖，冲突即整体报错（删了重来）；`--force` 逐个覆盖。
 //! - 名缺省取当前目录名；`--yes` 跳过确认，非 TTY 下缺 `--yes` 即报可读错。
 
 use std::path::{Path, PathBuf};
@@ -108,8 +108,8 @@ pub fn planned(name: &str) -> Vec<(PathBuf, String)> {
     ]
 }
 
-/// 落盘（冲突即整体报错，一个不写；成功打印清单）。
-pub async fn init(dir: &Path, name: Option<&str>, yes: bool) -> Result<(), Error> {
+/// 落盘（无 --force 时冲突即整体报错，一个不写；--force 逐个覆盖；成功打印清单）。
+pub async fn init(dir: &Path, name: Option<&str>, yes: bool, force: bool) -> Result<(), Error> {
     let default_name = dir
         .file_name()
         .and_then(|n| n.to_str())
@@ -138,9 +138,9 @@ pub async fn init(dir: &Path, name: Option<&str>, yes: bool) -> Result<(), Error
         .filter(|(p, _)| dir.join(p).exists())
         .map(|(p, _)| p.display().to_string())
         .collect();
-    if !clashes.is_empty() {
+    if !clashes.is_empty() && !force {
         return Err(Error::Other(format!(
-            "refusing to overwrite: {}",
+            "refusing to overwrite: {} (pass --force to overwrite)",
             clashes.join(", ")
         )));
     }

@@ -566,7 +566,98 @@ pub unsafe extern "C" fn fs_mkdtemp(
     false
 }
 
-// ── fs.watch（`notify` 线程 → channel → 事件循环；无防抖，文档记录）─────────
+// ── fs.watch（`notify` 线程 → 防抖线程 → 事件循环；300ms 静默窗，与 test --watch 同值）
+// 防抖说明：`notify-debouncer-mini`（批准单内轮子）只给 `Any`/`AnyContinuous`
+//（kind 丢失），`fs.watch` 的 `rename`/`change` 区分会被吃掉——此处用共享防抖线程
+// 手写 coalesce（按 `(id, kind, file)` 键 300ms 静默窗，kind 原样保留；失败事件直通）。
+// 线程模型与既有 `notify` 线程一致（Rust 侧多线程只经 channel 与 JS 线程通信，§6 合规）。
+
+/// 防抖窗（与 `testrun.rs` 的 300ms 同值，用户感知一致）。
+pub(crate) const WATCH_DEBOUNCE_MS: u64 = 300;
+
+/// 防抖线程输入（分类已做完的纯数据）。
+struct RawWatch {
+    id: u64,
+    kind: WatchKind,
+}
+
+type DebounceKey = (u64, String, Option<String>);
+
+/// 共享防抖线程入口（`OnceLock` 懒起，存 `Result` 以兼容 stable；
+/// 发送端掉光即退出）。
+static DEBOUNCE_TX: std::sync::OnceLock<Result<std::sync::mpsc::Sender<RawWatch>, String>> =
+    std::sync::OnceLock::new();
+
+fn debounce_handle(
+    js_tx: &tokio::sync::mpsc::UnboundedSender<WatchEvent>,
+) -> Result<std::sync::mpsc::Sender<RawWatch>, String> {
+    DEBOUNCE_TX
+        .get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<RawWatch>();
+            let js_tx = js_tx.clone();
+            match std::thread::Builder::new()
+                .name("wjs-fs-watch-debounce".into())
+                .spawn(move || debounce_loop(rx, js_tx))
+            {
+                Ok(_) => Ok(tx),
+                Err(e) => Err(format!("cannot start watch debounce thread: {e}")),
+            }
+        })
+        .clone()
+}
+
+fn debounce_loop(
+    rx: std::sync::mpsc::Receiver<RawWatch>,
+    js_tx: tokio::sync::mpsc::UnboundedSender<WatchEvent>,
+) {
+    use std::time::{Duration, Instant};
+    let window = Duration::from_millis(WATCH_DEBOUNCE_MS);
+    let mut pending: std::collections::HashMap<DebounceKey, (Instant, WatchEvent)> =
+        std::collections::HashMap::new();
+    loop {
+        let now = Instant::now();
+        // 到期即刷
+        let due: Vec<DebounceKey> = pending
+            .iter()
+            .filter(|(_, (d, _))| *d <= now)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in due {
+            if let Some((_, ev)) = pending.remove(&k) {
+                if js_tx.send(ev).is_err() {
+                    return;
+                }
+            }
+        }
+        let wait = pending
+            .values()
+            .map(|(d, _)| d.checked_duration_since(Instant::now()).unwrap_or(Duration::ZERO))
+            .min()
+            .unwrap_or(window);
+        match rx.recv_timeout(wait) {
+            Ok(raw) => {
+                let id = raw.id;
+                match raw.kind {
+                    // 失败直通（不防抖，尽早报错）
+                    WatchKind::Failed(msg) => {
+                        if js_tx.send(WatchEvent { id, kind: WatchKind::Failed(msg) }).is_err() {
+                            return;
+                        }
+                    }
+                    WatchKind::Fired { event, file } => {
+                        let key = (id, event.clone(), file.clone());
+                        pending.insert(
+                            key,
+                            (Instant::now() + window, WatchEvent { id, kind: WatchKind::Fired { event, file } }),
+                        );
+                    }
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
 
 /// notify 线程 → 事件循环（纯数据；`kind` 为 `rename`/`change`）。
 pub struct WatchEvent {
@@ -618,6 +709,12 @@ pub unsafe extern "C" fn watch_start(
         report_error(&mut cx, "failed to load settings: watch driver not installed");
         return false;
     };
+    let Ok(dtx) = debounce_handle(&tx) else {
+        report_error(&mut cx, "OperationError: watch failed (debounce thread)");
+        return false;
+    };
+    // js 直通道退役：事件统一经防抖线程进事件循环；tx 仅用于懒起线程
+    drop(tx);
     let mode = if recursive {
         notify::RecursiveMode::Recursive
     } else {
@@ -626,6 +723,7 @@ pub unsafe extern "C" fn watch_start(
     let watched = path.clone();
     let build: Result<notify::RecommendedWatcher, String> = (|| {
         use notify::Watcher as _;
+        // notify 回调只做分类（纯数据），防抖由共享线程做（300ms 静默窗，kind 保留）。
         let mut watcher =
             notify::RecommendedWatcher::new(move |res: Result<notify::Event, notify::Error>| {
                 match res {
@@ -636,11 +734,13 @@ pub unsafe extern "C" fn watch_start(
                         let file = ev.paths.first().and_then(|p| {
                             p.file_name().map(|n| n.to_string_lossy().into_owned())
                         });
-                        let _ =
-                            tx.send(WatchEvent { id, kind: WatchKind::Fired { event: kind.to_string(), file } });
+                        let _ = dtx.send(RawWatch {
+                            id,
+                            kind: WatchKind::Fired { event: kind.to_string(), file },
+                        });
                     }
                     Err(e) => {
-                        let _ = tx.send(WatchEvent { id, kind: WatchKind::Failed(e.to_string()) });
+                        let _ = dtx.send(RawWatch { id, kind: WatchKind::Failed(e.to_string()) });
                     }
                 }
             }, notify::Config::default())

@@ -55,10 +55,21 @@ fn module_url(record: *mut JSObject) -> Option<String> {
 
 // ── 取回 + 转译 ──────────────────────────────────────────────────────────
 
-/// URL 对应的本地解析路径（file: 真路径；data: 假名 `module.js`，按 JS 解析）。
+/// URL 对应的本地解析路径（file: 真路径；data: 假名 `module.js`，按 JS 解析；
+/// http(s): `remote-<blake3(url)>.<ext>` 假名（转译缓存键 + oxc SourceType 扩展名用，
+/// 同一性仍按 URL 字符串，见 §4.12）。
 fn module_path(url: &Url) -> Result<PathBuf, Error> {
     if url.scheme() == "file" {
         url.to_file_path().map_err(|_| Error::Other(format!("bad file URL: {url}")))
+    } else if url.scheme() == "http" || url.scheme() == "https" {
+        let ext = url
+            .path()
+            .rsplit('.')
+            .next()
+            .filter(|e| e.len() <= 5 && e.chars().all(|c| c.is_ascii_alphanumeric()))
+            .unwrap_or("js");
+        let hash = blake3::hash(url.as_str().as_bytes()).to_hex();
+        Ok(PathBuf::from(format!("remote-{hash}.{ext}")))
     } else {
         Ok(PathBuf::from("module.js"))
     }

@@ -3802,3 +3802,41 @@ fn serve_acme_cert_conflict() {
     assert!(err.contains("--acme-"), "stderr:\n{err}");
     dir.close().unwrap();
 }
+
+// ── loader http(s)（远端导入；stub 回环，不碰外网）────────────────────────────
+
+#[test]
+fn loader_http_import_end_to_end() {
+    // 正常：绝对 http 导入 + 远端相对导入（URL join）；TF：同 URL 去重（模块单例）。
+    let port = serve_http(3, move |head, _body| {
+        let line = head.lines().next().unwrap_or("").to_owned();
+        let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+        let body = if path == "/main.mjs" {
+            "import { answer } from \"./lib.mjs\";\nexport const double = answer * 2;\n"
+        } else if path == "/lib.mjs" {
+            "export const answer = 42;\n"
+        } else {
+            return (404, vec![], b"nope".to_vec());
+        };
+        (200, vec![("content-type", "text/javascript".into())], body.as_bytes().to_vec())
+    });
+    let code = format!(
+        "const m = await import(\"http://127.0.0.1:{port}/main.mjs\"); \
+         const m2 = await import(\"http://127.0.0.1:{port}/main.mjs\"); \
+         console.log(m.double, m === m2);"
+    );
+    assert_eq!(stdout_of(&mut winterjs().args(["--eval", &code])), "84 true\n");
+}
+
+#[test]
+fn loader_http_errors() {
+    // 报错：404 可读错（exit=1）；边界：超大/非 UTF-8 由单元口径覆盖，此处只钉 404。
+    let port = serve_http(1, move |_head, _body| {
+        (404, vec![], b"nope".to_vec())
+    });
+    let code = format!("await import(\"http://127.0.0.1:{port}/missing.mjs\")");
+    let out = winterjs().args(["--eval", &code]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("404"), "stderr:\n{err}");
+}

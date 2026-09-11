@@ -170,6 +170,7 @@ fn resolve_bare(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
 }
 
 /// 相对路径：resolver 主路径，失败回落自家 join+探测（行为保护网）。
+/// http(s) base 走 URL join（远端相对导入，见 loader http 收官）。
 fn resolve_relative(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
     // 绝对文件路径可不依赖 base
     if base.is_none() && Path::new(specifier).is_absolute() {
@@ -187,9 +188,14 @@ fn resolve_relative(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
             "cannot resolve relative import '{specifier}' from a data: module"
         )));
     }
+    if base.scheme() == "http" || base.scheme() == "https" {
+        return base.join(specifier).map_err(|e| {
+            Error::Other(format!("cannot resolve '{specifier}' from '{base}': {e}"))
+        });
+    }
     if base.scheme() != "file" {
         return Err(Error::Other(format!(
-            "cannot resolve '{specifier}' from '{base}' (only file: bases for now)"
+            "cannot resolve '{specifier}' from '{base}' (only file:/http(s): bases for now)"
         )));
     }
     if let Ok(p) = resolve_with(specifier, Some(base)) {
@@ -211,9 +217,7 @@ pub fn resolve(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
         return match url.scheme() {
             "file" => probe_file_url(&url),
             "data" => Ok(url),
-            "http" | "https" => Err(Error::Other(format!(
-                "remote module '{specifier}' needs Phase 3 (fetch); file:/data: only for now"
-            ))),
+            "http" | "https" => Ok(url),
             "node" => match crate::builtins::node::normalize_spec(specifier) {
                 Some(canonical) => {
                     tracing::debug!(target: "winterjs::loader", specifier, canonical, "builtin module");

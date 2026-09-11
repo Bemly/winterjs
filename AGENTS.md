@@ -406,6 +406,32 @@ cargo build
   返回值致退订恒 false。教训：黑盒设计前先核对 Node 套件原文断言，勿凭记忆。
 - 复现：`tests/node.rs::phase9a_diagnostics_channel_surface`（修前 `outside [object Object]`；拆分前在 tests/cli.rs）。
 
+### 4.32 逐字移植的解环/形态坑（2026-09-12，Phase 9b）
+
+- 症状一：`compose` 中路报 `Duplex is not a constructor`（p2 探针只测了 async
+  generator 分支，Duplex 构造分支未覆盖）。根因：CJS→ESM 懒解环包装
+  `__ensureDuplex()` 只包了 `.from()` 路径，`new Duplex({...})` 用了裸 `let`
+  绑定，静默 undefined 运行时才炸。修法：解环包装完成后 grep 该符号在本模块
+  全部裸引用逐处收口（本次 5 处漏 1）（`internal/streams/compose.rs:147`）。
+- 症状二：`node:buffer` SlowBuffer 垫片写了 `new Buffer.alloc ? ...`——class
+  静态方法无 `[[Construct]]`，`new Buffer.alloc` 直接 TypeError（想当然造的
+  三元，非 Node 原文）。修法：逐字移植禁"顺手改写"，垫片按 Node 原文
+  `return new Buffer(size)`（`node/buffer.rs`）。
+- 症状三：unhandled rejection `aggregateTwoErrors is not a function`——4 个
+  内部模块解构 errors 的符号而 errors 模块没导出，解构得 undefined 无声，
+  运行时才炸。修法：内部模块新增解构 errors 符号前先 grep 导出面是否齐
+  （`internal/errors.rs` 补 aggregateTwoErrors，errors.js:172 同款）。
+- 教训延续（§4.31 症状三同源，9b 黑盒 4 处断言错全在"凭记忆"）：
+  ① `pipeline`/`finished` 的 node:stream 命名导出是 callback 形态（末参必须
+  函数，popCallback validateFunction），promise 形态只在 `node:stream/promises`；
+  ② `Readable.from("ab")` 吐单块不逐码元（真 Node 实测同款）；
+  ③ string chunk 经 push/write 转 Buffer（writable.js:475/readable.js:488），
+  `chunk.constructor.name` 是 "Buffer" 非 "Uint8Array"；
+  ④ close 事件时点 `isDestroyed` 已为 true。
+  实现侧零 bug——全部先实测真 Node 再改断言，勿在黑盒里编码记忆里的语义。
+- 复现：`tests/node.rs::phase9b_stream_duplex_transform_pipeline`
+  （compose Duplex 分支修前报 `Duplex is not a constructor`）。
+
 
 ## 5. 路线图（按序）
 

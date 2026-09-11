@@ -527,6 +527,36 @@
   偏差逐条记模块头注。process prelude 补 `emitWarning`+`on('warning')`。
   黑盒 +18（Node 套件命名子集断言、消息逐字）；`cargo test` 102+194 全绿，
   0 警告，冒烟 5/5。踩坑记 AGENTS §4.31。
+- [x] 9b 流与缓冲（2026-09-12 完工）：
+  `node:stream` 整批——`internal/streams` 24 文件逐字内嵌（readable/writable/
+  duplex/duplexify/duplexpair/transform/passthrough/from/operators/iter_classic/
+  iter_types/compose/pipeline/end_of_stream/destroy/add_abort_signal/state/utils/
+  legacy/lazy_transform 等），require → 静态图垫片映射，真类继承环
+  （duplexify↔duplex）经 registry 双方自注册 + node:stream body 末尾拉 duplexify
+  进图，循环依赖一律懒解环（`__ensureXxx()`）；
+  四类流 + PassThrough 全语义（flow/pause-resume/cork-uncork/destroy/finish/
+  error 传播/write-after-end），chunk 口径与 Node 一致（string → Buffer，
+  writable.js:475/readable.js:488）；`compose`（含 Duplex 构造分支）、
+  `pipeline`（命名导出 callback 形态）、`finished`（promise + callback 双形态）、
+  `addAbortSignal`、hwm 存取、`duplexPair`；
+  `Readable.from`（字符串单块/iterable/async gen，Node 同款）+ 异步迭代器
+  （for await 早退销毁）+ `toArray` + objectMode；
+  `toWeb`/`fromWeb`（Readable/Writable 四向）；`node:stream/web`（web 全局
+  re-export）、`node:stream/promises`、`node:stream/consumers`（六件套）；
+  FastBuffer ↔ Buffer 原型桥（lib/buffer.js:157 口径：instanceof/isBuffer/
+  constructor.name 显 Buffer；共享原型 → 本仓 setPrototypeOf 桥接，微偏差记模块头注）；
+  `node:buffer` 模块面（named/default/constants/INSPECT_MAX_BYTES/SlowBuffer，
+  全局 Buffer prelude 口径不变）+ 全局 **Blob**（Web spec 语义：iterable parts/
+  嵌套 Blob/size/type 小写化/text/arrayBuffer/bytes/slice 负索引/stream）；
+  `node:timers/promises`（setTimeout/setImmediate/setInterval AsyncIterator/
+  scheduler.yield/wait，AbortError 口径；setImmediate≈setTimeout(0) 记档）。
+  修复：internal/errors 补 `aggregateTwoErrors`（4 模块在用而未导出，静默雷）；
+  compose Duplex 懒解环漏收口；SlowBuffer `new Buffer.alloc` 静态非构造。
+  记档缺口（非 9b）：全局 setTimeout 返回裸 number（无 Timeout 对象
+  refresh/unref/ref）、全局 setImmediate 缺失（process/timers 全局面）。
+  黑盒 +7（buffer 六编码+报错三件/Blob/RW 核心/duplex-transform-pipeline/
+  from-iterator/web+consumers/timers-promises）；`cargo test` 102+201 全绿，
+  冒烟 5/5。踩坑记 AGENTS §4.32。
 
 ## 全局纪律
 

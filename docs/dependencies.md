@@ -105,7 +105,9 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
   与 DefaultTransportFactory。
 - `object_store`：只进默认 `fs`；`http`/`aws`/`azure`/`gcp` 全部硬绑 aws-lc，禁。
 - `instant-acme`：`default-features=false` + `ring`；`default` 和 `hyper-rustls`
-  特性都拖 aws-lc，禁。
+  特性都拖 aws-lc，禁。接线附记（2026-09-11 实测）：`hyper-rustls` 禁后
+  `Account::builder()`（同特性门控）不可用——改 `builder_with_http` +
+  自实现 `HttpClient`（reqwest 桥接约 30 行，ring 同源，`src/acme.rs`）。
 - `metrics-exporter-prometheus`：`default-features=false` + `http-listener`；
   `push-gateway` 硬绑 `hyper-rustls/aws-lc-rs`，禁。
 - 审计附记（lock 内的"意外住客"，均实测不违规）：`openssl-probe` 0.2.1（经

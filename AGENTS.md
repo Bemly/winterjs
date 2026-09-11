@@ -358,6 +358,10 @@ cargo build
 - 无关闭、无释放的 reader + 无条件 pull = prefetch 空转，进程退不出。
   修法：字节流纯按需 pull（BYOB 排队或 default 读等待才拉）；
   default 老路径不动（§4.18 时序敏感）。
+- 追补（防抖 key 刷出顺序）：防抖表用 HashMap 即非确定序——新文件
+  Create+Modify 双事件谁先刷不一定（`ev: change` vs `ev: rename` flaky）。
+  修法：插入序 Vec，同键只留首事件并刷新 deadline，刷出按到达序
+  （首事件赢，与无防抖时的先到先得一致）（`fs.rs debounce_loop`）。
 
 ## 5. 路线图（按序）
 

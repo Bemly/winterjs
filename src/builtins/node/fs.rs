@@ -612,26 +612,27 @@ fn debounce_loop(
 ) {
     use std::time::{Duration, Instant};
     let window = Duration::from_millis(WATCH_DEBOUNCE_MS);
-    let mut pending: std::collections::HashMap<DebounceKey, (Instant, WatchEvent)> =
-        std::collections::HashMap::new();
+    // 插入序 Vec（不用 HashMap）：同键只保留首事件并刷新 deadline，刷出按到达序——
+    // 新文件 Create+Modify 双事件时 rename（先到）稳定赢（flaky 修，见黑盒 watch 用例）。
+    // 事件量极小（人手/测试级），O(n) 扫描可接受。
+    let mut pending: Vec<(DebounceKey, (Instant, WatchEvent))> = Vec::new();
     loop {
         let now = Instant::now();
-        // 到期即刷
-        let due: Vec<DebounceKey> = pending
-            .iter()
-            .filter(|(_, (d, _))| *d <= now)
-            .map(|(k, _)| k.clone())
-            .collect();
-        for k in due {
-            if let Some((_, ev)) = pending.remove(&k) {
+        // 到期即刷（保持到达序）
+        let mut i = 0;
+        while i < pending.len() {
+            if pending[i].1.0 <= now {
+                let (_, (_, ev)) = pending.remove(i);
                 if js_tx.send(ev).is_err() {
                     return;
                 }
+            } else {
+                i += 1;
             }
         }
         let wait = pending
-            .values()
-            .map(|(d, _)| d.checked_duration_since(Instant::now()).unwrap_or(Duration::ZERO))
+            .iter()
+            .map(|(_, (d, _))| d.checked_duration_since(Instant::now()).unwrap_or(Duration::ZERO))
             .min()
             .unwrap_or(window);
         match rx.recv_timeout(wait) {
@@ -646,10 +647,14 @@ fn debounce_loop(
                     }
                     WatchKind::Fired { event, file } => {
                         let key = (id, event.clone(), file.clone());
-                        pending.insert(
-                            key,
-                            (Instant::now() + window, WatchEvent { id, kind: WatchKind::Fired { event, file } }),
-                        );
+                        if let Some(slot) = pending.iter_mut().find(|(k, _)| *k == key) {
+                            slot.1.0 = Instant::now() + window;
+                        } else {
+                            pending.push((
+                                key,
+                                (Instant::now() + window, WatchEvent { id, kind: WatchKind::Fired { event, file } }),
+                            ));
+                        }
                     }
                 }
             }

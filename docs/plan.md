@@ -2,9 +2,16 @@
 
 > 版本 `26.9.11`，引擎 `mozjs 0.26.0`。本计划是活文档：每 Phase 开工前更新对应节，
 > 完工即打钩。依赖明细与平台矩阵见 `docs/dependencies.md`，工作规约见 `AGENTS.md`。
-> 当前状态：Phase 0–8 代码切片全部完工（2026-09-11，`cargo test` 67+147 全绿，
-> 0 警告，冒烟 5/5）。剩验收项（发 `27.x` 前置）：6-target CI 矩阵立起 +
+> 当前状态：Phase 0–8 代码切片全部完工 + 顺延全收官（2026-09-11，
+> 批1 Node小件/spawn pipe/流防空转、批2 Buffer/fs流、批3 publish PUT/OAuth、
+> 批4 ACME、批5 loader http；`cargo test` 全绿，0 警告，冒烟 5/5）。
+> 剩验收项（发 `27.x` 前置）：6-target CI 矩阵立起 +
 > android/ohos 列转正 + §1 ⚠️ 清零或书面理由（需 CI 环境，见 Phase 0/8 完成标准）。
+> 不再做的（书面理由见各 Phase 尾）：object_store 远端（§2 禁 aws-lc 后只剩 fs，
+> 与既有缓存重复）、russh（远端 git 含 ssh 全走 git CLI，覆盖）、
+> console-subscriber（dev 手动 RUSTFLAGS，非接线）、Win 服务（mac 无法验证，留 CI）、
+> netstat2（TOCTOU，不用）、oxc linter（上游未发布，穿透保留）、
+> watch 导入图（全量重跑，偏差接受）。
 > 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 
@@ -132,8 +139,12 @@
   Response + chunk 通道 + pull 泵；快照路径 data:/file:/构造体不变）+
   in-flight abort（signal 最小监听 + `fetch_abort` 取消任务/拒绝排队 pull/流中
   后继 read 拒 AbortError）。附带修事件循环退出 race（§4.18 progressed 轮不退）。
-  `tests/cli.rs` 6 例；`cargo test` 71+5 全绿，0 警告。
-  RSA-PSS/Ed25519/X25519（c-4x，按需排）。
+   `tests/cli.rs` 6 例；`cargo test` 71+5 全绿，0 警告。
+- [x] 顺延收官（2026-09-11）：c-4x（RSA-PSS/Ed25519/X25519/AES-192 全接线，
+  openssl 独立向量，模块 2 + 黑盒 4）+ TextDecoder 流式（有状态 Decoder）+
+  Abort 事件对象/onabort/dispatchEvent/timeout/any + BYOB（byte 流/read(view)/
+  byobRequest；字节流纯按需 pull）+ loader http(s)（批5：绝对直通/远端相对
+  join/独立线程 reqwest，黑盒 2 例）。c-4x 前的“顺延”字样作废。
 
 ## Phase 4 — Node 兼容垫片（开工 2026-09-10，切片 a 进行中）
 
@@ -171,10 +182,13 @@
   文件经柯里化包装执行 + 预注册循环半成品 + JSON + `.cjs` 入口 + require.main/
   resolve；ESM 报 ERR_REQUIRE_ESM）+ `fs.watch`（notify 进事件循环，persistent
   续命）+ 异步 `spawn`（exit/close 双调 + kill + detached 组杀 unix）。
-  `tests/cli.rs` 5 例；`cargo test` 89+10 全绿，0 警告。
-- 已知缺口（后 Phase 按需排）：`require` 不读 package.json type（`.js` 内 CJS 要改
-  `.cjs`）；spawn stdio pipe 流、`before/after` 钩子；`fs.watch` 无防抖；孙进程
-  win 组杀；RSA-PSS/Ed25519（c-4x）；Buffer 全局；fs 流。
+   `tests/cli.rs` 5 例；`cargo test` 89+10 全绿，0 警告。
+- [x] 顺延收官（2026-09-11，批1/批2）：`require` 读 package.json type
+  （module 一律 ERR_REQUIRE_ESM，其余强制 CJS）+ spawn pipe 流（stdin/out/err
+  live 流，残留先达再 Exited）+ `before/after/beforeEach/afterEach` 钩子 +
+  `--test-name-pattern` 名过滤 + `fs.watch` 共享防抖线程（kind 保留，300ms）+
+  Buffer 全局（Uint8Array 子类，hex/b64/utf8 等）+ fs 流（createRead/WriteStream，
+  Web 流外形）。“已知缺口”段作废；孙进程 win 组杀留 CI（mac 无法验证）。
 
 ## Phase 5 — 包管理（install/publish/upgrade，开工 2026-09-10，切片 a 进行中）
 
@@ -219,28 +233,36 @@
     `<cwd>/.npmrc` > `$HOME/.npmrc` > 默认 + token 按 host 透传（值永不进日志）。
     模块单测 4 例 + 黑盒 4 例（镜像/坏源报错/flag 覆盖/env 覆盖）；
     `cargo test` 25+100 全绿，0 警告。
-  - [x] d2 git 依赖：`spec` 扩展（`[<name>@]git+<url>[#<rev>]`，`github:` 缩写报错指路）+
+  - [x] d2 git 依赖：`spec` 扩展（`[<name>@]git+<url>[#<rev>]` +
+    `github:<user>/<repo>[#<rev>]` 缩写，2026-09-11 收官）+
     `src/pm/git.rs`（本地 `file://`/路径走 `gix` open+rev-parse+worktree 拷贝，
     远端走 `git` CLI 浅克隆——`gix` 默认特性无网络客户端，补特性拖 transport，
-    见 `dependencies.md` 附记；落地后 bin 链接 + lifecycle 与 tarball 同待遇，
-    lockfile 记 `git+<url>#<commit>`）。模块单测 7 例 + 黑盒 4 例
+    见 `dependencies.md` 附记；远端含 ssh 全走 git CLI，`russh` 不引入，见本节尾；
+    落地后 bin 链接 + lifecycle 与 tarball 同待遇，
+    lockfile 记 `git+<url>#<commit>`）。模块单测 7+3 例 + 黑盒 4 例
     （dry-run/未知 rev/裸名读包/真装 require）；`cargo test` 28+104 全绿，0 警告。
-  - [x] d3 publish/login：`src/pm/publish.rs`（`publish --dry-run` 本地校验：
-    名/版本（`semver`）/license（`spdx`，缺失 WARN/非法错）/`files` 表，
-    打印摘要不碰网络，真 PUT 顺延；`login --token` upsert
-    `//<host>/:_authToken` 进 `$HOME/.npmrc`（原子，值永不进日志），
-    TTY 缺 token 走 `dialoguer` 密码提示；`login --oauth` 经 `oauth2` 拼
-    `{registry}/oauth/authorize` URL + `webbrowser` 试开，code 交换顺延）。
-    CLI 新增 `publish`/`login`（man 7→9）。模块单测 4 例 + 黑盒 4 例
-    （dry-run/缺名坏 license/token 落盘/oauth URL）；`cargo test` 32+108 全绿，0 警告。
-  - [x] d4 upgrade：`src/pm/upgrade.rs`（渠道 `WINTERJS_UPDATE_GITHUB=owner/repo`；
-    dry-run 打印当前版 + 渠道不碰网络；真升有渠道走 `Update::update()`，
-    无渠道报顺延错；`self_update` 加 `github` 纯开关特性，`cargo tree` 复核
-    aws-lc/native-tls/openssl 仍为空）。CLI 新增 `upgrade`（man 9→10）。
-    模块单测 1 例 + 黑盒 3 例（dry-run/无渠道报错/渠道回显）；
-    `cargo test` 33+111 全绿，0 警告。
-- Phase 5 完工（2026-09-10）：install/dry-run/真装/缓存/lifecycle/续传/npmrc/git/
-  publish dry-run/login/upgrade 干跑，`cargo test` 33+111 全绿，0 警告，冒烟 5/5。
+  - [x] d3 publish/login：`src/pm/publish.rs`（本地校验：名/版本（`semver`）/
+    license（`spdx`，缺失 WARN/非法错）/`files` 表 + 打 tarball（`package/` 前缀）+
+    真 `PUT {registry}/{name}`（versions/dist-tags/_attachments，Bearer 鉴权，
+    409/401 可读错，2026-09-11 收官，批3；模块往返 + 黑盒 PUT/无 token/dry-run）；
+    `login --token` upsert `//<host>/:_authToken` 进 `$HOME/.npmrc`（原子，
+    值永不进日志），TTY 缺 token 走 `dialoguer` 密码提示；`login --oauth` 经
+    `oauth2` 拼 `{registry}/oauth/authorize` URL + `webbrowser` 试开 +
+    `--token code:<code>` 交换落盘（2026-09-11 收官）。
+    CLI 新增 `publish`/`login`（man 7→9）。模块单测 4+1 例 + 黑盒 4+2 例
+    （dry-run/缺名坏 license/token 落盘/oauth URL/真 PUT/无 token）；
+    `cargo test` 32+108 全绿，0 警告。
+  - [x] d1 补（2026-09-11，批1）：`@scope:registry` 作用域镜像（精确匹配，
+    project > home；cli/env 仍最高）+ token 按生效 registry 逐包透传 +
+    lifecycle 加 `prepare`（发包事件不跑，无远端发布流程）。
+    模块单测 +5（scope 精确/优先级/github 表）。
+- Phase 5 完工（2026-09-10；顺延 2026-09-11 收官）：install/dry-run/真装/缓存/
+  lifecycle/续传/npmrc/git/publish 真 PUT/login（含 OAuth 交换）/upgrade 干跑，
+  `cargo test` 全绿，0 警告，冒烟 5/5。
+- 不再做（书面理由）：`object_store` 远端缓存（§2 禁 aws-lc 后 http/aws/azure/gcp
+  后端全禁，只剩 fs——与既有 `cache.rs` 重复，不引入）；`russh` 私有仓 SSH
+  （远端 git 含 ssh 全走 git CLI，覆盖；`gix` 只做本地）；`keyring` 令牌保管
+  （npm 口径即 `~/.npmrc` 明文 token，`login` 已对齐，不引入）。
 
 ## Phase 6 — serve（HTTP 服务）
 
@@ -281,8 +303,19 @@
   `console-subscriber`（开发期，需 `tokio_unstable`）、`netstat2`
   （bind 错误已可读，预检有 TOCTOU，不用）。
   `cargo test` 39+123 全绿，0 警告，冒烟 5/5。
-- Phase 6 完工（2026-09-10）：serve/中间件/指标限流/TLS，`cargo test` 39+123
-  全绿，0 警告，冒烟 5/5，200 并发零失败。
+- [x] 切片 d5 ACME（2026-09-11，批4）：`--acme-domain`（缺省
+  `winterjs.bemly.moe`）`--acme-email`/`--acme-cache`/`--acme-production`
+  （缺省 staging 防限流）+ 缓存复用（notAfter>now+30d）+ HTTP-01（临时 `:80`
+  应答）+ CSR（rcgen）+ 账户落盘；`instant-acme` 的 hyper-rustls 拖 aws-lc
+  （§2 禁）故 ReqwestHttp 手写桥接（ring 同源）；与 `--cert/--key` 互斥；
+  `--dry-run` 只校验打印。模块 5 + 黑盒 2（dry-run 计划/互斥）。
+  约束书面记录：真签发需公网 `:80` + DNS 指到本机（当前域指 benchmark 段，
+  签不出，先 staging 手工验）。
+- Phase 6 完工（2026-09-10；ACME 2026-09-11 收官）：serve/中间件/指标限流/
+  TLS/ACME，`cargo test` 全绿，0 警告，冒烟 5/5，200 并发零失败。
+- 不再做（书面理由）：Win 服务（mac 无法验证，留 CI 编译）、
+  `console-subscriber`（开发期，需 `tokio_unstable`，dev 手动 RUSTFLAGS 接）、
+  `netstat2`（bind 错误已可读，预检有 TOCTOU，不用）。
 
 ## Phase 7 — runtime 补齐（sqlite/REPL/test/watch/FFI）
 
@@ -304,9 +337,10 @@
   `cargo test` 42+127 全绿，0 警告，冒烟 5/5。
 - [x] 切片 e2（2026-09-10）：`winterjs init [name] [--yes]`（`src/initpkg.rs`，
   `askama` 内联三模板：package.json + index.js + hello.test.js，init 后
-  `test` 即绿闭环；已存在不覆盖整体报错；缺名取目录名；非 TTY 缺 `--yes`
-  即错）。CLI 新增 `init`（man 12→13）。模块单测 2 例 + 黑盒 4 例
-  （闭环/坏名/冲突/非TTY）；  `cargo test` 44+131 全绿，0 警告，冒烟 5/5。
+  `test` 即绿闭环；已存在不覆盖整体报错（2026-09-11 加 `--force` 逐个覆盖）；
+  缺名取目录名；非 TTY 缺 `--yes` 即错）。CLI 新增 `init`（man 12→13）。
+  模块单测 2 例 + 黑盒 4 例（闭环/坏名/冲突/非TTY）；
+  `cargo test` 44+131 全绿，0 警告，冒烟 5/5。
 - [x] 切片 e3（2026-09-10）：`winterjs repl`（`src/repl.rs` + `runtime.rs::repl`：
   `init_session/pump_once` 抽共用（`run` 零回归 44+131），持久会话 +
   rustyline 行编辑/历史/括号续行 + 手写高亮（oxc Lexer 私有，见依赖附记）+
@@ -341,6 +375,8 @@
   每文件独立线程（CONTEXT/state TLS 随线程生灭，16MB 栈）。模块单测 +1
   （watchable 过滤表）+ 黑盒 +2（watch 重跑+SIGINT e2e / 两文件全过回归）；
   `cargo test` 53+139 全绿，0 警告，冒烟 5/5。
+- [x] 补（2026-09-11，批1）：`--test-name-pattern` 名过滤（子串或 `/re/flags`，
+  经 env 进 `node:test` harness；未命中 skip，before/after 照跑）。
 - [x] 切片 e6（2026-09-11）：`bun:ffi`（libloading 之上，`src/builtins/bun/ffi.rs`
   + build.rs 生成调用 shim）。动态调用引擎无 libffi 落法（调研：libffi/dyncall
   皆 C，纯 Rust 无轮子，§13 记手写件）：C ABI 按参数独立分类（INTEGER/SSE
@@ -410,9 +446,14 @@
   （fetch 懒装可能更晚）。退出顺序：panic 路径自身 flush(None)（发完才 unwind →
   human-panic/标准 hook 链），main 的 process::exit 前防御性 flush(2s)（§4.8 兼容）。
   上报是旁路：不可达端点/任何 sentry 失败绝不影响 CLI（黑盒钉住）。
-  模块单测 3 例（stub server 信封 e2e：POST /api/<proj>/envelope/ +
-  X-Sentry-Auth + 消息内容 / panic hook 链真路 / DSN 门控）+ 黑盒 1 例
-  （坏 DSN/不可达/未设 三态）；`cargo test` 67+147 全绿，0 警告，冒烟 5/5。
+   模块单测 3 例（stub server 信封 e2e：POST /api/<proj>/envelope/ +
+   X-Sentry-Auth + 消息内容 / panic hook 链真路 / DSN 门控）+ 黑盒 1 例
+   （坏 DSN/不可达/未设 三态）；`cargo test` 67+147 全绿，0 警告，冒烟 5/5。
+- [x] 顺延收官（2026-09-11）：全 flag CLI（`src/cli.rs` 重写：无裸子命令，
+  动作一律 `-x/--xxx`，`§0.8` 规范；一次恰好一个动作；man 回单页）+
+  中英双语 help（`rust-i18n`，`-l/--lang` > `WINTERJS_LANG` > 系统 > en；
+  英文输出逐字节不变）+ add/install 拆分（本地 `node_modules` / 全局数据目录）。
+  踩坑 §4.25（by-value 改造）§4.26（值紧贴/机械改名误伤）§4.28（空调用回滚）。
 
 ## 全局纪律
 

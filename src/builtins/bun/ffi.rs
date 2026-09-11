@@ -448,33 +448,33 @@ mod tests {
     fn invoke_shims_roundtrip() {
         unsafe {
             // 全整数参 + 整数返
-            match invoke(2, 0b00, 0, t_add as usize, &[3, 4], &[]) {
+            match invoke(2, 0b00, 0, t_add as *const () as usize, &[3, 4], &[]) {
                 Ok(FfiRet::I(v)) => assert_eq!(v, 7),
                 other => panic!("bad: {other:?}"),
             }
             // 混合类别：a0 整数 a1 双精度（mask 0b10）+ 浮点返
-            match invoke(2, 0b10, 1, t_mix as usize, &[2], &[0.5]) {
+            match invoke(2, 0b10, 1, t_mix as *const () as usize, &[2], &[0.5]) {
                 Ok(FfiRet::D(v)) => assert!((v - 2.5).abs() < 1e-12),
                 other => panic!("bad: {other:?}"),
             }
             // f32 返回（参数是 f64 → mask 0b01）
-            match invoke(1, 0b01, 2, t_f32 as usize, &[], &[21.0]) {
+            match invoke(1, 0b01, 2, t_f32 as *const () as usize, &[], &[21.0]) {
                 Ok(FfiRet::F(v)) => assert_eq!(v, 42.0f32),
                 other => panic!("bad: {other:?}"),
             }
             // 零参
-            match invoke(0, 0, 0, t_zero as usize, &[], &[]) {
+            match invoke(0, 0, 0, t_zero as *const () as usize, &[], &[]) {
                 Ok(FfiRet::I(v)) => assert_eq!(v, 77),
                 other => panic!("bad: {other:?}"),
             }
             // 负数按补码走（i64 通道），返回侧保号
             let neg = -12345i64 as u64;
-            match invoke(1, 0b00, 0, t_id as usize, &[neg], &[]) {
+            match invoke(1, 0b00, 0, t_id as *const () as usize, &[neg], &[]) {
                 Ok(FfiRet::I(v)) => assert_eq!((v as i64) as f64, -12345.0),
                 other => panic!("bad: {other:?}"),
             }
             // 未知组合（元数 >6）报错
-            assert!(invoke(7, 0, 0, t_zero as usize, &[], &[]).is_err());
+            assert!(invoke(7, 0, 0, t_zero as *const () as usize, &[], &[]).is_err());
         }
     }
 

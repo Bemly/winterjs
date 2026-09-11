@@ -335,6 +335,17 @@ cargo build
   撞上 `["init", ` 模式。修法：脚本断言计数 + 事后按命令名复核 bare 残留；
   跨工具同名（git init）逐个手改（`src/cli.rs` 全 flag 重写，`tests/cli.rs`）。
 
+### 4.28 空工具调用可能回滚工作区（2026-09-11）
+
+- 症状：一次无参数的 edit 调用被 abort 后，工作区 4 个文件被回滚到旧快照
+  （`mod.rs -190`/`fs.rs -47`/`tests -89`/`child.rs` 重现已删 PIPEDBG；
+  未提交的 `publish.rs` 改动全丢；已提交的批2内容 HEAD 完好）。
+- 根因：未深究（记坑；疑似 harness 对空调用/中断恢复了 stale 快照）。
+- 修法：`git checkout HEAD -- <files>` 恢复已提交部分，未提交部分按历史重做；
+  大 edit 后立即 `grep`/`tail` 确认落盘再跑测试。
+- 推广为铁律：绝不发送无参数/空参数的工具调用；同文件 edit 串行且每次验落盘；
+  大改动每完成一文件即 `git add`（不 commit 也先进 index，丢了能从 index 找回）。
+
 ### 4.27 增量解码两阶段 + BYOB 三坑（2026-09-11）
 
 - `decode_to_string` 的 `InputEmpty + read=0` 是"截断已缓存、等下次 feed"，

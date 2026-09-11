@@ -487,6 +487,8 @@
   中英双语 help（`rust-i18n`，`-l/--lang` > `WINTERJS_LANG` > 系统 > en；
   英文输出逐字节不变）+ add/install 拆分（本地 `node_modules` / 全局数据目录）。
   踩坑 §4.25（by-value 改造）§4.26（值紧贴/机械改名误伤）§4.28（空调用回滚）。
+  收尾计数（2026-09-11 实测）：`cargo test` 100（单测）+176（黑盒）全绿
+  （另 alloc 探针 1 过 1 忽略）；`cargo build` 0 警告；冒烟 5/5。
 
 ## 全局纪律
 

@@ -35,6 +35,7 @@ pub mod trace_events;
 pub mod tty;
 pub mod util;
 pub mod util_types;
+pub mod zlib;
 
 /// 全局 `process` 等启动期求值的 JS（`runtime` 在主 PRELUDE 后求值）。
 /// 版本占位 `26.9.11` 在求值前替换为 `CARGO_PKG_VERSION`（发版时两处同步改，不漂移）。
@@ -77,6 +78,8 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:diagnostics_channel", diagnostics_channel::SOURCE),
     ("node:trace_events", trace_events::SOURCE),
     ("node:tty", tty::SOURCE),
+    // Phase 9d-5
+    ("node:zlib", zlib::SOURCE),
 ];
 
 /// spec 规范化（`node:` 前缀可选；internal 走 `internal::normalize_internal`；
@@ -116,6 +119,8 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "stream/consumers" => Some("node:stream/consumers"),
         "stream/web" => Some("node:stream/web"),
         "timers/promises" => Some("node:timers/promises"),
+        // Phase 9d-5
+        "zlib" => Some("node:zlib"),
         _ => None,
     }
 }
@@ -185,6 +190,10 @@ mod tests {
         assert_eq!(normalize_spec("stream/promises"), Some("node:stream/promises"));
         assert_eq!(normalize_spec("node:stream/web"), Some("node:stream/web"));
         assert_eq!(normalize_spec("timers/promises"), Some("node:timers/promises"));
+        // Phase 9d-5
+        assert_eq!(normalize_spec("zlib"), Some("node:zlib"));
+        assert_eq!(normalize_spec("node:zlib"), Some("node:zlib"));
+        assert!(source("node:zlib").is_some());
         assert_eq!(normalize_spec("node:internal/streams/readable"), Some("node:internal/streams/readable"));
         assert!(source("node:buffer").is_some());
         assert!(source("node:stream").is_some());

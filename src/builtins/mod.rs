@@ -2060,6 +2060,18 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_dns_lookup", Some(node::dns::dns_lookup), 1),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
+            // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）
+            ("__wjs_zlib_deflate_lv", Some(node::zlib::zlib_deflate_lv), 2),
+            ("__wjs_zlib_inflate", Some(node::zlib::zlib_inflate), 1),
+            ("__wjs_zlib_deflate_raw", Some(node::zlib::zlib_deflate_raw), 2),
+            ("__wjs_zlib_inflate_raw", Some(node::zlib::zlib_inflate_raw), 1),
+            ("__wjs_zlib_gzip", Some(node::zlib::zlib_gzip), 2),
+            ("__wjs_zlib_gunzip", Some(node::zlib::zlib_gunzip), 1),
+            ("__wjs_zlib_unzip", Some(node::zlib::zlib_unzip), 1),
+            ("__wjs_zlib_brotli_compress", Some(node::zlib::zlib_brotli_compress), 2),
+            ("__wjs_zlib_brotli_decompress", Some(node::zlib::zlib_brotli_decompress), 1),
+            ("__wjs_zlib_zstd_compress", Some(node::zlib::zlib_zstd_compress), 1),
+            ("__wjs_zlib_zstd_decompress", Some(node::zlib::zlib_zstd_decompress), 1),
             ("__wjs_cp_exec", Some(node::child::cp_exec), 2),
             ("__wjs_cp_spawn", Some(node::child::cp_spawn), 3),
             // Phase 4d: 异步 spawn（c-4x 加 pipe：stdin 写/关 natives）

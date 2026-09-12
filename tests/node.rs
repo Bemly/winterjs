@@ -2358,3 +2358,168 @@ setTimeout(() => console.log("end-ok"), 200);
     assert!(out.contains("end-ok"), "out: {out}");
     dir.close().unwrap();
 }
+// ── Phase 9d-5：node:zlib ────
+
+#[test]
+fn phase9d_zlib_sync_roundtrip() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import z, {
+  deflateSync, inflateSync, deflateRawSync, inflateRawSync,
+  gzipSync, gunzipSync, unzipSync, brotliCompressSync, brotliDecompressSync,
+  zstdCompressSync, zstdDecompressSync, constants, codes,
+} from "node:zlib";
+const s = "the quick brown fox jumps over the lazy dog. ".repeat(40);
+const pairs = [
+  ["deflate", deflateSync, inflateSync],
+  ["deflateRaw", deflateRawSync, inflateRawSync],
+  ["gzip", gzipSync, gunzipSync],
+  ["brotli", brotliCompressSync, brotliDecompressSync],
+  ["zstd", zstdCompressSync, zstdDecompressSync],
+];
+for (const [name, enc, dec] of pairs) {
+  const c = enc(s);
+  const back = dec(c);
+  console.log(name, c.length < s.length, Buffer.isBuffer(c), back.toString() === s);
+}
+// 输入形态：string / Uint8Array / ArrayBuffer / DataView
+console.log("u8", gunzipSync(gzipSync(new TextEncoder().encode(s))).toString() === s);
+console.log("ab", gunzipSync(gzipSync(new TextEncoder().encode(s).buffer)).toString() === s);
+console.log("dv", gunzipSync(gzipSync(new DataView(new TextEncoder().encode(s).buffer))).toString() === s);
+// unzip 自动识别 gzip 与 zlib 包裹
+console.log("unzip", unzipSync(gzipSync(s)).toString() === s, unzipSync(deflateSync(s)).toString() === s);
+// level 生效：0（stored）大于默认压缩体积
+console.log("level", gzipSync(s, { level: 0 }).length > gzipSync(s).length);
+// brotli params[1]（BROTLI_PARAM_QUALITY）与 quality 等效
+const a = brotliCompressSync(s, { quality: 1 });
+const b = brotliCompressSync(s, { params: { 1: 1 } });
+console.log("brotli-q", a.length === b.length, brotliDecompressSync(b).toString() === s);
+// constants / codes / 顶层别名（Node 口径）
+console.log("const", constants.Z_OK === 0, constants.Z_DATA_ERROR === -3,
+  constants.Z_BEST_COMPRESSION === 9, constants.Z_DEFAULT_COMPRESSION === -1,
+  constants.BROTLI_OPERATION_PROCESS === 0, constants.BROTLI_PARAM_QUALITY === 1,
+  constants.BROTLI_MAX_QUALITY === 11);
+console.log("codes", codes.Z_DATA_ERROR === -3, codes[-3] === "Z_DATA_ERROR", codes[0] === "Z_OK");
+console.log("alias", z.Z_OK === 0, z.Z_STREAM_END === 1, z.Z_SYNC_FLUSH === 2);
+console.log("ns", typeof z.deflate === "function", typeof z.gunzipSync === "function");
+"#,
+    );
+    assert!(out.contains("deflate true true true"), "out: {out}");
+    assert!(out.contains("deflateRaw true true true"), "out: {out}");
+    assert!(out.contains("gzip true true true"), "out: {out}");
+    assert!(out.contains("brotli true true true"), "out: {out}");
+    assert!(out.contains("zstd true true true"), "out: {out}");
+    assert!(out.contains("u8 true"), "out: {out}");
+    assert!(out.contains("ab true"), "out: {out}");
+    assert!(out.contains("dv true"), "out: {out}");
+    assert!(out.contains("unzip true true"), "out: {out}");
+    assert!(out.contains("level true"), "out: {out}");
+    assert!(out.contains("brotli-q true true"), "out: {out}");
+    assert!(out.contains("const true true true true true true true"), "out: {out}");
+    assert!(out.contains("codes true true true"), "out: {out}");
+    assert!(out.contains("alias true true true"), "out: {out}");
+    assert!(out.contains("ns true true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9d_zlib_async_callback() {
+    // 回调链严格嵌套（§4.33：独立异步链交错即 flaky）
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import z from "node:zlib";
+const s = "async zlib chain ".repeat(60);
+z.gzip(s, (e1, c1) => {
+  console.log("gzip", !e1, Buffer.isBuffer(c1));
+  z.gunzip(c1, (e2, b1) => {
+    console.log("gunzip", !e2, String(b1) === s);
+    z.deflate(s, { level: 9 }, (e3, c2) => {
+      console.log("deflate", !e3);
+      z.inflate(c2, (e4, b2) => {
+        console.log("inflate", !e4, String(b2) === s);
+        z.brotliCompress(s, (e5, c3) => {
+          console.log("brotliC", !e5);
+          z.brotliDecompress(c3, (e6, b3) => {
+            console.log("brotliD", !e6, String(b3) === s);
+            z.zstdCompress(s, (e7, c4) => {
+              console.log("zstdC", !e7);
+              z.zstdDecompress(c4, (e8, b4) => {
+                console.log("zstdD", !e8, String(b4) === s);
+                // 回调内错误路径：坏输入进 err，不抛
+                z.gunzip(Buffer.from("garbage-in-garbage-out!!!!!!!!!!!!"), (e9, b5) => {
+                  console.log("bad", !!e9, e9.code, e9.errno, b5 === undefined);
+                  console.log("done");
+                });
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+});
+"#,
+    );
+    assert!(out.contains("gzip true true"), "out: {out}");
+    assert!(out.contains("gunzip true true"), "out: {out}");
+    assert!(out.contains("deflate true"), "out: {out}");
+    assert!(out.contains("inflate true true"), "out: {out}");
+    assert!(out.contains("brotliC true"), "out: {out}");
+    assert!(out.contains("brotliD true true"), "out: {out}");
+    assert!(out.contains("zstdC true"), "out: {out}");
+    assert!(out.contains("zstdD true true"), "out: {out}");
+    assert!(out.contains("bad true Z_DATA_ERROR -3 true"), "out: {out}");
+    assert!(out.contains("done"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9d_zlib_errors_boundary() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { gunzipSync, inflateSync, gzipSync, brotliCompressSync, brotliDecompressSync, gzip, unzipSync } from "node:zlib";
+// 报错：坏输入 code/errno 形状
+for (const [name, fn] of [["gunzip", gunzipSync], ["inflate", inflateSync], ["unzip", unzipSync], ["brotliD", brotliDecompressSync]]) {
+  try { fn(Buffer.from("definitely not compressed data at all!!!")); console.log(name, "no-throw"); }
+  catch (e) { console.log(name, e.code, e.errno, e instanceof Error); }
+}
+// 报错：越界 level/quality → ERR_OUT_OF_RANGE（直通不套 zlib 形）
+for (const [name, fn] of [["lv-hi", () => gzipSync("x", { level: 10 })], ["lv-lo", () => gzipSync("x", { level: -2 })], ["q-hi", () => brotliCompressSync("x", { quality: 12 })]]) {
+  try { fn(); console.log(name, "no-throw"); }
+  catch (e) { console.log(name, e.code, e instanceof RangeError); }
+}
+// 报错：缺回调同步抛 TypeError；错输入类型同步抛 TypeError
+try { gzip("x"); } catch (e) { console.log("nocb", e.constructor.name === "TypeError"); }
+try { gzipSync(123); } catch (e) { console.log("badin", e.constructor.name === "TypeError"); }
+// 边界：空输入往返；单字节；大块 1MB
+console.log("empty", gunzipSync(gzipSync("")).length === 0);
+console.log("one", gunzipSync(gzipSync("Q")).toString() === "Q");
+const big = "0123456789abcdef".repeat(65536);
+console.log("big", gunzipSync(gzipSync(big)).toString() === big);
+console.log("stored", gunzipSync(gzipSync(big, { level: 0 })).toString() === big);
+"#,
+    );
+    assert!(out.contains("gunzip Z_DATA_ERROR -3 true"), "out: {out}");
+    assert!(out.contains("inflate Z_DATA_ERROR -3 true"), "out: {out}");
+    assert!(out.contains("unzip Z_DATA_ERROR -3 true"), "out: {out}");
+    assert!(out.contains("brotliD Z_DATA_ERROR -3 true"), "out: {out}");
+    assert!(out.contains("lv-hi ERR_OUT_OF_RANGE true"), "out: {out}");
+    assert!(out.contains("lv-lo ERR_OUT_OF_RANGE true"), "out: {out}");
+    assert!(out.contains("q-hi ERR_OUT_OF_RANGE true"), "out: {out}");
+    assert!(out.contains("nocb true"), "out: {out}");
+    assert!(out.contains("badin true"), "out: {out}");
+    assert!(out.contains("empty true"), "out: {out}");
+    assert!(out.contains("one true"), "out: {out}");
+    assert!(out.contains("big true"), "out: {out}");
+    assert!(out.contains("stored true"), "out: {out}");
+    dir.close().unwrap();
+}

@@ -627,6 +627,21 @@
   踩坑：§4.34 坑一/坑三二进宫（__ev 忘预绑、task 侧 purge 抢跑）——已沉淀为
   「新事件域 checklist」，见 AGENTS §4.36。
   黑盒 +1（UDP 回环双 socket + 类型校验）；`cargo test` 102+211 全绿，冒烟 5/5。
+- [x] 9d-5 zlib（2026-09-12 完工；https/tls、http2 顺延）：
+  `node:zlib`——convenience 面（`src/builtins/node/zlib.rs`，11 natives +
+  JS 薄壳，零新 crate）：deflate/inflate/deflateRaw/inflateRaw/gzip/gunzip/
+  unzip（flate2）+ brotliCompress/brotliDecompress（brotli 9，quality 缺省 11，
+  `params[1]` 即 BROTLI_PARAM_QUALITY 等效）+ zstdCompress/zstdDecompress
+  （ruzstd；编码恒 Fastest——Default/Better/Best 标 UNIMPLEMENTED，见 §4.37）；
+  Sync + 回调双形态（回调经 `queueMicrotask` 派发，同步底层记档）；
+  `constants`（Z_* 取 zlib.h 通用值，BROTLI_* 经轮子源码实测）+ `codes` 双向表 +
+  顶层非 BROTLI 别名（Node 口径）；输出 `Buffer.prototype` 桥接
+  （`Buffer.isBuffer` 为 true）。
+  偏差记档：流式类/`createXxx`、`crc32`、Zip 实验面、dictionary/flush 系不做；
+  异步无线程池（大块阻塞记档）。
+  踩坑：Sync 校验抛在错误包装内被误标 code（§4.37）。
+  黑盒 +3（sync 五格式往返/回调嵌套链/报错边界）；`cargo test` 104+214 全绿，
+  0 新增警告，冒烟 5/5。
 
 ## 全局纪律
 

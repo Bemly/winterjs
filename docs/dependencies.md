@@ -277,6 +277,9 @@ OHOS 因 `target_os="linux"` 命中同一分支；`simd-json` 加速门控只看
 
 备注：`ruzstd` 经 GitHub README 核实是**完整** zstd 实现（decode 全量＋encode 五档：
 `Fastest`≈level1、`Default`≈3、`Better`≈7、`Best`≈11，另有 checksum；字典暂不开）。
+**勘误（2026-09-12 实测，Phase 9d-5）**：`encoding/mod.rs` 的 `Default`/`Better`/
+`Best` 标 `UNIMPLEMENTED`，实测仅 `Fastest` 可用——`node:zstd` 编码恒 `Fastest`，
+`level` 接受忽略（见 AGENTS §4.37）；上游补齐实现后复议。
 解码走 `StreamingDecoder`，编码走 `ruzstd::encoding::{compress,compress_to_vec}`，
 serve 静态预压缩用 `Fastest`/`Default`；流式编码按 `FrameEncoder` 在实施时确认。
 侦查教训：crates.io 一句话描述（"A decoder…"）是 stale 的，以上游 README 为准。

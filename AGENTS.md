@@ -502,6 +502,20 @@ cargo build
   message 前缀。
 - 复现：`tests/node.rs::phase9d_dgram_loopback`（修前 'close' 丢/`bad-type undefined`）。
 
+### 4.37 zlib 两坑（2026-09-12，Phase 9d-5）
+
+- 症状一：`gzipSync(s, { level: 99 })` 报 `Z_DATA_ERROR` 而非 `ERR_OUT_OF_RANGE`。
+  根因：Sync 把 `__zLevel` 校验写进了 `__zCall(fn)` 的 try 内——校验抛的
+  RangeError 被错误包装函数按无前缀默认成 `Z_DATA_ERROR` 重包。
+  修法：参数校验一律提到包装调用之外先执行；包装函数再加保险——已有
+  `ERR_*` 码的错误直通不重包（`src/builtins/node/zlib.rs` `__zErr`）。
+- 症状二（轮子文档与源码不符）：`dependencies.md` §6 记 ruzstd"编码五档"，
+  实测 `encoding/mod.rs` 只有 `Fastest` 可用（`Default`/`Better`/`Best` 标
+  `UNIMPLEMENTED`）。修法：zstd 编码恒 `Fastest`，`level` 接受忽略并记档；
+  教训：轮子能力断言以源码/实测为准，不抄 README 一句话（§4.32 教训延续）。
+- 复现：`tests/node.rs::phase9d_zlib_errors_boundary`（`lv-hi` 行修前为
+  `Z_DATA_ERROR`）。
+
 
 ## 5. 路线图（按序）
 

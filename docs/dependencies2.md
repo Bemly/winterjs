@@ -36,6 +36,14 @@
 > 版本墙（digest 0.10 双轨 + `hmac 0.13`/`sha3 0.12` traits 互斥）走手写档解决，
 > 未引 `sha1_010`（§0.5 问用户前置未触发），详 AGENTS §4.43。
 
+## 9f 落地注记（2026-09-12，零新 crate）
+
+> 9f 全程未改 `Cargo.toml`/`Cargo.lock`：vm 为 mozjs 原生多 global
+> （`JS_NewGlobalObject` + `Compile1`，无轮子）；worker 线程底座为
+> `std::thread` + `tokio`（§3）+ `std::sync::mpsc` rendezvous——`crossbeam`
+> 虽在 §映射 表内，实际未用到（标准库覆盖），不增补；
+> `quinn` 仍未接线（v1 不验收，§quic 表维持原判）。
+
 ## 9d-剩余三项拍板表（zlib / https-tls / http2，2026-09-12 已拍板）
 
 > 三项轮子**全部已在闭包**（版本号/建库/维护/纯度/矩阵照抄 `dependencies.md` §6/§10

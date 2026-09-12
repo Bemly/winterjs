@@ -714,6 +714,51 @@
   9e 记档缺口：ripemd160/XOF、secp256k1、dsa、PQ（ml-kem）、fork/真 IPC 通道、
   X509 verify、argon2 AD、`generatePrime{bigint,size}`、GCM iv 限 12B、
   PKCS#7 非恒定时间。
+- [x] 9f-1 node:vm（2026-09-12 完工；引擎深水）：
+  同 Runtime 多 global 沙箱（`src/builtins/node/vm.rs`，9 natives + JS 壳，
+  零新 crate）：`JS_NewGlobalObject(SIMPLE_GLOBAL_CLASS)` 建独立 global
+  （新 compartment，标准类同套懒 resolve，无 prelude；job queue per-context
+  共享不重装）→ `Box<Heap>` 入 `state::vm_contexts`（§4.40 定址），id 单调；
+  求值走 `evaluate_script`（自进目标 realm）+ 同步一轮 `RunJobs`
+  （afterEvaluate 等效）；完成值对象跨 compartment 以 CCW 传递；
+  沙箱快照式同步（run 前 sync-in、后 sync-out，只回写非标准初始键）；
+  错误保 name/message（包络重建同名 Error）；`Script` 构造期 `Compile1` 预检；
+  `compileFunction`（主/parsingContext 双目标 + contextExtensions）；
+  `measureMemory` 实验警告 + 恒 reject。真机逐项对齐（隔离/回写/`isContext`/
+  RangeError 保真/ctor SyntaxError）。
+  偏差记档：沙箱非活绑定；`timeout`/`breakOnSigint` 只校验；无字节码缓存；
+  `microtaskMode` 恒 afterEvaluate 等效；模块/`import()` 不支持；错误无 stack 跨域。
+  黑盒 +2（上下文隔离/Script/compileFunction + 报错边界）；`cargo test` 全绿。
+- [x] 9f-2 worker 消息通道（2026-09-12 完工）：
+  `src/builtins/node/worker.rs` + 事件循环第 6 通道 `worker_rx`
+  （`init_session`/`pump_once`/`event_loop`/`repl` 全链，idle 条件加
+  `worker_open()==0`）：`MessageChannel`/`MessagePort`（JSON 线经对端会话收件箱，
+  同会话回环亦走循环故恒异步；paused 口径——无监听只排队，`newListener` 开闸；
+  计数 `open && refed && listening`）+ `receiveMessageOnPort`/
+  `moveMessagePortToContext`（恒返自身）/`markAsUncloneable`（`DataCloneError`
+  具名）+ `isMainThread`/`threadId`（主 true/0）/`parentPort`/`workerData`
+  （主 null）/`resourceLimits` `{}`/`SHARE_ENV`/环境数据（进程级共享）。
+  附带修事件循环真 race（§4.46）：`progressed` 后直接 park 会饿死只排了 microtask
+  的结算（无 timer 即 hang）——改为回顶再跑一轮；`define_all` 加重名 native
+  `debug_assert`（§4.48）。
+  黑盒 +2（通道往返/迟监听/receive + 线程信息/边界）；`cargo test` 全绿。
+- [x] 9f-3 Worker（2026-09-12 完工）：
+  每 worker 独立 OS 线程 + 完整会话（`runtime::run_worker_thread`，16MB 栈，
+  §4.24 哲学；boot 经线程局部槽进 `init_session` 落地：身份/workerData/
+  parentPort/权限继承 CLI 快照）：boot rendezvous（收件箱 + parentPort 就绪才
+  返回；早失败亦发 parked 端 rendezvous，事件不丢、主侧不超时）→ `WOnline` →
+  用户脚本 → `WMsg`/`WError` → `WExit`。文件 worker 走文件管线；eval 串嗅探
+  ESM→落临时 `.mjs`（复用管线），否则经典求值。退出码：排空 0/未捕获错 1/
+  终止 1（`WTerminate` 检查点生效）/`process.exit(n)`→n。
+  黑盒 +3（eval+data/双向 terminate/错误边界 + 文件 worker；真机 w1–w4 逐行对齐）。
+  偏差记档：transfer 忽略；eval completion 照脚本语义打印；同步死循环停不下来；
+  workerData `undefined`→`null`；stdio 恒 null；execArgv 等接受忽略；
+  `BroadcastChannel` 等不导出；无 error 监听即 fatal（Node 同款）。
+- 9f 收官（2026-09-12）：`cargo test` 单测 119 + 黑盒 241 全绿
+  （node 83 含 9f 新增 7：vm 2/channel 2/worker 3；总 360 passed + 1 ignored，
+  0 failed），0 新增警告（5 预存），冒烟 5/5，零新 crate（`Cargo.toml` 未动；
+  `quinn` 仍未接线，v1 不验收）。剩 9f 深水（`vm` 模块系/`worker_threads` 传输
+  细节）与 plan2 §4 不做项记终局缺口。
 
 ## 全局纪律
 

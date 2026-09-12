@@ -626,6 +626,59 @@ cargo build
   `checkHost` 返匹配串、`hkdfSync` 回 ArrayBuffer、空 histogram 哨兵
   （`min=INT64_MAX`）——黑盒先对真机实测再写断言（§4.31 症状三/§4.32 教训延续）。
 
+### 4.46 `progressed` 后直接 park 会饿死 microtask-only 结算（2026-09-12，§4.18 推广）
+
+- 症状：worker 端口 `postMessage` 后进程 hang（无 timer 时必发；有 timer 时
+  到 sleep 醒才送达——延迟送达是同一根因的轻症）。
+- 根因：端口 `__ev` 只排 `queueMicrotask`（flush 在下轮 `RunJobs`），而循环在
+  `progressed` 后直接进 `select!` park——再无 `RunJobs` 机会。旧代码只对
+  "结算致 idle"（fetch 模型）有效：`idle && progressed` 经 None 分支 `continue`
+  回顶；而端口/net 类结算不改变 open 计数，`idle=false` 即 park。
+  同理潜伏：timer 回调内决议 promise + 他域 open 计数未清，同样 hang。
+- 修法（`src/runtime.rs`）：`idle && !progressed` 照旧 break，其后
+  `if progressed { continue; }`——回顶下一轮 pump 先 `RunJobs`，无新进展才 park，
+  不忙转（progressed 源皆有限：通道缓冲/timer 触发）；None 分支内
+  `if idle { continue; }` 已不可达，删除。
+- 复现：`w11.mjs`（监听 + 投递，无 timer，修前 hang；`tests/node.rs` 落盒时已修）。
+- 推广为铁律：§4.18 铁律的完整形态——结算点之后**到 park 之前**必须保证至少一轮
+  `RunJobs`；新增事件域若结算只排 microtask，必走此路径验证（无 timer 用例）。
+
+### 4.47 `newListener` 在监听入表*之前*触发（2026-09-12，Phase 9f-2）
+
+- 症状：迟挂监听（先 post、后 `on('message')`）永远收不到，端口关不掉 hang。
+- 根因：`newListener` 事件在监听**入表前**触发（events.js:371 同款语义）——
+  处理器里查 `listenerCount('message')` 仍为 0，flush 门控永不开。
+- 修法：newListener 处理器内 `queueMicrotask(() => maybeFlush())`，延迟到入表后
+  再判（`src/builtins/node/worker.rs` MessagePort 构造器）。
+- 推广为铁律：凡用 `newListener` 做"监听到达即…"门控，一律延迟一轮再读表；
+  同步读表恒为旧值。
+
+### 4.48 native 重名静默覆盖 + `static` 判重跨会话误报（2026-09-12，Phase 9f-2）
+
+- 症状：`phase4_node_process_argv_env` 挂——`process.env` 的 `Object.keys` 看不见
+  新变量、`delete` 删不掉；与 worker 八竿子打不着。
+- 根因：worker 环境数据 native 取名 `__wjs_env_get/set`，撞上 `process.env`
+  同名 native——`define_all` 同表后注册静默覆盖，get/set 走新表、keys/del 走旧表，
+  两张皮。教训：`__wjs_*` 无命名空间校验，全靠自觉。
+- 修法：改名 `__wjs_worker_env_*` + `define_all` 的 `web` 表循环加
+  `debug_assert` 判重（`src/builtins/mod.rs`，负验证：临时插重复名即 panic）。
+- 连环坑：判重集初版用 `static`——`define_all` 每会话跑一次（test 多文件/
+  worker 线程），第二会话起全误报。改函数局部 `HashSet`（`#[cfg(debug_assertions)]`）。
+- 推广为铁律：新增 `__wjs_*` 前先 grep 有无重名；判重状态一律函数局部，
+  禁 `static` 累积（多会话进程必误报）。
+
+### 4.49 worker 早失败必须也发 rendezvous，否则主侧超时 + 事件丢失（2026-09-12，Phase 9f-3）
+
+- 症状：`new Worker("./nope-missing.js")` 卡 30 秒报 `failed to start`；
+  若修超时，`WError`/`WExit` 又因先于 JS `attach` 到达被丢弃（exit 事件永不到）。
+- 根因：文件读错发生在会话起之前，rendezvous 从未发出（主侧 `recv_timeout`
+  干等）；早发的错误事件在目标登记前到达即丢（dispatch 查不到 target）。
+- 修法（`src/runtime.rs::run_worker_thread`）：早失败路径先排 `WError`/`WExit`，
+  再发 rendezvous（parked 收件箱——接收端已 drop，后续投递即失败不堆积）；
+  主侧 spawn 返回后 JS 同步 attach，早于任何分发，事件不丢。
+- 推广为铁律：跨线程 rendezvous 的**所有**出口（含失败出口）都必须发一次；
+  目标登记晚于事件到达是常态，设计时即保证"先排队、后登记、再分发"时序。
+
 
 ## 5. 路线图（按序）
 

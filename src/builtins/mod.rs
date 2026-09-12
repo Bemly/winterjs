@@ -2071,6 +2071,11 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_crypto_hash_update", Some(node::crypto::crypto_hash_update), 2),
             ("__wjs_crypto_hash_digest", Some(node::crypto::crypto_hash_digest), 1),
             ("__wjs_crypto_hash_copy", Some(node::crypto::crypto_hash_copy), 1),
+            // Phase 9e-1b: node:crypto 对称密码（CBC/CTR 流式 + ChaCha oneshot）
+            ("__wjs_cipher_new", Some(node::crypto::cipher_new), 5),
+            ("__wjs_cipher_update", Some(node::crypto::cipher_update), 2),
+            ("__wjs_cipher_final", Some(node::crypto::cipher_final), 1),
+            ("__wjs_cipher_chacha", Some(node::crypto::cipher_chacha), 6),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）

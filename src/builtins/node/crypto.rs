@@ -1,7 +1,7 @@
-//! `node:crypto` 9e-1a：Hash 流式 + Hmac/随机/杂项。
-//! 复用全局 `__wjs_*`（随机/UUID；零新 `UNSAFE-BOUNDARY`）；HMAC 经通用构造
+//! `node:crypto` 9e-1a/9e-1b：Hash 流式 + Hmac/随机/杂项 + 对称密码。
+//! 复用全局 `__wjs_*`（随机/UUID/AES-GCM；零新 `UNSAFE-BOUNDARY`）；HMAC 经通用构造
 //! 自架流式 Hash natives（sha3 与 hmac 0.13 的 block-API 不兼容，见修法记）；
-//! 新增仅增量 Hash 注册表（`encoding.rs` `STREAM_DECODERS` 同款线程本地表）。
+//! 新增仅增量 Hash/Cipher 注册表（`encoding.rs` `STREAM_DECODERS` 同款线程本地表）。
 //! 偏差记档（9e-1a）：
 //! - 摘要集合 = RustCrypto 已接线：sha1/sha256/sha384/sha512/md5/sha3-256/384/512/
 //!   blake2b512/blake2s256。`ripemd160`（无 crate）、XOF（shake/cshake/turboshake/
@@ -14,6 +14,12 @@
 //! - 异步形态（`randomBytes(cb)`/`randomInt(cb)`/`randomFill`）经 `queueMicrotask`
 //!   派发同步底层（`node:fs` 同款口径）；`getMacs`/`createMac` 真 Node 26 运行时
 //!   不存在（仅 `lib/crypto.js` 残留导出），不做；`setEngine/getFips` 等随 9e-1c。
+//! 偏差记档（9e-1b）：
+//! - 对称集合：aes-128/192/256-cbc/ctr/gcm + chacha20-poly1305 + des-ede3-cbc。
+//!   GCM/ChaCha 系 AEAD 无流式（buffered，`final` 时 oneshot；http 体整收同款口径）。
+//! - GCM iv 限 12 字节（`__wjs_aesgcm_*` 既有约束；Node 接受任意长度，记档）。
+//! - PKCS#7 填充校验非恒定时间实现（功能等价，侧信道记档）；`bf-cbc` 等 OpenSSL
+//!   遗留算法不做；`ccm/ocb/wrap` 系不做。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -269,6 +275,411 @@ pub unsafe extern "C" fn crypto_hash_copy(
         None => {
             report_error(&mut cx, "ERR_CRYPTO_HASH_FINALIZED: Digest already called");
             false
+        }
+    }
+}
+
+// ── 9e-1b 对称密码（CBC/CTR 真流式注册表；GCM/ChaCha 在 JS 侧 buffered）─────
+
+// cipher 0.5 系经 `aes` 重导出直用（零新增，`digest` 同款口径）。
+use aes::cipher::block::{BlockCipherDecrypt, BlockCipherEncrypt, BlockModeDecrypt, BlockModeEncrypt};
+use aes::cipher::{Block, BlockSizeUser, Key};
+
+/// CBC 加密作业（整块原地；`pending` 攒不足块，`final` 时 PKCS#7）。
+trait CbcEncJob {
+    fn enc_blocks(&mut self, data: &mut [u8]);
+}
+/// CBC 解密作业（解密时永远扣留最后一块，`final` 定夺填充）。
+trait CbcDecJob {
+    fn dec_blocks(&mut self, data: &mut [u8]);
+}
+/// CTR 作业（连续 keystream，无块边界概念）。
+trait CtrJob {
+    fn apply(&mut self, data: &mut [u8]);
+}
+
+struct CbcE<D: BlockCipherEncrypt>(cbc::Encryptor<D>);
+struct CbcD<D: BlockCipherDecrypt>(cbc::Decryptor<D>);
+/// CTR 内核（AES 三档单态枚举；泛型写法需 typenum 块约束，得不偿失）。
+enum CtrInner {
+    Aes128(ctr::Ctr128BE<aes::Aes128>),
+    Aes192(ctr::Ctr128BE<aes::Aes192>),
+    Aes256(ctr::Ctr128BE<aes::Aes256>),
+}
+struct CtrX(CtrInner);
+
+/// 字节片 ↔ 块向量（拷贝一次；正确优先，块粒度下开销可忽略）。
+fn to_blocks<D: BlockSizeUser>(data: &[u8]) -> Vec<Block<D>> {
+    data.chunks_exact(D::block_size())
+        .map(Block::<D>::clone_from_slice)
+        .collect()
+}
+
+fn from_blocks<D: BlockSizeUser>(blocks: &[Block<D>]) -> Vec<u8> {
+    let bs = D::block_size();
+    let mut out = Vec::with_capacity(blocks.len() * bs);
+    for b in blocks {
+        out.extend_from_slice(b);
+    }
+    out
+}
+
+impl<D: BlockCipherEncrypt> CbcEncJob for CbcE<D> {
+    fn enc_blocks(&mut self, data: &mut [u8]) {
+        let mut blocks = to_blocks::<D>(data);
+        self.0.encrypt_blocks(&mut blocks);
+        let flat = from_blocks::<D>(&blocks);
+        data.copy_from_slice(&flat);
+    }
+}
+
+impl<D: BlockCipherDecrypt> CbcDecJob for CbcD<D> {
+    fn dec_blocks(&mut self, data: &mut [u8]) {
+        let mut blocks = to_blocks::<D>(data);
+        self.0.decrypt_blocks(&mut blocks);
+        let flat = from_blocks::<D>(&blocks);
+        data.copy_from_slice(&flat);
+    }
+}
+
+impl CtrJob for CtrX {
+    fn apply(&mut self, data: &mut [u8]) {
+        use aes::cipher::StreamCipher as _;
+        match &mut self.0 {
+            CtrInner::Aes128(c) => c.apply_keystream(data),
+            CtrInner::Aes192(c) => c.apply_keystream(data),
+            CtrInner::Aes256(c) => c.apply_keystream(data),
+        }
+    }
+}
+
+enum CipherJob {
+    CbcEnc { job: Box<dyn CbcEncJob>, pending: Vec<u8>, block: usize },
+    CbcDec { job: Box<dyn CbcDecJob>, pending: Vec<u8>, block: usize, autopad: bool },
+    Ctr { job: Box<dyn CtrJob> },
+}
+
+thread_local! {
+    static CIPHERS: RefCell<HashMap<u64, CipherJob>> = RefCell::new(HashMap::new());
+    static CIPHER_NEXT: RefCell<u64> = RefCell::new(1);
+}
+
+fn cipher_alloc(job: CipherJob) -> u64 {
+    CIPHER_NEXT.with(|n| {
+        CIPHERS.with(|m| {
+            let mut n = n.borrow_mut();
+            let id = *n;
+            *n = n.wrapping_add(1).max(1);
+            m.borrow_mut().insert(id, job);
+            id
+        })
+    })
+}
+
+/// 对称算法表（纯函数，单元测试覆盖）：名 →（族，密钥长，iv 长，块）。
+fn cipher_params(alg: &str) -> Option<(&'static str, usize, usize, usize)> {
+    match alg.trim().to_ascii_lowercase().as_str() {
+        "aes-128-cbc" => Some(("cbc-aes128", 16, 16, 16)),
+        "aes-192-cbc" => Some(("cbc-aes192", 24, 16, 16)),
+        "aes-256-cbc" => Some(("cbc-aes256", 32, 16, 16)),
+        "aes-128-ctr" => Some(("ctr-aes128", 16, 16, 16)),
+        "aes-192-ctr" => Some(("ctr-aes192", 24, 16, 16)),
+        "aes-256-ctr" => Some(("ctr-aes256", 32, 16, 16)),
+        "des-ede3-cbc" => Some(("cbc-des3", 24, 8, 8)),
+        _ => None,
+    }
+}
+
+fn pkcs7_pad(block: usize, mut data: Vec<u8>) -> Vec<u8> {
+    let pad = block - (data.len() % block);
+    data.extend(std::iter::repeat(pad as u8).take(pad));
+    data
+}
+
+/// PKCS#7 校验剥离（非恒定时间实现，见头注记档）。
+fn pkcs7_unpad(block: usize, data: &[u8]) -> Option<Vec<u8>> {
+    let n = *data.last()? as usize;
+    if n == 0 || n > block || n > data.len() {
+        return None;
+    }
+    if !data[data.len() - n..].iter().all(|&b| b as usize == n) {
+        return None;
+    }
+    Some(data[..data.len() - n].to_vec())
+}
+
+/// `__wjs_cipher_new(alg, keyU8, ivU8, encNum, autoPadNum)` → id 字符串。
+pub unsafe extern "C" fn cipher_new(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 5 {
+        report_error(&mut cx, "TypeError: cipher needs algorithm, key, iv, mode and padding");
+        return false;
+    }
+    let alg = value_to_string(&mut cx, frame.arg(0));
+    let (Some(key), Some(iv)) = (
+        view_bytes(&mut cx, frame.arg(1), "cipher key"),
+        view_bytes(&mut cx, frame.arg(2), "cipher iv"),
+    ) else {
+        return false;
+    };
+    let enc = frame.arg(3).is_number() && frame.arg(3).to_number() != 0.0;
+    let autopad = !(frame.arg(4).is_number() && frame.arg(4).to_number() == 0.0);
+    let Some((fam, klen, ivlen, block)) = cipher_params(&alg) else {
+        report_error(&mut cx, "ERR_CRYPTO_UNKNOWN_CIPHER: Unknown cipher");
+        return false;
+    };
+    if key.len() != klen {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_KEYLEN: Invalid key length");
+        return false;
+    }
+    if iv.len() != ivlen {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_IV: Invalid initialization vector");
+        return false;
+    }
+    use aes::cipher::KeyIvInit as _;
+    macro_rules! cbc_pair {
+        ($e:ty, $d:ty) => {{
+            if enc {
+                CipherJob::CbcEnc {
+                    job: Box::new(CbcE(<cbc::Encryptor<$e>>::new(
+                        Key::<$e>::from_slice(&key),
+                        Block::<$e>::from_slice(&iv),
+                    ))),
+                    pending: Vec::new(),
+                    block,
+                }
+            } else {
+                CipherJob::CbcDec {
+                    job: Box::new(CbcD(<cbc::Decryptor<$d>>::new(
+                        Key::<$d>::from_slice(&key),
+                        Block::<$d>::from_slice(&iv),
+                    ))),
+                    pending: Vec::new(),
+                    block,
+                    autopad,
+                }
+            }
+        }};
+    }
+    let job = match fam {
+        "cbc-aes128" => cbc_pair!(aes::Aes128, aes::Aes128),
+        "cbc-aes192" => cbc_pair!(aes::Aes192, aes::Aes192),
+        "cbc-aes256" => cbc_pair!(aes::Aes256, aes::Aes256),
+        "cbc-des3" => cbc_pair!(des::TdesEde3, des::TdesEde3),
+        "ctr-aes128" => CipherJob::Ctr {
+            job: Box::new(CtrX(CtrInner::Aes128(<ctr::Ctr128BE<aes::Aes128>>::new(
+                Key::<aes::Aes128>::from_slice(&key),
+                Block::<aes::Aes128>::from_slice(&iv),
+            )))),
+        },
+        "ctr-aes192" => CipherJob::Ctr {
+            job: Box::new(CtrX(CtrInner::Aes192(<ctr::Ctr128BE<aes::Aes192>>::new(
+                Key::<aes::Aes192>::from_slice(&key),
+                Block::<aes::Aes192>::from_slice(&iv),
+            )))),
+        },
+        "ctr-aes256" => CipherJob::Ctr {
+            job: Box::new(CtrX(CtrInner::Aes256(<ctr::Ctr128BE<aes::Aes256>>::new(
+                Key::<aes::Aes256>::from_slice(&key),
+                Block::<aes::Aes256>::from_slice(&iv),
+            )))),
+        },
+        _ => {
+            report_error(&mut cx, "ERR_CRYPTO_UNKNOWN_CIPHER: Unknown cipher");
+            return false;
+        }
+    };
+    let id = cipher_alloc(job);
+    set_rval_str(&mut cx, &frame, &id.to_string());
+    true
+}
+
+/// `__wjs_cipher_update(idStr, bytesU8)` → Uint8Array。
+pub unsafe extern "C" fn cipher_update(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(id) = arg_id(&frame, 0, "cipher update", &mut cx) else {
+        return false;
+    };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: cipher update needs data");
+        return false;
+    }
+    let data = match view_bytes(&mut cx, frame.arg(1), "cipher update data") {
+        Some(b) => b,
+        None => return false,
+    };
+    let out = CIPHERS.with(|m| {
+        let mut m = m.borrow_mut();
+        let Some(job) = m.get_mut(&id) else {
+            return None;
+        };
+        Some(match job {
+            CipherJob::CbcEnc { job, pending, block } => {
+                pending.extend_from_slice(&data);
+                let n = pending.len() / *block * *block;
+                let mut chunk: Vec<u8> = pending.drain(..n).collect();
+                job.enc_blocks(&mut chunk);
+                chunk
+            }
+            CipherJob::CbcDec { job, pending, block, .. } => {
+                pending.extend_from_slice(&data);
+                // 永远扣留最后一块（`final` 定夺填充）
+                let n = pending.len().saturating_sub(*block) / *block * *block;
+                let n = n.min(pending.len().saturating_sub(*block));
+                let mut chunk: Vec<u8> = pending.drain(..n).collect();
+                job.dec_blocks(&mut chunk);
+                chunk
+            }
+            CipherJob::Ctr { job } => {
+                let mut chunk = data;
+                job.apply(&mut chunk);
+                chunk
+            }
+        })
+    });
+    match out {
+        Some(bytes) => set_rval_bytes(&mut cx, &frame, &bytes),
+        None => {
+            report_error(&mut cx, "ERR_CRYPTO_INVALID_STATE: Invalid state");
+            false
+        }
+    }
+}
+
+/// `__wjs_cipher_final(idStr)` → Uint8Array（消费句柄）。
+pub unsafe extern "C" fn cipher_final(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(id) = arg_id(&frame, 0, "cipher final", &mut cx) else {
+        return false;
+    };
+    let out: Option<Result<Vec<u8>, String>> = CIPHERS.with(|m| {
+        m.borrow_mut().remove(&id).map(|mut job| match &mut job {
+            CipherJob::CbcEnc { job, pending, block } => {
+                let mut chunk = pkcs7_pad(*block, std::mem::take(pending));
+                job.enc_blocks(&mut chunk);
+                Ok(chunk)
+            }
+            CipherJob::CbcDec { job, pending, block, autopad } => {
+                if pending.len() % *block != 0 || (*autopad && pending.is_empty()) {
+                    return Err("ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: wrong final block length".into());
+                }
+                let mut chunk = std::mem::take(pending);
+                job.dec_blocks(&mut chunk);
+                if *autopad {
+                    pkcs7_unpad(*block, &chunk).ok_or_else(|| {
+                        "ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: wrong final block length".to_string()
+                    })
+                } else {
+                    Ok(chunk)
+                }
+            }
+            CipherJob::Ctr { .. } => Ok(Vec::new()),
+        })
+    });
+    match out {
+        Some(Ok(bytes)) => set_rval_bytes(&mut cx, &frame, &bytes),
+        Some(Err(e)) => {
+            report_error(&mut cx, &e);
+            false
+        }
+        None => {
+            report_error(&mut cx, "ERR_CRYPTO_INVALID_STATE: Invalid state");
+            false
+        }
+    }
+}
+
+/// nullable 视图实参（`aad`/`tag` 传 null 即缺省）。
+fn opt_view(cx: &mut JSContext, v: JSVal, what: &str) -> Option<Option<Vec<u8>>> {
+    if v.is_null_or_undefined() {
+        return Some(None);
+    }
+    view_bytes(cx, v, what).map(Some)
+}
+
+/// `__wjs_cipher_chacha(encNum, keyU8, nonceU8, aadOrNull, dataU8, tagOrNull)`：
+/// enc=1 → ct‖tag16；enc=0 → pt（tag 必给，认证失败报原文无码错，Node 同款）。
+pub unsafe extern "C" fn cipher_chacha(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 6 {
+        report_error(&mut cx, "TypeError: chacha needs mode, key, nonce, aad, data and tag");
+        return false;
+    }
+    let enc = !(frame.arg(0).is_number() && frame.arg(0).to_number() == 0.0);
+    let (Some(key), Some(nonce), Some(aad), Some(data), Some(tag)) = (
+        view_bytes(&mut cx, frame.arg(1), "chacha key"),
+        view_bytes(&mut cx, frame.arg(2), "chacha nonce"),
+        opt_view(&mut cx, frame.arg(3), "chacha aad"),
+        view_bytes(&mut cx, frame.arg(4), "chacha data"),
+        opt_view(&mut cx, frame.arg(5), "chacha tag"),
+    ) else {
+        return false;
+    };
+    if key.len() != 32 {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_KEYLEN: Invalid key length");
+        return false;
+    }
+    if nonce.len() != 12 {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_IV: Invalid initialization vector");
+        return false;
+    }
+    use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
+    let cipher = chacha20poly1305::ChaCha20Poly1305::new_from_slice(&key)
+        .map_err(|e| format!("OperationError: {e}"));
+    let cipher = match cipher {
+        Ok(c) => c,
+        Err(e) => {
+            report_error(&mut cx, &e);
+            return false;
+        }
+    };
+    let nonce = chacha20poly1305::Nonce::from_slice(&nonce);
+    let aad_ref = aad.as_deref().unwrap_or(&[]);
+    if enc {
+        match cipher.encrypt(nonce, Payload { msg: &data, aad: aad_ref }) {
+            Ok(out) => set_rval_bytes(&mut cx, &frame, &out),
+            Err(e) => {
+                report_error(&mut cx, &format!("OperationError: chacha encrypt failed: {e}"));
+                false
+            }
+        }
+    } else {
+        let Some(tag) = tag else {
+            report_error(&mut cx, "Unsupported state or unable to authenticate data");
+            return false;
+        };
+        let mut input = data;
+        input.extend_from_slice(&tag);
+        match cipher.decrypt(nonce, Payload { msg: &input, aad: aad_ref }) {
+            Ok(out) => set_rval_bytes(&mut cx, &frame, &out),
+            Err(_) => {
+                report_error(&mut cx, "Unsupported state or unable to authenticate data");
+                false
+            }
         }
     }
 }
@@ -659,10 +1070,257 @@ export function getCurves() {
 }
 export const webcrypto = globalThis.crypto;
 
+const __CIPHERS = {
+  "aes-128-cbc": { family: "cbc", key: 16, iv: 16, block: 16, mode: "cbc", nid: 419 },
+  "aes-192-cbc": { family: "cbc", key: 24, iv: 16, block: 16, mode: "cbc", nid: 423 },
+  "aes-256-cbc": { family: "cbc", key: 32, iv: 16, block: 16, mode: "cbc", nid: 427 },
+  "aes-128-ctr": { family: "ctr", key: 16, iv: 16, block: 16, mode: "ctr", nid: 904 },
+  "aes-192-ctr": { family: "ctr", key: 24, iv: 16, block: 16, mode: "ctr", nid: 905 },
+  "aes-256-ctr": { family: "ctr", key: 32, iv: 16, block: 16, mode: "ctr", nid: 906 },
+  "aes-128-gcm": { family: "gcm", key: 16, iv: 12, block: 16, mode: "gcm", nid: 961 },
+  "aes-192-gcm": { family: "gcm", key: 24, iv: 12, block: 16, mode: "gcm", nid: 962 },
+  "aes-256-gcm": { family: "gcm", key: 32, iv: 12, block: 16, mode: "gcm", nid: 963 },
+  "chacha20-poly1305": { family: "chacha", key: 32, iv: 12, block: 16, mode: "chacha20-poly1305", nid: 1018 },
+  "des-ede3-cbc": { family: "cbc", key: 24, iv: 8, block: 8, mode: "cbc", nid: 44 },
+};
+function __cipherInfo(cipher) {
+  const info = __CIPHERS[String(cipher).toLowerCase()];
+  return info === undefined ? undefined : { name: String(cipher).toLowerCase(), ...info };
+}
+function __needCipher(cipher) {
+  const info = __cipherInfo(cipher);
+  if (info === undefined) {
+    const err = new Error("Unknown cipher");
+    err.code = "ERR_CRYPTO_UNKNOWN_CIPHER";
+    throw err;
+  }
+  return info;
+}
+function __needKeyIv(info, key, iv, what) {
+  const kb = __cryptBytes(key, "key");
+  if (kb.length !== info.key) {
+    const err = new Error("Invalid key length");
+    err.code = "ERR_CRYPTO_INVALID_KEYLEN";
+    throw err;
+  }
+  const ivb = __cryptBytes(iv, "iv");
+  if (ivb.length !== info.iv) {
+    const err = new Error("Invalid initialization vector");
+    err.code = "ERR_CRYPTO_INVALID_IV";
+    throw err;
+  }
+  return [kb, ivb];
+}
+function __badState() {
+  const err = new Error("Invalid state");
+  err.code = "ERR_CRYPTO_INVALID_STATE";
+  throw err;
+}
+function __unsupportedState() {
+  throw new Error("Trying to add data in unsupported state");
+}
+
+class Cipheriv {
+  constructor(cipher, key, iv, options) {
+    const info = __needCipher(cipher);
+    const [kb, ivb] = __needKeyIv(info, key, iv, "cipher");
+    this.__info = info;
+    this.__aad = null;
+    this.__aadDone = false;
+    this.__tag = null;
+    this.__finalized = false;
+    if (info.family === "cbc" || info.family === "ctr") {
+      this.__id = Number(__cryptCall(() =>
+        __wjs_cipher_new(info.name, kb, ivb, 1, options && options.autoPadding === false ? 0 : 1)));
+      this.__parts = null;
+    } else {
+      // AEAD 无流式：buffered，final 时 oneshot（头注记档）
+      this.__id = null;
+      this.__parts = [];
+      this.__key = kb;
+      this.__iv = ivb;
+    }
+  }
+  setAAD(aad, options) {
+    if (this.__info.family !== "gcm" && this.__info.family !== "chacha") {
+      const err = new Error("Trying to add data in unsupported state");
+      throw err;
+    }
+    if (this.__finalized || (this.__parts !== null && this.__aadDone)) __badState();
+    this.__aad = __cryptBytes(aad, "aad");
+    this.__aadDone = true;
+    return this;
+  }
+  setAutoPadding(autoPad) {
+    if (this.__id !== null) {
+      // CBC native 侧创建期已定；此处仅守卫时序（final 后调即错，Node 同款）
+      if (this.__finalized) __badState();
+    }
+    return this;
+  }
+  getAuthTag() {
+    if (this.__tag === null) __badState();
+    return this.__tag;
+  }
+  update(data, inputEncoding, outputEncoding) {
+    if (this.__finalized) __unsupportedState();
+    const bytes = data === undefined
+      ? (() => { const err = new TypeError('The "data" argument must be of type string or an instance of Buffer, TypedArray, or DataView.'); err.code = "ERR_INVALID_ARG_TYPE"; throw err; })()
+      : __cryptBytes(data, "data", inputEncoding);
+    let out;
+    if (this.__id !== null) {
+      out = __cryptCall(() => __wjs_cipher_update(String(this.__id), bytes));
+    } else {
+      this.__parts.push(bytes);
+      out = new Uint8Array(0);
+    }
+    return __outBuf(out, outputEncoding);
+  }
+  final(outputEncoding) {
+    if (this.__finalized) __badState();
+    this.__finalized = true;
+    let out;
+    if (this.__id !== null) {
+      out = __cryptCall(() => __wjs_cipher_final(String(this.__id)));
+    } else if (this.__info.family === "gcm") {
+      if (this.__iv.length !== 12) {
+        const err = new Error("Invalid initialization vector");
+        err.code = "ERR_CRYPTO_INVALID_IV";
+        throw err;
+      }
+      const pt = __joinParts(this.__parts);
+      const tagged = __cryptCall(() =>
+        __wjs_aesgcm_encrypt(this.__key, this.__iv, this.__aad ?? new Uint8Array(0), pt));
+      out = tagged.slice(0, tagged.length - 16);
+      this.__tag = Buffer.from(tagged.slice(tagged.length - 16));
+    } else {
+      const pt = __joinParts(this.__parts);
+      const aad = this.__aad ?? new Uint8Array(0);
+      const tagged = __cryptCall(() =>
+        __wjs_cipher_chacha(1, this.__key, this.__iv, aad, pt, null));
+      out = tagged.slice(0, tagged.length - 16);
+      this.__tag = Buffer.from(tagged.slice(tagged.length - 16));
+    }
+    return __outBuf(out, outputEncoding);
+  }
+}
+
+class Decipheriv {
+  constructor(cipher, key, iv, options) {
+    const info = __needCipher(cipher);
+    const [kb, ivb] = __needKeyIv(info, key, iv, "decipher");
+    this.__info = info;
+    this.__aad = null;
+    this.__tag = null;
+    this.__finalized = false;
+    this.__autoPad = !(options && options.autoPadding === false);
+    if (info.family === "cbc" || info.family === "ctr") {
+      this.__id = Number(__cryptCall(() =>
+        __wjs_cipher_new(info.name, kb, ivb, 0, this.__autoPad ? 1 : 0)));
+      this.__parts = null;
+    } else {
+      this.__id = null;
+      this.__parts = [];
+      this.__key = kb;
+      this.__iv = ivb;
+    }
+  }
+  setAAD(aad, options) {
+    if (this.__info.family !== "gcm" && this.__info.family !== "chacha") {
+      throw new Error("Trying to add data in unsupported state");
+    }
+    if (this.__finalized) __badState();
+    this.__aad = __cryptBytes(aad, "aad");
+    return this;
+  }
+  setAuthTag(tag) {
+    this.__tag = __cryptBytes(tag, "tag");
+    return this;
+  }
+  setAutoPadding(autoPad) {
+    if (this.__finalized) __badState();
+    this.__autoPad = !!autoPad;
+    return this;
+  }
+  update(data, inputEncoding, outputEncoding) {
+    if (this.__finalized) __unsupportedState();
+    if (data === undefined) {
+      const err = new TypeError('The "data" argument must be of type string or an instance of Buffer, TypedArray, or DataView.');
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    const bytes = __cryptBytes(data, "data", inputEncoding);
+    let out;
+    if (this.__id !== null) {
+      out = __cryptCall(() => __wjs_cipher_update(String(this.__id), bytes));
+    } else {
+      this.__parts.push(bytes);
+      out = new Uint8Array(0);
+    }
+    return __outBuf(out, outputEncoding);
+  }
+  final(outputEncoding) {
+    if (this.__finalized) __badState();
+    this.__finalized = true;
+    let out;
+    if (this.__id !== null) {
+      out = __cryptCall(() => __wjs_cipher_final(String(this.__id)));
+    } else if (this.__info.family === "gcm") {
+      const ct = __joinParts(this.__parts);
+      if (this.__tag === null || this.__tag.length !== 16) {
+        throw new Error("Unsupported state or unable to authenticate data");
+      }
+      const input = new Uint8Array(ct.length + 16);
+      input.set(ct, 0); input.set(this.__tag, ct.length);
+      try {
+        out = __wjs_aesgcm_decrypt(this.__key, this.__iv, this.__aad ?? new Uint8Array(0), input);
+      } catch {
+        throw new Error("Unsupported state or unable to authenticate data");
+      }
+    } else {
+      const ct = __joinParts(this.__parts);
+      if (this.__tag === null || this.__tag.length !== 16) {
+        throw new Error("Unsupported state or unable to authenticate data");
+      }
+      out = __cryptCall(() => __wjs_cipher_chacha(
+        0, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), ct, this.__tag));
+    }
+    return __outBuf(out, outputEncoding);
+  }
+}
+
+function __joinParts(parts) {
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { out.set(p, off); off += p.length; }
+  return out;
+}
+
+export function createCipheriv(cipher, key, iv, options) {
+  return new Cipheriv(cipher, key, iv, options);
+}
+export function createDecipheriv(cipher, key, iv, options) {
+  return new Decipheriv(cipher, key, iv, options);
+}
+export function getCiphers() {
+  return Object.keys(__CIPHERS);
+}
+export function getCipherInfo(name) {
+  const info = __cipherInfo(name);
+  if (info === undefined) return undefined;
+  return {
+    name: info.name, mode: info.mode, keyLength: info.key,
+    ivLength: info.iv, blockSize: info.block, nid: info.nid,
+  };
+}
+
 const __api = {
   createHash, createHmac, Hash, Hmac, hash,
   randomBytes, randomFill, randomFillSync, randomInt, randomUUID, randomUUIDv7,
   timingSafeEqual, getHashes, getCurves, webcrypto,
+  createCipheriv, createDecipheriv, Cipheriv, Decipheriv, getCiphers, getCipherInfo,
 };
 export default __api;
 "#;
@@ -689,8 +1347,7 @@ mod tests {
     }
 
     #[test]
-    fn crypto_hash_known_vectors() {
-        use sha2::Digest as _; // 全员 digest 0.11 系（sha1/sha2/md5/sha3/blake2 同 trait，无需直引 digest，见 §0.5 零新增）
+    fn crypto_hash_known_vectors() {        use sha2::Digest as _; // 全员 digest 0.11 系（sha1/sha2/md5/sha3/blake2 同 trait，无需直引 digest，见 §0.5 零新增）
         assert_eq!(
             const_hex::encode(sha2::Sha256::digest(b"abc")),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -702,6 +1359,42 @@ mod tests {
         assert_eq!(
             const_hex::encode(sha3::Sha3_256::digest(b"abc")),
             "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532"
+        );
+    }
+
+    #[test]
+    fn crypto_cipher_params_table() {
+        assert_eq!(cipher_params("aes-256-cbc"), Some(("cbc-aes256", 32, 16, 16)));
+        assert_eq!(cipher_params("AES-256-GCM"), None); // AEAD 不走流式注册表
+        assert_eq!(cipher_params("aes-128-ctr"), Some(("ctr-aes128", 16, 16, 16)));
+        assert_eq!(cipher_params("des-ede3-cbc"), Some(("cbc-des3", 24, 8, 8)));
+        assert!(cipher_params("aes-999-cbc").is_none());
+        assert!(cipher_params("").is_none());
+    }
+
+    #[test]
+    fn crypto_pkcs7_roundtrip() {
+        assert_eq!(pkcs7_pad(16, vec![]), vec![16u8; 16]);
+        assert_eq!(pkcs7_pad(16, vec![1, 2, 3]).len(), 16);
+        assert_eq!(pkcs7_unpad(16, &pkcs7_pad(16, b"hello".to_vec())), Some(b"hello".to_vec()));
+        assert!(pkcs7_unpad(16, &[1, 2, 3]).is_none());
+        assert!(pkcs7_unpad(16, &[]).is_none());
+        assert!(pkcs7_unpad(16, &[16u8; 15]).is_none());
+    }
+
+    #[test]
+    fn crypto_cbc_known_vector() {
+        // 真 Node 取证：aes-256-cbc(key=01×32, iv=02×16, "hello world")
+        use aes::cipher::KeyIvInit as _;
+        use aes::cipher::block::BlockModeEncrypt as _;
+        let key = aes::cipher::Key::<aes::Aes256>::from_slice(&[1u8; 32]);
+        let iv = aes::cipher::Block::<aes::Aes256>::from_slice(&[2u8; 16]);
+        let mut enc = cbc::Encryptor::<aes::Aes256>::new(key, iv);
+        let mut blocks = to_blocks::<aes::Aes256>(&pkcs7_pad(16, b"hello world".to_vec()));
+        enc.encrypt_blocks(&mut blocks);
+        assert_eq!(
+            const_hex::encode(from_blocks::<aes::Aes256>(&blocks)),
+            "f563737a376afbed282274255a7fcabd"
         );
     }
 }

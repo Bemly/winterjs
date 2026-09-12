@@ -888,6 +888,28 @@
   `cargo test` 单测 125 + 黑盒 256 全绿（总 381 passed，0 failed），0 新增警告，
   冒烟 5/5。记档不做：RSA-PSS 证书、checkIssued/checkPrivateKey、签发、
   显式参数 EC 证书（named-curve 缺失时 SPKI 试解失败即 false）。
+- [x] 9i-4 ml-kem（2026-09-13 完工；`ml-kem 0.3.2` 已在 c0ef72d 落账，本次接线）：
+  FIPS 203 三档（`generateKeyPair('ml-kem-512'|'ml-kem-768'|'ml-kem-1024')`）+
+  封装面 `encapsulate(key)`/`decapsulate(key, ct)`。Rust 五 natives
+  （`src/builtins/node/crypto.rs`：gen/seed_from_pkcs8/kind_from_spki/encaps/decaps）：
+  getrandom 自造 64B 种子 → `DecapsulationKey::from_seed` 展开；密钥 DER 走
+  **LAMPS 种子形 PKCS#8**（`SEQ{INT 0, SEQ{OID}, OCTET{[0] 64B}}`，总长恒 86）与
+  SPKI（头定长 22B，ek 裸 800/1184/1568）——手拼 TLV（`mlkem_tlv`），导入即展开校验；
+  封装 `encapsulate_with_rng`（rand 0.10 直通 CryptoRng）/解封装 `decapsulate_slice`
+  （长度内建校验 + FIPS 203 隐式拒绝：等长坏文不抛回伪随机）。KeyObject 走
+  material=DER 直通（export der/pem 免改）；导入分支进 pkcs8/spki try 链
+  （X509 `publicKey` 对 ml-kem 证书同链可用）；JWK `kty:"AKP"`（pub=ek、priv=种子，
+  b64url）。真机口径（node 26.8.2 逐项实测对齐）：尺寸表
+  （SPKI 822/1206/1590、PKCS#8 86、ct 768/1088/1568、ss 32）、`encapsulate` 公/私
+  KeyObject 均收、`decapsulate` 公钥 `ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE`/非 ml-kem
+  私钥无码错/非 KeyObject `ERR_OSSL_UNSUPPORTED`/错长 ct `ERR_CRYPTO_OPERATION_FAILED`、
+  第二参（异步回调形）`ERR_INVALID_ARG_TYPE`。**双向真机交叉**：本仓密文真机解 ✓、
+  本仓 SPKI/PKCS#8 真机导入互解 ✓、真机密文本仓解 ✓。
+  模块单测 3（参数/OID 表+TLV 长形/PKCS#8+SPKI wrap-parse 往返+真 crate 展开三档）；
+  黑盒 +1（23 断言：三档全链/报错/隐式拒绝/PEM）；`cargo test` 单测 128 + 黑盒 257
+  全绿（总 385 passed，0 failed），0 新增警告，冒烟 5/5。记档不做：
+  `generateKey` 单面（真机不支持，本仓 generateKey 亦仅 secret 面）、
+  `encapsulate` 异步回调形、`generateKeyPair` 未知类型码（pre-existing 偏差）。
 
 ## 全局纪律
 

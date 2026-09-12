@@ -14,6 +14,12 @@
 //! - 异步形态（`randomBytes(cb)`/`randomInt(cb)`/`randomFill`）经 `queueMicrotask`
 //!   派发同步底层（`node:fs` 同款口径）；`getMacs`/`createMac` 真 Node 26 运行时
 //!   不存在（仅 `lib/crypto.js` 残留导出），不做；`setEngine/getFips` 等随 9e-1c。
+//! 偏差记档（9i-4 ml-kem）：
+//! - 密钥 DER 用 LAMPS 种子形 PKCS#8（`[0]` 64B 种子，真机 26.8.2 同款逐字节同构，
+//!   双向交叉互解）；`generateKey`（单面）不收 ml-kem（本仓 generateKey 仅为
+//!   secret 面，既有口径）；`encapsulate` 异步回调形不做（给了第二参即
+//!   ERR_INVALID_ARG_TYPE，与真机该路径报错同码）；`generateKeyPair` 未知类型
+//!   仍报既有 ERR_NOT_SUPPORTED（真机为 ERR_INVALID_ARG_VALUE，pre-existing）。
 //! 偏差记档（9e-1b）：
 //! - 对称集合：aes-128/192/256-cbc/ctr/gcm + chacha20-poly1305 + des-ede3-cbc。
 //!   GCM/ChaCha 系 AEAD 无流式（buffered，`final` 时 oneshot；http 体整收同款口径）。
@@ -1631,6 +1637,412 @@ pub unsafe extern "C" fn kdf_argon2(
     }
 }
 
+// ── 9i-4 ml-kem（FIPS 203；`ml-kem` crate 直用，零版本墙）──────────────────
+// 真机口径（node 26.8.2 实测）：SPKI 头定长 22B（ek 裸字节 = SPKI[22..]，三档同构）；
+// PKCS#8 = SEQ{INT 0, SEQ{OID}, OCTET{ [0](0x80) 64B 种子 }}（LAMPS 种子形，总长 86）；
+// JWK kty "AKP"（pub=ek/priv=种子，b64url）；encapsulate(pub|priv) 均收；
+// decapsulate 长度不对 → ERR_CRYPTO_OPERATION_FAILED（FIPS 203 隐式拒绝：等长坏文
+// 不报错回伪随机密钥）；decapsulate 非 ml-kem 私钥 → 无码错；异步封装形不做。
+
+/// 参数集 → `(OID DER 内容, ek/ct 裸字节数)`。
+fn mlkem_params(kind: &str) -> Option<(&'static [u8], usize, usize)> {
+    match kind {
+        "ml-kem-512" => Some((&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x04, 0x01], 800, 768)),
+        "ml-kem-768" => Some((&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x04, 0x02], 1184, 1088)),
+        "ml-kem-1024" => Some((&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x04, 0x03], 1568, 1568)),
+        _ => None,
+    }
+}
+
+fn mlkem_kind_by_oid(oid: &[u8]) -> Option<&'static str> {
+    match oid {
+        [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x04, 0x01] => Some("ml-kem-512"),
+        [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x04, 0x02] => Some("ml-kem-768"),
+        [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x04, 0x03] => Some("ml-kem-1024"),
+        _ => None,
+    }
+}
+
+/// 小型 DER TLV 拼装（长度 <65536，键封装足够）。
+fn mlkem_tlv(tag: u8, body: &[u8]) -> Vec<u8> {
+    let mut out = vec![tag];
+    if body.len() < 128 {
+        out.push(body.len() as u8);
+    } else if body.len() < 256 {
+        out.extend_from_slice(&[0x81, body.len() as u8]);
+    } else {
+        out.extend_from_slice(&[0x82, (body.len() >> 8) as u8, (body.len() & 0xff) as u8]);
+    }
+    out.extend_from_slice(body);
+    out
+}
+
+/// PKCS#8 私钥（种子形）：`SEQ{INT 0, SEQ{OID}, OCTET{[0] 种子64}}`。
+fn mlkem_pkcs8(oid: &[u8], seed: &[u8]) -> Vec<u8> {
+    let mut body = mlkem_tlv(0x02, &[0]);
+    body.extend_from_slice(&mlkem_tlv(0x30, &mlkem_tlv(0x06, oid)));
+    body.extend_from_slice(&mlkem_tlv(0x04, &mlkem_tlv(0x80, seed)));
+    mlkem_tlv(0x30, &body)
+}
+
+/// SPKI 公钥：`SEQ{ SEQ{OID}, BITSTRING(00‖ek) }`。
+fn mlkem_spki(oid: &[u8], ek: &[u8]) -> Vec<u8> {
+    let mut bit = vec![0u8];
+    bit.extend_from_slice(ek);
+    let mut body = mlkem_tlv(0x30, &mlkem_tlv(0x06, oid));
+    body.extend_from_slice(&mlkem_tlv(0x03, &bit));
+    mlkem_tlv(0x30, &body)
+}
+
+/// PKCS#8 → `(OID, 种子)`（结构不合规即 None）。
+fn mlkem_pkcs8_seed(der: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (t, hl, cl) = crate::builtins::crypto::der_tlv(der)?;
+    if t != 0x30 {
+        return None;
+    }
+    let body = &der[hl..hl + cl];
+    let (t1, h1, c1) = crate::builtins::crypto::der_tlv(body)?;
+    if t1 != 0x02 || body[h1..h1 + c1] != [0] {
+        return None;
+    }
+    let rest = &body[h1 + c1..];
+    let (t2, h2, c2) = crate::builtins::crypto::der_tlv(rest)?;
+    if t2 != 0x30 {
+        return None;
+    }
+    let alg = &rest[h2..h2 + c2];
+    let (t3, h3, c3) = crate::builtins::crypto::der_tlv(alg)?;
+    if t3 != 0x06 {
+        return None;
+    }
+    let oid = &alg[h3..h3 + c3];
+    let rest2 = &rest[h2 + c2..];
+    let (t4, h4, c4) = crate::builtins::crypto::der_tlv(rest2)?;
+    if t4 != 0x04 {
+        return None;
+    }
+    let inner = &rest2[h4..h4 + c4];
+    let (t5, h5, c5) = crate::builtins::crypto::der_tlv(inner)?;
+    if t5 != 0x80 || c5 != 64 {
+        return None;
+    }
+    Some((oid, &inner[h5..h5 + c5]))
+}
+
+/// SPKI → `(OID, ek)`（BIT STRING 首字节须为 0 未用位）。
+fn mlkem_spki_ek(der: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (t, hl, cl) = crate::builtins::crypto::der_tlv(der)?;
+    if t != 0x30 {
+        return None;
+    }
+    let body = &der[hl..hl + cl];
+    let (t1, h1, c1) = crate::builtins::crypto::der_tlv(body)?;
+    if t1 != 0x30 {
+        return None;
+    }
+    let alg = &body[h1..h1 + c1];
+    let (t2, h2, c2) = crate::builtins::crypto::der_tlv(alg)?;
+    if t2 != 0x06 {
+        return None;
+    }
+    let oid = &alg[h2..h2 + c2];
+    let rest = &body[h1 + c1..];
+    let (t3, h3, c3) = crate::builtins::crypto::der_tlv(rest)?;
+    if t3 != 0x03 || c3 < 2 || rest[h3] != 0 {
+        return None;
+    }
+    Some((oid, &rest[h3 + 1..h3 + c3]))
+}
+
+/// 64B 种子 → `(PKCS#8, SPKI)`（展开即校验，坏种子报错）。
+fn mlkem_expand(kind: &str, seed: &[u8; 64]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let (oid, ek_len, _) = mlkem_params(kind)
+        .ok_or_else(|| "NotSupportedError: unsupported ml-kem parameter set".to_string())?;
+    macro_rules! case {
+        ($P:ty, $name:expr) => {
+            if kind == $name {
+                use ml_kem::KeyExport as _;
+                let dk = ml_kem::DecapsulationKey::<$P>::from_seed((*seed).into());
+                let ek = dk.encapsulation_key().to_bytes();
+                if ek.as_slice().len() != ek_len {
+                    return Err("OperationError: ml-kem ek length mismatch".into());
+                }
+                return Ok((mlkem_pkcs8(oid, seed), mlkem_spki(oid, ek.as_slice())));
+            }
+        };
+    }
+    case!(ml_kem::MlKem512, "ml-kem-512");
+    case!(ml_kem::MlKem768, "ml-kem-768");
+    case!(ml_kem::MlKem1024, "ml-kem-1024");
+    Err("NotSupportedError: unsupported ml-kem parameter set".into())
+}
+
+/// `__wjs_mlkem_gen(kind)` → JSON `{pkcs8, spki}`（b64；种子 getrandom 自造）。
+pub unsafe extern "C" fn mlkem_gen(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let kind = if frame.argc() > 0 { value_to_string(&mut cx, frame.arg(0)) } else { String::new() };
+    if mlkem_params(&kind).is_none() {
+        report_error(&mut cx, "NotSupportedError: unsupported ml-kem parameter set");
+        return false;
+    }
+    let mut seed = [0u8; 64];
+    if getrandom::fill(&mut seed).is_err() {
+        report_error(&mut cx, "OperationError: cannot get random values");
+        return false;
+    }
+    match mlkem_expand(&kind, &seed) {
+        Ok((pkcs8, spki)) => {
+            use base64::Engine as _;
+            let json = serde_json::json!({
+                "pkcs8": base64::engine::general_purpose::STANDARD.encode(pkcs8),
+                "spki": base64::engine::general_purpose::STANDARD.encode(spki),
+            })
+            .to_string();
+            set_rval_str(&mut cx, &frame, &json);
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_mlkem_seed_from_pkcs8(der)` → JSON `{kind, spki}`（b64；导入即展开校验）。
+pub unsafe extern "C" fn mlkem_seed_from_pkcs8(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(der) = (if frame.argc() > 0 { view_bytes(&mut cx, frame.arg(0), "ml-kem key") } else { None }) else {
+        return false;
+    };
+    let parsed = match mlkem_pkcs8_seed(&der) {
+        Some(p) => p,
+        None => {
+            report_error(&mut cx, "TypeError: Invalid PKCS#8 key");
+            return false;
+        }
+    };
+    let Some(kind) = mlkem_kind_by_oid(parsed.0) else {
+        report_error(&mut cx, "TypeError: Invalid PKCS#8 key");
+        return false;
+    };
+    let mut seed = [0u8; 64];
+    seed.copy_from_slice(parsed.1);
+    match mlkem_expand(kind, &seed) {
+        Ok((_, spki)) => {
+            use base64::Engine as _;
+            let json = serde_json::json!({
+                "kind": kind,
+                "seed": base64::engine::general_purpose::STANDARD.encode(seed),
+                "spki": base64::engine::general_purpose::STANDARD.encode(spki),
+            })
+            .to_string();
+            set_rval_str(&mut cx, &frame, &json);
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_mlkem_kind_from_spki(der)` → kind 串（OID + ek 长度校验，失败回空串）。
+pub unsafe extern "C" fn mlkem_kind_from_spki(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(der) = (if frame.argc() > 0 { view_bytes(&mut cx, frame.arg(0), "ml-kem key") } else { None }) else {
+        return false;
+    };
+    let kind = mlkem_spki_ek(&der)
+        .and_then(|(oid, ek)| {
+            mlkem_kind_by_oid(oid).filter(|k| mlkem_params(k).is_some_and(|(_, ek_len, _)| ek_len == ek.len()))
+        })
+        .unwrap_or("");
+    use mozjs::conversions::ToJSValConvertible as _;
+    kind.to_jsval(&mut cx, frame.rval_mut());
+    true
+}
+
+/// 三参数集分发：封装（ek 裸字节 → 借用 `&Key` 构造 → `encapsulate_with_rng`）。
+macro_rules! mlkem_encaps_case {
+    ($kind:expr, $ek:expr, $P:ty, $name:expr) => {
+        if $kind == $name {
+            Some((|| -> Result<(Vec<u8>, Vec<u8>), String> {
+                let arr = <&ml_kem::Key<ml_kem::EncapsulationKey<$P>>>::try_from($ek)
+                    .map_err(|_| "ERR_CRYPTO_OPERATION_FAILED: Encapsulation failed".to_string())?;
+                let key = ml_kem::EncapsulationKey::<$P>::new(arr)
+                    .map_err(|_| "ERR_CRYPTO_OPERATION_FAILED: Encapsulation failed".to_string())?;
+                use ml_kem::Encapsulate as _;
+                let (ct, sk) = key.encapsulate_with_rng(&mut rand::rng());
+                Ok((ct.as_slice().to_vec(), sk.as_slice().to_vec()))
+            })())
+        } else {
+            None
+        }
+    };
+}
+
+/// 三参数集分发：解封装（种子 → `KeyInit::new` → `decapsulate_slice`，长度内建校验）。
+macro_rules! mlkem_decaps_case {
+    ($kind:expr, $seed:expr, $ct:expr, $P:ty, $name:expr) => {
+        if $kind == $name {
+            Some((|| -> Result<Vec<u8>, String> {
+                let arr = <&ml_kem::Key<ml_kem::DecapsulationKey<$P>>>::try_from($seed)
+                    .map_err(|_| "ERR_CRYPTO_OPERATION_FAILED: Decapsulation failed".to_string())?;
+                use ml_kem::KeyInit as _;
+                let dk = ml_kem::DecapsulationKey::<$P>::new(arr);
+                use ml_kem::Decapsulate as _;
+                dk.decapsulate_slice($ct)
+                    .map(|sk| sk.as_slice().to_vec())
+                    .map_err(|_| "ERR_CRYPTO_OPERATION_FAILED: Decapsulation failed".to_string())
+            })())
+        } else {
+            None
+        }
+    };
+}
+
+/// `__wjs_mlkem_encaps(keyDer, isPriv)` → JSON `{ct, sk}`（b64）。
+/// keyDer：isPriv=0 为 SPKI（ek 直用），=1 为 PKCS#8（种子展开）。
+pub unsafe extern "C" fn mlkem_encaps(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "ERR_CRYPTO_OPERATION_FAILED: Encapsulation failed");
+        return false;
+    }
+    let Some(der) = view_bytes(&mut cx, frame.arg(0), "ml-kem key") else {
+        return false;
+    };
+    let is_priv = frame.arg(1).to_number() != 0.0;
+    let parsed = if is_priv {
+        mlkem_pkcs8_seed(&der).and_then(|(oid, seed)| mlkem_kind_by_oid(oid).map(|k| (k, seed.to_vec(), Vec::new())))
+    } else {
+        mlkem_spki_ek(&der).and_then(|(oid, ek)| mlkem_kind_by_oid(oid).map(|k| (k, Vec::new(), ek.to_vec())))
+    };
+    let Some((kind, seed, ek)) = parsed else {
+        report_error(&mut cx, "ERR_CRYPTO_OPERATION_FAILED: Encapsulation failed");
+        return false;
+    };
+    let Some((_, ek_len, _)) = mlkem_params(kind) else {
+        report_error(&mut cx, "ERR_CRYPTO_OPERATION_FAILED: Encapsulation failed");
+        return false;
+    };
+    // 私钥入参：先展开种子得 ek（一并完成校验）。
+    let ek_bytes: Vec<u8> = if is_priv {
+        let mut s = [0u8; 64];
+        s.copy_from_slice(&seed);
+        match mlkem_expand(kind, &s) {
+            Ok((_, spki)) => match mlkem_spki_ek(&spki) {
+                Some((_, e)) => e.to_vec(),
+                None => {
+                    report_error(&mut cx, "ERR_CRYPTO_OPERATION_FAILED: Encapsulation failed");
+                    return false;
+                }
+            },
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        }
+    } else {
+        ek
+    };
+    if ek_bytes.len() != ek_len {
+        report_error(&mut cx, "ERR_CRYPTO_OPERATION_FAILED: Encapsulation failed");
+        return false;
+    }
+    let enc: Result<(Vec<u8>, Vec<u8>), String> =
+        mlkem_encaps_case!(kind, ek_bytes.as_slice(), ml_kem::MlKem512, "ml-kem-512")
+            .or_else(|| mlkem_encaps_case!(kind, ek_bytes.as_slice(), ml_kem::MlKem768, "ml-kem-768"))
+            .or_else(|| mlkem_encaps_case!(kind, ek_bytes.as_slice(), ml_kem::MlKem1024, "ml-kem-1024"))
+            .unwrap_or_else(|| Err("ERR_CRYPTO_OPERATION_FAILED: Encapsulation failed".into()));
+    match enc {
+        Ok((ct, sk)) => {
+            use base64::Engine as _;
+            let json = serde_json::json!({
+                "ct": base64::engine::general_purpose::STANDARD.encode(ct),
+                "sk": base64::engine::general_purpose::STANDARD.encode(sk),
+            })
+            .to_string();
+            set_rval_str(&mut cx, &frame, &json);
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_mlkem_decaps(pkcs8Der, ct)` → 32B 共享密钥；长度不对报
+/// `ERR_CRYPTO_OPERATION_FAILED`（等长坏文按 FIPS 203 走隐式拒绝，不报错）。
+pub unsafe extern "C" fn mlkem_decaps(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "ERR_CRYPTO_OPERATION_FAILED: Decapsulation failed");
+        return false;
+    }
+    let (Some(der), Some(ct)) = (
+        view_bytes(&mut cx, frame.arg(0), "ml-kem key"),
+        view_bytes(&mut cx, frame.arg(1), "ciphertext"),
+    ) else {
+        return false;
+    };
+    let out: Result<Vec<u8>, String> = (|| {
+        let Some((oid, seed)) = mlkem_pkcs8_seed(&der)
+            .and_then(|(o, s)| mlkem_kind_by_oid(o).map(|k| (k, s)))
+        else {
+            return Err("ERR_CRYPTO_OPERATION_FAILED: Decapsulation failed".into());
+        };
+        let Some((_, _, ct_len)) = mlkem_params(oid) else {
+            return Err("ERR_CRYPTO_OPERATION_FAILED: Decapsulation failed".into());
+        };
+        if ct.len() != ct_len {
+            return Err("ERR_CRYPTO_OPERATION_FAILED: Decapsulation failed".into());
+        }
+        mlkem_decaps_case!(oid, seed, ct.as_slice(), ml_kem::MlKem512, "ml-kem-512")
+            .or_else(|| mlkem_decaps_case!(oid, seed, ct.as_slice(), ml_kem::MlKem768, "ml-kem-768"))
+            .or_else(|| mlkem_decaps_case!(oid, seed, ct.as_slice(), ml_kem::MlKem1024, "ml-kem-1024"))
+            .unwrap_or_else(|| Err("ERR_CRYPTO_OPERATION_FAILED: Decapsulation failed".into()))
+    })();
+    match out {
+        Ok(sk) => set_rval_bytes(&mut cx, &frame, &sk),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
 // ── 9e-1d X509（`x509-cert` 直用；9i-3 起验签面就位：verify/publicKey/ca，
 //    checkIssued/checkPrivateKey/签发不做）────────────────────
 
@@ -2792,6 +3204,19 @@ function __exportJwk(kobj) {
     }
     return jwk;
   }
+  if (typeof kobj.__keyType === "string" && kobj.__keyType.startsWith("ml-kem-")) {
+    // 9i-4 真机口径：kty "AKP"，alg 参数集名，pub=ek / priv=种子（均 b64url）。
+    const alg = { "ml-kem-512": "ML-KEM-512", "ml-kem-768": "ML-KEM-768", "ml-kem-1024": "ML-KEM-1024" }[kobj.__keyType];
+    const top = __derRead(kobj.__material, 0);
+    const kids = __derChildren(top.body);
+    const ek = kids[1].body.subarray(1);
+    const jwk = { kty: "AKP", alg, pub: b64u(ek) };
+    if (isPriv) {
+      const parts = JSON.parse(__cryptCall(() => __wjs_mlkem_seed_from_pkcs8(kobj.__material)));
+      jwk.priv = b64u(__b64dec(parts.seed));
+    }
+    return jwk;
+  }
   const err = new Error("JWK export not supported for this key type");
   err.code = "ERR_NOT_SUPPORTED";
   throw err;
@@ -2922,6 +3347,11 @@ function __parseKeyMaterial(key, format, type, want) {
         }
         throw new Error("no");
       }],
+      ["ml-kem", () => {
+        // 9i-4：种子形 PKCS#8（LAMPS 口径，[0] 64B 种子；展开即校验）。
+        const parts = JSON.parse(__cryptCall(() => __wjs_mlkem_seed_from_pkcs8(der)));
+        return new KeyObject("private", parts.kind, der);
+      }],
     ];
     for (const [, fn] of tries) {
       try { return fn(); } catch (e) { if (e && e.code && e.code !== "ERR_NOT_SUPPORTED") throw e; }
@@ -2954,6 +3384,11 @@ function __parseKeyMaterial(key, format, type, want) {
           } catch {}
         }
         throw new Error("no");
+      },
+      () => {
+        const kind = __cryptCall(() => __wjs_mlkem_kind_from_spki(der));
+        if (kind === "") throw new Error("no");
+        return new KeyObject("public", kind, der);
       },
     ];
     for (const fn of tries) {
@@ -3107,7 +3542,15 @@ function __genPairSync(type, options) {
     pub.__detail = priv.__detail;
     return { privateKey: priv, publicKey: pub };
   }
-  const err = new Error(`generateKeyPair type '${type}' not supported (rsa/rsa-pss/ec/ed25519/x25519/dsa)`);
+  if (type === "ml-kem-512" || type === "ml-kem-768" || type === "ml-kem-1024") {
+    // 9i-4：FIPS 203 PQ KEM（真机 generateKey 不收 ml-kem，此处 generateKeyPair 专属）。
+    const parts = JSON.parse(__cryptCall(() => __wjs_mlkem_gen(type)));
+    return {
+      privateKey: new KeyObject("private", type, Buffer.from(__b64dec(parts.pkcs8))),
+      publicKey: new KeyObject("public", type, Buffer.from(__b64dec(parts.spki))),
+    };
+  }
+  const err = new Error(`generateKeyPair type '${type}' not supported (rsa/rsa-pss/ec/ed25519/x25519/dsa/ml-kem-512/768/1024)`);
   err.code = "ERR_NOT_SUPPORTED";
   throw err;
 }
@@ -3921,6 +4364,44 @@ export function argon2(algorithm, parameters, callback) {
   });
 }
 
+// ── 9i-4 封装面（KEM；真机口径：encapsulate 收公/私 KeyObject，decapsulate 仅私）──
+
+const __MLKEM_KINDS = ["ml-kem-512", "ml-kem-768", "ml-kem-1024"];
+export function encapsulate(key, ...rest) {
+  // 真机第二参为异步回调形（本仓不做，给了即报 ERR_INVALID_ARG_TYPE）。
+  if (rest.length > 0) {
+    const err = new TypeError('The "callback" argument must be of type function');
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (key instanceof KeyObject && __MLKEM_KINDS.includes(key.__keyType)) {
+    const isPriv = key.type === "private" ? 1 : 0;
+    const r = JSON.parse(__cryptCall(() => __wjs_mlkem_encaps(key.__material, isPriv)));
+    return { sharedKey: Buffer.from(__b64dec(r.sk)), ciphertext: Buffer.from(__b64dec(r.ct)) };
+  }
+  const err = new Error("unsupported key for encapsulation");
+  err.code = "ERR_OSSL_UNSUPPORTED";
+  throw err;
+}
+export function decapsulate(key, ciphertext) {
+  if (!(key instanceof KeyObject)) {
+    const err = new Error("unsupported key for decapsulation");
+    err.code = "ERR_OSSL_UNSUPPORTED";
+    throw err;
+  }
+  if (key.type !== "private") {
+    const err = new TypeError("Invalid key object type public, expected private.");
+    err.code = "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE";
+    throw err;
+  }
+  if (!__MLKEM_KINDS.includes(key.__keyType)) {
+    // 真机：非 ml-kem 私钥 → 无码 Error。
+    throw new Error("Decapsulation failed");
+  }
+  const out = __cryptCall(() => __wjs_mlkem_decaps(key.__material, __cryptBytes(ciphertext, "ciphertext")));
+  return Buffer.from(out);
+}
+
 class X509Certificate {
   constructor(pemOrDer) {
     let der;
@@ -4041,6 +4522,7 @@ const __api = {
   constants, getFips, setFips, setEngine, secureHeapUsed,
   pbkdf2, pbkdf2Sync, scrypt, scryptSync, hkdf, hkdfSync,
   argon2, argon2Sync, X509Certificate, Certificate,
+  encapsulate, decapsulate,
 };
 export default __api;
 "#;
@@ -4184,5 +4666,72 @@ mod tests {
         assert_eq!(atv_short("2.5.4.10"), "O");
         assert_eq!(atv_short("1.2.840.113549.1.9.1"), "emailAddress");
         assert_eq!(atv_short("1.2.3.4"), "1.2.3.4");
+    }
+
+    // ── 9i-4 ml-kem ────────────────────────────────────────────────────────
+
+    #[test]
+    fn mlkem_tables_and_tlv() {
+        assert_eq!(mlkem_params("ml-kem-512").map(|p| (p.1, p.2)), Some((800, 768)));
+        assert_eq!(mlkem_params("ml-kem-768").map(|p| (p.1, p.2)), Some((1184, 1088)));
+        assert_eq!(mlkem_params("ml-kem-1024").map(|p| (p.1, p.2)), Some((1568, 1568)));
+        assert!(mlkem_params("ml-kem").is_none());
+        assert!(mlkem_params("nope").is_none());
+        for kind in ["ml-kem-512", "ml-kem-768", "ml-kem-1024"] {
+            let (oid, _, _) = mlkem_params(kind).unwrap();
+            assert_eq!(mlkem_kind_by_oid(oid), Some(kind));
+        }
+        assert!(mlkem_kind_by_oid(&[0u8; 9]).is_none());
+        // 长形长度（800 = 0x0320 → 0x82 双字节形）
+        let t = mlkem_tlv(0x04, &vec![0u8; 800]);
+        assert_eq!(&t[..4], &[0x04, 0x82, 0x03, 0x20]);
+        assert_eq!(t.len(), 804);
+        let s = mlkem_tlv(0x04, &[1, 2, 3]);
+        assert_eq!(s, vec![0x04, 0x03, 1, 2, 3]);
+    }
+
+    #[test]
+    fn mlkem_wrap_parse_roundtrip() {
+        let seed = [7u8; 64];
+        let (oid, _, _) = mlkem_params("ml-kem-768").unwrap();
+        // PKCS#8：总长 86（真机同款），种子逐字节还原；[0] 标签破坏即 None。
+        let pkcs8 = mlkem_pkcs8(oid, &seed);
+        assert_eq!(pkcs8.len(), 86);
+        let (oid2, parsed) = mlkem_pkcs8_seed(&pkcs8).unwrap();
+        assert_eq!(oid2, oid);
+        assert_eq!(parsed, &seed[..]);
+        let mut bad = pkcs8.clone();
+        bad[20] = 0x81; // 内层 [0] → 0x81（上下文构造形），结构不符
+        assert!(mlkem_pkcs8_seed(&bad).is_none());
+        assert!(mlkem_pkcs8_seed(&pkcs8[..40]).is_none());
+        // SPKI：768 档总长 1206（真机同款），ek 原样还原；未用位非零即 None。
+        let ek = vec![3u8; 1184];
+        let spki = mlkem_spki(oid, &ek);
+        assert_eq!(spki.len(), 1206);
+        let (oid3, ek2) = mlkem_spki_ek(&spki).unwrap();
+        assert_eq!(oid3, oid);
+        assert_eq!(ek2, &ek[..]);
+        let mut bad2 = spki.clone();
+        bad2[21] = 1; // BIT STRING 未用位
+        assert!(mlkem_spki_ek(&bad2).is_none());
+        assert!(mlkem_spki_ek(&[0x04, 0x00]).is_none());
+    }
+
+    #[test]
+    fn mlkem_expand_real_crate() {
+        let mut seed = [0u8; 64];
+        getrandom::fill(&mut seed).unwrap();
+        let (pkcs8, spki) = mlkem_expand("ml-kem-768", &seed).unwrap();
+        assert_eq!(pkcs8.len(), 86);
+        assert_eq!(spki.len(), 1206);
+        let (_, parsed) = mlkem_pkcs8_seed(&pkcs8).unwrap();
+        assert_eq!(parsed, &seed[..]);
+        let (_, ek) = mlkem_spki_ek(&spki).unwrap();
+        assert_eq!(ek.len(), 1184);
+        // 三档尺寸表（真机对齐：SPKI 822/1206/1590）
+        for (kind, spki_len) in [("ml-kem-512", 822), ("ml-kem-1024", 1590)] {
+            let (_, sp) = mlkem_expand(kind, &seed).unwrap();
+            assert_eq!(sp.len(), spki_len);
+        }
     }
 }

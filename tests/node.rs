@@ -4299,3 +4299,89 @@ t("xv-priv", () => x.verify(generateKeyPairSync("ec", { namedCurve: "P-256" }).p
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9i_mlkem() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "mk.mjs",
+        r#"
+import crypto from "node:crypto";
+const { generateKeyPairSync, encapsulate, decapsulate, createPrivateKey, createPublicKey } = crypto;
+for (const kind of ["ml-kem-512", "ml-kem-768", "ml-kem-1024"]) {
+  const { publicKey, privateKey } = generateKeyPairSync(kind);
+  const spki = publicKey.export({ format: "der", type: "spki" });
+  const pkcs8 = privateKey.export({ format: "der", type: "pkcs8" });
+  const r = encapsulate(publicKey);
+  const sk2 = decapsulate(privateKey, r.ciphertext);
+  // 尺寸与真机逐字节同构：SPKI 822/1206/1590，PKCS#8 恒 86（64B 种子形），ct 768/1088/1568，ss 恒 32。
+  const sizes = `${spki.length} ${pkcs8.length} ${r.ciphertext.length} ${r.sharedKey.length}`;
+  const expect = { "ml-kem-512": "822 86 768 32", "ml-kem-768": "1206 86 1088 32", "ml-kem-1024": "1590 86 1568 32" }[kind];
+  console.log(`mk-${kind.split("-")[2]}-sizes`, sizes === expect);
+  console.log(`mk-${kind.split("-")[2]}-roundtrip`, Buffer.compare(Buffer.from(r.sharedKey), Buffer.from(sk2)) === 0);
+  const r2 = encapsulate(privateKey);
+  console.log(`mk-${kind.split("-")[2]}-encap-priv`, r2.ciphertext.length === r.ciphertext.length, decapsulate(privateKey, r2.ciphertext).length === 32);
+  const k2 = createPrivateKey({ key: pkcs8, format: "der", type: "pkcs8" });
+  const p2 = createPublicKey({ key: spki, format: "der", type: "spki" });
+  console.log(`mk-${kind.split("-")[2]}-import`, k2.asymmetricKeyType === kind, p2.asymmetricKeyType === kind,
+    Buffer.compare(Buffer.from(decapsulate(k2, r.ciphertext)), Buffer.from(r.sharedKey)) === 0);
+  const j = publicKey.export({ format: "jwk" });
+  const jp = privateKey.export({ format: "jwk" });
+  console.log(`mk-${kind.split("-")[2]}-jwk`, j.kty === "AKP", j.alg === "ML-KEM-" + kind.split("-")[2], jp.kty === "AKP", typeof jp.priv === "string", jp.priv.length === 86);
+}
+// 报错/边界（真机口径）
+const { publicKey, privateKey } = generateKeyPairSync("ml-kem-768");
+const r = encapsulate(publicKey);
+const t = (n, f) => { try { f(); console.log(n, "NO-THROW"); } catch (e) { console.log(n, e.code ?? "no-code"); } };
+t("mk-err-decap-pub", () => decapsulate(publicKey, r.ciphertext));
+t("mk-err-decap-ec", () => decapsulate(generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey, r.ciphertext));
+t("mk-err-decap-str", () => decapsulate("str", r.ciphertext));
+t("mk-err-decap-short", () => decapsulate(privateKey, r.ciphertext.subarray(0, 100)));
+t("mk-err-encap-str", () => encapsulate("nope"));
+t("mk-err-encap-2arg", () => encapsulate(publicKey, {}));
+// 等长坏文：FIPS 203 隐式拒绝（不抛，回 32B 伪随机且不等于原共享密钥）。
+const bad = Buffer.from(r.ciphertext);
+bad[10] ^= 0xff;
+console.log("mk-err-implicit", decapsulate(privateKey, bad).length === 32,
+  Buffer.compare(decapsulate(privateKey, bad), Buffer.from(r.sharedKey)) !== 0);
+// PEM 导出（material 直通）与 X509 公钥链复用同一 try 表。
+console.log("mk-pem", privateKey.export({ format: "pem" }).startsWith("-----BEGIN PRIVATE KEY-----"),
+  publicKey.export({ format: "pem" }).startsWith("-----BEGIN PUBLIC KEY-----"));
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "mk-512-sizes true",
+        "mk-512-roundtrip true",
+        "mk-512-encap-priv true true",
+        "mk-512-import true true true",
+        "mk-512-jwk true true true true true",
+        "mk-768-sizes true",
+        "mk-768-roundtrip true",
+        "mk-768-encap-priv true true",
+        "mk-768-import true true true",
+        "mk-768-jwk true true true true true",
+        "mk-1024-sizes true",
+        "mk-1024-roundtrip true",
+        "mk-1024-encap-priv true true",
+        "mk-1024-import true true true",
+        "mk-1024-jwk true true true true true",
+        "mk-err-decap-pub ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE",
+        "mk-err-decap-ec no-code",
+        "mk-err-decap-str ERR_OSSL_UNSUPPORTED",
+        "mk-err-decap-short ERR_CRYPTO_OPERATION_FAILED",
+        "mk-err-encap-str ERR_OSSL_UNSUPPORTED",
+        "mk-err-encap-2arg ERR_INVALID_ARG_TYPE",
+        "mk-err-implicit true true",
+        "mk-pem true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

@@ -181,6 +181,14 @@ hermetic，0.01s 级）。`node:quic` JS 面 9g-1/9g-2 已落地（Endpoint/会�
 quic 特性组**；零新依赖三件（vm 模块系/worker 传输+broadcast/X509 verify）
 直接开工（vm→worker→X509 顺序）。
 
+## 9i-3/9i-4 落地（2026-09-13，X509 verify 零新 crate + ml-kem 接线）
+
+> 9i-3 X509 verify 零新 crate（`x509-cert` 解析 + 复用验签底座，TBS 裸段手解 TLV）。
+> 9i-4 `ml-kem 0.3.2` 接线（c0ef72d 已落账）：rand_core 0.10 与本仓 `rand 0.10` 同线
+> 直通（`rand::rng()` 即 CryptoRng），`kem 0.3` traits 全经 `ml_kem` 重导出使用；
+> 密钥 DER 实测采用 LAMPS **种子形** PKCS#8（真机 26.8.2 逐字节同构，双向交叉互解）。
+> 尚余 h3/h3-quinn 实证（9i-5）。
+
 ## 测试资产（非依赖，仓库外按需取）
 
 - Node：`test/parallel/test-<mod>-*.js`（`/tmp/wjs-node` sparse，单文件取）。

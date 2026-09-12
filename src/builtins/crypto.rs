@@ -2237,7 +2237,7 @@ pub unsafe extern "C" fn ed_verify(
 // Ed25519 纯签名。未知 OID / 验签不过一律 false（真机口径：错钥回 false 不抛）。
 
 /// 外层 TLV 头解析：`(tag, header_len, content_len)`（DER 定长，禁 indefinite）。
-fn der_tlv(der: &[u8]) -> Option<(u8, usize, usize)> {
+pub(crate) fn der_tlv(der: &[u8]) -> Option<(u8, usize, usize)> {
     if der.len() < 2 {
         return None;
     }

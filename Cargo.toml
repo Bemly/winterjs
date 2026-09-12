@@ -170,6 +170,10 @@ sha2_010 = { package = "sha2", version = "0.10", features = ["oid"] }
 sha3 = "0.12"
 blake2 = "0.11"
 md-5 = "0.11"
+# 9h-2（用户拍板两项全要）：ripemd160（RustCrypto digest 0.11 直通）+
+# SHAKE（sha3 0.12 已无类型，tiny-keccak shake 特性；CC0，见 dependencies2 9h-2）。
+ripemd = "0.2"
+tiny-keccak = { version = "2", default-features = false, features = ["shake"] }
 hmac = "0.13"
 hkdf = "0.13"
 pbkdf2 = "0.13"

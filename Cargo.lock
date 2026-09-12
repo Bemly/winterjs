@@ -8487,6 +8487,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ripemd"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dd4211456b4172d7e44261920c25acf07367c4f04bb5f5d54fc21b090d9b159"
+dependencies = [
+ "digest 0.11.3",
+]
+
+[[package]]
 name = "roaring"
 version = "0.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11793,6 +11802,7 @@ dependencies = [
  "regex",
  "remove_dir_all",
  "reqwest 0.13.5",
+ "ripemd",
  "rsa",
  "rstest",
  "rust-i18n",
@@ -11841,6 +11851,7 @@ dependencies = [
  "target-lexicon",
  "tempfile",
  "thiserror 2.0.20",
+ "tiny-keccak",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",

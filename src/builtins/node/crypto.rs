@@ -30,7 +30,8 @@ use mozjs::rooted;
 
 use crate::jsapi_glue::{report_error, value_to_string, view_bytes, wrap_cx, Frame};
 
-/// 增量摘要态（RustCrypto `Digest` 全员 `Clone`，`copy()` 语义天然）。
+/// 增量摘要态（RustCrypto `Digest` 全员 `Clone`，`copy()` 语义天然；
+/// SHAKE 系 `tiny_keccak::Shake` 同样 `Clone`，输出长存在注册时）。
 enum HashJob {
     Sha1(sha1::Sha1),
     Sha256(sha2::Sha256),
@@ -42,6 +43,9 @@ enum HashJob {
     Sha3_512(sha3::Sha3_512),
     Blake2b512(blake2::Blake2b512),
     Blake2s256(blake2::Blake2s256),
+    Ripemd160(ripemd::Ripemd160),
+    Shake128(tiny_keccak::Shake, usize),
+    Shake256(tiny_keccak::Shake, usize),
 }
 
 thread_local! {
@@ -50,8 +54,9 @@ thread_local! {
 }
 
 /// 算法归一（纯函数，单元测试覆盖）：小写去 `-_`，可剥 `RSA-` 前缀。
-fn norm_hash(name: &str) -> Option<HashJob> {
-    use sha2::Digest as _; // 全员 digest 0.11 系（sha1/sha2/md5/sha3/blake2 同 trait，无需直引 digest，见 §0.5 零新增）
+/// `xof_len` 只对 shake 系有效（定长算法忽略；长度校验在 JS 侧，见 DEP0198）。
+fn norm_hash(name: &str, xof_len: usize) -> Option<HashJob> {
+    use sha2::Digest as _; // 全员 digest 0.11 系（sha1/sha2/md5/sha3/blake2/ripemd 同 trait，无需直引 digest，见 §0.5 零新增）
     let flat: String = name
         .trim()
         .to_ascii_lowercase()
@@ -70,6 +75,9 @@ fn norm_hash(name: &str) -> Option<HashJob> {
         "sha3512" => Some(HashJob::Sha3_512(sha3::Sha3_512::new())),
         "blake2b512" => Some(HashJob::Blake2b512(blake2::Blake2b512::new())),
         "blake2s256" => Some(HashJob::Blake2s256(blake2::Blake2s256::new())),
+        "ripemd160" => Some(HashJob::Ripemd160(ripemd::Ripemd160::new())),
+        "shake128" => Some(HashJob::Shake128(tiny_keccak::Shake::v128(), xof_len)),
+        "shake256" => Some(HashJob::Shake256(tiny_keccak::Shake::v256(), xof_len)),
         _ => None,
     }
 }
@@ -140,7 +148,13 @@ pub unsafe extern "C" fn crypto_hash_new(
         return false;
     }
     let alg = value_to_string(&mut cx, frame.arg(0));
-    match norm_hash(&alg) {
+    // 可选第 2 参：XOF 输出长（定长算法忽略；JS 侧已落默认值，见 DEP0198）。
+    let xof_len = if frame.argc() >= 2 {
+        value_to_string(&mut cx, frame.arg(1)).parse::<usize>().unwrap_or(0)
+    } else {
+        0
+    };
+    match norm_hash(&alg, xof_len) {
         Some(job) => {
             let id = hash_alloc(job);
             set_rval_str(&mut cx, &frame, &id.to_string());
@@ -174,7 +188,8 @@ pub unsafe extern "C" fn crypto_hash_update(
         Some(b) => b,
         None => return false,
     };
-    use sha2::Digest as _; // 全员 digest 0.11 系（sha1/sha2/md5/sha3/blake2 同 trait，无需直引 digest，见 §0.5 零新增）
+    use sha2::Digest as _; // 全员 digest 0.11 系（sha1/sha2/md5/sha3/blake2/ripemd 同 trait，无需直引 digest，见 §0.5 零新增）
+    use tiny_keccak::Hasher as _; // SHAKE 系独立 trait（XOF 变长）
     let ok = HASHERS.with(|m| {
         let mut m = m.borrow_mut();
         let Some(job) = m.get_mut(&id) else {
@@ -191,6 +206,9 @@ pub unsafe extern "C" fn crypto_hash_update(
             HashJob::Sha3_512(h) => h.update(&data),
             HashJob::Blake2b512(h) => h.update(&data),
             HashJob::Blake2s256(h) => h.update(&data),
+            HashJob::Ripemd160(h) => h.update(&data),
+            HashJob::Shake128(h, _) => h.update(&data),
+            HashJob::Shake256(h, _) => h.update(&data),
         }
         true
     });
@@ -214,7 +232,8 @@ pub unsafe extern "C" fn crypto_hash_digest(
     let Some(id) = arg_id(&frame, 0, "hash digest", &mut cx) else {
         return false;
     };
-    use sha2::Digest as _; // 全员 digest 0.11 系（sha1/sha2/md5/sha3/blake2 同 trait，无需直引 digest，见 §0.5 零新增）
+    use sha2::Digest as _; // 全员 digest 0.11 系（sha1/sha2/md5/sha3/blake2/ripemd 同 trait，无需直引 digest，见 §0.5 零新增）
+    use tiny_keccak::Hasher as _; // SHAKE 系独立 trait（XOF 变长）
     let out: Option<Vec<u8>> = HASHERS.with(|m| {
         m.borrow_mut().remove(&id).map(|job| match job {
             HashJob::Sha1(h) => h.finalize().to_vec(),
@@ -227,6 +246,17 @@ pub unsafe extern "C" fn crypto_hash_digest(
             HashJob::Sha3_512(h) => h.finalize().to_vec(),
             HashJob::Blake2b512(h) => h.finalize().to_vec(),
             HashJob::Blake2s256(h) => h.finalize().to_vec(),
+            HashJob::Ripemd160(h) => h.finalize().to_vec(),
+            HashJob::Shake128(h, n) => {
+                let mut out = vec![0u8; n];
+                h.finalize(&mut out);
+                out
+            }
+            HashJob::Shake256(h, n) => {
+                let mut out = vec![0u8; n];
+                h.finalize(&mut out);
+                out
+            }
         })
     });
     match out {
@@ -264,6 +294,9 @@ pub unsafe extern "C" fn crypto_hash_copy(
                 HashJob::Sha3_512(h) => HashJob::Sha3_512(h.clone()),
                 HashJob::Blake2b512(h) => HashJob::Blake2b512(h.clone()),
                 HashJob::Blake2s256(h) => HashJob::Blake2s256(h.clone()),
+                HashJob::Ripemd160(h) => HashJob::Ripemd160(h.clone()),
+                HashJob::Shake128(h, n) => HashJob::Shake128(h.clone(), *n),
+                HashJob::Shake256(h, n) => HashJob::Shake256(h.clone(), *n),
             })
     });
     match cloned {
@@ -1903,7 +1936,29 @@ function __needStr(v, what) {
 class Hash {
   constructor(algorithm, options) {
     __needStr(algorithm, "algorithm");
-    this.__id = Number(__cryptCall(() => __wjs_crypto_hash_new(algorithm)));
+    // XOF 输出长（真机口径：缺省 shake128→16/shake256→32 + DEP0198 警告）。
+    let xofLen = 0;
+    const flat = String(algorithm).trim().toLowerCase().replace(/[-_]/g, "");
+    if (flat === "shake128" || flat === "shake256") {
+      const dflt = flat === "shake128" ? 16 : 32;
+      if (options?.outputLength === undefined) {
+        xofLen = dflt;
+        try {
+          process.emitWarning(
+            "Creating SHAKE128/256 digests without an explicit options.outputLength is deprecated.",
+            { type: "DeprecationWarning", code: "DEP0198" }
+          );
+        } catch {}
+      } else {
+        xofLen = Number(options.outputLength);
+        if (!Number.isInteger(xofLen) || xofLen < 0) {
+          const err = new TypeError(`The "options.outputLength" property must be a non-negative integer.`);
+          err.code = "ERR_INVALID_ARG_VALUE";
+          throw err;
+        }
+      }
+    }
+    this.__id = Number(__cryptCall(() => __wjs_crypto_hash_new(algorithm, String(xofLen))));
     this.__finalized = false;
   }
   update(data, inputEncoding) {
@@ -1996,10 +2051,15 @@ class Hmac {
     }
     // Node 口径：未知摘要直接 ERR_CRYPTO_INVALID_DIGEST（真机取证）
     const flat = String(hamc).trim().toLowerCase().replace(/[-_]/g, "");
+    if (flat === "shake128" || flat === "shake256") {
+      // 真机同款：OpenSSL 底层抛无码错（HMAC 不支持 XOF）。
+      throw new Error(`Invalid digest: ${hamc}`);
+    }
     const table = {
       "sha1": "sha1", "sha256": "sha256", "sha384": "sha384", "sha512": "sha512",
       "md5": "md5", "sha3256": "sha3256", "sha3384": "sha3384", "sha3512": "sha3512",
       "blake2b512": "blake2b512", "blake2s256": "blake2s256",
+      "ripemd160": "ripemd160",
     };
     const norm = table[flat];
     if (norm === undefined) {
@@ -2224,7 +2284,7 @@ export function timingSafeEqual(a, b) {
   return acc === 0;
 }
 export function getHashes() {
-  return ["sha1", "sha256", "sha384", "sha512", "md5", "sha3-256", "sha3-384", "sha3-512", "blake2b512", "blake2s256"];
+  return ["sha1", "sha256", "sha384", "sha512", "md5", "sha3-256", "sha3-384", "sha3-512", "blake2b512", "blake2s256", "ripemd160", "shake128", "shake256"];
 }
 export function getCurves() {
   return ["prime256v1", "secp384r1", "secp521r1", "secp256k1", "ed25519", "x25519"];
@@ -3958,19 +4018,20 @@ mod tests {
 
     #[test]
     fn crypto_hash_norm_table() {
-        assert!(norm_hash("sha256").is_some());
-        assert!(norm_hash("SHA256").is_some());
-        assert!(norm_hash("sha-256").is_some());
-        assert!(norm_hash("RSA-SHA256").is_some());
-        assert!(norm_hash("sha3-256").is_some());
-        assert!(norm_hash("blake2b512").is_some());
-        assert!(norm_hash("blake2s256").is_some());
-        assert!(norm_hash("md5").is_some());
-        // 缺口记档：ripemd160 无 crate、shake 系无 XOF 接口
-        assert!(norm_hash("ripemd160").is_none());
-        assert!(norm_hash("shake128").is_none());
-        assert!(norm_hash("nope").is_none());
-        assert!(norm_hash("").is_none());
+        assert!(norm_hash("sha256", 0).is_some());
+        assert!(norm_hash("SHA256", 0).is_some());
+        assert!(norm_hash("sha-256", 0).is_some());
+        assert!(norm_hash("RSA-SHA256", 0).is_some());
+        assert!(norm_hash("sha3-256", 0).is_some());
+        assert!(norm_hash("blake2b512", 0).is_some());
+        assert!(norm_hash("blake2s256", 0).is_some());
+        assert!(norm_hash("md5", 0).is_some());
+        // 9h-2 落地：ripemd160 + SHAKE（长度注册时带）。
+        assert!(norm_hash("ripemd160", 0).is_some());
+        assert!(norm_hash("shake128", 16).is_some());
+        assert!(norm_hash("shake256", 32).is_some());
+        assert!(norm_hash("nope", 0).is_none());
+        assert!(norm_hash("", 0).is_none());
     }
 
     #[test]
@@ -3987,6 +4048,29 @@ mod tests {
             const_hex::encode(sha3::Sha3_256::digest(b"abc")),
             "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532"
         );
+        // 9h-2：ripemd160 + SHAKE（真机向量，见 9h-2 黑盒）。
+        assert_eq!(
+            const_hex::encode(ripemd::Ripemd160::digest(b"abc")),
+            "8eb208f7e05d987a9b044a8e98c6b087f15a0bfc"
+        );
+        {
+            use tiny_keccak::Hasher as _;
+            let mut h = tiny_keccak::Shake::v128();
+            h.update(b"abc");
+            let mut out = [0u8; 32];
+            h.finalize(&mut out);
+            assert_eq!(
+                const_hex::encode(out),
+                "5881092dd818bf5cf8a3ddb793fbcba74097d5c526a6d35f97b83351940f2cc8"
+            );
+            let mut h = tiny_keccak::Shake::v256();
+            h.update(b"abc");
+            h.finalize(&mut out);
+            assert_eq!(
+                const_hex::encode(out),
+                "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739"
+            );
+        }
     }
 
     #[test]

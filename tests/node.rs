@@ -3331,3 +3331,81 @@ setTimeout(() => {
     assert!(out.contains("mel true true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9e_inspector_session() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import ins, { Session, open, close, url, waitForDebugger } from "node:inspector";
+console.log("shape", typeof open === "function" && typeof close() === "undefined" && url() === undefined && waitForDebugger() === undefined);
+const s = new Session();
+s.connect();
+const post = (m, p) => new Promise((res, rej) => s.post(m, p, (e, r) => (e ? rej(e) : res(r))));
+const r1 = await post("Runtime.evaluate", { expression: "40 + 2" });
+console.log("eval", r1.result.type === "number" && r1.result.value === 42);
+const r2 = await post("Runtime.evaluate", { expression: "({a: [1,2]})" });
+console.log("obj", r2.result.value.a.join(",") === "1,2");
+const r3 = await post("Runtime.evaluate", { expression: "throw new Error('boom')" });
+console.log("exc", r3.exceptionDetails.exception.description === "boom");
+const r4 = await post("Debugger.enable", {});
+console.log("ack", JSON.stringify(r4) === "{}");
+try {
+  await post("Nope.nope", {});
+} catch (e) { console.log("unk", e.code === "ERR_NOT_SUPPORTED"); }
+const r5 = await post("Runtime.evaluate", { expression: "1+1" });
+console.log("promise", r5.result.value === 2);
+s.disconnect();
+console.log("done");
+"#,
+    );
+    assert!(out.contains("shape true"), "out: {out}");
+    assert!(out.contains("eval true"), "out: {out}");
+    assert!(out.contains("obj true"), "out: {out}");
+    assert!(out.contains("exc true"), "out: {out}");
+    assert!(out.contains("ack true"), "out: {out}");
+    assert!(out.contains("unk true"), "out: {out}");
+    assert!(out.contains("promise true"), "out: {out}");
+    assert!(out.contains("done"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9e_child_corners() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { exec, execFile, execFileSync, spawn } from "node:child_process";
+console.log("sync", execFileSync("echo", ["sync-ok"]).trim() === "sync-ok");
+exec("echo hello-exec", (e, stdout) => {
+  console.log("exec", e === null && stdout.trim() === "hello-exec");
+  execFile("echo", ["hello-file"], (e2, stdout2) => {
+    console.log("execFile", e2 === null && stdout2.trim() === "hello-file");
+    exec("exit 3", (e3, o3, err3) => {
+      console.log("execfail", e3 !== null && e3.status === 3);
+      console.log("done");
+    });
+  });
+});
+const p = spawn("echo", ["live"]);
+console.log("meta", p.spawnfile === "echo", p.spawnargs.join(",") === "live", p.exitCode === null);
+p.on("exit", () => console.log("exit", p.exitCode === 0));
+p.on("close", () => console.log("close", p.exitCode === 0));
+try { p.send("x"); } catch (e) { console.log("send", e.code === "ERR_NOT_SUPPORTED"); }
+"#,
+    );
+    assert!(out.contains("sync true"), "out: {out}");
+    assert!(out.contains("exec true"), "out: {out}");
+    assert!(out.contains("execFile true"), "out: {out}");
+    assert!(out.contains("execfail true"), "out: {out}");
+    assert!(out.contains("done"), "out: {out}");
+    assert!(out.contains("meta true true true"), "out: {out}");
+    assert!(out.contains("exit true"), "out: {out}");
+    assert!(out.contains("close true"), "out: {out}");
+    assert!(out.contains("send true"), "out: {out}");
+    dir.close().unwrap();
+}

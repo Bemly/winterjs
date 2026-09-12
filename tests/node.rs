@@ -4018,3 +4018,179 @@ console.log("m9iB-synest", se.status === "errored");
     assert!(out.contains("m9iB-synest true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9i_worker_transfer_buffer_types() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { MessageChannel } from "node:worker_threads";
+const { port1, port2 } = new MessageChannel();
+const seen = [];
+port2.on("message", (m) => { seen.push(m); });
+const ab = new Uint8Array([1, 2, 3]).buffer;
+port1.postMessage(ab, [ab]);
+console.log("w9i-detach", ab.byteLength === 0);
+const ab2 = new Uint8Array([4, 5]).buffer;
+port1.postMessage(ab2);
+console.log("w9i-copy", ab2.byteLength === 2);
+const sub = new Uint8Array([1, 2, 3, 4]).subarray(1, 3);
+port1.postMessage({ sub });
+port1.postMessage({ bi: 5n, u: undefined, m: new Map([[1, 2]]), s: new Set([3]), d: new Date(0), ta: new Uint8Array([9]), dv: new DataView(new Uint8Array([7, 8]).buffer) });
+const t = (n, f) => { try { f(); console.log(n, "NO-THROW"); } catch (e) { console.log(n, e.name); } };
+t("w9i-baditem", () => port1.postMessage({ x: 1 }, [{ x: 1 }]));
+t("w9i-dup", () => port1.postMessage("x", [ab2, ab2]));
+t("w9i-detached", () => port1.postMessage(ab));
+t("w9i-circular", () => { const o = {}; o.me = o; port1.postMessage(o); });
+t("w9i-fn", () => port1.postMessage(() => {}));
+setTimeout(() => {
+  const [det, c2, subMsg, ty] = seen;
+  console.log("w9i-gotxfer", det instanceof ArrayBuffer, det.byteLength === 3);
+  console.log("w9i-gotbuf", c2 instanceof ArrayBuffer, c2.byteLength === 2, new Uint8Array(c2)[0] === 4);
+  console.log("w9i-sub", ty !== undefined && subMsg.sub instanceof Uint8Array, subMsg.sub.length === 2, subMsg.sub[0] === 2, subMsg.sub.byteOffset === 1);
+  console.log("w9i-types", typeof ty.bi === "bigint", ("u" in ty) && ty.u === undefined, ty.m instanceof Map && ty.m.get(1) === 2, ty.s instanceof Set && ty.s.has(3), ty.d instanceof Date && ty.d.getTime() === 0, ty.ta instanceof Uint8Array && ty.ta[0] === 9, ty.dv instanceof DataView && ty.dv.getUint8(1) === 8);
+  port1.close();
+  port2.close();
+}, 200);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "w9i-detach true",
+        "w9i-copy true",
+        "w9i-baditem DataCloneError",
+        "w9i-dup DataCloneError",
+        "w9i-detached DataCloneError",
+        "w9i-circular DataCloneError",
+        "w9i-fn DataCloneError",
+        "w9i-gotxfer true true",
+        "w9i-gotbuf true true true",
+        "w9i-sub true true true true",
+        "w9i-types true true true true true true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9i_worker_transfer_port_migration() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { MessageChannel, MessagePort } from "node:worker_threads";
+const { port1, port2 } = new MessageChannel();
+const { port1: a1, port2: a2 } = new MessageChannel();
+let a1got = [];
+a1.on("message", (m) => { a1got.push(m); });
+port1.postMessage({ p: a2 }, [a2]);
+// 源端 neutered：后用静默，a1 收不到。
+a2.postMessage("lost");
+port2.on("message", (m) => {
+  const ok = m.p instanceof MessagePort;
+  console.log("w9i-mig", ok);
+  if (!ok) return;
+  globalThis.__mig = m.p;
+  m.p.on("message", (x) => console.log("w9i-migmsg", x === "to-migrated"));
+  m.p.postMessage("to-a1");
+  a1.postMessage("to-migrated");
+});
+const t = (n, f) => { try { f(); console.log(n, "NO-THROW"); } catch (e) { console.log(n, e.name); } };
+t("w9i-portnotransfer", () => port1.postMessage({ p: a1 }));
+setTimeout(() => {
+  console.log("w9i-neuter", !a1got.includes("lost"), a1got.includes("to-a1"));
+  if (globalThis.__mig) globalThis.__mig.close();
+  port1.close();
+  port2.close();
+  a1.close();
+}, 300);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "w9i-mig true",
+        "w9i-migmsg true",
+        "w9i-portnotransfer DataCloneError",
+        "w9i-neuter true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9i_worker_transfer_cross_thread_and_broadcast() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { MessageChannel, BroadcastChannel, Worker } from "node:worker_threads";
+// 同会话 BC：自收排除、关者止收。
+const b1 = new BroadcastChannel("w9i-bc");
+const b2 = new BroadcastChannel("w9i-bc");
+const b3 = new BroadcastChannel("w9i-other");
+const seen = [];
+b2.onmessage = (e) => { seen.push(["b2", e.data]); };
+b1.onmessage = () => { seen.push(["b1", "SELF"]); };
+b3.onmessage = (e) => { seen.push(["b3", e.data]); };
+b1.postMessage("hello");
+await new Promise((r) => setTimeout(r, 100));
+b2.close();
+b1.postMessage("after");
+await new Promise((r) => setTimeout(r, 100));
+// 跨线程：端口经 workerData 迁移 + BC 跨线程扇出。
+const { port1, port2 } = new MessageChannel();
+const back = [];
+port1.on("message", (m) => { back.push(m); });
+const w = new Worker(
+  "import { parentPort, workerData, BroadcastChannel } from 'node:worker_threads';" +
+  "const bc = new BroadcastChannel('w9i-x');" +
+  "workerData.p.on('message', (m) => { parentPort.postMessage('w saw ' + m); bc.postMessage('from-worker'); });" +
+  "workerData.p.postMessage('hi-main');",
+  { eval: true, workerData: { n: 41n, p: port2 }, transferList: [port2] }
+);
+const xseen = [];
+const xb = new BroadcastChannel("w9i-x");
+xb.onmessage = (e) => { xseen.push(e.data); };
+w.on("message", (m) => { back.push("W:" + m); });
+w.on("error", (e) => { back.push("ERR" + e.message); });
+port1.postMessage("hi-worker");
+setTimeout(() => {
+  console.log("w9i-bc", JSON.stringify(seen) === JSON.stringify([["b2", "hello"]]));
+  console.log("w9i-xfer", back.includes("hi-main"), back.includes("W:w saw hi-worker"));
+  console.log("w9i-xbc", xseen.includes("from-worker"));
+  w.terminate().then(() => {
+    b1.close();
+    b3.close();
+    xb.close();
+    port1.close();
+  });
+}, 600);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in ["w9i-bc true", "w9i-xfer true true", "w9i-xbc true"] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

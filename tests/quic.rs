@@ -429,3 +429,95 @@ console.log("tu-done", true);
     assert!(out.contains("tu-done true"), "out: {out}");
     dir.close().unwrap();
 }
+
+// ── 9i-5 h3 over quinn 实证（headers 交换；h3/h3-quinn 在 quinn 特性组内）────
+
+const H3_ALPN: &[u8] = b"h3";
+
+fn h3_server_config() -> (quinn::ServerConfig, CertificateDer<'static>) {
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("rcgen");
+    let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
+    let mut crypto = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key_der.into())
+        .expect("server cert");
+    crypto.alpn_protocols = vec![H3_ALPN.to_vec()];
+    (quinn::ServerConfig::with_crypto(Arc::new(
+        quinn::crypto::rustls::QuicServerConfig::try_from(crypto).expect("quic server crypto"),
+    )), cert_der)
+}
+
+/// H3 回环：握手 → 请求头 `GET /probe` → 响应头 200 + 自定头（全 hermetic，port 0）。
+#[tokio::test]
+async fn phase9i_h3_over_quinn_loopback() {
+    let (server_cfg, server_cert) = h3_server_config();
+    let server = quinn::Endpoint::server(server_cfg, "127.0.0.1:0".parse::<SocketAddr>().unwrap())
+        .expect("quinn server endpoint");
+    let server_addr = server.local_addr().unwrap();
+    let mut client = quinn::Endpoint::client("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+        .expect("quinn client endpoint");
+    let mut client_crypto = rustls::ClientConfig::builder()
+        .with_root_certificates({
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(server_cert).expect("trust self-signed");
+            roots
+        })
+        .with_no_client_auth();
+    client_crypto.alpn_protocols = vec![H3_ALPN.to_vec()];
+    client.set_default_client_config(quinn::ClientConfig::new(Arc::new(
+        quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto).expect("quic client crypto"),
+    )));
+
+    // accept 与 connect 并发（QUIC 无重试投递，见 phase9g 注）。
+    // 服务端循环 accept 守到客户端关连接——发完响应即退出会连带着关连接，
+    // 客户端还没收到响应帧（conn drop 即 ApplicationClose）。
+    let server_task = tokio::spawn(async move {
+        let incoming = server.accept().await.expect("incoming");
+        let conn = incoming.await.expect("server handshake");
+        let mut h3_conn: h3::server::Connection<h3_quinn::Connection, bytes::Bytes> =
+            h3::server::Connection::new(h3_quinn::Connection::new(conn))
+                .await
+                .expect("h3 server accept");
+        while let Ok(Some(resolver)) = h3_conn.accept().await {
+            let Ok((req, mut stream)) = resolver.resolve_request().await else {
+                continue;
+            };
+            assert_eq!(req.method(), http::Method::GET, "method");
+            assert_eq!(req.uri().path(), "/probe", "path");
+            let resp = http::Response::builder()
+                .status(200)
+                .header("x-wjs", "h3-ok")
+                .body(())
+                .expect("response build");
+            stream.send_response(resp).await.expect("send response");
+            stream.finish().await.expect("finish stream");
+        }
+    });
+
+    let conn = client
+        .connect(server_addr, "localhost")
+        .expect("connect shape")
+        .await
+        .expect("quic handshake");
+    let (mut driver, mut send_request) = h3::client::new(h3_quinn::Connection::new(conn))
+        .await
+        .expect("h3 client");
+    // 驱动必须被轮询（wait_idle 常驻），否则响应帧无人解。
+    let driver_task = tokio::spawn(async move {
+        driver.wait_idle().await;
+    });
+    let req = http::Request::builder()
+        .method("GET")
+        .uri("https://localhost/probe")
+        .body(())
+        .expect("request build");
+    let mut stream = send_request.send_request(req).await.expect("send request");
+    stream.finish().await.expect("finish upload side");
+    let resp = stream.recv_response().await.expect("recv response");
+    assert_eq!(resp.status().as_u16(), 200, "status");
+    assert_eq!(resp.headers().get("x-wjs").map(|v| v.as_bytes()), Some(&b"h3-ok"[..]), "header");
+    driver_task.abort();
+    server_task.await.expect("server task");
+    client.close(0u32.into(), b"bye");
+}

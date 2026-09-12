@@ -910,6 +910,20 @@
   全绿（总 385 passed，0 failed），0 新增警告，冒烟 5/5。记档不做：
   `generateKey` 单面（真机不支持，本仓 generateKey 亦仅 secret 面）、
   `encapsulate` 异步回调形、`generateKeyPair` 未知类型码（pre-existing 偏差）。
+- [x] 9i-5 quic-h3 门控实证（2026-09-13 完工；h3/h3-quinn 已在 c0ef72d 入
+  `quinn` 特性组，本次 Rust 回环实证 + 纯度复查）：
+  `tests/quic.rs::phase9i_h3_over_quinn_loopback`（hermetic，port 0，rcgen 自签，
+  ALPN `h3`）：quinn 握手 → `h3::server::Connection` accept → 请求头
+  `GET /probe`（method/path 断言）→ 响应头 200 + 自定头回送 → 客户端
+  `recv_response` 收齐（driver `wait_idle` 后台轮询驱动）。两坑即时修：
+  ① 服务端发完响应即退出任务 → conn drop 连带 ApplicationClose，客户端收不到
+  响应帧——accept 循环守到对端关连接（§4.50/4.53 同族：任务尾清理抢跑）；
+  ② h3 驱动必须被轮询，`client::new` 的 driver 挂 `wait_idle` 后台任务。
+  `cargo tree -i aws-lc-rs`/`-i native-tls` 空（§2 门控红线保持）；
+  h3 0.0.8/h3-quinn 0.0.10 经 `quinn = ["dep:quinn","dep:h3","dep:h3-quinn"]`
+  特性组随 default 启用。`cargo test` 总 386 passed 0 failed，冒烟 5/5。
+  记档：`node:quic` JS 面的 headers 分支（H3 上行）未出，v1 不验收
+  （`node:quic` 裸流面照旧）；本切片只验门控与轮子可用性。
 
 ## 全局纪律
 

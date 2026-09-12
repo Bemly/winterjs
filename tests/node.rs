@@ -3225,7 +3225,7 @@ argon2("argon2id", { message: "password", nonce: "somesalt", parallelism: 4, tag
 });
 try { pbkdf2Sync("p", "s", 0, 32, "sha256"); } catch (e) { console.log("it0", e.code === "ERR_OUT_OF_RANGE"); }
 try { scryptSync("p", "s", 32, { N: 1048576, r: 8, p: 1 }); } catch (e) { console.log("mem", e.code === "ERR_CRYPTO_INVALID_SCRYPT_PARAMS"); }
-try { argon2Sync("argon2id", { message: "p", nonce: "somesalt12", parallelism: 1, tagLength: 32, memory: 32, passes: 1, associatedData: "x" }); } catch (e) { console.log("ad", e.code === "ERR_NOT_SUPPORTED"); }
+console.log("ad", argon2Sync("argon2id", { message: "secret", nonce: "somesalt12345678", parallelism: 1, tagLength: 32, memory: 8, passes: 1, associatedData: Buffer.from("ad-data") }).toString("hex") === "81454faa04011e9d56a85f66352875d91e04fb8edf2458d44c18c4d9bcef4762");
 "#,
     );
     assert!(out.contains("pbkdf2 true"), "out: {out}");
@@ -3729,5 +3729,134 @@ x.on("error", (e) => console.log("we-xerr", e.message));
     assert!(!out.contains("we-e2err"), "out: {out}");
     assert!(!out.contains("we-nerr"), "out: {out}");
     assert!(!out.contains("we-xerr"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9h_crypto_k256() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createECDH, generateKeyPairSync, createSign, createVerify, createPrivateKey, createPublicKey, getCurves } from "node:crypto";
+console.log("k-curves", getCurves().includes("secp256k1"));
+// 真机固定向量（node v26.8.2 实测）：priv/pub/peer/secret 逐字节对
+const FIX = {
+  priv: "ab5ece87dd1089783678deadcac0283eff35dddd6a32081dce7f2c1d3630de74",
+  pub: "04a72a7632bbef9c8b9a9a58224afba9ce6ba199b5d0d8dddf906e6de486ae34aa43be1ee6eab356aab327347da80fac8c09a38183a1ece15d37d570184912fd19",
+  peer: "0421d3b023a66019230f034f7fb38b575a613d1b4465d530ab96829b7d047687e34680bb8cbf806cfdcaf8216881aaa2a4f3f0e8f48de7a49f7d858a497ed1ab2d",
+  secret: "c9fe11e3f27bac5fb3692fac8787c0a07566ba02e47a32c45136234d1b080364",
+};
+const a = createECDH("secp256k1");
+a.setPrivateKey(Buffer.from(FIX.priv, "hex"));
+console.log("k-ecdh-vec", a.computeSecret(Buffer.from(FIX.peer, "hex")).toString("hex") === FIX.secret);
+const e1 = createECDH("secp256k1"); e1.generateKeys();
+const e2 = createECDH("secp256k1"); e2.generateKeys();
+console.log("k-ecdh-self", e1.computeSecret(e2.getPublicKey()).equals(e2.computeSecret(e1.getPublicKey())));
+// 签名往返 + 内容错验不过
+const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "secp256k1" });
+const data = Buffer.from("hello-k256");
+const sig = createSign("sha256").update(data).sign(privateKey);
+console.log("k-sign", createVerify("sha256").update(data).verify(publicKey, sig) === true);
+console.log("k-tamper", createVerify("sha256").update(Buffer.from("hello-k257")).verify(publicKey, sig) === false);
+// ieeep1363 形态往返
+const raw = createSign("sha256").update(data).sign({ key: privateKey, dsaEncoding: "ieee-p1363" });
+console.log("k-rawlen", raw.length === 64);
+console.log("k-rawvec", createVerify("sha256").update(data).verify({ key: publicKey, dsaEncoding: "ieee-p1363" }, raw) === true);
+// 导出导入往返（der/pem/jwk/sec1）
+const spki = publicKey.export({ format: "der", type: "spki" });
+const pkcs8 = privateKey.export({ format: "der", type: "pkcs8" });
+const pub2 = createPublicKey({ key: spki, format: "der", type: "spki" });
+console.log("k-spki", createVerify("sha256").update(data).verify(pub2, sig) === true);
+const priv2 = createPrivateKey({ key: pkcs8, format: "der", type: "pkcs8" });
+console.log("k-pkcs8", createSign("sha256").update(data).sign(priv2).length > 64);
+const jwk = publicKey.export({ format: "jwk" });
+console.log("k-jwk", jwk.kty === "EC" && jwk.crv === "secp256k1" && typeof jwk.x === "string");
+const pem = publicKey.export({ format: "pem", type: "spki" });
+console.log("k-pem", pem.startsWith("-----BEGIN PUBLIC KEY-----"));
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("k-curves true"), "out: {out}");
+    assert!(out.contains("k-ecdh-vec true"), "out: {out}");
+    assert!(out.contains("k-ecdh-self true"), "out: {out}");
+    assert!(out.contains("k-sign true"), "out: {out}");
+    assert!(out.contains("k-tamper true"), "out: {out}");
+    assert!(out.contains("k-rawlen true"), "out: {out}");
+    assert!(out.contains("k-rawvec true"), "out: {out}");
+    assert!(out.contains("k-spki true"), "out: {out}");
+    assert!(out.contains("k-pkcs8 true"), "out: {out}");
+    assert!(out.contains("k-jwk true"), "out: {out}");
+    assert!(out.contains("k-pem true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9h_crypto_dsa_prime() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { generateKeyPairSync, generateKeyPair, createSign, createVerify, createPrivateKey, createPublicKey, generatePrimeSync, checkPrimeSync } from "node:crypto";
+// DSA 快档（1024/160，Sign/Verify 全链；慢档只验形状不断言向量）
+const { privateKey, publicKey } = generateKeyPairSync("dsa", { modulusLength: 1024, divisorLength: 160 });
+console.log("d-gen", privateKey.type === "private", publicKey.type === "public", privateKey.asymmetricKeyType === "dsa");
+const data = Buffer.from("hello-dsa");
+const sig = createSign("sha256").update(data).sign(privateKey);
+console.log("d-sign", createVerify("sha256").update(data).verify(publicKey, sig) === true);
+console.log("d-tamper", createVerify("sha256").update(Buffer.from("hello-dsb")).verify(publicKey, sig) === false);
+// sha384 档（prehash 全哈希）
+const sig384 = createSign("sha384").update(data).sign(privateKey);
+console.log("d-384", createVerify("sha384").update(data).verify(publicKey, sig384) === true);
+// 导出导入往返（der/pem/jwk）
+const spki = publicKey.export({ format: "der", type: "spki" });
+const pkcs8 = privateKey.export({ format: "der", type: "pkcs8" });
+console.log("d-der", spki.length > 100, pkcs8.length > 100);
+const pub2 = createPublicKey({ key: spki, format: "der", type: "spki" });
+console.log("d-spki", createVerify("sha256").update(data).verify(pub2, sig) === true);
+const priv2 = createPrivateKey({ key: pkcs8, format: "der", type: "pkcs8" });
+console.log("d-pkcs8", createSign("sha256").update(data).sign(priv2).length > 40);
+console.log("d-pem", publicKey.export({ format: "pem", type: "spki" }).startsWith("-----BEGIN PUBLIC KEY-----"));
+const jwk = publicKey.export({ format: "jwk" });
+console.log("d-jwk", jwk.kty === "DSA" && typeof jwk.p === "string" && typeof jwk.y === "string" && jwk.x === undefined);
+const pub3 = createPublicKey({ key: jwk, format: "jwk" });
+console.log("d-jwkim", createVerify("sha256").update(data).verify(pub3, sig) === true);
+// 异步形态
+generateKeyPair("dsa", { modulusLength: 1024, divisorLength: 160 }, (e, pub, priv) => {
+  console.log("d-async", e === null && pub.type === "public" && priv.type === "private");
+});
+// bigint 素数（16 进制桥）
+const p = generatePrimeSync(256, { bigint: true });
+console.log("d-bigint", typeof p === "bigint" && checkPrimeSync(p) === true);
+const ps = generatePrimeSync(256, { bigint: true, safe: true });
+console.log("d-safe", typeof ps === "bigint" && checkPrimeSync(ps) === true && checkPrimeSync((ps - 1n) / 2n) === true);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("d-gen true true true"), "out: {out}");
+    assert!(out.contains("d-sign true"), "out: {out}");
+    assert!(out.contains("d-tamper true"), "out: {out}");
+    assert!(out.contains("d-384 true"), "out: {out}");
+    assert!(out.contains("d-der true true"), "out: {out}");
+    assert!(out.contains("d-spki true"), "out: {out}");
+    assert!(out.contains("d-pkcs8 true"), "out: {out}");
+    assert!(out.contains("d-pem true"), "out: {out}");
+    assert!(out.contains("d-jwk true"), "out: {out}");
+    assert!(out.contains("d-jwkim true"), "out: {out}");
+    assert!(out.contains("d-async true"), "out: {out}");
+    assert!(out.contains("d-bigint true"), "out: {out}");
+    assert!(out.contains("d-safe true"), "out: {out}");
     dir.close().unwrap();
 }

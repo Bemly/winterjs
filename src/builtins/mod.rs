@@ -2066,6 +2066,11 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_h2_connect", Some(node::http2::h2_connect), 4),
             ("__wjs_h2_open", Some(node::http2::h2_open), 4),
             ("__wjs_h2_respond", Some(node::http2::h2_respond), 5),
+            // Phase 9e-1a: node:crypto 增量 Hash（oneshot 复用全局 __wjs_*）
+            ("__wjs_crypto_hash_new", Some(node::crypto::crypto_hash_new), 1),
+            ("__wjs_crypto_hash_update", Some(node::crypto::crypto_hash_update), 2),
+            ("__wjs_crypto_hash_digest", Some(node::crypto::crypto_hash_digest), 1),
+            ("__wjs_crypto_hash_copy", Some(node::crypto::crypto_hash_copy), 1),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）

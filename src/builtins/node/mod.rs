@@ -10,6 +10,7 @@ pub mod assert;
 pub mod async_hooks;
 pub mod buffer;
 pub mod child;
+pub mod crypto;
 pub mod diagnostics_channel;
 pub mod events;
 pub mod dgram;
@@ -66,6 +67,8 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:tls", tls::SOURCE),
     // Phase 9d-7
     ("node:http2", http2::SOURCE),
+    // Phase 9e-1a
+    ("node:crypto", crypto::SOURCE),
     ("node:assert", assert::SOURCE),
     ("node:test", testmod::SOURCE),
     // Phase 9a
@@ -113,6 +116,8 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "tls" => Some("node:tls"),
         // Phase 9d-7
         "http2" => Some("node:http2"),
+        // Phase 9e-1a
+        "crypto" => Some("node:crypto"),
         "assert" => Some("node:assert"),
         "test" => Some("node:test"),
         "async_hooks" => Some("node:async_hooks"),
@@ -216,6 +221,10 @@ mod tests {
         assert_eq!(normalize_spec("http2"), Some("node:http2"));
         assert_eq!(normalize_spec("node:http2"), Some("node:http2"));
         assert!(source("node:http2").is_some());
+        // Phase 9e-1a
+        assert_eq!(normalize_spec("crypto"), Some("node:crypto"));
+        assert_eq!(normalize_spec("node:crypto"), Some("node:crypto"));
+        assert!(source("node:crypto").is_some());
         assert!(source("node:internal/http_framing").is_some());
         assert_eq!(normalize_spec("node:internal/streams/readable"), Some("node:internal/streams/readable"));
         assert!(source("node:buffer").is_some());

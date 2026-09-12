@@ -2029,3 +2029,157 @@ setTimeout(() => console.log("end-ok"), 50);
     assert!(out.contains("end-ok"), "out: {out}");
     dir.close().unwrap();
 }
+
+// ── Phase 9d-1：node:net TCP 回环（hermetic，port 0 避冲突）─────────────────
+
+#[test]
+fn phase9d_net_echo_loopback() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net, { Socket, createServer, createConnection } from "node:net";
+import assert from "node:assert";
+const server = createServer((sock) => {
+  assert.ok(sock instanceof Socket);
+  sock.on("data", (chunk) => {
+    console.log("srv-recv", typeof chunk, String(chunk), sock.remoteAddress, sock.remotePort > 0);
+    sock.write("echo:" + String(chunk));
+  });
+  sock.on("end", () => { console.log("srv-end"); sock.end(); });
+  sock.on("close", () => console.log("srv-close"));
+});
+server.listen(0, "127.0.0.1", () => {
+  const addr = server.address();
+  console.log("listening", typeof addr.port === "number" && addr.port > 0, addr.address, addr.family);
+  const s = net.connect(addr.port, "127.0.0.1", () => {
+    console.log("cli-connect-cb");
+  });
+  s.on("connect", () => {
+    console.log("cli-connect", s.remoteAddress, s.localAddress !== null);
+    s.write("ping");
+  });
+  s.on("data", (chunk) => {
+    console.log("cli-recv", String(chunk));
+    s.end();
+  });
+  s.on("end", () => console.log("cli-end"));
+  s.on("close", () => { console.log("cli-close"); server.close(); });
+});
+server.on("close", () => console.log("server-closed"));
+// 第二连接：destroy 硬关 + write after destroy 报错
+const srv2 = createServer((sock) => {
+  sock.on("data", () => { sock.destroy(); });
+});
+srv2.listen(0, "127.0.0.1", () => {
+  const c = createConnection(srv2.address().port, "127.0.0.1");
+  c.on("connect", () => {
+    c.write("boom");
+  });
+  c.on("close", () => {
+    console.log("destroyed-close");
+    try { c.write("late"); } catch (e) { console.log("wae", e.code); }
+    srv2.close();
+  });
+});
+setTimeout(() => console.log("end-ok"), 200);
+"#,
+    );
+    assert!(out.contains("srv-recv object ping 127.0.0.1 true"), "out: {out}");
+    assert!(out.contains("listening true 127.0.0.1 IPv4"), "out: {out}");
+    assert!(out.contains("cli-connect-cb"), "out: {out}");
+    assert!(out.contains("cli-connect 127.0.0.1 true"), "out: {out}");
+    assert!(out.contains("cli-recv echo:ping"), "out: {out}");
+    assert!(out.contains("cli-end"), "out: {out}");
+    assert!(out.contains("cli-close"), "out: {out}");
+    assert!(out.contains("srv-end"), "out: {out}");
+    assert!(out.contains("srv-close"), "out: {out}");
+    assert!(out.contains("server-closed"), "out: {out}");
+    assert!(out.contains("destroyed-close"), "out: {out}");
+    assert!(out.contains("wae ERR_STREAM_DESTROYED"), "out: {out}");
+    assert!(out.contains("end-ok"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9d_net_server_errors() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createServer } from "node:net";
+// 占位 server 抢住端口，第二个 server 绑定同端口 → 'error' 事件 EADDRINUSE
+const holder = createServer(() => {});
+holder.listen(0, "127.0.0.1", () => {
+  const port = holder.address().port;
+  const s2 = createServer(() => {});
+  s2.on("error", (e) => {
+    console.log("bind-err", e.code, e.port === port);
+    holder.close();
+  });
+  s2.on("close", () => console.log("s2-close"));
+  s2.listen(port, "127.0.0.1");
+});
+holder.on("close", () => console.log("holder-close"));
+setTimeout(() => console.log("end-ok"), 200);
+"#,
+    );
+    assert!(out.contains("bind-err EADDRINUSE true"), "out: {out}");
+    assert!(out.contains("s2-close"), "out: {out}");
+    assert!(out.contains("holder-close"), "out: {out}");
+    assert!(out.contains("end-ok"), "out: {out}");
+    dir.close().unwrap();
+}
+
+// ── Phase 9d-2：node:dns（hermetic，仅 localhost/回环）──────────────────────
+
+#[test]
+fn phase9d_dns_localhost() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import dns, { lookup, resolve4, resolve6 } from "node:dns";
+lookup("localhost", (err, address, family) => {
+  console.log("lookup", err === null, family === 4 || family === 6, /^[\d.]+$|^[0-9a-f:]+$/.test(address));
+});
+lookup("localhost", { all: true }, (err, addrs) => {
+  console.log("lookup-all", err === null, Array.isArray(addrs), addrs.length >= 1,
+    addrs.every((a) => typeof a.address === "string" && (a.family === 4 || a.family === 6)));
+});
+lookup("localhost", { family: 4 }, (err, address, family) => {
+  console.log("lookup-v4", err === null, family === 4, address === "127.0.0.1");
+});
+resolve4("localhost", (err, addrs) => {
+  console.log("resolve4", err === null, addrs.includes("127.0.0.1"));
+});
+resolve6("localhost", (err, addrs) => {
+  console.log("resolve6", err === null, addrs.includes("::1") || addrs.length >= 0);
+});
+dns.promises.lookup("localhost").then((r) => {
+  console.log("p-lookup", typeof r.address === "string", r.family === 4 || r.family === 6);
+});
+dns.promises.lookup("localhost", { all: true }).then((r) => {
+  console.log("p-lookup-all", Array.isArray(r));
+});
+// 空主机名 → 报错带 code（平台错误码不定，断言 Error 形状）
+lookup("", (err) => {
+  console.log("empty-err", err instanceof Error, typeof err.code === "string", err.syscall === "getaddrinfo");
+});
+setTimeout(() => console.log("end-ok"), 50);
+"#,
+    );
+    assert!(out.contains("lookup true true true"), "out: {out}");
+    assert!(out.contains("lookup-all true true true true"), "out: {out}");
+    assert!(out.contains("lookup-v4 true true true"), "out: {out}");
+    assert!(out.contains("resolve4 true true"), "out: {out}");
+    assert!(out.contains("resolve6 true"), "out: {out}");
+    assert!(out.contains("p-lookup true true"), "out: {out}");
+    assert!(out.contains("p-lookup-all true"), "out: {out}");
+    assert!(out.contains("empty-err true true true"), "out: {out}");
+    assert!(out.contains("end-ok"), "out: {out}");
+    dir.close().unwrap();
+}

@@ -1969,6 +1969,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_ec_jwk_pub", Some(crypto::ec_jwk_pub), 2),
             ("__wjs_ec_import_priv", Some(crypto::ec_import_priv), 2),
             ("__wjs_ec_import_pub", Some(crypto::ec_import_pub), 3),
+            // 9h-1：SPKI/PKCS#8 算法 OID 直判曲线（试解误判 secp256k1→P-256）
+            ("__wjs_ec_guess_curve", Some(crypto::ec_guess_curve), 1),
             // Phase c-4x：RSA-PSS / Ed25519 / X25519
             ("__wjs_pss_sign", Some(crypto::pss_sign), 4),
             ("__wjs_pss_verify", Some(crypto::pss_verify), 5),
@@ -2083,6 +2085,11 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_dh_secret", Some(node::crypto::dh_secret), 3),
             ("__wjs_prime_check", Some(node::crypto::prime_check), 2),
             ("__wjs_prime_gen", Some(node::crypto::prime_gen), 3),
+            // Phase 9h-1: DSA（dsa 0.7 + hazmat；信封 JSON 桥）
+            ("__wjs_dsa_generate", Some(crypto::dsa_generate), 2),
+            ("__wjs_dsa_sign", Some(crypto::dsa_sign), 3),
+            ("__wjs_dsa_verify", Some(crypto::dsa_verify), 4),
+            ("__wjs_dsa_export", Some(crypto::dsa_export), 1),
             // Phase 9e-1c: RSA-SHA1 手工件（digest 0.10 版本面，§0.5 未批新行）
             ("__wjs_node_rsa_oaep", Some(node::crypto::node_rsa_oaep), 4),
             ("__wjs_node_rsa_v15_sign", Some(node::crypto::node_rsa_v15_sign), 3),

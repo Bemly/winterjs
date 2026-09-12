@@ -1554,12 +1554,23 @@ pub unsafe extern "C" fn kdf_argon2(
             return false;
         }
     };
+    let mut builder = argon2::ParamsBuilder::new();
     if !ad.is_empty() {
-        // argon2 0.6 无 associated-data 接口（记档缺口）
-        report_error(&mut cx, "ERR_NOT_SUPPORTED: Argon2 associatedData not supported");
-        return false;
+        match argon2::AssociatedData::new(&ad) {
+            Ok(data) => {
+                builder.data(data);
+            }
+            Err(e) => {
+                report_error(&mut cx, &format!("ERR_OUT_OF_RANGE: bad Argon2 associatedData ({e})"));
+                return false;
+            }
+        }
     }
-    let params = match argon2::Params::new(nums[2] as u32, nums[3] as u32, nums[0] as u32, Some(nums[1] as usize)) {
+    builder.m_cost(nums[2] as u32);
+    builder.t_cost(nums[3] as u32);
+    builder.p_cost(nums[0] as u32);
+    builder.output_len(nums[1] as usize);
+    let params = match builder.build() {
         Ok(p) => p,
         Err(e) => {
             report_error(&mut cx, &format!("ERR_OUT_OF_RANGE: bad Argon2 params ({e})"));
@@ -2216,7 +2227,7 @@ export function getHashes() {
   return ["sha1", "sha256", "sha384", "sha512", "md5", "sha3-256", "sha3-384", "sha3-512", "blake2b512", "blake2s256"];
 }
 export function getCurves() {
-  return ["prime256v1", "secp384r1", "secp521r1", "ed25519", "x25519"];
+  return ["prime256v1", "secp384r1", "secp521r1", "secp256k1", "ed25519", "x25519"];
 }
 export const webcrypto = globalThis.crypto;
 
@@ -2531,6 +2542,7 @@ function __normCurve(name) {
     "prime256v1": "P-256", "secp256r1": "P-256", "p256": "P-256",
     "secp384r1": "P-384", "p384": "P-384",
     "secp521r1": "P-521", "p521": "P-521",
+    "secp256k1": "secp256k1", "k256": "secp256k1",
     "ed25519": "Ed25519", "x25519": "X25519",
   };
   const c = table[s];
@@ -2542,7 +2554,57 @@ function __normCurve(name) {
   return c;
 }
 function __curveSize(curve) {
-  return curve === "P-256" ? 32 : curve === "P-384" ? 48 : 66;
+  return curve === "P-256" ? 32 : curve === "P-384" ? 48 : curve === "secp256k1" ? 32 : 66;
+}
+// DSA DER 解析（PKCS#8/SPKI；轮子无公开 Decode，JS 侧走 __derRead）。
+// DSA OID 1.2.840.10040.4.1（hex 2a8648ce380401）；整数前导零剥掉（零值保一位）。
+function __dsaInts(kids) {
+  return kids.map((t) => {
+    if (t.tag !== 2) throw new Error("no");
+    let v = t.body;
+    while (v.length > 1 && v[0] === 0) v = v.slice(1);
+    return Buffer.from(v).toString("base64");
+  });
+}
+function __parseDsaDer(der, want) {
+  const fail = () => { throw new Error("no"); };
+  const top = __derRead(der, 0);
+  if (top.tag !== 48) fail();
+  const kids = __derChildren(top.body);
+  const dsaOid = "2a8648ce380401";
+  const hex = (u8) => Buffer.from(u8).toString("hex");
+  if (want === "private") {
+    // SEQ{ INT 0, SEQ{ OID dsa, SEQ{ p,q,g } }, OCTET{ INT x } }
+    if (kids.length < 3 || kids[0].tag !== 2) fail();
+    const alg = __derChildren(kids[1].body);
+    if (alg.length < 2 || alg[0].tag !== 6 || hex(alg[0].body) !== dsaOid) fail();
+    const params = __derChildren(alg[1].body);
+    if (params.length !== 3) fail();
+    if (kids[2].tag !== 4) fail();
+    const xTop = __derRead(kids[2].body, 0);
+    if (xTop.tag !== 2) fail();
+    const [p, q, g] = __dsaInts(params);
+    const [x] = __dsaInts([xTop]);
+    return { p, q, g, x };
+  }
+  // SEQ{ SEQ{ OID dsa, SEQ{ p,q,g } }, BITSTRING{ INT y } }
+  if (kids.length < 2) fail();
+  const alg = __derChildren(kids[0].body);
+  if (alg.length < 2 || alg[0].tag !== 6 || hex(alg[0].body) !== dsaOid) fail();
+  const params = __derChildren(alg[1].body);
+  if (params.length !== 3) fail();
+  if (kids[1].tag !== 3 || kids[1].body.length < 2 || kids[1].body[0] !== 0) fail();
+  const yTop = __derRead(kids[1].body.slice(1), 0);
+  if (yTop.tag !== 2) fail();
+  const [p, q, g] = __dsaInts(params);
+  const [y] = __dsaInts([yTop]);
+  return { p, q, g, y };
+}
+function __dsaKeyObject(env, kind) {
+  const k = new KeyObject(kind, "dsa", Buffer.from(JSON.stringify(env)));
+  const pLen = Buffer.from(env.p, "base64").length, qLen = Buffer.from(env.q, "base64").length;
+  k.__detail = { modulusLength: pLen * 8, divisorLength: qLen * 8 };
+  return k;
 }
 function __normHashName(alg) {
   // 'RSA-SHA256' / 'sha256' → 'SHA-256'（WebCrypto 口径既有表）
@@ -2589,6 +2651,20 @@ function __exportDer(kobj, options) {
     err.code = "ERR_NOT_SUPPORTED";
     throw err;
   }
+  // DSA material 是信封 JSON（非 DER），经轮子编 pkcs8/spki
+  if (kobj.__keyType === "dsa") {
+    const envStr = Buffer.from(kobj.__material).toString("utf8");
+    const parts = JSON.parse(__cryptCall(() => __wjs_dsa_export(envStr)));
+    if (kobj.__kind === "private") {
+      if (!parts.privDer) {
+        const err = new Error("DSA private key has no private material");
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      }
+      return __b64dec(parts.privDer);
+    }
+    return __b64dec(parts.pubDer);
+  }
   return kobj.__material;
 }
 function __exportJwk(kobj) {
@@ -2619,6 +2695,19 @@ function __exportJwk(kobj) {
       : kobj.__material;
     const jwk = { kty: "OKP", crv, x: b64u(pubBytes) };
     if (isPriv) jwk.d = b64u(kobj.__material);
+    return jwk;
+  }
+  if (kobj.__keyType === "dsa") {
+    const env = JSON.parse(Buffer.from(kobj.__material).toString("utf8"));
+    const jwk = { kty: "DSA", p: b64u(__b64dec(env.p)), q: b64u(__b64dec(env.q)), g: b64u(__b64dec(env.g)), y: b64u(__b64dec(env.y)) };
+    if (isPriv) {
+      if (!env.x) {
+        const err = new Error("DSA private key has no private material");
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      }
+      jwk.x = b64u(__b64dec(env.x));
+    }
     return jwk;
   }
   const err = new Error("JWK export not supported for this key type");
@@ -2670,6 +2759,25 @@ function __parseKeyMaterial(key, format, type, want) {
       k.__detail = { namedCurve: curve };
       return k;
     }
+    if (key.kty === "DSA") {
+      // JWK → 信封（b64url 转标准 b64 存；长度定档）。
+      const std = (s) => Buffer.from(__b64urlDec(s)).toString("base64");
+      for (const f of ["p", "q", "g", "y"]) {
+        if (typeof key[f] !== "string") {
+          const err = new TypeError(`Invalid DSA JWK (missing ${f})`);
+          err.code = "ERR_INVALID_ARG_VALUE";
+          throw err;
+        }
+      }
+      const env = { p: std(key.p), q: std(key.q), g: std(key.g), y: std(key.y) };
+      if (key.x !== undefined) env.x = std(key.x);
+      // 信封合法性经轮子校验（坐标对参数）。
+      __cryptCall(() => __wjs_dsa_export(JSON.stringify(env)));
+      const k = new KeyObject(key.x !== undefined ? "private" : "public", "dsa", Buffer.from(JSON.stringify(env)));
+      const pLen = Buffer.from(env.p, "base64").length, qLen = Buffer.from(env.q, "base64").length;
+      k.__detail = { modulusLength: pLen * 8, divisorLength: qLen * 8 };
+      return k;
+    }
     if (key.kty === "OKP") {
       const kt = key.crv === "Ed25519" ? "ed25519" : key.crv === "X25519" ? "x25519" : null;
       if (kt === null) {
@@ -2710,10 +2818,18 @@ function __parseKeyMaterial(key, format, type, want) {
     const tries = [
       ["rsa", () => { __cryptCall(() => __wjs_rsa_public(der)); return new KeyObject("private", "rsa", der); }],
       ["ec", () => {
-        for (const c of ["P-256", "P-384", "P-521"]) {
-          try { __cryptCall(() => __wjs_ec_public(c, der)); const k = new KeyObject("private", "ec", der); k.__detail = { namedCurve: c }; return k; } catch {}
-        }
-        throw new Error("no");
+        // SPKI 算法 OID 直判（试解靠坐标长度会把 secp256k1 误判成 P-256，同 32 字节）。
+        const g = __cryptCall(() => __wjs_ec_guess_curve(der));
+        if (g === "") throw new Error("no");
+        __cryptCall(() => __wjs_ec_public(g, der));
+        const k = new KeyObject("private", "ec", der);
+        k.__detail = { namedCurve: g };
+        return k;
+      }],
+      ["dsa", () => {
+        const env = __parseDsaDer(der, "private");
+        __cryptCall(() => __wjs_dsa_export(JSON.stringify(env)));
+        return __dsaKeyObject(env, "private");
       }],
       ["okp", () => {
         for (const kt of ["ed25519", "x25519"]) {
@@ -2736,10 +2852,17 @@ function __parseKeyMaterial(key, format, type, want) {
     const tries = [
       () => { __cryptCall(() => __wjs_rsa_jwk_pub(der)); return new KeyObject("public", "rsa", der); },
       () => {
-        for (const c of ["P-256", "P-384", "P-521"]) {
-          try { __cryptCall(() => __wjs_ec_jwk_pub(c, der)); const k = new KeyObject("public", "ec", der); k.__detail = { namedCurve: c }; return k; } catch {}
-        }
-        throw new Error("no");
+        const g = __cryptCall(() => __wjs_ec_guess_curve(der));
+        if (g === "") throw new Error("no");
+        __cryptCall(() => __wjs_ec_jwk_pub(g, der));
+        const k = new KeyObject("public", "ec", der);
+        k.__detail = { namedCurve: g };
+        return k;
+      },
+      () => {
+        const env = __parseDsaDer(der, "public");
+        __cryptCall(() => __wjs_dsa_export(JSON.stringify(env)));
+        return __dsaKeyObject(env, "public");
       },
       () => {
         for (const kt of ["ed25519", "x25519"]) {
@@ -2767,7 +2890,21 @@ function __parseKeyMaterial(key, format, type, want) {
       err.code = "ERR_INVALID_ARG_VALUE";
       throw err;
     }
-    for (const c of ["P-256", "P-384", "P-521"]) {
+    // [0] 显式曲线 OID 直判（无 OID 才试解；32 字节标量试解无法区分 P-256/secp256k1，记档）。
+    const curveOid = top.find((t) => t.tag === 160);
+    const oidMap = {
+      "2a8648ce3d030107": "P-256", "2b81040022": "P-384",
+      "2b81040023": "P-521", "2b8104000a": "secp256k1",
+    };
+    let curves = ["P-256", "P-384", "P-521", "secp256k1"];
+    if (curveOid && curveOid.body.length >= 2 && curveOid.body[0] === 6) {
+      // 显式标签内为完整 OID TLV（06 len bytes），剥掉再比。
+      let inner = curveOid.body.slice(2);
+      if (curveOid.body[1] >= 128) inner = curveOid.body.slice(3);
+      const hit = oidMap[Buffer.from(inner).toString("hex")];
+      if (hit) curves = [hit];
+    }
+    for (const c of curves) {
       try {
         const privDer = __cryptCall(() => __wjs_ec_import_priv(c, scalar.body));
         const k = new KeyObject("private", "ec", Buffer.from(privDer));
@@ -2813,6 +2950,13 @@ function __derivePublic(priv) {
   }
   if (priv.__keyType === "x25519") {
     return new KeyObject("public", "x25519", Buffer.from(__cryptCall(() => __wjs_x_public(priv.__material))));
+  }
+  if (priv.__keyType === "dsa") {
+    const env = JSON.parse(Buffer.from(priv.__material).toString("utf8"));
+    const pubEnv = { p: env.p, q: env.q, g: env.g, y: env.y };
+    const k = new KeyObject("public", "dsa", Buffer.from(JSON.stringify(pubEnv)));
+    k.__detail = priv.__detail;
+    return k;
   }
   const err = new Error("Cannot derive public key for this key type");
   err.code = "ERR_NOT_SUPPORTED";
@@ -2868,7 +3012,20 @@ function __genPairSync(type, options) {
       publicKey: new KeyObject("public", type, Buffer.from(pubB)),
     };
   }
-  const err = new Error(`generateKeyPair type '${type}' not supported (rsa/rsa-pss/ec/ed25519/x25519)`);
+  if (type === "dsa") {
+    // Node 缺省：divisorLength 按 modulus 取（1024→160，其余→256；2048/224 须显式）。
+    let modulusLength = options.modulusLength ?? 2048;
+    let divisorLength = options.divisorLength;
+    if (divisorLength === undefined) divisorLength = modulusLength === 1024 ? 160 : 256;
+    const env = JSON.parse(__cryptCall(() => __wjs_dsa_generate(modulusLength, divisorLength)));
+    const priv = new KeyObject("private", "dsa", Buffer.from(JSON.stringify(env)));
+    priv.__detail = { modulusLength, divisorLength };
+    const pubEnv = { p: env.p, q: env.q, g: env.g, y: env.y };
+    const pub = new KeyObject("public", "dsa", Buffer.from(JSON.stringify(pubEnv)));
+    pub.__detail = priv.__detail;
+    return { privateKey: priv, publicKey: pub };
+  }
+  const err = new Error(`generateKeyPair type '${type}' not supported (rsa/rsa-pss/ec/ed25519/x25519/dsa)`);
   err.code = "ERR_NOT_SUPPORTED";
   throw err;
 }
@@ -3005,6 +3162,19 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength) {
     if ((dsaEncoding ?? "der") === "der") return __rawToDerSig(Buffer.from(raw));
     return Buffer.from(raw);
   }
+  if (kt === "dsa") {
+    if (keyObj.__kind !== "private") {
+      const err = new TypeError("sign requires a private key");
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    const envStr = Buffer.from(keyObj.__material).toString("utf8");
+    const der = __cryptCall(() => __wjs_dsa_sign(hash, envStr, dataB));
+    if ((dsaEncoding ?? "der") === "der") return Buffer.from(der);
+    // ieee-p1363：r‖s 定长（q 长）；DER 解后拼。
+    const qLen = Buffer.from(JSON.parse(envStr).q, "base64").length;
+    return Buffer.from(__derToRawSig(Buffer.from(der), qLen));
+  }
   const err = new Error(`sign not supported for ${kt}`);
   err.code = "ERR_NOT_SUPPORTED";
   throw err;
@@ -3056,6 +3226,11 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
     const size = __curveSize(curve);
     const raw = (dsaEncoding ?? "der") === "der" ? __derToRawSig(sigB, size) : sigB;
     return __cryptCall(() => __wjs_ecdsa_verify(curve, hash, pubDer, raw, dataB));
+  }
+  if (kt === "dsa") {
+    const envStr = Buffer.from(keyObj.__material).toString("utf8");
+    const der = (dsaEncoding ?? "der") === "der" ? sigB : __rawToDerSig(sigB);
+    return __cryptCall(() => __wjs_dsa_verify(hash, envStr, der, dataB));
   }
   const err = new Error(`verify not supported for ${kt}`);
   err.code = "ERR_NOT_SUPPORTED";
@@ -3220,8 +3395,8 @@ export function publicDecrypt(key, data) { return __rsaCrypt(key, data, true, fa
 class ECDH {
   constructor(curve) {
     this.__curve = __normCurve(curve);
-    if (this.__curve !== "P-256" && this.__curve !== "P-384" && this.__curve !== "P-521") {
-      const err = new Error(`ECDH curve ${curve} not supported (P-256/384/521)`);
+    if (this.__curve !== "P-256" && this.__curve !== "P-384" && this.__curve !== "P-521" && this.__curve !== "secp256k1") {
+      const err = new Error(`ECDH curve ${curve} not supported (P-256/384/521/secp256k1)`);
       err.code = "ERR_NOT_SUPPORTED";
       throw err;
     }
@@ -3443,12 +3618,9 @@ export function generatePrimeSync(size, options) {
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
-  if (options?.bigint === true) {
-    const err = new Error("generatePrime bigint output not supported (no BigInt bridge)");
-    err.code = "ERR_NOT_SUPPORTED";
-    throw err;
-  }
   const out = __cryptCall(() => __wjs_prime_gen(bits, options?.checks ?? 64, options?.safe ? 1 : 0));
+  // bigint 经 16 进制桥（`BigInt("0x…")`，零 native 改动；§4.44 同类绕行）。
+  if (options?.bigint === true) return BigInt("0x" + Buffer.from(out).toString("hex"));
   return Buffer.from(out);
 }
 export function generatePrime(size, options, callback) {

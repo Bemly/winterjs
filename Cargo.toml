@@ -189,9 +189,11 @@ x25519-dalek = { version = "3", features = ["static_secrets"] }  # c-4x：按值
 p256 = { version = "0.14", features = ["ecdh", "pkcs8"] }
 p384 = { version = "0.14", features = ["ecdh", "pkcs8"] }
 p521 = { version = "0.14", features = ["ecdh", "pkcs8"] }
-k256 = "0.14"
+# 9h-1：secp256k1（node:crypto ECDH/签名；ecdh 纯 Rust，见 dependencies2 注记）。
+k256 = { version = "0.14", features = ["ecdh"] }
 crypto-bigint = "0.7"
-dsa = "0.7"
+# 9h-1：DSA 密钥生成要 hazmat（纯 Rust，见 dependencies2 注记）。
+dsa = { version = "0.7", features = ["hazmat"] }
 rsa = "0.9"
 der = "0.8"
 pem-rfc7468 = "1"

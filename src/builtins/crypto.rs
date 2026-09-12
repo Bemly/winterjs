@@ -966,15 +966,16 @@ pub unsafe extern "C" fn rsa_import_pub(
     set_rval_bytes(&mut cx, &frame, &der)
 }
 
-// ── 椭圆曲线（ECDSA/ECDH，P-256/384/521）──────────────────────────────────
+// ── 椭圆曲线（ECDSA/ECDH，P-256/384/521 + secp256k1）─────────────────────────
 // 三曲线同构：宏按曲线展开（`p256`/`p384`/`p521`，`ecdh`+`pkcs8` 特性已显式声明）。
 
 /// 曲线名字典序（prelude 已归一化 `P-256` 等；此处再守一次）。
 /// 绑定：曲线标记 `C`、私钥 `Secret`、公钥 `Public`、签名钥 `Signing`、验签钥 `Verifying`、签名 `Sig`。
 macro_rules! with_curve {
-    ($curve:expr, |$C:ident, $Secret:ident, $Public:ident, $Signing:ident, $Verifying:ident, $Sig:ident| $body:expr) => {{
+    ($curve:expr, |$C:ident, $Secret:ident, $Public:ident, $Signing:ident, $Verifying:ident, $Sig:ident, $K:ident| $body:expr) => {{
         match $curve {
             "P-256" => {
+                use p256 as $K;
                 #[allow(dead_code)]
                 type $C = p256::NistP256;
                 #[allow(dead_code)]
@@ -990,6 +991,7 @@ macro_rules! with_curve {
                 $body
             }
             "P-384" => {
+                use p384 as $K;
                 #[allow(dead_code)]
                 type $C = p384::NistP384;
                 #[allow(dead_code)]
@@ -1005,6 +1007,7 @@ macro_rules! with_curve {
                 $body
             }
             "P-521" => {
+                use p521 as $K;
                 #[allow(dead_code)]
                 type $C = p521::NistP521;
                 #[allow(dead_code)]
@@ -1019,17 +1022,35 @@ macro_rules! with_curve {
                 type $Sig = p521::ecdsa::Signature;
                 $body
             }
-            other => Err(format!("NotSupportedError: unsupported curve '{other}' (P-256/384/521)")),
+            // 9h-1：secp256k1（k256；API 与 P-* 同构，`$K` 统一轮子路径）。
+            "secp256k1" => {
+                use k256 as $K;
+                #[allow(dead_code)]
+                type $C = k256::Secp256k1;
+                #[allow(dead_code)]
+                type $Secret = k256::SecretKey;
+                #[allow(dead_code)]
+                type $Public = k256::PublicKey;
+                #[allow(dead_code)]
+                type $Signing = k256::ecdsa::SigningKey;
+                #[allow(dead_code)]
+                type $Verifying = k256::ecdsa::VerifyingKey;
+                #[allow(dead_code)]
+                type $Sig = k256::ecdsa::Signature;
+                $body
+            }
+            other => Err(format!("NotSupportedError: unsupported curve '{other}' (P-256/384/521/secp256k1)")),
         }
     }};
 }
 
-/// 曲线阶字节数（P-256→32，P-384→48，P-521→66；JWK 定长坐标用）。
+/// 曲线阶字节数（P-256→32，P-384→48，P-521→66，secp256k1→32；JWK 定长坐标用）。
 fn curve_size(curve: &str) -> Option<usize> {
     match curve {
         "P-256" => Some(32),
         "P-384" => Some(48),
         "P-521" => Some(66),
+        "secp256k1" => Some(32),
         _ => None,
     }
 }
@@ -1049,7 +1070,7 @@ pub unsafe extern "C" fn ec_generate(
     }
     let curve = value_to_string(&mut cx, frame.arg(0));
     let Some(size) = curve_size(&curve) else {
-        report_error(&mut cx, &format!("NotSupportedError: unsupported curve '{curve}' (P-256/384/521)"));
+        report_error(&mut cx, &format!("NotSupportedError: unsupported curve '{curve}' (P-256/384/521/secp256k1)"));
         return false;
     };
     // 极小概率越界（随机标量 ≥ 阶）即重试，而非报错。
@@ -1059,10 +1080,10 @@ pub unsafe extern "C" fn ec_generate(
             report_error(&mut cx, "OperationError: cannot get random values");
             return false;
         }
-        let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig| {
-            use p256::elliptic_curve::pkcs8::EncodePrivateKey as _;
+        let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {
+            use K::elliptic_curve::pkcs8::EncodePrivateKey as _;
             // C 仅作 `FieldBytes::<C>` 类型参（值位置用不上，`#[allow(dead_code)]` 在宏臂上）。
-            p256::elliptic_curve::FieldBytes::<C>::try_from(raw.as_slice())
+            K::elliptic_curve::FieldBytes::<C>::try_from(raw.as_slice())
                 .map_err(|_| String::new())
                 .and_then(|fb| Secret::from_bytes(&fb).map_err(|_| String::new()))
                 .and_then(|sk| sk.to_pkcs8_der().map_err(|_| String::new()))
@@ -1101,8 +1122,8 @@ pub unsafe extern "C" fn ec_public(
     let Some(der) = view_bytes(&mut cx, frame.arg(1), "EC private key") else {
         return false;
     };
-    let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig| {
-        use p256::elliptic_curve::pkcs8::{DecodePrivateKey as _, EncodePublicKey as _};
+    let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {
+        use K::elliptic_curve::pkcs8::{DecodePrivateKey as _, EncodePublicKey as _};
         Secret::from_pkcs8_der(&der)
             .map_err(|_| "DataError: bad EC private key (PKCS#8)".to_string())
             .and_then(|sk: Secret| {
@@ -1172,11 +1193,11 @@ pub unsafe extern "C" fn ecdsa_sign(
             return false;
         }
     };
-    let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig| {
+    let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {
         // IIFE：`?`/early-return 作用于闭包（外层函数返 bool，`?` 直写即 E0277）。
         (|| -> Result<Vec<u8>, String> {
-            use p256::ecdsa::signature::hazmat::PrehashSigner as _;
-            use p256::elliptic_curve::pkcs8::DecodePrivateKey as _;
+            use K::ecdsa::signature::hazmat::PrehashSigner as _;
+            use K::elliptic_curve::pkcs8::DecodePrivateKey as _;
             let sk = Secret::from_pkcs8_der(&der)
                 .map_err(|_| "DataError: bad ECDSA private key (PKCS#8)".to_string())?;
             let signer = Signing::from_bytes(&sk.to_bytes())
@@ -1226,16 +1247,18 @@ pub unsafe extern "C" fn ecdsa_verify(
             return false;
         }
     };
-    let out: Result<bool, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig| {
+    let out: Result<bool, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {
         (|| -> Result<bool, String> {
-            use p256::ecdsa::signature::hazmat::PrehashVerifier as _;
-            use p256::elliptic_curve::pkcs8::DecodePublicKey as _;
+            use K::ecdsa::signature::hazmat::PrehashVerifier as _;
+            use K::elliptic_curve::pkcs8::DecodePublicKey as _;
             let pk = Public::from_public_key_der(&der)
                 .map_err(|_| "DataError: bad ECDSA public key (SPKI)".to_string())?;
             let vk = Verifying::from_sec1_bytes(&pk.to_sec1_bytes())
                 .map_err(|_| "DataError: bad ECDSA public key".to_string())?;
             let sig = Sig::try_from(sig.as_slice())
                 .map_err(|_| "OperationError: bad ECDSA signature length".to_string())?;
+            // 高 S 归一化（OpenSSL 接受可锻造签名；k256 验签拒 high-S，Node 同兼容）。
+            let sig = sig.normalize_s();
             Ok(vk.verify_prehash(&digest, &sig).is_ok())
         })()
     });
@@ -1271,14 +1294,14 @@ pub unsafe extern "C" fn ecdh_derive(
     ) else {
         return false;
     };
-    let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig| {
+    let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {
         (|| -> Result<Vec<u8>, String> {
-            use p256::elliptic_curve::pkcs8::{DecodePrivateKey as _, DecodePublicKey as _};
+            use K::elliptic_curve::pkcs8::{DecodePrivateKey as _, DecodePublicKey as _};
             let sk = Secret::from_pkcs8_der(&priv_der)
                 .map_err(|_| "DataError: bad ECDH private key (PKCS#8)".to_string())?;
             let pk = Public::from_public_key_der(&pub_der)
                 .map_err(|_| "DataError: bad ECDH public key (SPKI)".to_string())?;
-            let shared = p256::elliptic_curve::ecdh::diffie_hellman(sk.to_nonzero_scalar(), pk.as_affine());
+            let shared = K::elliptic_curve::ecdh::diffie_hellman(sk.to_nonzero_scalar(), pk.as_affine());
             Ok(shared.raw_secret_bytes().as_slice().to_vec())
         })()
     });
@@ -1325,10 +1348,10 @@ pub unsafe extern "C" fn ec_jwk(
         report_error(&mut cx, &format!("NotSupportedError: unsupported curve '{curve}'"));
         return false;
     };
-    let out: Result<String, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig| {
+    let out: Result<String, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {
         (|| -> Result<String, String> {
-            use p256::elliptic_curve::pkcs8::{DecodePrivateKey as _, DecodePublicKey as _};
-            use p256::elliptic_curve::sec1::ToSec1Point as _;
+            use K::elliptic_curve::pkcs8::{DecodePrivateKey as _, DecodePublicKey as _};
+            use K::elliptic_curve::sec1::ToSec1Point as _;
             let sk = Secret::from_pkcs8_der(&priv_der)
                 .map_err(|_| "DataError: bad EC private key (PKCS#8)".to_string())?;
             let pk = Public::from_public_key_der(&pub_der)
@@ -1380,10 +1403,10 @@ pub unsafe extern "C" fn ec_jwk_pub(
         report_error(&mut cx, &format!("NotSupportedError: unsupported curve '{curve}'"));
         return false;
     };
-    let out: Result<String, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig| {
+    let out: Result<String, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {
         (|| -> Result<String, String> {
-            use p256::elliptic_curve::pkcs8::DecodePublicKey as _;
-            use p256::elliptic_curve::sec1::ToSec1Point as _;
+            use K::elliptic_curve::pkcs8::DecodePublicKey as _;
+            use K::elliptic_curve::sec1::ToSec1Point as _;
             let pk = Public::from_public_key_der(&pub_der)
                 .map_err(|_| "DataError: bad EC public key (SPKI)".to_string())?;
             let point = pk.to_sec1_point(false);
@@ -1436,9 +1459,9 @@ pub unsafe extern "C" fn ec_import_priv(
         report_error(&mut cx, "DataError: bad EC JWK (d length)");
         return false;
     }
-    let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig| {
-        use p256::elliptic_curve::pkcs8::EncodePrivateKey as _;
-        p256::elliptic_curve::FieldBytes::<C>::try_from(d.as_slice())
+    let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {
+        use K::elliptic_curve::pkcs8::EncodePrivateKey as _;
+        K::elliptic_curve::FieldBytes::<C>::try_from(d.as_slice())
             .map_err(|_| "DataError: bad EC JWK (d)".to_string())
             .and_then(|fb| Secret::from_bytes(&fb).map_err(|_| "DataError: bad EC JWK (d)".to_string()))
             .and_then(|sk| {
@@ -1454,6 +1477,53 @@ pub unsafe extern "C" fn ec_import_priv(
             false
         }
     }
+}
+
+/// SPKI/PKCS#8 算法参数 OID → 曲线名（纯函数，单测覆盖；未知/非 EC 即 ""）。
+/// 注意是 parameters 里的曲线 OID，不是 algorithm 本身（后者恒为 id-ecPublicKey）。
+fn ec_curve_name(der: &[u8]) -> &'static str {
+    let params = spki::SubjectPublicKeyInfoRef::try_from(der)
+        .ok()
+        .and_then(|s| s.algorithm.parameters)
+        .or_else(|| {
+            pkcs8::PrivateKeyInfoRef::try_from(der)
+                .ok()
+                .and_then(|p| p.algorithm.parameters)
+        });
+    let oid = params
+        .and_then(|any| any.decode_as::<der::asn1::ObjectIdentifier>().ok())
+        .map(|o| o.to_string());
+    match oid.as_deref() {
+        Some("1.2.840.10045.3.1.7") => "P-256",
+        Some("1.3.132.0.34") => "P-384",
+        Some("1.3.132.0.35") => "P-521",
+        Some("1.3.132.0.10") => "secp256k1",
+        _ => "",
+    }
+}
+
+/// `__wjs_ec_guess_curve(der)` → 曲线名（SPKI/PKCS#8 的算法 OID 直判；
+/// 试解循环靠坐标长度会把 secp256k1 误判成 P-256（同 32 字节），必须看 OID）。
+/// 未知/非 EC 即空串（调用方继续试别的类型）。
+pub unsafe extern "C" fn ec_guess_curve(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 {
+        report_error(&mut cx, "TypeError: EC curve guess needs DER");
+        return false;
+    }
+    let Some(der) = view_bytes(&mut cx, frame.arg(0), "EC key") else {
+        return false;
+    };
+    let name = ec_curve_name(&der);
+    use mozjs::conversions::ToJSValConvertible as _;
+    name.to_jsval(&mut cx, frame.rval_mut());
+    true
 }
 
 /// `__wjs_ec_import_pub(curve, xU8, yU8)` → SPKI DER（JWK `x/y` 或 raw 公钥进）。
@@ -1484,8 +1554,8 @@ pub unsafe extern "C" fn ec_import_pub(
         report_error(&mut cx, "DataError: bad EC JWK (x/y length)");
         return false;
     }
-    let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig| {
-        use p256::elliptic_curve::pkcs8::EncodePublicKey as _;
+    let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {
+        use K::elliptic_curve::pkcs8::EncodePublicKey as _;
         let mut prefixed = Vec::with_capacity(1 + 2 * size);
         prefixed.push(0x04);
         prefixed.extend_from_slice(&x);
@@ -1507,7 +1577,249 @@ pub unsafe extern "C" fn ec_import_pub(
     }
 }
 
-// ── Phase c-4x：RSA-PSS / Ed25519 / X25519 / AES-192 ─────────────────────
+// ── 9h-1 DSA（dsa 0.7 + hazmat；密钥信封 JSON `{p,q,g,x?,y}`，b64，定长不限）─
+// PKCS#8/SPKI 编解码走 dsa 自带 Encode（DER 互通真 Node）；导入走 JS 侧 DER 解析
+// （轮子无公开 Decode）；签名 deterministic（RFC6979）；验签走 prehash（全哈希档）。
+
+/// 信封解码（`{p,q,g,x?,y?}` b64 → 验证密钥 + 私钥质（`need_x` 时缺 x 即错）。
+/// 私钥信封常无 y（Node PKCS#8 省略公钥）：有 x 即 `y=g^x mod p` 补算。
+fn dsa_envelope(env: &serde_json::Value, need_x: bool) -> Result<(dsa::VerifyingKey, Option<dsa::BoxedUint>), String> {
+    use base64::Engine as _;
+    let get = |k: &str| -> Result<Vec<u8>, String> {
+        env.get(k)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("DataError: bad DSA key (missing {k})"))
+            .and_then(|s| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(s)
+                    .map_err(|_| format!("DataError: bad DSA key ({k} not base64)"))
+            })
+    };
+    let bu = |b: Vec<u8>| dsa::BoxedUint::from_be_slice_vartime(&b);
+    let comp = dsa::Components::from_components(bu(get("p")?), bu(get("q")?), bu(get("g")?))
+        .map_err(|_| "DataError: bad DSA parameters".to_string())?;
+    let x_raw: Option<Vec<u8>> = match env.get("x").and_then(|v| v.as_str()) {
+        Some(s) => Some(base64::engine::general_purpose::STANDARD
+            .decode(s)
+            .map_err(|_| "DataError: bad DSA key (x not base64)".to_string())?),
+        None if need_x => Some(get("x")?),
+        None => None,
+    };
+    let y = match env.get("y").and_then(|v| v.as_str()) {
+        Some(s) => bu(base64::engine::general_purpose::STANDARD
+            .decode(s)
+            .map_err(|_| "DataError: bad DSA key (y not base64)".to_string())?),
+        None => match &x_raw {
+            // 私钥信封常无 y（Node PKCS#8 省略公钥）：`y=g^x mod p` 补算。
+            Some(x) => {
+                let gb = rsa::BigUint::from_bytes_be(&comp.g().to_be_bytes());
+                let xb = rsa::BigUint::from_bytes_be(x);
+                let pb = rsa::BigUint::from_bytes_be(&comp.p().to_be_bytes());
+                bu(gb.modpow(&xb, &pb).to_bytes_be())
+            }
+            None => return Err("DataError: bad DSA key (missing y)".to_string()),
+        },
+    };
+    let vk = dsa::VerifyingKey::from_components(comp, y).map_err(|_| "DataError: bad DSA public key".to_string())?;
+    let x = x_raw.map(bu);
+    Ok((vk, x))
+}
+
+/// `__wjs_dsa_generate(lBits, nBits)` → 信封 JSON（`{p,q,g,x,y}` b64）。
+pub unsafe extern "C" fn dsa_generate(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: DSA generate needs modulus and divisor lengths");
+        return false;
+    }
+    let l = value_to_string(&mut cx, frame.arg(0)).parse::<u32>().unwrap_or(0);
+    let n = value_to_string(&mut cx, frame.arg(1)).parse::<u32>().unwrap_or(0);
+    let size = match (l, n) {
+        (1024, 160) => dsa::KeySize::DSA_1024_160,
+        (2048, 224) => dsa::KeySize::DSA_2048_224,
+        (2048, 256) => dsa::KeySize::DSA_2048_256,
+        (3072, 256) => dsa::KeySize::DSA_3072_256,
+        _ => {
+            report_error(&mut cx, "ERR_INVALID_ARG_VALUE: unsupported DSA size (1024/160, 2048/224, 2048/256, 3072/256)");
+            return false;
+        }
+    };
+    let mut rng = rand::rngs::SysRng;
+    let out: Result<String, String> = (|| {
+        use base64::Engine as _;
+        let b64 = &base64::engine::general_purpose::STANDARD;
+        let comp = dsa::Components::try_generate_from_rng_with_key_size(&mut rng, size)
+            .map_err(|e| format!("OperationError: DSA parameter generation failed ({e:?})"))?;
+        let sk = dsa::SigningKey::try_generate_from_rng_with_components(&mut rng, comp.clone())
+            .map_err(|e| format!("OperationError: DSA key generation failed ({e:?})"))?;
+        let b = |u: &dsa::BoxedUint| b64.encode(u.to_be_bytes());
+        Ok(serde_json::json!({
+            "p": b(comp.p()),
+            "q": b(comp.q()),
+            "g": b(comp.g()),
+            "x": b(sk.x()),
+            "y": b(sk.verifying_key().y()),
+        })
+        .to_string())
+    })();
+    match out {
+        Ok(json) => {
+            rooted!(&in(cx) let mut v = UndefinedValue());
+            json.to_jsval(&mut cx, v.handle_mut());
+            frame.set_rval(v.get());
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_dsa_sign(hash, envJson, data)` → DER 签名（deterministic RFC6979）。
+pub unsafe extern "C" fn dsa_sign(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: DSA sign needs hash, key and data");
+        return false;
+    }
+    let hash = value_to_string(&mut cx, frame.arg(0));
+    let (Some(env), Some(data)) = (
+        serde_json::from_str::<serde_json::Value>(&value_to_string(&mut cx, frame.arg(1))).ok(),
+        view_bytes(&mut cx, frame.arg(2), "DSA data"),
+    ) else {
+        report_error(&mut cx, "TypeError: DSA sign needs a key envelope and data");
+        return false;
+    };
+    let digest = match ec_hash(&hash, &data) {
+        Ok(h) => h,
+        Err(e) => {
+            report_error(&mut cx, &e);
+            return false;
+        }
+    };
+    let out: Result<Vec<u8>, String> = (|| {
+        use dsa::signature::SignatureEncoding as _;
+        let (vk, x) = dsa_envelope(&env, true)?;
+        let x = x.expect("need_x");
+        let sk = dsa::SigningKey::from_components(vk, x).map_err(|_| "DataError: bad DSA private key".to_string())?;
+        let sig = sk
+            .sign_prehashed_rfc6979::<sha2::Sha256>(&digest)
+            .map_err(|_| "OperationError: DSA sign failed".to_string())?;
+        Ok(sig.to_vec())
+    })();
+    match out {
+        Ok(der) => set_rval_bytes(&mut cx, &frame, &der),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_dsa_verify(hash, envJson, sigDer, data)` → boolean（prehash 全哈希档）。
+pub unsafe extern "C" fn dsa_verify(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: DSA verify needs hash, key, signature and data");
+        return false;
+    }
+    let hash = value_to_string(&mut cx, frame.arg(0));
+    let (Some(env), Some(sig), Some(data)) = (
+        serde_json::from_str::<serde_json::Value>(&value_to_string(&mut cx, frame.arg(1))).ok(),
+        view_bytes(&mut cx, frame.arg(2), "DSA signature"),
+        view_bytes(&mut cx, frame.arg(3), "DSA data"),
+    ) else {
+        report_error(&mut cx, "TypeError: DSA verify needs a key envelope, signature and data");
+        return false;
+    };
+    let digest = match ec_hash(&hash, &data) {
+        Ok(h) => h,
+        Err(e) => {
+            report_error(&mut cx, &e);
+            return false;
+        }
+    };
+    let out: Result<bool, String> = (|| {
+        use dsa::signature::hazmat::PrehashVerifier as _;
+        let (vk, _) = dsa_envelope(&env, false)?;
+        let sig = dsa::Signature::try_from(sig.as_slice()).map_err(|_| "OperationError: bad DSA signature".to_string())?;
+        Ok(vk.verify_prehash(&digest, &sig).is_ok())
+    })();
+    match out {
+        Ok(ok) => {
+            frame.set_rval(mozjs::jsval::BooleanValue(ok));
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_dsa_export(envJson)` → JSON `{privDer?, pubDer}`（b64；PKCS#8/SPKI）。
+pub unsafe extern "C" fn dsa_export(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 {
+        report_error(&mut cx, "TypeError: DSA export needs a key envelope");
+        return false;
+    }
+    let Some(env) = serde_json::from_str::<serde_json::Value>(&value_to_string(&mut cx, frame.arg(0))).ok() else {
+        report_error(&mut cx, "TypeError: DSA export needs a key envelope");
+        return false;
+    };
+    let out: Result<String, String> = (|| {
+        use base64::Engine as _;
+        use dsa::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
+        let b64 = &base64::engine::general_purpose::STANDARD;
+        let (vk, x) = dsa_envelope(&env, false)?;
+        let pub_der = vk.to_public_key_der().map_err(|e| format!("OperationError: DSA export failed ({e})"))?;
+        let mut o = serde_json::json!({ "pubDer": b64.encode(pub_der.as_bytes()) });
+        if let Some(x) = x {
+            let sk = dsa::SigningKey::from_components(vk, x).map_err(|_| "DataError: bad DSA private key".to_string())?;
+            let priv_der = sk.to_pkcs8_der().map_err(|e| format!("OperationError: DSA export failed ({e})"))?;
+            o["privDer"] = serde_json::Value::String(b64.encode(priv_der.as_bytes()));
+        }
+        Ok(o.to_string())
+    })();
+    match out {
+        Ok(json) => {
+            rooted!(&in(cx) let mut v = UndefinedValue());
+            json.to_jsval(&mut cx, v.handle_mut());
+            frame.set_rval(v.get());
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
 // 边界惯例同文件头：每 native 固定 `wrap_cx` + `Frame::from_raw` 两块
 //（UNSAFE-BOUNDARY，结构性计数；黑盒见 tests/cli.rs `subtle_c4x_*`）。
 // AES-192 经泛型 `AesGcm<Aes192, U12>`（aes-gcm 只给 128/256 起别名，无新依赖）。
@@ -1994,7 +2306,7 @@ pub unsafe extern "C" fn x_derive(
 
 #[cfg(test)]
 mod c4x_tests {
-    use super::{okp_unwrap_pkcs8, okp_unwrap_spki, okp_wrap_pkcs8, okp_wrap_spki};
+    use super::{ec_curve_name, okp_unwrap_pkcs8, okp_unwrap_spki, okp_wrap_pkcs8, okp_wrap_spki};
 
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
@@ -2032,5 +2344,20 @@ mod c4x_tests {
         assert!(okp_unwrap_spki("Ed25519", &hex(ED_SPKI)[..40]).is_err());
         assert!(okp_wrap_pkcs8("ED448", &[0u8; 32]).is_err());
         assert!(okp_wrap_pkcs8("Ed25519", &[0u8; 31]).is_err());
+    }
+
+    // openssl 实测 DER（P-256 SPKI/PKCS8 + secp256k1 SPKI；9h-1 OID 直判回归）。
+    const P256_SPKI: &str = "3059301306072a8648ce3d020106082a8648ce3d03010703420004934652ada5371695be1ebf30c3cb0d895f08d56bacf65704d30fa0d57c2df7d92c5abb658d19cf89cf70458b35649b30e1178c4e3e5991b1d5cea92aca090b25";
+    const P256_PKCS8: &str = "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b0201010420bc6225513217d5896a52275273c3f96641e446fb8abe6d98f260dd719910712ba14403420004dd0884d23cdff883f5ce6cf98a51dbb48c578868b9daf1f67e79740279be14ccbc39ea21b3352be24d5c14b29c0523bb1e489e21abf0993286f8314471ce1c18";
+    const K256_SPKI: &str = "3056301006072a8648ce3d020106052b8104000a034200047919bb26319bdf32b776c2b622c1cf49c14131d658aea027a5ebe069f6bf955cba294bd12bc5f30123a9e91598435cafae0952237601335f0f3d33f8fce4baf9";
+
+    #[test]
+    fn ec_curve_name_reads_oid_not_coords() {
+        assert_eq!(ec_curve_name(&hex(P256_SPKI)), "P-256");
+        assert_eq!(ec_curve_name(&hex(P256_PKCS8)), "P-256");
+        // 同 32 字节坐标：试解会误判 P-256，OID 直判必须给 secp256k1。
+        assert_eq!(ec_curve_name(&hex(K256_SPKI)), "secp256k1");
+        assert_eq!(ec_curve_name(&hex(ED_SPKI)), "");
+        assert_eq!(ec_curve_name(&[0u8; 10]), "");
     }
 }

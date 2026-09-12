@@ -422,6 +422,8 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
     state::with_plain(|p| p.net_tx = Some(net_tx));
     let (worker_tx, worker_rx) = tokio::sync::mpsc::unbounded_channel();
     state::with_plain(|p| p.worker_tx = Some(worker_tx));
+    // 会话序号（BC 自发排除等跨会话寻址用；每会话一次，线程生灭即换号）。
+    state::session_seq_init();
     let (quic_tx, quic_rx) = tokio::sync::mpsc::unbounded_channel();
     state::with_plain(|p| p.quic_tx = Some(quic_tx));
     // 线程身份默认主（worker 线程起后由 spawn 侧改写，见 state::worker_session_init）。

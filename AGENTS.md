@@ -782,6 +782,25 @@ cargo build
 - 复现：`tests/node.rs::phase9i_vm_module_boundary`（`m9iB-evthrow` 行修前为
   `OK` + 进程 exit=1）。
 
+### 4.58 迁移排空三件套：offer 留 target + forwarded 排空 + 分发回退（2026-09-13，Phase 9i-2）
+
+- 症状：跨线程端口迁移后，主→worker 方向首条消息必丢（worker→main 方向正常）。
+- 根因（三连）：① offer 即摘 target 则竞态消息无处排队；② `forwarded`
+  排空时通道里在途的迟到消息晚于排空到达，此时 target 已摘即丢；
+  ③ 本引擎 `structuredClone` 不支持 BigInt（`DataCloneError`），"先 clone
+  探路"的信封设计与 BigInt 支持互斥；另 `SharedArrayBuffer` 全局不存在，
+  `instanceof SharedArrayBuffer` 直接 ReferenceError（非 false）。
+- 修法：offer 置 `moved` 停计数但保留 target（竞态消息照常排队）→
+  `PortForward` 派发后调目标 `__ev("forwarded")` 经现转发路由排空 →
+  分发侧 `PortMsg` 见 target 空而有转发路由即改道（`port_forward_route`
+  回退）；可克隆性改 walk 全权判定（`__denyClone` 显式拒绝表）；
+  不存在的全局一律 `typeof` 守卫先行。
+- 推广为铁律：凡"先摘后建"的跨会话移交，必须回答"在途消息去哪"——排空点
+  + 分发回退缺一不可；引擎能力断言（structuredClone/BigInt/SAB）以上手实测
+  为准，不抄文档记忆。
+- 复现：`tests/node.rs::phase9i_worker_transfer_cross_thread_and_broadcast`
+ （`w9i-xfer` 第二项修前为 false）。
+
 
 ## 5. 路线图（按序）
 

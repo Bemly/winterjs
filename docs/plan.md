@@ -843,6 +843,28 @@
   黑盒 +2（零导入全链/隔离/TLA + 报错边界 17 断言）；`cargo test` 单测 120 +
   黑盒 252 全绿（node 88；总 372 passed + 1 ignored，0 failed），0 新增警告，
   冒烟 5/5。踩坑记 AGENTS §4.57。
+- [x] 9i-2 worker 传输细节（2026-09-13 完工；零新 crate）：
+  线信封 v2（单 JSON 串，Rust 通道零改动）：BigInt/undefined/Date/Map/Set/
+  ArrayBuffer/视图（类型保留，视图全量字节 + 偏移复原）全保留；循环/函数/
+  symbol/不可克隆内置（`__denyClone` 显式拒绝表——本引擎 structuredClone
+  不支持 BigInt，探路逻辑与之互斥，见 §4.58）/非法 transfer/分离中 buffer
+  报 DataCloneError；transfer 非数组忽略（真机实测）；共享引用变多份拷贝、
+  SAB 只拷贝（变普通 AB）记档。
+  端口迁移（`__wjs_port_offer/accept/withdraw/detach` 4 natives + `PortForward/
+  PortDrop` 事件 + 源表项转发器）：offer 置 `moved` 停计数但保留 target →
+  accept 建表（路由直连原对端）并回发 `PortForward` → 目标 `__ev("forwarded")`
+  经现路由排空后摘除；分发侧 `PortMsg` 备 `port_forward_route` 回退（排空竞态
+  不丢）；承接端 close 发 `PortDrop` 拆转发器；源端 neutered 后用静默
+  （真机同款）；`workerData.transferList`/`parentPort`/`Worker.postMessage`
+  全接线，workerData 缺省仍 `null`（存量不断）。
+  `BroadcastChannel`（`__wjs_bc_sub/unsub/pub/flags/attach` 5 natives + `BcMsg`
+  事件 + 进程级注册表 + 会话 `bc_targets`，计数抄端口口径）：同名跨会话扇出，
+  发者自收排除（`(sess, sub)` 对），关者止收；基座 EventEmitter（真机
+  EventTarget，记档），`message` 载荷裸值 + `onmessage` 收 `{data}`。
+  黑盒 +3（buffer/detach/类型/报错 10 行 + 同会话迁移双向/neuter + 跨线程
+  workerData 端口双向/BC 同会话与跨线程）；`cargo test` 单测 120 + 黑盒 255
+  全绿（node 91；总 375 passed + 1 ignored，0 failed），0 新增警告，冒烟 5/5。
+  踩坑记 AGENTS §4.58。
 
 ## 全局纪律
 

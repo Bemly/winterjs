@@ -4551,3 +4551,51 @@ console.log("xi-pq-priv", pqcert.checkPrivateKey(pqpair.privateKey) === false, p
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9i_x509_pss() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("pss.pem").write_str(include_str!("fixtures/pss.pem")).unwrap();
+    dir.child("chain-leaf.pem").write_str(include_str!("fixtures/chain-leaf.pem")).unwrap();
+    dir.child("chain-ca.pem").write_str(include_str!("fixtures/chain-ca.pem")).unwrap();
+    // pss.pem：openssl 3.6 rsassaPss（sha256 + mgf1-sha256）实签，真机 node 26.8.2 验过。
+    let out = {
+        let file = dir.child("ps.mjs");
+        file.write_str(
+            r#"
+import crypto from "node:crypto";
+import fs from "node:fs";
+const pss = new crypto.X509Certificate(fs.readFileSync("pss.pem", "utf8"));
+console.log("xp-self", pss.verify(pss.publicKey) === true, pss.ca === true, pss.publicKey.asymmetricKeyType === "rsa");
+const leaf = new crypto.X509Certificate(fs.readFileSync("chain-leaf.pem", "utf8"));
+const ca = new crypto.X509Certificate(fs.readFileSync("chain-ca.pem", "utf8"));
+console.log("xp-ec-still", leaf.verify(ca.publicKey) === true);
+const { publicKey: other } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+console.log("xp-wrong", pss.verify(other) === false);
+console.log("xp-cross", pss.verify(ca.publicKey) === false, leaf.checkIssued(pss) === false);
+"#,
+        )
+        .unwrap();
+        winterjs()
+            .arg("--run")
+            .arg(file.path())
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "xp-self true true true",
+        "xp-ec-still true",
+        "xp-wrong true",
+        "xp-cross true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

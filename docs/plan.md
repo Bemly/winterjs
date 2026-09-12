@@ -943,6 +943,20 @@
   入 `tests/fixtures/`：issued 三态/privkey 两态/报错四件/OKP/PQ，8 断言）；
   `cargo test` 总 390 passed，0 failed。记档：issuer 无 SKI 视为不匹配
   （真机不可复现该形，openssl 3.x 自动补 SKI）；无 AKID leaf 回落名字判。
+- [x] 9i-8 RSA-PSS 证书 verify（2026-09-13 完工；零新 crate，9h 缺口清单销账）：
+  `x509_verify_impl` 的 rsa/rsa-pss 臂认 `rsassaPss`（1.2.840.113549.1.1.10）——
+  参数按 RFC 4055 `RSASSA-PSS-params` 解析（openssl 实测 EXPLICIT 上下文标签：
+  [0] SEQ{OID,NULL} 哈希、[1] SEQ{OID mgf1, SEQ{OID,NULL}}、[2] INTEGER salt；
+  IMPLICIT 0x82 原生形兼容；缺省 sha1/mgf1-sha1/20；trailerField 忽略）→
+  手工 EMSA-PSS 验签（RFC 8017 §8.1.2：`em = sig^e mod n`、MGF1 掩码异或、
+  PS‖0x01‖salt 形校验、`H(00×8‖mHash‖salt)` 比对；DB 前导零无 ≥8 强制随
+  RFC 8017；哈希/MGF1 哈希/salt 全参数驱动，digest 0.11 直算无版本面）。
+  与 rsa 0.9 PSS 自签（sha2_010）交叉单测钉住；真机/本仓同验 openssl 3.6
+  rsassaPss 实签证书（`tests/fixtures/pss.pem`）。
+  模块单测 3（MGF1 向量+OID 表/PSS 参数三种形/手工⇄rsa crate 交叉+盐/哈希错配）；
+  黑盒 +1（`phase9i_x509_pss`：openssl PSS 证书自验/CA 公钥验 leaf/错钥/跨族 4 断言）；
+  `cargo test` 总 395 passed，0 failed。记档：仅证书签名面（顶层 sign 的 PSS
+  9e-1c 已有 `__wjs_pss_sign`）；trailerField 非 1 不认（回 false）。
 - [x] 9i-5 quic-h3 门控实证（2026-09-13 完工；h3/h3-quinn 已在 c0ef72d 入
   `quinn` 特性组，本次 Rust 回环实证 + 纯度复查）：
   `tests/quic.rs::phase9i_h3_over_quinn_loopback`（hermetic，port 0，rcgen 自签，

@@ -2276,7 +2276,7 @@ fn x509_tbs_bytes(der: &[u8]) -> Option<&[u8]> {
 }
 
 /// X.509 签名算法 OID → `(哈希名, EMSA-PKCS1-v1_5 DigestInfo 前缀)`。
-/// 返回 None 即不支持（含 RSA-PSS：参数携哈希，单独形，记档不做）。
+/// 返回 None 即不支持（含 RSA-PSS：参数携哈希，单独形，`x509_pss_params` 处理）。
 fn x509_rsa_sig_hash(oid: &str) -> Option<(&'static str, &'static [u8])> {
     match oid {
         // md5WithRSAEncryption
@@ -2316,6 +2316,170 @@ fn x509_ecdsa_sig_hash(oid: &str) -> Option<&'static str> {
         "1.2.840.10045.4.3.3" => Some("SHA-384"),
         "1.2.840.10045.4.3.4" => Some("SHA-512"),
         _ => None,
+    }
+}
+
+/// 哈希算法 OID（DER 内容字节）→ 哈希名（PSS 参数用）。
+fn x509_hash_oid_name(oid: &[u8]) -> Option<&'static str> {
+    match oid {
+        [0x2b, 0x0e, 0x03, 0x02, 0x1a] => Some("SHA-1"),
+        [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x04] => Some("SHA-224"),
+        [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01] => Some("SHA-256"),
+        [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02] => Some("SHA-384"),
+        [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03] => Some("SHA-512"),
+        _ => None,
+    }
+}
+
+/// X.509 RSA-PSS 参数（RFC 4055 `RSASSA-PSS-params`；openssl 实测 EXPLICIT
+/// 上下文标签：[0] SEQ{OID,NULL}、[1] SEQ{OID mgf1, SEQ{OID,NULL}}、[2] INTEGER）。
+/// 缺省 sha1 / mgf1(sha1) / 20；trailerField 忽略（恒 1）。解析不出即 None。
+fn x509_pss_params(params: &der::Any) -> Option<(&'static str, &'static str, usize)> {
+    let mut hash = "SHA-1";
+    let mut mgf = "SHA-1";
+    let mut salt = 20usize;
+    let mut rest: &[u8] = params.value();
+    while !rest.is_empty() {
+        let (tag, hl, cl) = der_tlv(rest)?;
+        let item = &rest[hl..hl + cl];
+        rest = &rest[hl + cl..];
+        match tag {
+            0xa0 => {
+                let (t, h2, c2) = der_tlv(item)?;
+                if t != 0x30 {
+                    return None;
+                }
+                let seq = &item[h2..h2 + c2];
+                let (t2, h3, c3) = der_tlv(seq)?;
+                if t2 != 0x06 {
+                    return None;
+                }
+                hash = x509_hash_oid_name(&seq[h3..h3 + c3])?;
+            }
+            0xa1 => {
+                let (t, h2, c2) = der_tlv(item)?;
+                if t != 0x30 {
+                    return None;
+                }
+                let seq = &item[h2..h2 + c2];
+                let (t2, h3, c3) = der_tlv(seq)?;
+                if t2 != 0x06 {
+                    return None;
+                }
+                // mgf1（1.2.840.113549.1.1.8）之外不认
+                if seq[h3..h3 + c3] != [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x08] {
+                    return None;
+                }
+                let (t3, h4, c4) = der_tlv(&seq[h3 + c3..])?;
+                if t3 != 0x30 {
+                    return None;
+                }
+                let inner = &seq[h3 + c3..][h4..h4 + c4];
+                let (t4, h5, c5) = der_tlv(inner)?;
+                if t4 != 0x06 {
+                    return None;
+                }
+                mgf = x509_hash_oid_name(&inner[h5..h5 + c5])?;
+            }
+            0xa2 | 0x82 => {
+                // saltLength：EXPLICIT INTEGER（openssl 形）或 IMPLICIT 原生
+                let bytes: &[u8] = if tag == 0xa2 {
+                    let (t, h2, c2) = der_tlv(item)?;
+                    if t != 0x02 {
+                        return None;
+                    }
+                    &item[h2..h2 + c2]
+                } else {
+                    item
+                };
+                if bytes.is_empty() || bytes.len() > 4 || (bytes[0] == 0 && bytes.len() > 1) {
+                    return None;
+                }
+                let mut v = 0usize;
+                for &b in bytes {
+                    v = (v << 8) | b as usize;
+                }
+                salt = v;
+            }
+            _ => {}
+        }
+    }
+    Some((hash, mgf, salt))
+}
+
+/// MGF1（RFC 8017 B.2.1；哈希经 `x509_digest` 直算，digest 0.11 系无版本面）。
+fn mgf1_with(hash: &str, seed: &[u8], mask_len: usize) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(mask_len);
+    let mut counter: u32 = 0;
+    while out.len() < mask_len {
+        let mut input = seed.to_vec();
+        input.extend_from_slice(&counter.to_be_bytes());
+        out.extend_from_slice(&x509_digest(hash, &input)?);
+        counter = counter.wrapping_add(1);
+    }
+    out.truncate(mask_len);
+    Ok(out)
+}
+
+/// RSA-PSS 手工验签（RFC 8017 §8.1.2/9.1.2 EMSA-PSS，OpenSSL 兼容口径；
+/// salt 长按证书参数，DB 前导零无 ≥8 强制——随 RFC 8017）。
+fn rsa_pss_verify_manual(
+    pub_key: &rsa::RsaPublicKey,
+    hash: &str,
+    mgf_hash: &str,
+    salt_len: usize,
+    m_hash: &[u8],
+    sig: &[u8],
+) -> bool {
+    use rsa::traits::PublicKeyParts as _;
+    let n = pub_key.n();
+    let e = pub_key.e();
+    let mod_bits = n.bits() as usize;
+    let em_bits = mod_bits - 1;
+    let em_len = em_bits.div_ceil(8);
+    let h_len = m_hash.len();
+    if em_len < h_len + salt_len + 2 || sig.len() != em_len {
+        return false;
+    }
+    let s = rsa::BigUint::from_bytes_be(sig);
+    if s >= *n {
+        return false;
+    }
+    let em_int = s.modpow(e, n).to_bytes_be();
+    let mut em = vec![0u8; em_len - em_int.len()];
+    em.extend_from_slice(&em_int);
+    // 左侧 8emLen - emBits 位必须为零；末字节 0xbc
+    let top_bits = em_len * 8 - em_bits;
+    if top_bits > 0 && (em[0] >> (8 - top_bits)) != 0 {
+        return false;
+    }
+    if em[em_len - 1] != 0xbc {
+        return false;
+    }
+    let db_len = em_len - h_len - 1;
+    let masked_db = &em[..db_len];
+    let h = &em[db_len..db_len + h_len];
+    let Ok(db_mask) = mgf1_with(mgf_hash, h, db_len) else {
+        return false;
+    };
+    let mut db: Vec<u8> = masked_db.iter().zip(db_mask.iter()).map(|(a, b)| a ^ b).collect();
+    if top_bits > 0 {
+        db[0] &= 0xff >> top_bits;
+    }
+    if db_len < salt_len + 1 {
+        return false;
+    }
+    let ps_len = db_len - salt_len - 1;
+    if db[..ps_len].iter().any(|&b| b != 0) || db[ps_len] != 0x01 {
+        return false;
+    }
+    let salt = &db[ps_len + 1..];
+    let mut m_prime = vec![0u8; 8];
+    m_prime.extend_from_slice(m_hash);
+    m_prime.extend_from_slice(salt);
+    match x509_digest(hash, &m_prime) {
+        Ok(h_prime) => h_prime == h,
+        Err(_) => false,
     }
 }
 
@@ -2451,10 +2615,21 @@ fn x509_verify_impl(der: &[u8], key: &[u8], key_type: &str) -> Result<bool, Stri
     let oid = cert.signature_algorithm().oid.to_string();
     match key_type {
         "rsa" | "rsa-pss" => {
+            let pub_key = rsa_pub_from_der(key)?;
+            if oid == "1.2.840.113549.1.1.10" {
+                // 9i-8：rsassaPss——哈希/MGF/salt 全从证书参数取。
+                let Some(ref params) = cert.signature_algorithm().parameters else {
+                    return Ok(false);
+                };
+                let Some((hash, mgf_hash, salt_len)) = x509_pss_params(&params) else {
+                    return Ok(false);
+                };
+                let m_hash = x509_digest(hash, tbs)?;
+                return Ok(rsa_pss_verify_manual(&pub_key, hash, mgf_hash, salt_len, &m_hash, sig));
+            }
             let Some((hash, prefix)) = x509_rsa_sig_hash(&oid) else {
                 return Ok(false);
             };
-            let pub_key = rsa_pub_from_der(key)?;
             let digest = x509_digest(hash, tbs)?;
             Ok(rsa_v15_verify_manual(&pub_key, prefix, &digest, sig))
         }
@@ -2600,8 +2775,9 @@ pub unsafe extern "C" fn x_derive(
 mod c4x_tests {
     use super::{
         der_ecdsa_sig_to_raw, der_tlv, ec_curve_name, okp_unwrap_pkcs8, okp_unwrap_spki,
-        okp_wrap_pkcs8, okp_wrap_spki, rsa_v15_verify_manual, x509_ecdsa_sig_hash,
-        x509_rsa_sig_hash, x509_tbs_bytes, SystemRng,
+        mgf1_with, okp_wrap_pkcs8, okp_wrap_spki, rsa_pss_verify_manual, rsa_v15_verify_manual,
+        x509_ecdsa_sig_hash, x509_hash_oid_name, x509_pss_params, x509_rsa_sig_hash,
+        x509_tbs_bytes, SystemRng,
     };
 
     fn hex(s: &str) -> Vec<u8> {
@@ -2738,6 +2914,71 @@ mod c4x_tests {
         assert!(!rsa_v15_verify_manual(&pub_key, prefix, &digest, &bad));
         assert!(!rsa_v15_verify_manual(&pub_key, prefix, &vec![0u8; 32], &sig));
         assert!(!rsa_v15_verify_manual(&pub_key, prefix, &digest, &sig[..sig.len() - 1]));
+    }
+
+    #[test]
+    fn x509_mgf1_and_hash_oid_table() {
+        // MGF1-SHA1("test", 20) = SHA1("test" ‖ 0x00000000)（node/crypto.rs 同向量）
+        assert_eq!(
+            mgf1_with("SHA-1", b"test", 20).unwrap(),
+            const_hex::decode("b67344dc7dea343795faaba3bc4d4508bf6766b1").unwrap()
+        );
+        assert_eq!(mgf1_with("SHA-256", b"x", 52).unwrap().len(), 52);
+        assert!(mgf1_with("nope", b"x", 4).is_err());
+        assert_eq!(x509_hash_oid_name(&[0x2b, 0x0e, 0x03, 0x02, 0x1a]), Some("SHA-1"));
+        assert_eq!(x509_hash_oid_name(&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01]), Some("SHA-256"));
+        assert_eq!(x509_hash_oid_name(&[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x08]), None);
+    }
+
+    #[test]
+    fn x509_pss_params_parse() {
+        let tlv = |tag: u8, body: &[u8]| -> Vec<u8> {
+            let mut out = vec![tag, body.len() as u8];
+            out.extend_from_slice(body);
+            out
+        };
+        let sha256_oid = [0x60u8, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
+        let mgf1_oid = [0x2au8, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x08];
+        let hash_alg = tlv(0x30, &[tlv(0x06, &sha256_oid), tlv(0x05, &[])].concat());
+        // openssl 形：[0] hash、[1] mgf1(sha256)、[2] salt（EXPLICIT INTEGER）
+        let params_body = [
+            tlv(0xa0, &hash_alg),
+            tlv(0xa1, &tlv(0x30, &[tlv(0x06, &mgf1_oid), hash_alg.clone()].concat())),
+            tlv(0xa2, &tlv(0x02, &[32])),
+        ]
+        .concat();
+        use der::Decode as _;
+        let any = der::Any::from_der(&tlv(0x30, &params_body)).unwrap();
+        assert_eq!(x509_pss_params(&any).unwrap(), ("SHA-256", "SHA-256", 32));
+        // IMPLICIT 原生 salt 形（0x82）也收
+        let params_body2 = [tlv(0xa0, &hash_alg.clone()), tlv(0x82, &[20])].concat();
+        let any2 = der::Any::from_der(&tlv(0x30, &params_body2)).unwrap();
+        assert_eq!(x509_pss_params(&any2).unwrap(), ("SHA-256", "SHA-1", 20));
+        // 空参 → 全缺省（sha1/mgf1-sha1/20）
+        let any3 = der::Any::from_der(&tlv(0x30, &[])).unwrap();
+        assert_eq!(x509_pss_params(&any3).unwrap(), ("SHA-1", "SHA-1", 20));
+    }
+
+    #[test]
+    fn x509_pss_manual_vs_rsa_crate() {
+        // rsa crate PSS 自签（sha2_010, salt=hLen）⇄ 手工 EMSA-PSS 验签（sha2 0.11 直算）
+        use rsa::signature::{RandomizedSigner as _, SignatureEncoding as _};
+        use sha2::Digest as _;
+        let key = rsa::RsaPrivateKey::new(&mut SystemRng, 2048).expect("keygen");
+        let data = b"pss-manual-verify";
+        let sk = rsa::pss::SigningKey::<sha2_010::Sha256>::new(key.clone());
+        let sig = sk
+            .try_sign_with_rng(&mut SystemRng, data)
+            .expect("pss sign")
+            .to_vec();
+        let m_hash = sha2::Sha256::digest(data).to_vec();
+        let pub_key = key.to_public_key();
+        assert!(rsa_pss_verify_manual(&pub_key, "SHA-256", "SHA-256", 32, &m_hash, &sig));
+        let mut bad = sig.clone();
+        bad[7] ^= 0xff;
+        assert!(!rsa_pss_verify_manual(&pub_key, "SHA-256", "SHA-256", 32, &m_hash, &bad));
+        assert!(!rsa_pss_verify_manual(&pub_key, "SHA-256", "SHA-256", 31, &m_hash, &sig));
+        assert!(!rsa_pss_verify_manual(&pub_key, "SHA-256", "SHA-1", 32, &m_hash, &sig));
     }
 
     #[test]

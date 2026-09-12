@@ -665,9 +665,55 @@
   偏差记档：无 Upgrade/h1c 回落、体整收、无推送/trailer/流控 knob、反射面仅 compat 子集。
   踩坑两件：① `createServer` 构造器与包层双注册 request 致请求事件双发（§4.39）；
   ② 1MB 体 SIGBUS——实为全域 `Heap` 搬运 UB（§4.40），非 http2 之过。
-  黑盒 +3（h2c 双流多路/h2s 回环/拒连+空体+1MB 边界）；`cargo test` 108+220 全绿
-  （单测 108 含 http2 新增 2，黑盒 node 63 含 http2 3，builtins 17 含 GC 回归 1），
-  0 新增警告，冒烟 5/5。
+   黑盒 +3（h2c 双流多路/h2s 回环/拒连+空体+1MB 边界）；`cargo test` 108+220 全绿
+   （单测 108 含 http2 新增 2，黑盒 node 63 含 http2 3，builtins 17 含 GC 回归 1），
+   0 新增警告，冒烟 5/5。
+- [x] 9e-1a node:crypto 哈希/随机（2026-09-12 完工）：
+  `src/builtins/node/crypto.rs`（natives + JS 薄壳，零新 crate）：
+  Hash 流式（new/update/digest/copy，md5/sha1/sha256/sha384/sha512，
+  真机向量逐字节对）+ Hmac 流式（二次 digest 回空，Node 口径）+
+  随机（randomBytes/randomInt/fill + `randomUUID` 复用）+ 杂项（getHashes/
+  getCiphers 常量表）。真机口径：`createHash('nope')` 无码原文错（不编 `code`）、
+  `getMacs` 真机不存在（不做）、`digest(badEnc)` 回 Buffer。
+  黑盒 +3（哈希向量/随机链/报错边界，`tests/node.rs::phase9e_crypto_hash_hmac` 等）；
+  模块单测（`crypto_hash_known_vectors`/`crypto_hash_norm_table` 等）。
+- [x] 9e-1b 对称密码（2026-09-12 完工）：
+  CBC/CTR 流式（Cipher/Decipher：new/update/final，PKCS#7 填充，非恒定时间记档）+
+  GCM（tagLength/tag 校验，iv 限 12B 记档）/ChaCha20-Poly1305，
+  6 组真机向量全对。黑盒 +2（分组往返+认证/填充/状态报错）。
+- [x] 9e-1c 非对称（2026-09-12 完工）：
+  KeyObject（createSecretKey/createPublicKey/createPrivateKey，DER/JWK 进出）+
+  Sign/Verify（含 RSA-PSS/Ed25519，裸 r‖s 口径沿用 c-4a）+ RSA 加解密
+  （OAEP-SHA1 与 v1.5-SHA1-MD5 **手写**：MGF1 + BigUint 模幂——`rsa 0.9` 绑
+  `digest 0.10`，`sha1_010` 需新 crate，按 §0.5 未引，见 AGENTS §4.43）+
+  ECDH/DH（`dh_genkey/dh_secret/dh_range`）+ 素性（`is_prime` Miller-Rabin，
+  `generatePrime{bigint,size}` 不做记档）；双向真机交叉验证
+  （本仓加密→真机解密 + 真机加密→本仓解密）。
+  零新依赖铁律：`digest`/`cipher`/`rsa::BigUint`/`rsa::rand_core` 全经重导出直用；
+  `hmac 0.13` 与 `sha3` 不兼容 → HMAC 通用构造自架。
+  黑盒 +3（密钥签名/加解密交换/素性边界）。
+- [x] 9e-1d KDF + X509（2026-09-12 完工）：
+  pbkdf2/scrypt/hkdf（`hkdfSync` 回 ArrayBuffer，真机口径）/argon2
+  （`kdf_argon`，argon2 AD 不做记档）+ X509 解析（`X509Certificate`：
+  subject/issuer/serialNumber/validity/fingerprint，openssl 交叉格式一致；
+  verify 不做记档）。黑盒 +2（KDF 向量/X509 内嵌证书全断言）。
+- [x] 9e-3 node:perf_hooks（2026-09-12 完工）：
+  纯 JS（`src/builtins/node/perf_hooks.rs` 内嵌源）：mark/measure/observer
+  （observer 语义与真机对齐修过一次）/Histogram（含 empty 哨兵
+  `min=INT64_MAX`，真机口径）/ELU 采样器。黑盒 +1
+  （`phase9e_perf_hooks_surface`：计时/观察者/直方图/采样器全链）。
+- [x] 9e-4 node:inspector + child 角落（2026-09-12 完工）：
+  inspector 会话薄层（`Runtime.evaluate` 真求值 + 域 ack，
+  `phase9e_inspector_session`）+ child 角落（exec/execFile 异步 +
+  execFileSync + 退出码属性，`phase9e_child_corners`；fork/真 IPC 不做记档）。
+  黑盒 +2。
+- 9e 收官（2026-09-12）：`cargo test` 单测 118 + 黑盒 234 全绿
+  （node 76 含 9e 新增 13：crypto 10/perf 1/inspector+child 2；
+  另 alloc 探针 1 过 1 忽略；总 352 passed + 1 ignored，0 failed），
+  0 新增警告（5 预存），冒烟 5/5。`cluster` 按 plan2 §4 顺延 v1 之后（多进程语义重）。
+  9e 记档缺口：ripemd160/XOF、secp256k1、dsa、PQ（ml-kem）、fork/真 IPC 通道、
+  X509 verify、argon2 AD、`generatePrime{bigint,size}`、GCM iv 限 12B、
+  PKCS#7 非恒定时间。
 
 ## 全局纪律
 

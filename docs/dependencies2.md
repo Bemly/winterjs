@@ -26,6 +26,16 @@
 | 9f quic | QUIC | 仅 `quinn` 可用（§quic 表；**已拍板未接线**，v1 不验收） | 待定项 |
 | 行级增补（闭包已有） | 直接 `use` 传递依赖时 | `idna`（`url` 带入；`punycode` 用）、`hyper`/`h2`（`axum` 带入；h2 服务端，§h2 表）、`flate2`/`brotli`/`ruzstd`/`tokio-rustls`/`rustls-pemfile`（§9d-剩余表，已拍板） | 版本跟 lock，补行即变更，走 §0.5 |
 
+## 9e 落地注记（2026-09-12，零新 crate）
+
+> 9e 全程未改 `Cargo.toml`/`Cargo.lock`（`git diff` 为空）：对称（`cbc`/`ctr`/
+> `aes-gcm`/`chacha20poly1305`）、KDF（`hkdf`/`pbkdf2`/`scrypt`/`argon2`）、
+> 非对称（`rsa 0.9` + `sha2_010` 改名直引 + `md-5`）、解析（`x509-cert`）、
+> 随机（`getrandom`/`rand`）全在 §7 闭包内；perf_hooks/inspector 纯 JS + 既有
+> `tracing`/`metrics`；child 角落复用既有 `tokio` process。
+> 版本墙（digest 0.10 双轨 + `hmac 0.13`/`sha3 0.12` traits 互斥）走手写档解决，
+> 未引 `sha1_010`（§0.5 问用户前置未触发），详 AGENTS §4.43。
+
 ## 9d-剩余三项拍板表（zlib / https-tls / http2，2026-09-12 已拍板）
 
 > 三项轮子**全部已在闭包**（版本号/建库/维护/纯度/矩阵照抄 `dependencies.md` §6/§10

@@ -563,6 +563,69 @@ cargo build
   禁裸 `Heap` 进一切可搬运容器（`Vec` 元素/`retain`/`remove`/结构体按值移动，
   含 interval 重排这类"自家搬自家"）。
 
+### 4.41 `#[serial]` 只保互斥不保顺序，读全局态的用例须先复位（2026-09-12）
+
+- 症状：全量 `cargo test` 里 `permissions::tests::grant_semantics` 挂
+  （`check_read("/etc/passwd")` 期望未安装默认全开放），单跑、单线程全过。
+- 根因：该用例首断言依赖"全局槽从未被安装过"；`#[serial]` 只保证串行，
+  不保证顺序——9e 新增十余个单测改变线程调度后，
+  `sandbox_denies_undropped_classes` 先抢锁装了沙箱，`grant_semantics` 后跑即挂。
+  属旧测试的时序假设 bug，非功能回归（9e 未碰 permissions）。
+- 修法：tests 模内加 `reset()`（槽写回 `None`），`grant_semantics` 首行调用；
+  其余用例先 `install` 再断言，本就顺序无关不动（`src/permissions.rs`）。
+- 推广为铁律：凡读进程级全局（权限槽/env/分配器开关）的单测，
+  先复位再断言；`#[serial]` 只防并发不防跑序。
+
+### 4.42 黑盒标签断言禁子串，`&&` 合并打印禁弱断言（2026-09-12，Phase 9e）
+
+- 症状一（空转）：`assert!(out.contains("md5 true"))` 恒过——输出里另有一行
+  `hmac-md5 true`，子串命中，md5 哈希路径坏了也测不出。
+  修法：纯哈希标签改名 `md5vec`，使任一标签都不构成另一标签的子串
+  （`tests/node.rs::phase9e_crypto_hash_hmac`，`hmac`/`hmac-md5`/`hmac-s3`/
+  `md5vec` 四标签互不包含）。
+- 症状二（弱断言）：`console.log("empty", a && b && c)` 只打一个布尔——
+  挂了不知挂在哪项，且复制粘贴时易漏项。
+  修法：多布尔分参打印 `console.log("empty", a, b, c)`，断言逐项精确匹配
+  （`5fb5692`，perf 黑盒 empty/timerify/mel 三处）。
+- 推广为铁律：黑盒输出标签设计时即做子串检查；一行多断言一律分参，
+  禁 `&&` 打包成单个布尔。
+
+### 4.43 手写密码学面的版本墙：digest 0.10 双轨 + HMAC 自架（2026-09-12，Phase 9e）
+
+- 背景：`Cargo.toml` 实测——`digest` 双版共存（0.10.7 供 `rsa 0.9`，0.11.3 供
+  `sha1/sha2 0.11`）、`hmac 0.13`（绑 digest 0.10 系 traits）、`sha3 0.12`
+  （digest 0.11 系），三者 traits 互不兼容。
+- 症状：`rsa 0.9` 的 OAEP/v1.5 接口要 `digest 0.10` 的哈希类型，
+  手头 `sha2 0.11` 传不进去；`hmac 0.13` 与 `sha3` 组合不出 HMAC-SHA3。
+- 修法（零新依赖）：`sha2_010` 改名直引（c-4 旧例）+ OAEP-SHA1/v1.5-SHA1-MD5
+  手写（MGF1 + `rsa::BigUint` 模幂，`src/builtins/node/crypto.rs`
+  `rsa_encrypt_v15/rsa_decrypt_v15/crypto_mgf`）+ HMAC 通用构造自架；
+  双向真机交叉验证钉住（本仓⇄真 Node 互解）。
+  `sha1_010` 这类新 crate 按 §0.5 须先问用户——本次没问，直接手写。
+- 推广为铁律：RustCrypto 系先查 `Cargo.lock` 里谁绑谁（digest 大版本），
+  不兼容先走重导出/改名直引/手写三档，最后一档才 §0.5 问用户加依赖。
+
+### 4.44 `format!` 拼 JS 一律绕行：花括号冲突改文件落盘（2026-09-12，Phase 9e）
+
+- 症状：测试想把大段 PEM/JS 经 `format!` 拼进探针脚本，JS 的 `{`/`}` 全被当
+  占位符——转义 `{{}}` 满屏且一漏就编译错/运行时串错。
+- 修法：大块载荷（X509 内嵌证书）改文件落盘——`dir.child("c.pem").write_str(pem)`，
+  JS 侧 `fs.readFileSync("c.pem")` 读回（`tests/node.rs::phase9e_crypto_x509`）；
+  `format!` 只拼小标量（路径/数字）。
+- 推广为铁律：`format!` 与 JS 模板字符串/对象字面量同现时，默认选文件落盘，
+  不选 `{{}}` 转义。
+
+### 4.45 9e 杂项小坑三则（2026-09-12）
+
+- `cmd | tail` 掩盖退出码：管道退出码是 `tail` 的，前面的测试/构建挂了也看不见。
+  修法：断言前先取 `${PIPESTATUS[0]}` 或改 `cmd >file 2>&1; rc=$?; tail file`。
+- `gen` 是 edition 2024 保留字（生成器）：Rust 变量/字段/函数名避开 `gen`
+  （如 DH/素数生成相关命名用 `genkey`/`generate` 全称），编译期即报错，改名即好。
+- 真机口径先行：`createHash('nope')` 无码原文错（不自编 `code`）、`getMacs`
+  真机不存在（不做）、Hmac 二次 digest 回空、`digest(badEnc)` 回 Buffer、
+  `checkHost` 返匹配串、`hkdfSync` 回 ArrayBuffer、空 histogram 哨兵
+  （`min=INT64_MAX`）——黑盒先对真机实测再写断言（§4.31 症状三/§4.32 教训延续）。
+
 
 ## 5. 路线图（按序）
 

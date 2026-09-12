@@ -910,6 +910,25 @@
   全绿（总 385 passed，0 failed），0 新增警告，冒烟 5/5。记档不做：
   `generateKey` 单面（真机不支持，本仓 generateKey 亦仅 secret 面）、
   `encapsulate` 异步回调形、`generateKeyPair` 未知类型码（pre-existing 偏差）。
+- [x] 9i-6 ml-dsa（2026-09-13 完工；`ml-dsa 0.1.1` 用户拍板引入，FIPS 204）：
+  三档 `generateKeyPair('ml-dsa-44'|'ml-dsa-65'|'ml-dsa-87')` + 顶层
+  `sign(null, data, key)`/`verify(null, data, key, sig)` 纯签名（非 null 即真机码
+  `ERR_OSSL_INVALID_DIGEST`）。Rust 六 natives（gen/seed_from_pkcs8/kind_from_spki/
+  public/sign/verify）：getrandom 自造 32B 种子 → `SigningKey::from_seed`；
+  密钥 DER 种子形 PKCS#8（`[0]` 32B，总长恒 54）+ SPKI（22B 头 + 裸 pk
+  1312/1952/2592）——复用 ml-kem 的 TLV 拼装/解析（种子长参数化）；导入进
+  pkcs8/spki try 链 + `__derivePublic` 补 ml-kem/ml-dsa 两支（`createPublicKey`
+  对 PQ 私钥可用）；JWK AKP（priv=种子）。crate Signer 走确定性档（真机 hedged，
+  互验不受影响）。X.509 验签收 ml-dsa 证书（签名 OID 与密钥 OID 同族
+  2.16.840.1.101.3.4.3.17/18/19，`x509_verify_impl` 增 ml-dsa 臂）。
+  真机口径（node 26.8.2 实测对齐）：尺寸表、hash=null 语义、JWK。**双向交叉**：
+  本仓确定性签名真机验 ✓、真机 hedged 签名本仓验 ✓、真机 PKCS#8/SPKI 本仓导入 ✓；
+  openssl 3.6 ML-DSA-65 实签证书真机/本仓同验 ✓（固件入库 `tests/fixtures/`）。
+  模块单测 2（表/TLV 往返 + sign-verify 核往返与档位错配）；黑盒 +1（20 断言，
+  含真机签名与 ML-DSA 证书两件真机固件）；`cargo test` 总 388 passed，0 failed。
+  依赖（dependencies2 §9i-6 注记）：`ml-dsa 0.1.1`（2024-10 建库/2026-09 维护/
+  传递闭包纯 Rust/rand_core 0.10 与本仓 rand 同线/无 nightly），signature 3 +
+  crypto-common 0.2 traits；`shake 0.1` 随入（RustCrypto/hashes，H 置换用）。
 - [x] 9i-5 quic-h3 门控实证（2026-09-13 完工；h3/h3-quinn 已在 c0ef72d 入
   `quinn` 特性组，本次 Rust 回环实证 + 纯度复查）：
   `tests/quic.rs::phase9i_h3_over_quinn_loopback`（hermetic，port 0，rcgen 自签，

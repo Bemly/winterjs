@@ -293,6 +293,7 @@ local-ip-address = "0.6"
 instant-acme = { version = "0.8", default-features = false, features = ["ring"] }
 qrcode = "0.14"
 wide = "1"
+ml-dsa = "0.1.1"
 
 # ── 平台专用行（§8 矩阵 ❌ 的按 cfg 门控）───────────────────────────────
 [target.'cfg(unix)'.dependencies]

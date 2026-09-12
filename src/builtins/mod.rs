@@ -2108,6 +2108,13 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_mlkem_kind_from_spki", Some(node::crypto::mlkem_kind_from_spki), 1),
             ("__wjs_mlkem_encaps", Some(node::crypto::mlkem_encaps), 2),
             ("__wjs_mlkem_decaps", Some(node::crypto::mlkem_decaps), 2),
+            // Phase 9i-6: ml-dsa（FIPS 204；纯签名，种子形 PKCS#8/SPKI/Sign-Verify）
+            ("__wjs_mldsa_gen", Some(node::crypto::mldsa_gen), 1),
+            ("__wjs_mldsa_seed_from_pkcs8", Some(node::crypto::mldsa_seed_from_pkcs8), 1),
+            ("__wjs_mldsa_kind_from_spki", Some(node::crypto::mldsa_kind_from_spki), 1),
+            ("__wjs_mldsa_public", Some(node::crypto::mldsa_public), 1),
+            ("__wjs_mldsa_sign", Some(node::crypto::mldsa_sign), 2),
+            ("__wjs_mldsa_verify", Some(node::crypto::mldsa_verify), 3),
             // Phase 9e-4: inspector 会话求值（同线程嵌套 evaluate_script）
             ("__wjs_inspector_eval", Some(node::inspector::inspector_eval), 1),
             // Phase 9f-1: node:vm（同 Runtime 多 global；id 字符串形态）

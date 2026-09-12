@@ -191,6 +191,20 @@ quic 特性组**；零新依赖三件（vm 模块系/worker 传输+broadcast/X50
 > 响应头交换）走通；`cargo tree` 无 aws-lc/native-tls 新增。`node:quic` JS 面的
 > headers 分支仍未出（v1 不验收）。
 
+## 9i-6 ml-dsa 落地（2026-09-13，用户拍板引入）
+
+| 用途 | crate | 最新版本 | 建库时间 | 最新维护 | 纯 Rust | macA64 | macX64 | linA64 | linX64 | winA64 | winX64 | andA64 | andX64 | ohA64 | ohX64 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| PQ 签名（ML-DSA-44/65/87，FIPS 204） | `ml-dsa` | 0.1.1 | 2024-10 | 2026-09 | ✅（RustCrypto/signatures） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+备注：四问全过（库龄/维护/传递闭包纯 Rust/无 nightly）；`signature 3` +
+`crypto-common 0.2`（traits，rand_core 0.10 与本仓 `rand 0.10` 同线直通），
+`shake 0.1`（RustCrypto/hashes，H 置换）随入，均零版本墙；`zeroize` 为可选特性未开。
+用法：`SigningKey::from_seed`（32B 种子，种子形 PKCS#8 与真机逐字节同构）+
+`Signer`（crate 确定性档；真机 hedged，互验不受影响）+ `Verifier`；
+顶层 `sign/verify`（hash=null）与 X.509 ml-dsa 证书验签已接线（真机双向交叉 +
+openssl 3.6 实签证书双验，固件 `tests/fixtures/mldsa-*`）。
+
 ## 测试资产（非依赖，仓库外按需取）
 
 - Node：`test/parallel/test-<mod>-*.js`（`/tmp/wjs-node` sparse，单文件取）。

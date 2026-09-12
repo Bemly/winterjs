@@ -2508,6 +2508,14 @@ fn x509_verify_impl(der: &[u8], key: &[u8], key_type: &str) -> Result<bool, Stri
             })()
             .unwrap_or(false))
         }
+        kt if kt.starts_with("ml-dsa-") => {
+            // 9i-6：证书签名 OID 与密钥 OID 同族（2.16.840.1.101.3.4.3.17/18/19），纯签名。
+            let Some((_, pk)) = crate::builtins::node::crypto::mldsa_spki_pk(key) else {
+                return Ok(false);
+            };
+            let cert_oid = crate::builtins::node::crypto::mldsa_kind_by_oid_str(&oid);
+            Ok(cert_oid == Some(kt) && crate::builtins::node::crypto::mldsa_verify_core(kt, &pk, sig, tbs))
+        }
         _ => Ok(false),
     }
 }

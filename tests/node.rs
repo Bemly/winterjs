@@ -4385,3 +4385,98 @@ console.log("mk-pem", privateKey.export({ format: "pem" }).startsWith("-----BEGI
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9i_mldsa() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    // 真机固件：node 26.8.2 签发（PKCS#8 种子 + "from-node-fixture" 的 hedged 签名）
+    // 与 openssl 3.6 ML-DSA-65 自签证书（X509 verify ml-dsa 臂）。
+    let fixture = include_str!("fixtures/mldsa-node-fixture.b64");
+    let mut lines = fixture.lines();
+    let node_pkcs8_b64 = lines.next().unwrap().trim();
+    let node_sig_b64 = lines.next().unwrap().trim();
+    let node_cert_pem = include_str!("fixtures/mldsa-cert.pem");
+    dir.child("node-cert.pem").write_str(node_cert_pem).unwrap();
+    let out = {
+        let file = dir.child("md.mjs");
+        file.write_str(&format!(
+            r#"
+import crypto from "node:crypto";
+import fs from "node:fs";
+const {{ generateKeyPairSync, sign, verify, createPrivateKey, createPublicKey, X509Certificate }} = crypto;
+for (const kind of ["ml-dsa-44", "ml-dsa-65", "ml-dsa-87"]) {{
+  const {{ publicKey, privateKey }} = generateKeyPairSync(kind);
+  const spki = publicKey.export({{ format: "der", type: "spki" }});
+  const pkcs8 = privateKey.export({{ format: "der", type: "pkcs8" }});
+  const sig = sign(null, Buffer.from("hello"), privateKey);
+  const tag = kind.split("-")[2];
+  // 尺寸与真机同构：SPKI 22+pk（1312/1952/2592）、PKCS#8 恒 54（32B 种子形）、sig 2420/3309/4627。
+  const sizes = `${{spki.length}} ${{pkcs8.length}} ${{sig.length}}`;
+  const expect = {{ "ml-dsa-44": "1334 54 2420", "ml-dsa-65": "1974 54 3309", "ml-dsa-87": "2614 54 4627" }}[kind];
+  console.log(`md-${{tag}}-sizes`, sizes === expect);
+  console.log(`md-${{tag}}-roundtrip`, verify(null, Buffer.from("hello"), publicKey, sig) === true);
+  const pub2 = createPublicKey(privateKey);
+  const k2 = createPrivateKey({{ key: pkcs8, format: "der", type: "pkcs8" }});
+  const p2 = createPublicKey({{ key: spki, format: "der", type: "spki" }});
+  console.log(`md-${{tag}}-import`, pub2.asymmetricKeyType === kind, k2.asymmetricKeyType === kind, p2.asymmetricKeyType === kind,
+    verify(null, Buffer.from("hello"), pub2, sig));
+  const j = publicKey.export({{ format: "jwk" }});
+  const jp = privateKey.export({{ format: "jwk" }});
+  console.log(`md-${{tag}}-jwk`, j.kty === "AKP", j.alg === "ML-DSA-" + tag, jp.priv.length === 43);
+  try {{ sign("sha256", Buffer.from("x"), privateKey); console.log(`md-${{tag}}-hash`, "NO-THROW"); }}
+  catch (e) {{ console.log(`md-${{tag}}-hash`, e.code === "ERR_OSSL_INVALID_DIGEST"); }}
+  const bad = Buffer.from(sig);
+  bad[100] ^= 0xff;
+  console.log(`md-${{tag}}-tamper`, verify(null, Buffer.from("hello"), publicKey, bad) === false);
+}}
+// 真机交叉：node 26.8.2 的 hedged 签名本仓可验（PKCS#8 种子形逐字节互通）。
+const nodePriv = createPrivateKey({{ key: Buffer.from("{node_pkcs8_b64}", "base64"), format: "der", type: "pkcs8" }});
+const nodePub = createPublicKey(nodePriv);
+const nodeSig = Buffer.from("{node_sig_b64}", "base64");
+console.log("md-node-cross", nodePub.asymmetricKeyType === "ml-dsa-65",
+  verify(null, Buffer.from("from-node-fixture"), nodePub, nodeSig) === true);
+// openssl ML-DSA-65 自签证书走 X509 verify（签名 OID 与密钥 OID 同族）。
+const cert = new X509Certificate(fs.readFileSync("node-cert.pem", "utf8"));
+console.log("md-cert", cert.verify(cert.publicKey) === true, cert.ca === true, cert.publicKey.asymmetricKeyType === "ml-dsa-65");
+"#
+        ))
+        .unwrap();
+        winterjs()
+            .arg("--run")
+            .arg(file.path())
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "md-44-sizes true",
+        "md-44-roundtrip true",
+        "md-44-import true true true true",
+        "md-44-jwk true true true",
+        "md-44-hash true",
+        "md-44-tamper true",
+        "md-65-sizes true",
+        "md-65-roundtrip true",
+        "md-65-import true true true true",
+        "md-65-jwk true true true",
+        "md-65-hash true",
+        "md-65-tamper true",
+        "md-87-sizes true",
+        "md-87-roundtrip true",
+        "md-87-import true true true true",
+        "md-87-jwk true true true",
+        "md-87-hash true",
+        "md-87-tamper true",
+        "md-node-cross true true",
+        "md-cert true true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

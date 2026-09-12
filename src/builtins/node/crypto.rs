@@ -20,6 +20,12 @@
 //!   secret 面，既有口径）；`encapsulate` 异步回调形不做（给了第二参即
 //!   ERR_INVALID_ARG_TYPE，与真机该路径报错同码）；`generateKeyPair` 未知类型
 //!   仍报既有 ERR_NOT_SUPPORTED（真机为 ERR_INVALID_ARG_VALUE，pre-existing）。
+//! 偏差记档（9i-6 ml-dsa）：
+//! - 种子形 PKCS#8（`[0]` 32B 种子，真机同款）；顶层 `sign/verify` 收 ml-dsa
+//!   （hash 必须 null，非 null 即真机码 ERR_OSSL_INVALID_DIGEST）；`Sign`/`Verify`
+//!   流式类不收 ml-dsa（真机同款走顶层）；crate 的 Signer 为**确定性**签名档
+//!   （真机 hedged，双方互验不受影响，双向交叉已验）；X.509 验签收 ml-dsa 证书
+//!   （签名 OID 与密钥 OID 同族，openssl 3.6 实签证书真机/本仓同验）。
 //! 偏差记档（9e-1b）：
 //! - 对称集合：aes-128/192/256-cbc/ctr/gcm + chacha20-poly1305 + des-ede3-cbc。
 //!   GCM/ChaCha 系 AEAD 无流式（buffered，`final` 时 oneshot；http 体整收同款口径）。
@@ -1694,8 +1700,8 @@ fn mlkem_spki(oid: &[u8], ek: &[u8]) -> Vec<u8> {
     mlkem_tlv(0x30, &body)
 }
 
-/// PKCS#8 → `(OID, 种子)`（结构不合规即 None）。
-fn mlkem_pkcs8_seed(der: &[u8]) -> Option<(&[u8], &[u8])> {
+/// PKCS#8 → `(OID, 种子)`（结构不合规即 None；种子长按参数集，ml-kem 64 / ml-dsa 32）。
+fn mlkem_pkcs8_seed(der: &[u8], seed_len: usize) -> Option<(&[u8], &[u8])> {
     let (t, hl, cl) = crate::builtins::crypto::der_tlv(der)?;
     if t != 0x30 {
         return None;
@@ -1723,7 +1729,7 @@ fn mlkem_pkcs8_seed(der: &[u8]) -> Option<(&[u8], &[u8])> {
     }
     let inner = &rest2[h4..h4 + c4];
     let (t5, h5, c5) = crate::builtins::crypto::der_tlv(inner)?;
-    if t5 != 0x80 || c5 != 64 {
+    if t5 != 0x80 || c5 != seed_len {
         return None;
     }
     Some((oid, &inner[h5..h5 + c5]))
@@ -1826,7 +1832,7 @@ pub unsafe extern "C" fn mlkem_seed_from_pkcs8(
     let Some(der) = (if frame.argc() > 0 { view_bytes(&mut cx, frame.arg(0), "ml-kem key") } else { None }) else {
         return false;
     };
-    let parsed = match mlkem_pkcs8_seed(&der) {
+    let parsed = match mlkem_pkcs8_seed(&der, 64) {
         Some(p) => p,
         None => {
             report_error(&mut cx, "TypeError: Invalid PKCS#8 key");
@@ -1938,7 +1944,7 @@ pub unsafe extern "C" fn mlkem_encaps(
     };
     let is_priv = frame.arg(1).to_number() != 0.0;
     let parsed = if is_priv {
-        mlkem_pkcs8_seed(&der).and_then(|(oid, seed)| mlkem_kind_by_oid(oid).map(|k| (k, seed.to_vec(), Vec::new())))
+        mlkem_pkcs8_seed(&der, 64).and_then(|(oid, seed)| mlkem_kind_by_oid(oid).map(|k| (k, seed.to_vec(), Vec::new())))
     } else {
         mlkem_spki_ek(&der).and_then(|(oid, ek)| mlkem_kind_by_oid(oid).map(|k| (k, Vec::new(), ek.to_vec())))
     };
@@ -2018,7 +2024,7 @@ pub unsafe extern "C" fn mlkem_decaps(
         return false;
     };
     let out: Result<Vec<u8>, String> = (|| {
-        let Some((oid, seed)) = mlkem_pkcs8_seed(&der)
+        let Some((oid, seed)) = mlkem_pkcs8_seed(&der, 64)
             .and_then(|(o, s)| mlkem_kind_by_oid(o).map(|k| (k, s)))
         else {
             return Err("ERR_CRYPTO_OPERATION_FAILED: Decapsulation failed".into());
@@ -2041,6 +2047,294 @@ pub unsafe extern "C" fn mlkem_decaps(
             false
         }
     }
+}
+
+// ── 9i-6 ml-dsa（FIPS 204；`ml-dsa` crate，纯签名 hash=null）───────────────
+// 真机口径（node 26.8.2 实测）：SPKI = 22B 头 + 裸 pk（1312/1952/2592）；
+// PKCS#8 = SEQ{INT 0, SEQ{OID}, OCTET{[0] 32B 种子}}（总长 54，OID …3.4.3.17/18/19）；
+// `crypto.sign(null, data, key)` 纯签名（非 null 即 ERR_OSSL_INVALID_DIGEST）；
+// 签名长 2420/3309/4627；JWK kty "AKP"（priv=32B 种子）。本仓 Signer 走 crate 的
+// 确定性档（真机为 hedged，双方互验不受影响）。
+
+fn mldsa_params(kind: &str) -> Option<(&'static [u8], usize, usize)> {
+    match kind {
+        "ml-dsa-44" => Some((&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x11], 1312, 2420)),
+        "ml-dsa-65" => Some((&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12], 1952, 3309)),
+        "ml-dsa-87" => Some((&[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x13], 2592, 4627)),
+        _ => None,
+    }
+}
+
+fn mldsa_kind_by_oid(oid: &[u8]) -> Option<&'static str> {
+    match oid {
+        [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x11] => Some("ml-dsa-44"),
+        [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x12] => Some("ml-dsa-65"),
+        [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x13] => Some("ml-dsa-87"),
+        _ => None,
+    }
+}
+
+/// dotted 串 OID → kind（X.509 证书签名算法用）。
+pub(crate) fn mldsa_kind_by_oid_str(oid: &str) -> Option<&'static str> {
+    match oid {
+        "2.16.840.1.101.3.4.3.17" => Some("ml-dsa-44"),
+        "2.16.840.1.101.3.4.3.18" => Some("ml-dsa-65"),
+        "2.16.840.1.101.3.4.3.19" => Some("ml-dsa-87"),
+        _ => None,
+    }
+}
+
+/// SPKI → `(kind, 裸 pk)`（X.509 验签用；OID/pk 长度不符即 None）。
+pub(crate) fn mldsa_spki_pk(spki: &[u8]) -> Option<(&'static str, Vec<u8>)> {
+    let (oid, pk) = mlkem_spki_ek(spki)?;
+    let kind = mldsa_kind_by_oid(oid)?;
+    mldsa_params(kind).is_some_and(|(_, pk_len, _)| pk_len == pk.len()).then(|| (kind, pk.to_vec()))
+}
+
+/// 32B 种子 → `(PKCS#8, SPKI)`（展开即校验）。
+fn mldsa_expand(kind: &str, seed: &[u8; 32]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let (oid, pk_len, _) = mldsa_params(kind)
+        .ok_or_else(|| "NotSupportedError: unsupported ml-dsa parameter set".to_string())?;
+    macro_rules! case {
+        ($P:ty, $name:expr) => {
+            if kind == $name {
+                use ml_dsa::{Keypair as _, KeyExport as _};
+                let sk = ml_dsa::SigningKey::<$P>::from_seed(&(*seed).into());
+                let pk = sk.verifying_key().to_bytes();
+                if pk.as_slice().len() != pk_len {
+                    return Err("OperationError: ml-dsa pk length mismatch".into());
+                }
+                return Ok((mlkem_pkcs8(oid, seed), mlkem_spki(oid, pk.as_slice())));
+            }
+        };
+    }
+    case!(ml_dsa::MlDsa44, "ml-dsa-44");
+    case!(ml_dsa::MlDsa65, "ml-dsa-65");
+    case!(ml_dsa::MlDsa87, "ml-dsa-87");
+    Err("NotSupportedError: unsupported ml-dsa parameter set".into())
+}
+
+/// `__wjs_mldsa_gen(kind)` → JSON `{pkcs8, spki}`（b64；种子 getrandom 自造）。
+pub unsafe extern "C" fn mldsa_gen(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let kind = if frame.argc() > 0 { value_to_string(&mut cx, frame.arg(0)) } else { String::new() };
+    if mldsa_params(&kind).is_none() {
+        report_error(&mut cx, "NotSupportedError: unsupported ml-dsa parameter set");
+        return false;
+    }
+    let mut seed = [0u8; 32];
+    if getrandom::fill(&mut seed).is_err() {
+        report_error(&mut cx, "OperationError: cannot get random values");
+        return false;
+    }
+    match mldsa_expand(&kind, &seed) {
+        Ok((pkcs8, spki)) => {
+            use base64::Engine as _;
+            let json = serde_json::json!({
+                "pkcs8": base64::engine::general_purpose::STANDARD.encode(pkcs8),
+                "spki": base64::engine::general_purpose::STANDARD.encode(spki),
+            })
+            .to_string();
+            set_rval_str(&mut cx, &frame, &json);
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_mldsa_seed_from_pkcs8(der)` → JSON `{kind, seed, spki}`（b64；导入即展开校验）。
+pub unsafe extern "C" fn mldsa_seed_from_pkcs8(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(der) = (if frame.argc() > 0 { view_bytes(&mut cx, frame.arg(0), "ml-dsa key") } else { None }) else {
+        return false;
+    };
+    let Some((oid, seed)) = mlkem_pkcs8_seed(&der, 32).and_then(|(o, s)| mldsa_kind_by_oid(o).map(|k| (k, s))) else {
+        report_error(&mut cx, "TypeError: Invalid PKCS#8 key");
+        return false;
+    };
+    let mut s = [0u8; 32];
+    s.copy_from_slice(seed);
+    match mldsa_expand(oid, &s) {
+        Ok((_, spki)) => {
+            use base64::Engine as _;
+            let json = serde_json::json!({
+                "kind": oid,
+                "seed": base64::engine::general_purpose::STANDARD.encode(s),
+                "spki": base64::engine::general_purpose::STANDARD.encode(spki),
+            })
+            .to_string();
+            set_rval_str(&mut cx, &frame, &json);
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_mldsa_kind_from_spki(der)` → kind 串（OID + pk 长度校验，失败回空串）。
+pub unsafe extern "C" fn mldsa_kind_from_spki(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(der) = (if frame.argc() > 0 { view_bytes(&mut cx, frame.arg(0), "ml-dsa key") } else { None }) else {
+        return false;
+    };
+    let kind = mlkem_spki_ek(&der)
+        .and_then(|(oid, pk)| mldsa_kind_by_oid(oid).filter(|k| mldsa_params(k).is_some_and(|(_, pk_len, _)| pk_len == pk.len())))
+        .unwrap_or("");
+    use mozjs::conversions::ToJSValConvertible as _;
+    kind.to_jsval(&mut cx, frame.rval_mut());
+    true
+}
+
+/// `__wjs_mldsa_public(pkcs8Der)` → SPKI DER（私钥派生公钥，createPublicKey 链用）。
+pub unsafe extern "C" fn mldsa_public(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(der) = (if frame.argc() > 0 { view_bytes(&mut cx, frame.arg(0), "ml-dsa key") } else { None }) else {
+        return false;
+    };
+    let Some((oid, seed)) = mlkem_pkcs8_seed(&der, 32).and_then(|(o, s)| mldsa_kind_by_oid(o).map(|k| (k, s))) else {
+        report_error(&mut cx, "TypeError: Invalid PKCS#8 key");
+        return false;
+    };
+    let mut s = [0u8; 32];
+    s.copy_from_slice(seed);
+    match mldsa_expand(oid, &s) {
+        Ok((_, spki)) => set_rval_bytes(&mut cx, &frame, &spki),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_mldsa_sign(pkcs8Der, data)` → 签名（确定性档，FIPS 204 可选形；空上下文）。
+pub unsafe extern "C" fn mldsa_sign(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: ml-dsa sign needs key and data");
+        return false;
+    }
+    let (Some(der), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "ml-dsa key"),
+        view_bytes(&mut cx, frame.arg(1), "data"),
+    ) else {
+        return false;
+    };
+    let Some((oid, seed)) = mlkem_pkcs8_seed(&der, 32).and_then(|(o, s)| mldsa_kind_by_oid(o).map(|k| (k, s))) else {
+        report_error(&mut cx, "TypeError: Invalid PKCS#8 key");
+        return false;
+    };
+    let mut s = [0u8; 32];
+    s.copy_from_slice(seed);
+    use ml_dsa::Signer as _;
+    let out: Result<Vec<u8>, String> = match oid {
+        "ml-dsa-44" => {
+            let sig = ml_dsa::SigningKey::<ml_dsa::MlDsa44>::from_seed(&s.into()).sign(&data);
+            Ok(sig.encode().as_slice().to_vec())
+        }
+        "ml-dsa-65" => {
+            let sig = ml_dsa::SigningKey::<ml_dsa::MlDsa65>::from_seed(&s.into()).sign(&data);
+            Ok(sig.encode().as_slice().to_vec())
+        }
+        _ => {
+            let sig = ml_dsa::SigningKey::<ml_dsa::MlDsa87>::from_seed(&s.into()).sign(&data);
+            Ok(sig.encode().as_slice().to_vec())
+        }
+    };
+    match out {
+        Ok(sig) => set_rval_bytes(&mut cx, &frame, &sig),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_mldsa_verify(pubDer, sig, data)` → boolean。
+pub unsafe extern "C" fn mldsa_verify(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: ml-dsa verify needs key, signature and data");
+        return false;
+    }
+    let (Some(der), Some(sig), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "ml-dsa key"),
+        view_bytes(&mut cx, frame.arg(1), "signature"),
+        view_bytes(&mut cx, frame.arg(2), "data"),
+    ) else {
+        return false;
+    };
+    let Some((oid, pk)) = mlkem_spki_ek(&der).and_then(|(o, p)| mldsa_kind_by_oid(o).map(|k| (k, p))) else {
+        report_error(&mut cx, "TypeError: Invalid SPKI key");
+        return false;
+    };
+    let ok = mldsa_verify_core(oid, pk, &sig, &data);
+    frame.set_rval(mozjs::jsval::BooleanValue(ok));
+    true
+}
+
+/// 验签核（native 与 X.509 验签共用；pub/kind/sig/data 逐项校验，不过即 false）。
+pub(crate) fn mldsa_verify_core(kind: &str, pk: &[u8], sig: &[u8], data: &[u8]) -> bool {
+    use ml_dsa::KeyInit as _;
+    macro_rules! case {
+        ($P:ty, $name:expr) => {
+            if kind == $name {
+                let (Some(arr), Some(sig)) = (
+                    <&ml_dsa::common::Key<ml_dsa::VerifyingKey<$P>>>::try_from(pk).ok(),
+                    ml_dsa::Signature::<$P>::try_from(sig).ok(),
+                ) else {
+                    return false;
+                };
+                let vk = ml_dsa::VerifyingKey::<$P>::new(arr);
+                use ml_dsa::Verifier as _;
+                return vk.verify(data, &sig).is_ok();
+            }
+        };
+    }
+    case!(ml_dsa::MlDsa44, "ml-dsa-44");
+    case!(ml_dsa::MlDsa65, "ml-dsa-65");
+    case!(ml_dsa::MlDsa87, "ml-dsa-87");
+    false
 }
 
 // ── 9e-1d X509（`x509-cert` 直用；9i-3 起验签面就位：verify/publicKey/ca，
@@ -3204,15 +3498,19 @@ function __exportJwk(kobj) {
     }
     return jwk;
   }
-  if (typeof kobj.__keyType === "string" && kobj.__keyType.startsWith("ml-kem-")) {
-    // 9i-4 真机口径：kty "AKP"，alg 参数集名，pub=ek / priv=种子（均 b64url）。
-    const alg = { "ml-kem-512": "ML-KEM-512", "ml-kem-768": "ML-KEM-768", "ml-kem-1024": "ML-KEM-1024" }[kobj.__keyType];
+  if (typeof kobj.__keyType === "string" && (kobj.__keyType.startsWith("ml-kem-") || kobj.__keyType.startsWith("ml-dsa-"))) {
+    // 9i-4/9i-6 真机口径：kty "AKP"，alg 参数集名，pub=裸公钥 / priv=种子（均 b64url）。
+    const isKem = kobj.__keyType.startsWith("ml-kem-");
+    const num = kobj.__keyType.split("-")[2];
+    const alg = isKem ? "ML-KEM-" + num : "ML-DSA-" + num;
     const top = __derRead(kobj.__material, 0);
     const kids = __derChildren(top.body);
-    const ek = kids[1].body.subarray(1);
-    const jwk = { kty: "AKP", alg, pub: b64u(ek) };
+    const raw = kids[1].body.subarray(1);
+    const jwk = { kty: "AKP", alg, pub: b64u(raw) };
     if (isPriv) {
-      const parts = JSON.parse(__cryptCall(() => __wjs_mlkem_seed_from_pkcs8(kobj.__material)));
+      const parts = JSON.parse(__cryptCall(() => (isKem
+        ? __wjs_mlkem_seed_from_pkcs8(kobj.__material)
+        : __wjs_mldsa_seed_from_pkcs8(kobj.__material))));
       jwk.priv = b64u(__b64dec(parts.seed));
     }
     return jwk;
@@ -3352,6 +3650,11 @@ function __parseKeyMaterial(key, format, type, want) {
         const parts = JSON.parse(__cryptCall(() => __wjs_mlkem_seed_from_pkcs8(der)));
         return new KeyObject("private", parts.kind, der);
       }],
+      ["ml-dsa", () => {
+        // 9i-6：种子形 PKCS#8（[0] 32B 种子；展开即校验）。
+        const parts = JSON.parse(__cryptCall(() => __wjs_mldsa_seed_from_pkcs8(der)));
+        return new KeyObject("private", parts.kind, der);
+      }],
     ];
     for (const [, fn] of tries) {
       try { return fn(); } catch (e) { if (e && e.code && e.code !== "ERR_NOT_SUPPORTED") throw e; }
@@ -3387,6 +3690,11 @@ function __parseKeyMaterial(key, format, type, want) {
       },
       () => {
         const kind = __cryptCall(() => __wjs_mlkem_kind_from_spki(der));
+        if (kind === "") throw new Error("no");
+        return new KeyObject("public", kind, der);
+      },
+      () => {
+        const kind = __cryptCall(() => __wjs_mldsa_kind_from_spki(der));
         if (kind === "") throw new Error("no");
         return new KeyObject("public", kind, der);
       },
@@ -3475,6 +3783,14 @@ function __derivePublic(priv) {
     k.__detail = priv.__detail;
     return k;
   }
+  if (typeof priv.__keyType === "string" && priv.__keyType.startsWith("ml-kem-")) {
+    const parts = JSON.parse(__cryptCall(() => __wjs_mlkem_seed_from_pkcs8(priv.__material)));
+    return new KeyObject("public", priv.__keyType, Buffer.from(__b64dec(parts.spki)));
+  }
+  if (typeof priv.__keyType === "string" && priv.__keyType.startsWith("ml-dsa-")) {
+    const spki = __cryptCall(() => __wjs_mldsa_public(priv.__material));
+    return new KeyObject("public", priv.__keyType, Buffer.from(spki));
+  }
   const err = new Error("Cannot derive public key for this key type");
   err.code = "ERR_NOT_SUPPORTED";
   throw err;
@@ -3550,7 +3866,15 @@ function __genPairSync(type, options) {
       publicKey: new KeyObject("public", type, Buffer.from(__b64dec(parts.spki))),
     };
   }
-  const err = new Error(`generateKeyPair type '${type}' not supported (rsa/rsa-pss/ec/ed25519/x25519/dsa/ml-kem-512/768/1024)`);
+  if (type === "ml-dsa-44" || type === "ml-dsa-65" || type === "ml-dsa-87") {
+    // 9i-6：FIPS 204 PQ 签名（纯签名，hash=null）。
+    const parts = JSON.parse(__cryptCall(() => __wjs_mldsa_gen(type)));
+    return {
+      privateKey: new KeyObject("private", type, Buffer.from(__b64dec(parts.pkcs8))),
+      publicKey: new KeyObject("public", type, Buffer.from(__b64dec(parts.spki))),
+    };
+  }
+  const err = new Error(`generateKeyPair type '${type}' not supported (rsa/rsa-pss/ec/ed25519/x25519/dsa/ml-kem-512/768/1024/ml-dsa-44/65/87)`);
   err.code = "ERR_NOT_SUPPORTED";
   throw err;
 }
@@ -3647,6 +3971,20 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength) {
     }
     return __cryptCall(() => __wjs_ed_sign(keyObj.__material, dataB));
   }
+  if (typeof kt === "string" && kt.startsWith("ml-dsa-")) {
+    // 9i-6：纯签名（真机口径：非 null 即 ERR_OSSL_INVALID_DIGEST）。
+    if (alg !== null && alg !== undefined) {
+      const err = new Error("Invalid digest");
+      err.code = "ERR_OSSL_INVALID_DIGEST";
+      throw err;
+    }
+    if (keyObj.__kind !== "private") {
+      const err = new TypeError("sign requires a private key");
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    return __cryptCall(() => __wjs_mldsa_sign(keyObj.__material, dataB));
+  }
   const hash = __normHashName(alg);
   if (hash === undefined) {
     const err = new Error("Invalid digest");
@@ -3720,6 +4058,20 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
       throw err;
     }
     return __cryptCall(() => __wjs_ed_verify(keyObj.__material, sigB, dataB));
+  }
+  if (typeof kt === "string" && kt.startsWith("ml-dsa-")) {
+    // 9i-6：纯签名（真机口径同 sign：非 null 即 ERR_OSSL_INVALID_DIGEST）。
+    if (alg !== null && alg !== undefined) {
+      const err = new Error("Invalid digest");
+      err.code = "ERR_OSSL_INVALID_DIGEST";
+      throw err;
+    }
+    if (keyObj.__kind === "private") {
+      const err = new TypeError("verify requires a public key");
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    return __cryptCall(() => __wjs_mldsa_verify(keyObj.__material, sigB, dataB));
   }
   const hash = __normHashName(alg);
   if (hash === undefined) {
@@ -4697,13 +5049,13 @@ mod tests {
         // PKCS#8：总长 86（真机同款），种子逐字节还原；[0] 标签破坏即 None。
         let pkcs8 = mlkem_pkcs8(oid, &seed);
         assert_eq!(pkcs8.len(), 86);
-        let (oid2, parsed) = mlkem_pkcs8_seed(&pkcs8).unwrap();
+        let (oid2, parsed) = mlkem_pkcs8_seed(&pkcs8, 64).unwrap();
         assert_eq!(oid2, oid);
         assert_eq!(parsed, &seed[..]);
         let mut bad = pkcs8.clone();
         bad[20] = 0x81; // 内层 [0] → 0x81（上下文构造形），结构不符
-        assert!(mlkem_pkcs8_seed(&bad).is_none());
-        assert!(mlkem_pkcs8_seed(&pkcs8[..40]).is_none());
+        assert!(mlkem_pkcs8_seed(&bad, 64).is_none());
+        assert!(mlkem_pkcs8_seed(&pkcs8[..40], 64).is_none());
         // SPKI：768 档总长 1206（真机同款），ek 原样还原；未用位非零即 None。
         let ek = vec![3u8; 1184];
         let spki = mlkem_spki(oid, &ek);
@@ -4718,13 +5070,77 @@ mod tests {
     }
 
     #[test]
+    fn mldsa_tables_and_wrap() {
+        assert_eq!(mldsa_params("ml-dsa-44").map(|p| (p.1, p.2)), Some((1312, 2420)));
+        assert_eq!(mldsa_params("ml-dsa-65").map(|p| (p.1, p.2)), Some((1952, 3309)));
+        assert_eq!(mldsa_params("ml-dsa-87").map(|p| (p.1, p.2)), Some((2592, 4627)));
+        assert!(mldsa_params("ml-dsa").is_none());
+        for kind in ["ml-dsa-44", "ml-dsa-65", "ml-dsa-87"] {
+            let (oid, _, _) = mldsa_params(kind).unwrap();
+            assert_eq!(mldsa_kind_by_oid(oid), Some(kind));
+        }
+        // dotted 串往返（X.509 证书签名算法 OID）
+        assert_eq!(mldsa_kind_by_oid_str("2.16.840.1.101.3.4.3.17"), Some("ml-dsa-44"));
+        assert_eq!(mldsa_kind_by_oid_str("2.16.840.1.101.3.4.3.18"), Some("ml-dsa-65"));
+        assert_eq!(mldsa_kind_by_oid_str("2.16.840.1.101.3.4.3.19"), Some("ml-dsa-87"));
+        assert_eq!(mldsa_kind_by_oid_str("2.16.840.1.101.3.4.3.99"), None);
+        // PKCS#8 54B / SPKI 1974B（65 档，真机同款）；种子逐字节还原
+        let seed = [9u8; 32];
+        let (pkcs8, spki) = mldsa_expand("ml-dsa-65", &seed).unwrap();
+        assert_eq!(pkcs8.len(), 54);
+        assert_eq!(spki.len(), 1974);
+        let (oid, parsed) = mlkem_pkcs8_seed(&pkcs8, 32).unwrap();
+        assert_eq!(mldsa_kind_by_oid(oid), Some("ml-dsa-65"));
+        assert_eq!(parsed, &seed[..]);
+        // 结构破坏（内层 [0] 标签改写）即 None
+        let mut bad = pkcs8.clone();
+        bad[20] = 0x81;
+        assert!(mlkem_pkcs8_seed(&bad, 32).is_none());
+        // SPKI pk 原样还原；未用位非零即 None
+        let (_, pk) = mlkem_spki_ek(&spki).unwrap();
+        assert_eq!(pk.len(), 1952);
+        let mut bad2 = spki.clone();
+        bad2[21] = 1;
+        assert!(mlkem_spki_ek(&bad2).is_none());
+    }
+
+    #[test]
+    fn mldsa_sign_verify_core_roundtrip() {
+        // 真 crate：from_seed → sign（确定性档）→ verify_core 过；篡改/换消息不过。
+        let seed = [0x42u8; 32];
+        let (pkcs8, spki) = mldsa_expand("ml-dsa-65", &seed).unwrap();
+        let (_, seed_b) = mlkem_pkcs8_seed(&pkcs8, 32).unwrap();
+        let mut s = [0u8; 32];
+        s.copy_from_slice(seed_b);
+        let sig = {
+            use ml_dsa::Signer as _;
+            ml_dsa::SigningKey::<ml_dsa::MlDsa65>::from_seed(&s.into())
+                .sign(b"unit-msg")
+                .encode()
+                .as_slice()
+                .to_vec()
+        };
+        assert_eq!(sig.len(), 3309);
+        let (_, pk) = mlkem_spki_ek(&spki).unwrap();
+        assert!(mldsa_verify_core("ml-dsa-65", pk, &sig, b"unit-msg"));
+        assert!(!mldsa_verify_core("ml-dsa-65", pk, &sig, b"other-msg"));
+        let mut bad = sig.clone();
+        bad[500] ^= 0xff;
+        assert!(!mldsa_verify_core("ml-dsa-65", pk, &bad, b"unit-msg"));
+        // 档位错配（44 公钥验 65 签名）→ false
+        let (_, pk44_spki) = mldsa_expand("ml-dsa-44", &seed).unwrap();
+        let (_, pk44_raw) = mlkem_spki_ek(&pk44_spki).unwrap();
+        assert!(!mldsa_verify_core("ml-dsa-44", pk44_raw, &sig, b"unit-msg"));
+    }
+
+    #[test]
     fn mlkem_expand_real_crate() {
         let mut seed = [0u8; 64];
         getrandom::fill(&mut seed).unwrap();
         let (pkcs8, spki) = mlkem_expand("ml-kem-768", &seed).unwrap();
         assert_eq!(pkcs8.len(), 86);
         assert_eq!(spki.len(), 1206);
-        let (_, parsed) = mlkem_pkcs8_seed(&pkcs8).unwrap();
+        let (_, parsed) = mlkem_pkcs8_seed(&pkcs8, 64).unwrap();
         assert_eq!(parsed, &seed[..]);
         let (_, ek) = mlkem_spki_ek(&spki).unwrap();
         assert_eq!(ek.len(), 1184);

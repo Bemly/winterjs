@@ -3511,3 +3511,99 @@ console.log("w-cache", cached.runInNewContext() === 9, cached.cachedDataProduced
     assert!(out.contains("w-cache true true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9f_worker_channel_roundtrip() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { MessageChannel, MessagePort, receiveMessageOnPort } from "node:worker_threads";
+const { port1, port2 } = new MessageChannel();
+console.log("ch-ports", port1 instanceof MessagePort, port2 instanceof MessagePort);
+port1.on("message", (m) => {
+  console.log("ch-p1", JSON.stringify(m) === JSON.stringify({ n: 41 }));
+  port1.postMessage([1, "x", true]);
+});
+port2.on("message", (m) => {
+  console.log("ch-p2", Array.isArray(m) && m[1] === "x");
+  port1.close(); port2.close();
+});
+port2.postMessage({ n: 41 });
+// 迟挂监听：先投递再 on，newListener 开闸照样收到
+const late = new MessageChannel();
+late.port2.postMessage("late-hi");
+await new Promise((r) => setTimeout(r, 20));
+late.port1.on("message", (m) => {
+  console.log("ch-late", m === "late-hi");
+  late.port1.close(); late.port2.close();
+});
+// 无监听排队：receiveMessageOnPort 同步取出
+const q = new MessageChannel();
+q.port2.postMessage("q1");
+q.port2.postMessage("q2");
+await new Promise((r) => setTimeout(r, 20));
+console.log("ch-recv", receiveMessageOnPort(q.port1).message === "q1", receiveMessageOnPort(q.port1).message === "q2", receiveMessageOnPort(q.port1) === undefined);
+try { q.port2.postMessage(() => {}); } catch (e) { console.log("ch-fn", e.name === "DataCloneError"); }
+q.port1.close(); q.port2.close();
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("ch-ports true true"), "out: {out}");
+    assert!(out.contains("ch-p1 true"), "out: {out}");
+    assert!(out.contains("ch-p2 true"), "out: {out}");
+    assert!(out.contains("ch-late true"), "out: {out}");
+    assert!(out.contains("ch-recv true true true"), "out: {out}");
+    assert!(out.contains("ch-fn true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9f_worker_thread_info_boundary() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { isMainThread, threadId, parentPort, workerData, resourceLimits, SHARE_ENV, setEnvironmentData, getEnvironmentData, markAsUncloneable, moveMessagePortToContext, MessageChannel } from "node:worker_threads";
+console.log("th-self", isMainThread === true, threadId === 0, parentPort === null, workerData === null);
+console.log("th-res", typeof resourceLimits === "object", typeof SHARE_ENV === "symbol");
+setEnvironmentData("wk", { v: 7 });
+console.log("th-env", JSON.stringify(getEnvironmentData("wk")) === JSON.stringify({ v: 7 }), getEnvironmentData("missing") === undefined);
+try { setEnvironmentData(42, 1); } catch (e) { console.log("th-badkey", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { getEnvironmentData(42); } catch (e) { console.log("th-badkey2", e.code === "ERR_INVALID_ARG_TYPE"); }
+const o = { a: 1 };
+markAsUncloneable(o);
+const { port1, port2 } = new MessageChannel();
+try { port2.postMessage(o); } catch (e) { console.log("th-unc", e.name === "DataCloneError"); }
+console.log("th-move", moveMessagePortToContext(port1, {}) === port1);
+port1.close(); port2.close();
+// unref 端口不续命：不 close 照样退出
+const u = new MessageChannel();
+u.port1.unref(); u.port2.unref();
+u.port2.postMessage("dropped");
+console.log("th-unref", true);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("th-self true true true true"), "out: {out}");
+    assert!(out.contains("th-res true true"), "out: {out}");
+    assert!(out.contains("th-env true true"), "out: {out}");
+    assert!(out.contains("th-badkey true"), "out: {out}");
+    assert!(out.contains("th-badkey2 true"), "out: {out}");
+    assert!(out.contains("th-unc true"), "out: {out}");
+    assert!(out.contains("th-move true"), "out: {out}");
+    assert!(out.contains("th-unref true"), "out: {out}");
+    dir.close().unwrap();
+}

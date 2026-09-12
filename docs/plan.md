@@ -820,6 +820,29 @@
   剩终局缺口：PQ、X509 verify、GCM 非 12B iv（轮子不支持）、`vm` 模块系、
   `worker_threads` 传输细节、quic headers 面、
   plan2 §4 不做项（wasi/v8 口径/sea/napi/cluster/domain/repl 口径）。
+- [x] 9i-1 vm 模块系（2026-09-13 完工；零新 crate）：
+  `Module` 基类（link 校验 linker 函数形态，`ERR_INVALID_ARG_TYPE` 真机口径）+
+  `SourceTextModule`（`__wjs_vm_compile_mod/link/evaluate/mod_ns/mod_release/
+  mod_settled` 6 natives + JS 壳 status 机：compile 在目标 compartment 内
+  `load_js` 转译（含 TS，ext 从 identifier 点后缀取）+ `CompileModule1`
+  （filename=identifier）；link 走 `load_dependencies` + `ModuleLink`
+  （零导入恒过；带导入 v1 报 `ERR_VM_MODULE_LINK_FAILURE`，linker 切片后续——
+  进程级 load hook 按主注册表工作，vm 记录带入即 compartment 错配）；
+  evaluate 走 `ModuleEvaluate` + 一轮 `RunJobs`，完成值 thenable 认领
+  （跨域 promise 恒异步，`instanceof` 恒 false，见 AGENTS §4.57）+
+  落定后补 evaluated 位/读 namespace（`vm_mod_ns` 以位为门），失败置 errored +
+  `module.error`；`dependencySpecifiers` 真表（编译期存 `deps`）。
+  `SyntheticModule` 纯 JS（出生即 linked，linker 可选，evaluateCallback 回填，
+  namespace 冻结快照；`setExport` 终态后拒）。
+  真机逐项对齐（`node --experimental-vm-modules` 实测：默认 `vm:module(n)`/
+  status 四态/link 必函数/evaluate 恒 promise/二次求值成功/二次 link 拒/
+  error 只读 errored 态/Synthetic 出生 linked）。
+  偏差记档：`context` 未给走新建上下文（返 `undefined`，非活对象）；
+  `importModuleDynamically`/`initializeImportMeta` 接受忽略；linker 回调 v1
+  从不调用；`import()` 仍走主线未定义。
+  黑盒 +2（零导入全链/隔离/TLA + 报错边界 17 断言）；`cargo test` 单测 120 +
+  黑盒 252 全绿（node 88；总 372 passed + 1 ignored，0 failed），0 新增警告，
+  冒烟 5/5。踩坑记 AGENTS §4.57。
 
 ## 全局纪律
 

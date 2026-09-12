@@ -752,7 +752,6 @@ cargo build
   大小端），再怀疑算法；可锻造性是验签侧必须兼容的语义，不是 bug。
 
 ### 4.56 Node PKCS#8 省公钥 y：`y=g^x mod p` 补算（2026-09-13，Phase 9h-1）
-
 - 症状：真 Node 的 DSA 私钥导不进（`Invalid PKCS#8 key`），自家往返全过。
 - 根因：Node 的 DSA PKCS#8 只含 `(p,q,g,x)`（公钥 y 可选省略），信封解码硬要 y。
 - 修法：`dsa_envelope` 内 y 缺失且 x 在，即补算 `y=g^x mod p`
@@ -760,6 +759,28 @@ cargo build
 - 推广为铁律：外部输入的"可选字段省略"是常态（尤其 OpenSSL 系编码），
   解码器必须按"缺啥补啥"写，而不是按"我家导出形状"收；双向交叉时，
   导入真机产物的用例与导出给真机的用例缺一不可。
+
+### 4.57 跨域 `instanceof Promise` 恒 false + 跨域求值恒异步（2026-09-13，Phase 9i-1）
+
+- 症状：vm 模块顶层 `throw` 后 `evaluate()` 反而 resolve，随后进程报
+  `unhandled rejection: Error: boom` exit=1；成功模块的完成值也全是 promise。
+- 根因（二连）：① JS 壳用 `r instanceof Promise` 判完成值形态——r 来自 vm
+  compartment（CCW），其原型是彼域 `Promise.prototype`，主域 `instanceof`
+  恒 false，落定被丢弃、成功靠巧合（回 undefined）、失败变 unhandled；
+  ② 跨域（native 内 `AutoRealm` 切 compartment 且 JS 在栈上）的
+  `ModuleEvaluate` 恒走异步求值（主域同序列对照亦然，非 compartment 之过；
+  `require` 同调用内无切换故同步）——rval 为 promise 是正确语义，不是 bug。
+- 修法：JS 侧按 thenable 结构认领（`typeof r.then === "function"`），成功
+  认领后置 evaluated 位 + 读 namespace，失败置 errored + 记 `module.error`；
+  Rust 侧 promise 路径不预置 evaluated 位（`__wjs_vm_mod_settled` 由壳在落定后
+  补记；`vm_mod_ns` 照旧以位为门）。
+  二分过程的临时 `vm_dbg_*` natives 用完即删，不进提交（本次删干净，
+  `grep vm_dbg` 为空）。
+- 推广为铁律：跨 compartment 的值一律按结构判形态（thenable/数组用
+  `Array.isArray` 跨域安全），禁 `instanceof`；凡 `evaluate` 族 API 的壳必须
+  同时兼容同步完成值与 promise 两种 rval。
+- 复现：`tests/node.rs::phase9i_vm_module_boundary`（`m9iB-evthrow` 行修前为
+  `OK` + 进程 exit=1）。
 
 
 ## 5. 路线图（按序）

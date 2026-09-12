@@ -21,6 +21,8 @@ pub fn io_code(e: &std::io::Error) -> &'static str {
             9 => "EBADF",
             // EADDRINUSE：macOS 48 / Linux 98（双平台绑定冲突，9d net）
             48 | 98 => "EADDRINUSE",
+            // ECONNREFUSED：macOS 61 / Linux 111（net/http 客户端拒连）
+            61 | 111 => "ECONNREFUSED",
             13 => "EACCES",
             17 => "EEXIST",
             18 => "EXDEV",

@@ -14,6 +14,7 @@ pub mod diagnostics_channel;
 pub mod events;
 pub mod dns;
 pub mod fs;
+pub mod http;
 pub mod internal;
 pub mod net;
 pub mod os;
@@ -53,6 +54,7 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:child_process", child::SOURCE),
     ("node:net", net::SOURCE),
     ("node:dns", dns::SOURCE),
+    ("node:http", http::SOURCE),
     ("node:assert", assert::SOURCE),
     ("node:test", testmod::SOURCE),
     // Phase 9a
@@ -91,6 +93,7 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "child_process" => Some("node:child_process"),
         "net" => Some("node:net"),
         "dns" => Some("node:dns"),
+        "http" => Some("node:http"),
         "assert" => Some("node:assert"),
         "test" => Some("node:test"),
         "async_hooks" => Some("node:async_hooks"),

@@ -2076,6 +2076,17 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_cipher_update", Some(node::crypto::cipher_update), 2),
             ("__wjs_cipher_final", Some(node::crypto::cipher_final), 1),
             ("__wjs_cipher_chacha", Some(node::crypto::cipher_chacha), 6),
+            // Phase 9e-1c: RSA v1.5 + DH/素性（签名/派生复用既有 natives）
+            ("__wjs_rsa_encrypt_v15", Some(node::crypto::rsa_encrypt_v15), 2),
+            ("__wjs_rsa_decrypt_v15", Some(node::crypto::rsa_decrypt_v15), 2),
+            ("__wjs_dh_genkey", Some(node::crypto::dh_genkey), 3),
+            ("__wjs_dh_secret", Some(node::crypto::dh_secret), 3),
+            ("__wjs_prime_check", Some(node::crypto::prime_check), 2),
+            ("__wjs_prime_gen", Some(node::crypto::prime_gen), 3),
+            // Phase 9e-1c: RSA-SHA1 手工件（digest 0.10 版本面，§0.5 未批新行）
+            ("__wjs_node_rsa_oaep", Some(node::crypto::node_rsa_oaep), 4),
+            ("__wjs_node_rsa_v15_sign", Some(node::crypto::node_rsa_v15_sign), 3),
+            ("__wjs_node_rsa_v15_verify", Some(node::crypto::node_rsa_v15_verify), 4),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）

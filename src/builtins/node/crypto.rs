@@ -1,4 +1,4 @@
-//! `node:crypto` 9e-1a/9e-1b：Hash 流式 + Hmac/随机/杂项 + 对称密码。
+//! `node:crypto` 9e-1a/9e-1b/9e-1c：Hash/Hmac/随机 + 对称密码 + 非对称。
 //! 复用全局 `__wjs_*`（随机/UUID/AES-GCM；零新 `UNSAFE-BOUNDARY`）；HMAC 经通用构造
 //! 自架流式 Hash natives（sha3 与 hmac 0.13 的 block-API 不兼容，见修法记）；
 //! 新增仅增量 Hash/Cipher 注册表（`encoding.rs` `STREAM_DECODERS` 同款线程本地表）。
@@ -684,6 +684,618 @@ pub unsafe extern "C" fn cipher_chacha(
     }
 }
 
+// ── 9e-1c 非对称（RSA v1.5 加解密 + DH/Miller-Rabin；密钥派生/签名复用既有 natives）
+
+/// OS 熵 RNG（`crypto.rs::SystemRng` 同款，`rsa::rand_core` 0.6 口径；本模块自含）。
+struct OsRng;
+
+impl rsa::rand_core::RngCore for OsRng {
+    fn next_u32(&mut self) -> u32 {
+        let mut b = [0u8; 4];
+        let _ = self.try_fill_bytes(&mut b);
+        u32::from_ne_bytes(b)
+    }
+    fn next_u64(&mut self) -> u64 {
+        let mut b = [0u8; 8];
+        let _ = self.try_fill_bytes(&mut b);
+        u64::from_ne_bytes(b)
+    }
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        let _ = self.try_fill_bytes(dest);
+    }
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rsa::rand_core::Error> {
+        getrandom::fill(dest).map_err(|_| rsa::rand_core::Error::from(OS_RNG_ERR))
+    }
+}
+
+impl rsa::rand_core::CryptoRng for OsRng {}
+
+/// 非零常量（`crypto.rs::SystemRng` 同款）。
+const OS_RNG_ERR: core::num::NonZeroU32 =
+    match core::num::NonZeroU32::new(rsa::rand_core::Error::CUSTOM_START) {
+        Some(n) => n,
+        None => core::num::NonZeroU32::MIN,
+    };
+
+fn rsa_pub_from_der(der: &[u8]) -> Result<rsa::RsaPublicKey, String> {
+    use rsa::pkcs8::DecodePublicKey as _;
+    rsa::RsaPublicKey::from_public_key_der(der)
+        .map_err(|_| "DataError: bad RSA public key (SPKI)".to_string())
+}
+
+fn rsa_priv_from_der(der: &[u8]) -> Result<rsa::RsaPrivateKey, String> {
+    use rsa::pkcs8::DecodePrivateKey as _;
+    rsa::RsaPrivateKey::from_pkcs8_der(der)
+        .map_err(|_| "DataError: bad RSA private key (PKCS#8)".to_string())
+}
+
+/// `__wjs_rsa_encrypt_v15(pubDerU8, dataU8)` → 密文（PKCS#1 v1.5）。
+pub unsafe extern "C" fn rsa_encrypt_v15(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: RSA v1.5 encrypt needs key and data");
+        return false;
+    }
+    let (Some(der), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "RSA public key"),
+        view_bytes(&mut cx, frame.arg(1), "RSA data"),
+    ) else {
+        return false;
+    };
+    let key = match rsa_pub_from_der(&der) {
+        Ok(k) => k,
+        Err(e) => {
+            report_error(&mut cx, &e);
+            return false;
+        }
+    };
+    match key.encrypt(&mut OsRng, rsa::Pkcs1v15Encrypt, &data) {
+        Ok(ct) => set_rval_bytes(&mut cx, &frame, &ct),
+        Err(e) => {
+            report_error(&mut cx, &format!("OperationError: RSA encrypt failed: {e}"));
+            false
+        }
+    }
+}
+
+/// `__wjs_rsa_decrypt_v15(privDerU8, dataU8)` → 明文（PKCS#1 v1.5）。
+pub unsafe extern "C" fn rsa_decrypt_v15(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: RSA v1.5 decrypt needs key and data");
+        return false;
+    }
+    let (Some(der), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "RSA private key"),
+        view_bytes(&mut cx, frame.arg(1), "RSA data"),
+    ) else {
+        return false;
+    };
+    let key = match rsa_priv_from_der(&der) {
+        Ok(k) => k,
+        Err(e) => {
+            report_error(&mut cx, &e);
+            return false;
+        }
+    };
+    match key.decrypt(rsa::Pkcs1v15Encrypt, &data) {
+        Ok(pt) => set_rval_bytes(&mut cx, &frame, &pt),
+        Err(e) => {
+            report_error(&mut cx, &format!("OperationError: RSA decrypt failed: {e}"));
+            false
+        }
+    }
+}
+
+// ── DH / 素性（`rsa::BigUint` 直用，`crypto.rs` 同款零新增口径）──────────────
+
+/// 左补零到定长（DH 密钥/密钥交换的定长口径，Node 回环长度断言即此）。
+fn pad_be(bytes: &[u8], len: usize) -> Vec<u8> {
+    if bytes.len() >= len {
+        return bytes[bytes.len() - len..].to_vec();
+    }
+    let mut out = vec![0u8; len - bytes.len()];
+    out.extend_from_slice(bytes);
+    out
+}
+
+fn dh_range(p: &rsa::BigUint, x: &rsa::BigUint) -> bool {
+    let one = rsa::BigUint::from(1u32);
+    x > &one && x < &(p - &one)
+}
+
+/// `__wjs_dh_genkey(primeU8, generatorNum, privLenNum)` → JSON `{priv,pub}`（b64）。
+pub unsafe extern "C" fn dh_genkey(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: DH genkey needs prime, generator and length");
+        return false;
+    }
+    let prime = match view_bytes(&mut cx, frame.arg(0), "DH prime") {
+        Some(b) => b,
+        None => return false,
+    };
+    let generator = if frame.arg(1).is_number() { frame.arg(1).to_number() as u64 } else { 2 };
+    let plen = if frame.arg(2).is_number() && frame.arg(2).to_number() > 0.0 {
+        frame.arg(2).to_number() as usize
+    } else {
+        prime.len()
+    };
+    if prime.len() < 64 || generator < 2 {
+        report_error(&mut cx, "OperationError: bad DH parameters");
+        return false;
+    }
+    let p = rsa::BigUint::from_bytes_be(&prime);
+    let g = rsa::BigUint::from(generator);
+    // 私钥 ∈ [2, p-2]（高位掩码 + 重试，恒终止）
+    let mut priv_b = vec![0u8; plen];
+    let x = loop {
+        if getrandom::fill(&mut priv_b).is_err() {
+            report_error(&mut cx, "OperationError: cannot get random values");
+            return false;
+        }
+        let x = rsa::BigUint::from_bytes_be(&priv_b);
+        if dh_range(&p, &x) {
+            break x;
+        }
+    };
+    let y = g.modpow(&x, &p);
+    use base64::Engine as _;
+    let json = serde_json::json!({
+        "priv": base64::engine::general_purpose::STANDARD.encode(pad_be(&x.to_bytes_be(), plen)),
+        "pub": base64::engine::general_purpose::STANDARD.encode(pad_be(&y.to_bytes_be(), prime.len())),
+    })
+    .to_string();
+    set_rval_str(&mut cx, &frame, &json);
+    true
+}
+
+/// `__wjs_dh_secret(primeU8, privU8, pubU8)` → 定长密钥（prime 长左补零，Node 同款）。
+pub unsafe extern "C" fn dh_secret(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: DH secret needs prime, private and public values");
+        return false;
+    }
+    let (Some(prime), Some(priv_b), Some(pub_b)) = (
+        view_bytes(&mut cx, frame.arg(0), "DH prime"),
+        view_bytes(&mut cx, frame.arg(1), "DH private key"),
+        view_bytes(&mut cx, frame.arg(2), "DH public key"),
+    ) else {
+        return false;
+    };
+    let p = rsa::BigUint::from_bytes_be(&prime);
+    let x = rsa::BigUint::from_bytes_be(&priv_b);
+    let y = rsa::BigUint::from_bytes_be(&pub_b);
+    if !dh_range(&p, &y) {
+        report_error(&mut cx, "OperationError: invalid DH public key");
+        return false;
+    }
+    let s = y.modpow(&x, &p);
+    set_rval_bytes(&mut cx, &frame, &pad_be(&s.to_bytes_be(), prime.len()))
+}
+
+/// Miller-Rabin（`checks` 轮随机基；小素数先试除。纯函数，单元测试覆盖）。
+fn is_prime(n: &rsa::BigUint, checks: u32) -> bool {
+    let zero = rsa::BigUint::from(0u32);
+    let two = rsa::BigUint::from(2u32);
+    if *n < two {
+        return false;
+    }
+    for p in [2u32, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
+        let pp = rsa::BigUint::from(p);
+        if *n == pp {
+            return true;
+        }
+        if n % &pp == zero {
+            return false;
+        }
+    }
+    // n-1 = d·2^s（尾零字节数 + 末字节尾零位）
+    let one = rsa::BigUint::from(1u32);
+    let nm1 = n - &one;
+    let nm1_bytes = nm1.to_bytes_be();
+    let mut s = 0u32;
+    for &b in nm1_bytes.iter().rev() {
+        if b != 0 {
+            s += b.trailing_zeros();
+            break;
+        }
+        s += 8;
+    }
+    let mut d = nm1.clone();
+    d >>= s as usize;
+    let mut base = vec![0u8; n.to_bytes_be().len()];
+    let two_b = rsa::BigUint::from(2u32);
+    for _ in 0..checks.max(1) {
+        if getrandom::fill(&mut base).is_err() {
+            return false;
+        }
+        // 基 ∈ [2, n-2]
+        let range = &nm1 - &two_b - &one;
+        let a = rsa::BigUint::from_bytes_be(&base) % &range + &two_b;
+        let mut x = a.modpow(&d, n);
+        if x == one || x == nm1 {
+            continue;
+        }
+        let mut composite = true;
+        for _ in 1..s {
+            x = x.modpow(&two_b, n);
+            if x == nm1 {
+                composite = false;
+                break;
+            }
+        }
+        if composite {
+            return false;
+        }
+    }
+    true
+}
+
+/// `__wjs_prime_check(bytesU8, checksNum)` → boolean。
+pub unsafe extern "C" fn prime_check(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 {
+        report_error(&mut cx, "TypeError: prime check needs a candidate");
+        return false;
+    }
+    let bytes = match view_bytes(&mut cx, frame.arg(0), "prime candidate") {
+        Some(b) => b,
+        None => return false,
+    };
+    let checks = if frame.argc() > 1 && frame.arg(1).is_number() {
+        frame.arg(1).to_number() as u32
+    } else {
+        64
+    };
+    let n = rsa::BigUint::from_bytes_be(&bytes);
+    frame.set_rval(mozjs::jsval::BooleanValue(is_prime(&n, checks)));
+    true
+}
+
+/// `__wjs_prime_gen(bitsNum, checksNum, safeNum)` → 素数 Uint8Array（定长）。
+pub unsafe extern "C" fn prime_gen(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 || !frame.arg(0).is_number() {
+        report_error(&mut cx, "TypeError: prime generation needs a bit length");
+        return false;
+    }
+    let bits = frame.arg(0).to_number() as usize;
+    if bits < 32 || bits > 4096 {
+        report_error(&mut cx, "ERR_OUT_OF_RANGE: prime bit length out of range (32..4096)");
+        return false;
+    }
+    let checks = if frame.argc() > 1 && frame.arg(1).is_number() {
+        frame.arg(1).to_number() as u32
+    } else {
+        64
+    };
+    let safe = frame.argc() > 2 && frame.arg(2).is_number() && frame.arg(2).to_number() != 0.0;
+    let len = bits.div_ceil(8);
+    let mut cand = vec![0u8; len];
+    for _ in 0..(bits as u64 * 1000 + 1000) {
+        if getrandom::fill(&mut cand).is_err() {
+            report_error(&mut cx, "OperationError: cannot get random values");
+            return false;
+        }
+        // 顶位置位（定长）+ 奇数
+        cand[0] |= 0x80;
+        let last = cand.len() - 1;
+        cand[last] |= 1;
+        let n = rsa::BigUint::from_bytes_be(&cand);
+        if !is_prime(&n, checks) {
+            continue;
+        }
+        if safe {
+            let half = (&n - rsa::BigUint::from(1u32)) >> 1usize;
+            if !is_prime(&half, checks) {
+                continue;
+            }
+        }
+        return set_rval_bytes(&mut cx, &frame, &pad_be(&n.to_bytes_be(), len));
+    }
+    report_error(&mut cx, "OperationError: prime generation failed to converge");
+    false
+}
+
+// ── RSA-SHA1/MD5 手工件（rsa 0.9 的 OAEP/签名接口绑 digest 0.10，
+// sha1/sha2_010 0.10 系无直引行（§0.5 未批），故 OAEP-SHA1 与 v1.5-SHA1/MD5
+// 签名在此手写：MGF1-SHA1 + BigUint 模幂 + 定长编码，全经真 Node 交叉验证。
+// OAEP-SHA256/384/512 与 v1.5-SHA256/384/512 继续走既有 natives。）─────────
+
+/// MGF1-SHA1（OAEP 编解码用）。
+fn mgf1_sha1(seed: &[u8], len: usize) -> Vec<u8> {
+    use sha1::Digest as _;
+    let mut out = Vec::with_capacity(len);
+    let mut ctr = 0u32;
+    while out.len() < len {
+        let mut h = sha1::Sha1::new();
+        h.update(seed);
+        h.update(ctr.to_be_bytes());
+        out.extend_from_slice(&h.finalize());
+        ctr += 1;
+    }
+    out.truncate(len);
+    out
+}
+
+fn sha1_bytes(data: &[u8]) -> Vec<u8> {
+    use sha1::Digest as _;
+    sha1::Sha1::digest(data).to_vec()
+}
+
+/// `__wjs_node_rsa_oaep(pubDerU8, dataU8, labelOrNull, encNum)`：
+/// OAEP-SHA1 加解密（enc=1 公钥加密 / enc=0 私钥解密）。
+pub unsafe extern "C" fn node_rsa_oaep(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: RSA-OAEP-SHA1 needs key, data, label and mode");
+        return false;
+    }
+    let (Some(der), Some(data), Some(label)) = (
+        view_bytes(&mut cx, frame.arg(0), "RSA key"),
+        view_bytes(&mut cx, frame.arg(1), "RSA data"),
+        opt_view(&mut cx, frame.arg(2), "RSA label"),
+    ) else {
+        return false;
+    };
+    let enc = !(frame.arg(3).is_number() && frame.arg(3).to_number() == 0.0);
+    let label_ref = label.as_deref().unwrap_or(&[]);
+    const HLEN: usize = 20;
+    if enc {
+        let key = match rsa_pub_from_der(&der) {
+            Ok(k) => k,
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        };
+        use rsa::traits::PublicKeyParts as _;
+        let k = key.size();
+        if data.len() > k - 2 * HLEN - 2 {
+            report_error(&mut cx, "OperationError: RSA encrypt failed: message too long");
+            return false;
+        }
+        let lhash = sha1_bytes(label_ref);
+        let ps_len = k - data.len() - 2 * HLEN - 2;
+        let mut db = Vec::with_capacity(k - HLEN - 1);
+        db.extend_from_slice(&lhash);
+        db.extend(std::iter::repeat(0u8).take(ps_len));
+        db.push(1);
+        db.extend_from_slice(&data);
+        let mut seed = vec![0u8; HLEN];
+        if getrandom::fill(&mut seed).is_err() {
+            report_error(&mut cx, "OperationError: cannot get random values");
+            return false;
+        }
+        let db_mask = mgf1_sha1(&seed, k - HLEN - 1);
+        let masked_db: Vec<u8> = db.iter().zip(db_mask.iter()).map(|(a, b)| a ^ b).collect();
+        let seed_mask = mgf1_sha1(&masked_db, HLEN);
+        let masked_seed: Vec<u8> =
+            seed.iter().zip(seed_mask.iter()).map(|(a, b)| a ^ b).collect();
+        let mut em = Vec::with_capacity(k);
+        em.push(0);
+        em.extend_from_slice(&masked_seed);
+        em.extend_from_slice(&masked_db);
+        let m = rsa::BigUint::from_bytes_be(&em);
+        let c = m.modpow(key.e(), key.n());
+        set_rval_bytes(&mut cx, &frame, &pad_be(&c.to_bytes_be(), k))
+    } else {
+        let key = match rsa_priv_from_der(&der) {
+            Ok(k) => k,
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        };
+        use rsa::traits::{PrivateKeyParts as _, PublicKeyParts as _};
+        let k = key.size();
+        if data.len() != k {
+            report_error(&mut cx, "OperationError: RSA decrypt failed: decryption error");
+            return false;
+        }
+        let m = rsa::BigUint::from_bytes_be(&data);
+        let em = pad_be(&m.modpow(key.d(), key.n()).to_bytes_be(), k);
+        if em[0] != 0 {
+            report_error(&mut cx, "OperationError: RSA decrypt failed: decryption error");
+            return false;
+        }
+        let (masked_seed, masked_db) = (&em[1..1 + HLEN], &em[1 + HLEN..]);
+        let seed_mask = mgf1_sha1(masked_db, HLEN);
+        let seed: Vec<u8> =
+            masked_seed.iter().zip(seed_mask.iter()).map(|(a, b)| a ^ b).collect();
+        let db_mask = mgf1_sha1(&seed, k - HLEN - 1);
+        let db: Vec<u8> =
+            masked_db.iter().zip(db_mask.iter()).map(|(a, b)| a ^ b).collect();
+        let lhash = sha1_bytes(label_ref);
+        if db[..HLEN] != lhash {
+            report_error(&mut cx, "OperationError: RSA decrypt failed: decryption error");
+            return false;
+        }
+        let rest = &db[HLEN..];
+        let one = rest.iter().position(|&b| b == 1);
+        match one {
+            Some(i) if rest[..i].iter().all(|&b| b == 0) => {
+                set_rval_bytes(&mut cx, &frame, &rest[i + 1..])
+            }
+            _ => {
+                report_error(&mut cx, "OperationError: RSA decrypt failed: decryption error");
+                false
+            }
+        }
+    }
+}
+
+/// v1.5 签名 DigestInfo 前缀（SHA-1/MD5；SHA-2 系走既有 natives）。
+fn v15_prefix(hash: &str) -> Option<&'static [u8]> {
+    match hash {
+        "SHA-1" => Some(&[
+            0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04,
+            0x14,
+        ]),
+        "MD5" => Some(&[
+            0x30, 0x20, 0x30, 0x0c, 0x06, 0x08, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x05,
+            0x05, 0x00, 0x04, 0x10,
+        ]),
+        _ => None,
+    }
+}
+
+fn v15_digest(hash: &str, data: &[u8]) -> Option<Vec<u8>> {
+    match hash {
+        "SHA-1" => Some(sha1_bytes(data)),
+        "MD5" => {
+            use sha2::Digest as _;
+            Some(md5::Md5::digest(data).to_vec())
+        }
+        _ => None,
+    }
+}
+
+/// `__wjs_node_rsa_v15_legacy(privDerU8, dataU8, hashStr)` → 签名（SHA-1/MD5）。
+pub unsafe extern "C" fn node_rsa_v15_sign(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: RSA v1.5 legacy sign needs key, data and hash");
+        return false;
+    }
+    let (Some(der), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "RSA private key"),
+        view_bytes(&mut cx, frame.arg(1), "RSA data"),
+    ) else {
+        return false;
+    };
+    let hash = value_to_string(&mut cx, frame.arg(2));
+    let (Some(prefix), Some(digest)) = (v15_prefix(&hash), v15_digest(&hash, &data)) else {
+        report_error(&mut cx, &format!("NotSupportedError: RSA legacy sign needs SHA-1/MD5"));
+        return false;
+    };
+    let key = match rsa_priv_from_der(&der) {
+        Ok(k) => k,
+        Err(e) => {
+            report_error(&mut cx, &e);
+            return false;
+        }
+    };
+    use rsa::traits::{PrivateKeyParts as _, PublicKeyParts as _};
+    let k = key.size();
+    let mut t = Vec::with_capacity(prefix.len() + digest.len());
+    t.extend_from_slice(prefix);
+    t.extend_from_slice(&digest);
+    if t.len() + 11 > k {
+        report_error(&mut cx, "OperationError: RSA sign failed: key too short");
+        return false;
+    }
+    let mut em = vec![0xffu8; k];
+    em[0] = 0;
+    em[1] = 1;
+    em[k - t.len() - 1] = 0;
+    em[k - t.len()..].copy_from_slice(&t);
+    let s = rsa::BigUint::from_bytes_be(&em).modpow(key.d(), key.n());
+    set_rval_bytes(&mut cx, &frame, &pad_be(&s.to_bytes_be(), k))
+}
+
+/// `__wjs_node_rsa_v15_verify(pubDerU8, sigU8, dataU8, hashStr)` → boolean。
+pub unsafe extern "C" fn node_rsa_v15_verify(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: RSA v1.5 legacy verify needs key, signature, data and hash");
+        return false;
+    }
+    let (Some(der), Some(sig), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "RSA public key"),
+        view_bytes(&mut cx, frame.arg(1), "RSA signature"),
+        view_bytes(&mut cx, frame.arg(2), "RSA data"),
+    ) else {
+        return false;
+    };
+    let hash = value_to_string(&mut cx, frame.arg(3));
+    let (Some(prefix), Some(digest)) = (v15_prefix(&hash), v15_digest(&hash, &data)) else {
+        report_error(&mut cx, &format!("NotSupportedError: RSA legacy verify needs SHA-1/MD5"));
+        return false;
+    };
+    let key = match rsa_pub_from_der(&der) {
+        Ok(k) => k,
+        Err(e) => {
+            report_error(&mut cx, &e);
+            return false;
+        }
+    };
+    use rsa::traits::PublicKeyParts as _;
+    let k = key.size();
+    if sig.len() != k {
+        frame.set_rval(mozjs::jsval::BooleanValue(false));
+        return true;
+    }
+    let m = rsa::BigUint::from_bytes_be(&sig);
+    let em = pad_be(&m.modpow(key.e(), key.n()).to_bytes_be(), k);
+    let mut t = Vec::with_capacity(prefix.len() + digest.len());
+    t.extend_from_slice(prefix);
+    t.extend_from_slice(&digest);
+    let ok = em[0] == 0
+        && em[1] == 1
+        && em[k - t.len() - 1] == 0
+        && em[2..k - t.len() - 1].iter().all(|&b| b == 0xff)
+        && em[k - t.len()..] == t;
+    frame.set_rval(mozjs::jsval::BooleanValue(ok));
+    true
+}
+
 /// 内嵌 ESM 源（`node:crypto` 9e-1a 面）。
 pub const SOURCE: &str = r#"
 function __cryptErr(e) {
@@ -1316,11 +1928,1059 @@ export function getCipherInfo(name) {
   };
 }
 
+// ── 9e-1c 非对称 ──────────────────────────────────────────────────────────
+
+const __DH_GROUPS = {
+  // 素数取自真 Node `getPrime('hex')`（RFC 7919），generator 恒 2
+  "modp5": "ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca237327ffffffffffffffff",
+  "modp14": "ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca18217c32905e462e36ce3be39e772c180e86039b2783a2ec07a28fb5c55df06f4c52c9de2bcbf6955817183995497cea956ae515d2261898fa051015728e5a8aacaa68ffffffffffffffff",
+  "modp15": "ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca18217c32905e462e36ce3be39e772c180e86039b2783a2ec07a28fb5c55df06f4c52c9de2bcbf6955817183995497cea956ae515d2261898fa051015728e5a8aaac42dad33170d04507a33a85521abdf1cba64ecfb850458dbef0a8aea71575d060c7db3970f85a6e1e4c7abf5ae8cdb0933d71e8c94e04a25619dcee3d2261ad2ee6bf12ffa06d98a0864d87602733ec86a64521f2b18177b200cbbe117577a615d6c770988c0bad946e208e24fa074e5ab3143db5bfce0fd108e4b82d120a93ad2caffffffffffffffff",
+  "modp16": "ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca18217c32905e462e36ce3be39e772c180e86039b2783a2ec07a28fb5c55df06f4c52c9de2bcbf6955817183995497cea956ae515d2261898fa051015728e5a8aaac42dad33170d04507a33a85521abdf1cba64ecfb850458dbef0a8aea71575d060c7db3970f85a6e1e4c7abf5ae8cdb0933d71e8c94e04a25619dcee3d2261ad2ee6bf12ffa06d98a0864d87602733ec86a64521f2b18177b200cbbe117577a615d6c770988c0bad946e208e24fa074e5ab3143db5bfce0fd108e4b82d120a93ad2caffffffffffffffff",
+};
+
+function __b64enc(u8) {
+  let s = "";
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function __b64dec(s) {
+  const bin = atob(String(s));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function __b64urlDec(s) {
+  let t = String(s).replace(/-/g, "+").replace(/_/g, "/");
+  while (t.length % 4) t += "=";
+  return __b64dec(t);
+}
+// 最小 DER 读器（SEC1/DH-PKCS8 解析用；完整 ASN.1 不做）
+function __derRead(buf, pos) {
+  const tag = buf[pos];
+  let len = buf[pos + 1];
+  let off = pos + 2;
+  if (len & 128) {
+    const n = len & 127;
+    len = 0;
+    for (let i = 0; i < n; i++) len = len * 256 + buf[off++];
+  }
+  return { tag, len, head: off, body: buf.slice(off, off + len), next: off + len };
+}
+function __derChildren(buf) {
+  const out = [];
+  let pos = 0;
+  while (pos < buf.length) {
+    const t = __derRead(buf, pos);
+    out.push(t);
+    pos = t.next;
+  }
+  return out;
+}
+function __pemDecode(text) {
+  const m = String(text).match(/-----BEGIN ([^-]+)-----([\s\S]*?)-----END \1-----/);
+  if (!m) return null;
+  return { label: m[1].trim(), der: __b64dec(m[2].replace(/\s+/g, "")) };
+}
+function __pemEncode(label, der) {
+  const b64 = __b64enc(der);
+  let body = "";
+  for (let i = 0; i < b64.length; i += 64) body += b64.slice(i, i + 64) + "\n";
+  return `-----BEGIN ${label}-----\n${body}-----END ${label}-----\n`;
+}
+function __normCurve(name) {
+  const s = String(name ?? "").trim().toLowerCase().replace(/[-_]/g, "");
+  const table = {
+    "prime256v1": "P-256", "secp256r1": "P-256", "p256": "P-256",
+    "secp384r1": "P-384", "p384": "P-384",
+    "secp521r1": "P-521", "p521": "P-521",
+    "ed25519": "Ed25519", "x25519": "X25519",
+  };
+  const c = table[s];
+  if (c === undefined) {
+    const err = new Error(`Unknown curve ${name}`);
+    err.code = "ERR_CRYPTO_INVALID_CURVE";
+    throw err;
+  }
+  return c;
+}
+function __curveSize(curve) {
+  return curve === "P-256" ? 32 : curve === "P-384" ? 48 : 66;
+}
+function __normHashName(alg) {
+  // 'RSA-SHA256' / 'sha256' → 'SHA-256'（WebCrypto 口径既有表）
+  const s = String(alg ?? "");
+  const up = s.trim().toUpperCase().replace(/[-_]/g, "");
+  const bare = up.startsWith("RSA") ? up.slice(3) : up;
+  const table = {
+    "SHA1": "SHA-1", "SHA256": "SHA-256", "SHA384": "SHA-384", "SHA512": "SHA-512",
+    "MD5": "MD5", "SHA3256": "SHA3-256", "SHA3384": "SHA3-384", "SHA3512": "SHA3-512",
+  };
+  return table[bare];
+}
+
+class KeyObject {
+  constructor(kind, keyType, material) {
+    this.__kind = kind; // 'secret' | 'public' | 'private'
+    this.__keyType = keyType; // 'secret' | 'rsa' | 'rsa-pss' | 'ec' | 'ed25519' | 'x25519' | 'dh'
+    this.__material = material; // Uint8Array（DER 或裸密钥字节）
+    this.__detail = null; // 附加参数（namedCurve / prime+g / pss）
+  }
+  get type() { return this.__kind; }
+  get asymmetricKeyType() { return this.__kind === "secret" ? undefined : this.__keyType; }
+  get symmetricKeySize() {
+    return this.__kind === "secret" ? this.__material.length : undefined;
+  }
+  export(options) {
+    const format = options?.format ?? "pem";
+    if (format === "jwk") return __exportJwk(this);
+    const der = __exportDer(this, options);
+    if (format === "der") return Buffer.from(der);
+    if (format === "pem") {
+      const label = this.__kind === "private" ? "PRIVATE KEY" : "PUBLIC KEY";
+      return __pemEncode(label, der);
+    }
+    const err = new TypeError(`Unknown export format ${format}`);
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+}
+function __exportDer(kobj, options) {
+  // DH 私钥是 JS 侧三元组（无 DER 形态，记档）；其余直接吐 material
+  if (kobj.__keyType === "dh") {
+    const err = new Error("DH keys export as 'der'/'pem' is not supported (use getPrime/getPrivateKey)");
+    err.code = "ERR_NOT_SUPPORTED";
+    throw err;
+  }
+  return kobj.__material;
+}
+function __exportJwk(kobj) {
+  const b64u = (u8) => __b64enc(u8).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  if (kobj.__keyType === "secret") return { kty: "oct", k: b64u(kobj.__material) };
+  const isPriv = kobj.__kind === "private";
+  if (kobj.__keyType === "rsa" || kobj.__keyType === "rsa-pss") {
+    const parts = isPriv
+      ? JSON.parse(__wjs_rsa_jwk(kobj.__material, __wjs_rsa_public(kobj.__material)))
+      : JSON.parse(__wjs_rsa_jwk_pub(kobj.__material));
+    const jwk = { kty: "RSA", n: parts.n, e: parts.e };
+    if (isPriv) { jwk.d = parts.d; jwk.p = parts.p; jwk.q = parts.q; jwk.dp = parts.dp; jwk.dq = parts.dq; jwk.qi = parts.qi; }
+    return jwk;
+  }
+  if (kobj.__keyType === "ec") {
+    const curve = kobj.__detail.namedCurve;
+    const parts = isPriv
+      ? JSON.parse(__wjs_ec_jwk(curve, kobj.__material, __wjs_ec_public(curve, kobj.__material)))
+      : JSON.parse(__wjs_ec_jwk_pub(curve, kobj.__material));
+    const jwk = { kty: "EC", crv: curve, x: parts.x, y: parts.y };
+    if (isPriv) jwk.d = parts.d;
+    return jwk;
+  }
+  if (kobj.__keyType === "ed25519" || kobj.__keyType === "x25519") {
+    const crv = kobj.__keyType === "ed25519" ? "Ed25519" : "X25519";
+    const pubBytes = isPriv
+      ? (kobj.__keyType === "ed25519" ? __wjs_ed_public(kobj.__material) : __wjs_x_public(kobj.__material))
+      : kobj.__material;
+    const jwk = { kty: "OKP", crv, x: b64u(pubBytes) };
+    if (isPriv) jwk.d = b64u(kobj.__material);
+    return jwk;
+  }
+  const err = new Error("JWK export not supported for this key type");
+  err.code = "ERR_NOT_SUPPORTED";
+  throw err;
+}
+export function createSecretKey(key) {
+  return new KeyObject("secret", "secret", __cryptBytes(key, "key"));
+}
+function __parseKeyMaterial(key, format, type, want) {
+  // → { keyType, material, detail }；want: 'private' | 'public'
+  if (key instanceof KeyObject) {
+    if (key.type !== want && !(want === "private" && key.type === "private")) {
+      const err = new TypeError("KeyObject type mismatch");
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    return key;
+  }
+  if (format === "jwk") {
+    if (typeof key !== "object" || key === null) {
+      const err = new TypeError("JWK key must be an object");
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    if (key.kty === "oct") return new KeyObject("secret", "secret", __b64urlDec(key.k));
+    if (key.kty === "RSA") {
+      const n = __b64urlDec(key.n), e = __b64urlDec(key.e);
+      if (key.d !== undefined) {
+        const d = __b64urlDec(key.d);
+        const privDer = __cryptCall(() => __wjs_rsa_import_priv(n, e, d));
+        const k = new KeyObject("private", "rsa", Buffer.from(privDer));
+        return k;
+      }
+      const pubDer = __cryptCall(() => __wjs_rsa_import_pub(n, e));
+      return new KeyObject("public", "rsa", Buffer.from(pubDer));
+    }
+    if (key.kty === "EC") {
+      const curve = __normCurve(key.crv);
+      const x = __b64urlDec(key.x), y = __b64urlDec(key.y);
+      if (key.d !== undefined) {
+        const privDer = __cryptCall(() => __wjs_ec_import_priv(curve, __b64urlDec(key.d)));
+        const k = new KeyObject("private", "ec", Buffer.from(privDer));
+        k.__detail = { namedCurve: curve };
+        return k;
+      }
+      const pubDer = __cryptCall(() => __wjs_ec_import_pub(curve, x, y));
+      const k = new KeyObject("public", "ec", Buffer.from(pubDer));
+      k.__detail = { namedCurve: curve };
+      return k;
+    }
+    if (key.kty === "OKP") {
+      const kt = key.crv === "Ed25519" ? "ed25519" : key.crv === "X25519" ? "x25519" : null;
+      if (kt === null) {
+        const err = new Error(`Unsupported OKP curve ${key.crv}`);
+        err.code = "ERR_NOT_SUPPORTED";
+        throw err;
+      }
+      if (key.d !== undefined) {
+        const k = new KeyObject("private", kt, __b64urlDec(key.d));
+        return k;
+      }
+      return new KeyObject("public", kt, __b64urlDec(key.x));
+    }
+    const err = new TypeError("Unsupported JWK kty");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  let der;
+  if (typeof key === "string") {
+    const pem = __pemDecode(key);
+    if (!pem) {
+      const err = new TypeError("PEM decode failed");
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    der = pem.der;
+    if (pem.label === "PRIVATE KEY") type = type ?? "pkcs8";
+    else if (pem.label === "PUBLIC KEY") type = type ?? "spki";
+    else if (pem.label === "RSA PRIVATE KEY") type = type ?? "pkcs1";
+    else if (pem.label === "RSA PUBLIC KEY") type = type ?? "pkcs1-pub";
+    else if (pem.label === "EC PRIVATE KEY") type = type ?? "sec1";
+  } else {
+    der = __cryptBytes(key, "key");
+  }
+  type = type ?? (want === "private" ? "pkcs8" : "spki");
+  if (type === "pkcs8") {
+    // 以 RSA/EC/OKP 逐一试解（DER 自描述不足，顺序即优先级；失败信息统一）
+    const tries = [
+      ["rsa", () => { __cryptCall(() => __wjs_rsa_public(der)); return new KeyObject("private", "rsa", der); }],
+      ["ec", () => {
+        for (const c of ["P-256", "P-384", "P-521"]) {
+          try { __cryptCall(() => __wjs_ec_public(c, der)); const k = new KeyObject("private", "ec", der); k.__detail = { namedCurve: c }; return k; } catch {}
+        }
+        throw new Error("no");
+      }],
+      ["okp", () => {
+        for (const kt of ["ed25519", "x25519"]) {
+          try {
+            const seed = __cryptCall(() => __wjs_okp_seed_from_pkcs8(kt === "ed25519" ? "ED25519" : "X25519", der));
+            return new KeyObject("private", kt, Buffer.from(seed));
+          } catch {}
+        }
+        throw new Error("no");
+      }],
+    ];
+    for (const [, fn] of tries) {
+      try { return fn(); } catch (e) { if (e && e.code && e.code !== "ERR_NOT_SUPPORTED") throw e; }
+    }
+    const err = new TypeError("Invalid PKCS#8 key");
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  if (type === "spki") {
+    const tries = [
+      () => { __cryptCall(() => __wjs_rsa_jwk_pub(der)); return new KeyObject("public", "rsa", der); },
+      () => {
+        for (const c of ["P-256", "P-384", "P-521"]) {
+          try { __cryptCall(() => __wjs_ec_jwk_pub(c, der)); const k = new KeyObject("public", "ec", der); k.__detail = { namedCurve: c }; return k; } catch {}
+        }
+        throw new Error("no");
+      },
+      () => {
+        for (const kt of ["ed25519", "x25519"]) {
+          try {
+            const pub = __cryptCall(() => __wjs_okp_pub_from_spki(kt === "ed25519" ? "ED25519" : "X25519", der));
+            return new KeyObject("public", kt, Buffer.from(pub));
+          } catch {}
+        }
+        throw new Error("no");
+      },
+    ];
+    for (const fn of tries) {
+      try { return fn(); } catch (e) { if (e && e.code && e.code !== "ERR_NOT_SUPPORTED") throw e; }
+    }
+    const err = new TypeError("Invalid SPKI key");
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  if (type === "sec1") {
+    // SEC1 EC 私钥：SEQ{ INTEGER 1, OCTET scalar, [0] curveOID?, [1] pub BITSTRING? }
+    const top = __derChildren(__derRead(der, 0).body);
+    const scalar = top.find((t) => t.tag === 4);
+    if (!scalar) {
+      const err = new TypeError("Invalid SEC1 key");
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    for (const c of ["P-256", "P-384", "P-521"]) {
+      try {
+        const privDer = __cryptCall(() => __wjs_ec_import_priv(c, scalar.body));
+        const k = new KeyObject("private", "ec", Buffer.from(privDer));
+        k.__detail = { namedCurve: c };
+        return k;
+      } catch {}
+    }
+    const err = new TypeError("Invalid SEC1 key");
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  const err = new TypeError(`Unsupported key type ${type} (der sec1/pkcs8/spki supported)`);
+  err.code = "ERR_INVALID_ARG_VALUE";
+  throw err;
+}
+export function createPrivateKey(key) {
+  if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof ArrayBuffer) && !ArrayBuffer.isView(key) && !(key instanceof KeyObject)) {
+    return __parseKeyMaterial(key.key ?? key, key.format, key.type, "private");
+  }
+  return __parseKeyMaterial(key, undefined, undefined, "private");
+}
+export function createPublicKey(key) {
+  if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof ArrayBuffer) && !ArrayBuffer.isView(key) && !(key instanceof KeyObject)) {
+    // 允许从私钥对象派生公钥（Node 同款）
+    if (key.key instanceof KeyObject && key.key.type === "private") {
+      return __derivePublic(key.key);
+    }
+    return __parseKeyMaterial(key.key ?? key, key.format, key.type, "public");
+  }
+  if (key instanceof KeyObject && key.type === "private") return __derivePublic(key);
+  return __parseKeyMaterial(key, undefined, undefined, "public");
+}
+function __derivePublic(priv) {
+  if (priv.__keyType === "rsa" || priv.__keyType === "rsa-pss") {
+    return new KeyObject("public", priv.__keyType, Buffer.from(__cryptCall(() => __wjs_rsa_public(priv.__material))));
+  }
+  if (priv.__keyType === "ec") {
+    const c = priv.__detail.namedCurve;
+    return Object.assign(new KeyObject("public", "ec", Buffer.from(__cryptCall(() => __wjs_ec_public(c, priv.__material)))), { __detail: { namedCurve: c } });
+  }
+  if (priv.__keyType === "ed25519") {
+    return new KeyObject("public", "ed25519", Buffer.from(__cryptCall(() => __wjs_ed_public(priv.__material))));
+  }
+  if (priv.__keyType === "x25519") {
+    return new KeyObject("public", "x25519", Buffer.from(__cryptCall(() => __wjs_x_public(priv.__material))));
+  }
+  const err = new Error("Cannot derive public key for this key type");
+  err.code = "ERR_NOT_SUPPORTED";
+  throw err;
+}
+function __genPairSync(type, options) {
+  options = options ?? {};
+  if (type === "rsa" || type === "rsa-pss") {
+    const bits = options.modulusLength ?? 2048;
+    if (![2048, 3072, 4096].includes(bits)) {
+      const err = new Error("RSA modulusLength must be 2048/3072/4096");
+      err.code = "ERR_NOT_SUPPORTED";
+      throw err;
+    }
+    let e = options.publicExponent ?? 65537;
+    if (e instanceof Uint8Array) {
+      let n = 0;
+      for (const b of e) n = n * 256 + b;
+      e = n;
+    }
+    const privDer = __cryptCall(() => __wjs_rsa_generate(bits, Number(e)));
+    const pubDer = __cryptCall(() => __wjs_rsa_public(privDer));
+    const kt = type === "rsa-pss" ? "rsa-pss" : "rsa";
+    const priv = new KeyObject("private", kt, Buffer.from(privDer));
+    const pub = new KeyObject("public", kt, Buffer.from(pubDer));
+    if (type === "rsa-pss") {
+      priv.__detail = { hash: options.hash ?? "sha256", saltLength: options.saltLength };
+      pub.__detail = priv.__detail;
+    }
+    return { privateKey: priv, publicKey: pub };
+  }
+  if (type === "ec") {
+    const curve = __normCurve(options.namedCurve);
+    if (curve === "Ed25519" || curve === "X25519") {
+      const err = new Error(`Use '${curve.toLowerCase()}' key type for OKP`);
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    const privDer = __cryptCall(() => __wjs_ec_generate(curve));
+    const pubDer = __cryptCall(() => __wjs_ec_public(curve, privDer));
+    const priv = new KeyObject("private", "ec", Buffer.from(privDer));
+    priv.__detail = { namedCurve: curve };
+    const pub = new KeyObject("public", "ec", Buffer.from(pubDer));
+    pub.__detail = { namedCurve: curve };
+    return { privateKey: priv, publicKey: pub };
+  }
+  if (type === "ed25519" || type === "x25519") {
+    const isEd = type === "ed25519";
+    const seed = __cryptCall(() => isEd ? __wjs_ed_generate() : __wjs_x_generate());
+    const pubB = __cryptCall(() => isEd ? __wjs_ed_public(seed) : __wjs_x_public(seed));
+    return {
+      privateKey: new KeyObject("private", type, Buffer.from(seed)),
+      publicKey: new KeyObject("public", type, Buffer.from(pubB)),
+    };
+  }
+  const err = new Error(`generateKeyPair type '${type}' not supported (rsa/rsa-pss/ec/ed25519/x25519)`);
+  err.code = "ERR_NOT_SUPPORTED";
+  throw err;
+}
+function __applyEncoding(pair, publicEncoding, privateEncoding) {
+  const out = {};
+  if (publicEncoding !== undefined) {
+    out.publicKey = pair.publicKey.export(publicEncoding);
+  } else out.publicKey = pair.publicKey;
+  if (privateEncoding !== undefined) {
+    out.privateKey = pair.privateKey.export(privateEncoding);
+  } else out.privateKey = pair.privateKey;
+  return out;
+}
+export function generateKeyPairSync(type, options, publicEncoding, privateEncoding) {
+  if (typeof options === "string" || options === undefined) options = {};
+  return __applyEncoding(__genPairSync(type, options), publicEncoding, privateEncoding);
+}
+export function generateKeyPair(type, options, ...rest) {
+  let cb = rest.find((a) => typeof a === "function");
+  let pubEnc, privEnc;
+  if (typeof options === "object" && options !== null) {
+    pubEnc = options.publicKeyEncoding;
+    privEnc = options.privateKeyEncoding;
+  }
+  if (!cb) {
+    if (typeof rest[0] === "function") cb = rest[0];
+  }
+  if (typeof cb !== "function") {
+    const err = new TypeError("generateKeyPair requires a callback for async form (use Sync variant otherwise)");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  queueMicrotask(() => {
+    try {
+      cb(null, __applyEncoding(__genPairSync(type, options ?? {}), pubEnc, privEnc).publicKey,
+        __applyEncoding(__genPairSync(type, options ?? {}), pubEnc, privEnc).privateKey);
+    } catch (e) {
+      cb(e);
+    }
+  });
+}
+// DER 编解码（ECDSA der 签名用）
+function __derLen(n) {
+  if (n < 128) return new Uint8Array([n]);
+  const bytes = [];
+  while (n > 0) { bytes.unshift(n & 255); n = Math.floor(n / 256); }
+  return new Uint8Array([128 | bytes.length, ...bytes]);
+}
+function __derInt(raw) {
+  let v = raw;
+  while (v.length > 1 && v[0] === 0) v = v.slice(1);
+  const neg = (v[0] & 128) !== 0;
+  const body = neg ? new Uint8Array([0, ...v]) : v;
+  return new Uint8Array([2, ...__derLen(body.length), ...body]);
+}
+function __rawToDerSig(raw) {
+  const half = raw.length / 2;
+  const seq = new Uint8Array([...__derInt(raw.slice(0, half)), ...__derInt(raw.slice(half))]);
+  return new Uint8Array([48, ...__derLen(seq.length), ...seq]);
+}
+function __derToRawSig(der, size) {
+  const top = __derRead(der, 0);
+  if (top.tag !== 48) throw new Error("bad signature");
+  const kids = __derChildren(top.body);
+  if (kids.length !== 2 || kids[0].tag !== 2 || kids[1].tag !== 2) throw new Error("bad signature");
+  const norm = (t) => {
+    let v = t.body;
+    while (v.length > 1 && v[0] === 0) v = v.slice(1);
+    if (v.length > size) throw new Error("bad signature");
+    const out = new Uint8Array(size);
+    out.set(v, size - v.length);
+    return out;
+  };
+  const out = new Uint8Array(size * 2);
+  out.set(norm(kids[0]), 0);
+  out.set(norm(kids[1]), size);
+  return out;
+}
+function __signCore(alg, data, keyObj, dsaEncoding, saltLength) {
+  const dataB = __cryptBytes(data, "data");
+  const kt = keyObj.__keyType;
+  if (kt === "ed25519") {
+    // EdDSA 无摘要算法（真 Node：非 null 即 ERR_OSSL_INVALID_DIGEST；
+    // 此处用 CRYPTO 扁平码，Sign 类同口径，记档）
+    if (alg !== null && alg !== undefined) {
+      const err = new Error("Invalid digest");
+      err.code = "ERR_CRYPTO_INVALID_DIGEST";
+      throw err;
+    }
+    if (keyObj.__kind !== "private") {
+      const err = new TypeError("sign requires a private key");
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    return __cryptCall(() => __wjs_ed_sign(keyObj.__material, dataB));
+  }
+  const hash = __normHashName(alg);
+  if (hash === undefined) {
+    const err = new Error("Invalid digest");
+    err.code = "ERR_CRYPTO_INVALID_DIGEST";
+    throw err;
+  }
+  if (kt === "rsa" || kt === "rsa-pss") {
+    if (keyObj.__kind !== "private") {
+      const err = new TypeError("sign requires a private key");
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    // SHA-1/MD5 走手写 v1.5（digest 0.10 版本面）；SHA-2 走既有 natives
+    if (hash === "SHA-1" || hash === "MD5") {
+      if (kt === "rsa-pss") {
+        const err = new Error("RSA-PSS with SHA-1/MD5 not supported");
+        err.code = "ERR_NOT_SUPPORTED";
+        throw err;
+      }
+      return __cryptCall(() => __wjs_node_rsa_v15_sign(keyObj.__material, dataB, hash));
+    }
+    const pss = kt === "rsa-pss";
+    if (pss) {
+      const defSalt = { "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[hash] ?? 32;
+      const salt = saltLength === undefined ? defSalt : Number(saltLength);
+      return __cryptCall(() => __wjs_pss_sign(hash, salt, keyObj.__material, dataB));
+    }
+    return __cryptCall(() => __wjs_rsa_sign(hash, keyObj.__material, dataB));
+  }
+  if (kt === "ec") {
+    if (keyObj.__kind !== "private") {
+      const err = new TypeError("sign requires a private key");
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    const curve = keyObj.__detail.namedCurve;
+    const raw = __cryptCall(() => __wjs_ecdsa_sign(curve, hash, keyObj.__material, dataB));
+    if ((dsaEncoding ?? "der") === "der") return __rawToDerSig(Buffer.from(raw));
+    return Buffer.from(raw);
+  }
+  const err = new Error(`sign not supported for ${kt}`);
+  err.code = "ERR_NOT_SUPPORTED";
+  throw err;
+}
+function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
+  const dataB = __cryptBytes(data, "data");
+  const sigB = __cryptBytes(sig, "signature");
+  const kt = keyObj.__keyType;
+  if (kt === "ed25519") {
+    if (alg !== null && alg !== undefined) {
+      const err = new Error("Invalid digest");
+      err.code = "ERR_CRYPTO_INVALID_DIGEST";
+      throw err;
+    }
+    if (keyObj.__kind === "private") {
+      const err = new TypeError("verify requires a public key");
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    return __cryptCall(() => __wjs_ed_verify(keyObj.__material, sigB, dataB));
+  }
+  const hash = __normHashName(alg);
+  if (hash === undefined) {
+    const err = new Error("Invalid digest");
+    err.code = "ERR_CRYPTO_INVALID_DIGEST";
+    throw err;
+  }
+  // 公钥派生（私钥亦可验，Node 同款）
+  const pubDer = keyObj.__kind === "private" ? __derivePublic(keyObj).__material : keyObj.__material;
+  if (kt === "rsa" || kt === "rsa-pss") {
+    if (hash === "SHA-1" || hash === "MD5") {
+      if (kt === "rsa-pss") {
+        const err = new Error("RSA-PSS with SHA-1/MD5 not supported");
+        err.code = "ERR_NOT_SUPPORTED";
+        throw err;
+      }
+      return __cryptCall(() => __wjs_node_rsa_v15_verify(pubDer, sigB, dataB, hash));
+    }
+    const pss = kt === "rsa-pss";
+    if (pss) {
+      const defSalt = { "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[hash] ?? 32;
+      const salt = saltLength === undefined ? defSalt : Number(saltLength);
+      return __cryptCall(() => __wjs_pss_verify(hash, salt, pubDer, sigB, dataB));
+    }
+    return __cryptCall(() => __wjs_rsa_verify(hash, pubDer, sigB, dataB));
+  }
+  if (kt === "ec") {
+    const curve = keyObj.__detail.namedCurve;
+    const size = __curveSize(curve);
+    const raw = (dsaEncoding ?? "der") === "der" ? __derToRawSig(sigB, size) : sigB;
+    return __cryptCall(() => __wjs_ecdsa_verify(curve, hash, pubDer, raw, dataB));
+  }
+  const err = new Error(`verify not supported for ${kt}`);
+  err.code = "ERR_NOT_SUPPORTED";
+  throw err;
+}
+function __keyArg(key, what) {
+  if (key instanceof KeyObject) return key;
+  if (typeof key === "string" || key instanceof Uint8Array || key instanceof ArrayBuffer || ArrayBuffer.isView(key)) {
+    try { return createPrivateKey(key); } catch { return createPublicKey(key); }
+  }
+  if (typeof key === "object" && key !== null) {
+    const inner = key.key ?? key;
+    if (inner instanceof KeyObject) return inner;
+    try { return createPrivateKey(key); } catch { return createPublicKey(key); }
+  }
+  const err = new TypeError(`The "${what}" argument must be a KeyObject or key material`);
+  err.code = "ERR_INVALID_ARG_TYPE";
+  throw err;
+}
+export function sign(alg, data, key) {
+  const k = __keyArg(key, "key");
+  const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof KeyObject)) ? key : {};
+  const out = __signCore(alg, data, k, opts.dsaEncoding, opts.saltLength);
+  return Buffer.from(out);
+}
+export function verify(alg, data, key, signature) {
+  const k = __keyArg(key, "key");
+  const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof KeyObject)) ? key : {};
+  return __verifyCore(alg, data, k, signature, opts.dsaEncoding, opts.saltLength);
+}
+class Sign {
+  constructor(alg, options) {
+    if (alg !== null && __normHashName(alg) === undefined && alg !== "ed25519") {
+      const err = new Error("Invalid digest");
+      err.code = "ERR_CRYPTO_INVALID_DIGEST";
+      throw err;
+    }
+    if (alg === "ed25519") {
+      const err = new Error("Invalid digest");
+      err.code = "ERR_CRYPTO_INVALID_DIGEST";
+      throw err;
+    }
+    this.__alg = alg;
+    this.__parts = [];
+  }
+  update(data, enc) {
+    this.__parts.push(__cryptBytes(data, "data", enc));
+    return this;
+  }
+  sign(key, ...rest) {
+    let dsaEncoding, saltLength;
+    for (const r of rest) {
+      if (typeof r === "string") dsaEncoding = r;
+      else if (typeof r === "number") saltLength = r;
+      else if (r && typeof r === "object") { dsaEncoding = r.dsaEncoding ?? dsaEncoding; saltLength = r.saltLength ?? saltLength; }
+    }
+    const flat = __joinParts(this.__parts);
+    if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof KeyObject) && !ArrayBuffer.isView(key)) {
+      const inner = key.key ?? key;
+      const k = __keyArg(inner, "key");
+      const out = __signCore(this.__alg, flat, k, key.dsaEncoding ?? dsaEncoding, key.saltLength ?? saltLength);
+      return Buffer.from(out);
+    }
+    const out = __signCore(this.__alg, flat, __keyArg(key, "key"), dsaEncoding, saltLength);
+    return Buffer.from(out);
+  }
+}
+class Verify {
+  constructor(alg, options) {
+    if (alg !== null && __normHashName(alg) === undefined && alg !== "ed25519") {
+      const err = new Error("Invalid digest");
+      err.code = "ERR_CRYPTO_INVALID_DIGEST";
+      throw err;
+    }
+    if (alg === "ed25519") {
+      const err = new Error("Invalid digest");
+      err.code = "ERR_CRYPTO_INVALID_DIGEST";
+      throw err;
+    }
+    this.__alg = alg;
+    this.__parts = [];
+  }
+  update(data, enc) {
+    this.__parts.push(__cryptBytes(data, "data", enc));
+    return this;
+  }
+  verify(key, signature, ...rest) {
+    let dsaEncoding, saltLength;
+    for (const r of rest) {
+      if (typeof r === "string") dsaEncoding = r;
+      else if (typeof r === "number") saltLength = r;
+      else if (r && typeof r === "object") { dsaEncoding = r.dsaEncoding ?? dsaEncoding; saltLength = r.saltLength ?? saltLength; }
+    }
+    const flat = __joinParts(this.__parts);
+    if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof KeyObject) && !ArrayBuffer.isView(key)) {
+      const inner = key.key ?? key;
+      const k = __keyArg(inner, "key");
+      return __verifyCore(this.__alg, flat, k, signature, key.dsaEncoding ?? dsaEncoding, key.saltLength ?? saltLength);
+    }
+    return __verifyCore(this.__alg, flat, __keyArg(key, "key"), signature, dsaEncoding, saltLength);
+  }
+}
+export function createSign(alg, options) { return new Sign(alg, options); }
+export function createVerify(alg, options) { return new Verify(alg, options); }
+function __rsaCrypt(key, data, isPublic, isEncrypt) {
+  const k = __keyArg(key, "key");
+  const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof KeyObject)) ? key : {};
+  const padding = opts.padding ?? 4;
+  const dataB = __cryptBytes(data, "data");
+  if (padding === 4) {
+    const hashFlat = opts.oaepHash ?? "sha1";
+    const hash = __normHashName(hashFlat);
+    if (hash === undefined || hash === "MD5") {
+      const err = new Error(`Unsupported OAEP hash ${opts.oaepHash}`);
+      err.code = "ERR_NOT_SUPPORTED";
+      throw err;
+    }
+    const label = opts.oaepLabel !== undefined ? __cryptBytes(opts.oaepLabel, "label") : null;
+    // SHA-1 走手写 OAEP（digest 0.10 版本面，见 Rust 侧记）；SHA-2 走既有 natives
+    if (isPublic && isEncrypt) {
+      if (hash === "SHA-1") {
+        return Buffer.from(__cryptCall(() => __wjs_node_rsa_oaep(k.__material, dataB, label, 1)));
+      }
+      return Buffer.from(__cryptCall(() => __wjs_rsa_encrypt(hash, k.__material, dataB, label)));
+    }
+    if (!isPublic && !isEncrypt) {
+      if (hash === "SHA-1") {
+        return Buffer.from(__cryptCall(() => __wjs_node_rsa_oaep(k.__material, dataB, label, 0)));
+      }
+      return Buffer.from(__cryptCall(() => __wjs_rsa_decrypt(hash, k.__material, dataB, label)));
+    }
+  }
+  if (padding === 1) {
+    if (isPublic && isEncrypt) {
+      return Buffer.from(__cryptCall(() => __wjs_rsa_encrypt_v15(k.__material, dataB)));
+    }
+    if (!isPublic && !isEncrypt) {
+      return Buffer.from(__cryptCall(() => __wjs_rsa_decrypt_v15(k.__material, dataB)));
+    }
+    if (!isPublic && isEncrypt) {
+      // 私钥加密（签名式填充）：本仓无 RSA 私钥加密 native，经 sign 原语不适用；
+      // 此处明确不支持（Node 允许，记档缺口）
+      const err = new Error("RSA privateEncrypt not supported");
+      err.code = "ERR_NOT_SUPPORTED";
+      throw err;
+    }
+    if (isPublic && !isEncrypt) {
+      const err = new Error("RSA publicDecrypt not supported");
+      err.code = "ERR_NOT_SUPPORTED";
+      throw err;
+    }
+  }
+  const err = new Error(`Unsupported RSA padding ${padding} for this operation`);
+  err.code = "ERR_NOT_SUPPORTED";
+  throw err;
+}
+export function publicEncrypt(key, data) { return __rsaCrypt(key, data, true, true); }
+export function privateDecrypt(key, data) { return __rsaCrypt(key, data, false, false); }
+export function privateEncrypt(key, data) { return __rsaCrypt(key, data, false, true); }
+export function publicDecrypt(key, data) { return __rsaCrypt(key, data, true, false); }
+
+class ECDH {
+  constructor(curve) {
+    this.__curve = __normCurve(curve);
+    if (this.__curve !== "P-256" && this.__curve !== "P-384" && this.__curve !== "P-521") {
+      const err = new Error(`ECDH curve ${curve} not supported (P-256/384/521)`);
+      err.code = "ERR_NOT_SUPPORTED";
+      throw err;
+    }
+    this.__priv = null;
+    this.__pub = null;
+  }
+  generateKeys() {
+    this.__priv = __cryptCall(() => __wjs_ec_generate(this.__curve));
+    this.__pub = __cryptCall(() => __wjs_ec_public(this.__curve, this.__priv));
+    return this.getPublicKey();
+  }
+  getPublicKey(encoding, format) {
+    if (this.__pub === null) {
+      const err = new Error("ECDH keys not generated");
+      err.code = "ERR_CRYPTO_INVALID_STATE";
+      throw err;
+    }
+    const parts = JSON.parse(__cryptCall(() => __wjs_ec_jwk_pub(this.__curve, this.__pub)));
+    const x = __b64urlDec(parts.x), y = __b64urlDec(parts.y);
+    const raw = new Uint8Array(1 + x.length + y.length);
+    raw[0] = 4; raw.set(x, 1); raw.set(y, 1 + x.length);
+    if (format === "der" || format === "pem") return this.__pubToDer(format);
+    if (encoding === undefined) return Buffer.from(raw);
+    return Buffer.from(raw).toString(encoding);
+  }
+  __pubToDer(format) {
+    if (format === "der") return Buffer.from(this.__pub);
+    return __pemEncode("PUBLIC KEY", this.__pub);
+  }
+  getPrivateKey(encoding) {
+    if (this.__priv === null) {
+      const err = new Error("ECDH keys not generated");
+      err.code = "ERR_CRYPTO_INVALID_STATE";
+      throw err;
+    }
+    const size = __curveSize(this.__curve);
+    const parts = JSON.parse(__cryptCall(() => __wjs_ec_jwk(this.__curve, this.__priv, this.__pub)));
+    const d = __b64urlDec(parts.d);
+    const out = new Uint8Array(size);
+    out.set(d, size - d.length);
+    if (encoding === undefined) return Buffer.from(out);
+    return Buffer.from(out).toString(encoding);
+  }
+  setPrivateKey(priv) {
+    const scalar = __cryptBytes(priv, "private key");
+    this.__priv = __cryptCall(() => __wjs_ec_import_priv(this.__curve, scalar));
+    this.__pub = __cryptCall(() => __wjs_ec_public(this.__curve, this.__priv));
+    return this;
+  }
+  computeSecret(peer, inputEncoding, outputEncoding) {
+    if (this.__priv === null) {
+      const err = new Error("ECDH keys not generated");
+      err.code = "ERR_CRYPTO_INVALID_STATE";
+      throw err;
+    }
+    let peerB = (typeof peer === "string") ? __cryptBytes(peer, "peer", inputEncoding) : __cryptBytes(peer, "peer");
+    let peerDer;
+    if (peerB.length > 0 && peerB[0] === 4) {
+      // 裸非压缩点 → 经 import 转 SPKI
+      const size = (peerB.length - 1) / 2;
+      peerDer = __cryptCall(() => __wjs_ec_import_pub(this.__curve, peerB.slice(1, 1 + size), peerB.slice(1 + size)));
+    } else {
+      peerDer = peerB;
+    }
+    const secret = __cryptCall(() => __wjs_ecdh_derive(this.__curve, this.__priv, peerDer));
+    if (outputEncoding === undefined) return Buffer.from(secret);
+    return Buffer.from(secret).toString(outputEncoding);
+  }
+}
+export function createECDH(curve, format) { return new ECDH(curve); }
+
+class DiffieHellman {
+  constructor(prime, generator) {
+    if (typeof prime === "number") {
+      const err = new Error("DH numeric size form needs parameter generation (use group or explicit prime)");
+      err.code = "ERR_NOT_SUPPORTED";
+      throw err;
+    }
+    const primeB = (typeof prime === "string") ? __cryptBytes(prime, "prime", "hex") : __cryptBytes(prime, "prime");
+    this.__prime = primeB;
+    this.__gen = generator === undefined ? 2 : Number(generator);
+    this.__priv = null;
+    this.__pub = null;
+    this.__verifyError = 0;
+  }
+  static group(name) {
+    const hex = __DH_GROUPS[String(name).toLowerCase()];
+    if (hex === undefined) {
+      const err = new Error(`Unknown DH group ${name} (modp5/14/15/16)`);
+      err.code = "ERR_NOT_SUPPORTED";
+      throw err;
+    }
+    return new DiffieHellman(__cryptBytes(hex, "prime", "hex"), 2);
+  }
+  generateKeys() {
+    const r = JSON.parse(__cryptCall(() => __wjs_dh_genkey(this.__prime, this.__gen, this.__prime.length)));
+    this.__priv = __b64dec(r.priv);
+    this.__pub = __b64dec(r.pub);
+    return this.getPublicKey();
+  }
+  getPublicKey(encoding) {
+    if (this.__pub === null) {
+      const err = new Error("DH keys not generated");
+      err.code = "ERR_CRYPTO_INVALID_STATE";
+      throw err;
+    }
+    if (encoding === undefined) return Buffer.from(this.__pub);
+    return Buffer.from(this.__pub).toString(encoding);
+  }
+  getPrivateKey(encoding) {
+    if (this.__priv === null) {
+      const err = new Error("DH keys not generated");
+      err.code = "ERR_CRYPTO_INVALID_STATE";
+      throw err;
+    }
+    if (encoding === undefined) return Buffer.from(this.__priv);
+    return Buffer.from(this.__priv).toString(encoding);
+  }
+  getPrime(encoding) {
+    if (encoding === undefined) return Buffer.from(this.__prime);
+    return Buffer.from(this.__prime).toString(encoding);
+  }
+  getGenerator(encoding) {
+    const g = new Uint8Array([this.__gen & 255]);
+    if (encoding === undefined) return Buffer.from(g);
+    return Buffer.from(g).toString(encoding);
+  }
+  setPublicKey(pub) { this.__pub = __cryptBytes(pub, "public key"); return this; }
+  setPrivateKey(priv) { this.__priv = __cryptBytes(priv, "private key"); return this; }
+  computeSecret(peer, inEnc, outEnc) {
+    if (this.__priv === null) {
+      const err = new Error("DH keys not generated");
+      err.code = "ERR_CRYPTO_INVALID_STATE";
+      throw err;
+    }
+    const peerB = (typeof peer === "string") ? __cryptBytes(peer, "peer", inEnc) : __cryptBytes(peer, "peer");
+    const secret = __cryptCall(() => __wjs_dh_secret(this.__prime, this.__priv, peerB));
+    if (outEnc === undefined) return Buffer.from(secret);
+    return Buffer.from(secret).toString(outEnc);
+  }
+  verifyError() { return this.__verifyError; }
+}
+export function createDiffieHellman(prime, generator) {
+  if (typeof prime === "string" && __DH_GROUPS[prime.toLowerCase()] !== undefined && generator === undefined) {
+    return DiffieHellman.group(prime);
+  }
+  return new DiffieHellman(prime, generator);
+}
+export function createDiffieHellmanGroup(name) { return DiffieHellman.group(name); }
+export function getDiffieHellman(name) { return DiffieHellman.group(name); }
+export function diffieHellman(options) {
+  const priv = options?.privateKey;
+  const pub = options?.publicKey;
+  const dh = (priv instanceof DiffieHellman) ? priv : null;
+  if (dh !== null && pub instanceof DiffieHellman) {
+    return dh.computeSecret(pub.getPublicKey());
+  }
+  if (priv instanceof KeyObject && pub instanceof KeyObject) {
+    if (priv.__keyType === "x25519") {
+      const out = __cryptCall(() => __wjs_x_derive(priv.__material, pub.__material));
+      return Buffer.from(out);
+    }
+    if (priv.__keyType === "ec") {
+      const curve = priv.__detail.namedCurve;
+      const pubDer = pub.__kind === "private" ? __derivePublic(pub).__material : pub.__material;
+      const out = __cryptCall(() => __wjs_ecdh_derive(curve, priv.__material, pubDer));
+      return Buffer.from(out);
+    }
+    const err = new Error("diffieHellman needs DH/ECDH/X25519 keys");
+    err.code = "ERR_NOT_SUPPORTED";
+    throw err;
+  }
+  const err = new TypeError("diffieHellman needs { privateKey, publicKey }");
+  err.code = "ERR_INVALID_ARG_TYPE";
+  throw err;
+}
+function __bigintToBytes(v) {
+  if (typeof v === "bigint") {
+    let hex = v.toString(16);
+    if (hex.length % 2) hex = "0" + hex;
+    return __cryptBytes(hex, "candidate", "hex");
+  }
+  if (typeof v === "number") {
+    if (!Number.isSafeInteger(v) || v < 0) {
+      const err = new TypeError("candidate must be a non-negative safe integer or Buffer");
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    let hex = v.toString(16);
+    if (hex.length % 2) hex = "0" + hex;
+    return __cryptBytes(hex, "candidate", "hex");
+  }
+  return __cryptBytes(v, "candidate");
+}
+export function checkPrimeSync(candidate, options) {
+  const bytes = __bigintToBytes(candidate);
+  const checks = options?.checks ?? 64;
+  return __cryptCall(() => __wjs_prime_check(bytes, checks));
+}
+export function checkPrime(candidate, options, callback) {
+  if (typeof options === "function") { callback = options; options = undefined; }
+  if (typeof callback !== "function") {
+    const err = new TypeError("checkPrime requires a callback for async form");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  queueMicrotask(() => {
+    try {
+      callback(null, checkPrimeSync(candidate, options));
+    } catch (e) {
+      callback(e);
+    }
+  });
+}
+export function generatePrimeSync(size, options) {
+  const bits = Number(size);
+  if (!Number.isInteger(bits)) {
+    const err = new TypeError("size must be an integer");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (options?.bigint === true) {
+    const err = new Error("generatePrime bigint output not supported (no BigInt bridge)");
+    err.code = "ERR_NOT_SUPPORTED";
+    throw err;
+  }
+  const out = __cryptCall(() => __wjs_prime_gen(bits, options?.checks ?? 64, options?.safe ? 1 : 0));
+  return Buffer.from(out);
+}
+export function generatePrime(size, options, callback) {
+  if (typeof options === "function") { callback = options; options = undefined; }
+  if (typeof callback !== "function") {
+    const err = new TypeError("generatePrime requires a callback for async form");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  queueMicrotask(() => {
+    try {
+      callback(null, generatePrimeSync(size, options));
+    } catch (e) {
+      callback(e);
+    }
+  });
+}
+export function generateKey(options, ...rest) {
+  const cb = rest.find((a) => typeof a === "function");
+  if (typeof cb !== "function") {
+    const err = new TypeError("generateKey requires a callback for async form");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  queueMicrotask(() => {
+    try {
+      const len = options?.length ?? 32;
+      cb(null, createSecretKey(randomBytes(len)));
+    } catch (e) {
+      cb(e);
+    }
+  });
+}
+export function generateKeySync(options) {
+  const len = options?.length ?? 32;
+  if (!Number.isInteger(len) || len <= 0) {
+    const err = new TypeError("generateKey length must be a positive integer");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  return createSecretKey(randomBytes(len));
+}
+export const constants = {
+  RSA_PKCS1_PADDING: 1, RSA_SSLV23_PADDING: 2, RSA_NO_PADDING: 3,
+  RSA_PKCS1_OAEP_PADDING: 4, RSA_X931_PADDING: 5, RSA_PKCS1_PSS_PADDING: 6,
+  RSA_PSS_SALTLEN_DIGEST: -1, RSA_PSS_SALTLEN_MAX_SIGN: -2, RSA_PSS_SALTLEN_AUTO: -2,
+  RSA_PSS_SALTLEN_AUTO_DIGEST_MAX: -2,
+  POINT_CONVERSION_COMPRESSED: 2, POINT_CONVERSION_UNCOMPRESSED: 4, POINT_CONVERSION_HYBRID: 6,
+  DH_CHECK_P_NOT_PRIME: 2, DH_CHECK_P_NOT_SAFE_PRIME: 4,
+  DH_UNABLE_TO_CHECK_GENERATOR: 8, DH_NOT_SUITABLE_GENERATOR: 16,
+  DH_CHECK_Q_NOT_PRIME: 1, DH_CHECK_INVALID_Q_VALUE: 32, DH_CHECK_INVALID_J_VALUE: 64,
+  defaultCipherList: "ECDHE+AESGCM:ECDHE+CHACHA20",
+};
+export function getFips() { return 0; }
+export function setFips() { return undefined; }
+export function setEngine() { return undefined; }
+export function secureHeapUsed() { return { total: 0, min: 0, max: 0, used: 0 }; }
+
 const __api = {
   createHash, createHmac, Hash, Hmac, hash,
   randomBytes, randomFill, randomFillSync, randomInt, randomUUID, randomUUIDv7,
   timingSafeEqual, getHashes, getCurves, webcrypto,
   createCipheriv, createDecipheriv, Cipheriv, Decipheriv, getCiphers, getCipherInfo,
+  KeyObject, createSecretKey, createPrivateKey, createPublicKey,
+  generateKeyPair, generateKeyPairSync, generateKey, generateKeySync,
+  createSign, createVerify, sign, verify,
+  publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt,
+  createECDH, ECDH, createDiffieHellman, createDiffieHellmanGroup, getDiffieHellman,
+  DiffieHellman, diffieHellman, checkPrime, checkPrimeSync, generatePrime, generatePrimeSync,
+  constants, getFips, setFips, setEngine, secureHeapUsed,
 };
 export default __api;
 "#;
@@ -1383,8 +3043,7 @@ mod tests {
     }
 
     #[test]
-    fn crypto_cbc_known_vector() {
-        // 真 Node 取证：aes-256-cbc(key=01×32, iv=02×16, "hello world")
+    fn crypto_cbc_known_vector() {        // 真 Node 取证：aes-256-cbc(key=01×32, iv=02×16, "hello world")
         use aes::cipher::KeyIvInit as _;
         use aes::cipher::block::BlockModeEncrypt as _;
         let key = aes::cipher::Key::<aes::Aes256>::from_slice(&[1u8; 32]);
@@ -1396,5 +3055,35 @@ mod tests {
             const_hex::encode(from_blocks::<aes::Aes256>(&blocks)),
             "f563737a376afbed282274255a7fcabd"
         );
+    }
+
+    #[test]
+    fn crypto_miller_rabin_small() {
+        for p in [2u32, 3, 5, 7, 11, 13, 7919, 104729] {
+            assert!(is_prime(&rsa::BigUint::from(p), 8), "{p} should be prime");
+        }
+        for n in [0u32, 1, 4, 9, 15, 21, 25, 27, 561, 2047] {
+            assert!(!is_prime(&rsa::BigUint::from(n), 8), "{n} should be composite");
+        }
+    }
+
+    #[test]
+    fn crypto_mgf1_sha1_vector() {
+        // MGF1-SHA1("test", 20) = SHA1("test" ‖ 0x00000000)
+        assert_eq!(
+            const_hex::encode(mgf1_sha1(b"test", 20)),
+            "b67344dc7dea343795faaba3bc4d4508bf6766b1"
+        );
+        assert_eq!(mgf1_sha1(b"test", 24).len(), 24);
+        assert_eq!(
+            const_hex::encode(mgf1_sha1(b"test", 24)[20..].to_vec()),
+            "b45ef443"
+        );
+    }
+
+    #[test]
+    fn crypto_pad_be_shapes() {
+        assert_eq!(pad_be(&[1, 2], 4), vec![0, 0, 1, 2]);
+        assert_eq!(pad_be(&[1, 2, 3, 4, 5], 3), vec![3, 4, 5]);
     }
 }

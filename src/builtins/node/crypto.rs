@@ -2606,6 +2606,135 @@ pub unsafe extern "C" fn x509_parse(
     true
 }
 
+// ── 9i-7 X509 checkIssued（OpenSSL X509_check_issued 主体口径）─────────────
+// 真机探针（node 26.8.2 + openssl 3.6 链固件）：同名不同钥 CA → false（AKID/SKID
+// 是判别器）；leaf.checkIssued(leaf) → false（名字不匹）；无 AKID 的 leaf 回落名字。
+
+/// TBS 内容按序取 `(issuer 裸 TLV, subject 裸 TLV)`（跳过可选 [0] 版本；
+/// 裸 DER 名字比较 = X509_NAME_cmp 的 canonical 等价）。
+fn x509_names_raw(der: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (_, ohl, _) = crate::builtins::crypto::der_tlv(der)?;
+    let tbs = &der[ohl..];
+    let (_, thl, tcl) = crate::builtins::crypto::der_tlv(tbs)?;
+    let mut rest = &tbs[thl..thl + tcl];
+    let mut children: Vec<&[u8]> = Vec::new();
+    while !rest.is_empty() {
+        let (_, hl, cl) = crate::builtins::crypto::der_tlv(rest)?;
+        children.push(&rest[..hl + cl]);
+        rest = &rest[hl + cl..];
+    }
+    let mut it = children.iter().copied();
+    let mut serial: &[u8] = it.next()?;
+    if serial[0] == 0xa0 {
+        serial = it.next()?;
+    }
+    if serial[0] != 0x02 {
+        return None;
+    }
+    let sig: &[u8] = it.next()?;
+    if sig.first() != Some(&0x30) {
+        return None;
+    }
+    let issuer: &[u8] = it.next()?;
+    if issuer.first() != Some(&0x30) {
+        return None;
+    }
+    it.next()?; // validity
+    let subject: &[u8] = it.next()?;
+    if subject.first() != Some(&0x30) {
+        return None;
+    }
+    Some((issuer, subject))
+}
+
+/// SKI 扩展值（extnValue 内层 OCTET STRING 即 keyid）。
+fn x509_ski(cert: &x509_cert::Certificate) -> Option<Vec<u8>> {
+    use der::Decode as _;
+    for ext in cert.tbs_certificate().extensions()?.iter() {
+        if ext.extn_id.to_string() == "2.5.29.14" {
+            if let Ok(os) = der::asn1::OctetString::from_der(ext.extn_value.as_bytes()) {
+                return Some(os.as_bytes().to_vec());
+            }
+        }
+    }
+    None
+}
+
+/// checkIssued 实现：名字 DER 相等 + AKID.keyid 对 issuer SKI + issuer keyUsage 允许。
+fn x509_check_issued_impl(der: &[u8], issuer_der: &[u8]) -> Result<bool, String> {
+    use der::Decode as _;
+    let cert = x509_cert::Certificate::from_der(der)
+        .map_err(|_| "TypeError: bad X.509 certificate".to_string())?;
+    let issuer_cert = x509_cert::Certificate::from_der(issuer_der)
+        .map_err(|_| "TypeError: bad X.509 certificate".to_string())?;
+    match (x509_names_raw(der), x509_names_raw(issuer_der)) {
+        (Some((li, _)), Some((_, is))) if li == is => {}
+        _ => return Ok(false),
+    }
+    if let Some(exts) = cert.tbs_certificate().extensions() {
+        for ext in exts.iter() {
+            if ext.extn_id.to_string() == "2.5.29.35" {
+                if let Ok(akid) =
+                    x509_cert::ext::pkix::AuthorityKeyIdentifier::from_der(ext.extn_value.as_bytes())
+                {
+                    if let Some(kid) = akid.key_identifier {
+                        let Some(ski) = x509_ski(&issuer_cert) else {
+                            return Ok(false);
+                        };
+                        if ski != kid.as_bytes() {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(exts) = issuer_cert.tbs_certificate().extensions() {
+        for ext in exts.iter() {
+            if ext.extn_id.to_string() == "2.5.29.15" {
+                if let Ok(ku) = x509_cert::ext::pkix::KeyUsage::from_der(ext.extn_value.as_bytes()) {
+                    use x509_cert::ext::pkix::KeyUsages;
+                    if !ku.0.contains(KeyUsages::KeyCertSign) {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// `__wjs_x509_check_issued(certDer, issuerDer)` → boolean。
+pub unsafe extern "C" fn x509_check_issued(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: X509 checkIssued needs cert and issuer");
+        return false;
+    }
+    let (Some(der), Some(issuer_der)) = (
+        view_bytes(&mut cx, frame.arg(0), "X509 cert"),
+        view_bytes(&mut cx, frame.arg(1), "X509 issuer"),
+    ) else {
+        return false;
+    };
+    match x509_check_issued_impl(&der, &issuer_der) {
+        Ok(ok) => {
+            frame.set_rval(mozjs::jsval::BooleanValue(ok));
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
 /// 内嵌 ESM 源（`node:crypto` 9e-1a 面）。
 pub const SOURCE: &str = r#"
 function __cryptErr(e) {
@@ -4819,6 +4948,42 @@ class X509Certificate {
     return __cryptCall(() => __wjs_x509_verify(this.__der, Buffer.from(publicKey.__material), kt)) === true;
   }
   checkHost(name) { return __x509Match(name, this.__info.sanDns, this.__info.sanIp, this.__info.subjectObj?.CN); }
+  checkIssued(otherCert) {
+    // 9i-7 真机口径：非 X509Certificate → ERR_INVALID_ARG_TYPE（noarg 同码）。
+    if (!(otherCert instanceof X509Certificate)) {
+      const err = new TypeError(`The "otherCert" argument must be an instance of X509Certificate. Received ${otherCert === null ? "null" : typeof otherCert}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    return __cryptCall(() => __wjs_x509_check_issued(this.__der, otherCert.__der)) === true;
+  }
+  checkPrivateKey(privateKey) {
+    // 9i-7 真机口径：非 KeyObject → ERR_INVALID_ARG_TYPE；公钥 → ERR_INVALID_ARG_VALUE。
+    if (!(privateKey instanceof KeyObject)) {
+      const err = new TypeError(`The "privateKey" argument must be an instance of KeyObject. Received ${privateKey === null ? "null" : typeof privateKey}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    if (privateKey.type !== "private") {
+      const err = new TypeError(`Key type must be private for X509Certificate.checkPrivateKey. Received ${privateKey.type}`);
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    // 派生公钥后与证书 SPKI 逐字节比（ed25519/x25519 material 是裸 32B，手工包 SPKI）。
+    const pub = createPublicKey(privateKey);
+    let spki;
+    if (pub.__keyType === "ed25519" || pub.__keyType === "x25519") {
+      const oidHex = pub.__keyType === "ed25519" ? "2b6570" : "2b656e";
+      spki = Buffer.concat([Buffer.from(`302a30050603${oidHex}032100`, "hex"), Buffer.from(pub.__material)]);
+    } else if (pub.__keyType === "dsa") {
+      const env = JSON.parse(Buffer.from(pub.__material).toString("utf8"));
+      const parts = JSON.parse(__cryptCall(() => __wjs_dsa_export(JSON.stringify(env))));
+      spki = Buffer.from(__b64dec(parts.pubDer));
+    } else {
+      spki = Buffer.from(pub.__material);
+    }
+    return Buffer.compare(spki, Buffer.from(this.__info.spkiB64, "base64")) === 0;
+  }
   checkEmail(email) {
     if (this.__info.sanEmail.length > 0) {
       return this.__info.sanEmail.includes(String(email)) ? String(email) : undefined;
@@ -5067,6 +5232,46 @@ mod tests {
         bad2[21] = 1; // BIT STRING 未用位
         assert!(mlkem_spki_ek(&bad2).is_none());
         assert!(mlkem_spki_ek(&[0x04, 0x00]).is_none());
+    }
+
+    #[test]
+    fn x509_names_raw_walk() {
+        // 手搭 TBS：[0]版本 + serial + sig + issuer(A) + validity + subject(B)，
+        // 名字裸 TLV 必须逐字节还原（issuer 取 A、subject 取 B）。
+        let name_a: &[u8] = &[0x30, 0x05, 0x0c, 0x03, b'a', b'b', b'c'];
+        let name_b: &[u8] = &[0x30, 0x05, 0x0c, 0x03, b'x', b'y', b'z'];
+        let utc = |s: &[u8]| -> Vec<u8> {
+            let mut t = vec![0x17u8, 0x0d];
+            t.extend_from_slice(s);
+            t
+        };
+        let v1 = utc(b"260912000000Z");
+        let v2 = utc(b"261012000000Z");
+        let mut validity = vec![0x30u8, (v1.len() + v2.len()) as u8];
+        validity.extend_from_slice(&v1);
+        validity.extend_from_slice(&v2);
+        let mut t: Vec<u8> = vec![0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x01, 0x03, 0x30, 0x00];
+        t.extend_from_slice(name_a);
+        t.extend_from_slice(&validity);
+        t.extend_from_slice(name_b);
+        let wrap = |content: &[u8]| -> Vec<u8> {
+            let mut tbs = vec![0x30u8, 0x81, content.len() as u8];
+            tbs.extend_from_slice(content);
+            let mut cert = vec![0x30u8, 0x81, tbs.len() as u8];
+            cert.extend_from_slice(&tbs);
+            cert
+        };
+        let der = wrap(&t);
+        let (issuer, subject) = x509_names_raw(&der).unwrap();
+        assert_eq!(issuer, name_a);
+        assert_eq!(subject, name_b);
+        // 无 [0] 版本头也走通（v1 证书形态）
+        let v1_der = wrap(&t[5..]);
+        let (issuer2, subject2) = x509_names_raw(&v1_der).unwrap();
+        assert_eq!(issuer2, name_a);
+        assert_eq!(subject2, name_b);
+        // 截断
+        assert!(x509_names_raw(&der[..der.len() - 1]).is_none());
     }
 
     #[test]

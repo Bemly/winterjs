@@ -2102,6 +2102,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_kdf_hkdf", Some(node::crypto::kdf_hkdf), 5),
             ("__wjs_kdf_argon2", Some(node::crypto::kdf_argon2), 9),
             ("__wjs_x509_parse", Some(node::crypto::x509_parse), 1),
+            // Phase 9i-7: X509 checkIssued（名字 DER + AKID/SKID + keyUsage）
+            ("__wjs_x509_check_issued", Some(node::crypto::x509_check_issued), 2),
             // Phase 9i-4: ml-kem（FIPS 203；ml-kem crate，种子形 PKCS#8/SPKI/封装面）
             ("__wjs_mlkem_gen", Some(node::crypto::mlkem_gen), 1),
             ("__wjs_mlkem_seed_from_pkcs8", Some(node::crypto::mlkem_seed_from_pkcs8), 1),

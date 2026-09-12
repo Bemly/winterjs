@@ -4480,3 +4480,74 @@ console.log("md-cert", cert.verify(cert.publicKey) === true, cert.ca === true, c
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9i_x509_issued_privkey() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    // openssl 3.6 链固件：CA（SKI/AKID/keyCertSign 齐）+ leaf + 同名不同钥 CA。
+    dir.child("chain-leaf.pem").write_str(include_str!("fixtures/chain-leaf.pem")).unwrap();
+    dir.child("chain-ca.pem").write_str(include_str!("fixtures/chain-ca.pem")).unwrap();
+    dir.child("unrelated-ca.pem").write_str(include_str!("fixtures/unrelated-ca.pem")).unwrap();
+    dir.child("chain-leaf.key").write_str(include_str!("fixtures/chain-leaf.key")).unwrap();
+    dir.child("mldsa-cert.pem").write_str(include_str!("fixtures/mldsa-cert.pem")).unwrap();
+    let out = {
+        let file = dir.child("i.mjs");
+        file.write_str(
+            r#"
+import crypto from "node:crypto";
+import fs from "node:fs";
+const X = (p) => new crypto.X509Certificate(fs.readFileSync(p, "utf8"));
+const leaf = X("chain-leaf.pem");
+const ca = X("chain-ca.pem");
+const unrelated = X("unrelated-ca.pem"); // 同 subject 名（CN=Test CA），AKID/SKID 对不上
+console.log("xi-issued", leaf.checkIssued(ca) === true, leaf.checkIssued(unrelated) === false, leaf.checkIssued(leaf) === false);
+const pk = crypto.createPrivateKey(fs.readFileSync("chain-leaf.key", "utf8"));
+const wrong = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey;
+console.log("xi-priv", leaf.checkPrivateKey(pk) === true, leaf.checkPrivateKey(wrong) === false);
+const t = (n, f) => { try { f(); console.log(n, "NO-THROW"); } catch (e) { console.log(n, e.code ?? "no-code"); } };
+t("xi-issued-noarg", () => leaf.checkIssued());
+t("xi-issued-str", () => leaf.checkIssued("x"));
+t("xi-priv-noarg", () => leaf.checkPrivateKey());
+t("xi-priv-pub", () => leaf.checkPrivateKey(goodPub()));
+function goodPub() { return crypto.createPublicKey(crypto.generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey); }
+// OKP 私钥匹配（material 裸 32B → 手工 SPKI 包装比较）
+const edpair = crypto.generateKeyPairSync("ed25519");
+const edSelf = (() => {
+  const spki = Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), edpair.publicKey.export({ format: "der", type: "raw" })]);
+  return spki;
+})();
+console.log("xi-okp-shape", edSelf.length === 44, edSelf[0] === 0x30);
+// PQ 私钥在证书上不匹配即 false（derive 链走 PQ 分支）
+const pqcert = new crypto.X509Certificate(fs.readFileSync("mldsa-cert.pem", "utf8"));
+const pqpair = crypto.generateKeyPairSync("ml-dsa-65");
+console.log("xi-pq-priv", pqcert.checkPrivateKey(pqpair.privateKey) === false, pqcert.checkIssued(pqcert) === true);
+"#,
+        )
+        .unwrap();
+        winterjs()
+            .arg("--run")
+            .arg(file.path())
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "xi-issued true true true",
+        "xi-priv true true",
+        "xi-issued-noarg ERR_INVALID_ARG_TYPE",
+        "xi-issued-str ERR_INVALID_ARG_TYPE",
+        "xi-priv-noarg ERR_INVALID_ARG_TYPE",
+        "xi-priv-pub ERR_INVALID_ARG_VALUE",
+        "xi-okp-shape true true",
+        "xi-pq-priv true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

@@ -929,6 +929,20 @@
   依赖（dependencies2 §9i-6 注记）：`ml-dsa 0.1.1`（2024-10 建库/2026-09 维护/
   传递闭包纯 Rust/rand_core 0.10 与本仓 rand 同线/无 nightly），signature 3 +
   crypto-common 0.2 traits；`shake 0.1` 随入（RustCrypto/hashes，H 置换用）。
+- [x] 9i-7 X509 checkIssued/checkPrivateKey（2026-09-13 完工；零新 crate）：
+  `checkIssued(otherCert)`——native `__wjs_x509_check_issued` 按 OpenSSL
+  `X509_check_issued` 主体口径：① 名字裸 DER 比较（TBS 内容 TLV 行走取
+  issuer/subject 裸段，canonical 等价于 `X509_NAME_cmp`）+ ② leaf AKID.keyid
+  在即要求 issuer SKI 相等（真机探针钉死判别器：**同名不同钥 CA → false**）+
+  ③ issuer keyUsage 有则必须含 keyCertSign；`checkPrivateKey(privateKey)`——JS
+  侧派生公钥（`__derivePublic` 补 ml-kem/ml-dsa 两支）与证书 SPKI 逐字节比
+  （ed25519/x25519 material 裸 32B 手工包 SPKI 头；DSA 经 envelope 转换）。
+  真机口径（node 26.8.2 实测）：非 X509Certificate/KeyObject →
+  `ERR_INVALID_ARG_TYPE`，公钥入参 → `ERR_INVALID_ARG_VALUE`（与 verify 同形）。
+  模块单测 1（名字 TLV 行走，含 v1 无版本头形态）；黑盒 +1（openssl 链固件
+  入 `tests/fixtures/`：issued 三态/privkey 两态/报错四件/OKP/PQ，8 断言）；
+  `cargo test` 总 390 passed，0 failed。记档：issuer 无 SKI 视为不匹配
+  （真机不可复现该形，openssl 3.x 自动补 SKI）；无 AKID leaf 回落名字判。
 - [x] 9i-5 quic-h3 门控实证（2026-09-13 完工；h3/h3-quinn 已在 c0ef72d 入
   `quinn` 特性组，本次 Rust 回环实证 + 纯度复查）：
   `tests/quic.rs::phase9i_h3_over_quinn_loopback`（hermetic，port 0，rcgen 自签，

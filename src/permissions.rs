@@ -236,10 +236,19 @@ mod tests {
         Permissions { read, write, env, run, ffi, allow_all: false }
     }
 
+    /// 全局槽清回未安装（`None` = 全开放默认态）。`#[serial]` 只保互斥不保顺序，
+    /// 读环境态的用例必须先复位，否则跑序一变即挂（2026-09-12 全量并行暴露）。
+    fn reset() {
+        if let Ok(mut slot) = PERMS.write() {
+            *slot = None;
+        }
+    }
+
     #[test]
     #[serial]
     fn grant_semantics() {
-        // 未装权限 = 全开放
+        // 未装权限 = 全开放（先复位：别的 serial 用例可能先跑并装了沙箱）
+        reset();
         assert!(check_read("/etc/passwd").is_ok());
         install(Permissions::open());
         assert!(check_read("/etc/passwd").is_ok());

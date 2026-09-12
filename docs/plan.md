@@ -616,6 +616,17 @@
   黑盒 +2（回环 GET/POST/404/500/finish/close 全链 + 客户端错误路径：
   ECONNREFUSED/https 拒绝/write-after-end）；`cargo test` 102+210 全绿，
   冒烟 5/5。踩坑记 AGENTS §4.35。
+- [x] 9d-4 dgram（2026-09-12 完工；https/tls、zlib、http2 顺延）：
+  `node:dgram`——UDP Socket（tokio net 底座），**复用 net 事件通道与状态机**
+  （NetCmd::SendTo + NetKind::DgramListening/DgramMessage 变体、net_open 计数、
+  close_once 单发旗、dispatch Close 后统一 purge——net.rs 零重复实现）；
+  单 task `select!`（recv_from ↔ 命令通道）；bind/send(address+port 双形态)/
+  close/message(msg, rinfo)/listening/error/close/address/ref-unref；
+  createSocket 类型校验（udp4/udp6，ERR_SOCKET_BAD_TYPE 带 code）。
+  偏差记档：无 connect/disconnect、组播/广播、setTTL/setBroadcast 系（子集）。
+  踩坑：§4.34 坑一/坑三二进宫（__ev 忘预绑、task 侧 purge 抢跑）——已沉淀为
+  「新事件域 checklist」，见 AGENTS §4.36。
+  黑盒 +1（UDP 回环双 socket + 类型校验）；`cargo test` 102+211 全绿，冒烟 5/5。
 
 ## 全局纪律
 

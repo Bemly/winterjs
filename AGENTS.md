@@ -489,6 +489,19 @@ cargo build
   要补 `req.on("error", () => {})` 空监听，而不是改实现吞错。
 - 复现：`tests/node.rs::phase9d_http_loopback`（喂体时序修前 POST 挂死）。
 
+### 4.36 新事件域 checklist（2026-09-12，Phase 9d-4 dgram 二进宫沉淀）
+
+- dgram 落地时把 §4.34 的坑 1（`__ev` 忘预绑定 → `this.emit is not a function`）
+  和坑 3（task 侧 `net_purge` 抢在 Close 派发前 → 'close' 事件丢失）**各重踩一遍**。
+- 沉淀为 checklist——今后凡基于 `dispatch → target.__ev` 模式新增事件域（tls/
+  worker 等），三查：
+  ① JS 构造器内 `this.__ev = this.__ev.bind(this)`（dispatch 以 global 为 this）；
+  ② task 侧只置 `close_once` 旗发事件，**purge 一律放 dispatch 派发 Close 之后**；
+  ③ native 数值返回（id/fd）JS 侧记得 `Number()` 包装。
+- 另：构造器参数校验的 TypeError 要带 `e.code`（Node 口径），黑盒断言 code 而非
+  message 前缀。
+- 复现：`tests/node.rs::phase9d_dgram_loopback`（修前 'close' 丢/`bad-type undefined`）。
+
 
 ## 5. 路线图（按序）
 

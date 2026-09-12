@@ -3409,3 +3409,105 @@ try { p.send("x"); } catch (e) { console.log("send", e.code === "ERR_NOT_SUPPORT
     assert!(out.contains("send true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9f_vm_context_spawns_and_isolates() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+const sb = { a: 5 };
+const r = vm.runInNewContext("b = a + 1; b", sb);
+console.log("v-run", r === 6, sb.b === 6, typeof b === "undefined");
+const c1 = vm.createContext({ x: 1 });
+const c2 = vm.createContext({ x: 2 });
+console.log("v-ctx", vm.isContext(c1), vm.isContext(c2), vm.isContext({}));
+vm.runInContext("y = x * 10", c1);
+vm.runInContext("y = x * 10", c2);
+console.log("v-iso", c1.y === 10, c2.y === 20);
+const s = new vm.Script("40 + 2");
+console.log("v-script", s.runInNewContext() === 42, s.runInThisContext() === 42);
+const f = vm.compileFunction("return a + b", ["a", "b"]);
+console.log("v-cf", f(20, 22) === 42);
+const o = vm.runInNewContext("({ z: 7 })", {});
+console.log("v-ccw", o.z === 7, typeof o === "object");
+const sb2 = {};
+vm.runInNewContext("Promise.resolve(1).then(v => { globalThis.px = v; })", sb2);
+console.log("v-micro", sb2.px === 1);
+console.log("v-std", vm.runInNewContext("typeof Object") === "function", vm.runInNewContext("typeof console") === "undefined");
+console.log("v-const", typeof vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER, typeof vm.constants.DONT_CONTEXTIFY);
+console.log("v-timeout", vm.runInNewContext("1 + 1", {}, { timeout: 100 }) === 2);
+const mm = await vm.measureMemory().then(() => "no", (e) => e.code);
+console.log("v-mm", mm === "ERR_CONTEXT_NOT_INITIALIZED");
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("v-run true true true"), "out: {out}");
+    assert!(out.contains("v-ctx true true false"), "out: {out}");
+    assert!(out.contains("v-iso true true"), "out: {out}");
+    assert!(out.contains("v-script true true"), "out: {out}");
+    assert!(out.contains("v-cf true"), "out: {out}");
+    assert!(out.contains("v-ccw true true"), "out: {out}");
+    assert!(out.contains("v-micro true"), "out: {out}");
+    assert!(out.contains("v-std true true"), "out: {out}");
+    assert!(out.contains("v-const symbol symbol"), "out: {out}");
+    assert!(out.contains("v-timeout true"), "out: {out}");
+    assert!(out.contains("v-mm true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9f_vm_errors_boundary() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+try { new vm.Script("}{"); } catch (e) { console.log("w-ctor", e.constructor.name === "SyntaxError"); }
+try { vm.compileFunction("}{"); } catch (e) { console.log("w-cf", e.constructor.name === "SyntaxError"); }
+try { vm.runInNewContext("throw new RangeError('nope')"); } catch (e) { console.log("w-range", e.constructor.name === "RangeError", e.message === "nope"); }
+try { vm.runInNewContext("throw 'strval'"); } catch (e) { console.log("w-str", e.constructor.name === "Error", e.message.includes("strval")); }
+try { vm.runInNewContext("noSuchVar + 1"); } catch (e) { console.log("w-ref", e.constructor.name === "ReferenceError"); }
+try { vm.runInContext("1", {}); } catch (e) { console.log("w-badctx", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { vm.runInNewContext("1", 42); } catch (e) { console.log("w-badsb", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { vm.isContext(42); } catch (e) { console.log("w-isctx", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { vm.runInNewContext("1", {}, { microtaskMode: "nope" }); } catch (e) { console.log("w-mmode", e.code === "ERR_INVALID_ARG_VALUE"); }
+try { vm.runInNewContext("1", {}, { timeout: -1 }); } catch (e) { console.log("w-timeout", e.code === "ERR_OUT_OF_RANGE"); }
+const pc = vm.createContext({ q: 41 });
+const f2 = vm.compileFunction("return q + 1", [], { parsingContext: pc });
+console.log("w-pc", f2() === 42);
+const ce = vm.compileFunction("return ex + 1", [], { contextExtensions: [{ ex: 41 }] });
+console.log("w-ext", ce() === 42);
+const cached = new vm.Script("9", { cachedData: Buffer.alloc(0), produceCachedData: true });
+console.log("w-cache", cached.runInNewContext() === 9, cached.cachedDataProduced === false);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("w-ctor true"), "out: {out}");
+    assert!(out.contains("w-cf true"), "out: {out}");
+    assert!(out.contains("w-range true true"), "out: {out}");
+    assert!(out.contains("w-str true true"), "out: {out}");
+    assert!(out.contains("w-ref true"), "out: {out}");
+    assert!(out.contains("w-badctx true"), "out: {out}");
+    assert!(out.contains("w-badsb true"), "out: {out}");
+    assert!(out.contains("w-isctx true"), "out: {out}");
+    assert!(out.contains("w-mmode true"), "out: {out}");
+    assert!(out.contains("w-timeout true"), "out: {out}");
+    assert!(out.contains("w-pc true"), "out: {out}");
+    assert!(out.contains("w-ext true"), "out: {out}");
+    assert!(out.contains("w-cache true true"), "out: {out}");
+    dir.close().unwrap();
+}

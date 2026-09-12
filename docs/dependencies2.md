@@ -136,8 +136,26 @@ hermetic，0.01s 级）。`node:quic` JS 面 9g-1/9g-2 已落地（Endpoint/会�
 > `dsa` 加 `hazmat` 特性（密钥生成；纯 Rust）。两项皆为已批准轮子的特性行增补
 > （`Cargo.lock` 无版本变化），非新 crate，不触发 §0.5；RNG 走 `rand 0.10`
 > 直引（`SysRng` 对 dsa 的 `TryCryptoRng`，同系直通），`y=g^x mod p` 走
-> `rsa::BigUint` 重导出。仍缺的轮子：`ripemd160`（无 crate）、SHAKE
-> （`sha3 0.12` 已移除 SHAKE 类型，需新 crate）——走 §0.5 问用户。
+> `rsa::BigUint` 重导出。仍缺的轮子见下节（走 §0.5 问用户）。
+
+## 9h-2 候选（ripemd160 / SHAKE，2026-09-13 实测入库，待拍板）
+
+> SHAKE 现状先行：`sha3 0.12` 已移除 `Shake128/Shake256` 类型（实测源码无此二型），
+> RustCrypto 系无其他 XOF 轮子；`tiny-keccak` 是唯一候选（见下表），但 6 年未维护 +
+> CC0 许可证，与本仓 MIT/Apache 主流不一致。`ripemd` 则干净（RustCrypto/hashes，
+> 0.2.0 在 2026-03 才发布，digest 0.11 与现有 sha2 线直通）。
+
+| 用途 | crate | 最新版本 | 建库时间 | 最新维护 | 纯 Rust | macA64 | macX64 | linA64 | linX64 | winA64 | winX64 | andA64 | andX64 | ohA64 | ohX64 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 杂凑（ripemd160） | `ripemd` | 0.2.0 | 2017-02-13 | 2026-03-27 | ✅（digest 0.11 直通） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| XOF（shake128/256） | `tiny-keccak` | 2.0.2 | 2015-11-27 | 2020-04-01 | ✅（零依赖） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+备注：`ripemd`（MIT OR Apache-2.0，edition 2024，rust 1.85，48M 下载）无门槛，
+用法 `default-features=false` 亦可（`alloc` 按需；本仓要 `std` 口径则默认）；
+`tiny-keccak`（CC0-1.0，edition 2018，无 rust-version 声明，6 年未发版，
+单人维护）用法 `default-features=false` + `shake`（`fips202` 全家不需要；
+`cshake`/`kmac` 等系不做）；两者矩阵 ✅ 均为"纯 Rust 可推定"，真机以 CI 为准。
+定夺：等用户拍板（ripemd 先行 / 全要 / 全不要）。
 
 ## 测试资产（非依赖，仓库外按需取）
 

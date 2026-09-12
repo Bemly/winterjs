@@ -6,7 +6,6 @@
 
 use mozjs::conversions::ToJSValConvertible as _;
 use mozjs::context::JSContext;
-use mozjs::jsapi::JSObject;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 

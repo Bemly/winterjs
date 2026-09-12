@@ -169,10 +169,9 @@ pub enum QuicStreamDir {
 }
 
 /// QUIC 流表项（读写半端各有任务持有；任一半终结即整流收尾，单出口哲学）。
+/// 注：流 id 即 map key，方向由创建点经任务/事件传递，不在此存储（曾存 id/dir，dead_code，已删）。
 pub struct QuicStreamEntry {
-    pub id: u64,
     pub sess: u64,
-    pub dir: QuicStreamDir,
     pub quic_id: Option<u64>,
     pub write_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicStreamCmd>>,
     pub read_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicStreamCmd>>,
@@ -1675,14 +1674,12 @@ pub fn quic_open() -> usize {
 // ── QUIC 流（9g-2；半端任务各持一端，任一半终结即整流收尾）────────────────
 
 /// 登记流（半端任务句柄随后补；`done` 防双重收尾）。
-pub fn quic_stream_insert(id: u64, sess: u64, dir: QuicStreamDir) {
+pub fn quic_stream_insert(id: u64, sess: u64, _dir: QuicStreamDir) {
     with_plain(|p| {
         p.quic_streams.insert(
             id,
             QuicStreamEntry {
-                id,
                 sess,
-                dir,
                 quic_id: None,
                 write_tx: None,
                 read_tx: None,
@@ -1723,10 +1720,6 @@ pub fn quic_stream_set_ends(
             }
         }
     });
-}
-
-pub fn quic_stream_dir(id: u64) -> Option<QuicStreamDir> {
-    with_plain(|p| p.quic_streams.get(&id).map(|e| e.dir))
 }
 
 /// 发流写命令（写端已摘即 false）。

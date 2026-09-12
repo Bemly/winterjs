@@ -5,13 +5,10 @@
 /// 无 DNS 后缀搜索/hosts 缓存语义（直用系统解析）。
 
 use mozjs::conversions::ToJSValConvertible as _;
-use mozjs::context::JSContext;
-use mozjs::jsapi::JSObject;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
-use crate::state;
 
 /// `__wjs_dns_lookup(host)` → JSON 数组 `[{address, family}]`（v4+v6 全量；
 /// 空数组由 JS 侧翻 ENOTFOUND）。

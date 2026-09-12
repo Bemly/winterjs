@@ -400,7 +400,6 @@ pub fn dispatch(
     ev: NetEvent,
     err: crate::runtime::ErrorSource<'_>,
 ) -> Result<(), crate::error::Error> {
-    use crate::jsapi_glue::call_two;
     let failed = |cx: &mut JSContext| match err {
         crate::runtime::ErrorSource::Script { source, filename } => {
             crate::jsapi_glue::pending_exception_error(cx, global, source, filename)

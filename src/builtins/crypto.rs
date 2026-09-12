@@ -1640,6 +1640,8 @@ pub unsafe extern "C" fn dsa_generate(
     }
     let l = value_to_string(&mut cx, frame.arg(0)).parse::<u32>().unwrap_or(0);
     let n = value_to_string(&mut cx, frame.arg(1)).parse::<u32>().unwrap_or(0);
+    // Node 兼容面保留 1024/160（上游 dsa 已按 SP 800-57 标记 deprecate，属预期告警，允许）。
+    #[allow(deprecated)]
     let size = match (l, n) {
         (1024, 160) => dsa::KeySize::DSA_1024_160,
         (2048, 224) => dsa::KeySize::DSA_2048_224,

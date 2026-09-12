@@ -309,9 +309,10 @@ enum CtrInner {
 struct CtrX(CtrInner);
 
 /// 字节片 ↔ 块向量（拷贝一次；正确优先，块粒度下开销可忽略）。
+/// `filter_map` 而非 `expect`：native 内禁 panic（见 §4.14），余块本就由 `pending` 持有。
 fn to_blocks<D: BlockSizeUser>(data: &[u8]) -> Vec<Block<D>> {
     data.chunks_exact(D::block_size())
-        .map(Block::<D>::clone_from_slice)
+        .filter_map(|c| Block::<D>::try_from(c).ok())
         .collect()
 }
 
@@ -445,21 +446,24 @@ pub unsafe extern "C" fn cipher_new(
     use aes::cipher::KeyIvInit as _;
     macro_rules! cbc_pair {
         ($e:ty, $d:ty) => {{
+            let (Ok(ke), Ok(ive), Ok(kd), Ok(ivd)) = (
+                Key::<$e>::try_from(key.as_slice()),
+                Block::<$e>::try_from(iv.as_slice()),
+                Key::<$d>::try_from(key.as_slice()),
+                Block::<$d>::try_from(iv.as_slice()),
+            ) else {
+                report_error(&mut cx, "ERR_CRYPTO_INVALID_KEYLEN: Invalid key length");
+                return false;
+            };
             if enc {
                 CipherJob::CbcEnc {
-                    job: Box::new(CbcE(<cbc::Encryptor<$e>>::new(
-                        Key::<$e>::from_slice(&key),
-                        Block::<$e>::from_slice(&iv),
-                    ))),
+                    job: Box::new(CbcE(<cbc::Encryptor<$e>>::new(&ke, &ive))),
                     pending: Vec::new(),
                     block,
                 }
             } else {
                 CipherJob::CbcDec {
-                    job: Box::new(CbcD(<cbc::Decryptor<$d>>::new(
-                        Key::<$d>::from_slice(&key),
-                        Block::<$d>::from_slice(&iv),
-                    ))),
+                    job: Box::new(CbcD(<cbc::Decryptor<$d>>::new(&kd, &ivd))),
                     pending: Vec::new(),
                     block,
                     autopad,
@@ -472,23 +476,41 @@ pub unsafe extern "C" fn cipher_new(
         "cbc-aes192" => cbc_pair!(aes::Aes192, aes::Aes192),
         "cbc-aes256" => cbc_pair!(aes::Aes256, aes::Aes256),
         "cbc-des3" => cbc_pair!(des::TdesEde3, des::TdesEde3),
-        "ctr-aes128" => CipherJob::Ctr {
-            job: Box::new(CtrX(CtrInner::Aes128(<ctr::Ctr128BE<aes::Aes128>>::new(
-                Key::<aes::Aes128>::from_slice(&key),
-                Block::<aes::Aes128>::from_slice(&iv),
-            )))),
+        "ctr-aes128" => {
+            let (Ok(ke), Ok(ive)) = (
+                Key::<aes::Aes128>::try_from(key.as_slice()),
+                Block::<aes::Aes128>::try_from(iv.as_slice()),
+            ) else {
+                report_error(&mut cx, "ERR_CRYPTO_INVALID_KEYLEN: Invalid key length");
+                return false;
+            };
+            CipherJob::Ctr {
+                job: Box::new(CtrX(CtrInner::Aes128(<ctr::Ctr128BE<aes::Aes128>>::new(&ke, &ive)))),
+            }
         },
-        "ctr-aes192" => CipherJob::Ctr {
-            job: Box::new(CtrX(CtrInner::Aes192(<ctr::Ctr128BE<aes::Aes192>>::new(
-                Key::<aes::Aes192>::from_slice(&key),
-                Block::<aes::Aes192>::from_slice(&iv),
-            )))),
+        "ctr-aes192" => {
+            let (Ok(ke), Ok(ive)) = (
+                Key::<aes::Aes192>::try_from(key.as_slice()),
+                Block::<aes::Aes192>::try_from(iv.as_slice()),
+            ) else {
+                report_error(&mut cx, "ERR_CRYPTO_INVALID_KEYLEN: Invalid key length");
+                return false;
+            };
+            CipherJob::Ctr {
+                job: Box::new(CtrX(CtrInner::Aes192(<ctr::Ctr128BE<aes::Aes192>>::new(&ke, &ive)))),
+            }
         },
-        "ctr-aes256" => CipherJob::Ctr {
-            job: Box::new(CtrX(CtrInner::Aes256(<ctr::Ctr128BE<aes::Aes256>>::new(
-                Key::<aes::Aes256>::from_slice(&key),
-                Block::<aes::Aes256>::from_slice(&iv),
-            )))),
+        "ctr-aes256" => {
+            let (Ok(ke), Ok(ive)) = (
+                Key::<aes::Aes256>::try_from(key.as_slice()),
+                Block::<aes::Aes256>::try_from(iv.as_slice()),
+            ) else {
+                report_error(&mut cx, "ERR_CRYPTO_INVALID_KEYLEN: Invalid key length");
+                return false;
+            };
+            CipherJob::Ctr {
+                job: Box::new(CtrX(CtrInner::Aes256(<ctr::Ctr128BE<aes::Aes256>>::new(&ke, &ive)))),
+            }
         },
         _ => {
             report_error(&mut cx, "ERR_CRYPTO_UNKNOWN_CIPHER: Unknown cipher");
@@ -657,10 +679,16 @@ pub unsafe extern "C" fn cipher_chacha(
             return false;
         }
     };
-    let nonce = chacha20poly1305::Nonce::from_slice(&nonce);
+    let nonce = match chacha20poly1305::Nonce::try_from(nonce.as_slice()) {
+        Ok(n) => n,
+        Err(_) => {
+            report_error(&mut cx, "ERR_CRYPTO_INVALID_IV: Invalid initialization vector");
+            return false;
+        }
+    };
     let aad_ref = aad.as_deref().unwrap_or(&[]);
     if enc {
-        match cipher.encrypt(nonce, Payload { msg: &data, aad: aad_ref }) {
+        match cipher.encrypt(&nonce, Payload { msg: &data, aad: aad_ref }) {
             Ok(out) => set_rval_bytes(&mut cx, &frame, &out),
             Err(e) => {
                 report_error(&mut cx, &format!("OperationError: chacha encrypt failed: {e}"));
@@ -674,7 +702,7 @@ pub unsafe extern "C" fn cipher_chacha(
         };
         let mut input = data;
         input.extend_from_slice(&tag);
-        match cipher.decrypt(nonce, Payload { msg: &input, aad: aad_ref }) {
+        match cipher.decrypt(&nonce, Payload { msg: &input, aad: aad_ref }) {
             Ok(out) => set_rval_bytes(&mut cx, &frame, &out),
             Err(_) => {
                 report_error(&mut cx, "Unsupported state or unable to authenticate data");
@@ -1614,7 +1642,6 @@ fn atv_short(oid: &str) -> &str {
 
 /// `der::Any` 属性值 → 字符串（常见串类型逐一试解，BMP 兜底）。
 fn atv_string(any: &der::Any) -> String {
-    use der::Decode as _;
     if let Ok(s) = any.decode_as::<der::asn1::Utf8StringRef>() {
         return s.as_str().to_owned();
     }
@@ -1692,8 +1719,7 @@ pub unsafe extern "C" fn x509_parse(
     let serial = hex_upper(tbs.serial_number().as_bytes());
     let valid_from = fmt_asn1_time(tbs.validity().not_before.to_unix_duration().as_secs());
     let valid_to = fmt_asn1_time(tbs.validity().not_after.to_unix_duration().as_secs());
-    use sha1::Digest as _;
-    use sha2::Digest as _;
+    use sha1::Digest as _; // 同 trait（digest 0.11），一次导入覆盖 sha2 系
     let fp = hex_colon(&sha1::Sha1::digest(&der));
     let fp256 = hex_colon(&sha2::Sha256::digest(&der));
     let fp512 = hex_colon(&sha2::Sha512::digest(&der));

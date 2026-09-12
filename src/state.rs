@@ -83,6 +83,19 @@ pub struct NetTarget {
     pub target: Box<Heap<JSVal>>,
 }
 
+/// 一个 vm 上下文的独立 global（新 compartment；run 时重进其 realm；`Box` 定址）。
+pub struct VmCtx {
+    pub id: u64,
+    pub global: Box<Heap<*mut JSObject>>,
+}
+
+// SAFETY: 只追踪 global（id 无 GC 指针）。
+unsafe impl Traceable for VmCtx {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
+        self.global.trace(trc);
+    }}
+}
+
 // SAFETY: 只追踪 target（id 无 GC 指针）。
 unsafe impl Traceable for NetTarget {
     unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
@@ -177,6 +190,7 @@ pub struct RootedState {
     pub watch_listeners: Vec<WatchCallback>, // fs.watch 监听（close 前保留，多次分发）
     pub child_targets: Vec<ChildTarget>, // 异步子进程目标（exit/close 后摘除）
     pub net_targets: Vec<NetTarget>, // node:net 目标（Close 后摘除）
+    pub vm_contexts: Vec<VmCtx>, // node:vm 上下文 global（release 摘除，会话终由 OS 回收）
     pub fetch_callbacks: Vec<FetchCallback>, // 未决 fetch 的 resolve/reject（按 id 取出）
     pub fetch_streams: Vec<FetchStreamState>, // 流式 body（chunk 泵；cancel/终态时移除）
     pub make_response_fn: Heap<JSVal>, // prelude 的 __wjs_make_response
@@ -200,6 +214,7 @@ unsafe impl Traceable for RootedState {
         self.watch_listeners.trace(trc);
         self.child_targets.trace(trc);
         self.net_targets.trace(trc);
+        self.vm_contexts.trace(trc);
         self.fetch_callbacks.trace(trc);
         self.fetch_streams.trace(trc);
         self.make_response_fn.trace(trc);
@@ -248,6 +263,8 @@ pub struct PlainState {
     /// 存活 socket/server 数（Close 结算时减；事件循环退出条件用）。
     pub net_open: usize,
     pub net_sockets: HashMap<u64, NetEntry>,
+    /// vm 上下文 id 分配（单调；release 不复用，与 fd 表同哲学）。
+    pub vm_next_id: u64,
     /// WebSocket 驱动端点（同上）+ 发送端表 + 存活计数（事件循环退出条件用）。
     pub ws_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::ws::WsEvent>>,
     pub ws_next_id: u64,
@@ -1035,6 +1052,36 @@ pub fn net_purge(id: u64) -> bool {
 /// 存活 socket/server 数（事件循环退出条件用）。
 pub fn net_open() -> usize {
     with_plain(|p| p.net_open)
+}
+
+// ── vm 上下文（同 Runtime 内多 global，各占新 compartment）────────────────
+///
+/// 登记新 global（`Box` 定址，`Heap::set` 后禁移动 §4.40），返回单调 id。
+
+pub fn vm_add(global: *mut JSObject) -> u64 {
+    let id = with_plain(|p| {
+        p.vm_next_id += 1;
+        p.vm_next_id
+    });
+    with_rooted(|s| {
+        s.vm_contexts.push(VmCtx { id, global: Heap::boxed(global) });
+    });
+    id
+}
+
+/// 取上下文 global 裸指针（调用方必须立即重 root，中间无 GC 间隙，见 runtime 约定）。
+pub fn vm_global(id: u64) -> Option<*mut JSObject> {
+    with_rooted(|s| s.vm_contexts.iter().find(|c| c.id == id).map(|c| c.global.get()))
+}
+
+/// 摘除上下文（JS 侧 FinalizationRegistry/显式释放用；不在即 false）。
+pub fn vm_release(id: u64) -> bool {
+    let n0 = with_rooted(|s| {
+        let n0 = s.vm_contexts.len();
+        s.vm_contexts.retain(|c| c.id != id);
+        n0
+    });
+    with_rooted(|s| s.vm_contexts.len() != n0)
 }
 
 // ── 异步子进程驱动（task → channel → 事件循环，见 node/child.rs）────────────

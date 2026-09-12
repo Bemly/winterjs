@@ -2095,6 +2095,16 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_x509_parse", Some(node::crypto::x509_parse), 1),
             // Phase 9e-4: inspector 会话求值（同线程嵌套 evaluate_script）
             ("__wjs_inspector_eval", Some(node::inspector::inspector_eval), 1),
+            // Phase 9f-1: node:vm（同 Runtime 多 global；id 字符串形态）
+            ("__wjs_vm_create", Some(node::vm::vm_create), 0),
+            ("__wjs_vm_compile", Some(node::vm::vm_compile), 2),
+            ("__wjs_vm_run", Some(node::vm::vm_run), 3),
+            ("__wjs_vm_run_this", Some(node::vm::vm_run_this), 2),
+            ("__wjs_vm_compile_fn", Some(node::vm::vm_compile_fn), 4),
+            ("__wjs_vm_set", Some(node::vm::vm_set), 3),
+            ("__wjs_vm_get", Some(node::vm::vm_get), 2),
+            ("__wjs_vm_keys", Some(node::vm::vm_keys), 1),
+            ("__wjs_vm_release", Some(node::vm::vm_release), 1),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）

@@ -78,6 +78,12 @@ impl Frame {
             *self.vp = v;
         }
     }
+
+    /// 返回值槽句柄（`to_jsval` 等需 rust MutableHandle 的写入用；调用期内有效）。
+    pub fn rval_mut(&self) -> mozjs::gc::MutableHandle<'_, JSVal> {
+        // SAFETY: from_raw 的不变式保证 vp[0] 为已 root 的返回值槽（set_rval 同前置）
+        unsafe { mozjs::gc::MutableHandle::from_marked_location(self.vp) }
+    }
 }
 
 /// ToString 语义取字符串。ToString 抛异常时清掉 pending exception 并给出占位串
@@ -337,5 +343,23 @@ pub fn view_bytes(cx: &mut JSContext, v: JSVal, what: &str) -> Option<Vec<u8>> {
             report_error(cx, &format!("TypeError: {what} view is detached"));
             None
         }
+    }
+}
+
+/// UNSAFE-BOUNDARY: 在对象上定义可枚举属性（值可跨 compartment，引擎自动包 CCW）。
+/// 前置：cx 在 obj 所属 realm 内；obj 为有效对象；name 无 NUL。
+/// 覆盖：`phase9f_vm_context_spawns_and_isolates`、`phase9f_vm_sandbox_sync`
+/// （经 vm sync-in/out）。
+pub fn define_prop(cx: &mut JSContext, obj: *mut JSObject, name: &CStr, val: JSVal) -> bool {
+    rooted!(&in(cx) let v = val);
+    // SAFETY: realm 内；obj 有效；name 无 NUL；v 为 rooted 值
+    unsafe {
+        mozjs::jsapi::JS_DefineProperty(
+            cx.raw_cx(),
+            raw_handle(&obj),
+            name.as_ptr(),
+            raw_handle(v.as_ptr()),
+            mozjs::jsapi::JSPROP_ENUMERATE as u32,
+        )
     }
 }

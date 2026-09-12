@@ -41,6 +41,7 @@ pub mod trace_events;
 pub mod tty;
 pub mod util;
 pub mod util_types;
+pub mod vm;
 pub mod zlib;
 
 /// 全局 `process` 等启动期求值的 JS（`runtime` 在主 PRELUDE 后求值）。
@@ -98,6 +99,8 @@ const BUILTINS: &[(&str, &str)] = &[
     // Phase 9e-4
     ("node:inspector", inspector::SOURCE),
     ("node:inspector/promises", inspector::SOURCE),
+    // Phase 9f-1
+    ("node:vm", vm::SOURCE),
 ];
 
 /// spec 规范化（`node:` 前缀可选；internal 走 `internal::normalize_internal`；
@@ -151,6 +154,8 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         // Phase 9e-4
         "inspector" => Some("node:inspector"),
         "inspector/promises" => Some("node:inspector/promises"),
+        // Phase 9f-1
+        "vm" => Some("node:vm"),
         _ => None,
     }
 }
@@ -233,6 +238,10 @@ mod tests {
         assert_eq!(normalize_spec("node:inspector/promises"), Some("node:inspector/promises"));
         assert!(source("node:inspector").is_some());
         assert!(source("node:inspector/promises").is_some());
+        // Phase 9f-1
+        assert_eq!(normalize_spec("vm"), Some("node:vm"));
+        assert_eq!(normalize_spec("node:vm"), Some("node:vm"));
+        assert!(source("node:vm").is_some());
         // Phase 9d-6
         assert_eq!(normalize_spec("https"), Some("node:https"));
         assert_eq!(normalize_spec("node:tls"), Some("node:tls"));

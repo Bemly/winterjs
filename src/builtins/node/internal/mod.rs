@@ -22,6 +22,7 @@ pub mod encoding;
 pub mod errors;
 pub mod event_target;
 pub mod fixed_queue;
+pub mod http_framing;
 pub mod inspect;
 pub mod options;
 pub mod primordials;
@@ -81,6 +82,8 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/streams/operators", streams::operators::SOURCE),
     ("node:internal/streams/iter_classic", streams::iter_classic::SOURCE),
     ("node:internal/streams/iter_types", streams::iter_types::SOURCE),
+    // Phase 9d-6：http/https 共享帧层
+    ("node:internal/http_framing", http_framing::SOURCE),
 ];
 
 /// internal 规范名（`internal/errors` 与 `node:internal/errors` 皆收 → `node:internal/errors`；
@@ -118,7 +121,7 @@ mod tests {
         assert_eq!(normalize_internal("internal/nope"), None);
         assert_eq!(normalize_internal("errors"), None);
         assert_eq!(normalize_internal("node:internal/errors"), Some("node:internal/errors"));
-        assert_eq!(INTERNALS.len(), 43);
+        assert_eq!(INTERNALS.len(), 44);
         for (name, src) in INTERNALS {
             assert!(source(name).is_some(), "{name} missing");
             assert!(!src.is_empty(), "{name} empty source");

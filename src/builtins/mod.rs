@@ -2058,6 +2058,9 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_net_end", Some(node::net::net_end), 1),
             ("__wjs_net_destroy", Some(node::net::net_destroy), 1),
             ("__wjs_dns_lookup", Some(node::dns::dns_lookup), 1),
+            // Phase 9d-6: node:tls（握手底座；读写复用 net_* natives）
+            ("__wjs_tls_connect", Some(node::tls::tls_connect), 4),
+            ("__wjs_tls_listen", Some(node::tls::tls_listen), 4),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）

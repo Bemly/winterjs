@@ -1,21 +1,28 @@
-//! `node:http`：HTTP/1.1 Server/Client——帧层经 `node:internal/http_framing` 共享
-//! （Phase 9d-6 重构，`node:https` 共用；解析/语义逐行保真，行为变更见下）。
-//! 附带修：`createServer(options, cb)` 的 `cb` 原先被吞（`new Server(options, cb)`
-//! 只认首参 listener），现双形态正常接线（http 既有黑盒全绿验证无回归）。
+//! `node:https`：HTTPS Server/Client——帧层复用 `node:internal/http_framing`
+//! （与 `node:http` 同语义），传输经 `node:tls`（Phase 9d-6）。
+//! 偏差记档（`node:http` 记档沿用：无 keep-alive、体整收、IncomingMessage 非流全家）：
+//! - 客户端 TLS 选项透传：`servername`/`ca`（PEM 串）/`rejectUnauthorized`
+//!   （`tls.connect` 同口径）；缺省系统 roots 校验。
+//! - 服务端 `createServer({ key, cert }, listener)`（PEM 串必填）。
 
-/// 内嵌 ESM 源（`node:http`；net 底座 + 共享帧层）。
+/// 内嵌 ESM 源（`node:https`；tls 底座 + 共享帧层）。
 pub const SOURCE: &str = r#"
-import * as net from "node:net";
+import * as tls from "node:tls";
 import {
   STATUS_CODES, METHODS, maxHeaderSize, IncomingMessage, ServerResponse,
   OutgoingMessage, Agent as BaseAgent, withHttpServer, withClientRequest,
   normalizeRequestArgs, requestFrom, getFrom,
 } from "node:internal/http_framing";
 
-const FLAVOR = { protocol: "http:", defaultPort: 80, other: "node:https" };
-const Server = withHttpServer(net.Server);
+const FLAVOR = { protocol: "https:", defaultPort: 443, other: "node:http" };
+const Server = withHttpServer(tls.Server);
 const ClientRequest = withClientRequest(
-  (host, port) => net.connect(port, host),
+  (host, port, extra) => tls.connect({
+    port, host,
+    servername: extra.servername,
+    ca: extra.ca,
+    rejectUnauthorized: extra.rejectUnauthorized,
+  }),
   FLAVOR,
 );
 class Agent extends BaseAgent {}
@@ -30,7 +37,7 @@ export function get(a, b, c) {
   return getFrom(ClientRequest, options, cb);
 }
 export function createServer(options, cb) {
-  const server = new Server();
+  const server = new Server(options ?? {});
   if (typeof options === "function") server.on("request", options);
   else if (typeof cb === "function") server.on("request", cb);
   return server;

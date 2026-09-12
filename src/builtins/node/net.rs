@@ -71,17 +71,22 @@ fn set_rval_str(cx: &mut JSContext, frame: &Frame, s: &str) {
     s.to_jsval(cx, v.handle_mut());
     frame.set_rval(v.get());
 }
-
 // ── 泵（connect 与 accept 共用；收尾单出口 = 读端 task）────────────────────
-
-fn spawn_pumps(
+/// 泛型拆分半部：TCP（`OwnedReadHalf/OwnedWriteHalf`）与 TLS（`tokio::io` split 半部）
+/// 共用（Phase 9d-6 `node:tls` 复用，零重复实现；行为与单态版一致）。
+pub(crate) fn spawn_pumps<R, W>(
     id: u64,
-    stream: tokio::net::TcpStream,
+    r: R,
+    w: W,
     ev_tx: tokio::sync::mpsc::UnboundedSender<NetEvent>,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<NetCmd>,
-) {
+) where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let handle = tokio::runtime::Handle::current();
-    let (mut r, mut w) = stream.into_split();
+    let mut r = r;
+    let mut w = w;
     let ev_w = ev_tx.clone();
     // 写端 task：消费 cmd；退出（drop w）→ 读端见 EOF/错，走统一收尾。
     handle.spawn(async move {
@@ -187,7 +192,8 @@ pub unsafe extern "C" fn net_connect(
             Ok(stream) => {
                 let local = stream.local_addr().ok();
                 let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local } });
-                spawn_pumps(id, stream, ev_tx, cmd_rx);
+                let (r, w) = stream.into_split();
+                spawn_pumps(id, r, w, ev_tx, cmd_rx);
             }
         }
     });
@@ -252,7 +258,8 @@ pub unsafe extern "C" fn net_listen(
                                 .local_addr()
                                 .unwrap_or_else(|_| "0.0.0.0:0".parse::<std::net::SocketAddr>().expect("literal addr"));
                             let (conn_id, conn_cmd_rx) = state::net_conn_add();
-                            spawn_pumps(conn_id, stream, ev_tx.clone(), conn_cmd_rx);
+                            let (r, w) = stream.into_split();
+                            spawn_pumps(conn_id, r, w, ev_tx.clone(), conn_cmd_rx);
                             let _ = ev_tx.send(NetEvent {
                                 id,
                                 kind: NetKind::Connection {

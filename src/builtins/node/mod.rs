@@ -16,6 +16,7 @@ pub mod dgram;
 pub mod dns;
 pub mod fs;
 pub mod http;
+pub mod https;
 pub mod internal;
 pub mod net;
 pub mod os;
@@ -31,6 +32,7 @@ pub mod stream_web;
 pub mod string_decoder;
 pub mod testmod;
 pub mod timers_promises;
+pub mod tls;
 pub mod trace_events;
 pub mod tty;
 pub mod util;
@@ -58,6 +60,9 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:dns", dns::SOURCE),
     ("node:dgram", dgram::SOURCE),
     ("node:http", http::SOURCE),
+    // Phase 9d-6
+    ("node:https", https::SOURCE),
+    ("node:tls", tls::SOURCE),
     ("node:assert", assert::SOURCE),
     ("node:test", testmod::SOURCE),
     // Phase 9a
@@ -100,6 +105,9 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "dns" => Some("node:dns"),
         "dgram" => Some("node:dgram"),
         "http" => Some("node:http"),
+        // Phase 9d-6
+        "https" => Some("node:https"),
+        "tls" => Some("node:tls"),
         "assert" => Some("node:assert"),
         "test" => Some("node:test"),
         "async_hooks" => Some("node:async_hooks"),
@@ -194,6 +202,12 @@ mod tests {
         assert_eq!(normalize_spec("zlib"), Some("node:zlib"));
         assert_eq!(normalize_spec("node:zlib"), Some("node:zlib"));
         assert!(source("node:zlib").is_some());
+        // Phase 9d-6
+        assert_eq!(normalize_spec("https"), Some("node:https"));
+        assert_eq!(normalize_spec("node:tls"), Some("node:tls"));
+        assert!(source("node:https").is_some());
+        assert!(source("node:tls").is_some());
+        assert!(source("node:internal/http_framing").is_some());
         assert_eq!(normalize_spec("node:internal/streams/readable"), Some("node:internal/streams/readable"));
         assert!(source("node:buffer").is_some());
         assert!(source("node:stream").is_some());

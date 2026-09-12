@@ -2118,6 +2118,16 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_worker_data", Some(node::worker::worker_data), 0),
             ("__wjs_worker_env_set", Some(node::worker::env_set), 2),
             ("__wjs_worker_env_get", Some(node::worker::env_get), 1),
+            // Phase 9f-3: Worker（spawn/投递/终止/监听计数）
+            ("__wjs_worker_spawn", Some(node::worker::worker_spawn), 3),
+            ("__wjs_worker_attach", Some(node::worker::worker_attach), 2),
+            ("__wjs_worker_post", Some(node::worker::worker_post), 2),
+            ("__wjs_worker_terminate", Some(node::worker::worker_terminate), 1),
+            ("__wjs_worker_set_ref", Some(node::worker::worker_set_ref), 2),
+            ("__wjs_worker_tid", Some(node::worker::worker_tid), 1),
+            ("__wjs_port_listen", Some(node::worker::port_listen), 1),
+            ("__wjs_port_unlisten", Some(node::worker::port_unlisten), 1),
+            ("__wjs_port_has_ref", Some(node::worker::port_has_ref), 1),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）

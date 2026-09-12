@@ -236,6 +236,41 @@ struct SessionInit {
     worker_rx: tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::worker::WorkerEvent>,
 }
 
+/// worker 线程规格（`node:worker_threads` spawn 用；move 进独立线程）。
+pub struct WorkerThreadSpec {
+    pub worker_id: u64,
+    pub file: Option<String>,
+    pub code: Option<String>,
+    pub argv: Vec<String>,
+    pub boot: crate::builtins::node::worker::WorkerBoot,
+}
+
+impl WorkerThreadSpec {
+    pub fn new(
+        worker_id: u64,
+        src: String,
+        is_eval: bool,
+        boot: crate::builtins::node::worker::WorkerBoot,
+    ) -> Self {
+        let exe = std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "winterjs".into());
+        if is_eval {
+            WorkerThreadSpec { worker_id, file: None, code: Some(src), argv: vec![exe], boot }
+        } else {
+            let argv = vec![exe, src.clone()];
+            WorkerThreadSpec { worker_id, file: Some(src), code: None, argv, boot }
+        }
+    }
+}
+
+thread_local! {
+    /// worker 线程 boot 槽（`run_worker_thread` 置入，`init_session` 取出；
+    /// 主会话恒 None。线程局部的跨函数传参，不经 JS 线程外）。
+    static WORKER_BOOT: std::cell::RefCell<Option<crate::builtins::node::worker::WorkerBoot>> =
+        std::cell::RefCell::new(None);
+}
+
 /// 进程级引擎单例：`JSEngine::init()` 每进程只能成功一次（第二次起
 /// `AlreadyInitialized`），而 test runner 多文件 / test --watch 都要在同进程
 /// 反复 `runtime::run`。本体 init 一次后刻意泄漏（永不 shutdown，§4.8），
@@ -386,7 +421,13 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
     let (worker_tx, worker_rx) = tokio::sync::mpsc::unbounded_channel();
     state::with_plain(|p| p.worker_tx = Some(worker_tx));
     // 线程身份默认主（worker 线程起后由 spawn 侧改写，见 state::worker_session_init）。
-    state::worker_session_init(true, 0);
+    // worker 线程带 boot 槽：取出落地（身份/workerData/parentPort/权限继承）。
+    match WORKER_BOOT.with(|b| b.borrow_mut().take()) {
+        Some(boot) => crate::builtins::node::worker::worker_boot_from_slot(boot),
+        None => state::worker_session_init(true, 0),
+    }
+    // worker boot 收尾放 init 末（主会话无操作；worker 回传收件箱 + 发 Online）。
+    crate::builtins::node::worker::worker_booted();
 
     Ok(SessionInit { rt, engine, global_ptr, state_guard, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx })
 }
@@ -564,6 +605,125 @@ pub fn run_isolated(source: String, filename: String, extra_args: Vec<String>) -
     rx.recv().unwrap_or_else(|_| Err(Error::Other("test file thread died".into())))
 }
 
+/// worker 线程入口（`node:worker_threads` spawn 用，§4.24 哲学：每 worker 独立
+/// OS 线程 + 完整会话；Runtime 照 §4.8 泄漏，线程退出即清 TLS）。
+/// 退出码经 `WExit` 事件回主会话（成功 0/未捕获错 1/终止 1/`process.exit(n)`→n），
+/// 错误文案经 `WError` 先行（随后必跟 `WExit{1}`）。detached 线程，主侧不等。
+pub fn run_worker_thread(spec: WorkerThreadSpec) {
+    use crate::builtins::node::worker::WorkerEvent;
+    let spawned = std::thread::Builder::new()
+        .name(format!("winterjs-worker-{}", spec.worker_id))
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let wid = spec.worker_id;
+            // 主收件箱先取一份（会话前失败路径用；会话起后走 state）。
+            let early_inbox = spec.boot.main_inbox.clone();
+            let early_rendezvous = spec.boot.rendezvous.clone();
+            // 早失败（文件读错/runtime 起不来）：WError/WExit 先排队，再发 rendezvous
+            //（parked 收件箱——后续投递静默失败），保证主侧不超时、事件不丢
+            //（attach 在 spawn 返回后同步发生，早于任何分发）。
+            let fail_early = |message: String| {
+                let _ = early_inbox.send(WorkerEvent::WError { worker_id: wid, message });
+                let _ = early_inbox.send(WorkerEvent::WExit { worker_id: wid, code: 1 });
+                let (park_tx, park_rx) = tokio::sync::mpsc::unbounded_channel();
+                drop(park_rx); // 接收端已死：后续投递即失败，不堆积
+                let _ = early_rendezvous.send((park_tx, 0));
+            };
+            // 源码决议：文件直读；eval 串嗅探 ESM→落临时 .mjs（复用文件管线），
+            // 否则经典求值（文件名 `worker-eval-<id>.js`）。
+            let (source, filename, tmp): (String, String, Option<std::path::PathBuf>) =
+                match (spec.file, spec.code) {
+                    (Some(path), _) => {
+                        let path = std::path::PathBuf::from(&path);
+                        let abs = if path.is_absolute() {
+                            path
+                        } else {
+                            std::env::current_dir().unwrap_or_default().join(&path)
+                        };
+                        match std::fs::read_to_string(&abs) {
+                            Ok(s) => (s, abs.to_string_lossy().into_owned(), None),
+                            Err(e) => {
+                                fail_early(format!("Worker: cannot read file {} ({e})", abs.display()));
+                                return;
+                            }
+                        }
+                    }
+                    (None, Some(code)) => {
+                        let is_module = std::env::current_dir()
+                            .ok()
+                            .and_then(|cwd| crate::loader::load_js(&code, "worker-eval.mjs", &cwd).ok())
+                            .is_some_and(|l| l.is_module);
+                        if is_module {
+                            let tmp = std::env::temp_dir().join(format!(
+                                "winterjs-worker-{}-{}.mjs",
+                                std::process::id(),
+                                wid
+                            ));
+                            match std::fs::write(&tmp, &code) {
+                                Ok(()) => (code, tmp.to_string_lossy().into_owned(), Some(tmp)),
+                                Err(e) => {
+                                    fail_early(format!("Worker: cannot stage eval source ({e})"));
+                                    return;
+                                }
+                            }
+                        } else {
+                            (code, format!("worker-eval-{wid}.js"), None)
+                        }
+                    }
+                    (None, None) => {
+                        fail_early("Worker: no filename or eval source".into());
+                        return;
+                    }
+                };
+            // boot 入槽（init_session 取出落地）；argv 照 file/eval 形态。
+            WORKER_BOOT.with(|b| *b.borrow_mut() = Some(spec.boot));
+            let tokio_rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    fail_early(format!("Worker: cannot start async runtime ({e})"));
+                    return;
+                }
+            };
+            let outcome = tokio::task::LocalSet::new().block_on(&tokio_rt, async {
+                run(&source, &filename, Mode::Script, &spec.argv).await
+            });
+            // 退出码映射 + 临时文件清理（best effort）。
+            if let Some(tmp) = tmp {
+                let _ = std::fs::remove_file(&tmp);
+            }
+            let code = match &outcome {
+                Err(Error::Exit(c)) => *c,
+                Err(e) => {
+                    let message = worker_error_text(e);
+                    let inbox = state::with_plain(|p| p.worker_main_inbox.clone());
+                    if let Some(tx) = inbox {
+                        let _ = tx.send(WorkerEvent::WError { worker_id: wid, message });
+                    }
+                    1
+                }
+                Ok(()) => {
+                    if state::worker_terminated() { 1 } else { 0 }
+                }
+            };
+            let inbox = state::with_plain(|p| p.worker_main_inbox.clone());
+            if let Some(tx) = inbox {
+                let _ = tx.send(WorkerEvent::WExit { worker_id: wid, code });
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(target: "winterjs::runtime", worker_id = spec.worker_id, "worker thread spawn failed: {e}");
+    }
+}
+
+/// worker 未捕获错误转文案（`WError` 用；定位信息尽量保留）。
+fn worker_error_text(e: &Error) -> String {
+    match e {
+        Error::Script { message, .. } => format!("Worker: {message}"),
+        Error::Other(message) => format!("Worker: {message}"),
+        _ => format!("Worker: {e}"),
+    }
+}
+
 
 /// eval 首次求值失败：若为 SyntaxError，用 async IIFE 重包一次。
 /// （触发条件放宽到一切 SyntaxError：`await` 在参数位置报的不是 await 错，见 §4.17；
@@ -706,6 +866,11 @@ async fn pump_once(
     // 注意顺序：必须在 RunJobs 之后——抛错的 job 会截断当轮排空，
     // 反应 job 留到下一轮；检查放排空前即饿死它们（实测：模块顶层 exit 必发）。
     if state::with_plain(|p| p.process_exited.is_some()) {
+        st.exited = true;
+        return Ok(st);
+    }
+    // worker 终止旗（`WTerminate` 置位；与 process.exit 同检查点顺序——RunJobs 之后）。
+    if state::worker_terminated() {
         st.exited = true;
         return Ok(st);
     }

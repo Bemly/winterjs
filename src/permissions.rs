@@ -70,6 +70,21 @@ impl Permissions {
 
 static PERMS: RwLock<Option<Permissions>> = RwLock::new(None);
 
+/// CLI 解析出的权限集快照（进程级；worker 线程继承沙箱用，9f-3）。
+static CLI_PERMS: RwLock<Option<Permissions>> = RwLock::new(None);
+
+/// 记录 CLI 权限（`main::install_permissions` 在 install 后调一次）。
+pub fn remember_cli(p: &Permissions) {
+    if let Ok(mut slot) = CLI_PERMS.write() {
+        *slot = Some(p.clone());
+    }
+}
+
+/// 取 CLI 权限快照（worker 线程起后 install，无即 None=全开放）。
+pub fn cli_snapshot() -> Option<Permissions> {
+    CLI_PERMS.read().ok().and_then(|s| s.clone())
+}
+
 /// 安装（dispatch 早期调用一次；重复安装覆盖——test 子进程各装各的）。
 pub fn install(p: Permissions) {
     if let Ok(mut slot) = PERMS.write() {

@@ -101,7 +101,8 @@ fn install_permissions(perms: &cli::PermissionArgs) {
         allow_all: perms.allow_all,
     };
     tracing::debug!(target: "winterjs::permissions", sandbox = p.sandboxed(), "installed");
-    permissions::install(p);
+    permissions::install(p.clone());
+    permissions::remember_cli(&p);
 }
 
 async fn dispatch(cli: Cli, settings: &settings::Settings) -> i32 {

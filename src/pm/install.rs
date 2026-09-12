@@ -134,7 +134,8 @@ async fn install_one(nm: &Path, nm_bin: &Path, r: &Resolved) -> Result<(), Error
         .map_err(|e| Error::Other(format!("cannot move into node_modules: {e}")))?;
     let _ = std::fs::remove_dir_all(&staging);
     link_bins(nm, &r.name, &dest)?;
-    crate::pm::lifecycle::run_package_scripts(&dest, &r.name, &r.version, nm_bin).await?;
+    // npm 口径：registry tarball 不跑 prepare（9i-10 勘误；git 依赖见 git.rs）。
+    crate::pm::lifecycle::run_stage_list(&dest, &r.name, &r.version, nm_bin, crate::pm::lifecycle::TAR_STAGES).await?;
     Ok(())
 }
 

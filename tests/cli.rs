@@ -267,3 +267,162 @@ fn cli_flag_spec_single_action() {
 }
 
 // ── SubtleCrypto c-4x（RSA-PSS/Ed25519/X25519/AES-192；向量经 openssl 独立生成）──
+
+// ── 9i-10 --run 脚本解释（带后缀→文件；裸名→package.json scripts 优先）──────
+
+/// 造一个带 scripts 的 package.json + 可选 .bin 工具，返回目录。
+fn script_project(dir: &assert_fs::TempDir, package_json: &str) {
+    dir.child("package.json").write_str(package_json).unwrap();
+}
+
+#[test]
+fn run_script_shell_command() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    script_project(&dir, r#"{"scripts":{"dev":"echo shell-ok"}}"#);
+    let out = winterjs()
+        .arg("--run")
+        .arg("dev")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("shell-ok"), "stdout: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn run_script_js_bin_runs_with_self() {
+    // 零 node 快路径：.bin 里 shebang node 的 JS bin → 递归调自身 --run 执行。
+    let dir = assert_fs::TempDir::new().unwrap();
+    script_project(
+        &dir,
+        r#"{"scripts":{"dev":"mybin --a 1","other":"mybin"}}"#,
+    );
+    let bin = dir.child("node_modules/.bin/mybin");
+    bin.write_str("#!/usr/bin/env node\nconsole.log('bin-ok', process.argv.slice(2).join(','));\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(bin.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let out = winterjs()
+        .arg("--run")
+        .arg("dev")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("bin-ok --a,1"), "stdout: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn run_script_native_bin_direct_argv() {
+    // .bin 里的原生/非 JS bin → 直接 argv 派发（不经 shell、不经 node）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    script_project(&dir, r#"{"scripts":{"dev":"nativebin"}}"#);
+    let bin = dir.child("node_modules/.bin/nativebin");
+    bin.write_str("#!/bin/sh\necho native-ok\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(bin.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let out = winterjs()
+        .arg("--run")
+        .arg("dev")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("native-ok"), "stdout: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn run_script_missing_lists_available() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    script_project(&dir, r#"{"scripts":{"build":"x","start":"y"}}"#);
+    let out = winterjs()
+        .arg("--run")
+        .arg("nope")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Missing script: nope"), "stderr: {stderr}");
+    assert!(stderr.contains("build") && stderr.contains("start"), "stderr: {stderr}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn run_script_exit_code_propagates() {
+    // exit 是 shell 内建 → shell 路径；退出码透传（Error::Exit 静默）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    script_project(&dir, r#"{"scripts":{"fail":"echo before-fail && exit 3"}}"#);
+    let out = winterjs()
+        .arg("--run")
+        .arg("fail")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    dir.close().unwrap();
+}
+
+#[test]
+fn run_script_args_passthrough_with_dashdash() {
+    // npm 口径：`--` 分隔符剥一个，其余拼到脚本串后。
+    let dir = assert_fs::TempDir::new().unwrap();
+    script_project(&dir, r#"{"scripts":{"dev":"echo args:"}}"#);
+    let out = winterjs()
+        .args(["--run", "dev", "--", "x", "y"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("args: x y"), "stdout: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn run_bare_name_falls_back_to_file() {
+    // 无对应 script 但 cwd 有同名文件 → 回落按文件跑。
+    let dir = assert_fs::TempDir::new().unwrap();
+    script_project(&dir, r#"{"scripts":{"build":"x"}}"#);
+    dir.child("dev").write_str("console.log('fallback-file');\n").unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg("dev")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("fallback-file"), "stdout: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn run_script_finds_package_json_up_the_tree() {
+    // monorepo：在 packages/foo 里跑，package.json 命中仓库根。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let root = dir.child("repo");
+    root.child("package.json").write_str(r#"{"scripts":{"dev":"echo root-script"}}"#).unwrap();
+    root.child("packages/foo").create_dir_all().unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg("dev")
+        .current_dir(root.join("packages/foo").to_path_buf())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("root-script"), "stdout: {stdout}");
+    dir.close().unwrap();
+}

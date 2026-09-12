@@ -38,7 +38,8 @@
 - 版本号用 CalVer `YY.MM.PATCH`（如 `26.9.0`，cargo 可解析；`^26.9.0` 即年内自动升）。
   依赖清单与 10-target 矩阵见 `docs/dependencies.md`。
 - 无 `rust-toolchain` pin、无 spiderfire/ion 依赖、无 server/request_handlers。
-- CLI（全 flag，§0.8）：`winterjs --run <file>` / `winterjs --eval <code>` /
+- CLI（全 flag，§0.8）：`winterjs --run <file|script>`（带脚本后缀→文件直跑；
+  裸名→package.json `scripts` 优先、同名文件回落；JS bin 递归自身执行，零 node）/ `winterjs --eval <code>` /
   `winterjs --config [--schema]` / `winterjs --completions <shell>` / `winterjs --man` 等，
   见 `src/`（cli/runner/error/logging/settings/alloc 模块）。
 - 依赖 2026-09-10 起全量入库（docs/dependencies.md 头部决策记录），代码按 Phase 接线。

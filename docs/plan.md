@@ -957,6 +957,27 @@
   黑盒 +1（`phase9i_x509_pss`：openssl PSS 证书自验/CA 公钥验 leaf/错钥/跨族 4 断言）；
   `cargo test` 总 395 passed，0 failed。记档：仅证书签名面（顶层 sign 的 PSS
   9e-1c 已有 `__wjs_pss_sign`）；trailerField 非 1 不认（回 false）。
+- [x] 9i-10 `--run` 脚本解释 + pm prepare 勘误（2026-09-13 完工）：
+  `--run <arg>` 带**脚本后缀**（js/mjs/cjs/ts/mts/cts/tsx/jsx）→ 文件直跑（零回归）；
+  **裸名** → 优先 package.json `scripts`（从 cwd 逐级向上，monorepo 命中根），
+  未命中回落同名文件，再不行 npm 风报错列可用脚本（`Missing script: x` + 清单）。
+  执行口径（`src/scripts.rs`，对齐 npm/bun + 零 node 目标）：首词解析到本地
+  `node_modules/.bin/<name>` 且是 **JS bin**（后缀 .js/.mjs/.cjs 或 shebang 含
+  node）→ 递归调自身 `--run <bin>`（JS bin 不走系统 shebang，没 node 的机器
+  也能跑）；解析到原生二进制 → 直接 argv（不经 shell）；其余（内建/复合命令/
+  env 前缀/含元字符）走 shell（`/bin/sh -c`，win `cmd /C`），PATH 前置沿包目录
+  向上每层 `.bin`；退出码经 `Error::Exit` 静默透传；`--` 分隔符剥一个、其余
+  透传（npm 口径）；沙箱开启时过 `permissions::check_run`。i18n help 双语更新。
+  **pm 勘误（真 bug，vite 安装挡路）**：npm 口径 **prepare 只对 git/本地依赖跑**，
+  registry tarball 不跑——pm 曾对 tarball 跑 prepare，lightningcss 的 prepare
+  引 patch-package（npm 下永不执行）把 `--add vite` 炸成 127；lifecycle 拆
+  `TAR_STAGES`（无 prepare）/`STAGES`（git 依赖全四段）。真机闭环：probe 目录
+  `--add vite`（vite 8.3.0，rolldown 系无 esbuild）装通 + `--run dev` 全管道走通
+  （scripts.dev=vite → .bin/vite JS → 自递归执行 vite 入口 → 卡在已知
+  `node:module` 缺口，属 vite 运行时面另案）。
+  模块单测 6（后缀表/向上行走/缺脚本清单/JS bin 判定/.bin 行走+PATH 前置/元字符表）；
+  黑盒 +8（shell 命令/JS bin 自递归/原生 bin 直 argv/缺脚本/退出码透传/`--` 透传/
+  文件回落/monorepo 向上）；`cargo test` 总 410 passed，0 failed，冒烟 5/5。
 - [x] 9i-9 node:quic headers 面（2026-09-13 完工；H3 分支，quinn 特性组内）：
   真机 node 26.8.2 无 node:quic 模块（`--experimental-quic` 亦无），headers 面为
   **本仓自定 API**（偏差记 quic.rs 模块头）。Rust：`QuicH3Cmd`

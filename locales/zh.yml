@@ -7,7 +7,7 @@ arg:
     help: "帮助文本语言（en 英文 / zh 中文，默认跟随系统语言）"
     value: "语言"
   run:
-    help: "运行 JS 文件并打印其完成值"
+    help: "运行 JS 文件（带脚本后缀）或 package.json 脚本（裸名），并打印其完成值"
     value: "文件"
   eval:
     help: "求值内联 JS 代码"

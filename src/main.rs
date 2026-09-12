@@ -17,6 +17,7 @@ mod pm;
 mod permissions;
 mod repl;
 mod runtime;
+mod scripts;
 mod sentry_report;
 mod serve;
 mod testrun;
@@ -130,14 +131,24 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             actions.join(", ")
         )));
     }
-    if let Some(path) = cli.run {
+    if let Some(target) = cli.run {
         install_permissions(&cli.perms);
-        let source = std::fs::read_to_string(&path).map_err(|source| Error::IoRead {
-            path: path.clone(),
-            source,
-        })?;
-        let filename = path.to_string_lossy().into_owned();
-        return runtime::run(&source, &filename, runtime::Mode::Script, &cli.args).await;
+        let target = target.to_string_lossy().into_owned();
+        // 9i-10：带脚本后缀 → 文件直跑；裸名 → package.json scripts 优先、同名文件回落。
+        match scripts::resolve(&target)? {
+            scripts::RunTarget::File(path) => {
+                let source = std::fs::read_to_string(&path).map_err(|source| Error::IoRead {
+                    path: path.clone(),
+                    source,
+                })?;
+                let filename = path.to_string_lossy().into_owned();
+                return runtime::run(&source, &filename, runtime::Mode::Script, &cli.args).await;
+            }
+            scripts::RunTarget::Script(pkg_dir, script) => {
+                let code = scripts::run(&pkg_dir, &script, &cli.args)?;
+                return Err(Error::Exit(code));
+            }
+        }
     }
     if let Some(code) = cli.eval {
         install_permissions(&cli.perms);

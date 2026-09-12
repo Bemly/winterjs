@@ -1,4 +1,7 @@
 //! lifecycle 脚本（plan Phase 5c/5d）：`preinstall → install → postinstall` + `prepare`。
+//! 9i-10 勘误（npm 口径实测回归）：**prepare 只对 git/本地依赖跑**——registry
+//! tarball 依赖不跑（npm 只在 git/local 包上跑 prepare；lightningcss 的 prepare
+//! 引 patch-package，对 tarball 跑它会把整个 vite 安装炸掉）。
 //!
 //! - 时机：单包 `node_modules/<pkg>` 落地 + bin 链接**之后**，cwd 即包目录。
 //!   `prepare` 跑在最后（npm 口径：本地/git 依赖装完构建；发包时另由 publish 干跑校验）。
@@ -18,6 +21,8 @@ use crate::error::Error;
 /// 按序执行的 lifecycle 事件（npm 子集；`prepublishOnly` 等发包事件不跑——
 /// publish 只有 dry-run 校验，无远端发布流程）。
 pub const STAGES: &[&str] = &["preinstall", "install", "postinstall", "prepare"];
+/// registry tarball 依赖的 lifecycle 段（npm 口径：无 prepare）。
+pub const TAR_STAGES: &[&str] = &["preinstall", "install", "postinstall"];
 
 /// 读包的 scripts 表（缺失/非法一律当空，不中断）。
 fn scripts_of(pkg_dir: &Path) -> serde_json::Map<String, serde_json::Value> {
@@ -79,8 +84,19 @@ pub async fn run_package_scripts(
     version: &str,
     nm_bin: &Path,
 ) -> Result<(), Error> {
+    run_stage_list(pkg_dir, name, version, nm_bin, STAGES).await
+}
+
+/// 指定段执行（tarball 走 `TAR_STAGES` 无 prepare；git/local 走 `STAGES` 全四段）。
+pub async fn run_stage_list(
+    pkg_dir: &Path,
+    name: &str,
+    version: &str,
+    nm_bin: &Path,
+    stages: &[&str],
+) -> Result<(), Error> {
     let scripts = scripts_of(pkg_dir);
-    for event in STAGES {
+    for event in stages {
         let Some(script) = scripts.get(*event).and_then(|v| v.as_str()) else {
             continue;
         };
@@ -124,7 +140,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).unwrap();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        rt.block_on(run_package_scripts(dir.path(), "x", "1.0.0", dir.path())).unwrap();
+        rt.block_on(run_stage_list(dir.path(), "x", "1.0.0", dir.path(), STAGES)).unwrap();
     }
 
     #[test]
@@ -141,7 +157,7 @@ mod tests {
         )
         .unwrap();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        rt.block_on(run_package_scripts(dir.path(), "x", "1.0.0", dir.path())).unwrap();
+        rt.block_on(run_stage_list(dir.path(), "x", "1.0.0", dir.path(), STAGES)).unwrap();
         let order = std::fs::read_to_string(dir.path().join("order.txt")).unwrap();
         assert_eq!(order, "preinstallpostprep");
     }

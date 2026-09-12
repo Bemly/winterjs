@@ -449,6 +449,31 @@ cargo build
   语义，Node 同款）、readFile ENOENT 的 `err.syscall` 是 `"open"`。
 - 复现：`tests/node.rs::phase9c_fs_sync_extras`（wx 修前 ENOENT）。
 
+### 4.34 net 事件循环收尾四坑（2026-09-12，Phase 9d-1）
+
+- 症状一：Server `__ev` 里 `this.emit is not a function`。根因：`call_two`
+  派发以 **global 为 this** 调 target 方法（jsapi_glue 调用约定）——类方法做
+  事件钩子必须 `this.__ev = this.__ev.bind(this)` 预绑定成自有属性（§4.31
+  症状二的引擎版：非对象字面量，而是 native 调用约定）。
+- 症状二：回环 echo 后进程 hang 不退。根因：**Node 默认 `allowHalfOpen=false`
+  ——socket 收到远端 FIN（'end'）后自动 end 本端**；漏掉该语义则连接半开，
+  `net_open` 永不归零，事件循环 idle 判定失败。教训：IO 面的生命周期必须逐条
+  对齐 Node 默认关闭语义，`*_open()` 计数 + idle 检查会把缺口暴露成 hang。
+- 症状三：`destroy()` 后对端 'close' 不发/双发。根因二连：① Close 事件在
+  task 内 **先 purge 后派发**，dispatch 读不到 target（顺序坑：清态必须在
+  派发之后）——改为 task 只置 `close_sent` 单发旗，purge 统一在 dispatch 后；
+  ② writer task 死后（destroy 断写端），reader EOF 时 JS auto-end 的 End
+  命令无人消费——entry 加 `writer_alive` 旗，reader EOF 见 writer 已死则
+  代行 `close_once + Close`。
+- 症状四：hermetic 陷阱——bogus 域名（`nope.invalid`）在 macOS 会被系统
+  解析器经 search domain 意外"解析成功"。教训：DNS/网络黑盒**只依赖
+  localhost + 空主机名**，失败路径断言 Error 形状（code 为 string）不断
+  具体码；server 端口一律 `port 0`（并行测试安全）。
+- 附：serde `SocketAddr` 序列化为 `"ip:port"` 串（IPv6 `[ip]:port`）；
+  io_code 的 EADDRINUSE 是双 errno（macOS 48 / Linux 98）——平台差异 errno
+  映射一律双码同列 + 单测双断言。
+- 复现：`tests/node.rs::phase9d_net_echo_loopback`（allowHalfOpen 修前 hang）。
+
 
 ## 5. 路线图（按序）
 

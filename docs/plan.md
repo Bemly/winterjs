@@ -579,6 +579,25 @@
   syscall 底座，验收子集不含）。
   黑盒 +3（同步 extras/FileHandle+promises/回调全家）；`cargo test` 102+205 全绿，
   冒烟 5/5。踩坑记 AGENTS §4.33。
+- [x] 9d-1/2 net + dns 切片（2026-09-12 完工；http/https/http2/tls/dgram/zlib 顺延）：
+  `node:net`——TCP Socket/Server（tokio net 底座），事件模型与 child 同构
+  （task → channel → 事件循环 pump → dispatch 调 target 预绑定的 `__ev` 钩子，
+  EventEmitter 翻译）；半关双旗（half_read/half_write）+ `close_sent` 单发 +
+  dispatch 后统一 purge 的收尾单出口；**allowHalfOpen=false 默认自动回 FIN**
+  （Node 口径，漏掉即连接半开、`net_open` 不归零、事件循环 hang）；writer task
+  死亡标记（destroy 路径 reader EOF 代行收尾）；Socket connect/write/end/destroy/
+  address/setEncoding/data(end/close/connect/error)、Server listen/close/address/
+  connection/listening/error/close、createServer/createConnection/connect、
+  Stream 别名；fd/事件 id 合成号（记档）；unix socket/ref-unref/write flush 语义
+  记档不做。事件循环第 5 条通道 net_rx 全链接线（SessionInit/run/pump/event_loop/
+  repl）+ idle 条件加 `net_open()==0`。
+  `node:dns`——lookup（含 all/family 选项）/resolve4/resolve6 + promises
+  （std `ToSocketAddrs` 底座，hermetic 只测 localhost；resolve* 深件 CNAME/MX/TXT
+  需 hickory-resolver **行级增补，动工前按 §0.5 问用户拍板**，记档）。
+  native +7（net_connect/net_listen/net_attach/net_write/net_end/net_destroy/
+  dns_lookup）；io_code 补 EBADF(9)/EADDRINUSE(macOS 48/Linux 98)。
+  黑盒 +3（回环 echo+destroy/EADDRINUSE/dns localhost，port 0 hermetic 并行安全）；
+  `cargo test` 102+208 全绿，冒烟 5/5。踩坑记 AGENTS §4.34。
 
 ## 全局纪律
 

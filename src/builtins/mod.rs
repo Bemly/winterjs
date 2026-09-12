@@ -2087,6 +2087,12 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_node_rsa_oaep", Some(node::crypto::node_rsa_oaep), 4),
             ("__wjs_node_rsa_v15_sign", Some(node::crypto::node_rsa_v15_sign), 3),
             ("__wjs_node_rsa_v15_verify", Some(node::crypto::node_rsa_v15_verify), 4),
+            // Phase 9e-1d: KDF + X509（全员树内轮子）
+            ("__wjs_kdf_pbkdf2", Some(node::crypto::kdf_pbkdf2), 5),
+            ("__wjs_kdf_scrypt", Some(node::crypto::kdf_scrypt), 7),
+            ("__wjs_kdf_hkdf", Some(node::crypto::kdf_hkdf), 5),
+            ("__wjs_kdf_argon2", Some(node::crypto::kdf_argon2), 9),
+            ("__wjs_x509_parse", Some(node::crypto::x509_parse), 1),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）

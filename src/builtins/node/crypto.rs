@@ -1296,6 +1296,518 @@ pub unsafe extern "C" fn node_rsa_v15_verify(
     true
 }
 
+// ── 9e-1d KDF（pbkdf2/scrypt/hkdf/argon2；全员树内轮子，零新增）──────────────
+
+/// KDF 摘要分发（HMAC 系：sha1/sha256/sha384/sha512/md5；sha3 无 block-API，记档）。
+macro_rules! kdf_hash_dispatch {
+    ($hash:expr, $D:ident, $body:expr) => {{
+        match $hash {
+            "SHA-1" => {
+                type $D = sha1::Sha1;
+                $body
+            }
+            "SHA-256" => {
+                type $D = sha2::Sha256;
+                $body
+            }
+            "SHA-384" => {
+                type $D = sha2::Sha384;
+                $body
+            }
+            "SHA-512" => {
+                type $D = sha2::Sha512;
+                $body
+            }
+            "MD5" => {
+                type $D = md5::Md5;
+                $body
+            }
+            other => Err(format!("NotSupportedError: KDF hash '{other}' needs SHA-1/256/384/512/MD5")),
+        }
+    }};
+}
+
+/// `__wjs_kdf_pbkdf2(hashStr, passU8, saltU8, roundsNum, lenNum)` → 派生密钥。
+pub unsafe extern "C" fn kdf_pbkdf2(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 5 {
+        report_error(&mut cx, "TypeError: PBKDF2 needs hash, password, salt, rounds and length");
+        return false;
+    }
+    let hash = value_to_string(&mut cx, frame.arg(0));
+    let (Some(pass), Some(salt)) = (
+        view_bytes(&mut cx, frame.arg(1), "PBKDF2 password"),
+        view_bytes(&mut cx, frame.arg(2), "PBKDF2 salt"),
+    ) else {
+        return false;
+    };
+    if !frame.arg(3).is_number() || !frame.arg(4).is_number() {
+        report_error(&mut cx, "TypeError: PBKDF2 rounds/length must be numbers");
+        return false;
+    }
+    let rounds = frame.arg(3).to_number();
+    let len = frame.arg(4).to_number();
+    if !(1.0..=2147483647.0).contains(&rounds) {
+        report_error(&mut cx, "ERR_OUT_OF_RANGE: PBKDF2 iterations out of range");
+        return false;
+    }
+    if !(0.0..=1073741824.0).contains(&len) {
+        report_error(&mut cx, "ERR_OUT_OF_RANGE: PBKDF2 key length out of range");
+        return false;
+    }
+    let mut out = vec![0u8; len as usize];
+    let r: Result<(), String> = kdf_hash_dispatch!(hash.as_str(), D, {
+        pbkdf2::pbkdf2_hmac::<D>(&pass, &salt, rounds as u32, &mut out);
+        Ok(())
+    });
+    match r {
+        Ok(()) => set_rval_bytes(&mut cx, &frame, &out),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_kdf_scrypt(passU8, saltU8, nNum, rNum, pNum, lenNum, maxmemNum)` → 派生密钥。
+pub unsafe extern "C" fn kdf_scrypt(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 7 {
+        report_error(&mut cx, "TypeError: scrypt needs password, salt, N, r, p, length and maxmem");
+        return false;
+    }
+    let (Some(pass), Some(salt)) = (
+        view_bytes(&mut cx, frame.arg(0), "scrypt password"),
+        view_bytes(&mut cx, frame.arg(1), "scrypt salt"),
+    ) else {
+        return false;
+    };
+    let nums: Option<Vec<f64>> = (2..7)
+        .map(|i| {
+            let v = frame.arg(i);
+            if v.is_number() { Some(v.to_number()) } else { None }
+        })
+        .collect();
+    let Some(nums) = nums else {
+        report_error(&mut cx, "TypeError: scrypt N/r/p/length/maxmem must be numbers");
+        return false;
+    };
+    let (n_f, r_f, p_f, len_f, maxmem_f) = (nums[0], nums[1], nums[2], nums[3], nums[4]);
+    if n_f <= 1.0 || n_f.fract() != 0.0 || (n_f.log2().fract() != 0.0 && n_f > 1.0) {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_SCRYPT_PARAMS: Invalid scrypt params");
+        return false;
+    }
+    let (n, r, p) = (n_f as u64, r_f as u32, p_f as u32);
+    // 内存上限（默认 32MiB，Node 同款；128·N·r·p 口径）
+    let mem = (n as u128) * (r as u128) * (p as u128) * 128;
+    if r == 0 || p == 0 || mem > maxmem_f as u128 {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_SCRYPT_PARAMS: Invalid scrypt params");
+        return false;
+    }
+    if !(1.0..=1073741824.0).contains(&len_f) {
+        report_error(&mut cx, "ERR_OUT_OF_RANGE: scrypt key length out of range");
+        return false;
+    }
+    let log_n = n_f.log2() as u8;
+    let params = match scrypt::Params::new(log_n, r, p) {
+        Ok(p) => p,
+        Err(_) => {
+            report_error(&mut cx, "ERR_CRYPTO_INVALID_SCRYPT_PARAMS: Invalid scrypt params");
+            return false;
+        }
+    };
+    let mut out = vec![0u8; len_f as usize];
+    match scrypt::scrypt(&pass, &salt, &params, &mut out) {
+        Ok(()) => set_rval_bytes(&mut cx, &frame, &out),
+        Err(_) => {
+            report_error(&mut cx, "ERR_CRYPTO_INVALID_SCRYPT_PARAMS: Invalid scrypt params");
+            false
+        }
+    }
+}
+
+/// `__wjs_kdf_hkdf(hashStr, ikmU8, saltU8, infoU8, lenNum)` → OKM（空 salt 即零串，RFC 口径）。
+pub unsafe extern "C" fn kdf_hkdf(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 5 {
+        report_error(&mut cx, "TypeError: HKDF needs hash, ikm, salt, info and length");
+        return false;
+    }
+    let hash = value_to_string(&mut cx, frame.arg(0));
+    let (Some(ikm), Some(salt), Some(info)) = (
+        view_bytes(&mut cx, frame.arg(1), "HKDF ikm"),
+        view_bytes(&mut cx, frame.arg(2), "HKDF salt"),
+        view_bytes(&mut cx, frame.arg(3), "HKDF info"),
+    ) else {
+        return false;
+    };
+    if !frame.arg(4).is_number() {
+        report_error(&mut cx, "TypeError: HKDF length must be a number");
+        return false;
+    }
+    let len = frame.arg(4).to_number();
+    if !(0.0..=1073741824.0).contains(&len) {
+        report_error(&mut cx, "ERR_OUT_OF_RANGE: HKDF length out of range");
+        return false;
+    }
+    let mut out = vec![0u8; len as usize];
+    let r: Result<(), String> = kdf_hash_dispatch!(hash.as_str(), D, {
+        let hk = hkdf::Hkdf::<D>::new(if salt.is_empty() { None } else { Some(&salt) }, &ikm);
+        match hk.expand(&info, &mut out) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(format!("OperationError: HKDF expand failed: {e}")),
+        }
+    });
+    match r {
+        Ok(()) => set_rval_bytes(&mut cx, &frame, &out),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs_kdf_argon2(algoStr, msgU8, nonceU8, secretU8, adU8, parNum, tagNum, memNum, passNum)` → tag。
+pub unsafe extern "C" fn kdf_argon2(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 9 {
+        report_error(&mut cx, "TypeError: Argon2 needs algorithm, message, nonce, secret, ad and params");
+        return false;
+    }
+    let algo = value_to_string(&mut cx, frame.arg(0));
+    let (Some(msg), Some(nonce), Some(secret), Some(ad)) = (
+        view_bytes(&mut cx, frame.arg(1), "Argon2 message"),
+        view_bytes(&mut cx, frame.arg(2), "Argon2 nonce"),
+        view_bytes(&mut cx, frame.arg(3), "Argon2 secret"),
+        view_bytes(&mut cx, frame.arg(4), "Argon2 associated data"),
+    ) else {
+        return false;
+    };
+    let nums: Option<Vec<f64>> = (5..9)
+        .map(|i| {
+            let v = frame.arg(i);
+            if v.is_number() { Some(v.to_number()) } else { None }
+        })
+        .collect();
+    let Some(nums) = nums else {
+        report_error(&mut cx, "TypeError: Argon2 params must be numbers");
+        return false;
+    };
+    let algorithm = match algo.as_str() {
+        "argon2d" => argon2::Algorithm::Argon2d,
+        "argon2i" => argon2::Algorithm::Argon2i,
+        "argon2id" => argon2::Algorithm::Argon2id,
+        _ => {
+            report_error(&mut cx, "ERR_INVALID_ARG_VALUE: Argon2 algorithm must be argon2d/argon2i/argon2id");
+            return false;
+        }
+    };
+    if !ad.is_empty() {
+        // argon2 0.6 无 associated-data 接口（记档缺口）
+        report_error(&mut cx, "ERR_NOT_SUPPORTED: Argon2 associatedData not supported");
+        return false;
+    }
+    let params = match argon2::Params::new(nums[2] as u32, nums[3] as u32, nums[0] as u32, Some(nums[1] as usize)) {
+        Ok(p) => p,
+        Err(e) => {
+            report_error(&mut cx, &format!("ERR_OUT_OF_RANGE: bad Argon2 params ({e})"));
+            return false;
+        }
+    };
+    let ctx = if secret.is_empty() {
+        argon2::Argon2::new(algorithm, argon2::Version::V0x13, params)
+    } else {
+        match argon2::Argon2::new_with_secret(&secret, algorithm, argon2::Version::V0x13, params) {
+            Ok(c) => c,
+            Err(e) => {
+                report_error(&mut cx, &format!("ERR_OUT_OF_RANGE: bad Argon2 secret ({e})"));
+                return false;
+            }
+        }
+    };
+    let mut out = vec![0u8; nums[1] as usize];
+    match ctx.hash_password_into(&msg, &nonce, &mut out) {
+        Ok(()) => set_rval_bytes(&mut cx, &frame, &out),
+        Err(e) => {
+            report_error(&mut cx, &format!("OperationError: Argon2 failed ({e})"));
+            false
+        }
+    }
+}
+
+// ── 9e-1d X509（解析面；`x509-cert` 直用，校验/签发不做）────────────────────
+
+/// unix 秒 → `MMM DD HH:MM:SS YYYY GMT`（openssl `ASN1_TIME_print` 口径，日空位补空格）。
+fn fmt_asn1_time(secs: u64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    // Howard Hinnant days-from-civil 逆算法
+    let days = (secs / 86400) as i64;
+    let rem = (secs % 86400) as u64;
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{} {:>2} {:02}:{:02}:{:02} {} GMT",
+        MONTHS[(m - 1) as usize],
+        d,
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60,
+        year
+    )
+}
+
+/// 属性 OID → 短名（Node `toLegacyObject` 口径；未知回 dotted）。
+fn atv_short(oid: &str) -> &str {
+    match oid {
+        "2.5.4.3" => "CN",
+        "2.5.4.4" => "SN",
+        "2.5.4.42" => "GN",
+        "2.5.4.5" => "serialNumber",
+        "2.5.4.6" => "C",
+        "2.5.4.7" => "L",
+        "2.5.4.8" => "ST",
+        "2.5.4.9" => "street",
+        "2.5.4.10" => "O",
+        "2.5.4.11" => "OU",
+        "2.5.4.12" => "title",
+        "2.5.4.13" => "description",
+        "2.5.4.17" => "postalCode",
+        "0.9.2342.19200300.100.1.25" => "DC",
+        "1.2.840.113549.1.9.1" => "emailAddress",
+        _ => oid,
+    }
+}
+
+/// `der::Any` 属性值 → 字符串（常见串类型逐一试解，BMP 兜底）。
+fn atv_string(any: &der::Any) -> String {
+    use der::Decode as _;
+    if let Ok(s) = any.decode_as::<der::asn1::Utf8StringRef>() {
+        return s.as_str().to_owned();
+    }
+    if let Ok(s) = any.decode_as::<der::asn1::PrintableString>() {
+        return s.as_str().to_owned();
+    }
+    if let Ok(s) = any.decode_as::<der::asn1::TeletexString>() {
+        return s.as_str().to_owned();
+    }
+    if let Ok(s) = any.decode_as::<der::asn1::Ia5String>() {
+        return s.as_str().to_owned();
+    }
+    String::from_utf8_lossy(any.value()).into_owned()
+}
+
+fn hex_upper(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 15) as usize] as char);
+    }
+    out
+}
+
+fn hex_colon(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(bytes.len() * 3);
+    for (i, &b) in bytes.iter().enumerate() {
+        if i > 0 {
+            out.push(':');
+        }
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 15) as usize] as char);
+    }
+    out
+}
+
+/// `__wjs_x509_parse(derU8)` → 证书 JSON（字段见 9e-1d；SAN/用法齐备，校验面不做）。
+pub unsafe extern "C" fn x509_parse(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 {
+        report_error(&mut cx, "TypeError: X509 needs DER bytes");
+        return false;
+    }
+    let der = match view_bytes(&mut cx, frame.arg(0), "X509 DER") {
+        Some(b) => b,
+        None => return false,
+    };
+    use der::Decode as _;
+    let cert = match x509_cert::Certificate::from_der(&der) {
+        Ok(c) => c,
+        Err(e) => {
+            report_error(&mut cx, &format!("TypeError: bad X.509 certificate ({e})"));
+            return false;
+        }
+    };
+    let tbs = cert.tbs_certificate();
+    let mut subj_pairs: Vec<(String, String)> = Vec::new();
+    for atv in tbs.subject().iter() {
+        subj_pairs.push((atv_short(&atv.oid.to_string()).to_owned(), atv_string(&atv.value)));
+    }
+    let mut iss_pairs: Vec<(String, String)> = Vec::new();
+    for atv in tbs.issuer().iter() {
+        iss_pairs.push((atv_short(&atv.oid.to_string()).to_owned(), atv_string(&atv.value)));
+    }
+    let subject = subj_pairs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("\n");
+    let issuer = iss_pairs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("\n");
+    let serial = hex_upper(tbs.serial_number().as_bytes());
+    let valid_from = fmt_asn1_time(tbs.validity().not_before.to_unix_duration().as_secs());
+    let valid_to = fmt_asn1_time(tbs.validity().not_after.to_unix_duration().as_secs());
+    use sha1::Digest as _;
+    use sha2::Digest as _;
+    let fp = hex_colon(&sha1::Sha1::digest(&der));
+    let fp256 = hex_colon(&sha2::Sha256::digest(&der));
+    let fp512 = hex_colon(&sha2::Sha512::digest(&der));
+    // 扩展：SAN / KeyUsage / ExtKeyUsage（缺席即 null/空，Node 同款）
+    let mut san_dns: Vec<String> = Vec::new();
+    let mut san_ip: Vec<String> = Vec::new();
+    let mut san_email: Vec<String> = Vec::new();
+    let mut san_uri: Vec<String> = Vec::new();
+    let mut key_usage: Option<Vec<String>> = None;
+    let mut ext_key_usage: Option<Vec<String>> = None;
+    if let Some(exts) = tbs.extensions() {
+        for ext in exts.iter() {
+            let oid = ext.extn_id.to_string();
+            let bytes = ext.extn_value.as_bytes();
+            if oid == "2.5.29.17" {
+                if let Ok(san) = x509_cert::ext::pkix::SubjectAltName::from_der(bytes) {
+                    for name in san.0.iter() {
+                        use x509_cert::ext::pkix::name::GeneralName;
+                        match name {
+                            GeneralName::DnsName(s) => san_dns.push(s.to_string()),
+                            GeneralName::IpAddress(o) => {
+                                let b = o.as_bytes();
+                                if b.len() == 4 {
+                                    san_ip.push(format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]));
+                                } else if b.len() == 16 {
+                                    san_ip.push(b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(":"));
+                                }
+                            }
+                            GeneralName::Rfc822Name(s) => san_email.push(s.to_string()),
+                            GeneralName::UniformResourceIdentifier(s) => san_uri.push(s.to_string()),
+                            _ => {}
+                        }
+                    }
+                }
+            } else if oid == "2.5.29.15" {
+                if let Ok(ku) = x509_cert::ext::pkix::KeyUsage::from_der(bytes) {
+                    use x509_cert::ext::pkix::KeyUsages;
+                    let mut names = Vec::new();
+                    if ku.0.contains(KeyUsages::DigitalSignature) {
+                        names.push("Digital Signature".to_owned());
+                    }
+                    if ku.0.contains(KeyUsages::NonRepudiation) {
+                        names.push("Non Repudiation".to_owned());
+                    }
+                    if ku.0.contains(KeyUsages::KeyEncipherment) {
+                        names.push("Key Encipherment".to_owned());
+                    }
+                    if ku.0.contains(KeyUsages::DataEncipherment) {
+                        names.push("Data Encipherment".to_owned());
+                    }
+                    if ku.0.contains(KeyUsages::KeyAgreement) {
+                        names.push("Key Agreement".to_owned());
+                    }
+                    if ku.0.contains(KeyUsages::KeyCertSign) {
+                        names.push("Key Cert Sign".to_owned());
+                    }
+                    if ku.0.contains(KeyUsages::CRLSign) {
+                        names.push("CRL Sign".to_owned());
+                    }
+                    if ku.0.contains(KeyUsages::EncipherOnly) {
+                        names.push("Encipher Only".to_owned());
+                    }
+                    if ku.0.contains(KeyUsages::DecipherOnly) {
+                        names.push("Decipher Only".to_owned());
+                    }
+                    key_usage = Some(names);
+                }
+            } else if oid == "2.5.29.37" {
+                if let Ok(eku) = Vec::<der::asn1::ObjectIdentifier>::from_der(bytes) {
+                    ext_key_usage = Some(eku.iter().map(|o| o.to_string()).collect());
+                }
+            }
+        }
+    }
+    let mut san_parts: Vec<String> = Vec::new();
+    for d in &san_dns {
+        san_parts.push(format!("DNS:{d}"));
+    }
+    for e in &san_email {
+        san_parts.push(format!("EMAIL:{e}"));
+    }
+    for u in &san_uri {
+        san_parts.push(format!("URI:{u}"));
+    }
+    for i in &san_ip {
+        san_parts.push(format!("IP Address:{i}"));
+    }
+    let obj_of = |pairs: &[(String, String)]| -> serde_json::Map<String, serde_json::Value> {
+        pairs.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect()
+    };
+    let json = serde_json::json!({
+        "subject": subject,
+        "issuer": issuer,
+        "subjectObj": obj_of(&subj_pairs),
+        "issuerObj": obj_of(&iss_pairs),
+        "serialNumber": serial,
+        "validFrom": valid_from,
+        "validTo": valid_to,
+        "fingerprint": fp,
+        "fingerprint256": fp256,
+        "fingerprint512": fp512,
+        "sanDns": san_dns,
+        "sanIp": san_ip,
+        "sanEmail": san_email,
+        "sanUri": san_uri,
+        "subjectAltName": if san_parts.is_empty() { None } else { Some(san_parts.join(", ")) },
+        "keyUsage": key_usage,
+        "extKeyUsage": ext_key_usage,
+    })
+    .to_string();
+    set_rval_str(&mut cx, &frame, &json);
+    true
+}
+
 /// 内嵌 ESM 源（`node:crypto` 9e-1a 面）。
 pub const SOURCE: &str = r#"
 function __cryptErr(e) {
@@ -2969,6 +3481,261 @@ export function setFips() { return undefined; }
 export function setEngine() { return undefined; }
 export function secureHeapUsed() { return { total: 0, min: 0, max: 0, used: 0 }; }
 
+// ── 9e-1d KDF + X509 ──────────────────────────────────────────────────────
+
+const __KDF_HASHES = ["sha1", "sha256", "sha384", "sha512", "md5"];
+function __kdfHash(digest) {
+  if (typeof digest !== "string") {
+    const err = new TypeError(`The "digest" argument must be of type string. Received type ${typeof digest}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  const flat = digest.trim().toLowerCase().replace(/[-_]/g, "");
+  const table = { "sha1": "SHA-1", "sha256": "SHA-256", "sha384": "SHA-384", "sha512": "SHA-512", "md5": "MD5" };
+  const norm = table[flat];
+  if (norm === undefined) {
+    const err = new Error(`Invalid digest: ${digest}`);
+    err.code = "ERR_CRYPTO_INVALID_DIGEST";
+    throw err;
+  }
+  return norm;
+}
+export function pbkdf2Sync(password, salt, iterations, keylen, digest) {
+  const it = Number(iterations);
+  if (!Number.isInteger(it) || it < 1 || it > 2147483647) {
+    const err = new RangeError(`The value of "iterations" is out of range. It must be >= 1 && <= 2147483647. Received ${iterations}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  const out = __cryptCall(() => __wjs_kdf_pbkdf2(
+    __kdfHash(digest), __cryptBytes(password, "password"), __cryptBytes(salt, "salt"), it, Number(keylen)));
+  return Buffer.from(out);
+}
+export function pbkdf2(password, salt, iterations, keylen, digest, callback) {
+  if (typeof callback !== "function") {
+    const err = new TypeError("pbkdf2 requires a callback for async form");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  queueMicrotask(() => {
+    try {
+      callback(null, pbkdf2Sync(password, salt, iterations, keylen, digest));
+    } catch (e) {
+      callback(e);
+    }
+  });
+}
+const __SCRYPT_DEFAULTS = { N: 16384, r: 8, p: 1, maxmem: 33554432 };
+function __scryptArgs(password, salt, keylen, options) {
+  const o = options ?? {};
+  const N = o.N ?? __SCRYPT_DEFAULTS.N;
+  const r = o.r ?? __SCRYPT_DEFAULTS.r;
+  const p = o.p ?? __SCRYPT_DEFAULTS.p;
+  const maxmem = o.maxmem ?? __SCRYPT_DEFAULTS.maxmem;
+  return [__cryptBytes(password, "password"), __cryptBytes(salt, "salt"),
+    Number(keylen), Number(N), Number(r), Number(p), Number(maxmem)];
+}
+export function scryptSync(password, salt, keylen, options) {
+  const [pw, sa, kl, N, r, p, maxmem] = __scryptArgs(password, salt, keylen, options);
+  const out = __cryptCall(() => __wjs_kdf_scrypt(pw, sa, N, r, p, kl, maxmem));
+  return Buffer.from(out);
+}
+export function scrypt(password, salt, keylen, options, callback) {
+  if (typeof options === "function") { callback = options; options = undefined; }
+  if (typeof callback !== "function") {
+    const err = new TypeError("scrypt requires a callback for async form");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  queueMicrotask(() => {
+    try {
+      callback(null, scryptSync(password, salt, keylen, options));
+    } catch (e) {
+      callback(e);
+    }
+  });
+}
+export function hkdfSync(hash, ikm, salt, info, keylen) {
+  const out = __cryptCall(() => __wjs_kdf_hkdf(
+    __kdfHash(hash), __cryptBytes(ikm, "ikm"),
+    salt === undefined || salt === null ? new Uint8Array(0) : __cryptBytes(salt, "salt"),
+    info === undefined || info === null ? new Uint8Array(0) : __cryptBytes(info, "info"),
+    Number(keylen)));
+  // Node 回 ArrayBuffer（非 Buffer），同口径
+  return Buffer.from(out).buffer;
+}
+export function hkdf(hash, ikm, salt, info, keylen, callback) {
+  if (typeof callback !== "function") {
+    const err = new TypeError("hkdf requires a callback for async form");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  queueMicrotask(() => {
+    try {
+      callback(null, hkdfSync(hash, ikm, salt, info, keylen));
+    } catch (e) {
+      callback(e);
+    }
+  });
+}
+function __argon2Args(algorithm, parameters) {
+  if (typeof algorithm !== "string" || !["argon2d", "argon2i", "argon2id"].includes(algorithm)) {
+    const err = new TypeError(`The argument 'algorithm' must be one of: 'argon2d', 'argon2i', 'argon2id'. Received '${algorithm}'`);
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  if (typeof parameters !== "object" || parameters === null) {
+    const err = new TypeError("The \"parameters\" argument must be of type object");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  const needView = (v, name) => {
+    if (typeof v !== "string" && !(v instanceof Uint8Array) && !(v instanceof ArrayBuffer) && !ArrayBuffer.isView(v)) {
+      const err = new TypeError(`The "parameters.${name}" property must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView.`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    return __cryptBytes(v, name);
+  };
+  const message = needView(parameters.message, "message");
+  const nonce = needView(parameters.nonce, "nonce");
+  if (nonce.length < 8) {
+    const err = new RangeError("parameters.nonce must have byteLength >= 8");
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  const intArg = (v, name, min, max) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < min || n > max) {
+      const err = new RangeError(`The value of "parameters.${name}" is out of range. It must be >= ${min} && <= ${max}.`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+    return n;
+  };
+  const parallelism = intArg(parameters.parallelism, "parallelism", 1, 16777215);
+  const tagLength = intArg(parameters.tagLength, "tagLength", 4, 4294967295);
+  const memory = intArg(parameters.memory, "memory", 8 * parallelism, 4294967295);
+  const passes = intArg(parameters.passes, "passes", 0, 4294967295);
+  const secret = parameters.secret === undefined ? new Uint8Array(0) : needView(parameters.secret, "secret");
+  const ad = parameters.associatedData === undefined ? new Uint8Array(0) : needView(parameters.associatedData, "associatedData");
+  return [algorithm, message, nonce, secret, ad, parallelism, tagLength, memory, passes];
+}
+export function argon2Sync(algorithm, parameters) {
+  const a = __argon2Args(algorithm, parameters);
+  const out = __cryptCall(() => __wjs_kdf_argon2(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]));
+  return Buffer.from(out);
+}
+export function argon2(algorithm, parameters, callback) {
+  if (typeof callback !== "function") {
+    const err = new TypeError("argon2 requires a callback for async form");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  queueMicrotask(() => {
+    try {
+      callback(null, argon2Sync(algorithm, parameters));
+    } catch (e) {
+      callback(e);
+    }
+  });
+}
+
+class X509Certificate {
+  constructor(pemOrDer) {
+    let der;
+    if (typeof pemOrDer === "string") {
+      const pem = __pemDecode(pemOrDer);
+      if (!pem || pem.label !== "CERTIFICATE") {
+        const err = new TypeError("X509 needs a CERTIFICATE PEM or DER");
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      }
+      der = pem.der;
+    } else {
+      der = __cryptBytes(pemOrDer, "cert");
+    }
+    this.__der = Buffer.from(der);
+    this.__info = JSON.parse(__cryptCall(() => __wjs_x509_parse(der)));
+  }
+  get subject() { return this.__info.subject; }
+  get issuer() { return this.__info.issuer; }
+  get subjectAltName() { return this.__info.subjectAltName; }
+  get infoAccess() { return undefined; }
+  get serialNumber() { return this.__info.serialNumber; }
+  get validFrom() { return this.__info.validFrom; }
+  get validTo() { return this.__info.validTo; }
+  get fingerprint() { return this.__info.fingerprint; }
+  get fingerprint256() { return this.__info.fingerprint256; }
+  get fingerprint512() { return this.__info.fingerprint512; }
+  get keyUsage() { return this.__info.keyUsage; }
+  get extKeyUsage() { return this.__info.extKeyUsage; }
+  get raw() { return Buffer.from(this.__der); }
+  get publicKey() {
+    const err = new Error("X509Certificate.publicKey not supported");
+    err.code = "ERR_NOT_SUPPORTED";
+    throw err;
+  }
+  toString() { return __pemEncode("CERTIFICATE", this.__der); }
+  toJSON() { return this.toLegacyObject(); }
+  toLegacyObject() {
+    return {
+      subject: this.__info.subjectObj,
+      issuer: this.__info.issuerObj,
+      subjectaltname: this.__info.subjectAltName,
+      infoAccess: undefined,
+      serialNumber: this.__info.serialNumber,
+      validFrom: this.__info.validFrom,
+      validTo: this.__info.validTo,
+    };
+  }
+  verify() {
+    const err = new Error("X509Certificate.verify not supported (no chain builder)");
+    err.code = "ERR_NOT_SUPPORTED";
+    throw err;
+  }
+  checkHost(name) { return __x509Match(name, this.__info.sanDns, this.__info.sanIp, this.__info.subjectObj?.CN); }
+  checkEmail(email) {
+    if (this.__info.sanEmail.length > 0) {
+      return this.__info.sanEmail.includes(String(email)) ? String(email) : undefined;
+    }
+    return undefined;
+  }
+  checkIP(ip) {
+    return this.__info.sanIp.includes(String(ip)) ? String(ip) : undefined;
+  }
+}
+function __x509Match(name, dns, ips, cn) {
+  name = String(name);
+  // IP 字面量走 SAN-iP 精确匹配
+  if (/^[0-9a-fA-F:.]+$/.test(name) && (name.includes(":") || /^\d+\.\d+\.\d+\.\d+$/.test(name))) {
+    return ips.includes(name) ? name : undefined;
+  }
+  const lower = name.toLowerCase();
+  for (const pattern of dns) {
+    if (__dnsMatch(lower, pattern.toLowerCase())) return pattern;
+  }
+  if (cn && __dnsMatch(lower, String(cn).toLowerCase())) return cn;
+  return undefined;
+}
+function __dnsMatch(host, pattern) {
+  if (!pattern.includes("*")) return host === pattern;
+  // 单标签通配（RFC 6125 口径子集）
+  if (!pattern.startsWith("*.")) return false;
+  const suffix = pattern.slice(2);
+  if (!host.endsWith(suffix) || host.length <= suffix.length) return false;
+  const left = host.slice(0, host.length - suffix.length);
+  return left.length > 0 && !left.includes(".");
+}
+export { X509Certificate };
+export class Certificate {
+  constructor() {
+    const err = new Error("legacy Certificate/SPKAC not supported");
+    err.code = "ERR_NOT_SUPPORTED";
+    throw err;
+  }
+}
+
 const __api = {
   createHash, createHmac, Hash, Hmac, hash,
   randomBytes, randomFill, randomFillSync, randomInt, randomUUID, randomUUIDv7,
@@ -2981,6 +3748,8 @@ const __api = {
   createECDH, ECDH, createDiffieHellman, createDiffieHellmanGroup, getDiffieHellman,
   DiffieHellman, diffieHellman, checkPrime, checkPrimeSync, generatePrime, generatePrimeSync,
   constants, getFips, setFips, setEngine, secureHeapUsed,
+  pbkdf2, pbkdf2Sync, scrypt, scryptSync, hkdf, hkdfSync,
+  argon2, argon2Sync, X509Certificate, Certificate,
 };
 export default __api;
 "#;
@@ -3085,5 +3854,20 @@ mod tests {
     fn crypto_pad_be_shapes() {
         assert_eq!(pad_be(&[1, 2], 4), vec![0, 0, 1, 2]);
         assert_eq!(pad_be(&[1, 2, 3, 4, 5], 3), vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn crypto_asn1_time_shapes() {
+        assert_eq!(fmt_asn1_time(0), "Jan  1 00:00:00 1970 GMT");
+        // 2026-09-12T07:03:16Z（真机证书有效期同形）
+        assert_eq!(fmt_asn1_time(1789196596), "Sep 12 07:03:16 2026 GMT");
+    }
+
+    #[test]
+    fn crypto_atv_short_table() {
+        assert_eq!(atv_short("2.5.4.3"), "CN");
+        assert_eq!(atv_short("2.5.4.10"), "O");
+        assert_eq!(atv_short("1.2.840.113549.1.9.1"), "emailAddress");
+        assert_eq!(atv_short("1.2.3.4"), "1.2.3.4");
     }
 }

@@ -150,12 +150,11 @@ hermetic，0.01s 级）。`node:quic` JS 面 9g-1/9g-2 已落地（Endpoint/会�
 | 杂凑（ripemd160） | `ripemd` | 0.2.0 | 2017-02-13 | 2026-03-27 | ✅（digest 0.11 直通） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | XOF（shake128/256） | `tiny-keccak` | 2.0.2 | 2015-11-27 | 2020-04-01 | ✅（零依赖） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-备注：`ripemd`（MIT OR Apache-2.0，edition 2024，rust 1.85，48M 下载）无门槛，
-用法 `default-features=false` 亦可（`alloc` 按需；本仓要 `std` 口径则默认）；
-`tiny-keccak`（CC0-1.0，edition 2018，无 rust-version 声明，6 年未发版，
-单人维护）用法 `default-features=false` + `shake`（`fips202` 全家不需要；
-`cshake`/`kmac` 等系不做）；两者矩阵 ✅ 均为"纯 Rust 可推定"，真机以 CI 为准。
-定夺：等用户拍板（ripemd 先行 / 全要 / 全不要）。
+## 9h-2 落地（2026-09-13，用户拍板两项全要）
+
+> `ripemd = "0.2"`（默认特性）+ `tiny-keccak = { version = "2",
+> default-features = false, features = ["shake"] }` 入 `Cargo.toml` §7；
+> `Cargo.lock` 增两行，无版本冲突。9h-2 候选节转正，定夺项清零。
 
 ## 测试资产（非依赖，仓库外按需取）
 

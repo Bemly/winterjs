@@ -799,12 +799,26 @@
   openssl 向量单测钉住）；② k256 验签拒 high-S → 验前 `normalize_s`
   （OpenSSL 接受可锻造签名）；③ Node PKCS#8 省公钥 y → `y=g^x mod p` 补算。
   黑盒 +2（k256 真机向量/ECDH 自洽/签名编解码全链 + DSA 全链/bigint/AD 向量）。
-  剩缺口：ripemd160（无 crate）、XOF（sha3 0.12 已移除 SHAKE，轮子待定——
-  两项走 §0.5 问用户）、PQ、X509 verify、GCM 非 12B iv（轮子不支持）。
-- 9h 收官（2026-09-13）：`cargo test` 单测 120 + 黑盒 249 全绿
-  （node 85 含 9h 新增 2；总 369 passed + 1 ignored，0 failed），
+  剩缺口：ripemd160、XOF（9h-2 落地，见下）、PQ、X509 verify、
+  GCM 非 12B iv（轮子不支持）。
+- [x] 9h-2 ripemd160 + SHAKE（2026-09-13 完工；用户拍板两项全要）：
+  `ripemd 0.2`（digest 0.11 直通，零版本墙）+ `tiny-keccak 2`（`shake` 特性；
+  `sha3 0.12` 已无 SHAKE 类型）→ 流式 Hash 注册表（定长 ripemd + 变长 XOF，
+  长度注册时带；`copy()` 同克隆）+ `getHashes` + HMAC（ripemd 进表；
+  HMAC-SHAKE 真机抛无码错，本仓同款抛无码 `Error`，不做超集）+
+  缺省输出长（shake128→16/shake256→32 + DEP0198 真机文案警告）+
+  `outputLength` 非法即 `ERR_INVALID_ARG_VALUE`。真机向量逐字节对
+  （ripemd/shake128/shake256/HMAC-ripemd；记忆向量全错过一次，先对真机，
+  §4.32 教训延续）。
+  黑盒 +1（向量/HMAC/拷贝/缺省警告/DEP0198 stderr）。
+- 9h 收官（2026-09-13）：`cargo test` 单测 120 + 黑盒 250 全绿
+  （node 86 含 9h 新增 3；总 370 passed + 1 ignored，0 failed），
   0 新增警告（5 预存），冒烟 5/5。
-- 剩终局缺口：`vm` 模块系、`worker_threads` 传输细节、quic headers 面、
+- 9h 收官（2026-09-13）：`cargo test` 单测 120 + 黑盒 250 全绿
+  （node 86 含 9h 新增 3；总 370 passed + 1 ignored，0 failed），
+  0 新增警告（5 预存），冒烟 5/5。
+  剩终局缺口：PQ、X509 verify、GCM 非 12B iv（轮子不支持）、`vm` 模块系、
+  `worker_threads` 传输细节、quic headers 面、
   plan2 §4 不做项（wasi/v8 口径/sea/napi/cluster/domain/repl 口径）。
 
 ## 全局纪律

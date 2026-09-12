@@ -863,8 +863,31 @@
   EventTarget，记档），`message` 载荷裸值 + `onmessage` 收 `{data}`。
   黑盒 +3（buffer/detach/类型/报错 10 行 + 同会话迁移双向/neuter + 跨线程
   workerData 端口双向/BC 同会话与跨线程）；`cargo test` 单测 120 + 黑盒 255
-  全绿（node 91；总 375 passed + 1 ignored，0 failed），0 新增警告，冒烟 5/5。
+全绿（node 91；总 375 passed + 1 ignored，0 failed），0 新增警告，冒烟 5/5。
   踩坑记 AGENTS §4.58。
+- [x] 9i-3 X509 verify（2026-09-13 完工；零新 crate）：
+  `X509Certificate.verify(publicKey)`/`publicKey`/`ca` 三件就位（verify/签发/checkIssued/
+  checkPrivateKey 的 ERR_NOT_SUPPORTED 占位退役；9h 收官缺口清单中的 X509 verify 销账）。
+  Rust 底座（`src/builtins/crypto.rs` `__wjs_x509_verify`，复用验签件）：手解外层 TLV 取
+  **TBS 裸段**（含自身 TLV，无重编码风险）→ 签名算法 OID 分发：RSA 全档
+  （md5/sha1/sha224/256/384/512WithRSA，DigestInfo 前缀表 + `BigUint` modpow 手工
+  EMSA-PKCS1-v1_5，OpenSSL 口径 FF≥8 非定长；绕开 rsa 0.9 的 digest 0.10 版本墙，
+  §4.43 同源取舍，单测与 rsa crate 自签交叉钉住）/ ECDSA（ecdsa-with-SHA1-512，
+  复用 `ec_curve_name`+`with_curve!`+`verify_prehash`，DER `SEQ{r,s}` → 定长裸 r‖s
+  还原，high-S normalize_s 沿 §4.55）/ Ed25519（纯签名，裸 32B 公钥直验）；
+  未知 OID/验签不过一律 false。`x509_parse` 增 `ca`（BasicConstraints 2.5.29.19，
+  缺省 false）与 `spkiB64`（der::Encode 忠实重编，publicKey 经 createPublicKey 重建）。
+  JS 壳真机口径（node 26.8.2 实测逐项对齐）：无参/非 KeyObject →
+  `ERR_INVALID_ARG_TYPE`；私钥 → `ERR_INVALID_ARG_VALUE`；错钥/异族（含 x25519）/
+  RSA-PSS/不支持算法 → false 不抛；`rsa-pss` KeyObject 按 rsa 分发（SPKI 同构）。
+  真机交叉：本仓 ⇄ node 26.8.2 对同一组 openssl 证书（P-256/RSA/Ed25519/leaf）
+  verify/ca 结果逐项一致。黑盒烤入 openssl 固件（RSA/Ed25519 PEM 常量，hermetic）+
+  rcgen 自签 + 篡改（末字节翻转）/错钥/跨族/报错 13 断言（`phase9i_x509_verify`）；
+  9e 遗留断言（verify 抛 ERR_NOT_SUPPORTED）随语义升级改写。模块单测 5
+  （TLV 形/TBS 裸段逐字节/DigestInfo 标准前缀/EMSA 手工⇄rsa crate 交叉/DER 签名还原）；
+  `cargo test` 单测 125 + 黑盒 256 全绿（总 381 passed，0 failed），0 新增警告，
+  冒烟 5/5。记档不做：RSA-PSS 证书、checkIssued/checkPrivateKey、签发、
+  显式参数 EC 证书（named-curve 缺失时 SPKI 试解失败即 false）。
 
 ## 全局纪律
 

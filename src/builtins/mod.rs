@@ -1971,6 +1971,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_ec_import_pub", Some(crypto::ec_import_pub), 3),
             // 9h-1：SPKI/PKCS#8 算法 OID 直判曲线（试解误判 secp256k1→P-256）
             ("__wjs_ec_guess_curve", Some(crypto::ec_guess_curve), 1),
+            // 9i-3：X.509 证书验签（TBS 裸段 + 签名算法 OID 分发，复用验签底座）
+            ("__wjs_x509_verify", Some(crypto::x509_verify), 3),
             // Phase c-4x：RSA-PSS / Ed25519 / X25519
             ("__wjs_pss_sign", Some(crypto::pss_sign), 4),
             ("__wjs_pss_verify", Some(crypto::pss_verify), 5),

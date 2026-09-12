@@ -3266,7 +3266,8 @@ console.log("pem", x.toString().startsWith("-----BEGIN CERTIFICATE-----"), x.raw
 console.log("legacy", x.toLegacyObject().subject.CN === "www.example.com");
 console.log("ku", JSON.stringify(x.keyUsage) === JSON.stringify(["Digital Signature", "Key Encipherment"]));
 try { new X509Certificate("nope"); } catch (e) { console.log("bad", e.code === "ERR_INVALID_ARG_VALUE"); }
-try { x.verify(); } catch (e) { console.log("verify", e.code === "ERR_NOT_SUPPORTED"); }
+try { x.verify(); } catch (e) { console.log("verify", e.code === "ERR_INVALID_ARG_TYPE"); }
+console.log("verifyself", x.verify(x.publicKey) === true);
 try { new Certificate(); } catch (e) { console.log("legacy-cert", e.code === "ERR_NOT_SUPPORTED"); }
 "#,
     );
@@ -3280,6 +3281,7 @@ try { new Certificate(); } catch (e) { console.log("legacy-cert", e.code === "ER
     assert!(out.contains("ku true"), "out: {out}");
     assert!(out.contains("bad true"), "out: {out}");
     assert!(out.contains("verify true"), "out: {out}");
+    assert!(out.contains("verifyself true"), "out: {out}");
     assert!(out.contains("legacy-cert true"), "out: {out}");
     dir.close().unwrap();
 }
@@ -4190,6 +4192,109 @@ setTimeout(() => {
     );
     let out = String::from_utf8(out.stdout).unwrap();
     for line in ["w9i-bc true", "w9i-xfer true true", "w9i-xbc true"] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9i_x509_verify() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let key = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    dir.child("c.pem").write_str(&key.cert.pem()).unwrap();
+    // openssl 烤入固件：sha256WithRSAEncryption（CA:TRUE）与 Ed25519（SKI/AKID 齐）。
+    const RSA_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIDBzCCAe+gAwIBAgIUKMqG5DU1vRAPDN73tipxwpNdnyYwDQYJKoZIhvcNAQEL\nBQAwEzERMA8GA1UEAwwIcnNhcHJvYmUwHhcNMjYwOTEyMTUzNzEwWhcNMjYxMDEy\nMTUzNzEwWjATMREwDwYDVQQDDAhyc2Fwcm9iZTCCASIwDQYJKoZIhvcNAQEBBQAD\nggEPADCCAQoCggEBAKNUnvi0BslHzHg4FsLJVRAGGnJLau1qpKYsUpl9o54Gi37o\nmDISUL+m+2sHk4GfdHmQtZMv/2ehbsZlWeXF+KN7R8Y3gsjXjws772d2H2KSKeBs\nrgXuW0aK7dZ298VJWiOkwn3Yxw3/VIrCnf22OvFD6hIEnJINsed7pWXcO6ENs0sn\nZjSoTrdUARO4bP4UUaRHRC7OvvmJOhk7YP27GxeZYlpGZAVc9bApeqNXFMORbw7h\n56F5OaWRd3+hLS2Qzb1WG8hkHNP2p6IjrM3sJv9/MxDG7oqUyGfHUU+L7WwsKVSX\nIvH1KVjSgCpQIe0xNK6hDVeEzCQ1K+1NerUXZb0CAwEAAaNTMFEwHQYDVR0OBBYE\nFCYP4DCcqmSzcUh9l5twIQZ+vfTnMB8GA1UdIwQYMBaAFCYP4DCcqmSzcUh9l5tw\nIQZ+vfTnMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAELdfAXs\nhThVFUilcN1IqvCgnpJQaWt9F9hrK/kFU4xYuufULn8/ON1XSEsq9zFdaieh3yUS\ngfK5TzaqYWdmReZQmQwu3tWQP3i2N/+yhlKtyG8HVYGE8XnWzc1vqVCvo4Qgbo8A\nvprQmAByt1d73hYRAVqy6352VyaODUzv88o+bhA4lEVoFT+ywq/NTKMBItzX2nrf\nmbYHk5BuaD60LrgoHhagfZN0AtyjUsrSpZzhZibvkF/dd8JECjgMfdW2TzQt7oGu\nXlWJbDY2dLREtjr9Gy9xL9VYEqVwBl0LnOn+6NVXu1SWpdvb7JJkiTl/E5T7jJHM\nJYXWO6JD6QVhZA4=\n-----END CERTIFICATE-----\n";
+    const ED_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIBODCB66ADAgECAhQKqo7DNn6Wqr9sY8nb/FFQHmFWrzAFBgMrZXAwEjEQMA4G\nA1UEAwwHZWRwcm9iZTAeFw0yNjA5MTIxNTM3MTBaFw0yNjEwMTIxNTM3MTBaMBIx\nEDAOBgNVBAMMB2VkcHJvYmUwKjAFBgMrZXADIQDZBIIBibh/Hk5+4U8s3/NQ1YLC\nkRPopcUuaL2ubsrCyaNTMFEwHwYDVR0jBBgwFoAUx3a9XMqYMQnv2WV1xfhH8yx4\nlbIwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUx3a9XMqYMQnv2WV1xfhH8yx4\nlbIwBQYDK2VwA0EADkN9ATKhMQdKm8vmdTP4+kV0BczvogHkDyXLYf+If4nw4CYs\nBngogF7qMQ7NdKgX1SlKGef1y1Oqc6T0zFQAAg==\n-----END CERTIFICATE-----\n";
+    let out = {
+        let file = dir.child("x.mjs");
+        file.write_str(
+            r#"
+import { X509Certificate, createPublicKey, generateKeyPairSync } from "node:crypto";
+import fs from "node:fs";
+const x = new X509Certificate(fs.readFileSync("c.pem", "utf8"));
+console.log("xv-self", x.verify(x.publicKey));
+console.log("xv-ca", x.ca === false, typeof x.publicKey === "object");
+console.log("xv-pemrt", new X509Certificate(x.toString()).verify(x.publicKey));
+const pk2 = createPublicKey(x.publicKey.export({ type: "spki", format: "pem" }));
+console.log("xv-pubrt", x.verify(pk2));
+const RSA_PEM = `-----BEGIN CERTIFICATE-----
+MIIDBzCCAe+gAwIBAgIUKMqG5DU1vRAPDN73tipxwpNdnyYwDQYJKoZIhvcNAQEL
+BQAwEzERMA8GA1UEAwwIcnNhcHJvYmUwHhcNMjYwOTEyMTUzNzEwWhcNMjYxMDEy
+MTUzNzEwWjATMREwDwYDVQQDDAhyc2Fwcm9iZTCCASIwDQYJKoZIhvcNAQEBBQAD
+ggEPADCCAQoCggEBAKNUnvi0BslHzHg4FsLJVRAGGnJLau1qpKYsUpl9o54Gi37o
+mDISUL+m+2sHk4GfdHmQtZMv/2ehbsZlWeXF+KN7R8Y3gsjXjws772d2H2KSKeBs
+rgXuW0aK7dZ298VJWiOkwn3Yxw3/VIrCnf22OvFD6hIEnJINsed7pWXcO6ENs0sn
+ZjSoTrdUARO4bP4UUaRHRC7OvvmJOhk7YP27GxeZYlpGZAVc9bApeqNXFMORbw7h
+56F5OaWRd3+hLS2Qzb1WG8hkHNP2p6IjrM3sJv9/MxDG7oqUyGfHUU+L7WwsKVSX
+IvH1KVjSgCpQIe0xNK6hDVeEzCQ1K+1NerUXZb0CAwEAAaNTMFEwHQYDVR0OBBYE
+FCYP4DCcqmSzcUh9l5twIQZ+vfTnMB8GA1UdIwQYMBaAFCYP4DCcqmSzcUh9l5tw
+IQZ+vfTnMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAELdfAXs
+hThVFUilcN1IqvCgnpJQaWt9F9hrK/kFU4xYuufULn8/ON1XSEsq9zFdaieh3yUS
+gfK5TzaqYWdmReZQmQwu3tWQP3i2N/+yhlKtyG8HVYGE8XnWzc1vqVCvo4Qgbo8A
+vprQmAByt1d73hYRAVqy6352VyaODUzv88o+bhA4lEVoFT+ywq/NTKMBItzX2nrf
+mbYHk5BuaD60LrgoHhagfZN0AtyjUsrSpZzhZibvkF/dd8JECjgMfdW2TzQt7oGu
+XlWJbDY2dLREtjr9Gy9xL9VYEqVwBl0LnOn+6NVXu1SWpdvb7JJkiTl/E5T7jJHM
+JYXWO6JD6QVhZA4=
+-----END CERTIFICATE-----
+`;
+const ED_PEM = `-----BEGIN CERTIFICATE-----
+MIIBODCB66ADAgECAhQKqo7DNn6Wqr9sY8nb/FFQHmFWrzAFBgMrZXAwEjEQMA4G
+A1UEAwwHZWRwcm9iZTAeFw0yNjA5MTIxNTM3MTBaFw0yNjEwMTIxNTM3MTBaMBIx
+EDAOBgNVBAMMB2VkcHJvYmUwKjAFBgMrZXADIQDZBIIBibh/Hk5+4U8s3/NQ1YLC
+kRPopcUuaL2ubsrCyaNTMFEwHwYDVR0jBBgwFoAUx3a9XMqYMQnv2WV1xfhH8yx4
+lbIwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUx3a9XMqYMQnv2WV1xfhH8yx4
+lbIwBQYDK2VwA0EADkN9ATKhMQdKm8vmdTP4+kV0BczvogHkDyXLYf+If4nw4CYs
+BngogF7qMQ7NdKgX1SlKGef1y1Oqc6T0zFQAAg==
+-----END CERTIFICATE-----
+`;
+const rsa = new X509Certificate(RSA_PEM);
+console.log("xv-rsa", rsa.verify(rsa.publicKey), rsa.ca === true);
+const ed = new X509Certificate(ED_PEM);
+console.log("xv-ed", ed.verify(ed.publicKey));
+const { publicKey: other } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+console.log("xv-wrong", x.verify(other));
+console.log("xv-cross", rsa.verify(x.publicKey), ed.verify(rsa.publicKey));
+const { publicKey: okp } = generateKeyPairSync("x25519");
+console.log("xv-okp", x.verify(okp));
+const der = Buffer.from(x.raw);
+der[der.length - 1] ^= 0xff;
+const tampered = new X509Certificate(der);
+console.log("xv-tamper", tampered.verify(tampered.publicKey) === false);
+const t = (n, f) => { try { f(); console.log(n, "NO-THROW"); } catch (e) { console.log(n, e.code); } };
+t("xv-noarg", () => x.verify());
+t("xv-strarg", () => x.verify("nope"));
+t("xv-priv", () => x.verify(generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey));
+"#,
+        )
+        .unwrap();
+        winterjs()
+            .arg("--run")
+            .arg(file.path())
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "xv-self true",
+        "xv-ca true true",
+        "xv-pemrt true",
+        "xv-pubrt true",
+        "xv-rsa true true",
+        "xv-ed true",
+        "xv-wrong false",
+        "xv-cross false false",
+        "xv-okp false",
+        "xv-tamper true",
+        "xv-noarg ERR_INVALID_ARG_TYPE",
+        "xv-strarg ERR_INVALID_ARG_TYPE",
+        "xv-priv ERR_INVALID_ARG_VALUE",
+    ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }
     dir.close().unwrap();

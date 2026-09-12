@@ -2230,6 +2230,288 @@ pub unsafe extern "C" fn ed_verify(
     }
 }
 
+// ── 9i-3 X.509 证书验签（node:crypto `X509Certificate.verify` 底座）─────────
+// 口径：取 TBS 裸段（含自身 TLV）按签名算法 OID 哈希，复用既有验签底座；
+// RSA 全档走手工 EMSA-PKCS1-v1_5（digest 0.11 直算，绕开 rsa 0.9 的 digest 0.10
+// 版本墙，§4.43 同源取舍）；ECDSA 走 with_curve! + verify_prehash；
+// Ed25519 纯签名。未知 OID / 验签不过一律 false（真机口径：错钥回 false 不抛）。
+
+/// 外层 TLV 头解析：`(tag, header_len, content_len)`（DER 定长，禁 indefinite）。
+fn der_tlv(der: &[u8]) -> Option<(u8, usize, usize)> {
+    if der.len() < 2 {
+        return None;
+    }
+    let tag = der[0];
+    let b = der[1] as usize;
+    let (hl, cl) = if b < 0x80 {
+        (2, b)
+    } else if b == 0x80 {
+        return None; // indefinite 不属 DER
+    } else {
+        let n = b & 0x7f;
+        if n > 4 || der.len() < 2 + n {
+            return None;
+        }
+        let mut len = 0usize;
+        for &byte in &der[2..2 + n] {
+            len = (len << 8) | byte as usize;
+        }
+        (2 + n, len)
+    };
+    if der.len() < hl + cl {
+        return None;
+    }
+    Some((tag, hl, cl))
+}
+
+/// 证书 DER → TBS 裸段（外层 SEQUENCE 后的第一个 TLV，含自身头，验签对象）。
+fn x509_tbs_bytes(der: &[u8]) -> Option<&[u8]> {
+    let (_, ohl, _) = der_tlv(der)?;
+    let rest = &der[ohl..];
+    let (tag, thl, tcl) = der_tlv(rest)?;
+    if tag != 0x30 {
+        return None;
+    }
+    Some(&rest[..thl + tcl])
+}
+
+/// X.509 签名算法 OID → `(哈希名, EMSA-PKCS1-v1_5 DigestInfo 前缀)`。
+/// 返回 None 即不支持（含 RSA-PSS：参数携哈希，单独形，记档不做）。
+fn x509_rsa_sig_hash(oid: &str) -> Option<(&'static str, &'static [u8])> {
+    match oid {
+        // md5WithRSAEncryption
+        "1.2.840.113549.1.1.4" => Some(("MD5", &[
+            0x30, 0x20, 0x30, 0x0c, 0x06, 0x08, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x05, 0x05, 0x00, 0x04, 0x10,
+        ])),
+        // sha1WithRSAEncryption
+        "1.2.840.113549.1.1.5" => Some(("SHA-1", &[
+            0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14,
+        ])),
+        // sha224WithRSAEncryption
+        "1.2.840.113549.1.1.14" => Some(("SHA-224", &[
+            0x30, 0x2d, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x04, 0x05, 0x00, 0x04, 0x1c,
+        ])),
+        // sha256WithRSAEncryption
+        "1.2.840.113549.1.1.11" => Some(("SHA-256", &[
+            0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20,
+        ])),
+        // sha384WithRSAEncryption
+        "1.2.840.113549.1.1.12" => Some(("SHA-384", &[
+            0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02, 0x05, 0x00, 0x04, 0x30,
+        ])),
+        // sha512WithRSAEncryption
+        "1.2.840.113549.1.1.13" => Some(("SHA-512", &[
+            0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05, 0x00, 0x04, 0x40,
+        ])),
+        _ => None,
+    }
+}
+
+/// ECDSA 签名算法 OID → 哈希名（ecdsa-with-SHA*）。
+fn x509_ecdsa_sig_hash(oid: &str) -> Option<&'static str> {
+    match oid {
+        "1.2.840.10045.4.1" => Some("SHA-1"),
+        "1.2.840.10045.4.3.1" => Some("SHA-224"),
+        "1.2.840.10045.4.3.2" => Some("SHA-256"),
+        "1.2.840.10045.4.3.3" => Some("SHA-384"),
+        "1.2.840.10045.4.3.4" => Some("SHA-512"),
+        _ => None,
+    }
+}
+
+/// X.509 证书签名哈希（digest 0.11 系直算：sha1/sha2/md5 同 trait）。
+fn x509_digest(hash: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+    use sha2::Digest as _;
+    Ok(match hash {
+        "MD5" => md5::Md5::digest(data).to_vec(),
+        "SHA-1" => sha1::Sha1::digest(data).to_vec(),
+        "SHA-224" => sha2::Sha224::digest(data).to_vec(),
+        "SHA-256" => sha2::Sha256::digest(data).to_vec(),
+        "SHA-384" => sha2::Sha384::digest(data).to_vec(),
+        "SHA-512" => sha2::Sha512::digest(data).to_vec(),
+        other => return Err(format!("NotSupportedError: unsupported cert hash '{other}'")),
+    })
+}
+
+/// RSA PKCS#1 v1.5 手工验签：`em = sig^e mod n` 须为
+/// `00 01 FF×(≥8) 00 ‖ DigestInfo ‖ H`（OpenSSL 口径：FF 非定长但 ≥8）。
+fn rsa_v15_verify_manual(pub_key: &rsa::RsaPublicKey, prefix: &[u8], digest: &[u8], sig: &[u8]) -> bool {
+    use rsa::traits::PublicKeyParts as _;
+    let n = pub_key.n();
+    let e = pub_key.e();    let k = (n.bits() as usize).div_ceil(8);
+    if sig.len() != k {
+        return false;
+    }
+    let s = rsa::BigUint::from_bytes_be(sig);
+    if s >= *n {
+        return false;
+    }
+    let em = s.modpow(e, n).to_bytes_be();
+    let mut full = vec![0u8; k - em.len()];
+    full.extend_from_slice(&em);
+    // EMSA 下界：2 + 8 + 1 + T；T = prefix + digest
+    if full.len() < 2 + 8 + 1 + prefix.len() + digest.len() {
+        return false;
+    }
+    if full[0] != 0x00 || full[1] != 0x01 {
+        return false;
+    }
+    let rest = &full[2..];
+    let ff = rest.iter().take_while(|&&b| b == 0xFF).count();
+    if ff < 8 || rest[ff] != 0x00 {
+        return false;
+    }
+    let mut expect = Vec::with_capacity(prefix.len() + digest.len());
+    expect.extend_from_slice(prefix);
+    expect.extend_from_slice(digest);
+    rest[ff + 1..].iter().eq(expect.iter())
+}
+
+/// X.509 ECDSA 签名（DER `SEQ{r,s}`）→ 定长裸 `r‖s`（verify_prehash 用）。
+fn der_ecdsa_sig_to_raw(sig: &[u8], size: usize) -> Option<Vec<u8>> {
+    let (tag, hl, cl) = der_tlv(sig)?;
+    if tag != 0x30 {
+        return None;
+    }
+    let mut pos = hl;
+    let end = hl + cl;
+    let mut out = Vec::with_capacity(size * 2);
+    for _ in 0..2 {
+        let (t, ihl, icl) = der_tlv(&sig[pos..end])?;
+        if t != 0x02 {
+            return None;
+        }
+        let mut v = sig[pos + ihl..pos + ihl + icl].to_vec();
+        while v.len() > 1 && v[0] == 0x00 {
+            v.remove(0);
+        }
+        if v.is_empty() || v.len() > size {
+            return None;
+        }
+        out.extend(std::iter::repeat_n(0u8, size - v.len()));
+        out.extend_from_slice(&v);
+        pos += ihl + icl;
+    }
+    if pos != end {
+        return None;
+    }
+    Some(out)
+}
+
+/// `__wjs_x509_verify(certDer, keyBytes, keyType)` → boolean。
+/// keyBytes：rsa/rsa-pss/ec 为 SPKI DER，ed25519 为裸 32B；其余 keyType 一律 false
+/// （真机口径：错钥/异族 → false 不抛，private 入参的拒绝在 JS 壳做）。
+pub unsafe extern "C" fn x509_verify(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: X509 verify needs cert, key and key type");
+        return false;
+    }
+    let (Some(der), Some(key)) = (
+        view_bytes(&mut cx, frame.arg(0), "X509 cert"),
+        view_bytes(&mut cx, frame.arg(1), "X509 key"),
+    ) else {
+        return false;
+    };
+    let key_type = value_to_string(&mut cx, frame.arg(2));
+    let out = x509_verify_impl(&der, &key, &key_type);
+    match out {
+        Ok(ok) => {
+            frame.set_rval(mozjs::jsval::BooleanValue(ok));
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// 验签实现（native 的纯逻辑核，单测覆盖）。
+fn x509_verify_impl(der: &[u8], key: &[u8], key_type: &str) -> Result<bool, String> {
+    use der::Decode as _;
+    let cert = x509_cert::Certificate::from_der(der)
+        .map_err(|_| "TypeError: bad X.509 certificate".to_string())?;
+    let Some(tbs) = x509_tbs_bytes(der) else {
+        return Err("TypeError: bad X.509 certificate".into());
+    };
+    if cert.signature().unused_bits() != 0 {
+        return Ok(false);
+    }
+    // der BitString::as_bytes：unused_bits 非 8 的倍数时 None（上面已挡）
+    let Some(sig) = cert.signature().as_bytes() else {
+        return Ok(false);
+    };
+    let oid = cert.signature_algorithm().oid.to_string();
+    match key_type {
+        "rsa" | "rsa-pss" => {
+            let Some((hash, prefix)) = x509_rsa_sig_hash(&oid) else {
+                return Ok(false);
+            };
+            let pub_key = rsa_pub_from_der(key)?;
+            let digest = x509_digest(hash, tbs)?;
+            Ok(rsa_v15_verify_manual(&pub_key, prefix, &digest, sig))
+        }
+        "ec" => {
+            let Some(hash) = x509_ecdsa_sig_hash(&oid) else {
+                return Ok(false);
+            };
+            let curve = ec_curve_name(key);
+            if curve.is_empty() {
+                return Ok(false);
+            }
+            let Some(size) = curve_size(curve) else {
+                return Ok(false);
+            };
+            let Some(raw) = der_ecdsa_sig_to_raw(sig, size) else {
+                return Ok(false);
+            };
+            let digest = x509_digest(hash, tbs)?;
+            let out: Result<bool, String> = with_curve!(curve, |C, Secret, Public, Signing, Verifying, Sig, K| {
+                (|| -> Result<bool, String> {
+                    use K::ecdsa::signature::hazmat::PrehashVerifier as _;
+                    use K::elliptic_curve::pkcs8::DecodePublicKey as _;
+                    let pk = Public::from_public_key_der(key)
+                        .map_err(|_| "DataError: bad ECDSA public key (SPKI)".to_string())?;
+                    let vk = Verifying::from_sec1_bytes(&pk.to_sec1_bytes())
+                        .map_err(|_| "DataError: bad ECDSA public key".to_string())?;
+                    let sig = Sig::try_from(raw.as_slice())
+                        .map_err(|_| "OperationError: bad ECDSA signature".to_string())?;
+                    // 高 S 归一（OpenSSL 接受可锻造签名，§4.55 同口径）。
+                    let sig = sig.normalize_s();
+                    Ok(vk.verify_prehash(&digest, &sig).is_ok())
+                })()
+            });
+            out
+        }
+        "ed25519" => {
+            if oid != "1.3.101.112" {
+                return Ok(false);
+            }
+            let Ok(publ) = <[u8; 32]>::try_from(key) else {
+                return Ok(false);
+            };
+            let Ok(sigb) = <[u8; 64]>::try_from(sig) else {
+                return Ok(false);
+            };
+            Ok((|| {
+                use ed25519_dalek::Verifier as _;
+                let vk = ed25519_dalek::VerifyingKey::from_bytes(&publ).ok()?;
+                let sig = ed25519_dalek::Signature::from(sigb);
+                vk.verify(tbs, &sig).is_ok().then_some(true)
+            })()
+            .unwrap_or(false))
+        }
+        _ => Ok(false),
+    }
+}
+
 /// `__wjs_x_generate()` → 32B 私钥。
 pub unsafe extern "C" fn x_generate(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -2308,7 +2590,11 @@ pub unsafe extern "C" fn x_derive(
 
 #[cfg(test)]
 mod c4x_tests {
-    use super::{ec_curve_name, okp_unwrap_pkcs8, okp_unwrap_spki, okp_wrap_pkcs8, okp_wrap_spki};
+    use super::{
+        der_ecdsa_sig_to_raw, der_tlv, ec_curve_name, okp_unwrap_pkcs8, okp_unwrap_spki,
+        okp_wrap_pkcs8, okp_wrap_spki, rsa_v15_verify_manual, x509_ecdsa_sig_hash,
+        x509_rsa_sig_hash, x509_tbs_bytes, SystemRng,
+    };
 
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
@@ -2361,5 +2647,106 @@ mod c4x_tests {
         assert_eq!(ec_curve_name(&hex(K256_SPKI)), "secp256k1");
         assert_eq!(ec_curve_name(&hex(ED_SPKI)), "");
         assert_eq!(ec_curve_name(&[0u8; 10]), "");
+    }
+
+    // ── 9i-3 X.509 验签底座 ────────────────────────────────────────────────
+
+    #[test]
+    fn x509_der_tlv_shapes() {
+        // 短形：04 05 <5B>
+        assert_eq!(der_tlv(&[0x04, 0x05, 0, 0, 0, 0, 0]), Some((0x04, 2, 5)));
+        // 长形：30 82 01 00 → 256B
+        let mut long = vec![0x30, 0x82, 0x01, 0x00];
+        long.extend(std::iter::repeat_n(0u8, 256));
+        assert_eq!(der_tlv(&long), Some((0x30, 4, 256)));
+        // 截断 / indefinite / 超长字段数
+        assert_eq!(der_tlv(&[0x30, 0x05, 0]), None);
+        assert_eq!(der_tlv(&[0x30, 0x80]), None);
+        assert_eq!(der_tlv(&[0x30]), None);
+        assert_eq!(der_tlv(&[]), None);
+    }
+
+    #[test]
+    fn x509_tbs_span_exact() {
+        // 手搭证书：SEQ{ SEQ{INT 1}, SEQ{OID}, BITSTRING }——TBS 裸段必须逐字节还原
+        let tbs_body = [0x02u8, 0x01, 0x01, 0x0c, 0x03, b'a', b'b', b'c'];
+        let mut tbs = vec![0x30, tbs_body.len() as u8];
+        tbs.extend_from_slice(&tbs_body);
+        let alg = [0x30u8, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70];
+        let sig = [0x03u8, 0x02, 0x00, 0xAA];
+        let mut body = tbs.clone();
+        body.extend_from_slice(&alg);
+        body.extend_from_slice(&sig);
+        let mut der = vec![0x30, body.len() as u8];
+        der.extend_from_slice(&body);
+        assert_eq!(x509_tbs_bytes(&der), Some(tbs.as_slice()));
+        // 非 SEQ 首件 / 截断
+        assert_eq!(x509_tbs_bytes(&[0x04, 0x00]), None);
+        assert_eq!(x509_tbs_bytes(&der[..der.len() - 1]), None);
+    }
+
+    #[test]
+    fn x509_digestinfo_prefix_known_bytes() {
+        // RFC 8017 §9.2 注记值（标准 DigestInfo 前缀）
+        assert_eq!(
+            x509_rsa_sig_hash("1.2.840.113549.1.1.4").unwrap().1,
+            &const_hex::decode("3020300c06082a864886f70d020505000410").unwrap()[..]
+        );
+        assert_eq!(
+            x509_rsa_sig_hash("1.2.840.113549.1.1.5").unwrap().1,
+            &const_hex::decode("3021300906052b0e03021a05000414").unwrap()[..]
+        );
+        assert_eq!(
+            x509_rsa_sig_hash("1.2.840.113549.1.1.11").unwrap().1,
+            &const_hex::decode("3031300d060960864801650304020105000420").unwrap()[..]
+        );
+        // PSS/未知 → None
+        assert!(x509_rsa_sig_hash("1.2.840.113549.1.1.10").is_none());
+        assert!(x509_rsa_sig_hash("nope").is_none());
+        assert_eq!(x509_ecdsa_sig_hash("1.2.840.10045.4.3.2"), Some("SHA-256"));
+        assert_eq!(x509_ecdsa_sig_hash("1.2.840.10045.4.3.9"), None);
+    }
+
+    #[test]
+    fn x509_rsa_v15_manual_matches_rsa_crate() {
+        // rsa crate 自签（sha2_010, digest 0.10）⇄ 手工 EMSA 验签（sha2 0.11 直算）交叉
+        use rsa::signature::Signer as _;
+        use sha2::Digest as _;
+        let mut key_bytes = [0u8; 32];
+        getrandom::fill(&mut key_bytes).unwrap();
+        let key = rsa::RsaPrivateKey::new(&mut SystemRng, 2048).expect("keygen");
+        let data = b"tbs-bytes-for-manual-verify";
+        let sig = Box::<[u8]>::from(
+            rsa::pkcs1v15::SigningKey::<sha2_010::Sha256>::new(key.clone()).sign(data),
+        )
+        .into_vec();
+        let digest = sha2::Sha256::digest(data).to_vec();
+        let (_, prefix) = x509_rsa_sig_hash("1.2.840.113549.1.1.11").unwrap();
+        let pub_key = key.to_public_key();
+        assert!(rsa_v15_verify_manual(&pub_key, prefix, &digest, &sig));
+        // 篡改签名 / 篡改摘要 / 短签名 → false
+        let mut bad = sig.clone();
+        bad[10] ^= 0xFF;
+        assert!(!rsa_v15_verify_manual(&pub_key, prefix, &digest, &bad));
+        assert!(!rsa_v15_verify_manual(&pub_key, prefix, &vec![0u8; 32], &sig));
+        assert!(!rsa_v15_verify_manual(&pub_key, prefix, &digest, &sig[..sig.len() - 1]));
+    }
+
+    #[test]
+    fn x509_der_ecdsa_sig_to_raw_shapes() {
+        // SEQ{INT 1, INT 0xdeadbeef(高字节非零)} → 32B 定长左补零拼接
+        let der = [0x30u8, 0x0a, 0x02, 0x01, 0x01, 0x02, 0x05, 0x00, 0xde, 0xad, 0xbe, 0xef];
+        let raw = der_ecdsa_sig_to_raw(&der, 32).unwrap();
+        assert_eq!(raw.len(), 64);
+        assert!(raw[..31].iter().all(|&b| b == 0));
+        assert_eq!(raw[31], 1);
+        assert_eq!(&raw[60..], &[0xde, 0xad, 0xbe, 0xef]);
+        // 前导零剥除 / 非法形 / 空整数
+        let der0 = [0x30u8, 0x07, 0x02, 0x02, 0x00, 0x01, 0x02, 0x01, 0x02];
+        let raw0 = der_ecdsa_sig_to_raw(&der0, 2).unwrap();
+        assert_eq!(raw0, vec![0, 1, 0, 2]);
+        assert!(der_ecdsa_sig_to_raw(&[0x04, 0x00], 32).is_none());
+        assert!(der_ecdsa_sig_to_raw(&[0x30, 0x02, 0x04, 0x00], 32).is_none());
+        assert!(der_ecdsa_sig_to_raw(&[0x30, 0x00], 32).is_none());
     }
 }

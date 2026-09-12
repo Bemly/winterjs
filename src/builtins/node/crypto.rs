@@ -1631,7 +1631,8 @@ pub unsafe extern "C" fn kdf_argon2(
     }
 }
 
-// ── 9e-1d X509（解析面；`x509-cert` 直用，校验/签发不做）────────────────────
+// ── 9e-1d X509（`x509-cert` 直用；9i-3 起验签面就位：verify/publicKey/ca，
+//    checkIssued/checkPrivateKey/签发不做）────────────────────
 
 /// unix 秒 → `MMM DD HH:MM:SS YYYY GMT`（openssl `ASN1_TIME_print` 口径，日空位补空格）。
 fn fmt_asn1_time(secs: u64) -> String {
@@ -1724,7 +1725,8 @@ fn hex_colon(bytes: &[u8]) -> String {
     out
 }
 
-/// `__wjs_x509_parse(derU8)` → 证书 JSON（字段见 9e-1d；SAN/用法齐备，校验面不做）。
+/// `__wjs_x509_parse(derU8)` → 证书 JSON（字段见 9e-1d；SAN/用法齐备；
+/// 9i-3 增 `ca`（BasicConstraints）与 `spkiB64`（公钥重建），验签底座走 `__wjs_x509_verify`）。
 pub unsafe extern "C" fn x509_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -1774,6 +1776,7 @@ pub unsafe extern "C" fn x509_parse(
     let mut san_uri: Vec<String> = Vec::new();
     let mut key_usage: Option<Vec<String>> = None;
     let mut ext_key_usage: Option<Vec<String>> = None;
+    let mut ca = false;
     if let Some(exts) = tbs.extensions() {
         for ext in exts.iter() {
             let oid = ext.extn_id.to_string();
@@ -1831,6 +1834,11 @@ pub unsafe extern "C" fn x509_parse(
                     }
                     key_usage = Some(names);
                 }
+            } else if oid == "2.5.29.19" {
+                // BasicConstraints（cA 缺省 false，Node `x509.ca` 同口径）
+                if let Ok(bc) = x509_cert::ext::pkix::BasicConstraints::from_der(bytes) {
+                    ca = bc.ca;
+                }
             } else if oid == "2.5.29.37" {
                 if let Ok(eku) = Vec::<der::asn1::ObjectIdentifier>::from_der(bytes) {
                     ext_key_usage = Some(eku.iter().map(|o| o.to_string()).collect());
@@ -1854,6 +1862,18 @@ pub unsafe extern "C" fn x509_parse(
     let obj_of = |pairs: &[(String, String)]| -> serde_json::Map<String, serde_json::Value> {
         pairs.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect()
     };
+    // SPKI DER（`x509.publicKey` 重建公钥 KeyObject 用；der::Encode 忠实重编）
+    use der::Encode as _;
+    let spki_b64 = {
+        use base64::Engine as _;
+        match tbs.subject_public_key_info().to_der() {
+            Ok(d) => base64::engine::general_purpose::STANDARD.encode(d),
+            Err(_) => {
+                report_error(&mut cx, "TypeError: bad X.509 certificate");
+                return false;
+            }
+        }
+    };
     let json = serde_json::json!({
         "subject": subject,
         "issuer": issuer,
@@ -1872,6 +1892,8 @@ pub unsafe extern "C" fn x509_parse(
         "subjectAltName": if san_parts.is_empty() { None } else { Some(san_parts.join(", ")) },
         "keyUsage": key_usage,
         "extKeyUsage": ext_key_usage,
+        "ca": ca,
+        "spkiB64": spki_b64,
     })
     .to_string();
     set_rval_str(&mut cx, &frame, &json);
@@ -3930,10 +3952,10 @@ class X509Certificate {
   get extKeyUsage() { return this.__info.extKeyUsage; }
   get raw() { return Buffer.from(this.__der); }
   get publicKey() {
-    const err = new Error("X509Certificate.publicKey not supported");
-    err.code = "ERR_NOT_SUPPORTED";
-    throw err;
+    // 9i-3：由 SPKI DER 重建公钥 KeyObject（createPublicKey 试解链 rsa/ec/dsa/okp/ml-kem）
+    return createPublicKey({ key: Buffer.from(this.__info.spkiB64, "base64"), format: "der", type: "spki" });
   }
+  get ca() { return this.__info.ca === true; }
   toString() { return __pemEncode("CERTIFICATE", this.__der); }
   toJSON() { return this.toLegacyObject(); }
   toLegacyObject() {
@@ -3947,10 +3969,21 @@ class X509Certificate {
       validTo: this.__info.validTo,
     };
   }
-  verify() {
-    const err = new Error("X509Certificate.verify not supported (no chain builder)");
-    err.code = "ERR_NOT_SUPPORTED";
-    throw err;
+  verify(publicKey) {
+    // 9i-3 真机口径：无参/非 KeyObject → ERR_INVALID_ARG_TYPE；私钥 → ERR_INVALID_ARG_VALUE；
+    // 错钥/异族/不支持算法 → false 不抛。
+    if (!(publicKey instanceof KeyObject)) {
+      const err = new TypeError(`The "publicKey" argument must be an instance of KeyObject. Received ${publicKey === null ? "null" : typeof publicKey}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    if (publicKey.type !== "public") {
+      const err = new TypeError(`Key type must be public for X509Certificate.verify. Received ${publicKey.type}`);
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    const kt = publicKey.__keyType === "rsa-pss" ? "rsa" : publicKey.__keyType;
+    return __cryptCall(() => __wjs_x509_verify(this.__der, Buffer.from(publicKey.__material), kt)) === true;
   }
   checkHost(name) { return __x509Match(name, this.__info.sanDns, this.__info.sanIp, this.__info.subjectObj?.CN); }
   checkEmail(email) {

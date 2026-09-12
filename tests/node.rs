@@ -2855,3 +2855,136 @@ setTimeout(() => console.log("end-ok"), 2500);
     assert!(out.contains("end-ok"), "out: {out}");
     dir.close().unwrap();
 }
+// ── Phase 9e-1a：node:crypto（Hash/Hmac/随机/杂项） ────
+
+#[test]
+fn phase9e_crypto_hash_hmac() {
+    // 真 Node 取证向量（HMAC-SHA256/MD5/SHA3-256 + BLAKE2b/SHA3-512，逐字节对）
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import c, { createHash, createHmac, hash, getHashes, getCurves } from "node:crypto";
+console.log("sha", createHash("sha256").update("a").update("b").digest("hex") === "fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603");
+console.log("hmac", createHmac("sha256", "key").update("The quick brown fox jumps over the lazy dog").digest("hex") === "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8");
+console.log("hmac-md5", createHmac("md5", "key").update("msg").digest("hex") === "18e3548c59ad40dd03907b7aeee71d67");
+console.log("hmac-s3", createHmac("sha3-256", "key").update("msg").digest("hex") === "56b616feab81d996beb8cf47719b253cfe6d1da9be562c63520fef130a6d935e");
+console.log("blake", createHash("blake2b512").update("abc").digest("hex").slice(0, 32) === "ba80a53f981c4d0d6a2797b69f12f6e9");
+console.log("md5vec", createHash("md5").update("abc").digest("hex") === "900150983cd24fb0d6963f7d28e17f72");
+const h = createHash("sha256"); h.update("a"); const h2 = h.copy();
+console.log("copy", h2.update("b").digest("hex") === createHash("sha256").update("ab").digest("hex"));
+console.log("buf", Buffer.isBuffer(createHash("sha256").update("x").digest()), createHash("sha256").update("x").digest("hex").length === 64);
+console.log("oneshot", hash("sha256", "abc", "hex") === "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+console.log("alias", createHash("RSA-SHA256").update("x").digest("hex").slice(0, 8) === createHash("sha256").update("x").digest("hex").slice(0, 8));
+console.log("hashes", getHashes().includes("sha256") && getHashes().includes("blake2s256") && !getHashes().includes("ripemd160"));
+console.log("curves", getCurves().includes("prime256v1") && getCurves().includes("ed25519"));
+console.log("ns", typeof c.createHash === "function", c.webcrypto === globalThis.crypto);
+"#,
+    );
+    assert!(out.contains("sha true"), "out: {out}");
+    assert!(out.contains("hmac true"), "out: {out}");
+    assert!(out.contains("hmac-md5 true"), "out: {out}");
+    assert!(out.contains("hmac-s3 true"), "out: {out}");
+    assert!(out.contains("blake true"), "out: {out}");
+    assert!(out.contains("md5vec true"), "out: {out}");
+    assert!(out.contains("copy true"), "out: {out}");
+    assert!(out.contains("buf true true"), "out: {out}");
+    assert!(out.contains("oneshot true"), "out: {out}");
+    assert!(out.contains("alias true"), "out: {out}");
+    assert!(out.contains("hashes true"), "out: {out}");
+    assert!(out.contains("curves true"), "out: {out}");
+    assert!(out.contains("ns true true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9e_crypto_random() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { randomBytes, randomFill, randomFillSync, randomInt, randomUUID, randomUUIDv7, timingSafeEqual } from "node:crypto";
+console.log("rb", randomBytes(16).length === 16, Buffer.isBuffer(randomBytes(4)));
+randomBytes(8, (e, b) => {
+  console.log("rbcb", e === null, b.length === 8);
+  randomInt(1, 7, (e2, v) => {
+    console.log("ricb", e2 === null, v >= 1 && v < 7);
+    const buf = Buffer.alloc(8);
+    randomFill(buf, 2, 4, (e3, out) => {
+      console.log("rfcb", e3 === null, out === buf);
+      console.log("done");
+    });
+  });
+});
+console.log("ri", randomInt(5) >= 0 && randomInt(5) < 5, randomInt(3, 4) === 3);
+const u = randomUUID();
+console.log("uuid", u.length === 36 && u[14] === "4");
+const v7 = randomUUIDv7();
+console.log("uuid7", v7.length === 36 && v7[14] === "7" && v7 !== randomUUIDv7());
+const f = Buffer.alloc(4); randomFillSync(f);
+console.log("rfsync", f.length === 4, randomFillSync(new Uint8Array(3)).length === 3);
+console.log("tse", timingSafeEqual(Buffer.from([1, 2]), Buffer.from([1, 2])) === true,
+  timingSafeEqual(Buffer.from([1, 2]), Buffer.from([1, 3])) === false);
+"#,
+    );
+    assert!(out.contains("rb true true"), "out: {out}");
+    assert!(out.contains("rbcb true true"), "out: {out}");
+    assert!(out.contains("ricb true true"), "out: {out}");
+    assert!(out.contains("rfcb true true"), "out: {out}");
+    assert!(out.contains("done"), "out: {out}");
+    assert!(out.contains("ri true true"), "out: {out}");
+    assert!(out.contains("uuid true"), "out: {out}");
+    assert!(out.contains("uuid7 true"), "out: {out}");
+    assert!(out.contains("rfsync true true"), "out: {out}");
+    assert!(out.contains("tse true true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9e_crypto_errors_boundary() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createHash, createHmac, randomBytes, randomInt, randomFillSync, timingSafeEqual, hash } from "node:crypto";
+// 报错：未知算法（Hash 无码原文 / Hmac 有码，俱为真 Node 口径）
+try { createHash("nope"); } catch (e) { console.log("halg", e.code === undefined, e.message); }
+try { createHmac("nope", "k"); } catch (e) { console.log("malg", e.code === "ERR_CRYPTO_INVALID_DIGEST"); }
+try { createHash(123); } catch (e) { console.log("halgtype", e.code === "ERR_INVALID_ARG_TYPE"); }
+// 报错：finalized 后 update/copy（真 Node 同码）
+try { const h = createHash("sha256"); h.digest(); h.update("x"); } catch (e) { console.log("fin", e.code === "ERR_CRYPTO_HASH_FINALIZED"); }
+try { const h = createHash("sha256"); h.digest(); h.copy(); } catch (e) { console.log("fincopy", e.code === "ERR_CRYPTO_HASH_FINALIZED"); }
+// 报错：随机数形状
+try { randomBytes(-1); } catch (e) { console.log("rneg", e.code === "ERR_OUT_OF_RANGE"); }
+try { randomInt(5, 5); } catch (e) { console.log("rrange", e.code === "ERR_OUT_OF_RANGE"); }
+try { randomInt(); } catch (e) { console.log("rinttype", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { randomFillSync("no"); } catch (e) { console.log("rftype", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { timingSafeEqual(Buffer.from([1]), Buffer.from([1, 2])); } catch (e) { console.log("tse", e.code === "ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH"); }
+try { hash("sha256", "x", "nope"); } catch (e) { console.log("henc", e.code === "ERR_INVALID_ARG_VALUE"); }
+// 边界：未知输出编码回 Buffer（真 Node 宽容口径）；空输入；大块 1MB 往返一致
+const enc = createHash("sha256").update("x").digest("nope");
+console.log("badenc", Buffer.isBuffer(enc));
+console.log("empty", createHash("sha256").update("").digest("hex") === "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+const big = "ab".repeat(524288);
+console.log("big", createHash("sha256").update(big).digest("hex") === createHash("sha256").update(big).digest("hex"));
+"#,
+    );
+    assert!(out.contains("halg true Digest method not supported"), "out: {out}");
+    assert!(out.contains("malg true"), "out: {out}");
+    assert!(out.contains("halgtype true"), "out: {out}");
+    assert!(out.contains("fin true"), "out: {out}");
+    assert!(out.contains("fincopy true"), "out: {out}");
+    assert!(out.contains("rneg true"), "out: {out}");
+    assert!(out.contains("rrange true"), "out: {out}");
+    assert!(out.contains("rinttype true"), "out: {out}");
+    assert!(out.contains("rftype true"), "out: {out}");
+    assert!(out.contains("tse true"), "out: {out}");
+    assert!(out.contains("henc true"), "out: {out}");
+    assert!(out.contains("badenc true"), "out: {out}");
+    assert!(out.contains("empty true"), "out: {out}");
+    assert!(out.contains("big true"), "out: {out}");
+    dir.close().unwrap();
+}

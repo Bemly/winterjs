@@ -1591,3 +1591,34 @@ pub fn child_open() -> usize {
 pub fn child_try_wait(id: u64) -> Option<std::process::ExitStatus> {
     with_plain(|p| p.child_procs.get_mut(&id)?.child.try_wait().ok()?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    /// 端口计数状态机（`counted = open && refed && listening`）需 rooted 会话，
+    /// 单测起不来引擎——由黑盒全链覆盖（`phase9f_worker_channel_roundtrip` 的
+    /// close/unref/`phase9f_worker_thread_info_boundary` 的 th-unref 行）。
+
+    /// worker 句柄计数：运行中 +1，unref 摘，退出结算防双减。
+    #[test]
+    #[serial]
+    fn worker_handle_counting() {
+        let base = worker_open();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        worker_handle_add(WorkerHandle { worker_id: 9001, thread_id: 7, inbox_tx: tx, parent_port: 0, counted: true, exited: false });
+        assert_eq!(worker_open(), base + 1);
+        assert_eq!(worker_tid(9001), Some(7));
+        worker_set_ref(9001, false);
+        assert_eq!(worker_open(), base);
+        worker_set_ref(9001, true);
+        assert_eq!(worker_open(), base + 1);
+        assert!(worker_exited(9001)); // 首次 true
+        assert_eq!(worker_open(), base);
+        assert!(!worker_exited(9001)); // 防双减
+        assert_eq!(worker_open(), base);
+        assert!(worker_inbox(9001).is_none()); // 已退出即无端点
+        with_plain(|p| p.worker_handles.remove(&9001));
+    }
+}

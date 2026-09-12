@@ -2,9 +2,10 @@
 
 > 结论先行：9a–9e 所需轮子**全部已在闭包内**（`docs/dependencies.md` 采购单），
 > h2 服务端三家（§h2 表）经 `axum` 已在闭包，行级增补即可；
-> quic 仅 `quinn` 可用（§quic 表，待定夺，未引入）。
+> quic 仅 `quinn` 可用（§quic 表，已拍板未接线）。
 > 行级增补（补直引行，版本跟 lock）与真待定一样，动前照样记录+问用户。
 > 版本号一律引用 `dependencies.md`，此处不复写（防数字腐烂）。
+> 9d 剩余三项（zlib / https-tls / http2）2026-09-12 已拍板（§9d-剩余表）。
 
 ## 映射
 
@@ -22,10 +23,37 @@
 | 9e child IPC | 进程/管道/组杀 | `tokio` process + `nix`（§3/§8） | ✅ 全纯 Rust |
 | 9e perf/inspector | 观测/调试 | `tracing` + `metrics`（§3/§10） | ✅ 全纯 Rust |
 | 9f vm/worker | compartment/线程 | std thread + `crossbeam`（§3，在树内；设计另议） | ✅ 全纯 Rust |
-| 9f quic | QUIC | 仅 `quinn` 可用（§quic 表；**待定夺，未引入**） | 待定项 |
-| 行级增补（闭包已有） | 直接 `use` 传递依赖时 | `idna`（`url` 带入；`punycode` 用）、`hyper`/`h2`（`axum` 带入；h2 服务端，§h2 表） | 版本跟 lock，补行即变更，走 §0.5 |
+| 9f quic | QUIC | 仅 `quinn` 可用（§quic 表；**已拍板未接线**，v1 不验收） | 待定项 |
+| 行级增补（闭包已有） | 直接 `use` 传递依赖时 | `idna`（`url` 带入；`punycode` 用）、`hyper`/`h2`（`axum` 带入；h2 服务端，§h2 表）、`flate2`/`brotli`/`ruzstd`/`tokio-rustls`/`rustls-pemfile`（§9d-剩余表，已拍板） | 版本跟 lock，补行即变更，走 §0.5 |
 
-## h2 服务端候选（9d，2026-09-12 实测入库，待定夺）
+## 9d-剩余三项拍板表（zlib / https-tls / http2，2026-09-12 已拍板）
+
+> 三项轮子**全部已在闭包**（版本号/建库/维护/纯度/矩阵照抄 `dependencies.md` §6/§10
+> 与本文件 §h2 表，`Cargo.lock` 实测在列），零新 crate；
+> `flate2`/`brotli`/`ruzstd`/`tokio-rustls`/`rustls-pemfile` 已是 `Cargo.toml`
+> 直引（§2/§6/§10 门控沿用），`node:` 侧直接 `use` 无需增补；
+> `hyper`/`h2` 经 `axum` 在闭包，`node:http2` 动工时行级增补（版本跟 lock）。
+
+| 用途 | crate | 最新版本 | 建库时间 | 最新维护 | 纯 Rust | macA64 | macX64 | linA64 | linX64 | winA64 | winX64 | andA64 | andX64 | ohA64 | ohX64 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 压缩（zlib：gzip/deflate） | `flate2` | 1.1.10 | 2014-11-11 | 2026-08-28 | ✅（默认后端） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 压缩（zlib：brotli） | `brotli` | 9.0.0 | 2015-11-30 | 2026-09-02 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| zstd 编解码（serve 已用，zlib 备选） | `ruzstd` | 0.9.0 | 2019-11-04 | 2026-07-26 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 服务端 TLS（https） | `tokio-rustls` | 0.26.5 | 2017-02-22 | 2026-09-04 | ✅（TLS 豁免） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| PEM 加载（https 证书） | `rustls-pemfile` | 2.2.0 | 2020-12-28 | 2024-09-30 | ✅（冻结） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| h2 服务端引擎（http2 必选，见 §h2 表） | `hyper` | 1.11.1 | 2014-11-22 | 2026-08-28 | ✅（特性门控见备注） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| h2 直驱（http2 条件 fallback，见 §h2 表） | `h2` | 0.4.19 | 2017-03-09 | 2026-08-24 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+备注：zlib 对应 `node:zlib`（gzip/gunzip/deflate/inflate + brotli；`flate2` 默认
+`miniz_oxide` 纯 Rust 后端，禁 `zlib`/`zlib-ng`，§2 门控沿用）；
+https-tls 对应 `node:https` + `node:tls` 服务端（`tokio-rustls` 用法
+`default-features=false` + `ring`，禁 aws-lc，§2 门控沿用；PEM 只收
+`rustls-pemfile` + `x509-cert` 口径，PFX 不支持）；
+http2 定夺沿用 §h2 表（`hyper` 必选，用法 `default-features=false` +
+`server,http2`，禁 `client`/`ffi`/`capi`；`h2` 仅条件 fallback）。
+`httparse`（§h2 表保底件）https/http2 用不上，不列入本表。
+
+## h2 服务端候选（9d，2026-09-12 实测入库，已拍板：`hyper` 必选）
 
 > 三家全纯 Rust且**全已在闭包**（`hyper 1.11.1` + `h2 0.4.19` 经 `axum` 入图，
 > `Cargo.lock` 实测在列），h2 无任何新 crate 需求；`hyper` 按需特性
@@ -47,7 +75,7 @@
  非首选。`axum` 组合已在树内但它是 Web 框架层，做 `node:http2` 外形仍需
  二选一引擎，故 devoted 表只列引擎。
 
-## quic 候选（9f，2026-09-12 实测入库，待定夺）
+## quic 候选（9f，2026-09-12 实测入库，已拍板未接线：`quinn` 必选，v1 不验收）
 
 > 仅 `quinn` 过门：默认特性即 ring（`rustls-ring`，aws-lc 全是 opt-in），
 > 依赖全纯 Rust/树内（bytes/rustc-hash/pin-project-lite/thiserror/tracing/
@@ -58,11 +86,7 @@
 | 用途 | crate | 最新版本 | 建库时间 | 最新维护 | 纯 Rust | macA64 | macX64 | linA64 | linX64 | winA64 | winX64 | andA64 | andX64 | ohA64 | ohX64 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | QUIC 传输 | `quinn` | 0.11.11 | 2018-10-02 | 2026-06-22 | ✅（§2 门控，默认 ring） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| QUIC 传输（备选） | `s2n-quic` | 1.88.0 | 2022-02-16 | 2026-08-21 | ❌（双路皆禁，见备注） | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | P2P QUIC（层错配） | `iroh` | 1.2.0 | 2022-03-10 | 2026-09-09 | ✅（默认 ring） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
-| QUIC（C，禁） | `quiche` | 0.29.3 | 2019-01-24 | 2026-07-14 | ❌（BoringSSL C++/cmake） | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| QUIC（无 crate，禁） | `neqo` | —（`neqo`/`neqo-common` 查无此包） | — | — | ❌（NSS C） | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| QUIC（C 绑定，禁） | `msquic` | 2.5.1-beta | 2021-07-18 | 2025-07-11 | ❌（平台 C 库绑定） | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 备注：`s2n-quic` 默认 TLS 走 `s2n-tls`（C），`provider-tls-rustls` 切过去后
 其 `s2n-quic-rustls` 仍硬绑 `rustls aws-lc-rs`（manifest 实测），双路皆撞 §2，

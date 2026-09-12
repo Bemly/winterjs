@@ -3172,14 +3172,14 @@ fn phase9e_crypto_asym_errors() {
 import { generateKeyPairSync, checkPrimeSync, generatePrimeSync, createECDH, createDiffieHellman, createDiffieHellmanGroup, sign } from "node:crypto";
 console.log("prime", checkPrimeSync(13n) === true && checkPrimeSync(15n) === false);
 console.log("primebuf", checkPrimeSync(Buffer.from([13])) === true);
-try { generateKeyPairSync("dsa", {}); } catch (e) { console.log("dsa", e.code === "ERR_NOT_SUPPORTED"); }
-try { createECDH("secp256k1"); } catch (e) { console.log("k1", e.code === "ERR_CRYPTO_INVALID_CURVE"); }
+try { generateKeyPairSync("dsa", {}); console.log("dsa", true); } catch (e) { console.log("dsa", false); }
+try { createECDH("secp256k1"); console.log("k1", true); } catch (e) { console.log("k1", false); }
 try { createDiffieHellmanGroup("modp1"); } catch (e) { console.log("modp1", e.code === "ERR_NOT_SUPPORTED"); }
 try { createDiffieHellmanGroup("modp99"); } catch (e) { console.log("modp99", e.code === "ERR_NOT_SUPPORTED"); }
 try { createDiffieHellman(2048); } catch (e) { console.log("dhsize", e.code === "ERR_NOT_SUPPORTED"); }
 const p = generatePrimeSync(64, { checks: 3 });
 console.log("gen", p.length === 8 && checkPrimeSync(p, { checks: 3 }) === true);
-try { generatePrimeSync(64, { bigint: true }); } catch (e) { console.log("bigint", e.code === "ERR_NOT_SUPPORTED"); }
+try { console.log("bigint", typeof generatePrimeSync(64, { bigint: true }) === "bigint"); } catch (e) { console.log("bigint", false); }
 try { sign("nope", Buffer.from("m"), generateKeyPairSync("ed25519").privateKey); } catch (e) { console.log("edalg", e.code === "ERR_CRYPTO_INVALID_DIGEST"); }
 "#,
     );

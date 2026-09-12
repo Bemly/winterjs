@@ -2105,6 +2105,19 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_vm_get", Some(node::vm::vm_get), 2),
             ("__wjs_vm_keys", Some(node::vm::vm_keys), 1),
             ("__wjs_vm_release", Some(node::vm::vm_release), 1),
+            // Phase 9f-2: worker 消息通道（端口对/投递/线程身份/环境数据）
+            ("__wjs_port_pair", Some(node::worker::port_pair), 0),
+            ("__wjs_port_attach", Some(node::worker::port_attach), 2),
+            ("__wjs_port_post", Some(node::worker::port_post), 2),
+            ("__wjs_port_close", Some(node::worker::port_close), 1),
+            ("__wjs_port_unref", Some(node::worker::port_unref), 1),
+            ("__wjs_port_ref", Some(node::worker::port_ref), 1),
+            ("__wjs_worker_is_main", Some(node::worker::worker_is_main), 0),
+            ("__wjs_worker_thread_id", Some(node::worker::worker_thread_id), 0),
+            ("__wjs_worker_parent", Some(node::worker::worker_parent), 0),
+            ("__wjs_worker_data", Some(node::worker::worker_data), 0),
+            ("__wjs_worker_env_set", Some(node::worker::env_set), 2),
+            ("__wjs_worker_env_get", Some(node::worker::env_get), 1),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）
@@ -2149,8 +2162,18 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_ffi_cstring", Some(bun::ffi::ffi_cstring), 1),
             ("__wjs_ffi_bytes", Some(bun::ffi::ffi_bytes), 2),
         ];
+        // 重名 native 会静默覆盖（如 __wjs_env_* 曾被 worker 环境数据顶掉，
+        // process.env 全坏——debug 期即炸，见 9f-2。局部表：每会话 define_all
+        // 都跑一次，判重集必须局部（static 跨会话误报）。
+        #[cfg(debug_assertions)]
+        let mut seen_native: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for (name, native, nargs) in web {
             let cname = CString::new(*name).expect("no NUL");
+            #[cfg(debug_assertions)]
+            debug_assert!(
+                seen_native.insert(*name),
+                "duplicate builtin native name: {name}"
+            );
             if mozjs::jsapi::JS_DefineFunction(rcx, raw_handle(&global), cname.as_ptr(), *native, *nargs, 0)
                 .is_null()
             {

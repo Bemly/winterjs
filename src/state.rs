@@ -103,6 +103,24 @@ unsafe impl Traceable for NetTarget {
     }}
 }
 
+/// 一个 MessagePort 端（`Box` 定址）：对端会话收件箱 + JS 目标（Close 后摘除）。
+pub struct WorkerPort {
+    pub id: u64,
+    pub peer: u64,
+    pub peer_tx: tokio::sync::mpsc::UnboundedSender<crate::builtins::node::worker::WorkerEvent>,
+    pub target: Option<Box<Heap<JSVal>>>,
+    pub open: bool,
+    pub counted: bool,
+    pub peer_closed: bool,
+}
+
+// SAFETY: 只追踪 target（通道/旗无 GC 指针）。
+unsafe impl Traceable for WorkerPort {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
+        self.target.trace(trc);
+    }}
+}
+
 /// socket/server 表项（写端命令通道 + 半关旗；收尾单出口见 node/net.rs）。
 pub struct NetEntry {
     pub cmd_tx: tokio::sync::mpsc::UnboundedSender<crate::builtins::node::net::NetCmd>,
@@ -190,6 +208,7 @@ pub struct RootedState {
     pub watch_listeners: Vec<WatchCallback>, // fs.watch 监听（close 前保留，多次分发）
     pub child_targets: Vec<ChildTarget>, // 异步子进程目标（exit/close 后摘除）
     pub net_targets: Vec<NetTarget>, // node:net 目标（Close 后摘除）
+    pub worker_ports: Vec<WorkerPort>, // worker MessagePort 端（close 后摘除）
     pub vm_contexts: Vec<VmCtx>, // node:vm 上下文 global（release 摘除，会话终由 OS 回收）
     pub fetch_callbacks: Vec<FetchCallback>, // 未决 fetch 的 resolve/reject（按 id 取出）
     pub fetch_streams: Vec<FetchStreamState>, // 流式 body（chunk 泵；cancel/终态时移除）
@@ -214,6 +233,7 @@ unsafe impl Traceable for RootedState {
         self.watch_listeners.trace(trc);
         self.child_targets.trace(trc);
         self.net_targets.trace(trc);
+        self.worker_ports.trace(trc);
         self.vm_contexts.trace(trc);
         self.fetch_callbacks.trace(trc);
         self.fetch_streams.trace(trc);
@@ -263,6 +283,15 @@ pub struct PlainState {
     /// 存活 socket/server 数（Close 结算时减；事件循环退出条件用）。
     pub net_open: usize,
     pub net_sockets: HashMap<u64, NetEntry>,
+    /// worker 驱动端点（MessagePort/Worker；接收端由事件循环持有）。
+    pub worker_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::worker::WorkerEvent>>,
+    pub worker_next_id: u64,
+    /// 存活计数（ref'd 端口 + 运行中 worker；事件循环退出条件用）。
+    pub worker_open: usize,
+    /// 本会话线程身份（主=true/0；worker 线程由 spawn 侧显式改写，默认 false 须经
+    /// `worker_session_init` 矫正——init_session 对每个会话都调一次）。
+    pub worker_is_main: bool,
+    pub worker_thread_id: u64,
     /// vm 上下文 id 分配（单调；release 不复用，与 fd 表同哲学）。
     pub vm_next_id: u64,
     /// WebSocket 驱动端点（同上）+ 发送端表 + 存活计数（事件循环退出条件用）。
@@ -1052,6 +1081,150 @@ pub fn net_purge(id: u64) -> bool {
 /// 存活 socket/server 数（事件循环退出条件用）。
 pub fn net_open() -> usize {
     with_plain(|p| p.net_open)
+}
+
+// ── worker 驱动（MessagePort/Worker；channel → 事件循环，同 net 模型）────────
+
+/// 会话线程身份初始化（`init_session` 对每个会话都调：主调 (true, 0)，9f-3 的
+/// worker 线程起后改写 (false, id)；PlainState::default 全 false/0 不可直接用）。
+pub fn worker_session_init(is_main: bool, thread_id: u64) {
+    with_plain(|p| {
+        p.worker_is_main = is_main;
+        p.worker_thread_id = thread_id;
+    });
+}
+
+pub fn worker_is_main() -> bool {
+    with_plain(|p| p.worker_is_main)
+}
+
+pub fn worker_thread_id() -> u64 {
+    with_plain(|p| p.worker_thread_id)
+}
+
+/// 建直连端口对（同会话回环；两端各计 1 存活；返回 (a, b)）。
+pub fn port_pair() -> Option<(u64, u64)> {
+    with_plain(|p| {
+        let tx = p.worker_tx.clone()?;
+        p.worker_next_id += 1;
+        let a = p.worker_next_id;
+        p.worker_next_id += 1;
+        let b = p.worker_next_id;
+        p.worker_open += 2;
+        with_rooted(|s| {
+            s.worker_ports.push(WorkerPort { id: a, peer: b, peer_tx: tx.clone(), target: None, open: true, counted: true, peer_closed: false });
+            s.worker_ports.push(WorkerPort { id: b, peer: a, peer_tx: tx, target: None, open: true, counted: true, peer_closed: false });
+        });
+        Some((a, b))
+    })
+}
+
+/// 登记端口 JS 目标（MessagePort 构造时 attach；dispatch 经 `__ev` 回调）。
+pub fn port_attach(id: u64, target: JSVal) {
+    with_rooted(|s| {
+        if let Some(p) = s.worker_ports.iter_mut().find(|p| p.id == id) {
+            p.target = Some(Heap::boxed(target));
+        }
+    });
+}
+
+pub fn port_target(id: u64) -> Option<JSVal> {
+    with_rooted(|s| {
+        s.worker_ports.iter().find(|p| p.id == id).and_then(|p| p.target.as_ref().map(|t| t.get()))
+    })
+}
+
+/// 发往对端（本端已关/对端已关即丢弃，Node 同款静默）。
+pub fn port_post(id: u64, json: String) -> bool {
+    let route = with_rooted(|s| {
+        s.worker_ports.iter().find(|p| p.id == id).and_then(|p| {
+            if !p.open || p.peer_closed {
+                return None;
+            }
+            Some((p.peer, p.peer_tx.clone()))
+        })
+    });
+    match route {
+        Some((peer, tx)) => tx.send(crate::builtins::node::worker::WorkerEvent::PortMsg { to: peer, json }).is_ok(),
+        None => false,
+    }
+}
+
+/// 本端关闭（首次 true；摘 target；计过数即减；尽力通知对端记 peer_closed）。
+pub fn port_close(id: u64) -> bool {
+    let route = with_rooted(|s| {
+        let mut out = None;
+        if let Some(p) = s.worker_ports.iter_mut().find(|p| p.id == id) {
+            if !p.open {
+                return None;
+            }
+            p.open = false;
+            p.target = None;
+            if p.counted {
+                p.counted = false;
+                out = Some((p.peer, p.peer_tx.clone(), true));
+            } else {
+                out = Some((p.peer, p.peer_tx.clone(), false));
+            }
+        }
+        out
+    });
+    match route {
+        Some((peer, tx, dec)) => {
+            if dec {
+                with_plain(|p| p.worker_open = p.worker_open.saturating_sub(1));
+            }
+            let _ = tx.send(crate::builtins::node::worker::WorkerEvent::PortClose { to: peer });
+            true
+        }
+        None => false,
+    }
+}
+
+/// 取消引用（端口不再续命事件循环；幂等）。
+pub fn port_unref(id: u64) {
+    let dec = with_rooted(|s| {
+        match s.worker_ports.iter_mut().find(|p| p.id == id) {
+            Some(p) if p.counted => {
+                p.counted = false;
+                true
+            }
+            _ => false,
+        }
+    });
+    if dec {
+        with_plain(|p| p.worker_open = p.worker_open.saturating_sub(1));
+    }
+}
+
+/// 重新引用（unref 的逆操作；已关闭/已计数即无操作）。
+pub fn port_ref(id: u64) {
+    let inc = with_rooted(|s| {
+        match s.worker_ports.iter_mut().find(|p| p.id == id) {
+            Some(p) if p.open && !p.counted => {
+                p.counted = true;
+                true
+            }
+            _ => false,
+        }
+    });
+    if inc {
+        with_plain(|p| p.worker_open += 1);
+    }
+}
+
+/// 对端关闭到达：记 peer_closed（后续 post 静默丢弃；本端不派 close，Node 口径）。
+pub fn port_peer_closed(id: u64) {
+    with_rooted(|s| {
+        if let Some(p) = s.worker_ports.iter_mut().find(|p| p.id == id) {
+            p.peer_closed = true;
+        }
+    });
+}
+
+/// 存活计数（ref'd 端口 + 运行中 worker；事件循环退出条件用）。
+pub fn worker_open() -> usize {
+    with_plain(|p| p.worker_open)
 }
 
 // ── vm 上下文（同 Runtime 内多 global，各占新 compartment）────────────────

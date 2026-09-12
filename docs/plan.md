@@ -656,6 +656,18 @@
   黑盒 +3（tls 回环双授权路径/https GET+POST/错误路径，rcgen 实时签发 hermetic）；
   `cargo test` 106+217 全绿（serve 3 例并行 flake 一次，单跑+重跑全绿），
   0 新增警告，冒烟 5/5。
+- [x] 9d-7 http2（2026-09-12 完工；9d 关口收官，剩 9e）：
+  `node:http2`（`src/builtins/node/http2.rs`，4 natives；hyper `server`+`http2`
+  行级直引 `Cargo.toml`，§h2 拍板口径）：h2c prior-knowledge + h2s（ALPN h2，
+  tls 复用 `server_config_h2`/`client_config_h2`）；事件复用 net 通道
+  （`H2Request`/`H2Stream`/`H2SessionClose` 变体 + `H2Respond`/`H2Open` 命令，
+  零新 channel）；服务端整收应答经 oneshot；客户端 session 驱动与 conn 同 task。
+  偏差记档：无 Upgrade/h1c 回落、体整收、无推送/trailer/流控 knob、反射面仅 compat 子集。
+  踩坑两件：① `createServer` 构造器与包层双注册 request 致请求事件双发（§4.39）；
+  ② 1MB 体 SIGBUS——实为全域 `Heap` 搬运 UB（§4.40），非 http2 之过。
+  黑盒 +3（h2c 双流多路/h2s 回环/拒连+空体+1MB 边界）；`cargo test` 108+220 全绿
+  （单测 108 含 http2 新增 2，黑盒 node 63 含 http2 3，builtins 17 含 GC 回归 1），
+  0 新增警告，冒烟 5/5。
 
 ## 全局纪律
 

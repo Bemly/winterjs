@@ -16,7 +16,7 @@
 | 9c fs | 文件 IO/错误码 | `fs-err` + std + `tokio` fs（§3/§8） | ✅ 全纯 Rust |
 | 9d net/dns | TCP/UDP/lookup | `tokio` net + `hickory-resolver`（§3/§6） | ✅ 全纯 Rust |
 | 9d http/https | 客户端/服务端/路由 | `reqwest` + `axum` + `tower`（§2 门控沿用） | ✅（TLS 豁免沿用 §12） |
-| 9d http2 | h2 服务端 | `hyper`（`server`+`http2`）或 `h2` 直驱（§h2 表；双双已在闭包，行级增补） | ✅ 全纯 Rust |
+| 9d http2 | h2 服务端 | `hyper`（`server`+`http2`，§h2 表；2026-09-12 已行级直引接线） | ✅ 全纯 Rust |
 | 9d tls | 服务端 TLS | `tokio-rustls` + `rustls-pemfile`（§2/§10） | ✅（TLS 豁免沿用 §12） |
 | 9d dgram/zlib | UDP/压缩 | `tokio` net + `flate2`/`brotli`/`ruzstd`（§6） | ✅（默认后端口径沿用） |
 | 9e crypto | 非对称/杂凑差集 | RustCrypto 全家 + `rcgen`（§7，门控沿用） | ✅ 全纯 Rust |
@@ -32,7 +32,9 @@
 > 与本文件 §h2 表，`Cargo.lock` 实测在列），零新 crate；
 > `flate2`/`brotli`/`ruzstd`/`tokio-rustls`/`rustls-pemfile` 已是 `Cargo.toml`
 > 直引（§2/§6/§10 门控沿用），`node:` 侧直接 `use` 无需增补；
-> `hyper`/`h2` 经 `axum` 在闭包，`node:http2` 动工时行级增补（版本跟 lock）。
+> `hyper`/`h2` 经 `axum` 在闭包；`node:http2` 已于 2026-09-12 行级增补接线
+> （`hyper = { version = "1", default-features = false, features = ["server", "http2"] }`，
+> 版本跟 lock 1.11.1；`h2` 未直引，条件 fallback 保留）。
 
 | 用途 | crate | 最新版本 | 建库时间 | 最新维护 | 纯 Rust | macA64 | macX64 | linA64 | linX64 | winA64 | winX64 | andA64 | andX64 | ohA64 | ohX64 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|

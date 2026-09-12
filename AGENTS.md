@@ -533,6 +533,36 @@ cargo build
  （`generate_simple_self_signed`，自带正确扩展；serve 黑盒同款）。
 - 复现：`tests/node.rs::phase9d_https_loopback`（三参修前 hang）。
 
+### 4.39 http2 请求事件双发：构造器与包层别双注册（2026-09-12，Phase 9d-7）
+
+- 症状：3 路 h2 请求，服务端 `srv-req` 打印 6 次；多路复用黑盒丢一整流。
+- 根因：`Http2Server` 构造器内 `if (typeof options === "function") this.on(...)`
+  与 `createServer/createSecureServer` 包层接线重复——函数首参同时命中两处。
+- 修法：构造器不再碰 request 监听器，只由包层接线（`src/builtins/node/http2.rs`）。
+- 复现：3 流探针（修前每流双 `srv-req`）；`tests/node.rs::phase9d_http2_cleartext`。
+
+### 4.40 `Heap::set` 后禁移动，违者 nursery GC 必崩（2026-09-12，Phase 9d-7 总根因）
+
+- 症状：回调内制造 GC 压力（2 万小对象 / btoa 大串 / 100KB+ http2 体）后进程
+  SIGSEGV/SIGBUS（exit=138/139），崩点不定（dispatch 内外皆可）；timer-only
+  同样崩，与 net/http2/zlib 无关——此前"大字符串崩""http2 大包崩"全是该根因的表象。
+- 根因：mozjs `Heap::set` 的 post-barrier 记录的是槽地址，set 后移动即悬垂
+  （上游 `jsgc.rs` 明写 + 专设 `Heap::boxed` 防此）；本仓 `Vec<NetTarget/
+  TimerEntry/ModuleEntry/CjsEntry/WatchCallback/ChildTarget/FetchCallback/
+  StreamWaiter>` + `unhandled` 的 `push/realloc/retain/remove` 件件在搬运已 set
+  的 Heap，下次 minor GC 读悬垂 store-buffer 边即炸。旧测试全绿只因从未在回调内
+  制造 nursery 压力（btoa 大串走大对象空间，未必触发 minor GC，故时崩时不崩）。
+- 修法：全部持 JS 值的 Vec 元素字段改 `Box<Heap<T>>`（Box 移动只搬指针，
+  槽地址恒稳；`drop` 自带 clearing barrier，摘除安全）；构造点一律
+  `Heap::boxed(v)`；读侧 `.get()` 经 Deref 零改；trace impl 零改（`Box` blanket）；
+  `RootedState` 直属单值字段不动（已在 `RootedTraceableBox` 内稳定）。
+  （`src/state.rs` + `timers.rs`/`modules.rs`/`runtime.rs` 共 11 构造点。）
+- 复现：`tests/builtins.rs::phase1_gc_pressure_keeps_rooted_targets`
+  （修前 exit=139；探针 `setTimeout` 内 2 万对象分配）。
+- 推广为铁律：新增跨 GC 存活的 JS 值存储，一律 `Box<Heap>` 定址；
+  禁裸 `Heap` 进一切可搬运容器（`Vec` 元素/`retain`/`remove`/结构体按值移动，
+  含 interval 重排这类"自家搬自家"）。
+
 
 ## 5. 路线图（按序）
 

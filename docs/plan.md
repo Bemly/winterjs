@@ -756,9 +756,12 @@
   `BroadcastChannel` 等不导出；无 error 监听即 fatal（Node 同款）。
 - 9f 收官（2026-09-12）：`cargo test` 单测 119 + 黑盒 241 全绿
   （node 83 含 9f 新增 7：vm 2/channel 2/worker 3；总 360 passed + 1 ignored，
-  0 failed），0 新增警告（5 预存），冒烟 5/5，零新 crate（`Cargo.toml` 未动；
-  `quinn` 仍未接线，v1 不验收）。剩 9f 深水（`vm` 模块系/`worker_threads` 传输
-  细节）与 plan2 §4 不做项记终局缺口。
+  0 failed），0 新增警告（5 预存），冒烟 5/5，零新 crate（`Cargo.toml` 未动）。
+- quinn 接线（2026-09-13）：`quinn 0.11.11` 入 `Cargo.toml`（optional + 进
+  `default`，自身 default 特性全开，`cargo tree` 无 aws-lc/C 新增）+
+  `tests/quic.rs` 回环实证 2 例（握手/双向流 echo/自签负路径，hermetic）；
+  `node:quic` JS 面未出（v1 不验收；dependencies2 §quic 记全）。
+  剩 9f 深水（`vm` 模块系/`worker_threads` 传输细节）与 plan2 §4 不做项记终局缺口。
 
 ## 全局纪律
 

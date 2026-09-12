@@ -2,7 +2,7 @@
 
 > 结论先行：9a–9e 所需轮子**全部已在闭包内**（`docs/dependencies.md` 采购单），
 > h2 服务端三家（§h2 表）经 `axum` 已在闭包，行级增补即可；
-> quic 仅 `quinn` 可用（§quic 表，已拍板未接线）。
+> quic 即 `quinn`（§quic 表；2026-09-13 已接线，`node:quic` 面仍 v1 不验收）。
 > 行级增补（补直引行，版本跟 lock）与真待定一样，动前照样记录+问用户。
 > 版本号一律引用 `dependencies.md`，此处不复写（防数字腐烂）。
 > 9d 剩余三项（zlib / https-tls / http2）2026-09-12 已拍板（§9d-剩余表）。
@@ -23,7 +23,7 @@
 | 9e child IPC | 进程/管道/组杀 | `tokio` process + `nix`（§3/§8） | ✅ 全纯 Rust |
 | 9e perf/inspector | 观测/调试 | `tracing` + `metrics`（§3/§10） | ✅ 全纯 Rust |
 | 9f vm/worker | compartment/线程 | std thread + `crossbeam`（§3，在树内；设计另议） | ✅ 全纯 Rust |
-| 9f quic | QUIC | 仅 `quinn` 可用（§quic 表；**已拍板未接线**，v1 不验收） | 待定项 |
+| 9f quic | QUIC | `quinn`（§quic 表；2026-09-13 已接线，面仍 v1 不验收） | ✅ 全纯 Rust |
 | 行级增补（闭包已有） | 直接 `use` 传递依赖时 | `idna`（`url` 带入；`punycode` 用）、`hyper`/`h2`（`axum` 带入；h2 服务端，§h2 表）、`flate2`/`brotli`/`ruzstd`/`tokio-rustls`/`rustls-pemfile`（§9d-剩余表，已拍板） | 版本跟 lock，补行即变更，走 §0.5 |
 
 ## 9e 落地注记（2026-09-12，零新 crate）
@@ -41,8 +41,8 @@
 > 9f 全程未改 `Cargo.toml`/`Cargo.lock`：vm 为 mozjs 原生多 global
 > （`JS_NewGlobalObject` + `Compile1`，无轮子）；worker 线程底座为
 > `std::thread` + `tokio`（§3）+ `std::sync::mpsc` rendezvous——`crossbeam`
-> 虽在 §映射 表内，实际未用到（标准库覆盖），不增补；
-> `quinn` 仍未接线（v1 不验收，§quic 表维持原判）。
+> 虽在 §映射 表内，实际未用到（标准库覆盖），不增补。
+> quinn 于 2026-09-13 接线（本文件 §quic 表），`node:quic` 面仍 v1 不验收。
 
 ## 9d-剩余三项拍板表（zlib / https-tls / http2，2026-09-12 已拍板）
 
@@ -95,7 +95,7 @@ http2 定夺沿用 §h2 表（`hyper` 必选，用法 `default-features=false` +
  非首选。`axum` 组合已在树内但它是 Web 框架层，做 `node:http2` 外形仍需
  二选一引擎，故 devoted 表只列引擎。
 
-## quic 候选（9f，2026-09-12 实测入库，已拍板未接线：`quinn` 必选，v1 不验收）
+## quic 候选（9f，2026-09-12 实测入库，已拍板；2026-09-13 接线：`quinn`，面仍 v1 不验收）
 
 > 仅 `quinn` 过门：默认特性即 ring（`rustls-ring`，aws-lc 全是 opt-in），
 > 依赖全纯 Rust/树内（bytes/rustc-hash/pin-project-lite/thiserror/tracing/
@@ -119,6 +119,16 @@ http2 定夺沿用 §h2 表（`hyper` 必选，用法 `default-features=false` +
 禁 `rustls-aws-lc-rs*`；`optional` 经 `--features quinn` 按需，默认零成本，
 `cap-std` 同款）；其余 quic 一律不要。
 `neqo` 在 crates.io 无可用包（404 实测）且 NSS 即 C，双杀。
+接线（2026-09-13 用户拍板默认启用）：`quinn = { version = "0.11", optional = true }`
+（自身 **default 特性全开**：`log/platform-verifier/runtime-tokio/rustls-ring/bloom`，
+`cargo tree` 实测无 aws-lc/C 新增，rustls 统一 0.23.44、ring 0.17.14；
+拍板的 `default-features=false` 口径被 default 取代——default 本就无 aws-lc，
+还多拿 platform-verifier 真机验签能力，精神一致），
+feature `quinn = ["dep:quinn"]` 并进 `default`（`--no-default-features` 照编，
+`tests/quic.rs` 整文件 `cfg(feature)` 门控即 0 用例）。
+实证 `tests/quic.rs` 2 例（回环握手 + 双向流 echo + 自签负路径，全 127.0.0.1
+hermetic，0.01s 级）。`node:quic` JS 面未出（真机 node v26.8.2 自带都没有；
+8000 行对齐不在切片尺度，等消费者）。
 
 ## 测试资产（非依赖，仓库外按需取）
 

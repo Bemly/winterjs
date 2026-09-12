@@ -2657,6 +2657,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastbloom"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef975e30683b2d965054bb0a836f8973857c4ebf6acf274fe46617cd285060d8"
+dependencies = [
+ "foldhash 0.2.0",
+ "libm",
+ "portable-atomic",
+ "siphasher",
+]
+
+[[package]]
 name = "faster-hex"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8030,6 +8042,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04759210543be93709136e28212294a659ef5001836ff4eab4d663e4529bba83"
 dependencies = [
  "bytes",
+ "fastbloom 0.17.0",
  "getrandom 0.4.3",
  "lru-slab",
  "rand 0.10.2",
@@ -8038,6 +8051,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "rustls",
  "rustls-pki-types",
+ "rustls-platform-verifier",
  "slab",
  "thiserror 2.0.20",
  "tinyvec",
@@ -10597,7 +10611,7 @@ dependencies = [
  "crossbeam-skiplist",
  "either",
  "fallible-iterator",
- "fastbloom",
+ "fastbloom 0.14.1",
  "hex",
  "intrusive-collections",
  "io-uring",
@@ -11771,6 +11785,7 @@ dependencies = [
  "pretty_assertions",
  "proptest",
  "qrcode",
+ "quinn",
  "rand 0.10.2",
  "rayon",
  "rcgen",

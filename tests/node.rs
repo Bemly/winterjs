@@ -2877,7 +2877,7 @@ console.log("copy", h2.update("b").digest("hex") === createHash("sha256").update
 console.log("buf", Buffer.isBuffer(createHash("sha256").update("x").digest()), createHash("sha256").update("x").digest("hex").length === 64);
 console.log("oneshot", hash("sha256", "abc", "hex") === "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 console.log("alias", createHash("RSA-SHA256").update("x").digest("hex").slice(0, 8) === createHash("sha256").update("x").digest("hex").slice(0, 8));
-console.log("hashes", getHashes().includes("sha256") && getHashes().includes("blake2s256") && !getHashes().includes("ripemd160"));
+console.log("hashes", getHashes().includes("sha256") && getHashes().includes("blake2s256") && getHashes().includes("ripemd160") && getHashes().includes("shake256"));
 console.log("curves", getCurves().includes("prime256v1") && getCurves().includes("ed25519"));
 console.log("ns", typeof c.createHash === "function", c.webcrypto === globalThis.crypto);
 "#,
@@ -3858,5 +3858,41 @@ console.log("d-safe", typeof ps === "bigint" && checkPrimeSync(ps) === true && c
     assert!(out.contains("d-async true"), "out: {out}");
     assert!(out.contains("d-bigint true"), "out: {out}");
     assert!(out.contains("d-safe true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9h_crypto_xof_ripemd() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("p.mjs");
+    file.write_str(
+        r#"
+import { createHash, createHmac, getHashes } from "node:crypto";
+console.log("x-ripemd", createHash("ripemd160").update("abc").digest("hex") === "8eb208f7e05d987a9b044a8e98c6b087f15a0bfc");
+console.log("x-s128", createHash("shake128", { outputLength: 32 }).update("abc").digest("hex") === "5881092dd818bf5cf8a3ddb793fbcba74097d5c526a6d35f97b83351940f2cc8");
+console.log("x-s256", createHash("shake256", { outputLength: 32 }).update("abc").digest("hex") === "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739");
+console.log("x-hmacri", createHmac("ripemd160", "key").update("msg").digest("hex") === "af9f1041c7727ee3161fdbda8821364fb888a0e2");
+try { createHmac("shake256", "key"); console.log("x-hmacshake-never", false); }
+catch (e) { console.log("x-hmacshake", e.code === undefined); }
+const h = createHash("shake256", { outputLength: 16 });
+h.update("a");
+const c2 = h.copy();
+h.update("bc"); c2.update("bc");
+console.log("x-copy", h.digest("hex") === c2.digest("hex") && h.digest === c2.digest);
+try { createHash("shake256", { outputLength: -1 }); console.log("x-badlen-never", false); }
+catch (e) { console.log("x-badlen", e.code === "ERR_INVALID_ARG_VALUE"); }
+console.log("x-hashes", getHashes().includes("ripemd160") && getHashes().includes("shake128") && getHashes().includes("shake256"));
+console.log("x-dflt", createHash("shake256").update("abc").digest("hex").length === 64);
+console.log("x-dflt128", createHash("shake128").update("abc").digest("hex").length === 32);
+"#,
+    ).unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    for tag in ["x-ripemd", "x-s128", "x-s256", "x-hmacri", "x-hmacshake", "x-copy", "x-badlen", "x-hashes", "x-dflt", "x-dflt128"] {
+        assert!(stdout.contains(&format!("{tag} true")), "out: {stdout}");
+    }
+    // DEP0198 缺省警告走 stderr（真机同款）。
+    assert!(String::from_utf8_lossy(&out.stderr).contains("DEP0198"), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     dir.close().unwrap();
 }

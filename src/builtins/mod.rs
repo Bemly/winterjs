@@ -2093,6 +2093,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_kdf_hkdf", Some(node::crypto::kdf_hkdf), 5),
             ("__wjs_kdf_argon2", Some(node::crypto::kdf_argon2), 9),
             ("__wjs_x509_parse", Some(node::crypto::x509_parse), 1),
+            // Phase 9e-4: inspector 会话求值（同线程嵌套 evaluate_script）
+            ("__wjs_inspector_eval", Some(node::inspector::inspector_eval), 1),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）

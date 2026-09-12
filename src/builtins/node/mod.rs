@@ -20,6 +20,7 @@ pub mod http;
 pub mod http2;
 pub mod https;
 pub mod internal;
+pub mod inspector;
 pub mod net;
 pub mod os;
 pub mod path;
@@ -94,6 +95,9 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:zlib", zlib::SOURCE),
     // Phase 9e-3
     ("node:perf_hooks", perf_hooks::SOURCE),
+    // Phase 9e-4
+    ("node:inspector", inspector::SOURCE),
+    ("node:inspector/promises", inspector::SOURCE),
 ];
 
 /// spec 规范化（`node:` 前缀可选；internal 走 `internal::normalize_internal`；
@@ -144,6 +148,9 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "zlib" => Some("node:zlib"),
         // Phase 9e-3
         "perf_hooks" => Some("node:perf_hooks"),
+        // Phase 9e-4
+        "inspector" => Some("node:inspector"),
+        "inspector/promises" => Some("node:inspector/promises"),
         _ => None,
     }
 }
@@ -221,6 +228,11 @@ mod tests {
         assert_eq!(normalize_spec("perf_hooks"), Some("node:perf_hooks"));
         assert_eq!(normalize_spec("node:perf_hooks"), Some("node:perf_hooks"));
         assert!(source("node:perf_hooks").is_some());
+        // Phase 9e-4
+        assert_eq!(normalize_spec("inspector"), Some("node:inspector"));
+        assert_eq!(normalize_spec("node:inspector/promises"), Some("node:inspector/promises"));
+        assert!(source("node:inspector").is_some());
+        assert!(source("node:inspector/promises").is_some());
         // Phase 9d-6
         assert_eq!(normalize_spec("https"), Some("node:https"));
         assert_eq!(normalize_spec("node:tls"), Some("node:tls"));

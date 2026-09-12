@@ -3607,3 +3607,127 @@ console.log("th-unref", true);
     assert!(out.contains("th-unref true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9f_worker_eval_and_data() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { Worker, isMainThread, threadId } from "node:worker_threads";
+console.log("wk-self", isMainThread === true, threadId === 0);
+const w = new Worker("import { parentPort } from 'node:worker_threads'; parentPort.postMessage(40 + 2);", { eval: true });
+console.log("wk-tid", w.threadId > 0);
+w.on("online", () => console.log("wk-online", true));
+w.on("message", (m) => console.log("wk-msg", m === 42));
+w.on("error", (e) => console.log("wk-err", e.message));
+w.on("exit", (c) => console.log("wk-exit", c === 0));
+const d = new Worker("import { parentPort, workerData } from 'node:worker_threads'; parentPort.postMessage({ e: workerData.n + 1 });", { eval: true, workerData: { n: 41 } });
+d.on("message", (m) => console.log("wk-data", m.e === 42));
+d.on("exit", () => {});
+d.on("error", (e) => console.log("wk-derr", e.message));
+console.log("wk-ref", w.unref() === w, w.ref() === w);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("wk-self true true"), "out: {out}");
+    assert!(out.contains("wk-tid true"), "out: {out}");
+    assert!(out.contains("wk-online true"), "out: {out}");
+    assert!(out.contains("wk-msg true"), "out: {out}");
+    assert!(out.contains("wk-exit true"), "out: {out}");
+    assert!(out.contains("wk-data true"), "out: {out}");
+    assert!(out.contains("wk-ref true true"), "out: {out}");
+    assert!(!out.contains("wk-err"), "out: {out}");
+    assert!(!out.contains("wk-derr"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9f_worker_twoway_terminate() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { Worker } from "node:worker_threads";
+const w = new Worker("import { parentPort } from 'node:worker_threads'; parentPort.on('message', (m) => parentPort.postMessage(m * 2));", { eval: true });
+w.on("online", () => w.postMessage(21));
+w.on("message", (m) => {
+  console.log("wx-msg", m === 42);
+  w.terminate().then((c) => console.log("wx-term", c === 1));
+});
+w.on("exit", (c) => console.log("wx-exit", c === 1));
+w.on("error", (e) => console.log("wx-err", e.message));
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("wx-msg true"), "out: {out}");
+    assert!(out.contains("wx-term true"), "out: {out}");
+    assert!(out.contains("wx-exit true"), "out: {out}");
+    assert!(!out.contains("wx-err"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9f_worker_errors_boundary() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("wfile.js").write_str("import { parentPort } from \"node:worker_threads\";\nparentPort.postMessage(\"file-ok\");\n").unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { Worker } from "node:worker_threads";
+try { new Worker(42); } catch (e) { console.log("we-badfile", e.code === "ERR_INVALID_ARG_TYPE"); }
+const f = new Worker("./wfile.js");
+f.on("message", (m) => console.log("we-file", m === "file-ok"));
+f.on("exit", () => {});
+f.on("error", (e) => console.log("we-ferr", e.message));
+const t = new Worker("throw new Error('boom-x')", { eval: true });
+t.on("error", (e) => console.log("we-throw", e.message.includes("boom-x")));
+t.on("exit", (c) => console.log("we-texit", c === 1));
+const m = new Worker("./nope-missing.js");
+m.on("error", (e) => console.log("we-miss", e.message.includes("nope-missing")));
+m.on("exit", (c) => console.log("we-mexit", c === 1));
+const e2 = new Worker("void 0", { eval: true });
+e2.on("exit", (c) => {
+  console.log("we-e2", c === 0);
+  e2.postMessage("late-drop");
+  e2.terminate().then((cc) => console.log("we-term2", cc === 0));
+});
+e2.on("error", (e) => console.log("we-e2err", e.message));
+const n = new Worker("import { workerData } from 'node:worker_threads'; import { parentPort } from 'node:worker_threads'; parentPort.postMessage(workerData === null);", { eval: true });
+n.on("message", (mm) => console.log("we-novalue", mm === true));
+n.on("exit", () => {});
+n.on("error", (e) => console.log("we-nerr", e.message));
+const x = new Worker("process.exit(7);", { eval: true });
+x.on("exit", (c) => console.log("we-code", c === 7));
+x.on("error", (e) => console.log("we-xerr", e.message));
+"#,
+    );
+    assert!(out.contains("we-badfile true"), "out: {out}");
+    assert!(out.contains("we-file true"), "out: {out}");
+    assert!(out.contains("we-throw true"), "out: {out}");
+    assert!(out.contains("we-texit true"), "out: {out}");
+    assert!(out.contains("we-miss true"), "out: {out}");
+    assert!(out.contains("we-mexit true"), "out: {out}");
+    assert!(out.contains("we-e2 true"), "out: {out}");
+    assert!(out.contains("we-term2 true"), "out: {out}");
+    assert!(out.contains("we-novalue true"), "out: {out}");
+    assert!(out.contains("we-code true"), "out: {out}");
+    assert!(!out.contains("we-ferr"), "out: {out}");
+    assert!(!out.contains("we-e2err"), "out: {out}");
+    assert!(!out.contains("we-nerr"), "out: {out}");
+    assert!(!out.contains("we-xerr"), "out: {out}");
+    dir.close().unwrap();
+}

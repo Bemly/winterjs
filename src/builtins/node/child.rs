@@ -842,6 +842,15 @@ export function spawnSync(file, args, opts) {
 export class ChildProcess {
   #id = 0;
   #killed = false;
+  #onexit = null;
+  #onclose = null;
+  #onerror = null;
+  #onspawn = null;
+  exitCode = null;
+  signalCode = null;
+  spawnfile = null;
+  spawnargs = null;
+  channel = null;
   __init(id, stdio) {
     this.#id = id;
     // pipe 口径：stdout/stderr 为 live ReadableStream（Rust 泵按块 enqueue，
@@ -885,8 +894,39 @@ export class ChildProcess {
     else if (event === "close") this.onclose = cb;
     else if (event === "error") this.onerror = cb;
     else if (event === "spawn") this.onspawn = cb;
+    else if (event === "message" || event === "disconnect") {
+      // 无 fd-passing 通道（记档缺口）：监听即明错，不静默吞
+      throw Object.assign(new Error("ERR_NOT_SUPPORTED: child IPC channel not supported (no fork/send)"), { code: "ERR_NOT_SUPPORTED" });
+    }
     else throw new Error(`NotSupportedError: ChildProcess event '${event}' (exit/close/error/spawn)`);
     return this;
+  }
+  // exit/close 经访问器 wrap：落定退出码（直接赋值亦生效，Node 的 exitCode 语义）
+  set onexit(cb) {
+    this.#onexit = (typeof cb === "function") ? ((ev) => {
+      this.exitCode = ev && ev.status !== undefined ? ev.status : this.exitCode;
+      this.signalCode = ev && ev.signal !== undefined ? ev.signal : this.signalCode;
+      cb(ev);
+    }) : cb;
+  }
+  get onexit() { return this.#onexit; }
+  set onclose(cb) {
+    this.#onclose = (typeof cb === "function") ? ((ev) => {
+      if (this.exitCode === null) this.exitCode = ev && ev.status !== undefined ? ev.status : null;
+      if (this.signalCode === null) this.signalCode = ev && ev.signal !== undefined ? ev.signal : null;
+      cb(ev);
+    }) : cb;
+  }
+  get onclose() { return this.#onclose; }
+  set onerror(cb) { this.#onerror = cb; }
+  get onerror() { return this.#onerror; }
+  set onspawn(cb) { this.#onspawn = cb; }
+  get onspawn() { return this.#onspawn; }
+  send() {
+    throw Object.assign(new Error("ERR_NOT_SUPPORTED: child send() needs an IPC channel (fork unsupported)"), { code: "ERR_NOT_SUPPORTED" });
+  }
+  disconnect() {
+    throw Object.assign(new Error("ERR_NOT_SUPPORTED: child disconnect() needs an IPC channel (fork unsupported)"), { code: "ERR_NOT_SUPPORTED" });
   }
   get connected() { return false; }
   unref() { return this; }
@@ -921,12 +961,76 @@ export function spawn(file, args, opts) {
   if (args !== undefined && !Array.isArray(args)) { opts = args; args = []; }
   const o = __normSpawnAsyncOpts(opts);
   const proc = new ChildProcess();
+  proc.spawnfile = String(file);
+  proc.spawnargs = [...(args || [])].map(String);
   const id = __wjs_spawn_start(String(file), JSON.stringify([...(args || [])].map(String)), JSON.stringify({
     cwd: o.cwd, env: o.env, detached: o.detached, timeout_ms: o.timeoutMs,
   }), proc, JSON.stringify(o.stdio));
   return proc.__init(id, o.stdio);
 }
-export default { execSync, spawnSync, spawn, ChildProcess };
+function __asyncOneShot(kind, run) {
+  // run(): 同步 core 调用（抛转回调 err）；无 live 句柄（记档偏差）
+  return (...args) => {
+    const cb = args.findLast((a) => typeof a === "function");
+    const rest = args.filter((a) => typeof a !== "function");
+    if (typeof cb !== "function") {
+      const err = new TypeError(`${kind} requires a callback for async form`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    queueMicrotask(() => {
+      try {
+        const [outErr, stdout, stderr] = run(...rest);
+        cb(outErr, stdout, stderr);
+      } catch (e) {
+        cb(e);
+      }
+    });
+    return undefined;
+  };
+}
+export const exec = __asyncOneShot("exec", (cmd, opts) => {
+  const o = __normExecOpts(opts);
+  const r = JSON.parse(__wjs_cp_exec(String(cmd), JSON.stringify({
+    cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
+    shell: !!o.shell, input_b64: o.inputB64, max_buffer: o.maxBuffer,
+  })));
+  if (r.spawnErr || r.timedOut || r.status !== 0) {
+    try {
+      __spawnError(cmd, r, o.encoding);
+    } catch (e) {
+      return [e, __toOut(r.stdout_b64, o.encoding), __toOut(r.stderr_b64, o.encoding)];
+    }
+  }
+  return [null, __toOut(r.stdout_b64, o.encoding), __toOut(r.stderr_b64, o.encoding)];
+});
+export const execFile = __asyncOneShot("execFile", (file, args, opts) => {
+  if (args !== undefined && !Array.isArray(args)) { opts = args; args = []; }
+  const o = __normSpawnOpts(opts);
+  const r = JSON.parse(__wjs_cp_spawn(String(file), JSON.stringify([...(args || [])].map(String)), JSON.stringify({
+    cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
+    shell: false, input_b64: o.inputB64, max_buffer: o.maxBuffer,
+  })));
+  if (r.spawnErr || r.timedOut || r.status !== 0) {
+    try {
+      __spawnError(file, r, o.encoding);
+    } catch (e) {
+      return [e, __toOut(r.stdout_b64, o.encoding), __toOut(r.stderr_b64, o.encoding)];
+    }
+  }
+  return [null, __toOut(r.stdout_b64, o.encoding), __toOut(r.stderr_b64, o.encoding)];
+});
+export function execFileSync(file, args, opts) {
+  if (args !== undefined && !Array.isArray(args)) { opts = args; args = []; }
+  const o = __normSpawnOpts(opts);
+  const r = JSON.parse(__wjs_cp_spawn(String(file), JSON.stringify([...(args || [])].map(String)), JSON.stringify({
+    cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
+    shell: false, input_b64: o.inputB64, max_buffer: o.maxBuffer,
+  })));
+  if (r.spawnErr || r.timedOut || r.status !== 0) __spawnError(file, r, o.encoding);
+  return __toOut(r.stdout_b64, o.encoding);
+}
+export default { execSync, spawnSync, spawn, exec, execFile, execFileSync, ChildProcess };
 "#;
 
 #[cfg(test)]

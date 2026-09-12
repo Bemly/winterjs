@@ -2988,3 +2988,96 @@ console.log("big", createHash("sha256").update(big).digest("hex") === createHash
     assert!(out.contains("big true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9e_crypto_cipher_roundtrip() {
+    // 真 Node 取证向量（逐字节对；gcm/chacha tag 另断长度）
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createCipheriv, createDecipheriv, getCiphers, getCipherInfo } from "node:crypto";
+const key = Buffer.alloc(32, 1), iv16 = Buffer.alloc(16, 2), iv12 = Buffer.alloc(12, 3);
+const x = createCipheriv("aes-256-cbc", key, iv16);
+console.log("cbc", x.update("hello world", "utf8", "hex") + x.final("hex"));
+const e = createCipheriv("aes-256-cbc", key, iv16);
+const ct = Buffer.concat([e.update("hi"), e.final()]);
+const d = createDecipheriv("aes-256-cbc", key, iv16);
+console.log("dec", d.update(ct).toString() + d.final("utf8"));
+// 流式多 update 与 oneshot 等价
+const a = createCipheriv("aes-256-cbc", key, iv16);
+const p1 = a.update("hel", "utf8", "hex") + a.update("lo world", "utf8", "hex") + a.final("hex");
+console.log("stream", p1 === "f563737a376afbed282274255a7fcabd");
+const g = createCipheriv("aes-256-gcm", key, iv12);
+g.setAAD(Buffer.from("aad"));
+console.log("gcm", g.update("secret", "utf8", "hex") + g.final("hex"), g.getAuthTag().length);
+const gd = createDecipheriv("aes-256-gcm", key, iv12);
+gd.setAAD(Buffer.from("aad")); gd.setAuthTag(g.getAuthTag());
+const gct = Buffer.from("8b0477e89af0", "hex");
+console.log("gdec", gd.update(gct).toString() + gd.final("utf8"));
+const ch = createCipheriv("chacha20-poly1305", key, iv12);
+console.log("chacha", ch.update("hello", "utf8", "hex") + ch.final("hex"), ch.getAuthTag().length);
+const chd = createDecipheriv("chacha20-poly1305", key, iv12);
+chd.setAuthTag(ch.getAuthTag());
+console.log("chdec", chd.update(Buffer.from("e66dea2709", "hex")).toString() + chd.final("utf8"));
+const t = createCipheriv("aes-128-ctr", Buffer.alloc(16, 7), iv16);
+console.log("ctr", t.update("0123456789abcdef", "utf8", "hex") + t.final("hex"));
+console.log("list", getCiphers().includes("aes-256-gcm") && getCiphers().includes("des-ede3-cbc"));
+const info = getCipherInfo("aes-256-cbc");
+console.log("info", info.mode === "cbc" && info.keyLength === 32 && info.ivLength === 16 && info.nid === 427);
+console.log("nounk", getCipherInfo("nope") === undefined);
+"#,
+    );
+    assert!(out.contains("cbc f563737a376afbed282274255a7fcabd"), "out: {out}");
+    assert!(out.contains("dec hi"), "out: {out}");
+    assert!(out.contains("stream true"), "out: {out}");
+    assert!(out.contains("gcm 8b0477e89af0 16"), "out: {out}");
+    assert!(out.contains("gdec secret"), "out: {out}");
+    assert!(out.contains("chacha e66dea2709 16"), "out: {out}");
+    assert!(out.contains("chdec hello"), "out: {out}");
+    assert!(out.contains("ctr 60d4f4ceae18fbef892ccaa49d8b32a6"), "out: {out}");
+    assert!(out.contains("list true"), "out: {out}");
+    assert!(out.contains("info true"), "out: {out}");
+    assert!(out.contains("nounk true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9e_crypto_cipher_errors() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createCipheriv, createDecipheriv } from "node:crypto";
+const key = Buffer.alloc(32, 1), iv16 = Buffer.alloc(16, 2), iv12 = Buffer.alloc(12, 3);
+try { createCipheriv("aes-999-cbc", key, iv16); } catch (e) { console.log("alg", e.code === "ERR_CRYPTO_UNKNOWN_CIPHER"); }
+try { createCipheriv("aes-256-cbc", Buffer.alloc(5), iv16); } catch (e) { console.log("key", e.code === "ERR_CRYPTO_INVALID_KEYLEN"); }
+try { createCipheriv("aes-256-cbc", key, Buffer.alloc(4)); } catch (e) { console.log("iv", e.code === "ERR_CRYPTO_INVALID_IV"); }
+try { const d = createDecipheriv("aes-256-cbc", key, iv16); d.update(Buffer.from("00112233", "hex")); d.final(); } catch (e) { console.log("pad", e.code === "ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH"); }
+try { const x = createCipheriv("aes-256-cbc", key, iv16); x.final(); x.final("hex"); } catch (e) { console.log("fin2", e.code === "ERR_CRYPTO_INVALID_STATE"); }
+try { const x = createCipheriv("aes-256-cbc", key, iv16); x.final(); x.update("x", "utf8", "hex"); } catch (e) { console.log("updfin", e.code === undefined); }
+try {
+  const x = createCipheriv("aes-256-gcm", key, iv12);
+  const ct = Buffer.concat([x.update("s"), x.final()]);
+  const tag = x.getAuthTag(); tag[0] ^= 1;
+  const dd = createDecipheriv("aes-256-gcm", key, iv12);
+  dd.setAuthTag(tag); dd.update(ct); dd.final("utf8");
+} catch (e) { console.log("tag", e.code === undefined && /authenticate/.test(e.message)); }
+try {
+  const dd = createDecipheriv("aes-256-gcm", key, iv12);
+  dd.setAuthTag(Buffer.alloc(16)); dd.update(Buffer.from("00", "hex")); dd.final("utf8");
+} catch (e) { console.log("noaad", e.code === undefined); }
+"#,
+    );
+    assert!(out.contains("alg true"), "out: {out}");
+    assert!(out.contains("key true"), "out: {out}");
+    assert!(out.contains("iv true"), "out: {out}");
+    assert!(out.contains("pad true"), "out: {out}");
+    assert!(out.contains("fin2 true"), "out: {out}");
+    assert!(out.contains("updfin true"), "out: {out}");
+    assert!(out.contains("tag true"), "out: {out}");
+    assert!(out.contains("noaad true"), "out: {out}");
+    dir.close().unwrap();
+}

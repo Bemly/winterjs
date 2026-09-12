@@ -41,13 +41,18 @@ pub enum NetKind {
     },
     ServerError { code: String, msg: String },
     ServerClose,
+    /// dgram：绑定完成。
+    DgramListening { addr: String, port: u16 },
+    /// dgram：收到数据报。
+    DgramMessage { data_b64: String, address: String, port: u16, family: u8 },
 }
 
-/// socket 命令（写/半关/硬关；写端 task 消费）。
+/// socket 命令（写/半关/硬关；写端 task 消费。SendTo 为 dgram 专用）。
 pub enum NetCmd {
     Write(Vec<u8>),
     End,
     Close,
+    SendTo { data: Vec<u8>, addr: String },
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -97,6 +102,7 @@ fn spawn_pumps(
                     break;
                 }
                 NetCmd::Close => break,
+                NetCmd::SendTo { .. } => {} // dgram 专用（net socket 不产生）
             }
         }
         state::net_writer_exit(id);
@@ -427,6 +433,14 @@ pub fn dispatch(
             ("error", serde_json::json!({ "code": code, "msg": msg }).to_string())
         }
         NetKind::ServerClose => ("close", String::new()),
+        NetKind::DgramListening { addr, port } => {
+            ("listening", serde_json::json!({ "addr": addr, "port": port }).to_string())
+        }
+        NetKind::DgramMessage { data_b64, address, port, family } => (
+            "message",
+            serde_json::json!({ "data": data_b64, "address": address, "port": port, "family": family })
+                .to_string(),
+        ),
         NetKind::Connection { .. } => unreachable!(),
     };
     let ok = with_str_args(cx, global, fun, kind, &payload);

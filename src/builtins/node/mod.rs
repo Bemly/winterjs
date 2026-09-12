@@ -12,6 +12,7 @@ pub mod buffer;
 pub mod child;
 pub mod diagnostics_channel;
 pub mod events;
+pub mod dgram;
 pub mod dns;
 pub mod fs;
 pub mod http;
@@ -54,6 +55,7 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:child_process", child::SOURCE),
     ("node:net", net::SOURCE),
     ("node:dns", dns::SOURCE),
+    ("node:dgram", dgram::SOURCE),
     ("node:http", http::SOURCE),
     ("node:assert", assert::SOURCE),
     ("node:test", testmod::SOURCE),
@@ -93,6 +95,7 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "child_process" => Some("node:child_process"),
         "net" => Some("node:net"),
         "dns" => Some("node:dns"),
+        "dgram" => Some("node:dgram"),
         "http" => Some("node:http"),
         "assert" => Some("node:assert"),
         "test" => Some("node:test"),

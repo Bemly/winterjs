@@ -598,6 +598,24 @@
   dns_lookup）；io_code 补 EBADF(9)/EADDRINUSE(macOS 48/Linux 98)。
   黑盒 +3（回环 echo+destroy/EADDRINUSE/dns localhost，port 0 hermetic 并行安全）；
   `cargo test` 102+208 全绿，冒烟 5/5。踩坑记 AGENTS §4.34。
+- [x] 9d-3 http（2026-09-12 完工；https/tls、dgram/zlib、http2 顺延）：
+  `node:http`——**纯 JS 架在 node:net 之上，零新 native、零新依赖**（架构决策：
+  node:http 是纯 HTTP/1.1，Node 本尊即 net + 独立解析器结构；hyper 直引/
+  httparse 行级增补就此**不需要**，§0.5 拍板项绕开；解析器 JS 子集：请求/响应
+  头 latin1 解码 + Content-Length + chunked 双向解码，trailer 忽略）。
+  Server（net.Server 子类；连接级解析喂入，体备齐后先 emit("request") 再喂
+  data/end——监听器时序）+ ServerResponse（writeHead/setHeader/getHeader/
+  write/end/finish，Content-Length 自动补、connection: close）；ClientRequest
+  （request/get，options 对象 + URL 字符串形态，头小写、Host 默认、体缓冲
+  connect+end 齐后一次成帧、无 CL 响应读到 EOF、https URL 即 ERR_INVALID_PROTOCOL）
+  + IncomingMessage（data/end/complete/destroy）+ STATUS_CODES/METHODS/
+  maxHeaderSize/Agent stub（globalAgent）。
+  偏差记档：无 keep-alive（单请求一连接，双侧 connection: close）；体整收单块
+  'data'；IncomingMessage/OutgoingMessage 非 node:stream 全家（EventEmitter
+  形状）；chunked trailer 忽略。io_code 补 ECONNREFUSED（macOS 61/Linux 111）。
+  黑盒 +2（回环 GET/POST/404/500/finish/close 全链 + 客户端错误路径：
+  ECONNREFUSED/https 拒绝/write-after-end）；`cargo test` 102+210 全绿，
+  冒烟 5/5。踩坑记 AGENTS §4.35。
 
 ## 全局纪律
 

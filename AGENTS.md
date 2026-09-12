@@ -474,6 +474,21 @@ cargo build
   映射一律双码同列 + 单测双断言。
 - 复现：`tests/node.rs::phase9d_net_echo_loopback`（allowHalfOpen 修前 hang）。
 
+### 4.35 node:http 回环两坑（2026-09-12，Phase 9d-3）
+
+- 症状一：POST 体丢失、res 永不结束、请求看似收到两次。根因：解析器在
+  `emit("request", req, res)` **之前**就把体喂完（data/end 先发）——用户
+  request 监听器里再挂 `req.on("data")` 永远收不到，res.end 不执行。修法：
+  体先备齐缓存，**先 emit("request") 再喂体**（Node parser 同口径：request
+  事件先于 body）。推广：凡"事件 + 数据流"API，数据派发必须在用户监听器
+  可注册之后。
+- 症状二：客户端 'end' 双发。根因：`res.__feed`（整收口径发 data+end）与
+  `__finish`（又补 end）重复——整收口径下 end 只能由一处派发，其余路径只
+  收尾连接（sock.end + req 'close'）。
+- 黑盒教训：请求**无监听 error 事件即抛错**是 Node 正确行为——错误路径黑盒
+  要补 `req.on("error", () => {})` 空监听，而不是改实现吞错。
+- 复现：`tests/node.rs::phase9d_http_loopback`（喂体时序修前 POST 挂死）。
+
 
 ## 5. 路线图（按序）
 

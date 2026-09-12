@@ -264,3 +264,162 @@ try {
     assert!(out.contains("q-badidle true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9g_quic_stream_echo() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (_c, _k) = write_self_signed(&dir);
+    let out = run_quic_file(
+        &dir,
+        "s.mjs",
+        r#"
+import { listen, connect } from "node:quic";
+import fs from "node:fs";
+const key = fs.readFileSync("k.pem", "utf8");
+const cert = fs.readFileSync("c.pem", "utf8");
+const ep = await listen(
+  (sess) => {
+    sess.on("secure", () => {});
+    sess.on("stream", (st) => {
+      console.log("t-srvdir", st.direction === "bidi", st.id !== null);
+      if (st.direction !== "bidi") return;
+      st.on("data", (d) => { st.write("echo:" + d.toString()); st.end(); });
+      st.on("end", () => console.log("t-srvend", true));
+      st.on("close", (c) => console.log("t-srvclose", c === 0));
+      st.on("error", (e) => console.log("t-srverr", e.message));
+    });
+    sess.on("datagram", (d) => console.log("t-srvdg", d.toString() === "ping-dg"));
+    sess.on("close", () => {});
+    sess.on("error", () => {});
+  },
+  { port: 0, alpn: ["qq"], key, cert }
+);
+const c = await connect(`localhost:${ep.address().port}`, { alpn: "qq", ca: cert });
+await new Promise((r) => c.on("secure", r));
+c.on("close", () => {});
+c.on("error", (e) => console.log("t-clierr", e.message));
+console.log("t-maxdg", c.maxDatagramSize > 0);
+c.sendDatagram(Buffer.from("ping-dg"));
+const st = await c.createBidirectionalStream();
+console.log("t-open", st.direction === "bidi", st.id !== null);
+st.on("data", (d) => console.log("t-data", d.toString() === "echo:hello"));
+st.on("end", () => console.log("t-end", true));
+st.on("close", (cc) => console.log("t-close", cc === 0));
+st.on("error", (e) => console.log("t-cserr", e.message));
+st.write("hello");
+st.end();
+const u = await c.createUnidirectionalStream();
+console.log("t-uopen", u.direction === "send");
+u.on("close", (cc) => console.log("t-uclose", cc === 0));
+u.on("error", (e) => console.log("t-uerr", e.message));
+u.write("one-way");
+u.end();
+await new Promise((r) => setTimeout(r, 600));
+c.close();
+await new Promise((r) => setTimeout(r, 300));
+ep.close();
+await new Promise((r) => setTimeout(r, 300));
+console.log("t-done", true);
+"#,
+    );
+    assert!(out.contains("t-maxdg true"), "out: {out}");
+    assert!(out.contains("t-srvdir true true"), "out: {out}");
+    assert!(out.contains("t-srvdg true"), "out: {out}");
+    assert!(out.contains("t-open true true"), "out: {out}");
+    assert!(out.contains("t-data true"), "out: {out}");
+    assert!(out.contains("t-end true"), "out: {out}");
+    assert!(out.contains("t-close true"), "out: {out}");
+    assert!(out.contains("t-srvend true"), "out: {out}");
+    assert!(out.contains("t-srvclose true"), "out: {out}");
+    assert!(out.contains("t-uopen true"), "out: {out}");
+    assert!(out.contains("t-uclose true"), "out: {out}");
+    assert!(out.contains("t-done true"), "out: {out}");
+    assert!(!out.contains("t-cserr"), "out: {out}");
+    assert!(!out.contains("t-srverr"), "out: {out}");
+    assert!(!out.contains("t-clierr"), "out: {out}");
+    assert!(!out.contains("t-uerr"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9g_quic_stream_boundary() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (_c, _k) = write_self_signed(&dir);
+    let out = run_quic_file(
+        &dir,
+        "b.mjs",
+        r#"
+import { listen, connect } from "node:quic";
+import fs from "node:fs";
+const key = fs.readFileSync("k.pem", "utf8");
+const cert = fs.readFileSync("c.pem", "utf8");
+const ep = await listen(
+  (sess) => {
+    sess.on("stream", (st) => {
+      if (st.direction === "receive") {
+        try { st.write("x"); console.log("tu-nowrite-never", false); }
+        catch (e) { console.log("tu-nowrite", e.code === "ERR_INVALID_STATE"); }
+      }
+      st.on("data", () => {});
+      st.on("end", () => {});
+      st.on("close", () => {});
+      st.on("error", () => {});
+    });
+    sess.on("close", () => {});
+    sess.on("error", () => {});
+  },
+  { port: 0, alpn: ["qq"], key, cert }
+);
+const c = await connect(`localhost:${ep.address().port}`, { alpn: "qq", ca: cert });
+await new Promise((r) => c.on("secure", r));
+c.on("close", () => {});
+c.on("error", () => {});
+// reset 码透传
+const r = await c.createBidirectionalStream();
+r.on("close", (cc) => console.log("tu-reset", cc === 42));
+r.on("error", (e) => console.log("tu-rerr", e.message));
+r.resetStream(42);
+// 写后写即错
+const w = await c.createBidirectionalStream();
+w.on("close", () => {});
+w.on("error", () => {});
+w.write("a");
+w.end();
+try { w.write("b"); console.log("tu-wae-never", false); }
+catch (e) { console.log("tu-wae", e.code === "ERR_STREAM_WRITE_AFTER_END"); }
+// 单向流测量 + 超大报静默丢
+const u = await c.createUnidirectionalStream();
+u.on("close", () => {});
+u.on("error", () => {});
+u.end();
+await new Promise((rr) => setTimeout(rr, 400));
+// 收尾：会话关带走全流
+c.close();
+await new Promise((rr) => setTimeout(rr, 300));
+ep.close();
+await new Promise((rr) => setTimeout(rr, 300));
+try {
+  await c.createBidirectionalStream();
+  console.log("tu-closed-never", false);
+} catch (e) { console.log("tu-closed", true); }
+try {
+  c.sendDatagram("x".repeat(65535));
+  console.log("tu-big", true);
+} catch (e) { console.log("tu-big-never", false); }
+try {
+  r.resetStream(-1);
+  console.log("tu-badcode-never", false);
+} catch (e) { console.log("tu-badcode", e.code === "ERR_OUT_OF_RANGE"); }
+console.log("tu-done", true);
+"#,
+    );
+    assert!(out.contains("tu-reset true"), "out: {out}");
+    assert!(!out.contains("tu-rerr"), "out: {out}");
+    assert!(out.contains("tu-wae true"), "out: {out}");
+    assert!(out.contains("tu-nowrite true"), "out: {out}");
+    assert!(out.contains("tu-closed true"), "out: {out}");
+    assert!(out.contains("tu-big true"), "out: {out}");
+    assert!(out.contains("tu-badcode true"), "out: {out}");
+    assert!(out.contains("tu-done true"), "out: {out}");
+    dir.close().unwrap();
+}

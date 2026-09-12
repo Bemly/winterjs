@@ -33,6 +33,8 @@ use mozjs::jsapi::JSObject;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 
+use base64::Engine as _;
+
 use crate::jsapi_glue::{get_prop_value, report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
 
@@ -232,7 +234,7 @@ fn close_info(err: quinn::ConnectionError) -> (i64, String) {
     }
 }
 
-/// 会话收件箱事件（9g-2 加流/数据报变体）。
+/// 会话收件箱事件（方向按收件会话定）。
 #[derive(Debug)]
 pub enum QuicEvent {
     /// 服务端新会话（endpoint 目标收；含寻址信息，JS 侧建 `QuicSession`）。
@@ -245,6 +247,22 @@ pub enum QuicEvent {
     SessionClose { id: u64, code: i64, reason: String },
     /// endpoint accept 环结束（endpoint 目标收；派发后摘除 + purge）。
     EndpointClosed { ep: u64 },
+    /// 本地开流就绪（流目标收；`qid` 为 quic 流号）。
+    StreamOpened { id: u64, qid: u64 },
+    /// 对端开流（会话目标收；JS 侧建 `QuicStream`）。
+    StreamAccepted { id: u64, qid: u64, dir: String },
+    /// 流数据（流目标收；`b64` 载荷，JS 侧转 Buffer）。
+    StreamData { id: u64, b64: String },
+    /// 读端 FIN（流目标收）。
+    StreamEnd { id: u64 },
+    /// 写端 finish 落定（流目标收；与 `StreamEnd` 配对成 `close`）。
+    StreamWriteDone { id: u64 },
+    /// 流终结（流目标收；派发后收尾 + 摘除 + purge）。
+    StreamClosed { id: u64, code: i64 },
+    /// 流读写错（流目标收；随后必跟 `StreamClosed{-1}`）。
+    StreamError { id: u64, message: String },
+    /// 数据报到达（会话目标收；`b64` 载荷）。
+    Datagram { id: u64, b64: String },
 }
 
 fn with_str_args(
@@ -316,6 +334,12 @@ pub fn dispatch(
                 let payload = serde_json::json!({ "code": code, "reason": reason }).to_string();
                 emit_to(cx, target, "close", &payload)?;
             }
+            // 名下流一并收尾（任务 abort + 记录摘 + 目标摘；事件不再补，记档）。
+            for sid in state::quic_session_streams(id) {
+                state::quic_stream_finish(sid);
+                state::quic_stream_remove(sid);
+                state::quic_stream_target_remove(sid);
+            }
             // purge 一律放派发之后（§4.36 checklist）。
             state::quic_sess_remove(id);
             state::quic_sess_target_remove(id);
@@ -328,6 +352,45 @@ pub fn dispatch(
             state::quic_ep_remove(ep);
             state::quic_ep_target_remove(ep);
             Ok(())
+        }
+        QuicEvent::StreamOpened { id, qid } => {
+            let Some(target) = state::quic_stream_target(id) else { return Ok(()) };
+            emit_to(cx, target, "opened", &qid.to_string())
+        }
+        QuicEvent::StreamAccepted { id, qid, dir } => {
+            // 对端流挂到会话目标下（JS 侧建 `QuicStream` 再 attach）。
+            let Some(starget) = state::quic_sess_target_by_stream(id) else { return Ok(()) };
+            let payload = serde_json::json!({ "streamId": id.to_string(), "qid": qid, "dir": dir }).to_string();
+            emit_to(cx, starget, "stream", &payload)
+        }
+        QuicEvent::StreamData { id, b64 } => {
+            let Some(target) = state::quic_stream_target(id) else { return Ok(()) };
+            emit_to(cx, target, "data", &b64)
+        }
+        QuicEvent::StreamEnd { id } => {
+            let Some(target) = state::quic_stream_target(id) else { return Ok(()) };
+            emit_to(cx, target, "end", "")
+        }
+        QuicEvent::StreamWriteDone { id } => {
+            let Some(target) = state::quic_stream_target(id) else { return Ok(()) };
+            emit_to(cx, target, "writedone", "")
+        }
+        QuicEvent::StreamClosed { id, code } => {
+            if let Some(target) = state::quic_stream_target(id) {
+                emit_to(cx, target, "closed", &code.to_string())?;
+            }
+            state::quic_stream_finish(id);
+            state::quic_stream_remove(id);
+            state::quic_stream_target_remove(id);
+            Ok(())
+        }
+        QuicEvent::StreamError { id, message } => {
+            let Some(target) = state::quic_stream_target(id) else { return Ok(()) };
+            emit_to(cx, target, "error", &message)
+        }
+        QuicEvent::Datagram { id, b64 } => {
+            let Some(target) = state::quic_sess_target(id) else { return Ok(()) };
+            emit_to(cx, target, "datagram", &b64)
         }
     }
 }
@@ -448,15 +511,11 @@ pub unsafe extern "C" fn quic_listen(
                     Ok(conn) => {
                         let (alpn, servername) = handshake_info(&conn);
                         let sess = state::quic_alloc_id();
-                        let watch_conn = conn.clone();
-                        let watch_inbox = inbox.clone();
-                        let watcher = tokio::spawn(async move {
-                            let (code, reason) = close_info(watch_conn.closed().await);
-                            let _ = watch_inbox.send(QuicEvent::SessionClose { id: sess, code, reason });
-                        });
-                        let local = ep_local;
-                        state::quic_sess_insert(sess, watcher.abort_handle(), local, remote.clone());
-                        state::quic_sess_set_conn(sess, conn);
+                        state::quic_sess_insert(sess, ep_local, remote.clone());
+                        state::quic_sess_set_conn(sess, conn.clone());
+                        // 驱动任务接管命令/accept/数据报/`closed()` 守望。
+                        let driver = spawn_driver(sess, conn, inbox.clone());
+                        state::quic_sess_set_driver(sess, driver);
                         // 服务端会话握手已成：先报会话（建目标），再报 secure（与客户端对称）。
                         let _ = inbox.send(QuicEvent::EndpointSession {
                             ep: id,
@@ -636,11 +695,18 @@ pub unsafe extern "C" fn quic_connect(
     let alpn_report = opts.alpn.clone();
     let remote_report = addr.to_string();
     let local_report = endpoint.local_addr().map(|a| a.to_string()).unwrap_or_default();
+    state::quic_sess_insert(id, local_report, remote_report);
     let handle = tokio::spawn(async move {
         match endpoint.connect(addr, &servername) {
             Ok(connecting) => match connecting.await {
                 Ok(conn) => {
                     state::quic_sess_set_conn(id, conn.clone());
+                    // 发起侧 endpoint 移交 entry 保活（任务结束即 drop 会怎样未可知，
+                    // 实测 task 尾 close 会杀会话；收尾时才关，见 quic_sess_remove）。
+                    state::quic_sess_set_client_ep(id, endpoint.clone());
+                    // 驱动接管命令/accept/数据报/`closed()` 守望；Secure 先行。
+                    let driver = spawn_driver(id, conn, inbox.clone());
+                    state::quic_sess_set_driver(id, driver);
                     // 发起侧 handshake_data 的 server_name 恒 None（quinn 口径），
                     // 用请求时的 servername（TLS 失败即无握手，无此事件）。
                     let _ = inbox.send(QuicEvent::SessionSecure {
@@ -648,8 +714,6 @@ pub unsafe extern "C" fn quic_connect(
                         alpn: alpn_report,
                         servername,
                     });
-                    let (code, reason) = close_info(conn.closed().await);
-                    let _ = inbox.send(QuicEvent::SessionClose { id, code, reason });
                 }
                 Err(e) => {
                     let _ = inbox.send(QuicEvent::SessionError {
@@ -667,9 +731,10 @@ pub unsafe extern "C" fn quic_connect(
                 let _ = inbox.send(QuicEvent::SessionClose { id, code: -1, reason: "connect failed".into() });
             }
         }
-        endpoint.close(0u32.into(), b"bye");
+        // endpoint 已移交 entry 保活，此处不再 close（task 尾 close 会杀活会话）。
     });
-    state::quic_sess_insert(id, handle.abort_handle(), local_report, remote_report);
+    // 连接任务自生自灭（连上即孵化驱动后结束；失败发 Error+Close）；柄 detach。
+    drop(handle);
     use mozjs::conversions::ToJSValConvertible as _;
     id.to_string().to_jsval(&mut cx, frame.rval_mut());
     true
@@ -798,6 +863,502 @@ pub unsafe extern "C" fn quic_sess_close(
     true
 }
 
+// ── 流与数据报（9g-2）────────────────────────────────────────────────────
+
+// ── 流与数据报（9g-2）────────────────────────────────────────────────────
+
+/// 会话命令（驱动任务持有接收端；open 流走此通道，写/读另有流级通道）。
+#[derive(Debug)]
+pub enum QuicSessCmd {
+    OpenBidi { stream: u64 },
+    OpenUni { stream: u64 },
+}
+
+/// 流级命令（写端任务收 `Write/Finish/Reset`，读端任务收 `Stop`）。
+#[derive(Debug)]
+pub enum QuicStreamCmd {
+    Write(Vec<u8>),
+    Finish,
+    Reset(u64),
+    Stop(u64),
+}
+
+/// 会话驱动任务：命令 + 双向/单向 accept + 数据报接收 + `closed()` 守望。
+/// 任一终结条件先到即发 `SessionClose`（`done` 旗防双发）后退出。
+pub fn spawn_driver(
+    sess: u64,
+    conn: quinn::Connection,
+    inbox: tokio::sync::mpsc::UnboundedSender<QuicEvent>,
+) -> tokio::task::AbortHandle {
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<QuicSessCmd>();
+    state::quic_sess_set_cmd(sess, cmd_tx);
+    tokio::spawn(async move {
+        let mut done = false;
+        // 收尾：先收半端任务（abort 后无噪声 Error），再发 `SessionClose`。
+        // 否则 teardown 引发的读写失败会误报成流错误（无监听即 fatal）。
+        let finish = |inbox: &tokio::sync::mpsc::UnboundedSender<QuicEvent>,
+                      sess: u64,
+                      code: i64,
+                      reason: String,
+                      done: &mut bool| {
+            if !*done {
+                *done = true;
+                for sid in state::quic_session_streams(sess) {
+                    state::quic_stream_finish(sid);
+                }
+                let _ = inbox.send(QuicEvent::SessionClose { id: sess, code, reason });
+            }
+        };
+        loop {
+            tokio::select! {
+                cmd = cmd_rx.recv() => {
+                    match cmd {
+                        None => break, // 会话已摘（发送端全 drop），退出
+                        Some(QuicSessCmd::OpenBidi { stream }) => {
+                            let inbox = inbox.clone();
+                            let conn = conn.clone();
+                            tokio::spawn(async move {
+                                open_halves(sess, stream, state::QuicStreamDir::Bidi, inbox, conn, true).await;
+                            });
+                        }
+                        Some(QuicSessCmd::OpenUni { stream }) => {
+                            let inbox = inbox.clone();
+                            let conn = conn.clone();
+                            tokio::spawn(async move {
+                                open_halves(sess, stream, state::QuicStreamDir::Send, inbox, conn, false).await;
+                            });
+                        }
+                    }
+                }
+                acc = conn.accept_bi(), if !done => {
+                    match acc {
+                        Ok((send, recv)) => {
+                            peer_halves(sess, state::QuicStreamDir::Bidi, inbox.clone(), Some(send), Some(recv)).await;
+                        }
+                        Err(_) => {
+                            let (code, reason) = close_info(conn.closed().await);
+                            finish(&inbox, sess, code, reason, &mut done);
+                            break;
+                        }
+                    }
+                }
+                acc = conn.accept_uni(), if !done => {
+                    match acc {
+                        Ok(recv) => {
+                            peer_halves(sess, state::QuicStreamDir::Recv, inbox.clone(), None, Some(recv)).await;
+                        }
+                        Err(_) => {
+                            let (code, reason) = close_info(conn.closed().await);
+                            finish(&inbox, sess, code, reason, &mut done);
+                            break;
+                        }
+                    }
+                }
+                dg = conn.read_datagram(), if !done => {
+                    match dg {
+                        Ok(bytes) => {
+                            let _ = inbox.send(QuicEvent::Datagram {
+                                id: sess,
+                                b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                            });
+                        }
+                        Err(_) => {
+                            let (code, reason) = close_info(conn.closed().await);
+                            finish(&inbox, sess, code, reason, &mut done);
+                            break;
+                        }
+                    }
+                }
+                err = conn.closed() => {
+                    let (code, reason) = close_info(err);
+                    finish(&inbox, sess, code, reason, &mut done);
+                    break;
+                }
+            }
+        }
+    })
+    .abort_handle()
+}
+
+/// 本地发起开流：`open_bi/open_uni` → 登记半端 → `StreamOpened`（失败即 `StreamError`）。
+async fn open_halves(
+    sess: u64,
+    stream: u64,
+    dir: state::QuicStreamDir,
+    inbox: tokio::sync::mpsc::UnboundedSender<QuicEvent>,
+    conn: quinn::Connection,
+    bidi: bool,
+) {
+    if bidi {
+        match conn.open_bi().await {
+            Ok((send, recv)) => {
+                let qid = send.id().index();
+                state::quic_stream_set_qid(stream, qid);
+                spawn_halves(sess, stream, dir, inbox.clone(), Some(send), Some(recv)).await;
+                let _ = inbox.send(QuicEvent::StreamOpened { id: stream, qid });
+            }
+            Err(e) => {
+                let _ = inbox.send(QuicEvent::StreamError { id: stream, message: format!("ERR_QUIC_STREAM: open failed ({e})") });
+                let _ = inbox.send(QuicEvent::StreamClosed { id: stream, code: -1 });
+            }
+        }
+    } else {
+        match conn.open_uni().await {
+            Ok(send) => {
+                let qid = send.id().index();
+                state::quic_stream_set_qid(stream, qid);
+                spawn_halves(sess, stream, dir, inbox.clone(), Some(send), None).await;
+                let _ = inbox.send(QuicEvent::StreamOpened { id: stream, qid });
+            }
+            Err(e) => {
+                let _ = inbox.send(QuicEvent::StreamError { id: stream, message: format!("ERR_QUIC_STREAM: open failed ({e})") });
+                let _ = inbox.send(QuicEvent::StreamClosed { id: stream, code: -1 });
+            }
+        }
+    }
+}
+
+/// 对端发起流：直接登记半端 → `StreamAccepted`（读/写任务即起）。
+async fn peer_halves(
+    sess: u64,
+    dir: state::QuicStreamDir,
+    inbox: tokio::sync::mpsc::UnboundedSender<QuicEvent>,
+    send: Option<quinn::SendStream>,
+    recv: Option<quinn::RecvStream>,
+) {
+    let qid = send.as_ref().map(|s| s.id().index()).or_else(|| recv.as_ref().map(|r| r.id().index())).unwrap_or(0);
+    let stream = state::quic_alloc_id();
+    state::quic_stream_insert(stream, sess, dir);
+    state::quic_stream_set_qid(stream, qid);
+    spawn_halves(sess, stream, dir, inbox.clone(), send, recv).await;
+    let dir_s = match dir {
+        state::QuicStreamDir::Bidi => "bidi",
+        state::QuicStreamDir::Send => "send",
+        state::QuicStreamDir::Recv => "receive",
+    };
+    let _ = inbox.send(QuicEvent::StreamAccepted { id: stream, qid, dir: dir_s.into() });
+}
+
+/// 起读写半端任务（有半端才起；任一半终结即整流 `StreamClosed`，单出口）。
+async fn spawn_halves(
+    sess: u64,
+    stream: u64,
+    _dir: state::QuicStreamDir,
+    inbox: tokio::sync::mpsc::UnboundedSender<QuicEvent>,
+    send: Option<quinn::SendStream>,
+    recv: Option<quinn::RecvStream>,
+) {
+    let _ = sess;
+    if let Some(mut send) = send {
+        let (wtx, mut wrx) = tokio::sync::mpsc::unbounded_channel::<QuicStreamCmd>();
+        let inbox = inbox.clone();
+        let wtask = tokio::spawn(async move {
+            loop {
+                match wrx.recv().await {
+                    None => break, // 流已收尾
+                    Some(QuicStreamCmd::Write(bytes)) => {
+                        if let Err(e) = send.write_all(&bytes).await {
+                            let _ = inbox.send(QuicEvent::StreamError {
+                                id: stream,
+                                message: format!("ERR_QUIC_STREAM: write failed ({e})"),
+                            });
+                            let _ = inbox.send(QuicEvent::StreamClosed { id: stream, code: -1 });
+                            break;
+                        }
+                    }
+                    Some(QuicStreamCmd::Finish) => {
+                        let _ = send.finish();
+                        let _ = inbox.send(QuicEvent::StreamWriteDone { id: stream });
+                        break;
+                    }
+                    Some(QuicStreamCmd::Reset(code)) => {
+                        if let Ok(v) = quinn::VarInt::from_u64(code) {
+                            let _ = send.reset(v);
+                        }
+                        let _ = inbox.send(QuicEvent::StreamClosed { id: stream, code: code as i64 });
+                        break;
+                    }
+                    Some(QuicStreamCmd::Stop(_)) => {} // 读端命令，写端忽略
+                }
+            }
+        });
+        state::quic_stream_set_ends(stream, Some(wtx), Some(wtask.abort_handle()), None, None);
+    }
+    if let Some(mut recv) = recv {
+        let (rtx, mut rrx) = tokio::sync::mpsc::unbounded_channel::<QuicStreamCmd>();
+        let inbox = inbox.clone();
+        let rtask = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    cmd = rrx.recv() => {
+                        match cmd {
+                            Some(QuicStreamCmd::Stop(code)) => {
+                                if let Ok(v) = quinn::VarInt::from_u64(code) {
+                                    let _ = recv.stop(v);
+                                }
+                            }
+                            _ => break, // 写端命令/通道关闭即退
+                        }
+                    }
+                    chunk = recv.read_chunk(65536, true) => {
+                        match chunk {
+                            Ok(Some(c)) => {
+                                let _ = inbox.send(QuicEvent::StreamData {
+                                    id: stream,
+                                    b64: base64::engine::general_purpose::STANDARD.encode(&c.bytes),
+                                });
+                            }
+                            Ok(None) => {
+                                let _ = inbox.send(QuicEvent::StreamEnd { id: stream });
+                                break;
+                            }
+                            Err(quinn::ReadError::Reset(code)) => {
+                                let _ = inbox.send(QuicEvent::StreamClosed { id: stream, code: code.into_inner() as i64 });
+                                break;
+                            }
+                            Err(e) => {
+                                let _ = inbox.send(QuicEvent::StreamError {
+                                    id: stream,
+                                    message: format!("ERR_QUIC_STREAM: read failed ({e})"),
+                                });
+                                let _ = inbox.send(QuicEvent::StreamClosed { id: stream, code: -1 });
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        state::quic_stream_set_ends(stream, None, None, Some(rtx), Some(rtask.abort_handle()));
+    }
+}
+
+/// 本地开流。`__wjs_quic_sess_open(sessId, "bidi"|"uni")` → 流 id 串
+/// （就绪经 `StreamOpened` 事件；会话已摘即 `ERR_INVALID_STATE` 错）。
+pub unsafe extern "C" fn quic_sess_open(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 quic_listen
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let sess = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    let dir = if frame.argc() >= 2 { value_to_string(&mut cx, frame.arg(1)) } else { String::new() };
+    let bidi = match dir.as_str() {
+        "bidi" => true,
+        "uni" => false,
+        _ => {
+            report_error(&mut cx, "TypeError: direction must be bidi or uni");
+            return false;
+        }
+    };
+    let dir_enum =
+        if bidi { state::QuicStreamDir::Bidi } else { state::QuicStreamDir::Send };
+    let stream = state::quic_alloc_id();
+    state::quic_stream_insert(stream, sess, dir_enum);
+    let cmd = if bidi {
+        QuicSessCmd::OpenBidi { stream }
+    } else {
+        QuicSessCmd::OpenUni { stream }
+    };
+    if !state::quic_sess_cmd(sess, cmd) {
+        state::quic_stream_remove(stream);
+        report_error(&mut cx, "ERR_INVALID_STATE: Session is closed. New streams cannot be opened.");
+        return false;
+    }
+    use mozjs::conversions::ToJSValConvertible as _;
+    stream.to_string().to_jsval(&mut cx, frame.rval_mut());
+    true
+}
+
+/// 登记流 JS 目标。`__wjs_quic_stream_attach(id, target)` → undefined。
+pub unsafe extern "C" fn quic_stream_attach(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 quic_listen
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    if frame.argc() < 2 || !frame.arg(1).is_object() {
+        report_error(&mut cx, "TypeError: quic stream attach needs a target object");
+        return false;
+    }
+    state::quic_stream_target_add(id, frame.arg(1));
+    frame.set_rval(UndefinedValue());
+    true
+}
+
+/// 流写。`__wjs_quic_stream_write(id, uint8)` → boolean（流已收尾即 false）。
+pub unsafe extern "C" fn quic_stream_write(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 quic_listen
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: quic stream write needs data");
+        return false;
+    }
+    let bytes = match crate::jsapi_glue::view_bytes(&mut cx, frame.arg(1), "quic stream write") {
+        Some(b) => b,
+        None => return false,
+    };
+    frame.set_rval(mozjs::jsval::BooleanValue(
+        state::quic_stream_write_cmd(id, QuicStreamCmd::Write(bytes)),
+    ));
+    true
+}
+
+/// 写端 finish。`__wjs_quic_stream_finish(id)` → undefined（已收尾即无操作）。
+pub unsafe extern "C" fn quic_stream_finish(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 quic_listen
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    state::quic_stream_write_cmd(id, QuicStreamCmd::Finish);
+    frame.set_rval(UndefinedValue());
+    true
+}
+
+/// 码实参（number/bigint 形态；非法即 `ERR_OUT_OF_RANGE` 错，None）。
+fn arg_code(cx: &mut JSContext, frame: &Frame, i: u32) -> Option<u64> {
+    if frame.argc() <= i {
+        return Some(0);
+    }
+    let v = frame.arg(i);
+    let n = if v.is_number() {
+        value_to_string(cx, v).parse::<i64>().ok()?
+    } else if v.is_bigint() {
+        value_to_string(cx, v).trim_end_matches('n').parse::<i64>().ok()?
+    } else {
+        return None;
+    };
+    if n < 0 || n > 0xFFFF_FFFF {
+        return None;
+    }
+    Some(n as u64)
+}
+
+/// 写端 reset。`__wjs_quic_stream_reset(id, code)` → undefined。
+pub unsafe extern "C" fn quic_stream_reset(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 quic_listen
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    let code = match arg_code(&mut cx, &frame, 1) {
+        Some(c) => c,
+        None => {
+            report_error(&mut cx, "ERR_OUT_OF_RANGE: reset code must be an integer in range");
+            return false;
+        }
+    };
+    state::quic_stream_write_cmd(id, QuicStreamCmd::Reset(code));
+    frame.set_rval(UndefinedValue());
+    true
+}
+
+/// 读端 stop。`__wjs_quic_stream_stop(id, code)` → undefined。
+pub unsafe extern "C" fn quic_stream_stop(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 quic_listen
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    let code = match arg_code(&mut cx, &frame, 1) {
+        Some(c) => c,
+        None => {
+            report_error(&mut cx, "ERR_OUT_OF_RANGE: stop code must be an integer in range");
+            return false;
+        }
+    };
+    state::quic_stream_read_cmd(id, QuicStreamCmd::Stop(code));
+    frame.set_rval(UndefinedValue());
+    true
+}
+
+/// 发数据报（超限静默丢弃，Node 同款）。`__wjs_quic_sess_send_dgram(id, uint8)` → boolean。
+pub unsafe extern "C" fn quic_sess_send_dgram(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 quic_listen
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: sendDatagram needs data");
+        return false;
+    }
+    let bytes = match crate::jsapi_glue::view_bytes(&mut cx, frame.arg(1), "sendDatagram") {
+        Some(b) => b,
+        None => return false,
+    };
+    let ok = match state::quic_sess_conn(id) {
+        Some(conn) => conn.send_datagram(bytes.into()).is_ok(),
+        None => false,
+    };
+    frame.set_rval(mozjs::jsval::BooleanValue(ok));
+    true
+}
+
+/// 数据报上限（禁收发即 0，Node 同款）。`__wjs_quic_sess_max_dgram(id)` → 数字串。
+pub unsafe extern "C" fn quic_sess_max_dgram(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 quic_listen
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    use mozjs::conversions::ToJSValConvertible as _;
+    let max = state::quic_sess_conn(id).and_then(|c| c.max_datagram_size()).unwrap_or(0);
+    max.to_string().to_jsval(&mut cx, frame.rval_mut());
+    true
+}
+
 /// 内嵌 ESM 源（`node:quic`，9g-1：Endpoint + 会话）。
 pub const SOURCE: &str = r#"
 import { EventEmitter } from "node:events";
@@ -814,9 +1375,15 @@ export class QuicError extends Error {
   }
 }
 
+function __parseCoded(m, dflt) {
+  const mm = String(m).match(/^(ERR_[A-Z0-9_]+): ([\s\S]*)$/);
+  if (mm) return { code: mm[1], message: mm[2] };
+  return { code: dflt, message: String(m) };
+}
 function __quicErr(e, dflt = "ERR_QUIC_ERROR") {
   const m = String((e && e.message) || e);
-  const err = new QuicError(m, dflt);
+  const { code, message } = __parseCoded(m, dflt);
+  const err = new QuicError(message, code);
   throw err;
 }
 function __callNative(fn, dflt) {
@@ -964,12 +1531,19 @@ export class QuicSession extends EventEmitter {
       this.__peer.servername = info.servername;
       this.emit("secure", info.servername, info.alpn);
     } else if (kind === "error") {
-      this.emit("error", new QuicError(String(payload), "ERR_QUIC_HANDSHAKE"));
+      const { code, message } = __parseCoded(String(payload), "ERR_QUIC_HANDSHAKE");
+      this.emit("error", new QuicError(message, code));
     } else if (kind === "close") {
       if (this.__closed) return;
       this.__closed = true;
       const info = JSON.parse(String(payload));
       this.emit("close", info.code, info.reason);
+    } else if (kind === "stream") {
+      const info = JSON.parse(String(payload));
+      const stream = new QuicStream(info.streamId, { dir: info.dir, qid: info.qid });
+      this.emit("stream", stream);
+    } else if (kind === "datagram") {
+      this.emit("datagram", Buffer.from(String(payload), "base64"));
     }
   }
   get encrypted() { return this.__secure; }
@@ -1013,6 +1587,152 @@ export class QuicSession extends EventEmitter {
   destroy(err) {
     void err;
     this.close();
+  }
+  createBidirectionalStream() {
+    return this.__openStream("bidi");
+  }
+  createUnidirectionalStream() {
+    return this.__openStream("uni");
+  }
+  __openStream(dir) {
+    const sid = __callNative(() => __wjs_quic_sess_open(this.__id, dir));
+    const stream = new QuicStream(String(sid), { dir: dir === "bidi" ? "bidi" : "send", qid: null });
+    return new Promise((resolve, reject) => {
+      stream.__pendingOpen = { resolve, reject };
+    });
+  }
+  sendDatagram(data) {
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data ?? ""));
+    return Boolean(__callNative(() => __wjs_quic_sess_send_dgram(this.__id, buf)));
+  }
+  get maxDatagramSize() {
+    return Number(__callNative(() => __wjs_quic_sess_max_dgram(this.__id)));
+  }
+}
+
+function __normStreamCode(v, what) {
+  if (typeof v === "bigint") v = Number(v);
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 4294967295) {
+    const err = new RangeError(`The "${what}" argument must be an integer in range 0..2^32-1.`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  return v;
+}
+
+export class QuicStream extends EventEmitter {
+  constructor(__id, { dir, qid }) {
+    super();
+    if (typeof __id !== "string") {
+      const err = new TypeError(`QuicStream needs an internal stream id.`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    this.__id = __id;
+    this.__dir = dir;
+    this.__qid = qid ?? null;
+    // 半流：不存在的方向视为已 done（单出口 close 配对才成立）。
+    this.__readDone = (dir === "send");
+    this.__writeDone = (dir === "receive");
+    // end()/close() 调后同步落旗（writedone 事件异步到，期间再写必须同步抛）。
+    this.__ended = (dir === "receive");
+    this.__closed = false;
+    this.__closeCode = 0;
+    this.__pendingOpen = null;
+    this.__ev = this.__ev.bind(this);
+    __wjs_quic_stream_attach(__id, this);
+  }
+  __ev(kind, payload) {
+    if (kind === "opened") {
+      this.__qid = Number(payload);
+      if (this.__pendingOpen) {
+        const { resolve } = this.__pendingOpen;
+        this.__pendingOpen = null;
+        resolve(this);
+      }
+    } else if (kind === "data") {
+      this.emit("data", Buffer.from(String(payload), "base64"));
+    } else if (kind === "end") {
+      this.__readDone = true;
+      this.emit("end");
+      this.__maybeClose();
+    } else if (kind === "writedone") {
+      this.__writeDone = true;
+      this.emit("finish");
+      this.__maybeClose();
+    } else if (kind === "closed") {
+      this.__forceClose(Number(payload));
+    } else if (kind === "error") {
+      const { code, message } = __parseCoded(String(payload), "ERR_QUIC_STREAM");
+      if (this.__pendingOpen) {
+        const { reject } = this.__pendingOpen;
+        this.__pendingOpen = null;
+        reject(new QuicError(message, code));
+      } else {
+        this.emit("error", new QuicError(message, code));
+      }
+    }
+  }
+  __maybeClose() {
+    if (this.__closed || !this.__readDone || !this.__writeDone) return;
+    this.__closed = true;
+    this.emit("close", this.__closeCode);
+  }
+  __forceClose(code) {
+    if (this.__closed) return;
+    this.__closed = true;
+    this.__readDone = true;
+    this.__writeDone = true;
+    this.__closeCode = code;
+    this.emit("close", code);
+  }
+  get id() { return this.__qid; }
+  get direction() { return this.__dir; }
+  write(chunk, encoding) {
+    if (this.__dir === "receive") {
+      const err = new Error("Cannot write to receive-only stream.");
+      err.code = "ERR_INVALID_STATE";
+      throw err;
+    }
+    if (this.__writeDone || this.__closed || this.__ended) {
+      const err = new Error("Write after end.");
+      err.code = "ERR_STREAM_WRITE_AFTER_END";
+      throw err;
+    }
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""), encoding ?? "utf8");
+    const ok = __callNative(() => __wjs_quic_stream_write(this.__id, buf));
+    if (!ok) {
+      const err = new Error("Write after end.");
+      err.code = "ERR_STREAM_WRITE_AFTER_END";
+      throw err;
+    }
+    return true;
+  }
+  end(data, encoding) {
+    if (data !== undefined) this.write(data, encoding);
+    this.__ended = true;
+    __callNative(() => __wjs_quic_stream_finish(this.__id));
+    return this;
+  }
+  close() {
+    this.__ended = true;
+    __callNative(() => __wjs_quic_stream_finish(this.__id));
+  }
+  destroy(err) {
+    __callNative(() => __wjs_quic_stream_reset(this.__id, 0));
+    __callNative(() => __wjs_quic_stream_stop(this.__id, 0));
+    if (err !== undefined && err !== null) {
+      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+    }
+    this.__forceClose(0);
+  }
+  stopSending(code = 0) {
+    const c = __normStreamCode(code, "code");
+    __callNative(() => __wjs_quic_stream_stop(this.__id, c));
+  }
+  resetStream(code = 0) {
+    const c = __normStreamCode(code, "code");
+    __callNative(() => __wjs_quic_stream_reset(this.__id, c));
   }
 }
 
@@ -1070,6 +1790,6 @@ export async function connect(address, options = {}) {
   return new QuicSession(String(id), {});
 }
 
-const __api = { listen, connect, QuicEndpoint, QuicSession, QuicError, CC_ALGO_RENO, CC_ALGO_CUBIC, CC_ALGO_BBR };
+const __api = { listen, connect, QuicEndpoint, QuicSession, QuicStream, QuicError, CC_ALGO_RENO, CC_ALGO_CUBIC, CC_ALGO_BBR };
 export default __api;
 "#;

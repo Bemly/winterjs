@@ -2138,6 +2138,15 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_quic_sess_info", Some(node::quic::quic_sess_info), 1),
             ("__wjs_quic_sess_stats", Some(node::quic::quic_sess_stats), 1),
             ("__wjs_quic_sess_close", Some(node::quic::quic_sess_close), 2),
+            // Phase 9g-2: QUIC 流/数据报
+            ("__wjs_quic_sess_open", Some(node::quic::quic_sess_open), 2),
+            ("__wjs_quic_stream_attach", Some(node::quic::quic_stream_attach), 2),
+            ("__wjs_quic_stream_write", Some(node::quic::quic_stream_write), 2),
+            ("__wjs_quic_stream_finish", Some(node::quic::quic_stream_finish), 1),
+            ("__wjs_quic_stream_reset", Some(node::quic::quic_stream_reset), 2),
+            ("__wjs_quic_stream_stop", Some(node::quic::quic_stream_stop), 2),
+            ("__wjs_quic_sess_send_dgram", Some(node::quic::quic_sess_send_dgram), 2),
+            ("__wjs_quic_sess_max_dgram", Some(node::quic::quic_sess_max_dgram), 1),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）

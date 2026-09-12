@@ -146,12 +146,39 @@ pub struct QuicEndpointEntry {
     pub closing: bool,
 }
 
-/// QUIC 会话表项（连接句柄；watcher 任务等 `closed()` 后发 `SessionClose`）。
+/// QUIC 会话表项（连接句柄；驱动任务跑命令/accept/数据报/`closed()` 守望）。
 pub struct QuicSessionEntry {
     pub conn: Option<quinn::Connection>,
-    pub watcher: tokio::task::AbortHandle,
+    pub driver: Option<tokio::task::AbortHandle>,
     pub local: String,
     pub remote: String,
+    pub cmd_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicSessCmd>>,
+    /// 发起侧自有 endpoint（socket 保活；收尾时 close + 释放。服务端会话为 None，
+    /// 其 socket 归 endpoint 表项管）。
+    pub client_ep: Option<quinn::Endpoint>,
+}
+
+/// QUIC 流方向（本地视角）。
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum QuicStreamDir {
+    Bidi,
+    /// 本地只写（对端只读）。
+    Send,
+    /// 本地只读（对端只写）。
+    Recv,
+}
+
+/// QUIC 流表项（读写半端各有任务持有；任一半终结即整流收尾，单出口哲学）。
+pub struct QuicStreamEntry {
+    pub id: u64,
+    pub sess: u64,
+    pub dir: QuicStreamDir,
+    pub quic_id: Option<u64>,
+    pub write_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicStreamCmd>>,
+    pub read_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicStreamCmd>>,
+    pub write_task: Option<tokio::task::AbortHandle>,
+    pub read_task: Option<tokio::task::AbortHandle>,
+    pub done: bool,
 }
 /// 计数规则（Node paused 口径）：`counted = open && refed && listening`，
 /// 只有正在监听的端口才续命事件循环（`port_listen/unlisten` 由 JS 监听装卸驱动）。
@@ -267,6 +294,7 @@ pub struct RootedState {
     pub worker_targets: Vec<WorkerTarget>, // 运行中 worker 的 JS 目标（Exit 后摘除）
     pub quic_ep_targets: Vec<QuicTarget>, // QUIC endpoint 的 JS 目标（Close 后摘除）
     pub quic_sess_targets: Vec<QuicTarget>, // QUIC 会话的 JS 目标（Close 后摘除）
+    pub quic_stream_targets: Vec<QuicTarget>, // QUIC 流的 JS 目标（Close 后摘除）
     pub vm_contexts: Vec<VmCtx>, // node:vm 上下文 global（release 摘除，会话终由 OS 回收）
     pub fetch_callbacks: Vec<FetchCallback>, // 未决 fetch 的 resolve/reject（按 id 取出）
     pub fetch_streams: Vec<FetchStreamState>, // 流式 body（chunk 泵；cancel/终态时移除）
@@ -295,6 +323,7 @@ unsafe impl Traceable for RootedState {
         self.worker_targets.trace(trc);
         self.quic_ep_targets.trace(trc);
         self.quic_sess_targets.trace(trc);
+        self.quic_stream_targets.trace(trc);
         self.vm_contexts.trace(trc);
         self.fetch_callbacks.trace(trc);
         self.fetch_streams.trace(trc);
@@ -374,6 +403,7 @@ pub struct PlainState {
     pub quic_open: usize,
     pub quic_endpoints: HashMap<u64, QuicEndpointEntry>,
     pub quic_sessions: HashMap<u64, QuicSessionEntry>,
+    pub quic_streams: HashMap<u64, QuicStreamEntry>,
     /// vm 上下文 id 分配（单调；release 不复用，与 fd 表同哲学）。
     pub vm_next_id: u64,
     /// WebSocket 驱动端点（同上）+ 发送端表 + 存活计数（事件循环退出条件用）。
@@ -1518,11 +1548,22 @@ pub fn quic_ep_remove(id: u64) -> bool {
     })
 }
 
-/// 登记会话（存活计 1；conn 建好后补，见 `quic_sess_set_conn`）。
-pub fn quic_sess_insert(id: u64, watcher: tokio::task::AbortHandle, local: String, remote: String) {
+/// 登记会话（存活计 1；conn/cmd 建好后补，见 `quic_sess_set_conn`）。
+pub fn quic_sess_insert(id: u64, local: String, remote: String) {
     with_plain(|p| {
-        p.quic_sessions.insert(id, QuicSessionEntry { conn: None, watcher, local, remote });
+        p.quic_sessions.insert(id, QuicSessionEntry { conn: None, driver: None, local, remote, cmd_tx: None, client_ep: None });
         p.quic_open += 1;
+    });
+}
+
+/// 补登记驱动任务句柄（spawn 后；重复登记 abort 旧柄）。
+pub fn quic_sess_set_driver(id: u64, driver: tokio::task::AbortHandle) {
+    with_plain(|p| {
+        if let Some(e) = p.quic_sessions.get_mut(&id) {
+            if let Some(old) = e.driver.replace(driver) {
+                old.abort();
+            }
+        }
     });
 }
 
@@ -1531,7 +1572,7 @@ pub fn quic_sess_addrs(id: u64) -> Option<(String, String)> {
     with_plain(|p| p.quic_sessions.get(&id).map(|e| (e.local.clone(), e.remote.clone())))
 }
 
-/// 补登记连接句柄（握手成功后；watcher 等 `closed()` 用不上它，info/stats/close 用）。
+/// 补登记连接句柄（握手成功后；驱动任务等 `closed()` 用不上它，info/stats/close 用）。
 pub fn quic_sess_set_conn(id: u64, conn: quinn::Connection) {
     with_plain(|p| {
         if let Some(e) = p.quic_sessions.get_mut(&id) {
@@ -1544,15 +1585,49 @@ pub fn quic_sess_conn(id: u64) -> Option<quinn::Connection> {
     with_plain(|p| p.quic_sessions.get(&id).and_then(|e| e.conn.clone()))
 }
 
-/// 摘除会话（abort watcher；计过数即减；返回是否首次）。
+/// 摘除会话（abort 驱动；名下流由分发侧收尾；自有 endpoint 关后释放；
+/// 计过数即减；返回是否首次）。
 pub fn quic_sess_remove(id: u64) -> bool {
     with_plain(|p| match p.quic_sessions.remove(&id) {
         Some(e) => {
-            e.watcher.abort();
+            if let Some(d) = e.driver {
+                d.abort();
+            }
+            if let Some(ep) = e.client_ep {
+                ep.close(0u32.into(), b"bye");
+            }
             p.quic_open = p.quic_open.saturating_sub(1);
             true
         }
         None => false,
+    })
+}
+
+/// 寄存发起侧 endpoint（socket 保活到会话收尾；任务结束即 move 进来）。
+pub fn quic_sess_set_client_ep(id: u64, ep: quinn::Endpoint) {
+    with_plain(|p| {
+        if let Some(e) = p.quic_sessions.get_mut(&id) {
+            e.client_ep = Some(ep);
+        }
+    });
+}
+
+/// 登记会话命令端点（驱动任务持有接收端；open 流/关会话走此通道）。
+pub fn quic_sess_set_cmd(
+    id: u64,
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicSessCmd>,
+) {
+    with_plain(|p| {
+        if let Some(e) = p.quic_sessions.get_mut(&id) {
+            e.cmd_tx = Some(cmd_tx);
+        }
+    });
+}
+
+/// 发会话命令（会话已摘即 false）。
+pub fn quic_sess_cmd(id: u64, cmd: crate::builtins::node::quic::QuicSessCmd) -> bool {
+    with_plain(|p| {
+        p.quic_sessions.get(&id).and_then(|e| e.cmd_tx.clone()).is_some_and(|tx| tx.send(cmd).is_ok())
     })
 }
 
@@ -1595,6 +1670,132 @@ pub fn quic_sess_target_remove(id: u64) -> bool {
 /// 存活数（监听中 endpoint + 存活会话；事件循环退出条件用）。
 pub fn quic_open() -> usize {
     with_plain(|p| p.quic_open)
+}
+
+// ── QUIC 流（9g-2；半端任务各持一端，任一半终结即整流收尾）────────────────
+
+/// 登记流（半端任务句柄随后补；`done` 防双重收尾）。
+pub fn quic_stream_insert(id: u64, sess: u64, dir: QuicStreamDir) {
+    with_plain(|p| {
+        p.quic_streams.insert(
+            id,
+            QuicStreamEntry {
+                id,
+                sess,
+                dir,
+                quic_id: None,
+                write_tx: None,
+                read_tx: None,
+                write_task: None,
+                read_task: None,
+                done: false,
+            },
+        );
+    });
+}
+
+/// 补登记 quic 流 id（`StreamOpened/Accepted` 后）。
+pub fn quic_stream_set_qid(id: u64, qid: u64) {
+    with_plain(|p| {
+        if let Some(e) = p.quic_streams.get_mut(&id) {
+            e.quic_id = Some(qid);
+        }
+    });
+}
+
+/// 补登记半端（写端/读端任务各调一次）。
+pub fn quic_stream_set_ends(
+    id: u64,
+    write_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicStreamCmd>>,
+    write_task: Option<tokio::task::AbortHandle>,
+    read_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicStreamCmd>>,
+    read_task: Option<tokio::task::AbortHandle>,
+) {
+    with_plain(|p| {
+        if let Some(e) = p.quic_streams.get_mut(&id) {
+            if write_tx.is_some() {
+                e.write_tx = write_tx;
+                e.write_task = write_task;
+            }
+            if read_tx.is_some() {
+                e.read_tx = read_tx;
+                e.read_task = read_task;
+            }
+        }
+    });
+}
+
+pub fn quic_stream_dir(id: u64) -> Option<QuicStreamDir> {
+    with_plain(|p| p.quic_streams.get(&id).map(|e| e.dir))
+}
+
+/// 发流写命令（写端已摘即 false）。
+pub fn quic_stream_write_cmd(id: u64, cmd: crate::builtins::node::quic::QuicStreamCmd) -> bool {
+    with_plain(|p| {
+        p.quic_streams.get(&id).and_then(|e| e.write_tx.clone()).is_some_and(|tx| tx.send(cmd).is_ok())
+    })
+}
+
+/// 发流读命令（目前仅 `Stop`；读端已摘即 false）。
+pub fn quic_stream_read_cmd(id: u64, cmd: crate::builtins::node::quic::QuicStreamCmd) -> bool {
+    with_plain(|p| {
+        p.quic_streams.get(&id).and_then(|e| e.read_tx.clone()).is_some_and(|tx| tx.send(cmd).is_ok())
+    })
+}
+
+/// 流收尾（abort 半端任务；`done` 置位防双收；返回是否首次）。
+pub fn quic_stream_finish(id: u64) -> bool {
+    with_plain(|p| match p.quic_streams.get_mut(&id) {
+        Some(e) if !e.done => {
+            e.done = true;
+            if let Some(t) = e.write_task.take() {
+                t.abort();
+            }
+            if let Some(t) = e.read_task.take() {
+                t.abort();
+            }
+            e.write_tx = None;
+            e.read_tx = None;
+            true
+        }
+        _ => false,
+    })
+}
+
+/// 摘除流记录（收尾后调；会话摘除时顺带清其流——任务已 abort，无泄漏）。
+pub fn quic_stream_remove(id: u64) {
+    with_plain(|p| {
+        p.quic_streams.remove(&id);
+    });
+}
+
+/// 会话名下全流 id（会话收尾时逐个 `quic_stream_finish` 用）。
+pub fn quic_session_streams(sess: u64) -> Vec<u64> {
+    with_plain(|p| p.quic_streams.iter().filter(|(_, e)| e.sess == sess).map(|(id, _)| *id).collect())
+}
+
+/// 登记流 JS 目标（`QuicStream` 构造时 attach）。
+pub fn quic_stream_target_add(id: u64, target: JSVal) {
+    with_rooted(|s| s.quic_stream_targets.push(QuicTarget { id, target: Heap::boxed(target) }));
+}
+
+pub fn quic_stream_target(id: u64) -> Option<JSVal> {
+    with_rooted(|s| s.quic_stream_targets.iter().find(|t| t.id == id).map(|t| t.target.get()))
+}
+
+/// 流所属会话的 JS 目标（对端开流事件挂到会话下用）。
+pub fn quic_sess_target_by_stream(stream: u64) -> Option<JSVal> {
+    let sess = with_plain(|p| p.quic_streams.get(&stream).map(|e| e.sess))?;
+    quic_sess_target(sess)
+}
+
+/// 摘除流 JS 目标（Close 派发后调；返回首次 true）。
+pub fn quic_stream_target_remove(id: u64) -> bool {
+    with_rooted(|s| {
+        let n0 = s.quic_stream_targets.len();
+        s.quic_stream_targets.retain(|t| t.id != id);
+        s.quic_stream_targets.len() != n0
+    })
 }
 
 // ── vm 上下文（同 Runtime 内多 global，各占新 compartment）────────────────

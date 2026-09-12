@@ -77,6 +77,28 @@ pub struct ChildTarget {
     pub target: Heap<JSVal>,
 }
 
+pub struct NetTarget {
+    pub id: u64,
+    pub target: Heap<JSVal>,
+}
+
+// SAFETY: 只追踪 target（id 无 GC 指针）。
+unsafe impl Traceable for NetTarget {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
+        self.target.trace(trc);
+    }}
+}
+
+/// socket/server 表项（写端命令通道 + 半关旗；收尾单出口见 node/net.rs）。
+pub struct NetEntry {
+    pub cmd_tx: tokio::sync::mpsc::UnboundedSender<crate::builtins::node::net::NetCmd>,
+    pub half_read: bool,
+    pub half_write: bool,
+    pub close_sent: bool,
+    /// 写端 task 是否存活（destroy 后死亡；读端见 EOF 时若已死则直接收尾）。
+    pub writer_alive: bool,
+}
+
 // SAFETY: 只追踪 target（id 无 GC 指针）。
 unsafe impl Traceable for ChildTarget {
     unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
@@ -153,6 +175,7 @@ pub struct RootedState {
     pub cjs_modules: Vec<CjsEntry>, // URL → CJS `module.exports`（执行前预注册，循环可见半成品）
     pub watch_listeners: Vec<WatchCallback>, // fs.watch 监听（close 前保留，多次分发）
     pub child_targets: Vec<ChildTarget>, // 异步子进程目标（exit/close 后摘除）
+    pub net_targets: Vec<NetTarget>, // node:net 目标（Close 后摘除）
     pub fetch_callbacks: Vec<FetchCallback>, // 未决 fetch 的 resolve/reject（按 id 取出）
     pub fetch_streams: Vec<FetchStreamState>, // 流式 body（chunk 泵；cancel/终态时移除）
     pub make_response_fn: Heap<JSVal>, // prelude 的 __wjs_make_response
@@ -175,6 +198,7 @@ unsafe impl Traceable for RootedState {
         self.cjs_modules.trace(trc);
         self.watch_listeners.trace(trc);
         self.child_targets.trace(trc);
+        self.net_targets.trace(trc);
         self.fetch_callbacks.trace(trc);
         self.fetch_streams.trace(trc);
         self.make_response_fn.trace(trc);
@@ -217,6 +241,12 @@ pub struct PlainState {
     /// 存活子进程数（exit/close 结算时减；事件循环退出条件用）。
     pub child_open: usize,
     pub child_procs: HashMap<u64, ChildEntry>,
+    /// 网络驱动端点（node:net；接收端由事件循环持有）。
+    pub net_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::net::NetEvent>>,
+    pub net_next_id: u64,
+    /// 存活 socket/server 数（Close 结算时减；事件循环退出条件用）。
+    pub net_open: usize,
+    pub net_sockets: HashMap<u64, NetEntry>,
     /// WebSocket 驱动端点（同上）+ 发送端表 + 存活计数（事件循环退出条件用）。
     pub ws_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::ws::WsEvent>>,
     pub ws_next_id: u64,
@@ -880,6 +910,138 @@ pub fn watch_remove(id: u64) {
 /// 存活 watch 数（persistent；事件循环退出条件用）。
 pub fn watch_open() -> usize {
     with_plain(|p| p.watch_open)
+}
+
+// ── 网络驱动（node:net；task → channel → 事件循环，同 child 模型）───────────
+
+/// 分配网络 id + 事件端点。
+pub fn net_alloc() -> Option<(
+    u64,
+    tokio::sync::mpsc::UnboundedSender<crate::builtins::node::net::NetEvent>,
+)> {
+    with_plain(|p| {
+        let tx = p.net_tx.clone()?;
+        p.net_next_id += 1;
+        Some((p.net_next_id, tx))
+    })
+}
+
+/// 登记客户端/服务端 socket（native 侧；返回写端命令接收端交泵 task）。
+pub fn net_socket_add(
+    id: u64,
+    target: JSVal,
+) -> tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::net::NetCmd> {
+    let heap = Heap::default();
+    heap.set(target);
+    with_rooted(|s| s.net_targets.push(NetTarget { id, target: heap }));
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    with_plain(|p| {
+        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true });
+        p.net_open += 1;
+    });
+    rx
+}
+
+/// server accept 出的连接：无 target 入表（JS 侧 attach 后补），返回命令接收端。
+pub fn net_conn_add() -> (u64, tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::net::NetCmd>) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let id = with_plain(|p| {
+        p.net_next_id += 1;
+        let id = p.net_next_id;
+        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true });
+        p.net_open += 1;
+        id
+    });
+    (id, rx)
+}
+
+/// 事后补登记 target（server 连接 attach）。
+pub fn net_target_add(id: u64, target: JSVal) {
+    let heap = Heap::default();
+    heap.set(target);
+    with_rooted(|s| s.net_targets.push(NetTarget { id, target: heap }));
+}
+
+pub fn net_target(id: u64) -> Option<JSVal> {
+    with_rooted(|s| s.net_targets.iter().find(|t| t.id == id).map(|t| t.target.get()))
+}
+
+/// 发命令（socket 已收尾即 false）。
+pub fn net_cmd(id: u64, cmd: crate::builtins::node::net::NetCmd) -> bool {
+    with_plain(|p| p.net_sockets.get(&id).is_some_and(|e| e.cmd_tx.send(cmd).is_ok()))
+}
+
+/// 置半关旗（读端）；返回是否两侧都已半关（旗已随 purge 清空不重发）。
+pub fn net_half_read(id: u64) -> bool {
+    with_plain(|p| {
+        if let Some(e) = p.net_sockets.get_mut(&id) {
+            e.half_read = true;
+            e.half_read && e.half_write
+        } else {
+            false
+        }
+    })
+}
+
+/// 置半关旗（写端）。
+pub fn net_half_write(id: u64) -> bool {
+    with_plain(|p| {
+        if let Some(e) = p.net_sockets.get_mut(&id) {
+            e.half_write = true;
+            e.half_read && e.half_write
+        } else {
+            false
+        }
+    })
+}
+
+/// 标记写端 task 退出（返回此前是否存活）。
+pub fn net_writer_exit(id: u64) -> bool {
+    with_plain(|p| {
+        if let Some(e) = p.net_sockets.get_mut(&id) {
+            std::mem::replace(&mut e.writer_alive, false)
+        } else {
+            false
+        }
+    })
+}
+
+/// 写端是否已死（死则读端 EOF 需代行收尾，End 命令无人消费）。
+pub fn net_writer_dead(id: u64) -> bool {
+    with_plain(|p| p.net_sockets.get(&id).is_some_and(|e| !e.writer_alive))
+}
+
+/// Close 单次发送旗（task 侧防双发；purge 由 dispatch 完成后统一做）。
+pub fn net_close_once(id: u64) -> bool {
+    with_plain(|p| {
+        if let Some(e) = p.net_sockets.get_mut(&id) {
+            if e.close_sent {
+                false
+            } else {
+                e.close_sent = true;
+                true
+            }
+        } else {
+            false
+        }
+    })
+}
+
+/// 收尾清除（entry + target；Close 派发后调用；返回首次 true）。
+pub fn net_purge(id: u64) -> bool {
+    let entry = with_plain(|p| p.net_sockets.remove(&id));
+    with_rooted(|s| s.net_targets.retain(|t| t.id != id));
+    if entry.is_some() {
+        with_plain(|p| p.net_open = p.net_open.saturating_sub(1));
+        true
+    } else {
+        false
+    }
+}
+
+/// 存活 socket/server 数（事件循环退出条件用）。
+pub fn net_open() -> usize {
+    with_plain(|p| p.net_open)
 }
 
 // ── 异步子进程驱动（task → channel → 事件循环，见 node/child.rs）────────────

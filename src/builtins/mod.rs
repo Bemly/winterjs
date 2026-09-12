@@ -2050,6 +2050,14 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_watch_start", Some(node::fs::watch_start), 4),
             ("__wjs_watch_close", Some(node::fs::watch_close), 1),
             // Phase 4c: child_process
+            // Phase 9d: node:net + node:dns
+            ("__wjs_net_connect", Some(node::net::net_connect), 3),
+            ("__wjs_net_listen", Some(node::net::net_listen), 3),
+            ("__wjs_net_attach", Some(node::net::net_attach), 2),
+            ("__wjs_net_write", Some(node::net::net_write), 2),
+            ("__wjs_net_end", Some(node::net::net_end), 1),
+            ("__wjs_net_destroy", Some(node::net::net_destroy), 1),
+            ("__wjs_dns_lookup", Some(node::dns::dns_lookup), 1),
             ("__wjs_cp_exec", Some(node::child::cp_exec), 2),
             ("__wjs_cp_spawn", Some(node::child::cp_spawn), 3),
             // Phase 4d: 异步 spawn（c-4x 加 pipe：stdin 写/关 natives）

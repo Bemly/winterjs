@@ -19,6 +19,8 @@ pub fn io_code(e: &std::io::Error) -> &'static str {
             1 => "EPERM",
             2 => "ENOENT",
             9 => "EBADF",
+            // EADDRINUSE：macOS 48 / Linux 98（双平台绑定冲突，9d net）
+            48 | 98 => "EADDRINUSE",
             13 => "EACCES",
             17 => "EEXIST",
             18 => "EXDEV",
@@ -1499,8 +1501,10 @@ mod tests {
             io_code(&std::io::Error::from_raw_os_error(39)),
             "ENOTEMPTY"
         );
-        // 9c：fd 系读写路径报错面（EBADF）
+        // 9c：fd 系读写路径报错面（EBADF）；9d：绑定冲突（macOS/Linux 双 errno）
         assert_eq!(io_code(&std::io::Error::from_raw_os_error(9)), "EBADF");
+        assert_eq!(io_code(&std::io::Error::from_raw_os_error(48)), "EADDRINUSE");
+        assert_eq!(io_code(&std::io::Error::from_raw_os_error(98)), "EADDRINUSE");
         assert_eq!(io_code(&std::io::Error::from_raw_os_error(9999)), "UNKNOWN");
     }
 }

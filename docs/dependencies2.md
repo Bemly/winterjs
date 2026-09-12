@@ -130,6 +130,15 @@ feature `quinn = ["dep:quinn"]` 并进 `default`（`--no-default-features` 照�
 hermetic，0.01s 级）。`node:quic` JS 面 9g-1/9g-2 已落地（Endpoint/会话/流/
 数据报可用子集，偏差见 `src/builtins/node/quic.rs` 模块头注；v1 仍不验收全对齐）。
 
+## 9h-1 特性增补注记（2026-09-13，零新 crate）
+
+> `k256` 加 `ecdh` 特性（secp256k1 ECDH；arithmetic 系纯 Rust，与 p 系列同口径）、
+> `dsa` 加 `hazmat` 特性（密钥生成；纯 Rust）。两项皆为已批准轮子的特性行增补
+> （`Cargo.lock` 无版本变化），非新 crate，不触发 §0.5；RNG 走 `rand 0.10`
+> 直引（`SysRng` 对 dsa 的 `TryCryptoRng`，同系直通），`y=g^x mod p` 走
+> `rsa::BigUint` 重导出。仍缺的轮子：`ripemd160`（无 crate）、SHAKE
+> （`sha3 0.12` 已移除 SHAKE 类型，需新 crate）——走 §0.5 问用户。
+
 ## 测试资产（非依赖，仓库外按需取）
 
 - Node：`test/parallel/test-<mod>-*.js`（`/tmp/wjs-node` sparse，单文件取）。

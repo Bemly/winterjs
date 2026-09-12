@@ -686,15 +686,15 @@
   Sign/Verify（含 RSA-PSS/Ed25519，裸 r‖s 口径沿用 c-4a）+ RSA 加解密
   （OAEP-SHA1 与 v1.5-SHA1-MD5 **手写**：MGF1 + BigUint 模幂——`rsa 0.9` 绑
   `digest 0.10`，`sha1_010` 需新 crate，按 §0.5 未引，见 AGENTS §4.43）+
-  ECDH/DH（`dh_genkey/dh_secret/dh_range`）+ 素性（`is_prime` Miller-Rabin，
-  `generatePrime{bigint,size}` 不做记档）；双向真机交叉验证
+  ECDH/DH（`dh_genkey/dh_secret/dh_range`）+ 素性（`is_prime` Miller-Rabin；
+  `bigint` 形态 9h-1 落地，见下）；双向真机交叉验证
   （本仓加密→真机解密 + 真机加密→本仓解密）。
   零新依赖铁律：`digest`/`cipher`/`rsa::BigUint`/`rsa::rand_core` 全经重导出直用；
   `hmac 0.13` 与 `sha3` 不兼容 → HMAC 通用构造自架。
   黑盒 +3（密钥签名/加解密交换/素性边界）。
 - [x] 9e-1d KDF + X509（2026-09-12 完工）：
   pbkdf2/scrypt/hkdf（`hkdfSync` 回 ArrayBuffer，真机口径）/argon2
-  （`kdf_argon`，argon2 AD 不做记档）+ X509 解析（`X509Certificate`：
+  （`kdf_argon`；AD 在 9h-1 接线，见下）+ X509 解析（`X509Certificate`：
   subject/issuer/serialNumber/validity/fingerprint，openssl 交叉格式一致；
   verify 不做记档）。黑盒 +2（KDF 向量/X509 内嵌证书全断言）。
 - [x] 9e-3 node:perf_hooks（2026-09-12 完工）：
@@ -711,8 +711,8 @@
   （node 76 含 9e 新增 13：crypto 10/perf 1/inspector+child 2；
   另 alloc 探针 1 过 1 忽略；总 352 passed + 1 ignored，0 failed），
   0 新增警告（5 预存），冒烟 5/5。`cluster` 按 plan2 §4 顺延 v1 之后（多进程语义重）。
-  9e 记档缺口：ripemd160/XOF、secp256k1、dsa、PQ（ml-kem）、fork/真 IPC 通道、
-  X509 verify、argon2 AD、`generatePrime{bigint,size}`、GCM iv 限 12B、
+  9e 记档缺口：ripemd160/XOF（sha3 0.12 已无 SHAKE，轮子待定，§0.5 问用户）、
+  PQ（ml-kem）、fork/真 IPC 通道、X509 verify、GCM iv 限 12B、
   PKCS#7 非恒定时间。
 - [x] 9f-1 node:vm（2026-09-12 完工；引擎深水）：
   同 Runtime 多 global 沙箱（`src/builtins/node/vm.rs`，9 natives + JS 壳，
@@ -788,7 +788,23 @@
 - 9g 收官（2026-09-13）：`cargo test` 单测 119 + 黑盒 247 全绿
   （quic 6：rust 实证 2 + 黑盒 4；总 366 passed + 1 ignored，0 failed），
   0 新增警告（5 预存），冒烟 5/5。
-  剩终局缺口：`vm` 模块系、`worker_threads` 传输细节、quic headers 面、
+- [x] 9h-1 crypto 补齐（2026-09-13 完工；树内轮子，零新 crate）：
+  secp256k1（`k256` 加 `ecdh` 特性：ECDH/签名/`generateKeyPair`/`getCurves`，
+  双向真机交叉验证）+ DSA（`dsa` 加 `hazmat` 特性：生成/签名 deterministic
+  RFC6979/验签/`pkcs8`·`spki`·`jwk` 进出全链，双向交叉验证）+
+  argon2 AD（`ParamsBuilder::data`，真机向量逐字节对）+
+  `generatePrimeSync` bigint（16 进制桥，零 native 改动）。
+  附带修两真 bug：① SPKI/PKCS#8 试解靠坐标长度把 secp256k1 误判 P-256
+  （同 32 字节）→ 算法 OID 直判（`__wjs_ec_guess_curve` + SEC1 `[0]` OID，
+  openssl 向量单测钉住）；② k256 验签拒 high-S → 验前 `normalize_s`
+  （OpenSSL 接受可锻造签名）；③ Node PKCS#8 省公钥 y → `y=g^x mod p` 补算。
+  黑盒 +2（k256 真机向量/ECDH 自洽/签名编解码全链 + DSA 全链/bigint/AD 向量）。
+  剩缺口：ripemd160（无 crate）、XOF（sha3 0.12 已移除 SHAKE，轮子待定——
+  两项走 §0.5 问用户）、PQ、X509 verify、GCM 非 12B iv（轮子不支持）。
+- 9h 收官（2026-09-13）：`cargo test` 单测 120 + 黑盒 249 全绿
+  （node 85 含 9h 新增 2；总 369 passed + 1 ignored，0 failed），
+  0 新增警告（5 预存），冒烟 5/5。
+- 剩终局缺口：`vm` 模块系、`worker_threads` 传输细节、quic headers 面、
   plan2 §4 不做项（wasi/v8 口径/sea/napi/cluster/domain/repl 口径）。
 
 ## 全局纪律

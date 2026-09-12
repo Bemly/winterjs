@@ -2128,6 +2128,16 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_port_listen", Some(node::worker::port_listen), 1),
             ("__wjs_port_unlisten", Some(node::worker::port_unlisten), 1),
             ("__wjs_port_has_ref", Some(node::worker::port_has_ref), 1),
+            // Phase 9g-1: node:quic（Endpoint/会话；流/数据报 9g-2）
+            ("__wjs_quic_listen", Some(node::quic::quic_listen), 1),
+            ("__wjs_quic_ep_addr", Some(node::quic::quic_ep_addr), 1),
+            ("__wjs_quic_ep_close", Some(node::quic::quic_ep_close), 1),
+            ("__wjs_quic_ep_attach", Some(node::quic::quic_ep_attach), 2),
+            ("__wjs_quic_connect", Some(node::quic::quic_connect), 1),
+            ("__wjs_quic_sess_attach", Some(node::quic::quic_sess_attach), 2),
+            ("__wjs_quic_sess_info", Some(node::quic::quic_sess_info), 1),
+            ("__wjs_quic_sess_stats", Some(node::quic::quic_sess_stats), 1),
+            ("__wjs_quic_sess_close", Some(node::quic::quic_sess_close), 2),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）

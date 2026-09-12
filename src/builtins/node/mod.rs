@@ -28,6 +28,7 @@ pub mod perf_hooks;
 pub mod process_;
 pub mod punycode;
 pub mod querystring;
+pub mod quic;
 pub mod require;
 pub mod stream;
 pub mod stream_consumers;
@@ -82,6 +83,8 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:util/types", util_types::SOURCE),
     ("node:querystring", querystring::SOURCE),
     ("node:punycode", punycode::SOURCE),
+    // Phase 9g-1
+    ("node:quic", quic::SOURCE),
     ("node:string_decoder", string_decoder::SOURCE),
     // Phase 9b
     ("node:buffer", buffer::SOURCE),
@@ -139,6 +142,8 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "util/types" => Some("node:util/types"),
         "querystring" => Some("node:querystring"),
         "punycode" => Some("node:punycode"),
+        // Phase 9g-1
+        "quic" => Some("node:quic"),
         "string_decoder" => Some("node:string_decoder"),
         "diagnostics_channel" => Some("node:diagnostics_channel"),
         "trace_events" => Some("node:trace_events"),
@@ -217,6 +222,10 @@ mod tests {
         assert_eq!(normalize_spec("node:string_decoder"), Some("node:string_decoder"));
         assert!(source("node:querystring").is_some());
         assert!(source("node:punycode").is_some());
+        // Phase 9g-1
+        assert_eq!(normalize_spec("quic"), Some("node:quic"));
+        assert_eq!(normalize_spec("node:quic"), Some("node:quic"));
+        assert!(source("node:quic").is_some());
         assert!(source("node:string_decoder").is_some());
         assert_eq!(normalize_spec("diagnostics_channel"), Some("node:diagnostics_channel"));
         assert_eq!(normalize_spec("node:trace_events"), Some("node:trace_events"));

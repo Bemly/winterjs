@@ -125,6 +125,34 @@ unsafe impl Traceable for WorkerTarget {
         self.target.trace(trc);
     }}
 }
+
+/// 一个 QUIC endpoint/会话的 JS 目标（`__ev` 回调；Close 后摘除；`Box` 定址）。
+pub struct QuicTarget {
+    pub id: u64,
+    pub target: Box<Heap<JSVal>>,
+}
+
+// SAFETY: 只追踪 target（id 无 GC 指针）。
+unsafe impl Traceable for QuicTarget {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
+        self.target.trace(trc);
+    }}
+}
+
+/// QUIC endpoint 表项（监听 socket + accept 任务；close 时 abort）。
+pub struct QuicEndpointEntry {
+    pub ep: quinn::Endpoint,
+    pub accept_task: tokio::task::AbortHandle,
+    pub closing: bool,
+}
+
+/// QUIC 会话表项（连接句柄；watcher 任务等 `closed()` 后发 `SessionClose`）。
+pub struct QuicSessionEntry {
+    pub conn: Option<quinn::Connection>,
+    pub watcher: tokio::task::AbortHandle,
+    pub local: String,
+    pub remote: String,
+}
 /// 计数规则（Node paused 口径）：`counted = open && refed && listening`，
 /// 只有正在监听的端口才续命事件循环（`port_listen/unlisten` 由 JS 监听装卸驱动）。
 pub struct WorkerPort {
@@ -237,6 +265,8 @@ pub struct RootedState {
     pub net_targets: Vec<NetTarget>, // node:net 目标（Close 后摘除）
     pub worker_ports: Vec<WorkerPort>, // worker MessagePort 端（close 后摘除）
     pub worker_targets: Vec<WorkerTarget>, // 运行中 worker 的 JS 目标（Exit 后摘除）
+    pub quic_ep_targets: Vec<QuicTarget>, // QUIC endpoint 的 JS 目标（Close 后摘除）
+    pub quic_sess_targets: Vec<QuicTarget>, // QUIC 会话的 JS 目标（Close 后摘除）
     pub vm_contexts: Vec<VmCtx>, // node:vm 上下文 global（release 摘除，会话终由 OS 回收）
     pub fetch_callbacks: Vec<FetchCallback>, // 未决 fetch 的 resolve/reject（按 id 取出）
     pub fetch_streams: Vec<FetchStreamState>, // 流式 body（chunk 泵；cancel/终态时移除）
@@ -263,6 +293,8 @@ unsafe impl Traceable for RootedState {
         self.net_targets.trace(trc);
         self.worker_ports.trace(trc);
         self.worker_targets.trace(trc);
+        self.quic_ep_targets.trace(trc);
+        self.quic_sess_targets.trace(trc);
         self.vm_contexts.trace(trc);
         self.fetch_callbacks.trace(trc);
         self.fetch_streams.trace(trc);
@@ -335,6 +367,13 @@ pub struct PlainState {
         tokio::sync::mpsc::UnboundedSender<crate::builtins::node::worker::WorkerEvent>,
         u64,
     )>>,
+    /// QUIC 驱动端点（endpoint/会话；接收端由事件循环持有）。
+    pub quic_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicEvent>>,
+    pub quic_next_id: u64,
+    /// 存活数（监听中 endpoint + 存活会话；事件循环退出条件用）。
+    pub quic_open: usize,
+    pub quic_endpoints: HashMap<u64, QuicEndpointEntry>,
+    pub quic_sessions: HashMap<u64, QuicSessionEntry>,
     /// vm 上下文 id 分配（单调；release 不复用，与 fd 表同哲学）。
     pub vm_next_id: u64,
     /// WebSocket 驱动端点（同上）+ 发送端表 + 存活计数（事件循环退出条件用）。
@@ -1425,6 +1464,137 @@ pub fn worker_target_remove(id: u64) -> bool {
         s.worker_targets.retain(|t| t.id != id);
         s.worker_targets.len() != n0
     })
+}
+
+// ── QUIC 驱动（endpoint/会话；task → channel → 事件循环，同 net 模型）─────
+
+/// QUIC 事件端点（接收端由事件循环持有；无即会话外，不分配）。
+pub fn quic_tx_clone() -> Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicEvent>> {
+    with_plain(|p| p.quic_tx.clone())
+}
+
+/// 分配 QUIC id（endpoint/会话共享单调空间）。
+pub fn quic_alloc_id() -> u64 {
+    with_plain(|p| {
+        p.quic_next_id += 1;
+        p.quic_next_id
+    })
+}
+
+/// 登记 endpoint（监听中计 1 存活）。
+pub fn quic_ep_insert(id: u64, ep: quinn::Endpoint, accept_task: tokio::task::AbortHandle) {
+    with_plain(|p| {
+        p.quic_endpoints.insert(id, QuicEndpointEntry { ep, accept_task, closing: false });
+        p.quic_open += 1;
+    });
+}
+
+/// 开始关闭（置 closing + abort accept 环；返回 endpoint 供发 Close 帧）。
+/// 重复关即 None（防双发 `EndpointClosed`）。
+pub fn quic_ep_begin_close(id: u64) -> Option<quinn::Endpoint> {
+    with_plain(|p| match p.quic_endpoints.get_mut(&id) {
+        Some(e) if !e.closing => {
+            e.closing = true;
+            e.accept_task.abort();
+            Some(e.ep.clone())
+        }
+        _ => None,
+    })
+}
+
+pub fn quic_ep_get(id: u64) -> Option<quinn::Endpoint> {
+    with_plain(|p| p.quic_endpoints.get(&id).map(|e| e.ep.clone()))
+}
+
+/// 摘除 endpoint（abort accept 任务；计过数即减；返回是否首次）。
+pub fn quic_ep_remove(id: u64) -> bool {
+    with_plain(|p| match p.quic_endpoints.remove(&id) {
+        Some(e) => {
+            e.accept_task.abort();
+            p.quic_open = p.quic_open.saturating_sub(1);
+            true
+        }
+        None => false,
+    })
+}
+
+/// 登记会话（存活计 1；conn 建好后补，见 `quic_sess_set_conn`）。
+pub fn quic_sess_insert(id: u64, watcher: tokio::task::AbortHandle, local: String, remote: String) {
+    with_plain(|p| {
+        p.quic_sessions.insert(id, QuicSessionEntry { conn: None, watcher, local, remote });
+        p.quic_open += 1;
+    });
+}
+
+/// 会话寻址（info 用；conn 建好前也能读）。
+pub fn quic_sess_addrs(id: u64) -> Option<(String, String)> {
+    with_plain(|p| p.quic_sessions.get(&id).map(|e| (e.local.clone(), e.remote.clone())))
+}
+
+/// 补登记连接句柄（握手成功后；watcher 等 `closed()` 用不上它，info/stats/close 用）。
+pub fn quic_sess_set_conn(id: u64, conn: quinn::Connection) {
+    with_plain(|p| {
+        if let Some(e) = p.quic_sessions.get_mut(&id) {
+            e.conn = Some(conn);
+        }
+    });
+}
+
+pub fn quic_sess_conn(id: u64) -> Option<quinn::Connection> {
+    with_plain(|p| p.quic_sessions.get(&id).and_then(|e| e.conn.clone()))
+}
+
+/// 摘除会话（abort watcher；计过数即减；返回是否首次）。
+pub fn quic_sess_remove(id: u64) -> bool {
+    with_plain(|p| match p.quic_sessions.remove(&id) {
+        Some(e) => {
+            e.watcher.abort();
+            p.quic_open = p.quic_open.saturating_sub(1);
+            true
+        }
+        None => false,
+    })
+}
+
+/// 登记 endpoint JS 目标（`QuicEndpoint` 构造时 attach）。
+pub fn quic_ep_target_add(id: u64, target: JSVal) {
+    with_rooted(|s| s.quic_ep_targets.push(QuicTarget { id, target: Heap::boxed(target) }));
+}
+
+pub fn quic_ep_target(id: u64) -> Option<JSVal> {
+    with_rooted(|s| s.quic_ep_targets.iter().find(|t| t.id == id).map(|t| t.target.get()))
+}
+
+/// 摘除 endpoint JS 目标（Close 派发后调；返回首次 true）。
+pub fn quic_ep_target_remove(id: u64) -> bool {
+    with_rooted(|s| {
+        let n0 = s.quic_ep_targets.len();
+        s.quic_ep_targets.retain(|t| t.id != id);
+        s.quic_ep_targets.len() != n0
+    })
+}
+
+/// 登记会话 JS 目标（`QuicSession` 构造时 attach）。
+pub fn quic_sess_target_add(id: u64, target: JSVal) {
+    with_rooted(|s| s.quic_sess_targets.push(QuicTarget { id, target: Heap::boxed(target) }));
+}
+
+pub fn quic_sess_target(id: u64) -> Option<JSVal> {
+    with_rooted(|s| s.quic_sess_targets.iter().find(|t| t.id == id).map(|t| t.target.get()))
+}
+
+/// 摘除会话 JS 目标（Close 派发后调；返回首次 true）。
+pub fn quic_sess_target_remove(id: u64) -> bool {
+    with_rooted(|s| {
+        let n0 = s.quic_sess_targets.len();
+        s.quic_sess_targets.retain(|t| t.id != id);
+        s.quic_sess_targets.len() != n0
+    })
+}
+
+/// 存活数（监听中 endpoint + 存活会话；事件循环退出条件用）。
+pub fn quic_open() -> usize {
+    with_plain(|p| p.quic_open)
 }
 
 // ── vm 上下文（同 Runtime 内多 global，各占新 compartment）────────────────

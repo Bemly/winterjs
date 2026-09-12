@@ -3081,3 +3081,117 @@ try {
     assert!(out.contains("noaad true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9e_crypto_keys_sign() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { generateKeyPairSync, createSign, createVerify, sign, verify, createPrivateKey, createPublicKey, constants } from "node:crypto";
+const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+console.log("rsa", privateKey.type === "private" && privateKey.asymmetricKeyType === "rsa" && publicKey.type === "public");
+const sig = sign("sha256", Buffer.from("msg"), privateKey);
+console.log("sign", verify("sha256", Buffer.from("msg"), publicKey, sig) === true);
+console.log("neg", verify("sha256", Buffer.from("msg!"), publicKey, sig) === false);
+const s = createSign("RSA-SHA256"); s.update("he"); s.update("llo");
+const v = createVerify("RSA-SHA256"); v.update("hello");
+console.log("sv", v.verify(publicKey, s.sign(privateKey)) === true);
+const s1 = sign("RSA-SHA1", Buffer.from("m"), privateKey);
+console.log("sha1", verify("RSA-SHA1", Buffer.from("m"), publicKey, s1) === true);
+const pem = privateKey.export({ format: "pem", type: "pkcs8" });
+const back = createPrivateKey(pem);
+console.log("pem", back.type === "private" && back.asymmetricKeyType === "rsa");
+console.log("pubfrompriv", createPublicKey(privateKey).type === "public");
+const jwk = publicKey.export({ format: "jwk" });
+console.log("jwk", jwk.kty === "RSA" && jwk.e === "AQAB");
+const { publicKey: ep, privateKey: es } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+const esig = sign("sha256", Buffer.from("m"), es);
+console.log("ec", verify("sha256", Buffer.from("m"), ep, esig) === true);
+const { publicKey: dp, privateKey: ds } = generateKeyPairSync("ed25519");
+const dsg = sign(null, Buffer.from("m"), ds);
+console.log("ed", verify(null, Buffer.from("m"), dp, dsg) === true);
+console.log("const", constants.RSA_PKCS1_PADDING === 1 && constants.RSA_PKCS1_OAEP_PADDING === 4 && constants.RSA_PSS_SALTLEN_DIGEST === -1);
+"#,
+    );
+    assert!(out.contains("rsa true"), "out: {out}");
+    assert!(out.contains("sign true"), "out: {out}");
+    assert!(out.contains("neg true"), "out: {out}");
+    assert!(out.contains("sv true"), "out: {out}");
+    assert!(out.contains("sha1 true"), "out: {out}");
+    assert!(out.contains("pem true"), "out: {out}");
+    assert!(out.contains("pubfrompriv true"), "out: {out}");
+    assert!(out.contains("jwk true"), "out: {out}");
+    assert!(out.contains("ec true"), "out: {out}");
+    assert!(out.contains("ed true"), "out: {out}");
+    assert!(out.contains("const true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9e_crypto_enc_dh_ecdh() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { generateKeyPairSync, publicEncrypt, privateDecrypt, createECDH, createDiffieHellmanGroup, diffieHellman } from "node:crypto";
+const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const enc = publicEncrypt(publicKey, Buffer.from("hi"));
+console.log("oaep", privateDecrypt(privateKey, enc).toString() === "hi");
+const enc1 = publicEncrypt({ key: publicKey, padding: 1 }, Buffer.from("v15"));
+console.log("v15", privateDecrypt({ key: privateKey, padding: 1 }, enc1).toString() === "v15");
+const a = createECDH("prime256v1"); a.generateKeys();
+const b = createECDH("prime256v1"); b.generateKeys();
+console.log("ecdh", a.computeSecret(b.getPublicKey()).equals(b.computeSecret(a.getPublicKey())));
+console.log("ecdhraw", a.getPublicKey()[0] === 4 && a.getPrivateKey().length === 32);
+const x = createDiffieHellmanGroup("modp14"); x.generateKeys();
+const y = createDiffieHellmanGroup("modp14"); y.generateKeys();
+const sx = x.computeSecret(y.getPublicKey());
+console.log("dh", sx.equals(y.computeSecret(x.getPublicKey())) && sx.length === 256);
+console.log("dhprime", x.getPrime().length === 256 && x.verifyError() === 0);
+"#,
+    );
+    assert!(out.contains("oaep true"), "out: {out}");
+    assert!(out.contains("v15 true"), "out: {out}");
+    assert!(out.contains("ecdh true"), "out: {out}");
+    assert!(out.contains("ecdhraw true"), "out: {out}");
+    assert!(out.contains("dh true"), "out: {out}");
+    assert!(out.contains("dhprime true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9e_crypto_asym_errors() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { generateKeyPairSync, checkPrimeSync, generatePrimeSync, createECDH, createDiffieHellman, createDiffieHellmanGroup, sign } from "node:crypto";
+console.log("prime", checkPrimeSync(13n) === true && checkPrimeSync(15n) === false);
+console.log("primebuf", checkPrimeSync(Buffer.from([13])) === true);
+try { generateKeyPairSync("dsa", {}); } catch (e) { console.log("dsa", e.code === "ERR_NOT_SUPPORTED"); }
+try { createECDH("secp256k1"); } catch (e) { console.log("k1", e.code === "ERR_CRYPTO_INVALID_CURVE"); }
+try { createDiffieHellmanGroup("modp1"); } catch (e) { console.log("modp1", e.code === "ERR_NOT_SUPPORTED"); }
+try { createDiffieHellmanGroup("modp99"); } catch (e) { console.log("modp99", e.code === "ERR_NOT_SUPPORTED"); }
+try { createDiffieHellman(2048); } catch (e) { console.log("dhsize", e.code === "ERR_NOT_SUPPORTED"); }
+const p = generatePrimeSync(64, { checks: 3 });
+console.log("gen", p.length === 8 && checkPrimeSync(p, { checks: 3 }) === true);
+try { generatePrimeSync(64, { bigint: true }); } catch (e) { console.log("bigint", e.code === "ERR_NOT_SUPPORTED"); }
+try { sign("nope", Buffer.from("m"), generateKeyPairSync("ed25519").privateKey); } catch (e) { console.log("edalg", e.code === "ERR_CRYPTO_INVALID_DIGEST"); }
+"#,
+    );
+    assert!(out.contains("prime true"), "out: {out}");
+    assert!(out.contains("primebuf true"), "out: {out}");
+    assert!(out.contains("dsa true"), "out: {out}");
+    assert!(out.contains("k1 true"), "out: {out}");
+    assert!(out.contains("modp1 true"), "out: {out}");
+    assert!(out.contains("modp99 true"), "out: {out}");
+    assert!(out.contains("dhsize true"), "out: {out}");
+    assert!(out.contains("gen true"), "out: {out}");
+    assert!(out.contains("bigint true"), "out: {out}");
+    assert!(out.contains("edalg true"), "out: {out}");
+    dir.close().unwrap();
+}

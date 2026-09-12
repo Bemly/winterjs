@@ -23,6 +23,7 @@ pub mod internal;
 pub mod net;
 pub mod os;
 pub mod path;
+pub mod perf_hooks;
 pub mod process_;
 pub mod punycode;
 pub mod querystring;
@@ -91,6 +92,8 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:tty", tty::SOURCE),
     // Phase 9d-5
     ("node:zlib", zlib::SOURCE),
+    // Phase 9e-3
+    ("node:perf_hooks", perf_hooks::SOURCE),
 ];
 
 /// spec 规范化（`node:` 前缀可选；internal 走 `internal::normalize_internal`；
@@ -139,6 +142,8 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "timers/promises" => Some("node:timers/promises"),
         // Phase 9d-5
         "zlib" => Some("node:zlib"),
+        // Phase 9e-3
+        "perf_hooks" => Some("node:perf_hooks"),
         _ => None,
     }
 }
@@ -212,6 +217,10 @@ mod tests {
         assert_eq!(normalize_spec("zlib"), Some("node:zlib"));
         assert_eq!(normalize_spec("node:zlib"), Some("node:zlib"));
         assert!(source("node:zlib").is_some());
+        // Phase 9e-3
+        assert_eq!(normalize_spec("perf_hooks"), Some("node:perf_hooks"));
+        assert_eq!(normalize_spec("node:perf_hooks"), Some("node:perf_hooks"));
+        assert!(source("node:perf_hooks").is_some());
         // Phase 9d-6
         assert_eq!(normalize_spec("https"), Some("node:https"));
         assert_eq!(normalize_spec("node:tls"), Some("node:tls"));

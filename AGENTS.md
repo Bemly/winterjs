@@ -516,6 +516,23 @@ cargo build
 - 复现：`tests/node.rs::phase9d_zlib_errors_boundary`（`lv-hi` 行修前为
   `Z_DATA_ERROR`）。
 
+### 4.38 https/tls 三坑（2026-09-12，Phase 9d-6）
+
+- 症状一：`https.get(url, opts, cb)` 三参回环 hang（测试 300s 超时）。
+  根因：实现只收两参，`cb` 位置拿到 options 对象 → response 监听器未注册 →
+  `server.close()` 永不执行 → 事件循环不退。修法：帧层加
+  `normalizeRequestArgs`（url/options 合并，options 优先，跨协议即
+  `ERR_INVALID_PROTOCOL`），http/https 双包层同走。
+  教训：请求侧"无监听即挂起"是正常语义（§4.35 同源）——先查形态覆盖，再查实现。
+- 症状二：`ca: "garbage"` 静默通过（空 roots，握手必挂）。
+  根因：`rustls_pemfile::certs` 对无 armor 文本产空迭代无错。
+  修法：`ca` 给出但零证书即同步 TypeError（fail fast；服务端 PEM 同口径）。
+- 症状三（测试件）：openssl 默认自签带 `CA:TRUE`，rustls 报
+  `CaUsedAsEndEntity`。教训：hermetic TLS 测试证书须 end-entity
+  （`basicConstraints=CA:FALSE` + serverAuth EKU），或直接用 rcgen
+ （`generate_simple_self_signed`，自带正确扩展；serve 黑盒同款）。
+- 复现：`tests/node.rs::phase9d_https_loopback`（三参修前 hang）。
+
 
 ## 5. 路线图（按序）
 

@@ -642,6 +642,20 @@
   踩坑：Sync 校验抛在错误包装内被误标 code（§4.37）。
   黑盒 +3（sync 五格式往返/回调嵌套链/报错边界）；`cargo test` 104+214 全绿，
   0 新增警告，冒烟 5/5。
+- [x] 9d-6 https/tls（2026-09-12 完工；http2 顺延）：
+  `node:tls`（`src/builtins/node/tls.rs`，2 natives：握手底座，读写复用 net 通道/
+  状态机/`net_*` natives，`spawn_pumps` 泛化零重复实现）+ `node:https`
+  （`src/builtins/node/https.rs`，帧层与 http 同语义）+ 帧层抽
+  `node:internal/http_framing`（`withHttpServer`/`withClientRequest` 双注入，
+  http 改薄包层逐行保真；附带修 `createServer(opts,cb)` 掉回调 + 补
+  `request/get(url,opts,cb)` 三形态）。
+  TLS：`ca` PEM 自建 roots / `rejectUnauthorized:false` 跳校验 / 缺省系统 roots；
+  服务端 PEM 错同步 TypeError；握手失败 `ERR_TLS_HANDSHAKE`（细粒度 cert 码顺延）。
+  偏差记档：`createSecureContext`/`getPeerCertificate`/客户端证书不做。
+  踩坑：三参 `get` 缺失致回环 hang（§4.38）；自签测试证书须 end-entity（§4.38）。
+  黑盒 +3（tls 回环双授权路径/https GET+POST/错误路径，rcgen 实时签发 hermetic）；
+  `cargo test` 106+217 全绿（serve 3 例并行 flake 一次，单跑+重跑全绿），
+  0 新增警告，冒烟 5/5。
 
 ## 全局纪律
 

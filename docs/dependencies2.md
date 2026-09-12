@@ -127,8 +127,8 @@ http2 定夺沿用 §h2 表（`hyper` 必选，用法 `default-features=false` +
 feature `quinn = ["dep:quinn"]` 并进 `default`（`--no-default-features` 照编，
 `tests/quic.rs` 整文件 `cfg(feature)` 门控即 0 用例）。
 实证 `tests/quic.rs` 2 例（回环握手 + 双向流 echo + 自签负路径，全 127.0.0.1
-hermetic，0.01s 级）。`node:quic` JS 面未出（真机 node v26.8.2 自带都没有；
-8000 行对齐不在切片尺度，等消费者）。
+hermetic，0.01s 级）。`node:quic` JS 面 9g-1/9g-2 已落地（Endpoint/会话/流/
+数据报可用子集，偏差见 `src/builtins/node/quic.rs` 模块头注；v1 仍不验收全对齐）。
 
 ## 测试资产（非依赖，仓库外按需取）
 

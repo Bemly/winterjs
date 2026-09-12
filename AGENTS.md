@@ -679,6 +679,55 @@ cargo build
 - 推广为铁律：跨线程 rendezvous 的**所有**出口（含失败出口）都必须发一次；
   目标登记晚于事件到达是常态，设计时即保证"先排队、后登记、再分发"时序。
 
+### 4.50 任务尾的资源释放：重构拿掉等待点后即变杀手（2026-09-13，Phase 9g-2）
+
+- 症状：`createBidirectionalStream` 永不 resolve，随后会话无故 `close`。
+- 根因：connect 任务尾有 `endpoint.close()`——9g-1 时任务卡在 `closed().await`，
+  该行只在会话自然结束后执行，无害；9g-2 改驱动接管守望后任务直达尾部，
+  上线即关（实证：quinn `Endpoint::close` 杀其名下活会话）。
+- 修法：发起侧 endpoint 移交会话表项保活（`client_ep`），收尾时才关
+  （`quic_sess_remove`）；任务尾只 detach（`src/builtins/node/quic.rs`）。
+- 推广为铁律：凡"等待点之后"的清理代码，拿掉等待点时必须重审其前提；
+  跨任务共享的资源（socket/句柄）归属写进表项，不靠任务尾 drop 顺带。
+
+### 4.51 校验必须待在 `__callNative` 闭包之外（2026-09-13，Phase 9g-2）
+
+- 症状：`cc: "nope"`/`idleTimeout: -1`/`resetStream(-1)` 全报 `ERR_QUIC_ERROR`，
+  与黑盒断言的 `ERR_INVALID_ARG_VALUE`/`ERR_OUT_OF_RANGE` 对不上。
+- 根因：校验调用写成了 `__callNative(() => native(..., __normCc(v)))` 的实参——
+  抛错发生在闭包内，被包装函数一律重包成 `ERR_QUIC_ERROR`。
+  同源：`resetStream/stopStream` 传 `String(code)` 给只收 number/bigint 的
+  native，直接 `ERR_OUT_OF_RANGE`（`quic_sess_close` 传串是对的——它家 native
+  收串，各家约定不一致，调用前先看 native 侧类型）。
+- 修法：校验提到 `__callNative` 之外先执行，结果变量再传入
+  （`src/builtins/node/quic.rs` `connect`/`listen`/`stopSending`/`resetStream`）。
+- 推广为铁律：`__callNative` 闭包内只放纯 native 调用 + 已校验的值；
+  踩过一次的"码被重包"（§4.37 症状一同源），新增包装函数时先查。
+
+### 4.52 会话收尾先收半端任务，否则 teardown 噪声变 fatal（2026-09-13，Phase 9g-2）
+
+- 症状：`c.close()` 后进程报 `read failed (connection lost)` exit=1（流无 error
+  监听时）；有监听则多一行本不该有的 error。
+- 根因：会话关 → 读写任务的 pending 读/写立刻失败 → `StreamError` 先于
+  `SessionClose` 派发——用户只关了会话，流 error 属 teardown 噪声。
+- 修法：驱动发 `SessionClose` 前先对名下全流 `quic_stream_finish`
+  （abort 半端任务，无声），再发事件；分发侧收尾照旧
+  （`src/builtins/node/quic.rs` 驱动 `finish` 闭包）。
+- 推广为铁律：父域收尾（会话/进程）必须先静默摘除子域任务，再发自己的
+  终结事件；顺序反了，子域的临终报错必先到（§4.36 purge 顺序的跨任务版）。
+
+### 4.53 quinn 默认 idle 30s：悬空会话 hang 测试，收尾必须显式关（2026-09-13，Phase 9g-2）
+
+- 症状：黑盒跑 30.9s 才退（平时 4s）；connect 到已关 endpoint 同样 30s 才报。
+- 根因：quinn 默认 `max_idle_timeout` 30s——服务端接受了但从不关的会话、
+  发往黑洞的握手，全按 30s 结算。`quic_open` 计数如实续命，属正确语义，
+  非 bug。
+- 修法：测试里服务端 `secure` 即关（用完即走）；需要等失败的用例给短
+  `idleTimeout`（如 1500ms）或错配 CA（TLS alert 即时失败）。
+  黑盒禁依赖"对端会关"的用例形状。
+- 推广为铁律：凡引入带默认超时的轮子（idle/握手），先查清默认值并写入
+  测试纪律；hang 30s 整首先怀疑默认超时，其次才是死锁。
+
 
 ## 5. 路线图（按序）
 

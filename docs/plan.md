@@ -761,7 +761,35 @@
   `default`，自身 default 特性全开，`cargo tree` 无 aws-lc/C 新增）+
   `tests/quic.rs` 回环实证 2 例（握手/双向流 echo/自签负路径，hermetic）；
   `node:quic` JS 面未出（v1 不验收；dependencies2 §quic 记全）。
-  剩 9f 深水（`vm` 模块系/`worker_threads` 传输细节）与 plan2 §4 不做项记终局缺口。
+- [x] 9g-1 node:quic Endpoint + 会话（2026-09-13 完工）：
+  `src/builtins/node/quic.rs`（9 natives + JS 壳，零新 crate；事件循环第 7 通道
+  `quic_rx`）：`listen(cb, opts)`（key/cert PEM 必给，ALPN 必选，cc 三档真映射，
+  idleTimeout 毫秒）/ `connect(addr, opts)`（ca 缺省系统 roots，
+  `rejectUnauthorized:false` 跳校验，servername 缺省 host）→ `QuicEndpoint`
+  （address/close/`'session'`）/ `QuicSession`（`'secure'`/`'close'`/`'error'`、
+  close/destroy、local/remoteAddress、alpnProtocol/servername、真值 stats 子集
+  rtt/udp 收发/cwnd/loss）+ `QuicError` + `CC_ALGO_*`。握手失败客户端
+  `ERR_QUIC_HANDSHAKE` + Close（tls §9d-6 同口径），服务端静默丢（防扫描杀服务）。
+  偏差记档：无 ping（quinn 0.11 无原语）、无客户端证书、endpoint 无 stats、
+  updateKey/SNI 上下文/qlog/keylog/ticket/0-RTT/headers 全不支持、
+  `DEFAULT_CIPHERS/GROUPS` 不导出。
+  黑盒 +2（secure 回环 + 握手失败/校验边界，rcgen 自签 hermetic）。
+- [x] 9g-2 QUIC 流/数据报（2026-09-13 完工）：
+  会话驱动任务（命令/open/accept/数据报/`closed()` 守望三合一，`done` 旗防双发
+  `SessionClose`）+ 读写半端任务（任一半终结即整流收尾，单出口）：
+  `createBidirectionalStream()`/`createUnidirectionalStream()`（Node 同款 async，
+  就绪 resolve）/ `QuicStream`（EventEmitter：data/end/finish/close/error，
+  write/end/close/destroy/stopSending/resetStream，id/direction，码 number/bigint）
+  / `sendDatagram`（超限静默丢，Node 同款）/`'datagram'`/`maxDatagramSize`。
+  收尾纪律：驱动发 `SessionClose` 前先收半端任务（teardown 噪声零误报）；
+  会话收尾带走名下全流。偏差记档：流非 `stream.Duplex`（事件形）；
+  半开独立语义弱化（首个终结即整流关）；headers/trailers/priority/stats 不支持。
+  黑盒 +2（双向 echo + 单向 + 数据报 + reset/半流/超限/码边界全链）。
+- 9g 收官（2026-09-13）：`cargo test` 单测 119 + 黑盒 247 全绿
+  （quic 6：rust 实证 2 + 黑盒 4；总 366 passed + 1 ignored，0 failed），
+  0 新增警告（5 预存），冒烟 5/5。
+  剩终局缺口：`vm` 模块系、`worker_threads` 传输细节、quic headers 面、
+  plan2 §4 不做项（wasi/v8 口径/sea/napi/cluster/domain/repl 口径）。
 
 ## 全局纪律
 

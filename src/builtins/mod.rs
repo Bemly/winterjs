@@ -2183,6 +2183,9 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             // Phase 9g-2: QUIC 流/数据报
             ("__wjs_quic_sess_open", Some(node::quic::quic_sess_open), 2),
             ("__wjs_quic_stream_attach", Some(node::quic::quic_stream_attach), 2),
+            // Phase 9i-9: H3 分支（服务端 respond / 客户端 request）
+            ("__wjs_quic_h3_respond", Some(node::quic::quic_h3_respond), 3),
+            ("__wjs_quic_h3_request", Some(node::quic::quic_h3_request), 2),
             ("__wjs_quic_stream_write", Some(node::quic::quic_stream_write), 2),
             ("__wjs_quic_stream_finish", Some(node::quic::quic_stream_finish), 1),
             ("__wjs_quic_stream_reset", Some(node::quic::quic_stream_reset), 2),

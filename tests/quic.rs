@@ -521,3 +521,72 @@ async fn phase9i_h3_over_quinn_loopback() {
     server_task.await.expect("server task");
     client.close(0u32.into(), b"bye");
 }
+
+/// 9i-9：node:quic H3 面（本仓自定 API，真机无 node:quic 可对）——
+/// 服务端 request 事件 + respond；客户端 request() promise；POST 体回显。
+#[test]
+fn phase9i_quic_h3_headers() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (_c, _k) = write_self_signed(&dir);
+    let out = run_quic_file(
+        &dir,
+        "h.mjs",
+        r#"
+import { listen, connect } from "node:quic";
+import fs from "node:fs";
+const key = fs.readFileSync("k.pem", "utf8");
+const cert = fs.readFileSync("c.pem", "utf8");
+const ep = await listen(
+  (sess) => {
+    sess.on("request", (req) => {
+      if (req.path === "/echo") {
+        console.log("h3-srv-post", req.method === "POST", req.headers["x-req"] === "1", req.body.toString() === "h3-body");
+        req.respond({ status: 201, headers: { "x-wjs": "h3-ok" }, body: Buffer.concat([Buffer.from("echo:"), req.body]) });
+      } else {
+        console.log("h3-srv-get", req.method === "GET", Object.keys(req.headers).length >= 0);
+        req.respond({ status: 200, headers: { "content-type": "text/plain" }, body: "hello-h3" });
+      }
+    });
+    sess.on("close", () => {});
+    sess.on("error", (e) => console.log("h3-srv-err", e.message));
+  },
+  { port: 0, alpn: ["h3"], key, cert }
+);
+const c = await connect(`localhost:${ep.address().port}`, { alpn: "h3", ca: cert });
+await new Promise((r) => c.on("secure", r));
+c.on("close", () => {});
+c.on("error", (e) => console.log("h3-cli-err", e.message));
+const r1 = await c.request({ path: "/", headers: { accept: "text/plain" } });
+console.log("h3-cli-get", r1.status === 200, r1.headers["content-type"] === "text/plain", r1.body.toString() === "hello-h3");
+const r2 = await c.request({ method: "POST", path: "/echo", headers: { "x-req": "1" }, body: Buffer.from("h3-body") });
+console.log("h3-cli-post", r2.status === 201, r2.headers["x-wjs"] === "h3-ok", r2.body.toString() === "echo:h3-body");
+// 非 h3 会话 request() 即 ERR_INVALID_PROTOCOL
+const ep2 = await listen((sess) => { sess.on("close", () => {}); sess.on("error", () => {}); }, { port: 0, alpn: ["raw"], key, cert });
+const c2 = await connect(`localhost:${ep2.address().port}`, { alpn: "raw", ca: cert });
+await new Promise((r) => c2.on("secure", r));
+c2.on("close", () => {});
+try { c2.request({ path: "/" }); console.log("h3-noh3 NEVER"); }
+catch (e) { console.log("h3-noh3", e.code === "ERR_INVALID_PROTOCOL"); }
+c2.close();
+ep2.close();
+c.close();
+ep.close();
+await new Promise((r) => setTimeout(r, 300));
+console.log("h3-done", true);
+"#,
+    );
+    let out_str = out;
+    for line in [
+        "h3-srv-get true true",
+        "h3-cli-get true true true",
+        "h3-srv-post true true true",
+        "h3-cli-post true true true",
+        "h3-noh3 true",
+        "h3-done true",
+    ] {
+        assert!(out_str.lines().any(|l| l == line), "missing line: {line}\nout: {out_str}");
+    }
+    assert!(!out_str.contains("h3-srv-err"), "out: {out_str}");
+    assert!(!out_str.contains("h3-cli-err"), "out: {out_str}");
+    dir.close().unwrap();
+}

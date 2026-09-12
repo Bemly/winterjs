@@ -23,6 +23,14 @@
 //! - `close()` 同步调、异步到（`'close'` 事件为准）；`destroy()` 同 `close()`。
 //! - `DEFAULT_CIPHERS`/`DEFAULT_GROUPS` 不导出（套件选择不支持，无真值可给）；
 //!   `CC_ALGO_*` 三档真映射（reno/cubic/bbr）；`idleTimeout` 毫秒（0/缺省=不限）。
+//! 偏差记档（9i-9 H3 分支）：
+//! - 真机 node 26.8.2 无 node:quic 模块（`--experimental-quic` 亦无），headers 面
+//!   为**本仓自定 API**：ALPN 含 "h3" 的会话走 H3 驱动——服务端 `sess.on("request",
+//!   (req) => req.respond({status, headers, body}))`，客户端 `sess.request(opts)`
+//!   回一次性 Promise；非 h3 会话 request() 即 ERR_INVALID_PROTOCOL。
+//! - H3 会话独占连接：无裸流/datagram 事件；请求/响应**串行**处理（v1 记档）；
+//!   响应头经 serde_json Map（键字典序）；请求体服务端整收后才发 request 事件
+//!   （§4.35 同口径）。会话关闭时未决请求 promise 拒绝（ERR_QUIC_SESSION_CLOSED）。
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -263,6 +271,10 @@ pub enum QuicEvent {
     StreamError { id: u64, message: String },
     /// 数据报到达（会话目标收；`b64` 载荷）。
     Datagram { id: u64, b64: String },
+    /// H3 请求到达（会话目标收；9i-9 服务端 H3 分支；headers 为 JSON 值，body b64）。
+    H3Request { sess: u64, stream: u64, method: String, path: String, headers: serde_json::Value, body: String },
+    /// H3 响应就绪（流目标收；9i-9 客户端 H3 分支；headers 为 JSON 值，body b64）。
+    H3Response { stream: u64, status: u16, headers: serde_json::Value, body: String },
 }
 
 fn with_str_args(
@@ -392,6 +404,20 @@ pub fn dispatch(
             let Some(target) = state::quic_sess_target(id) else { return Ok(()) };
             emit_to(cx, target, "datagram", &b64)
         }
+        QuicEvent::H3Request { sess, stream, method, path, headers, body } => {
+            let Some(target) = state::quic_sess_target(sess) else { return Ok(()) };
+            let payload = serde_json::json!({
+                "streamId": stream.to_string(), "method": method, "path": path,
+                "headers": headers, "body": body,
+            })
+            .to_string();
+            emit_to(cx, target, "request", &payload)
+        }
+        QuicEvent::H3Response { stream, status, headers, body } => {
+            let Some(target) = state::quic_stream_target(stream) else { return Ok(()) };
+            let payload = serde_json::json!({ "status": status, "headers": headers, "body": body }).to_string();
+            emit_to(cx, target, "response", &payload)
+        }
     }
 }
 
@@ -513,8 +539,12 @@ pub unsafe extern "C" fn quic_listen(
                         let sess = state::quic_alloc_id();
                         state::quic_sess_insert(sess, ep_local, remote.clone());
                         state::quic_sess_set_conn(sess, conn.clone());
-                        // 驱动任务接管命令/accept/数据报/`closed()` 守望。
-                        let driver = spawn_driver(sess, conn, inbox.clone());
+                        // ALPN "h3" 走 H3 驱动（accept 循环 + Respond 命令）；其余裸流。
+                        let driver = if alpn == "h3" {
+                            spawn_h3_server(sess, conn.clone(), inbox.clone())
+                        } else {
+                            spawn_driver(sess, conn, inbox.clone())
+                        };
                         state::quic_sess_set_driver(sess, driver);
                         // 服务端会话握手已成：先报会话（建目标），再报 secure（与客户端对称）。
                         let _ = inbox.send(QuicEvent::EndpointSession {
@@ -704,8 +734,12 @@ pub unsafe extern "C" fn quic_connect(
                     // 发起侧 endpoint 移交 entry 保活（任务结束即 drop 会怎样未可知，
                     // 实测 task 尾 close 会杀会话；收尾时才关，见 quic_sess_remove）。
                     state::quic_sess_set_client_ep(id, endpoint.clone());
-                    // 驱动接管命令/accept/数据报/`closed()` 守望；Secure 先行。
-                    let driver = spawn_driver(id, conn, inbox.clone());
+                    // ALPN "h3" 走 H3 服务任务（driver 轮询 + Request 命令）；其余裸流。
+                    let driver = if alpn_report == "h3" {
+                        spawn_h3_client(id, conn, inbox.clone())
+                    } else {
+                        spawn_driver(id, conn, inbox.clone())
+                    };
                     state::quic_sess_set_driver(id, driver);
                     // 发起侧 handshake_data 的 server_name 恒 None（quinn 口径），
                     // 用请求时的 servername（TLS 失败即无握手，无此事件）。
@@ -881,6 +915,69 @@ pub enum QuicStreamCmd {
     Finish,
     Reset(u64),
     Stop(u64),
+}
+
+/// H3 分支命令（9i-9；服务端驱动收 Respond，客户端服务任务收 Request）。
+#[derive(Debug)]
+pub enum QuicH3Cmd {
+    Respond { stream: u64, status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
+    Request { stream: u64, method: String, path: String, headers: Vec<(String, String)>, body: Vec<u8> },
+}
+
+/// H3 请求/响应头（serde_json Map → 有序对；同名以 `, ` 连接，Node http 同款）。
+fn h3_headers_json(value: serde_json::Value) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    if let serde_json::Value::Object(map) = value {
+        for (k, v) in map {
+            let vs = match v {
+                serde_json::Value::String(sv) => sv,
+                serde_json::Value::Array(items) => items
+                    .iter()
+                    .map(|x| x.as_str().unwrap_or_default().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                other => other.to_string(),
+            };
+            out.push((k, vs));
+        }
+    }
+    out
+}
+
+/// 会话收尾单出口（§4.52：先收名下流任务/表项，再发 `SessionClose`；done 旗防双发）。
+fn sess_finish(
+    inbox: &tokio::sync::mpsc::UnboundedSender<QuicEvent>,
+    sess: u64,
+    code: i64,
+    reason: String,
+    done: &mut bool,
+) {
+    if !*done {
+        *done = true;
+        for sid in state::quic_session_streams(sess) {
+            state::quic_stream_finish(sid);
+        }
+        let _ = inbox.send(QuicEvent::SessionClose { id: sess, code, reason });
+    }
+}
+
+/// H3 响应头 JSON 值（`http::HeaderMap` → Map；多值 `, ` 连接）。
+fn h3_headers_value(headers: &http::HeaderMap) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (k, v) in headers.iter() {
+        let key = k.as_str().to_string();
+        let val = String::from_utf8_lossy(v.as_bytes()).into_owned();
+        match map.get_mut(&key) {
+            Some(serde_json::Value::String(prev)) => {
+                let joined = format!("{prev}, {val}");
+                map.insert(key, serde_json::Value::String(joined));
+            }
+            _ => {
+                map.insert(key, serde_json::Value::String(val));
+            }
+        }
+    }
+    serde_json::Value::Object(map)
 }
 
 /// 会话驱动任务：命令 + 双向/单向 accept + 数据报接收 + `closed()` 守望。
@@ -1131,6 +1228,289 @@ async fn spawn_halves(
         });
         state::quic_stream_set_ends(stream, None, None, Some(rtx), Some(rtask.abort_handle()));
     }
+}
+
+// ── 9i-9 H3 分支（headers 面；`quinn` 特性组内 h3/h3-quinn）──────────────
+// 本仓自定面（真机 node:quic 模块不存在，26.8.2 实测）：ALPN 含 "h3" 的会话走
+// H3 驱动——服务端 accept 循环发 `request` 事件（respond 单发）；客户端
+// `request()` 经 SendRequest 串行发请求、`response` 事件回结果。H3 会话无
+// 裸流/datagram 事件（h3 独占连接，记档）。
+
+/// 服务端 H3 驱动：accept 循环 → `H3Request`；Respond 命令回响应；
+/// `closed()`/accept 结束即收尾（先收名下流，§4.52 顺序）。
+pub fn spawn_h3_server(
+    sess: u64,
+    conn: quinn::Connection,
+    inbox: tokio::sync::mpsc::UnboundedSender<QuicEvent>,
+) -> tokio::task::AbortHandle {
+    let (h3tx, mut h3rx) = tokio::sync::mpsc::unbounded_channel::<QuicH3Cmd>();
+    state::quic_sess_set_h3_cmd(sess, h3tx);
+    tokio::spawn(async move {
+        let mut done = false;
+        let mut h3_conn: h3::server::Connection<h3_quinn::Connection, bytes::Bytes> =
+            match h3::server::Connection::new(h3_quinn::Connection::new(conn.clone())).await {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = inbox.send(QuicEvent::SessionError { id: sess, message: format!("ERR_QUIC_H3: {e}") });
+                    sess_finish(&inbox, sess, -1, "h3 init failed".into(), &mut done);
+                    return;
+                }
+            };
+        let mut streams: std::collections::HashMap<
+            u64,
+            h3::server::RequestStream<h3_quinn::BidiStream<bytes::Bytes>, bytes::Bytes>,
+        > = std::collections::HashMap::new();
+        loop {
+            tokio::select! {
+                cmd = h3rx.recv() => {
+                    match cmd {
+                        None => break,
+                        Some(QuicH3Cmd::Respond { stream, status, headers, body }) => {
+                            let Some(mut st) = streams.remove(&stream) else { continue };
+                            let mut builder = http::Response::builder().status(status);
+                            for (k, v) in &headers {
+                                builder = builder.header(k, v);
+                            }
+                            if let Ok(resp) = builder.body(()) {
+                                if st.send_response(resp).await.is_ok() {
+                                    if !body.is_empty() {
+                                        let _ = st.send_data(bytes::Bytes::from(body)).await;
+                                    }
+                                    let _ = st.finish().await;
+                                }
+                            }
+                        }
+                        Some(QuicH3Cmd::Request { .. }) => {} // 服务端无此命令
+                    }
+                }
+                acc = h3_conn.accept(), if !done => {
+                    match acc {
+                        Ok(Some(resolver)) => {
+                            if let Ok((req, mut stream)) = resolver.resolve_request().await {
+                                // 体先备齐再发事件（§4.35 同口径；顺序处理 v1 记档）。
+                                let mut body_acc = Vec::new();
+                                loop {
+                                    match stream.recv_data().await {
+                                        Ok(Some(chunk)) => {
+                                            use bytes::Buf as _;
+                                            body_acc.extend_from_slice(chunk.chunk());
+                                        }
+                                        Ok(None) => break,
+                                        Err(_) => break,
+                                    }
+                                }
+                                let sid = state::quic_alloc_id();
+                                state::quic_stream_insert(sid, sess, state::QuicStreamDir::Bidi);
+                                streams.insert(sid, stream);
+                                let _ = inbox.send(QuicEvent::H3Request {
+                                    sess,
+                                    stream: sid,
+                                    method: req.method().as_str().to_string(),
+                                    path: req.uri().path().to_string(),
+                                    headers: h3_headers_value(req.headers()),
+                                    body: base64::engine::general_purpose::STANDARD.encode(&body_acc),
+                                });
+                            }
+                        }
+                        // Ok(None)/Err：h3 连接终结 → 等待 QUIC 关闭原因后收尾
+                        _ => {
+                            let err = conn.closed().await;
+                            let (code, reason) = close_info(err);
+                            sess_finish(&inbox, sess, code, reason, &mut done);
+                            break;
+                        }
+                    }
+                }
+                err = conn.closed(), if !done => {
+                    let (code, reason) = close_info(err);
+                    sess_finish(&inbox, sess, code, reason, &mut done);
+                    break;
+                }
+            }
+        }
+    })
+    .abort_handle()
+}
+
+/// 客户端 H3 服务任务：h3 driver 后台轮询 + Request 命令串行处理
+/// （send → [body] → recv_response → recv_data 全量）→ `H3Response`；
+/// `closed()` 守望收尾（driver abort 后发 `SessionClose`，§4.52 顺序）。
+pub fn spawn_h3_client(
+    sess: u64,
+    conn: quinn::Connection,
+    inbox: tokio::sync::mpsc::UnboundedSender<QuicEvent>,
+) -> tokio::task::AbortHandle {
+    let (h3tx, mut h3rx) = tokio::sync::mpsc::unbounded_channel::<QuicH3Cmd>();
+    state::quic_sess_set_h3_cmd(sess, h3tx);
+    tokio::spawn(async move {
+        let mut done = false;
+        let (mut driver, mut send_request) =
+            match h3::client::new(h3_quinn::Connection::new(conn.clone())).await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    let _ = inbox.send(QuicEvent::SessionError { id: sess, message: format!("ERR_QUIC_H3: {e}") });
+                    sess_finish(&inbox, sess, -1, "h3 init failed".into(), &mut done);
+                    return;
+                }
+            };
+        let driver_task = tokio::spawn(async move {
+            driver.wait_idle().await;
+        });
+        loop {
+            tokio::select! {
+                cmd = h3rx.recv() => {
+                    match cmd {
+                        None => break,
+                        Some(QuicH3Cmd::Request { stream, method, path, headers, body }) => {
+                            let authority = state::quic_sess_addrs(sess)
+                                .map(|(_, remote)| remote)
+                                .unwrap_or_default();
+                            let mut builder = http::Request::builder()
+                                .method(method.as_str())
+                                .uri(format!("https://{authority}{path}"));
+                            for (k, v) in &headers {
+                                builder = builder.header(k, v);
+                            }
+                            let req = match builder.body(()) {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    let _ = inbox.send(QuicEvent::StreamError { id: stream, message: format!("ERR_QUIC_H3: bad request ({e})") });
+                                    let _ = inbox.send(QuicEvent::StreamClosed { id: stream, code: -1 });
+                                    continue;
+                                }
+                            };
+                            match send_request.send_request(req).await {
+                                Ok(mut st) => {
+                                    if !body.is_empty() {
+                                        let _ = st.send_data(bytes::Bytes::from(body)).await;
+                                    }
+                                    let _ = st.finish().await;
+                                    match st.recv_response().await {
+                                        Ok(resp) => {
+                                            let status = resp.status().as_u16();
+                                            let headers = h3_headers_value(resp.headers());
+                                            let mut body_acc = Vec::new();
+                                            loop {
+                                                match st.recv_data().await {
+                                                    Ok(Some(chunk)) => {
+                                                        use bytes::Buf as _;
+                                                        body_acc.extend_from_slice(chunk.chunk());
+                                                    }
+                                                    Ok(None) => break,
+                                                    Err(_) => break,
+                                                }
+                                            }
+                                            let _ = inbox.send(QuicEvent::H3Response {
+                                                stream,
+                                                status,
+                                                headers,
+                                                body: base64::engine::general_purpose::STANDARD.encode(&body_acc),
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let _ = inbox.send(QuicEvent::StreamError { id: stream, message: format!("ERR_QUIC_H3: {e}") });
+                                            let _ = inbox.send(QuicEvent::StreamClosed { id: stream, code: -1 });
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = inbox.send(QuicEvent::StreamError { id: stream, message: format!("ERR_QUIC_H3: {e}") });
+                                    let _ = inbox.send(QuicEvent::StreamClosed { id: stream, code: -1 });
+                                }
+                            }
+                        }
+                        Some(QuicH3Cmd::Respond { .. }) => {} // 客户端无此命令
+                    }
+                }
+                err = conn.closed(), if !done => {
+                    driver_task.abort();
+                    let (code, reason) = close_info(err);
+                    sess_finish(&inbox, sess, code, reason, &mut done);
+                    break;
+                }
+            }
+        }
+    })
+    .abort_handle()
+}
+
+/// `__wjs_quic_h3_respond(sessId, streamId, json)` → undefined（服务端回 H3 响应；
+/// json `{status, headers, body(b64)}`；会话已摘/非 H3 即 ERR_INVALID_STATE）。
+pub unsafe extern "C" fn quic_h3_respond(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(sess) = arg_id(&mut cx, &frame, 0) else {
+        return false;
+    };
+    let Some(stream) = arg_id(&mut cx, &frame, 1) else {
+        return false;
+    };
+    let v = match arg_json(&mut cx, &frame, 2, "quic h3 respond") {
+        Some(v) => v,
+        None => return false,
+    };
+    let status = v.get("status").and_then(|x| x.as_u64()).unwrap_or(200).min(599) as u16;
+    let headers = h3_headers_json(v.get("headers").cloned().unwrap_or(serde_json::Value::Object(Default::default())));
+    let body = v.get("body").and_then(|x| x.as_str()).unwrap_or("");
+    let body = match base64::engine::general_purpose::STANDARD.decode(body) {
+        Ok(b) => b,
+        Err(e) => {
+            report_error(&mut cx, &format!("TypeError: quic h3 respond body is not base64 ({e})"));
+            return false;
+        }
+    };
+    let Some(tx) = state::quic_sess_h3_cmd(sess) else {
+        report_error(&mut cx, "ERR_INVALID_STATE: quic h3 session is gone");
+        return false;
+    };
+    let _ = tx.send(QuicH3Cmd::Respond { stream, status, headers, body });
+    frame.set_rval(UndefinedValue());
+    true
+}
+
+/// `__wjs_quic_h3_request(sessId, json)` → 流 id 串（客户端发 H3 请求；
+/// json `{method, path, headers, body(b64)}`；响应经 `H3Response` 到流目标）。
+pub unsafe extern "C" fn quic_h3_request(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 quic_h3_respond
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(sess) = arg_id(&mut cx, &frame, 0) else {
+        return false;
+    };
+    let v = match arg_json(&mut cx, &frame, 1, "quic h3 request") {
+        Some(v) => v,
+        None => return false,
+    };
+    let method = v.get("method").and_then(|x| x.as_str()).unwrap_or("GET").to_string();
+    let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("/").to_string();
+    let headers = h3_headers_json(v.get("headers").cloned().unwrap_or(serde_json::Value::Object(Default::default())));
+    let body = v.get("body").and_then(|x| x.as_str()).unwrap_or("");
+    let body = match base64::engine::general_purpose::STANDARD.decode(body) {
+        Ok(b) => b,
+        Err(e) => {
+            report_error(&mut cx, &format!("TypeError: quic h3 request body is not base64 ({e})"));
+            return false;
+        }
+    };
+    let Some(tx) = state::quic_sess_h3_cmd(sess) else {
+        report_error(&mut cx, "ERR_INVALID_STATE: quic h3 session is gone");
+        return false;
+    };
+    let stream = state::quic_alloc_id();
+    state::quic_stream_insert(stream, sess, state::QuicStreamDir::Bidi);
+    let _ = tx.send(QuicH3Cmd::Request { stream, method, path, headers, body });
+    use mozjs::conversions::ToJSValConvertible as _;
+    stream.to_string().to_jsval(&mut cx, frame.rval_mut());
+    true
 }
 
 /// 本地开流。`__wjs_quic_sess_open(sessId, "bidi"|"uni")` → 流 id 串
@@ -1520,6 +1900,7 @@ export class QuicSession extends EventEmitter {
     this.__peer = __peer;
     this.__secure = false;
     this.__closed = false;
+    this.__h3Pending = new Set();
     this.__ev = this.__ev.bind(this);
     __wjs_quic_sess_attach(__id, this);
   }
@@ -1537,7 +1918,27 @@ export class QuicSession extends EventEmitter {
       if (this.__closed) return;
       this.__closed = true;
       const info = JSON.parse(String(payload));
+      // H3 未决请求随会话关闭全部失败（避免 promise 悬挂）。
+      for (const fail of this.__h3Pending) fail();
+      this.__h3Pending.clear();
       this.emit("close", info.code, info.reason);
+    } else if (kind === "request") {
+      const info = JSON.parse(String(payload));
+      const req = {
+        id: info.streamId,
+        method: info.method,
+        path: info.path,
+        headers: info.headers,
+        body: Buffer.from(String(info.body || ""), "base64"),
+        respond: ({ status = 200, headers = {}, body } = {}) => {
+          const b64 = body === undefined || body === null ? ""
+            : Buffer.isBuffer(body) ? body.toString("base64")
+            : Buffer.from(body).toString("base64");
+          __callNative(() => __wjs_quic_h3_respond(this.__id, info.streamId,
+            JSON.stringify({ status, headers, body: b64 })));
+        },
+      };
+      this.emit("request", req);
     } else if (kind === "stream") {
       const info = JSON.parse(String(payload));
       const stream = new QuicStream(info.streamId, { dir: info.dir, qid: info.qid });
@@ -1587,6 +1988,41 @@ export class QuicSession extends EventEmitter {
   destroy(err) {
     void err;
     this.close();
+  }
+  request({ method = "GET", path = "/", headers = {}, body } = {}) {
+    // 9i-9 H3 面（自定）：仅 ALPN "h3" 会话；响应走一次性 promise。
+    if (this.__peer.alpn !== "h3") {
+      const err = new Error(`Session ALPN must be "h3" for request(). Received ${JSON.stringify(this.__peer.alpn)}`);
+      err.code = "ERR_INVALID_PROTOCOL";
+      throw err;
+    }
+    const b64 = body === undefined || body === null ? ""
+      : Buffer.isBuffer(body) ? body.toString("base64")
+      : Buffer.from(body).toString("base64");
+    const sid = __callNative(() => __wjs_quic_h3_request(this.__id,
+      JSON.stringify({ method, path, headers, body: b64 })));
+    const target = new EventEmitter();
+    target.__ev = (kind, payload) => {
+      if (kind === "response") {
+        const info = JSON.parse(String(payload));
+        this.__h3Pending.delete(fail);
+        target.emit("response", { status: info.status, headers: info.headers, body: Buffer.from(String(info.body || ""), "base64") });
+      } else if (kind === "error") {
+        this.__h3Pending.delete(fail);
+        const { code, message } = __parseCoded(String(payload), "ERR_QUIC_H3");
+        target.emit("error", new QuicError(message, code));
+      } else if (kind === "closed") {
+        this.__h3Pending.delete(fail);
+        target.emit("error", new QuicError("session closed before response", "ERR_QUIC_SESSION_CLOSED"));
+      }
+    };
+    const fail = () => target.emit("closed");
+    this.__h3Pending.add(fail);
+    __wjs_quic_stream_attach(String(sid), target);
+    return new Promise((resolve, reject) => {
+      target.once("response", resolve);
+      target.once("error", reject);
+    });
   }
   createBidirectionalStream() {
     return this.__openStream("bidi");

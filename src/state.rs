@@ -178,6 +178,8 @@ pub struct QuicSessionEntry {
     pub local: String,
     pub remote: String,
     pub cmd_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicSessCmd>>,
+    /// H3 分支命令端点（9i-9；服务端 Respond / 客户端 Request）。
+    pub h3_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicH3Cmd>>,
     /// 发起侧自有 endpoint（socket 保活；收尾时 close + 释放。服务端会话为 None，
     /// 其 socket 归 endpoint 表项管）。
     pub client_ep: Option<quinn::Endpoint>,
@@ -1949,7 +1951,7 @@ pub fn quic_ep_remove(id: u64) -> bool {
 /// 登记会话（存活计 1；conn/cmd 建好后补，见 `quic_sess_set_conn`）。
 pub fn quic_sess_insert(id: u64, local: String, remote: String) {
     with_plain(|p| {
-        p.quic_sessions.insert(id, QuicSessionEntry { conn: None, driver: None, local, remote, cmd_tx: None, client_ep: None });
+        p.quic_sessions.insert(id, QuicSessionEntry { conn: None, driver: None, local, remote, cmd_tx: None, h3_tx: None, client_ep: None });
         p.quic_open += 1;
     });
 }
@@ -2027,6 +2029,23 @@ pub fn quic_sess_cmd(id: u64, cmd: crate::builtins::node::quic::QuicSessCmd) -> 
     with_plain(|p| {
         p.quic_sessions.get(&id).and_then(|e| e.cmd_tx.clone()).is_some_and(|tx| tx.send(cmd).is_ok())
     })
+}
+
+/// 登记 H3 分支命令端点（9i-9；h3 驱动/服务任务持有接收端）。
+pub fn quic_sess_set_h3_cmd(
+    id: u64,
+    tx: tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicH3Cmd>,
+) {
+    with_plain(|p| {
+        if let Some(e) = p.quic_sessions.get_mut(&id) {
+            e.h3_tx = Some(tx);
+        }
+    });
+}
+
+/// 取 H3 命令端点（会话已摘/非 H3 即 None）。
+pub fn quic_sess_h3_cmd(id: u64) -> Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::quic::QuicH3Cmd>> {
+    with_plain(|p| p.quic_sessions.get(&id).and_then(|e| e.h3_tx.clone()))
 }
 
 /// 登记 endpoint JS 目标（`QuicEndpoint` 构造时 attach）。

@@ -957,6 +957,23 @@
   黑盒 +1（`phase9i_x509_pss`：openssl PSS 证书自验/CA 公钥验 leaf/错钥/跨族 4 断言）；
   `cargo test` 总 395 passed，0 failed。记档：仅证书签名面（顶层 sign 的 PSS
   9e-1c 已有 `__wjs_pss_sign`）；trailerField 非 1 不认（回 false）。
+- [x] 9i-9 node:quic headers 面（2026-09-13 完工；H3 分支，quinn 特性组内）：
+  真机 node 26.8.2 无 node:quic 模块（`--experimental-quic` 亦无），headers 面为
+  **本仓自定 API**（偏差记 quic.rs 模块头）。Rust：`QuicH3Cmd`
+  （Respond/Request）+ `spawn_h3_server`（accept 循环 → `H3Request` 事件，
+  Respond 命令回响应，`closed()`/终结守望 + sess_finish 单出口）+
+  `spawn_h3_client`（h3 driver `wait_idle` 后台轮询 + Request 命令串行处理 →
+  `H3Response` 事件）；`sess_finish` 抽公共（spawn_driver 同源收口）；
+  ALPN "h3" 的会话在 listen/connect 接线时选 H3 驱动（state 会话条目增
+  `h3_tx`）。请求体服务端整收后才发事件（§4.35 同口径）；响应体全量收集
+  b64 回传。JS：`sess.on("request", (req) => req.respond(...))`（服务端）+
+  `sess.request(opts)` 一次性 Promise（客户端；非 h3 会话即
+  `ERR_INVALID_PROTOCOL`）；会话关闭时未决请求 promise 拒绝
+  （`ERR_QUIC_SESSION_CLOSED`，§4.49 时序哲学）。
+  黑盒 +1（`phase9i_quic_h3_headers`：GET/POST 体回显全链 + 非 h3 拒绝 6 断言）；
+  `cargo test` 总 396 passed，0 failed，冒烟 5/5。记档：H3 会话无裸流/datagram
+  事件（h3 独占连接）；请求/响应串行处理（v1）；响应头经 serde_json Map
+  （键字典序）；trailers/push 不支持。
 - [x] 9i-5 quic-h3 门控实证（2026-09-13 完工；h3/h3-quinn 已在 c0ef72d 入
   `quinn` 特性组，本次 Rust 回环实证 + 纯度复查）：
   `tests/quic.rs::phase9i_h3_over_quinn_loopback`（hermetic，port 0，rcgen 自签，

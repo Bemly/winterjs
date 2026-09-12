@@ -3195,3 +3195,91 @@ try { sign("nope", Buffer.from("m"), generateKeyPairSync("ed25519").privateKey);
     assert!(out.contains("edalg true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9e_crypto_kdf() {
+    // 真 Node 取证向量（pbkdf2/scrypt/hkdf/argon2，逐字节对）
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { pbkdf2Sync, pbkdf2, scryptSync, scrypt, hkdfSync, hkdf, argon2Sync, argon2 } from "node:crypto";
+console.log("pbkdf2", pbkdf2Sync("password", "salt", 1, 32, "sha256").toString("hex") === "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b");
+console.log("pbkdf2b", pbkdf2Sync("password", "salt", 2, 20, "sha1").toString("hex") === "ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957");
+pbkdf2("password", "salt", 1, 32, "sha256", (e, dk) => {
+  console.log("pbkdf2a", e === null && dk.toString("hex") === "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b");
+  console.log("done");
+});
+console.log("scrypt", scryptSync("password", "salt", 64, { N: 1024, r: 8, p: 1 }).toString("hex").slice(0, 64) === "16dbc8906763c7f048977a68f9d305f7710e068ca2cd95dab372125bb3f19608");
+scrypt("password", "salt", 32, { N: 1024 }, (e, dk) => {
+  console.log("scrypta", e === null && dk.length === 32);
+});
+console.log("hkdf", Buffer.from(hkdfSync("sha256", "ikm", "salt", "info", 42)).toString("hex") === "fe8f9615d2374c0d17f77d1aeaf408c2e75fe0466073d0def23c733e2f862dfd6814c9254418fa112fe8");
+hkdf("sha256", "ikm", "salt", "info", 42, (e, okm) => {
+  console.log("hkdfa", e === null && okm instanceof ArrayBuffer && okm.byteLength === 42);
+});
+console.log("argon2", argon2Sync("argon2id", { message: "password", nonce: "somesalt", parallelism: 4, tagLength: 32, memory: 32, passes: 1 }).toString("hex") === "299d5e50f0022a4eef2d510ade9b1743bd1f568feefc042c3dff926a271e7fb2");
+argon2("argon2id", { message: "password", nonce: "somesalt", parallelism: 4, tagLength: 16, memory: 32, passes: 1 }, (e, tag) => {
+  console.log("argon2a", e === null && tag.length === 16);
+});
+try { pbkdf2Sync("p", "s", 0, 32, "sha256"); } catch (e) { console.log("it0", e.code === "ERR_OUT_OF_RANGE"); }
+try { scryptSync("p", "s", 32, { N: 1048576, r: 8, p: 1 }); } catch (e) { console.log("mem", e.code === "ERR_CRYPTO_INVALID_SCRYPT_PARAMS"); }
+try { argon2Sync("argon2id", { message: "p", nonce: "somesalt12", parallelism: 1, tagLength: 32, memory: 32, passes: 1, associatedData: "x" }); } catch (e) { console.log("ad", e.code === "ERR_NOT_SUPPORTED"); }
+"#,
+    );
+    assert!(out.contains("pbkdf2 true"), "out: {out}");
+    assert!(out.contains("pbkdf2b true"), "out: {out}");
+    assert!(out.contains("pbkdf2a true"), "out: {out}");
+    assert!(out.contains("done"), "out: {out}");
+    assert!(out.contains("scrypt true"), "out: {out}");
+    assert!(out.contains("scrypta true"), "out: {out}");
+    assert!(out.contains("hkdf true"), "out: {out}");
+    assert!(out.contains("hkdfa true"), "out: {out}");
+    assert!(out.contains("argon2 true"), "out: {out}");
+    assert!(out.contains("argon2a true"), "out: {out}");
+    assert!(out.contains("it0 true"), "out: {out}");
+    assert!(out.contains("mem true"), "out: {out}");
+    assert!(out.contains("ad true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9e_crypto_x509() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let pem = "-----BEGIN CERTIFICATE-----\nMIIDizCCAnOgAwIBAgIUXHVjPqV6YzyPBqRQYPc0ZcZRzkswDQYJKoZIhvcNAQEL\nBQAwNjELMAkGA1UEBhMCVVMxDTALBgNVBAoMBEFjbWUxGDAWBgNVBAMMD3d3dy5l\neGFtcGxlLmNvbTAeFw0yNjA5MTIwNzAzMTZaFw0yNjA5MTQwNzAzMTZaMDYxCzAJ\nBgNVBAYTAlVTMQ0wCwYDVQQKDARBY21lMRgwFgYDVQQDDA93d3cuZXhhbXBsZS5j\nb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQChD22N6LlqRJlVEyGj\nE+zohSE50NYazdABnbAcECBTT9d0NAsLPfASUbVWzDoyDDiMGGbApwORUiACMwZq\nNI7KQ1OeEe6wDkVUWXb+07bNV2pUZzDZXnZJzgkZMjy7kNT6uu+36n4KdApSt9jO\nwG89qdYQ/5wIMo8LCA0vV1Px2jiYvgXQTACy4BXa6QbzZR2iUFlGA4wYfzv7dEk1\nY5Bz4vwo/5PfxdrtUkirg/kdxJqqBypV+ptW8YZRPZLwTh05dAOHx2Mh/vx1QKi+\nnvj7PQUihHogt64+i0Q6hqQNX2U/FI05dvUonRAnHl+o0YJCVhOOBNPqB5ZBNXEc\n9kAVAgMBAAGjgZAwgY0wHQYDVR0OBBYEFFl6516N9nn1EPzjIobzQcYtEV0wMB8G\nA1UdIwQYMBaAFFl6516N9nn1EPzjIobzQcYtEV0wMA8GA1UdEwEB/wQFMAMBAf8w\nLQYDVR0RBCYwJIIPd3d3LmV4YW1wbGUuY29tggtleGFtcGxlLmNvbYcEfwAAATAL\nBgNVHQ8EBAMCBaAwDQYJKoZIhvcNAQELBQADggEBAAd7FdDiGjuGBBtw5GTn+zD6\n+qTq2YoJIZzkKJ/TaPpPk67jyEVpKghI+aJ6o7ZBDiAytOGPCZsEmX7j+26oj1c6\nsukEQn3jF9h9eKw+ih/FUsFUsU7JGuywO7lbk9GbHxKtfF1na0tYDSpQnN9WldXz\n5/btna3Nzj+53wdkO0BkkXefVZfFu0dIH7o6hvxhW40RLfhkwW0DWSJ9vgHYta0d\nfDlfTxiy6M+f1YxM49MDmzL37FopkuFj0xmbRXUdIjHTKq+rIZYuMW9x510uVD4y\ndh6vOBNEHn8gVd1JIJLjrBvY55ecfA/UieRe8TCJ380CqZ9bYHJoIm1JZiaGSdg=\n-----END CERTIFICATE-----\n";
+    dir.child("c.pem").write_str(pem).unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { X509Certificate, Certificate } from "node:crypto";
+import fs from "node:fs";
+const pem = fs.readFileSync("c.pem", "utf8");
+const x = new X509Certificate(pem);
+console.log("subj", x.subject === "C=US\nO=Acme\nCN=www.example.com");
+console.log("san", x.subjectAltName === "DNS:www.example.com, DNS:example.com, IP Address:127.0.0.1");
+console.log("host", x.checkHost("www.example.com") === "www.example.com", x.checkHost("other.com") === undefined, x.checkHost("127.0.0.1") === "127.0.0.1");
+console.log("sn", x.serialNumber.length > 4, x.validFrom.endsWith("GMT"), x.validTo.endsWith("GMT"));
+console.log("fp", x.fingerprint.split(":").length === 20, x.fingerprint256.split(":").length === 32, x.fingerprint512.split(":").length === 64);
+console.log("pem", x.toString().startsWith("-----BEGIN CERTIFICATE-----"), x.raw.length > 100);
+console.log("legacy", x.toLegacyObject().subject.CN === "www.example.com");
+console.log("ku", JSON.stringify(x.keyUsage) === JSON.stringify(["Digital Signature", "Key Encipherment"]));
+try { new X509Certificate("nope"); } catch (e) { console.log("bad", e.code === "ERR_INVALID_ARG_VALUE"); }
+try { x.verify(); } catch (e) { console.log("verify", e.code === "ERR_NOT_SUPPORTED"); }
+try { new Certificate(); } catch (e) { console.log("legacy-cert", e.code === "ERR_NOT_SUPPORTED"); }
+"#,
+    );
+    assert!(out.contains("subj true"), "out: {out}");
+    assert!(out.contains("san true"), "out: {out}");
+    assert!(out.contains("host true true true"), "out: {out}");
+    assert!(out.contains("sn true true true"), "out: {out}");
+    assert!(out.contains("fp true true true"), "out: {out}");
+    assert!(out.contains("pem true true"), "out: {out}");
+    assert!(out.contains("legacy true"), "out: {out}");
+    assert!(out.contains("ku true"), "out: {out}");
+    assert!(out.contains("bad true"), "out: {out}");
+    assert!(out.contains("verify true"), "out: {out}");
+    assert!(out.contains("legacy-cert true"), "out: {out}");
+    dir.close().unwrap();
+}

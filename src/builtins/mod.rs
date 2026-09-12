@@ -2112,6 +2112,14 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_vm_get", Some(node::vm::vm_get), 2),
             ("__wjs_vm_keys", Some(node::vm::vm_keys), 1),
             ("__wjs_vm_release", Some(node::vm::vm_release), 1),
+            // Phase 9i-1: vm 模块系（SourceText；Synthetic 纯 JS）
+            ("__wjs_vm_compile_mod", Some(node::vm::vm_mod_compile), 3),
+            ("__wjs_vm_link", Some(node::vm::vm_mod_link), 1),
+            ("__wjs_vm_evaluate", Some(node::vm::vm_mod_evaluate), 1),
+            ("__wjs_vm_mod_ns", Some(node::vm::vm_mod_ns), 1),
+            ("__wjs_vm_mod_release", Some(node::vm::vm_mod_release), 1),
+            ("__wjs_vm_mod_settled", Some(node::vm::vm_mod_settled), 1),
+            ("__wjs_vm_mod_deps", Some(node::vm::vm_mod_deps), 1),
             // Phase 9f-2: worker 消息通道（端口对/投递/线程身份/环境数据）
             ("__wjs_port_pair", Some(node::worker::port_pair), 0),
             ("__wjs_port_attach", Some(node::worker::port_attach), 2),

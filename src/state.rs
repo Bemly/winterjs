@@ -96,6 +96,29 @@ unsafe impl Traceable for VmCtx {
     }}
 }
 
+/// 一个 vm 模块记录（SourceTextModule 编译产物；新 compartment 归属其 ctx；
+/// `Box` 定址，见 §4.40）。状态机（linked/evaluated 一次语义）由 JS 壳 نگه，
+/// Rust 侧只记位防重复 link/evaluate；has_imports 为 true 者 v1 拒绝 link
+///（带导入的 linker 切片后续做，见 vm.rs 模块头注）。
+pub struct VmMod {
+    pub id: u64,
+    pub ctx: u64,
+    pub identifier: String,
+    pub record: Box<Heap<*mut JSObject>>,
+    pub has_imports: bool,
+    /// 静态依赖 specifier 表（`dependencySpecifiers` 面；纯数据，无 GC 指针）。
+    pub deps: Vec<String>,
+    pub linked: bool,
+    pub evaluated: bool,
+}
+
+// SAFETY: 只追踪 record（其余无 GC 指针）。
+unsafe impl Traceable for VmMod {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
+        self.record.trace(trc);
+    }}
+}
+
 // SAFETY: 只追踪 target（id 无 GC 指针）。
 unsafe impl Traceable for NetTarget {
     unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
@@ -295,6 +318,7 @@ pub struct RootedState {
     pub quic_sess_targets: Vec<QuicTarget>, // QUIC 会话的 JS 目标（Close 后摘除）
     pub quic_stream_targets: Vec<QuicTarget>, // QUIC 流的 JS 目标（Close 后摘除）
     pub vm_contexts: Vec<VmCtx>, // node:vm 上下文 global（release 摘除，会话终由 OS 回收）
+    pub vm_mods: Vec<VmMod>, // node:vm 模块记录（link/evaluate 后摘除，会话终由 OS 回收）
     pub fetch_callbacks: Vec<FetchCallback>, // 未决 fetch 的 resolve/reject（按 id 取出）
     pub fetch_streams: Vec<FetchStreamState>, // 流式 body（chunk 泵；cancel/终态时移除）
     pub make_response_fn: Heap<JSVal>, // prelude 的 __wjs_make_response
@@ -324,6 +348,7 @@ unsafe impl Traceable for RootedState {
         self.quic_sess_targets.trace(trc);
         self.quic_stream_targets.trace(trc);
         self.vm_contexts.trace(trc);
+        self.vm_mods.trace(trc);
         self.fetch_callbacks.trace(trc);
         self.fetch_streams.trace(trc);
         self.make_response_fn.trace(trc);
@@ -1818,7 +1843,90 @@ pub fn vm_release(id: u64) -> bool {
         s.vm_contexts.retain(|c| c.id != id);
         n0
     });
+    // 上下文摘除时顺带摘其名下未释放模块（record 随 global 走，无悬垂）。
+    with_rooted(|s| s.vm_mods.retain(|m| m.ctx != id));
     with_rooted(|s| s.vm_contexts.len() != n0)
+}
+
+// ── vm 模块（9i-1；SourceTextModule 编译产物，归属其 ctx 的 compartment）───
+
+/// 登记模块记录，返回单调 id（`Box` 定址 §4.40）。
+pub fn vm_mod_add(
+    ctx: u64,
+    identifier: String,
+    record: *mut JSObject,
+    has_imports: bool,
+    deps: Vec<String>,
+) -> u64 {
+    let id = with_plain(|p| {
+        p.vm_next_id += 1;
+        p.vm_next_id
+    });
+    with_rooted(|s| {
+        s.vm_mods.push(VmMod {
+            id,
+            ctx,
+            identifier,
+            record: Heap::boxed(record),
+            has_imports,
+            deps,
+            linked: false,
+            evaluated: false,
+        });
+    });
+    id
+}
+
+/// 取模块（record 裸指针 + 状态快照；调用方立即重 root，中间无 GC 间隙）。
+pub fn vm_mod_get(id: u64) -> Option<(*mut JSObject, u64, bool, bool, bool)> {
+    with_rooted(|s| {
+        s.vm_mods.iter().find(|m| m.id == id).map(|m| {
+            (m.record.get(), m.ctx, m.has_imports, m.linked, m.evaluated)
+        })
+    })
+}
+
+/// 取模块标识（报错信息用）。
+pub fn vm_mod_identifier(id: u64) -> Option<String> {
+    with_rooted(|s| s.vm_mods.iter().find(|m| m.id == id).map(|m| m.identifier.clone()))
+}
+
+/// 取静态依赖表 JSON（`dependencySpecifiers` 面）。
+pub fn vm_mod_deps_json(id: u64) -> Option<String> {
+    with_rooted(|s| {
+        s.vm_mods.iter().find(|m| m.id == id).map(|m| {
+            serde_json::Value::Array(m.deps.iter().map(|d| serde_json::Value::String(d.clone())).collect())
+                .to_string()
+        })
+    })
+}
+
+/// 置 link 位（重复 link 由 JS 壳按 status 机拦截，此处幂等）。
+pub fn vm_mod_set_linked(id: u64) {
+    with_rooted(|s| {
+        if let Some(m) = s.vm_mods.iter_mut().find(|m| m.id == id) {
+            m.linked = true;
+        }
+    });
+}
+
+/// 置 evaluate 位（幂等）。
+pub fn vm_mod_set_evaluated(id: u64) {
+    with_rooted(|s| {
+        if let Some(m) = s.vm_mods.iter_mut().find(|m| m.id == id) {
+            m.evaluated = true;
+        }
+    });
+}
+
+/// 摘除模块（重复释放 false）。
+pub fn vm_mod_release(id: u64) -> bool {
+    let n0 = with_rooted(|s| {
+        let n0 = s.vm_mods.len();
+        s.vm_mods.retain(|m| m.id != id);
+        n0
+    });
+    with_rooted(|s| s.vm_mods.len() != n0)
 }
 
 // ── 异步子进程驱动（task → channel → 事件循环，见 node/child.rs）────────────

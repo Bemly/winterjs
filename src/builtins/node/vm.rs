@@ -19,8 +19,11 @@
 //!   与主脚本同等待遇——进程 hang，测试禁写此类用例）；`cachedData`/
 //!   `produceCachedData` 接受忽略（无字节码缓存，每次 run 重解析）。
 //! - `microtaskMode` 接受忽略（恒 afterEvaluate 等效：run 后同步排空一轮）。
-//! - `importModuleDynamically`/模块系（SourceTextModule 等实验面）不支持；
-//!   vm 内 `import()` 走主模块管线（`state::global` 指向主 global），行为未定义。
+//! - `importModuleDynamically`/模块系：9i-1 落地 `Module` 基类 +
+//!   `SourceTextModule`（零导入全链：compile/link/evaluate/namespace/status；
+//!   带导入者 link 报 `ERR_VM_MODULE_LINK_FAILURE`，linker 切片后续）+
+//!   `SyntheticModule`（纯 JS：evaluateCallback 回填导出）；
+//!   vm 内 `import()` 仍走主模块管线，行为未定义（记档）。
 //! - `measureMemory` 恒 reject `ERR_CONTEXT_NOT_INITIALIZED`（实验警告照发）。
 
 use mozjs::jsapi::{JSObject, RunJobs};
@@ -426,6 +429,321 @@ pub unsafe extern "C" fn vm_release(
     true
 }
 
+// ── 9i-1 模块系（SourceTextModule；SyntheticModule 纯 JS，见 SOURCE）─────────
+//
+// 落法：`compile` 在目标 compartment 内 `load_js` 转译（含 TS）+ `CompileModule1`
+// （filename=identifier，使 `referrer_base` 天然分流）；`link` 走
+// `load_dependencies` + `ModuleLink`（零导入恒过；`has_imports` 者 v1 拒绝——
+// 进程级 load hook 按主 global/主注册表工作，vm 记录带入即 compartment 错配，
+// linker 切片后续做）；`evaluate` 走 `ModuleEvaluate` + 一轮 `RunJobs`
+// （afterEvaluate 等效）；namespace 经 `GetModuleNamespace` 以 CCW 回主域。
+// 记录以 `Box<Heap>` 入 `state::vm_mods`（§4.40 定址），状态位防重复 link/evaluate。
+
+/// 编译模块：`__wjs_vm_compile_mod(ctxId, identifier, code)` → modId 字符串。
+/// 失败抛包络 SyntaxError（转译错/编译错，含行列信息）。
+pub unsafe extern "C" fn vm_mod_compile(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    use mozjs::rust::wrappers2::CompileModule1;
+    // SAFETY: 同 vm_create
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let ctx = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    let identifier = match arg_string(&mut cx, &frame, 1, "vm SourceTextModule") {
+        Some(s) => s,
+        None => return false,
+    };
+    let code = match arg_string(&mut cx, &frame, 2, "vm SourceTextModule") {
+        Some(s) => s,
+        None => return false,
+    };
+    let ptr = match lookup_global(&mut cx, ctx) {
+        Some(p) => p,
+        None => return false,
+    };
+    rooted!(&in(cx) let global = ptr);
+    // 转译（TS 免费；ext 从 identifier 点后缀取，无点按 js）。
+    let ext = identifier.rsplit('.').next().filter(|e| {
+        identifier.contains('.')
+            && e.len() <= 5
+            && !e.is_empty()
+            && e.chars().all(|c| c.is_ascii_alphanumeric())
+    });
+    let fake_path = std::path::PathBuf::from(format!("vm_mod.{}", ext.unwrap_or("js")));
+    let loaded = match crate::loader::load_js(&code, &identifier, &fake_path) {
+        Ok(l) => l,
+        Err(e) => {
+            throw_vm(&mut cx, "SyntaxError", &e.to_string());
+            return false;
+        }
+    };
+    let has_imports = !loaded.imports.is_empty();
+    let c_filename =
+        std::ffi::CString::new(identifier.as_str()).unwrap_or_else(|_| c"vm_module.js".to_owned());
+    let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+    let options = CompileOptionsWrapper::new(&realm, c_filename, 1);
+    let mut src = transform_str_to_source_text(&loaded.js);
+    // SAFETY: realm 内；options/src 存活到调用返回；null 即编译失败
+    let record = unsafe { CompileModule1(&mut realm, options.ptr, &mut src) };
+    if record.is_null() {
+        rooted!(&in(&mut realm) let mut exc = UndefinedValue());
+        let msg = match mozjs::rust::error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
+            Some(info) => format!("{}:{}:{}: {}", identifier, info.line.max(1), info.col.max(1), info.message),
+            None => format!("{identifier}: invalid module"),
+        };
+        throw_vm(&mut realm, "SyntaxError", &msg);
+        return false;
+    }
+    let id = state::vm_mod_add(ctx, identifier, record, has_imports, loaded.imports);
+    id.to_string().to_jsval(&mut realm, frame.rval_mut());
+    true
+}
+
+/// 取静态依赖表：`__wjs_vm_mod_deps(modId)` → JSON 数组串。
+pub unsafe extern "C" fn vm_mod_deps(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 vm_create
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let s = match arg_string(&mut cx, &frame, 0, "vm Module") {
+        Some(s) => s,
+        None => return false,
+    };
+    let Ok(id) = s.parse::<u64>() else {
+        report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
+        return false;
+    };
+    let Some(json) = state::vm_mod_deps_json(id) else {
+        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
+        return false;
+    };
+    json.to_jsval(&mut cx, frame.rval_mut());
+    true
+}
+
+/// 链接模块：`__wjs_vm_link(modId)` → undefined。
+/// 零导入恒过；带导入 v1 报 `ERR_VM_MODULE_LINK_FAILURE`（linker 切片后续）。
+pub unsafe extern "C" fn vm_mod_link(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    use mozjs::rust::wrappers2::ModuleLink;
+    // SAFETY: 同 vm_create
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let s = match arg_string(&mut cx, &frame, 0, "vm Module") {
+        Some(s) => s,
+        None => return false,
+    };
+    let id = match s.parse::<u64>() {
+        Ok(id) => id,
+        Err(_) => {
+            report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
+            return false;
+        }
+    };
+    let Some((record, ctx, has_imports, _linked, _evaluated)) = state::vm_mod_get(id) else {
+        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
+        return false;
+    };
+    if has_imports {
+        let ident = state::vm_mod_identifier(id).unwrap_or_default();
+        report_error(
+            &mut cx,
+            &format!(
+                "ERR_VM_MODULE_LINK_FAILURE: module '{ident}' has imports but no linker was provided (v1: zero-import only)"
+            ),
+        );
+        return false;
+    }
+    let Some(ptr) = state::vm_global(ctx) else {
+        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm context has been released");
+        return false;
+    };
+    rooted!(&in(cx) let global = ptr);
+    rooted!(&in(cx) let record_root: *mut JSObject = record);
+    let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+    if let Err(e) = crate::modules::load_dependencies(&mut realm, record_root.get()) {
+        throw_vm(&mut realm, "Error", &e.to_string());
+        return false;
+    }
+    // SAFETY: record 有效 rooted；加载态已就绪，realm 内同步 link
+    if !unsafe { ModuleLink(&mut realm, record_root.handle()) } {
+        let msg = crate::modules::module_error(&mut realm, "vm_module").to_string();
+        throw_vm(&mut realm, "Error", &msg);
+        return false;
+    }
+    state::vm_mod_set_linked(id);
+    frame.set_rval(UndefinedValue());
+    true
+}
+
+/// 求值模块：`__wjs_vm_evaluate(modId)` → completion（promise 照常回调用方）。
+/// 未 link 即报 `ERR_VM_MODULE_STATUS`（Node 口径：先 link 后 evaluate）。
+pub unsafe extern "C" fn vm_mod_evaluate(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    use mozjs::rust::wrappers2::ModuleEvaluate;
+    // SAFETY: 同 vm_create
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let s = match arg_string(&mut cx, &frame, 0, "vm Module") {
+        Some(s) => s,
+        None => return false,
+    };
+    let id = match s.parse::<u64>() {
+        Ok(id) => id,
+        Err(_) => {
+            report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
+            return false;
+        }
+    };
+    let Some((record, ctx, _has_imports, linked, _evaluated)) = state::vm_mod_get(id) else {
+        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
+        return false;
+    };
+    if !linked {
+        report_error(&mut cx, "ERR_VM_MODULE_STATUS: module must be linked before evaluate");
+        return false;
+    }
+    let Some(ptr) = state::vm_global(ctx) else {
+        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm context has been released");
+        return false;
+    };
+    rooted!(&in(cx) let global = ptr);
+    rooted!(&in(cx) let record_root: *mut JSObject = record);
+    rooted!(&in(cx) let mut rval = UndefinedValue());
+    let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+    // SAFETY: record 有效 rooted；realm 内同步求值
+    if !unsafe { ModuleEvaluate(&mut realm, record_root.handle(), rval.handle_mut()) } {
+        let msg = crate::modules::module_error(&mut realm, "vm_module").to_string();
+        throw_vm(&mut realm, "Error", &msg);
+        return false;
+    }
+    // Node afterEvaluate 等效：当轮排空 vm 内 promise 反应（同一 JobQueue）
+    {
+        // SAFETY: realm 内排空内部 job queue（主循环同款）
+        unsafe { RunJobs(realm.raw_cx()) };
+    }
+    // 跨域求值恒异步（见 §4.57）：rval 为 promise 时结算未定，不置 evaluated 位，
+    // 由 JS 壳在 promise 落定后经 `__wjs_vm_mod_settled` 补记；同步完成值才即置。
+    let is_promise = if rval.is_object() {
+        rooted!(&in(&mut realm) let rval_obj: *mut JSObject = rval.to_object());
+        // SAFETY: rval_obj 为有效 rooted 对象
+        unsafe { mozjs::jsapi::IsPromiseObject(crate::jsapi_glue::raw_handle(rval_obj.as_ptr())) }
+    } else {
+        false
+    };
+    if !is_promise {
+        state::vm_mod_set_evaluated(id);
+    }
+    frame.set_rval(rval.get());
+    true
+}
+
+/// 取模块 namespace：`__wjs_vm_mod_ns(modId)` → namespace 对象（CCW 回主域）。
+pub unsafe extern "C" fn vm_mod_ns(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    use mozjs::rust::wrappers2::GetModuleNamespace;
+    // SAFETY: 同 vm_create
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let s = match arg_string(&mut cx, &frame, 0, "vm Module") {
+        Some(s) => s,
+        None => return false,
+    };
+    let id = match s.parse::<u64>() {
+        Ok(id) => id,
+        Err(_) => {
+            report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
+            return false;
+        }
+    };
+    let Some((record, ctx, _has_imports, _linked, evaluated)) = state::vm_mod_get(id) else {
+        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
+        return false;
+    };
+    if !evaluated {
+        report_error(&mut cx, "ERR_VM_MODULE_STATUS: module must be evaluated before reading namespace");
+        return false;
+    }
+    let Some(ptr) = state::vm_global(ctx) else {
+        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm context has been released");
+        return false;
+    };
+    rooted!(&in(cx) let global = ptr);
+    rooted!(&in(cx) let record_root: *mut JSObject = record);
+    let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+    // SAFETY: record 有效；返回的 namespace 由记录保活（引擎内边）
+    let ns = unsafe { GetModuleNamespace(&mut realm, record_root.handle()) };
+    if ns.is_null() {
+        throw_vm(&mut realm, "Error", "vm could not read module namespace");
+        return false;
+    }
+    rooted!(&in(&mut realm) let ns_root: *mut JSObject = ns);
+    frame.set_rval(mozjs::jsval::ObjectValue(ns_root.get()));
+    true
+}
+
+/// 摘除模块：`__wjs_vm_mod_release(modId)` → boolean。
+pub unsafe extern "C" fn vm_mod_release(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 vm_create
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let s = match arg_string(&mut cx, &frame, 0, "vm Module") {
+        Some(s) => s,
+        None => return false,
+    };
+    let Ok(id) = s.parse::<u64>() else {
+        report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
+        return false;
+    };
+    let _ = &mut cx;
+    frame.set_rval(BooleanValue(state::vm_mod_release(id)));
+    true
+}
+
+/// 异步落定补记：`__wjs_vm_mod_settled(modId)` → undefined。
+/// 跨域求值恒异步（§4.57），promise 路径的 evaluated 位由 JS 壳在落定后补记。
+pub unsafe extern "C" fn vm_mod_settled(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 vm_create
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let s = match arg_string(&mut cx, &frame, 0, "vm Module") {
+        Some(s) => s,
+        None => return false,
+    };
+    let Ok(id) = s.parse::<u64>() else {
+        report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
+        return false;
+    };
+    state::vm_mod_set_evaluated(id);
+    frame.set_rval(UndefinedValue());
+    true
+}
+
 /// 内嵌 ESM 源（`node:vm`）。
 pub const SOURCE: &str = r#"
 import { EventEmitter } from "node:events";
@@ -455,6 +773,7 @@ function __vmCall(fn) {
 }
 
 let __vmFinal = null;
+let __vmModFinal = null;
 function __vmAutoRelease(obj, id) {
   try {
     if (typeof FinalizationRegistry === "undefined") return;
@@ -464,6 +783,17 @@ function __vmAutoRelease(obj, id) {
       });
     }
     __vmFinal.register(obj, id);
+  } catch { /* 无注册表即会话级存活，记档 */ }
+}
+function __vmModAutoRelease(obj, id) {
+  try {
+    if (typeof FinalizationRegistry === "undefined") return;
+    if (!__vmModFinal) {
+      __vmModFinal = new FinalizationRegistry((held) => {
+        try { __wjs_vm_mod_release(String(held)); } catch { /* 会话收尾期忽略 */ }
+      });
+    }
+    __vmModFinal.register(obj, id);
   } catch { /* 无注册表即会话级存活，记档 */ }
 }
 
@@ -703,9 +1033,195 @@ export const constants = Object.freeze({
   DONT_CONTEXTIFY: __dontCtx,
 });
 
+// ── 9i-1 模块系（真机口径：node --experimental-vm-modules 实测，见模块头注）──
+// SourceTextModule：Rust 侧编译/link/evaluate（零导入全链；带导入 link 即
+// ERR_VM_MODULE_LINK_FAILURE，linker 切片后续）；SyntheticModule 纯 JS。
+
+let __vmModSeq = 0;
+
+function __modErr(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  throw err;
+}
+
+export class Module {
+  link(linker) {
+    if (typeof linker !== "function") {
+      __modErr("ERR_INVALID_ARG_TYPE", `The "linker" argument must be of type function. Received ${linker === null ? "null" : typeof linker}`);
+    }
+    return this.__doLink(linker);
+  }
+  evaluate() {
+    return this.__doEvaluate();
+  }
+}
+
+export class SourceTextModule extends Module {
+  constructor(code, options = {}) {
+    super();
+    if (typeof code !== "string") {
+      __modErr("ERR_INVALID_ARG_TYPE", `The "code" argument must be of type string. Received type ${typeof code}`);
+    }
+    if (options === null || (typeof options !== "object" && typeof options !== "function")) {
+      __modErr("ERR_INVALID_ARG_TYPE", `The "options" argument must be of type object. Received ${options === null ? "null" : typeof options}`);
+    }
+    const identifier = __normStr(options.identifier, "identifier", `vm:module(${__vmModSeq++})`);
+    let ctxId;
+    if (options.context !== undefined) {
+      ctxId = __validateCtx(options.context);
+      this.__context = options.context;
+    } else {
+      ctxId = __vmCall(() => __wjs_vm_create());
+      const std = JSON.parse(__vmCall(() => __wjs_vm_keys(ctxId)));
+      const holder = {};
+      Object.defineProperty(holder, __kCtx, { value: ctxId });
+      Object.defineProperty(holder, __kStd, { value: std });
+      __vmAutoRelease(holder, ctxId);
+      this.__context = undefined;
+    }
+    this.__ctxId = ctxId;
+    this.__identifier = identifier;
+    this.__status = "unlinked";
+    this.__error = null;
+    this.__ns = undefined;
+    // importModuleDynamically/initializeImportMeta 接受忽略（v1 未接线，记档）。
+    this.__id = __vmCall(() => __wjs_vm_compile_mod(ctxId, identifier, code));
+    __vmModAutoRelease(this, this.__id);
+  }
+  get status() { return this.__status; }
+  get identifier() { return this.__identifier; }
+  get context() { return this.__context; }
+  get dependencySpecifiers() {
+    return JSON.parse(__vmCall(() => __wjs_vm_mod_deps(this.__id)));
+  }
+  get namespace() {
+    if (this.__status !== "evaluated") {
+      __modErr("ERR_VM_MODULE_STATUS", "Module status must be evaluated");
+    }
+    return this.__ns;
+  }
+  get error() {
+    if (this.__status !== "errored") {
+      __modErr("ERR_VM_MODULE_STATUS", "Module status must be errored");
+    }
+    return this.__error;
+  }
+  __doLink(linker) {
+    if (this.__status !== "unlinked") {
+      return Promise.reject(Object.assign(new Error("Module status must be unlinked"), { code: "ERR_VM_MODULE_STATUS" }));
+    }
+    void linker;
+    return Promise.resolve().then(() => {
+      __vmCall(() => __wjs_vm_link(this.__id));
+      this.__status = "linked";
+    });
+  }
+  __doEvaluate() {
+    if (this.__status !== "linked" && this.__status !== "evaluated" && this.__status !== "errored") {
+      return Promise.reject(Object.assign(new Error("Module status must be linked"), { code: "ERR_VM_MODULE_STATUS" }));
+    }
+    if (this.__status === "evaluated") return Promise.resolve(undefined);
+    return Promise.resolve().then(() => {
+      // native 同步抛错（参数/link 前置）即失败落定；完成值可能是跨域 promise
+      // （§4.57：`instanceof Promise` 跨 compartment 恒 false，必须按 thenable 认领，
+      // 否则落定被丢弃、报错变 unhandled rejection）。
+      const r = __vmCall(() => __wjs_vm_evaluate(this.__id));
+      const done = () => {
+        __vmCall(() => __wjs_vm_mod_settled(this.__id));
+        this.__status = "evaluated";
+        this.__ns = __vmCall(() => __wjs_vm_mod_ns(this.__id));
+        return undefined;
+      };
+      const failed = (e) => {
+        this.__status = "errored";
+        this.__error = e;
+        throw e;
+      };
+      if (r !== null && (typeof r === "object" || typeof r === "function") && typeof r.then === "function") {
+        return r.then(done, failed);
+      }
+      try {
+        return done();
+      } catch (e) {
+        return failed(e);
+      }
+    });
+  }
+}
+
+export class SyntheticModule extends Module {
+  constructor(exportNames, evaluateCallback, options = {}) {
+    super();
+    if (!Array.isArray(exportNames)) {
+      __modErr("ERR_INVALID_ARG_TYPE", `The "exportNames" argument must be of type array. Received type ${typeof exportNames}`);
+    }
+    if (typeof evaluateCallback !== "function") {
+      __modErr("ERR_INVALID_ARG_TYPE", `The "evaluateCallback" argument must be of type function. Received type ${typeof evaluateCallback}`);
+    }
+    if (options === null || (typeof options !== "object" && typeof options !== "function")) {
+      __modErr("ERR_INVALID_ARG_TYPE", `The "options" argument must be of type object. Received ${options === null ? "null" : typeof options}`);
+    }
+    this.__exports = {};
+    for (const n of exportNames) this.__exports[String(n)] = undefined;
+    this.__cb = evaluateCallback;
+    this.__identifier = __normStr(options.identifier, "identifier", `vm:module(${__vmModSeq++})`);
+    this.__status = "linked";
+    this.__error = null;
+    this.__ns = undefined;
+  }
+  get status() { return this.__status; }
+  get identifier() { return this.__identifier; }
+  get dependencySpecifiers() { return undefined; }
+  get namespace() {
+    if (this.__status !== "evaluated") {
+      __modErr("ERR_VM_MODULE_STATUS", "Module status must be evaluated");
+    }
+    return this.__ns;
+  }
+  get error() {
+    if (this.__status !== "errored") {
+      __modErr("ERR_VM_MODULE_STATUS", "Module status must be errored");
+    }
+    return this.__error;
+  }
+  setExport(name, value) {
+    if (this.__status === "evaluated") {
+      __modErr("ERR_VM_MODULE_STATUS", "Module status must not be evaluated");
+    }
+    this.__exports[String(name)] = value;
+  }
+  // Synthetic 的 linker 可选（真机口径：无参 link 即过）。
+  link(linker) {
+    if (linker !== undefined) return super.link(linker);
+    return this.__doLink(undefined);
+  }
+  __doLink(linker) {
+    void linker;
+    // Synthetic 出生即 linked；重复 link 照真机保持 linked（无操作成功）。
+    return Promise.resolve(undefined);
+  }
+  __doEvaluate() {
+    if (this.__status === "evaluated") return Promise.resolve(undefined);
+    return Promise.resolve().then(() => {
+      try {
+        this.__cb(this.__exports);
+      } catch (e) {
+        this.__status = "errored";
+        this.__error = e;
+        throw e;
+      }
+      this.__status = "evaluated";
+      this.__ns = Object.freeze({ ...this.__exports });
+      return undefined;
+    });
+  }
+}
+
 const __api = {
   Script, createContext, createScript, runInContext, runInNewContext,
   runInThisContext, isContext, compileFunction, measureMemory, constants,
+  Module, SourceTextModule, SyntheticModule,
 };
 export default __api;
 "#;

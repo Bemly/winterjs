@@ -3307,15 +3307,15 @@ setTimeout(() => {
   const h = createHistogram(); h.record(10); h.record(20);
   console.log("hist", h.count === 2 && h.min === 10 && h.max === 20 && h.mean === 15 && h.percentile(50) === 10);
   const e = createHistogram();
-  console.log("empty", e.min === 9223372036854776000 && e.max === 0 && e.count === 0);
+  console.log("empty", e.min === 9223372036854776000, e.max === 0, e.count === 0);
   const u = performance.eventLoopUtilization();
   console.log("elu", typeof u.active === "number" && u.utilization === 1);
   const f = timerify((x) => x * 2);
-  console.log("timerify", f(21) === 42 && performance.getEntriesByType("function").length === 1);
+  console.log("timerify", f(21) === 42, performance.getEntriesByType("function").length === 1);
   console.log("const", constants.NODE_PERFORMANCE_GC_MAJOR === 4 && constants.NODE_PERFORMANCE_GC_FLAGS_NO === 0);
   const mel = monitorEventLoopDelay({ resolution: 10 });
   mel.enable();
-  setTimeout(() => { mel.disable(); console.log("mel", mel.count >= 0 && mel.min >= 0); }, 60);
+  setTimeout(() => { mel.disable(); console.log("mel", mel.count >= 0, mel.min >= 0); }, 60);
 }, 20);
 "#,
     );

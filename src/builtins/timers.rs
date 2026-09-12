@@ -36,16 +36,12 @@ fn register_timer(cx: &mut JSContext, frame: &Frame, interval: bool) -> bool {
     let delay = Duration::from_secs_f64(clamp_delay(delay_ms) / 1e3);
     let id = state::next_timer_id();
 
-    let callback = Heap::default();
-    callback.set(cb);
-    let args_heap = Heap::default();
-    args_heap.set(args);
-
+    // `Heap::boxed` 定址（set 后禁移动，见 §4.39；Vec push/interval 重排会搬运）。
     state::with_rooted(|s| {
         s.timers.push(state::TimerEntry {
             id,
-            callback,
-            args: args_heap,
+            callback: Heap::boxed(cb),
+            args: Heap::boxed(args),
             at: Instant::now() + delay,
             interval: interval.then_some(delay),
         });

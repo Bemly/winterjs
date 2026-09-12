@@ -16,10 +16,11 @@ use crate::jsapi_glue::{Frame, get_prop_string, get_prop_u32, value_to_string};
 use crate::loader::sourcemap::remap_location;
 
 /// 一个已注册的定时器。`at` 为触发时刻（interval 为上次触发 + 间隔，漂移校正）。
+/// `callback`/`args` 经 `Box` 定址（mozjs `Heap::set` 后禁移动，见 §4.39）。
 pub struct TimerEntry {
     pub id: u32,
-    pub callback: Heap<JSVal>,
-    pub args: Heap<JSVal>, // JS 数组，由 prelude 打包
+    pub callback: Box<Heap<JSVal>>,
+    pub args: Box<Heap<JSVal>>, // JS 数组，由 prelude 打包
     pub at: Instant,
     pub interval: Option<Duration>,
 }
@@ -32,10 +33,10 @@ unsafe impl Traceable for TimerEntry {
     }}
 }
 
-/// 一个已编译的模块：URL（spec 键）+ 跨 GC 保活的模块记录。
+/// 一个已编译的模块：URL（spec 键）+ 跨 GC 保活的模块记录（`Box` 定址，见 §4.39）。
 pub struct ModuleEntry {
     pub url: String,
-    pub record: Heap<*mut JSObject>,
+    pub record: Box<Heap<*mut JSObject>>,
 }
 
 // SAFETY: 只追踪 record（URL 无 GC 指针）。
@@ -45,10 +46,10 @@ unsafe impl Traceable for ModuleEntry {
     }}
 }
 
-/// 一个已加载的 CJS 模块：URL + 跨 GC 保活的 `module.exports`（循环引用 prefab）。
+/// 一个已加载的 CJS 模块：URL + 跨 GC 保活的 `module.exports`（循环引用 prefab；`Box` 定址）。
 pub struct CjsEntry {
     pub url: String,
-    pub exports: Heap<JSVal>,
+    pub exports: Box<Heap<JSVal>>,
 }
 
 // SAFETY: 只追踪 exports（URL 无 GC 指针）。
@@ -58,10 +59,10 @@ unsafe impl Traceable for CjsEntry {
     }}
 }
 
-/// 一路 `fs.watch` 的 JS 监听（事件循环分发时取出，**保留**注册，多次触发）。
+/// 一路 `fs.watch` 的 JS 监听（事件循环分发时取出，**保留**注册，多次触发；`Box` 定址）。
 pub struct WatchCallback {
     pub id: u64,
-    pub listener: Heap<JSVal>,
+    pub listener: Box<Heap<JSVal>>,
 }
 
 // SAFETY: 只追踪 listener（id 无 GC 指针）。
@@ -71,15 +72,15 @@ unsafe impl Traceable for WatchCallback {
     }}
 }
 
-/// 一个异步子进程的 JS 目标对象（`onexit/onclose/onerror` 走属性读；close 前保留）。
+/// 一个异步子进程的 JS 目标对象（`onexit/onclose/onerror` 走属性读；close 前保留；`Box` 定址）。
 pub struct ChildTarget {
     pub id: u64,
-    pub target: Heap<JSVal>,
+    pub target: Box<Heap<JSVal>>,
 }
 
 pub struct NetTarget {
     pub id: u64,
-    pub target: Heap<JSVal>,
+    pub target: Box<Heap<JSVal>>,
 }
 
 // SAFETY: 只追踪 target（id 无 GC 指针）。
@@ -115,11 +116,11 @@ pub struct ModuleDebug {
     pub map: Option<String>,
 }
 
-/// 一个未决 fetch 的 resolve/reject（事件循环结算时取出并移除）。
+/// 一个未决 fetch 的 resolve/reject（事件循环结算时取出并移除；`Box` 定址）。
 pub struct FetchCallback {
     pub id: u64,
-    pub resolve: Heap<JSVal>,
-    pub reject: Heap<JSVal>,
+    pub resolve: Box<Heap<JSVal>>,
+    pub reject: Box<Heap<JSVal>>,
 }
 
 // SAFETY: 只追踪两个回调值（id 无 GC 指针）。
@@ -130,10 +131,10 @@ unsafe impl Traceable for FetchCallback {
     }}
 }
 
-/// 流式 body 的等待 pull（resolve/reject 存 RootedState 被 GC 追踪）。
+/// 流式 body 的等待 pull（resolve/reject 存 RootedState 被 GC 追踪；`Box` 定址）。
 pub struct StreamWaiter {
-    pub resolve: Heap<JSVal>,
-    pub reject: Heap<JSVal>,
+    pub resolve: Box<Heap<JSVal>>,
+    pub reject: Box<Heap<JSVal>>,
 }
 
 // SAFETY: 只追踪两个回调值。
@@ -164,7 +165,7 @@ unsafe impl Traceable for FetchStreamState {
 #[derive(Default)]
 pub struct RootedState {
     pub timers: Vec<TimerEntry>,
-    pub unhandled: Vec<Heap<*mut JSObject>>, // 未处理 rejection 的 promise
+    pub unhandled: Vec<Box<Heap<*mut JSObject>>>, // 未处理 rejection 的 promise（`Box` 定址）
     pub call_fn: Heap<JSVal>,                // prelude 的 __wjs_call(cb, args)
     pub entries_fn: Heap<JSVal>,             // prelude 的 __wjs_entries(v)
     pub on_fulfilled: Heap<JSVal>,           // rejection 捕获用 native
@@ -438,11 +439,12 @@ pub fn entry_native_values() -> (JSVal, JSVal) {
 /// 存入一组 fetch 回调（调用方已分配 id）。
 pub fn push_fetch_callback(id: u64, resolve: JSVal, reject: JSVal) {
     with_rooted(|s| {
-        let resolve_h = Heap::default();
-        resolve_h.set(resolve);
-        let reject_h = Heap::default();
-        reject_h.set(reject);
-        s.fetch_callbacks.push(FetchCallback { id, resolve: resolve_h, reject: reject_h });
+        // `Heap::boxed` 定址（set 后禁移动，见 §4.39；Vec push 会搬运元素）。
+        s.fetch_callbacks.push(FetchCallback {
+            id,
+            resolve: Heap::boxed(resolve),
+            reject: Heap::boxed(reject),
+        });
     });
 }
 
@@ -562,11 +564,10 @@ pub fn stream_pull(id: u64, resolve: JSVal, reject: JSVal) -> StreamPull {
         if let Some(err) = s.fetch_streams[pos].error.clone() {
             return StreamPull::Failed(err);
         }
-        let resolve_h = Heap::default();
-        resolve_h.set(resolve);
-        let reject_h = Heap::default();
-        reject_h.set(reject);
-        s.fetch_streams[pos].waiters.push(StreamWaiter { resolve: resolve_h, reject: reject_h });
+        s.fetch_streams[pos].waiters.push(StreamWaiter {
+            resolve: Heap::boxed(resolve),
+            reject: Heap::boxed(reject),
+        });
         StreamPull::Queued
     })
 }
@@ -820,9 +821,7 @@ pub fn cjs_find(url: &str) -> Option<JSVal> {
 pub fn cjs_register(url: String, exports: JSVal) {
     with_rooted(|s| {
         if !s.cjs_modules.iter().any(|m| m.url == url) {
-            let heap = Heap::default();
-            heap.set(exports);
-            s.cjs_modules.push(CjsEntry { url, exports: heap });
+            s.cjs_modules.push(CjsEntry { url, exports: Heap::boxed(exports) });
         }
     });
 }
@@ -877,9 +876,7 @@ pub fn watch_add(
     listener: JSVal,
     persistent: bool,
 ) {
-    let heap = Heap::default();
-    heap.set(listener);
-    with_rooted(|s| s.watch_listeners.push(WatchCallback { id, listener: heap }));
+    with_rooted(|s| s.watch_listeners.push(WatchCallback { id, listener: Heap::boxed(listener) }));
     with_plain(|p| {
         p.watch_drivers.insert(id, (driver, persistent));
         if persistent {
@@ -931,9 +928,7 @@ pub fn net_socket_add(
     id: u64,
     target: JSVal,
 ) -> tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::net::NetCmd> {
-    let heap = Heap::default();
-    heap.set(target);
-    with_rooted(|s| s.net_targets.push(NetTarget { id, target: heap }));
+    with_rooted(|s| s.net_targets.push(NetTarget { id, target: Heap::boxed(target) }));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     with_plain(|p| {
         p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true });
@@ -957,9 +952,7 @@ pub fn net_conn_add() -> (u64, tokio::sync::mpsc::UnboundedReceiver<crate::built
 
 /// 事后补登记 target（server 连接 attach）。
 pub fn net_target_add(id: u64, target: JSVal) {
-    let heap = Heap::default();
-    heap.set(target);
-    with_rooted(|s| s.net_targets.push(NetTarget { id, target: heap }));
+    with_rooted(|s| s.net_targets.push(NetTarget { id, target: Heap::boxed(target) }));
 }
 
 pub fn net_target(id: u64) -> Option<JSVal> {
@@ -1078,9 +1071,7 @@ pub fn child_add(
     stdin_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::child::StdinCmd>>,
     pipes_expected: u8,
 ) {
-    let heap = Heap::default();
-    heap.set(target);
-    with_rooted(|s| s.child_targets.push(ChildTarget { id, target: heap }));
+    with_rooted(|s| s.child_targets.push(ChildTarget { id, target: Heap::boxed(target) }));
     with_plain(|p| {
         p.child_procs.insert(id, ChildEntry { child, detached, stdin_tx, pipes_expected, pipes_done: 0 });
         p.child_open += 1;

@@ -40,9 +40,7 @@ fn find_module(url: &str) -> Option<*mut JSObject> {
 fn register_module(url: String, record: *mut JSObject) {
     state::with_rooted(|s| {
         if !s.modules.iter().any(|m| m.url == url) {
-            let heap = mozjs::jsapi::Heap::default();
-            heap.set(record);
-            s.modules.push(state::ModuleEntry { url, record: heap });
+            s.modules.push(state::ModuleEntry { url, record: mozjs::jsapi::Heap::boxed(record) });
         }
     });
 }

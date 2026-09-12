@@ -250,6 +250,9 @@ turso = { version = "=0.6.1", default-features = false, features = ["pure-rust-c
 # ── §10 serve（HTTP 服务）──────────────────────────────────────────────
 axum = "0.8"
 axum-extra = "0.12"
+# §h2（2026-09-12 用户拍板，node:http2 必选）：直引 hyper，只开 server+http2
+# （禁 client/ffi/capi；client 侧同特性服务，无需另加）；版本跟 lock（1.11.1）。
+hyper = { version = "1", default-features = false, features = ["server", "http2"] }
 tower = "0.5"
 # §2：只开 fs/cors/compression-gzip,br/trace，禁 compression-zstd
 tower-http = { version = "0.7", default-features = false, features = ["fs", "cors", "compression-gzip", "compression-br", "trace"] }

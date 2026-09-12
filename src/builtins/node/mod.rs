@@ -16,6 +16,7 @@ pub mod dgram;
 pub mod dns;
 pub mod fs;
 pub mod http;
+pub mod http2;
 pub mod https;
 pub mod internal;
 pub mod net;
@@ -63,6 +64,8 @@ const BUILTINS: &[(&str, &str)] = &[
     // Phase 9d-6
     ("node:https", https::SOURCE),
     ("node:tls", tls::SOURCE),
+    // Phase 9d-7
+    ("node:http2", http2::SOURCE),
     ("node:assert", assert::SOURCE),
     ("node:test", testmod::SOURCE),
     // Phase 9a
@@ -108,6 +111,8 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         // Phase 9d-6
         "https" => Some("node:https"),
         "tls" => Some("node:tls"),
+        // Phase 9d-7
+        "http2" => Some("node:http2"),
         "assert" => Some("node:assert"),
         "test" => Some("node:test"),
         "async_hooks" => Some("node:async_hooks"),
@@ -207,6 +212,10 @@ mod tests {
         assert_eq!(normalize_spec("node:tls"), Some("node:tls"));
         assert!(source("node:https").is_some());
         assert!(source("node:tls").is_some());
+        // Phase 9d-7
+        assert_eq!(normalize_spec("http2"), Some("node:http2"));
+        assert_eq!(normalize_spec("node:http2"), Some("node:http2"));
+        assert!(source("node:http2").is_some());
         assert!(source("node:internal/http_framing").is_some());
         assert_eq!(normalize_spec("node:internal/streams/readable"), Some("node:internal/streams/readable"));
         assert!(source("node:buffer").is_some());

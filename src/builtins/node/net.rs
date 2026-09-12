@@ -45,6 +45,20 @@ pub enum NetKind {
     DgramListening { addr: String, port: u16 },
     /// dgram：收到数据报。
     DgramMessage { data_b64: String, address: String, port: u16, family: u8 },
+    // ── http2（Phase 9d-7；与 net 共通道，零新 channel）─────────────────────
+    /// h2 服务端收到完整请求（ev.id = server id；整收口径，http 记档同款）。
+    H2Request {
+        conn_id: u64,
+        stream_id: u64,
+        method: String,
+        path: String,
+        headers: String,
+        body_b64: String,
+    },
+    /// h2 客户端流事件（ev.id = session id；what ∈ headers/data/end/error）。
+    H2Stream { stream_id: u64, what: String, payload: String },
+    /// h2 客户端 session 终结（单次；派发后 purge）。
+    H2SessionClose,
 }
 
 /// socket 命令（写/半关/硬关；写端 task 消费。SendTo 为 dgram 专用）。
@@ -53,6 +67,20 @@ pub enum NetCmd {
     End,
     Close,
     SendTo { data: Vec<u8>, addr: String },
+    // ── http2 ─────────────────────────────────────────────────────────────
+    /// 服务端应答（发往 conn id；stream_id 由 H2Request 事件给出）。
+    H2Respond {
+        stream_id: u64,
+        status: u16,
+        headers: String,
+        body_b64: String,
+    },
+    /// 客户端开流（发往 session id；stream_id 由 JS 侧会话内分配）。
+    H2Open {
+        stream_id: u64,
+        headers: String,
+        body_b64: String,
+    },
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -108,6 +136,8 @@ pub(crate) fn spawn_pumps<R, W>(
                 }
                 NetCmd::Close => break,
                 NetCmd::SendTo { .. } => {} // dgram 专用（net socket 不产生）
+                // http2 命令走 h2 conn/session task（本泵不产生，见 http2.rs）
+                NetCmd::H2Respond { .. } | NetCmd::H2Open { .. } => {}
             }
         }
         state::net_writer_exit(id);
@@ -405,20 +435,20 @@ pub fn dispatch(
         return Ok(());
     }
     let Some(target) = state::net_target(ev.id) else {
-        if matches!(ev.kind, NetKind::Close | NetKind::ServerClose) {
+        if matches!(ev.kind, NetKind::Close | NetKind::ServerClose | NetKind::H2SessionClose) {
             state::net_purge(ev.id);
         }
         return Ok(());
     };
     if !target.is_object() {
-        if matches!(ev.kind, NetKind::Close | NetKind::ServerClose) {
+        if matches!(ev.kind, NetKind::Close | NetKind::ServerClose | NetKind::H2SessionClose) {
             state::net_purge(ev.id);
         }
         return Ok(());
     }
     rooted!(&in(cx) let t: *mut JSObject = target.to_object());
     let Some(fun) = get_prop_value(cx, t.get(), c"__ev") else {
-        if matches!(ev.kind, NetKind::Close | NetKind::ServerClose) {
+        if matches!(ev.kind, NetKind::Close | NetKind::ServerClose | NetKind::H2SessionClose) {
             state::net_purge(ev.id);
         }
         return Err(failed(cx));
@@ -448,10 +478,28 @@ pub fn dispatch(
             serde_json::json!({ "data": data_b64, "address": address, "port": port, "family": family })
                 .to_string(),
         ),
+        // http2：request 派发给 server target；stream/session 派发给 session target
+        NetKind::H2Request { conn_id, stream_id, method, path, headers, body_b64 } => (
+            "request",
+            serde_json::json!({
+                "connId": conn_id, "streamId": stream_id,
+                "method": method, "path": path,
+                "headers": headers, "body": body_b64,
+            })
+            .to_string(),
+        ),
+        NetKind::H2Stream { stream_id, what, payload } => (
+            what.as_str(),
+            serde_json::json!({ "streamId": stream_id, "payload": payload }).to_string(),
+        ),
+        NetKind::H2SessionClose => ("close", String::new()),
         NetKind::Connection { .. } => unreachable!(),
     };
     let ok = with_str_args(cx, global, fun, kind, &payload);
-    let closed = matches!(ev.kind, NetKind::Close | NetKind::ServerClose);
+    let closed = matches!(
+        ev.kind,
+        NetKind::Close | NetKind::ServerClose | NetKind::H2SessionClose
+    );
     if closed {
         state::net_purge(ev.id);
     }

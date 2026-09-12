@@ -117,6 +117,23 @@ fn client_config(ca_pem: Option<&str>, reject_unauthorized: bool) -> Result<rust
         .with_no_client_auth())
 }
 
+/// 服务端配置（HTTP/2，ALPN `h2`；`node:http2` 用）。
+pub(crate) fn server_config_h2(cert_pem: &str, key_pem: &str) -> Result<rustls::ServerConfig, String> {
+    let mut cfg = server_config(cert_pem, key_pem)?;
+    cfg.alpn_protocols = vec![b"h2".to_vec()];
+    Ok(cfg)
+}
+
+/// 客户端配置（HTTP/2，ALPN `h2`；`node:http2` 用）。
+pub(crate) fn client_config_h2(
+    ca_pem: Option<&str>,
+    reject_unauthorized: bool,
+) -> Result<rustls::ClientConfig, String> {
+    let mut cfg = client_config(ca_pem, reject_unauthorized)?;
+    cfg.alpn_protocols = vec![b"h2".to_vec()];
+    Ok(cfg)
+}
+
 fn set_rval_str(cx: &mut JSContext, frame: &Frame, s: &str) {
     rooted!(&in(cx) let mut v = UndefinedValue());
     s.to_jsval(cx, v.handle_mut());

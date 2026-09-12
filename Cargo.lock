@@ -11718,6 +11718,7 @@ dependencies = [
  "httpdate",
  "human-panic",
  "humantime",
+ "hyper",
  "iai-callgrind",
  "if-addrs",
  "ignore",

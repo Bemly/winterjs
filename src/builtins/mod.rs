@@ -2061,6 +2061,11 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             // Phase 9d-6: node:tls（握手底座；读写复用 net_* natives）
             ("__wjs_tls_connect", Some(node::tls::tls_connect), 4),
             ("__wjs_tls_listen", Some(node::tls::tls_listen), 4),
+            // Phase 9d-7: node:http2（hyper 直引；关闭复用 __wjs_net_destroy）
+            ("__wjs_h2_listen", Some(node::http2::h2_listen), 4),
+            ("__wjs_h2_connect", Some(node::http2::h2_connect), 4),
+            ("__wjs_h2_open", Some(node::http2::h2_open), 4),
+            ("__wjs_h2_respond", Some(node::http2::h2_respond), 5),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）

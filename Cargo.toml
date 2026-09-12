@@ -31,7 +31,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("ohos"))
 default = ["quinn"]
 tokio-console = ["dep:console-subscriber", "tokio/tracing"]
 cap-std = ["dep:cap-std"]
-quinn = ["dep:quinn"]
+quinn = ["dep:quinn", "dep:h3", "dep:h3-quinn"]
 
 [dependencies]
 # 铁律：mozjs 永远钉死精确版本，只跟随 servo 的 release 手动升级，
@@ -196,6 +196,9 @@ p521 = { version = "0.14", features = ["ecdh", "pkcs8"] }
 # 9h-1：secp256k1（node:crypto ECDH/签名；ecdh 纯 Rust，见 dependencies2 注记）。
 k256 = { version = "0.14", features = ["ecdh"] }
 crypto-bigint = "0.7"
+# 9i（2026-09-13 用户拍板）：ml-kem（RustCrypto/KEMs FIPS 203，
+# kem 0.3 traits，不碰 digest 版本墙；ML-DSA 另议）。
+ml-kem = "0.3"
 # 9h-1：DSA 密钥生成要 hazmat（纯 Rust，见 dependencies2 注记）。
 dsa = { version = "0.7", features = ["hazmat"] }
 rsa = "0.9"
@@ -275,6 +278,10 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # 全开（log/platform-verifier/runtime-tokio/rustls-ring/bloom；aws-lc 系 opt-in 未碰，
 # 纯度见 dependencies2.md §quic）；optional 经 feature 门控，默认启用（default 含 quinn）。
 quinn = { version = "0.11", optional = true }
+# 9i（2026-09-13 用户拍板，quic 特性组）：h3 + h3-quinn（hyperium/h3 experimental；
+# quinn ^0.11.7 正配本仓 0.11.11；headers 面走 H3 分支，裸流分支不动）。
+h3 = { version = "0.0.8", optional = true }
+h3-quinn = { version = "0.0.10", optional = true }
 governor = "0.10"
 metrics = "0.24"
 # push-gateway 特性硬绑 hyper-rustls/aws-lc-rs（§2 禁），只开 http-listener（/metrics 自托管）

@@ -124,8 +124,10 @@ http2 定夺沿用 §h2 表（`hyper` 必选，用法 `default-features=false` +
 `cargo tree` 实测无 aws-lc/C 新增，rustls 统一 0.23.44、ring 0.17.14；
 拍板的 `default-features=false` 口径被 default 取代——default 本就无 aws-lc，
 还多拿 platform-verifier 真机验签能力，精神一致），
-feature `quinn = ["dep:quinn"]` 并进 `default`（`--no-default-features` 照编，
-`tests/quic.rs` 整文件 `cfg(feature)` 门控即 0 用例）。
+feature `quinn = ["dep:quinn"]` 并进 `default`
+（注：2026-09-13 实测 `cargo check --no-default-features` 已不通过，
+quic.rs 直用 quinn 未做 cfg 门控，9g 接线时即如此；此前“照编”记法作废，
+以实测为准。`tests/quic.rs` 整文件 `cfg(feature)` 门控即 0 用例）。
 实证 `tests/quic.rs` 2 例（回环握手 + 双向流 echo + 自签负路径，全 127.0.0.1
 hermetic，0.01s 级）。`node:quic` JS 面 9g-1/9g-2 已落地（Endpoint/会话/流/
 数据报可用子集，偏差见 `src/builtins/node/quic.rs` 模块头注；v1 仍不验收全对齐）。
@@ -155,6 +157,29 @@ hermetic，0.01s 级）。`node:quic` JS 面 9g-1/9g-2 已落地（Endpoint/会�
 > `ripemd = "0.2"`（默认特性）+ `tiny-keccak = { version = "2",
 > default-features = false, features = ["shake"] }` 入 `Cargo.toml` §7；
 > `Cargo.lock` 增两行，无版本冲突。9h-2 候选节转正，定夺项清零。
+
+## 9i 候选（PQ ml-kem / H3 headers，2026-09-13 实测入库，已拍板）
+
+> 四问口径（库龄超一年/近一年维护/传递闭包纯 Rust/不要 nightly）全过；
+> GCM 非 12B iv 与 quic 自定帧两条替代路径经调研否决（前者等于重造 AEAD，
+> 后者对真 Node 零互操作），不引轮子不做。
+
+| 用途 | crate | 最新版本 | 建库时间 | 最新维护 | 纯 Rust | macA64 | macX64 | linA64 | linX64 | winA64 | winX64 | andA64 | andX64 | ohA64 | ohX64 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| PQ KEM（ml-kem-512/768/1024） | `ml-kem` | 0.3.2 | 2023-08-24 | 2026-05-10 | ✅（RustCrypto/KEMs，FIPS 203） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| HTTP/3 会话（quic headers 面） | `h3` | 0.0.8 | 2019-03-06 | 2025-05-06 | ✅（hyperium/h3，experimental） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| H3 QUIC 传输（quinn 桥） | `h3-quinn` | 0.0.10 | 2023-03-01 | 2025-05-06 | ✅（要 quinn ^0.11.7，正配本仓 0.11.11） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+备注：`ml-kem`（Apache-2.0/MIT，3.6M 下载，MSRV 1.85，本仓 1.98；
+`kem 0.3` traits，不碰 digest 版本墙，§4.43 不适用；备选 `libcrux-ml-kem`
+0.0.x 不稳定出局，`pqcrypto` 含 C 出局） unconditional 进 §7（PQ 属核心密码面）。
+`h3` + `h3-quinn`（MIT，MSRV 1.70；出局项 `neqo`/`s2n-quic`/`msquic`/`quiche`
+见 §quic）optional 进 §10，双双并入 `quinn` feature 组（`quinn = ["dep:quinn",
+"dep:h3", "dep:h3-quinn"]`，`--no-default-features` 照编，`default` 仍经 quinn 组全开）。
+
+定夺（2026-09-13 用户拍板）：**`ml-kem` 引入；`h3` + `h3-quinn` 引入并放入
+quic 特性组**；零新依赖三件（vm 模块系/worker 传输+broadcast/X509 verify）
+直接开工（vm→worker→X509 顺序）。
 
 ## 测试资产（非依赖，仓库外按需取）
 

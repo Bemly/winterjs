@@ -342,6 +342,7 @@ pub struct RootedState {
     pub make_response_fn: Heap<JSVal>, // prelude 的 __wjs_make_response
     pub make_fetch_error_fn: Heap<JSVal>, // prelude 的 __wjs_make_fetch_error
     pub ws_emit_fn: Heap<JSVal>, // prelude 的 __wjs_ws_emit
+    pub napi: Option<crate::napi::env::NapiEnv>, // napi 会话单例（首个 .node require 建起；plan-napi §2）
 }
 
 // SAFETY: 同 TimerEntry，全字段 Traceable 或无 GC 指针。
@@ -373,6 +374,7 @@ unsafe impl Traceable for RootedState {
         self.make_response_fn.trace(trc);
         self.make_fetch_error_fn.trace(trc);
         self.ws_emit_fn.trace(trc);
+        self.napi.trace(trc);
     }}
 }
 
@@ -588,6 +590,12 @@ pub fn with_rooted<R>(f: impl FnOnce(&mut RootedState) -> R) -> R {
 
 pub fn with_plain<R>(f: impl FnOnce(&mut PlainState) -> R) -> R {
     PLAIN.with(|p| f(&mut p.borrow_mut()))
+}
+
+/// napi 会话单例裸指针（api.rs trampoline/函数族用；JS 线程专用，§4.24 纪律）。
+/// 裸指针出 TLS 闭包：NapiEnv 生命周期 = 会话 = RootedState TLS 本体。
+pub fn napi_env_ptr() -> Option<*mut crate::napi::env::NapiEnv> {
+    with_rooted(|s| s.napi.as_mut().map(|e| e as *mut crate::napi::env::NapiEnv))
 }
 
 pub fn next_timer_id() -> u32 {

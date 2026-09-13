@@ -217,3 +217,19 @@ openssl 3.6 实签证书双验，固件 `tests/fixtures/mldsa-*`）。
 - 若开工时发现缺轮子（如 h2 服务端、quic）：跑新增四问
  （库龄超一年/近一年维护/传递闭包纯 Rust/不要 nightly），记入本表 §映射，
  然后停下问用户——与 §15 同纪律。
+
+## napi 分支行级增补（2026-09-13 拍板，plan-napi §0）
+
+> host 侧 Node-API 手写实现（无轮子可引，§0.5 调研结论见 plan-napi §1）。
+> 依赖拍板：`bindgen` build-dep 引入；`cc` dev-dep **勘误不引**（fixture 是 dylib，
+> cc crate 只产静态库，沿用 `tests/common` shell-out 先例）；`napi-sys` 仅源码对照
+> （addon 侧 extern 块方向相反，host 不能依赖）；`napi` dev-dep M2 再议。
+
+| 用途 | crate | 最新版本 | 建库时间 | 最新维护 | 纯 Rust | macA64 | macX64 | linA64 | linX64 | winA64 | winX64 | andA64 | andX64 | ohA64 | ohX64 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| N-API sys 类型生成（vendored 头 → FFI，函数声明 blocklist） | `bindgen` | 0.73.2 | 2014-11-21 | 2026-09-08 | ✅（build-dep host-only；build 期需 libclang——`mozjs_sys` 本就要求；BSD-3） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+已在树内直接用（零增补）：`libloading`（dlopen/dlsym，§8）、`paste`（§5）、
+`encoding_rs`（§6）、`dhat`（§11 dev）。vendored 资产：Node 头四件
+（`src/napi/include/`，v26.8.2，MIT 头原样）；rolldown 符号名单
+（`docs/rolldown-napi-symbols.txt`）。

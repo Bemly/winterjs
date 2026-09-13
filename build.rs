@@ -1,6 +1,7 @@
 // 构建元数据：VERGEN_BUILD_* / VERGEN_GIT_*（调 git CLI，§2 禁 git2）。
 // git 不可用时 vergen 默认 fail_on_error=false，降级为 "unknown" 并出 cargo:warning。
-// 另：FFI 调用 shim 代码生成（bun:ffi，§13 手写件）——见本目录 emit_ffi_shims。
+// 另：FFI 调用 shim 代码生成（bun:ffi，§13 手写件）——见本目录 emit_ffi_shims；
+// napi：vendored Node 头 → sys 类型生成 + 宿主符号导出（plan-napi §2）。
 use vergen_gitcl::{Build, Emitter, Gitcl};
 
 fn main() {
@@ -12,11 +13,71 @@ fn main() {
             .add_instructions(&gitcl)?
             .emit()?;
         emit_ffi_shims()?;
+        emit_napi_sys()?;
+        emit_symbol_export()?;
         Ok(())
     })();
     if let Err(e) = result {
         println!("cargo:warning=winterjs: build metadata unavailable: {e}");
     }
+}
+
+// ── napi：vendored Node 头 → sys 类型 + 常量（plan-napi M0）──────────────
+// 只生成类型/常量：函数声明 blocklist——133 个 napi_* 由 src/napi 以
+// `#[no_mangle] pub unsafe extern "C" fn` **定义并导出**，bindgen 的 extern
+// 块声明若保留会造未定义引用（rval 经 dlsym 查表的 addon 两边都要宿主导出）。
+fn emit_napi_sys() -> Result<(), Box<dyn std::error::Error>> {
+    let inc = "src/napi/include";
+    for f in [
+        "js_native_api.h",
+        "js_native_api_types.h",
+        "node_api.h",
+        "node_api_types.h",
+    ] {
+        println!("cargo:rerun-if-changed={inc}/{f}");
+    }
+    let bindings = bindgen::Builder::default()
+        .header(format!("{inc}/node_api.h"))
+        .clang_arg(format!("-I{inc}"))
+        // 类型 + 常量全要（napi_* 结构/枚举/typedef + NAPI_* 宏）。
+        .allowlist_type("napi_.*")
+        .allowlist_var("napi_.*")
+        .allowlist_var("NAPI_.*")
+        // 函数一律不要（理由见上）。
+        .blocklist_function("napi_.*")
+        .blocklist_function("uv_.*")
+        .blocklist_function("node_api_.*")
+        .allowlist_var("uv_.*")
+        .size_t_is_usize(true)
+        .default_enum_style(bindgen::EnumVariation::Consts)
+        .generate()?;
+    let out_dir = std::env::var("OUT_DIR")?;
+    bindings.write_to_file(format!("{out_dir}/napi_sys.rs"))?;
+    Ok(())
+}
+
+// ── napi：宿主符号导出 ───────────────────────────────────────────────────
+// addon 对 napi_* 的解析两条路（plan-napi §1 实测）都最终落到**宿主进程全局
+// 符号表**：napi-rs 3 运行期 dlsym 查表；老式 addon 链接期 undefined lookup。
+// 可执行文件默认不导出符号。macOS 用 -exported_symbols_list（通配 `_napi_*`）——
+// 全量 -export_dynamic 会保留全部符号的 unwind 信息，__eh_frame 超 16MB 触发
+// 链接器警告（2026-09-13 实测），清单导出既精准又保住 0 警告。
+// Windows dllexport/.def 留 CI（见 plan-napi §4）。
+fn emit_symbol_export() -> Result<(), Box<dyn std::error::Error>> {
+    let target = std::env::var("TARGET")?;
+    let out_dir = std::env::var("OUT_DIR")?;
+    if target.contains("apple") {
+        // glob 而非字面量：字面量在 dead-strip 后会被清单判为未定义（测试
+        // 二进制 2026-09-13 实测）；存在性自检由 dlsym fixture 黑盒覆盖。
+        let list = format!("{out_dir}/napi_export.txt");
+        std::fs::write(&list, "_napi_*\n_uv_*\n")?;
+        println!("cargo:rustc-link-arg=-Wl,-exported_symbols_list,{list}");
+    } else if target.contains("linux") {
+        println!("cargo:rustc-link-arg=-rdynamic");
+    } else if target.contains("windows") {
+        println!("cargo:warning=winterjs: napi symbol export for windows not wired yet (CI)");
+    }
+    Ok(())
 }
 
 // ── bun:ffi 调用 shim 生成 ────────────────────────────────────────────────

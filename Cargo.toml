@@ -327,6 +327,9 @@ proptest = "1"
 [build-dependencies]
 # §2：vergen 10 起 git 支持拆到独立 crate vergen-gitcl（调 git CLI，禁 git2 的 C）
 vergen-gitcl = { version = "10", features = ["build"] }
+# napi（plan-napi M0）：vendored Node 头 → sys 类型生成（函数声明 blocklist，
+# 由 src/napi 定义并导出）；host-only build-dep，build 期需 libclang（mozjs_sys 同要求）
+bindgen = { version = "0.73", default-features = false, features = ["runtime"] }
 
 # criterion 自带 main，关 libtest harness（否则 bench 二进制空跑 0 tests）
 [[bench]]

@@ -217,12 +217,10 @@ fn require_value(
                 .to_file_path()
                 .map_err(|_| Error::Other(format!("Cannot find module '{spec}'")))?;
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            // napi（`.node` 二进制）v1 不做（plan2 §4）：文件存在也直说，
-            // 不让二进制读进转译器报乱码错（vite/rolldown 链实测至此，plan 9j）。
+            // napi（`.node` 二进制，plan-napi M0）：权限门控（复用 --allow-ffi）
+            // → dlopen + register → exports（9j 的可读拒错退役）。
             if ext == "node" {
-                return Err(Error::Other(format!(
-                    "require() of native module '{spec}' (.node) is not supported"
-                )));
+                return crate::napi::load(cx, global, spec, &path).map_err(Error::Other);
             }
             if ext == "json" {
                 let text = std::fs::read_to_string(&path).map_err(|e| {

@@ -4834,19 +4834,20 @@ try { parseEnv(42); } catch (e) { console.log("pe-t", e.code); }
 
 #[test]
 fn phase9j_native_node_rejected() {
-    // napi（.node）v1 不做：文件存在也报可读错，不读二进制。
+    // napi（.node，plan-napi M0）：垃圾 .node → dlopen 可读错（9j 的"不支持"
+    // 拒错随 napi 落地退役；非 Mach-O 文件进 dlopen 即可读失败）。
     let dir = assert_fs::TempDir::new().unwrap();
     let fake = dir.child("fake.node");
     fake.write_str("not a real binary").unwrap();
     let out = winterjs()
-        .args(["--eval", &format!("try {{ require({:?}); }} catch (e) {{ console.log(e.message.slice(0, 200)); }}", fake.path().to_string_lossy())])
+        .args(["--eval", &format!("try {{ require({:?}); }} catch (e) {{ console.log(String(e.message).slice(0, 200)); }}", fake.path().to_string_lossy())])
         .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
-        stdout.contains("require() of native module") && stdout.contains("not supported"),
+        stdout.contains("cannot load native module") || stdout.contains("dlopen"),
         "stdout: {stdout}"
     );
     dir.close().unwrap();

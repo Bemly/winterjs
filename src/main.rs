@@ -12,6 +12,7 @@ mod lintfmt;
 mod loader;
 mod logging;
 mod modules;
+mod napi;
 mod initpkg;
 mod pm;
 mod permissions;

@@ -8,6 +8,18 @@ use common::*;
 
 use assert_fs::prelude::*;
 
+/// 从 tests/fixtures/napi/ 读 C 源现场编译（与手工探针同源，防两处漂移）。
+#[cfg(unix)]
+fn build_fixture_dylib(dir: &assert_fs::TempDir, name: &str) -> std::path::PathBuf {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("tests/fixtures/napi/{name}.c")),
+    )
+    .expect("fixture source exists");
+    build_napi_dylib(dir, name, &src)
+}
+
+
 /// 现场编 `.node` fixture（bun:ffi `build_ffi_dylib` 同款 shell-out；napi 需
 /// `-undefined dynamic_lookup`——addon 符号由宿主运行期解析，链接期不可见）。
 #[cfg(unix)]
@@ -256,5 +268,77 @@ try {{
         so.contains("caught add needs two numbers"),
         "stdout: {so}"
     );
+    dir.close().unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn phase_napi_m1_values_matrix() {
+    // 正常：M1 值系统全矩阵（roundtrip/typeof/strict_equals/instanceof/is_error/
+    // coerce/pending-exception）——fixture 内部按位断言，1 = 全过。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let node = build_fixture_dylib(&dir, "m1_values");
+    let app = dir.child("app.js");
+    app.write_str(&format!(
+        r#"
+const v = require({node:?});
+console.log("num", v.numRoundtrip(), v.int32(), v.uint32(), v.int64());
+console.log("bnu", v.boolNullUndef(), "str", v.stringRoundtrip(), "u16", v.utf16Surrogate(), "l1", v.latin1());
+console.log("sym", v.symbol(), "arr", v.array(), "tof", v.typeofAndEquals());
+console.log("err", v.errorFamily(new Error("x"), Error), "iserr", v.isErrorJsInstance(new TypeError("t")), v.isErrorJsInstance({{}}));
+console.log("coerce", v.coerce(), "pend", v.pendingException());
+"#
+    ))
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(app.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("num 1 1 1 1"), "stdout: {so}");
+    assert!(so.contains("bnu 1 str 1 u16 1 l1 1"), "stdout: {so}");
+    assert!(so.contains("sym 1 arr 31 tof 1"), "stdout: {so}");
+    assert!(so.contains("err 1 iserr 1 0"), "stdout: {so}");
+    assert!(so.contains("coerce 1 pend 7"), "stdout: {so}");
+    dir.close().unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn phase_napi_m1_props_matrix() {
+    // 正常：named/generic-key 属性族 + define_properties（value/method/data/
+    // attrs/不可枚举缺席）+ prototype + array_length。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let node = build_fixture_dylib(&dir, "m1_props");
+    let app = dir.child("app.js");
+    app.write_str(&format!(
+        r#"
+const p = require({node:?});
+console.log("named", p.named(), "generic", p.genericKey());
+console.log("defs", p.defineProperties(), "proto", p.prototypeAndArrayLen());
+"#
+    ))
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(app.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("named 1 generic 1"), "stdout: {so}");
+    assert!(so.contains("defs 1 proto 1"), "stdout: {so}");
     dir.close().unwrap();
 }

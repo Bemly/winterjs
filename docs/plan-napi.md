@@ -90,8 +90,29 @@
   `napi_module_register`（头注 deprecated），宏直接导出
   `napi_register_module_v1`；loader 的 dlsym 回落是主路径而非兜底
   （rolldown 绑定同为该符号），constructor 暂存保留为老式 addon 兼容。
-- [ ] **M1 值系统矩阵**：值家族读写/coerce、属性与元素、typeof/instanceof/strict_equals、
-  symbol/bigint/date、define_properties。验收：fixture 矩阵全绿（正常/报错/边界三件）。
+- [x] **M1 值系统矩阵**（2026-09-14 完工）：`src/napi/value.rs` + `property.rs`
+  + api.rs 调用面——落地面 ~35 个：create_object/array(+with_length)/
+  string_utf16/latin1/symbol、get_value_string_utf16/latin1、coerce 四族
+  （bool 返 napi_value，对照头文件 188 行）、instanceof/strict_equals/is_array/
+  is_error（instanceof Error 近似，记档）、错误对象族（create/throw ×3，
+  code 属性挂接）、get_and_clear_last_exception、get/set/has/delete 属性
+  （named char\* + generic string key；symbol key M2 记档）+ 元素四件 +
+  get_property_names（Object.keys 直调路线，记档）+ get_prototype +
+  get_array_length + define_properties（value/method/data/attrs；getter/
+  setter 随 M2 class）+ napi_call_function（N 参经 prelude
+  `__wjs_napi_call` apply 展开 + glue call_three）。
+  实测修正四件（对照 vendored 头逐签名审计）：create_error 族 code/msg 是
+  napi_value 非 char\*；has_own/delete 的 key 是 napi_value；coerce_to_bool
+  result 是 napi_value\*；create_int32 必须 Int32Value（get_value_int32 的
+  to_int32 断言依赖 tag）。int64/uint32 经 f64 截断为 N-API 语义（记档）。
+  bigint/date 未实现（rolldown 132 名单未引用，M4 实测需要时补）。
+  fixture 矩阵：m1_values.c（15 check）/ m1_props.c（4 check），
+  黑盒 2 例（values/props 全矩阵）+ M0 存量 4 例零回归。
+  `cargo test` 439 全绿 0 失败，build 0 警告，冒烟过。
+  坑追补：① cc 隐式函数声明即错（fixture 忘 stdio.h 时静默跑旧 dylib，
+  排查走 `strings` 验产物）；② js::ToObjectSlow 断言 !isObject（对象必须
+  直返，MOZ_ASSERT 实测炸）；③ jsval to_int32 断言 int32 tag（建值需
+  Int32Value，读值用 to_number 兜双 tag）。
 - [ ] **M2 函数与类深水**：cbinfo 全语义/make_callback/async_init+async_destroy+
   callback_scope、define_class/new_instance/wrap/unwrap/external+finalize、
   error 家族、escapable scope。验收：finalize 释放链用例（dhat）。

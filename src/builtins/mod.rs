@@ -45,6 +45,8 @@ globalThis.clearTimeout = function (id) { __wjs_clearTimeout(typeof id === "numb
 globalThis.clearInterval = function (id) { __wjs_clearTimeout(typeof id === "number" ? id : 0); };
 // 事件循环触发定时器 / structuredClone 枚举属性用的内部辅助
 globalThis.__wjs_call = (cb, args) => cb(...args);
+// napi_call_function：recv 语义的参数展开（Function.prototype.apply）
+globalThis.__wjs_napi_call = (recv, fn, args) => fn.apply(recv, args);
 globalThis.__wjs_entries = (v) => Object.entries(v);
 // ---- Phase 3a: URL / URLSearchParams / TextEncoder/Decoder / base64 / crypto ----
 globalThis.btoa = (s) => __wjs_btoa(String(s));

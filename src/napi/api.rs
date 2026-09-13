@@ -13,6 +13,7 @@ use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::context::JSContext;
 
+use crate::jsapi_glue::raw_handle;
 use crate::napi::env::{CbInfo, NapiEnv};
 use crate::napi::sys;
 use crate::napi::sys::{
@@ -23,7 +24,7 @@ use crate::napi::sys::{
 
 /// # Safety
 /// `env` 必须是本 crate 发给 addon 的有效 `NapiEnv` 指针（会话内存续）。
-unsafe fn e<'a>(env: napi_env) -> &'a mut NapiEnv {
+pub(crate) unsafe fn e<'a>(env: napi_env) -> &'a mut NapiEnv {
     // SAFETY：调用方持有本 crate 发出的有效 env 指针（前置已记录）。
     unsafe { &mut *(env as *mut NapiEnv) }
 }
@@ -32,7 +33,7 @@ unsafe fn e<'a>(env: napi_env) -> &'a mut NapiEnv {
 ///
 /// # Safety
 /// 同上；cx raw 指针在会话存续期有效。
-unsafe fn cx_of(env: napi_env) -> JSContext {
+pub(crate) unsafe fn cx_of(env: napi_env) -> JSContext {
     // SAFETY：napi_* 仅 JS 线程调用，raw cx 会话存续期有效（模块头注）。
     unsafe { JSContext::from_ptr(std::ptr::NonNull::new_unchecked(e(env).cx)) }
 }
@@ -272,8 +273,12 @@ pub unsafe extern "C" fn napi_create_int32(
     value: i32,
     result: *mut napi_value,
 ) -> napi_status {
-    // SAFETY：同族建值。
-    unsafe { create_number(env, value as f64, result) }
+    if result.is_null() {
+        return NAPI_INVALID_ARG;
+    }
+    // SAFETY：Int32Value 保留 int32 tag（get_value_int32 的 to_int32 断言依赖）。
+    unsafe { *result = e(env).put(mozjs::jsval::Int32Value(value)) };
+    NAPI_OK
 }
 
 /// # Safety
@@ -284,8 +289,12 @@ pub unsafe extern "C" fn napi_create_uint32(
     value: u32,
     result: *mut napi_value,
 ) -> napi_status {
-    // SAFETY：同族建值。
-    unsafe { create_number(env, value as f64, result) }
+    if result.is_null() {
+        return NAPI_INVALID_ARG;
+    }
+    // SAFETY：UInt32Value 保留最小 tag 表示。
+    unsafe { *result = e(env).put(mozjs::jsval::UInt32Value(value)) };
+    NAPI_OK
 }
 
 /// # Safety
@@ -471,20 +480,31 @@ pub unsafe extern "C" fn napi_typeof(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn napi_throw_error(
     env: napi_env,
-    _code: *const c_char,
+    code: *const c_char,
     msg: *const c_char,
 ) -> napi_status {
-    let message = if msg.is_null() {
-        "error".to_string()
-    } else {
-        // SAFETY：addon 保证 NUL 结尾。
-        unsafe { CStr::from_ptr(msg).to_string_lossy().into_owned() }
-    };
-    let mut cx = unsafe { cx_of(env) };
-    unsafe { e(env).set_last_error(&message) };
-    // report_error 建 Error 并置 pending（safe glue）。
-    crate::jsapi_glue::report_error(&mut cx, &message);
-    NAPI_OK
+    // SAFETY：throw_* 收 char*（js_native_api.h:400）；建 Error 值后置 pending。
+    unsafe {
+        let mut msg_v: napi_value = std::ptr::null_mut();
+        if napi_create_string_utf8(env, msg, usize::MAX, &mut msg_v) != sys::napi_status_napi_ok {
+            return sys::napi_status_napi_generic_failure;
+        }
+        let code_v: napi_value = if code.is_null() {
+            std::ptr::null_mut()
+        } else {
+            let mut v: napi_value = std::ptr::null_mut();
+            if napi_create_string_utf8(env, code, usize::MAX, &mut v) != sys::napi_status_napi_ok {
+                return sys::napi_status_napi_generic_failure;
+            }
+            v
+        };
+        let mut out: napi_value = std::ptr::null_mut();
+        let st = crate::napi::value::napi_create_error(env, code_v, msg_v, &mut out);
+        if st != sys::napi_status_napi_ok || out.is_null() {
+            return st;
+        }
+        crate::napi::value::napi_throw(env, out)
+    }
 }
 
 /// # Safety
@@ -647,8 +667,8 @@ pub unsafe extern "C" fn napi_get_value_int32(
     if !v.is_number() {
         return sys::napi_status_napi_number_expected;
     }
-    // SAFETY：同上。
-    unsafe { *result = v.to_int32() };
+    // SAFETY：同上（to_number 双 tag 兼容；截断为 N-API int32 语义）。
+    unsafe { *result = v.to_number() as i32 };
     NAPI_OK
 }
 
@@ -748,6 +768,75 @@ pub unsafe extern "C" fn napi_get_value_string_utf8(
         *buf.add(n) = 0;
         if !result.is_null() {
             *result = n;
+        }
+    }
+    NAPI_OK
+}
+
+// ── 调用面（M1 补：props fixture 与 rolldown 回调都需要）────────────────
+
+/// # Safety
+/// N-API 约定（argv 为本 env 槽位指针数组；result 可空 = 不取返回值）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_call_function(
+    env: napi_env,
+    recv: napi_value,
+    func: napi_value,
+    argc: usize,
+    argv: *const napi_value,
+    result: *mut napi_value,
+) -> napi_status {
+    if func.is_null() {
+        return NAPI_INVALID_ARG;
+    }
+    let env_ref = unsafe { e(env) };
+    let recv_v = if recv.is_null() {
+        UndefinedValue()
+    } else {
+        unsafe { env_ref.get(recv) }
+    };
+    let fn_v = unsafe { env_ref.get(func) };
+    let mut cx = unsafe { cx_of(env) };
+    // 参数落 JS 数组（元素逐个 SetElement——数组对象 rooted，天然 GC 安全；
+    // N 参展开经 prelude helper `__wjs_napi_call(recv, fn, args)`，timers 同款惯例）。
+    // SAFETY：数组与函数先 rooted 再调用；值均在本 env 槽位（traced）。
+    unsafe {
+        rooted!(&in(cx) let fn_root = fn_v);
+        let arr = mozjs::jsapi::JS::NewArrayObject1(cx.raw_cx(), argc);
+        if arr.is_null() {
+            return sys::napi_status_napi_generic_failure;
+        }
+        rooted!(&in(cx) let arr_root = arr);
+        for i in 0..argc {
+            let av = *argv.add(i);
+            let val = env_ref.get(av);
+            rooted!(&in(cx) let val_root = val);
+            if !mozjs::jsapi::JS_SetElement(
+                cx.raw_cx(),
+                raw_handle(&arr_root.get()),
+                i as u32,
+                raw_handle(val_root.as_ptr()),
+            ) {
+                return sys::napi_status_napi_generic_failure;
+            }
+        }
+        rooted!(&in(cx) let recv_root = recv_v);
+        let Some(helper) = crate::jsapi_glue::get_prop_value(&mut cx, crate::state::global(), c"__wjs_napi_call") else {
+            return sys::napi_status_napi_generic_failure;
+        };
+        let Some(r) = crate::jsapi_glue::call_three(
+            &mut cx,
+            crate::state::global(),
+            helper,
+            recv_root.get(),
+            fn_root.get(),
+            ObjectValue(arr_root.get()),
+        ) else {
+            // addon 侧按契约查 pending exception
+            return sys::napi_status_napi_generic_failure;
+        };
+        if !result.is_null() {
+            *result = env_ref.put(r);
         }
     }
     NAPI_OK

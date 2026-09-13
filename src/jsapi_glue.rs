@@ -300,6 +300,39 @@ pub fn call_two(
     if ok { Some(rval.get()) } else { None }
 }
 
+/// UNSAFE-BOUNDARY: 调三参函数 `fun(a, b, c)`（this=global；napi_call 的
+/// prelude helper `__wjs_napi_call(recv, fn, args)` 用）。
+/// 前置：cx 在 realm 内；调用后 pending exception 由调用方处理。
+/// 覆盖：`tests/napi.rs::phase_napi_m1_values`（经 napi_call_function）。
+pub fn call_three(
+    cx: &mut JSContext,
+    global: *mut JSObject,
+    fun: JSVal,
+    a: JSVal,
+    b: JSVal,
+    c: JSVal,
+) -> Option<JSVal> {
+    rooted!(&in(cx) let fun_root = fun);
+    rooted!(&in(cx) let argv = ValueArray::new([a, b, c]));
+    rooted!(&in(cx) let mut rval = UndefinedValue());
+    let args_array = HandleValueArray {
+        length_: 3,
+        // SAFETY: argv 为栈上 Rooted 槽，存活到调用返回，元素被 GC 追踪
+        elements_: argv.as_ptr().cast(),
+    };
+    // SAFETY: cx/global/fun 均有效；rval 为 rooted 出参
+    let ok = unsafe {
+        JS_CallFunctionValue(
+            cx.raw_cx(),
+            raw_handle(&global),
+            raw_handle(fun_root.as_ptr()),
+            &args_array,
+            raw_handle_mut(rval.as_ptr()),
+        )
+    };
+    if ok { Some(rval.get()) } else { None }
+}
+
 /// UNSAFE-BOUNDARY: 由字节建 Uint8Array。
 /// 前置：cx 在 realm 内；bytes 存活到调用返回。
 /// 覆盖：`phase3_text_encoder_decoder`、`phase3_subtle_digest_vectors`、

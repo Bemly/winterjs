@@ -21,7 +21,9 @@
 pub mod api;
 pub mod env;
 pub mod loader;
+pub mod property;
 pub mod sys;
+pub mod value;
 
 use mozjs::jsval::JSVal;
 use std::path::Path;

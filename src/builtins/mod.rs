@@ -53,6 +53,15 @@ globalThis.__wjs_napi_new = (ctor, args) => new ctor(...args);
 // 冻结属性抛 TypeError），Node 的 napi_set_property 走 v8 非严格 set（静默
 // 无操作返回 ok）。sloppy 函数内的 `obj[key] = value` 与后者精确对齐。
 globalThis.__wjs_napi_set = (obj, key, value) => { obj[key] = value; };
+// napi Buffer 形状：Uint8Array + Buffer.prototype（Node 实例同款）；
+// is_buffer 判定（instanceof Buffer；Buffer 缺席恒 false）
+globalThis.__wjs_napi_bufferify = (u8) => {
+  if (typeof Buffer !== "function") throw new TypeError("Buffer is not available");
+  Object.setPrototypeOf(u8, Buffer.prototype);
+  return u8;
+};
+globalThis.__wjs_napi_is_buffer =
+  (v) => typeof Buffer === "function" && v instanceof Buffer;
 // napi_define_class/define_properties 的访问器定义（setter 传 undefined =
 // Node getter-only 语义：sloppy 赋值静默、strict TypeError）
 globalThis.__wjs_napi_accessor =

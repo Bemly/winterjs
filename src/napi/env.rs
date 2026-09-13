@@ -46,6 +46,11 @@ pub struct NapiEnv {
     pub wrap_sym: Option<Box<Heap<JSVal>>>,
     /// `napi_adjust_external_memory` 累计（Node 口径返回累计值）。
     pub external_mem: i64,
+    /// 活跃 deferred（`napi_create_promise` 的 promise Heap 槽位；
+    /// 句柄 = 槽位地址，落定即摘——一次性，promise.rs）。
+    pub deferreds: Vec<Box<Heap<JSVal>>>,
+    /// 活跃引用（`napi_ref` 本体；句柄 = Box 指针，ref.rs）。
+    pub refs: Vec<Box<crate::napi::refcount::RefRec>>,
     /// 已加载 addon 库（path → Library；永不 dlclose）。
     pub libs: Vec<(PathBuf, libloading::Library)>,
     /// `.node` 模块 exports 缓存（require 幂等，Node 口径；exports 进 GC 图）。
@@ -65,21 +70,27 @@ pub struct NapiModule {
 // SAFETY（§6 前置条件记录）：NapiEnv 仅 JS 线程访问；`cx` raw 指针与会话
 // Runtime 同生命周期（RootedState TLS 随线程生灭，§4.24）；trace 只追 JS 值
 // 槽位（cx/libs/scopes 非 JS 值不进 GC 图）。
-unsafe impl mozjs::gc::Traceable for NapiEnv {
-    unsafe fn trace(&self, trc: *mut mozjs::jsapi::JSTracer) {
-        // SAFETY：trace 协议（引擎在 GC 期间调用；Trace trait 同前置）。
-        unsafe {
-            mozjs::rust::Trace::trace(&self.slots, trc);
-            mozjs::rust::Trace::trace(&self.escape_slots, trc);
-            if let Some(sym) = &self.wrap_sym {
-                sym.trace(trc);
-            }
-            for m in &self.modules {
-                m.exports.trace(trc);
+    unsafe impl mozjs::gc::Traceable for NapiEnv {
+        unsafe fn trace(&self, trc: *mut mozjs::jsapi::JSTracer) {
+            // SAFETY：trace 协议（引擎在 GC 期间调用；Trace trait 同前置）。
+            unsafe {
+                mozjs::rust::Trace::trace(&self.slots, trc);
+                mozjs::rust::Trace::trace(&self.escape_slots, trc);
+                mozjs::rust::Trace::trace(&self.deferreds, trc);
+                for r in &self.refs {
+                    // weak（refcount==0）同追：SM 无 embedder 弱值通道，不追即
+                    // GC 后悬垂（ref.rs 模块头偏差记档）。
+                    r.value.trace(trc);
+                }
+                if let Some(sym) = &self.wrap_sym {
+                    sym.trace(trc);
+                }
+                for m in &self.modules {
+                    m.exports.trace(trc);
+                }
             }
         }
     }
-}
 
 impl NapiEnv {
     pub fn new(cx: *mut RawJSContext) -> Self {
@@ -90,6 +101,8 @@ impl NapiEnv {
             escape_slots: Vec::new(),
             wrap_sym: None,
             external_mem: 0,
+            deferreds: Vec::new(),
+            refs: Vec::new(),
             libs: Vec::new(),
             modules: Vec::new(),
             last_error: None,

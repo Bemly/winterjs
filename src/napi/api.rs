@@ -58,9 +58,9 @@ pub(crate) unsafe fn cstr_of_len(s: *const c_char, len: usize) -> Result<String,
     String::from_utf8(bytes.to_vec()).map_err(|_| sys::napi_status_napi_generic_failure)
 }
 
-const NAPI_OK: napi_status = sys::napi_status_napi_ok;
-const NAPI_INVALID_ARG: napi_status = sys::napi_status_napi_invalid_arg;
-const NAPI_GENERIC_FAILURE: napi_status = sys::napi_status_napi_generic_failure;
+pub(crate) const NAPI_OK: napi_status = sys::napi_status_napi_ok;
+pub(crate) const NAPI_INVALID_ARG: napi_status = sys::napi_status_napi_invalid_arg;
+pub(crate) const NAPI_GENERIC_FAILURE: napi_status = sys::napi_status_napi_generic_failure;
 
 // ── trampoline：JS native 函数 → addon C 回调 ────────────────────────────
 // reserved slots：0 = addon 回调指针、1 = data。帧布局（jsapi_glue Frame 约定）：

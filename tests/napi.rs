@@ -621,3 +621,96 @@ await bundle.close();
     assert!(so.contains("export { msg };"), "stdout: {so}");
     dir.close().unwrap();
 }
+
+#[test]
+#[ignore = "real network: installs vite via own pm (plan-napi M5 build acceptance)"]
+fn phase_napi_m5_vite_build_real_network() {
+    // 真网络：pm 装 vite（连带 rolldown/@rolldown/binding）→ vite build JS API
+    // 全链（resolveConfig → vite.config.js 经 require.extensions/_compile 加载
+    // → build → dist 落盘）→ 产物 --run 可执行。napi 面：cac 的 EventTarget
+    // 基类、PromiseRaw.then/catch 的 napi_wrap 任意对象路、crypto.getRandomValues、
+    // process.versions.node 22.12 地板。
+    // 注：不带 --allow-ffi/--allow-env（权限沙箱会拒 fs 读，vite existsSync 门
+    // 吞 EACCES 返 false——探针实录）；pm add 与 build 均在 tempdir 内（§4.20）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let wjs = std::env::var("CARGO_BIN_EXE_winterjs")
+        .unwrap_or_else(|_| "target/debug/winterjs".to_string());
+    // 1) 自家 pm 真装 vite（连带 rolldown + binding-darwin-arm64）
+    let add = std::process::Command::new(&wjs)
+        .args(["-a", "vite"])
+        .current_dir(dir.path())
+        .env("WINTERJS_LOG", "warn")
+        .output()
+        .expect("pm add runs");
+    assert!(
+        add.status.success(),
+        "pm add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    // 2) 最小工程 + 关 modulePreload polyfill（产物为纯 JS 客户端 IIFE，可 --run）
+    let src = dir.child("src");
+    std::fs::create_dir_all(src.path()).unwrap();
+    src.child("lib.js")
+        .write_str("export function greet(name) { return `hello, ${name}!`; }\n")
+        .unwrap();
+    src.child("main.js")
+        .write_str("import { greet } from './lib.js';\nconsole.log(greet('vite'));\n")
+        .unwrap();
+    dir.child("index.html").write_str(
+        "<!doctype html>\n<html><body><script type=\"module\" src=\"/src/main.js\"></script></body></html>\n",
+    ).unwrap();
+    dir.child("vite.config.js")
+        .write_str("export default { build: { modulePreload: { polyfill: false } } };\n")
+        .unwrap();
+    // 3) vite build JS API（config 文件加载走 require.extensions 链）
+    dir.child("build-probe.mjs")
+        .write_str(
+            r#"
+import { build } from 'vite';
+await build({ logLevel: 'info' });
+console.log("BUILD-OK");
+"#,
+        )
+        .unwrap();
+    let out = winterjs()
+        .args(["--run", "build-probe.mjs"])
+        .current_dir(dir.path())
+        .env("WINTERJS_LOG", "warn")
+        .output()
+        .expect("build runs");
+    assert!(
+        out.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("BUILD-OK"), "stdout: {so}");
+    // 4) 产物可执行（dist/assets/index-*.js 客户端 IIFE）
+    let assets = dir.child("dist/assets");
+    let mut chunk = None;
+    for entry in std::fs::read_dir(assets.path()).unwrap() {
+        let p = entry.unwrap().path();
+        if p.extension().and_then(|e| e.to_str()) == Some("js") {
+            chunk = Some(p);
+        }
+    }
+    let chunk = chunk.expect("dist chunk exists");
+    let run = winterjs()
+        .args(["--run"])
+        .arg(&chunk)
+        .current_dir(dir.path())
+        .env("WINTERJS_LOG", "warn")
+        .output()
+        .expect("artifact runs");
+    assert!(
+        run.status.success(),
+        "artifact failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("hello, vite!"),
+        "artifact stdout: {}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+    dir.close().unwrap();
+}

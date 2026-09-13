@@ -4,6 +4,7 @@ mod acme;
 mod alloc;
 mod builtins;
 mod cli;
+mod dispatch;
 mod error;
 mod i18n;
 mod jobqueue;

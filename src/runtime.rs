@@ -114,6 +114,7 @@ async fn run_module(
     worker_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::worker::WorkerEvent>,
     quic_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::quic::QuicEvent>,
     napi_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::napi::asyncwork::NapiEvent>,
+    dispatch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<usize>,
 ) -> Result<(), Error> {
     use mozjs::rust::wrappers2::{ModuleEvaluate, ModuleLink};
 
@@ -158,7 +159,7 @@ async fn run_module(
         }
     }
 
-    event_loop(rt, global, ErrorSource::Module { url: url.as_str() }, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx).await?;
+    event_loop(rt, global, ErrorSource::Module { url: url.as_str() }, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx).await?;
 
     // 收割入口决议（事件循环的排空已驱动捕获回调）。
     let (fulfillment, rejection) =
@@ -238,6 +239,7 @@ struct SessionInit {
     worker_rx: tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::worker::WorkerEvent>,
     quic_rx: tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::quic::QuicEvent>,
     napi_rx: tokio::sync::mpsc::UnboundedReceiver<crate::napi::asyncwork::NapiEvent>,
+    dispatch_rx: tokio::sync::mpsc::UnboundedReceiver<usize>,
 }
 
 /// worker 线程规格（`node:worker_threads` spawn 用；move 进独立线程）。
@@ -316,11 +318,19 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
     });
 
     // §4.1：进入 global realm 后再做 JSAPI 初始化（内建、prelude、rejection 追踪器）
+    let dispatch_rx;
     {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         // SAFETY: realm 内启用内部 job queue（realm 外调用会 SEGV）；
         // 不启用则 RunJobs 无队列可用，同样 SEGV（AGENTS §4.7 记坑）。
         unsafe { crate::jobqueue::install((&mut realm).raw_cx()) };
+        // SM 异步任务派发桥（wasm compile 等）：接收端交事件循环，
+        // 闭包指针进 PlainState（pending 计数读取 + 会话身份）。
+        let (drx, closure_ptr) =
+            // SAFETY: realm 内取 raw cx（jobqueue 装配同款）
+            unsafe { crate::dispatch::install((&mut realm).raw_cx()) };
+        dispatch_rx = drx;
+        state::with_plain(|p| p.dispatch_closure = Some(closure_ptr));
         state::init(&mut realm);
         state::set_global(global.get());
         state::set_line_adjust(0);
@@ -440,7 +450,7 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
     // worker boot 收尾放 init 末（主会话无操作；worker 回传收件箱 + 发 Online）。
     crate::builtins::node::worker::worker_booted();
 
-    Ok(SessionInit { rt, engine, global_ptr, state_guard, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx })
+    Ok(SessionInit { rt, engine, global_ptr, state_guard, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx })
 }
 
 async fn run_inner(
@@ -479,6 +489,7 @@ async fn run_inner(
     let mut worker_rx = init.worker_rx;
     let mut quic_rx = init.quic_rx;
     let mut napi_rx = init.napi_rx;
+    let mut dispatch_rx = init.dispatch_rx;
 
     rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
 
@@ -486,7 +497,7 @@ async fn run_inner(
     // 解析失败 → 回落经典（经典求值会给出它自己的报错）。
     if mode == Mode::Script {
         if let Some(url) = sniff_module(filename, source) {
-            let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx).await;
+            let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await;
             // §4.8：跳过引擎/运行时析构
             end_session(rt, engine);
             return r;
@@ -519,7 +530,7 @@ async fn run_inner(
                     end_session(rt, engine);
                     return Err(err);
                 }
-                event_loop(&mut rt, &global, ErrorSource::Script { source: &main_src, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx).await?;
+                event_loop(&mut rt, &global, ErrorSource::Script { source: &main_src, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await?;
                 end_session(rt, engine);
                 return Ok(());
             }
@@ -536,7 +547,7 @@ async fn run_inner(
         let res = evaluate_script(rt.cx(), global.handle(), source, rval.handle_mut(), options);
         if res.is_err() {
             if mode == Mode::Eval {
-                let r = eval_syntax_fallback(&mut rt, &global, source, filename, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx).await;
+                let r = eval_syntax_fallback(&mut rt, &global, source, filename, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await;
                 // §4.8：跳过引擎/运行时析构（StoreBuffer 悬垂边在 destroyRuntime 的小 GC 里 SEGV）
                 end_session(rt, engine);
                 return r;
@@ -558,7 +569,7 @@ async fn run_inner(
                 && crate::loader::load_js(source, filename, &path).is_ok()
             {
                 tracing::info!(target: "winterjs::runtime", url = url.as_str(), "retrying as module");
-                let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx).await;
+                let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await;
                 end_session(rt, engine);
                 return r;
             }
@@ -573,7 +584,7 @@ async fn run_inner(
 
     // 未包装成功的场景（含全部 Script 与无顶层 await 的 Eval）：
     // 完成值就是 rval（老行为）；仅 async IIFE 包装路径才读 __wjs_value。
-    event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx).await?;
+    event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await?;
     let r = print_completion(&mut rt, &global, rval.get());
     // §4.8：跳过引擎/运行时析构（带 timer 的路径在 JS_DestroyContext 里 SEGV）。
     // CLI 进程即将退出，内存由 OS 回收；见 AGENTS §4.8。
@@ -757,6 +768,7 @@ async fn eval_syntax_fallback(
     worker_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::worker::WorkerEvent>,
     quic_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::quic::QuicEvent>,
     napi_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::napi::asyncwork::NapiEvent>,
+    dispatch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<usize>,
 ) -> Result<(), Error> {
     let original = {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
@@ -802,7 +814,7 @@ async fn eval_syntax_fallback(
         // 同 run()；包装版行号偏移经 line_adjust 校正
         let res = evaluate_script(rt.cx(), global.handle(), &wrapped, wrapped_rval.handle_mut(), options);
         if res.is_ok() {
-            event_loop(rt, global, ErrorSource::Script { source, filename }, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx).await?;
+            event_loop(rt, global, ErrorSource::Script { source, filename }, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx).await?;
             let r = extract_eval_result(rt, global, source, filename);
             // engine/rt 由外层 run() 统一 forget（见 §4.8）
             return r;
@@ -860,6 +872,7 @@ struct PumpStats {
     worker: usize,
     quic: usize,
     napi: usize,
+    dispatch: usize,
 }
 
 /// 事件循环单轮推进：RunJobs 排空 → exit 检查 → 同步结算 → 到期 timer 触发。
@@ -876,10 +889,21 @@ async fn pump_once(
     worker_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::worker::WorkerEvent>,
     quic_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::quic::QuicEvent>,
     napi_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::napi::asyncwork::NapiEvent>,
+    dispatch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<usize>,
 ) -> Result<PumpStats, Error> {
     use crate::builtins::{fetch, node::child as node_child, node::fs as node_fs, node::net as node_net, node::quic as node_quic, node::worker as node_worker, ws};
     use crate::napi::asyncwork as napi_aw;
     let mut st = PumpStats::default();
+    // SM 异步任务派发（wasm compile/instantiate 完成回调）：先运行再 RunJobs——
+    // DispatchableRun 内部只 resolve promise（结算排 microtask），同一轮
+    // RunJobs 排空反应 job（§4.18：结算点后到 park 前必有 RunJobs）。
+    while let Ok(ptr) = dispatch_rx.try_recv() {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        // SAFETY: realm 内取 raw cx（jobqueue 装配同款）
+        unsafe { crate::dispatch::run_dispatchable((&mut realm).raw_cx(), ptr) };
+        st.dispatch += 1;
+        st.progressed = true;
+    }
     {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         // SAFETY: realm 内排空内部 job queue
@@ -970,6 +994,7 @@ async fn event_loop(
     worker_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::worker::WorkerEvent>,
     quic_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::quic::QuicEvent>,
     napi_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::napi::asyncwork::NapiEvent>,
+    dispatch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<usize>,
 ) -> Result<(), Error> {
     use crate::builtins::{fetch, node::child as node_child, node::fs as node_fs, node::net as node_net, node::quic as node_quic, node::worker as node_worker, ws};
     use crate::napi::asyncwork as napi_aw;
@@ -983,6 +1008,7 @@ async fn event_loop(
     let mut workers_settled: usize = 0;
     let mut quics_settled: usize = 0;
     let mut napis_settled: usize = 0;
+    let mut dispatches_settled: usize = 0;
     macro_rules! settle_fetch {
         ($msg:expr) => {{
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
@@ -1032,6 +1058,14 @@ async fn event_loop(
             quics_settled += 1;
         }};
     }
+    macro_rules! settle_dispatch {
+        ($ptr:expr) => {{
+            let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+            // SAFETY: realm 内取 raw cx（jobqueue 装配同款）
+            unsafe { crate::dispatch::run_dispatchable((&mut realm).raw_cx(), $ptr) };
+            dispatches_settled += 1;
+        }};
+    }
     macro_rules! settle_watch {
         ($ev:expr) => {{
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
@@ -1041,7 +1075,7 @@ async fn event_loop(
     }
     loop {
         // 单轮推进与 `repl` 共用（§4.18 检查点顺序在内保持）。
-        let st = pump_once(rt, global, err, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx).await?;
+        let st = pump_once(rt, global, err, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx).await?;
         if st.exited {
             return Ok(());
         }
@@ -1055,6 +1089,7 @@ async fn event_loop(
         workers_settled += st.worker;
         quics_settled += st.quic;
         napis_settled += st.napi;
+        dispatches_settled += st.dispatch;
         // timer 触发同样排队 microtask（回调内决议 promise），必须算 progress，
         // 否则 idle 检查提前退出、反应 job 被丢（§4.18 同类，TLA 必挂）。
         let progressed = st.progressed || st.timers > 0;
@@ -1069,7 +1104,8 @@ async fn event_loop(
             && state::net_open() == 0
             && state::worker_open() == 0
             && state::quic_open() == 0
-            && state::napi_pending() == 0;
+            && state::napi_pending() == 0
+            && crate::dispatch::pending() == 0;
         if idle && !progressed {
             break;
         }
@@ -1125,6 +1161,11 @@ async fn event_loop(
                             settle_napi!(nev2);
                         }
                     }
+                    dptr = dispatch_rx.recv() => {
+                        if let Some(ptr) = dptr {
+                            settle_dispatch!(ptr);
+                        }
+                    }
                 }
             }
             // 无定时器但有未决项：睡到有完成为止（到此必非 idle——全 idle 只剩
@@ -1171,11 +1212,16 @@ async fn event_loop(
                             settle_napi!(nev2);
                         }
                     }
+                    dptr = dispatch_rx.recv() => {
+                        if let Some(ptr) = dptr {
+                            settle_dispatch!(ptr);
+                        }
+                    }
                 }
             }
         }
     }
-    tracing::info!(target: "winterjs::runtime", iterations, timers_fired, fetches_settled, ws_settled, watches_settled, children_settled, nets_settled, workers_settled, quics_settled, napis_settled, "event loop drained");
+    tracing::info!(target: "winterjs::runtime", iterations, timers_fired, fetches_settled, ws_settled, watches_settled, children_settled, nets_settled, workers_settled, quics_settled, napis_settled, dispatches_settled, "event loop drained");
 
     report_unhandled_rejections(rt, global)
 }
@@ -1294,6 +1340,7 @@ pub async fn repl() -> Result<(), Error> {
     let mut worker_rx = init.worker_rx;
     let mut quic_rx = init.quic_rx;
     let mut napi_rx = init.napi_rx;
+    let mut dispatch_rx = init.dispatch_rx;
 
     let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<Option<String>>();
     let hist = crate::repl::history_path();
@@ -1308,7 +1355,7 @@ pub async fn repl() -> Result<(), Error> {
     let err_src = ErrorSource::Script { source: "", filename: "repl.js" };
     loop {
         let st = match pump_once(
-            &mut rt, &global, err_src, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx,
+            &mut rt, &global, err_src, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx,
         )
         .await
         {

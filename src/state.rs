@@ -397,6 +397,9 @@ pub struct PlainState {
     /// napi 第 8 通道发送端（async_work/TSFN；JS 线程 create 时克隆进 rec，
     /// OS 线程只经 rec.tx 发送——禁经 TLS 取，§4.24）。
     pub napi_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::napi::asyncwork::NapiEvent>>,
+    /// SM 异步任务派发闭包（dispatch::install 泄漏的 Box 指针：pending 计数
+    /// 读取与会话身份；进程存活期恒有效，与 §4.8 Runtime 泄漏同哲学）。
+    pub dispatch_closure: Option<*mut std::ffi::c_void>,
     /// fetch 驱动端点（`run()` 初始化；接收端由事件循环持有，无 JS 值，可跨 await）。
     pub fetch_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::fetch::FetchMsg>>,
     pub fetch_next_id: u64,

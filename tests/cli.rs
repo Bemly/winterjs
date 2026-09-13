@@ -319,6 +319,32 @@ fn run_script_js_bin_runs_with_self() {
 }
 
 #[test]
+fn run_script_js_bin_known_flag_passthrough() {
+    // 子递归经 `--` 收尾：rest 里的本仓已知 flag（--version）必须落到 bin 的
+    // argv，不能被子进程 clap 吃掉（修前打出 winterjs 版本横幅，bin 没跑）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    script_project(&dir, r#"{"scripts":{"v":"mybin --version --help"}}"#);
+    let bin = dir.child("node_modules/.bin/mybin");
+    bin.write_str("#!/usr/bin/env node\nconsole.log('bin-ok', process.argv.slice(2).join(','));\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(bin.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let out = winterjs()
+        .arg("--run")
+        .arg("v")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("bin-ok --version,--help"), "stdout: {stdout}");
+    assert!(!stdout.contains("winterjs"), "clap banner leaked: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn run_script_native_bin_direct_argv() {
     // .bin 里的原生/非 JS bin → 直接 argv 派发（不经 shell、不经 node）。
     let dir = assert_fs::TempDir::new().unwrap();

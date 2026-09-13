@@ -4,8 +4,9 @@
 //!
 //! 执行口径（对齐 npm/bun，零 node 目标优先）：
 //! - 首词解析到本地 `node_modules/.bin/<name>` 且是 **JS bin**（后缀 .js/.mjs/.cjs
-//!   或 shebang 含 node）→ 递归调自身 `--run <bin>`——JS bin 不走系统 shebang，
-//!   机器上没有 node 也能跑（lint/fmt 穿透同思想的自身版）；
+//!   或 shebang 含 node）→ 递归调自身 `--run <bin> -- <args>`——JS bin 不走系统
+//!   shebang，机器上没有 node 也能跑（lint/fmt 穿透同思想的自身版）；
+//!   `--` 收尾防子进程 clap 吃掉 `--version` 等本仓已知 flag；
 //! - 首词解析到真实可执行文件（.bin 原生二进制或 PATH 上有）→ 直接 argv 派发
 //!   （不经 shell；esbuild 这类平台二进制即此路）；
 //! - 其余（shell 内建/复合命令/env 前缀/含元字符）走 shell（unix `/bin/sh -c`，
@@ -179,11 +180,14 @@ pub fn run(pkg_dir: &Path, script: &str, extra_args: &[String]) -> Result<i32, E
             if let Some(bin) = &resolved {
                 if is_js_bin(bin) {
                     // 零 node 快路径：JS bin 递归调自身（子进程无沙箱旗，语义同 npm 直跑）。
+                    // `--` 收尾旗解析：rest 里的 `--version`/`--help` 这类**本仓已知 flag**
+                    // 不加会被子进程 clap 吃掉（2026-09-13 探针实测：
+                    // `scripts: {"v": "node-which --version"}` 打出 winterjs 版本横幅）。
                     let exe = std::env::current_exe().map_err(|e| {
                         Error::Other(format!("failed to locate current exe: {e}"))
                     })?;
                     let mut cmd = std::process::Command::new(exe);
-                    cmd.arg("--run").arg(bin);
+                    cmd.arg("--run").arg(bin).arg("--");
                     for a in rest {
                         cmd.arg(a);
                     }

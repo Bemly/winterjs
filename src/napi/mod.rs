@@ -14,14 +14,16 @@
 //!   （dlsym 双入口）→ register(env, exports) → exports 返回 require 管线。
 //!
 //! 契约与偏差（记档，plan-napi §4）：`napi_value` = `*mut Heap<JSVal>`（对
-//! addon 完全不透明，N-API 契约即如此）；M0 槽位 arena 只增不回收（scope 仅
-//! 配平校验，M2 引入 escape-aware 回收）；env 跨调用存续（Node 同语义）；
-//! 所有 `napi_*` 仅 JS 线程可调（TSFN 的跨线程面在 M3 经事件循环通道）。
+//! addon 完全不透明，N-API 契约即如此）；槽位 arena 由 scope 栈截断回收
+//! （M2 起），escape 产物入独立池由宿主入口回收；env 跨调用存续（Node 同
+//! 语义）；所有 `napi_*` 仅 JS 线程可调（TSFN 的跨线程面在 M3 经事件循环通道）。
 
 pub mod api;
+pub mod class;
 pub mod env;
 pub mod loader;
 pub mod property;
+pub mod scope;
 pub mod sys;
 pub mod value;
 

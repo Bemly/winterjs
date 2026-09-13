@@ -113,9 +113,39 @@
   排查走 `strings` 验产物）；② js::ToObjectSlow 断言 !isObject（对象必须
   直返，MOZ_ASSERT 实测炸）；③ jsval to_int32 断言 int32 tag（建值需
   Int32Value，读值用 to_number 兜双 tag）。
-- [ ] **M2 函数与类深水**：cbinfo 全语义/make_callback/async_init+async_destroy+
-  callback_scope、define_class/new_instance/wrap/unwrap/external+finalize、
-  error 家族、escapable scope。验收：finalize 释放链用例（dhat）。
+- [x] **M2 函数与类深水**（2026-09-14 完工）：cbinfo 全语义/make_callback/
+  async_init+async_destroy+callback_scope、define_class/new_instance/wrap/
+  unwrap/remove_wrap/external+finalize、node_api_create/throw_syntax_error、
+  escapable scope（统一栈 + LIFO 校验 + escape 产物独立池由 trampoline 回收）。
+  验收：finalize 释放链用例（malloc/free 成对计数，dhat 口径等价——两轮 40 万
+  次灌入后 free 追上 alloc 一半、free≤alloc 恒成立；`m2_finalize.c`）。
+  落地面：
+  - `class.rs`：静态 JSClass 两枚全 napi 类共享（NAPI_INSTANCE/EXTERNAL，判定走
+    `JS_InstanceOf` 指针比对），私有数据 reserved slots 0..3（data/finalize/hint/
+    env，全 PrivateValue——double-tag，GC 不追；未写槽 = undefined，`is_double`
+    即哨兵）。`JSCLASS_FOREGROUND_FINALIZE` 钉死主线程（默认 background 会在
+    helper 线程跑 finalize op，addon 回调碰 NapiEnv 即数据竞争）。
+  - trampoline 回调按进入水位截断主 arena（Node 契约：napi_value 仅回调存活期
+    有效；同时是 finalize 链前提——槽位是 GC 根，不截断则回调产物永不可达死态）。
+    escaped 池单独截断。loader register 直调不截断（exports 由 modules 表锚定）。
+  - napi_set_named/set_property/set_element 走 sloppy prelude helper
+    `__wjs_napi_set`（JSAPI JS_SetProperty 是 strict 语义，对只读+不可配置属性
+    抛 TypeError；Node 的 napi_set_property 走 v8 非严格 set 静默返回 ok，
+    m1_props 探针实测修正）。define 面保持 JSAPI（Node define 同为 strict）。
+  - napi_new_instance / define_class 访问器经 prelude `__wjs_napi_new`（new 全
+    语义）/`__wjs_napi_accessor`（Object.defineProperty，setter undefined =
+    getter-only）——免变长 HandleValueArray 与 JSAPI 访问器旗帜位雷区。
+  - `define_one`（property.rs）：define_properties/define_class 共用 descriptor
+    落地（method → getter/setter 访问器 → value；static 位拆放置目标）。
+  - napi_create_function/define_class 构造器函数都设 `JSFUN_CONSTRUCTOR`
+    （SM native 函数默认**不可**构造，`new` 报 not a constructor，2026-09-14 实测）。
+  偏差（M4 实测再议）：napi_wrap 仅限 define_class 实例（external 的 data 槽与
+  wrap 单槽不混、任意对象缺 GC 驱动 finalize 通道，均 fail-fast 不静默泄漏）；
+  napi_wrap 的 napi_ref 出参 M3 前报错；finalizer 在 GC sweep 内直调（Node 同期
+  语义，finalizer 期间禁大多数 napi_*）；napi_typeof 的 external 判定走类比对。
+  fixture：m2_class.c（类矩阵 8 面）/ m2_finalize.c（释放链），
+  黑盒 +2（441 全绿 0 失败，M1 439 零回归），build 0 警告，冒烟过；
+  导出符号 69 → 89（+ node_api_* 错误族 glob `_node_api_*`）。
 - [ ] **M3 异步与 buffer**：promise/deferred（§4.18 RunJobs 纪律）、refs 全语义、
   arraybuffer/typedarray/dataview/buffer/external buffer、async_work、
   TSFN（第 8 通道 + acquire/release/ref/unref/cleanup）。验收：真 OS 线程回调进 JS。

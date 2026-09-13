@@ -47,6 +47,17 @@ globalThis.clearInterval = function (id) { __wjs_clearTimeout(typeof id === "num
 globalThis.__wjs_call = (cb, args) => cb(...args);
 // napi_call_function：recv 语义的参数展开（Function.prototype.apply）
 globalThis.__wjs_napi_call = (recv, fn, args) => fn.apply(recv, args);
+// napi_new_instance：`new ctor(...args)` 全语义（new.target/prototype/异常传播）
+globalThis.__wjs_napi_new = (ctor, args) => new ctor(...args);
+// napi_set_* 的非严格赋值面：JSAPI JS_SetProperty 是 strict 语义（对只读/
+// 冻结属性抛 TypeError），Node 的 napi_set_property 走 v8 非严格 set（静默
+// 无操作返回 ok）。sloppy 函数内的 `obj[key] = value` 与后者精确对齐。
+globalThis.__wjs_napi_set = (obj, key, value) => { obj[key] = value; };
+// napi_define_class/define_properties 的访问器定义（setter 传 undefined =
+// Node getter-only 语义：sloppy 赋值静默、strict TypeError）
+globalThis.__wjs_napi_accessor =
+  (obj, name, getter, setter, enumerable, configurable) =>
+    Object.defineProperty(obj, name, { get: getter, set: setter, enumerable, configurable });
 globalThis.__wjs_entries = (v) => Object.entries(v);
 // ---- Phase 3a: URL / URLSearchParams / TextEncoder/Decoder / base64 / crypto ----
 globalThis.btoa = (s) => __wjs_btoa(String(s));

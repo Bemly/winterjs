@@ -617,22 +617,11 @@ pub unsafe extern "C" fn napi_throw(env: napi_env, error: napi_value) -> napi_st
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn napi_throw_type_error(
     env: napi_env,
-    _code: *const c_char,
+    code: *const c_char,
     msg: *const c_char,
 ) -> napi_status {
-    // SAFETY：throw_* 收 char*（js_native_api.h:403）；建 msg 值后复用 create+throw。
-    unsafe {
-        let mut msg_v: napi_value = std::ptr::null_mut();
-        if crate::napi::api::napi_create_string_utf8(env, msg, usize::MAX, &mut msg_v) != sys::napi_status_napi_ok {
-            return sys::napi_status_napi_generic_failure;
-        }
-        let mut out: napi_value = std::ptr::null_mut();
-        let st = napi_create_type_error(env, std::ptr::null_mut(), msg_v, &mut out);
-        if st != sys::napi_status_napi_ok || out.is_null() {
-            return st;
-        }
-        napi_throw(env, out)
-    }
+    // SAFETY：同 throw_syntax_error。
+    unsafe { throw_error_family(env, code, msg, c"TypeError") }
 }
 
 /// # Safety
@@ -640,22 +629,11 @@ pub unsafe extern "C" fn napi_throw_type_error(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn napi_throw_range_error(
     env: napi_env,
-    _code: *const c_char,
+    code: *const c_char,
     msg: *const c_char,
 ) -> napi_status {
-    // SAFETY：同 throw_type_error。
-    unsafe {
-        let mut msg_v: napi_value = std::ptr::null_mut();
-        if crate::napi::api::napi_create_string_utf8(env, msg, usize::MAX, &mut msg_v) != sys::napi_status_napi_ok {
-            return sys::napi_status_napi_generic_failure;
-        }
-        let mut out: napi_value = std::ptr::null_mut();
-        let st = napi_create_range_error(env, std::ptr::null_mut(), msg_v, &mut out);
-        if st != sys::napi_status_napi_ok || out.is_null() {
-            return st;
-        }
-        napi_throw(env, out)
-    }
+    // SAFETY：同 throw_syntax_error（code 挂 `code` 属性，Node 口径）。
+    unsafe { throw_error_family(env, code, msg, c"RangeError") }
 }
 
 /// # Safety
@@ -698,4 +676,72 @@ pub unsafe extern "C" fn napi_get_and_clear_last_exception(
         *result = env_ref.put(exc.get());
     }
     NAPI_OK
+}
+
+// ── Node-API 10 错误族（node_api_* 前缀；syntax = SyntaxError）──────────
+
+/// # Safety
+/// N-API 约定（vendored js_native_api.h:145；code/msg 同 create_error 族）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn node_api_create_syntax_error(
+    env: napi_env,
+    code: napi_value,
+    msg: napi_value,
+    result: *mut napi_value,
+) -> napi_status {
+    // SAFETY：同族建错误（create_error_impl 内部 rooted）。
+    unsafe { create_error_impl(env, c"SyntaxError", code, msg, result) }
+}
+
+/// # Safety
+/// N-API 约定（vendored js_native_api.h:410）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn node_api_throw_syntax_error(
+    env: napi_env,
+    code: *const c_char,
+    msg: *const c_char,
+) -> napi_status {
+    // SAFETY：同 throw_error_family（code 非 null 即挂 `code` 属性，Node 口径）。
+    unsafe { throw_error_family(env, code, msg, c"SyntaxError") }
+}
+
+/// throw_* 族共享实现：建 code/msg 值 → create_error_impl → throw
+/// （M1 的 throw_type/range_error 曾丢 code，2026-09-14 修正）。
+///
+/// # Safety
+/// `env` 有效；code/msg 为合法 CStr（语义内可读）。
+unsafe fn throw_error_family(
+    env: napi_env,
+    code: *const c_char,
+    msg: *const c_char,
+    kind: &CStr,
+) -> napi_status {
+    unsafe {
+        let mut code_v: napi_value = std::ptr::null_mut();
+        if !code.is_null() {
+            if crate::napi::api::napi_create_string_utf8(env, code, usize::MAX, &mut code_v)
+                != sys::napi_status_napi_ok
+            {
+                return sys::napi_status_napi_generic_failure;
+            }
+        }
+        let mut msg_v: napi_value = std::ptr::null_mut();
+        if crate::napi::api::napi_create_string_utf8(env, msg, usize::MAX, &mut msg_v)
+            != sys::napi_status_napi_ok
+        {
+            return sys::napi_status_napi_generic_failure;
+        }
+        let mut out: napi_value = std::ptr::null_mut();
+        let st = if kind == c"SyntaxError" {
+            node_api_create_syntax_error(env, code_v, msg_v, &mut out)
+        } else if kind == c"TypeError" {
+            napi_create_type_error(env, code_v, msg_v, &mut out)
+        } else {
+            napi_create_range_error(env, code_v, msg_v, &mut out)
+        };
+        if st != sys::napi_status_napi_ok || out.is_null() {
+            return st;
+        }
+        napi_throw(env, out)
+    }
 }

@@ -6,19 +6,21 @@
 //! reserved slots 私有值（GC 不可见）携带 addon 回调指针/`data`。
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ptr::NonNull;
 
 use mozjs::conversions::ToJSValConvertible as _;
-use mozjs::jsapi::{JS_IsExceptionPending, JSContext as RawJSContext, JSObject};
+use mozjs::jsapi::{
+    JS_IsExceptionPending, JS_NewObjectWithGivenProto, JS_NewPlainObject,
+    JSContext as RawJSContext, JSObject,
+};
 use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::context::JSContext;
 
-use crate::jsapi_glue::raw_handle;
+use crate::jsapi_glue::{call_three, get_prop_value, raw_handle, value_to_string};
 use crate::napi::env::{CbInfo, NapiEnv};
 use crate::napi::sys;
-use crate::napi::sys::{
-    napi_callback, napi_callback_info, napi_env, napi_status, napi_value,
-};
+use crate::napi::sys::{napi_callback, napi_callback_info, napi_env, napi_status, napi_value};
 
 // ── 内部辅助 ─────────────────────────────────────────────────────────────
 
@@ -35,14 +37,14 @@ pub(crate) unsafe fn e<'a>(env: napi_env) -> &'a mut NapiEnv {
 /// 同上；cx raw 指针在会话存续期有效。
 pub(crate) unsafe fn cx_of(env: napi_env) -> JSContext {
     // SAFETY：napi_* 仅 JS 线程调用，raw cx 会话存续期有效（模块头注）。
-    unsafe { JSContext::from_ptr(std::ptr::NonNull::new_unchecked(e(env).cx)) }
+    unsafe { JSContext::from_ptr(NonNull::new_unchecked(e(env).cx)) }
 }
 
 /// C 字符串参数（len == `napi_auto_length`（SIZE_MAX）/ -1 时取 strlen）。
 ///
 /// # Safety
 /// `s` 在长度语义内必须是合法 UTF-8 可读内存。
-unsafe fn cstr_of_len(s: *const c_char, len: usize) -> Result<String, napi_status> {
+pub(crate) unsafe fn cstr_of_len(s: *const c_char, len: usize) -> Result<String, napi_status> {
     if s.is_null() {
         return Err(sys::napi_status_napi_invalid_arg);
     }
@@ -63,6 +65,11 @@ const NAPI_GENERIC_FAILURE: napi_status = sys::napi_status_napi_generic_failure;
 // ── trampoline：JS native 函数 → addon C 回调 ────────────────────────────
 // reserved slots：0 = addon 回调指针、1 = data。帧布局（jsapi_glue Frame 约定）：
 // vp[0]=callee/rval 槽、vp[1]=this、vp[2..]=实参。
+// 构造帧（SM native 构造约定，mozjs_sys 153 实证）：vp[1] 为 JS_IS_CONSTRUCTING
+// 魔数（魔数不可被 JS 侧持有，is_magic 即构造判据），引擎在 vp[2+argc] 写
+// new.target（CallArgs.h `newTarget = argv_[argc_]`）；this 由 native 自建——
+// 取 new.target.prototype（非对象回落 Object.prototype 默认建）。`clasp` 非
+// null 时实例带该类（define_class 路径，class.rs；wrap 面依赖 reserved slots）。
 
 pub unsafe extern "C" fn napi_trampoline(
     cx_raw: *mut RawJSContext,
@@ -70,15 +77,22 @@ pub unsafe extern "C" fn napi_trampoline(
     vp: *mut JSVal,
 ) -> bool {
     // SAFETY：引擎回调帧 + 会话 env（JS 线程）；整个函数体即边界（UNSAFE-BOUNDARY：
-    // reserved slots 指针须由 napi_create_function 写入；覆盖 tests/napi.rs）。
-    return trampoline_inner(cx_raw, argc, vp);
+    // reserved slots 指针须由 napi_create_function/define_class 写入；覆盖 tests/napi.rs）。
+    unsafe { napi_trampoline_frame(cx_raw, argc, vp, std::ptr::null()) }
+}
 
-    fn trampoline_inner(
-        cx_raw: *mut RawJSContext,
-        argc: u32,
-        vp: *mut JSVal,
-    ) -> bool {
-    // SAFETY：同上（引擎回调帧 + 会话 env + reserved slots 前置）。
+/// trampoline 共享帧（plain create_function 与 define_class 构造器两路）。
+///
+/// # Safety
+/// 仅引擎回调帧内调用（cx_raw/vp 有效；env 会话单例）。
+pub(crate) unsafe fn napi_trampoline_frame(
+    cx_raw: *mut RawJSContext,
+    argc: u32,
+    vp: *mut JSVal,
+    clasp: *const mozjs::jsapi::JSClass,
+) -> bool {
+    // SAFETY：引擎回调帧 + 会话 env + reserved slots 前置（UNSAFE-BOUNDARY，
+    // 覆盖 tests/napi.rs 全量黑盒）。
     unsafe {
     let Some(env) = crate::state::napi_env_ptr() else {
         return false;
@@ -93,36 +107,112 @@ pub unsafe extern "C" fn napi_trampoline(
     if cb_ptr == 0 {
         return false;
     }
-    // SAFETY：指针由 napi_create_function 写入（addon 回调，签名按 N-API 头）。
+    // SAFETY：指针由 napi_create_function/define_class 写入（addon 回调，签名按 N-API 头）。
     let cb: unsafe extern "C" fn(napi_env, napi_callback_info) -> napi_value =
         std::mem::transmute(cb_ptr);
 
-    // 实参/this 先拷入 env 槽位（回调返回后仍有效；Node 同语义）。
+    let mut cx = JSContext::from_ptr(NonNull::new_unchecked(cx_raw));
     let env_ref = e(env as napi_env);
+    let constructing = (*vp.add(1)).is_magic();
+    let new_target_v = if constructing {
+        // 引擎写入的 new.target（构造帧保证存在且为 constructor 对象）。
+        *vp.add(2 + argc as usize)
+    } else {
+        UndefinedValue()
+    };
+    // 构造帧自建 this（N-API 语义：cbinfo this_arg 即新实例；引擎要求构造返回
+    // 对象——addon 返回非对象时回落 this，见下方 rval 语义）。
+    let this_v: JSVal = if constructing {
+        let proto = if new_target_v.is_object() {
+            get_prop_value(&mut cx, new_target_v.to_object(), c"prototype")
+                .filter(|p| p.is_object())
+        } else {
+            None
+        };
+        let obj = match proto {
+            Some(p) => {
+                rooted!(&in(cx) let proto_root: *mut JSObject = p.to_object());
+                // clasp null = plain object（NewPlainObjectWithProto，jsapi.cpp 实证）；
+                // 非 null = define_class 实例（带 wrap reserved slots，class.rs）。
+                JS_NewObjectWithGivenProto(cx.raw_cx(), clasp, raw_handle(&proto_root.get()))
+            }
+            None => {
+                if clasp.is_null() {
+                    JS_NewPlainObject(cx.raw_cx())
+                } else {
+                    // JS 语义：prototype 非对象回落 %Object.prototype%。
+                    let Some(base) = object_prototype(&mut cx) else {
+                        return false;
+                    };
+                    rooted!(&in(cx) let base_root: *mut JSObject = base.to_object());
+                    JS_NewObjectWithGivenProto(cx.raw_cx(), clasp, raw_handle(&base_root.get()))
+                }
+            }
+        };
+        if obj.is_null() {
+            return false;
+        }
+        ObjectValue(obj)
+    } else {
+        *vp.add(1)
+    };
+
+    // 回调槽位基线：argv/this/new.target 与回调内建值都在其上，返回时截断
+    //（Node 契约：napi_value 仅回调存活期有效；同时是 finalize 链的前提——
+    // 槽位是 GC 根，不截断则回调产物永不可达死态）。
+    let mark = env_ref.slots.len();
+    // escape 回收基线（本回调产物按此水位截断；N-API handle scope 契约）。
+    let escape_base = env_ref.escape_slots.len();
+    // 实参/this/new.target 拷入 env 槽位（回调期间有效；Node 同语义）。
     let mut argv = Vec::with_capacity(argc as usize);
     for i in 0..argc {
         argv.push(env_ref.put(*vp.add(2 + i as usize)));
     }
-    let this = env_ref.put(*vp.add(1));
+    let this = env_ref.put(this_v);
+    let nt = env_ref.put(new_target_v);
     let info = CbInfo {
         argc,
         argv,
         this,
         data: data as *mut c_void,
+        new_target: nt,
     };
     let r = cb(env as napi_env, &info as *const CbInfo as napi_callback_info);
     // SAFETY：info 借用的槽位都在 env arena 内（traced），cb 返回后仅指针作废。
     let env_ref = e(env as napi_env);
-    if !r.is_null() {
+    // pending 优先：addon 抛错即传播（无论返回值形态；引擎要求成功返回时无 pending）。
+    if JS_IsExceptionPending(cx_raw) {
+        env_ref.slots.truncate(mark);
+        crate::napi::scope::escape_truncate_to(env as napi_env, escape_base);
+        return false;
+    }
+    if constructing {
+        // 构造返回语义：返回对象即 new 结果，否则回落自建 this（V8/SM 同款）。
+        let rv = if !r.is_null() { env_ref.get(r) } else { UndefinedValue() };
+        *vp = if rv.is_object() { rv } else { this_v };
+    } else if !r.is_null() {
         *vp = env_ref.get(r);
-        true
-    } else if JS_IsExceptionPending(cx_raw) {
-        false
     } else {
         *vp = UndefinedValue();
-        true
     }
+    // 返回值已拷入帧槽（vp），回调产物槽位全量回收（escaped 池单独回收）。
+    env_ref.slots.truncate(mark);
+    crate::napi::scope::escape_truncate_to(env as napi_env, escape_base);
+    true
     }
+}
+
+/// `Object.prototype` 值（define_class 实例回落 proto 用）。
+pub(crate) unsafe fn object_prototype(cx: &mut JSContext) -> Option<JSVal> {
+    // SAFETY：global 对象属性读取（get_prop_value 前置）。
+    {
+        let ctor = get_prop_value(cx, crate::state::global(), c"Object")?;
+        if !ctor.is_object() {
+            return None;
+        }
+        rooted!(&in(cx) let ctor_root = ctor.to_object());
+        let proto = get_prop_value(cx, ctor_root.get(), c"prototype")?;
+        proto.is_object().then_some(proto)
     }
 }
 
@@ -175,11 +265,12 @@ pub unsafe extern "C" fn napi_create_function(
     let env_ref = unsafe { e(env) };
     // SAFETY：cx 在 realm 内（addon 由 require 管线在 JS 执行栈上调入）。
     unsafe {
+        // JSFUN_CONSTRUCTOR：Node 口径 addon 函数可 new（构造帧经同一 trampoline）
         let fun = mozjs::jsapi::js::NewFunctionWithReserved(
             cx.raw_cx(),
             Some(napi_trampoline),
             0,
-            0,
+            mozjs::jsapi::JSFUN_CONSTRUCTOR,
             cname.as_ptr(),
         );
         if fun.is_null() {
@@ -212,7 +303,7 @@ pub unsafe extern "C" fn napi_set_named_property(
     utf8name: *const c_char,
     value: napi_value,
 ) -> napi_status {
-    if obj.is_null() || value.is_null() {
+    if obj.is_null() || value.is_null() || utf8name.is_null() {
         return NAPI_INVALID_ARG;
     }
     let name = match unsafe { cstr_of_len(utf8name, usize::MAX) } {
@@ -230,12 +321,39 @@ pub unsafe extern "C" fn napi_set_named_property(
         if !obj_v.is_object() {
             return NAPI_INVALID_ARG;
         }
-        let val = env_ref.get(value);
-        if !crate::jsapi_glue::define_prop(&mut cx, obj_v.to_object(), &cname, val) {
+        let s = mozjs::jsapi::JS_NewStringCopyN(cx.raw_cx(), cname.as_ptr(), cname.as_bytes().len());
+        if s.is_null() {
             return NAPI_GENERIC_FAILURE;
         }
+        rooted!(&in(cx) let key_root = mozjs::jsval::StringValue(&*s));
+        let val = env_ref.get(value);
+        set_via_helper(&mut cx, obj_v, key_root.get(), val)
     }
-    NAPI_OK
+}
+
+/// napi set 面的统一通道：经 sloppy prelude helper `__wjs_napi_set`
+/// （`obj[key] = value`）——JSAPI JS_SetProperty 是 strict 语义（只读/冻结
+/// 属性抛 TypeError），Node 的 napi_set_property 走 v8 非严格 set（静默
+/// 返回 ok，2026-09-14 实测对齐）。
+///
+/// # Safety
+/// `cx`/值槽位语义同调用方（N-API 面内）。
+pub(crate) unsafe fn set_via_helper(
+    cx: &mut JSContext,
+    obj_v: JSVal,
+    key_v: JSVal,
+    val: JSVal,
+) -> napi_status {
+    // SAFETY：helper 与值均 rooted/槽位存活；异常经 pending 传播。
+    {
+        let Some(helper) = get_prop_value(cx, crate::state::global(), c"__wjs_napi_set") else {
+            return NAPI_GENERIC_FAILURE;
+        };
+        match call_three(cx, crate::state::global(), helper, obj_v, key_v, val) {
+            Some(_) => NAPI_OK,
+            None => NAPI_GENERIC_FAILURE,
+        }
+    }
 }
 
 /// # Safety
@@ -445,7 +563,8 @@ pub unsafe extern "C" fn napi_typeof(
         return NAPI_INVALID_ARG;
     }
     let env_ref = unsafe { e(env) };
-    // SAFETY：槽位读取；cx raw 在会话内存续。
+    let mut cx = unsafe { cx_of(env) };
+    // SAFETY：槽位读取；cx raw 在会话存续。
     unsafe {
         let v = env_ref.get(value);
         *result = if v.is_undefined() {
@@ -461,6 +580,13 @@ pub unsafe extern "C" fn napi_typeof(
         } else if v.is_object() {
             if mozjs::jsapi::JS_ObjectIsFunction(v.to_object()) {
                 sys::napi_valuetype_napi_function
+            } else if crate::napi::class::object_is_class(
+                &mut cx,
+                v.to_object(),
+                &crate::napi::class::NAPI_EXTERNAL_CLASS,
+            ) {
+                // napi_create_external 产物（Node 同口径：typeof = external）。
+                sys::napi_valuetype_napi_external
             } else {
                 sys::napi_valuetype_napi_object
             }
@@ -508,36 +634,21 @@ pub unsafe extern "C" fn napi_throw_error(
 }
 
 /// # Safety
-/// N-API 约定。
+/// N-API 约定（cbinfo 由 trampoline 建立，回调期间有效）。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_open_handle_scope(
+pub unsafe extern "C" fn napi_get_new_target(
     env: napi_env,
-    result: *mut sys::napi_handle_scope,
+    cbinfo: napi_callback_info,
+    result: *mut napi_value,
 ) -> napi_status {
-    if result.is_null() {
+    let _ = env;
+    if cbinfo.is_null() || result.is_null() {
         return NAPI_INVALID_ARG;
     }
-    let env_ref = unsafe { e(env) };
-    env_ref.scopes.push(env_ref.slots.len());
-    // M0：标记句柄以 index 编码（对 addon 不透明；arena 只增不缩，见模块偏差）。
-    // SAFETY：result 为 addon 提供的合法出参。
-    unsafe { *result = env_ref.scopes.len() as sys::napi_handle_scope };
-    NAPI_OK
-}
-
-/// # Safety
-/// N-API 约定（scope 必须配对关闭）。
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_close_handle_scope(
-    env: napi_env,
-    scope: sys::napi_handle_scope,
-) -> napi_status {
-    let env_ref = unsafe { e(env) };
-    // M0：只配平校验，不缩 arena（偏差记 plan-napi §4；M2 引入 escape-aware 回收）。
-    let idx = scope as usize;
-    debug_assert!(idx <= env_ref.scopes.len(), "napi_close_handle_scope out of order");
-    while env_ref.scopes.len() > idx.saturating_sub(1) && !env_ref.scopes.is_empty() {
-        env_ref.scopes.pop();
+    // 非构造调用时 trampoline 存的是 undefined 槽（Node 同语义）。
+    // SAFETY：cbinfo 由 trampoline 建立且在回调栈内有效。
+    unsafe {
+        *result = (&*(cbinfo as *const CbInfo)).new_target;
     }
     NAPI_OK
 }
@@ -621,12 +732,150 @@ pub unsafe extern "C" fn napi_fatal_error(
 }
 
 /// # Safety
-/// N-API 约定（M0：记 last-error 即返；真 fatal 异常传播面 M2 补）。
+/// N-API 约定（触发 uncaught 异常路径：本仓经 pending exception 传播到顶层，
+/// 用户可见结局与 Node 一致——报错 + exit 1；偏差记 plan-napi §4）。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn napi_fatal_exception(env: napi_env, err: napi_value) -> napi_status {
-    unsafe { e(env).set_last_error("fatal exception (napi)") };
-    let _ = err;
-    NAPI_GENERIC_FAILURE
+    if err.is_null() {
+        return NAPI_INVALID_ARG;
+    }
+    let v = unsafe { e(env).get(err) };
+    let mut cx = unsafe { cx_of(env) };
+    // SAFETY：槽位值；标准 pending 传播路径（trampoline pending 优先）。
+    unsafe {
+        rooted!(&in(cx) let v_root = v);
+        mozjs::jsapi::JS_SetPendingException(
+            cx.raw_cx(),
+            raw_handle(v_root.as_ptr()),
+            mozjs::jsapi::JS::ExceptionStackBehavior::Capture,
+        );
+    }
+    NAPI_OK
+}
+
+// ── M2：异步上下文 / callback scope / run_script / external memory ──────
+
+/// # Safety
+/// N-API 约定。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_async_init(
+    env: napi_env,
+    async_resource: napi_value,
+    async_resource_name: napi_value,
+    result: *mut sys::napi_async_context,
+) -> napi_status {
+    let _ = (env, async_resource, async_resource_name);
+    if result.is_null() {
+        return NAPI_INVALID_ARG;
+    }
+    // 偏差（记 plan-napi §4）：async_hooks 上下文未接——发哑句柄（堆 1 字节，
+    // async_destroy 释放；句柄非空即合 N-API 契约）。
+    // SAFETY：result 为 addon 提供的合法出参。
+    unsafe { *result = Box::into_raw(Box::new(0u8)) as sys::napi_async_context };
+    NAPI_OK
+}
+
+/// # Safety
+/// N-API 约定（context 须来自 async_init 且未销毁）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_async_destroy(
+    env: napi_env,
+    async_context: sys::napi_async_context,
+) -> napi_status {
+    let _ = env;
+    if async_context.is_null() {
+        return NAPI_INVALID_ARG;
+    }
+    // SAFETY：句柄由 async_init 发出（Box::into_raw），一次配对释放。
+    unsafe { drop(Box::from_raw(async_context as *mut u8)) };
+    NAPI_OK
+}
+
+/// # Safety
+/// N-API 约定。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_open_callback_scope(
+    env: napi_env,
+    resource_object: napi_value,
+    context: sys::napi_async_context,
+    result: *mut sys::napi_callback_scope,
+) -> napi_status {
+    let _ = (resource_object, context);
+    if result.is_null() {
+        return NAPI_INVALID_ARG;
+    }
+    // 偏差（记 plan-napi §4）：async context 面未接——发 env 哑句柄（非空、
+    // 会话内唯一；close 只验非空）。
+    // SAFETY：result 为 addon 提供的合法出参。
+    unsafe { *result = env as usize as sys::napi_callback_scope };
+    NAPI_OK
+}
+
+/// # Safety
+/// N-API 约定。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_close_callback_scope(
+    env: napi_env,
+    scope: sys::napi_callback_scope,
+) -> napi_status {
+    let _ = env;
+    if scope.is_null() {
+        return NAPI_INVALID_ARG;
+    }
+    NAPI_OK
+}
+
+/// # Safety
+/// N-API 约定（script 为 string；同步求值，promise 反应交给外层事件循环）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_run_script(
+    env: napi_env,
+    script: napi_value,
+    result: *mut napi_value,
+) -> napi_status {
+    if script.is_null() || result.is_null() {
+        return NAPI_INVALID_ARG;
+    }
+    let v = unsafe { e(env).get(script) };
+    if !v.is_string() {
+        return sys::napi_status_napi_string_expected;
+    }
+    let mut cx = unsafe { cx_of(env) };
+    // SAFETY：value 已验字符串；evaluate_script 自进当前 global 的 realm
+    //（同 global 无 realm 切换，返回后 addon 栈帧的 realm 语境不变）。
+    let code = value_to_string(&mut cx, v);
+    unsafe {
+        rooted!(&in(cx) let global = crate::state::global());
+        rooted!(&in(cx) let mut rval = UndefinedValue());
+        let filename = CString::new("napi_run_script").unwrap_or_default();
+        let options = mozjs::rust::CompileOptionsWrapper::new(&cx, filename, 1);
+        if mozjs::rust::evaluate_script(&mut cx, global.handle(), &code, rval.handle_mut(), options)
+            .is_err()
+        {
+            // pending exception 已置（addon 按 N-API 契约处理/传播）。
+            return NAPI_GENERIC_FAILURE;
+        }
+        *result = e(env).put(rval.get());
+    }
+    NAPI_OK
+}
+
+/// # Safety
+/// N-API 约定。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_adjust_external_memory(
+    env: napi_env,
+    change_in_bytes: i64,
+    adjusted_value: *mut i64,
+) -> napi_status {
+    if adjusted_value.is_null() {
+        return NAPI_INVALID_ARG;
+    }
+    let env_ref = unsafe { e(env) };
+    env_ref.external_mem += change_in_bytes;
+    // SAFETY：result 为 addon 提供的合法出参（累计值，Node 口径）。
+    unsafe { *adjusted_value = env_ref.external_mem };
+    NAPI_OK
 }
 
 // ── 值读族（M0 补：fixture add() 需 get_value_double；lazy-bind 缺符号即
@@ -773,13 +1022,17 @@ pub unsafe extern "C" fn napi_get_value_string_utf8(
     NAPI_OK
 }
 
-// ── 调用面（M1 补：props fixture 与 rolldown 回调都需要）────────────────
+// ── 调用面（M1 起；M2 抽出 call_impl 供 make_callback 复用）────────────
 
+/// 共享调用面：实参落 JS 数组（元素逐个 SetElement——数组对象 rooted，天然
+/// GC 安全），经 prelude helper `helper(recv, fn, args)`（apply 展开）调用，
+/// timers 同款惯例。
+///
 /// # Safety
-/// N-API 约定（argv 为本 env 槽位指针数组；result 可空 = 不取返回值）。
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn napi_call_function(
+/// `env` 有效；argv 为本 env 槽位指针数组；result 可空 = 不取返回值。
+unsafe fn call_impl(
     env: napi_env,
+    helper: &CStr,
     recv: napi_value,
     func: napi_value,
     argc: usize,
@@ -797,14 +1050,12 @@ pub unsafe extern "C" fn napi_call_function(
     };
     let fn_v = unsafe { env_ref.get(func) };
     let mut cx = unsafe { cx_of(env) };
-    // 参数落 JS 数组（元素逐个 SetElement——数组对象 rooted，天然 GC 安全；
-    // N 参展开经 prelude helper `__wjs_napi_call(recv, fn, args)`，timers 同款惯例）。
     // SAFETY：数组与函数先 rooted 再调用；值均在本 env 槽位（traced）。
     unsafe {
         rooted!(&in(cx) let fn_root = fn_v);
         let arr = mozjs::jsapi::JS::NewArrayObject1(cx.raw_cx(), argc);
         if arr.is_null() {
-            return sys::napi_status_napi_generic_failure;
+            return NAPI_GENERIC_FAILURE;
         }
         rooted!(&in(cx) let arr_root = arr);
         for i in 0..argc {
@@ -817,27 +1068,61 @@ pub unsafe extern "C" fn napi_call_function(
                 i as u32,
                 raw_handle(val_root.as_ptr()),
             ) {
-                return sys::napi_status_napi_generic_failure;
+                return NAPI_GENERIC_FAILURE;
             }
         }
         rooted!(&in(cx) let recv_root = recv_v);
-        let Some(helper) = crate::jsapi_glue::get_prop_value(&mut cx, crate::state::global(), c"__wjs_napi_call") else {
-            return sys::napi_status_napi_generic_failure;
+        let Some(helper_v) = get_prop_value(&mut cx, crate::state::global(), helper) else {
+            return NAPI_GENERIC_FAILURE;
         };
-        let Some(r) = crate::jsapi_glue::call_three(
+        // addon 侧按契约查 pending exception（失败 = 调用抛错）。
+        let Some(r) = call_three(
             &mut cx,
             crate::state::global(),
-            helper,
+            helper_v,
             recv_root.get(),
             fn_root.get(),
             ObjectValue(arr_root.get()),
         ) else {
-            // addon 侧按契约查 pending exception
-            return sys::napi_status_napi_generic_failure;
+            return NAPI_GENERIC_FAILURE;
         };
         if !result.is_null() {
             *result = env_ref.put(r);
         }
     }
     NAPI_OK
+}
+
+/// # Safety
+/// N-API 约定（argv 为本 env 槽位指针数组；result 可空 = 不取返回值）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_call_function(
+    env: napi_env,
+    recv: napi_value,
+    func: napi_value,
+    argc: usize,
+    argv: *const napi_value,
+    result: *mut napi_value,
+) -> napi_status {
+    // SAFETY：env 有效（前置）；helper 名为静态 CStr。
+    unsafe { call_impl(env, c"__wjs_napi_call", recv, func, argc, argv, result) }
+}
+
+/// # Safety
+/// N-API 约定（async_context 可空；Node 同语义）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn napi_make_callback(
+    env: napi_env,
+    async_context: sys::napi_async_context,
+    recv: napi_value,
+    func: napi_value,
+    argc: usize,
+    argv: *const napi_value,
+    result: *mut napi_value,
+) -> napi_status {
+    // 偏差（记 plan-napi §4）：async_hooks 上下文面未接（async_context 收下
+    // 不消费，M3 TSFN/async_work 再议）；调用语义与 call_function 一致。
+    let _ = async_context;
+    // SAFETY：同 call_function。
+    unsafe { call_impl(env, c"__wjs_napi_call", recv, func, argc, argv, result) }
 }

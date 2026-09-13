@@ -66,6 +66,15 @@ static napi_value check_define_properties(napi_env env, napi_callback_info info)
   napi_get_property_names(env, obj, &names);
   uint32_t alen = 0; napi_get_array_length(env, names, &alen);
   if (alen != 2) ok = 0;
+  // attrs 位语义（M2 修正位映射后）：writable 位生效
+  napi_value nine; napi_create_int32(env, 9, &nine);
+  napi_set_named_property(env, obj, "val", nine);
+  napi_get_named_property(env, obj, "val", &got);
+  napi_get_value_double(env, got, &d); if (d != 9) ok = 0;
+  // 默认（attrs=0）= 只读：sloppy 赋值静默失败
+  napi_set_named_property(env, obj, "hidden", nine);
+  napi_get_named_property(env, obj, "hidden", &got);
+  napi_get_value_double(env, got, &d); if (d != 3) ok = 0;
   napi_create_int32(env, ok, &out);
   return out;
 }

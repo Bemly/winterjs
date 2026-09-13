@@ -34,6 +34,8 @@ fn build_napi_dylib(dir: &assert_fs::TempDir, name: &str, c_src: &str) -> std::p
         cmd.args(["-shared", "-fPIC"]);
     }
     cmd.arg("-undefined").arg("dynamic_lookup");
+    // Node-API 10 面（node_api_* 错误族等；rolldown/napi-rs 3 同款口径）
+    cmd.arg("-DNAPI_VERSION=10");
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     cmd.arg("-I").arg(manifest.join("src/napi/include"));
     let status = cmd
@@ -340,5 +342,97 @@ console.log("defs", p.defineProperties(), "proto", p.prototypeAndArrayLen());
     let so = String::from_utf8_lossy(&out.stdout);
     assert!(so.contains("named 1 generic 1"), "stdout: {so}");
     assert!(so.contains("defs 1 proto 1"), "stdout: {so}");
+    dir.close().unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn phase_napi_m2_class_matrix() {
+    // 正常：define_class/new_instance/wrap-unwrap-remove_wrap/external（typeof
+    // + 回读）/new.target/instanceof/访问器/static 成员/escapable scope/
+    // node_api_* syntax error——fixture 内部按位断言，1 = 全过。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let node = build_fixture_dylib(&dir, "m2_class");
+    let app = dir.child("app.js");
+    app.write_str(&format!(
+        r#"
+const m = require({node:?});
+const p = new m.Person(42);
+console.log("ctor", m.Person.newTargetOk(), m.Person.lastAge());
+console.log("inst", p instanceof m.Person, typeof p);
+console.log("wrap", p.getAge(), m.Person.newInstance(), m.Person.shape());
+console.log("acc", (p.name = "alice"), p.name);
+console.log("stat", m.Person.kind, typeof m.Person.make, m.Person.make(9).getAge());
+console.log("plain", m.Person.plainCall());
+console.log("ext", m.Person.external(), m.Person.escapable(), m.Person.syntaxShape());
+try {{
+  m.Person.throwSyntax();
+  console.log("syn no-throw");
+}} catch (e) {{
+  console.log("syn", e instanceof SyntaxError, e.code, e.message);
+}}
+"#
+    ))
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(app.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("ctor 1 42"), "stdout: {so}");
+    assert!(so.contains("inst true object"), "stdout: {so}");
+    assert!(so.contains("wrap 42 1 1"), "stdout: {so}");
+    assert!(so.contains("acc alice alice"), "stdout: {so}");
+    assert!(so.contains("stat human function 9"), "stdout: {so}");
+    assert!(so.contains("plain 1"), "stdout: {so}");
+    assert!(so.contains("ext 1 1 1"), "stdout: {so}");
+    assert!(so.contains("syn true ERR_WJS_THROW thrown syntax"), "stdout: {so}");
+    dir.close().unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn phase_napi_m2_finalize_chain() {
+    // 正常：finalize 释放链（dhat 等价的计数器口径）——external + wrap 实例
+    // malloc/free 成对计数；trampoline 槽位截断 → 对象死态 → minor GC →
+    // finalizer。两轮灌入保证首轮对象全部过 GC；free 追上一半即链路闭合，
+    // 且 free ≤ alloc 恒成立（无双发/提前释放）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let node = build_fixture_dylib(&dir, "m2_finalize");
+    let app = dir.child("app.js");
+    app.write_str(&format!(
+        r#"
+const m = require({node:?});
+for (let i = 0; i < 400000; i++) m.mk(i);
+const a = m.counts();
+for (let i = 0; i < 400000; i++) m.mk(i);
+const b = m.counts();
+// 分参逐项打印（§4.42：禁 && 打包）
+console.log("fin", b[1] > 0, b[3] > 0, b[1] <= b[0], b[3] <= b[2]);
+console.log("drain", b[1] >= Math.floor(a[0] / 2), b[3] >= Math.floor(a[2] / 2));
+"#
+    ))
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(app.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("fin true true true true"), "stdout: {so}");
+    assert!(so.contains("drain true true"), "stdout: {so}");
     dir.close().unwrap();
 }

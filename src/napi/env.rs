@@ -3,8 +3,9 @@
 //! - 值槽位 arena：`Vec<Box<Heap<JSVal>>>`——`Box` 定址（槽地址恒稳，§4.40），
 //!   `Heap` 经 RootedState 的 trace 链入 GC。`napi_value` 即槽位地址
 //!   （`*mut Heap<JSVal>` 转 `sys::napi_value`，对 addon 不透明）。
-//! - M0 偏差（plan-napi §4）：arena 只增不回收；handle scope 仅配平校验
-//!   （M2 引入 escape-aware 回收——Addon 回调产物大水位在 M4 实测后再定）。
+//! - 槽位回收（M2）：trampoline 回调按进入水位截断（Node 契约：回调内建值
+//!   仅回调存活期有效）；显式 handle scope 由 scope.rs 统一栈管理（close 截
+//!   断 + LIFO 校验）；escape 产物入独立池，由宿主入口按水位回收。
 //! - addon 库表：`libloading::Library` 会话存活、永不 dlclose（地址稳定，
 //!   bun:ffi 同口径）。
 //! - `napi_module_register` 暂存：dlopen 的 constructor 在 dlopen 调用栈内
@@ -21,13 +22,30 @@ use mozjs::context::JSContext;
 
 use crate::napi::sys;
 
+/// scope 栈条目（M2：统一栈，handle/escapable 同栈严格 LIFO）。
+pub struct ScopeEntry {
+    /// 开栈时的 arena 水位（close 时截断回收）。
+    pub mark: usize,
+    /// true = escapable handle scope。
+    pub escapable: bool,
+    /// escapable 专用：`napi_escape_handle` 已用过（每 scope 一次）。
+    pub escaped: bool,
+}
+
 pub struct NapiEnv {
     /// JS 线程专用 raw cx（会话存续期有效；与 `state::global()` 同生命周期纪律）。
     pub cx: *mut RawJSContext,
     /// 值槽位 arena（GC traced，见模块头注）。
     pub slots: Vec<Box<Heap<JSVal>>>,
-    /// handle scope 标记（M0 仅配平校验）。
-    pub scopes: Vec<usize>,
+    /// scope 栈（handle/escapable 统一；close 严格 LIFO + 截断回收，M2）。
+    pub scopes: Vec<ScopeEntry>,
+    /// escape 产物槽（`napi_escape_handle` 的存活区——scope 截断不会波及；
+    /// 由各宿主入口（trampoline/loader register）按进入时水位截断回收）。
+    pub escape_slots: Vec<Box<Heap<JSVal>>>,
+    /// `napi_wrap` 隐藏键（`Symbol.for("__wjs_napi_wrap")`，会话缓存；traced）。
+    pub wrap_sym: Option<Box<Heap<JSVal>>>,
+    /// `napi_adjust_external_memory` 累计（Node 口径返回累计值）。
+    pub external_mem: i64,
     /// 已加载 addon 库（path → Library；永不 dlclose）。
     pub libs: Vec<(PathBuf, libloading::Library)>,
     /// `.node` 模块 exports 缓存（require 幂等，Node 口径；exports 进 GC 图）。
@@ -52,6 +70,10 @@ unsafe impl mozjs::gc::Traceable for NapiEnv {
         // SAFETY：trace 协议（引擎在 GC 期间调用；Trace trait 同前置）。
         unsafe {
             mozjs::rust::Trace::trace(&self.slots, trc);
+            mozjs::rust::Trace::trace(&self.escape_slots, trc);
+            if let Some(sym) = &self.wrap_sym {
+                sym.trace(trc);
+            }
             for m in &self.modules {
                 m.exports.trace(trc);
             }
@@ -65,6 +87,9 @@ impl NapiEnv {
             cx,
             slots: Vec::new(),
             scopes: Vec::new(),
+            escape_slots: Vec::new(),
+            wrap_sym: None,
+            external_mem: 0,
             libs: Vec::new(),
             modules: Vec::new(),
             last_error: None,
@@ -86,6 +111,15 @@ impl NapiEnv {
         ptr.cast::<sys::napi_value__>()
     }
 
+    /// escape 产物槽（`escape_slots`；地址恒稳，scope 截断不波及）。
+    pub fn put_escaped(&mut self, v: JSVal) -> sys::napi_value {
+        let slot = Heap::boxed(v);
+        // SAFETY：Box 归 escape 池所有，堆地址恒稳（§4.40）。
+        let ptr: *mut Heap<JSVal> = &*slot as *const Heap<JSVal> as *mut Heap<JSVal>;
+        self.escape_slots.push(slot);
+        ptr.cast::<sys::napi_value__>()
+    }
+
     /// 读槽位（`napi_value` → `JSVal`；addon 持有的指针在 scope 存活期内有效）。
     ///
     /// # Safety
@@ -104,10 +138,12 @@ impl NapiEnv {
 /// napi 回调信息（`napi_callback_info` 本体；回调期间有效，addon 不得留存）。
 pub struct CbInfo {
     pub argc: u32,
-    /// 实参槽位（已拷入 arena，回调返回后仍有效——Node 同语义）。
+    /// 实参槽位（回调期间有效；trampoline 返回时随 mark 截断——Node 同契约）。
     pub argv: Vec<sys::napi_value>,
     pub this: sys::napi_value,
     pub data: *mut std::os::raw::c_void,
+    /// new.target 槽位（非构造调用 = undefined 槽；`napi_get_new_target` 读）。
+    pub new_target: sys::napi_value,
 }
 
 // SAFETY：CbInfo 持有的都是槽位指针 + addon 自带 data；仅回调栈内存续。

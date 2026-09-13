@@ -39,8 +39,11 @@ fn emit_napi_sys() -> Result<(), Box<dyn std::error::Error>> {
     let bindings = bindgen::Builder::default()
         .header(format!("{inc}/node_api.h"))
         .clang_arg(format!("-I{inc}"))
-        // 类型 + 常量全要（napi_* 结构/枚举/typedef + NAPI_* 宏）。
+        // 类型 + 常量全要（napi_* 结构/枚举/typedef + NAPI_* 宏；node_api_*
+        // 是 Node-API 10 的 basic-finalize/错误族类型面——M2 wrap/external/
+        // syntax_error 用，函数同样 blocklist）。
         .allowlist_type("napi_.*")
+        .allowlist_type("node_api_.*")
         .allowlist_var("napi_.*")
         .allowlist_var("NAPI_.*")
         // 函数一律不要（理由见上）。
@@ -69,8 +72,9 @@ fn emit_symbol_export() -> Result<(), Box<dyn std::error::Error>> {
     if target.contains("apple") {
         // glob 而非字面量：字面量在 dead-strip 后会被清单判为未定义（测试
         // 二进制 2026-09-13 实测）；存在性自检由 dlsym fixture 黑盒覆盖。
+        // `_node_api_*`：Node-API 10 错误族（node_api_create_syntax_error 等）。
         let list = format!("{out_dir}/napi_export.txt");
-        std::fs::write(&list, "_napi_*\n_uv_*\n")?;
+        std::fs::write(&list, "_napi_*\n_node_api_*\n_uv_*\n")?;
         println!("cargo:rustc-link-arg=-Wl,-exported_symbols_list,{list}");
     } else if target.contains("linux") {
         println!("cargo:rustc-link-arg=-rdynamic");

@@ -587,6 +587,9 @@ async fn run_inner(
 /// `run_isolated` 的每文件独立线程：CONTEXT TLS 随线程消亡，下一次
 /// `Runtime::new` 不受影响（§4.24 —— 单线程内建第二个 Runtime 会直接炸）。
 fn end_session(rt: Runtime, engine: JSEngineHandle) {
+    // napi env cleanup hooks（M4）：JS 线程 + 引擎存活期内的最后收敛点
+    //（hook 无 env 参、不可能进 JSAPI——lifecycle.rs 模块头注）。
+    crate::napi::lifecycle::run_cleanup_hooks();
     std::mem::forget(rt);
     std::mem::forget(engine);
 }

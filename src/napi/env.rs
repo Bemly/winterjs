@@ -12,7 +12,7 @@
 //!   同步执行（JS 线程），thread_local 槽由 loader 随后取走。
 
 use std::cell::RefCell;
-use std::ffi::CString;
+use std::ffi::{c_void, CString};
 use std::path::PathBuf;
 
 use mozjs::jsapi::Heap;
@@ -21,6 +21,7 @@ use mozjs::jsval::JSVal;
 use mozjs::context::JSContext;
 
 use crate::napi::sys;
+use crate::napi::sys::napi_cleanup_hook;
 
 /// scope 栈条目（M2：统一栈，handle/escapable 同栈严格 LIFO）。
 pub struct ScopeEntry {
@@ -59,6 +60,8 @@ pub struct NapiEnv {
     pub async_pending: usize,
     /// napi 句柄 id 发号器（async_work/TSFN 共用；0 保留）。
     pub next_napi_id: u64,
+    /// env cleanup hooks（end_session 收敛点 LIFO 触发，lifecycle.rs）。
+    pub cleanup_hooks: Vec<(napi_cleanup_hook, *mut c_void)>,
     /// 已加载 addon 库（path → Library；永不 dlclose）。
     pub libs: Vec<(PathBuf, libloading::Library)>,
     /// `.node` 模块 exports 缓存（require 幂等，Node 口径；exports 进 GC 图）。
@@ -115,6 +118,7 @@ impl NapiEnv {
             tsfns: std::collections::HashMap::new(),
             async_pending: 0,
             next_napi_id: 0,
+            cleanup_hooks: Vec::new(),
             libs: Vec::new(),
             modules: Vec::new(),
             last_error: None,

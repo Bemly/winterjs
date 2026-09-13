@@ -175,8 +175,27 @@
   async_hooks/async_context 未接；external free 恒主线程（单 GC 线程）。
   黑盒 +2（m3_value 矩阵 / m3_async OS 线程）→ 443 全绿 0 失败，
   build 0 警告，冒烟过。
-- [ ] **M4 rolldown 闭环**：真 rolldown 包（自家 pm 装，真网络标注）跑 transform/bundle，
-  按 §6 名单补缺口。验收：rolldown 内核产出正确 bundle。
+- [x] **M4 rolldown 闭环**（2026-09-14 完工）：真 rolldown 1.2.8（连带
+  @rolldown/binding-darwin-arm64，自家 pm 真网络安装）跑通 transform/bundle。
+  验收 ✓：rolldown 内核产出正确 bundle（双模块内联 + TS 输入类型擦除，产物
+  可执行），黑盒 `phase_napi_m4_rolldown_bundle_real_network`（**真网络标注**
+  `#[ignore]`，验收跑 `--ignored`，6.7s）。按 §6 名单补缺口三函数：
+  `napi_add/remove_env_cleanup_hook`（`lifecycle.rs`；end_session 收敛点 LIFO
+  触发，同 (fun,arg) 重复 add 拒绝）+ `napi_get_node_version`（与
+  process.version 同源 CalVer，进程级快照）。
+  实战揪出的四个宿主缺口（对照 M1–M3 的偏差记录全部见真章）：
+  ① **napi_wrap 的 napi_ref 出参**：napi-rs 3 的 ctor 恒传非空 `&mut
+  object_ref`（Reference 簿记），我们的 fail-fast 直接让全部 napi-rs 类构造
+  炸出 "Failed to initialize class `constructor`"（`{constructor}` 是 napi-rs
+  报错模板的占位串，非类名）——补上 Node 口径 ref（初始计数 0）；
+  ② **TSFN 的 js_callback 可空**：napi-rs 的 JsDeferred 恒传 null func
+  （call_js_cb 内直接 resolve deferred）——放宽校验；
+  ③ **register 直调遗留 pending**：loader 对 register 期 pending 异常显式
+  检测 + 上抛（此前静默吞掉会污染后续所有 JSAPI 面）；
+  ④ M0 的 `--allow-env` 权限面被 rolldown prelude 实际触发
+  （NAPI_RS_WASI_FLAVOR 查询），权限门控行为符合预期。
+  调试纪律：临时 eprintln 探针（`[wdbg]` 前缀，对照 §4.57 vm_dbg 惯例）用完
+  即删，`grep -rn wdbg src/` 为空后提交。
 - [ ] **M5 vite 全链**：dev server（HMR ws 服务端面）+ vite build + vitest
   （tinypool/worker_threads 9f 底座）。验收：vue-project 三命令全绿（终线）。
 - [ ] **M6 收尾合流**：Node 官方 napi 套件选点回归 + AGENTS §6 审计口径补「napi 面」

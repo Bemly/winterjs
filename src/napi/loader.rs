@@ -5,9 +5,10 @@
 
 use std::path::Path;
 use mozjs::jsapi::Heap;
+use crate::jsapi_glue::{raw_handle_mut, value_to_string};
 
 use mozjs::jsapi::{JSObject, JS_NewPlainObject};
-use mozjs::jsval::{JSVal, ObjectValue};
+use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::context::JSContext;
 
@@ -65,6 +66,15 @@ pub fn load(
         rooted!(&in(cx) let obj_root: *mut JSObject = obj);
         let exports = (*env_ptr).put(ObjectValue(obj_root.get()));
         let rv = reg(env_ptr as napi_env, exports);
+        // register 期间 addon 可能遗留 pending（register 直调无 trampoline 收口
+        // ——遗留即污染后续所有 JSAPI 面，napi-rs ctor 实测拒绝初始化）。
+        if mozjs::jsapi::JS_IsExceptionPending(cx.raw_cx()) {
+            rooted!(&in(cx) let mut exc = UndefinedValue());
+            mozjs::jsapi::JS_GetPendingException(cx.raw_cx(), raw_handle_mut(exc.as_ptr()));
+            mozjs::jsapi::JS_ClearPendingException(cx.raw_cx());
+            let msg = value_to_string(cx, exc.get());
+            return Err(format!("native addon '{spec}' threw during registration: {msg}"));
+        }
         let out = if !rv.is_null() && !(*env_ptr).get(rv).is_undefined() {
             (*env_ptr).get(rv)
         } else {

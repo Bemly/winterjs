@@ -528,3 +528,96 @@ console.log("end");
     assert!(so.contains("tsfn done m1,m2,m3"), "stdout: {so}");
     dir.close().unwrap();
 }
+
+/// M4 验收（plan-napi）：真 rolldown 包经自家 pm 安装（**真网络**，故默认
+/// ignore；验收跑 `cargo test --test napi -- --ignored`）。npm registry 偶发
+/// 慢，超时上限给足。
+#[test]
+#[cfg(unix)]
+#[ignore = "real network: installs rolldown via own pm (plan-napi M4 acceptance)"]
+fn phase_napi_m4_rolldown_bundle_real_network() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let wjs = std::env::var("CARGO_BIN_EXE_winterjs")
+        .unwrap_or_else(|_| "target/debug/winterjs".to_string());
+    // 1) 自家 pm 真装 rolldown（连带 @rolldown/binding-darwin-arm64）
+    let add = std::process::Command::new(&wjs)
+        .args(["-a", "rolldown"])
+        .current_dir(dir.path())
+        .env("WINTERJS_LOG", "warn")
+        .output()
+        .expect("pm add runs");
+    assert!(
+        add.status.success(),
+        "pm add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    // 2) 最小工程 + rolldown JS API bundle
+    let src = dir.child("src");
+    std::fs::create_dir_all(src.path()).unwrap();
+    src.child("lib.js")
+        .write_str("export function greet(name) { return `hello, ${name}!`; }\n")
+        .unwrap();
+    src.child("main.js")
+        .write_str("import { greet } from './lib.js';\nconsole.log(greet('rolldown'));\n")
+        .unwrap();
+    dir.child("bundle.mjs")
+        .write_str(
+            r#"
+import { rolldown } from 'rolldown';
+const bundle = await rolldown({ input: 'src/main.js' });
+const { output } = await bundle.generate({ format: 'es' });
+console.log("chunks", output.length);
+console.log("code>>>");
+console.log(output[0].code);
+await bundle.close();
+"#,
+        )
+        .unwrap();
+    let out = winterjs()
+        .args(["--run", "bundle.mjs", "--allow-ffi", "--allow-env"])
+        .current_dir(dir.path())
+        .env("WINTERJS_LOG", "warn")
+        .output()
+        .expect("bundle runs");
+    assert!(
+        out.status.success(),
+        "bundle failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("chunks 1"), "stdout: {so}");
+    // 真内核产物断言：两模块内联 + 类型擦除/字符串拼接保留
+    assert!(so.contains("function greet(name)"), "stdout: {so}");
+    assert!(so.contains("console.log(greet(\"rolldown\"));"), "stdout: {so}");
+    // 3) TS 输入 bundle（rolldown 内核 oxc transform 面）
+    src.child("app.ts")
+        .write_str("interface User { name: string; age: number }\nconst u: User = { name: \"winter\", age: 26 };\nexport const msg: string = `${u.name} is ${u.age}`;\n")
+        .unwrap();
+    dir.child("bundle2.mjs")
+        .write_str(
+            r#"
+import { rolldown } from 'rolldown';
+const bundle = await rolldown({ input: 'src/app.ts' });
+const { output } = await bundle.generate({ format: 'es' });
+console.log(output[0].code);
+await bundle.close();
+"#,
+        )
+        .unwrap();
+    let out = winterjs()
+        .args(["--run", "bundle2.mjs", "--allow-ffi", "--allow-env"])
+        .current_dir(dir.path())
+        .env("WINTERJS_LOG", "warn")
+        .output()
+        .expect("ts bundle runs");
+    assert!(
+        out.status.success(),
+        "ts bundle failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("const u = {"), "stdout: {so}");
+    assert!(!so.contains("interface User"), "interface must be erased: {so}");
+    assert!(so.contains("export { msg };"), "stdout: {so}");
+    dir.close().unwrap();
+}

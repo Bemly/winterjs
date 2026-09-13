@@ -318,11 +318,6 @@ pub unsafe extern "C" fn napi_wrap(
     if js_object.is_null() {
         return NAPI_INVALID_ARG;
     }
-    if !result.is_null() {
-        let env_ref = unsafe { e(env) };
-        env_ref.set_last_error("napi_wrap result (napi_ref) not implemented until M3");
-        return NAPI_GENERIC_FAILURE;
-    }
     let obj_v = unsafe { e(env).get(js_object) };
     if !obj_v.is_object() {
         return NAPI_INVALID_ARG;
@@ -351,6 +346,17 @@ pub unsafe extern "C" fn napi_wrap(
             JS_SetReservedSlot(obj, SLOT_FINALIZE, &PrivateValue(f as *const c_void));
             JS_SetReservedSlot(obj, SLOT_HINT, &PrivateValue(finalize_hint));
             JS_SetReservedSlot(obj, SLOT_ENV, &PrivateValue(env as *const c_void));
+        }
+        if !result.is_null() {
+            // napi_ref 出参（Node 口径：初始计数 0 的引用，指向被 wrap 对象；
+            // napi-rs 3 的 ctor 恒传此参做 Reference 簿记）。
+            let rec = Box::new(crate::napi::refcount::RefRec {
+                value: mozjs::jsapi::Heap::boxed(obj_v),
+                refcount: 0,
+            });
+            *result = &*rec as *const crate::napi::refcount::RefRec
+                as *const c_void as sys::napi_ref;
+            e(env).refs.push(rec);
         }
     }
     NAPI_OK

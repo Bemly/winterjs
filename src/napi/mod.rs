@@ -23,6 +23,7 @@ pub mod asyncwork;
 pub mod buffer;
 pub mod class;
 pub mod env;
+pub mod lifecycle;
 pub mod loader;
 pub mod promise;
 pub mod property;

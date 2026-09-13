@@ -270,13 +270,20 @@ pub unsafe extern "C" fn napi_create_threadsafe_function(
     result: *mut napi_threadsafe_function,
 ) -> napi_status {
     let _ = (async_resource, async_resource_name);
-    if func.is_null() || result.is_null() || call_js_cb.is_none() {
+    // func（js_callback）可空：napi-rs 的 JsDeferred 恒传 null（call_js_cb 内
+    // 直接 resolve deferred，不经 JS 函数——Node 同契约）。
+    if result.is_null() || call_js_cb.is_none() {
         return NAPI_INVALID_ARG;
     }
-    let v = unsafe { e(env).get(func) };
-    if !v.is_object() {
-        return NAPI_INVALID_ARG;
-    }
+    let v = if func.is_null() {
+        mozjs::jsval::UndefinedValue()
+    } else {
+        let v = unsafe { e(env).get(func) };
+        if !v.is_object() {
+            return NAPI_INVALID_ARG;
+        }
+        v
+    };
     let Some(tx) = crate::state::with_plain(|p| p.napi_tx.clone()) else {
         return NAPI_GENERIC_FAILURE;
     };

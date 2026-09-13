@@ -32,7 +32,7 @@ arg:
   upgrade:
     help: "Self-upgrade winterjs (needs WINTERJS_UPDATE_GITHUB=owner/repo)"
   init:
-    help: "Scaffold a new package"
+    help: "Scaffold a new package (installs package.json dependencies when present)"
     value: "NAME"
   repl:
     help: "Start an interactive REPL"

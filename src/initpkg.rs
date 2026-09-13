@@ -11,6 +11,11 @@
 //! - 名优先级：显式 `--init [name]`/`--name` > 现有 `package.json` 的 `name` >
 //!   当前目录名；只有显式名才走 `check_name` 校验（已落盘的怪名不拦路）。
 //! - `--yes` 跳过确认，非 TTY 下缺 `--yes` 即报可读错。
+//! - 依赖安装（2026-09-13 补，对齐 `bun install`/`bun init` 实测口径）：
+//!   文件阶段后读 `package.json` 依赖段装包（`pm::install_manifest`）；
+//!   清单指纹没变且 `node_modules` 在即 `dependencies up to date` 幂等跳过。
+//!   偏差（书面记录）：不学 bun 把模板依赖写回已有 package.json（9j 拍板
+//!   "采用不碰"）；模板自身无依赖段，新建路径不触发安装。
 
 use std::path::{Path, PathBuf};
 
@@ -123,8 +128,16 @@ pub fn adopted_name(dir: &Path) -> Option<String> {
 }
 
 /// 落盘（有配置重建、无配置新建：已存在文件非 `--force` 一律跳过；
-/// `package.json` 存在即采用不碰；成功打印清单，全齐则报 already initialized）。
-pub async fn init(dir: &Path, name: Option<&str>, yes: bool, force: bool) -> Result<(), Error> {
+/// `package.json` 存在即采用不碰；成功打印清单，全齐则报 already initialized。
+/// 文件阶段后对齐 bun init：有依赖段即装包，幂等指纹跳过）。
+pub async fn init(
+    dir: &Path,
+    name: Option<&str>,
+    yes: bool,
+    force: bool,
+    dry_run: bool,
+    registry: Option<&str>,
+) -> Result<(), Error> {
     let default_name = dir
         .file_name()
         .and_then(|n| n.to_str())
@@ -175,6 +188,12 @@ pub async fn init(dir: &Path, name: Option<&str>, yes: bool, force: bool) -> Res
     }
     if skipped == files.len() {
         println!("already initialized, nothing to do");
+    }
+    // 依赖安装（bun install 对齐；失败即整单失败——文件已落盘，重跑 `-I` 续装）。
+    match crate::pm::install_manifest(dir, dry_run, registry).await? {
+        crate::pm::ManifestOutcome::Installed => {}
+        crate::pm::ManifestOutcome::UpToDate => println!("dependencies up to date"),
+        crate::pm::ManifestOutcome::NoManifest => {}
     }
     tracing::info!(target: "winterjs::init", package = name.as_str(), "initialized");
     Ok(())

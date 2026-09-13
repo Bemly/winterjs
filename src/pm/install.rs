@@ -19,11 +19,14 @@ pub const LOCKFILE: &str = "winterjs-lock.json";
 
 /// registry 树 + git 包 + release 二进制一次装完（锁只持一次；lockfile 合并写）。
 /// `releases` 为已落盘项（name, tag, resolved, integrity），只合并进 lockfile。
+/// `manifest` 为清单指纹（install-all 记入 lockfile `manifest` 字段；
+/// `None` 保留已有值，`-a` 等单包操作不动指纹）。
 pub async fn install_all(
     root: &Path,
     tree: &[Resolved],
     git_specs: &[crate::pm::spec::GitSpec],
     releases: &[(String, String, String, Option<String>)],
+    manifest: Option<&str>,
 ) -> Result<(), Error> {
     let nm = root.join("node_modules");
     std::fs::create_dir_all(&nm).map_err(|e| Error::Other(format!("cannot create node_modules: {e}")))?;
@@ -52,7 +55,7 @@ pub async fn install_all(
         println!("added {name}@git+{}#{}", g.url, commit.chars().take(12).collect::<String>());
         git_locked.push((name, commit, g.url.clone()));
     }
-    write_lockfile(root, &landed, &git_locked, releases)?;
+    write_lockfile(root, &landed, &git_locked, releases, manifest)?;
     Ok(())
 }
 
@@ -246,15 +249,34 @@ pub(crate) fn link_bins(nm: &Path, name: &str, dest: &Path) -> Result<(), Error>
     Ok(())
 }
 
-/// lockfile 写（`{version:1, packages:{name:{version,resolved,integrity}}}`，原子）。
+/// lockfile 写（`{version:1, packages:{name:{version,resolved,integrity}}, manifest}`
+///，原子）。**合并写**：已有合法 lockfile 的 `packages` 条目先入表，本次装上的
+/// 覆盖同名（历史：曾整体重建，`-a` 连装两包后者会清掉前者记录，属真 bug）。
 /// git 行：`version` 记 commit 全 hex，`resolved` 记 `git+<url>#<commit>`，无 integrity。
+/// `manifest`：`Some` 覆盖清单指纹，`None` 保留已有值（无则缺省）。
 fn write_lockfile(
     root: &Path,
     tree: &[Resolved],
     git: &[(String, String, String)],
     releases: &[(String, String, String, Option<String>)],
+    manifest: Option<&str>,
 ) -> Result<(), Error> {
-    let mut packages = serde_json::Map::new();
+    // 旧 lockfile（合法 JSON object）先读：packages 并入、manifest 保留；
+    // 坏/缺文件当空表。
+    let old = std::fs::read_to_string(root.join(LOCKFILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    let mut packages = old
+        .as_ref()
+        .and_then(|v| v.get("packages"))
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let old_manifest = old
+        .as_ref()
+        .and_then(|v| v.get("manifest"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
     for r in tree {
         packages.insert(
             r.name.clone(),
@@ -285,7 +307,11 @@ fn write_lockfile(
             }),
         );
     }
-    let lock = serde_json::json!({ "version": 1, "packages": packages });
+    let manifest_value = match manifest {
+        Some(fp) => serde_json::Value::String(fp.to_owned()),
+        None => old_manifest.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null),
+    };
+    let lock = serde_json::json!({ "version": 1, "packages": packages, "manifest": manifest_value });
     let text = serde_json::to_string_pretty(&lock).map_err(Error::Json)?;
     crate::pm::cache::atomic_write(&root.join(LOCKFILE), text.as_bytes())
         .map_err(Error::Other)?;

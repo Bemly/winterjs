@@ -221,7 +221,7 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
         // `--init` 裸 flag（无值，经 default_missing_value 得空串）取目录名
         let name = if name.is_empty() { None } else { Some(name) };
-        return initpkg::init(&cwd, name.as_deref(), cli.yes, cli.force).await;
+        return initpkg::init(&cwd, name.as_deref(), cli.yes, cli.force, cli.dry_run, cli.registry.as_deref()).await;
     }
     if cli.repl {
         return runtime::repl().await;

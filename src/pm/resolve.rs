@@ -64,12 +64,13 @@ pub fn pick(pack: &Packument, req: &str) -> Result<(String, crate::pm::registry:
 /// 顶层 specs → 传递闭包（BFS；同名先定为准；fetch 由调用方注入，便于单测）。
 /// 边分必需/可选：可选包的子树继承可选；必需边可达即升级为必需。
 /// 平台不命中（`os`/`cpu`）的版本直接跳过（不报错；npm 口径）。
-pub async fn solve_tree<F, Fut>(
-    specs: &[Spec],
+/// 可选根（manifest `optionalDependencies`）走 `solve_tree_rooted`。
+pub async fn solve_tree_rooted<F, Fut>(
+    required_roots: &[Spec],
+    optional_roots: &[Spec],
     mut fetch: F,
 ) -> Result<Vec<Resolved>, String>
 where
-    // owned 传参（闭包返回 future 借用外名则生命周期无解；调用方 clone 即可）。
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<Packument, String>>,
 {
@@ -77,9 +78,11 @@ where
     // pin 表：名 → 版本（先定为准）；`required` 表：false 表仅经可选边可达。
     let mut pinned: HashMap<String, String> = HashMap::new();
     let mut required: HashMap<String, bool> = HashMap::new();
-    let mut queue: VecDeque<(String, String, bool)> = specs
+    // 必需根排前、可选根排后（同名时必需先 pin，可选边经 pin 短路）。
+    let mut queue: VecDeque<(String, String, bool)> = required_roots
         .iter()
         .map(|s| (s.name.clone(), s.range.clone(), false))
+        .chain(optional_roots.iter().map(|s| (s.name.clone(), s.range.clone(), true)))
         .collect();
     // 步数上限（防病态图；按弹出计，与深度成正比）。
     let mut steps = 0usize;
@@ -226,7 +229,7 @@ mod tests {
         };
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let out = rt
-            .block_on(solve_tree(&[Spec { name: "lib".into(), range: "^2.0.0".into() }], |name: String| {
+            .block_on(solve_tree_rooted(&[Spec { name: "lib".into(), range: "^2.0.0".into() }], &[], |name: String| {
                 let lib = lib.clone();
                 let dep = dep.clone();
                 async move {
@@ -293,7 +296,7 @@ mod tests {
         };
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let out = rt
-            .block_on(solve_tree(&[Spec { name: "tool".into(), range: "*".into() }], |name: String| {
+            .block_on(solve_tree_rooted(&[Spec { name: "tool".into(), range: "*".into() }], &[], |name: String| {
                 let (tool, hit, miss, dep) =
                     (tool.clone(), hit.clone(), miss.clone(), dep.clone());
                 async move {
@@ -320,6 +323,54 @@ mod tests {
     }
 
     #[test]
+    fn solve_tree_optional_roots() {
+        // 可选根：命中的装上（记 optional）、404 容忍跳过；必需根 + 可选根同名
+        // 时必需优先（版本不动、不降级为 optional）。
+        let one = |name: &str| Packument {
+            name: name.into(),
+            dist_tags: [("latest".to_string(), "1.0.0".to_string())].into(),
+            versions: [(
+                "1.0.0".to_string(),
+                VersionMeta {
+                    dist: Dist { tarball: format!("https://r/{name}.tgz"), integrity: None, shasum: None },
+                    dependencies: [].into(),
+                    optional_dependencies: [].into(),
+                    os: None,
+                    cpu: None,
+                },
+            )]
+            .into(),
+        };
+        let (hit, shared) = (one("opt-hit"), one("shared"));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let out = rt
+            .block_on(solve_tree_rooted(
+                &[Spec { name: "shared".into(), range: "*".into() }],
+                &[
+                    Spec { name: "opt-hit".into(), range: "*".into() },
+                    Spec { name: "opt-404".into(), range: "*".into() },
+                    Spec { name: "shared".into(), range: ">=0.5.0".into() },
+                ],
+                |name: String| {
+                    let (hit, shared) = (hit.clone(), shared.clone());
+                    async move {
+                        match name.as_str() {
+                            "opt-hit" => Ok(hit),
+                            "shared" => Ok(shared),
+                            other => Err(format!("missing stub '{other}'")),
+                        }
+                    }
+                },
+            ))
+            .unwrap();
+        let shared_r = out.iter().find(|r| r.name == "shared").expect("shared pinned");
+        assert!(!shared_r.optional, "required root must stay required: {out:?}");
+        let hit_r = out.iter().find(|r| r.name == "opt-hit").expect("opt-hit pinned");
+        assert!(hit_r.optional, "optional root must be optional");
+        assert!(out.len() == 2, "opt-404 tolerated: {out:?}");
+    }
+
+    #[test]
     fn solve_tree_optional_upgraded_by_required() {
         // BFS 序决定 shared 先经可选边 pin（optional），随后被必需边命中 → 升级为必需
         //（版本不动；npm 口径：双重可达按必需算）。
@@ -340,8 +391,9 @@ mod tests {
         let shared = one(&[], &[]);
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let out = rt
-            .block_on(solve_tree(
+            .block_on(solve_tree_rooted(
                 &[Spec { name: "a".into(), range: "*".into() }, Spec { name: "b".into(), range: "*".into() }],
+                &[],
                 |name: String| {
                     let (a, b, shared) = (a.clone(), b.clone(), shared.clone());
                     async move {

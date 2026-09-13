@@ -5,6 +5,7 @@ pub mod cache;
 pub mod git;
 pub mod install;
 pub mod lifecycle;
+pub mod manifest;
 pub mod npmrc;
 pub mod platform;
 pub mod publish;
@@ -49,7 +50,64 @@ pub async fn install_to(
     dry_run: bool,
     registry: Option<&str>,
 ) -> Result<(), Error> {
-    if packages.is_empty() {
+    install_request(root, packages, &[], dry_run, registry, None).await
+}
+
+/// install-all（`--init` 对齐 `bun install`）：读 `root/package.json` 依赖段
+/// （`manifest`），清单没变且 `node_modules` 在即跳过；否则全量求解安装，
+/// lockfile 记清单指纹。
+pub async fn install_manifest(
+    root: &std::path::Path,
+    dry_run: bool,
+    registry: Option<&str>,
+) -> Result<ManifestOutcome, Error> {
+    let Some(deps) = manifest::load(root)? else {
+        return Ok(ManifestOutcome::NoManifest);
+    };
+    let fp = manifest::fingerprint(&deps);
+    // 指纹相同且 node_modules 在 → 视为最新（幂等；逐包对账 npm 级不做到）。
+    if lockfile_manifest(root).is_some_and(|m| m == fp) && root.join("node_modules").is_dir() {
+        return Ok(ManifestOutcome::UpToDate);
+    }
+    let (required, optional) = manifest::spec_strings(&deps);
+    if required.is_empty() && optional.is_empty() {
+        // 有 package.json 但无依赖段：无事可做（不建 node_modules）。
+        return Ok(ManifestOutcome::NoManifest);
+    }
+    install_request(root, &required, &optional, dry_run, registry, Some(&fp)).await?;
+    Ok(ManifestOutcome::Installed)
+}
+
+/// install-all 结果（init 打印分支用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestOutcome {
+    /// 无 package.json 或清单无依赖段。
+    NoManifest,
+    /// 清单指纹未变且 node_modules 在，跳过。
+    UpToDate,
+    /// 已执行安装。
+    Installed,
+}
+
+/// lockfile 里的清单指纹（无/坏文件 → `None`）。
+fn lockfile_manifest(root: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(root.join(install::LOCKFILE)).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("manifest")?.as_str().map(str::to_owned)
+}
+
+/// 安装共用体（`install_to` 与 `install_manifest` 共用）：
+/// spec 串分流 registry/git/release，`optional` 段 spec 走可选根求解
+/// （拉取/求解失败容忍跳过；git/release 形不做可选，见 manifest 头注）。
+async fn install_request(
+    root: &std::path::Path,
+    packages: &[String],
+    optional: &[String],
+    dry_run: bool,
+    registry: Option<&str>,
+    manifest_fp: Option<&str>,
+) -> Result<(), Error> {
+    if packages.is_empty() && optional.is_empty() {
         return Err(Error::Other("specify packages with -a/--add".into()));
     }
     let (project, home) = npmrc::load_cwd_and_home(root);
@@ -58,19 +116,30 @@ pub async fn install_to(
         .ok();
     // 请求分流（registry 走 packument 求解；git 走 rev 解析；release 走 GitHub API）。
     let mut reg_specs = Vec::with_capacity(packages.len());
+    let mut reg_optional = Vec::new();
     let mut git_specs = Vec::new();
     let mut rel_specs = Vec::new();
-    for pkg in packages {
-        match spec::parse_request(pkg).map_err(Error::Other)? {
-            spec::Request::Registry(s) => reg_specs.push(s),
+    for (pkg, via_optional) in packages.iter().map(|p| (p, false)).chain(optional.iter().map(|p| (p, true))) {
+        let parsed = spec::parse_request(pkg).map_err(|e| {
+            if via_optional {
+                Error::Other(format!("bad optional dependency '{pkg}' in package.json: {e}"))
+            } else {
+                Error::Other(e)
+            }
+        })?;
+        match parsed {
+            spec::Request::Registry(s) => {
+                if via_optional { reg_optional.push(s) } else { reg_specs.push(s) }
+            }
+            // git/release 形不做可选根（清单里出现即按必需装；偏差记 manifest 头注）。
             spec::Request::Git(g) => git_specs.push(g),
             spec::Request::Release(r) => rel_specs.push(r),
         }
     }
-    if reg_specs.is_empty() && git_specs.is_empty() && rel_specs.is_empty() {
+    if reg_specs.is_empty() && reg_optional.is_empty() && git_specs.is_empty() && rel_specs.is_empty() {
         return Err(Error::Other("nothing to install".into()));
     }
-    let tree = resolve::solve_tree(&reg_specs, |name: String| {
+    let tree = resolve::solve_tree_rooted(&reg_specs, &reg_optional, |name: String| {
         // 逐包决策（作用域镜像）+ 逐 registry 取 token（token 值永不进日志）。
         let (src, url) = npmrc::resolve_registry_for_package(
             registry,
@@ -115,5 +184,5 @@ pub async fn install_to(
     for r in &rel_specs {
         rel_locked.push(release::install_one_release(&nm_bin, r).await?);
     }
-    install::install_all(root, &tree, &git_specs, &rel_locked).await
+    install::install_all(root, &tree, &git_specs, &rel_locked, manifest_fp).await
 }

@@ -32,7 +32,7 @@ arg:
   upgrade:
     help: "自升级 winterjs（需要 WINTERJS_UPDATE_GITHUB=owner/repo）"
   init:
-    help: "新建软件包脚手架"
+    help: "新建软件包脚手架（已有 package.json 依赖时自动安装）"
     value: "名称"
   repl:
     help: "启动交互式 REPL"

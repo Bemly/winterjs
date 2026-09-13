@@ -1663,25 +1663,3 @@ fn make_git_repo(name: &str, tagged: bool) -> assert_fs::TempDir {
     dir
 }
 
-/// 现场造 tgz（`package/` 包裹；`files` 为包内路径→内容）。
-fn make_tgz(files: &[(&str, &[u8])]) -> Vec<u8> {
-    let mut tar_data = Vec::new();
-    {
-        let mut ar = tar::Builder::new(&mut tar_data);
-        for (name, data) in files {
-            let mut header = tar::Header::new_gnu();
-            header.set_path(format!("package/{name}")).unwrap();
-            header.set_size(data.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            ar.append(&header, *data).unwrap();
-        }
-        ar.finish().unwrap();
-    }
-    use flate2::Compression;
-    use flate2::write::GzEncoder;
-    use std::io::Write as _;
-    let mut enc = GzEncoder::new(Vec::new(), Compression::default());
-    enc.write_all(&tar_data).unwrap();
-    enc.finish().unwrap()
-}

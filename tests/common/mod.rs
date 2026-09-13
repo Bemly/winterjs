@@ -136,3 +136,26 @@ pub fn wjs(args: &[&str], dir: &assert_fs::TempDir) -> (bool, String, String) {
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
 }
+
+/// 现场打一个最小 npm tarball（`package/` 前缀包裹；配 sha2 算 integrity 用）。
+pub fn make_tgz(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut tar_data = Vec::new();
+    {
+        let mut ar = tar::Builder::new(&mut tar_data);
+        for (name, data) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(format!("package/{name}")).unwrap();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            ar.append(&header, *data).unwrap();
+        }
+        ar.finish().unwrap();
+    }
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write as _;
+    let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(&tar_data).unwrap();
+    enc.finish().unwrap()
+}

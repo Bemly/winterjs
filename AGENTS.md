@@ -861,6 +861,27 @@ cargo build
 - 推广为铁律：凡中途 stash/checkout 换过代码再探，必须重编主二进制；
   `cargo test` 绿 + 手工探针红 ≠ 代码问题，先查二进制新鲜度。
 
+### 4.63 子进程复用自家 CLI 时透传参数必须 `--` 收尾（2026-09-13，9k）
+
+- 症状：scripts `{"v": "node-which --version"}` 经 .bin JS bin 自递归
+  （`winterjs --run <bin> --version`）打出 winterjs 版本横幅，bin 本体没跑。
+- 根因：本仓已知内置 flag（`--version`/`--help`）在 trailing positional
+  收集前就被子进程 clap 拦截；§4.61 的"未知 flag trailing_var_arg 透传"
+  只覆盖未知 flag，已知 flag 是它的补集缺口。
+- 修法：子递归统一 `--run <bin> -- <args>`，`--` 由 clap 消费、rest 原样落
+  `cli.args`（`src/scripts.rs`）。
+- 推广为铁律：凡 spawn 自家 CLI 传用户参数，一律 `--` 收尾；每新增一个
+  内置 flag，grep 全部这类调用点复核一遍。
+
+### 4.64 成对分隔符夹在中间时 strip_suffix 必空（2026-09-13，9k）
+
+- 症状：stub registry 按 `/<name>/-/<name>-1.0.0.tgz` 剥后缀解析 tarball
+  路径，`strip_suffix("-1.0.0.tgz")` 后再 `strip_suffix("/-")` 恒失败——
+  剩余串以包名结尾（如 `init-dep-a/-/init-dep-a`），`/-` 在中间不在尾部。
+- 修法：`split_once("/-/")` 取左名 + 右文件名全等校验。
+- 推广为铁律：路径/串解析先画全形再选 API——分隔符在串中段用 split 家族，
+  strip_suffix 只配"真后缀"；stub 请求数对不上时先打印实际 path。
+
 
 ## 5. 路线图（按序）
 

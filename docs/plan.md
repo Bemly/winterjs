@@ -1040,6 +1040,34 @@
     （scripts → .bin 自递归 → node:module，`tests/cli.rs`）。
   - `cargo test` 全绿，0 警告，冒烟 5/5。
 
+- [x] 9k init 安装依赖（2026-09-13 完工；用户 vue-project 实测牵引：
+  `yarn create vue` 后 `-I` 只补文件不装依赖，`-r dev` 即 `vite: command not
+  found`——bun 同场景在 install 前同样 127，差别在它有 `bun install` 补位；
+  实测 `bun init` 脚手架后自动 install 且 deps+devDeps 全装）：
+  - `src/pm/manifest.rs`：package.json 三依赖段读取（npm 优先级：optional
+    整项覆盖同名 dependencies → 转可选；dependencies 压 devDependencies；
+    空 range 视为 `*`）+ 确定性指纹 + spec 串化（git/github:/release: 值
+    自带 scheme 照走 parse_request）；`workspace:`/`file:`/`link:`/`portal:`/
+    `npm:`/URL 形报可读错（清单位错误 fail fast，与求解期 optional 容忍区分）。
+  - `resolve.rs::solve_tree_rooted`：可选根（拉取/求解失败容忍跳过，静默
+    记 debug——install 期失败才打 `skipped optional`，d5 口径；必需根先
+    pin，同名可选根被压住；必需边升级语义沿用）。
+  - `install.rs`：lockfile 改**合并写**（修真 bug：`-a` 连装两包后者清掉
+    前者记录）+ `manifest` 指纹字段（单包操作保留原值）。
+  - `mod.rs::install_manifest`：指纹没变且 `node_modules` 在 → UpToDate
+    幂等零请求；无清单/无依赖段 → NoManifest 静默；`install_request`
+    共用体（`-a`/`-i` 零回归）。
+  - `initpkg.rs`：文件阶段后 install_manifest 三态（安装失败整单失败——
+    文件已落盘，重跑 `-I` 续装）；不学 bun 把模板依赖写回已有 package.json
+    （9j "采用不碰" 维持）。i18n init help 双语更新。
+  - 黑盒 5（tests/initpkg.rs stub registry：deps+devDeps 全装 + .bin +
+    lockfile 指纹/幂等零请求/清单编辑增量装 + lockfile 合并/optional 404
+    容忍缺席/无依赖零安装 + 坏清单可读错）+ manifest 单测 4 + 可选根单测 1；
+    `make_tgz` 提升 common。
+  - 顺带修 scripts：JS bin 子递归 `--` 收尾——`--version` 被子进程 clap 吃掉
+    打版本横幅（AGENTS §4.63）。
+  - `cargo test` 433 全绿 0 失败，build 0 警告（5 预存），冒烟 5/5。
+
 ## 全局纪律
 
 - 每 Phase 开工前更新本计划对应节；完工打钩并 commit。

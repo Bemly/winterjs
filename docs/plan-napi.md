@@ -146,9 +146,35 @@
   fixture：m2_class.c（类矩阵 8 面）/ m2_finalize.c（释放链），
   黑盒 +2（441 全绿 0 失败，M1 439 零回归），build 0 警告，冒烟过；
   导出符号 69 → 89（+ node_api_* 错误族 glob `_node_api_*`）。
-- [ ] **M3 异步与 buffer**：promise/deferred（§4.18 RunJobs 纪律）、refs 全语义、
-  arraybuffer/typedarray/dataview/buffer/external buffer、async_work、
-  TSFN（第 8 通道 + acquire/release/ref/unref/cleanup）。验收：真 OS 线程回调进 JS。
+- [x] **M3 异步与 buffer**（2026-09-14 完工，两个切片）：
+  promise/deferred（`JS::NewPromiseObject(executor=null)` 即 deferred 语义，
+  句柄 = Heap 槽位地址，一次性；落定走引擎标准 reaction 路径，§4.18 由循环
+  拓扑保证）、refs（句柄 = Box 指针；**weak 同追偏差**——SM 无 embedder 弱值
+  通道，不追即 GC 后悬垂）、arraybuffer/typedarray（11 种全走 global 构造器
+  `__wjs_napi_new`；**SM 与 napi 的 Scalar::Type 序号不同**——clamped 8↔2，
+  显式双向映射表）/dataview（`JS_NewDataView` + FixedLengthClassPtr 判定）/
+  node Buffer（Uint8Array+Buffer.prototype；external buffer 与 external AB 同
+  `JS::BufferContentsFreeFunc` 桥——Box 携带 env/cb/hint）、async_work + TSFN
+  （第 8 通道 `napi_rx`，fetch/net 同构模式）。验收：真 OS 线程回调进 JS ✓
+  （`m3_async.c`：async_work 线程 fib(20)=6765 经 complete→deferred→await；
+  TSFN 线程 3 条消息经 call_js_cb 回 JS → release → thread_finalize 落定）。
+  M3-3 踩坑四则（对照 AGENTS §4 风格）：
+  ① **通道 Sender 必须随记录走**：OS 线程侧禁经 `with_plain` 取通道（TLS 是
+  JS 线程的，§4.24）——Sender 在 JS 线程 create 时捕获存进 rec/shared；
+  ② **TSFN 句柄必须自包含**：`Arc::into_raw` 指针即句柄（from_raw/into_raw
+  严格往返），call/acquire/release/ref/unref 全零 TLS；按 id 查 env 表的
+  设计在 OS 线程上必炸（state::init not called）；
+  ③ **cancelled 的 complete 必达**：complete/data 嵌进事件本身——addon 在
+  complete 前合法 delete_async_work 会让按 id 查表的 dispatch 扑空丢回调
+  （fixture cancel+delete 实测断链）；async_pending 计数只 queue++/dispatch--，
+  cancel 不动（防双减）；
+  ④ **closing 的 TSFN 不再 keep-alive**：pending_count 过滤 closing（否则
+  release 后循环永不退）。
+  偏差（记 §4）：weak ref 钉值至 delete；SM 小 AB inline 存储 GC 可搬移，
+  data 指针跨回调须重取 `napi_get_arraybuffer_info`（M4 rolldown 实测）；
+  async_hooks/async_context 未接；external free 恒主线程（单 GC 线程）。
+  黑盒 +2（m3_value 矩阵 / m3_async OS 线程）→ 443 全绿 0 失败，
+  build 0 警告，冒烟过。
 - [ ] **M4 rolldown 闭环**：真 rolldown 包（自家 pm 装，真网络标注）跑 transform/bundle，
   按 §6 名单补缺口。验收：rolldown 内核产出正确 bundle。
 - [ ] **M5 vite 全链**：dev server（HMR ws 服务端面）+ vite build + vitest

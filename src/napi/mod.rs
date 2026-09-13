@@ -19,6 +19,7 @@
 //! 语义）；所有 `napi_*` 仅 JS 线程可调（TSFN 的跨线程面在 M3 经事件循环通道）。
 
 pub mod api;
+pub mod asyncwork;
 pub mod buffer;
 pub mod class;
 pub mod env;

@@ -394,6 +394,9 @@ pub struct PlainState {
     pub module_debug: HashMap<String, ModuleDebug>,
     /// 模块加载 hook 暂存的友好错误（hook 返回 false，中断加载后由外层取出上报）。
     pub module_load_error: Option<crate::error::Error>,
+    /// napi 第 8 通道发送端（async_work/TSFN；JS 线程 create 时克隆进 rec，
+    /// OS 线程只经 rec.tx 发送——禁经 TLS 取，§4.24）。
+    pub napi_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::napi::asyncwork::NapiEvent>>,
     /// fetch 驱动端点（`run()` 初始化；接收端由事件循环持有，无 JS 值，可跨 await）。
     pub fetch_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::fetch::FetchMsg>>,
     pub fetch_next_id: u64,
@@ -1246,6 +1249,11 @@ pub fn net_purge(id: u64) -> bool {
 /// 存活 socket/server 数（事件循环退出条件用）。
 pub fn net_open() -> usize {
     with_plain(|p| p.net_open)
+}
+
+/// napi 异步 keep-alive（未完成 async_work + refed TSFN；事件循环退出条件用）。
+pub fn napi_pending() -> usize {
+    crate::napi::asyncwork::pending_count()
 }
 
 // ── worker 驱动（MessagePort/Worker；channel → 事件循环，同 net 模型）────────

@@ -436,3 +436,95 @@ console.log("drain", b[1] >= Math.floor(a[0] / 2), b[3] >= Math.floor(a[2] / 2))
     assert!(so.contains("drain true true"), "stdout: {so}");
     dir.close().unwrap();
 }
+
+#[test]
+#[cfg(unix)]
+fn phase_napi_m3_promise_ref_buffer_matrix() {
+    // 正常：M3 值面矩阵（promise/deferred 回环 + refs 计数 + typedarray/
+    // dataview 指针一致性 + BigInt64 + Buffer 读写/external）——fixture 内部
+    // 按位断言，1 = 全过。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let node = build_fixture_dylib(&dir, "m3_value");
+    let app = dir.child("app.js");
+    app.write_str(&format!(
+        r#"
+const m = require({node:?});
+const p = m.makeDeferred();
+console.log("isp", m.isPromise(p), m.isPromise({{}}));
+p.then((v) => console.log("resolved", v));
+m.resolveIt();
+m.rejectIt().catch((e) => console.log("rejected", e));
+console.log("ref", m.checkRef());
+console.log("typed", m.checkTyped());
+const ta = m.makeTA();
+console.log("big", ta.constructor.name, ta.length, typeof ta[0]);
+const buf = m.makeBuf();
+console.log("buf", m.checkBuf(buf), buf.toString(), buf.length);
+"#
+    ))
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(app.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("isp 1 0"), "stdout: {so}");
+    assert!(so.contains("resolved 77"), "stdout: {so}");
+    assert!(so.contains("rejected nope"), "stdout: {so}");
+    assert!(so.contains("ref 1"), "stdout: {so}");
+    assert!(so.contains("typed 1"), "stdout: {so}");
+    assert!(so.contains("big BigInt64Array 4 bigint"), "stdout: {so}");
+    assert!(so.contains("buf 1 hello 5"), "stdout: {so}");
+    dir.close().unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn phase_napi_m3_async_work_tsfn() {
+    // 正常（M3 验收线）：真 OS 线程回调进 JS——async_work 线程 execute →
+    // complete resolve deferred（await 取值）；TSFN 线程 3 条消息 →
+    // call_js_cb 逐条回 JS → release → thread_finalize 落定 "done"；
+    // cancel 的 complete(napi_cancelled) 必达；keep-alive：全结算后进程自退。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let node = build_fixture_dylib(&dir, "m3_async");
+    let app = dir.child("app.js");
+    app.write_str(&format!(
+        r#"
+const m = require({node:?});
+(async () => {{
+  console.log("work", await m.startWork(20));
+  console.log("delete", m.deleteProbe());
+  console.log("cancel", await m.cancelProbe());
+  const msgs = [];
+  const done = await m.startTsfn(function (v) {{ msgs.push(v); }});
+  console.log("tsfn", done, msgs.join(","));
+}})();
+console.log("end");
+"#
+    ))
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(app.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("work 6765"), "stdout: {so}");
+    assert!(so.contains("delete 1"), "stdout: {so}");
+    assert!(so.contains("cancel cancelled"), "stdout: {so}");
+    assert!(so.contains("tsfn done m1,m2,m3"), "stdout: {so}");
+    dir.close().unwrap();
+}

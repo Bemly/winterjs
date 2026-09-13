@@ -49,8 +49,16 @@ pub struct NapiEnv {
     /// 活跃 deferred（`napi_create_promise` 的 promise Heap 槽位；
     /// 句柄 = 槽位地址，落定即摘——一次性，promise.rs）。
     pub deferreds: Vec<Box<Heap<JSVal>>>,
-    /// 活跃引用（`napi_ref` 本体；句柄 = Box 指针，ref.rs）。
+    /// 活跃引用（`napi_ref` 本体；句柄 = Box 指针，refcount.rs；Box 定址铁律）。
     pub refs: Vec<Box<crate::napi::refcount::RefRec>>,
+    /// 活跃 async_work（句柄 = id；asyncwork.rs）。
+    pub async_works: std::collections::HashMap<u64, crate::napi::asyncwork::AsyncWorkRec>,
+    /// 活跃 TSFN（句柄 = id；asyncwork.rs）。
+    pub tsfns: std::collections::HashMap<u64, crate::napi::asyncwork::TsfnRec>,
+    /// 已排队未完成的 async_work 数（事件循环 keep-alive；JS 线程读写）。
+    pub async_pending: usize,
+    /// napi 句柄 id 发号器（async_work/TSFN 共用；0 保留）。
+    pub next_napi_id: u64,
     /// 已加载 addon 库（path → Library；永不 dlclose）。
     pub libs: Vec<(PathBuf, libloading::Library)>,
     /// `.node` 模块 exports 缓存（require 幂等，Node 口径；exports 进 GC 图）。
@@ -103,6 +111,10 @@ impl NapiEnv {
             external_mem: 0,
             deferreds: Vec::new(),
             refs: Vec::new(),
+            async_works: std::collections::HashMap::new(),
+            tsfns: std::collections::HashMap::new(),
+            async_pending: 0,
+            next_napi_id: 0,
             libs: Vec::new(),
             modules: Vec::new(),
             last_error: None,

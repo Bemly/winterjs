@@ -802,6 +802,65 @@ cargo build
 - 复现：`tests/node.rs::phase9i_worker_transfer_cross_thread_and_broadcast`
  （`w9i-xfer` 第二项修前为 false）。
 
+### 4.59 CJS 互操作垫片吞掉纯 TLA 的 `.js` 依赖（2026-09-13，Phase 9j）
+
+- 症状：CJS 互操作上线后，`phase2_top_level_await_entry` 挂——入口 `tla.js`
+  （顶层 `await` 专属、无 import/export）报 `await is only valid in async
+  functions...`，而非走模块重试。
+- 根因：`cjs_interop` 用 `is_module`（`has_module_syntax`）判 ESM——纯 TLA
+  文件无模块语法即判 CJS，打上 `export default` 垫片；垫片求值期同步
+  require，CJS 包装走经典脚本求值，顶层 `await` 即炸。入口经典路径的
+  TLA 重试（§4.17）够不着依赖。
+- 修法：歧义集（无 type 的 `.js`/`.jsx`）加经典目标试解析
+  （`parses_as_script`，`with_module(false)`）：但注意 oxc 在 script goal
+  下仍会对无歧义顶层 `await` 置模块升级信号（Babel 式 `sawUnambiguousESM`，
+  `set_module_syntax` + 延迟错丢弃）——所以试解析必须同时看
+  `!has_module_syntax`，只看"无错"不够（`src/modules.rs`）。
+- 复现：`tests/node.rs::phase9j_tla_dep_stays_esm`（修前 TLA 依赖进垫片炸）。
+- 推广为铁律：oxc `with_module(false)` ≠"无模块信号"——`module_record.
+  has_module_syntax` 才是升级真相；任何"经典/CJS 兜底"判定都要先过 TLA
+  专属文件这一关（入口 `tla.js` 即现成探针）。
+
+### 4.60 `util.parseEnv` 结果键按 ASCII 排序，非插入序（2026-09-13，Phase 9j）
+
+- 症状：四组真机差分探针前三组全同，第四组（多行引号）仅键序不同——
+  `B=1\nA=2` 真机出 `{"A":"1","B":"1"}`，不是插入序 `{"B","A"}`。
+- 根因：Node 的 parseEnv 实现按 ASCII 排序输出键（`B=1\nA=2` → A,B，
+  大小写敏感大写在前），与 JS 对象插入序直觉相反。
+- 修法：解析期 `Map` 收集，组装期 `[...keys()].sort()` 再写入
+  （`src/builtins/node/util.rs` `parseEnv`）。
+- 复现：`tests/node.rs::phase9j_util_parse_env` 首断言
+  （`{"A":"1","B":"1"}` 顺；修前为插入序）。
+- 推广为铁律：§4.32 教训延续——"顺序"也是语义，真机差分必须连键序一起
+  `diff`，逐行 `JSON.stringify` 对拍（本仓即靠它抓到）。
+
+### 4.61 自递归子进程的动作 flag 碰撞：脚本参数禁复用 winterjs 动作名（2026-09-13，Phase 9j）
+
+- 症状：vue 形 `-r dev` 管线黑盒用 `tool --serve` 作 fixture，子进程报
+  `specify exactly one action, got: --run, --serve`。
+- 根因：9i-10 JS bin 自递归把脚本参数原样透传给自身 `--run <bin>`；
+  `--serve` 是 winterjs 已知动作 flag，子进程 clap 即判双动作（§4.26
+  全 flag 铁律）。未知 flag（如 `--watch-mode`）因 `trailing_var_arg`
+  透传无事——只有**已知动作名**才炸。
+- 修法：fixture 改中性参数（`--watch-mode`）；真脚本如需透传动作名，
+  走 `--` 分隔（9i-10 语义）。
+- 复现：`tests/cli.rs::run_script_vue_dev_shape_through_node_module`
+  （`--serve` 形修前必炸）。
+- 推广为铁律：黑盒 fixture 的脚本参数不得与 winterjs 动作 flag 同名；
+  新增动作 flag 时 grep 测试 fixtures 有无撞名。
+
+### 4.62 stash 期间构建会污染 target，pop 后必须重编再探（2026-09-13）
+
+- 症状：`git stash → cargo build → git stash pop` 后，`./target/debug/winterjs`
+  探针报旧行为（`'node:module' is not a builtin`），而 `cargo test` 全绿——
+  两边结论打架。
+- 根因：stash 期间的构建把旧代码编进了 `target/debug/winterjs`；
+  `cargo test` 的测试二进制每次现编（新代码），手工探针用的却是 stale 主二进制。
+- 修法：pop 后立即 `cargo build` 再探；结论打架时先对 `ls -la target/debug/winterjs`
+  时间戳。
+- 推广为铁律：凡中途 stash/checkout 换过代码再探，必须重编主二进制；
+  `cargo test` 绿 + 手工探针红 ≠ 代码问题，先查二进制新鲜度。
+
 
 ## 5. 路线图（按序）
 

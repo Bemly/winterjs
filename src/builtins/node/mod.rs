@@ -22,6 +22,7 @@ pub mod https;
 pub mod internal;
 pub mod inspector;
 pub mod net;
+pub mod nodemodule;
 pub mod os;
 pub mod path;
 pub mod perf_hooks;
@@ -29,6 +30,7 @@ pub mod process_;
 pub mod punycode;
 pub mod querystring;
 pub mod quic;
+pub mod readline;
 pub mod require;
 pub mod stream;
 pub mod stream_consumers;
@@ -42,6 +44,8 @@ pub mod trace_events;
 pub mod tty;
 pub mod util;
 pub mod util_types;
+pub mod url;
+pub mod v8;
 pub mod vm;
 pub mod worker;
 pub mod zlib;
@@ -107,6 +111,11 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:vm", vm::SOURCE),
     // Phase 9f-2
     ("node:worker_threads", worker::SOURCE),
+    // Phase 9j
+    ("node:module", nodemodule::SOURCE),
+    ("node:v8", v8::SOURCE),
+    ("node:readline", readline::SOURCE),
+    ("node:url", url::SOURCE),
 ];
 
 /// spec 规范化（`node:` 前缀可选；internal 走 `internal::normalize_internal`；
@@ -166,6 +175,11 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "vm" => Some("node:vm"),
         // Phase 9f-2
         "worker_threads" => Some("node:worker_threads"),
+        // Phase 9j
+        "module" => Some("node:module"),
+        "v8" => Some("node:v8"),
+        "readline" => Some("node:readline"),
+        "url" => Some("node:url"),
         _ => None,
     }
 }
@@ -260,6 +274,19 @@ mod tests {
         assert_eq!(normalize_spec("worker_threads"), Some("node:worker_threads"));
         assert_eq!(normalize_spec("node:worker_threads"), Some("node:worker_threads"));
         assert!(source("node:worker_threads").is_some());
+        // Phase 9j
+        assert_eq!(normalize_spec("module"), Some("node:module"));
+        assert_eq!(normalize_spec("node:module"), Some("node:module"));
+        assert!(source("node:module").is_some());
+        assert_eq!(normalize_spec("v8"), Some("node:v8"));
+        assert_eq!(normalize_spec("node:v8"), Some("node:v8"));
+        assert!(source("node:v8").is_some());
+        assert_eq!(normalize_spec("readline"), Some("node:readline"));
+        assert_eq!(normalize_spec("node:readline"), Some("node:readline"));
+        assert!(source("node:readline").is_some());
+        assert_eq!(normalize_spec("url"), Some("node:url"));
+        assert_eq!(normalize_spec("node:url"), Some("node:url"));
+        assert!(source("node:url").is_some());
         // Phase 9d-6
         assert_eq!(normalize_spec("https"), Some("node:https"));
         assert_eq!(normalize_spec("node:tls"), Some("node:tls"));

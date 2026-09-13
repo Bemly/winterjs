@@ -298,6 +298,9 @@ E('ERR_TRACE_EVENTS_CATEGORY_REQUIRED', 'At least one category must be enabled',
 E('ERR_INVALID_ASYNC_ID', 'Invalid %s value: %s', RangeError);
 E('ERR_INVALID_THIS', 'Value of "this" must be of type %s', TypeError, HideStackFramesError);
 E('ERR_INVALID_URI', 'URI malformed', URIError);
+E('ERR_INVALID_URL_SCHEME', 'The URL must be of scheme %s', TypeError);
+E('ERR_INVALID_FILE_URL_HOST', 'File URL host must be "localhost" or empty on %s', TypeError);
+E('ERR_INVALID_URL', 'Invalid URL', TypeError);
 E('ERR_UNKNOWN_ENCODING', 'Unknown encoding: %s', TypeError, HideStackFramesError);
 E('ERR_OUT_OF_RANGE',
   (str, range, input, replaceDefaultBoolean = false) => {

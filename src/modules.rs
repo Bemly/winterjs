@@ -77,6 +77,7 @@ struct Prepared {
     original: String,
     js: String,
     imports: Vec<String>,
+    is_module: bool,
     map: Option<String>,
 }
 
@@ -99,12 +100,12 @@ fn prepare(url: &Url) -> Result<Prepared, Error> {
         let path = PathBuf::from(format!("{}.js", url.as_str().replace(':', "_")));
         let loaded = load_js(&text, url.as_str(), &path)?;
         tracing::debug!(target: "winterjs::modules", url = url.as_str(), "builtin module prepared");
-        return Ok(Prepared { original: text, js: loaded.js, imports: loaded.imports, map: loaded.map });
+        return Ok(Prepared { original: text, js: loaded.js, imports: loaded.imports, is_module: true, map: loaded.map });
     }
     let fetched = fetch(url)?;
     let path = module_path(url)?;
     let loaded = load_js(&fetched.text, url.as_str(), &path)?;
-    Ok(Prepared { original: fetched.text, js: loaded.js, imports: loaded.imports, map: loaded.map })
+    Ok(Prepared { original: fetched.text, js: loaded.js, imports: loaded.imports, is_module: loaded.is_module, map: loaded.map })
 }
 
 // ── 编译（registry 命中直接返回；同时返回静态 imports 供子图遍历）─────────
@@ -127,15 +128,77 @@ fn compile_source(cx: &mut JSContext, filename: &str, js: &str) -> Result<*mut J
     }
 }
 
+/// file: 依赖的 CJS 互操作判定（Node ≥22 detect-module 口径，plan 9j）：
+/// `.cjs` 恒 CJS；`.js`/`.jsx` 仅当最近 type 非 module、无 ESM 语法、
+/// 且能按经典脚本解析（TLA 专属文件经典解析失败，走 ESM，保 §4.17 入口重试
+/// 与 TLA 导入不退化）时 CJS；其余（mjs/mts/ts/非 file）走原 ESM 路。
+/// 入口经典路径（`sniff_module`）不动。
+fn cjs_interop(url: &Url, is_module: bool, text: &str) -> bool {
+    if url.scheme() != "file" {
+        return false;
+    }
+    let Ok(path) = url.to_file_path() else {
+        return false;
+    };
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("cjs") => true,
+        Some("js" | "jsx") => {
+            !is_module
+                && crate::builtins::node::require::nearest_pkg_type(&path).as_deref()
+                    != Some("module")
+                && parses_as_script(text, &path)
+        }
+        _ => false,
+    }
+}
+
+/// 经典脚本目标试解析（oxc script/unambiguous goal）：TLA/import/export 任一
+/// 即失败或升级为模块信号（`has_module_syntax`，oxc 无歧义 await 自动升级）。
+/// 纯函数；只在上述歧义集上调用（ESM 已定文件不走这里，无额外开销）。
+fn parses_as_script(text: &str, path: &std::path::Path) -> bool {
+    use oxc::{allocator::Allocator, parser::Parser, span::SourceType};
+    let allocator = Allocator::default();
+    let Ok(source_type) = SourceType::from_path(path).map(|t| t.with_module(false)) else {
+        return false;
+    };
+    let ret = Parser::new(&allocator, text, source_type).parse();
+    !ret.fatal_error && !ret.diagnostics.has_errors() && !ret.module_record.has_module_syntax
+}
+
+/// CJS 互操作垫片：同步 require 整包再 `export default`（命名导出只有 default；
+/// CJS 依赖在求值期懒解析，静态子图无需预编译）。
+fn cjs_shim_js(url: &Url) -> String {
+    format!(
+        "const __wjs_cjs_exports = globalThis.__wjs_require_cjs_by_url({url:?});\nexport default __wjs_cjs_exports;\n",
+        url = url.as_str()
+    )
+}
+
 /// 取回 + 转译 + 编译 + 注册（无递归；调用方负责遍历）。
 fn compile_url(cx: &mut JSContext, url: &Url) -> Result<(*mut JSObject, Vec<String>), Error> {
     if let Some(record) = find_module(url.as_str()) {
         return Ok((record, Vec::new()));
     }
     let prepared = prepare(url)?;
+    if cjs_interop(url, prepared.is_module, &prepared.original) {
+        let js = cjs_shim_js(url);
+        let record = compile_source(cx, url.as_str(), &js)?;
+        register_module(url.as_str().to_owned(), record);
+        let Prepared { original, map, .. } = prepared;
+        tracing::debug!(target: "winterjs::modules", url = url.as_str(), "cjs interop shim compiled");
+        let debug = state::ModuleDebug { original, map };
+        state::with_plain(|p| {
+            p.module_debug.insert(url.as_str().to_owned(), debug);
+        });
+        return Ok((record, Vec::new()));
+    }
     let record = compile_source(cx, url.as_str(), &prepared.js)?;
     register_module(url.as_str().to_owned(), record);
-    let Prepared { original, js: _, imports, map } = prepared;
+    let Prepared { original, js: _, imports, map, .. } = prepared;
     tracing::debug!(target: "winterjs::modules", url = url.as_str(), deps = imports.len(), "module compiled");
     let debug = state::ModuleDebug { original, map };
     state::with_plain(|p| {

@@ -4599,3 +4599,275 @@ console.log("xp-cross", pss.verify(ca.publicKey) === false, leaf.checkIssued(pss
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9j_module_create_require() {
+    // 正常：createRequire(file URL) 读 CJS/JSON/内建 + resolve；
+    // Module.createRequire 同口径；builtinModules 双形/isBuiltin/sync 无操作。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("helper.cjs").write_str("module.exports = { v: 41 };\n").unwrap();
+    dir.child("data.json").write_str("{\"n\": 7}\n").unwrap();
+    let file = dir.child("m.mjs");
+    file.write_str(
+        r#"
+import { createRequire, builtinModules, isBuiltin, Module } from "node:module";
+const req = createRequire(import.meta.url);
+console.log("cr-cjs", req("./helper.cjs").v);
+console.log("cr-json", req("./data.json").n);
+console.log("cr-builtin", typeof req("node:path").join);
+console.log("cr-resolve", req.resolve("./helper.cjs").endsWith("helper.cjs"));
+const req2 = Module.createRequire(import.meta.url);
+console.log("mod-cr", req2("./helper.cjs").v);
+console.log("bl", builtinModules.includes("node:module") && builtinModules.includes("module") && isBuiltin("fs") && isBuiltin("node:fs") && !isBuiltin("node:nope"));
+console.log("sync", Module.syncBuiltinESMExports() === undefined);
+try { req("./nope-missing-xyz.cjs"); } catch (e) { console.log("miss", String(e.message).includes("Cannot find module")); }
+try { createRequire(42); } catch (e) { console.log("badbase", e.code); }
+try { Module.register(); } catch (e) { console.log("reg", e.code); }
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "cr-cjs 41",
+        "cr-json 7",
+        "cr-builtin function",
+        "cr-resolve true",
+        "mod-cr 41",
+        "bl true",
+        "sync true",
+        "miss true",
+        "badbase ERR_INVALID_ARG_TYPE",
+        "reg ERR_METHOD_NOT_IMPLEMENTED",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9j_global_alias() {
+    // Node 口径：global 为全局自引用（vite bin 直引，-r dev 实测补齐）。
+    let out = winterjs()
+        .args(["--eval", "console.log(global === globalThis, typeof global.setTimeout, global.process === process)"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "true function true\n");
+}
+
+#[test]
+fn phase9j_v8_readline_surface() {
+    // v8：startupSnapshot 守卫（vite try 内调用）；readline：建接口/关/光标恒 false/非法入参。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("vr.mjs");
+    file.write_str(
+        r#"
+import v8, { startupSnapshot } from "node:v8";
+console.log("v8snap", startupSnapshot.isBuildingSnapshot() === false, v8.startupSnapshot === startupSnapshot);
+import rl, { createInterface, cursorTo, clearScreenDown, emitKeypressEvents } from "node:readline";
+const itf = createInterface({ input: null, output: null });
+let closed = false;
+itf.on("close", () => { closed = true; });
+itf.setPrompt("> ");
+console.log("rl-open", itf.getPrompt() === "> " && itf.closed === false);
+itf.close();
+console.log("rl-close", closed && itf.closed);
+console.log("rl-cursor", cursorTo(null, 0, 0) === false && clearScreenDown(null) === false && emitKeypressEvents(null) === undefined);
+try { itf.question("q?", () => {}); } catch (e) { console.log("rl-q", e.code); }
+try { createInterface(42); } catch (e) { console.log("rl-bad", e.code); }
+console.log("rl-def", typeof rl.createInterface === "function");
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "v8snap true true",
+        "rl-open true",
+        "rl-close true",
+        "rl-cursor true",
+        "rl-q ERR_METHOD_NOT_IMPLEMENTED",
+        "rl-bad ERR_INVALID_ARG_TYPE",
+        "rl-def true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9j_url_file_convert() {
+    // 真机逐项对过（node 26.8.2）：往返/编解码/三码三文案。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("u.mjs");
+    file.write_str(
+        r#"
+import { URL as U, URLSearchParams as USP, fileURLToPath, pathToFileURL } from "node:url";
+console.log("u-re", U === globalThis.URL && USP === globalThis.URLSearchParams);
+console.log("u-f2p", fileURLToPath("file:///a/b%20c"));
+console.log("u-f2purl", fileURLToPath(new URL("file:///x/y")));
+console.log("u-p2f", pathToFileURL("/a/b c").href);
+try { fileURLToPath(42); } catch (e) { console.log("u-t", e.code, e.message); }
+try { fileURLToPath("https://x/y"); } catch (e) { console.log("u-s", e.code, e.message); }
+try { fileURLToPath("/a/b"); } catch (e) { console.log("u-i", e.code, e.message); }
+try { pathToFileURL(42); } catch (e) { console.log("u-pt", e.code, e.message); }
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "u-re true",
+        "u-f2p /a/b c",
+        "u-f2purl /x/y",
+        "u-p2f file:///a/b%20c",
+        "u-t ERR_INVALID_ARG_TYPE The \"path\" argument must be of type string or an instance of URL. Received type number (42)",
+        "u-s ERR_INVALID_URL_SCHEME The URL must be of scheme file",
+        "u-i ERR_INVALID_URL Invalid URL",
+        "u-pt ERR_INVALID_ARG_TYPE The \"path\" argument must be of type string. Received type number (42)",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9j_cjs_interop_default() {
+    // CJS 互操作（Node detect-module 口径）：import 命中 .cjs/无语法 .js 即 default；
+    // require() 同一文件值同一；副作用 import 照跑；命名导入仍报缺导出。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("dep.cjs").write_str("module.exports = { v: 41 };\n").unwrap();
+    dir.child("plain.js").write_str("module.exports = { w: 7 };\n").unwrap();
+    dir.child("side.cjs").write_str("globalThis.__wjs_side = 1;\n").unwrap();
+    let file = dir.child("m.mjs");
+    file.write_str(
+        r#"
+import pkg from "./dep.cjs";
+import plain from "./plain.js";
+import "./side.cjs";
+console.log("cjs-def", pkg.v, plain.w, globalThis.__wjs_side);
+console.log("cjs-same", globalThis.require("./dep.cjs") === pkg);
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in ["cjs-def 41 7 1", "cjs-same true"] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    // 边界：CJS 垫片只有 default，命名导入报缺导出（与 Node 同为 link 期错）。
+    let bad = dir.child("b.mjs");
+    bad.write_str("import { v } from \"./dep.cjs\";\nconsole.log(v);\n").unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(bad.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "named import from CJS must fail");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("export named"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9j_util_parse_env() {
+    // 真机差分钉住（node 26.8.2 四组探针全同）：引号/注释/export/重复/排序/多行。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("pe.mjs");
+    file.write_str(
+        r##"
+import { parseEnv } from "node:util";
+console.log(JSON.stringify(parseEnv("B=2\nA=1")));
+console.log(JSON.stringify(parseEnv("# c\nexport C=3\nD='a#b'\nE=\"x\\nY\"\nF=v # t\nG=\"m\nn\"\nH=\"q\"q")));
+console.log(JSON.stringify(parseEnv("X=one\nX=two\n=v\nnoeq")));
+try { parseEnv(42); } catch (e) { console.log("pe-t", e.code); }
+"##,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "{\"A\":\"1\",\"B\":\"2\"}",
+        "{\"C\":\"3\",\"D\":\"a#b\",\"E\":\"x\\nY\",\"F\":\"v\",\"G\":\"m\\nn\",\"H\":\"q\"}",
+        "{\"X\":\"two\"}",
+        "pe-t ERR_INVALID_ARG_TYPE",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9j_native_node_rejected() {
+    // napi（.node）v1 不做：文件存在也报可读错，不读二进制。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let fake = dir.child("fake.node");
+    fake.write_str("not a real binary").unwrap();
+    let out = winterjs()
+        .args(["--eval", &format!("try {{ require({:?}); }} catch (e) {{ console.log(e.message.slice(0, 200)); }}", fake.path().to_string_lossy())])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("require() of native module") && stdout.contains("not supported"),
+        "stdout: {stdout}"
+    );
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9j_tla_dep_stays_esm() {
+    // 回归（CJS 互操作曾吞掉它）：TLA 专属 .js 被 import 时仍走 ESM，不进垫片。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("tla-dep.js")
+        .write_str("const v = await Promise.resolve(6);\nexport default v * 7;\n")
+        .unwrap();
+    let file = dir.child("m.mjs");
+    file.write_str("import v from \"./tla-dep.js\";\nconsole.log(\"tla-dep\", v);\n").unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "tla-dep 42\n");
+    dir.close().unwrap();
+}

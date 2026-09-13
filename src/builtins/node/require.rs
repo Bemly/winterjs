@@ -217,6 +217,13 @@ fn require_value(
                 .to_file_path()
                 .map_err(|_| Error::Other(format!("Cannot find module '{spec}'")))?;
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            // napi（`.node` 二进制）v1 不做（plan2 §4）：文件存在也直说，
+            // 不让二进制读进转译器报乱码错（vite/rolldown 链实测至此，plan 9j）。
+            if ext == "node" {
+                return Err(Error::Other(format!(
+                    "require() of native module '{spec}' (.node) is not supported"
+                )));
+            }
             if ext == "json" {
                 let text = std::fs::read_to_string(&path).map_err(|e| {
                     Error::Other(format!("Cannot find module '{spec}' ({})", e))
@@ -339,6 +346,163 @@ Object.defineProperty(globalThis.require, "main", {
 });
 "#;
 
+/// 显式 base 解析（`createRequire(filename)` 用；`file:` URL 或路径，
+/// 相对路径按 cwd 拼；非法 base 即错，不回落调用方）。
+fn explicit_base(base_s: &str) -> Result<Url, String> {
+    if let Ok(u) = Url::parse(base_s)
+        && u.scheme() == "file"
+    {
+        return Ok(u);
+    }
+    let path = std::path::PathBuf::from(base_s);
+    let abs = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("cannot get cwd: {e}"))?
+            .join(path)
+    };
+    Url::from_file_path(&abs).map_err(|_| format!("bad require base '{base_s}'"))
+}
+
+/// UNSAFE-BOUNDARY: `__wjs_require_from(base, id)` → `createRequire` 底座，
+/// 显式 base 复用 `require_value`（调用方定位/JSON/CJS/ESM 口径与全局 `require`
+/// 完全一致）；前置：两参皆字符串（非串即 TypeError，不读值）；
+/// 覆盖：`tests/node.rs::phase9j_module_create_require`。
+pub unsafe extern "C" fn require_from(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 || !frame.arg(0).is_string() || !frame.arg(1).is_string() {
+        report_error(&mut cx, "TypeError: __wjs_require_from needs (base, id) strings");
+        return false;
+    }
+    let base_s = value_to_string(&mut cx, frame.arg(0));
+    let spec = value_to_string(&mut cx, frame.arg(1));
+    let global = state::global();
+    rooted!(&in(cx) let global_root: *mut JSObject = global);
+    let base = match explicit_base(&base_s) {
+        Ok(u) => u,
+        Err(e) => {
+            report_error(&mut cx, &format!("TypeError: {e}"));
+            return false;
+        }
+    };
+    match require_value(&mut cx, global_root.get(), &spec, Some(base)) {
+        Ok(v) => {
+            rooted!(&in(cx) let v_root = v);
+            frame.set_rval(v_root.get());
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e.to_string());
+            false
+        }
+    }
+}
+
+/// UNSAFE-BOUNDARY: `__wjs_require_resolve_from(base, id)` → 解析后 URL 串
+/// （`createRequire().resolve` 用；同显式 base 规则）；
+/// 前置同上；覆盖：`tests/node.rs::phase9j_module_create_require`。
+pub unsafe extern "C" fn require_resolve_from(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 || !frame.arg(0).is_string() || !frame.arg(1).is_string() {
+        report_error(&mut cx, "TypeError: __wjs_require_resolve_from needs (base, id) strings");
+        return false;
+    }
+    let base_s = value_to_string(&mut cx, frame.arg(0));
+    let spec = value_to_string(&mut cx, frame.arg(1));
+    let base = match explicit_base(&base_s) {
+        Ok(u) => u,
+        Err(e) => {
+            report_error(&mut cx, &format!("TypeError: {e}"));
+            return false;
+        }
+    };
+    let url = if let Some(canonical) = crate::builtins::node::normalize_spec(&spec) {
+        Url::parse(canonical).map_err(|e| Error::Other(format!("bad builtin URL: {e}")))
+    } else {
+        resolve(&spec, Some(&base))
+    };
+    match url {
+        Ok(u) => {
+            rooted!(&in(cx) let mut v = UndefinedValue());
+            u.as_str().to_jsval(&mut cx, v.handle_mut());
+            frame.set_rval(v.get());
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &format!("Cannot find module '{spec}' ({e})"));
+            false
+        }
+    }
+}
+
+/// UNSAFE-BOUNDARY: `__wjs_builtin_modules()` → JSON 数组（`node:module` 的
+/// `builtinModules`/`isBuiltin` 用；裸名 + `node:` 双形，与 `available()` 同源，
+/// 天然不漂移）；前置：无参；覆盖：`tests/node.rs::phase9j_module_surface`。
+pub unsafe extern "C" fn builtin_modules_json(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let mut names: Vec<&str> = Vec::new();
+    for canonical in crate::builtins::node::available() {
+        names.push(canonical.strip_prefix("node:").unwrap_or(canonical));
+        names.push(canonical);
+    }
+    let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".into());
+    rooted!(&in(cx) let mut v = UndefinedValue());
+    json.to_jsval(&mut cx, v.handle_mut());
+    frame.set_rval(v.get());
+    true
+}
+/// UNSAFE-BOUNDARY: `__wjs_require_cjs_by_url(url)` → CJS 互操作垫片底座
+/// （`import` 命中 CJS 文件时合成 `export default`；复用 `require_value` 全口径：
+/// 注册表命中则同值、CJS 循环见半成品；垫片求值期同步执行 CJS 体）。
+/// 前置：单参为 file: URL 串（非法即抛错，不回落）；
+/// 覆盖：`tests/node.rs::phase9j_cjs_interop_default`。
+pub unsafe extern "C" fn require_cjs_by_url(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 || !frame.arg(0).is_string() {
+        report_error(&mut cx, "TypeError: __wjs_require_cjs_by_url needs a file URL string");
+        return false;
+    }
+    let spec = value_to_string(&mut cx, frame.arg(0));
+    let global = state::global();
+    rooted!(&in(cx) let global_root: *mut JSObject = global);
+    // 绝对 file: URL 不依赖调用方 base（垫片求值点的调用方是垫片自身）。
+    match require_value(&mut cx, global_root.get(), &spec, None) {
+        Ok(v) => {
+            rooted!(&in(cx) let v_root = v);
+            frame.set_rval(v_root.get());
+            true
+        }
+        Err(e) => {
+            report_error(&mut cx, &e.to_string());
+            false
+        }
+    }
+}
 /// `__wjs_require_main_url()` → 主模块 URL 串｜undefined（prelude 包成对象）。
 pub unsafe extern "C" fn require_main_url(
     cx_raw: *mut mozjs::jsapi::JSContext,

@@ -77,7 +77,7 @@ pub struct Cli {
     pub upgrade: bool,
 
     /// Scaffold a new package
-    #[arg(long = "init", value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
+    #[arg(short = 'I', long = "init", value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
     pub init: Option<String>,
 
     /// Start an interactive REPL

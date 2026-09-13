@@ -351,9 +351,11 @@
   `cargo test` 42+127 全绿，0 警告，冒烟 5/5。
 - [x] 切片 e2（2026-09-10）：`winterjs init [name] [--yes]`（`src/initpkg.rs`，
   `askama` 内联三模板：package.json + index.js + hello.test.js，init 后
-  `test` 即绿闭环；已存在不覆盖整体报错（2026-09-11 加 `--force` 逐个覆盖）；
-  缺名取目录名；非 TTY 缺 `--yes` 即错）。CLI 新增 `init`（man 12→13）。
-  模块单测 2 例 + 黑盒 4 例（闭环/坏名/冲突/非TTY）；
+  `test` 即绿闭环；2026-09-13 改重建语义（旧"冲突整体报错"作废）：无配置新建、
+  有配置只补缺失（现有文件逐个跳过，`package.json` 采用不碰，全齐报
+  already initialized；`--force` 仍逐个覆盖）+ `-I` 简写；
+  缺名优先级显式 > 现有 package.json > 目录名；非 TTY 缺 `--yes` 即错）。CLI 新增 `init`（man 12→13）。
+  模块单测 3 例 + 黑盒 6 例（闭环/坏名/重建不碰/非TTY/采用已有项目/-I+force）；
   `cargo test` 44+131 全绿，0 警告，冒烟 5/5。
 - [x] 切片 e3（2026-09-10）：`winterjs repl`（`src/repl.rs` + `runtime.rs::repl`：
   `init_session/pump_once` 抽共用（`run` 零回归 44+131），持久会话 +
@@ -1009,6 +1011,34 @@
   特性组随 default 启用。`cargo test` 总 386 passed 0 failed，冒烟 5/5。
   记档：`node:quic` JS 面的 headers 分支（H3 上行）未出，v1 不验收
   （`node:quic` 裸流面照旧）；本切片只验门控与轮子可用性。
+
+- [x] 9j vue-project 实战（2026-09-13 完工；用户拿 `yarn create vue` 全家桶
+  （ts/jsx/router/pinia/vitest/cypress/eslint/oxfmt）实验 `-r dev` 牵引）：
+  - `init` 重建语义（旧"冲突整体报错"作废）：无配置新建、有配置只补缺失
+    （`package.json` 采用不碰，名优先级显式 > 现有 > 目录名；全齐报
+    already initialized；`--force` 仍逐个覆盖）+ `-I` 简写（`-i` 已被 install
+    占，用大写）。黑盒重写冲突例 + 新增采用/-I/force（init 6 例）。
+  - `node:module` 最小桥（`__wjs_require_from/resolve_from/builtin_modules`
+    3 natives + `nodemodule.rs` 壳）：`createRequire`（path｜file URL｜URL 对象
+    显式 base，复用 `require_value` 全口径）/`createRequireFromPath`/
+    `builtinModules`（裸名 + `node:` 双形，与 `available()` 同源不漂移）/
+    `isBuiltin`/`Module`（createRequire/builtinModules/sync 无操作/`register`
+    抛未实现/实例 `require`）。
+  - 附带：`global` 自引用别名（prelude 一行，vite 直引）；`node:v8` 最小桥
+    （仅 `startupSnapshot` 守卫，堆/序列化口径仍跳过，plan2 §4 有效）；
+    `node:readline` 最小桥（EventEmitter 基座 + 光标系恒 false + question 抛未实现）；
+    `node:url`（全局重导出 + `fileURLToPath`/`pathToFileURL`，三码三文案逐字）；
+    `util.parseEnv`（dotenv 语义，真机四组探针全同；**键按 ASCII 排序输出**，
+    `B=1\nA=2` → A,B，实测钉住）；CJS 互操作（Node ≥22 detect-module 口径：
+    `import` 命中 `.cjs`/无语法 typeless `.js` 即合成 `export default`，
+    求值期同步 require，命名导入仍 link 期错）；`.node` 可读拒错
+    （napi v1 不做，文件存在也不读二进制）。
+  - vite `-r dev` 实测链：node:module 缺失 → `global` 未定义 → node:v8 →
+    node:url → picomatch 无 default（CJS 互操作修）→ parseEnv 缺失 → 终到
+    rolldown `.node` 原生绑定墙（真机 node 同链可跑；napi 另案，v1 不做）。
+    以上每步均有黑盒（phase9j_* 8 例）+ Hermetic vue 形 `-r dev` 管线例
+    （scripts → .bin 自递归 → node:module，`tests/cli.rs`）。
+  - `cargo test` 全绿，0 警告，冒烟 5/5。
 
 ## 全局纪律
 

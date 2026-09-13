@@ -426,3 +426,35 @@ fn run_script_finds_package_json_up_the_tree() {
     assert!(stdout.contains("root-script"), "stdout: {stdout}");
     dir.close().unwrap();
 }
+
+#[test]
+fn run_script_vue_dev_shape_through_node_module() {
+    // vue-project 案：scripts.dev → .bin JS bin（自递归）→ import node:module →
+    // createRequire 读 CJS 配置，全链 exit=0（缺 node:module 时到此即炸）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    script_project(
+        &dir,
+        r#"{"name":"vue-probe","type":"module","scripts":{"dev":"tool --watch-mode"}}"#,
+    );
+    dir.child("cfg.cjs").write_str("module.exports = { ok: true };\n").unwrap();
+    let bin = dir.child("node_modules/.bin/tool");
+    bin.write_str(
+        "#!/usr/bin/env node\nimport { createRequire } from \"node:module\";\nconst req = createRequire(import.meta.url);\nconst cfg = req(\"../../cfg.cjs\");\nconsole.log(\"vue-dev\", cfg.ok, typeof req.resolve, process.argv.slice(2).join(\",\"));\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(bin.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let out = winterjs()
+        .arg("--run")
+        .arg("dev")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("vue-dev true function --watch-mode"), "stdout: {stdout}");
+    dir.close().unwrap();
+}

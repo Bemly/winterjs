@@ -50,8 +50,8 @@ fn phase7_init_bad_name() {
 }
 
 #[test]
-fn phase7_init_conflict() {
-    // 边界：已存在文件不覆盖，第二次 init exit=1 且一个不写。
+fn phase7_init_rebuild_keeps_existing() {
+    // 重建：已存在文件不碰（exit=0），缺失的补齐。
     let dir = assert_fs::TempDir::new().unwrap();
     assert!(
         winterjs()
@@ -63,13 +63,16 @@ fn phase7_init_conflict() {
             .success()
     );
     std::fs::write(dir.path().join("index.js"), b"mine\n").unwrap();
+    std::fs::remove_file(dir.path().join("hello.test.js")).unwrap();
     let out = winterjs()
         .args(["--init", "p", "--yes"])
         .current_dir(dir.path())
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("refusing to overwrite"));
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("exists, skipped index.js"), "stdout: {so}");
+    assert!(so.contains("created hello.test.js"), "stdout: {so}");
     assert_eq!(
         std::fs::read(dir.path().join("index.js")).unwrap(),
         b"mine\n"
@@ -92,5 +95,64 @@ fn phase7_init_needs_yes_without_tty() {
         !dir.path().join("package.json").exists(),
         "nothing must be written"
     );
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9_init_adopts_existing_project() {
+    // vue-project 案：已有 package.json 的项目只补缺失、不碰现有一字节。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let pkg = r#"{"name":"vue-project","version":"0.0.0","private":true,"type":"module","scripts":{"dev":"vite"}}"#;
+    std::fs::write(dir.path().join("package.json"), pkg).unwrap();
+    let out = winterjs()
+        .args(["--init", "--yes"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("exists, skipped package.json"), "stdout: {so}");
+    assert_eq!(std::fs::read_to_string(dir.path().join("package.json")).unwrap(), pkg);
+    assert!(dir.path().join("index.js").exists());
+    assert!(dir.path().join("hello.test.js").exists());
+    // 全齐再跑：already initialized，exit=0。
+    let out2 = winterjs()
+        .args(["--init", "--yes"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out2.status.success());
+    assert!(
+        String::from_utf8_lossy(&out2.stdout).contains("already initialized"),
+        "stdout: {}",
+        String::from_utf8_lossy(&out2.stdout)
+    );
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9_init_short_flag_and_force() {
+    // -I 简写可用；--force 逐个覆盖并报 overwrote。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = stdout_of(
+        winterjs().args(["-I", "short-pkg", "--yes"]).current_dir(dir.path()),
+    );
+    assert!(out.contains("created package.json"), "init:\n{out}");
+    let pkg = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
+    assert!(pkg.contains("\"short-pkg\""), "package.json:\n{pkg}");
+
+    std::fs::write(dir.path().join("index.js"), b"mine\n").unwrap();
+    let out = winterjs()
+        .args(["--init", "short-pkg", "--yes", "--force"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("overwrote index.js"),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_ne!(std::fs::read(dir.path().join("index.js")).unwrap(), b"mine\n");
     dir.close().unwrap();
 }

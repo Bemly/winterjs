@@ -26,6 +26,8 @@ use crate::jsapi_glue::report_error;
 
 /// 引擎启动时在全局对象上求值的一次性脚本（§1 路线 Phase 1）。
 pub const PRELUDE: &str = r#"
+// Node 口径：`global` 为全局对象自引用别名（vite 等直引；9j 实测补齐）。
+globalThis.global = globalThis;
 globalThis.queueMicrotask = function (cb) {
   if (typeof cb !== "function") throw new TypeError("queueMicrotask: callback must be a function");
   // 与引擎内部 job queue 同一条微任务队列；回调抛错 → 未处理 rejection（由 runtime 上报）
@@ -2218,6 +2220,12 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("require", Some(node::require::require_native), 1),
             ("__wjs_require_resolve", Some(node::require::require_resolve), 1),
             ("__wjs_require_main_url", Some(node::require::require_main_url), 0),
+            // Phase 9j: node:module（createRequire 显式 base 底座 + 内建列表）
+            ("__wjs_require_from", Some(node::require::require_from), 2),
+            ("__wjs_require_resolve_from", Some(node::require::require_resolve_from), 2),
+            ("__wjs_builtin_modules", Some(node::require::builtin_modules_json), 0),
+            // Phase 9j: CJS 互操作垫片（import 命中 CJS → export default）
+            ("__wjs_require_cjs_by_url", Some(node::require::require_cjs_by_url), 1),
             ("__wjs_ws_connect", Some(ws::ws_connect), 3),
             ("__wjs_ws_send", Some(ws::ws_send), 3),
             ("__wjs_ws_close", Some(ws::ws_close), 3),

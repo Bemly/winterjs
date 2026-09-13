@@ -4,6 +4,7 @@
 //! internal/util/inspect）、`promisify`（含 custom/customPromisifyArgs/DEP0174
 //! 警告）、`callbackify`（含 falsy rejection 包裹 + 描述符复制）、`inherits`、
 //! `_extend`（DEP0060）、`isDeepStrictEqual`（严格面）、`toUSVString`、
+//! `parseEnv`（9j 差分移植，真机 26.8.2 全例对过）、
 //! `convertProcessSignalToExitCode`、legacy is* 判定、`debuglog`、`deprecate`。
 //!
 //! 偏差（9a 口径，逐条记档）：
@@ -12,7 +13,7 @@
 //!   宽松 `isDeepEqual` 非公开面未移植。
 //! - `styleText` 最小实现（内联 ANSI 表；NO_COLOR/isTTY 判色；inspect.colors
 //!   未暴露——本仓 inspect 无色）。
-//! - 未移植（后续切片按需）：`parseArgs`、`parseEnv`、`MIMEType/MIMEParams`、
+//! - 未移植（后续切片按需）：`parseArgs`、`MIMEType/MIMEParams`、
 //!   `getSystemErrorName/Message/Map`（需 uv errno 表，随 9c fs 错误映射）、
 //!   `getCallSites`/`markPromiseAsHandled`/`aborted`/transferable 系列（引擎绑定）。
 //! - `TextEncoder`/`TextDecoder` 直通全局（本仓 prelude 实现）。
@@ -436,6 +437,53 @@ function toUSVString(input) {
   return `${input}`.toWellFormed();
 }
 
+// ── parseEnv（dotenv 语义；真机 26.8.2 差分钉住，plan 9j）───────────────────
+// 行按 \n 切；trim 后空行/`#` 跳过；`export ` 前缀剥离；首个 `=` 分键值
+// （空键/无 `=` 丢弃）；值 trim 后首字符为引号则扫到同種闭引号（可跨行吞
+// 后续行；永不闭合则首行原文、后续行照常解析），双引号内容只展开 `\n`，
+// 单引号原文；其余（非引号）在首个 `#` 处截断再去尾空格。
+function parseEnv(content) {
+  validateString(content, 'content');
+  const entries = new Map();
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trim();
+    if (line === '' || line.startsWith('#')) continue;
+    if (line === 'export') continue;
+    if (/^export\s/.test(line)) line = line.slice(6).trim();
+    const idx = line.indexOf('=');
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    if (key === '') continue;
+    let val = line.slice(idx + 1).trim();
+    const q = val[0];
+    if (q === '"' || q === "'") {
+      let end = val.indexOf(q, 1);
+      let j = i;
+      let acc = val;
+      while (end === -1 && j + 1 < lines.length) {
+        j++;
+        acc += '\n' + lines[j];
+        end = acc.indexOf(q, 1);
+      }
+      if (end !== -1) {
+        i = j;
+        val = acc.slice(1, end);
+        if (q === '"') val = val.replace(/\\n/g, '\n');
+      }
+    } else {
+      const hash = val.indexOf('#');
+      if (hash !== -1) val = val.slice(0, hash);
+      val = val.trimEnd();
+    }
+    entries.set(key, val);
+  }
+  // 真机行为：结果键按 ASCII 排序（`B=1\nA=2` → A,B；大小写敏感，大写在前）。
+  const obj = {};
+  for (const k of [...entries.keys()].sort()) obj[k] = entries.get(k);
+  return obj;
+}
+
 // ── 组装（Node module.exports 形态）───────────────────────────────────────
 const _extendDep = deprecate(_extend, 'The `util._extend` API is deprecated. Please use Object.assign() instead.', 'DEP0060');
 const isArrayDep = deprecate(isArray, 'The `util.isArray` API is deprecated. Please use `Array.isArray()` instead.', 'DEP0044');
@@ -483,6 +531,7 @@ const util = {
   isSymbol: isSymbolDep,
   isUndefined: isUndefinedDep,
   isDeepStrictEqual,
+  parseEnv,
   promisify,
   stripVTControlCharacters,
   toUSVString,
@@ -501,6 +550,7 @@ export {
   inherits,
   inspect,
   isDeepStrictEqual,
+  parseEnv,
   promisify,
   stripVTControlCharacters,
   styleText,

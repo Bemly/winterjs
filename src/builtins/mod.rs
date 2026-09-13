@@ -985,24 +985,143 @@ globalThis.crypto = {
     },
   },
 };
+// ---- M5: 全局 Event / EventTarget / CustomEvent（Node 平坦派发口径）----
+// Node 的 EventTarget 不实现捕获/冒泡 propagation path（官方文档明言）：
+// capture 选项仅为 removeEventListener 匹配保留；listener 收函数或 {handleEvent}。
+// 事件状态走共享 WeakMap（Event 与 EventTarget 跨类要读写字段，# 私有够不着；
+// 与既有 __wjs_abortState 同风格，前缀避免污染全局面）。
+const __wjs_eventState = new WeakMap();
+const __wjs_etState = new WeakMap();
+globalThis.Event = class Event {
+  constructor(type, options = {}) {
+    if (arguments.length === 0) throw new TypeError("Event requires at least 1 argument, but only 0 were passed");
+    const o = options ?? {};
+    __wjs_eventState.set(this, {
+      type: String(type),
+      bubbles: !!o.bubbles,
+      cancelable: !!o.cancelable,
+      composed: !!o.composed,
+      defaultPrevented: false,
+      stopped: false,
+      immediate: false,
+      dispatching: false,
+      timeStamp: Date.now(),
+      target: null,
+      currentTarget: null,
+    });
+  }
+  get type() { return __wjs_eventState.get(this).type; }
+  get bubbles() { return __wjs_eventState.get(this).bubbles; }
+  get cancelable() { return __wjs_eventState.get(this).cancelable; }
+  get composed() { return __wjs_eventState.get(this).composed; }
+  get timeStamp() { return __wjs_eventState.get(this).timeStamp; }
+  get defaultPrevented() { return __wjs_eventState.get(this).defaultPrevented; }
+  get target() { return __wjs_eventState.get(this).target; }
+  get currentTarget() { return __wjs_eventState.get(this).currentTarget; }
+  get srcElement() { return __wjs_eventState.get(this).target; }
+  get isTrusted() { return false; }
+  preventDefault() {
+    const s = __wjs_eventState.get(this);
+    if (s.cancelable) s.defaultPrevented = true;
+  }
+  stopPropagation() { __wjs_eventState.get(this).stopped = true; }
+  stopImmediatePropagation() {
+    const s = __wjs_eventState.get(this);
+    s.stopped = true;
+    s.immediate = true;
+  }
+};
+globalThis.CustomEvent = class CustomEvent extends Event {
+  #detail;
+  constructor(type, options = {}) {
+    super(type, options);
+    this.#detail = (options ?? {}).detail ?? null;
+  }
+  get detail() { return this.#detail; }
+};
+globalThis.EventTarget = class EventTarget {
+  constructor() {
+    __wjs_etState.set(this, new Map());
+  }
+  addEventListener(type, listener, options = {}) {
+    if (arguments.length < 2) throw new TypeError("addEventListener requires at least 2 arguments");
+    if (typeof listener !== "function" && (typeof listener !== "object" || listener === null || typeof listener.handleEvent !== "function")) {
+      throw new TypeError("addEventListener: listener must be a function or an object with handleEvent");
+    }
+    const o = typeof options === "boolean" ? { capture: options } : (options ?? {});
+    if (o.signal?.aborted) return;
+    const st = __wjs_etState.get(this);
+    const key = String(type);
+    const list = st.get(key) ?? [];
+    if (list.some((e) => e.listener === listener && e.capture === !!o.capture)) return;
+    const entry = { listener, once: !!o.once, capture: !!o.capture, signal: o.signal ?? null, removed: false };
+    list.push(entry);
+    st.set(key, list);
+    if (o.signal) o.signal.addEventListener("abort", () => this.removeEventListener(key, listener, options), { once: true });
+  }
+  removeEventListener(type, listener, options = {}) {
+    const o = typeof options === "boolean" ? { capture: options } : (options ?? {});
+    const st = __wjs_etState.get(this);
+    if (!st) return;
+    const list = st.get(String(type));
+    if (!list) return;
+    const i = list.findIndex((e) => e.listener === listener && e.capture === !!o.capture && !e.removed);
+    if (i >= 0) {
+      list[i].removed = true;
+      list.splice(i, 1);
+    }
+  }
+  dispatchEvent(event) {
+    if (!(event instanceof Event)) throw new TypeError("dispatchEvent requires an Event instance");
+    const es = __wjs_eventState.get(event);
+    if (es.dispatching) throw new Error("InvalidStateError: event is already being dispatched");
+    const st = __wjs_etState.get(this);
+    if (!st) throw new TypeError("dispatchEvent called on non-EventTarget");
+    es.target = this;
+    es.dispatching = true;
+    const list = (st.get(es.type) ?? []).slice();
+    try {
+      for (const entry of list) {
+        if (es.immediate || entry.removed) continue;
+        if (entry.signal?.aborted) continue;
+        if (entry.once) this.removeEventListener(es.type, entry.listener, { capture: entry.capture });
+        es.currentTarget = this;
+        if (typeof entry.listener === "function") {
+          entry.listener.call(this, event);
+        } else {
+          entry.listener.handleEvent(event);
+        }
+      }
+    } finally {
+      es.dispatching = false;
+      es.currentTarget = null;
+    }
+    return !(es.cancelable && es.defaultPrevented);
+  }
+};
+
 // ---- Phase 3b: Headers / Request / Response / fetch ----
+// AbortSignal 重构到全局 EventTarget 基类（Node 同构：signal 即 EventTarget，
+// abort 走 dispatchEvent；监听登记/移除/once/signal 选项全由基类承载）。
 const __wjs_abortState = new WeakMap();
 function __wjs_abortFire(signal, reason) {
   const st = __wjs_abortState.get(signal);
   if (!st || st.aborted) return;
   st.aborted = true;
   st.reason = reason === undefined ? new Error("AbortError: signal aborted") : reason;
-  // 事件对象（最小 Event 口径：type/target；无 Event 类，不做捕获冒泡）。
-  const event = { type: "abort", target: signal, currentTarget: signal, bubbles: false, cancelable: false };
-  for (const cb of st.listeners.splice(0)) {
-    try { cb.call(signal, event); } catch {}
-  }
+  const event = new Event("abort");
+  // onabort 独立属性路径（Node 同为 getter/setter 而非 EventTarget on* 表）；
+  // 沿既有口径吞错（abort 链失败不该炸用户回调）。
   if (typeof st.onabort === "function") {
     try { st.onabort.call(signal, event); } catch {}
   }
+  signal.dispatchEvent(event);
 }
-globalThis.AbortSignal = class AbortSignal {
-  constructor() { __wjs_abortState.set(this, { aborted: false, reason: undefined, listeners: [], onabort: null }); }
+globalThis.AbortSignal = class AbortSignal extends EventTarget {
+  constructor() {
+    super();
+    __wjs_abortState.set(this, { aborted: false, reason: undefined, onabort: null });
+  }
   get aborted() { return __wjs_abortState.get(this).aborted; }
   get reason() { return __wjs_abortState.get(this).reason; }
   get onabort() { return __wjs_abortState.get(this).onabort; }
@@ -1010,19 +1129,6 @@ globalThis.AbortSignal = class AbortSignal {
   throwIfAborted() {
     const st = __wjs_abortState.get(this);
     if (st.aborted) throw st.reason;
-  }
-  addEventListener(type, cb) {
-    if (type === "abort" && typeof cb === "function") __wjs_abortState.get(this).listeners.push(cb);
-  }
-  removeEventListener(type, cb) {
-    if (type !== "abort") return;
-    const st = __wjs_abortState.get(this);
-    st.listeners = st.listeners.filter((f) => f !== cb);
-  }
-  dispatchEvent(event) {
-    if (!event || event.type !== "abort") return true;
-    __wjs_abortFire(this, undefined);
-    return true;
   }
   static abort(reason) {
     const s = new AbortSignal();

@@ -251,8 +251,12 @@ let late = 0;
 c.signal.addEventListener("abort", () => { late++; });
 if (late !== 0) throw new Error("late listener must not fire");
 const c2 = new AbortController();
-if (c2.signal.dispatchEvent({ type: "abort" }) !== true || !c2.signal.aborted) throw new Error("dispatchEvent failed");
-if (c2.signal.dispatchEvent({ type: "click" }) !== true) throw new Error("dispatchEvent non-abort");
+// 真机口径（node 26 实测）：dispatchEvent 只收 Event 实例（普通对象 TypeError）；
+// 手动 dispatch "abort" 返 true 但不置 aborted 位（置位只归 abort 算法）。
+if (c2.signal.dispatchEvent(new Event("abort")) !== true || c2.signal.aborted) throw new Error("dispatchEvent manual must not flag aborted");
+if (c2.signal.dispatchEvent(new Event("click")) !== true) throw new Error("dispatchEvent non-abort");
+try { c2.signal.dispatchEvent({ type: "abort" }); throw new Error("must throw"); }
+catch (e) { if (!(e instanceof TypeError)) throw e; }
 const t = AbortSignal.timeout(5);
 await new Promise(r => setTimeout(r, 30));
 if (!t.aborted) throw new Error("timeout failed");

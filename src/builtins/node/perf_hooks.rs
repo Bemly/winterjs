@@ -7,6 +7,8 @@
 //! - `eventLoopUtilization` 未接事件循环内外计时：恒 `{ idle: 0, active: 累计,
 //!   utilization: 1 }`（delta 形态正常计算差值）；`nodeTiming` 为形状桩（数值 0）。
 //! - `PerformanceResourceTiming` 仅形状类（无资源加载埋点，不产生条目）。
+//! - 全局 `performance` 在本模块求值期安装（vite 等顶层 import 即有；
+//!   未 import 的会话徒手引用为 undefined，与 Node 全集口径的偏差）。
 
 /// 内嵌 ESM 源（`node:perf_hooks`）。
 pub const SOURCE: &str = r#"
@@ -215,6 +217,9 @@ const __performanceMethods = {
 class Performance {}
 const performance = __performanceMethods;
 Object.setPrototypeOf(performance, Performance.prototype);
+// Node 全局 performance（vite loadEnv 等徒手引用，不 import 本模块也能拿到——
+// 本模块求值期装全局；偏差：未 import 过 perf_hooks 的会话无此全局，记档 M5）。
+globalThis.performance = performance;
 
 function timerify(fn, options) {
   if (typeof fn !== "function") {

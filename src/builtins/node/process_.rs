@@ -407,7 +407,10 @@ globalThis.process = {
   get platform() { return __wjs_os_platform(); },
   get arch() { return __wjs_os_arch(); },
   version: "v26.9.13",
-  versions: { node: "22.0.0", winterjs: "26.9.13", mozjs: "153" },
+  // versions.node = Node API 兼容水位（Bun 同哲学：process.version 是自家版本，
+  // versions.node 报兼容等级）。22.12 = vite 8 的最低地板（22 && minor>=12），
+  // 22.x 大版本保 `^22` caret 区间可用；22.0.0 过不了 vite checkNodeVersion。
+  versions: { node: "22.12.0", winterjs: "26.9.13", mozjs: "153" },
   execPath: __wjs_exec_path(),
   pid: __wjs_pid(),
   uptime() { return __wjs_uptime(); },

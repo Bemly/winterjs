@@ -882,6 +882,22 @@ cargo build
 - 推广为铁律：路径/串解析先画全形再选 API——分隔符在串中段用 split 家族，
   strip_suffix 只配"真后缀"；stub 请求数对不上时先打印实际 path。
 
+### 4.65 宽松 API 重构到严格语义：先真机实测，再改伪语义断言（2026-09-14，M5）
+
+- 症状：EventTarget 全局化（cac `class CAC extends EventTarget` 前置）并把
+  AbortSignal 重构到基类后，`tests/fetch.rs::streams_abort_events` 挂
+  （`dispatchEvent requires an Event instance`）。
+- 根因：旧 AbortSignal 的 dispatchEvent 收普通对象且手动 dispatch 会置
+  aborted 位；新实现按 DOM/Node 标准只收 Event 实例。真 node 26 实测：
+  普通对象 → TypeError（`The "event" argument must be an instance of Event`）；
+  `dispatchEvent(new Event("abort"))` 返 true 但 aborted **不变**（置位只归
+  abort 算法）。旧测试编码的是伪语义，非实现回归。
+- 修法：测试按真机改（`new Event("abort")` + 断言 aborted 不置位 +
+  普通对象断 TypeError）。
+- 推广为铁律：把宽松 API 重构到标准严格语义后必跑全量抓旧测试；断言与
+  真机冲突时先实测再改——测试也可能在编码实现的历史偏差（§4.32 测试侧版）。
+- 复现：修前 `cargo test --test fetch streams_abort_events` 必挂。
+
 
 ## 5. 路线图（按序）
 

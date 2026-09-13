@@ -3147,6 +3147,10 @@ export function getCurves() {
   return ["prime256v1", "secp384r1", "secp521r1", "secp256k1", "ed25519", "x25519"];
 }
 export const webcrypto = globalThis.crypto;
+// Node 19+ 模块级 getRandomValues（webcrypto 同一实现；vite webSocketToken 用）。
+export function getRandomValues(typedArray) {
+  return globalThis.crypto.getRandomValues(typedArray);
+}
 
 const __CIPHERS = {
   "aes-128-cbc": { family: "cbc", key: 16, iv: 16, block: 16, mode: "cbc", nid: 419 },
@@ -5028,7 +5032,7 @@ export class Certificate {
 const __api = {
   createHash, createHmac, Hash, Hmac, hash,
   randomBytes, randomFill, randomFillSync, randomInt, randomUUID, randomUUIDv7,
-  timingSafeEqual, getHashes, getCurves, webcrypto,
+  timingSafeEqual, getHashes, getCurves, webcrypto, getRandomValues,
   createCipheriv, createDecipheriv, Cipheriv, Decipheriv, getCiphers, getCipherInfo,
   KeyObject, createSecretKey, createPrivateKey, createPublicKey,
   generateKeyPair, generateKeyPairSync, generateKey, generateKeySync,

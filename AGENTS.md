@@ -898,6 +898,33 @@ cargo build
   真机冲突时先实测再改——测试也可能在编码实现的历史偏差（§4.32 测试侧版）。
 - 复现：修前 `cargo test --test fetch streams_abort_events` 必挂。
 
+### 4.66 napi-rs 3 的 Promise 转换暗面 + Either 兜底吞真因（2026-09-14，M5）
+
+- 症状：vite build JS API 报 `The function returned \`object\`, but expected
+  \`undefined\`.`（stack 空）；CLI 路径则死在 vite 配置加载
+  `export declarations may only appear at top level of a module`。
+- 根因（二连）：① 报错文案出自 rolldown binding 的
+  `Either<Ret, InvalidReturnValue>` 兜底分支——它把一切转换失败吞成统一文案；
+  真因是 napi-rs 3 的 `PromiseRaw.then/catch` 会**立即对自家
+  `napi_create_function` 产物调 `napi_wrap` 挂 finalizer**，撞上 M3 的
+  "仅 define_class 实例" fail-fast（真 Node 的 napi_wrap 本就收任意对象——
+  m2 fixture 编码了偏差）。② vite 配置打包链
+  （bundleConfigFile→loadConfigFromBundledFile）依赖 `require.extensions` +
+  `module._compile`（内存 CJS 产物求值），require 无视钩子直接读盘即炸。
+- 修法：napi_wrap 任意对象路进 env 登记表（无 GC 驱动 finalize，
+  end_session 收敛 LIFO 触发；ref 出参仅类实例路）；createRequire 系
+  require 消费 extensions（`.js` 兜底同 vite loaderExt；cache 先于
+  extensions，Node 口径）+ native `__wjs_cjs_compile`（CJS 包装口径与
+  require 全同，require 以文件自身为 base）。
+- 定位手法（可复用）：文案不可信时给 `napi_call_function` 插 [wdbg]——
+  被调函数名 + 匿名函数经 `Function.prototype.toString` 吐源码前段 +
+  rval 类型，TSFN 加 resource_name；报错紧跟的最后一条即命中。
+- 推广为铁律：napi-rs 3 起 Promise 转换是**有副作用**的（挂 then/catch
+  回调 + napi_wrap）；凡 "expected X" 类报错先查 Either 兜底吞没的真因。
+  fixture 断言偏离真机语义的，真机口径一锤定音（§4.65 同源）。
+- 复现：`cd /tmp/wjs-vite-probe/min-proj && build-probe.mjs`（napi Wrap 前
+  必报 expected undefined；改 vite.config.js 前必报 export declarations）。
+
 
 ## 5. 路线图（按序）
 

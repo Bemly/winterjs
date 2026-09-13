@@ -601,6 +601,7 @@ fn end_session(rt: Runtime, engine: JSEngineHandle) {
     // napi env cleanup hooks（M4）：JS 线程 + 引擎存活期内的最后收敛点
     //（hook 无 env 参、不可能进 JSAPI——lifecycle.rs 模块头注）。
     crate::napi::lifecycle::run_cleanup_hooks();
+    crate::napi::lifecycle::run_wrap_finalizers();
     std::mem::forget(rt);
     std::mem::forget(engine);
 }

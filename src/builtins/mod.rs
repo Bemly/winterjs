@@ -2351,6 +2351,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             // Phase 9j: node:module（createRequire 显式 base 底座 + 内建列表）
             ("__wjs_require_from", Some(node::require::require_from), 2),
             ("__wjs_require_resolve_from", Some(node::require::require_resolve_from), 2),
+            ("__wjs_cjs_compile", Some(node::require::cjs_compile), 3),
             ("__wjs_builtin_modules", Some(node::require::builtin_modules_json), 0),
             // Phase 9j: CJS 互操作垫片（import 命中 CJS → export default）
             ("__wjs_require_cjs_by_url", Some(node::require::require_cjs_by_url), 1),

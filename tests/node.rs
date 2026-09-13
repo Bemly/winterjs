@@ -4652,6 +4652,73 @@ try { Module.register(); } catch (e) { console.log("reg", e.code); }
 }
 
 #[test]
+fn phase9k_module_extensions_hook() {
+    // 正常：createRequire 实例的 extensions 钩子 + module._compile 内存求值
+    // （vite loadConfigFromBundledFile 形态：内存码优先于磁盘，filename 走
+    // realpath 口径）；exports 重赋值终态；cache 命中（Node 口径 cache 先于
+    // extensions，vite delete cache[resolve] 即为绕过）；.js 兜底（loaderExt）。
+    // 报错：无钩子回落 native（磁盘 ESM 经 require 报经典 SyntaxError 文案）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("esm-target.js").write_str("export default 1;\n").unwrap();
+    dir.child("fresh-esm.js").write_str("export default 2;\n").unwrap();
+    dir.child("reassign.js").write_str("module.exports = { disk: true };\n").unwrap();
+    dir.child("noext.cfg").write_str("anything\n").unwrap();
+    let file = dir.child("m.mjs");
+    file.write_str(
+        r#"
+import { createRequire } from "node:module";
+const req = createRequire(import.meta.url);
+
+req.extensions[".js"] = (mod, filename) => {
+  mod._compile("module.exports = { v: 42, who: __filename };", filename);
+};
+const m = req("./esm-target.js");
+console.log("hooked", m.v, m.who.endsWith("esm-target.js"));
+
+req.extensions[".js"] = (mod, filename) => {
+  mod._compile("module.exports = { reassigned: true };", filename);
+};
+console.log("reassigned", req("./reassign.js").reassigned);
+
+let calls = 0;
+req.extensions[".js"] = (mod, fn) => { calls++; mod._compile("module.exports = { n: " + calls + " };", fn); };
+delete req.cache[req.resolve("./esm-target.js")];
+const a = req("./esm-target.js");
+const b = req("./esm-target.js");
+console.log("cache", a.n === b.n, calls);
+
+delete req.extensions[".js"];
+try { req("./fresh-esm.js"); console.log("NO-ERR"); }
+catch (e) { console.log("native-err", e.constructor.name, String(e.message).slice(0, 60)); }
+
+req.extensions[".js"] = (mod, fn) => { mod._compile("module.exports = { via: 'fallback' };", fn); };
+console.log("fallback", req("./noext.cfg").via);
+console.log("ext-ok");
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "hooked 42 true",
+        "reassigned true",
+        "cache true 1",
+        "native-err Error export declarations may only appear at top level of a module",
+        "fallback fallback",
+        "ext-ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase9j_global_alias() {
     // Node 口径：global 为全局自引用（vite bin 直引，-r dev 实测补齐）。
     let out = winterjs()

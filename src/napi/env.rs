@@ -62,6 +62,11 @@ pub struct NapiEnv {
     pub next_napi_id: u64,
     /// env cleanup hooks（end_session 收敛点 LIFO 触发，lifecycle.rs）。
     pub cleanup_hooks: Vec<(napi_cleanup_hook, *mut c_void)>,
+    /// 任意对象 napi_wrap 登记（class.rs WrapBoxRec；end_session 收敛 LIFO
+    /// 触发 finalizer。偏差记档：无 GC 驱动 finalize——SpiderMonkey 弱指针面
+    /// 未接，对象自身死亡不提前释放；payload 为回调闭包等小分配。无 JS 值，
+    /// 不进 GC 图）。
+    pub wrap_boxes: Vec<crate::napi::class::WrapBoxRec>,
     /// 已加载 addon 库（path → Library；永不 dlclose）。
     pub libs: Vec<(PathBuf, libloading::Library)>,
     /// `.node` 模块 exports 缓存（require 幂等，Node 口径；exports 进 GC 图）。
@@ -119,6 +124,7 @@ impl NapiEnv {
             async_pending: 0,
             next_napi_id: 0,
             cleanup_hooks: Vec::new(),
+            wrap_boxes: Vec::new(),
             libs: Vec::new(),
             modules: Vec::new(),
             last_error: None,

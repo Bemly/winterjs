@@ -332,6 +332,7 @@ globalThis.__wjs_make_module = (filename) => ({
   filename: String(filename),
   paths: [],
 });
+globalThis.__wjs_make_base_require = (base) => (id) => __wjs_require_from(base, String(id));
 globalThis.__wjs_require_main = (url) => globalThis.require(String(url));
 globalThis.require.resolve = (id) => __wjs_require_resolve(String(id));
 Object.defineProperty(globalThis.require, "main", {
@@ -444,6 +445,137 @@ pub unsafe extern "C" fn require_resolve_from(
             false
         }
     }
+}
+
+/// UNSAFE-BOUNDARY: `__wjs_cjs_compile(module, code, filename)` → `module._compile`
+/// 底座（vite loadConfigFromBundledFile：require.extensions 钩子把内存中的 CJS
+/// 打包产物求值进给定 module 对象）。求值口径与 `require_cjs_file` 全同
+/// （柯里化包装五连：exports/require/module/__filename/__dirname），差异：
+/// module 由调用方传入、require 以 filename 为显式 base（prelude
+/// `__wjs_make_base_require`）、不进 cjs 注册表（缓存语义由调用方
+/// require.cache 承载）。前置：module 对象、code 串、filename 为绝对路径或
+/// file: URL 串；覆盖：`tests/node.rs::phase9k_module_extensions_hook`。
+pub unsafe extern "C" fn cjs_compile(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3
+        || !frame.arg(0).is_object()
+        || !frame.arg(1).is_string()
+        || !frame.arg(2).is_string()
+    {
+        report_error(
+            &mut cx,
+            "TypeError: __wjs_cjs_compile needs (module object, code string, filename string)",
+        );
+        return false;
+    }
+    let code = value_to_string(&mut cx, frame.arg(1));
+    let filename_s = value_to_string(&mut cx, frame.arg(2));
+    let global = state::global();
+    rooted!(&in(cx) let global_root: *mut JSObject = global);
+    rooted!(&in(cx) let module_root: *mut JSObject = frame.arg(0).to_object());
+    // filename → URL（file: 直 parse；路径串 canonicalize 对齐 §4.12，失败退原文）。
+    let url = if let Ok(u) = Url::parse(&filename_s) {
+        u
+    } else {
+        let p = std::path::PathBuf::from(&filename_s);
+        let p = if p.is_absolute() {
+            p
+        } else {
+            match std::env::current_dir() {
+                Ok(d) => d.join(p),
+                Err(e) => {
+                    report_error(&mut cx, &format!("TypeError: cannot resolve '{filename_s}': {e}"));
+                    return false;
+                }
+            }
+        };
+        let canon = p.canonicalize().unwrap_or(p);
+        match Url::from_file_path(&canon) {
+            Ok(u) => u,
+            Err(_) => {
+                report_error(&mut cx, &format!("TypeError: bad module filename '{filename_s}'"));
+                return false;
+            }
+        }
+    };
+    // 柯里化包装（单参链，§4.9 合规；与 require_cjs_file 同形）。
+    let wrapped = format!(
+        "((exports) => (require) => (module) => (__filename) => (__dirname) => {{\n{code}\n}})"
+    );
+    let c_filename =
+        std::ffi::CString::new(url.as_str()).unwrap_or_else(|_| c"module.js".into());
+    let options = CompileOptionsWrapper::new(&mut cx, c_filename, 1);
+    rooted!(&in(cx) let mut fn_v = UndefinedValue());
+    let res = evaluate_script(&mut cx, global_root.handle(), wrapped.as_str(), fn_v.handle_mut(), options);
+    if res.is_err() {
+        let msg = pending_message(&mut cx);
+        report_error(&mut cx, &msg);
+        return false;
+    }
+    if !fn_v.is_object() {
+        report_error(&mut cx, &format!("cannot compile '{}': wrapper failed", url.as_str()));
+        return false;
+    }
+    let Some(exports_v) = get_prop_value(&mut cx, module_root.get(), c"exports") else {
+        report_error(&mut cx, "TypeError: module.exports missing");
+        return false;
+    };
+    rooted!(&in(cx) let exports_root = exports_v);
+    let Some(make_req) = get_prop_value(&mut cx, global_root.get(), c"__wjs_make_base_require") else {
+        report_error(&mut cx, "prelude helper __wjs_make_base_require missing");
+        return false;
+    };
+    rooted!(&in(cx) let mut url_v = UndefinedValue());
+    url.as_str().to_jsval(&mut cx, url_v.handle_mut());
+    let Some(require_v) = call_one(&mut cx, global_root.get(), make_req, url_v.get()) else {
+        let msg = pending_message(&mut cx);
+        report_error(&mut cx, &msg);
+        return false;
+    };
+    rooted!(&in(cx) let require_root = require_v);
+    // __filename/__dirname（file: URL；其余退原文）。
+    let (filename_str, dirname_str) = match url.to_file_path() {
+        Ok(p) => {
+            let dir = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+            (p.to_string_lossy().into_owned(), dir)
+        }
+        Err(_) => (url.as_str().to_owned(), String::new()),
+    };
+    rooted!(&in(cx) let mut s_v = UndefinedValue());
+    filename_str.to_jsval(&mut cx, s_v.handle_mut());
+    rooted!(&in(cx) let mut d_v = UndefinedValue());
+    dirname_str.to_jsval(&mut cx, d_v.handle_mut());
+    // 五连单参调用（§4.9）。
+    let mut cur = fn_v.get();
+    let chain: [(&str, JSVal); 5] = [
+        ("exports", exports_root.get()),
+        ("require", require_root.get()),
+        ("module", mozjs::jsval::ObjectValue(module_root.get())),
+        ("__filename", s_v.get()),
+        ("__dirname", d_v.get()),
+    ];
+    for (label, arg) in chain {
+        if !cur.is_object() {
+            report_error(&mut cx, &format!("cannot compile '{}': {label} step is not callable", url.as_str()));
+            return false;
+        }
+        match call_one(&mut cx, global_root.get(), cur, arg) {
+            Some(v) => cur = v,
+            None => {
+                let msg = pending_message(&mut cx);
+                report_error(&mut cx, &msg);
+                return false;
+            }
+        }
+    }
+    frame.set_rval(UndefinedValue());
+    true
 }
 
 /// UNSAFE-BOUNDARY: `__wjs_builtin_modules()` → JSON 数组（`node:module` 的

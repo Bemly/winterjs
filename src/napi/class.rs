@@ -303,9 +303,19 @@ pub unsafe extern "C" fn napi_new_instance(
     NAPI_OK
 }
 
+/// 任意对象 napi_wrap 的登记项（纯 Rust 指针，无 JS 值不进 GC 图；teardown
+/// 收敛点 LIFO 触发 finalizer——lifecycle.rs `run_wrap_finalizers`）。
+pub struct WrapBoxRec {
+    pub env: napi_env,
+    pub payload: *mut c_void,
+    pub finalize: sys::node_api_basic_finalize,
+    pub hint: *mut c_void,
+}
+
 /// # Safety
-/// N-API 约定（vendored js_native_api.h:323）。`result`（napi_ref）M3 未接——
-/// 非 null 即 fail-fast（记 plan-napi §4；rolldown 不取 ref）。
+/// N-API 约定（vendored js_native_api.h:323）。类实例走 reserved 槽 + result
+/// ref 出参；任意对象走 env 登记表（偏差记档：无 GC 驱动 finalize），
+/// result 非 null 即 fail-fast。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn napi_wrap(
     env: napi_env,
@@ -327,11 +337,24 @@ pub unsafe extern "C" fn napi_wrap(
     unsafe {
         let obj = obj_v.to_object();
         if !object_is_class(&mut cx, obj, &NAPI_INSTANCE_CLASS) {
-            let env_ref = e(env);
-            env_ref.set_last_error(
-                "napi_wrap requires a define_class instance (arbitrary objects need GC-driven finalize, planned M4)",
-            );
-            return NAPI_INVALID_ARG;
+            // 任意对象路（M5）：napi-rs 3 的 PromiseRaw.then/catch 对自家
+            // napi_create_function 产物挂 finalizer，进到这里的是合法用法。
+            // 偏差记档：无 GC 驱动 finalize（SM 弱指针面未接），payload 进
+            // env 登记表，end_session 收敛 LIFO 触发；ref 出参仅类实例路支持。
+            if !result.is_null() {
+                let env_ref = e(env);
+                env_ref.set_last_error(
+                    "napi_wrap napi_ref out-param requires a define_class instance",
+                );
+                return NAPI_INVALID_ARG;
+            }
+            e(env).wrap_boxes.push(WrapBoxRec {
+                env,
+                payload: native_object,
+                finalize: finalize_cb,
+                hint: finalize_hint,
+            });
+            return NAPI_OK;
         }
         let mut existing = UndefinedValue();
         // data 槽被占用即已 wrap（wrap 必写 data；finalize 可能是 NULL）

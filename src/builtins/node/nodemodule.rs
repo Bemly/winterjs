@@ -7,9 +7,13 @@
 //! （无操作）/`Module.prototype.require`（以自身 filename 为 base）。
 //!
 //! 偏差（记档）：
-//! - `require.cache` 为每 `createRequire` 独立 `{}`（全局 require 本就没有共享
-//!   CJS 缓存表，`state::cjs_*` 是 URL 注册表，不等价，不硬套）。
-//! - `require.extensions` 为 `{}`（转译/加载走 loader，不走扩展处理器）。
+//! - `require.cache` 为每 `createRequire` 独立表（键 = `require.resolve` 的
+//!   URL 串；仅 extensions 钩子路径消费，native 路径缓存仍走 loader 注册表）。
+//! - `require.extensions`：空表起步、`createRequire` 系 require 按消费——命中
+//!   钩子走 `module._compile(code, filename)`（native `__wjs_cjs_compile`，
+//!   CJS 包装口径与 require 全同；require 以文件自身为 base），`.js` 兜底同
+//!   vite `loaderExt` 口径。vite 配置打包链（loadConfigFromBundledFile）依赖。
+//!   全局 `require` 不消费（转译/加载走 loader）。
 //! - `Module.register()` 抛 `ERR_METHOD_NOT_IMPLEMENTED`（ESM loader 定制不支持）。
 //! - `stripTypeScriptTypes` 不导出（TS 由 loader 原生处理，无需剥离）。
 //! - `runMain`/`_load`/`_resolveFilename` 等下划线内部件不导出。
@@ -21,6 +25,7 @@ pub const SOURCE: &str = r#"
 // Copyright Joyent, Inc. and other Node contributors. MIT.
 // Port of node lib/module.js (minimal bridge; see module docs for deviations).
 import errors from 'node:internal/errors';
+import { fileURLToPath } from 'node:url';
 
 const {
   codes: {
@@ -37,9 +42,49 @@ function normalizeBase(filename) {
   return filename;
 }
 
+function extnameOf(p) {
+  const clean = String(p).replace(/[?#].*$/, "");
+  const slash = Math.max(clean.lastIndexOf("/"), clean.lastIndexOf("\\"));
+  const dot = clean.lastIndexOf(".");
+  return dot > slash ? clean.slice(dot) : "";
+}
+
 function makeRequire(base) {
   function require(id) {
-    return __wjs_require_from(base, String(id));
+    const spec = String(id);
+    const hooks = require.extensions;
+    if (hooks && typeof hooks === "object" && !Array.isArray(hooks)) {
+      let resolved = null;
+      try { resolved = __wjs_require_resolve_from(base, spec); } catch { resolved = null; }
+      if (resolved !== null && resolved.startsWith("file://")) {
+        if (Object.prototype.hasOwnProperty.call(require.cache, resolved)) {
+          return require.cache[resolved].exports;
+        }
+        const ext = extnameOf(resolved);
+        const has = (k) => Object.prototype.hasOwnProperty.call(hooks, k);
+        const hook = has(ext) ? hooks[ext] : has(".js") ? hooks[".js"] : null;
+        if (typeof hook === "function") {
+          const fsPath = fileURLToPath(resolved);
+          const mod = {
+            id: fsPath,
+            filename: fsPath,
+            paths: [],
+            exports: {},
+            loaded: false,
+            children: [],
+            parent: null,
+          };
+          mod._compile = function (code, filenameArg) {
+            __wjs_cjs_compile(this, String(code), filenameArg != null ? String(filenameArg) : fsPath);
+          };
+          require.cache[resolved] = mod;
+          hook(mod, fsPath);
+          mod.loaded = true;
+          return mod.exports;
+        }
+      }
+    }
+    return __wjs_require_from(base, spec);
   }
   require.resolve = function resolve(id) {
     return __wjs_require_resolve_from(base, String(id));

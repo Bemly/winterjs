@@ -117,10 +117,12 @@ static napi_value CheckNewInstance(napi_env env, napi_callback_info info) {
   napi_remove_wrap(env, inst, (void **)&got);
   if (napi_unwrap(env, inst, (void **)&got) == napi_ok) { g_fail |= 5; ok = 0; } // 摘除后不可再解
   if (got) free(got);
-  // 非 define_class 实例对象 wrap 必须 fail-fast
+  // 任意对象 wrap（Node 口径，M5 起）：plain 对象可挂 NULL payload/NULL
+  // finalize（napi-rs 3 的 PromiseRaw.then/catch 依赖此面；本仓偏差记档：
+  // 无 GC 驱动 finalize，finalizer 于 end_session 收敛触发）
   napi_value plain;
   napi_create_object(env, &plain);
-  if (napi_wrap(env, plain, NULL, NULL, NULL, NULL) == napi_ok) { g_fail |= 6; ok = 0; }
+  if (napi_wrap(env, plain, NULL, NULL, NULL, NULL) != napi_ok) { g_fail |= 6; ok = 0; }
   napi_create_int32(env, ok, &out);
   return out;
 }

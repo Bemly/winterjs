@@ -23,6 +23,8 @@
    黑盒测试（`tests/`，经 CLI 断言用户可见行为；**文件按 src 对齐**：
    `cli/builtins/crypto/fetch/ws/loader/node/pm/serve/acme/testrun/initpkg/repl/bun/permissions/lintfmt/sentry_report.rs`，
    共享 helper 进 `tests/common/mod.rs`（`use common::*;`），新 API 的黑盒进对应域文件，
+   node 域二层按 `src/builtins/node/*.rs` 对齐（`tests/node/<mod>.rs` 经 `#[path]` 挂壳，
+   域内共享脚手架进 `tests/node/helpers.rs`），
    每个新 API 必含正常 + 报错 + 边界三件；`UNSAFE-BOUNDARY` 新增必须配 panic 路径用例）、
    冒烟（§3 探针命令，构建后必跑，不过不提交）。
 8. **CLI 全 flag 规范**：无裸子命令、无裸位置参数——所有动作一律 `-x/--xxx`
@@ -1022,6 +1024,63 @@ cargo build
   修前模块单测必挂。
 - 推广为铁律：凡"前 N 个全过、特定包必败"的安装失败，先 `tar -tzf` 看该包
   条目布局（根目录条目/非 package 根/符号链接三件），再怀疑网络与版本。
+
+### 4.70 入口失败 + 开着的句柄 = 事件循环永不收割（2026-09-14，M5 fork 牵引）
+
+- 症状：`fork("/no/such/xxx.mjs")` 父端无 error 无 exit，进程 hang（`bad-arg`
+  同步校验正常；裸 eval worker 同样缺失 import 却正常 error+exit 1）。
+- 根因：`run_module` 的入口 rejection 收割在 `event_loop` **之后**
+  （`src/runtime.rs`）——子会话开着 parentPort（message/close 双监听）时循环
+  永不 idle，收割点永不到。裸 worker 无句柄，首轮即 idle，收割正常。
+  二分探针：端口在场 + 未捕获顶层拒绝即挂（`p6.mjs`），catch 住即回 END 后
+  空转（`p5.mjs`，端口续命本身是正确语义）。
+- 修法：`PumpStats` 加 `entry_failed` 旗——`pump_once` 内 RunJobs **之后**
+  查 `entry_rejection.is_some()`（与 `process_exited`/`worker_terminated`
+  同族检查点、同顺序），`event_loop` 见旗即 `break` 走既有收割上报
+  （入口带专用捕获，不进 `unhandled` 表，收尾 `report_unhandled_rejections`
+  不受影响；`process.exit` 优先顺序不动）。
+- 复现：`tests/node/child.rs::phase9m_child_fork_errors`（修前 hang；
+  另带出父断子不断 control 分支漏 `parentPort.close()`，同批修，
+  `phase9m_child_fork_ipc` 的 `EXIT-EV 0 0` 覆盖）。
+- 推广为铁律：凡"失败只在循环尾收割"的设计，必须回答"循环不退时失败去哪"——
+  fatal 类决议（入口错/uncaught）一律检查点提前跳出，不等自然排空。
+
+### 4.71 `Object.assign` 不自建自引用 + 真机 assert 形态先行（2026-09-14，M5）
+
+- 症状：`assert.ok is not a function`（`phase4_node_assert_subset`），连带
+  `net_echo_loopback`（服务端 handler 首行即 `assert.ok`，抛错后响应永不结束→
+  链式 stall→server 不关→全进程 hang；http 回环 hang 同源，修 assert 即好，
+  无 http 侧改动）。
+- 根因：M5 把默认导出改可调用时写成 `Object.assign(ok, {...})`——assign 不建
+  自引用键，`default.ok` 为 undefined。想当然补 `__default.ok = __default`
+  又错第二遍：真机（node 26.8.2 实测）`assert.ok !== assert`，
+  `assert.ok === assert.strict.ok`，名分别为 `assert`/`ok`。
+- 修法（`src/builtins/node/assert.rs`）：具名 `function assert(value, message)`
+  转调 `ok`，再 assign 全方法（`ok/strict/AssertionError` 等）后默认导出——
+  五项逐项对真机：`typeof function`×2、自反 false、`ok===strict.ok`、
+  双名、`assert(true)` 直调。
+- 教训：§4.65 姊妹篇——"真机口径"必须**逐项实测**，不能只验规划的那两项
+  （本次若只验 `typeof` + 直调，自引用错就漏网；`console` 黑盒的
+  `assert-callable true false` 即真机逐项，修完直接绿）。
+- 推广为铁律："与真机同款"断言必须列出全部可观察项并逐项对拍，缺一项即欠账。
+
+### 4.72 fork 单槽监听 + CJS 具名上线后的黑盒同步（2026-09-14，M5）
+
+- 症状一：`phase9m_child_fork_ipc` 修 hang 后报
+  `NotSupportedError: ChildProcess event 'w9m-never'`——测试用凭空事件名验
+  once/off，而 `on()` 对未知名按设计抛错。
+- 修法（测试侧）：占位改 fork 路径永不触发的 `spawn` 事件——不用 error/exit
+  是因单槽位 `once` 会顶掉同名常驻监听（`off` 对 exit/close 双重 wrap 也摘不净），
+  不用 message/disconnect 是因流程内真会触发。注释写明三选理由。
+- 症状二：`phase9j_cjs_interop_default` 的"命名导入必须失败"边界在具名导出
+  上线后反绿为红（`import { v }` 成功）。
+- 修法（测试侧）：边界翻转为成功断言（`cjs-named 41`），与
+  `phase9j_cjs_interop_named` 同口径；旧"缺导出"注释标退役。
+  另：`cjs_named` 的 `defaults … function …` 系 fixture/plain-object 与期望
+  打架的测试 bug（`typeof` 应为 object），同批改。
+- 推广为铁律：功能上线即全 grep 旧边界断言（"必须失败/必须抛"类），上线不改
+  旧断言等于埋红；单槽事件设计下，测试占位事件必须选"永不触发 + 无常驻监听"
+  的那一个。
 
 
 ## 5. 路线图（按序）

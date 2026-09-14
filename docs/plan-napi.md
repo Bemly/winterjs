@@ -205,7 +205,14 @@
     ignored 黑盒 `phase_napi_m5_vite_dev_polling_real_network` 落账）；
     fsevents 默认路径 139 已修复（`NapiEnv::trace` 漏标 `tsfns.js_cb`，
     见 AGENTS §4.68；`hmr-min9.mjs` 修后 full-reload + `EXIT:0`）；
-    剩 vitest/tinypool 链路。
+    vitest 双池全绿（threads/forks 跑 basic.test.js 均 pass、EXIT:0；仅剩收尾
+    close timed out / 2 Vite servers 妆饰警告）；
+    node 黑盒 8 件落账（console/subpath-timers/statfs/stdio/worker-stdio/
+    cjs-named/fork-ipc/fork-errors，`tests/node/` 下 src 对齐 40 文件，
+    116 例全绿）；fork 缺失模块 hang 根因收敛（入口失败 + 开端口永不收割，
+    见 AGENTS §4.70；control 分支补 `parentPort.close()`；assert 默认形态
+    对真机五项，见 §4.71）；
+    剩 vitest 妆饰收尾 + 终线（vue-project 三命令）。
 - [ ] **M6 收尾合流**：Node 官方 napi 套件选点回归 + AGENTS §6 审计口径补「napi 面」
   （~133 `unsafe extern "C"` 结构性新增，不逐个计数）+ 黑盒清单按 src 对齐
   （tests/napi.rs）→ 长分支一次性合 master。

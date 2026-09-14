@@ -1,0 +1,305 @@
+//! tests/node/stream.rs — 对齐 src/builtins/node/stream.rs（node:stream 系（含 consumers/web））。
+
+use crate::helpers::*;
+
+#[test]
+fn phase9b_stream_readable_writable_core() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import stream, { Readable, Writable } from "node:stream";
+// Readable：push → flow → end
+const chunks = [];
+const r = new Readable({ read() {} });
+r.push("a"); r.push("b"); r.push(null);
+r.on("data", (c) => chunks.push(c));
+r.on("end", () => console.log("end", chunks.join(","), chunks.map((c) => c.constructor.name).join("/")));
+// pause/resume（Node 口径：push(null) 排空后 end 即发，先于 resume）
+const r2 = new Readable({ read() {} });
+r2.push("x"); r2.push(null);
+const seen = [];
+r2.on("end", () => console.log("resume-end", seen.join(","), r2.readableEnded));
+r2.on("data", (c) => { seen.push(c); r2.pause(); });
+await new Promise((res) => setTimeout(res, 20));
+console.log("paused", seen.length, r2.isPaused());
+r2.resume();
+// readable 面方法
+const r3 = new Readable({ read() {} });
+r3.push("q");
+console.log("rface", r3.readableLength, typeof r3.read, typeof r3.unpipe);
+console.log("rread", String(r3.read()));
+// Writable：write/end/finish
+const writes = [];
+const w = new Writable({ write(chunk, enc, cb) { writes.push(String(chunk)); cb(); } });
+w.write("1"); w.write("2"); w.end("3");
+w.on("finish", () => console.log("finish", writes.join(""), w.writableEnded));
+// cork/uncork 批量
+let n = 0;
+const w2 = new Writable({ write(c, e, cb) { n++; cb(); } });
+w2.cork(); w2.write("a"); w2.write("b");
+console.log("corked", n);
+w2.uncork(); w2.end();
+w2.on("finish", () => console.log("uncork", n));
+// write after end → error 事件
+const w3 = new Writable({ write(c, e, cb) { cb(); } });
+const errs = [];
+w3.on("error", (e) => errs.push(e.code));
+w3.end();
+w3.write("late");
+await new Promise((res) => setTimeout(res, 20));
+console.log("wae", errs.length, errs[0]);
+// destroy/close
+const r5 = new Readable({ read() {} });
+r5.push("d");
+r5.on("close", () => console.log("closed", r5.destroyed, stream.isDestroyed(r5)));
+r5.destroy();
+// destroy(err) → error + close
+const r6 = new Readable({ read() {} });
+const e6 = [];
+r6.on("error", (e) => e6.push(e.message));
+r6.on("close", () => console.log("destroy-err", e6.join(","), r6.destroyed, stream.isErrored(r6)));
+r6.destroy(new Error("boom"));
+await new Promise((res) => setTimeout(res, 30));
+console.log("same", stream.Readable === Readable, stream.Writable === Writable, typeof stream.isDisturbed);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("end a,b Buffer/Buffer"), "out: {out}");
+    assert!(out.contains("paused 1 true"), "out: {out}");
+    assert!(out.contains("resume-end x"), "out: {out}");
+    assert!(out.contains("rface 1 function function"), "out: {out}");
+    assert!(out.contains("rread q"), "out: {out}");
+    assert!(out.contains("finish 123 true"), "out: {out}");
+    assert!(out.contains("corked 0"), "out: {out}");
+    assert!(out.contains("uncork 2"), "out: {out}");
+    assert!(out.contains("wae 1 ERR_STREAM_WRITE_AFTER_END"), "out: {out}");
+    assert!(out.contains("closed true true"), "out: {out}");
+    assert!(out.contains("destroy-err boom true true"), "out: {out}");
+    assert!(out.contains("same true true function"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9b_stream_duplex_transform_pipeline() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import stream, { Readable, Writable, Duplex, Transform, PassThrough, pipeline, finished, compose, addAbortSignal } from "node:stream";
+import { pipeline as ppipeline, finished as pfinished } from "node:stream/promises";
+// Duplex 双向
+const dOut = [];
+const d = new Duplex({ read() {}, write(c, e, cb) { dOut.push("w:" + String(c)); cb(); } });
+d.on("data", (c) => dOut.push("r:" + String(c)));
+d.push("r1"); d.write("w1");
+await new Promise((res) => setTimeout(res, 30));
+console.log("dup", dOut.sort().join(","));
+// duplexPair 两侧互写
+const [sa, sb] = stream.duplexPair();
+const gotB = [];
+sb.on("data", (c) => gotB.push(String(c)));
+sa.write("ping");
+await new Promise((res) => setTimeout(res, 20));
+console.log("pair", gotB.join(","), sb.writable && sa.readable);
+// Transform + pipeline（callback 形态，node:stream 命名导出——无回调即 validateFunction 报错）
+const up = new Transform({ transform(c, e, cb) { cb(null, String(c).toUpperCase()); } });
+const o1 = [];
+const w1 = new Writable({ write(c, e, cb) { o1.push(String(c)); cb(); } });
+await new Promise((res, rej) => pipeline(Readable.from(["a", "b"]), up, w1, (err) => (err ? rej(err) : res())));
+console.log("pipeline", o1.join(""), up.writableEnded, up.readableEnded);
+try { pipeline(Readable.from(["a"]), new Writable({ write(c, e, cb) { cb(); } })); }
+catch (e) { console.log("pcall-err", e.message.includes("must be of type function")); }
+// flush 尾包 + node:stream/promises 模块面
+const fl = [];
+const tf = new Transform({ transform(c, e, cb) { cb(null, c); }, flush(cb) { fl.push("f"); cb(null, "!"); } });
+const o2 = [];
+await ppipeline(Readable.from(["x"]), tf, new Writable({ write(c, e, cb) { o2.push(String(c)); cb(); } }));
+console.log("flush", o2.join(""), fl.join(","));
+// transform 报错沿 pipeline 传播
+const bad = new Transform({ transform(c, e, cb) { cb(new Error("t-boom")); } });
+try { await ppipeline(Readable.from(["a"]), bad, new Writable({ write(c, e, cb) { cb(); } })); }
+catch (e) { console.log("terr", e.message); }
+// 源错误传播（命名 pipeline callback 形态）
+const rs = new Readable({ read() { this.destroy(new Error("src-boom")); } });
+try { await new Promise((res, rej) => pipeline(rs, new Writable({ write(c, e, cb) { cb(); } }), (err) => (err ? rej(err) : res()))); }
+catch (e) { console.log("perr", e.message); }
+// compose（Readable + Transform → 单一流再接管道；promise 形态走 node:stream/promises）
+const c1 = compose(Readable.from(["m"]), new Transform({ transform(c, e, cb) { cb(null, String(c) + "!"); } }));
+const o3 = [];
+await ppipeline(c1, new Writable({ write(c, e, cb) { o3.push(String(c)); cb(); } }));
+console.log("compose", o3.join(""));
+// PassThrough
+const pt = new PassThrough();
+pt.end("pt");
+console.log("pt", await new Promise((res) => { let s = ""; pt.on("data", (c) => (s += String(c))); pt.on("end", () => res(s)); }));
+// finished：promise 形态（node:stream/promises）+ callback 形态（命名导出）
+const fw = new Writable({ write(c, e, cb) { cb(); } });
+fw.end();
+await pfinished(fw); console.log("fin-ok");
+const fw2 = new Writable({ write(c, e, cb) { cb(); } });
+fw2.end();
+console.log("fin-cb", await new Promise((res) => finished(fw2, (err) => res(err ? err.code : "ok"))));
+// eos 不消费流：须先让流流动，read 内的 destroy 才会触发（Node 同款）
+const re = new Readable({ read() { this.destroy(new Error("fin-boom")); } });
+const fp = new Promise((res) => finished(re, (err) => res(err.message)));
+re.resume();
+console.log("fin-err", await fp);
+// addAbortSignal
+const ac = new AbortController();
+const r5 = new Readable({ read() {} });
+const a5 = [];
+r5.on("error", (e) => a5.push(e.name));
+addAbortSignal(ac.signal, r5);
+ac.abort();
+await new Promise((res) => setTimeout(res, 20));
+console.log("abort", a5.join(","), r5.destroyed);
+// hwm 存取
+stream.setDefaultHighWaterMark(true, 9999);
+console.log("hwm", stream.getDefaultHighWaterMark(true), stream.getDefaultHighWaterMark(false));
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("dup r:r1,w:w1"), "out: {out}");
+    assert!(out.contains("pair ping true"), "out: {out}");
+    assert!(out.contains("pipeline AB true true"), "out: {out}");
+    assert!(out.contains("pcall-err true"), "out: {out}");
+    assert!(out.contains("flush x! f"), "out: {out}");
+    assert!(out.contains("terr t-boom"), "out: {out}");
+    assert!(out.contains("perr src-boom"), "out: {out}");
+    assert!(out.contains("compose m!"), "out: {out}");
+    assert!(out.contains("pt pt"), "out: {out}");
+    assert!(out.contains("fin-ok"), "out: {out}");
+    assert!(out.contains("fin-err fin-boom"), "out: {out}");
+    assert!(out.contains("abort AbortError true"), "out: {out}");
+    assert!(out.contains("hwm 9999 65536"), "out: {out}");
+    dir.close().unwrap();
+}
+
+// ── Phase 9b-4：Readable.from / 异步迭代器 / stream/web / consumers ─────────
+
+#[test]
+fn phase9b_stream_from_iterators() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { Readable } from "node:stream";
+// from 变体：字符串按码元逐个、数组保真、生成器、异步生成器
+const r1 = Readable.from("ab");
+const got = [];
+for await (const c of r1) got.push(String(c));
+console.log("from-str", got.join(","));
+console.log("from-arr", (await Readable.from([1, 2, 3]).toArray()).join(","));
+function* g() { yield "x"; yield "y"; }
+console.log("from-gen", (await Readable.from(g()).toArray()).join(","));
+async function* ag() { await new Promise((res) => setTimeout(res, 10)); yield "s"; }
+console.log("from-async", (await Readable.from(ag()).toArray()).join(","));
+// objectMode 保真（非字节块原样传递）
+const om = Readable.from([{ a: 1 }, [2, 3], 42]);
+console.log("objmode", JSON.stringify(await om.toArray()));
+// 早退 break → 流销毁
+const rb = Readable.from([1, 2, 3, 4]);
+const picked = [];
+for await (const c of rb) { picked.push(c); if (c === 2) break; }
+console.log("break", picked.join(","), rb.destroyed);
+// 非可迭代源报错
+try { Readable.from(42); } catch (e) { console.log("e1", e.code); }
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("from-str ab"), "out: {out}");
+    assert!(out.contains("from-arr 1,2,3"), "out: {out}");
+    assert!(out.contains("from-gen x,y"), "out: {out}");
+    assert!(out.contains("from-async s"), "out: {out}");
+    assert!(out.contains(r#"objmode [{"a":1},[2,3],42]"#), "out: {out}");
+    assert!(out.contains("break 1,2 true"), "out: {out}");
+    assert!(out.contains("e1 ERR_INVALID_ARG_TYPE"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9b_stream_web_and_consumers() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { Readable, Writable } from "node:stream";
+import * as streamWeb from "node:stream/web";
+import * as consumers from "node:stream/consumers";
+// toWeb：node Readable → web ReadableStream，chunk 原样透传
+const webR = Readable.toWeb(Readable.from(["tw"]));
+const rd = webR.getReader();
+const parts = [];
+while (true) { const { done, value } = await rd.read(); if (done) break; parts.push(new TextDecoder().decode(value)); }
+console.log("t2w", parts.join(","), webR instanceof ReadableStream);
+// fromWeb：web → node，chunk 为 Uint8Array
+const nfw = Readable.fromWeb(new ReadableStream({ start(c) { c.enqueue(new Uint8Array([9])); c.close(); } }));
+const a9 = await nfw.toArray();
+console.log("f2w", a9.length, a9[0].constructor.name);
+// Writable.toWeb / fromWeb
+const got = [];
+const nw = new Writable({ write(c, e, cb) { got.push(new TextDecoder().decode(c)); cb(); } });
+const ww = Writable.toWeb(nw).getWriter();
+await ww.write(new TextEncoder().encode("hx")); await ww.close();
+console.log("w2w", got.join(","));
+const nw2 = Writable.fromWeb(new WritableStream({ write(c) { got.push("f:" + new TextDecoder().decode(c)); } }));
+nw2.write("q"); await new Promise((res) => nw2.end(res));
+console.log("w2w", got.join(","));
+// node:stream/web 面 = Web 全局类
+console.log("webmod", streamWeb.ReadableStream === ReadableStream,
+  new streamWeb.TransformStream() instanceof TransformStream);
+// consumers 六件套
+console.log("c-text", await consumers.text(Readable.from(["he", "llo"])));
+const ab2 = await consumers.arrayBuffer(Readable.from([new Uint8Array([1, 2]), new Uint8Array([3])]));
+console.log("c-ab", ab2.byteLength, new Uint8Array(ab2).join(","));
+console.log("c-json", JSON.stringify(await consumers.json(Readable.from(['{"n":', '5}']))));
+console.log("c-buf", (await consumers.buffer(Readable.from(["z"]))).constructor.name);
+console.log("c-bytes", (await consumers.bytes(Readable.from(["z"]))).constructor.name);
+const bl = await consumers.blob(Readable.from(["q"]));
+console.log("c-blob", bl.size, bl instanceof Blob);
+// 报错：非法 JSON
+try { await consumers.json(Readable.from(["nope"])); } catch (e) { console.log("c-e1", e.constructor.name); }
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("t2w tw true"), "out: {out}");
+    assert!(out.contains("f2w 1 Buffer"), "out: {out}");
+    assert!(out.contains("w2w hx"), "out: {out}");
+    assert!(out.contains("w2w hx,f:q"), "out: {out}");
+    assert!(out.contains("webmod true true"), "out: {out}");
+    assert!(out.contains("c-text hello"), "out: {out}");
+    assert!(out.contains("c-ab 3 1,2,3"), "out: {out}");
+    assert!(out.contains(r#"c-json {"n":5}"#), "out: {out}");
+    assert!(out.contains("c-buf Buffer"), "out: {out}");
+    assert!(out.contains("c-bytes Uint8Array"), "out: {out}");
+    assert!(out.contains("c-blob 1 true"), "out: {out}");
+    assert!(out.contains("c-e1 SyntaxError"), "out: {out}");
+    dir.close().unwrap();
+}
+
+// ── Phase 9b-5：node:timers/promises ────────────────────────────────────────

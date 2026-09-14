@@ -560,6 +560,125 @@ fn phase5_install_end_to_end_stub() {
 }
 
 #[test]
+fn phase5_install_dir_first_tarball_stub() {
+    // 目录首条目 tarball（@types/chai 系：`chai/` 目录条目打头，非 `package/`
+    // 布局；修前解包报 `failed to create <staging>`，见 AGENTS §4.69）。
+    // 现场打 gz（首条目为显式目录），stub 下发→真装→require 可跑。
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    use std::io::Write as _;
+    let mut tar_data = Vec::new();
+    {
+        let mut ar = tar::Builder::new(&mut tar_data);
+        let mut dir_header = tar::Header::new_gnu();
+        dir_header.set_entry_type(tar::EntryType::Directory);
+        dir_header.set_path("oddball/").unwrap();
+        dir_header.set_size(0);
+        dir_header.set_mode(0o755);
+        dir_header.set_cksum();
+        ar.append(&dir_header, &[][..]).unwrap();
+        for (name, body) in [
+            (
+                "oddball/package.json",
+                br#"{"name":"oddball","version":"1.0.0","main":"index.js"}"#.as_slice(),
+            ),
+            ("oddball/index.js", b"exports.add = (a, b) => a + b;\n".as_slice()),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(name).unwrap();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            ar.append(&header, body).unwrap();
+        }
+        ar.finish().unwrap();
+    }
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(&tar_data).unwrap();
+    let tgz = enc.finish().unwrap();
+    let integrity = format!(
+        "sha512-{}",
+        base64::engine::general_purpose::STANDARD.encode(sha2::Sha512::digest(&tgz))
+    );
+    let tgz_holder = std::sync::Arc::new(tgz);
+    let int_holder = std::sync::Arc::new(integrity);
+    let port = serve_http(2, move |head, _body| {
+        let line = head.lines().next().unwrap_or("").to_owned();
+        let path = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+        let port = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Host:").or_else(|| l.strip_prefix("host:")))
+            .and_then(|v| v.trim().split(':').nth(1))
+            .unwrap_or("")
+            .to_owned();
+        if path == "/oddball" {
+            let body = serde_json::json!({
+                "name": "oddball",
+                "dist-tags": { "latest": "1.0.0" },
+                "versions": { "1.0.0": {
+                    "dist": {
+                        "tarball": format!("http://127.0.0.1:{port}/oddball/-/oddball-1.0.0.tgz"),
+                        "integrity": *int_holder,
+                    },
+                    "dependencies": {},
+                } },
+            })
+            .to_string();
+            return (
+                200,
+                vec![("content-type", "application/json".into())],
+                body.into_bytes(),
+            );
+        }
+        if path == "/oddball/-/oddball-1.0.0.tgz" {
+            return (
+                200,
+                vec![("content-type", "application/octet-stream".into())],
+                (*tgz_holder).clone(),
+            );
+        }
+        (404, vec![], b"nope".to_vec())
+    });
+    let reg = format!("http://127.0.0.1:{port}");
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = winterjs()
+        .arg("--add")
+        .arg("oddball")
+        .arg("--registry")
+        .arg(&reg)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("added oddball@1.0.0"));
+    assert!(
+        dir.path()
+            .join("node_modules/oddball/package.json")
+            .is_file()
+    );
+    let app = dir.child("app.cjs");
+    app.write_str("const t = require(\"oddball\");\nconsole.log(t.add(19, 23));\n")
+        .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(app.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "42\n");
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase5_cache_second_install_hits_cache() {
     // 二次安装全命中缓存：tarball 只下一次，第二次删 node_modules 重装仍成功，
     // 此时 stub 的 tarball 端点已翻为 404（若回源必败），证明走缓存。

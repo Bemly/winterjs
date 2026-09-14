@@ -996,6 +996,33 @@ cargo build
   在本引擎不可靠（真机同为 false），回归探针用"确定性压力 + 投递存活"断言，
   不用 canary（试过，不稳定）。
 
+### 4.69 目录首条目 tarball 炸解包：暂存预建（2026-09-14，M5 vitest 牵引）
+
+- 症状：`winterjs -a vitest` 在 `@types/chai@5.2.3` 必败：
+  `cannot unpack @types/chai@5.2.3: unpack failed: failed to create
+  node_modules/.staging-<pid>-<rand>`；其前 100+ 包全过。
+- 根因（二连）：① 该包 tarball 非 `package/` 布局——条目以 `chai/` **目录条目**
+  打头（`tar -tzf` 首行 `chai/`，常规 npm 包首条目即文件、无根目录条目）；
+  ② tar 0.4.46 的 `unpack_in` 在父链校验里 `canonicalize(dst)`，首条目为目录
+  时本仓又跳过预建父链（只对非目录条目建），暂存尚不存在即
+  `failed to create <staging>`。常规包因首个文件条目的预建顺带建了暂存，
+  故从未暴露。另：`chai/` 根的回落（暂存内唯一顶层目录即包根）本就写好，
+  只是一直没活到那一步。
+- 修法（`src/pm/install.rs::unpack_tgz`）：循环前 `create_dir_all(staging)`
+  预建暂存，一行。回归：模块单测 `unpack_dir_first_non_package_root`
+  （现场打目录首条目 gz，目标为尚不存在的暂存；revert-check 注释预建即挂）+
+  黑盒 `phase5_install_dir_first_tarball_stub`（stub 下发→真装→require 出 42）。
+  实证：修后 `-a vitest` 一遍过（25 包，`vitest@5.0.0`）。
+- 过程教训：中途一次"旧二进制却装成功"系误判——`cargo test --test pm`
+  会先编出**带修复的主二进制**（集成测试要 `CARGO_BIN_EXE`），其后对
+  `install.rs` 的 revert/恢复编辑只改了 mtime 没改净内容，二进制实际已含修复；
+  `ls -la` 的新旧比较证明不了二进制由哪版源码编出。结论打架时先查构建指纹链，
+  不只看 mtime（§4.62 姊妹篇）。
+- 复现：`curl registry @types/chai/-/chai-5.2.3.tgz | tar -tzf -` 首行即目录；
+  修前模块单测必挂。
+- 推广为铁律：凡"前 N 个全过、特定包必败"的安装失败，先 `tar -tzf` 看该包
+  条目布局（根目录条目/非 package 根/符号链接三件），再怀疑网络与版本。
+
 
 ## 5. 路线图（按序）
 

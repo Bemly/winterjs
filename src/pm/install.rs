@@ -169,6 +169,11 @@ async fn download(url: &str) -> Result<Vec<u8>, Error> {
 /// tgz 解包到暂存（`package/` 包裹剥离；越界条目拒绝；返回包根）。
 fn unpack_tgz(bytes: &[u8], staging: &Path) -> Result<PathBuf, String> {
     use flate2::read::GzDecoder;
+    // 暂存预建（tar 0.4.46 的 `unpack_in` 在父链校验里 `canonicalize(dst)`，
+    // 首条目为目录时暂存尚不存在即报 `failed to create <staging>`——正常 npm
+    // 包首条目即文件（预建父链顺带建了暂存）故从未暴露；@types/chai 系首条目
+    // 为目录（`chai/` 非 `package/` 布局）即炸，见 AGENTS §4.69）。
+    std::fs::create_dir_all(staging).map_err(|e| format!("cannot stage dir: {e}"))?;
     let gz = GzDecoder::new(bytes);
     let mut archive = tar::Archive::new(gz);
     let entries = archive.entries().map_err(|e| format!("bad tarball: {e}"))?;
@@ -316,4 +321,69 @@ fn write_lockfile(
     crate::pm::cache::atomic_write(&root.join(LOCKFILE), text.as_bytes())
         .map_err(Error::Other)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 目录首条目 tarball（@types/chai 系：`chai/` 目录条目打头，非 `package/`
+    /// 布局；修前 `unpack_in` 报 `failed to create <staging>`，见 AGENTS §4.69）。
+    /// 现场打 gz（tar + flate2 皆主依赖），解包目标为尚不存在的暂存。
+    fn dir_first_tgz() -> Vec<u8> {
+        let mut tar_data = Vec::new();
+        {
+            let mut ar = tar::Builder::new(&mut tar_data);
+            // 显式目录条目打头（npm 常规包无此条目，故旧逻辑从未建暂存即炸）。
+            let mut dir_header = tar::Header::new_gnu();
+            dir_header.set_entry_type(tar::EntryType::Directory);
+            dir_header.set_path("oddball/").unwrap();
+            dir_header.set_size(0);
+            dir_header.set_mode(0o755);
+            dir_header.set_cksum();
+            ar.append(&dir_header, &[][..]).unwrap();
+            let mut header = tar::Header::new_gnu();
+            let body = br#"{"name":"oddball","version":"1.0.0","main":"index.js"}"#;
+            header.set_path("oddball/package.json").unwrap();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            ar.append(&header, &body[..]).unwrap();
+            let mut header = tar::Header::new_gnu();
+            let body = b"exports.add = (a, b) => a + b;\n";
+            header.set_path("oddball/index.js").unwrap();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            ar.append(&header, &body[..]).unwrap();
+            ar.finish().unwrap();
+        }
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        use std::io::Write as _;
+        enc.write_all(&tar_data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn unpack_dir_first_non_package_root() {
+        let bytes = dir_first_tgz();
+        let tmp = std::env::temp_dir().join(format!(
+            "wjs-unpack-probe-{}-{:x}",
+            std::process::id(),
+            {
+                let mut b = [0u8; 4];
+                getrandom::fill(&mut b).unwrap();
+                u32::from_ne_bytes(b)
+            }
+        ));
+        // 暂存尚不存在（复现修前条件）；解完自清。
+        assert!(!tmp.exists());
+        let root = unpack_tgz(&bytes, &tmp).expect("dir-first tarball unpacks");
+        assert_eq!(root.file_name().unwrap(), "oddball");
+        let pkg = std::fs::read_to_string(root.join("package.json")).unwrap();
+        assert!(pkg.contains("\"oddball\""), "pkg: {pkg}");
+        let idx = std::fs::read_to_string(root.join("index.js")).unwrap();
+        assert!(idx.contains("exports.add"), "idx: {idx}");
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
 }

@@ -159,7 +159,9 @@ pub(crate) unsafe fn napi_trampoline_frame(
 
     // 回调槽位基线：argv/this/new.target 与回调内建值都在其上，返回时截断
     //（Node 契约：napi_value 仅回调存活期有效；同时是 finalize 链的前提——
-    // 槽位是 GC 根，不截断则回调产物永不可达死态）。
+    // 槽位是 GC 根，不截断则 external/wrap 对象永不可达死态，finalizer 永不
+    // 跑（§4.77 实测：pin-all = external 内存无底洞泄漏）。addon 跨窗持有
+    // 必须走 ref（§4.76 wrap-ref 出参）。
     let mark = env_ref.slots.len();
     // escape 回收基线（本回调产物按此水位截断；N-API handle scope 契约）。
     let escape_base = env_ref.escape_slots.len();
@@ -1050,6 +1052,13 @@ unsafe fn call_impl(
     };
     let fn_v = unsafe { env_ref.get(func) };
     let mut cx = unsafe { cx_of(env) };
+    // 防御：func 非 object（悬垂槽位/类型错）即可读失败——Node 同款是 UB，我们
+    // 不让它进 JSAPI（§4.79：截断语义下跨回调裸持 napi_value 的现形点）。
+    if !fn_v.is_object() {
+        let env_ref = unsafe { e(env) };
+        env_ref.set_last_error("napi_call_function: func is not an object (stale napi_value?)");
+        return NAPI_INVALID_ARG;
+    }
     // SAFETY：数组与函数先 rooted 再调用；值均在本 env 槽位（traced）。
     unsafe {
         rooted!(&in(cx) let fn_root = fn_v);

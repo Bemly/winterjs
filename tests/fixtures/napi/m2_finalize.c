@@ -1,6 +1,9 @@
 // napi M2 finalize 释放链 fixture：external + wrap 实例全走 GC finalizer 释放
-// malloc 内存。计数器对（alloc/free）经 counts() 回读——free 追上 alloc 即
-// 链路闭合（宿主 trampoline 槽位截断 → 对象可达死态 → minor GC → finalize op）。
+// malloc 内存。计数器对（alloc/free）经 counts() 回读。
+// §4.77/§4.78 语义：宿主槽位不截断 + finalizer 延迟收敛（GC sweep 内只入队，
+// dispatch 安全点排空）——中途 free 不再追上 alloc；`drain(cb)` 排一个
+// async_work，其 complete（安全点，宿主已排空 pending finalizer）回吐计数，
+// 供测试断言"finalizer 真会跑 + free ≤ alloc 恒成立"。
 #include <node_api.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +13,7 @@ static long g_ext_allocs = 0;
 static long g_ext_frees = 0;
 static long g_wrap_allocs = 0;
 static long g_wrap_frees = 0;
+static napi_ref g_drain_cb_ref = NULL; // 跨回调持 JS 回调必须走 ref（Node 契约）
 
 static void ext_finalizer(napi_env env, void *data, void *hint) {
   (void)env; (void)hint;
@@ -64,6 +68,36 @@ static napi_value Counts(napi_env env, napi_callback_info info) {
   return arr;
 }
 
+// drain(cb): 排一个 async_work；complete 在安全点（宿主 dispatch 入口已排空
+// pending finalizer）调 cb(counts)——延迟收敛后的 free 计数在此可见。
+static void drain_execute(napi_env env, void *data) { (void)env; (void)data; }
+static void drain_complete(napi_env env, napi_status status, void *data) {
+  (void)status; (void)data;
+  napi_value arr, out, undef, cb;
+  if (napi_get_reference_value(env, g_drain_cb_ref, &cb) != napi_ok) return;
+  napi_create_array_with_length(env, 4, &arr);
+  long vals[4] = { g_ext_allocs, g_ext_frees, g_wrap_allocs, g_wrap_frees };
+  for (int i = 0; i < 4; i++) {
+    napi_create_int64(env, vals[i], &out);
+    napi_set_element(env, arr, (uint32_t)i, out);
+  }
+  napi_get_undefined(env, &undef);
+  napi_call_function(env, undef, cb, 1, &arr, NULL);
+}
+static napi_value Drain(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok) return NULL;
+  if (g_drain_cb_ref == NULL &&
+      napi_create_reference(env, argv[0], 1, &g_drain_cb_ref) != napi_ok) return NULL;
+  napi_value name;
+  napi_async_work work;
+  if (napi_create_string_utf8(env, "drain", NAPI_AUTO_LENGTH, &name) != napi_ok) return NULL;
+  if (napi_create_async_work(env, NULL, name, drain_execute, drain_complete, NULL, &work) != napi_ok) return NULL;
+  if (napi_queue_async_work(env, work) != napi_ok) return NULL;
+  return NULL;
+}
+
 static napi_value BoxCtor(napi_env env, napi_callback_info info) {
   napi_value this_v;
   napi_get_cb_info(env, info, NULL, NULL, &this_v, NULL);
@@ -73,11 +107,13 @@ static napi_value BoxCtor(napi_env env, napi_callback_info info) {
 
 static napi_value Init(napi_env env, napi_value exports) {
   if (napi_define_class(env, "Box", NAPI_AUTO_LENGTH, BoxCtor, NULL, 0, NULL, &g_box_ctor) != napi_ok) return NULL;
-  napi_value mk, counts;
+  napi_value mk, counts, drain;
   napi_create_function(env, "mk", NAPI_AUTO_LENGTH, Mk, NULL, &mk);
   napi_create_function(env, "counts", NAPI_AUTO_LENGTH, Counts, NULL, &counts);
+  napi_create_function(env, "drain", NAPI_AUTO_LENGTH, Drain, NULL, &drain);
   napi_set_named_property(env, exports, "mk", mk);
   napi_set_named_property(env, exports, "counts", counts);
+  napi_set_named_property(env, exports, "drain", drain);
   return exports;
 }
 NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)

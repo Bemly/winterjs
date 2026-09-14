@@ -1,10 +1,13 @@
 //! napi buffer 族（plan-napi M3）：arraybuffer / typedarray / dataview /
 //! node Buffer 全面。
 //!
-//! - ArrayBuffer 走 `JS::NewArrayBuffer` / `JS::NewExternalArrayBuffer`；
-//!   **偏差（记 plan-napi §4）**：SM 对小 ArrayBuffer 用 inline 存储，GC 可
-//!   搬移——addon 拿到的 data 指针跨回调使用须重取
-//!   `napi_get_arraybuffer_info`（Node/V8 的指针恒稳）。rolldown M4 实测。
+//! - ArrayBuffer 走 `JS::NewArrayBuffer` / `JS::NewExternalArrayBuffer`。
+//!   **数据指针稳定性（§4.75，vue-project 138/139 根因）**：Node/V8 契约是
+//!   create_arraybuffer/buffer 交出的 data 指针终身稳定；SM 自建小 AB 用
+//!   inline 存储 GC 可搬移——故 `napi_create_arraybuffer`/`napi_create_buffer`/
+//!   `napi_create_buffer_copy` 一律走 `new_owned_ab`（Rust 分配 + external AB
+//!   桥 + free 回收）。JS 侧建 AB 传给 addon 的指针仍只保回调存活期有效
+//!   （跨回调须重取 `napi_get_arraybuffer_info`，偏差记档）。
 //! - external 的 finalize 经 `JS::BufferContentsFreeFunc` 桥（Box 携带 env/
 //!   cb/hint；本运行时单 GC 线程 + FOREGROUND 语义，free 恒主线程——SM 文档
 //!   的"任意线程"在本运行时不会发生，记档）。
@@ -22,7 +25,6 @@ use mozjs::glue::GetUint8ArrayLengthAndData;
 use mozjs::jsapi::{JSObject, JS_NewDataView, JS_InstanceOf, JS_IsTypedArrayObject};
 use mozjs::jsval::{JSVal, ObjectValue};
 use mozjs::rooted;
-use mozjs::typedarray::{CreateWith, TypedArray, Uint8};
 
 use crate::jsapi_glue::{call_one, call_two, get_prop_value, raw_handle};
 use crate::napi::api::{cx_of, e, NAPI_GENERIC_FAILURE, NAPI_INVALID_ARG, NAPI_OK};
@@ -44,17 +46,14 @@ pub unsafe extern "C" fn napi_create_arraybuffer(
     }
     let mut cx = unsafe { cx_of(env) };
     let env_ref = unsafe { e(env) };
-    // SAFETY：对象先 rooted 再取数据指针/落槽（建值与取指针间无 GC 点）。
+    // SAFETY：自有稳定存储（§4.75）；对象建后即 rooted，落槽前无 GC 点。
     unsafe {
-        let ab = mozjs::jsapi::JS::NewArrayBuffer(cx.raw_cx(), byte_length);
-        if ab.is_null() {
+        let Some((ptr, ab)) = new_owned_ab(&mut cx, byte_length) else {
             return NAPI_GENERIC_FAILURE;
-        }
+        };
         rooted!(&in(cx) let ab_root: *mut JSObject = ab);
         if !data.is_null() {
-            let (len, ptr) = ab_data(ab_root.get());
-            debug_assert_eq!(len, byte_length);
-            *data = ptr as *mut c_void;
+            *data = ptr;
         }
         *result = env_ref.put(ObjectValue(ab_root.get()));
     }
@@ -90,8 +89,115 @@ unsafe extern "C" fn ext_ab_free(contents: *mut c_void, user_data: *mut c_void) 
     unsafe {
         let b = Box::from_raw(user_data as *mut ExtBridge);
         if let Some(f) = b.cb {
-            f(b.env, contents, b.hint);
+            // §4.78：GC sweep 内禁 addon 回调（改 env 表/写堆即腐坏 GC）——
+            // 入队，`asyncwork::dispatch` 入口 / end_session 安全点执行。
+            // data（contents）随 cb 交还 addon 释放（external 语义）。
+            let env_ref = &mut *(b.env as *mut crate::napi::env::NapiEnv);
+            env_ref.pending_finalizers.push(crate::napi::class::PendingFinalize {
+                env: b.env,
+                data: contents,
+                finalize: Some(f),
+                hint: b.hint,
+            });
         }
+    }
+}
+
+/// 自有稳定存储桥（`new_owned_ab` 专用；free 时按记录的 len 重建 layout）。
+struct OwnedAb {
+    len: usize,
+}
+
+/// # Safety
+/// 引擎在 ArrayBuffer 回收时调用；contents 即 `new_owned_ab` 的分配基址。
+unsafe extern "C" fn owned_ab_free(contents: *mut c_void, user_data: *mut c_void) {
+    // SAFETY：bridge 由 new_owned_ab 以 Box::into_raw 交出；layout 与分配时同形。
+    unsafe {
+        let b = Box::from_raw(user_data as *mut OwnedAb);
+        if !contents.is_null() {
+            let layout = std::alloc::Layout::from_size_align(b.len.max(1), 16)
+                .expect("owned ab layout");
+            std::alloc::dealloc(contents as *mut u8, layout);
+        }
+    }
+}
+
+/// 建带**自有稳定存储**的 ArrayBuffer（Rust 分配 + external AB 桥，零填充）。
+///
+/// Node/V8 契约：`napi_create_arraybuffer/buffer` 交出的 data 指针**终身稳定**；
+/// SM 自建 AB 对小长度用 inline 存储、GC 可搬移——napi-rs 按 Node 语义持指针
+/// 跨 GC 读写即腐坏引擎堆（vue-project dev/transform 链 138/139 的根因，
+/// AGENTS §4.75）。故 napi 建面一律走 external 稳定存储。
+///
+/// # Safety
+/// `cx` 在 realm 内。成功返回 (稳定数据基址, AB 对象)；失败已回收分配。
+unsafe fn new_owned_ab(cx: &mut JSContext, len: usize) -> Option<(*mut c_void, *mut JSObject)> {
+    // SAFETY：分配/零填在 GC 外；对象建后即 rooted 于调用方（返回即交根）。
+    unsafe {
+        let layout = std::alloc::Layout::from_size_align(len.max(1), 16).ok()?;
+        let ptr = std::alloc::alloc(layout);
+        if ptr.is_null() {
+            return None;
+        }
+        std::ptr::write_bytes(ptr, 0, len.max(1));
+        let ab = mozjs::jsapi::glue::NewExternalArrayBuffer(
+            cx.raw_cx(),
+            len,
+            ptr as *mut c_void,
+            Some(owned_ab_free),
+            Box::into_raw(Box::new(OwnedAb { len })) as *mut c_void,
+        );
+        if ab.is_null() {
+            std::alloc::dealloc(ptr, layout);
+            return None;
+        }
+        Some((ptr as *mut c_void, ab))
+    }
+}
+
+/// `new Uint8Array(ab)` 经全局构造器 + `bufferify`（external/buffer/copy 三面公用）。
+///
+/// # Safety
+/// `env` 有效；`ab` 为已 rooted 的 ArrayBuffer 对象。
+unsafe fn u8_over_ab(env: napi_env, ab: *mut JSObject) -> Option<JSVal> {
+    // SAFETY：ctor/实参先 rooted 再调 `__wjs_napi_new`（全语义构造）。
+    unsafe {
+        let mut cx = cx_of(env);
+        rooted!(&in(cx) let ab_root: *mut JSObject = ab);
+        let Some(u8ctor) = get_prop_value(&mut cx, crate::state::global(), c"Uint8Array") else {
+            return None;
+        };
+        rooted!(&in(cx) let ctor_root = u8ctor);
+        let args = mozjs::jsapi::JS::NewArrayObject1(cx.raw_cx(), 1);
+        if args.is_null() {
+            return None;
+        }
+        rooted!(&in(cx) let args_root = args);
+        rooted!(&in(cx) let item = ObjectValue(ab_root.get()));
+        if !mozjs::jsapi::JS_SetElement(
+            cx.raw_cx(),
+            raw_handle(&args_root.get()),
+            0,
+            raw_handle(item.as_ptr()),
+        ) {
+            return None;
+        }
+        let Some(helper) = get_prop_value(&mut cx, crate::state::global(), c"__wjs_napi_new") else {
+            return None;
+        };
+        let Some(r) = call_two(
+            &mut cx,
+            crate::state::global(),
+            helper,
+            ctor_root.get(),
+            ObjectValue(args_root.get()),
+        ) else {
+            return None;
+        };
+        if !r.is_object() {
+            return None;
+        }
+        bufferify(env, r.to_object())
     }
 }
 
@@ -564,27 +670,6 @@ pub unsafe extern "C" fn napi_is_dataview(
 
 // ── node Buffer ──────────────────────────────────────────────────────────
 
-/// 建裸 Uint8Array（CreateWith::Length）→ 长度。
-///
-/// # Safety
-/// `cx` 在 realm 内；成功时 `*out` 为新对象。
-unsafe fn new_u8_array(cx: &mut JSContext, len: usize) -> Option<*mut JSObject> {
-    // SAFETY：TypedArray::create 为 safe glue（obj rooted 出参）。
-    unsafe {
-        rooted!(&in(cx) let mut obj: *mut JSObject = ptr::null_mut());
-        let r = TypedArray::<Uint8, *mut JSObject>::create(
-            cx,
-            CreateWith::Length(len),
-            obj.handle_mut(),
-        );
-        if r.is_err() || obj.is_null() {
-            None
-        } else {
-            Some(obj.get())
-        }
-    }
-}
-
 /// Uint8Array 挂 Buffer.prototype（Node 实例形状）。
 ///
 /// # Safety
@@ -631,17 +716,17 @@ pub unsafe extern "C" fn napi_create_buffer(
     }
     let mut cx = unsafe { cx_of(env) };
     let env_ref = unsafe { e(env) };
-    // SAFETY：对象先建（rooted in new_u8_array）再 bufferify/落槽。
+    // SAFETY：自有稳定存储（§4.75）；对象先 rooted 再 bufferify/落槽。
     unsafe {
-        let Some(obj) = new_u8_array(&mut cx, length) else {
+        let Some((ptr, ab)) = new_owned_ab(&mut cx, length) else {
             return NAPI_GENERIC_FAILURE;
         };
-        let Some(bv) = bufferify(env, obj) else {
+        rooted!(&in(cx) let ab_root: *mut JSObject = ab);
+        let Some(bv) = u8_over_ab(env, ab_root.get()) else {
             return NAPI_GENERIC_FAILURE;
         };
         if !data.is_null() {
-            let (_, ptr) = u8_data(obj);
-            *data = ptr as *mut c_void;
+            *data = ptr;
         }
         *result = env_ref.put(bv);
     }
@@ -663,18 +748,17 @@ pub unsafe extern "C" fn napi_create_buffer_copy(
     }
     let mut cx = unsafe { cx_of(env) };
     let env_ref = unsafe { e(env) };
-    // SAFETY：同 create_buffer；拷贝在 rooted 期完成（无 GC 点）。
+    // SAFETY：同 create_buffer；拷贝写自有稳定存储（无 GC 点）。
     unsafe {
-        let Some(obj) = new_u8_array(&mut cx, length) else {
+        let Some((ptr, ab)) = new_owned_ab(&mut cx, length) else {
             return NAPI_GENERIC_FAILURE;
         };
+        rooted!(&in(cx) let ab_root: *mut JSObject = ab);
         if !result_data.is_null() {
-            let (_, ptr) = u8_data(obj);
-            *result_data = ptr as *mut c_void;
+            *result_data = ptr;
         }
-        let (_, dst) = u8_data(obj);
-        std::ptr::copy_nonoverlapping(data as *const u8, dst, length);
-        let Some(bv) = bufferify(env, obj) else {
+        std::ptr::copy_nonoverlapping(data as *const u8, ptr as *mut u8, length);
+        let Some(bv) = u8_over_ab(env, ab_root.get()) else {
             return NAPI_GENERIC_FAILURE;
         };
         *result = env_ref.put(bv);
@@ -717,41 +801,7 @@ pub unsafe extern "C" fn napi_create_external_buffer(
         }
         rooted!(&in(cx) let ab_root: *mut JSObject = ab);
         // new Uint8Array(ab) 经构造器（全语义，含越界抛错）。
-        let Some(u8ctor) = get_prop_value(&mut cx, crate::state::global(), c"Uint8Array") else {
-            return NAPI_GENERIC_FAILURE;
-        };
-        rooted!(&in(cx) let ctor_root = u8ctor);
-        let args = mozjs::jsapi::JS::NewArrayObject1(cx.raw_cx(), 1);
-        if args.is_null() {
-            return NAPI_GENERIC_FAILURE;
-        }
-        rooted!(&in(cx) let args_root = args);
-        rooted!(&in(cx) let item = ObjectValue(ab_root.get()));
-        if !mozjs::jsapi::JS_SetElement(
-            cx.raw_cx(),
-            raw_handle(&args_root.get()),
-            0,
-            raw_handle(item.as_ptr()),
-        ) {
-            return NAPI_GENERIC_FAILURE;
-        }
-        let Some(helper) = get_prop_value(&mut cx, crate::state::global(), c"__wjs_napi_new")
-        else {
-            return NAPI_GENERIC_FAILURE;
-        };
-        let Some(r) = call_two(
-            &mut cx,
-            crate::state::global(),
-            helper,
-            ctor_root.get(),
-            ObjectValue(args_root.get()),
-        ) else {
-            return NAPI_GENERIC_FAILURE;
-        };
-        if !r.is_object() {
-            return NAPI_GENERIC_FAILURE;
-        }
-        let Some(bv) = bufferify(env, r.to_object()) else {
+        let Some(bv) = u8_over_ab(env, ab_root.get()) else {
             return NAPI_GENERIC_FAILURE;
         };
         *result = env_ref.put(bv);

@@ -33,6 +33,7 @@ use mozjs::jsval::{JSVal, ObjectValue, PrivateValue, UndefinedValue};
 use mozjs::rooted;
 
 use crate::jsapi_glue::{call_two, get_prop_value, raw_handle};
+use crate::napi::env::NapiEnv;
 use crate::napi::api::{cstr_of_len, cx_of, e, napi_trampoline_frame, object_prototype};
 use crate::napi::property::define_one;
 use crate::napi::sys;
@@ -103,11 +104,42 @@ pub(crate) fn object_is_class(
     }
 }
 
+/// 待执行的 addon finalizer（GC sweep 内只入队；安全点排空，§4.78）。
+pub struct PendingFinalize {
+    pub env: napi_env,
+    pub data: *mut c_void,
+    pub finalize: sys::node_api_basic_finalize,
+    pub hint: *mut c_void,
+}
+
+/// 安全点排空 pending finalizer（`asyncwork::dispatch` 入口 / end_session）。
+/// 前置：JS 线程、无 GC 活动期（finalize 回调内可跑 JSAPI——Node 口径
+/// finalizer 上下文；本引擎在其外再禁 re-entrancy 无必要，回调按 Node 契约
+/// 只碰 native 与 napi 簿记面）。
+pub fn drain_pending_finalizers(env_ptr: *mut NapiEnv) {
+    // SAFETY：JS 线程专用 env（会话单例，§4.24）。
+    let env = unsafe { &mut *env_ptr };
+    if env.pending_finalizers.is_empty() {
+        return;
+    }
+    let list = std::mem::take(&mut env.pending_finalizers);
+    for p in list {
+        if let Some(f) = p.finalize {
+            // SAFETY：cb 由 napi_wrap/external AB 写入（vendored 头实测
+            // node_api_basic_finalize 与 napi_finalize 同形）。
+            unsafe { f(p.env, p.data, p.hint) };
+        }
+    }
+}
+
 /// 共享 finalize op（GC sweep 期执行；主线程——FOREGROUND_FINALIZE 钉死）。
 ///
 /// # Safety
 /// 仅引擎 GC 调用（JSFinalizeOp 协议）；只读 reserved slots（finalize 期
-/// 唯一安全访问面），禁一切 JSAPI（addon finalizer 同约束，Node 同口径）。
+/// 唯一安全访问面），**禁 addon 回调直调**（§4.78：sweep 内跑 napi-rs 的
+/// finalizer 会经 napi_delete_reference 等改 env 表 + Heap clearing barrier
+/// ——GC 期间写堆 = GC 元数据腐坏，vue-project 138/139 根因）——只入队，
+/// 由安全点（dispatch 入口/end_session）排空。
 unsafe extern "C" fn napi_class_finalize(_gcx: *mut mozjs::jsapi::JS::GCContext, obj: *mut JSObject) {
     // SAFETY：引擎 finalize 协议（见 # Safety）；slots 全 PrivateValue 语义。
     unsafe {
@@ -138,7 +170,14 @@ unsafe extern "C" fn napi_class_finalize(_gcx: *mut mozjs::jsapi::JS::GCContext,
         // node_api_basic_finalize 签名，vendored 头实测 = napi_finalize 同形）。
         let f: unsafe extern "C" fn(napi_env, *mut c_void, *mut c_void) =
             std::mem::transmute(cb.to_private());
-        f(env, data_ptr, hint_ptr);
+        // 纯 Rust 入队（不碰 JSAPI/不写堆），安全点再调 addon。
+        let env_ref = &mut *(env as *mut NapiEnv);
+        env_ref.pending_finalizers.push(PendingFinalize {
+            env,
+            data: data_ptr,
+            finalize: Some(f),
+            hint: hint_ptr,
+        });
     }
 }
 
@@ -315,7 +354,8 @@ pub struct WrapBoxRec {
 /// # Safety
 /// N-API 约定（vendored js_native_api.h:323）。类实例走 reserved 槽 + result
 /// ref 出参；任意对象走 env 登记表（偏差记档：无 GC 驱动 finalize），
-/// result 非 null 即 fail-fast。
+/// result 出参两路同发（§4.76：napi-rs 缓存跨回调复用的对象恒带此参，
+/// 拒发即对象无根被 GC——悬垂槽位读 = vue-project 138/139 根因）。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn napi_wrap(
     env: napi_env,
@@ -340,13 +380,20 @@ pub unsafe extern "C" fn napi_wrap(
             // 任意对象路（M5）：napi-rs 3 的 PromiseRaw.then/catch 对自家
             // napi_create_function 产物挂 finalizer，进到这里的是合法用法。
             // 偏差记档：无 GC 驱动 finalize（SM 弱指针面未接），payload 进
-            // env 登记表，end_session 收敛 LIFO 触发；ref 出参仅类实例路支持。
+            // env 登记表，end_session 收敛 LIFO 触发。
+            // ref 出参（§4.76）：napi-rs 对跨回调缓存复用的函数恒带此参——
+            // 拒发即对象无根可被 GC 回收，其裸 napi_value 跨窗口读出的槽位
+            // 残留旧指针（看似有效、指向已死对象）→ 任意后续崩点
+            // （vue-project dev/build 链 138/139 随 GC 时序漂移的根因）。
+            // Node 口径：初始计数 0 的引用，指向被 wrap 对象（类实例路同款）。
             if !result.is_null() {
-                let env_ref = e(env);
-                env_ref.set_last_error(
-                    "napi_wrap napi_ref out-param requires a define_class instance",
-                );
-                return NAPI_INVALID_ARG;
+                let rec = Box::new(crate::napi::refcount::RefRec {
+                    value: mozjs::jsapi::Heap::boxed(obj_v),
+                    refcount: 0,
+                });
+                *result = &*rec as *const crate::napi::refcount::RefRec
+                    as *const c_void as sys::napi_ref;
+                e(env).refs.push(rec);
             }
             e(env).wrap_boxes.push(WrapBoxRec {
                 env,

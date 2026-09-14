@@ -3,9 +3,13 @@
 //! - 值槽位 arena：`Vec<Box<Heap<JSVal>>>`——`Box` 定址（槽地址恒稳，§4.40），
 //!   `Heap` 经 RootedState 的 trace 链入 GC。`napi_value` 即槽位地址
 //!   （`*mut Heap<JSVal>` 转 `sys::napi_value`，对 addon 不透明）。
-//! - 槽位回收（M2）：trampoline 回调按进入水位截断（Node 契约：回调内建值
-//!   仅回调存活期有效）；显式 handle scope 由 scope.rs 统一栈管理（close 截
-//!   断 + LIFO 校验）；escape 产物入独立池，由宿主入口按水位回收。
+//! - 槽位回收（M2）：trampoline 回调按进入水位截断（Node 契约：napi_value 仅
+//!   回调存活期有效；截断同时是 finalize 链前提——槽位是 GC 根，不截断则
+//!   external/wrap 对象永不可达死态，finalizer 永不跑/external 内存永不释放，
+//!   §4.77 pin-all 实测即此泄漏，已回退）。addon 跨窗持有必须走 ref
+//!   （§4.76 wrap-ref 出参两路同发）。
+//! - finalizer 延迟收敛（§4.78）：GC sweep 内只入队 `pending_finalizers`，
+//!   dispatch 入口 / end_session 安全点执行。
 //! - addon 库表：`libloading::Library` 会话存活、永不 dlclose（地址稳定，
 //!   bun:ffi 同口径）。
 //! - `napi_module_register` 暂存：dlopen 的 constructor 在 dlopen 调用栈内
@@ -67,6 +71,9 @@ pub struct NapiEnv {
     /// 未接，对象自身死亡不提前释放；payload 为回调闭包等小分配。无 JS 值，
     /// 不进 GC 图）。
     pub wrap_boxes: Vec<crate::napi::class::WrapBoxRec>,
+    /// 待执行的 addon finalizer（类实例 wrap/external AB 共用；GC sweep 内
+    /// 只入队（§4.78），`asyncwork::dispatch` 入口 / end_session 安全点排空）。
+    pub pending_finalizers: Vec<crate::napi::class::PendingFinalize>,
     /// 已加载 addon 库（path → Library；永不 dlclose）。
     pub libs: Vec<(PathBuf, libloading::Library)>,
     /// `.node` 模块 exports 缓存（require 幂等，Node 口径；exports 进 GC 图）。
@@ -131,6 +138,7 @@ impl NapiEnv {
             next_napi_id: 0,
             cleanup_hooks: Vec::new(),
             wrap_boxes: Vec::new(),
+            pending_finalizers: Vec::new(),
             libs: Vec::new(),
             modules: Vec::new(),
             last_error: None,

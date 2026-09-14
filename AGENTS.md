@@ -1126,3 +1126,93 @@ cargo build
 - 线程模型：`JSContext` 是 `!Send`，JS 永远跑在独占线程（tokio `LocalSet`），
   Rust 侧多线程只通过消息队列与 JS 线程通信，绝不跨线程共享 `&mut JSContext`
  （winterjs-old §7.9 的 aliasing-UB 教训）。
+
+### 4.73 线信封循环引用：先序 id + ref marker，两端同序才成立（2026-09-14，M5）
+
+- 症状：vitest/tinypool 跨池消息含循环/共享引用对象——9i-2 信封语义下
+  DataCloneError（循环抛错）或共享引用被拷成多份（身份丢失），池消息失真。
+- 根因：9i-2 信封走"可克隆性探路 + 拒绝"，不保对象同一性。
+- 修法（`worker.rs` `__packValue/__unpackValue`）：容器先序 id——打包侧首访
+  `path.set(v, nextId++)`、重访出 `ref` marker；解码侧**同先序、先占位再填子项**
+  （`refs[nextId++] = out` 先注册占位，子项回填），祖先后向引用恒可解。
+  共享引用保留同一性（真机 structuredClone 口径）。9i-2 黑盒同步翻转
+  （`w9i-circular true true true true`：自引用/自同/数组含自身/跨消息不串）。
+- 复现：`tests/node/worker.rs` 循环保留用例（M5 升级前必抛 DataCloneError）。
+- 推广为铁律：跨端序列化保循环 = "同序编号 + 先占位后回填"两条同时成立，
+  漏任一即环解 undefined；编码器语义升级时全 grep 旧"必须抛"断言。
+
+### 4.74 `process.stdout.write("", cb)` 无回调实现 = 等落定的协议永挂（2026-09-14，M5）
+
+- 症状：vitest threads 池 worker 挂起——worker 线程 `flushStdio` 以
+  `process.stdout.write("", cb)` 等前序块落定，本仓 write 只写不回调，cb 永不触发。
+- 根因：`process_.rs` stdout/stderr 的 write 未实现 Node 的 `write(str[, cb])`
+  回调面（Node：flush 后异步触发，即便直写成功也异步回）。
+- 修法：write 识别函数实参，直写恒成功，cb 经 `queueMicrotask` 异步回
+  （stdout/stderr 双侧）；黑盒 `write("",cb) → fired`（`tests/node/process_.rs`）。
+- 推广为铁律：凡实现"带回调的写出面"，回调即使同步完成也必须异步触发
+  （microtask），否则调用方"等 flush"的挂起式协议永不解锁。
+
+### 4.75 napi 建面 AB 数据指针必须终身稳定（2026-09-15，M5 终线）
+
+- 症状：vue-project rolldown 载荷下偶发堆腐坏（138/139 随 GC 时序漂移）。
+- 根因：`napi_create_arraybuffer/buffer` 走 `JS::NewArrayBuffer`——SM 小 AB 用
+  inline 存储、GC 可搬移；Node/V8 契约是 data 指针**终身稳定**，napi-rs 按
+  Node 语义持指针跨 GC 读写即腐坏引擎堆。M3"偏差记档：指针须重取"实际不可
+  执行——addon 无从得知何时 GC。
+- 修法（`buffer.rs` `new_owned_ab`）：napi 建面一律走自有稳定存储（Rust 分配
+  对齐 16 + 零填 + `NewExternalArrayBuffer` 桥 + free 回收）；JS 侧建 AB 传
+  addon 的指针仍只保回调存活期（偏差记档）。
+- 复现：`tests/napi.rs` 全量黑盒 + rolldown 真包载荷。
+- 推广为铁律：宿主 AB 与"Node AB 指针稳定"的引擎差异，必须在 napi 建面
+  一次性抹平，不得要求 addon 配合（addon 按 Node 契约书写）。
+
+### 4.76 napi_wrap 的 ref 出参两路同发：拒发即 addon 对象无根（2026-09-15，M5 终线）
+
+- 症状：任意对象路 napi_wrap 对非空 `result`（napi_ref 出参）报
+  INVALID_ARG——napi-rs 对缓存跨回调复用的函数（PromiseRaw.then/catch 产物）
+  恒带此参；拒发后对象无 ref 保活。
+- 修法（`class.rs`）：任意对象路同样发初始计数 0 的 ref（类实例路同款）。
+- 推广为铁律：Node 语义里"跨 scope 存活的 napi_value"只有 ref 一条正道；
+  宿主对 ref 出参拒发 = 逼 addon 裸持 = 悬垂。fail-fast 前先想 addon 有无
+  正当用法（§4.66 的 fail-fast 被 M4/M5 实战两次证伪为缺口）。
+
+### 4.77 pin-all（槽位不截断）反例：finalize 链整体死亡（2026-09-15，M5 终线）
+
+- 症状：为根治"悬垂槽位读"试 pin-all（arena 只增不截断）——external/wrap
+  对象被槽位永久钉住，永不可达死态，**finalizer 从此永不跑**
+  （m2 drain 探针 `free` 恒 0），external 内存无底洞泄漏（rolldown 每
+  transform 产 buffer 即中招）。
+- 根因：截断不只是"Node 值域契约"，更是 finalize 链的前提——槽位是 GC 根，
+  不截断则回调产物永不可达死态（M2 头注早有预言，本轮实证）。
+- 修法：回退截断（trampoline/dispatch/scope close 三处恢复），addon 跨窗持有
+  走 §4.76 ref；测试侧 `m2_finalize` 改 drain 形（async_work 安全点回吐计数）。
+- 推广为铁律：改内存管理语义前先问"finalizer 何时跑"——凡 GC 根面（槽位/表），
+  收回 = 析构通道，两头（泄漏 vs 悬垂）都通向事故，正解只有 Node 口径
+  （值随 scope、跨 scope 走 ref）。
+
+### 4.78 GC sweep 内禁 addon finalizer：入队 + 安全点排空（2026-09-15，M5 终线）
+
+- 症状（疑点，未单独复现钉死）：`napi_class_finalize` 在 GC sweep 内直调
+  addon finalizer——napi-rs 的 finalizer 会经 `napi_delete_reference` 等改
+  env 表 + Heap clearing barrier，即 GC 期间写堆，GC 元数据腐坏风险。
+- 修法（`class.rs`/`buffer.rs`/`asyncwork.rs`/`lifecycle.rs`）：sweep 内只
+  **入队** `pending_finalizers`（纯 Rust push，不碰 JSAPI/不写堆）；
+  `asyncwork::dispatch` 入口 / end_session 安全点排空（JS 线程、无 GC 活动期）。
+  external AB 的 contents 释放随 cb 一并延迟（external 语义：data 归 addon）。
+- 复现：m2_finalize drain 形（GC 期入队 → 安全点全量 free）。
+- 推广为铁律：GC 回调（finalize op）内只许纯 Rust 簿记；凡会触 JSAPI/写堆/
+  改 GC 根面的 addon 回调，一律队列化到安全点。Node 的 finalizer 上下文限制
+  （只许 napi 簿记面）在宿主侧必须由"延迟排空"落实，不能指望 addon 自律。
+
+### 4.79 截断语义下跨回调裸持 napi_value = 悬垂，call_impl 先验 func 形态（2026-09-15，M5 终线）
+
+- 症状：fixture 裸 static 存 `napi_value` 跨回调（无 ref），下一次
+  `napi_call_function` 的 func 读出非 object（tag 0xfff9 系）——直接进
+  JSAPI 即崩（bad func → JIT/解释器读垃圾对象）。
+- 修法：`call_impl` 入口先验 `fn_v.is_object()`（tag 检查不 deref），非 object
+  返 INVALID_ARG + last_error（"stale napi_value?"）——Node 同款是 UB，本仓
+  给可读错当现形点；fixture 侧改 `napi_create_reference`（Node 正道）。
+- 复现：m2_finalize drain 探针（ref 前必现 BAD-FUNC，ref 后干净）。
+- 推广为铁律：§4.31 教训的 napi 版——跨 JS/Rust 边界的句柄生命周期，契约
+  （scope 存活期/ref）违者宿主要能"可读地死"而非 UB；新增宿主入口先想
+  "输入是垃圾时怎么死"。

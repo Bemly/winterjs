@@ -86,16 +86,22 @@ pub fn run_cleanup_hooks() {
 
 /// 会话收尾触发：任意对象 napi_wrap 的 finalizer（end_session 调；后进先出，
 /// 与 cleanup hooks 同序原则。napi-rs 的 finalizer 只 free Rust 分配——
-/// Promise 回调闭包盒，不进 JSAPI）。
+/// Promise 回调闭包盒，不进 JSAPI）。GC 期入队的类实例/external AB finalizer
+/// 也在此一并收敛（§4.78）。
 pub fn run_wrap_finalizers() {
     let Some(env_ptr) = crate::state::napi_env_ptr() else {
         return;
     };
     // SAFETY：JS 线程（end_session 在 JS 线程收敛）；env 会话存续。
-    let boxes = unsafe {
-        let env_ref = &mut *env_ptr;
-        std::mem::take(&mut env_ref.wrap_boxes)
-    };
+    let env_ref = unsafe { &mut *env_ptr };
+    let pending = std::mem::take(&mut env_ref.pending_finalizers);
+    for p in pending.into_iter().rev() {
+        if let Some(f) = p.finalize {
+            // SAFETY：addon 注册的 finalizer（只析构 native payload）。
+            unsafe { f(p.env, p.data, p.hint) };
+        }
+    }
+    let boxes = std::mem::take(&mut env_ref.wrap_boxes);
     for rec in boxes.into_iter().rev() {
         if let Some(f) = rec.finalize {
             // SAFETY：addon 注册的 finalizer（只析构 native payload）。

@@ -401,9 +401,11 @@ try {{
 #[cfg(unix)]
 fn phase_napi_m2_finalize_chain() {
     // 正常：finalize 释放链（dhat 等价的计数器口径）——external + wrap 实例
-    // malloc/free 成对计数；trampoline 槽位截断 → 对象死态 → minor GC →
-    // finalizer。两轮灌入保证首轮对象全部过 GC；free 追上一半即链路闭合，
-    // 且 free ≤ alloc 恒成立（无双发/提前释放）。
+    // malloc/free 成对计数。§4.77/§4.78 语义：宿主槽位不截断 + finalizer 延迟
+    // 收敛（GC sweep 内只入队）——中途 free 不再追上，`m.drain(cb)` 排一个
+    // async_work，其 complete（安全点，宿主 dispatch 入口已排空 pending
+    // finalizer）回吐排空后计数：finalizer 真会跑 + free ≤ alloc 恒成立
+    // （无双发/提前释放）。
     let dir = assert_fs::TempDir::new().unwrap();
     let node = build_fixture_dylib(&dir, "m2_finalize");
     let app = dir.child("app.js");
@@ -415,8 +417,8 @@ const a = m.counts();
 for (let i = 0; i < 400000; i++) m.mk(i);
 const b = m.counts();
 // 分参逐项打印（§4.42：禁 && 打包）
-console.log("fin", b[1] > 0, b[3] > 0, b[1] <= b[0], b[3] <= b[2]);
-console.log("drain", b[1] >= Math.floor(a[0] / 2), b[3] >= Math.floor(a[2] / 2));
+console.log("fin", b[1] <= b[0], b[3] <= b[2]);
+m.drain((c) => console.log("drain", c[1] >= Math.floor(a[0] / 2), c[3] >= Math.floor(a[2] / 2), c[1] <= c[0]));
 "#
     ))
     .unwrap();
@@ -432,8 +434,8 @@ console.log("drain", b[1] >= Math.floor(a[0] / 2), b[3] >= Math.floor(a[2] / 2))
         String::from_utf8_lossy(&out.stderr)
     );
     let so = String::from_utf8_lossy(&out.stdout);
-    assert!(so.contains("fin true true true true"), "stdout: {so}");
-    assert!(so.contains("drain true true"), "stdout: {so}");
+    assert!(so.contains("fin true true"), "stdout: {so}");
+    assert!(so.contains("drain true true true"), "stdout: {so}");
     dir.close().unwrap();
 }
 

@@ -2,9 +2,8 @@
 //!
 //! 语义（N-API 契约，对齐 Node）：
 //! - `napi_value` 只在其创建时的 scope 存活期内有效；close 即截断 arena 回收
-//!   （槽位 Box drop，值仅由更外层引用保活）。escaped 产物入 `escape_slots`
-//!   （scope 截断不波及），由宿主入口（trampoline/loader register）按进入时
-//!   水位回收——同一次回调内保留略久于 Node（ retention 偏差，记 plan-napi §4）。
+//!   （§4.77 pin-all 反例实测：不截断则 external/wrap 对象永不可达死态，
+//!   finalizer 永不跑；addon 跨窗持有必须走 ref，§4.76）。
 //! - 栈严格 LIFO：错序 close 返回 generic_failure（Node 同期 assert/UB，我们
 //!   给可读错误）；escape 每 scope 至多一次，重复返回
 //!   `napi_escape_called_twice`。
@@ -82,8 +81,10 @@ pub unsafe extern "C" fn napi_close_escapable_handle_scope(
     unsafe { close_scope_top(env, scope as usize, true) }
 }
 
-/// 关闭栈顶 scope（严格 LIFO：`depth` 必须等于当前栈深且 kind 匹配），
-/// 截断 arena 至开栈水位。
+/// 关闭栈顶 scope（严格 LIFO：`depth` 必须等于当前栈深且 kind 匹配）。
+/// **不截断 arena（§4.77）**：napi_value 槽位随会话生存——addon 会合法地
+/// 把 out-param 产物存进自身状态跨回调复用，截断 = 释放其底层 Box = 悬垂。
+/// scope 只作 bookkeeping（Node 契约的"值域"检查保留 LIFO/kind 校验）。
 ///
 /// # Safety
 /// `env` 为本 crate 发出的有效指针。

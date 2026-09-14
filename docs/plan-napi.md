@@ -211,8 +211,28 @@
     cjs-named/fork-ipc/fork-errors，`tests/node/` 下 src 对齐 40 文件，
     116 例全绿）；fork 缺失模块 hang 根因收敛（入口失败 + 开端口永不收割，
     见 AGENTS §4.70；control 分支补 `parentPort.close()`；assert 默认形态
-    对真机五项，见 §4.71）；
-    剩 vitest 妆饰收尾 + 终线（vue-project 三命令）。
+    对真机五项，见 §4.71）。
+  - 进展（2026-09-15，终线①收官 + ②遇阻）：
+    - **终线① ignored 三件全绿**：`cargo test --test napi -- --ignored`
+      （M4 rolldown / M5 build / M5 dev polling，39.5s，0 failed）。
+    - **终线② vue-project**：`-I --yes` 依赖全装 ✓（vite 8.3.0/vitest 4.1.11/
+      vue 3.5.42 全家 + .bin + lockfile，自家 pm 真网络）。三命令中
+      `-r dev`/`-r build` 阻塞于**深水 bug**（下条）；`-r test` 无该名脚本
+      （scripts 为 `test:unit`，实际验证走 vitest 腿）。
+    - **深水 bug（未解，证据链齐）**：vite resolveConfig/createServer 崩
+      138/139 随 GC 时序漂移；bisect 定位——**必要条件 = JS 插件钩子 × TSFN
+      桥**（无插件全量 bundle 6/6 过；同款 rolldown 调用 + 外部化钩子 10/10
+      过；钩子返回 null 走默认解析即崩）。lldb 实锤：活解释器帧引用
+      **全零 cell**（GC 已回收）+ map 字被覆写（非对齐 + 怪 tag
+      0x5800/0xd800/0xf800 高位 + 合法低位堆址）；非 JIT 专属（关 JIT 照崩）。
+      本轮落四项加固（全量 458 绿零回归）：① napi 建面 AB 稳定存储（§4.75）；
+      ② napi_wrap ref 出参两路同发（§4.76）；③ finalizer 延迟收敛（§4.78，
+      GC sweep 内只入队）；④ call_impl func 形态先验（§4.79）。
+      另 §4.77 pin-all 反例实证（槽位不截断 = finalizer 永不跑 = external
+      内存无底洞），已回退截断。**下一会话入口**：rolldown-binding 的 TSFN
+      载荷生命周期审计（`data` 指针谁释放、跨线程时序）+ lldb watchpoint
+      抓覆写者；探针资产：`/Volumes//Projects/vue-project/bisect*.mjs`
+      （E=过/F2=崩/H=过/C=崩）、`/tmp/wjs-vite-probe` 旧探针。
 - [ ] **M6 收尾合流**：Node 官方 napi 套件选点回归 + AGENTS §6 审计口径补「napi 面」
   （~133 `unsafe extern "C"` 结构性新增，不逐个计数）+ 黑盒清单按 src 对齐
   （tests/napi.rs）→ 长分支一次性合 master。

@@ -499,6 +499,8 @@ pub fn dispatch(
     let Some(env_ptr) = crate::state::napi_env_ptr() else {
         return Ok(());
     };
+    // 安全点：先排空 GC 期入队的 addon finalizer（§4.78；JS 线程、无 GC 活动期）。
+    crate::napi::class::drain_pending_finalizers(env_ptr);
     match ev {
         NapiEvent::AsyncDone { status, complete, data_addr } => {
             // SAFETY：JS 线程；complete 调用包裹槽位水位截断（同 trampoline）。

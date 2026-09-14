@@ -92,7 +92,9 @@ pub unsafe extern "C" fn vm_create(
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let options = RealmOptions::default();
+    let mut options = RealmOptions::default();
+    // Atomics/SharedArrayBuffer 与主域同开关（jsdom 等生态取此面）。
+    options.creationOptions_.sharedMemoryAndAtomics_ = true;
     rooted!(&in(cx) let global = unsafe {
         mozjs::rust::wrappers2::JS_NewGlobalObject(
             &mut cx,
@@ -108,6 +110,39 @@ pub unsafe extern "C" fn vm_create(
     }
     let id = state::vm_add(global.get());
     id.to_string().to_jsval(&mut cx, frame.rval_mut());
+    true
+}
+
+/// `__wjs_vm_global(id)` → 该 context 的 global 对象本体（DONT_CONTEXTIFY 用：
+/// jsdom 29 拿它当 window 直装 DOM 全局，写入即落 vm global）。
+/// UNSAFE-BOUNDARY: id 为 vm 表有效 id；出参经 rooted（覆盖 tests/node/vm.rs）。
+pub unsafe extern "C" fn vm_global(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_string(&mut cx, &frame, 0, "vm global") {
+        Some(s) => match s.parse::<u64>() {
+            Ok(v) => v,
+            Err(_) => {
+                report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm global id must be a module id string");
+                return false;
+            }
+        },
+        None => return false,
+    };
+    let Some(g) = (match state::vm_global(id) {
+        Some(g) if !g.is_null() => Some(g),
+        _ => None,
+    }) else {
+        report_error(&mut cx, "ERR_INVALID_ARG_TYPE: contextifiedObject must be a vm.Context");
+        return false;
+    };
+    rooted!(&in(cx) let g_root: *mut JSObject = g);
+    frame.set_rval(mozjs::jsval::ObjectValue(g_root.get()));
     true
 }
 
@@ -879,6 +914,16 @@ function __runArgs(contextifiedObject, options) {
 }
 
 export function createContext(contextObject = {}, options = {}) {
+  // Node 24+ DONT_CONTEXTIFY（真机实测语义）：新建独立 context，返回其 global
+  // 对象本体——不等于主 globalThis、写入不穿透主域、runInContext("this")===返回值。
+  // jsdom 29（vitest jsdom 环境）拿它当 window 直装 DOM 全局。
+  if (contextObject === __dontCtx) {
+    const id = __vmCall(() => __wjs_vm_create());
+    const g = __vmCall(() => __wjs_vm_global(id));
+    Object.defineProperty(g, __kCtx, { value: id, enumerable: false, writable: false, configurable: true });
+    Object.defineProperty(g, __kStd, { value: [], enumerable: false, writable: false, configurable: true });
+    return g;
+  }
   if (contextObject !== null && (typeof contextObject !== "object" && typeof contextObject !== "function")) {
     const err = new TypeError(`The "contextObject" argument must be of type object. Received type ${typeof contextObject}`);
     err.code = "ERR_INVALID_ARG_TYPE";

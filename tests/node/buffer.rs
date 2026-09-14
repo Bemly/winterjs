@@ -204,3 +204,42 @@ try { new Blob(42); } catch (e) { console.log("e1", e.constructor.name); }
 }
 
 // ── Phase 9b-2/3：Readable / Writable 核心 + Duplex / Transform / pipeline ──
+
+#[test]
+fn node_buffer_encoding_validators() {
+    // 正常/边界/报错三件。真机 26.8.2 对拍：node:buffer 校验器全集就
+    // isAscii/isUtf8（isUtf16* 非 Node 面，超集误加已删，§4.65 纪律）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import buffer, { isAscii, isUtf8 } from "node:buffer";
+console.log("fns", typeof isAscii, typeof isUtf8, typeof buffer.isUtf16Le);
+console.log("ascii", isAscii(Buffer.from("hi")), isAscii(Buffer.from([0x80])), isAscii(new Uint8Array([65])));
+console.log("utf8", isUtf8(Buffer.from("héllo")), isUtf8(Buffer.from([0xc3])), isUtf8(Buffer.from([0x28])));
+const ab = new ArrayBuffer(2);
+console.log("view", isUtf8(new Uint8Array(ab)), isAscii(ab));
+try { isUtf8("str"); console.log("NO-ERR"); }
+catch (e) { console.log("err", e.constructor.name); }
+console.log("filemod", typeof buffer.File);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "fns function function undefined",
+        "ascii true false true",
+        "utf8 true false true",
+        "view true true",
+        "err TypeError",
+        "filemod function",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

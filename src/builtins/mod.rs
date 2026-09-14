@@ -90,6 +90,53 @@ globalThis.__wjs_module_resolve_chain = function (specifier, parentURL) {
   }
   return out.url;
 };
+// DOMException（Web/Node 17+ 全局；jsdom 生态取此面）：Error 子类 + name +
+// Web 规范常量族 + legacy code getter（name→旧码；真机 26.8.2 实测
+// new DOMException("x","AbortError").code === 20）。
+globalThis.DOMException = class DOMException extends Error {
+  constructor(message = "", name = "Error") {
+    super(String(message));
+    this.name = String(name);
+  }
+  get code() {
+    const legacy = {
+      IndexSizeError: 1, HierarchyRequestError: 3, WrongDocumentError: 4,
+      InvalidCharacterError: 5, NoModificationAllowedError: 7, NotFoundError: 8,
+      NotSupportedError: 9, InUseAttributeError: 10, InvalidStateError: 11,
+      SyntaxError: 12, InvalidModificationError: 13, NamespaceError: 14,
+      InvalidAccessError: 15, TypeMismatchError: 17, SecurityError: 18,
+      NetworkError: 19, AbortError: 20, URLMismatchError: 21,
+      QuotaExceededError: 22, TimeoutError: 23, InvalidNodeTypeError: 24,
+      DataCloneError: 25,
+    };
+    return legacy[this.name] ?? 0;
+  }
+  get [Symbol.toStringTag]() { return "DOMException"; }
+};
+{
+  const codes = [
+    ["INDEX_SIZE_ERR", 1], ["DOMSTRING_SIZE_ERR", 2], ["HIERARCHY_REQUEST_ERR", 3],
+    ["WRONG_DOCUMENT_ERR", 4], ["INVALID_CHARACTER_ERR", 5], ["NO_DATA_ALLOWED_ERR", 6],
+    ["NO_MODIFICATION_ALLOWED_ERR", 7], ["NOT_FOUND_ERR", 8], ["NOT_SUPPORTED_ERR", 9],
+    ["INUSE_ATTRIBUTE_ERR", 10], ["INVALID_STATE_ERR", 11], ["SYNTAX_ERR", 12],
+    ["INVALID_MODIFICATION_ERR", 13], ["NAMESPACE_ERR", 14], ["INVALID_ACCESS_ERR", 15],
+    ["VALIDATION_ERR", 16], ["TYPE_MISMATCH_ERR", 17], ["SECURITY_ERR", 18],
+    ["NETWORK_ERR", 19], ["ABORT_ERR", 20], ["URL_MISMATCH_ERR", 21],
+    ["QUOTA_EXCEEDED_ERR", 22], ["TIMEOUT_ERR", 23], ["INVALID_NODE_TYPE_ERR", 24],
+    ["DATA_CLONE_ERR", 25],
+  ];
+  for (const [name, code] of codes) {
+    globalThis.DOMException[name] = code;
+  }
+}
+// Node 15+ 全局 MessageChannel/MessagePort = worker_threads 同款类（getter 惰性
+// require 保类同一性：global 与 module 导出同一对象，instanceof 不分叉）。
+for (const name of ["MessageChannel", "MessagePort"]) {
+  Object.defineProperty(globalThis, name, {
+    configurable: true,
+    get() { return globalThis.require("node:worker_threads")[name]; },
+  });
+}
 // import.meta.resolve 的每模块闭包（modules.rs metadata_hook 以模块 URL 调用）
 globalThis.__wjs_make_meta_resolve = function (url) {
   return function resolve(specifier) {
@@ -2102,6 +2149,20 @@ globalThis.Blob = class Blob {
   }
   get [Symbol.toStringTag]() { return "Blob"; }
 };
+// File（Web/Node 20+ 全局；jsdom/vitest 生态取此面）：Blob 子类 + name/lastModified。
+// 状态复用 __wjs_blobBytes（WeakMap 随原型链命中，§4.23 纪律）。
+globalThis.File = class File extends Blob {
+  constructor(parts = [], name, options = {}) {
+    if (arguments.length < 2 || name === undefined) {
+      throw new TypeError("File constructor: name is required");
+    }
+    super(parts, options);
+    this.name = String(name);
+    this.lastModified =
+      typeof options.lastModified === "number" ? options.lastModified : Date.now();
+  }
+  get [Symbol.toStringTag]() { return "File"; }
+};
 globalThis.fetch = (input, init = {}) => {
   const req = new Request(input, init);
   const st = __wjs_reqState.get(req);
@@ -2369,6 +2430,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             // Phase 9f-1: node:vm（同 Runtime 多 global；id 字符串形态）
             ("__wjs_vm_create", Some(node::vm::vm_create), 0),
             ("__wjs_vm_compile", Some(node::vm::vm_compile), 2),
+            ("__wjs_vm_global", Some(node::vm::vm_global), 1),
             ("__wjs_vm_run", Some(node::vm::vm_run), 3),
             ("__wjs_vm_run_this", Some(node::vm::vm_run_this), 2),
             ("__wjs_vm_compile_fn", Some(node::vm::vm_compile_fn), 4),

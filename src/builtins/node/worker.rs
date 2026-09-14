@@ -1237,6 +1237,19 @@ export class MessagePort extends EventEmitter {
     });
     __wjs_port_attach(__id, this);
   }
+  // onmessage 兼容面（真机语义：赋值即隐式开始流动——经 addEventListener 走
+  // newListener 开闸；回调收 `{ data }` 兼容形，`message` 载荷裸值同 BC）。
+  get onmessage() { return this.__onmessage; }
+  set onmessage(fn) {
+    if (this.__onmessage) this.removeListener("message", this.__onmessageWrap);
+    this.__onmessage = (typeof fn === "function") ? fn : null;
+    if (this.__onmessage) {
+      this.__onmessageWrap = (value) => { this.__onmessage({ data: value }); };
+      this.on("message", this.__onmessageWrap);
+    } else {
+      this.__onmessageWrap = null;
+    }
+  }
   __neuter() {
     // 迁移后源端：静默（真机同款 no-op），不摘对端。
     if (this.__neutered) return;

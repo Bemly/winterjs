@@ -101,7 +101,8 @@ function makePosix() {
     if (dir) return dir === "/" ? "/" + base : dir + "/" + base;
     return (o.root || "") + base;
   }
-  return { sep, delimiter: ":", normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format };
+  function toNamespacedPath(p) { return p == null ? p : String(p); }
+  return { sep, delimiter: ":", normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format, toNamespacedPath };
 }
 // ---- win32 ----
 function winSplit(p) { return p.split(/[\\/]/); }
@@ -236,13 +237,19 @@ function makeWin32() {
     if (dir) return /[\\/]$/.test(dir) ? dir + base : dir + "\\" + base;
     return (o.root || "") + base;
   }
-  return { sep, delimiter: ";", normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format };
+  function toNamespacedPath(p) {
+    if (p == null) return p;
+    const n = normalize(String(p));
+    const m = /^[a-zA-Z]:\\/.exec(n);
+    return m ? "\\\\?\\" + n : n;
+  }
+  return { sep, delimiter: ";", normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format, toNamespacedPath };
 }
 const posix = makePosix();
 const win32 = makeWin32();
 const isWin = typeof globalThis.process !== "undefined" && globalThis.process.platform === "win32";
 const path = isWin ? { ...win32, posix, win32 } : { ...posix, posix, win32 };
 export default path;
-export const { sep, delimiter, normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format } = path;
+export const { sep, delimiter, normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format, toNamespacedPath } = path;
 export { posix, win32 };
 "#;

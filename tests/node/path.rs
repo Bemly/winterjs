@@ -36,3 +36,30 @@ console.log(posix.join("a", "b"));
     );
     dir.close().unwrap();
 }
+
+#[test]
+fn node_path_to_namespaced_path() {
+    // toNamespacedPath（真机 26.8.2 对拍）：posix 平台恒等；win32 盘符前缀
+    // `\\?\`；null 原样穿透。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import path from "node:path";
+console.log("posix", path.posix.toNamespacedPath("/a/b"), path.toNamespacedPath("/a/b"));
+console.log("win32", path.win32.toNamespacedPath("C:\\a\\b"), path.win32.toNamespacedPath(null));
+console.log("pnull", path.posix.toNamespacedPath(null));
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in ["posix /a/b /a/b", "win32 \\\\?\\C:\\a\\b null", "pnull null"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

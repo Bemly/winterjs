@@ -201,3 +201,36 @@ fn phase1_gc_pressure_keeps_rooted_targets() {
     assert!(out.contains("t1 199990000"), "gc pressure t1: {out}");
     assert!(out.contains("t2-ok"), "gc pressure t2: {out}");
 }
+
+#[test]
+fn phase9m_global_dom_exception_file_message_channel_sab() {
+    // jsdom/vitest 生态全局面（真机 26.8.2 对拍）：DOMException（legacy code
+    // getter + 常量族）/File（Blob 子类）/MessageChannel·MessagePort 与
+    // worker_threads 同一性/SharedArrayBuffer + Atomics。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        "const de = new DOMException('boom', 'AbortError');\n\
+         console.log('domex', de.name, de.message, de instanceof Error, DOMException.ABORT_ERR, de.code, String(de));\n\
+         console.log('codedef', new DOMException('x', 'NopeError').code);\n\
+         const f = new File(['ab'], 'a.txt', { type: 'text/plain' });\n\
+         console.log('file', f.name, f instanceof Blob, f.size, f.type, typeof f.lastModified);\n\
+         try { new File(['x']); console.log('NO-ERR'); } catch (e) { console.log('fileerr', e.constructor.name); }\n\
+         const sab = new SharedArrayBuffer(8); const ta = new Int32Array(sab);\n\
+         console.log('sab', typeof SharedArrayBuffer, Atomics.add(ta, 0, 5), ta[0]);\n\
+         import('node:worker_threads').then((wt) => {\n\
+           console.log('ident', globalThis.MessageChannel === wt.MessageChannel, globalThis.MessagePort === wt.MessagePort);\n\
+           const { port1, port2 } = new MessageChannel();\n\
+           port1.onmessage = (e) => { console.log('msg', e.data); port1.close(); port2.close(); };\n\
+           port2.postMessage('ping');\n\
+         });"]));
+    for line in [
+        "domex AbortError boom true 20 20 AbortError: boom",
+        "codedef 0",
+        "file a.txt true 2 text/plain number",
+        "fileerr TypeError",
+        "sab function 0 5",
+        "ident true true",
+        "msg ping",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+}

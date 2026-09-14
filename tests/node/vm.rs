@@ -225,3 +225,34 @@ console.log("m9iB-synest", se.status === "errored");
     assert!(out.contains("m9iB-synest true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9m_vm_dont_contextify() {
+    // Node 24+ DONT_CONTEXTIFY（真机 26.8.2 对拍）：新建独立 context 并返回其
+    // global 本体——≠主 globalThis、isContext、runInContext("this")===返回值、
+    // 写入不穿透主域、新域带 SAB/Atomics（jsdom 29 以此直装 DOM 全局）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+const w = vm.createContext(vm.constants.DONT_CONTEXTIFY);
+console.log("ident", w !== globalThis, vm.isContext(w));
+console.log("this", vm.runInContext("this", w) === w, vm.runInContext("this", w) === globalThis);
+w.__probe = 7;
+console.log("iso", globalThis.__probe === undefined, vm.runInContext("__probe", w));
+console.log("sab", typeof w.SharedArrayBuffer, typeof w.Atomics);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in ["ident true true", "this true false", "iso true 7", "sab function object"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

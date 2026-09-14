@@ -306,7 +306,9 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
 
     // SAFETY: 引擎初始化后、首段脚本前启用内部 job queue（JS shell 同款），
     // Promise 微任务由此排队，RunJobs 排空。
-    let options = RealmOptions::default();
+    // SharedArrayBuffer + Atomics（Node 全局形态；jsdom 等生态直引用）。
+    let mut options = RealmOptions::default();
+    options.creationOptions_.sharedMemoryAndAtomics_ = true;
     rooted!(&in(rt.cx()) let global = unsafe {
         JS_NewGlobalObject(
             rt.cx(),

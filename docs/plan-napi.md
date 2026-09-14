@@ -232,7 +232,21 @@
       内存无底洞），已回退截断。**下一会话入口**：rolldown-binding 的 TSFN
       载荷生命周期审计（`data` 指针谁释放、跨线程时序）+ lldb watchpoint
       抓覆写者；探针资产：`/Volumes//Projects/vue-project/bisect*.mjs`
-      （E=过/F2=崩/H=过/C=崩）、`/tmp/wjs-vite-probe` 旧探针。
+      （E=过/F2=崩/H=过/C=崩）、`/tmp/wjs-vite-probe` 旧探针（已清）。
+  - 进展（2026-09-15 续，判别实验两轮收窄）：
+    - **排除 JIT**：关 JIT（BASELINE/ION 全关）照崩 8/8——解释器路径同样崩
+      （lldb 现场即 `js::Interpret`/`GetProperty`），非 JIT 交互问题。
+    - **排除 nursery 家族**：`JSGC_MAX_NURSERY_BYTES=0`（全分配直进 tenured）
+      照崩（F2 6/6 + C 3/3）——全零 cell 非 nursery 疏散残留，腐坏源在
+      tenured 堆或 Rust 侧。
+    - **当前最优理论（待下毒实验实锤）**：悬垂槽位读——arena 截断释放
+      `Box<Heap>` 后，跨窗被持的旧 napi_value 读出「看似有效的旧指针」
+      （槽位内存被分配器复用前仍留旧 Value 位型）指向已 GC 死对象；怪
+      double 位型（0x5800/0xd800 高位）= Rust 分配器元数据。§4.76 wrap-ref
+      只堵了 wrap 一口，napi-rs 从 PromiseRaw.then/catch 产物、hook 返回值
+      等多路拿裸 napi_value 跨窗。
+    - **下一实验**：截断前对将释放槽位写 0xdead 指纹（mem::forget 泄漏换
+      可观测），悬垂读必现指纹位型/BAD-FUNC；命中后按调用点回溯持值方。
 - [ ] **M6 收尾合流**：Node 官方 napi 套件选点回归 + AGENTS §6 审计口径补「napi 面」
   （~133 `unsafe extern "C"` 结构性新增，不逐个计数）+ 黑盒清单按 src 对齐
   （tests/napi.rs）→ 长分支一次性合 master。

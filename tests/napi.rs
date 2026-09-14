@@ -714,3 +714,73 @@ console.log("BUILD-OK");
     );
     dir.close().unwrap();
 }
+
+#[test]
+#[ignore = "real network: installs vite via own pm (plan-napi M5 dev acceptance, polling backend)"]
+fn phase_napi_m5_vite_dev_polling_real_network() {
+    // 真网络：pm 装 vite → dev server 全链（listen → transform 取 main/lib 入
+    // 模块图 → WS 握手 connected → watchFile 轮询侦测 append → full-reload
+    // 经 WS 推送 → 干净 close）。napi 面：rolldown transform + fsevents 未用
+    // （usePolling；默认 fsevents 路径真变更 139 隔离中，见 AGENTS §4.67）。
+    // 注：与 build 测试同约束——不带 --allow-*（沙箱拒读）；tempdir 内（§4.20）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let wjs = std::env::var("CARGO_BIN_EXE_winterjs")
+        .unwrap_or_else(|_| "target/debug/winterjs".to_string());
+    let add = std::process::Command::new(&wjs)
+        .args(["-a", "vite"])
+        .current_dir(dir.path())
+        .env("WINTERJS_LOG", "warn")
+        .output()
+        .expect("pm add runs");
+    assert!(
+        add.status.success(),
+        "pm add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let src = dir.child("src");
+    std::fs::create_dir_all(src.path()).unwrap();
+    src.child("lib.js")
+        .write_str("export function greet(name) { return `hello, ${name}!`; }\n")
+        .unwrap();
+    src.child("main.js")
+        .write_str("import { greet } from './lib.js';\nconsole.log(greet('vite'));\n")
+        .unwrap();
+    dir.child("index.html").write_str(
+        "<!doctype html>\n<html><body><script type=\"module\" src=\"/src/main.js\"></script></body></html>\n",
+    ).unwrap();
+    dir.child("dev-probe.mjs")
+        .write_str(
+            r#"
+import { createServer } from 'vite';
+import fs from "node:fs";
+const server = await createServer({ root: '.', server: { port: 5229, strictPort: true, watch: { usePolling: true, interval: 200 } }, logLevel: 'silent' });
+await server.listen();
+console.log("LISTEN-OK");
+const html = await (await fetch("http://localhost:5229/@vite/client")).text();
+const token = /const wsToken = "([^"]+)"/.exec(html)?.[1];
+const ws = new WebSocket(`ws://localhost:5229/?token=${token}`, "vite-hmr");
+ws.onmessage = (ev) => console.log("CLI-MSG", String(ev.data).slice(0, 120));
+await fetch("http://localhost:5229/src/main.js").then((r) => r.text()).then((t) => console.log("fetched-main", t.length));
+await fetch("http://localhost:5229/src/lib.js").then((r) => r.text()).then((t) => console.log("fetched-lib", t.length));
+setTimeout(() => { fs.appendFileSync("src/lib.js", "// hmr\n"); console.log("appended"); }, 2500);
+setTimeout(() => { server.close().then(() => console.log("CLOSED")); }, 8000);
+"#,
+        )
+        .unwrap();
+    let out = winterjs()
+        .args(["--run", "dev-probe.mjs"])
+        .current_dir(dir.path())
+        .env("WINTERJS_LOG", "warn")
+        .output()
+        .expect("dev probe runs");
+    assert!(
+        out.status.success(),
+        "dev failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    for line in ["LISTEN-OK", "connected", "fetched-main", "appended", "full-reload", "CLOSED"] {
+        assert!(so.contains(line), "missing: {line}\nstdout: {so}");
+    }
+    dir.close().unwrap();
+}

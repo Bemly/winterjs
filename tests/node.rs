@@ -1386,6 +1386,56 @@ try { Buffer.alloc(1).copy("no"); } catch (e) { console.log("e6", e.constructor.
 }
 
 #[test]
+fn phase9b_buffer_int_rw() {
+    // 定长整数/浮点读写系（M5 dev 实测 `writeUInt16BE is not a function` 后补齐，
+    // sourcemap 等链路直调；DataView 直通，越界/值域即 RangeError）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { Buffer } from "node:buffer";
+const b = Buffer.alloc(28);
+console.log("w",
+  b.writeUInt8(0xAB, 0), b.writeUInt16LE(0xCDEF, 1), b.writeUInt16BE(0x1234, 3),
+  b.writeUInt32LE(0x89ABCDEF, 5), b.writeUInt32BE(0x13579BDF, 9),
+  b.writeInt8(-5, 13), b.writeInt16BE(-300, 14), b.writeInt32LE(-70000, 16),
+  b.writeBigUInt64BE(12345678901234567890n, 20));
+console.log("r",
+  b.readUInt8(0).toString(16), b.readUInt16LE(1).toString(16), b.readUInt16BE(3).toString(16),
+  b.readUInt32LE(5).toString(16), b.readUInt32BE(9).toString(16),
+  b.readInt8(13), b.readInt16BE(14), b.readInt32LE(16), b.readBigUInt64BE(20).toString());
+const f = Buffer.alloc(12);
+f.writeFloatLE(0.5, 0); f.writeDoubleBE(Math.PI, 4);
+console.log("f", f.readFloatLE(0) === 0.5, f.readDoubleBE(4) === Math.PI);
+// 报错三件：越界读/越界写/值域
+try { b.readUInt16BE(27); } catch (e) { console.log("e1", e.constructor.name); }
+try { b.writeUInt32LE(1, 25); } catch (e) { console.log("e2", e.constructor.name); }
+try { b.writeUInt8(999, 0); } catch (e) { console.log("e3", e.constructor.name); }
+try { b.writeInt8(-200, 0); } catch (e) { console.log("e4", e.constructor.name); }
+// 边界：0 偏移默认 + 返回值为下一偏移
+const z = Buffer.alloc(4);
+console.log("z", z.writeUInt16BE(1), z.readUInt16BE(0));
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("w 1 3 5 9 13 14 16 20 28"), "out: {out}");
+    assert!(out.contains("r ab cdef 1234 89abcdef 13579bdf -5 -300 -70000 12345678901234567890"), "out: {out}");
+    assert!(out.contains("f true true"), "out: {out}");
+    assert!(out.contains("e1 RangeError"), "out: {out}");
+    assert!(out.contains("e2 RangeError"), "out: {out}");
+    assert!(out.contains("e3 RangeError"), "out: {out}");
+    assert!(out.contains("e4 RangeError"), "out: {out}");
+    assert!(out.contains("z 2 1"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase9b_blob_global_surface() {
     // 9b-1 补的全局 Blob（Web spec 语义，text/arrayBuffer/bytes/slice/stream）
     let dir = assert_fs::TempDir::new().unwrap();

@@ -261,12 +261,38 @@ globalThis.TextDecoder = class TextDecoder {
 };
 // ---- Buffer 全局（Node 子集；Uint8Array 子类，见头注口径）----
 // 口径（文档记录）：from/alloc/concat/isBuffer/byteLength/toString(hex/base64/
-// base64url/utf8/latin1/ascii/utf16le)；其余 TypedArray 行为全部继承；
+// base64url/utf8/latin1/ascii/utf16le）+ 定长整数/浮点读写系（M5 dev 实测补齐）；
+// 其余 TypedArray 行为全部继承；
 // allocUnsafe 为零填（无未初始化内存暴露）；inspect 自定义；pool 概念无（直接分配）。
 function __wjs_bufFromBytes(u8) {
   const b = new Buffer(u8.length);
   b.set(u8);
   return b;
+}
+// 定长读写越界检查（noAssert 真值即跳过，Node 口径；返回数值化 offset）
+function __wjs_bufO(buf, o, size, noAssert) {
+  const off = o === undefined ? 0 : Number(o);
+  if (!noAssert && (!Number.isInteger(off) || off < 0 || off + size > buf.length)) {
+    throw new RangeError("Buffer: out of range");
+  }
+  return off;
+}
+// 数值写（值域检查 + DataView 落盘，返回 offset+size）
+function __wjs_bufW(buf, v, o, size, lo, hi, noAssert, set) {
+  const n = Number(v);
+  const off = __wjs_bufO(buf, o, size, noAssert);
+  if (!noAssert && (!Number.isInteger(n) || n < lo || n > hi)) {
+    throw new RangeError("Buffer: value out of range");
+  }
+  set(buf.__wjs_bufV(), off, n);
+  return off + size;
+}
+function __wjs_bufWB(buf, v, o, lo, hi, noAssert, set) {
+  const n = typeof v === "bigint" ? v : BigInt(Number(v));
+  const off = __wjs_bufO(buf, o, 8, noAssert);
+  if (!noAssert && (n < lo || n > hi)) throw new RangeError("Buffer: value out of range");
+  set(buf.__wjs_bufV(), off, n);
+  return off + 8;
 }
 function __wjs_bufDecode(str, enc) {
   enc = String(enc || "utf8").toLowerCase().replace(/[-_]/g, "");
@@ -430,6 +456,45 @@ globalThis.Buffer = class Buffer extends Uint8Array {
     this.set(src.subarray(0, Math.max(0, n)), offset);
     return Math.max(0, n);
   }
+  // 定长整数/浮点读写系（M5 dev 实测 `writeUInt16BE is not a function`——
+  // sourcemap 等链路直调；DataView 直通，越界/值域即 RangeError，Node 口径）。
+  readUInt8(o, na) { return this.__wjs_bufV().getUint8(__wjs_bufO(this, o, 1, na)); }
+  readUInt16LE(o, na) { return this.__wjs_bufV().getUint16(__wjs_bufO(this, o, 2, na), true); }
+  readUInt16BE(o, na) { return this.__wjs_bufV().getUint16(__wjs_bufO(this, o, 2, na), false); }
+  readUInt32LE(o, na) { return this.__wjs_bufV().getUint32(__wjs_bufO(this, o, 4, na), true); }
+  readUInt32BE(o, na) { return this.__wjs_bufV().getUint32(__wjs_bufO(this, o, 4, na), false); }
+  readInt8(o, na) { return this.__wjs_bufV().getInt8(__wjs_bufO(this, o, 1, na)); }
+  readInt16LE(o, na) { return this.__wjs_bufV().getInt16(__wjs_bufO(this, o, 2, na), true); }
+  readInt16BE(o, na) { return this.__wjs_bufV().getInt16(__wjs_bufO(this, o, 2, na), false); }
+  readInt32LE(o, na) { return this.__wjs_bufV().getInt32(__wjs_bufO(this, o, 4, na), true); }
+  readInt32BE(o, na) { return this.__wjs_bufV().getInt32(__wjs_bufO(this, o, 4, na), false); }
+  readBigUInt64LE(o, na) { return this.__wjs_bufV().getBigUint64(__wjs_bufO(this, o, 8, na), true); }
+  readBigUInt64BE(o, na) { return this.__wjs_bufV().getBigUint64(__wjs_bufO(this, o, 8, na), false); }
+  readBigInt64LE(o, na) { return this.__wjs_bufV().getBigInt64(__wjs_bufO(this, o, 8, na), true); }
+  readBigInt64BE(o, na) { return this.__wjs_bufV().getBigInt64(__wjs_bufO(this, o, 8, na), false); }
+  readFloatLE(o, na) { return this.__wjs_bufV().getFloat32(__wjs_bufO(this, o, 4, na), true); }
+  readFloatBE(o, na) { return this.__wjs_bufV().getFloat32(__wjs_bufO(this, o, 4, na), false); }
+  readDoubleLE(o, na) { return this.__wjs_bufV().getFloat64(__wjs_bufO(this, o, 8, na), true); }
+  readDoubleBE(o, na) { return this.__wjs_bufV().getFloat64(__wjs_bufO(this, o, 8, na), false); }
+  writeUInt8(v, o = 0, na) { return __wjs_bufW(this, v, o, 1, 0, 0xff, na, (vw, oo, vv) => vw.setUint8(oo, vv)); }
+  writeUInt16LE(v, o = 0, na) { return __wjs_bufW(this, v, o, 2, 0, 0xffff, na, (vw, oo, vv) => vw.setUint16(oo, vv, true)); }
+  writeUInt16BE(v, o = 0, na) { return __wjs_bufW(this, v, o, 2, 0, 0xffff, na, (vw, oo, vv) => vw.setUint16(oo, vv, false)); }
+  writeUInt32LE(v, o = 0, na) { return __wjs_bufW(this, v, o, 4, 0, 0xffffffff, na, (vw, oo, vv) => vw.setUint32(oo, vv, true)); }
+  writeUInt32BE(v, o = 0, na) { return __wjs_bufW(this, v, o, 4, 0, 0xffffffff, na, (vw, oo, vv) => vw.setUint32(oo, vv, false)); }
+  writeInt8(v, o = 0, na) { return __wjs_bufW(this, v, o, 1, -0x80, 0x7f, na, (vw, oo, vv) => vw.setInt8(oo, vv)); }
+  writeInt16LE(v, o = 0, na) { return __wjs_bufW(this, v, o, 2, -0x8000, 0x7fff, na, (vw, oo, vv) => vw.setInt16(oo, vv, true)); }
+  writeInt16BE(v, o = 0, na) { return __wjs_bufW(this, v, o, 2, -0x8000, 0x7fff, na, (vw, oo, vv) => vw.setInt16(oo, vv, false)); }
+  writeInt32LE(v, o = 0, na) { return __wjs_bufW(this, v, o, 4, -0x80000000, 0x7fffffff, na, (vw, oo, vv) => vw.setInt32(oo, vv, true)); }
+  writeInt32BE(v, o = 0, na) { return __wjs_bufW(this, v, o, 4, -0x80000000, 0x7fffffff, na, (vw, oo, vv) => vw.setInt32(oo, vv, false)); }
+  writeBigUInt64LE(v, o = 0, na) { return __wjs_bufWB(this, v, o, 0n, (1n << 64n) - 1n, na, (vw, oo, vv) => vw.setBigUint64(oo, vv, true)); }
+  writeBigUInt64BE(v, o = 0, na) { return __wjs_bufWB(this, v, o, 0n, (1n << 64n) - 1n, na, (vw, oo, vv) => vw.setBigUint64(oo, vv, false)); }
+  writeBigInt64LE(v, o = 0, na) { return __wjs_bufWB(this, v, o, -(1n << 63n), (1n << 63n) - 1n, na, (vw, oo, vv) => vw.setBigInt64(oo, vv, true)); }
+  writeBigInt64BE(v, o = 0, na) { return __wjs_bufWB(this, v, o, -(1n << 63n), (1n << 63n) - 1n, na, (vw, oo, vv) => vw.setBigInt64(oo, vv, false)); }
+  writeFloatLE(v, o = 0, na) { const oo = __wjs_bufO(this, o, 4, na); this.__wjs_bufV().setFloat32(oo, Number(v), true); return oo + 4; }
+  writeFloatBE(v, o = 0, na) { const oo = __wjs_bufO(this, o, 4, na); this.__wjs_bufV().setFloat32(oo, Number(v), false); return oo + 4; }
+  writeDoubleLE(v, o = 0, na) { const oo = __wjs_bufO(this, o, 8, na); this.__wjs_bufV().setFloat64(oo, Number(v), true); return oo + 8; }
+  writeDoubleBE(v, o = 0, na) { const oo = __wjs_bufO(this, o, 8, na); this.__wjs_bufV().setFloat64(oo, Number(v), false); return oo + 8; }
+  __wjs_bufV() { return new DataView(this.buffer, this.byteOffset, this.byteLength); }
   copy(target, tStart, sStart, sEnd) {
     if (!(target instanceof Uint8Array)) throw new TypeError("Buffer.copy: target must be a Buffer");
     tStart = tStart === undefined ? 0 : Number(tStart);

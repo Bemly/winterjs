@@ -199,9 +199,11 @@
 - [ ] **M5 vite 全链**：dev server（HMR ws 服务端面）+ vite build + vitest
   （tinypool/worker_threads 9f 底座）。验收：vue-project 三命令全绿（终线）。
   - 进展（2026-09-14）：build 黑盒已落（HEAD）；dev 前置缺口收敛中——upgrade
-    派发 + Socket 流桩 + `fs.watchFile` 纯 JS 轮询 + TSFN pending 守卫；
-    polling 后端 HMR 已验证（`CHOK-CHANGE` + 干净退出），fsevents 默认路径
-    真变更 139 隔离中（见 AGENTS §4.67）。
+    派发 + Socket 流桩 + `fs.watchFile` 纯 JS 轮询 + TSFN pending 守卫 +
+    Buffer 整数读写系（HMR error 推送根因）；
+    polling 后端 dev 全链已验证（listen/transform/WS/full-reload/CLOSED，
+    ignored 黑盒 `phase_napi_m5_vite_dev_polling_real_network` 落账）；
+    fsevents 默认路径真变更 139 隔离中（见 AGENTS §4.67）。
 - [ ] **M6 收尾合流**：Node 官方 napi 套件选点回归 + AGENTS §6 审计口径补「napi 面」
   （~133 `unsafe extern "C"` 结构性新增，不逐个计数）+ 黑盒清单按 src 对齐
   （tests/napi.rs）→ 长分支一次性合 master。

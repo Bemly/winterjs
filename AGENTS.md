@@ -955,6 +955,13 @@ cargo build
  （`0x4b4b4b4b` 高位恒定）。
 - 推广为铁律：长驻探针进程一律输出落盘再读（`>file 2>&1` + 定时 kill），
   管道直连超时即丢输出；新事件域 dispatch 先抄 `failed(cx)` 收敛再接线。
+- 追补（2026-09-14）：`writeUInt16BE is not a function` 是另一独立缺口——
+  HMR 重变换链（sourcemap 编码）直调 Buffer 整数系，本仓全局 Buffer 从未实现
+  `read/write*整数/浮点` 全家（`phase9b_buffer_int_rw` 落盒，DataView 直通
+  32 方法）。症状是 HMR 推 `{"type":"error"}` 而非 update（有 CHOK 无 update
+  即查此面），与 fsevents 139 无关（polling 后端同样先 error 后随补齐转绿）。
+  `/var` 下"能侦测不推送"即此缺口所致，非路径/时序问题（教训：先看推了什么
+  消息类型再怀疑路径）。
 
 
 ## 5. 路线图（按序）

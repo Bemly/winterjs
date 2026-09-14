@@ -925,6 +925,37 @@ cargo build
 - 复现：`cd /tmp/wjs-vite-probe/min-proj && build-probe.mjs`（napi Wrap 前
   必报 expected undefined；改 vite.config.js 前必报 export declarations）。
 
+### 4.67 vite dev 真变更 139：fsevents 回调专属，polling 通（2026-09-14，M5）
+
+- 症状：vite dev（rolldown transform 拉起 + WS 握手完成）后真文件 append 即
+  `EXIT:139`（`EXC_BAD_ACCESS 0x4b4b4b4bXXXXXXXX`，栈顶 JIT
+  `tryAttachTypedArrayElement`；调用栈 `asyncwork::dispatch(TsfnDrain)` →
+  `fse_dispatch_event` → `napi_call_function` → JS 内崩，`CHOK-CHANGE` 前）。
+  `hmr:false` 照崩；`usePolling:true` 不崩。
+- 隔离矩阵（`/tmp/wjs-vite-probe/min-proj/hmr-min*.mjs`，落盘法读输出——
+  进程不退出时管道输出会被吞）：无 WS/手动 emit/仅 fetch/仅 append 全过；
+  `fetch(transform)+握手+真 append` 必崩（WS 事先 close 照崩——握手期 state
+  已埋雷）；`fetch(@vite/client 静态)+握手+append` 不崩（transform 必需）。
+  [wdbg] 实证 napi 实参形态正确（path 字符串/flags 数字/id 数字）。
+- 落袋三件（实锤缺口，与崩溃因果未完全钉死但均为 dev 必经面）：
+  ① `stream.resume is not a function`（min13 关停路径 unhandled rejection
+  实录）→ Socket/IncomingMessage/ServerResponse 补 pause/resume/read/
+  setTimeout/cork/uncork 桩（整收口径 read 恒 null）；
+  ② `fs.watchFile is not a function`（polling 37 路 rejection 实录）→ 纯 JS
+  stat 轮询实现 + `unwatchFile`（零 native；persistent:false/bigint 记档）；
+  ③ TSFN dispatch 无 pending 守卫（M4-③ loader 同类，net/worker 系均有
+  `failed(cx)` 收敛）→ `TsfnDrain/AsyncDone` 回调后查 pending 即转可读错
+  （本次未触发——崩溃在回调**内**，属防御性收敛）。
+- 未闭环：fsevents 原生回调同步 JS 路径的崩溃根因未定（napi 层无异常遗留；
+  0x4b 高位恒定、低位浮动； suspects 剩堆损坏延迟引信/形状损坏，待深入）。
+  M5 dev 验证暂走 polling（`server.watch.usePolling`，HMR `CHOK-CHANGE` +
+  干净退出已验证）；默认 fsevents 路径记档待修。
+- 复现：`hmr-min11.mjs` 形（transform fetch + WS 握手 + 真 append，三件齐崩；
+  任缺一件即过）；崩溃报告见 `~/Library/Logs/DiagnosticReports/winterjs-*.ips`
+ （`0x4b4b4b4b` 高位恒定）。
+- 推广为铁律：长驻探针进程一律输出落盘再读（`>file 2>&1` + 定时 kill），
+  管道直连超时即丢输出；新事件域 dispatch 先抄 `failed(cx)` 收敛再接线。
+
 
 ## 5. 路线图（按序）
 

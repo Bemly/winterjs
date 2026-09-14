@@ -123,6 +123,12 @@ export class IncomingMessage extends EventEmitter {
     this.complete = true;
     this.emit("end");
   }
+  // 可读流最小面（ws/vite 等库直接调用；整收口径无缓冲，pause/resume 为
+  // no-op，read 恒 null——M5 dev 实测 `stream.resume is not a function`）。
+  pause() { return this; }
+  resume() { return this; }
+  read() { return null; }
+  unshift() { return this; }
   destroy(err) {
     if (this.destroyed) return this;
     this.destroyed = true;
@@ -164,6 +170,9 @@ export class ServerResponse extends EventEmitter {
     this.__total += u8.length;
     return true;
   }
+  // 可写流最小面（ws Sender 的 cork/uncork；本仓写直通无聚合，no-op）。
+  cork() { return this; }
+  uncork() { return this; }
   end(chunk) {
     if (this.__done) return this;
     if (chunk !== undefined && chunk !== null) this.write(chunk);
@@ -206,7 +215,7 @@ export function withHttpServer(Base) {
       this.on("connection", (sock) => {
         let buf = new Uint8Array(0);
         sock.on("data", (chunk) => {
-          if (this.__closing) return;
+          if (this.__closing || sock.__upgraded) return;
           try {
             buf = this.__feed(buf, chunk, sock);
           } catch {
@@ -228,6 +237,24 @@ export function withHttpServer(Base) {
       req.httpVersion = first[2].replace("HTTP/", "");
       req.headers = headers;
       req.rawHeaders = rawHeaders;
+      req.socket = sock;
+      req.connection = sock;
+      // Node 口径：带 Upgrade 头的请求不进 request 管线——派发 'upgrade'
+      //（req, 原始 socket；vite 的 ws 库经它完成 101 握手与帧收发），无监听
+      // 则销毁连接。升级后本连接停止 HTTP 解析（__upgraded 旗）；头后残留
+      // 字节（罕见）经 microtask 以裸 data 事件回灌（监听方已同步登记）。
+      if (headers.upgrade !== undefined) {
+        sock.__upgraded = true;
+        if (this.listenerCount("upgrade") > 0) {
+          // Node 口径三参 (req, socket, head)：head 恒 Buffer（零长=无残留，
+          // ws 库 setSocket 读 head.length——undefined 即 TypeError）。
+          const leftover = buf.slice(headEnd + 4);
+          this.emit("upgrade", req, sock, leftover);
+        } else {
+          sock.destroy();
+        }
+        return new Uint8Array(0);
+      }
       const te = (headers["transfer-encoding"] || "").toLowerCase();
       let body = null;
       if (te.includes("chunked")) {

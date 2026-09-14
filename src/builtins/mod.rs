@@ -33,16 +33,32 @@ globalThis.queueMicrotask = function (cb) {
   // 与引擎内部 job queue 同一条微任务队列；回调抛错 → 未处理 rejection（由 runtime 上报）
   Promise.resolve().then(cb);
 };
+// Node 口径 Timeout/Interval 对象（unref/ref/hasRef/refresh no-op——keep-alive
+// 语义由 Rust 侧定时器表决定；[Symbol.toPrimitive] 保数字 id 算术兼容）。
+// vite cleanupDepsCacheStaleDirs 用 `setTimeout(...).unref()`。
+globalThis.__wjs_timer_wrap = (id) => {
+  const t = {
+    __wjs_id: id,
+    unref() { return t; },
+    ref() { return t; },
+    hasRef() { return true; },
+    refresh() { return t; },
+    [Symbol.toPrimitive]() { return id; },
+  };
+  return t;
+};
+globalThis.__wjs_timer_id = (id) =>
+  id === null || id === undefined ? 0 : typeof id === "object" ? (id.__wjs_id ?? 0) : typeof id === "number" ? id : 0;
 globalThis.setTimeout = function (cb, ms, ...rest) {
   if (typeof cb !== "function") throw new TypeError("setTimeout: callback must be a function");
-  return __wjs_setTimeout(cb, Number(ms) || 0, rest);
+  return __wjs_timer_wrap(__wjs_setTimeout(cb, Number(ms) || 0, rest));
 };
 globalThis.setInterval = function (cb, ms, ...rest) {
   if (typeof cb !== "function") throw new TypeError("setInterval: callback must be a function");
-  return __wjs_setInterval(cb, Number(ms) || 0, rest);
+  return __wjs_timer_wrap(__wjs_setInterval(cb, Number(ms) || 0, rest));
 };
-globalThis.clearTimeout = function (id) { __wjs_clearTimeout(typeof id === "number" ? id : 0); };
-globalThis.clearInterval = function (id) { __wjs_clearTimeout(typeof id === "number" ? id : 0); };
+globalThis.clearTimeout = function (id) { __wjs_clearTimeout(__wjs_timer_id(id)); };
+globalThis.clearInterval = function (id) { __wjs_clearTimeout(__wjs_timer_id(id)); };
 // 事件循环触发定时器 / structuredClone 枚举属性用的内部辅助
 globalThis.__wjs_call = (cb, args) => cb(...args);
 // napi_call_function：recv 语义的参数展开（Function.prototype.apply）
@@ -2186,6 +2202,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             // Phase 4c: child_process
             // Phase 9d: node:net + node:dns
             ("__wjs_net_connect", Some(node::net::net_connect), 3),
+            ("__wjs_net_isip", Some(node::net::net_isip), 1),
             ("__wjs_net_listen", Some(node::net::net_listen), 3),
             ("__wjs_net_attach", Some(node::net::net_attach), 2),
             ("__wjs_net_write", Some(node::net::net_write), 2),

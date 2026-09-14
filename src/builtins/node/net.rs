@@ -230,6 +230,31 @@ pub unsafe extern "C" fn net_connect(
     true
 }
 
+/// `__wjs_net_isip(s)` → "0"|"4"|"6"（`net.isIP` 底座；std::net 解析）。
+pub unsafe extern "C" fn net_isip(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 || !frame.arg(0).is_string() {
+        set_rval_str(&mut cx, &frame, "0");
+        return true;
+    }
+    let s = value_to_string(&mut cx, frame.arg(0));
+    let n = if s.parse::<std::net::Ipv4Addr>().is_ok() {
+        4
+    } else if s.parse::<std::net::Ipv6Addr>().is_ok() {
+        6
+    } else {
+        0
+    };
+    set_rval_str(&mut cx, &frame, &n.to_string());
+    true
+}
+
 /// `__wjs_net_listen(port, host, target)` → id。bind 错误经 ServerError 事件。
 pub unsafe extern "C" fn net_listen(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -567,6 +592,22 @@ class Socket extends EventEmitter {
     }
     // 事件循环派发钩子：dispatch 以 global 为 this 调用，须预绑定（self 语义）
     this.__ev = this.__ev.bind(this);
+    // Node Writable/Readable 内部面（ws 等 npm 库直接翻字段/调用）：
+    // cork/uncork no-op（JS 层写本就不聚合，行为等价）；setNoDelay/
+    // setKeepAlive no-op（tokio 写半直通，无 Nagle 可关）；_readableState
+    // 最小桩（socketOnClose/socketOnEnd 读 endEmitted/length 判收尾路径）；
+    // pause/resume/setTimeout no-op（读流无 JS 侧缓冲，整包即达）；
+    // read 恒 null（数据已全经 data 事件投递，无缓冲可取——M5 dev 实测
+    // `stream.resume is not a function`，缺桩即 TypeError）。
+    this.cork = () => this;
+    this.uncork = () => this;
+    this.setNoDelay = () => this;
+    this.setKeepAlive = () => this;
+    this.pause = () => this;
+    this.resume = () => this;
+    this.setTimeout = () => this;
+    this.read = () => null;
+    this._readableState = { endEmitted: false, length: 0 };
   }
   connect(...args) {
     let port, host, cb;
@@ -726,6 +767,13 @@ Socket.prototype.__attachConn = function (info) {
   this.readable = true; this.writable = true;
   __wjs_net_attach(this.__id, this);
 };
+// Node Socket.unshift：字节塞回读流头部（ws setSocket 对升级残留用）；
+// 本仓读流无 JS 侧缓冲，以 data 事件回灌近似（先于后续 pump chunk——
+// microtask 时序，残余错序仅限升级瞬间的罕见重叠帧）。
+Socket.prototype.unshift = function (chunk) {
+  if (chunk && chunk.length > 0) queueMicrotask(() => this.emit("data", chunk));
+  return this;
+};
 
 export function createServer(options, cb) {
   return new Server(options, cb);
@@ -734,6 +782,10 @@ export function createConnection(...args) { return new Socket().connect(...args)
 export const connect = createConnection;
 export { Socket, Server };
 export const Stream = Socket;
-const __api = { Socket, Server, createServer, createConnection, connect, Stream };
+// Node `net.isIP/isIPv4/isIPv6`（vite 请求路径 host 校验用；std 解析对齐语义）
+export function isIP(input) { return Number(__wjs_net_isip(String(input))); }
+export function isIPv4(input) { return isIP(input) === 4; }
+export function isIPv6(input) { return isIP(input) === 6; }
+const __api = { Socket, Server, createServer, createConnection, connect, Stream, isIP, isIPv4, isIPv6 };
 export default __api;
 "#;

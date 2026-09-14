@@ -4939,3 +4939,70 @@ fn phase9j_tla_dep_stays_esm() {
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "tla-dep 42\n");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9c_fs_watchfile_poll() {
+    // 正常：watchFile 轮询侦测到 append（size 变化即派发 curr/prev）；
+    // unwatchFile 指定监听摘除后不再派发；StatWatcher stop/ref/unref 链式。
+    // 报错：listener 非函数即 TypeError。边界：stat 失败的 tick 跳过不派发。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("w.txt").write_str("aaa").unwrap();
+    let file = dir.child("m.mjs");
+    file.write_str(
+        r#"
+import { watchFile, unwatchFile, appendFileSync } from "node:fs";
+try { watchFile("w.txt"); console.log("NO-ERR"); }
+catch (e) { console.log("bad-listener", e.constructor.name); }
+let calls = 0;
+const w = watchFile("w.txt", { interval: 100 }, (curr, prev) => {
+  calls++;
+  console.log("changed", curr.size, prev.size, curr.size > prev.size);
+  unwatchFile("w.txt");
+});
+const w2 = watchFile("w.txt", { interval: 100 }, () => { calls += 10; });
+console.log("chain", w2.stop() === w2, w2.ref() === w2, w2.unref() === w2);
+setTimeout(() => { appendFileSync("w.txt", "bbbb"); }, 350);
+setTimeout(() => {
+  console.log("calls", calls);
+  unwatchFile("w.txt");
+}, 1400);
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in ["bad-listener TypeError", "chain true true true", "changed 7 3 true", "calls 1"] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9d_net_http_stream_stubs() {
+    // ws/vite 等库直调的流最小面：pause/resume/setTimeout/cork/uncork
+    // no-op 链式返回自身，read 恒 null；net.isIP 三态。缺桩曾报
+    // `stream.resume is not a function`（M5 dev 实测）。
+    let out = winterjs()
+        .args(["--eval",
+        r#"const net = await import("node:net"); const http = await import("node:http");
+const s = new net.Socket();
+console.log("sock", s.pause() === s, s.resume() === s, s.setTimeout() === s, s.read() === null, s.cork() === s, s.uncork() === s, s.setNoDelay() === s, s.setKeepAlive() === s);
+console.log("isip", net.isIP("127.0.0.1"), net.isIP("::1"), net.isIP("nope"), net.isIPv4("1.2.3.4"), net.isIPv6("::1"));
+const req = new http.IncomingMessage();
+console.log("req", req.pause() === req, req.resume() === req, req.read() === null);
+const res = new http.ServerResponse({ write() {}, end() {} });
+console.log("res", res.cork() === res, res.uncork() === res);"#])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "sock true true true true true true true true\nisip 4 6 0 true true\nreq true true true\nres true true\n"
+    );
+}

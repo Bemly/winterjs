@@ -479,11 +479,23 @@ fn ping_recount(shared: &TsfnShared) {
 
 /// 通道结算（pump 调；签名对齐 net/worker dispatch）。
 pub fn dispatch(
-    _cx: &mut mozjs::context::JSContext,
-    _global: *mut mozjs::jsapi::JSObject,
+    cx: &mut mozjs::context::JSContext,
+    global: *mut mozjs::jsapi::JSObject,
     ev: NapiEvent,
-    _err: crate::runtime::ErrorSource<'_>,
+    err: crate::runtime::ErrorSource<'_>,
 ) -> Result<(), crate::error::Error> {
+    // TSFN/async_work 回调抛错即 pending 异常——不收敛则污染后续一切 JSAPI
+    // （M4-③ loader register 同类：遗留 pending 必转可读错，不可静默 Ok）。
+    let failed = |cx: &mut mozjs::context::JSContext| match err {
+        crate::runtime::ErrorSource::Script { source, filename } => {
+            crate::jsapi_glue::pending_exception_error(cx, global, source, filename)
+        }
+        crate::runtime::ErrorSource::Module { url } => crate::modules::module_error(cx, url),
+    };
+    // SAFETY：JS 线程；JS_IsExceptionPending 读 pending 位无副作用。
+    let pending = |cx: &mut mozjs::context::JSContext| unsafe {
+        mozjs::jsapi::JS_IsExceptionPending(cx.raw_cx())
+    };
     let Some(env_ptr) = crate::state::napi_env_ptr() else {
         return Ok(());
     };
@@ -502,6 +514,9 @@ pub fn dispatch(
                     let env = &mut *env_ptr;
                     env.slots.truncate(mark);
                     crate::napi::scope::escape_truncate_to(env_ptr as napi_env, escape_base);
+                    if pending(cx) {
+                        return Err(failed(cx));
+                    }
                 }
             }
             Ok(())
@@ -536,6 +551,9 @@ pub fn dispatch(
                     let env = &mut *env_ptr;
                     env.slots.truncate(mark);
                     crate::napi::scope::escape_truncate_to(env_ptr as napi_env, escape_base);
+                    if pending(cx) {
+                        return Err(failed(cx));
+                    }
                     mark = env.slots.len();
                 }
                 // 终化检查：closing + 队列空 + 0 线程 → thread_finalize_cb 一次。

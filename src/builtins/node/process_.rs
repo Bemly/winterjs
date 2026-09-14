@@ -428,8 +428,59 @@ globalThis.process = {
     { bigint: () => BigInt(__wjs_hrtime_ns()) },
   ),
   memoryUsage() { return JSON.parse(__wjs_memory_usage()); },
-  stdout: { write(s) { return __wjs_stdout_write(String(s)); }, get isTTY() { return __wjs_stdio_istty(1); } },
-  stderr: { write(s) { return __wjs_stderr_write(String(s)); }, get isTTY() { return __wjs_stdio_istty(2); } },
+  // Node 22.3+（vite 用 getBuiltinModule('node:module').Module 做互操作）；
+  // require 的 ESM-default 口径（node:module default 导出带 Module 类）。
+  getBuiltinModule(id) {
+    const spec = String(id);
+    if (!spec.startsWith("node:")) {
+      throw new TypeError("getBuiltinModule: only 'node:' builtins are supported");
+    }
+    return globalThis.require(spec);
+  },
+  // stdout/stderr 富流（vite dev：clearLine/cursorTo/getColorDepth——非 TTY
+  // no-op，TTY 下走 ANSI 转义的调用方（node:readline）自己写；rows/columns
+  // 留 undefined（Node 非 TTY 口径，调用方均有守卫））。stdin：监听登记 +
+  // isTTY + EOF read()（偏差记档：stdin EOF/data 不投递、信号不投递——
+  // 注册表只收不发，SIGTERM 默认行为不变（OS 默认终止））。
+  stdout: {
+    write(s) { return __wjs_stdout_write(String(s)); },
+    get isTTY() { return __wjs_stdio_istty(1); },
+    clearLine() { return __wjs_stdio_istty(1); },
+    cursorTo() { return __wjs_stdio_istty(1); },
+    getColorDepth() { return __wjs_stdio_istty(1) ? 8 : 1; },
+  },
+  stderr: {
+    write(s) { return __wjs_stderr_write(String(s)); },
+    get isTTY() { return __wjs_stdio_istty(2); },
+    clearLine() { return __wjs_stdio_istty(2); },
+    cursorTo() { return __wjs_stdio_istty(2); },
+    getColorDepth() { return __wjs_stdio_istty(2) ? 8 : 1; },
+  },
+  stdin: {
+    get isTTY() { return __wjs_stdio_istty(0); },
+    __wjs_listeners: {},
+    on(type, cb) {
+      if (typeof cb !== "function") throw new TypeError("stdin.on: listener must be a function");
+      (this.__wjs_listeners[String(type)] ??= []).push(cb);
+      return this;
+    },
+    once(type, cb) { return this.on(type, cb); },
+    off(type, cb) {
+      const list = this.__wjs_listeners[String(type)];
+      if (list) {
+        const i = list.indexOf(cb);
+        if (i >= 0) list.splice(i, 1);
+      }
+      return this;
+    },
+    removeListener(type, cb) { return this.off(type, cb); },
+    read() { return null; },
+    pause() { return this; },
+    resume() { return this; },
+    setRawMode() { return this; },
+    unref() { return this; },
+    ref() { return this; },
+  },
   nextTick(cb, ...args) {
     if (typeof cb !== "function") throw new TypeError("nextTick: callback must be a function");
     queueMicrotask(() => cb(...args));
@@ -439,9 +490,41 @@ globalThis.process = {
   // Error 原样；第二参可 string（type）或 { type, code, detail }；有监听走监听，
   // 否则 stderr 默认打印 `(node:<pid>) [code] Name: message`。
   __wjs_warningListeners: [],
+  // 通用监听表（warning 沿旧径；signal/stdin 等只登记不投递——偏差记档，
+  // SIGTERM 默认行为不变）。emit 供未来事件循环接信号投递。
+  __wjs_listeners: {},
   on(type, cb) {
     if (type === "warning" && typeof cb === "function") process.__wjs_warningListeners.push(cb);
+    if (typeof cb !== "function") throw new TypeError("process.on: listener must be a function");
+    (process.__wjs_listeners[String(type)] ??= []).push(cb);
     return process;
+  },
+  once(type, cb) {
+    if (typeof cb !== "function") throw new TypeError("process.once: listener must be a function");
+    const wrapped = (...args) => { process.off(type, wrapped); cb(...args); };
+    wrapped.__wjs_orig = cb;
+    return process.on(type, wrapped);
+  },
+  off(type, cb) {
+    const list = process.__wjs_listeners[String(type)];
+    if (list) {
+      let i = list.findIndex((l) => l === cb || l.__wjs_orig === cb);
+      while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb || l.__wjs_orig === cb); }
+    }
+    return process;
+  },
+  removeListener(type, cb) { return process.off(type, cb); },
+  removeAllListeners(type) {
+    if (type === undefined) process.__wjs_listeners = {};
+    else delete process.__wjs_listeners[String(type)];
+    return process;
+  },
+  listenerCount(type) { return (process.__wjs_listeners[String(type)] ?? []).length; },
+  __wjs_emit(type, ...args) {
+    const list = [...(process.__wjs_listeners[String(type)] ?? [])];
+    for (const l of list) {
+      try { l.call(process, ...args); } catch {}
+    }
   },
   emitWarning(warning, typeOrOptions, code, _ctor) {
     let type, detail;

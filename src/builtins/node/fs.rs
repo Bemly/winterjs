@@ -1772,6 +1772,79 @@ export function watch(p, opts, listener) {
   const id = __fsCall("watch", p, () => __wjs_watch_start(p, recursive, persistent, listener));
   return new __FSWatcher(id);
 }
+// stat 轮询表（watchFile 底座；interval 経 setInterval，statSync 取样）。
+// 偏差记档：persistent:false 不实际 unref（定时器 keep-alive 由 Rust 表决定，
+// 全局 Timeout 语义见 mod.rs）；stat 失败的 tick 跳过（不派发，缺失→出现视为
+// 一次变化）；bigint 选项接受忽略（恒返回数字 Stats，chokidar 等调用方无影响）。
+const __statWatchers = new Map();
+function __statPoll(p) {
+  const rec = __statWatchers.get(p);
+  if (!rec) return;
+  let curr = null;
+  try { curr = statSync(p); } catch { curr = null; }
+  const prev = rec.prev;
+  rec.prev = curr;
+  if (curr === null || prev === null) {
+    if ((curr === null) !== (prev === null)) {
+      for (const l of [...rec.listeners]) l(curr ?? prev, prev ?? curr);
+      for (const l of [...rec.changeListeners]) l(curr ?? prev, prev ?? curr);
+    }
+    return;
+  }
+  if (curr.size !== prev.size || curr.mtimeMs !== prev.mtimeMs) {
+    for (const l of [...rec.listeners]) l(curr, prev);
+    for (const l of [...rec.changeListeners]) l(curr, prev);
+  }
+}
+class __StatWatcher {
+  #path;
+  #listener;
+  constructor(p, listener) { this.#path = p; this.#listener = listener; }
+  stop() { unwatchFile(this.#path, this.#listener); return this; }
+  close() { return this.stop(); }
+  ref() { return this; }
+  unref() { return this; }
+  on(type, cb) {
+    if (type === "change" && typeof cb === "function") {
+      const rec = __statWatchers.get(this.#path);
+      if (rec) rec.changeListeners.add(cb);
+    }
+    return this;
+  }
+  off(type, cb) {
+    if (type === "change") {
+      const rec = __statWatchers.get(this.#path);
+      if (rec && cb) rec.changeListeners.delete(cb);
+    }
+    return this;
+  }
+}
+export function watchFile(p, opts, listener) {
+  if (typeof opts === "function") { listener = opts; opts = {}; }
+  if (typeof listener !== "function") throw new TypeError("watchFile: listener must be a function");
+  p = __fsPath(p, "watchFile");
+  const interval = (opts && Number(opts.interval) > 0) ? Number(opts.interval) : 5007;
+  let rec = __statWatchers.get(p);
+  if (!rec) {
+    rec = { listeners: new Set(), changeListeners: new Set(), prev: null, timer: null };
+    try { rec.prev = statSync(p); } catch { rec.prev = null; }
+    rec.timer = setInterval(() => __statPoll(p), interval);
+    __statWatchers.set(p, rec);
+  }
+  rec.listeners.add(listener);
+  return new __StatWatcher(p, listener);
+}
+export function unwatchFile(p, listener) {
+  p = __fsPath(p, "unwatchFile");
+  const rec = __statWatchers.get(p);
+  if (!rec) return;
+  if (typeof listener === "function") rec.listeners.delete(listener);
+  else rec.listeners.clear();
+  if (rec.listeners.size === 0 && rec.changeListeners.size === 0) {
+    clearInterval(rec.timer);
+    __statWatchers.delete(p);
+  }
+}
 // ---- fs 流（同步底层 + Web 流外形；口径见头注）----
 // 口径（文档记录）：createReadStream 返回 Web ReadableStream（整文件读入后按
 // highWaterMark 切块；async 迭代/getReader 可用；Node 的 .on('data') 事件式
@@ -2127,7 +2200,7 @@ const __api = {
   // 同步（Phase 4 基础面）
   readFileSync, writeFileSync, appendFileSync, statSync, lstatSync, existsSync,
   mkdirSync, rmSync, rmdirSync, unlinkSync, readdirSync, renameSync, copyFileSync,
-  realpathSync, mkdtempSync, watch, constants, createReadStream, createWriteStream,
+  realpathSync, mkdtempSync, watch, watchFile, unwatchFile, constants, createReadStream, createWriteStream,
   // 同步（Phase 9c 增补）
   accessSync, truncateSync, utimesSync, chmodSync, linkSync, symlinkSync, readlinkSync,
   cpSync, opendirSync, openSync, closeSync, readSync, writeSync, ftruncateSync,

@@ -81,10 +81,9 @@ pub unsafe extern "C" fn napi_close_escapable_handle_scope(
     unsafe { close_scope_top(env, scope as usize, true) }
 }
 
-/// 关闭栈顶 scope（严格 LIFO：`depth` 必须等于当前栈深且 kind 匹配）。
-/// **不截断 arena（§4.77）**：napi_value 槽位随会话生存——addon 会合法地
-/// 把 out-param 产物存进自身状态跨回调复用，截断 = 释放其底层 Box = 悬垂。
-/// scope 只作 bookkeeping（Node 契约的"值域"检查保留 LIFO/kind 校验）。
+/// 关闭栈顶 scope（严格 LIFO：`depth` 必须等于当前栈深且 kind 匹配），
+/// 截断 arena 至开栈水位（§4.77 反例实证：不截断则 external/wrap 对象
+/// 永不可达死态，finalizer 永不跑；addon 跨窗持有走 ref，§4.76）。
 ///
 /// # Safety
 /// `env` 为本 crate 发出的有效指针。

@@ -169,13 +169,36 @@ fn parses_as_script(text: &str, path: &std::path::Path) -> bool {
     !ret.fatal_error && !ret.diagnostics.has_errors() && !ret.module_record.has_module_syntax
 }
 
-/// CJS 互操作垫片：同步 require 整包再 `export default`（命名导出只有 default；
-/// CJS 依赖在求值期懒解析，静态子图无需预编译）。
-fn cjs_shim_js(url: &Url) -> String {
-    format!(
-        "const __wjs_cjs_exports = globalThis.__wjs_require_cjs_by_url({url:?});\nexport default __wjs_cjs_exports;\n",
-        url = url.as_str()
-    )
+/// CJS 互操作垫片：同步 require 整包再导出（单 `export {}` 子句；具名
+/// `export { tmp as "key" }` 全引号形，`import { "kebab-name" }` 双侧实测；
+/// CJS 依赖在求值期懒解析，静态子图无需预编译；命名表由编译期
+/// `cjs_export_names` 快照运行时键——`__exportStar` 合并键天然在内，
+/// 快照后新增键/循环半成品缺键记档）。
+/// 具名 `default` 即整包（真机实测：`import { default as d }` 得整包而非
+/// `.default` 属性，故 `default` 键映射回整包，不单列）。
+fn cjs_shim_js(url: &Url, names: &[String]) -> String {
+    let mut js = String::from("const __wjs_cjs_exports = globalThis.__wjs_require_cjs_by_url(");
+    js.push_str(&serde_json::to_string(url.as_str()).unwrap_or_else(|_| "\"\"".into()));
+    js.push_str(");\n");
+    let mut entries: Vec<String> = Vec::with_capacity(names.len() + 1);
+    entries.push("__wjs_cjs_exports as default".to_owned());
+    for (i, k) in names.iter().enumerate() {
+        if k == "default" {
+            continue;
+        }
+        js.push_str(&format!(
+            "const __wjs_e_{i} = __wjs_cjs_exports[{}];\n",
+            serde_json::to_string(k).unwrap_or_default()
+        ));
+        entries.push(format!(
+            "__wjs_e_{i} as {}",
+            serde_json::to_string(k).unwrap_or_default()
+        ));
+    }
+    js.push_str("export { ");
+    js.push_str(&entries.join(", "));
+    js.push_str(" };\n");
+    js
 }
 
 /// 取回 + 转译 + 编译 + 注册（无递归；调用方负责遍历）。
@@ -185,7 +208,17 @@ fn compile_url(cx: &mut JSContext, url: &Url) -> Result<(*mut JSObject, Vec<Stri
     }
     let prepared = prepare(url)?;
     if cjs_interop(url, prepared.is_module, &prepared.original) {
-        let js = cjs_shim_js(url);
+        // 命名导出发现（M5）：realm 内同步 require 取运行时键（best-effort；
+        // 失败回 default-only，求值期 require 走原语义；双跑/半成品记档见
+        // `cjs_export_names`）。
+        let names = {
+            let global = state::global();
+            rooted!(&in(cx) let global_root: *mut JSObject = global);
+            // SAFETY: global 由 global_root 保活；同步 require 的 realm 见 §4.1。
+            let mut realm = mozjs::realm::AutoRealm::new_from_handle(cx, global_root.handle());
+            crate::builtins::node::require::cjs_export_names(&mut realm, global_root.get(), url)
+        };
+        let js = cjs_shim_js(url, &names);
         let record = compile_source(cx, url.as_str(), &js)?;
         register_module(url.as_str().to_owned(), record);
         let Prepared { original, map, .. } = prepared;

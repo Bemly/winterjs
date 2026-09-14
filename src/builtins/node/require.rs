@@ -600,9 +600,56 @@ pub unsafe extern "C" fn builtin_modules_json(
     frame.set_rval(v.get());
     true
 }
+/// CJS 互操作命名导出发现（M5 vitest 牵引，供 `modules.rs` 垫片静态列名）。
+/// 编译期同步 require 一次取运行时键（`Object.keys` 实测；`__exportStar` 合并键
+/// 天然在内，静态词法分析做不到这点）；注册表缓存使求值期复用零重跑。
+/// best-effort：失败（循环中体/抛错体）即回空 → 调用方退 default-only 垫片，
+/// 求值期 require 走原语义（抛错/半成品照旧；抛错体在发现期跑过一次、求值期
+/// 再跑一次，双跑记档）。
+/// 前置：cx 在 realm 内；`url` 为 file: CJS（调用方已判 `cjs_interop`）。
+pub(crate) fn cjs_export_names(
+    cx: &mut mozjs::context::JSContext,
+    global: *mut JSObject,
+    url: &Url,
+) -> Vec<String> {
+    let exports = match require_value(cx, global, url.as_str(), None) {
+        Ok(v) if v.is_object() => v,
+        _ => return Vec::new(),
+    };
+    rooted!(&in(cx) let exports_root = exports);
+    rooted!(&in(cx) let global_root: *mut JSObject = global);
+    // Object.keys(exports)（glue 直调，无新 JSAPI 面）。
+    let keys_fn = match get_prop_value(cx, global_root.get(), c"Object")
+        .filter(|o| o.is_object())
+        .and_then(|o| get_prop_value(cx, o.to_object(), c"keys"))
+    {
+        Some(f) => f,
+        _ => return Vec::new(),
+    };
+    let arr = match call_one(cx, global_root.get(), keys_fn, exports_root.get()) {
+        Some(v) if v.is_object() => v,
+        _ => return Vec::new(),
+    };
+    // JSON.stringify(keys) → Rust 侧解析（`parse_json` 另有落值用途，此处只要串）。
+    let str_fn = match get_prop_value(cx, global_root.get(), c"JSON")
+        .filter(|o| o.is_object())
+        .and_then(|o| get_prop_value(cx, o.to_object(), c"stringify"))
+    {
+        Some(f) => f,
+        _ => return Vec::new(),
+    };
+    let arr_rooted = arr;
+    rooted!(&in(cx) let arr_root = arr_rooted);
+    let json = match call_one(cx, global_root.get(), str_fn, arr_root.get()) {
+        Some(v) => value_to_string(cx, v),
+        _ => return Vec::new(),
+    };
+    serde_json::from_str::<Vec<String>>(&json).unwrap_or_default()
+}
 /// UNSAFE-BOUNDARY: `__wjs_require_cjs_by_url(url)` → CJS 互操作垫片底座
-/// （`import` 命中 CJS 文件时合成 `export default`；复用 `require_value` 全口径：
-/// 注册表命中则同值、CJS 循环见半成品；垫片求值期同步执行 CJS 体）。
+/// （`import` 命中 CJS 文件时合成 `export default` + 命名导出；复用
+/// `require_value` 全口径：注册表命中则同值、CJS 循环见半成品；垫片求值期
+/// 同步执行 CJS 体——编译期发现已跑过则缓存复用）。
 /// 前置：单参为 file: URL 串（非法即抛错，不回落）；
 /// 覆盖：`tests/node.rs::phase9j_cjs_interop_default`。
 pub unsafe extern "C" fn require_cjs_by_url(

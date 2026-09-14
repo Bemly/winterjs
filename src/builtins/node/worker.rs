@@ -16,9 +16,11 @@
 //! 退出码：排空 0/未捕获错 1/终止 1/`process.exit(n)`→n；权限继承 CLI 快照。
 //!
 //! 偏差记档：
-//! - 线口径 JSON 信封 v2（9i-2）：BigInt/undefined/Date/Map/Set/ArrayBuffer/
-//!   视图（类型保留，字节拷贝）全保留；循环引用/函数/symbol/MarkAsUncloneable
-//!   物件/DataCloneError；共享引用变多份拷贝；SAB 只拷贝（变普通 AB，不共享）。
+//! - 线口径 JSON 信封 v2（9i-2；M5 循环保留升级）：BigInt/undefined/Date/Map/Set/
+//!   ArrayBuffer/视图（类型保留，字节拷贝）全保留；循环/共享引用保留同一性
+//!   （先序 id + `ref` marker，真机口径；此前多份拷贝/循环抛错，9i-2 黑盒已同步
+//!   升级）；函数/symbol/MarkAsUncloneable 物件仍 DataCloneError；SAB 只拷贝
+//!   （变普通 AB，不共享）。
 //! - transfer（9i-2）：ArrayBuffer/视图 transfer 即 detach（源归零）；MessagePort
 //!   transfer 经邀约槽 + 源 neutered（后用静默）；同/跨会话统一路径（跨会话经源
 //!   表项转发器多一跳）；transfer 非数组即忽略，重复/非法项 DataCloneError；
@@ -966,9 +968,10 @@ function __dataCloneErr(what) {
 
 // ── 9i-2 线信封 v2（仍是单 JSON 串，Rust 通道零改动）─────────────────────
 // 自定义打包走 JSON（BigInt/undefined/Date/Map/Set/ArrayBuffer/视图/
-// MessagePort 全保留；循环引用/函数/symbol/不可克隆内置报 DataCloneError；
-// 共享引用变多份拷贝，记档）。transfer 标记内联 + 顶层信封带 nonce，接收侧
-// reviver 认领。
+// MessagePort 全保留；循环/共享引用保留同一性——容器先序 id，重访即 `ref`
+// marker（M5 vitest 牵引：任务图天生带环；此前抛错/多份拷贝， wire 兼容：
+// 无环消息形状逐字节不变）；函数/symbol/MarkAsUncloneable 物件任何位置出现
+// 即 DataCloneError；transfer 标记内联 + 顶层信封带 nonce，接收侧 reviver 认领。
 // ArrayBuffer/视图：transfer 即 detach（源归零，真机同款），否则拷贝字节；
 // SAB 只拷贝（变普通 AB，记档）；分离中（detached）出现即 DataCloneError。
 // MessagePort：仅 transfer 可投递（offer/accept 邀约槽 + 源 neutered 静默），
@@ -1064,22 +1067,17 @@ function __packValue(v, st) {
   if (v === undefined) return { __wjs_xfer: st.nonce, k: "undef" };
   if (v instanceof Date) return { __wjs_xfer: st.nonce, k: "date", v: v.toISOString() };
   if (v instanceof Map) {
-    if (st.path.has(v)) __dataCloneErr("Circular value");
-    st.path.add(v);
-    try {
-      return { __wjs_xfer: st.nonce, k: "map", v: [...v].map(([k2, v2]) => [__packValue(k2, st), __packValue(v2, st)]) };
-    } finally {
-      st.path.delete(v);
-    }
+    // 容器先序 id：首访编号，祖先/共享重访即 `ref`（解码侧同序注册，恒后向引用）。
+    const hit = st.path.get(v);
+    if (hit !== undefined) return { __wjs_xfer: st.nonce, k: "ref", id: hit };
+    st.path.set(v, st.nextId++);
+    return { __wjs_xfer: st.nonce, k: "map", v: [...v].map(([k2, v2]) => [__packValue(k2, st), __packValue(v2, st)]) };
   }
   if (v instanceof Set) {
-    if (st.path.has(v)) __dataCloneErr("Circular value");
-    st.path.add(v);
-    try {
-      return { __wjs_xfer: st.nonce, k: "set", v: [...v].map((x) => __packValue(x, st)) };
-    } finally {
-      st.path.delete(v);
-    }
+    const hit = st.path.get(v);
+    if (hit !== undefined) return { __wjs_xfer: st.nonce, k: "ref", id: hit };
+    st.path.set(v, st.nextId++);
+    return { __wjs_xfer: st.nonce, k: "set", v: [...v].map((x) => __packValue(x, st)) };
   }
   if (v instanceof MessagePort) __dataCloneErr("MessagePort without transfer");
   if (v instanceof ArrayBuffer) {
@@ -1092,38 +1090,49 @@ function __packValue(v, st) {
     return { __wjs_xfer: st.nonce, k: "view", t: v.constructor.name, b: __b64encode(new Uint8Array(b)), o: v.byteOffset, n: v.byteLength };
   }
   if (Array.isArray(v)) {
-    if (st.path.has(v)) __dataCloneErr("Circular value");
-    st.path.add(v);
-    try {
-      return v.map((x) => __packValue(x, st));
-    } finally {
-      st.path.delete(v);
-    }
+    const hit = st.path.get(v);
+    if (hit !== undefined) return { __wjs_xfer: st.nonce, k: "ref", id: hit };
+    st.path.set(v, st.nextId++);
+    return v.map((x) => __packValue(x, st));
   }
   if (v !== null && typeof v === "object") {
-    if (st.path.has(v)) __dataCloneErr("Circular value");
-    st.path.add(v);
-    try {
-      const out = {};
-      for (const k of Object.keys(v)) out[k] = __packValue(v[k], st);
-      return out;
-    } finally {
-      st.path.delete(v);
-    }
+    const hit = st.path.get(v);
+    if (hit !== undefined) return { __wjs_xfer: st.nonce, k: "ref", id: hit };
+    st.path.set(v, st.nextId++);
+    const out = {};
+    for (const k of Object.keys(v)) out[k] = __packValue(v[k], st);
+    return out;
   }
   return v;
 }
 
 function __unpackValue(v, st) {
-  if (Array.isArray(v)) return v.map((x) => __unpackValue(x, st));
+  if (Array.isArray(v)) {
+    // 与打包侧同先序注册（先占位再填子项，祖先后向引用恒可解）。
+    const a = [];
+    st.refs[st.nextId++] = a;
+    for (let i = 0; i < v.length; i++) a[i] = __unpackValue(v[i], st);
+    return a;
+  }
   if (v !== null && typeof v === "object") {
     if (v.__wjs_xfer === st.nonce) {
       switch (v.k) {
+        case "ref": return st.refs[v.id];
         case "big": return BigInt(v.v);
         case "undef": return undefined;
         case "date": return new Date(v.v);
-        case "map": return new Map(v.v.map(([k2, v2]) => [__unpackValue(k2, st), __unpackValue(v2, st)]));
-        case "set": return new Set(v.v.map((x) => __unpackValue(x, st)));
+        case "map": {
+          const m = new Map();
+          st.refs[st.nextId++] = m;
+          for (const [k2, v2] of v.v) m.set(__unpackValue(k2, st), __unpackValue(v2, st));
+          return m;
+        }
+        case "set": {
+          const s = new Set();
+          st.refs[st.nextId++] = s;
+          for (const x of v.v) s.add(__unpackValue(x, st));
+          return s;
+        }
         case "buf": return __b64decode(v.b).buffer;
         case "view": {
           const u8 = __b64decode(v.b);
@@ -1142,6 +1151,7 @@ function __unpackValue(v, st) {
       }
     }
     const out = {};
+    st.refs[st.nextId++] = out;
     for (const k of Object.keys(v)) out[k] = __unpackValue(v[k], st);
     return out;
   }
@@ -1150,7 +1160,7 @@ function __unpackValue(v, st) {
 
 function __toWire(value, transfer) {
   const list = __normTransfer(transfer);
-  const st = { nonce: `w${++__wireSeq}x${Math.floor(Math.random() * 36 ** 6).toString(36)}`, tmap: new Map(), path: new Set(), neuterPorts: [], seenTransfer: new Set() };
+  const st = { nonce: `w${++__wireSeq}x${Math.floor(Math.random() * 36 ** 6).toString(36)}`, tmap: new Map(), path: new Map(), nextId: 0, neuterPorts: [], seenTransfer: new Set() };
   for (const t of list) {
     if (t.kind === "port") st.tmap.set(t.obj, { kind: "port", id: t.obj.__id, obj: t.obj });
     else st.tmap.set(t.obj, t);
@@ -1197,7 +1207,7 @@ function __fromWire(json) {
     throw err;
   }
   if (raw !== null && typeof raw === "object" && typeof raw.__wjs_env === "string" && "d" in raw) {
-    return __unpackValue(raw.d, { nonce: raw.__wjs_env });
+    return __unpackValue(raw.d, { nonce: raw.__wjs_env, refs: [], nextId: 0 });
   }
   // v1 载荷（本二进制内不产生；防御性直通，无 marker 可误认）。
   return raw;
@@ -1445,6 +1455,11 @@ function __workerFilePath(filename) {
 }
 
 export class Worker extends EventEmitter {
+  // 子线程标出流（M5 vitest 牵引：threads 池 `worker.stdout.pipe(logger)` 无守卫，
+  // `streamFlushed` 等 end/close；无数据流——子输出直走共享 stdio，见 `__end` 记档）。
+  // 仅 `new Worker(..., { stdout: true })` 时具现（Node 形），否则保持 null。
+  __stdout = null;
+  __stderr = null;
   constructor(filename, options = {}) {
     super();
     if (options === null || (typeof options !== "object" && typeof options !== "function")) {
@@ -1465,6 +1480,8 @@ export class Worker extends EventEmitter {
     this.__tid = Number(ids[1]);
     this.__exited = null;
     this.__termWaiters = [];
+    if (options.stdout) this.__stdout = new __WorkerStdio();
+    if (options.stderr) this.__stderr = new __WorkerStdio();
     this.__ev = this.__ev.bind(this);
     __wjs_worker_attach(this.__id, this);
   }
@@ -1483,6 +1500,8 @@ export class Worker extends EventEmitter {
     } else if (kind === "exit") {
       const code = Number(payload);
       this.__exited = code;
+      if (this.__stdout) this.__stdout.__end();
+      if (this.__stderr) this.__stderr.__end();
       const waiters = this.__termWaiters.splice(0);
       for (const w of waiters) {
         try { w(code); } catch { /* 忽略 */ }
@@ -1512,8 +1531,50 @@ export class Worker extends EventEmitter {
   get threadId() { return this.__tid; }
   get resourceLimits() { return {}; }
   get stdin() { return null; }
-  get stdout() { return null; }
-  get stderr() { return null; }
+  get stdout() { return this.__stdout; }
+  get stderr() { return this.__stderr; }
+}
+// 无数据标出流（见 Worker 注释）：pipe/unpipe 形状 + end/close 一次性语义；
+// 数据永不流动（子输出直走共享 stdio），`__end` 在 worker 退出时由分发调用。
+class __WorkerStdio {
+  constructor() {
+    this.__listeners = {};
+    this.readableEnded = false;
+    this.destroyed = false;
+  }
+  on(ev, cb) {
+    if (typeof cb !== "function") throw new TypeError("listener must be a function");
+    (this.__listeners[String(ev)] ??= []).push(cb);
+    return this;
+  }
+  once(ev, cb) {
+    if (typeof cb !== "function") throw new TypeError("listener must be a function");
+    const self = this;
+    const wrapped = (...args) => { self.off(ev, wrapped); cb(...args); };
+    wrapped.__wjs_orig = cb;
+    return this.on(ev, wrapped);
+  }
+  off(ev, cb) {
+    const list = this.__listeners[String(ev)];
+    if (list) {
+      let i = list.findIndex((l) => l === cb || l.__wjs_orig === cb);
+      while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb || l.__wjs_orig === cb); }
+    }
+    return this;
+  }
+  pipe(dest) { return dest; }
+  unpipe() { return this; }
+  __end() {
+    if (this.readableEnded) return;
+    this.readableEnded = true;
+    this.destroyed = true;
+    for (const ev of ["end", "close"]) {
+      for (const cb of [...(this.__listeners[ev] ?? [])]) {
+        try { cb(); } catch {}
+      }
+    }
+    this.__listeners = {};
+  }
 }
 
 const __api = {

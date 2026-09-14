@@ -302,6 +302,9 @@ export function userInfo() { return __user(); }
 export function uptime() { return __wjs_os_uptime(); }
 export function loadavg() { return __load(); }
 export function getLocale() { return __wjs_os_locale(); }
+// 可用并行度（M5 vitest 牵引：真机按 CPU 亲和/线程池上限打折，本仓恒回
+// cpus 数——单进程 JS 线程 + tokio 同步多线程，无亲和约束，记档）。
+export function availableParallelism() { return __cpus().length; }
 export const EOL = isWin ? "\r\n" : "\n";
-export default { platform, arch, release, type, hostname, tmpdir, homedir, totalmem, freemem, cpus, networkInterfaces, userInfo, uptime, loadavg, EOL };
+export default { platform, arch, release, type, hostname, tmpdir, homedir, totalmem, freemem, cpus, networkInterfaces, userInfo, uptime, loadavg, EOL, availableParallelism };
 "#;

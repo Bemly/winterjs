@@ -6,6 +6,18 @@
 //!（write 满即发，close 关写端；子进程已走即写失败）；无 max_buffer 上限（流式消费）。
 //! `detached:true` 在 unix 起 setsid 组长，kill 走组杀（`nix` 轮子；win 回退直杀）。
 //! 结果走 JSON 桥（二进制 base64）；错误形状由 prelude 组装（见 SOURCE）。
+//!
+//! `fork`（M5 vitest 牵引）：worker 线程底座的进程形 fork（零新 native）。
+//! 子会话跑目标模块（argv `[execPath, module, ...args]`，与真机同形），子端
+//! `process.send/disconnect/on('message')/connected/channel` 经 parentPort 桥接；
+//! 父端为 `ChildProcess`（`send/on('message')/disconnect/connected/kill` 全语义，
+//! 关通道后 send 回 false + 异步 `ERR_IPC_CHANNEL_CLOSED`，真机口径）。
+//! 偏差（记档）：同进程线程（无独立进程；env/cwd/execArgv/silent/stdio/
+//! serialization/timeout/detached 接受忽略，stdio 恒 null）；子发消息无监听即丢
+//! （EventEmitter 口径）；kill 信号值忽略（terminate 语义）；exit/signal 双调参
+//! 为单 `{status, signal}` 对象（与本模块 spawn 路径同形）；message/disconnect
+//! 为单监听器位（spawn 路径 exit/close 同款风格）；控制信封单键对象
+//! `{__wjs_fork_ctl:"disconnect"}` 不投递给用户。
 
 use std::io::{Read as _, Write as _};
 use std::time::{Duration, Instant};
@@ -743,6 +755,8 @@ pub unsafe extern "C" fn cp_spawn(
 
 /// 内嵌 ESM 源（`node:child_process`；同步子集，见头注）。
 pub const SOURCE: &str = r#"
+import { Worker } from "node:worker_threads";
+import { pathToFileURL } from "node:url";
 function __b64dec(s) {
   s = String(s).replace(/-/g, "+").replace(/_/g, "/");
   while (s.length % 4) s += "=";
@@ -846,11 +860,20 @@ export class ChildProcess {
   #onclose = null;
   #onerror = null;
   #onspawn = null;
+  #onmessage = null;
+  #ondisconnect = null;
   exitCode = null;
   signalCode = null;
   spawnfile = null;
   spawnargs = null;
   channel = null;
+  // fork 面（worker 线程底座，见文末 `fork`）：置位后 message/disconnect/
+  // send/disconnect/kill/unref 走线程通道；spawn 子进程保持原语义。
+  __forkChild = false;
+  __worker = null;
+  __connected = false;
+  __exitCode = null;
+  __killSignal = "SIGTERM";
   __init(id, stdio) {
     this.#id = id;
     // pipe 口径：stdout/stderr 为 live ReadableStream（Rust 泵按块 enqueue，
@@ -884,6 +907,12 @@ export class ChildProcess {
   get pid() { return __wjs_child_pid(this.#id); }
   get killed() { return this.#killed; }
   kill(signal) {
+    if (this.__forkChild) {
+      if (this.__exitCode !== null) return false;
+      this.#killed = true;
+      try { this.__worker.terminate(); } catch { return false; }
+      return true;
+    }
     const ok = __wjs_child_kill(this.#id, signal === undefined ? "SIGTERM" : String(signal));
     if (ok) this.#killed = true;
     return ok;
@@ -895,12 +924,34 @@ export class ChildProcess {
     else if (event === "error") this.onerror = cb;
     else if (event === "spawn") this.onspawn = cb;
     else if (event === "message" || event === "disconnect") {
-      // 无 fd-passing 通道（记档缺口）：监听即明错，不静默吞
-      throw Object.assign(new Error("ERR_NOT_SUPPORTED: child IPC channel not supported (no fork/send)"), { code: "ERR_NOT_SUPPORTED" });
+      if (!this.__forkChild) {
+        // spawn 子进程无 fd-passing 通道（记档缺口）：监听即明错，不静默吞
+        throw Object.assign(new Error("ERR_NOT_SUPPORTED: child IPC channel not supported (use fork)"), { code: "ERR_NOT_SUPPORTED" });
+      }
+      if (event === "message") this.#onmessage = cb;
+      else this.#ondisconnect = cb;
     }
-    else throw new Error(`NotSupportedError: ChildProcess event '${event}' (exit/close/error/spawn)`);
+    else throw new Error(`NotSupportedError: ChildProcess event '${event}' (exit/close/error/spawn/message/disconnect)`);
     return this;
   }
+  once(event, cb) {
+    if (typeof cb !== "function") throw new TypeError("listener must be a function");
+    const self = this;
+    const wrapped = (...args) => { self.off(event, wrapped); cb(...args); };
+    wrapped.__wjs_orig = cb;
+    return this.on(event, wrapped);
+  }
+  off(event, cb) {
+    const match = (fn) => fn === cb || (typeof fn === "function" && fn.__wjs_orig === cb);
+    if (event === "exit" && match(this.#onexit)) this.onexit = null;
+    else if (event === "close" && match(this.#onclose)) this.onclose = null;
+    else if (event === "error" && match(this.#onerror)) this.onerror = null;
+    else if (event === "spawn" && match(this.#onspawn)) this.onspawn = null;
+    else if (event === "message" && match(this.#onmessage)) this.#onmessage = null;
+    else if (event === "disconnect" && match(this.#ondisconnect)) this.#ondisconnect = null;
+    return this;
+  }
+  removeListener(event, cb) { return this.off(event, cb); }
   // exit/close 经访问器 wrap：落定退出码（直接赋值亦生效，Node 的 exitCode 语义）
   set onexit(cb) {
     this.#onexit = (typeof cb === "function") ? ((ev) => {
@@ -922,15 +973,69 @@ export class ChildProcess {
   get onerror() { return this.#onerror; }
   set onspawn(cb) { this.#onspawn = cb; }
   get onspawn() { return this.#onspawn; }
-  send() {
-    throw Object.assign(new Error("ERR_NOT_SUPPORTED: child send() needs an IPC channel (fork unsupported)"), { code: "ERR_NOT_SUPPORTED" });
+  send(message, ...rest) {
+    if (!this.__forkChild) {
+      throw Object.assign(new Error("ERR_NOT_SUPPORTED: child send() needs an IPC channel (use fork)"), { code: "ERR_NOT_SUPPORTED" });
+    }
+    let cb = null;
+    for (const a of rest) if (typeof a === "function") cb = a;
+    if (!this.__connected) {
+      // Node 口径：关通道后 send 回 false，并异步报 ERR_IPC_CHANNEL_CLOSED。
+      const err = new Error("Channel closed");
+      err.code = "ERR_IPC_CHANNEL_CLOSED";
+      if (cb) queueMicrotask(() => cb(err));
+      queueMicrotask(() => this.__emitForkError(err));
+      return false;
+    }
+    try {
+      this.__worker.postMessage(message);
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (!err.code) err.code = "ERR_IPC_CHANNEL_CLOSED";
+      if (cb) queueMicrotask(() => cb(err));
+      else queueMicrotask(() => this.__emitForkError(err));
+      return false;
+    }
+    if (cb) queueMicrotask(() => cb(null));
+    return true;
   }
   disconnect() {
-    throw Object.assign(new Error("ERR_NOT_SUPPORTED: child disconnect() needs an IPC channel (fork unsupported)"), { code: "ERR_NOT_SUPPORTED" });
+    if (!this.__forkChild) {
+      throw Object.assign(new Error("ERR_NOT_SUPPORTED: child disconnect() needs an IPC channel (use fork)"), { code: "ERR_NOT_SUPPORTED" });
+    }
+    if (!this.__connected) return;
+    this.__connected = false;
+    // 控制信封（单键载荷，子端 shim 解释为 disconnect，不投递给用户）。
+    try { this.__worker.postMessage({ __wjs_fork_ctl: "disconnect" }); } catch {}
+    if (typeof this.#ondisconnect === "function") {
+      try { this.#ondisconnect(); } catch {}
+    }
   }
-  get connected() { return false; }
-  unref() { return this; }
-  ref() { return this; }
+  __emitForkError(err) {
+    if (typeof this.#onerror === "function") this.#onerror(err);
+    else throw err;
+  }
+  __onForkMessage(m) {
+    if (typeof this.#onmessage === "function") this.#onmessage(m);
+  }
+  __onForkExit(code) {
+    this.__exitCode = code;
+    const ev = { status: code, signal: null };
+    if (this.__connected) this.__connected = false;
+    // 与 spawn 路径同形：单 `{status, signal}` 对象经 onexit/onclose 访问器
+    // 落定 exitCode/signalCode 再调用户回调。
+    if (typeof this.onexit === "function") this.onexit(ev);
+    if (typeof this.onclose === "function") this.onclose(ev);
+  }
+  get connected() { return !!this.__connected; }
+  unref() {
+    if (this.__worker) { try { this.__worker.unref(); } catch {} }
+    return this;
+  }
+  ref() {
+    if (this.__worker) { try { this.__worker.ref(); } catch {} }
+    return this;
+  }
 }
 function __normSpawnAsyncOpts(opts) {
   const o = { cwd: null, env: null, detached: false, stdio: ["inherit", "inherit", "inherit"], timeoutMs: 0 };
@@ -1030,7 +1135,120 @@ export function execFileSync(file, args, opts) {
   if (r.spawnErr || r.timedOut || r.status !== 0) __spawnError(file, r, o.encoding);
   return __toOut(r.stdout_b64, o.encoding);
 }
-export default { execSync, spawnSync, spawn, exec, execFile, execFileSync, ChildProcess };
+// fork 子会话入口（worker eval 串；占位 `__FORK_MOD__`/`__FORK_ARGV__` 由
+// `fork()` 经 replacer 函数填 JSON——`format!` 拼 JS 禁花括号转义，见 §4.44）。
+// 子端 IPC 面：process.send/disconnect/on('message')/connected/channel，
+// 经 parentPort 与父端 ChildProcess 桥接；控制信封 `{__wjs_fork_ctl:
+// // "disconnect"}` 单键载荷不投递给用户（见父端 `disconnect()`）。
+const __FORK_CHILD_SRC = `
+import { parentPort } from "node:worker_threads";
+const __mod = __FORK_MOD__;
+const __forkArgs = __FORK_ARGV__;
+process.argv = [process.execPath, __mod, ...__forkArgs];
+process.connected = true;
+process.channel = { ref() {}, unref() {}, hasRef() { return true; } };
+process.send = (message, ...rest) => {
+  let cb = null;
+  for (const a of rest) if (typeof a === "function") cb = a;
+  if (!process.connected || parentPort === null) {
+    const err = new Error("Channel closed");
+    err.code = "ERR_IPC_CHANNEL_CLOSED";
+    if (cb) queueMicrotask(() => cb(err));
+    else queueMicrotask(() => process.__wjs_emit("error", err));
+    return false;
+  }
+  try {
+    parentPort.postMessage(message);
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    if (!err.code) err.code = "ERR_IPC_CHANNEL_CLOSED";
+    if (cb) queueMicrotask(() => cb(err));
+    else queueMicrotask(() => process.__wjs_emit("error", err));
+    return false;
+  }
+  if (cb) queueMicrotask(() => cb(null));
+  return true;
+};
+process.disconnect = () => {
+  if (!process.connected) return;
+  process.connected = false;
+  try { parentPort.close(); } catch {}
+  process.__wjs_emit("disconnect");
+};
+parentPort.on("message", (message) => {
+  if (message !== null && typeof message === "object" && !Array.isArray(message) &&
+      Object.keys(message).length === 1 && message.__wjs_fork_ctl === "disconnect") {
+    if (process.connected) {
+      process.connected = false;
+      try { parentPort.close(); } catch {}
+      process.__wjs_emit("disconnect");
+    }
+    return;
+  }
+  process.__wjs_emit("message", message);
+});
+parentPort.on("close", () => {
+  if (process.connected) {
+    process.connected = false;
+    process.__wjs_emit("disconnect");
+  }
+});
+await import(__mod);
+`;
+function __normForkOpts(opts) {
+  const o = { execPath: process.execPath, killSignal: "SIGTERM" };
+  if (opts === undefined || opts === null) return o;
+  if (typeof opts !== "object") {
+    const err = new TypeError("The \"options\" argument must be of type object");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  // 线程底座：cwd/env/execArgv/silent/stdio/serialization/timeout/detached 等
+  // 接受忽略（同进程线程，无独立进程环境；stdio 恒 null，见 `fork` 文档）。
+  if (opts.killSignal !== undefined) o.killSignal = String(opts.killSignal);
+  if (opts.execPath !== undefined) o.execPath = String(opts.execPath);
+  return o;
+}
+export function fork(modulePath, args, opts) {
+  if (args !== undefined && !Array.isArray(args)) { opts = args; args = []; }
+  if (modulePath === undefined || modulePath === null ||
+      (typeof modulePath !== "string" && !(modulePath instanceof URL))) {
+    const err = new TypeError("The \"modulePath\" argument must be of type string or URL");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (modulePath instanceof URL && modulePath.protocol !== "file:") {
+    const err = new TypeError("The \"modulePath\" argument must be a file URL");
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  const o = __normForkOpts(opts);
+  const modStr = modulePath instanceof URL ? modulePath.href : String(modulePath);
+  const fileUrl = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(modStr) ? modStr : pathToFileURL(modStr).href;
+  const argsArr = [...(args || [])].map(String);
+  const src = __FORK_CHILD_SRC
+    .replace("__FORK_MOD__", () => JSON.stringify(fileUrl))
+    .replace("__FORK_ARGV__", () => JSON.stringify(argsArr));
+  const worker = new Worker(src, { eval: true });
+  const proc = new ChildProcess();
+  proc.__forkChild = true;
+  proc.__worker = worker;
+  proc.__connected = true;
+  proc.__killSignal = o.killSignal;
+  proc.spawnfile = o.execPath;
+  proc.spawnargs = [o.execPath, fileUrl, ...argsArr];
+  proc.stdin = null;
+  proc.stdout = null;
+  proc.stderr = null;
+  proc.channel = { ref() {}, unref() {} };
+  worker.on("message", (m) => proc.__onForkMessage(m));
+  worker.on("error", (e) => {
+    if (typeof proc.onerror === "function") proc.onerror(e);
+  });
+  worker.on("exit", (code) => proc.__onForkExit(code));
+  return proc;
+}
+export default { execSync, spawnSync, spawn, exec, execFile, execFileSync, fork, ChildProcess };
 "#;
 
 #[cfg(test)]

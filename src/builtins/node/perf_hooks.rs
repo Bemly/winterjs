@@ -7,8 +7,9 @@
 //! - `eventLoopUtilization` 未接事件循环内外计时：恒 `{ idle: 0, active: 累计,
 //!   utilization: 1 }`（delta 形态正常计算差值）；`nodeTiming` 为形状桩（数值 0）。
 //! - `PerformanceResourceTiming` 仅形状类（无资源加载埋点，不产生条目）。
-//! - 全局 `performance` 在本模块求值期安装（vite 等顶层 import 即有；
-//!   未 import 的会话徒手引用为 undefined，与 Node 全集口径的偏差）。
+//! - 全局 `performance` 在本模块求值期以全功能对象覆盖（核心 prelude 已有
+//!   `now/timeOrigin/toJSON` 最小子集；覆盖后与 `perf_hooks.performance`
+//!   同一对象，真机口径；覆盖前持有旧对象者不追新，记档）。
 
 /// 内嵌 ESM 源（`node:perf_hooks`）。
 pub const SOURCE: &str = r#"

@@ -156,5 +156,10 @@ export function doesNotMatch(value, reg, message) {
 }
 const strict = { equal: strictEqual, deepEqual: deepStrictEqual, ok, fail, ifError, throws, rejects, doesNotThrow, doesNotReject, match, doesNotMatch };
 export { strict };
-export default { ok, equal, notEqual, strictEqual, notStrictEqual, deepEqual, notDeepEqual, deepStrictEqual, notDeepStrictEqual, throws, doesNotThrow, rejects, doesNotReject, fail, ifError, match, doesNotMatch, strict, AssertionError };
+// 默认导出即可调用函数（真机口径：`typeof require('assert') === 'function'`；
+// 但 `default.ok !== default`——`ok` 是独立函数（与 `strict.ok` 同一，名 `ok`），
+// 默认本体名 `assert`；M5 vitest 牵引：reporter 直调 `assert(cond, msg)`）。
+function assert(value, message) { return ok(value, message); }
+const __default = Object.assign(assert, { ok, equal, notEqual, strictEqual, notStrictEqual, deepEqual, notDeepEqual, deepStrictEqual, notDeepStrictEqual, throws, doesNotThrow, rejects, doesNotReject, fail, ifError, match, doesNotMatch, strict, AssertionError });
+export default __default;
 "#;

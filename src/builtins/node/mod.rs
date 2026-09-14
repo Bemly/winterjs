@@ -7,14 +7,17 @@
 //! `normalize_spec` 接受（宽松），但**不进 `available()` 报错列表**。
 
 pub mod assert;
+pub mod assert_strict;
 pub mod async_hooks;
 pub mod buffer;
 pub mod child;
+pub mod console;
 pub mod crypto;
 pub mod diagnostics_channel;
-pub mod events;
 pub mod dgram;
 pub mod dns;
+pub mod dns_promises;
+pub mod events;
 pub mod fs;
 pub mod http;
 pub mod http2;
@@ -25,6 +28,8 @@ pub mod net;
 pub mod nodemodule;
 pub mod os;
 pub mod path;
+pub mod path_posix;
+pub mod path_win32;
 pub mod perf_hooks;
 pub mod process_;
 pub mod punycode;
@@ -38,6 +43,7 @@ pub mod stream_promises;
 pub mod stream_web;
 pub mod string_decoder;
 pub mod testmod;
+pub mod timers;
 pub mod timers_promises;
 pub mod tls;
 pub mod trace_events;
@@ -62,13 +68,18 @@ pub fn node_prelude() -> String {
 /// 保证 `available()` 天然不含 internal。
 const BUILTINS: &[(&str, &str)] = &[
     ("node:path", path::SOURCE),
+    ("node:path/posix", path_posix::SOURCE),
+    ("node:path/win32", path_win32::SOURCE),
     ("node:os", os::SOURCE),
     ("node:process", process_::SOURCE),
     ("node:fs", fs::SOURCE),
     ("node:fs/promises", fs::PROMISES_SOURCE),
     ("node:child_process", child::SOURCE),
+    // M5 vitest 牵引：node:console 模块面（纯 JS，全局 console + Console 类）
+    ("node:console", console::SOURCE),
     ("node:net", net::SOURCE),
     ("node:dns", dns::SOURCE),
+    ("node:dns/promises", dns_promises::SOURCE),
     ("node:dgram", dgram::SOURCE),
     ("node:http", http::SOURCE),
     // Phase 9d-6
@@ -79,6 +90,7 @@ const BUILTINS: &[(&str, &str)] = &[
     // Phase 9e-1a
     ("node:crypto", crypto::SOURCE),
     ("node:assert", assert::SOURCE),
+    ("node:assert/strict", assert_strict::SOURCE),
     ("node:test", testmod::SOURCE),
     // Phase 9a
     ("node:async_hooks", async_hooks::SOURCE),
@@ -97,6 +109,8 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:stream/consumers", stream_consumers::SOURCE),
     ("node:stream/web", stream_web::SOURCE),
     ("node:timers/promises", timers_promises::SOURCE),
+    // M5 vitest 牵引：回调形态
+    ("node:timers", timers::SOURCE),
     ("node:diagnostics_channel", diagnostics_channel::SOURCE),
     ("node:trace_events", trace_events::SOURCE),
     ("node:tty", tty::SOURCE),
@@ -127,13 +141,19 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
     }
     match spec.strip_prefix("node:").unwrap_or(spec) {
         "path" => Some("node:path"),
+        // M5 vitest 牵引：子路径
+        "path/posix" => Some("node:path/posix"),
+        "path/win32" => Some("node:path/win32"),
         "os" => Some("node:os"),
         "process" => Some("node:process"),
         "fs" => Some("node:fs"),
         "fs/promises" => Some("node:fs/promises"),
         "child_process" => Some("node:child_process"),
+        // M5 vitest 牵引
+        "console" => Some("node:console"),
         "net" => Some("node:net"),
         "dns" => Some("node:dns"),
+        "dns/promises" => Some("node:dns/promises"),
         "dgram" => Some("node:dgram"),
         "http" => Some("node:http"),
         // Phase 9d-6
@@ -144,6 +164,7 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         // Phase 9e-1a
         "crypto" => Some("node:crypto"),
         "assert" => Some("node:assert"),
+        "assert/strict" => Some("node:assert/strict"),
         "test" => Some("node:test"),
         "async_hooks" => Some("node:async_hooks"),
         "events" => Some("node:events"),
@@ -164,6 +185,8 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "stream/consumers" => Some("node:stream/consumers"),
         "stream/web" => Some("node:stream/web"),
         "timers/promises" => Some("node:timers/promises"),
+        // M5 vitest 牵引：回调形态
+        "timers" => Some("node:timers"),
         // Phase 9d-5
         "zlib" => Some("node:zlib"),
         // Phase 9e-3
@@ -247,6 +270,10 @@ mod tests {
         assert!(source("node:diagnostics_channel").is_some());
         assert!(source("node:trace_events").is_some());
         assert!(source("node:tty").is_some());
+        // M5 vitest 牵引
+        assert_eq!(normalize_spec("console"), Some("node:console"));
+        assert_eq!(normalize_spec("node:console"), Some("node:console"));
+        assert!(source("node:console").is_some());
         // Phase 9b
         assert_eq!(normalize_spec("buffer"), Some("node:buffer"));
         assert_eq!(normalize_spec("node:stream"), Some("node:stream"));
@@ -287,6 +314,18 @@ mod tests {
         assert_eq!(normalize_spec("url"), Some("node:url"));
         assert_eq!(normalize_spec("node:url"), Some("node:url"));
         assert!(source("node:url").is_some());
+        // M5 vitest 牵引：子路径 + 回调 timers + console 模块面
+        assert_eq!(normalize_spec("path/posix"), Some("node:path/posix"));
+        assert_eq!(normalize_spec("node:path/win32"), Some("node:path/win32"));
+        assert!(source("node:path/posix").is_some());
+        assert!(source("node:path/win32").is_some());
+        assert_eq!(normalize_spec("timers"), Some("node:timers"));
+        assert_eq!(normalize_spec("node:timers"), Some("node:timers"));
+        assert!(source("node:timers").is_some());
+        assert_eq!(normalize_spec("assert/strict"), Some("node:assert/strict"));
+        assert!(source("node:assert/strict").is_some());
+        assert_eq!(normalize_spec("dns/promises"), Some("node:dns/promises"));
+        assert!(source("node:dns/promises").is_some());
         // Phase 9d-6
         assert_eq!(normalize_spec("https"), Some("node:https"));
         assert_eq!(normalize_spec("node:tls"), Some("node:tls"));

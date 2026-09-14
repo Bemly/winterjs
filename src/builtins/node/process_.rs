@@ -412,6 +412,8 @@ globalThis.process = {
   // 22.x 大版本保 `^22` caret 区间可用；22.0.0 过不了 vite checkNodeVersion。
   versions: { node: "22.12.0", winterjs: "26.9.13", mozjs: "153" },
   execPath: __wjs_exec_path(),
+  // node 选项透传（M5 vitest 牵引：本仓无 node 旗标，恒空数组，真机口径）。
+  execArgv: [],
   pid: __wjs_pid(),
   uptime() { return __wjs_uptime(); },
   hrtime: Object.assign(
@@ -443,18 +445,38 @@ globalThis.process = {
   // isTTY + EOF read()（偏差记档：stdin EOF/data 不投递、信号不投递——
   // 注册表只收不发，SIGTERM 默认行为不变（OS 默认终止））。
   stdout: {
-    write(s) { return __wjs_stdout_write(String(s)); },
+    // 写完成回调（M5 vitest 牵引：worker 线程 `flushStdio` 以 `write("", cb)`
+    // 等前序块落定；直写恒成功，回调经 microtask 异步回，真机口径）。
+    write(s, ...rest) {
+      const r = __wjs_stdout_write(String(s));
+      const cb = rest.find((a) => typeof a === "function");
+      if (cb) queueMicrotask(() => cb());
+      return r;
+    },
     get isTTY() { return __wjs_stdio_istty(1); },
     clearLine() { return __wjs_stdio_istty(1); },
     cursorTo() { return __wjs_stdio_istty(1); },
     getColorDepth() { return __wjs_stdio_istty(1) ? 8 : 1; },
+    // EventEmitter 记账面（M5 vitest 牵引：threads 池调 set/getMaxListeners；
+    // 本体无事件发射，仅记数，Node 默认 10）。
+    __wjs_maxListeners: 10,
+    getMaxListeners() { return this.__wjs_maxListeners; },
+    setMaxListeners(n) { this.__wjs_maxListeners = Number(n); return this; },
   },
   stderr: {
-    write(s) { return __wjs_stderr_write(String(s)); },
+    write(s, ...rest) {
+      const r = __wjs_stderr_write(String(s));
+      const cb = rest.find((a) => typeof a === "function");
+      if (cb) queueMicrotask(() => cb());
+      return r;
+    },
     get isTTY() { return __wjs_stdio_istty(2); },
     clearLine() { return __wjs_stdio_istty(2); },
     cursorTo() { return __wjs_stdio_istty(2); },
     getColorDepth() { return __wjs_stdio_istty(2) ? 8 : 1; },
+    __wjs_maxListeners: 10,
+    getMaxListeners() { return this.__wjs_maxListeners; },
+    setMaxListeners(n) { this.__wjs_maxListeners = Number(n); return this; },
   },
   stdin: {
     get isTTY() { return __wjs_stdio_istty(0); },
@@ -520,6 +542,10 @@ globalThis.process = {
     return process;
   },
   listenerCount(type) { return (process.__wjs_listeners[String(type)] ?? []).length; },
+  // EventEmitter 读表（M5 vitest 牵引：init 链 `process.listeners(..).bind(..)`）。
+  listeners(type) { return [...(process.__wjs_listeners[String(type)] ?? [])]; },
+  rawListeners(type) { return process.listeners(type); },
+  eventNames() { return Object.keys(process.__wjs_listeners); },
   __wjs_emit(type, ...args) {
     const list = [...(process.__wjs_listeners[String(type)] ?? [])];
     for (const l of list) {
@@ -571,6 +597,7 @@ export const arch = p.arch;
 export const version = p.version;
 export const versions = p.versions;
 export const execPath = p.execPath;
+export const execArgv = p.execArgv;
 export function cwd() { return p.cwd(); }
 export function chdir(d) { return p.chdir(d); }
 export function exit(c) { return p.exit(c); }

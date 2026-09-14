@@ -862,6 +862,8 @@ pub(crate) enum ErrorSource<'a> {
 struct PumpStats {
     /// `process.exit` 已调（调用方收尾退出，见 §4.18 检查点顺序）。
     exited: bool,
+    /// 入口 promise 已决议失败（调用方跳出收割上报，不等自然排空）。
+    entry_failed: bool,
     /// 本轮结算过（§4.18：结算后必须再跑一轮 RunJobs，不可直接退）。
     progressed: bool,
     timers: usize,
@@ -920,6 +922,14 @@ async fn pump_once(
     // worker 终止旗（`WTerminate` 置位；与 process.exit 同检查点顺序——RunJobs 之后）。
     if state::worker_terminated() {
         st.exited = true;
+        return Ok(st);
+    }
+    // 入口 promise 已决议失败（顶层 `await import` 炸等）：Node 口径即 fatal——
+    // 不等事件循环自然排空（开着的句柄如 worker 端口会让循环永不 idle，
+    // fork 缺失模块即挂死于此）；置旗由 event_loop 跳出，收割路径照常上报。
+    // 注意顺序：同上在 RunJobs 之后；`process.exit` 优先（既有语义不动）。
+    if state::with_plain(|p| p.entry_rejection.is_some()) {
+        st.entry_failed = true;
         return Ok(st);
     }
 
@@ -1079,6 +1089,11 @@ async fn event_loop(
         let st = pump_once(rt, global, err, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx).await?;
         if st.exited {
             return Ok(());
+        }
+        // 入口已失败即跳出（收割路径上报；未处理 rejection 收尾不受影响——
+        // 入口带专用捕获，不进 `unhandled` 表，见 `run_module`）。
+        if st.entry_failed {
+            break;
         }
         iterations += 1;
         timers_fired += st.timers;

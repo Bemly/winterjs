@@ -322,6 +322,55 @@ pub unsafe extern "C" fn fs_stat(
     }
 }
 
+/// `__wjs_fs_statfs(path)` → StatsFs JSON（M5 vitest 牵引）。
+/// unix 经已批准轮子 `nix::sys::statvfs`（§8 直引，零新依赖）；`type` 取
+/// filesystem_id（nix 0.31 未暴露 f_type 魔数，记档）；非 unix 报 ENOSYS。
+pub unsafe extern "C" fn fs_statfs(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "statfs", PermClass::Read) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        match nix::sys::statvfs::statvfs(path.as_str()) {
+            Ok(st) => {
+                let json = serde_json::json!({
+                    "type": st.filesystem_id(),
+                    "bsize": st.block_size(),
+                    "blocks": st.blocks(),
+                    "bfree": st.blocks_free(),
+                    "bavail": st.blocks_available(),
+                    "files": st.files(),
+                    "ffree": st.files_free(),
+                })
+                .to_string();
+                set_rval_str(&mut cx, &frame, &json);
+                true
+            }
+            Err(e) => {
+                report_io(&mut cx, "statfs", &path, std::io::Error::from(e));
+                false
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        report_io(
+            &mut cx,
+            "statfs",
+            &path,
+            std::io::Error::new(std::io::ErrorKind::Unsupported, "statfs not implemented on this platform"),
+        );
+        false
+    }
+}
+
 /// `__wjs_fs_mkdir(path, recursiveBool)`。
 pub unsafe extern "C" fn fs_mkdir(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -1620,6 +1669,18 @@ class __Dirent {
   isFIFO() { return false; }
   isSocket() { return false; }
 }
+// StatsFs 纯数据面（type/bsize/blocks/bfree/bavail/files/ffree，无方法，Node 口径）。
+class __StatsFs {
+  constructor(j) {
+    this.type = j.type ?? 0;
+    this.bsize = j.bsize ?? 4096;
+    this.blocks = j.blocks ?? 0;
+    this.bfree = j.bfree ?? 0;
+    this.bavail = j.bavail ?? 0;
+    this.files = j.files ?? 0;
+    this.ffree = j.ffree ?? 0;
+  }
+}
 // flags 字符串 → OpenFlags JSON（Node 口径子集；`s` 后缀忽略；数字只认本运行时
 // constants 暴露的位值，O_CREAT/O_EXCL/O_TRUNC/O_APPEND 用 Linux 位值，记档）。
 function __fsFlags(flag, what) {
@@ -1695,6 +1756,11 @@ export function appendFileSync(p, data, opts) {
 export function statSync(p) {
   p = __fsPath(p, "stat");
   return new __Stats(JSON.parse(__fsCall("stat", p, () => __wjs_fs_stat(p, true))));
+}
+// 文件系统级状态（M5 vitest 牵引；unix 经 statvfs，type 取 filesystem_id 记档）。
+export function statfsSync(p) {
+  p = __fsPath(p, "statfs");
+  return new __StatsFs(JSON.parse(__fsCall("statfs", p, () => __wjs_fs_statfs(p))));
 }
 export function lstatSync(p) {
   p = __fsPath(p, "lstat");
@@ -2115,6 +2181,7 @@ export const promises = {
   rm: __as(rmSync),
   rmdir: __as(rmdirSync),
   stat: __as(statSync),
+  statfs: __as(statfsSync),
   symlink: __as(symlinkSync),
   truncate: __as(truncateSync),
   unlink: __as(unlinkSync),
@@ -2140,6 +2207,7 @@ export const readFile = __cb1(readFileSync, "readFile", __id);
 export const writeFile = __cb1(writeFileSync, "writeFile", __id);
 export const appendFile = __cb1(appendFileSync, "appendFile", __id);
 export const stat = __cb1(statSync, "stat", __id);
+export const statfs = __cb1(statfsSync, "statfs", __id);
 export const lstat = __cb1(lstatSync, "lstat", __id);
 export const mkdir = __cb1(mkdirSync, "mkdir", __id);
 export const rmdir = __cb1(rmdirSync, "rmdir", __id);
@@ -2204,16 +2272,16 @@ const __api = {
   // 同步（Phase 9c 增补）
   accessSync, truncateSync, utimesSync, chmodSync, linkSync, symlinkSync, readlinkSync,
   cpSync, opendirSync, openSync, closeSync, readSync, writeSync, ftruncateSync,
-  fstatSync, fchmodSync, futimesSync, fsyncSync, fdatasyncSync,
+  fstatSync, fchmodSync, futimesSync, fsyncSync, fdatasyncSync, statfsSync,
   // 回调面（Phase 9c）
-  readFile, writeFile, appendFile, stat, lstat, exists, mkdir, rmdir, rm, unlink,
+  readFile, writeFile, appendFile, stat, statfs, lstat, exists, mkdir, rmdir, rm, unlink,
   readdir, rename, copyFile, realpath, mkdtemp, access, truncate, utimes, chmod,
   link, symlink, readlink, open, close, read, write, opendir, cp,
   // 类 + promises
-  Stats: __Stats, Dirent: __Dirent, Dir, FileHandle, promises,
+  Stats: __Stats, Dirent: __Dirent, StatsFs: __StatsFs, Dir, FileHandle, promises,
 };
 export default __api;
-export { __Stats as Stats, __Dirent as Dirent };
+export { __Stats as Stats, __Dirent as Dirent, __StatsFs as StatsFs };
 "#;
 
 /// 内嵌 ESM 源（`node:fs/promises`；同步底层 async 包裹，见头注）。
@@ -2241,6 +2309,7 @@ export const rename = fs.promises.rename;
 export const rm = fs.promises.rm;
 export const rmdir = fs.promises.rmdir;
 export const stat = fs.promises.stat;
+export const statfs = fs.promises.statfs;
 export const symlink = fs.promises.symlink;
 export const truncate = fs.promises.truncate;
 export const unlink = fs.promises.unlink;

@@ -28,6 +28,14 @@ use crate::jsapi_glue::report_error;
 pub const PRELUDE: &str = r#"
 // Node 口径：`global` 为全局对象自引用别名（vite 等直引；9j 实测补齐）。
 globalThis.global = globalThis;
+// Web/Node 全局 `performance` 最小子集（M5 vitest 牵引：tinybench 等徒手引用，
+// 不 import 任何模块；`node:perf_hooks` 求值期以全功能对象覆盖，覆盖后与
+// `perf_hooks.performance` 同一对象，真机口径）。
+globalThis.performance = {
+  now: () => Date.now() - globalThis.performance.timeOrigin,
+  timeOrigin: Date.now(),
+  toJSON() { return { timeOrigin: this.timeOrigin }; },
+};
 globalThis.queueMicrotask = function (cb) {
   if (typeof cb !== "function") throw new TypeError("queueMicrotask: callback must be a function");
   // 与引擎内部 job queue 同一条微任务队列；回调抛错 → 未处理 rejection（由 runtime 上报）
@@ -2235,6 +2243,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_fs_write_file", Some(node::fs::fs_write_file), 3),
             ("__wjs_fs_append_file", Some(node::fs::fs_append_file), 2),
             ("__wjs_fs_stat", Some(node::fs::fs_stat), 2),
+            // M5 vitest 牵引：statfs（unix 经 nix statvfs，既有直引轮子）
+            ("__wjs_fs_statfs", Some(node::fs::fs_statfs), 1),
             ("__wjs_fs_mkdir", Some(node::fs::fs_mkdir), 2),
             ("__wjs_fs_rm", Some(node::fs::fs_rm), 3),
             ("__wjs_fs_readdir", Some(node::fs::fs_readdir), 2),

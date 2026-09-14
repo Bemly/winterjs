@@ -61,13 +61,15 @@ fn phase4_require_errors() {
     let dir = assert_fs::TempDir::new().unwrap();
     let mod_ = dir.child("m.mjs");
     mod_.write_str("export const x = 1;\n").unwrap();
+    // require(esm)（Node ≥22.12/26 无条件，真机 26.8.2 实测同款成功）：
+    // .mjs 直接 require 返回 namespace（旧"ESM 拒绝"断言随语义升级退役）。
     let code = format!(
-        "try {{ require({:?}); }} catch (e) {{ console.log(e.message.slice(0, 30)); }}",
+        "try {{ const m = require({:?}); console.log(\"esm\", m.x); }} catch (e) {{ console.log(\"esm-err\", e.constructor.name); }}",
         mod_.path().to_string_lossy()
     );
     let out = winterjs().args(["--eval", &code]).output().unwrap();
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.contains("require() of ES Module"), "esm: {stdout}");
+    assert!(stdout.contains("esm 1"), "esm: {stdout}");
     let out =
         stdout_of(&mut winterjs().args(["--eval", "console.log(require.resolve(\"node:path\"));"]));
     assert_eq!(out, "node:path\n", "resolve: {out}");
@@ -80,7 +82,9 @@ fn phase9k_module_extensions_hook() {
     // （vite loadConfigFromBundledFile 形态：内存码优先于磁盘，filename 走
     // realpath 口径）；exports 重赋值终态；cache 命中（Node 口径 cache 先于
     // extensions，vite delete cache[resolve] 即为绕过）；.js 兜底（loaderExt）。
-    // 报错：无钩子回落 native（磁盘 ESM 经 require 报经典 SyntaxError 文案）。
+    // 报错改成功：无钩子回落 native 后 require(typeless ESM .js) 经
+    // detect-module + require(esm) 成功（真机 26.8.2 实测同款；旧"经典
+    // SyntaxError"断言随语义升级退役）。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("esm-target.js").write_str("export default 1;\n").unwrap();
     dir.child("fresh-esm.js").write_str("export default 2;\n").unwrap();
@@ -132,7 +136,7 @@ console.log("ext-ok");
         "hooked 42 true",
         "reassigned true",
         "cache true 1",
-        "native-err Error export declarations may only appear at top level of a module",
+        "NO-ERR",
         "fallback fallback",
         "ext-ok",
     ] {
@@ -248,8 +252,10 @@ fn phase9j_cjs_interop_named() {
     dir.child("star-a.cjs")
         .write_str("exports.x = 10;\n")
         .unwrap();
+    // 转出跟随用 TS __exportStar 形（真机 cjs-module-lexer 同款静态识别；
+    // 自定义 `__es(...)` 包装真机也不识别——link 期 x 缺失同款失败）。
     dir.child("star.cjs")
-        .write_str("function __es(r) { for (const k in r) { if (k !== 'default') exports[k] = r[k]; } }\n__es(require('./star-a.cjs'));\nexports.y = 20;\n")
+        .write_str("function __exportStar(r, e) { for (const k in r) { if (k !== 'default') e[k] = r[k]; } }\n__exportStar(require('./star-a.cjs'), exports);\nexports.y = 20;\n")
         .unwrap();
     let file = dir.child("m.mjs");
     file.write_str("import \"./mix.mjs\";\n").unwrap();
@@ -297,5 +303,86 @@ console.log("kebab", kebab);
         !out.status.success(),
         "missing-name link should fail"
     );
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9m_require_exports_conditions() {
+    // require 条件族（真机 26.8.2 对拍）：require 走 require 条件（双条件包
+    // 命中 CJS 入口，非 ESM namespace）；imports-only 包 require 即解析失败
+    // （真机同款 ERR_PACKAGE_PATH_NOT_EXPORTED，无 import 回落）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let mixed = dir.child("node_modules/mixed");
+    mixed.create_dir_all().unwrap();
+    mixed
+        .child("package.json")
+        .write_str(r#"{"name":"mixed","version":"1.0.0","exports":{".":{"import":"./esm.mjs","require":"./cjs.cjs"}}}"#)
+        .unwrap();
+    mixed
+        .child("esm.mjs")
+        .write_str("export const side = \"esm\";\nexport default {};\n")
+        .unwrap();
+    mixed
+        .child("cjs.cjs")
+        .write_str("module.exports = { side: \"cjs\" };\n")
+        .unwrap();
+    let only = dir.child("node_modules/onlyesm");
+    only.create_dir_all().unwrap();
+    only
+        .child("package.json")
+        .write_str(r#"{"name":"onlyesm","version":"1.0.0","exports":{".":{"import":"./esm.mjs"}}}"#)
+        .unwrap();
+    only.child("esm.mjs").write_str("export default {};\n").unwrap();
+    let main = dir.child("main.cjs");
+    main.write_str(
+        r#"const mixed = require("mixed");
+console.log("cond", mixed.side);
+try { require("onlyesm"); console.log("NO-ERR"); }
+catch (e) { console.log("onlyerr", String(e.message).includes("Cannot find module 'onlyesm'")); }
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(main.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in ["cond cjs", "onlyerr true"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase9m_require_resolve_caller_relative() {
+    // require.resolve 相对说明符按**调用方文件**定 base：直挂原生后
+    // describe_scripted_caller 的最内层帧 = 调用方（prelude 闭包帧不再盖住；
+    // jsdom api.js 实测同款）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let a = dir.child("a");
+    a.create_dir_all().unwrap();
+    a.child("two.cjs").write_str("module.exports = 1;\n").unwrap();
+    a.child("one.cjs")
+        .write_str("console.log(\"res\", require.resolve(\"./two.cjs\").endsWith(\"two.cjs\"));\n")
+        .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(a.child("one.cjs").path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "res true\n");
     dir.close().unwrap();
 }

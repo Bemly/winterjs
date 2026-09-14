@@ -13,10 +13,25 @@ use crate::error::Error;
 const PROBE_EXTS: &[&str] = &["ts", "tsx", "mts", "js", "mjs"];
 const INDEX_FILES: &[&str] = &["index.ts", "index.tsx", "index.mts", "index.js", "index.mjs"];
 
-/// 进程级单例 resolver（`tsconfig: Auto` 按每次查询目录发现，无需多例）。
-fn resolver() -> &'static Resolver {
-    static R: OnceLock<Resolver> = OnceLock::new();
-    R.get_or_init(|| {
+/// 条件族（package.json `exports` 双入口）：ESM `import` / CJS `require`。
+/// Node 口径：require 严格走 require 条件——imports-only 包报
+/// ERR_PACKAGE_PATH_NOT_EXPORTED（真机 26.8.2 实测），无 import 回落；
+/// require(esm) 只作用于"已解析文件是 ESM"的情形。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cond {
+    Import,
+    Require,
+}
+
+/// 条件各一份进程级单例 resolver（`tsconfig: Auto` 按每次查询目录发现）。
+fn resolver(cond: Cond) -> &'static Resolver {
+    static IMPORT: OnceLock<Resolver> = OnceLock::new();
+    static REQUIRE: OnceLock<Resolver> = OnceLock::new();
+    let (lock, extra) = match cond {
+        Cond::Import => (&IMPORT, "import"),
+        Cond::Require => (&REQUIRE, "require"),
+    };
+    lock.get_or_init(|| {
         Resolver::new(ResolveOptions {
             extensions: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"]
                 .iter()
@@ -31,7 +46,7 @@ fn resolver() -> &'static Resolver {
             ]
             .into_iter()
             .collect(),
-            condition_names: vec!["node".into(), "import".into()],
+            condition_names: vec!["node".into(), extra.into()],
             main_files: vec!["index".into()],
             tsconfig: Some(TsconfigDiscovery::Auto),
             ..ResolveOptions::default()
@@ -119,7 +134,7 @@ fn caller_file(base: Option<&Url>) -> Result<(PathBuf, bool), Error> {
 }
 
 /// 统一走 resolver：有真实文件用 `resolve_file`（tsconfig 生效），否则 `resolve`。
-fn resolve_with(specifier: &str, base: Option<&Url>) -> Result<PathBuf, Error> {
+fn resolve_with(cond: Cond, specifier: &str, base: Option<&Url>) -> Result<PathBuf, Error> {
     let (anchor, use_file) = caller_file(base)?;
     let dir = if anchor.is_dir() {
         anchor.clone()
@@ -127,9 +142,9 @@ fn resolve_with(specifier: &str, base: Option<&Url>) -> Result<PathBuf, Error> {
         anchor.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| anchor.clone())
     };
     let r = if use_file && !anchor.is_dir() {
-        resolver().resolve_file(&anchor, specifier)
+        resolver(cond).resolve_file(&anchor, specifier)
     } else {
-        resolver().resolve(&dir, specifier)
+        resolver(cond).resolve(&dir, specifier)
     };
     r.map(|r| r.full_path()).map_err(|e| {
         Error::Other(format!(
@@ -150,7 +165,7 @@ fn path_to_file_url(p: PathBuf) -> Result<Url, Error> {
 }
 
 /// 裸导入：node 内建优先 → node_modules + tsconfig（paths）+ exports 条件。
-fn resolve_bare(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
+fn resolve_bare(cond: Cond, specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
     // node 内建优先于 node_modules（与 Node 一致；`fs` 与 `node:fs` 同一模块）。
     if let Some(canonical) = crate::builtins::node::normalize_spec(specifier) {
         tracing::debug!(target: "winterjs::loader", specifier, canonical, "builtin module");
@@ -160,7 +175,7 @@ fn resolve_bare(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
             "cannot resolve bare specifier '{specifier}' from a data: module"
         )));
     }
-    match resolve_with(specifier, base) {
+    match resolve_with(cond, specifier, base) {
         Ok(p) => {
             tracing::debug!(target: "winterjs::loader", specifier, path = %p.display(), "resolved via oxc_resolver");
             path_to_file_url(p)
@@ -171,7 +186,7 @@ fn resolve_bare(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
 
 /// 相对路径：resolver 主路径，失败回落自家 join+探测（行为保护网）。
 /// http(s) base 走 URL join（远端相对导入，见 loader http 收官）。
-fn resolve_relative(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
+fn resolve_relative(cond: Cond, specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
     // 绝对文件路径可不依赖 base
     if base.is_none() && Path::new(specifier).is_absolute() {
         let url = Url::from_file_path(specifier)
@@ -198,7 +213,7 @@ fn resolve_relative(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
             "cannot resolve '{specifier}' from '{base}' (only file:/http(s): bases for now)"
         )));
     }
-    if let Ok(p) = resolve_with(specifier, Some(base)) {
+    if let Ok(p) = resolve_with(cond, specifier, Some(base)) {
         tracing::debug!(target: "winterjs::loader", specifier, path = %p.display(), "resolved via oxc_resolver");
         return path_to_file_url(p);
     }
@@ -210,8 +225,17 @@ fn resolve_relative(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
     probe_file_url(&joined)
 }
 
-/// `import spec` + 发起方 URL → 目标 URL。
+/// `import spec` + 发起方 URL → 目标 URL（ESM 条件族）。
 pub fn resolve(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
+    resolve_cond(Cond::Import, specifier, base)
+}
+
+/// `require(spec)` 同款（CJS 条件族；require.rs 全部解析走此入口）。
+pub fn resolve_require(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
+    resolve_cond(Cond::Require, specifier, base)
+}
+
+fn resolve_cond(cond: Cond, specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
     // 绝对 URL（含 scheme）
     if let Ok(url) = Url::parse(specifier) {
         return match url.scheme() {
@@ -244,9 +268,9 @@ pub fn resolve(specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
         };
     }
     if specifier.starts_with("./") || specifier.starts_with("../") || specifier.starts_with('/') {
-        resolve_relative(specifier, base)
+        resolve_relative(cond, specifier, base)
     } else {
-        resolve_bare(specifier, base)
+        resolve_bare(cond, specifier, base)
     }
 }
 

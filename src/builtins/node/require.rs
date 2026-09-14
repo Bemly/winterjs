@@ -25,7 +25,7 @@ use crate::jsapi_glue::{
     call_one, get_prop_value, parse_json, report_error, value_to_string, wrap_cx, Frame,
 };
 use crate::loader::load_js;
-use crate::loader::resolve::resolve;
+use crate::loader::resolve::resolve_require;
 use crate::state;
 
 // ── CJS 具名导出静态发现（cjs-module-lexer 核心子集；零求值）──────────────
@@ -107,7 +107,7 @@ fn cjs_static_names(path: &Path, depth: usize, seen: &mut HashSet<PathBuf>) -> V
         let Ok(base) = Url::from_file_path(path) else {
             return;
         };
-        if let Ok(u) = resolve(spec, Some(&base)) {
+        if let Ok(u) = resolve_require(spec, Some(&base)) {
             if let Ok(p) = u.to_file_path() {
                 for name in cjs_static_names(&p, depth + 1, seen) {
                     push(&name);
@@ -277,21 +277,27 @@ fn require_cjs_file(
         Err(_) => (url.as_str().to_owned(), String::new()),
     };
     // 五连单参调用（§4.9：不用 ValueArray；串先 rooted，避闭包借用冲突）。
+    // §4.40/§4.68 教训的 require 版：链内每次 call_one 都可能 GC（curried 闭包
+    // 分配 + wrapper 体嵌套 require），cur 与各实参一律全程 rooted、调用点现读
+    // 现传——裸 JSVal 栈拷贝在 GC 搬移后即悬垂（css-tree 深图 worker 线程
+    // SIGBUS 实锤：cur/arg 位型 0xFFF8/0x5800 垃圾，require 条件修复后 CJS
+    // 图暴增才把它养出来）。
+    rooted!(&in(cx) let mut cur = fn_v.get());
+    rooted!(&in(cx) let exports_root = exports_v);
+    rooted!(&in(cx) let require_root = require_v);
+    rooted!(&in(cx) let module_val_root = module_v);
     rooted!(&in(cx) let mut s_v = UndefinedValue());
     filename_s.to_jsval(cx, s_v.handle_mut());
-    let filename_v = s_v.get();
     rooted!(&in(cx) let mut d_v = UndefinedValue());
     dirname_s.to_jsval(cx, d_v.handle_mut());
-    let dirname_v = d_v.get();
-    let mut cur = fn_v.get();
     let mut call_arg = |label: &str, arg: JSVal| -> Result<JSVal, String> {
-        if !cur.is_object() {
+        if !cur.get().is_object() {
             state::cjs_remove(url.as_str());
             return Err(format!("cannot load '{}': {label} is not callable", url.as_str()));
         }
-        match call_one(cx, global_root.get(), cur, arg) {
+        match call_one(cx, global_root.get(), cur.get(), arg) {
             Some(v) => {
-                cur = v;
+                cur.set(v);
                 Ok(v)
             }
             None => {
@@ -300,11 +306,11 @@ fn require_cjs_file(
             }
         }
     };
-    call_arg("exports", exports_v)?;
-    call_arg("require", require_v)?;
-    call_arg("module", module_v)?;
-    call_arg("__filename", filename_v)?;
-    call_arg("__dirname", dirname_v)?;
+    call_arg("exports", exports_root.get())?;
+    call_arg("require", require_root.get())?;
+    call_arg("module", module_val_root.get())?;
+    call_arg("__filename", s_v.get())?;
+    call_arg("__dirname", d_v.get())?;
     // 终态 exports（允许执行期重赋值 `module.exports = …`；先移除预注册再记终态）。
     match get_prop_value(cx, module_root.get(), c"exports") {
         Some(final_v) => {
@@ -351,7 +357,7 @@ fn require_value(
             .map_err(|e| Error::Other(format!("bad builtin URL: {e}")))?;
         return require_esm_default(cx, global, &url).map_err(Error::Other);
     }
-    let url = resolve(spec, base.as_ref()).map_err(|e| {
+    let url = resolve_require(spec, base.as_ref()).map_err(|e| {
         Error::Other(format!("Cannot find module '{spec}' ({e})"))
     })?;
     match url.scheme() {
@@ -449,7 +455,7 @@ pub unsafe extern "C" fn require_resolve(
     let url = if let Some(canonical) = crate::builtins::node::normalize_spec(&spec) {
         Url::parse(canonical).map_err(|e| Error::Other(format!("bad builtin URL: {e}")))
     } else {
-        resolve(&spec, base.as_ref())
+        resolve_require(&spec, base.as_ref())
     };
     match url {
         Ok(u) => {
@@ -475,7 +481,10 @@ globalThis.__wjs_make_module = (filename) => ({
 });
 globalThis.__wjs_make_base_require = (base) => (id) => __wjs_require_from(base, String(id));
 globalThis.__wjs_require_main = (url) => globalThis.require(String(url));
-globalThis.require.resolve = (id) => __wjs_require_resolve(String(id));
+// 直挂原生（禁 JS 闭包包装）：describe_scripted_caller 的最内层帧须是调用方
+// 文件——闭包帧（本 prelude）会盖掉它，相对 require.resolve 即丢 base
+// （jsdom api.js 实测：caller=__wjs_node_prelude.js）。
+globalThis.require.resolve = __wjs_require_resolve;
 Object.defineProperty(globalThis.require, "main", {
   configurable: true,
   get() {
@@ -572,7 +581,7 @@ pub unsafe extern "C" fn require_resolve_from(
     let url = if let Some(canonical) = crate::builtins::node::normalize_spec(&spec) {
         Url::parse(canonical).map_err(|e| Error::Other(format!("bad builtin URL: {e}")))
     } else {
-        resolve(&spec, Some(&base))
+        resolve_require(&spec, Some(&base))
     };
     match url {
         Ok(u) => {

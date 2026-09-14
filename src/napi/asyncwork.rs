@@ -18,7 +18,6 @@
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
-use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -536,7 +535,6 @@ pub fn dispatch(
                     None => return Ok(()),
                 };
                 let context = shared.context;
-                let cb_v = rec.js_cb.get();
                 let finalize_data = rec.thread_finalize_data;
                 let finalize_cb = rec.thread_finalize_cb;
                 let mut mark = env.slots.len();
@@ -548,7 +546,14 @@ pub fn dispatch(
                     };
                     shared.space.notify_all();
                     let Some(data) = item else { break };
-                    let cb_val = env.put(cb_v);
+                    // 每 item 重读 js_cb（traced Heap）：前一条回调内跑过 GC 时，
+                    // 对象可能被搬移/回收，循环外一次性的栈位拷贝即成悬垂 Value
+                    // （is_object() 按 tag 照过，进 JS 就是全零 cell/被复用形状
+                    // —— vue-project 138/139 根因）。重读 = 取搬移后的最新地址。
+                    let Some(cb_v) = (*env_ptr).tsfns.get(&id).map(|r| r.js_cb.get()) else {
+                        break;
+                    };
+                    let cb_val = (*env_ptr).put(cb_v);
                     call_js_cb(env_ptr as napi_env, cb_val, context, data);
                     let env = &mut *env_ptr;
                     env.slots.truncate(mark);
@@ -568,7 +573,11 @@ pub fn dispatch(
                         if !rec.finalized {
                             rec.finalized = true;
                             if let Some(f) = finalize_cb {
-                                f(env_ptr as napi_env, finalize_data, ptr::null_mut());
+                                // Node 口径（node_api.cc Finalize()）：hint =
+                                // 创建时的 context（napi-rs 的 thread_finalize_cb
+                                // 把 hint 当 Box<R>（用户回调）释放，传 null =
+                                // Box::from_raw(null) UB，rolldown/vite 收尾必炸）。
+                                f(env_ptr as napi_env, finalize_data, shared.context);
                             }
                         }
                     }

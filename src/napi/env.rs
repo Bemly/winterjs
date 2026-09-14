@@ -104,6 +104,12 @@ pub struct NapiModule {
                 for m in &self.modules {
                     m.exports.trace(trc);
                 }
+                for (_, t) in &self.tsfns {
+                    // TSFN 的 JS 回调（fsevents/rolldown 长驻回调只被此处持有；
+                    // 漏标即 GC 后悬垂，下次事件 dispatch 进 `fn.apply` 即 SEGV，
+                    // M5 dev 真变更 139 根因，见 AGENTS §4.68）。
+                    t.js_cb.trace(trc);
+                }
             }
         }
     }

@@ -203,7 +203,9 @@
     Buffer 整数读写系（HMR error 推送根因）；
     polling 后端 dev 全链已验证（listen/transform/WS/full-reload/CLOSED，
     ignored 黑盒 `phase_napi_m5_vite_dev_polling_real_network` 落账）；
-    fsevents 默认路径真变更 139 隔离中（见 AGENTS §4.67）。
+    fsevents 默认路径 139 已修复（`NapiEnv::trace` 漏标 `tsfns.js_cb`，
+    见 AGENTS §4.68；`hmr-min9.mjs` 修后 full-reload + `EXIT:0`）；
+    剩 vitest/tinypool 链路。
 - [ ] **M6 收尾合流**：Node 官方 napi 套件选点回归 + AGENTS §6 审计口径补「napi 面」
   （~133 `unsafe extern "C"` 结构性新增，不逐个计数）+ 黑盒清单按 src 对齐
   （tests/napi.rs）→ 长分支一次性合 master。

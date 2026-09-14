@@ -950,6 +950,8 @@ cargo build
   0x4b 高位恒定、低位浮动； suspects 剩堆损坏延迟引信/形状损坏，待深入）。
   M5 dev 验证暂走 polling（`server.watch.usePolling`，HMR `CHOK-CHANGE` +
   干净退出已验证）；默认 fsevents 路径记档待修。
+  **→ 已闭环（2026-09-14，见 §4.68：`NapiEnv::trace` 漏标 `tsfns.js_cb`），
+  默认 fsevents 路径 `hmr-min9.mjs` 修后 full-reload + `EXIT:0`。**
 - 复现：`hmr-min11.mjs` 形（transform fetch + WS 握手 + 真 append，三件齐崩；
   任缺一件即过）；崩溃报告见 `~/Library/Logs/DiagnosticReports/winterjs-*.ips`
  （`0x4b4b4b4b` 高位恒定）。
@@ -962,6 +964,37 @@ cargo build
   即查此面），与 fsevents 139 无关（polling 后端同样先 error 后随补齐转绿）。
   `/var` 下"能侦测不推送"即此缺口所致，非路径/时序问题（教训：先看推了什么
   消息类型再怀疑路径）。
+
+### 4.68 TSFN 的 JS 回调漏标 GC 根：fsevents 真变更 139 根因（2026-09-14，M5）
+
+- 症状：§4.67 的 139——真文件 append 后 `EXIT:139`
+ （`EXC_BAD_ACCESS 0x4b4b4b4bXXXXXXXX`，高位恒定、低位浮动；调用栈
+  `asyncwork::dispatch(TsfnDrain)` → `fse_dispatch_event` →
+  `napi_call_function` → `call_impl` → `JS_CallFunctionValue` → JS 内崩）。
+  崩点在回调**内**（`tryAttachTypedArrayElement`/`GetProperty` 都见过——
+  崩点是受害现场，不是根因）；napi 实参形态正确、无 pending 遗留。
+- 根因：`NapiEnv::trace` 只标 `slots/escape_slots/deferreds/refs/wrap_sym/
+  modules`，漏了 `tsfns` 记录里的 `js_cb`。TSFN 的 JS 回调**只被该记录持有**
+  （dispatch 截断 `slots` 后无其他根），一次 GC 后回调即悬垂，下次事件
+  dispatch 取悬垂槽值进 `fn.apply` 就是 UAF。fsevents 是长驻回调 +
+  transform/fetch 制造 GC 压力 → 稳定复现；m3 旧 fixture 全程无压力 → 全绿
+  掩盖（§4.40 同源：旧测试从未在回调内存活期外造 nursery 压力）。
+- 修法（`src/napi/env.rs`）：trace 加 `for (_, t) in &self.tsfns {
+  t.js_cb.trace(trc) }`。回归：`tests/fixtures/napi/m3_tsfngc.c`
+  （线程延迟 600ms 投递 3 条，JS 侧 8 轮 × 20 万小对象 ≈ 80MB nursery 压力；
+  大对象直进 tenured 触发不了 minor GC，故不用大数组）+
+  `tests/napi.rs::phase_napi_m3_tsfngc_roots_callback`。
+  Revert-check：注释掉该行即挂（修前 139/修后过；`/tmp/wjs-tsfngc` 手动复现同，
+  崩溃报告 `0x4b4b4b4b00000000` 与线上同特征）。
+- 复现：`hmr-min9.mjs`（transform fetch + WS 握手 + 真 append）修前 139、
+  修后 `full-reload` + `CLOSED` + `EXIT:0`；mimic 探针的 BigInt 是红鲱鱼
+  （`Number(id & 0xffffn)` 混用抛 TypeError 触发 fsevents.c 的 assert，
+  改纯 Number 探针即过，与 139 无关）。
+- 推广为铁律：§4.40 的完整形态——**`Box<Heap>` 定址只保地址稳，trace 才保
+  可达，两者缺一不可**；凡新增跨 GC 存活的 JS 值存储（含 HashMap value、
+  新 napi 记录），trace 必须同步加，上线前 grep trace 覆盖。FinalizationRegistry
+  在本引擎不可靠（真机同为 false），回归探针用"确定性压力 + 投递存活"断言，
+  不用 canary（试过，不稳定）。
 
 
 ## 5. 路线图（按序）

@@ -529,6 +529,48 @@ console.log("end");
     dir.close().unwrap();
 }
 
+#[test]
+#[cfg(unix)]
+fn phase_napi_m3_tsfngc_roots_callback() {
+    // 回归（M5 dev 真变更 139 根因，AGENTS §4.68）：TSFN 的 JS 回调只被
+    // env.tsfns 记录持有，必须进 GC 图；线程延迟 600ms 投递，JS 侧先造
+    // nursery 压力（8 轮 × 20 万小对象 ≈ 80MB，大对象直进 tenured 触发不了
+    // minor GC）——漏标则回调被回收，投递即 SEGV（已实证修前 139/修后过）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let node = build_fixture_dylib(&dir, "m3_tsfngc");
+    let app = dir.child("app.js");
+    app.write_str(&format!(
+        r#"
+const m = require({node:?});
+(async () => {{
+  const msgs = [];
+  const doneP = m.startGcTsfn(function (v) {{ msgs.push(v); }});
+  for (let r = 0; r < 8; r++) {{
+    const hold = [];
+    for (let i = 0; i < 200000; i++) hold.push({{ i }});
+    await new Promise((rr) => setTimeout(rr, 5));
+  }}
+  console.log("tsfngc", await doneP, msgs.join(","));
+}})();
+"#,
+    ))
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(app.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(so.contains("tsfngc done g1,g2,g3"), "stdout: {so}");
+    dir.close().unwrap();
+}
+
 /// M4 验收（plan-napi）：真 rolldown 包经自家 pm 安装（**真网络**，故默认
 /// ignore；验收跑 `cargo test --test napi -- --ignored`）。npm registry 偶发
 /// 慢，超时上限给足。

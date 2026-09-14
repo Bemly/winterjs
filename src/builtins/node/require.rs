@@ -16,6 +16,10 @@ use mozjs::rooted;
 use mozjs::rust::{evaluate_script, CompileOptionsWrapper};
 use url::Url;
 
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
 use crate::error::Error;
 use crate::jsapi_glue::{
     call_one, get_prop_value, parse_json, report_error, value_to_string, wrap_cx, Frame,
@@ -23,6 +27,149 @@ use crate::jsapi_glue::{
 use crate::loader::load_js;
 use crate::loader::resolve::resolve;
 use crate::state;
+
+// ── CJS 具名导出静态发现（cjs-module-lexer 核心子集；零求值）──────────────
+//
+// require(esm)（Node ≥22.12）落地后，M5 的运行时键快照（求值取键）在
+// CJS↔ESM 环上会无限递归：发现期求值 CJS → require ESM → 编译其子图 →
+// 环上 CJS 再进发现期。正解同 Node cjs-module-lexer：静态词法为主（零求值、
+// 循环天然安全），运行时快照降级为回退并加在飞护栏。
+//
+// 静态面（近似口径，偏差记本节）：`exports.NAME =` / `module.exports.NAME =`
+// （标识符键）、`exports["NAME"] =`、`Object.defineProperty(exports, "NAME", …)`、
+// `module.exports = require("<相对>")` 与 `__exportStar(require("<相对>"), exports)`
+// 转出跟随（深度 ≤ 8，路径集合去重；多分支 if/else 取并集）。
+// `__esModule` 互操作标记剔除。
+
+fn cjs_static_names(path: &Path, depth: usize, seen: &mut HashSet<PathBuf>) -> Vec<String> {
+    if depth > 8 || !seen.insert(path.to_path_buf()) {
+        return Vec::new();
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = Vec::new();
+    let mut push = |n: &str| {
+        if n != "__esModule" && n != "default" && !names.iter().any(|x| x == n) {
+            names.push(n.to_owned());
+        }
+    };
+    // exports.NAME = … / module.exports.NAME = …（链式 `exports.a = exports.b =`
+    // 全捕获；`=[^=]` 排除 ==/===；无行锚——`(0 && (exports.x = …))` 死代码形
+    // 也是真导出名）。babel 的 `exports.version = exports.types = void 0` 落此。
+    for caps in regex::Regex::new(r#"(?:module\.)?exports\.([A-Za-z_$][\w$]*)\s*=[^=]"#)
+        .unwrap()
+        .captures_iter(&text)
+    {
+        push(&caps[1]);
+    }
+    // exports["NAME"] = …
+    for caps in regex::Regex::new(r#"(?:module\.)?exports\[["']([^"']+)["']\]\s*=[^=]"#)
+        .unwrap()
+        .captures_iter(&text)
+    {
+        push(&caps[1]);
+    }
+    // Object.defineProperty(exports|module.exports|(0, exports), "NAME", …)
+    // babel 系 TS 编译产物的 `(0, exports)` 接收器同捕获。
+    for caps in regex::Regex::new(
+        r#"Object\.defineProperty\(\s*(?:\(0,\s*)?(?:module\.)?exports\s*,\s*["']([^"']+)["']"#,
+    )
+    .unwrap()
+    .captures_iter(&text)
+    {
+        push(&caps[1]);
+    }
+    // require 绑定表（var/const/let X = require("spec")）：Object.keys(X).forEach
+    // 动态转出的跟随依据。裸说明符经本仓 resolver 解析（真机 vue.cjs.js 的
+    // Object.keys(runtimeDom).forEach 即此形，实测 173 键全出）。
+    let mut bindings: Vec<(String, String)> = Vec::new();
+    for caps in regex::Regex::new(
+        r#"(?:var|const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)"#,
+    )
+    .unwrap()
+    .captures_iter(&text)
+    {
+        bindings.push((caps[1].to_owned(), caps[2].to_owned()));
+    }
+    // 整包转出跟随：module.exports = require("rel") / Object.keys(X|require(..)).forEach
+    // / __exportStar(require("rel"), exports)。多分支取并集。
+    let dir = path.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    let mut follow_spec = |spec: &str, depth: usize, seen: &mut HashSet<PathBuf>| {
+        if spec.starts_with("./") || spec.starts_with("../") {
+            let resolved = cjs_follow_spec(&dir, spec);
+            for name in cjs_static_names(&resolved, depth + 1, seen) {
+                push(&name);
+            }
+            return;
+        }
+        // 裸说明符：base = 本文件 URL，走本仓 resolver（package exports 感知）。
+        let Ok(base) = Url::from_file_path(path) else {
+            return;
+        };
+        if let Ok(u) = resolve(spec, Some(&base)) {
+            if let Ok(p) = u.to_file_path() {
+                for name in cjs_static_names(&p, depth + 1, seen) {
+                    push(&name);
+                }
+            }
+        }
+    };
+    for caps in regex::Regex::new(r#"module\.exports\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)"#)
+        .unwrap()
+        .captures_iter(&text)
+    {
+        follow_spec(&caps[1], depth, seen);
+    }
+    for caps in regex::Regex::new(
+        r#"Object\.keys\(\s*require\(\s*['"]([^'"]+)['"]\s*\)\s*\)\.forEach"#,
+    )
+    .unwrap()
+    .captures_iter(&text)
+    {
+        follow_spec(&caps[1], depth, seen);
+    }
+    for caps in regex::Regex::new(r#"Object\.keys\(\s*([A-Za-z_$][\w$]*)\s*\)\.forEach"#)
+        .unwrap()
+        .captures_iter(&text)
+    {
+        if let Some((_, spec)) = bindings.iter().find(|(n, _)| n == &caps[1]) {
+            follow_spec(spec, depth, seen);
+        }
+    }
+    for caps in regex::Regex::new(
+        r#"__exportStar\(\s*require\(\s*['"]([^'"]+)['"]\s*\)\s*,\s*(?:module\.)?exports\s*\)"#,
+    )
+    .unwrap()
+    .captures_iter(&text)
+    {
+        let resolved = cjs_follow_spec(&dir, &caps[1]);
+        for name in cjs_static_names(&resolved, depth + 1, seen) {
+            push(&name);
+        }
+    }
+    names
+}
+
+/// 转出跟随的相对说明符解析（仅 `./`/`../` 形；扩展名缺失探测 .js/.cjs/index 双形）。
+fn cjs_follow_spec(dir: &Path, spec: &str) -> PathBuf {
+    let rel = spec.trim_start_matches("./");
+    if let Some(p) = dir.join(rel).canonicalize().ok() {
+        return p;
+    }
+    for suffix in [".js", ".cjs", "/index.js", "/index.cjs"] {
+        let cand = dir.join(format!("{rel}{suffix}"));
+        if cand.is_file() {
+            return cand;
+        }
+    }
+    dir.join(rel)
+}
+
+// 发现期在飞护栏（递归环上重入即放弃，调用方退 default-only 垫片）。
+thread_local! {
+    static NAMES_INFLIGHT: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
 
 /// 调用方 base（脚本文件名 → URL；eval/prelude 等非 URL 返回 None）。
 fn caller_base(cx: &mozjs::context::JSContext) -> Option<Url> {
@@ -237,21 +384,15 @@ fn require_value(
                 let text = std::fs::read_to_string(&path).map_err(|e| {
                     Error::Other(format!("Cannot find module '{spec}' ({e})"))
                 })?;
-                // `.js` 的 Node 口径：最近 type==module 一律 ERR_REQUIRE_ESM；
-                // 其余强制 CJS（ESM 语法在包装执行期自然报 SyntaxError）。
-                if ext == "js" && nearest_pkg_type(&path).as_deref() == Some("module") {
-                    return Err(Error::Other(format!(
-                        "require() of ES Module '{spec}' is not supported; use import instead"
-                    )));
-                }
+                // require(esm)（Node ≥22.12，26 无条件）：type==module 的 .js
+                // 或带模块语法的文件走同步求值返回 namespace；其余强制 CJS
+                // （ESM 语法在包装执行期自然报 SyntaxError）。
+                let type_module = ext == "js" && nearest_pkg_type(&path).as_deref() == Some("module");
                 let loaded = load_js(&text, url.as_str(), &path).map_err(|e| {
                     Error::Other(format!("Cannot load '{spec}' ({e})"))
                 })?;
-                let force_cjs = ext == "js";
-                if loaded.is_module && !force_cjs {
-                    return Err(Error::Other(format!(
-                        "require() of ES Module '{spec}' is not supported; use import instead"
-                    )));
+                if type_module || loaded.is_module {
+                    return crate::modules::require_esm(cx, &url);
                 }
                 require_cjs_file(cx, global, &url, &loaded.js).map_err(Error::Other)
             }
@@ -608,6 +749,33 @@ pub unsafe extern "C" fn builtin_modules_json(
 /// 再跑一次，双跑记档）。
 /// 前置：cx 在 realm 内；`url` 为 file: CJS（调用方已判 `cjs_interop`）。
 pub(crate) fn cjs_export_names(
+    cx: &mut mozjs::context::JSContext,
+    global: *mut JSObject,
+    url: &Url,
+) -> Vec<String> {
+    // 静态优先（cjs-module-lexer 口径，零求值——require(esm) 循环安全）。
+    if let Ok(path) = url.to_file_path() {
+        let mut seen = HashSet::new();
+        let names = cjs_static_names(&path, 0, &mut seen);
+        if !names.is_empty() {
+            return names;
+        }
+    }
+    // 运行时键快照回退（__exportStar 合并键等动态形；在飞护栏防 CJS↔ESM 环
+    // 递归——重入即放弃，调用方退 default-only 垫片）。
+    let reentered = NAMES_INFLIGHT
+        .with(|s| !s.borrow_mut().insert(url.as_str().to_owned()));
+    if reentered {
+        return Vec::new();
+    }
+    let out = cjs_export_names_runtime(cx, global, url);
+    NAMES_INFLIGHT.with(|s| {
+        s.borrow_mut().remove(url.as_str());
+    });
+    out
+}
+
+fn cjs_export_names_runtime(
     cx: &mut mozjs::context::JSContext,
     global: *mut JSObject,
     url: &Url,

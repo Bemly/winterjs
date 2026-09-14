@@ -14,7 +14,9 @@
 //!   CJS 包装口径与 require 全同；require 以文件自身为 base），`.js` 兜底同
 //!   vite `loaderExt` 口径。vite 配置打包链（loadConfigFromBundledFile）依赖。
 //!   全局 `require` 不消费（转译/加载走 loader）。
-//! - `Module.register()` 抛 `ERR_METHOD_NOT_IMPLEMENTED`（ESM loader 定制不支持）。
+//! - `Module.registerHooks()`（Node 22.15+ 同步 ESM 定制钩子）实做 resolve 面
+//!   （链式消费见 prelude `__wjs_module_resolve_chain`；`import.meta.resolve`
+//!   同链）；load 钩子与异步 `Module.register()` 抛 `ERR_METHOD_NOT_IMPLEMENTED`。
 //! - `stripTypeScriptTypes` 不导出（TS 由 loader 原生处理，无需剥离）。
 //! - `runMain`/`_load`/`_resolveFilename` 等下划线内部件不导出。
 //! - 错误对象沿全局 `require` 口径（消息串，无 `MODULE_NOT_FOUND` code；
@@ -140,6 +142,34 @@ export class Module {
   static register() {
     throw new ERR_METHOD_NOT_IMPLEMENTED('Module.register');
   }
+  // Node 22.15+ 的同步 ESM 定制钩子（进程内、当前线程；vite config 打包链的
+  // import.meta.resolve 走此面）。resolve 钩子链在 __wjs_module_resolve_chain
+  // 消费（后注册者先跑，next = 链上已见部分，默认底座 = 本仓解析器）。
+  // load 钩子未实现（无消费方，fail fast）；register()（异步 worker 形态）
+  // 有 registerHooks 后 vite 不再到达，保持未实现。
+  static registerHooks(specifiers) {
+    if (typeof specifiers !== 'object' || specifiers === null) {
+      throw new ERR_INVALID_ARG_TYPE('specifiers', ['object'], specifiers);
+    }
+    for (const key of ['resolve', 'load']) {
+      const hook = specifiers[key];
+      if (hook !== undefined && typeof hook !== 'function') {
+        throw new ERR_INVALID_ARG_TYPE(`specifiers.${key}`, ['function', 'undefined'], hook);
+      }
+    }
+    if (specifiers.load !== undefined) {
+      throw new ERR_METHOD_NOT_IMPLEMENTED('Module.registerHooks: load hook');
+    }
+    const entry = { resolve: specifiers.resolve };
+    globalThis.__wjs_module_hooks.push(entry);
+    return [
+      function deregister() {
+        const hooks = globalThis.__wjs_module_hooks;
+        const i = hooks.indexOf(entry);
+        if (i !== -1) hooks.splice(i, 1);
+      },
+    ];
+  }
 }
 
 export default {
@@ -148,6 +178,7 @@ export default {
   builtinModules,
   isBuiltin,
   Module,
+  registerHooks: Module.registerHooks,
   syncBuiltinESMExports: Module.syncBuiltinESMExports,
 };
 "#;

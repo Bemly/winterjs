@@ -71,6 +71,31 @@ globalThis.clearInterval = function (id) { __wjs_clearTimeout(__wjs_timer_id(id)
 globalThis.__wjs_call = (cb, args) => cb(...args);
 // napi_call_function：recv 语义的参数展开（Function.prototype.apply）
 globalThis.__wjs_napi_call = (recv, fn, args) => fn.apply(recv, args);
+// ESM 定制钩子注册表（module.registerHooks 写、import.meta.resolve 消费）。
+// Node 口径：后注册者先跑（每个新钩子包住既有链，next = 链上已见部分）；
+// 默认底座 = 本仓解析器（parentURL 显式 base 的 __wjs_require_resolve_from）。
+globalThis.__wjs_module_hooks = [];
+globalThis.__wjs_module_resolve_chain = function (specifier, parentURL) {
+  let chain = (spec, ctx) => ({ url: __wjs_require_resolve_from(ctx.parentURL, spec) });
+  for (const h of globalThis.__wjs_module_hooks) {
+    if (h && typeof h.resolve === "function") {
+      const next = chain;
+      const hook = h.resolve;
+      chain = (spec2, ctx2) => hook(spec2, ctx2, next);
+    }
+  }
+  const out = chain(String(specifier), { parentURL });
+  if (!out || typeof out.url !== "string") {
+    throw new Error("module customization resolve hook must return { url: <string> }");
+  }
+  return out.url;
+};
+// import.meta.resolve 的每模块闭包（modules.rs metadata_hook 以模块 URL 调用）
+globalThis.__wjs_make_meta_resolve = function (url) {
+  return function resolve(specifier) {
+    return __wjs_module_resolve_chain(specifier, url);
+  };
+};
 // napi_new_instance：`new ctor(...args)` 全语义（new.target/prototype/异常传播）
 globalThis.__wjs_napi_new = (ctor, args) => new ctor(...args);
 // napi_set_* 的非严格赋值面：JSAPI JS_SetProperty 是 strict 语义（对只读/

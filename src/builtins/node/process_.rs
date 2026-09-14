@@ -431,13 +431,11 @@ globalThis.process = {
   ),
   memoryUsage() { return JSON.parse(__wjs_memory_usage()); },
   // Node 22.3+（vite 用 getBuiltinModule('node:module').Module 做互操作）；
-  // require 的 ESM-default 口径（node:module default 导出带 Module 类）。
+  // 裸名（'module'）与 'node:module' 双形均收（Node 口径），非内置走 require
+  // 的可读报错；require 的 ESM-default 口径（node:module default 导出带 Module 类）。
   getBuiltinModule(id) {
     const spec = String(id);
-    if (!spec.startsWith("node:")) {
-      throw new TypeError("getBuiltinModule: only 'node:' builtins are supported");
-    }
-    return globalThis.require(spec);
+    return globalThis.require(spec.startsWith("node:") ? spec : `node:${spec}`);
   },
   // stdout/stderr 富流（vite dev：clearLine/cursorTo/getColorDepth——非 TTY
   // no-op，TTY 下走 ANSI 转义的调用方（node:readline）自己写；rows/columns

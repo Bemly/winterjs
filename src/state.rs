@@ -39,6 +39,9 @@ unsafe impl Traceable for TimerEntry {
 pub struct ModuleEntry {
     pub url: String,
     pub record: Box<Heap<*mut JSObject>>,
+    /// `ModuleEvaluate` 已跑（require(esm) 幂等门；动态 import 由引擎级联求值，
+    /// 也置位防二次 evaluate）。
+    pub evaluated: bool,
 }
 
 // SAFETY: 只追踪 record（URL 无 GC 指针）。

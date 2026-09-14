@@ -15,6 +15,7 @@ use mozjs::jsapi::{
     IsPromiseObject, JS_DefineProperty, JSObject, JSPROP_ENUMERATE, SetModuleLoadHook,
     SetModuleMetadataHook,
 };
+use crate::jsapi_glue::{call_one, get_prop_value};
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::transform_str_to_source_text;
@@ -40,7 +41,7 @@ fn find_module(url: &str) -> Option<*mut JSObject> {
 fn register_module(url: String, record: *mut JSObject) {
     state::with_rooted(|s| {
         if !s.modules.iter().any(|m| m.url == url) {
-            s.modules.push(state::ModuleEntry { url, record: mozjs::jsapi::Heap::boxed(record) });
+            s.modules.push(state::ModuleEntry { url, record: mozjs::jsapi::Heap::boxed(record), evaluated: false });
         }
     });
 }
@@ -364,6 +365,117 @@ pub(crate) fn ensure_subgraph(cx: &mut JSContext, root: &Url) -> Result<*mut JSO
     Ok(root_record)
 }
 
+
+/// require(esm)（Node ≥22.12，26 无条件）：同步求值整图返回 namespace 对象。
+/// 幂等：注册表 evaluated 位已置即直取 namespace。TLA 模块（求值 promise
+/// 经 RunJobs 后仍 pending）报 ERR_REQUIRE_ASYNC_MODULE（Node 同文案）。
+pub(crate) fn require_esm(cx: &mut JSContext, url: &Url) -> Result<JSVal, Error> {
+    use mozjs::rust::wrappers2::ModuleEvaluate;
+    if let Some(rec) = state::with_rooted(|s| {
+        s.modules
+            .iter()
+            .find(|m| m.url == url.as_str() && m.evaluated)
+            .map(|m| m.record.get())
+    }) {
+        return get_namespace(cx, rec);
+    }
+    // 环上重入（本模块正被外层 require(esm) 求值、求值体内又 require 回它）：
+    // Node 口径返回部分初始化的 namespace（CJS 环同款半成品语义）；二次
+    // ModuleEvaluate 会撞引擎 "unexpected status: Evaluating"。
+    {
+        let in_flight = ESMS_EVALUATING.with(|s| s.borrow().contains(url.as_str()));
+        if in_flight {
+            if let Some(rec) = state::with_rooted(|s| {
+                s.modules
+                    .iter()
+                    .find(|m| m.url == url.as_str())
+                    .map(|m| m.record.get())
+            }) {
+                return get_namespace(cx, rec);
+            }
+        }
+    }
+    let record = ensure_subgraph(cx, url)?;
+    rooted!(&in(cx) let record_root: *mut JSObject = record);
+    let global = state::global();
+    rooted!(&in(cx) let global_root: *mut JSObject = global);
+    rooted!(&in(cx) let mut rval = UndefinedValue());
+    ESMS_EVALUATING.with(|s| s.borrow_mut().insert(url.as_str().to_owned()));
+    let eval_out: Result<(), Error> = {
+        // SAFETY: global_root 保活 global；求值须在 realm 内（§4.1）
+        let mut realm = mozjs::realm::AutoRealm::new_from_handle(cx, global_root.handle());
+        // SAFETY: record 为 rooted 有效模块记录；realm 内求值
+        if !unsafe { ModuleEvaluate(&mut realm, record_root.handle(), rval.handle_mut()) } {
+            rooted!(&in(&mut realm) let mut exc = UndefinedValue());
+            match mozjs::rust::error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
+                Some(info) => Err(Error::script(
+                    url.as_str(),
+                    "",
+                    info.line.max(1),
+                    info.col,
+                    info.message,
+                )),
+                None => Err(Error::Other(format!("failed to evaluate {}", url.as_str()))),
+            }
+        } else {
+            // §4.18：结算点后必须 RunJobs（同步模块体 + 微任务全在此轮排空）；
+            // RunJobs 驱动已装配的内部 job queue（§4.7 glue）。
+            unsafe { mozjs::jsapi::RunJobs((&mut realm).raw_cx()) };
+            // TLA 检查：求值 promise 仍 pending = 模块带顶层 await（require 恒同步）。
+            if rval.get().is_object() {
+                rooted!(&in(&mut realm) let p_root: *mut JSObject = rval.get().to_object());
+                // SAFETY: promise 谓词/状态读取无 GC 点
+                let is_promise = unsafe { IsPromiseObject(raw_handle(&p_root.get())) };
+                if is_promise {
+                    match unsafe { mozjs::jsapi::JS::GetPromiseState(raw_handle(&p_root.get())) } {
+                        mozjs::jsapi::JS::PromiseState::Rejected => Err(Error::Other(format!(
+                            "require() of ES module {} rejected during evaluation",
+                            url.as_str()
+                        ))),
+                        mozjs::jsapi::JS::PromiseState::Pending => Err(Error::Other(format!(
+                            "require() of ES module {} with top-level await is not supported; use dynamic import instead",
+                            url.as_str()
+                        ))),
+                        mozjs::jsapi::JS::PromiseState::Fulfilled => Ok(()),
+                    }
+                } else {
+                    Ok(())
+                }
+            } else {
+                Ok(())
+            }
+        }
+    };
+    ESMS_EVALUATING.with(|s| {
+        s.borrow_mut().remove(url.as_str());
+    });
+    eval_out?;
+    state::with_rooted(|s| {
+        if let Some(m) = s.modules.iter_mut().find(|m| m.url == url.as_str()) {
+            m.evaluated = true;
+        }
+    });
+    get_namespace(cx, record)
+}
+
+thread_local! {
+    static ESMS_EVALUATING: std::cell::RefCell<HashSet<String>> =
+        std::cell::RefCell::new(HashSet::new());
+}
+
+/// 模块 namespace（`GetModuleNamespace` 以 CCW 出跨域无虞；本调用同域）。
+fn get_namespace(cx: &mut JSContext, record: *mut JSObject) -> Result<JSVal, Error> {
+    use mozjs::rust::wrappers2::GetModuleNamespace;
+    rooted!(&in(cx) let record_root: *mut JSObject = record);
+    // SAFETY: record 为 rooted 有效模块记录
+    let ns = unsafe { GetModuleNamespace(cx, record_root.handle()) };
+    if ns.is_null() {
+        return Err(Error::Other("failed to get module namespace".into()));
+    }
+    rooted!(&in(cx) let ns_root: *mut JSObject = ns);
+    Ok(mozjs::jsval::ObjectValue(ns_root.get()))
+}
+
 /// SAFETY: 由引擎以有效参数回调（HostLoadImportedModule 约定）。
 unsafe extern "C" fn load_hook(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -442,7 +554,7 @@ unsafe extern "C" fn metadata_hook(
     rooted!(&in(cx) let mut v = UndefinedValue());
     url.to_jsval(cx, v.handle_mut());
     // SAFETY: cx/meta/v 均有效；c"url" 无 NUL
-    unsafe {
+    let url_ok = unsafe {
         JS_DefineProperty(
             cx.raw_cx(),
             raw_handle(&meta),
@@ -450,7 +562,36 @@ unsafe extern "C" fn metadata_hook(
             raw_handle(v.as_ptr()),
             JSPROP_ENUMERATE as u32,
         )
-    }
+    };
+    // import.meta.resolve（Module.registerHooks 钩子链 + 默认解析底座；
+    // vite config 打包链的 inject-file-scope-variables 面依赖）。
+    // 助手缺席/构建失败不致命：import.meta 保持 url-only。
+    let resolve_ok = (|| {
+        let Some(helper) = get_prop_value(cx, global, c"__wjs_make_meta_resolve") else {
+            return true;
+        };
+        rooted!(&in(cx) let helper_root = helper);
+        rooted!(&in(cx) let mut arg = UndefinedValue());
+        url.to_jsval(cx, arg.handle_mut());
+        let Some(f) = call_one(cx, global, helper_root.get(), arg.get()) else {
+            return true;
+        };
+        if !f.is_object() {
+            return true;
+        }
+        rooted!(&in(cx) let f_root = f);
+        // SAFETY: cx/meta/f 均有效；c"resolve" 无 NUL
+        unsafe {
+            JS_DefineProperty(
+                cx.raw_cx(),
+                raw_handle(&meta),
+                c"resolve".as_ptr(),
+                raw_handle(f_root.as_ptr()),
+                JSPROP_ENUMERATE as u32,
+            )
+        }
+    })();
+    url_ok && resolve_ok
 }
 
 /// 安装模块 hooks（`install` 同款进程级一次性语义；操作对象是 rt，realm 内外皆可）。

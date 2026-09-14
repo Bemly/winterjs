@@ -1814,6 +1814,9 @@ export function realpathSync(p) {
   p = __fsPath(p, "realpath");
   return __fsCall("lstat", p, () => __wjs_fs_realpath(p));
 }
+// Node 口径：.native = binding 级 realpath（无 JS 层缓存/规范化）。本仓两者
+// 同底座（std canonicalize），直接自引用（vite 8 的 safeRealpathSync 取此面）。
+realpathSync.native = realpathSync;
 export function mkdtempSync(prefix) {
   return __fsCall("mkdir", String(prefix), () => __wjs_fs_mkdtemp(String(prefix)));
 }

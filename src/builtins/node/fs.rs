@@ -1615,7 +1615,12 @@ function __fsMode(opts) {
   return 0;
 }
 function __fsDecode(bytes, encoding, what) {
-  if (encoding === null) return bytes;
+  if (encoding === null) {
+    // Node 语义：无编码读返回 Buffer（非裸 Uint8Array）——String(buf)/
+    // toString() = utf8 内容、isBuffer = true。裸 Uint8Array 会 join 成
+    // "byte,byte,…"（vite PostCSS 配置加载 JSON.parse(buf) 实测误判）。
+    return Buffer.from(bytes);
+  }
   return new TextDecoder(String(encoding)).decode(bytes);
 }
 class __Stats {

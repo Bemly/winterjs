@@ -477,3 +477,28 @@ catch (e) { console.log("err", e.code); }
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase9m_read_file_no_encoding_returns_buffer() {
+    // 无编码读返回 Buffer（Node 语义；真机口径）：isBuffer/String(buf)/
+    // toString() = utf8 内容、JSON.parse(buf) 隐式转换取内容——裸 Uint8Array
+    // 会 join 成 "byte,byte,…"（vite PostCSS 配置加载实测误判）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("f.txt").write_str("{\"k\":\"v\"}").unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import fs from "node:fs";
+const b = fs.readFileSync("f.txt");
+console.log("buf", Buffer.isBuffer(b), b instanceof Uint8Array, b.constructor.name);
+console.log("str", String(b), b.toString());
+console.log("json", JSON.parse(b).k);
+console.log("enc", typeof fs.readFileSync("f.txt", "utf8"));
+"#,
+    );
+    for line in ["buf true true Buffer", "str {\"k\":\"v\"} {\"k\":\"v\"}", "json v", "enc string"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

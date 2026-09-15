@@ -11,6 +11,7 @@ pub mod assert_strict;
 pub mod async_hooks;
 pub mod buffer;
 pub mod child;
+pub mod cluster;
 pub mod console;
 pub mod crypto;
 pub mod diagnostics_channel;
@@ -78,6 +79,8 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:fs", fs::SOURCE),
     ("node:fs/promises", fs::PROMISES_SOURCE),
     ("node:child_process", child::SOURCE),
+    // 10e：node:cluster（worker 线程底座；fork/message/exit 对等面）
+    ("node:cluster", cluster::SOURCE),
     // M5 vitest 牵引：node:console 模块面（纯 JS，全局 console + Console 类）
     ("node:console", console::SOURCE),
     ("node:net", net::SOURCE),
@@ -155,6 +158,8 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "fs" => Some("node:fs"),
         "fs/promises" => Some("node:fs/promises"),
         "child_process" => Some("node:child_process"),
+        // 10e
+        "cluster" => Some("node:cluster"),
         // M5 vitest 牵引
         "console" => Some("node:console"),
         "net" => Some("node:net"),
@@ -249,6 +254,10 @@ mod tests {
         assert_eq!(normalize_spec("node:fs/promises"), Some("node:fs/promises"));
         assert_eq!(normalize_spec("fs/promises"), Some("node:fs/promises"));
         assert_eq!(normalize_spec("node:child_process"), Some("node:child_process"));
+        // 10e：node:cluster
+        assert_eq!(normalize_spec("cluster"), Some("node:cluster"));
+        assert_eq!(normalize_spec("node:cluster"), Some("node:cluster"));
+        assert!(source("node:cluster").is_some());
         assert_eq!(normalize_spec("child_process"), Some("node:child_process"));
         assert_eq!(normalize_spec("node:assert"), Some("node:assert"));
         assert_eq!(normalize_spec("node:test"), Some("node:test"));

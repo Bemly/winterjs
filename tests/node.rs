@@ -11,6 +11,8 @@ mod async_hooks;
 mod buffer;
 #[path = "node/child.rs"]
 mod child;
+#[path = "node/cluster.rs"]
+mod cluster;
 #[path = "node/console.rs"]
 mod console;
 #[path = "node/crypto.rs"]

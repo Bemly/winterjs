@@ -196,8 +196,8 @@
   （NAPI_RS_WASI_FLAVOR 查询），权限门控行为符合预期。
   调试纪律：临时 eprintln 探针（`[wdbg]` 前缀，对照 §4.57 vm_dbg 惯例）用完
   即删，`grep -rn wdbg src/` 为空后提交。
-- [ ] **M5 vite 全链**：dev server（HMR ws 服务端面）+ vite build + vitest
-  （tinypool/worker_threads 9f 底座）。验收：vue-project 三命令全绿（终线）。
+- [x] **M5 vite 全链**（2026-09-15 完工，终线三命令全绿）：dev server（HMR ws
+  服务端面）+ vite build + vitest（tinypool/worker_threads 9f 底座）。
   - 进展（2026-09-14）：build 黑盒已落（HEAD）；dev 前置缺口收敛中——upgrade
     派发 + Socket 流桩 + `fs.watchFile` 纯 JS 轮询 + TSFN pending 守卫 +
     Buffer 整数读写系（HMR error 推送根因）；
@@ -233,23 +233,45 @@
       载荷生命周期审计（`data` 指针谁释放、跨线程时序）+ lldb watchpoint
       抓覆写者；探针资产：`/Volumes//Projects/vue-project/bisect*.mjs`
       （E=过/F2=崩/H=过/C=崩）、`/tmp/wjs-vite-probe` 旧探针（已清）。
-  - 进展（2026-09-15 续，判别实验两轮收窄）：
-    - **排除 JIT**：关 JIT（BASELINE/ION 全关）照崩 8/8——解释器路径同样崩
-      （lldb 现场即 `js::Interpret`/`GetProperty`），非 JIT 交互问题。
-    - **排除 nursery 家族**：`JSGC_MAX_NURSERY_BYTES=0`（全分配直进 tenured）
-      照崩（F2 6/6 + C 3/3）——全零 cell 非 nursery 疏散残留，腐坏源在
-      tenured 堆或 Rust 侧。
-    - **当前最优理论（待下毒实验实锤）**：悬垂槽位读——arena 截断释放
-      `Box<Heap>` 后，跨窗被持的旧 napi_value 读出「看似有效的旧指针」
-      （槽位内存被分配器复用前仍留旧 Value 位型）指向已 GC 死对象；怪
-      double 位型（0x5800/0xd800 高位）= Rust 分配器元数据。§4.76 wrap-ref
-      只堵了 wrap 一口，napi-rs 从 PromiseRaw.then/catch 产物、hook 返回值
-      等多路拿裸 napi_value 跨窗。
-    - **下一实验**：截断前对将释放槽位写 0xdead 指纹（mem::forget 泄漏换
-      可观测），悬垂读必现指纹位型/BAD-FUNC；命中后按调用点回溯持值方。
-- [ ] **M6 收尾合流**：Node 官方 napi 套件选点回归 + AGENTS §6 审计口径补「napi 面」
-  （~133 `unsafe extern "C"` 结构性新增，不逐个计数）+ 黑盒清单按 src 对齐
-  （tests/napi.rs）→ 长分支一次性合 master。
+  - 进展（2026-09-15 终，终线②收官）：
+    - **深水 138/139 根治（两连根因）**：① TSFN drain 循环跨 GC 持 js_cb
+      栈位拷贝（05fcd6d，修后 F2 30/30）；② `require_cjs_file` 五连柯里化
+      链裸 JSVal 栈拷贝跨 call_one（c2470fe，§4.80；lldb 实锤 worker 线程
+      加载 css-tree 深图时 cur/arg 位型 0xFFF8/0x5800 垃圾写穿）——
+      require 条件族让 CJS 图暴增才把该潜在 UB 养出。修后 vitest 全链通。
+    - **require 条件族**（c2470fe）：resolver 按 import/require 分流双单例；
+      真机对拍 imports-only 包 require 报错（§4.81）；magic-string 双条件包
+      命中 CJS 入口。附带 require(esm)+detect-module 语义升级的旧断言翻转
+      （§4.82）+ `require.resolve` 直挂原生（scripted caller 帧修正）。
+    - **生态全局面**（055dd1b）：DOMException（legacy code getter）/
+      File/MessageChannel·MessagePort 全局 + MessagePort.onmessage（赋值即
+      开闸）/SAB+Atomics（主域+vm context）/vm DONT_CONTEXTIFY（真机 24+
+      口径，新 native `__wjs_vm_global`）/path.toNamespacedPath/buffer
+      isAscii·isUtf8（真机全集就两个，超集已删）。
+    - **fs 无编码读返回 Buffer**（7657d65，§4.83）：裸 Uint8Array 的
+      String() join 位型把 vite PostCSS 配置加载（JSON.parse(buf)）炸出
+      column 4 假错——Node 语义收口 `Buffer.from`。
+    - **终线②验证**（对等口径）：`-r build` exit 0（44 模块，产物 99.58 kB
+      gzip 38.51）；`-r dev` exit 0（VITE ready/HTTP 200/TS transform/HMR
+      full-reload）；`-r test:unit`——HelloWorld.spec.ts（jsdom 环境）过；
+      hello.test.js（init 模板的 node:test）真机 node 26.8.2 同败
+      （"No test suite found" exit 1）→ 汇总两侧逐行同（1 failed | 1 passed），
+      挪开该 fixture 本仓 vitest **exit 0 全绿**。唯一残留差异：本仓多
+      "close timed out" 妆饰警告（§4.67 记档，无碍）。
+- [x] **M6 收尾合流**（2026-09-15 完工）：
+  - Node 官方套件选点回归：`test/js-native-api` 的 2_function_arguments +
+    3_callbacks **原文 verbatim** 入库（official/ 布局镜像，common.h/
+    common-inl.h/entry_point.h 同源 vendored，MIT 头原样）——编译即验
+    vendored 头忠实度；断言取官方 test.js 子集（strict 驱动 + node:assert；
+    recv 原始值经 strict 函数直通，真机对拍）。揪出并修掉
+    `napi_get_cb_info` 余槽填 undefined 硬契约（§4.84，node `Args()` 原文
+    实锤）。
+  - AGENTS §6 审计口径补 napi 面（~133 `unsafe extern "C"` 结构性新增，
+    不逐个计数）。
+  - 黑盒清单：`tests/napi.rs`（15 例：M0–M3 fixture 矩阵 + M4 rolldown
+    真网络 + M5 build/dev polling 真网络 + M6 官方选点）。
+  - 收官计数（2026-09-15）：`cargo test` 466 全绿 0 失败，build 0 警告，
+    冒烟 5/5；vue-project 三命令对等全绿 → 长分支一次性合 master。
 
 ## 4. 风险与纪律
 

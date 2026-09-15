@@ -1115,6 +1115,10 @@ cargo build
   没有更上层的 safe 运行时可选。
   审计口径：禁业务层 `unsafe`、禁裸指针新用法（状态一律走保留槽/JSON 桥/TypedArray
   safe 读）；边界入口块如实计数，不算违规。
+  napi 面追补（2026-09-15，M6 合流）：`src/napi/` 全部 `#[no_mangle] pub unsafe
+  extern "C" fn` 为 N-API C ABI 面（~133 符号，rolldown 名单 §6 对齐）——结构性
+  新增，不逐个计数；其业务体（Rust 侧）仍守"禁业务层 unsafe"口径，JSAPI 调用
+  经 NapiEnv/Heap 槽位 arena（§4.40 `Box<Heap>` 定址 + trace 补根双铁律）。
 - 可观测性（2026-09-10）：所有功能模块必须带分级 `tracing` 埋点（Phase 0 已接线），
   分级：INFO=阶段里程碑（run/eval 起止、事件循环退出）；DEBUG=状态变迁
   （timer 注册/触发/取消、fallback 路径选择、rejection 捕获）；TRACE=热路径逐条
@@ -1216,3 +1220,79 @@ cargo build
 - 推广为铁律：§4.31 教训的 napi 版——跨 JS/Rust 边界的句柄生命周期，契约
   （scope 存活期/ref）违者宿主要能"可读地死"而非 UB；新增宿主入口先想
   "输入是垃圾时怎么死"。
+
+### 4.80 CJS 包装五连链的裸 JSVal 栈拷贝：GC 搬移即悬垂（2026-09-15，M5 终线②）
+
+- 症状：vitest worker 线程（fork 底座）加载 css-tree 深图必现 138/139，
+  exit 1 静默（scripts 父进程把信号死亡映射成 1，`echo $?` 全程骗人）。
+  lldb 实锤：`require_cjs_file` 闭包 → `call_one(cur, arg)`，cur/arg 位型
+  0xFFF8/0x5800 垃圾，`js::Interpret` 写穿 KERN_PROTECTION_FAILURE。
+- 根因：五连柯里化调用链里 `cur`（wrapper 函数）与 exports/require/module/
+  filename/dirname 实参全是裸 JSVal 栈拷贝——`call_one` 入口 rooting 只保
+  **调用中**，不保**调用间**；链内每次 call_one 都分配 curried 闭包可触发
+  GC，nursery 搬移后栈拷贝即悬垂。§4.40/§4.68 完整形态第 N 例。
+- 修法：cur 与各实参全程 `rooted!` 槽位、调用点现读现传（`.get()` 后无
+  JSAPI 直入 call_one 入口 rooting，窗口为零）。
+- 复现：修前 `--run node_modules/.bin/vitest` 必 138；修后全链通。
+- 推广为铁律：凡"多次 JS 调用组成的链"（CJS 包装/遍历/reduce 式），链上
+  中间值一律 rooted——call_one/call_two 的入口 rooting 不是链的保活凭证。
+  另：父进程把子进程信号死亡映射 exit 1 会吞掉整个崩溃类，结论打架先看
+  真实退出码（`--run bin` 直跑拿原始 rc）。
+
+### 4.81 require 条件族：resolver 必须按调用方分流（2026-09-15，M5 终线②）
+
+- 症状：`require('magic-string')` 拿到 ESM namespace，`new MagicString()`
+  报 is not a constructor（真 node 正常）。
+- 根因：resolver 单例写死 `["node","import"]` 条件——require 走 import 条件
+  挑了 ESM 入口。真机口径（26.8.2 对拍）：require 严格走 `["node","require"]`，
+  imports-only 包直接 `ERR_PACKAGE_PATH_NOT_EXPORTED`（无 import 回落）；
+  require(esm) 只作用于"已解析文件是 ESM"的情形。
+- 修法：`resolve.rs` 条件族双单例（`Cond::Import/Require`）+ `resolve_require`
+  入口，require.rs 四调用点（require_value/resolve/resolve_from/静态名跟随）
+  全切。
+- 推广为铁律：module resolution 的条件族是调用方属性（import vs require），
+  共享 resolver 必须参数化；"require 拿到 ESM 就垫 default"类的互操作补丁
+  在双条件包面前全是错药。
+
+### 4.82 语义升级（require(esm)+detect-module）后旧边界断言全翻转（2026-09-15，M5 终线②）
+
+- 症状：require(esm) 上线后 `phase4_require_errors`/`phase9k` 静默挂
+  （"ESM 拒绝"断言反绿为红）；`phase9j` 具名发现 fixture（自定义 `__es(...)`
+  转出）link 期报缺导出。
+- 根因：① 4dbb202 上线 require(esm)/detect-module 时未 grep 旧"必须抛"
+  断言（§4.72 二进宫）；② 自定义转出包装真机 cjs-module-lexer 同样不识别
+  （实测：静态 import `__es` 形 link 期同败），我们的静态 lexer 行为已对等。
+- 修法：断言翻转对真机逐项实测（typeless ESM .js require 成功、__exportStar
+  形真机识别——fixture 改该形 + 本地补 helper 定义）。
+- 推广为铁律：语义升级的收尾动作 = grep 全部旧断言逐个对真机；fixture 的
+  "聪明写法"若真机不认，宁可改 fixture 也不给宿主加超集。
+  附：`-r test:unit` 里 hello.test.js（node:test）在 vitest 4 下真机同败
+  （"No test suite found"，exit 1）——真机对等即验收，别替 fixture 修世界。
+
+### 4.83 无编码 fs 读必须返回 Buffer：String(buf) = utf8 内容（2026-09-15，M5 终线②）
+
+- 症状：vite PostCSS 配置加载报 `JSON.parse ... column 4` 假错。
+- 根因：`readFileSync`（无编码）返回裸 Uint8Array——`String(buf)` 走
+  TypedArray join 成 "byte,byte,…"，JSON.parse 隐式 ToString 后把字节列表
+  当 JSON（`{` 的字节 123 → 解析出 "123" 后 column 4 报错）。
+- 修法：`__fsDecode(encoding=null)` 统一 `Buffer.from(bytes)`（Node 语义：
+  isBuffer/toString()/String(buf) 全 utf8 口径）；两调用点（sync + fh 读）
+  一处收口。
+- 推广为铁律：Node API 返回"Buffer 的地方"必须是真 Buffer（Uint8Array 子类
+  不够——toString/String/isBuffer 三面都要对）；裸 TypedArray 与 Buffer 的
+  差异隐在隐式转换里，JSON.parse(buf) 是现成探针。
+
+### 4.84 napi_get_cb_info 余槽必须填 undefined（node Args() 契约）（2026-09-15，M6）
+
+- 症状：官方 js-native-api 3_callbacks 在本仓 139——addon 在 `argc==1` 断言
+  后照读 `args[1]`（请求 2 槽、实际 1 参）。
+- 根因：node 的 `FunctionCallbackWrapper::Args()`（js_native_api_v8.cc）
+  把请求槽位余下部分**全填同一 undefined**——这是书面契约外的硬契约，
+  官方套件直接依赖；我们的实现只填实际个数，余槽留 addon 栈垃圾 = UB 读。
+- 修法：照抄 node——`put(UndefinedValue())` 单槽共享填满请求槽位，`*argc`
+  回写实际个数。
+- 复现：`tests/napi.rs::phase_napi_m6_official_js_native_api_spot_check`
+  （官方 2_function_arguments + 3_callbacks 原文 verbatim，vendored 头编译）。
+- 推广为铁律：宿主实现 napi 面时，"官方套件怎么写"本身就是契约的一部分——
+  选点回归（M6）不是仪式，是抓这类暗契约的唯一网；遇 addon 读"没给出的
+  参数"先查宿主填充语义再骂 addon。

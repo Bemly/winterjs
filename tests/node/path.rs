@@ -103,3 +103,53 @@ console.log(JSON.stringify(out));
     );
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_path_posix_port() {
+    // posix 直译真值表（真机 26.8.2 逐字节对码；resolve-cwd 走动态比对）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import path from "node:path";
+const p = path.posix;
+const out = [
+  p.join("./"), p.join(".", "./"), p.join("", "."), p.join("", "foo"),
+  p.join("a", "b", "..", "c"), p.join("/a", "/b"),
+  p.normalize("a//b/./c/"), p.normalize("./"), p.normalize(""),
+  p.normalize("a/../../b"), p.normalize("/a/../../b"),
+  p.resolve("/a", "b"), p.resolve("/a", "/b"),
+  p.resolve("") === process.cwd(), p.relative("/a/b/c", "/a/d"),
+  p.relative("/", "/foo"), p.relative("/a", "/a"),
+  JSON.stringify(p.parse("/home/user/dir/file.txt")),
+  JSON.stringify(p.parse("file")), JSON.stringify(p.parse("..")),
+  p.format({ name: "x", ext: "png" }), p.format({ dir: "some/dir" }),
+];
+console.log(JSON.stringify(out));
+for (const v of [null, undefined, 1, true, false, "str"]) {
+  try { p.format(v); console.log("NO-THROW"); }
+  catch (e) { console.log("THROW", e.name, e.code, JSON.stringify(e.message)); }
+}
+try { p.parse(null); console.log("NO-THROW parse"); }
+catch (e) { console.log("THROW", e.name, e.code); }
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "[\"./\",\"./\",\".\",\"foo\",\"a/c\",\"/a/b\",\"a/b/c/\",\"./\",\".\",\"../b\",\"/b\",\"/a/b\",\"/b\",true,\"../../d\",\"foo\",\"\",\"{\\\"root\\\":\\\"/\\\",\\\"dir\\\":\\\"/home/user/dir\\\",\\\"base\\\":\\\"file.txt\\\",\\\"ext\\\":\\\".txt\\\",\\\"name\\\":\\\"file\\\"}\",\"{\\\"root\\\":\\\"\\\",\\\"dir\\\":\\\"\\\",\\\"base\\\":\\\"file\\\",\\\"ext\\\":\\\"\\\",\\\"name\\\":\\\"file\\\"}\",\"{\\\"root\\\":\\\"\\\",\\\"dir\\\":\\\"\\\",\\\"base\\\":\\\"..\\\",\\\"ext\\\":\\\"\\\",\\\"name\\\":\\\"..\\\"}\",\"x.png\",\"some/dir/\"]\n".to_string()
+            + "THROW TypeError ERR_INVALID_ARG_TYPE \"The \\\"pathObject\\\" argument must be of type object. Received null\"\n"
+            + "THROW TypeError ERR_INVALID_ARG_TYPE \"The \\\"pathObject\\\" argument must be of type object. Received undefined\"\n"
+            + "THROW TypeError ERR_INVALID_ARG_TYPE \"The \\\"pathObject\\\" argument must be of type object. Received type number (1)\"\n"
+            + "THROW TypeError ERR_INVALID_ARG_TYPE \"The \\\"pathObject\\\" argument must be of type object. Received type boolean (true)\"\n"
+            + "THROW TypeError ERR_INVALID_ARG_TYPE \"The \\\"pathObject\\\" argument must be of type object. Received type boolean (false)\"\n"
+            + "THROW TypeError ERR_INVALID_ARG_TYPE \"The \\\"pathObject\\\" argument must be of type object. Received type string ('str')\"\n"
+            + "THROW TypeError ERR_INVALID_ARG_TYPE\n",
+    );
+    dir.close().unwrap();
+}

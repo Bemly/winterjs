@@ -507,7 +507,20 @@ async fn run_inner(
     }
 
     // 用户脚本求值（`.cjs` 经 require 主模块起，不打印 exports；见 node/require.rs）。
-    if mode == Mode::Script && std::path::Path::new(filename).extension().is_some_and(|e| e == "cjs" || e == "cts") {
+    // 10f：typeless `.js`/`.jsx` 同理（9j `cjs_interop` 口径复用——入口经典求值
+    // 无 file base，相对 require/`__filename` 全挂，套件点名；TLA/ESM 已在
+    // sniff 分流，此处 `is_module=false` 只收纯经典脚本）。
+    let is_cjs_entry = mode == Mode::Script && {
+        let p = std::path::Path::new(filename);
+        if p.extension().is_some_and(|e| e == "cjs" || e == "cts") {
+            true
+        } else {
+            crate::loader::resolve::entry_url(p)
+                .ok()
+                .is_some_and(|u| crate::modules::cjs_interop(&u, false, source))
+        }
+    };
+    if is_cjs_entry {
         let url = crate::loader::resolve::entry_url(std::path::Path::new(filename));
         match url {
             Ok(url) => {

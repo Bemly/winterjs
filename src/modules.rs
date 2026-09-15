@@ -134,7 +134,8 @@ fn compile_source(cx: &mut JSContext, filename: &str, js: &str) -> Result<*mut J
 /// 且能按经典脚本解析（TLA 专属文件经典解析失败，走 ESM，保 §4.17 入口重试
 /// 与 TLA 导入不退化）时 CJS；其余（mjs/mts/ts/非 file）走原 ESM 路。
 /// 入口经典路径（`sniff_module`）不动。
-fn cjs_interop(url: &Url, is_module: bool, text: &str) -> bool {
+/// 10f：入口 `.js` CJS 化复用本判定（`pub(crate)`，见 runtime 入口分支）。
+pub(crate) fn cjs_interop(url: &Url, is_module: bool, text: &str) -> bool {
     if url.scheme() != "file" {
         return false;
     }

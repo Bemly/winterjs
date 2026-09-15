@@ -106,3 +106,7 @@
 `wasi`、`v8` 口径、`sea`、napi、quic（轮子已定：`quinn` 必选；
 引入与接线顺延到 9f，v1 不验收）。
 `cluster`/`domain`/`repl` 口径补齐顺延到 v1 之后（deno 侧 ❌ 的三项不列入验收）。
+
+> 反转注记（2026-09-13/15）：napi（M0–M6 全收官，见 `docs/plan-napi.md`）、
+> quic（9g 接线，`src/builtins/node/quic.rs` + `tests/quic.rs`）均已落地，
+> 本节"不做"仅保留为 v1 切片时的历史口径，不再是现状。

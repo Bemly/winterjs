@@ -275,13 +275,13 @@ OHOS 因 `target_os="linux"` 命中同一分支；`simd-json` 加速门控只看
 | 正则 | `regex` | 1.13.1 | 2014-12-13 | 2026-07-15 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 内存查找 | `memchr` | 2.8.3 | 2015-06-11 | 2026-07-08 | ✅（SIMD） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-备注：`ruzstd` 经 GitHub README 核实是**完整** zstd 实现（decode 全量＋encode 五档：
+备注：`ruzstd` README 自称**完整** zstd 实现（decode 全量＋encode 名义五档：
 `Fastest`≈level1、`Default`≈3、`Better`≈7、`Best`≈11，另有 checksum；字典暂不开）。
 **勘误（2026-09-12 实测，Phase 9d-5）**：`encoding/mod.rs` 的 `Default`/`Better`/
 `Best` 标 `UNIMPLEMENTED`，实测仅 `Fastest` 可用——`node:zstd` 编码恒 `Fastest`，
 `level` 接受忽略（见 AGENTS §4.37）；上游补齐实现后复议。
 解码走 `StreamingDecoder`，编码走 `ruzstd::encoding::{compress,compress_to_vec}`，
-serve 静态预压缩用 `Fastest`/`Default`；流式编码按 `FrameEncoder` 在实施时确认。
+serve 静态预压缩只用 `Fastest`；流式编码按 `FrameEncoder` 在实施时确认。
 侦查教训：crates.io 一句话描述（"A decoder…"）是 stale 的，以上游 README 为准。
 `cookie_store` 开 `public_suffix` 特性即带 PSL（纯 Rust 数据表，已在 default 里），
 无需另引 `psl`。（2026-09-10 勘误：特性名是 `public_suffix`，原文写的 `publicsuffix` 不存在。）
@@ -428,7 +428,7 @@ npmrc 附记（2026-09-10 实测）：`rust-ini` 把 `:` 也当键值分隔符
 
 | 用途 | crate | 最新版本 | 建库时间 | 最新维护 | 纯 Rust | macA64 | macX64 | linA64 | linX64 | winA64 | winX64 | andA64 | andX64 | ohA64 | ohX64 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 内建 DB | `turso` | 0.7.2 | 2025-07-01 | 2026-07-30 | ✅（§2 门控） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
+| 内建 DB | `turso` | =0.6.1（钉版，见下决策记录；上游最新 0.7.2） | 2025-07-01 | 2026-07-30 | ✅（§2 门控） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
 
 决策记录（2026-09-10，二改）：**钉 `=0.6.1`**（用户拍板）。0.7 全线非可选依赖
 `icu_locale ^2.2.0`，与 `mozjs_sys` 钉死的 `icu_capi =2.1.2`（icu_locale ~2.1.1）死锁，
@@ -546,7 +546,7 @@ TS 家族（`ts/mts/cts/tsx/jsx`）MIME 由自有 `from_fn` 中间件覆盖为 `
   `linked_list_allocator`（内核向）、`mimalloc` 直引（C，turso 内已门控禁掉）。
   注意：crates.io 上的 `smalloc` 0.1.2 是同名异物，禁引，只能用 `smmalloc` 并 rename。
 - DB 落选不等于否决（只是不选）：`redb`/`gluesql+redb`/`fjall`/`rusqlite`（见 §9）。
-  出局：`limbo`（0.0 版+停更）、`turso` 的 pre 线（用 0.7.2 稳定线）、`sled`（冻结）。
+  出局：`limbo`（0.0 版+停更）、`turso` 的 pre 线（稳定线 0.7 系因 icu 死锁不可用，实钉 =0.6.1，见 §9）、`sled`（冻结）。
 - 压缩：`zstd` 本体出局（`ruzstd` 接管解码，编码不支持）；`bzip2`/`xz` 系（npm 不用）。
 - `wasmtime`（WASM 由 SpiderMonkey 引擎自己执行，不需要第二个运行时）。
 - `openssl`/`native-tls`/`tokio-native-tls`/`hyper-tls`（全线 rustls，躲开 VCPKG/OpenSSL 地狱）。

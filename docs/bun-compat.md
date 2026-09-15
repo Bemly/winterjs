@@ -32,7 +32,9 @@
 `JS+内` = 另吃 `src/js/internal/` 子件；`原生` = 主体在 native 底座。
 node 列全 ✅（它是参照系，无例外）；deno 列数据源 `docs.deno.com`
 （全 23 + 半 16 + 无 6，Deno 2.7/2.8 口径）。
-winterjs 列：✅ = 已有（`src/builtins/node/` 8 件）。
+winterjs 列：✅ = 已有（立项时点 2026-09-12 为 `src/builtins/node/` 8 件；
+**本表 frozen 在立项时点**，现状是 48 件 + `src/napi/`，`events/dgram/dns/http/
+https/http2/tls/zlib/vm/worker` 等均已落地，以 src 为准，不再回填此表）。
 
 | 模块 | node | Bun | deno | 形态 | winterjs | 移植注记 |
 |---|---|---|---|---|---|---|

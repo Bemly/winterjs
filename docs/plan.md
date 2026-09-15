@@ -13,7 +13,7 @@
 > netstat2（TOCTOU，不用）、oxc linter（上游未发布，穿透保留）、
 > watch 导入图（全量重跑，偏差接受）。
 > console-subscriber 已于 2026-09-11 接为 cargo feature `tokio-console`（默认关闭，dev 按需）。
-> **2026-09-12 黑盒测试拆分**：`tests/cli.rs`（4674 行/188 例）按 src 布局对齐拆为`tests/{cli,builtins,crypto,fetch,ws,loader,node,pm,serve,acme,testrun,initpkg,repl,bun,permissions,lintfmt,sentry_report}.rs` + 共享 helper `tests/common/mod.rs`；测试名一律未改，仅换文件（本文历史章节的 `tests/cli.rs` N 例为拆分前存档）。拆分分支 `tests/src-aligned`。
+> **2026-09-12 黑盒测试拆分**：`tests/cli.rs`（4674 行/188 例）按 src 布局对齐拆为`tests/{cli,builtins,crypto,fetch,ws,loader,node,pm,serve,acme,testrun,initpkg,repl,bun,permissions,lintfmt,sentry_report,alloc_probe,napi,quic}.rs` + 共享 helper `tests/common/mod.rs`；测试名一律未改，仅换文件（本文历史章节的 `tests/cli.rs` N 例为拆分前存档）。拆分分支 `tests/src-aligned` 已合回 master 并删除。
 > 依赖于 2026-09-10 按用户拍板全量引入，
 > 见 `docs/dependencies.md` 头部决策记录，Phase 0-8 的“引入依赖”清单已全部入库）。
 

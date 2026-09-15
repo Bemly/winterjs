@@ -1,10 +1,10 @@
-# napi 立项计划（napi 长分支 · winterjs-napi worktree）
+# napi 立项计划（已收官合流，存档）
 
 > 立项 2026-09-13（用户拍板）。目标：在 mozjs 上手写 host 侧 Node-API 实现，
 > 终验收线 = **用户 vue-project 上 `winterjs -r dev` / `-r build` / `-r test`
 > 三命令全绿**（vite 8.3.0 rolldown 系）。
-> 本文档只在 `napi` 分支维护（长分支到底，收官一次性合回 master）；
-> 每 M 收尾 rebase master。工作规约见 AGENTS.md，依赖口径见 docs/dependencies*.md。
+> 收官（2026-09-15，M6）：`napi` 分支已合回 master，`winterjs-napi` worktree
+> 已删；本文存档，不再更新。工作规约见 AGENTS.md，依赖口径见 docs/dependencies*.md。
 
 ## 0. 已拍板决策（2026-09-13，用户）
 

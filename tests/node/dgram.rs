@@ -1,6 +1,8 @@
 //! tests/node/dgram.rs — 对齐 src/builtins/node/dgram.rs（node:dgram）。
 
+use crate::common::*;
 use crate::helpers::*;
+use assert_fs::prelude::*;
 
 #[test]
 fn phase9d_dgram_loopback() {
@@ -49,3 +51,141 @@ setTimeout(() => console.log("end-ok"), 200);
     dir.close().unwrap();
 }
 // ── Phase 9d-5：node:zlib ────
+
+#[test]
+fn phase10a_dgram_multicast_connect() {
+    // 10a：组播/connect/ref 全家——同步校验 + 回环/组播投递 + unref 释放。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "m.mjs",
+        r#"
+import dgram, { createSocket } from "node:dgram";
+// ── 同步校验（真机逐项对过码与文案子集）──
+try { createSocket("udp4").addMembership(); } catch (e) { console.log("mem-miss", e.code); }
+try { createSocket("udp4").addMembership("999.1.1.1"); } catch (e) { console.log("mem-bad", e.code, e.message); }
+try { createSocket("udp4").addMembership("192.168.1.1"); } catch (e) { console.log("mem-uni", e.code); }
+try { createSocket("udp4").dropMembership(); } catch (e) { console.log("drop-miss", e.code); }
+const t0 = createSocket("udp4");
+for (const [tag, fn] of [
+  ["ttl-0", () => t0.setTTL(0)],
+  ["ttl-256", () => t0.setTTL(256)],
+  ["mttl-256", () => t0.setMulticastTTL(256)],
+  ["conn-none", () => t0.connect()],
+  ["remote-before", () => t0.remoteAddress()],
+  ["send-noaddr", () => t0.send("hi")],
+]) {
+  try { fn(); console.log(tag, "NO-THROW"); }
+  catch (e) { console.log(tag, e.code); }
+}
+try { t0.setTTL("x"); } catch (e) { console.log("ttl-str", e.code); }
+console.log("ttl-ret", t0.setTTL(64), t0.setMulticastTTL(5), t0.setMulticastLoopback(false), t0.setBroadcast(true));
+t0.close();
+// ── connect 回环（默认远端发送）──
+const server = createSocket("udp4");
+server.on("error", (e) => console.log("srv-error", e.code));
+server.on("listening", () => {
+  const port = server.address().port;
+  const client = createSocket("udp4");
+  client.on("error", (e) => console.log("cli-error", e.code));
+  client.on("connect", () => {
+    console.log("conn-remote", JSON.stringify(client.remoteAddress()));
+    client.send("hi-connected");
+  });
+  client.on("message", (msg) => {
+    console.log("conn-back", String(msg));
+    try { client.disconnect(); console.log("disc-ok"); } catch (e) { console.log("disc-err", e.code); }
+    try { client.remoteAddress(); } catch (e) { console.log("remote-after", e.code); }
+    try { client.disconnect(); } catch (e) { console.log("disc-twice", e.code); }
+    client.close(() => server.close());
+  });
+  client.connect(port, "127.0.0.1");
+});
+server.on("message", (msg, rinfo) => {
+  console.log("srv-got", String(msg), rinfo.port > 0);
+  server.send("hello-back", rinfo.port, rinfo.address);
+});
+server.bind(0, "127.0.0.1");
+// ── 组播投递（hermetic 配方：双端绑 0.0.0.0 + 默认接口加组；
+// 127.0.0.1 端在此沙箱收不到组播——真机同配方同样收不到，已对拍）──
+const mcast = createSocket("udp4");
+mcast.on("error", (e) => console.log("mcast-error", e.code));
+mcast.on("listening", () => {
+  const port = mcast.address().port;
+  mcast.addMembership("239.0.0.1");
+  const sender = createSocket("udp4");
+  sender.on("error", (e) => console.log("sender-error", e.code));
+  sender.bind(0, "0.0.0.0", () => {
+    sender.send("mcast-hi", port, "239.0.0.1");
+    setTimeout(() => sender.close(), 500);
+  });
+});
+mcast.on("message", (msg, rinfo) => {
+  console.log("mcast-got", String(msg));
+  mcast.dropMembership("239.0.0.1");
+  mcast.close();
+});
+mcast.bind(0, "0.0.0.0");
+setTimeout(() => console.log("end-ok"), 1500);
+"#,
+    );
+    for line in [
+        "mem-miss ERR_MISSING_ARGS",
+        "mem-bad EINVAL addMembership EINVAL",
+        "mem-uni EINVAL",
+        "drop-miss ERR_MISSING_ARGS",
+        "ttl-0 EINVAL",
+        "ttl-256 EINVAL",
+        "mttl-256 EINVAL",
+        "conn-none ERR_SOCKET_BAD_PORT",
+        "remote-before ERR_SOCKET_DGRAM_NOT_CONNECTED",
+        "send-noaddr ERR_SOCKET_DGRAM_NOT_RUNNING",
+        "ttl-str EINVAL",
+        "ttl-ret 64 5 false undefined",
+        "conn-remote {\"address\":\"127.0.0.1\",\"port\":",
+        "srv-got hi-connected true",
+        "conn-back hello-back",
+        "disc-ok",
+        "remote-after ERR_SOCKET_DGRAM_NOT_CONNECTED",
+        "disc-twice ERR_SOCKET_DGRAM_NOT_CONNECTED",
+        "mcast-got mcast-hi",
+        "end-ok",
+    ] {
+        assert!(out.lines().any(|l| l == line || l.starts_with(line)), "missing line: {line}\nout: {out}");
+    }
+    assert!(!out.contains("srv-error"), "out: {out}");
+    assert!(!out.contains("cli-error"), "out: {out}");
+    assert!(!out.contains("mcast-error"), "out: {out}");
+    assert!(!out.contains("sender-error"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10a_dgram_unref_releases_loop() {
+    // 10a：unref 真计数——唯一句柄 unref 后循环即退。
+    // 脚本内零 timer（pending timer 同样续命，会掩盖结论）；挂了由外部
+    // 8s 超时判失败，不 hang 住全量。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("u.mjs");
+    file.write_str(
+        r#"import { createSocket } from "node:dgram";
+const s = createSocket("udp4");
+s.bind(0, "127.0.0.1", () => {
+  console.log("unref-ret", s.unref() === s, s.ref() === s);
+  s.unref();
+});
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .timeout(std::time::Duration::from_secs(8))
+        .output()
+        .expect("unref test hung: socket still holds loop (8s timeout)");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("unref-ret true true"), "out: {out}");
+    dir.close().unwrap();
+}

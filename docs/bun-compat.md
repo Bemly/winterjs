@@ -41,7 +41,7 @@ winterjs 列（2026-09-15 现状回填，证据见后表注记；注册表以
 | assert | ✅ | 🟢 | ✅ | JS | ✅ | `assert` + `assert/strict` 双注册；深 equal 语义对齐另算 |
 | buffer | ✅ | 🟢（单体 4GiB 上限） | ✅ | 原生（builtins） | ✅ | 全局子类 + 模块面 + 整数/浮点读写 32 方法（DataView 直通，9h） |
 | console | ✅ | 🟢 | ✅ | 原生（builtins） | ✅ | 具名全表 + `Console` 类；`table` 无列对齐（记档） |
-| dgram 99% | ✅ | 🟢 | 🟡 | JS+内 | ✅ | 回环 + close 语义（§4.36 checklist 三查）；TypeError 带 code |
+| dgram 99% | ✅ | 🟢 | 🟡 | JS+内 | ✅ | 回环/connect/组播投递 + close 语义（§4.36 checklist 三查）；未做 recvbuf 系（另切片） |
 | diagnostics_channel | ✅ | 🟡（缺 bounded/多数组内置通道） | ✅ | JS | ✅ | 全语义移植（含 TracingChannel/BoundedChannel），Bun 缺口本仓无 |
 | dns | ✅ | 🟢（缺 resolveTlsa） | 🟡 | JS+内 | 🟡 | `lookup/resolve4/6`（std 底座）；CNAME/MX/TXT 深件待 hickory（§0.5 待拍板） |
 | events 95% | ✅ | 🟢 | ✅ | JS（6 内部件） | ✅ | 全语义移植（`once/on` 迭代器、AsyncResource 挂载） |

@@ -32,10 +32,10 @@
 | url | 🟢 | ✅（WHATWG+file 系） | legacy `parse/format/resolve` + `Url` 类 + domainTo*（follow-redirects 已走原生分支，低风险） | 10a |
 | timers | 🟢（promises/scheduler） | ✅（setImmediate 近似） | setImmediate check 语义定案（`scheduler.yield/wait` 已有；无 macrotask 分层，近似验收或偏离） | 10a |
 | util | 🟢 | ✅（三件未移植） | `parseArgs`、`MIMEType/MIMEParams`、`getSystemErrorName/Message/Map`（uv errno 表随 fs 错误映射） | 10a |
-| zlib | 🟢 | ✅（zstd 恒 Fastest） | `crc32`（flate2 自带 `Crc`，零新依赖）；非 Fastest 档等上游 ruzstd（偏离，复议） | 10a |
+| zlib | 🟢 | ✅（zstd 恒 Fastest） | `crc32` 落地（ISO-HDLC 自实现，零新依赖）；非 Fastest 档等上游 ruzstd（偏离，复议） | 10a |
 | dns | 🟢（缺 resolveTlsa） | 🟡（std 底座） | CNAME/MX/TXT/SRV 深件经 hickory-resolver（已在树内；✅ 2026-09-15 拍板：全套+系统配置） | 10d |
 | sqlite | 🟢 | ✅ bun:sqlite／— node:sqlite | `node:sqlite` 注册 + DatabaseSync/StatementSync 口径对齐（turso 底座，不跟系统 libsqlite） | 10d |
-| dgram | 🟢 | ✅（base 面） | 组播全家（addMembership/dropMembership/setBroadcast/组播 TTL/loopback）、connect/disconnect、ref 真计数 | 10a |
+| dgram | 🟢 | ✅（10a-6 收官：connect/组播投递/ref 真计数；剩 recvbuf 系另切片） | 组播全家（addMembership/dropMembership/setBroadcast/组播 TTL/loopback）、connect/disconnect、ref 真计数 | 10a |
 | cluster | 🟡（http 多绑限 Linux） | — | Bun 🟡 对等面：primary/worker、fork/disconnect、scheduling 策略（骑 fork/worker 底座，不做真多进程超集） | 10e |
 | domain | 🟡 | — | 遗留薄面：create/run/bind/intercept + error 路由（小） | 10e |
 | crypto | 🟡（缺 ed448/secp256k1/CCM 等） | ✅（缺口不重合：GCM iv 限 12B、无 ccm/ocb） | 差集：✅ 2026-09-15 用户全批——`ccm` 0.6 + `ghash` 0.6 直引 + `ed448-goldilocks` 特批钉 `=0.14.0-pre.15`（上游稳定版后回 caret）+ bf-cbc 实测后定；ocb 非 Node 面出局。采购单见 `docs/dependencies3.md` §1 | 10e |
@@ -55,7 +55,7 @@
   真机逐项对码与文案）；setImmediate 口径定案（`scheduler.yield/wait` 已有，
   只定 check 语义验收标准，不造分层）；
   `util` 三件（parseArgs/MIMEType/getSystemError*）；zlib `crc32`
-  （flate2::Crc 直通，sync+async 双形态）；dgram 组播全家 + connect/disconnect +
+  （ISO-HDLC 自实现——`flate2::Crc` 不收 seed；同步纯函数）；dgram 组播全家 + connect/disconnect +
   ref 真计数（tokio UdpSocket 底座能力先实测）。
 - 验收：`test-url-*.js` legacy 子集、`test-timers-*.js` scheduler 项、
   `test-util-*.js` 三件项、`test-zlib-*.js` crc32 项、`test-dgram-*.js`

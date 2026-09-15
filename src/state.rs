@@ -253,6 +253,8 @@ pub struct NetEntry {
     pub close_sent: bool,
     /// 写端 task 是否存活（destroy 后死亡；读端见 EOF 时若已死则直接收尾）。
     pub writer_alive: bool,
+    /// ref 计数位（10a 真计数：unref 摘循环续命，ref 装回；默认 true）。
+    pub refed: bool,
 }
 
 // SAFETY: 只追踪 target（id 无 GC 指针）。
@@ -1151,7 +1153,7 @@ pub fn net_socket_add(
     with_rooted(|s| s.net_targets.push(NetTarget { id, target: Heap::boxed(target) }));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     with_plain(|p| {
-        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true });
+        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true, refed: true });
         p.net_open += 1;
     });
     rx
@@ -1163,7 +1165,7 @@ pub fn net_conn_add() -> (u64, tokio::sync::mpsc::UnboundedReceiver<crate::built
     let id = with_plain(|p| {
         p.net_next_id += 1;
         let id = p.net_next_id;
-        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true });
+        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true, refed: true });
         p.net_open += 1;
         id
     });
@@ -1240,11 +1242,31 @@ pub fn net_close_once(id: u64) -> bool {
     })
 }
 
+/// ref/unref 真计数（10a）：切换 refed 位并增减 net_open；entry 不在即 false。
+/// unref 后 Close 派发不再减（purge 按位），ref 装回后恢复。
+pub fn net_set_ref(id: u64, refed: bool) -> bool {
+    with_plain(|p| {
+        if let Some(e) = p.net_sockets.get_mut(&id) {
+            if e.refed != refed {
+                e.refed = refed;
+                if refed {
+                    p.net_open += 1;
+                } else {
+                    p.net_open = p.net_open.saturating_sub(1);
+                }
+            }
+            true
+        } else {
+            false
+        }
+    })
+}
+
 /// 收尾清除（entry + target；Close 派发后调用；返回首次 true）。
 pub fn net_purge(id: u64) -> bool {
     let entry = with_plain(|p| p.net_sockets.remove(&id));
     with_rooted(|s| s.net_targets.retain(|t| t.id != id));
-    if entry.is_some() {
+    if entry.is_some_and(|e| e.refed) {
         with_plain(|p| p.net_open = p.net_open.saturating_sub(1));
         true
     } else {

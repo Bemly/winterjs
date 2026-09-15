@@ -45,6 +45,8 @@ pub enum NetKind {
     DgramListening { addr: String, port: u16 },
     /// dgram：收到数据报。
     DgramMessage { data_b64: String, address: String, port: u16, family: u8 },
+    /// dgram：connect 生效（task 已记默认远端；JS 侧置位并发 'connect'）。
+    DgramConnect,
     // ── http2（Phase 9d-7；与 net 共通道，零新 channel）─────────────────────
     /// h2 服务端收到完整请求（ev.id = server id；整收口径，http 记档同款）。
     H2Request {
@@ -67,6 +69,24 @@ pub enum NetCmd {
     End,
     Close,
     SendTo { data: Vec<u8>, addr: String },
+    // ── dgram 10a（组播/广播/TTL/connect 全家；task 内同步 setsockopt，
+    // 失败走 Error 事件——真机同步抛的偏差记档，见 dgram.rs）────────────────
+    /// SO_BROADCAST 开关。
+    DgramBroadcast(bool),
+    /// 组播环回开关。
+    DgramMulticastLoop(bool),
+    /// 组播 TTL（0-255，JS 侧已验范围）。
+    DgramMulticastTtl(u8),
+    /// 单播 TTL（1-255，JS 侧已验范围）。
+    DgramTtl(u32),
+    /// 加组播组（点分十进制串；v6 用索引串，task 内分流）。
+    DgramJoin { multi: String, iface: String },
+    /// 退组播组。
+    DgramLeave { multi: String, iface: String },
+    /// 记默认远端（task 级 connect，无内核过滤，记档）。
+    DgramConnect { addr: String },
+    /// 清默认远端。
+    DgramDisconnect,
     // ── http2 ─────────────────────────────────────────────────────────────
     /// 服务端应答（发往 conn id；stream_id 由 H2Request 事件给出）。
     H2Respond {
@@ -136,6 +156,15 @@ pub(crate) fn spawn_pumps<R, W>(
                 }
                 NetCmd::Close => break,
                 NetCmd::SendTo { .. } => {} // dgram 专用（net socket 不产生）
+                // 10a dgram sockopt 全家（同上，net socket 不产生）
+                NetCmd::DgramBroadcast(_)
+                | NetCmd::DgramMulticastLoop(_)
+                | NetCmd::DgramMulticastTtl(_)
+                | NetCmd::DgramTtl(_)
+                | NetCmd::DgramJoin { .. }
+                | NetCmd::DgramLeave { .. }
+                | NetCmd::DgramConnect { .. }
+                | NetCmd::DgramDisconnect => {}
                 // http2 命令走 h2 conn/session task（本泵不产生，见 http2.rs）
                 NetCmd::H2Respond { .. } | NetCmd::H2Open { .. } => {}
             }
@@ -415,6 +444,39 @@ pub unsafe extern "C" fn net_destroy(
     true
 }
 
+/// `__wjs_net_ref(id)` / `__wjs_net_unref(id)`：ref 真计数（10a；未知 id 静默，
+/// Node 口径 ref/unref 不抛）。
+pub unsafe extern "C" fn net_ref(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(id) = opt_num(&frame, 0) else {
+        report_error(&mut cx, "TypeError: ref: id must be a number");
+        return false;
+    };
+    state::net_set_ref(id as u64, true);
+    true
+}
+
+/// SAFETY: 同 net_ref。
+pub unsafe extern "C" fn net_unref(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(id) = opt_num(&frame, 0) else {
+        report_error(&mut cx, "TypeError: unref: id must be a number");
+        return false;
+    };
+    state::net_set_ref(id as u64, false);
+    true
+}
+
 // ── 事件循环派发 ────────────────────────────────────────────────────────────
 
 /// 网络事件派发：调 target 的 `__ev(kind, payload)`（payload 空串或 JSON）。
@@ -502,6 +564,7 @@ pub fn dispatch(
             serde_json::json!({ "data": data_b64, "address": address, "port": port, "family": family })
                 .to_string(),
         ),
+        NetKind::DgramConnect => ("connect", String::new()),
         // http2：request 派发给 server target；stream/session 派发给 session target
         NetKind::H2Request { conn_id, stream_id, method, path, headers, body_b64 } => (
             "request",
@@ -691,8 +754,9 @@ class Socket extends EventEmitter {
     return { address: this.localAddress, port: this.localPort, family: String(this.localAddress).includes(":") ? "IPv6" : "IPv4" };
   }
   setEncoding(enc) { this.__enc = enc === null || enc === undefined ? null : String(enc); return this; }
-  ref() { return this; }
-  unref() { return this; }
+  // 10a：ref 真计数（net/dgram 共用 natives；__id 为 0 时静默 no-op）。
+  ref() { if (this.__id) __wjs_net_ref(this.__id); return this; }
+  unref() { if (this.__id) __wjs_net_unref(this.__id); return this; }
 }
 
 class Server extends EventEmitter {
@@ -754,8 +818,9 @@ class Server extends EventEmitter {
     if (this.__id) __wjs_net_destroy(this.__id);
     return this;
   }
-  ref() { return this; }
-  unref() { return this; }
+  // 10a：ref 真计数（同 Socket）。
+  ref() { if (this.__id) __wjs_net_ref(this.__id); return this; }
+  unref() { if (this.__id) __wjs_net_unref(this.__id); return this; }
 }
 
 Socket.prototype.__attachConn = function (info) {

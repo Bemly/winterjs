@@ -2380,6 +2380,9 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_net_write", Some(node::net::net_write), 2),
             ("__wjs_net_end", Some(node::net::net_end), 1),
             ("__wjs_net_destroy", Some(node::net::net_destroy), 1),
+            // 10a：ref 真计数（net/dgram 共用）
+            ("__wjs_net_ref", Some(node::net::net_ref), 1),
+            ("__wjs_net_unref", Some(node::net::net_unref), 1),
             ("__wjs_dns_lookup", Some(node::dns::dns_lookup), 1),
             // Phase 9d-6: node:tls（握手底座；读写复用 net_* natives）
             ("__wjs_tls_connect", Some(node::tls::tls_connect), 4),
@@ -2514,6 +2517,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_quic_sess_max_dgram", Some(node::quic::quic_sess_max_dgram), 1),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
             ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
+            // 10a：组播/广播/TTL/connect（JSON 单 native；id+op 包）
+            ("__wjs_dgram_sockopt", Some(node::dgram::dgram_sockopt), 2),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）
             ("__wjs_zlib_deflate_lv", Some(node::zlib::zlib_deflate_lv), 2),
             ("__wjs_zlib_inflate", Some(node::zlib::zlib_inflate), 1),

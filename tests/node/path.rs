@@ -63,3 +63,43 @@ console.log("pnull", path.posix.toNamespacedPath(null));
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_path_trailing_sep_boundary() {
+    // 边界（真机 26.8.2 逐字节对码）：多尾分隔符全剥、后缀整吞回退、
+    // UNC 设备前导双条保留、`//a` dirname 保 `//`、`..` 无 ext。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import path from "node:path";
+const out = [
+  path.win32.basename("basename.ext\\\\"),
+  path.posix.basename("basename.ext//"),
+  path.posix.basename("aaa/bbb//", "bbb"),
+  path.posix.basename("a", "a"),
+  path.win32.basename("aaa\\bbb\\\\", "bbb"),
+  path.win32.dirname("\\\\unc\\share"),
+  path.win32.dirname("\\\\unc\\share\\foo"),
+  path.posix.dirname("//a"),
+  path.posix.dirname("////"),
+  path.posix.extname("/path/to/.."),
+  path.win32.extname("C:\\path\\to\\.."),
+  path.win32.dirname("/a/b/"),
+  path.win32.dirname("/"),
+];
+console.log(JSON.stringify(out));
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "[\"basename.ext\",\"basename.ext\",\"bbb\",\"\",\"bbb\",\"\\\\\\\\unc\\\\share\",\"\\\\\\\\unc\\\\share\\\\\",\"//\",\"/\",\"\",\"\",\"/a\",\"/\"]\n",
+    );
+    dir.close().unwrap();
+}

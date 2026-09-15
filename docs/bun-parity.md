@@ -52,6 +52,30 @@
 | test-util-callbackify.js | 1 | 0 | 🟡 差集：execFile 自 spawn 用位置参数（全 flag CLI 设计）；纯语义已对（含 falsy 文案修正） |
 | test-util-deprecate.js | ≠0 | ≠0 | ⏭️ `--expose-internals`（`internal/util`，无 flag 时真机亦挂） |
 
+## path
+
+> 10f 首批：`basename/dirname/extname/isabsolute` 全绿（含 win32 UNC/后缀整吞/`..`/`//` 根）；
+> `join/normalize/resolve/relative/parse-format` 系下一批（Node 原文直译）。
+
+| 文件 | winterjs | node | 结论 |
+|---|---|---|---|
+| test-path-basename.js | 0 | 0 | ✅（修：多尾分隔符全剥/后缀整吞回退，见 §4 候选） |
+| test-path-dirname.js | 0 | 0 | ✅（修：UNC 前导双条保留/win32.dirname 直译/`//a` 保 `//`） |
+| test-path-extname.js | 0 | 0 | ✅（修：`..` 无 ext） |
+| test-path-isabsolute.js | 0 | 0 | ✅ |
+| test-path-posix-exists.js | 0 | 0 | ✅ |
+| test-path-win32-exists.js | 0 | 0 | ✅ |
+| test-path-posix-relative-on-windows.js | 0 | 0 | ✅ |
+| test-path-win32-normalize-device-names.js | 0 | 0 | ✅ |
+| test-path-glob.js | 1 | 0 | 🟡 差集：`matchesGlob` 未实现（新 API，另切片） |
+| test-path-join.js | 1 | 0 | 🟡 待修：空段/尾斜杠口径（下批直译） |
+| test-path-normalize.js | 1 | 0 | 🟡 待修：同 join 系（下批直译） |
+| test-path-resolve.js | 1 | 0 | 🟡 待修：win32 drive 继承/尾斜杠（下批直译） |
+| test-path-relative.js | 1 | 0 | 🟡 待修：win32 大小写等价/UNC（下批直译） |
+| test-path-parse-format.js | 1 | 0 | 🟡 待修：parse/format 回环（下批随 normalize 系） |
+| test-path-makelong.js | 1 | 0 | 🟡 待查（下批） |
+| test-path-zero-length-strings.js | 1 | 0 | 🟡 待修：空串 join/normalize（下批，同 join） |
+
 ## assert
 
 > 行为件全修（跨域重抛/参数校验/构造器校验/rejects 双收/throws 正则）；

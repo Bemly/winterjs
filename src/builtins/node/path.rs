@@ -53,25 +53,32 @@ function makePosix() {
     p = String(p);
     if (p === "") return ".";
     const hasRoot = p[0] === "/";
-    const noTrail = p.length > 1 && p[p.length - 1] === "/" ? p.slice(0, -1) : p;
+    let noTrail = p;
+    while (noTrail.length > 1 && noTrail[noTrail.length - 1] === "/") noTrail = noTrail.slice(0, -1);
     const idx = noTrail.lastIndexOf("/");
     if (idx === -1) return ".";
+    if (idx === 1 && hasRoot) return "//";
     if (idx === 0) return "/";
     const dir = noTrail.slice(0, idx);
     return dir === "" && hasRoot ? "/" : dir || ".";
   }
   function basename(p, suffix) {
     p = String(p);
-    const noTrail = p.length > 1 && p[p.length - 1] === "/" ? p.slice(0, -1) : p;
+    let noTrail = p;
+    while (noTrail.length > 1 && noTrail[noTrail.length - 1] === "/") noTrail = noTrail.slice(0, -1);
     const idx = noTrail.lastIndexOf("/");
     let base = idx === -1 ? noTrail : noTrail.slice(idx + 1);
-    if (suffix !== undefined && base.endsWith(suffix) && suffix !== "") {
-      base = base.slice(0, base.length - suffix.length);
+    if (suffix !== undefined && suffix !== "") {
+      if (suffix === p) return "";
+      if (base.endsWith(suffix) && base.length !== suffix.length) {
+        base = base.slice(0, base.length - suffix.length);
+      }
     }
     return base;
   }
   function extname(p) {
     p = basename(String(p));
+    if (p === "..") return "";
     const idx = p.lastIndexOf(".");
     if (idx <= 0) return "";
     return p.slice(idx);
@@ -111,7 +118,8 @@ function winDevice(p) {
   if (/^[a-zA-Z]:/.test(p)) return { device: p.slice(0, 2), rest: p.slice(2) };
   if (/^[\\/]{2}[^\\/]+[\\/]+[^\\/]+/.test(p)) {
     const m = p.match(/^([\\/]{2}[^\\/]+[\\/]+[^\\/]+)([\\/]?[\s\S]*)$/);
-    return { device: m[1].replace(/[\\/]+/g, "\\"), rest: m[2] || "" };
+    // UNC 设备保留前导双分隔符（`\\server\share`；内部分隔符归一为 `\`）。
+    return { device: "\\" + m[1].replace(/[\\/]+/g, "\\"), rest: m[2] || "" };
   }
   return { device: "", rest: p };
 }
@@ -177,28 +185,63 @@ function makeWin32() {
     return out;
   }
   function dirname(p) {
+    // Node `lib/path.js` win32.dirname 直译（分隔符原样保留；UNC 根直回）。
     p = String(p);
-    if (p === "") return ".";
-    const { device, rest } = winDevice(p);
-    const noTrail = /[\\/]$/.test(rest) && rest.length > 1 ? rest.slice(0, -1) : rest;
-    const idx = Math.max(noTrail.lastIndexOf("\\"), noTrail.lastIndexOf("/"));
-    if (idx === -1) return device || ".";
-    if (idx === 0) return device + "\\";
-    return device + noTrail.slice(0, idx);
+    const len = p.length;
+    if (len === 0) return ".";
+    const isSep = (c) => c === "\\" || c === "/";
+    if (len === 1) return isSep(p[0]) ? p : ".";
+    let rootEnd = -1, offset = 0;
+    if (isSep(p[0])) {
+      rootEnd = offset = 1;
+      if (len > 1 && isSep(p[1])) {
+        let j = 2, last = j;
+        while (j < len && !isSep(p[j])) j++;
+        if (j < len && j !== last) {
+          last = j;
+          while (j < len && isSep(p[j])) j++;
+          if (j < len && j !== last) {
+            last = j;
+            while (j < len && !isSep(p[j])) j++;
+            if (j === len) return p;
+            if (j !== last) rootEnd = offset = j + 1;
+          }
+        }
+      }
+    } else if (/^[a-zA-Z]/.test(p[0]) && p[1] === ":") {
+      rootEnd = (len > 2 && isSep(p[2])) ? 3 : 2;
+      offset = rootEnd;
+    }
+    let end = -1, matchedSlash = true;
+    for (let i = len - 1; i >= offset; --i) {
+      if (isSep(p[i])) {
+        if (!matchedSlash) { end = i; break; }
+      } else matchedSlash = false;
+    }
+    if (end === -1) {
+      if (rootEnd === -1) return ".";
+      end = rootEnd;
+    }
+    return p.slice(0, end);
   }
   function basename(p, suffix) {
     p = String(p);
     const { rest } = winDevice(p);
-    const noTrail = /[\\/]$/.test(rest) && rest.length > 1 ? rest.slice(0, -1) : rest;
+    let noTrail = rest;
+    while (noTrail.length > 1 && /[\\/]$/.test(noTrail)) noTrail = noTrail.slice(0, -1);
     const idx = Math.max(noTrail.lastIndexOf("\\"), noTrail.lastIndexOf("/"));
     let base = idx === -1 ? noTrail : noTrail.slice(idx + 1);
-    if (suffix !== undefined && base.endsWith(suffix) && suffix !== "") {
-      base = base.slice(0, base.length - suffix.length);
+    if (suffix !== undefined && suffix !== "") {
+      if (suffix === p) return "";
+      if (base.endsWith(suffix) && base.length !== suffix.length) {
+        base = base.slice(0, base.length - suffix.length);
+      }
     }
     return base;
   }
   function extname(p) {
     p = basename(String(p));
+    if (p === "..") return "";
     const idx = p.lastIndexOf(".");
     if (idx <= 0) return "";
     return p.slice(idx);

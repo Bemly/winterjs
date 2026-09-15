@@ -52,7 +52,7 @@ winterjs 列（2026-09-15 现状回填，证据见后表注记；注册表以
 | path | ✅ | 🟢 | ✅ | JS（posix/win32 分文件） | ✅ | 纯 JS 双空间 + 子路径双注册；glob 语义差另算 |
 | punycode | ✅ | 🟢 100% | ✅ | JS | ✅ | 冻结小模块全移植 |
 | querystring | ✅ | 🟢 100% | ✅ | JS | ✅ | 全移植 |
-| readline | ✅ | 🟢 | ✅ | JS | 🟡 | 最小桥（`question` 抛未实现、无行编辑；vite import 解挡） |
+| readline | ✅ | 🟢 | ✅ | JS | ✅ | 行/history/question/按键解码/Emacs 子集/迭代器；无 completer（记档） |
 | stream | ✅ | 🟢 | ✅ | JS+内（20+ 文件） | ✅ | lib 逐字内嵌 + Duplex/Transform/pipeline/compose 全链 |
 | string_decoder | ✅ | 🟢 100% | ✅ | 原生（无 JS 外壳） | ✅ | 纯 JS 重写（含遗产 lastNeed/lastChar 面） |
 | timers | ✅ | 🟢（含 promises/scheduler） | ✅ | JS+内 | ✅ | 回调 + `timers/promises` 双面；`setImmediate` 近似、`scheduler` 未导出（记档） |
@@ -76,7 +76,7 @@ winterjs 列（2026-09-15 现状回填，证据见后表注记；注册表以
 | wasi | ✅ | 🟡 | ❌ | 原生 | — | `wasmtime` 已否决（§14），**不做** |
 | worker_threads | ✅ | 🟡 | 🟡 | JS+内 | ✅ | MessageChannel/Worker + 循环引用信封（已超 deno 🟡） |
 | inspector | ✅ | 🟡 | 🟡 | JS+内 | 🟡 | 薄层（Runtime.evaluate 真求值，domains 仅 ack） |
-| repl | ✅ | 🟡 | ❌ | JS | ✅ CLI／— 模块 | CLI `--repl` 全功能；`node:repl` 模块面未注册 |
+| repl | ✅ | 🟡 | ❌ | JS | ✅ CLI + ✅ 模块 | CLI `--repl` 全功能；`node:repl`（REPLServer/start/Recoverable/内建命令，无 caret 行） |
 | sqlite | ✅ | 🟢 | ✅ | 原生 | ✅ bun／— node | `bun:sqlite`（turso 路线）；`node:sqlite`（Node 22+ 实验面）未注册 |
 | test | ✅ | 🟡 | ✅ | JS（test_runner） | 🟡 | `node:test` 起步 + `winterjs test` runner；reporter/diff 深度欠账 |
 | trace_events | ✅ | 🟢 | ❌ | JS | ✅ | 全语义移植（类别集 JS 侧） |

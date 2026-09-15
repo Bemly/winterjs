@@ -141,6 +141,22 @@ pub fn get_prop_value(cx: &mut JSContext, obj: *mut JSObject, name: &CStr) -> Op
     if ok { Some(v.get()) } else { None }
 }
 
+/// UNSAFE-BOUNDARY: 写对象属性值（赋值语义；失败 false，pending 由调用方处理）。
+/// 前置：cx 在 realm 内；obj 为有效对象；val 为 rooted 值。
+/// 覆盖：`tests/node/vm.rs::phase10c_vm_rerun_with_new_globals`（经 vm sync-in 回落）。
+pub fn set_prop_value(cx: &mut JSContext, obj: *mut JSObject, name: &CStr, val: JSVal) -> bool {
+    rooted!(&in(cx) let v = val);
+    // SAFETY: cx 为有效 wrapper；标记位置指针直拷；raw 调用不触发 GC
+    unsafe {
+        mozjs::jsapi::JS_SetProperty(
+            cx.raw_cx(),
+            raw_handle(&obj),
+            name.as_ptr(),
+            raw_handle(v.as_ptr()),
+        )
+    }
+}
+
 /// UNSAFE-BOUNDARY: `JSON.parse(text)`（失败 None，pending 由调用方处理）。
 /// 前置：cx 在 realm 内；global 为有效全局。
 /// 覆盖：`phase4_require_json`（经 require 读 `.json`）。

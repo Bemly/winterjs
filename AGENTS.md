@@ -1385,3 +1385,20 @@ cargo build
 - 推广为铁律：凡"构造即发"（请求/连接）遇"异步就绪"（connect/握手），就绪
   回调必须同时服务"已就绪数据"与"已结束标记"两件，缺一件即半吊子挂起。
   定位时先分清"没发出去"（服务端零收到，curl 对照）还是"没解析出来"。
+
+### 4.90 vm 重跑即炸：sync-in 的重定义必须回落赋值（2026-09-15，10c-3）
+
+- 症状：同 context 第二次 `runInContext` 即 `vm could not define sandbox property`
+  ——当前轮新建了全局（function/var 声明）时必发；纯求值重跑无事。
+- 根因：每次 run 前 `__syncIn` 把沙箱属性逐个 `JS_DefineProperty` 重打一遍；
+  上轮 sync-out 又同步回来的新全局（值为跨 compartment CCW）在重定义时失败。
+  纯数据种子（`{x:1}`）重打无事，故 9i 旧测试全绿掩盖（REPL 是首个高频复用者）。
+- 修法：`vm_set` 里 define 失败即回落 `JS_SetProperty` 赋值语义（更新值、
+  保留既有描述符；双失败才抛）；收敛函数 `set_prop_value` 进 `jsapi_glue`
+  （`UNSAFE-BOUNDARY` + 覆盖测试名）。
+  附带同案：DONT_CONTEXTIFY 全局跑 `runInContext` 首轮即炸（sync-in 逐个重打
+  标准内建）——同修法一并治愈。
+- 复现：`tests/node/vm.rs::phase10c_vm_rerun_with_new_globals`（修前第二跑必炸）。
+- 推广为铁律：凡"每次调用前全量同步"的设计，必须回答"已存在项怎么办"——
+  define-if-absent + set-if-present 两条路，缺回落即二次调用必炸；
+  旧测试只跑一次的面，新功能复用即现形（§4.24 多 run 教训的 vm 版）。

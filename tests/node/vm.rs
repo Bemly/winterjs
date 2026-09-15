@@ -256,3 +256,32 @@ console.log("sab", typeof w.SharedArrayBuffer, typeof w.Atomics);
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10c_vm_rerun_with_new_globals() {
+    // 10c-3：同 context 重复 runInContext（前轮新建的全局须可复用；
+    // sync-in 的重定义走赋值回落，见 vm_set）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "r.mjs",
+        r#"
+import vm from "node:vm";
+const a = vm.createContext({ x: 1 });
+console.log("a", vm.runInContext("x + 1", a), vm.runInContext("x + 2", a));
+const b = vm.createContext({});
+vm.runInContext("function foo() { return 1; }", b);
+console.log("fn", vm.runInContext("foo()", b));
+const c = vm.createContext({});
+vm.runInContext("var cv = 5", c);
+console.log("vr", vm.runInContext("cv + 1", c));
+const d = vm.createContext({ seed: 9 });
+vm.runInContext("function f() { return seed * 2; }", d);
+console.log("mix", vm.runInContext("f()", d), vm.runInContext("seed + 1", d));
+"#,
+    );
+    for line in ["a 2 3", "fn 1", "vr 6", "mix 18 10"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

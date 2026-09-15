@@ -36,6 +36,8 @@ pub mod punycode;
 pub mod querystring;
 pub mod quic;
 pub mod readline;
+/// 10c-3: node:repl（REPLServer/start/Recoverable，骑 readline Interface）。
+pub mod repl;
 pub mod require;
 pub mod stream;
 pub mod stream_consumers;
@@ -129,6 +131,7 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:module", nodemodule::SOURCE),
     ("node:v8", v8::SOURCE),
     ("node:readline", readline::SOURCE),
+    ("node:repl", repl::SOURCE),
     ("node:url", url::SOURCE),
 ];
 
@@ -205,6 +208,7 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "module" => Some("node:module"),
         "v8" => Some("node:v8"),
         "readline" => Some("node:readline"),
+        "repl" => Some("node:repl"),
         "url" => Some("node:url"),
         _ => None,
     }
@@ -315,6 +319,9 @@ mod tests {
         assert_eq!(normalize_spec("node:v8"), Some("node:v8"));
         assert!(source("node:v8").is_some());
         assert_eq!(normalize_spec("readline"), Some("node:readline"));
+        assert_eq!(normalize_spec("repl"), Some("node:repl"));
+        assert_eq!(normalize_spec("node:repl"), Some("node:repl"));
+        assert!(source("node:repl").is_some());
         assert_eq!(normalize_spec("node:readline"), Some("node:readline"));
         assert!(source("node:readline").is_some());
         assert_eq!(normalize_spec("url"), Some("node:url"));

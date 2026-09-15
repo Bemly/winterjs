@@ -372,8 +372,12 @@ pub unsafe extern "C" fn vm_set(
         return false;
     };
     if !define_prop(&mut realm, global.get(), &c_key, val) {
-        throw_vm(&mut realm, "Error", "vm could not define sandbox property");
-        return false;
+        // 已有属性的重定义在跨 compartment 值（sync-out 又 sync-in 的函数等）
+        // 下失败：回落赋值语义（更新值、保留既有描述符；双失败才抛，10c-3）。
+        if !crate::jsapi_glue::set_prop_value(&mut realm, global.get(), &c_key, val) {
+            throw_vm(&mut realm, "Error", "vm could not define sandbox property");
+            return false;
+        }
     }
     frame.set_rval(UndefinedValue());
     true

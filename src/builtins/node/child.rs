@@ -1,9 +1,13 @@
 //! `node:child_process` 同步子集 + 异步 `spawn`（plan Phase 4d/c-4x）。
 //! 同步经 `std::process` 阻塞跑；异步经 `tokio::process` + 事件循环分发
 //! `exit/close/error`；stdio 支持 `inherit`/`ignore`/`pipe`（字符串三同或三元数组）。
-//! pipe 口径（文档记录）：stdout/stderr 为 live `ReadableStream`（出的块序 = 进程
-//! 出序；exit 前必先送达残留数据再调 onexit/onclose）；stdin 为 `WritableStream`
-//!（write 满即发，close 关写端；子进程已走即写失败）；无 max_buffer 上限（流式消费）。
+//! pipe 口径（10f 起 node 真语义）：stdout/stderr 为 legacy Readable 面
+//!（`on('data'/'end'/'close'/'error')/once/off/setEncoding/pause/resume/
+//! destroy`；data 缺省 Buffer，setEncoding 后为串——真机 `Readable`，
+//! spawnPromisified 系套件口径；内部经 Web ReadableStream 泵接 Rust 块序，
+//! 出块序 = 进程出序，exit 前必先送达残留数据再调 onexit/onclose）；
+//! stdin 为 `WritableStream`（write 满即发，close 关写端；子进程已走即写
+//! 失败；legacy Writable 记偏差）；无 max_buffer 上限（流式消费）。
 //! `detached:true` 在 unix 起 setsid 组长，kill 走组杀（`nix` 轮子；win 回退直杀）。
 //! 结果走 JSON 桥（二进制 base64）；错误形状由 prelude 组装（见 SOURCE）。
 //!
@@ -14,8 +18,7 @@
 //! 关通道后 send 回 false + 异步 `ERR_IPC_CHANNEL_CLOSED`，真机口径）。
 //! 偏差（记档）：同进程线程（无独立进程；env/cwd/execArgv/silent/stdio/
 //! serialization/timeout/detached 接受忽略，stdio 恒 null）；子发消息无监听即丢
-//! （EventEmitter 口径）；kill 信号值忽略（terminate 语义）；exit/signal 双调参
-//! 为单 `{status, signal}` 对象（与本模块 spawn 路径同形）；message/disconnect
+//! （EventEmitter 口径）；kill 信号值忽略（terminate 语义）；message/disconnect
 //! 为单监听器位（spawn 路径 exit/close 同款风格）；控制信封单键对象
 //! `{__wjs_fork_ctl:"disconnect"}` 不投递给用户。
 
@@ -594,7 +597,7 @@ pub fn dispatch(
     ev: ChildEvent,
     err: crate::runtime::ErrorSource<'_>,
 ) -> Result<(), crate::error::Error> {
-    use crate::jsapi_glue::{call_one, get_prop_value, parse_json};
+    use crate::jsapi_glue::{call_two, get_prop_value, parse_json};
     let failed = |cx: &mut mozjs::context::JSContext| match err {
         crate::runtime::ErrorSource::Script { source, filename } => {
             crate::jsapi_glue::pending_exception_error(cx, global, source, filename)
@@ -625,7 +628,10 @@ pub fn dispatch(
         ChildKind::Exited { status, signal } => {
             // 先关流（残留块已送达），再走原 exit/close 双调
             push_pipe_close(cx, global, target_root.get());
-            let json = serde_json::json!({ "status": status, "signal": signal }).to_string();
+            // node 口径：exit/close 双参 (code, signal)——单对象形是旧偏差，
+            // spawnPromisified 系解构 close(code, signal) 现形（10f url）。
+            let status_json = serde_json::json!(status).to_string();
+            let signal_json = serde_json::json!(signal).to_string();
             let mut ok = true;
             // exit 与 close 同事件双调（`onerror` 永不触发：spawn 失败走同步抛错）。
             for name in [c"onexit", c"onclose"] {
@@ -636,14 +642,15 @@ pub fn dispatch(
                 if handler.is_undefined() || handler.is_null() || !handler.is_object() {
                     continue;
                 }
-                let event_obj = match parse_json(cx, global, &json) {
-                    Some(o) => o,
-                    None => {
-                        state::child_remove(ev.id);
-                        return Err(failed(cx));
-                    }
+                let Some(status_v) = parse_json(cx, global, &status_json) else {
+                    state::child_remove(ev.id);
+                    return Err(failed(cx));
                 };
-                ok &= call_one(cx, global, handler, event_obj).is_some();
+                let Some(signal_v) = parse_json(cx, global, &signal_json) else {
+                    state::child_remove(ev.id);
+                    return Err(failed(cx));
+                };
+                ok &= call_two(cx, global, handler, status_v, signal_v).is_some();
             }
             state::child_remove(ev.id);
             if ok { Ok(()) } else { Err(failed(cx)) }
@@ -853,6 +860,75 @@ export function spawnSync(file, args, opts) {
   }
   return out;
 }
+// legacy Readable 面（node 真机口径）：Web ReadableStream 外壳，供
+// spawnPromisified 系套件（setEncoding + on('data')）与 CLI 自省使用。
+// data 缺省 Buffer（§4.83），setEncoding 后为串；'data' 挂载即流动泵。
+function __legacyReadable(web) {
+  const listeners = {};
+  let flowing = false;
+  let paused = false;
+  let ended = false;
+  let destroyed = false;
+  let enc = null;
+  let reader = null;
+  const emit = (ev, ...args) => {
+    for (const l of [...(listeners[ev] || [])]) {
+      try { l(...args); } catch {}
+    }
+  };
+  async function pump() {
+    if (reader === null) reader = web.getReader();
+    while (flowing && !paused && !ended && !destroyed) {
+      let r;
+      try { r = await reader.read(); } catch (e) { emit("error", e); return; }
+      if (r.done) {
+        ended = true;
+        emit("end");
+        emit("close");
+        return;
+      }
+      let chunk = Buffer.from(r.value);
+      if (enc !== null) chunk = chunk.toString(enc);
+      emit("data", chunk);
+    }
+  }
+  const api = {
+    on(ev, cb) {
+      (listeners[ev] ||= []).push(cb);
+      if (ev === "data") { flowing = true; pump(); }
+      return api;
+    },
+    once(ev, cb) {
+      const w = (...a) => { api.off(ev, w); cb(...a); };
+      return api.on(ev, w);
+    },
+    off(ev, cb) {
+      const l = listeners[ev];
+      if (l) { const i = l.indexOf(cb); if (i !== -1) l.splice(i, 1); }
+      return api;
+    },
+    removeListener(ev, cb) { return api.off(ev, cb); },
+    removeAllListeners(ev) {
+      if (ev !== undefined) delete listeners[ev];
+      else for (const k of Object.keys(listeners)) delete listeners[k];
+      return api;
+    },
+    setEncoding(e) { enc = e === null ? null : String(e); return api; },
+    pause() { paused = true; return api; },
+    resume() { paused = false; flowing = true; pump(); return api; },
+    destroy() {
+      if (destroyed) return api;
+      destroyed = true;
+      try { if (reader !== null) reader.cancel(); } catch {}
+      emit("close");
+      return api;
+    },
+    // 整收口径（§4.67 同款）：read() 恒 null，数据走 'data' 事件。
+    read() { return null; },
+    get destroyed() { return destroyed; },
+  };
+  return api;
+}
 export class ChildProcess {
   #id = 0;
   #killed = false;
@@ -883,7 +959,7 @@ export class ChildProcess {
       const stream = new ReadableStream({ start(c) { ctl = c; }, cancel() {} });
       this[push] = (b64) => { try { ctl.enqueue(__b64dec(b64)); } catch {} };
       this[close] = () => { try { ctl.close(); } catch {} };
-      return stream;
+      return __legacyReadable(stream);
     };
     if (stdio[1] === "pipe") this.stdout = mkOut("__pushOut", "__closeOut");
     else this.stdout = null;
@@ -952,20 +1028,22 @@ export class ChildProcess {
     return this;
   }
   removeListener(event, cb) { return this.off(event, cb); }
-  // exit/close 经访问器 wrap：落定退出码（直接赋值亦生效，Node 的 exitCode 语义）
+  // exit/close 经访问器 wrap：落定退出码（直接赋值亦生效，Node 的 exitCode 语义）。
+  // node 口径：回调双参 (code, signal)；null/undefined 的位不动（exit 用旧值，
+  // close 用 null——真机 close 在 signal 死亡时 exitCode 仍 null）。
   set onexit(cb) {
-    this.#onexit = (typeof cb === "function") ? ((ev) => {
-      this.exitCode = ev && ev.status !== undefined ? ev.status : this.exitCode;
-      this.signalCode = ev && ev.signal !== undefined ? ev.signal : this.signalCode;
-      cb(ev);
+    this.#onexit = (typeof cb === "function") ? ((code, signal) => {
+      if (code !== undefined && code !== null) this.exitCode = code;
+      if (signal !== undefined && signal !== null) this.signalCode = signal;
+      cb(code, signal);
     }) : cb;
   }
   get onexit() { return this.#onexit; }
   set onclose(cb) {
-    this.#onclose = (typeof cb === "function") ? ((ev) => {
-      if (this.exitCode === null) this.exitCode = ev && ev.status !== undefined ? ev.status : null;
-      if (this.signalCode === null) this.signalCode = ev && ev.signal !== undefined ? ev.signal : null;
-      cb(ev);
+    this.#onclose = (typeof cb === "function") ? ((code, signal) => {
+      if (this.exitCode === null && code !== undefined && code !== null) this.exitCode = code;
+      if (this.signalCode === null && signal !== undefined && signal !== null) this.signalCode = signal;
+      cb(code, signal);
     }) : cb;
   }
   get onclose() { return this.#onclose; }
@@ -1020,12 +1098,11 @@ export class ChildProcess {
   }
   __onForkExit(code) {
     this.__exitCode = code;
-    const ev = { status: code, signal: null };
     if (this.__connected) this.__connected = false;
-    // 与 spawn 路径同形：单 `{status, signal}` 对象经 onexit/onclose 访问器
-    // 落定 exitCode/signalCode 再调用户回调。
-    if (typeof this.onexit === "function") this.onexit(ev);
-    if (typeof this.onclose === "function") this.onclose(ev);
+    // node 口径：exit/close 双参 (code, signal)（fork 旧单对象形一并翻转，
+    // 与 spawn 派发同形）。
+    if (typeof this.onexit === "function") this.onexit(code, null);
+    if (typeof this.onclose === "function") this.onclose(code, null);
   }
   get connected() { return !!this.__connected; }
   unref() {
@@ -1038,7 +1115,10 @@ export class ChildProcess {
   }
 }
 function __normSpawnAsyncOpts(opts) {
-  const o = { cwd: null, env: null, detached: false, stdio: ["inherit", "inherit", "inherit"], timeoutMs: 0 };
+  // node 口径：stdio 缺省（整体缺或数组缺项）一律 'pipe'——spawnPromisified
+  // 系套件直接读 child.stdout/stderr（'child.stderr is null' 现形于
+  // test-url-parse-deprecation）；旧默认 inherit 是偏差。
+  const o = { cwd: null, env: null, detached: false, stdio: ["pipe", "pipe", "pipe"], timeoutMs: 0 };
   if (opts === undefined || opts === null) return o;
   if (opts.cwd !== undefined) o.cwd = String(opts.cwd);
   if (opts.env !== undefined) o.env = { ...opts.env };
@@ -1052,9 +1132,9 @@ function __normSpawnAsyncOpts(opts) {
     };
     if (typeof opts.stdio === "string") o.stdio = [one(opts.stdio), one(opts.stdio), one(opts.stdio)];
     else if (Array.isArray(opts.stdio)) {
-      // 三元数组（缺省补 inherit；Node 的复杂组合如 fd 重定向不在此列，文档记录）
+      // 三元数组（缺省补 pipe；Node 的复杂组合如 fd 重定向不在此列，文档记录）
       if (opts.stdio.length > 3) throw new Error("NotSupportedError: spawn stdio array takes at most 3 entries");
-      o.stdio = [0, 1, 2].map((i) => opts.stdio[i] === undefined ? "inherit" : one(opts.stdio[i]));
+      o.stdio = [0, 1, 2].map((i) => opts.stdio[i] === undefined ? "pipe" : one(opts.stdio[i]));
     } else {
       throw new Error("NotSupportedError: spawn stdio must be a string or array");
     }

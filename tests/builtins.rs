@@ -307,8 +307,8 @@ fn phase10f_timer_face_unref_uncaught() {
          process.on('warning', (w) => warned.push(w.name));\n\
          setTimeout(() => {}, NaN); setTimeout(() => {}, -1); setTimeout(() => {}, -2);\n\
          setTimeout(() => {}, 3e9); setTimeout(() => {}, 4e9);\n\
-         console.log('warn', JSON.stringify(warned));\n\
          await new Promise((r) => setTimeout(r, 40));\n\
+         console.log('warn', JSON.stringify(warned));\n\
          console.log('string-clear', globalThis.__bad === false);\n\
          let caught = '';\n\
          let origins = '';\n\
@@ -354,8 +354,8 @@ fn phase10f_timer_face_unref_uncaught() {
         "dispose true true",
         "disposed true",
         "validate ERR_INVALID_ARG_TYPE,true,ERR_INVALID_ARG_TYPE,ERR_INVALID_ARG_TYPE",
-        "warn [\"TimeoutNaNWarning\",\"TimeoutNegativeWarning\",\"TimeoutOverflowWarning\",\"TimeoutOverflowWarning\"]",
         "string-clear true",
+        "warn [\"TimeoutNaNWarning\",\"TimeoutNegativeWarning\",\"TimeoutOverflowWarning\",\"TimeoutOverflowWarning\"]",
         "uncaught true true",
         "als true",
         "domain true true",

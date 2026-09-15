@@ -5642,9 +5642,9 @@ mod tests {
     fn crypto_cbc_known_vector() {        // 真 Node 取证：aes-256-cbc(key=01×32, iv=02×16, "hello world")
         use aes::cipher::KeyIvInit as _;
         use aes::cipher::block::BlockModeEncrypt as _;
-        let key = aes::cipher::Key::<aes::Aes256>::from_slice(&[1u8; 32]);
-        let iv = aes::cipher::Block::<aes::Aes256>::from_slice(&[2u8; 16]);
-        let mut enc = cbc::Encryptor::<aes::Aes256>::new(key, iv);
+        let key: aes::cipher::Key<aes::Aes256> = [1u8; 32].into();
+        let iv: aes::cipher::Block<aes::Aes256> = [2u8; 16].into();
+        let mut enc = cbc::Encryptor::<aes::Aes256>::new(&key, &iv);
         let mut blocks = to_blocks::<aes::Aes256>(&pkcs7_pad(16, b"hello world".to_vec()));
         enc.encrypt_blocks(&mut blocks);
         assert_eq!(

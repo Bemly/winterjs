@@ -122,11 +122,18 @@ function __checkThrow(e, expected, prefix) {
   if (expected === undefined) return;
   let ok = false;
   if (typeof expected === "function") {
-    // 10f：真机口径——先 instanceof，不过再当校验函数调且须严格回 true
-    //（旧实现 `!!expected(e)` 把构造器调用的真值对象当通过）。
+    // 10f：真机口径——Error 子类先 instanceof，不过再当校验函数调且须严格
+    // 回 true（旧实现 `!!expected(e)` 把构造器调用的真值对象当通过）。
+    // instanceof 须以 prototype 为 Error 为门——箭头函数无 prototype，
+    // `e instanceof arrow` 本身就抛 TypeError，被 catch 吞后校验器永不到达
+    //（test-url-parse-invalid-input 的 `(e) => e instanceof URIError` 形现形）。
     try {
-      ok = e instanceof expected;
-      if (!ok) ok = expected(e) === true;
+      if (expected.prototype !== undefined && expected.prototype instanceof Error) {
+        ok = e instanceof expected;
+        if (!ok) ok = expected(e) === true;
+      } else {
+        ok = expected(e) === true;
+      }
     } catch {
       ok = false;
     }

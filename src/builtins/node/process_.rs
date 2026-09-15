@@ -635,17 +635,22 @@ globalThis.process = {
     } else {
       throw new TypeError("warning must be a string or an Error");
     }
-    const listeners = this.__wjs_warningListeners;
-    if (listeners.length > 0) {
-      for (const l of listeners) {
-        try { l.call(this, warning); } catch {}
+    // node 口径：warning 异步派发（nextTick）——emitWarning 同步返回后
+    // 调用方才挂 'warning' 监听（套件"先 parse 后 expectWarning"的时序
+    // 依赖此，10f url DEP0169 现形）；§4.74 同源教训。
+    queueMicrotask(() => {
+      const listeners = this.__wjs_warningListeners;
+      if (listeners.length > 0) {
+        for (const l of listeners) {
+          try { l.call(this, warning); } catch {}
+        }
+      } else {
+        const codePart = warning.code ? `[${warning.code}] ` : "";
+        const line = `(node:${__wjs_pid()}) ${codePart}${warning.name}: ${warning.message}`;
+        __wjs_stderr_write(line + "\n");
+        if (warning.detail) __wjs_stderr_write(warning.detail + "\n");
       }
-    } else {
-      const codePart = warning.code ? `[${warning.code}] ` : "";
-      const line = `(node:${__wjs_pid()}) ${codePart}${warning.name}: ${warning.message}`;
-      __wjs_stderr_write(line + "\n");
-      if (warning.detail) __wjs_stderr_write(warning.detail + "\n");
-    }
+    });
   },
 };
 "#;

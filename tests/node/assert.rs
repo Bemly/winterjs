@@ -1,6 +1,7 @@
 //! tests/node/assert.rs — 对齐 src/builtins/node/assert.rs（node:assert）。
 
 use crate::common::*;
+use assert_fs::prelude::*;
 
 #[test]
 fn phase4_node_assert_subset() {
@@ -72,4 +73,41 @@ try { assert.throws(() => { throw new Error("nope"); }, { message: /zzz/ }); } c
 console.log("regex-obj", bad);
 try { assert.throws(() => { throw new Error("nope"); }, { code: "E_MISSING" }); } catch (e) { console.log("code-mismatch", e.code === "ERR_ASSERTION"); }"#]));
     assert_eq!(out, "regex-obj true\ncode-mismatch true\n", "assert: {out}");
+}
+
+#[test]
+fn phase10f_throws_arrow_validator() {
+    // 10f：函数形期望的 instanceof 门——箭头函数无 prototype，instanceof
+    // 须以 Error 子类为门，否则校验器永不到达（§4.99）。正常+报错+边界。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("a.mjs");
+    file.write_str(
+        r#"
+import assert from "node:assert";
+const L = [];
+// 箭头校验器：instanceof 形 + 码形
+assert.throws(() => { decodeURIComponent("%E0%A4%A"); }, (e) => e instanceof URIError);
+try { assert.throws(() => {}, (e) => e instanceof URIError); } catch (e) { L.push("nofn " + (e.code === "ERR_ASSERTION" || e instanceof assert.AssertionError)); }
+// 校验器返回 false → unexpected throw
+try { assert.throws(() => { throw new Error("x"); }, () => false); } catch (e) { L.push("rej " + (e instanceof assert.AssertionError)); }
+// 类校验器（Error 子类 instanceof 门）不受影响
+try { assert.throws(() => { throw new TypeError("t"); }, (e) => e instanceof URIError); } catch (e) { L.push("cls-rej " + (e instanceof assert.AssertionError)); }
+// 函数形真值非 true（如返回对象）不通过（真机 === true 口径）
+try { assert.throws(() => { throw new Error("y"); }, () => ({})); } catch (e) { L.push("truthy " + (e instanceof assert.AssertionError)); }
+console.log(L.join("\n"));
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in ["nofn true", "rej true", "cls-rej true", "truthy true"] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
 }

@@ -126,6 +126,9 @@ const warnings = [];
 process.on("warning", (w) => warnings.push(w));
 const ee = new EE();
 for (let i = 0; i < 12; i++) ee.on("l", () => {});
+// node 口径：emitWarning nextTick 异步派发（§4.102）——同步收集恒空，
+// 转一 tick 后断言。
+await new Promise((r) => setTimeout(r, 5));
 console.log("warned", warnings.length, warnings[0]?.name, warnings[0]?.count);
 // Node 原文消息格式（test-events-common 断言口径）
 try { ee.once("x", 42); } catch (e) {

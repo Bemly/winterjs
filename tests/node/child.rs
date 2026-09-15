@@ -46,13 +46,13 @@ fn phase4_cp_timeout_and_shell() {
 fn phase4_spawn_async_exit_close_kill() {
     // exit+close 双调 + kill 中断（SIGTERM 形）。
     let out = stdout_of(&mut winterjs().args(["--eval",
-        r#"const { spawn } = await import("node:child_process"); const log = []; const c = spawn("echo", ["async-hi"], { stdio: "ignore" }); console.log("pid:", c.pid > 0, "killed:", c.killed); c.on("exit", (e) => log.push("exit:" + e.status)); c.on("close", () => { log.push("close"); console.log(log.join("|")); });"#]));
+        r#"const { spawn } = await import("node:child_process"); const log = []; const c = spawn("echo", ["async-hi"], { stdio: "ignore" }); console.log("pid:", c.pid > 0, "killed:", c.killed); c.on("exit", (code) => log.push("exit:" + code)); c.on("close", () => { log.push("close"); console.log(log.join("|")); });"#]));
     assert_eq!(
         out, "pid: true killed: false\nexit:0|close\n",
         "spawn: {out}"
     );
     let out = stdout_of(&mut winterjs().args(["--eval",
-        r#"const { spawn } = await import("node:child_process"); const log = []; const c = spawn("sleep", ["30"]); c.on("exit", (e) => log.push("exit:" + e.signal)); c.on("close", () => { log.push("close"); console.log(log.join("|")); }); setTimeout(() => console.log("killed:", c.kill()), 100);"#]));
+        r#"const { spawn } = await import("node:child_process"); const log = []; const c = spawn("sleep", ["30"]); c.on("exit", (code, signal) => log.push("exit:" + signal)); c.on("close", () => { log.push("close"); console.log(log.join("|")); }); setTimeout(() => console.log("killed:", c.kill()), 100);"#]));
     assert_eq!(out, "killed: true\nexit:SIGTERM|close\n", "kill: {out}");
 }
 
@@ -61,22 +61,27 @@ fn phase4_spawn_async_exit_close_kill() {
 fn node_spawn_pipe_streams() {
     // pipe：echo 回环 + cat stdin 写/关 + exit/close（--eval 经动态 import，见既有 spawn 用例）。
     // 注意：close 监听必须在 read 之前注册（echo 退出快，否则分发时无监听即摘除，后续 await 永挂）。
+    // 10f 起 stdout/stderr 为 legacy Readable 面（真机 `Readable`：setEncoding +
+    // on('data')；旧 Web getReader 用法编码的是实现偏差，§4.65 翻转）。stdin 仍
+    // Web WritableStream（legacy Writable 记偏差）。
     let code = r#"const { spawn } = await import("node:child_process");
 const c = spawn("/bin/echo", ["hi-echo"], { stdio: ["ignore", "pipe", "ignore"] });
 const closed = new Promise((res) => c.on("close", res));
-const x = await c.stdout.getReader().read();
-if (new TextDecoder().decode(x.value).trim() !== "hi-echo") throw new Error("echo failed");
+let got = "";
+c.stdout.setEncoding("utf8");
+c.stdout.on("data", (d) => { got += d; });
 await closed;
+if (got.trim() !== "hi-echo") throw new Error("echo failed: " + JSON.stringify(got));
 const c2 = spawn("cat", [], { stdio: "pipe" });
 const closed2 = new Promise((res) => c2.on("close", res));
 const w = c2.stdin.getWriter();
 await w.write("hi-stdin");
 await w.close();
 let out = "";
-const r = c2.stdout.getReader();
-for (;;) { const y = await r.read(); if (y.done) break; out += new TextDecoder().decode(y.value); }
-if (out !== "hi-stdin") throw new Error("cat failed: " + JSON.stringify(out));
+c2.stdout.setEncoding("utf8");
+c2.stdout.on("data", (d) => { out += d; });
 await closed2;
+if (out !== "hi-stdin") throw new Error("cat failed: " + JSON.stringify(out));
 console.log("pipe-ok");
 "#;
     assert_eq!(
@@ -153,7 +158,7 @@ c.on("message", (m) => {{
 }});
 c.on("disconnect", () => console.log("DISC-EV"));
 c.on("error", (e) => console.log("ERR-EV", e.code));
-c.on("exit", (e) => console.log("EXIT-EV", e.status, c.exitCode));
+c.on("exit", (code) => console.log("EXIT-EV", code, c.exitCode));
 c.send({{ hello: 1 }});
 console.log("send-open", true);
 // spawn 子进程的 message 监听照旧明错（非 fork 无通道）。
@@ -212,7 +217,7 @@ try { fork(); console.log("NO-ERR"); }
 catch (e) { console.log("bad-arg", e.constructor.name, e.code); }
 const c = fork("/no/such/fork-target-9m.mjs");
 c.on("error", (e) => console.log("ERR-EV", typeof (e && e.message) === "string"));
-c.on("exit", (e) => console.log("EXIT-EV", e.status !== 0, c.exitCode !== 0, c.kill() === false));
+c.on("exit", (code) => console.log("EXIT-EV", code !== 0, c.exitCode !== 0, c.kill() === false));
 "#,
     )
     .unwrap();
@@ -229,6 +234,57 @@ c.on("exit", (e) => console.log("EXIT-EV", e.status !== 0, c.exitCode !== 0, c.k
     );
     let out = String::from_utf8(out.stdout).unwrap();
     for line in ["bad-arg TypeError ERR_INVALID_ARG_TYPE", "ERR-EV true", "EXIT-EV true true true"] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_spawn_default_pipe_close_args() {
+    // 10f：spawn 缺省 stdio = pipe×3（node 口径——child.stderr 非 null 可
+    // setEncoding/on('data')）；exit/close 事件 node 双参 (code, signal)，
+    // 用户代码解构可收（§4.101）。正常+报错+边界。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("s.mjs");
+    file.write_str(
+        r#"
+import { spawn } from "node:child_process";
+// 缺省 stdio：stdout/stderr 为 legacy Readable（pipe），stdin 为 WritableStream
+const c = spawn("/bin/sh", ["-c", "echo out-hi; echo err-hi 1>&2"]);
+const closed = new Promise((res) => c.on("close", (code, signal) => {
+  console.log("close", code === 0, signal === null);
+  res();
+}));
+let out = "", err = "";
+c.stdout.setEncoding("utf8"); c.stderr.setEncoding("utf8");
+c.stdout.on("data", (d) => { out += d; });
+c.stderr.on("data", (d) => { err += d; });
+await closed;
+console.log("pipes", out.trim() === "out-hi", err.trim() === "err-hi");
+console.log("stdin-writable", typeof c.stdin.getWriter === "function");
+// exit 双参：signal 死亡时 (null, 'SIGTERM')，正常退出 (0, null)
+const c2 = spawn("sleep", ["30"]);
+c2.on("exit", (code, signal) => console.log("exit-sig", code === null, signal === "SIGTERM"));
+setTimeout(() => console.log("killed", c2.kill() === true), 60);
+await new Promise((r) => setTimeout(r, 200));
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "close true true",
+        "pipes true true",
+        "stdin-writable true",
+        "exit-sig true true",
+        "killed true",
+    ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }
     dir.close().unwrap();

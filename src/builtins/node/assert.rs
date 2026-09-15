@@ -140,7 +140,14 @@ function __checkThrow(e, expected, prefix) {
     }
     ok = expected.test(s);
   } else if (typeof expected === "object" && expected !== null) {
-    ok = Object.entries(expected).every(([k, v]) => (e && e[k]) == v);
+    // 10f：真机口径——实际值为 string 且期望为正则时做正则匹配
+    //（`{ message: /re/ }` 形；旧实现 `==` 永假，os.getPriority 用例现形）。
+    ok = Object.entries(expected).every(([k, v]) => {
+      const a = e ? e[k] : undefined;
+      if (typeof a === "string" && v instanceof RegExp) return v.test(a);
+      // eslint-disable-next-line eqeqeq
+      return a == v;
+    });
   }
   if (!ok) {
     throw new AssertionError({ message: `${prefix}: unexpected throw`, actual: e, expected, operator: prefix });

@@ -59,3 +59,17 @@ try { assert.fail(xerr); } catch (e) { console.log("fail-err", e.name); }"#]));
         "assert: {out}"
     );
 }
+
+#[test]
+fn phase10f_assert_throws_object_regex() {
+    // 10f：throws 对象形态中正则期望按匹配语义（旧 `==` 永假；os.getPriority 用例现形）。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        r#"const assert = (await import("node:assert")).default;
+assert.throws(() => { const e = new Error("boom-x"); e.code = "E_X"; throw e; }, { code: "E_X", message: /boom/, name: "Error" });
+assert.throws(() => { throw new TypeError("bad input"); }, { name: "TypeError", message: /bad/ });
+let bad = false;
+try { assert.throws(() => { throw new Error("nope"); }, { message: /zzz/ }); } catch (e) { bad = e.code === "ERR_ASSERTION"; }
+console.log("regex-obj", bad);
+try { assert.throws(() => { throw new Error("nope"); }, { code: "E_MISSING" }); } catch (e) { console.log("code-mismatch", e.code === "ERR_ASSERTION"); }"#]));
+    assert_eq!(out, "regex-obj true\ncode-mismatch true\n", "assert: {out}");
+}

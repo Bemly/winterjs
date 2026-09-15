@@ -32,7 +32,8 @@
 //! - 对称集合：aes-128/192/256-cbc/ctr/gcm + chacha20-poly1305 + des-ede3-cbc
 //!   + aes-128/192/256-ccm（10e；`ccm` 0.6 直引，全档分发）。
 //!   GCM/ChaCha/CCM 系 AEAD 无流式（buffered，`final` 时 oneshot；http 体整收同款口径）。
-//! - GCM iv 限 12 字节（`__wjs_aesgcm_*` 既有约束；Node 接受任意长度，记档，10e-2 做）。
+//! - GCM 任意 iv（10e-2：12B 内走 crate，其余 J0 手工 `__wjs_gcm_anyiv`；
+//!   WebCrypto 共用面维持 12B，spec 口径）。
 //! - PKCS#7 填充校验非恒定时间实现（功能等价，侧信道记档）；`bf-cbc` 真机 26
 //!   `getCiphers()` 已无 bf 系（10e 删项，不做）；`ocb/wrap` 系不做（ocb 非 Node 面）。
 
@@ -886,6 +887,173 @@ pub unsafe extern "C" fn ccm_crypt_native(
                 report_error(&mut cx, &e);
                 false
             }
+        }
+    }
+}
+
+// ── 10e GCM 任意 iv（NIST SP 800-38D J0 构造；`ghash` 0.6 直引）────────────
+// 说明：12B 走 `aes-gcm` crate 原路径（`__wjs_aesgcm_*`，WebCrypto 共用，spec 本就
+// 只收 12B）；node 侧非 12B 走本节手工路径（`aes` ECB 单块 + `ghash`，约 60 行）。
+// 计时侧信道与既有 PKCS#7 注记同口径（非恒定时间比较，功能等价）。
+
+/// AES-ECB 单块加密（密钥三档分发）。
+fn gcm_block_enc(key: &[u8], block: &[u8; 16]) -> Result<[u8; 16], String> {
+    use aes::cipher::{BlockCipherEncrypt, KeyInit as _};
+    macro_rules! one {
+        ($aes:ty) => {{
+            let c = <$aes>::new_from_slice(key).map_err(|e| format!("OperationError: {e}"))?;
+            let mut b = aes::cipher::Block::<$aes>::default();
+            b.copy_from_slice(block);
+            c.encrypt_block(&mut b);
+            let mut out = [0u8; 16];
+            out.copy_from_slice(&b);
+            out
+        }};
+    }
+    match key.len() {
+        16 => Ok(one!(aes::Aes128)),
+        24 => Ok(one!(aes::Aes192)),
+        32 => Ok(one!(aes::Aes256)),
+        _ => Err("ERR_CRYPTO_INVALID_KEYLEN: Invalid key length".to_string()),
+    }
+}
+
+/// GCM J0（SP 800-38D §7.1）：12B 直接后缀；其余 GHASH 全量构造。
+fn gcm_j0(h: &[u8; 16], iv: &[u8]) -> Result<[u8; 16], String> {
+    // `universal_hash` 经 `ghash` 重导出直用（零新增依赖，`rsa::BigUint` 同款口径）。
+    use ghash::universal_hash::UniversalHash as _;
+    if iv.len() == 12 {
+        let mut j0 = [0u8; 16];
+        j0[..12].copy_from_slice(iv);
+        j0[15] = 1;
+        return Ok(j0);
+    }
+    let key = ghash::Key::try_from(&h[..]).map_err(|_| "OperationError: bad GHASH key".to_string())?;
+    let mut g = ghash::GHash::new(&key);
+    g.update_padded(iv);
+    // 64 零位 + 64 位大端 iv 位长
+    let mut lens = [0u8; 16];
+    let bits = (iv.len() as u64).wrapping_mul(8);
+    lens[8..].copy_from_slice(&bits.to_be_bytes());
+    g.update(&[lens.into()]);
+    Ok(g.finalize().into())
+}
+
+/// inc32（大端低 32 位递增，回绕；SP 800-38D §7.2）。
+fn gcm_inc32(y: &[u8; 16], n: u32) -> [u8; 16] {
+    let mut out = *y;
+    let ctr = u32::from_be_bytes([y[12], y[13], y[14], y[15]]).wrapping_add(n);
+    out[12..].copy_from_slice(&ctr.to_be_bytes());
+    out
+}
+
+/// 手工 GCM（非 12B iv 专用）：enc=true 输入 pt 输出 ct‖tag16；
+/// enc=false 输入 ct‖tag16 输出 pt（tag 错报原文无码错，Node 同款）。
+fn gcm_manual(key: &[u8], iv: &[u8], aad: &[u8], input: &[u8], enc: bool) -> Result<Vec<u8>, String> {
+    use ghash::universal_hash::UniversalHash as _;
+    if iv.is_empty() {
+        return Err("ERR_CRYPTO_INVALID_IV: Invalid initialization vector".to_string());
+    }
+    let zero = [0u8; 16];
+    let h = gcm_block_enc(key, &zero)?;
+    let j0 = gcm_j0(&h, iv)?;
+    let (ct_in, tag_in) = if enc {
+        (input, None)
+    } else {
+        if input.len() < 16 {
+            return Err("Unsupported state or unable to authenticate data".to_string());
+        }
+        let (c, t) = input.split_at(input.len() - 16);
+        (c, Some(t))
+    };
+    // CTR（首计数器 J0+1）
+    let mut out = Vec::with_capacity(ct_in.len());
+    for (i, chunk) in ct_in.chunks(16).enumerate() {
+        let ks = gcm_block_enc(key, &gcm_inc32(&j0, (i as u32).wrapping_add(1)))?;
+        for (j, b) in chunk.iter().enumerate() {
+            out.push(b ^ ks[j]);
+        }
+    }
+    // GHASH(AAD‖CT‖lens) XOR E(K,J0)——解密分支同样 over 密文（上轮曾误 over 明文）。
+    let (gct, glen) = if enc { (&out[..], out.len()) } else { (ct_in, ct_in.len()) };
+    let gkey = ghash::Key::try_from(&h[..]).map_err(|_| "OperationError: bad GHASH key".to_string())?;
+    let mut g = ghash::GHash::new(&gkey);
+    g.update_padded(aad);
+    g.update_padded(gct);
+    let mut lens = [0u8; 16];
+    lens[..8].copy_from_slice(&((aad.len() as u64).wrapping_mul(8).to_be_bytes()));
+    lens[8..].copy_from_slice(&((glen as u64).wrapping_mul(8).to_be_bytes()));
+    g.update(&[lens.into()]);
+    let s: [u8; 16] = g.finalize().into();
+    let e0 = gcm_block_enc(key, &j0)?;
+    let mut tag = [0u8; 16];
+    for i in 0..16 {
+        tag[i] = s[i] ^ e0[i];
+    }
+    if enc {
+        out.extend_from_slice(&tag);
+        Ok(out)
+    } else {
+        let want = tag_in.expect("checked");
+        let mut diff = 0u8;
+        for i in 0..16 {
+            diff |= tag[i] ^ want[i];
+        }
+        if diff != 0 {
+            return Err("Unsupported state or unable to authenticate data".to_string());
+        }
+        Ok(out)
+    }
+}
+
+/// `__wjs_gcm_anyiv(encNum, keyU8, ivU8, aadU8, dataU8)`：12B 走 `aes-gcm`
+/// crate（与 `__wjs_aesgcm_*` 同语义），其余走手工 J0 路径；输出形状与 CCM 对齐
+/// （enc → ct‖tag16；dec 输入 ct‖tag16 → pt）。
+pub unsafe extern "C" fn gcm_anyiv(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 5 {
+        report_error(&mut cx, "TypeError: gcm needs mode, key, iv, aad and data");
+        return false;
+    }
+    let enc = !(frame.arg(0).is_number() && frame.arg(0).to_number() == 0.0);
+    let (Some(key), Some(iv), Some(aad), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(1), "gcm key"),
+        view_bytes(&mut cx, frame.arg(2), "gcm iv"),
+        opt_view(&mut cx, frame.arg(3), "gcm aad"),
+        view_bytes(&mut cx, frame.arg(4), "gcm data"),
+    ) else {
+        return false;
+    };
+    if key.len() != 16 && key.len() != 24 && key.len() != 32 {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_KEYLEN: Invalid key length");
+        return false;
+    }
+    if iv.is_empty() {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_IV: Invalid initialization vector");
+        return false;
+    }
+    let aad_ref = aad.as_deref().unwrap_or(&[]);
+    let out = if iv.len() == 12 {
+        // 原 crate 路径（12B；错误文案与 `__wjs_aesgcm_*` 对齐）
+        if enc {
+            crate::builtins::crypto::gcm_encrypt_raw(&key, &iv, aad_ref, &data)
+        } else {
+            crate::builtins::crypto::gcm_decrypt_raw(&key, &iv, aad_ref, &data)
+        }
+    } else {
+        gcm_manual(&key, &iv, aad_ref, &data, enc)
+    };
+    match out {
+        Ok(v) => set_rval_bytes(&mut cx, &frame, &v),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
         }
     }
 }
@@ -3324,8 +3492,15 @@ function __needKeyIv(info, key, iv, what) {
   }
   const ivb = __cryptBytes(iv, "iv");
   // 10e CCM：iv 7–13 可变（NIST SP 800-38D；`info.iv` 仅名义 12）
+  // 10e-2 GCM：任意非空 iv（12B 外走 J0 手工路径；`info.iv` 仅名义 12）
   if (info.family === "ccm") {
     if (ivb.length < 7 || ivb.length > 13) {
+      const err = new Error("Invalid initialization vector");
+      err.code = "ERR_CRYPTO_INVALID_IV";
+      throw err;
+    }
+  } else if (info.family === "gcm") {
+    if (ivb.length === 0) {
       const err = new Error("Invalid initialization vector");
       err.code = "ERR_CRYPTO_INVALID_IV";
       throw err;
@@ -3426,14 +3601,10 @@ class Cipheriv {
     if (this.__id !== null) {
       out = __cryptCall(() => __wjs_cipher_final(String(this.__id)));
     } else if (this.__info.family === "gcm") {
-      if (this.__iv.length !== 12) {
-        const err = new Error("Invalid initialization vector");
-        err.code = "ERR_CRYPTO_INVALID_IV";
-        throw err;
-      }
+      // 10e-2：经 anyiv（12B 内走 crate，其余 J0 手工；iv 非空已在构造期校验）
       const pt = __joinParts(this.__parts);
       const tagged = __cryptCall(() =>
-        __wjs_aesgcm_encrypt(this.__key, this.__iv, this.__aad ?? new Uint8Array(0), pt));
+        __wjs_gcm_anyiv(1, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), pt));
       out = tagged.slice(0, tagged.length - 16);
       this.__tag = Buffer.from(tagged.slice(tagged.length - 16));
     } else if (this.__info.family === "ccm") {
@@ -3538,7 +3709,8 @@ class Decipheriv {
       const input = new Uint8Array(ct.length + 16);
       input.set(ct, 0); input.set(this.__tag, ct.length);
       try {
-        out = __wjs_aesgcm_decrypt(this.__key, this.__iv, this.__aad ?? new Uint8Array(0), input);
+        // 10e-2：经 anyiv（iv 非空已在构造期校验）
+        out = __wjs_gcm_anyiv(0, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), input);
       } catch {
         throw new Error("Unsupported state or unable to authenticate data");
       }
@@ -5314,9 +5486,8 @@ mod tests {
         assert!(cipher_params("").is_none());
     }
 
-    #[test]
-    fn crypto_ccm_known_answer() {
-        // 真 Node 交叉取证：aes-128-ccm(key=0001..0f, nonce=1011..1b, tag 12, "hello CCM")
+        #[test]
+    fn crypto_ccm_known_answer() {        // 真 Node 交叉取证：aes-128-ccm(key=0001..0f, nonce=1011..1b, tag 12, "hello CCM")
         // 逐字节一致（ct 4bd0d5cc2dd46ef147 / tag e3e2af5555de4dea4caafca2）。
         let key = const_hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
         let nonce = const_hex::decode("101112131415161718191a1b").unwrap();
@@ -5349,6 +5520,40 @@ mod tests {
                     assert_eq!(back, b"data");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn crypto_gcm_j0_known_answer() {
+        // 真 Node 交叉取证：aes-128-gcm(key=0001..0f, iv8=0102..08, aad="aad",
+        // "hello GCM") → ct 0abdd127a6e4463bbe / tag 5fee9590bf890f933f19030aa67fad71。
+        let key = const_hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+        let iv = const_hex::decode("0102030405060708").unwrap();
+        let out = gcm_manual(&key, &iv, b"aad", b"hello GCM", true).unwrap();
+        assert_eq!(const_hex::encode(&out[..9]), "0abdd127a6e4463bbe");
+        assert_eq!(const_hex::encode(&out[9..]), "5fee9590bf890f933f19030aa67fad71");
+        let back = gcm_manual(&key, &iv, b"aad", &out, false).unwrap();
+        assert_eq!(back, b"hello GCM");
+        // J0 形状：12B 后缀 00..01；8B 走 GHASH（与 12B 结果不同即分路生效）
+        let h = gcm_block_enc(&key, &[0u8; 16]).unwrap();
+        let j12 = gcm_j0(&h, &[0xABu8; 12]).unwrap();
+        assert_eq!(&j12[..12], &[0xABu8; 12]);
+        assert_eq!(&j12[12..], &[0, 0, 0, 1]);
+        // 错 tag 拒收（原文无码错）+ 空 iv 拒收
+        let mut bad = out.clone();
+        bad[10] ^= 0xFF;
+        assert_eq!(
+            gcm_manual(&key, &iv, b"aad", &bad, false),
+            Err("Unsupported state or unable to authenticate data".to_string())
+        );
+        assert!(gcm_manual(&key, &[], b"", b"x", true).is_err());
+        // 192/256 档冒烟（与 crate 12B 路径同口径：12B 手工 == crate 输出）
+        for kl in [16usize, 24, 32] {
+            let k = vec![0x11u8; kl];
+            let iv12 = vec![0x22u8; 12];
+            let a = gcm_manual(&k, &iv12, b"a", b"data", true).unwrap();
+            let b = crate::builtins::crypto::gcm_encrypt_raw(&k, &iv12, b"a", b"data").unwrap();
+            assert_eq!(a, b);
         }
     }
 

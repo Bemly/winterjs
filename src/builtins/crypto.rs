@@ -39,21 +39,10 @@ pub unsafe extern "C" fn aesgcm_encrypt(
         return false;
     }
     let aad_ref = aad.as_deref().unwrap_or(&[]);
-    type Aes192Gcm = aes_gcm::AesGcm<aes::Aes192, aes_gcm::aead::consts::U12>;
-    let out = if key.len() == 16 {
-        encrypt_with::<aes_gcm::Aes128Gcm>(&key, &iv, aad_ref, &plain)
-    } else if key.len() == 24 {
-        encrypt_with::<Aes192Gcm>(&key, &iv, aad_ref, &plain)
-    } else if key.len() == 32 {
-        encrypt_with::<aes_gcm::Aes256Gcm>(&key, &iv, aad_ref, &plain)
-    } else {
-        report_error(&mut cx, "OperationError: AES-GCM key must be 16, 24 or 32 bytes");
-        return false;
-    };
-    match out {
+    match gcm_encrypt_raw(&key, &iv, aad_ref, &plain) {
         Ok(ct) => set_rval_bytes(&mut cx, &frame, &ct),
         Err(e) => {
-            report_error(&mut cx, &format!("OperationError: AES-GCM encrypt failed: {e}"));
+            report_error(&mut cx, &e);
             false
         }
     }
@@ -98,22 +87,15 @@ pub unsafe extern "C" fn aesgcm_decrypt(
         report_error(&mut cx, "OperationError: AES-GCM iv must be 12 bytes");
         return false;
     }
-    let aad_ref = aad.as_deref().unwrap_or(&[]);
-    type Aes192Gcm = aes_gcm::AesGcm<aes::Aes192, aes_gcm::aead::consts::U12>;
-    let out = if key.len() == 16 {
-        decrypt_with::<aes_gcm::Aes128Gcm>(&key, &iv, aad_ref, &data)
-    } else if key.len() == 24 {
-        decrypt_with::<Aes192Gcm>(&key, &iv, aad_ref, &data)
-    } else if key.len() == 32 {
-        decrypt_with::<aes_gcm::Aes256Gcm>(&key, &iv, aad_ref, &data)
-    } else {
+    if key.len() != 16 && key.len() != 24 && key.len() != 32 {
         report_error(&mut cx, "OperationError: AES-GCM key must be 16, 24 or 32 bytes");
         return false;
-    };
-    match out {
+    }
+    let aad_ref = aad.as_deref().unwrap_or(&[]);
+    match gcm_decrypt_raw(&key, &iv, aad_ref, &data) {
         Ok(pt) => set_rval_bytes(&mut cx, &frame, &pt),
-        Err(_) => {
-            report_error(&mut cx, "OperationError: AES-GCM decrypt failed (bad key/iv/tag?)");
+        Err(e) => {
+            report_error(&mut cx, &e);
             false
         }
     }
@@ -130,6 +112,53 @@ where
     cipher
         .decrypt(&nonce, Payload { msg: data, aad })
         .map_err(|e| e.to_string())
+}
+
+/// AES-GCM 12B 裸加密（`__wjs_aesgcm_encrypt` 与 node 侧 `gcm_anyiv` 共用；
+/// 错误文案维持 `__wjs_aesgcm_*` 口径，调用方按需包装）。
+pub(crate) fn gcm_encrypt_raw(
+    key: &[u8],
+    iv: &[u8],
+    aad: &[u8],
+    plain: &[u8],
+) -> Result<Vec<u8>, String> {
+    type Aes192Gcm = aes_gcm::AesGcm<aes::Aes192, aes_gcm::aead::consts::U12>;
+    if key.len() == 16 {
+        encrypt_with::<aes_gcm::Aes128Gcm>(key, iv, aad, plain)
+    } else if key.len() == 24 {
+        encrypt_with::<Aes192Gcm>(key, iv, aad, plain)
+    } else if key.len() == 32 {
+        encrypt_with::<aes_gcm::Aes256Gcm>(key, iv, aad, plain)
+    } else {
+        Err("OperationError: AES-GCM key must be 16, 24 or 32 bytes".to_string())
+    }
+    .map_err(|e| {
+        if e.starts_with("OperationError") {
+            e
+        } else {
+            format!("OperationError: AES-GCM encrypt failed: {e}")
+        }
+    })
+}
+
+/// AES-GCM 12B 裸解密（共用；失败文案与 `__wjs_aesgcm_decrypt` 一致）。
+pub(crate) fn gcm_decrypt_raw(
+    key: &[u8],
+    iv: &[u8],
+    aad: &[u8],
+    data: &[u8],
+) -> Result<Vec<u8>, String> {
+    type Aes192Gcm = aes_gcm::AesGcm<aes::Aes192, aes_gcm::aead::consts::U12>;
+    if key.len() == 16 {
+        decrypt_with::<aes_gcm::Aes128Gcm>(key, iv, aad, data)
+    } else if key.len() == 24 {
+        decrypt_with::<Aes192Gcm>(key, iv, aad, data)
+    } else if key.len() == 32 {
+        decrypt_with::<aes_gcm::Aes256Gcm>(key, iv, aad, data)
+    } else {
+        Err("bad key".to_string())
+    }
+    .map_err(|_| "OperationError: AES-GCM decrypt failed (bad key/iv/tag?)".to_string())
 }
 
 macro_rules! hmac_with {

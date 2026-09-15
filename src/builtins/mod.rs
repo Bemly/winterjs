@@ -2413,6 +2413,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_cipher_chacha", Some(node::crypto::cipher_chacha), 6),
             // 10e: AES-CCM oneshot（ccm 0.6 直引）
             ("__wjs_ccm_crypt", Some(node::crypto::ccm_crypt_native), 7),
+            // 10e: GCM 任意 iv（12B 走 crate，其余 J0 手工；WebCrypto 共用面不动）
+            ("__wjs_gcm_anyiv", Some(node::crypto::gcm_anyiv), 5),
             // Phase 9e-1c: RSA v1.5 + DH/素性（签名/派生复用既有 natives）
             ("__wjs_rsa_encrypt_v15", Some(node::crypto::rsa_encrypt_v15), 2),
             ("__wjs_rsa_decrypt_v15", Some(node::crypto::rsa_decrypt_v15), 2),

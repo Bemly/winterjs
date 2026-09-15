@@ -1084,3 +1084,65 @@ console.log("info", getCipherInfo("aes-128-ccm").nid === 896 && getCipherInfo("a
     assert!(out.contains("info true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10e_crypto_gcm_anyiv() {
+    // 10e-2 GCM 任意 iv：真 Node 交叉取证逐字节向量 + 往返 + 报错/边界三件
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createCipheriv, createDecipheriv } from "node:crypto";
+const k = Buffer.from("000102030405060708090a0b0c0d0e0f", "hex");
+// 已知向量（与真机逐字节一致；12B 回归 crate 路径）
+for (const [ivh, ct, tag] of [
+  ["01", "138fb39fea1878f98e", "4e8c59b0daa7aca4d3da0bc3058f77a5"],
+  ["0102030405060708", "0abdd127a6e4463bbe", "5fee9590bf890f933f19030aa67fad71"],
+  ["000102030405060708090a0b", "fb09cba2093bb01706", "ce6f0f4faa84b1d687a70f3fd41cbf67"],
+  ["000102030405060708090a0b0c0d0e0f10", "2300d58d728165e659", "457e809f0765819935663e0ad8afe3e7"],
+]) {
+  const iv = Buffer.from(ivh, "hex");
+  const c = createCipheriv("aes-128-gcm", k, iv);
+  c.setAAD(Buffer.from("aad"));
+  const out = Buffer.concat([c.update("hello GCM", "utf8"), c.final()]);
+  console.log("vec-" + iv.length, out.toString("hex") === ct, c.getAuthTag().toString("hex") === tag);
+  const d = createDecipheriv("aes-128-gcm", k, iv);
+  d.setAAD(Buffer.from("aad")); d.setAuthTag(c.getAuthTag());
+  console.log("rt-" + iv.length, Buffer.concat([d.update(Buffer.from(ct, "hex")), d.final()]).toString() === "hello GCM");
+}
+// 192/256 档非 12B 往返
+for (const [alg, kl] of [["aes-192-gcm", 24], ["aes-256-gcm", 32]]) {
+  const key = Buffer.alloc(kl, 5), nonce = Buffer.alloc(8, 6);
+  const c = createCipheriv(alg, key, nonce);
+  const ct = Buffer.concat([c.update("data", "utf8"), c.final()]);
+  const d = createDecipheriv(alg, key, nonce);
+  d.setAuthTag(c.getAuthTag());
+  console.log("wide-" + alg, Buffer.concat([d.update(ct), d.final()]).toString() === "data");
+}
+// 报错：空 iv；错 tag 无码错
+try { createCipheriv("aes-128-gcm", k, Buffer.alloc(0)); } catch (e) { console.log("emptyiv", e.code); }
+try {
+  const iv = Buffer.alloc(8, 1);
+  const c = createCipheriv("aes-128-gcm", k, iv);
+  const ct = Buffer.concat([c.update("x", "utf8"), c.final()]);
+  const d = createDecipheriv("aes-128-gcm", k, iv);
+  d.setAuthTag(Buffer.alloc(16, 2));
+  d.update(ct); d.final();
+} catch (e) { console.log("badtag8", e.code === undefined, e.message === "Unsupported state or unable to authenticate data"); }
+"#,
+    );
+    assert!(out.contains("vec-1 true true"), "out: {out}");
+    assert!(out.contains("vec-8 true true"), "out: {out}");
+    assert!(out.contains("vec-12 true true"), "out: {out}");
+    assert!(out.contains("vec-17 true true"), "out: {out}");
+    assert!(out.contains("rt-1 true"), "out: {out}");
+    assert!(out.contains("rt-8 true"), "out: {out}");
+    assert!(out.contains("rt-12 true"), "out: {out}");
+    assert!(out.contains("rt-17 true"), "out: {out}");
+    assert!(out.contains("wide-aes-192-gcm true"), "out: {out}");
+    assert!(out.contains("wide-aes-256-gcm true"), "out: {out}");
+    assert!(out.contains("emptyiv ERR_CRYPTO_INVALID_IV"), "out: {out}");
+    assert!(out.contains("badtag8 true true"), "out: {out}");
+    dir.close().unwrap();
+}

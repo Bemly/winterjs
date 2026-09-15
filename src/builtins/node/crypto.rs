@@ -29,11 +29,12 @@
 //!   （真机 hedged，双方互验不受影响，双向交叉已验）；X.509 验签收 ml-dsa 证书
 //!   （签名 OID 与密钥 OID 同族，openssl 3.6 实签证书真机/本仓同验）。
 //! 偏差记档（9e-1b）：
-//! - 对称集合：aes-128/192/256-cbc/ctr/gcm + chacha20-poly1305 + des-ede3-cbc。
-//!   GCM/ChaCha 系 AEAD 无流式（buffered，`final` 时 oneshot；http 体整收同款口径）。
-//! - GCM iv 限 12 字节（`__wjs_aesgcm_*` 既有约束；Node 接受任意长度，记档）。
-//! - PKCS#7 填充校验非恒定时间实现（功能等价，侧信道记档）；`bf-cbc` 等 OpenSSL
-//!   遗留算法不做；`ccm/ocb/wrap` 系不做。
+//! - 对称集合：aes-128/192/256-cbc/ctr/gcm + chacha20-poly1305 + des-ede3-cbc
+//!   + aes-128/192/256-ccm（10e；`ccm` 0.6 直引，全档分发）。
+//!   GCM/ChaCha/CCM 系 AEAD 无流式（buffered，`final` 时 oneshot；http 体整收同款口径）。
+//! - GCM iv 限 12 字节（`__wjs_aesgcm_*` 既有约束；Node 接受任意长度，记档，10e-2 做）。
+//! - PKCS#7 填充校验非恒定时间实现（功能等价，侧信道记档）；`bf-cbc` 真机 26
+//!   `getCiphers()` 已无 bf 系（10e 删项，不做）；`ocb/wrap` 系不做（ocb 非 Node 面）。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -753,6 +754,136 @@ pub unsafe extern "C" fn cipher_chacha(
             Ok(out) => set_rval_bytes(&mut cx, &frame, &out),
             Err(_) => {
                 report_error(&mut cx, "Unsupported state or unable to authenticate data");
+                false
+            }
+        }
+    }
+}
+
+// ── 10e AES-CCM（`ccm` 0.6 直引；NIST SP 800-38D；ghash/J0 见 GCM 节）───────
+
+/// CCM 组合分发（密钥 16/24/32 × nonce 7–13 × tag 4/6/…/16 全档；147 单态，
+/// 薄泛型，编译期展开）。
+/// enc=true → ct‖tag；enc=false → pt（input 为 ct‖tag；失败报原文无码错，Node 同款）。
+fn ccm_crypt(
+    key: &[u8],
+    nonce: &[u8],
+    aad: &[u8],
+    input: &[u8],
+    tag_len: usize,
+    enc: bool,
+) -> Result<Vec<u8>, String> {
+    use ccm::aead::{Aead as _, KeyInit as _, Payload};
+    // `Ccm<C, M, N>`：M = tag 长，N = nonce 长（上游注记，非直觉顺序）。
+    macro_rules! run {
+        ($aes:ty, $tlen:ty, $nlen:ty) => {{
+            let cipher = ccm::Ccm::<$aes, $tlen, $nlen>::new_from_slice(key)
+                .map_err(|e| format!("OperationError: {e}"))?;
+            let n = ccm::Nonce::<$nlen>::try_from(nonce)
+                .map_err(|_| "ERR_CRYPTO_INVALID_IV: Invalid initialization vector".to_string())?;
+            if enc {
+                cipher
+                    .encrypt(&n, Payload { msg: input, aad })
+                    .map_err(|e| format!("OperationError: ccm encrypt failed: {e}"))
+            } else {
+                cipher
+                    .decrypt(&n, Payload { msg: input, aad })
+                    .map_err(|_| "Unsupported state or unable to authenticate data".to_string())
+            }
+        }};
+    }
+    macro_rules! on_nonce {
+        ($aes:ty, $tlen:ty) => {
+            match nonce.len() {
+                7 => run!($aes, $tlen, ccm::consts::U7),
+                8 => run!($aes, $tlen, ccm::consts::U8),
+                9 => run!($aes, $tlen, ccm::consts::U9),
+                10 => run!($aes, $tlen, ccm::consts::U10),
+                11 => run!($aes, $tlen, ccm::consts::U11),
+                12 => run!($aes, $tlen, ccm::consts::U12),
+                13 => run!($aes, $tlen, ccm::consts::U13),
+                _ => Err("ERR_CRYPTO_INVALID_IV: Invalid initialization vector".to_string()),
+            }
+        };
+    }
+    macro_rules! on_tag {
+        ($aes:ty) => {
+            match tag_len {
+                4 => on_nonce!($aes, ccm::consts::U4),
+                6 => on_nonce!($aes, ccm::consts::U6),
+                8 => on_nonce!($aes, ccm::consts::U8),
+                10 => on_nonce!($aes, ccm::consts::U10),
+                12 => on_nonce!($aes, ccm::consts::U12),
+                14 => on_nonce!($aes, ccm::consts::U14),
+                16 => on_nonce!($aes, ccm::consts::U16),
+                _ => Err("ERR_CRYPTO_INVALID_AUTH_TAG: Invalid authentication tag length".to_string()),
+            }
+        };
+    }
+    match key.len() {
+        16 => on_tag!(aes::Aes128),
+        24 => on_tag!(aes::Aes192),
+        32 => on_tag!(aes::Aes256),
+        _ => Err("ERR_CRYPTO_INVALID_KEYLEN: Invalid key length".to_string()),
+    }
+}
+
+/// `__wjs_ccm_crypt(encNum, keyU8, nonceU8, aadU8, dataU8, tagU8OrNull, tagLenNum)`：
+/// enc=1 → ct‖tag；enc=0 → pt（tag 必给；tag 长须等于 tagLen，认证失败原文无码错）。
+pub unsafe extern "C" fn ccm_crypt_native(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 7 {
+        report_error(&mut cx, "TypeError: ccm needs mode, key, nonce, aad, data, tag and tag length");
+        return false;
+    }
+    let enc = !(frame.arg(0).is_number() && frame.arg(0).to_number() == 0.0);
+    let (Some(key), Some(nonce), Some(aad), Some(data), Some(tag)) = (
+        view_bytes(&mut cx, frame.arg(1), "ccm key"),
+        view_bytes(&mut cx, frame.arg(2), "ccm nonce"),
+        opt_view(&mut cx, frame.arg(3), "ccm aad"),
+        view_bytes(&mut cx, frame.arg(4), "ccm data"),
+        opt_view(&mut cx, frame.arg(5), "ccm tag"),
+    ) else {
+        return false;
+    };
+    let tag_len = if frame.arg(6).is_number() {
+        frame.arg(6).to_number() as usize
+    } else {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_AUTH_TAG: Invalid authentication tag length");
+        return false;
+    };
+    if enc {
+        match ccm_crypt(&key, &nonce, aad.as_deref().unwrap_or(&[]), &data, tag_len, true) {
+            Ok(out) => set_rval_bytes(&mut cx, &frame, &out),
+            Err(e) => {
+                report_error(&mut cx, &e);
+                false
+            }
+        }
+    } else {
+        let Some(tag) = tag else {
+            report_error(&mut cx, "Unsupported state or unable to authenticate data");
+            return false;
+        };
+        if tag.len() != tag_len {
+            report_error(
+                &mut cx,
+                &format!("ERR_CRYPTO_INVALID_AUTH_TAG: Invalid authentication tag length: {}", tag.len()),
+            );
+            return false;
+        }
+        let mut input = data;
+        input.extend_from_slice(&tag);
+        match ccm_crypt(&key, &nonce, aad.as_deref().unwrap_or(&[]), &input, tag_len, false) {
+            Ok(out) => set_rval_bytes(&mut cx, &frame, &out),
+            Err(e) => {
+                report_error(&mut cx, &e);
                 false
             }
         }
@@ -3164,6 +3295,10 @@ const __CIPHERS = {
   "aes-128-gcm": { family: "gcm", key: 16, iv: 12, block: 16, mode: "gcm", nid: 961 },
   "aes-192-gcm": { family: "gcm", key: 24, iv: 12, block: 16, mode: "gcm", nid: 962 },
   "aes-256-gcm": { family: "gcm", key: 32, iv: 12, block: 16, mode: "gcm", nid: 963 },
+  // 10e：AES-CCM 三档（iv 7–13 可变，`__needKeyIv` 另分支；nid 真机 896/897/898）
+  "aes-128-ccm": { family: "ccm", key: 16, iv: 12, block: 16, mode: "ccm", nid: 896 },
+  "aes-192-ccm": { family: "ccm", key: 24, iv: 12, block: 16, mode: "ccm", nid: 897 },
+  "aes-256-ccm": { family: "ccm", key: 32, iv: 12, block: 16, mode: "ccm", nid: 898 },
   "chacha20-poly1305": { family: "chacha", key: 32, iv: 12, block: 16, mode: "chacha20-poly1305", nid: 1018 },
   "des-ede3-cbc": { family: "cbc", key: 24, iv: 8, block: 8, mode: "cbc", nid: 44 },
 };
@@ -3188,12 +3323,28 @@ function __needKeyIv(info, key, iv, what) {
     throw err;
   }
   const ivb = __cryptBytes(iv, "iv");
-  if (ivb.length !== info.iv) {
+  // 10e CCM：iv 7–13 可变（NIST SP 800-38D；`info.iv` 仅名义 12）
+  if (info.family === "ccm") {
+    if (ivb.length < 7 || ivb.length > 13) {
+      const err = new Error("Invalid initialization vector");
+      err.code = "ERR_CRYPTO_INVALID_IV";
+      throw err;
+    }
+  } else if (ivb.length !== info.iv) {
     const err = new Error("Invalid initialization vector");
     err.code = "ERR_CRYPTO_INVALID_IV";
     throw err;
   }
   return [kb, ivb];
+}
+function __ccmTagLen(info, options) {
+  const tl = options && options.authTagLength !== undefined ? Number(options.authTagLength) : NaN;
+  if (![4, 6, 8, 10, 12, 14, 16].includes(tl)) {
+    const err = new Error(`authTagLength required for ${info.name}`);
+    err.code = "ERR_CRYPTO_INVALID_AUTH_TAG";
+    throw err;
+  }
+  return tl;
 }
 function __badState() {
   const err = new Error("Invalid state");
@@ -3223,11 +3374,19 @@ class Cipheriv {
       this.__parts = [];
       this.__key = kb;
       this.__iv = ivb;
+      // 10e CCM：authTagLength 必给（真机缺省即 ERR_CRYPTO_INVALID_AUTH_TAG）
+      this.__tagLen = info.family === "ccm" ? __ccmTagLen(info, options) : 16;
     }
   }
   setAAD(aad, options) {
-    if (this.__info.family !== "gcm" && this.__info.family !== "chacha") {
+    if (this.__info.family !== "gcm" && this.__info.family !== "chacha" && this.__info.family !== "ccm") {
       const err = new Error("Trying to add data in unsupported state");
+      throw err;
+    }
+    // 10e CCM：setAAD 恒要 options.plaintextLength（空 AAD 亦然，真机口径）
+    if (this.__info.family === "ccm" && !(options && options.plaintextLength !== undefined)) {
+      const err = new TypeError("options.plaintextLength required for CCM mode with AAD");
+      err.code = "ERR_MISSING_ARGS";
       throw err;
     }
     if (this.__finalized || (this.__parts !== null && this.__aadDone)) __badState();
@@ -3277,6 +3436,13 @@ class Cipheriv {
         __wjs_aesgcm_encrypt(this.__key, this.__iv, this.__aad ?? new Uint8Array(0), pt));
       out = tagged.slice(0, tagged.length - 16);
       this.__tag = Buffer.from(tagged.slice(tagged.length - 16));
+    } else if (this.__info.family === "ccm") {
+      // 10e CCM：tag 长按实例 authTagLength 切分
+      const pt = __joinParts(this.__parts);
+      const tagged = __cryptCall(() =>
+        __wjs_ccm_crypt(1, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), pt, null, this.__tagLen));
+      out = tagged.slice(0, tagged.length - this.__tagLen);
+      this.__tag = Buffer.from(tagged.slice(tagged.length - this.__tagLen));
     } else {
       const pt = __joinParts(this.__parts);
       const aad = this.__aad ?? new Uint8Array(0);
@@ -3307,18 +3473,33 @@ class Decipheriv {
       this.__parts = [];
       this.__key = kb;
       this.__iv = ivb;
+      // 10e CCM：解密侧同样必给 authTagLength（真机口径）
+      this.__tagLen = info.family === "ccm" ? __ccmTagLen(info, options) : 16;
     }
   }
   setAAD(aad, options) {
-    if (this.__info.family !== "gcm" && this.__info.family !== "chacha") {
+    if (this.__info.family !== "gcm" && this.__info.family !== "chacha" && this.__info.family !== "ccm") {
       throw new Error("Trying to add data in unsupported state");
+    }
+    // 10e CCM：解密侧 setAAD 同样恒要 options.plaintextLength
+    if (this.__info.family === "ccm" && !(options && options.plaintextLength !== undefined)) {
+      const err = new TypeError("options.plaintextLength required for CCM mode with AAD");
+      err.code = "ERR_MISSING_ARGS";
+      throw err;
     }
     if (this.__finalized) __badState();
     this.__aad = __cryptBytes(aad, "aad");
     return this;
   }
   setAuthTag(tag) {
-    this.__tag = __cryptBytes(tag, "tag");
+    const tb = __cryptBytes(tag, "tag");
+    // 10e CCM：tag 长错配在 set 时即抛（真机口径；GCM/ChaCha 维持 final 期检查）
+    if (this.__info.family === "ccm" && tb.length !== this.__tagLen) {
+      const err = new TypeError(`Invalid authentication tag length: ${tb.length}`);
+      err.code = "ERR_CRYPTO_INVALID_AUTH_TAG";
+      throw err;
+    }
+    this.__tag = tb;
     return this;
   }
   setAutoPadding(autoPad) {
@@ -3358,6 +3539,18 @@ class Decipheriv {
       input.set(ct, 0); input.set(this.__tag, ct.length);
       try {
         out = __wjs_aesgcm_decrypt(this.__key, this.__iv, this.__aad ?? new Uint8Array(0), input);
+      } catch {
+        throw new Error("Unsupported state or unable to authenticate data");
+      }
+    } else if (this.__info.family === "ccm") {
+      // 10e CCM：tag 长按实例 authTagLength（set 时已校验等长）
+      const ct = __joinParts(this.__parts);
+      if (this.__tag === null || this.__tag.length !== this.__tagLen) {
+        throw new Error("Unsupported state or unable to authenticate data");
+      }
+      try {
+        out = __wjs_ccm_crypt(0, this.__key, this.__iv,
+          this.__aad ?? new Uint8Array(0), ct, this.__tag, this.__tagLen);
       } catch {
         throw new Error("Unsupported state or unable to authenticate data");
       }
@@ -5119,6 +5312,44 @@ mod tests {
         assert_eq!(cipher_params("des-ede3-cbc"), Some(("cbc-des3", 24, 8, 8)));
         assert!(cipher_params("aes-999-cbc").is_none());
         assert!(cipher_params("").is_none());
+    }
+
+    #[test]
+    fn crypto_ccm_known_answer() {
+        // 真 Node 交叉取证：aes-128-ccm(key=0001..0f, nonce=1011..1b, tag 12, "hello CCM")
+        // 逐字节一致（ct 4bd0d5cc2dd46ef147 / tag e3e2af5555de4dea4caafca2）。
+        let key = const_hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
+        let nonce = const_hex::decode("101112131415161718191a1b").unwrap();
+        let out = ccm_crypt(&key, &nonce, b"", b"hello CCM", 12, true).unwrap();
+        assert_eq!(const_hex::encode(&out[..9]), "4bd0d5cc2dd46ef147");
+        assert_eq!(const_hex::encode(&out[9..]), "e3e2af5555de4dea4caafca2");
+        // 解密往返 + 错 tag 拒收（原文无码错，Node 同款）
+        let pt = ccm_crypt(&key, &nonce, b"", &out, 12, false).unwrap();
+        assert_eq!(pt, b"hello CCM");
+        let mut bad = out.clone();
+        bad[10] ^= 0xFF;
+        assert_eq!(
+            ccm_crypt(&key, &nonce, b"", &bad, 12, false),
+            Err("Unsupported state or unable to authenticate data".to_string())
+        );
+        // 边界：nonce 6/14 拒、tag 5 拒、key 10B 拒
+        assert!(ccm_crypt(&key, &[0u8; 6], b"", b"x", 8, true).is_err());
+        assert!(ccm_crypt(&key, &[0u8; 14], b"", b"x", 8, true).is_err());
+        assert!(ccm_crypt(&key, &nonce, b"", b"x", 5, true).is_err());
+        assert!(ccm_crypt(&[0u8; 10], &nonce, b"", b"x", 8, true).is_err());
+        // 全档冒烟：三密钥 × nonce 7/13 × tag 4/16 往返
+        for kl in [16usize, 24, 32] {
+            for nl in [7usize, 13] {
+                for tl in [4usize, 16] {
+                    let k = vec![0xA5u8; kl];
+                    let n = vec![0x3Cu8; nl];
+                    let ct = ccm_crypt(&k, &n, b"ad", b"data", tl, true).unwrap();
+                    assert_eq!(ct.len(), 4 + tl);
+                    let back = ccm_crypt(&k, &n, b"ad", &ct, tl, false).unwrap();
+                    assert_eq!(back, b"data");
+                }
+            }
+        }
     }
 
     #[test]

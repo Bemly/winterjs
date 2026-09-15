@@ -998,3 +998,89 @@ console.log("xp-cross", pss.verify(ca.publicKey) === false, leaf.checkIssued(pss
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10e_crypto_ccm() {
+    // 10e AES-CCM 三档：真 Node 交叉取证逐字节向量 + 全档往返 + 报错/边界三件
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createCipheriv, createDecipheriv, getCiphers, getCipherInfo } from "node:crypto";
+// 已知向量（与真机逐字节一致）
+const k = Buffer.from("000102030405060708090a0b0c0d0e0f", "hex");
+const iv = Buffer.from("101112131415161718191a1b", "hex");
+const c0 = createCipheriv("aes-128-ccm", k, iv, { authTagLength: 12 });
+const ct0 = Buffer.concat([c0.update("hello CCM", "utf8"), c0.final()]);
+console.log("vec", ct0.toString("hex") === "4bd0d5cc2dd46ef147", c0.getAuthTag().toString("hex") === "e3e2af5555de4dea4caafca2");
+// 三档 × AAD 往返
+for (const [alg, kl] of [["aes-128-ccm", 16], ["aes-192-ccm", 24], ["aes-256-ccm", 32]]) {
+  const key = Buffer.alloc(kl, 9), nonce = Buffer.alloc(12, 4);
+  const c = createCipheriv(alg, key, nonce, { authTagLength: 8 });
+  c.setAAD(Buffer.from("hd"), { plaintextLength: 5 });
+  const ct = Buffer.concat([c.update("world", "utf8"), c.final()]);
+  const d = createDecipheriv(alg, key, nonce, { authTagLength: 8 });
+  d.setAAD(Buffer.from("hd"), { plaintextLength: 5 });
+  d.setAuthTag(c.getAuthTag());
+  console.log("rt-" + alg, Buffer.concat([d.update(ct), d.final()]).toString() === "world", c.getAuthTag().length);
+}
+// 报错三件
+try { createCipheriv("aes-128-ccm", k, Buffer.alloc(6), { authTagLength: 8 }); } catch (e) { console.log("badiv", e.code); }
+try { createCipheriv("aes-128-ccm", k, iv); } catch (e) { console.log("notaglen", e.code); }
+try { createCipheriv("aes-128-ccm", k, iv, { authTagLength: 5 }); } catch (e) { console.log("badtaglen", e.code); }
+try {
+  const c = createCipheriv("aes-128-ccm", k, iv, { authTagLength: 8 });
+  c.setAAD(Buffer.from("x"));
+} catch (e) { console.log("aad-noopt", e.code); }
+try {
+  const c = createCipheriv("aes-128-ccm", k, iv, { authTagLength: 8 });
+  const ct = Buffer.concat([c.update("hi", "utf8"), c.final()]);
+  const d = createDecipheriv("aes-128-ccm", k, iv, { authTagLength: 8 });
+  d.setAuthTag(Buffer.alloc(8, 1));
+  d.update(ct); d.final();
+} catch (e) { console.log("badtag", e.code === undefined, e.message === "Unsupported state or unable to authenticate data"); }
+try {
+  const c = createCipheriv("aes-128-ccm", k, iv, { authTagLength: 8 });
+  const ct = Buffer.concat([c.update("hi", "utf8"), c.final()]);
+  const d = createDecipheriv("aes-128-ccm", k, iv, { authTagLength: 8 });
+  d.update(ct); d.final();
+} catch (e) { console.log("notag", e.code === undefined); }
+try {
+  const d = createDecipheriv("aes-128-ccm", k, iv, { authTagLength: 12 });
+  d.setAuthTag(Buffer.alloc(8));
+} catch (e) { console.log("taglen-mismatch", e.code); }
+// 边界：nonce 7/13、tag 4/16、空明文
+for (const nl of [7, 13]) {
+  for (const tl of [4, 16]) {
+    const key = Buffer.alloc(16, 2), nonce = Buffer.alloc(nl, 3);
+    const c = createCipheriv("aes-128-ccm", key, nonce, { authTagLength: tl });
+    const ct = Buffer.concat([c.update("", "utf8"), c.final()]);
+    const d = createDecipheriv("aes-128-ccm", key, nonce, { authTagLength: tl });
+    d.setAuthTag(c.getAuthTag());
+    console.log("edge", nl, tl, c.getAuthTag().length, d.final().length);
+  }
+}
+console.log("list", getCiphers().includes("aes-128-ccm") && getCiphers().includes("aes-256-ccm"));
+console.log("info", getCipherInfo("aes-128-ccm").nid === 896 && getCipherInfo("aes-256-ccm").keyLength === 32);
+"#,
+    );
+    assert!(out.contains("vec true true"), "out: {out}");
+    assert!(out.contains("rt-aes-128-ccm true 8"), "out: {out}");
+    assert!(out.contains("rt-aes-192-ccm true 8"), "out: {out}");
+    assert!(out.contains("rt-aes-256-ccm true 8"), "out: {out}");
+    assert!(out.contains("badiv ERR_CRYPTO_INVALID_IV"), "out: {out}");
+    assert!(out.contains("notaglen ERR_CRYPTO_INVALID_AUTH_TAG"), "out: {out}");
+    assert!(out.contains("badtaglen ERR_CRYPTO_INVALID_AUTH_TAG"), "out: {out}");
+    assert!(out.contains("aad-noopt ERR_MISSING_ARGS"), "out: {out}");
+    assert!(out.contains("badtag true true"), "out: {out}");
+    assert!(out.contains("notag true"), "out: {out}");
+    assert!(out.contains("taglen-mismatch ERR_CRYPTO_INVALID_AUTH_TAG"), "out: {out}");
+    assert!(out.contains("edge 7 4 4 0"), "out: {out}");
+    assert!(out.contains("edge 7 16 16 0"), "out: {out}");
+    assert!(out.contains("edge 13 4 4 0"), "out: {out}");
+    assert!(out.contains("edge 13 16 16 0"), "out: {out}");
+    assert!(out.contains("list true"), "out: {out}");
+    assert!(out.contains("info true"), "out: {out}");
+    dir.close().unwrap();
+}

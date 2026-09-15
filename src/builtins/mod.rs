@@ -2328,6 +2328,11 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_os_uptime", Some(node::os::os_uptime), 0),
             ("__wjs_os_load", Some(node::os::os_load), 0),
             ("__wjs_os_locale", Some(node::os::os_locale), 0),
+            // 10f os 对拍：machine/uname/priority
+            ("__wjs_os_machine", Some(node::os::os_machine), 0),
+            ("__wjs_os_uname", Some(node::os::os_uname), 0),
+            ("__wjs_os_prio_get", Some(node::os::os_prio_get), 1),
+            ("__wjs_os_prio_set", Some(node::os::os_prio_set), 2),
             ("__wjs_argv_json", Some(node::process_::argv_json), 0),
             ("__wjs_env_get", Some(node::process_::env_get), 1),
             ("__wjs_env_set", Some(node::process_::env_set), 2),

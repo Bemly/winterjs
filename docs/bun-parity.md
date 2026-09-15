@@ -77,6 +77,19 @@
 | test-path-zero-length-strings.js | 0 | 0 | ✅（修：空串 join/normalize，同直译） |
 | test-path-glob.js | 0 | 0 | ✅（H 手写 minimatch 子集：60+ 探针对拍零分歧，见 §4 候选） |
 
+## os
+
+| 文件 | winterjs | node | 结论 |
+|---|---|---|---|
+| test-os.js | 0 | 0 | ✅（修：tmpdir 动态/env 优先级/homedir 动态/constants/priority/endian/machine/version/devNull/buffer/cidr/toPrimitive） |
+| test-os-eol.js | 0 | 0 | ✅（修：EOL 非写可配 + 重定义） |
+| test-os-process-priority.js | 0 | 0 | ✅（修：priority 常量/get/set/双校验/SystemError；附带修 assert.throws 对象正则） |
+| test-os-constants-signals.js | 0 | 0 | ✅（signals 冻结实在化；旧偶然通过） |
+| test-os-checked-function.js | ≠0 | ≠0 | ⏭️ `--expose-internals`（`internal/test/binding`） |
+| test-os-fast.js | ≠0 | ≠0 | ⏭️ `--expose-internals` + V8 natives（fast API 计数） |
+| test-os-homedir-no-envvar.js | 1 | 0 | ⏭️ 自 spawn 位置参数（全 flag CLI 设计） |
+| test-os-userinfo-handles-getter-errors.js | 1 | 0 | ⏭️ 自 spawn `-e`（全 flag CLI 设计） |
+
 ## assert
 
 > 行为件全修（跨域重抛/参数校验/构造器校验/rejects 双收/throws 正则）；

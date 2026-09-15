@@ -160,6 +160,7 @@ pub unsafe extern "C" fn os_mem(
 
 /// `__wjs_os_net()` → `{iface: [{address, family, internal}]}` JSON。
 /// 偏差：mac 恒 `00:00:00:00:00:00`（逐 iface MAC 无可信纯 Rust 轮子，文档记录）。
+/// 10f：补 `netmask` + `cidr`（`address/prefixlen`，test-os.js 点名）。
 pub unsafe extern "C" fn os_net(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -172,15 +173,27 @@ pub unsafe extern "C" fn os_net(
         std::collections::BTreeMap::new();
     if let Ok(ifaces) = if_addrs::get_if_addrs() {
         for iface in ifaces {
-            let (address, family) = match iface.ip() {
-                std::net::IpAddr::V4(v4) => (v4.to_string(), "IPv4"),
-                std::net::IpAddr::V6(v6) => (v6.to_string(), "IPv6"),
+            let (address, family, netmask, prefixlen) = match &iface.addr {
+                if_addrs::IfAddr::V4(v4) => (
+                    v4.ip.to_string(),
+                    "IPv4",
+                    v4.netmask.to_string(),
+                    v4.prefixlen,
+                ),
+                if_addrs::IfAddr::V6(v6) => (
+                    v6.ip.to_string(),
+                    "IPv6",
+                    v6.netmask.to_string(),
+                    v6.prefixlen,
+                ),
             };
             map.entry(iface.name.clone()).or_default().push(serde_json::json!({
                 "address": address,
+                "netmask": netmask,
                 "family": family,
-                "internal": iface.is_loopback(),
                 "mac": "00:00:00:00:00:00",
+                "internal": iface.is_loopback(),
+                "cidr": format!("{address}/{prefixlen}"),
             }));
         }
     }
@@ -278,33 +291,307 @@ pub unsafe extern "C" fn os_locale(
     true
 }
 
-/// 内嵌 ESM 源（JSON 桥拆包；`EOL` 按平台）。
+/// 本机原始架构名（`arch()` 的映射前形态；uname -m 口径，纯函数，单元测试覆盖）。
+fn machine_raw() -> &'static str {
+    if cfg!(target_os = "windows") {
+        if cfg!(target_arch = "aarch64") {
+            "ARM64"
+        } else {
+            "AMD64"
+        }
+    } else if cfg!(target_os = "macos") || cfg!(target_os = "ios") {
+        if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            std::env::consts::ARCH
+        }
+    } else {
+        // linux（含 android/ohos，见 dependencies §1）：uname -m 原样
+        std::env::consts::ARCH
+    }
+}
+
+/// `__wjs_os_machine()` → 原始架构名。
+pub unsafe extern "C" fn os_machine(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    set_rval_str(&mut cx, &frame, machine_raw());
+    true
+}
+
+#[cfg(unix)]
+fn uname_version() -> String {
+    // SAFETY: 零初始化 buf；`libc::uname` 只写 buf 内；version 恒 NUL 结尾（POSIX）
+    unsafe {
+        let mut buf: libc::utsname = std::mem::MaybeUninit::zeroed().assume_init();
+        if libc::uname(&mut buf) != 0 {
+            return String::new();
+        }
+        std::ffi::CStr::from_ptr(buf.version.as_ptr())
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+/// `__wjs_os_uname()` → `{"version": <uname -v>}` JSON（unix 经 libc；
+/// 非 unix 回空串由 JS 侧回落，win 记档）。
+pub unsafe extern "C" fn os_uname(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    #[cfg(unix)]
+    let version = uname_version();
+    #[cfg(not(unix))]
+    let version = String::new();
+    set_rval_str(
+        &mut cx,
+        &frame,
+        &serde_json::json!({ "version": version }).to_string(),
+    );
+    true
+}
+
+/// errno 错误体 JSON（`{"errno","code","message"}`；message 首字母小写贴 libuv 口径，
+/// 并剥离 Rust `to_string` 自带的 ` (os error N)` 后缀）。
+fn prio_err_json(errno: i32) -> String {
+    let e = std::io::Error::from_raw_os_error(errno);
+    let mut message = e.to_string();
+    let suffix = format!(" (os error {errno})");
+    if let Some(stripped) = message.strip_suffix(&suffix) {
+        message = stripped.to_string();
+    }
+    if let Some(first) = message.get_mut(0..1) {
+        first.make_ascii_lowercase();
+    }
+    serde_json::json!({
+        "errno": errno,
+        "code": super::fs::io_code(&e),
+        "message": message,
+    })
+    .to_string()
+}
+
+/// `__wjs_os_prio_get(pid)` → `{"ok": prio}` / 错误体 JSON。
+/// pid 由 JS 侧 validateInt32 保证 int32；unix 经 getpriority + 哨兵消毒
+/// （先 `close(-1)` 把 errno 钉成 getpriority 永不报的 EBADF：哨兵仍在即真值 -1，
+/// 否则为真错；成功 syscall 不动 errno，见 man 契约）；非 unix 回 ENOSYS 桩。
+pub unsafe extern "C" fn os_prio_get(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上；close(-1) 必败无副作用；getpriority 只读调度器状态
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let pid = if frame.argc() > 0 && frame.arg(0).is_number() {
+        frame.arg(0).to_number() as i32
+    } else {
+        0
+    };
+    #[cfg(unix)]
+    let text = unsafe {
+        libc::close(-1);
+        let r = libc::getpriority(libc::PRIO_PROCESS, pid as libc::id_t);
+        if r == -1 {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if errno == libc::EBADF {
+                serde_json::json!({ "ok": -1 }).to_string()
+            } else {
+                prio_err_json(errno)
+            }
+        } else {
+            serde_json::json!({ "ok": r }).to_string()
+        }
+    };
+    #[cfg(not(unix))]
+    let text = prio_err_json(38); // ENOSYS（win 记档）
+    set_rval_str(&mut cx, &frame, &text);
+    true
+}
+
+/// `__wjs_os_prio_set(pid, prio)` → `{"ok": true}` / 错误体 JSON
+/// （unix setpriority；非 unix ENOSYS 桩）。
+pub unsafe extern "C" fn os_prio_set(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上；setpriority 只改目标进程 nice 值
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let pid = if frame.argc() > 0 && frame.arg(0).is_number() {
+        frame.arg(0).to_number() as i32
+    } else {
+        0
+    };
+    let prio = if frame.argc() > 1 && frame.arg(1).is_number() {
+        frame.arg(1).to_number() as i32
+    } else {
+        0
+    };
+    #[cfg(unix)]
+    let text = unsafe {
+        let r = libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, prio as libc::c_int);
+        if r == 0 {
+            serde_json::json!({ "ok": true }).to_string()
+        } else {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            prio_err_json(errno)
+        }
+    };
+    #[cfg(not(unix))]
+    let text = prio_err_json(38); // ENOSYS（win 记档）
+    set_rval_str(&mut cx, &frame, &text);
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn machine_raw_matches_target() {
+        if cfg!(target_os = "windows") {
+            assert!(matches!(machine_raw(), "AMD64" | "ARM64"));
+        } else if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+            assert_eq!(machine_raw(), "arm64");
+        } else {
+            assert_eq!(machine_raw(), std::env::consts::ARCH);
+        }
+    }
+
+    #[test]
+    fn prio_err_json_shapes_libuv_message() {
+        let v: serde_json::Value =
+            serde_json::from_str(&prio_err_json(22)).expect("valid json");
+        assert_eq!(v["errno"], 22);
+        assert_eq!(v["code"], "EINVAL");
+        assert_eq!(v["message"], "invalid argument");
+    }
+}
+
+/// 内嵌 ESM 源（JSON 桥拆包；`EOL`/`devNull` 非写，`tmpdir`/`homedir` 读 env 动态值）。
 pub const SOURCE: &str = r#"
+import { validateInt32 } from 'node:internal/validators';
+import errors from 'node:internal/errors';
+const { ERR_SYSTEM_ERROR } = errors.codes;
 const __info = JSON.parse(__wjs_os_info());
 const __mem = () => JSON.parse(__wjs_os_mem());
 const __cpus = () => JSON.parse(__wjs_os_cpus());
 const __net = () => JSON.parse(__wjs_os_net());
 const __user = () => JSON.parse(__wjs_os_user());
 const __load = () => JSON.parse(__wjs_os_load());
+const __uname = () => JSON.parse(__wjs_os_uname());
 const isWin = __wjs_os_platform() === "win32";
+// Node lib/os.js signals 表（unix 全集 + Windows 子集；internal/validators 同款）。
+const signals = {
+  SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGIOT: 6,
+  SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12,
+  SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGSTKFLT: 16, SIGCHLD: 17, SIGCONT: 18,
+  SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24,
+  SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29, SIGPOLL: 29,
+  SIGINFO: 29, SIGPWR: 30, SIGSYS: 31, SIGBREAK: 21,
+};
+// UV_PRIORITY_*（真机 26.8.2 对码；HIGHEST=-20，注意非 -19）。
+const priority = {
+  PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0,
+  PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20,
+};
+const constants = { priority, signals };
+Object.freeze(signals);
+function sysErr(syscall, body) {
+  const err = new ERR_SYSTEM_ERROR(syscall, body.code, body.message);
+  err.errno = -body.errno;
+  err.syscall = syscall;
+  err.info = { errno: -body.errno, code: body.code, message: body.message, syscall };
+  return err;
+}
+export function setPriority(pid, priority) {
+  if (priority === undefined) { priority = pid; pid = 0; }
+  validateInt32(pid, "pid");
+  validateInt32(priority, "priority", -20, 19);
+  const r = JSON.parse(__wjs_os_prio_set(pid, priority));
+  if (r.errno !== undefined) throw sysErr("uv_os_setpriority", r);
+}
+export function getPriority(pid) {
+  if (pid === undefined) pid = 0;
+  else validateInt32(pid, "pid");
+  const r = JSON.parse(__wjs_os_prio_get(pid));
+  if (r.errno !== undefined) throw sysErr("uv_os_getpriority", r);
+  return r.ok;
+}
 export function platform() { return __wjs_os_platform(); }
 export function arch() { return __wjs_os_arch(); }
 export function release() { return __info.release; }
 export function type() { return __info.type; }
 export function hostname() { return __info.hostname; }
-export function tmpdir() { return __info.tmpdir; }
-export function homedir() { return __info.homedir; }
+export function tmpdir() {
+  if (isWin) {
+    const p = process.env.TEMP || process.env.TMP ||
+      ((process.env.SystemRoot || process.env.windir) + "\\temp");
+    if (p.length > 1 && p[p.length - 1] === "\\" && p[p.length - 2] !== ":") return p.slice(0, -1);
+    return p;
+  }
+  const t = process.env.TMPDIR || process.env.TMP || process.env.TEMP || "/tmp";
+  let out = t;
+  while (out.length > 1 && out[out.length - 1] === "/") out = out.slice(0, -1);
+  return out;
+}
+export function homedir() {
+  if (isWin) return process.env.USERPROFILE || __info.homedir;
+  return process.env.HOME || __info.homedir;
+}
 export function totalmem() { return __mem().total; }
 export function freemem() { return __mem().free; }
 export function cpus() { return __cpus(); }
 export function networkInterfaces() { return __net(); }
-export function userInfo() { return __user(); }
+export function userInfo(options) {
+  const u = __user();
+  if (options != null && options.encoding === "buffer") {
+    return {
+      uid: u.uid, gid: u.gid,
+      username: Buffer.from(u.username), homedir: Buffer.from(u.homedir), shell: Buffer.from(u.shell),
+    };
+  }
+  return u;
+}
 export function uptime() { return __wjs_os_uptime(); }
 export function loadavg() { return __load(); }
 export function getLocale() { return __wjs_os_locale(); }
 // 可用并行度（M5 vitest 牵引：真机按 CPU 亲和/线程池上限打折，本仓恒回
 // cpus 数——单进程 JS 线程 + tokio 同步多线程，无亲和约束，记档）。
 export function availableParallelism() { return __cpus().length; }
+export function endianness() {
+  return new Uint8Array(new Uint16Array([0x1234]).buffer)[0] === 0x34 ? "LE" : "BE";
+}
+export function machine() { return __wjs_os_machine(); }
+export function version() {
+  const v = __uname().version;
+  return v || __info.release || __info.type;
+}
 export const EOL = isWin ? "\r\n" : "\n";
-export default { platform, arch, release, type, hostname, tmpdir, homedir, totalmem, freemem, cpus, networkInterfaces, userInfo, uptime, loadavg, EOL, availableParallelism };
+export const devNull = isWin ? "\\\\.\\nul" : "/dev/null";
+export { constants };
+for (const f of [hostname, homedir, release, type, arch, platform, version,
+    machine, endianness, tmpdir, totalmem, uptime, freemem, availableParallelism]) {
+  f[Symbol.toPrimitive] = () => f();
+}
+const __def = { platform, arch, release, type, hostname, tmpdir, homedir, totalmem,
+  freemem, cpus, networkInterfaces, userInfo, uptime, loadavg, EOL, devNull,
+  constants, endianness, machine, version, setPriority, getPriority, availableParallelism };
+Object.defineProperties(__def, {
+  EOL: { value: EOL, writable: false, enumerable: true, configurable: true },
+  devNull: { value: devNull, writable: false, enumerable: true, configurable: true },
+  constants: { value: constants, writable: false, enumerable: true, configurable: false },
+});
+export default __def;
 "#;

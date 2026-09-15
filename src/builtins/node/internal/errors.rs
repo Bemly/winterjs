@@ -216,6 +216,16 @@ class AbortError extends Error {
   }
 }
 
+// A specialized Error for system call failures (10f os priority：化工序
+// `err.info/errno/code/syscall` 由调用方补挂，与 libuv 口径对齐）。
+// 真机 `name` 为自有属性（writable/configurable，非枚举），此处构造器直置。
+class SystemError extends Error {
+  constructor(...args) {
+    super(...args);
+    this.name = 'SystemError';
+  }
+}
+
 // Generic Node.js error with extra properties.
 const genericNodeError = hideStackFrames(function genericNodeError(message, errorProperties) {
   const err = new Error(message);
@@ -381,6 +391,9 @@ E('ERR_STREAM_UNABLE_TO_PIPE', 'Cannot pipe to a closed or destroyed stream', Er
 E('ERR_STREAM_UNSHIFT_AFTER_END_EVENT',
   'stream.unshift() after end event', Error);
 E('ERR_STREAM_WRITE_AFTER_END', 'write after end', Error);
+E('ERR_SYSTEM_ERROR',
+  (syscall, code, message) => `A system error occurred: ${syscall} returned ${code} (${message})`,
+  SystemError, HideStackFramesError);
 
 // errors.js:172 同款（AggregateError 聚合；errors.errors 已是聚合体则吸收）
 const aggregateTwoErrors = (innerError, outerError) => {

@@ -18,6 +18,7 @@ pub fn io_code(e: &std::io::Error) -> &'static str {
         return match errno {
             1 => "EPERM",
             2 => "ENOENT",
+            3 => "ESRCH", // 10f os.getPriority(-1)（kill 系同理备用）
             9 => "EBADF",
             // EADDRINUSE：macOS 48 / Linux 98（双平台绑定冲突，9d net）
             48 | 98 => "EADDRINUSE",
@@ -33,6 +34,7 @@ pub fn io_code(e: &std::io::Error) -> &'static str {
             28 => "ENOSPC",
             32 => "EPIPE",
             36 => "ENAMETOOLONG",
+            38 => "ENOSYS", // 10f 非 unix 的 priority 桩（win 记档）
             39 => "ENOTEMPTY",
             40 => "ELOOP",
             _ => "UNKNOWN",
@@ -1556,6 +1558,9 @@ mod tests {
         assert_eq!(io_code(&std::io::Error::from_raw_os_error(9)), "EBADF");
         assert_eq!(io_code(&std::io::Error::from_raw_os_error(48)), "EADDRINUSE");
         assert_eq!(io_code(&std::io::Error::from_raw_os_error(98)), "EADDRINUSE");
+        // 10f：priority 面（ESRCH）+ 非 unix 桩（ENOSYS）
+        assert_eq!(io_code(&std::io::Error::from_raw_os_error(3)), "ESRCH");
+        assert_eq!(io_code(&std::io::Error::from_raw_os_error(38)), "ENOSYS");
         assert_eq!(io_code(&std::io::Error::from_raw_os_error(9999)), "UNKNOWN");
     }
 }

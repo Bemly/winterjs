@@ -197,3 +197,96 @@ for (const [m, a] of [["parse", [null]], ["format", [""]], ["join", [1]], ["reso
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "ok\n".repeat(22),);
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_path_matches_glob() {
+    // matchesGlob（H 手写；真机 26.8.2 全量对拍：套件 20 + 探针 32 + 抛错 2）。
+    // nocase 四项宿主相关（mac/win 真，其余假），JS 内按 platform 动态期望。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import path from "node:path";
+const H = process.platform === "darwin" || process.platform === "win32";
+const cases = [
+  ["win32", "foo\\bar\\baz", "foo\\[bcr]ar\\baz", true],
+  ["win32", "foo\\bar\\baz", "foo\\[!bcr]ar\\baz", false],
+  ["win32", "foo\\bar\\baz", "foo\\[bc-r]ar\\baz", true],
+  ["win32", "foo\\bar\\baz", "foo\\*\\!bar\\*\\baz", false],
+  ["win32", "foo\\bar1\\baz", "foo\\bar[0-9]\\baz", true],
+  ["win32", "foo\\bar5\\baz", "foo\\bar[0-9]\\baz", true],
+  ["win32", "foo\\barx\\baz", "foo\\bar[a-z]\\baz", true],
+  ["win32", "foo\\bar\\baz\\boo", "foo\\[bc-r]ar\\baz\\*", true],
+  ["win32", "foo\\bar\\baz", "foo/**", true],
+  ["win32", "foo\\bar\\baz", "*", false],
+  ["win32", "platform-cache\\file", "platform-cache/**", true],
+  ["posix", "foo/bar/baz", "foo/[bcr]ar/baz", true],
+  ["posix", "foo/bar/baz", "foo/[!bcr]ar/baz", false],
+  ["posix", "foo/bar/baz", "foo/[bc-r]ar/baz", true],
+  ["posix", "foo/bar/baz", "foo/*/!bar/*/baz", false],
+  ["posix", "foo/bar1/baz", "foo/bar[0-9]/baz", true],
+  ["posix", "foo/bar5/baz", "foo/bar[0-9]/baz", true],
+  ["posix", "foo/barx/baz", "foo/bar[a-z]/baz", true],
+  ["posix", "foo/bar/baz/boo", "foo/[bc-r]ar/baz/*", true],
+  ["posix", "foo/bar/baz", "foo/**", true],
+  ["posix", "foo/bar/baz", "*", false],
+  ["posix", "platform-cache/file", "platform-cache/**", true],
+  ["posix", "a/b", "a/{b,c}", true],
+  ["posix", "a/c", "a/{b,c}", true],
+  ["posix", "a/d", "a/{b,c}", false],
+  ["posix", "a/b", "a/{b,{c,d}}", true],
+  ["posix", "a/d", "a/{b,{c,d}}", true],
+  ["posix", "a1", "a{1..3}", true],
+  ["posix", "foo/.bar", "foo/**", false],
+  ["posix", ".hidden", "*", false],
+  ["posix", ".", ".*", false],
+  ["posix", "..", ".*", false],
+  ["posix", ".x", ".*", true],
+  ["posix", "a.b", "a*", true],
+  ["posix", ".a", "*a", false],
+  ["posix", ".", "**", false],
+  ["posix", "a", "a/**", false],
+  ["posix", "a/b", "a/**", true],
+  ["posix", "a/", "a/**", true],
+  ["posix", "", "**", true],
+  ["posix", "", "*", false],
+  ["posix", "a//b", "a/*/b", false],
+  ["posix", "a//b", "a/**/b", true],
+  ["posix", "a/b/", "a/*", true],
+  ["posix", "a/b", "a\\b", true],
+  ["posix", "ab", "a\\b", false],
+  ["posix", "a\\b", "a/b", false],
+  ["posix", "b", "a/../b", true],
+  ["posix", "a/b", "a/./b", true],
+  ["posix", "a//b", "a//b", true],
+  ["posix", "FOO", "f*", H],
+  ["posix", "foo", "F*", H],
+  ["posix", "FOO", "foo", false],
+  ["win32", "FOO\\BAR", "foo\\b*", false],
+];
+let n = 0;
+for (const [ns, ps, pat, exp] of cases) {
+  const got = path[ns].matchesGlob(ps, pat);
+  console.log(got === exp ? "ok" : "FAIL " + ns + " " + JSON.stringify(ps) + " " + JSON.stringify(pat));
+  n++;
+}
+for (const [a, b] of [[123, "foo/bar/baz"], ["foo/bar/baz", 123]]) {
+  try { path.matchesGlob(a, b); console.log("NO-THROW"); }
+  catch (e) { console.log(/must be of type string/.test(e.message) ? "ok" : "FAIL " + e.message); }
+  n++;
+}
+console.log("n=" + n);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        "ok\n".repeat(56) + "n=56\n",
+    );
+    dir.close().unwrap();
+}

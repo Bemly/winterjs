@@ -54,9 +54,9 @@
 
 ## path
 
-> 10f 收官（除 glob）：posix/win32 六件全按 Node `lib/path.js` 直译
+> 10f 收官：posix/win32 全按 Node `lib/path.js` 直译
 > （`normalizeString` 核心 + validateString/validateObject 精确码）；
-> `matchesGlob` 需 `internal/fs/glob`，另切片。
+> `matchesGlob` 为手写 minimatch 子集（H 方案，142 条差分探针零分歧）。
 
 | 文件 | winterjs | node | 结论 |
 |---|---|---|---|
@@ -75,7 +75,7 @@
 | test-path-parse-format.js | 0 | 0 | ✅（修：parse 单遍直译/_format/validateObject 精确文案） |
 | test-path-makelong.js | 0 | 0 | ✅（修：非 string 原样穿透） |
 | test-path-zero-length-strings.js | 0 | 0 | ✅（修：空串 join/normalize，同直译） |
-| test-path-glob.js | 1 | 0 | 🟡 差集：`matchesGlob` 未实现（需 `internal/fs/glob`，另切片） |
+| test-path-glob.js | 0 | 0 | ✅（H 手写 minimatch 子集：60+ 探针对拍零分歧，见 §4 候选） |
 
 ## assert
 

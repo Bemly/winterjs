@@ -67,6 +67,237 @@ function fmtPath(sep, pathObject) {
   if (!dir) return base;
   return dir === pathObject.root ? `${dir}${base}` : `${dir}${sep}${base}`;
 }
+// ---- minimatch 子集（matchesGlob 口径；H 手写，见 dependencies3 §4）----
+// Node `internal/fs/glob` 固定选项：nonegate + dot:false + nocaseMagicOnly
+//（宿主 mac/win 才 nocase）+ windowsPathsNoEscape（win32 `\` 即分隔符）。
+// 实测口径（60+ 真机探针对拍）：
+// - pattern 的 `\` 恒为分隔符（双平台）；path 侧仅 win32 归一（posix `\` 即字面）。
+// - 切分按 `/+` 塌缩（首尾空段保留）；interior `.`/`` 塌缩 + `..` 相消（Node firstPhase 子集）。
+// - dot：`.`/`..` 段只配字面；点首段须 pattern 段以字面 `.`（`[` 类正常判定）开头。
+// - `*` 纯星段不配空段；`**` 可跨段但吞不下点段，尾部 `/**`（非首）须消费 ≥1 段；
+//   尾单空 path 段可忽略（pattern 耗尽时）。
+const globHostNoCase = typeof globalThis.process !== "undefined" &&
+  (globalThis.process.platform === "darwin" || globalThis.process.platform === "win32");
+function globHasMagic(seg) {
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i];
+    if (c === "*" || c === "?") return true;
+    if (c === "[" && seg.indexOf("]", i + 1) !== -1) return true;
+  }
+  return false;
+}
+function globBraceSplit(body) {
+  const parts = [];
+  let depth = 0, cur = "";
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === "{") depth++;
+    else if (c === "}") { if (depth > 0) depth--; }
+    if (c === "," && depth === 0) { parts.push(cur); cur = ""; }
+    else cur += c;
+  }
+  parts.push(cur);
+  return parts;
+}
+function globPadInt(v, width) {
+  const neg = v < 0;
+  const digits = String(neg ? -v : v).padStart(width, "0");
+  return (neg ? "-" : "") + digits;
+}
+function globSequence(body) {
+  let m = /^(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?$/.exec(body);
+  if (m) {
+    const lo = parseInt(m[1], 10), hi = parseInt(m[2], 10);
+    let step = m[3] === undefined ? (lo <= hi ? 1 : -1) : parseInt(m[3], 10);
+    if (!(step > 0) && !(step < 0)) return null;
+    const w = (s) => s.replace(/^-/, "").length;
+    const pad = Math.max(w(m[1]), w(m[2]));
+    const padOn = /^0\d/.test(m[1].replace(/^-/, "")) || /^-?0\d/.test(m[1]) ||
+      /^0\d/.test(m[2].replace(/^-/, "")) || /^-?0\d/.test(m[2]);
+    const out = [];
+    if (step > 0) { for (let v = lo; v <= hi; v += step) out.push(globPadInt(v, padOn ? pad : 0)); }
+    else { for (let v = lo; v >= hi; v += step) out.push(globPadInt(v, padOn ? pad : 0)); }
+    return out;
+  }
+  m = /^([A-Za-z])\.\.([A-Za-z])(?:\.\.(-?\d+))?$/.exec(body);
+  if (m) {
+    const lo = m[1].charCodeAt(0), hi = m[2].charCodeAt(0);
+    let step = m[3] === undefined ? (lo <= hi ? 1 : -1) : parseInt(m[3], 10);
+    if (!(step > 0) && !(step < 0)) return null;
+    const out = [];
+    if (step > 0) { for (let v = lo; v <= hi; v += step) out.push(String.fromCharCode(v)); }
+    else { for (let v = lo; v >= hi; v += step) out.push(String.fromCharCode(v)); }
+    return out;
+  }
+  return null;
+}
+function globExpandBraces(pat) {
+  const open = pat.indexOf("{");
+  if (open === -1) return [pat];
+  let depth = 0, close = -1;
+  for (let i = open; i < pat.length; i++) {
+    if (pat[i] === "{") depth++;
+    else if (pat[i] === "}") {
+      depth--;
+      if (depth === 0) { close = i; break; }
+    }
+  }
+  if (close === -1) return [pat];
+  const pre = pat.slice(0, open), body = pat.slice(open + 1, close), post = pat.slice(close + 1);
+  let alts = globSequence(body);
+  if (alts === null) {
+    const parts = globBraceSplit(body);
+    if (parts.length < 2) return [pat];
+    alts = parts;
+  }
+  const out = [];
+  for (const a of alts)
+    for (const ea of globExpandBraces(a))
+      for (const rest of globExpandBraces(post)) out.push(pre + ea + rest);
+  return out;
+}
+// minimatch firstPhase/levelTwo 子集：pattern/path 段数组的 interior ``/`.` 塌缩
+//（首尾保留）+ `..` 与前字面段相消（`**` 相邻、`..` 首位不动）。
+function globNormalizeSegs(segs) {
+  const out = segs.slice();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let o = 1; o < out.length - 1; o++) {
+      if (out[o] === "" || out[o] === ".") {
+        if (o === 1 && out[o] === "" && out[0] === "") continue;
+        out.splice(o, 1); o--; changed = true;
+      }
+    }
+    if (out.length === 2 && out[0] === "." && (out[1] === "." || out[1] === "")) {
+      out.pop(); changed = true;
+    }
+    let n = 0;
+    while ((n = out.indexOf("..", n + 1)) !== -1) {
+      const prev = out[n - 1];
+      if (prev && prev !== "." && prev !== ".." && prev !== "**") {
+        out.splice(n - 1, 2); n -= 2; changed = true;
+        if (out.length === 0) out.push("");
+      }
+    }
+  }
+  return out;
+}
+function globClassEnd(pat, i) {
+  let j = i + 1;
+  if (pat[j] === "!" || pat[j] === "^") j++;
+  if (pat[j] === "]") j++;
+  const k = pat.indexOf("]", j);
+  return k;
+}
+function globClassTest(body, ch, fold) {
+  let i = 0, negate = false;
+  if (body[0] === "!" || body[0] === "^") { negate = true; i = 1; }
+  const F = (c) => fold ? c.toLowerCase() : c;
+  const fc = F(ch);
+  let hit = false;
+  const members = [];
+  while (i < body.length) {
+    if (body[i] === "-" && members.length > 0 && i + 1 < body.length) {
+      const lo = members.pop();
+      members.push({ lo, hi: body[i + 1] });
+      i += 2;
+    } else { members.push(body[i]); i++; }
+  }
+  for (const m of members) {
+    if (typeof m === "string") { if (F(m) === fc) { hit = true; break; } }
+    else if (F(m.lo) <= fc && fc <= F(m.hi)) { hit = true; break; }
+  }
+  return negate ? !hit : hit;
+}
+function globSegMatch(pat, str, fold) {
+  const memo = new Map();
+  const F = (c) => fold ? c.toLowerCase() : c;
+  function rec(pi, si) {
+    const key = pi + "," + si;
+    if (memo.has(key)) return memo.get(key);
+    let r = false;
+    if (pi === pat.length) r = si === str.length;
+    else {
+      const pc = pat[pi];
+      if (pc === "*") {
+        let pj = pi;
+        while (pat[pj + 1] === "*") pj++;
+        if (pj + 1 === pat.length) r = true;
+        else {
+          for (let k = si; k <= str.length; k++) {
+            if (rec(pj + 1, k)) { r = true; break; }
+          }
+        }
+      } else if (si < str.length) {
+        if (pc === "?") r = rec(pi + 1, si + 1);
+        else if (pc === "[") {
+          const close = globClassEnd(pat, pi);
+          if (close === -1) r = F(str[si]) === F("[") && rec(pi + 1, si + 1);
+          else r = globClassTest(pat.slice(pi + 1, close), str[si], fold) && rec(close + 1, si + 1);
+        } else r = F(str[si]) === F(pc) && rec(pi + 1, si + 1);
+      }
+    }
+    memo.set(key, r);
+    return r;
+  }
+  return rec(0, 0);
+}
+function globSegPair(patSeg, pathSeg) {
+  // R1：`.`/`..` 只配字面
+  if (pathSeg === "." || pathSeg === "..") return patSeg === pathSeg;
+  // R2：点首段须 pattern 以字面 `.`（`[` 类正常判定）开头
+  if (pathSeg[0] === "." && patSeg[0] !== "." && patSeg[0] !== "[") return false;
+  // 纯星段不配空段（`**` 走跨段分支，到不了这里）
+  if (/^\*+$/.test(patSeg) && pathSeg === "") return false;
+  const fold = globHostNoCase && globHasMagic(patSeg);
+  return globSegMatch(patSeg, pathSeg, fold);
+}
+function globMatchSegs(patSegs, pathSegs) {
+  const memo = new Map();
+  function rec(pi, si) {
+    const key = pi + "," + si;
+    if (memo.has(key)) return memo.get(key);
+    let r = false;
+    if (pi === patSegs.length) {
+      r = si === pathSegs.length ||
+        (si === pathSegs.length - 1 && pathSegs[si] === "");
+    } else if (patSegs[pi] === "**") {
+      // `/**`（非首段）在尾部须消费 ≥1 段（`a/**` 不配 `a`，配 `a/`；首段 `**` 可空）。
+      if (pi > 0 && pi === patSegs.length - 1) {
+        for (let k = si; k < pathSegs.length; k++) {
+          const s = pathSegs[k];
+          if (s === "." || s === ".." || s[0] === ".") break;
+          if (rec(pi + 1, k + 1)) { r = true; break; }
+        }
+      } else if (rec(pi + 1, si)) r = true;
+      else {
+        for (let k = si; !r && k < pathSegs.length; k++) {
+          const s = pathSegs[k];
+          if (s === "." || s === ".." || s[0] === ".") break;
+          r = rec(pi + 1, k + 1);
+        }
+      }
+    } else if (si < pathSegs.length && globSegPair(patSegs[pi], pathSegs[si])) {
+      r = rec(pi + 1, si + 1);
+    }
+    memo.set(key, r);
+    return r;
+  }
+  return rec(0, 0);
+}
+function matchesGlobImpl(p, pattern, isWin) {
+  validateString(p, "path");
+  validateString(pattern, "pattern");
+  // pattern 的 `\` 恒为分隔符（双平台实测口径；path 侧仅 win32 归一）。
+  const pp = pattern.replace(/\\/g, "/");
+  const ps = isWin ? p.replace(/\\/g, "/") : p;
+  for (const alt of globExpandBraces(pp)) {
+    const patSegs = globNormalizeSegs(alt.split(/\/+/));
+    if (globMatchSegs(patSegs, globNormalizeSegs(ps.split(/\/+/)))) return true;
+  }
+  return false;
+}
 function makePosix() {
   const sep = "/";
   function normalize(p) {
@@ -246,7 +477,8 @@ function makePosix() {
   function format(o) { return fmtPath("/", o); }
   function toNamespacedPath(p) { return p; }
   function _makeLong(p) { return toNamespacedPath(p); }
-  return { sep, delimiter: ":", normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format, toNamespacedPath, _makeLong };
+  function matchesGlob(p, pattern) { return matchesGlobImpl(p, pattern, false); }
+  return { sep, delimiter: ":", normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format, toNamespacedPath, _makeLong, matchesGlob };
 }
 // ---- win32 ----
 function winDevice(p) {
@@ -679,13 +911,14 @@ function makeWin32() {
     return resolvedPath;
   }
   function _makeLong(p) { return toNamespacedPath(p); }
-  return { sep, delimiter: ";", normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format, toNamespacedPath, _makeLong };
+  function matchesGlob(p, pattern) { return matchesGlobImpl(p, pattern, true); }
+  return { sep, delimiter: ";", normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format, toNamespacedPath, _makeLong, matchesGlob };
 }
 const posix = makePosix();
 const win32 = makeWin32();
 const isWin = typeof globalThis.process !== "undefined" && globalThis.process.platform === "win32";
 const path = isWin ? { ...win32, posix, win32 } : { ...posix, posix, win32 };
 export default path;
-export const { sep, delimiter, normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format, toNamespacedPath } = path;
+export const { sep, delimiter, normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format, toNamespacedPath, matchesGlob } = path;
 export { posix, win32 };
 "#;

@@ -82,7 +82,11 @@
 `libc 1.x` 因本地 index 无稳定版元数据暂不可解析，走 0.2 线（锁内已有，
 零新增传递依赖）。unix-only 使用，win 回落记档（见 `node/tty.rs` 头注）。
 
-## §4 matchesGlob 候选（10f `test-path-glob.js`，2026-09-15 调研，未拍板）
+## §4 matchesGlob 候选（10f `test-path-glob.js`，2026-09-15 调研，✅ 已拍板 H）
+
+> **2026-09-15 用户拍板：H 手写**（零新依赖）。F/A/G 均有套件外暗语义缺口，
+> 详下表；`decode` 落账见 `src/builtins/node/path.rs` 头注 + 142 条差分探针
+> （`/tmp/wjs-globprobe` 离线实证 + `/tmp/wjs-probe/mm-*.js` 真机对拍）。
 
 > 需求：`path.{posix,win32}.matchesGlob(path, pattern)` = Node
 > `internal/fs/glob` 的 `matchGlobPattern`（minimatch `Minimatch.match`，

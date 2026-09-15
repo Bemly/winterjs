@@ -81,3 +81,33 @@
 故须直引 `libc` 取类型与常量）；`term` 特性空依赖（纯 libc 包装）。
 `libc 1.x` 因本地 index 无稳定版元数据暂不可解析，走 0.2 线（锁内已有，
 零新增传递依赖）。unix-only 使用，win 回落记档（见 `node/tty.rs` 头注）。
+
+## §4 matchesGlob 候选（10f `test-path-glob.js`，2026-09-15 调研，未拍板）
+
+> 需求：`path.{posix,win32}.matchesGlob(path, pattern)` = Node
+> `internal/fs/glob` 的 `matchGlobPattern`（minimatch `Minimatch.match`，
+> 固定选项 `nocase=host(mac/win)` + `windowsPathsNoEscape` + `nonegate` +
+> `nocomment` + `platform` + `nocaseMagicOnly`）。真机实测钉住三条暗语义：
+> ① `nocaseMagicOnly` 是**逐段**门控（`foo\b*` vs `FOO\BAR` → false，
+> 无 magic 段恒大小写敏感）；② dot 规则（`*` 不配前导 `.`）；
+> ③ `nonegate` 下前导 `!` 为字面量（`!foo` vs `bar` → false）。
+> 实证：`/tmp/wjs-globprobe` 离线 scratch（`glob =0.3.4` + `glob-match =0.2.1` +
+> `fast-glob =1.1.1`）跑 17 条套件用例三轮子**全过**；分歧全在套件外探针。
+
+| 方案 | crate | 最新版本 | 建库时间 | 最新维护 | 纯 Rust | 10 列 | 套件外缺口（须 shim/记档） |
+|---|---|---|---|---|---|---|---|---|
+| A 树内直用 | `glob`（已直引，零新增） | 0.3.4 | 2014 | 维护中 | ✅ 零依赖 | ✅ | `{}` 不支持（文档明示）；大小写整 pattern 开关，表达不了逐段门控 |
+| F 行级增补 | `fast-glob`（闭包内 1.1.1，经 oxc 带入；直引跟锁） | 1.1.1 | 2024-05-27 | 2026-08-31（oxc 系） | ✅（仅 arrayvec） | ✅ | 前导 `!` 取反（`\\!` 转义重写可救）；dot 规则无（前检查可救）；大小写无选项（逐段小写驱动可救，但 `{a/b,c}` 含 slash brace 需 brace 感知切分） |
+| G 新引 | `glob-match` 0.2.1 | 0.2.1 | 2023-01-16 | 2023-02-07 后无维护（13.5M 下载，冻结型候选） | ✅ 零依赖 | ✅ | 与 F 同三缺口（F 是其修 bug 分支，G 无胜场） |
+| H 手写 | —（零新依赖，`Cargo.lock` 不动） | — | — | — | ✅ | ✅ | extglob `+(…)` 不做（套件无，真机罕见，记档）；Unicode 大小写折叠走 `to_lowercase` 近似（regex `i` 的 Turkic-I 类边角记档） |
+
+注：
+
+- `globset`（闭包内 0.4.20）出局：gitignore 语义（无 slash pattern 配 basename），
+  `*` vs `foo/bar/baz` 会误配 true，与套件 `false` 断言直接冲突。
+- `wax`（2021 建/2026-01 维护，MIT）出局：自有方言非 minimatch 口径；
+  默认带 `walk` 特性（walkdir），关特性也救不了语义。
+- `rs-minimatch-core`/`glob-matcher`（2026 新 crate）出局：库龄不足一年。
+- 备选 F 的行级增补若拍板：`fast-glob = "1"`（跟锁 1.1.1，零新增传递依赖）。
+- 备选 H 若拍板：Rust 实现约 150 行（段切分 + `**` 跨段 + 段内 `*?[]` + `{}` 展开 +
+  逐段 nocase + dot 规则 + 前导 `!` 字面），单测用本轮探针真值表钉住。

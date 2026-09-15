@@ -571,43 +571,51 @@ globalThis.process = {
   __wjs_warningListeners: [],
   // 通用监听表（warning 沿旧径；signal/stdin 等只登记不投递——偏差记档，
   // SIGTERM 默认行为不变）。emit 供未来事件循环接信号投递。
+  // 方法一律走 `this`（套件 process-tampering：node common 载入期捕获
+  // `const process = globalThis.process`，之后全局被换也不经它读表）。
   __wjs_listeners: {},
   on(type, cb) {
-    if (type === "warning" && typeof cb === "function") process.__wjs_warningListeners.push(cb);
+    if (type === "warning" && typeof cb === "function") this.__wjs_warningListeners.push(cb);
     if (typeof cb !== "function") throw new TypeError("process.on: listener must be a function");
-    (process.__wjs_listeners[String(type)] ??= []).push(cb);
-    return process;
+    (this.__wjs_listeners[String(type)] ??= []).push(cb);
+    return this;
   },
   once(type, cb) {
     if (typeof cb !== "function") throw new TypeError("process.once: listener must be a function");
-    const wrapped = (...args) => { process.off(type, wrapped); cb(...args); };
+    const self = this;
+    const wrapped = (...args) => { self.off(type, wrapped); cb(...args); };
     wrapped.__wjs_orig = cb;
-    return process.on(type, wrapped);
+    return self.on(type, wrapped);
   },
   off(type, cb) {
-    const list = process.__wjs_listeners[String(type)];
+    const list = this.__wjs_listeners[String(type)];
     if (list) {
       let i = list.findIndex((l) => l === cb || l.__wjs_orig === cb);
       while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb || l.__wjs_orig === cb); }
     }
-    return process;
+    return this;
   },
-  removeListener(type, cb) { return process.off(type, cb); },
+  removeListener(type, cb) { return this.off(type, cb); },
+  // node process 即 EventEmitter（套件 promises-scheduler：process.addListener/
+  // process.emit 直用）；emit 返回是否命中监听（node 口径）。
+  addListener(type, cb) { return this.on(type, cb); },
+  emit(type, ...args) { return this.__wjs_emit(type, ...args) > 0; },
   removeAllListeners(type) {
-    if (type === undefined) process.__wjs_listeners = {};
-    else delete process.__wjs_listeners[String(type)];
-    return process;
+    if (type === undefined) this.__wjs_listeners = {};
+    else delete this.__wjs_listeners[String(type)];
+    return this;
   },
-  listenerCount(type) { return (process.__wjs_listeners[String(type)] ?? []).length; },
+  listenerCount(type) { return (this.__wjs_listeners[String(type)] ?? []).length; },
   // EventEmitter 读表（M5 vitest 牵引：init 链 `process.listeners(..).bind(..)`）。
-  listeners(type) { return [...(process.__wjs_listeners[String(type)] ?? [])]; },
-  rawListeners(type) { return process.listeners(type); },
-  eventNames() { return Object.keys(process.__wjs_listeners); },
+  listeners(type) { return [...(this.__wjs_listeners[String(type)] ?? [])]; },
+  rawListeners(type) { return this.listeners(type); },
+  eventNames() { return Object.keys(this.__wjs_listeners); },
   __wjs_emit(type, ...args) {
-    const list = [...(process.__wjs_listeners[String(type)] ?? [])];
+    const list = [...(this.__wjs_listeners[String(type)] ?? [])];
     for (const l of list) {
-      try { l.call(process, ...args); } catch {}
+      try { l.call(this, ...args); } catch {}
     }
+    return list.length;
   },
   emitWarning(warning, typeOrOptions, code, _ctor) {
     let type, detail;
@@ -627,10 +635,10 @@ globalThis.process = {
     } else {
       throw new TypeError("warning must be a string or an Error");
     }
-    const listeners = process.__wjs_warningListeners;
+    const listeners = this.__wjs_warningListeners;
     if (listeners.length > 0) {
       for (const l of listeners) {
-        try { l.call(process, warning); } catch {}
+        try { l.call(this, warning); } catch {}
       }
     } else {
       const codePart = warning.code ? `[${warning.code}] ` : "";

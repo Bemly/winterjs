@@ -9,7 +9,8 @@ fn phase9b_timers_promises_surface() {
         &dir,
         "p.mjs",
         r#"
-import tp, { setTimeout as sleep, setImmediate as simm, setInterval as sint, scheduler } from "node:timers/promises";
+import * as tp from "node:timers/promises";
+import { setTimeout as sleep, setImmediate as simm, setInterval as sint, scheduler } from "node:timers/promises";
 // setTimeout：值透传 + 计时
 const t0 = Date.now();
 console.log("sleep", (await sleep(30, "v")) === "v", Date.now() - t0 >= 25);
@@ -33,7 +34,8 @@ const ac2 = new AbortController();
 const wabort = scheduler.wait(1000, { signal: ac2.signal });
 wabort.catch((e) => console.log("w-abort", e.name));
 ac2.abort();
-// default 导出面
+// namespace 导出面（10f 对拍：去 default 后 require 走 namespace 回落，
+// 与 node:timers 的 .promises 同一对象——真机 require(esm) 返回 namespace）。
 console.log("default", typeof tp.setTimeout === "function", typeof tp.scheduler === "object",
   typeof tp.setInterval === "function");
 "#,
@@ -56,3 +58,39 @@ console.log("default", typeof tp.setTimeout === "function", typeof tp.scheduler 
 }
 
 // ── Phase 9c-1：fs 同步面增补（link 系/时间戳/权限/access/fd 系/cp/opendir）──
+
+#[test]
+fn phase10f_timers_promises_namespace_scheduler() {
+    // 10f 对拍：去 default 后 require(esm) 走 namespace 回落，与 node:timers
+    // 的 .promises 同一对象（套件 test-timers-promises 的 deepStrictEqual）；
+    // scheduler 不可 new（ERR_ILLEGAL_CONSTRUCTOR）+ this 校验（ERR_INVALID_THIS）
+    // + 已中止信号同步拒绝（套件 test-timers-promises-scheduler）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import timers from "node:timers";
+import * as tp from "node:timers/promises";
+console.log("ident", tp === timers.promises);
+try { new (tp.scheduler.constructor)(); } catch (e) { console.log("ctor", e.code); }
+try { tp.scheduler.yield.call({}); } catch (e) { console.log("this", e.code); }
+try { await tp.scheduler.wait(10000, { signal: AbortSignal.abort() }); }
+catch (e) { console.log("preabort", e.code, e.message); }
+const ac = new AbortController();
+const w = tp.scheduler.wait(10000, { signal: ac.signal });
+ac.abort();
+try { await w; } catch (e) { console.log("postabort", e.code); }
+"#,
+    );
+    for line in [
+        "ident true",
+        "ctor ERR_ILLEGAL_CONSTRUCTOR",
+        "this ERR_INVALID_THIS",
+        "preabort ABORT_ERR The operation was aborted",
+        "postabort ABORT_ERR",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

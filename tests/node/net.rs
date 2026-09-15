@@ -154,3 +154,36 @@ console.log("kept", net.getDefaultAutoSelectFamilyAttemptTimeout());
     assert!(out.contains("kept 1000"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_socket_settimeout_fires_without_closing() {
+    // 10f timers 对拍：socket.setTimeout(ms[, cb]) 真实现——单发 'timeout'
+    // 事件（Node 口径：不关连接、socket 仍可写；cb 注册为 once 监听），
+    // 内部 timer 恒 unref（套件 test-timers-socket-timeout-removes-other-socket-
+    // unref-timer 形状收窄为 hermetic 单 socket）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+const server = net.createServer((sock) => {
+  sock.setTimeout(30, () => {
+    console.log("timeout-fired", sock.writable, sock.destroyed === false);
+    sock.end();
+  });
+});
+server.listen(0, "127.0.0.1", () => {
+  const addr = server.address();
+  const c = net.connect(addr.port, "127.0.0.1", () => {
+    console.log("cli-connect");
+  });
+  c.on("close", () => server.close(() => console.log("closed")));
+});
+"#,
+    );
+    assert!(out.contains("cli-connect"), "out: {out}");
+    assert!(out.contains("timeout-fired true true"), "out: {out}");
+    assert!(out.contains("closed"), "out: {out}");
+    dir.close().unwrap();
+}

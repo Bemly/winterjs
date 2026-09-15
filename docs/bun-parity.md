@@ -101,3 +101,74 @@
 | test-assert-async.js | 1 | 0 | 🟡 同上 |
 | test-assert-fail.js | 1 | 0 | 🟡 同上 |
 | test-assert-if-error.js | 1 | 0 | 🟡 同上 |
+## timers
+
+> 10f 收官：59 点名 = 45 ✅ + 14 ⏭️（12 件 internalBinding/expose-internals 类 + 2 件
+> 自 spawn 位置参数），红 0。本轮改动主体：Timeout 真语义（unref/ref/hasRef/refresh/
+> close/[Symbol.dispose]/_destroyed/this 绑定 + node 原文 delay 钳制与三态警告）、
+> uncaughtException 路由、ALS/域的登记期捕获、scheduler 形态、socket.setTimeout
+> 真实现；事件循环 park 唤醒集与存活判定集分家（AGENTS §4.94）。
+> 偏离维持记档：`setImmediate` check 阶段近似（plan3 §4）、refresh-after-fire
+> 不重臂、socket.setTimeout 无活动重置（整收口径）。
+
+| 文件 | winterjs | node | 结论 |
+|---|---|---|---|
+| test-timers-api-refs.js | 0 | 0 | ✅（修：三清同体——delete 全局后 clearInterval/clearImmediate 不二次解引用） |
+| test-timers-args.js | 0 | 0 | ✅ |
+| test-timers-async-store-leak.js | 1 | 1 | ⏭️ internalBinding（`internal/test/binding`/`internal/linkedlist`，--expose-internals 类） |
+| test-timers-clear-null-does-not-throw-error.js | 0 | 0 | ✅ |
+| test-timers-clear-object-does-not-throw-error.js | 0 | 0 | ✅ |
+| test-timers-clear-timeout-interval-equivalent.js | 0 | 0 | ✅ |
+| test-timers-clearImmediate-als.js | 0 | 0 | ✅（修：ALS capture/restore 挂载点） |
+| test-timers-clearImmediate.js | 0 | 0 | ✅ |
+| test-timers-destroyed.js | 0 | 0 | ✅（修：_destroyed 生命周期（clear/fire 置位，interval 例外）） |
+| test-timers-dispose.js | 0 | 0 | ✅（修：Symbol.dispose/close（= clearTimeout）） |
+| test-timers-fast-calls.js | 1 | 1 | ⏭️ internalBinding（`internal/test/binding`/`internal/linkedlist`，--expose-internals 类） |
+| test-timers-immediate-promisified.js | 1 | 1 | ⏭️ internalBinding（`internal/test/binding`/`internal/linkedlist`，--expose-internals 类） |
+| test-timers-immediate-queue-throw.js | 0 | 0 | ✅（修：uncaughtException 路由 + 域登记期捕获路由（origin/双 handler 全对）） |
+| test-timers-immediate-queue.js | 1 | 1 | ⏭️ internalBinding（`internal/test/binding`/`internal/linkedlist`，--expose-internals 类） |
+| test-timers-immediate-unref-nested-once.js | 0 | 0 | ✅（修：unref'd immediate 不续命） |
+| test-timers-immediate-unref-simple.js | 0 | 0 | ✅（修：unref'd immediate 不续命） |
+| test-timers-immediate-unref.js | 0 | 0 | ✅（修：immediate unref 真语义 + hasRef） |
+| test-timers-immediate.js | 0 | 0 | ✅ |
+| test-timers-interval-promisified.js | 1 | 1 | ⏭️ internalBinding（`internal/test/binding`/`internal/linkedlist`，--expose-internals 类） |
+| test-timers-interval-throw.js | 0 | 0 | ✅（修：interval 抛错续排 + uncaught 双次） |
+| test-timers-invalid-clear.js | 0 | 0 | ✅ |
+| test-timers-linked-list.js | 1 | 1 | ⏭️ internalBinding（`internal/test/binding`/`internal/linkedlist`，--expose-internals 类） |
+| test-timers-max-duration-warning.js | 0 | 0 | ✅ |
+| test-timers-nan-duration-emit-once-per-process.js | 0 | 0 | ✅ |
+| test-timers-nan-duration-warning-promises.js | 0 | 0 | ✅ |
+| test-timers-nan-duration-warning.js | 1 | 0 | ⏭️ 自 spawn 位置参数（`spawnSync(execPath,[file,arg])`，全 flag CLI 设计） |
+| test-timers-negative-duration-warning-emit-once-per-process.js | 0 | 0 | ✅ |
+| test-timers-negative-duration-warning.js | 1 | 0 | ⏭️ 自 spawn 位置参数（`spawnSync(execPath,[file,arg])`，全 flag CLI 设计） |
+| test-timers-nested.js | 0 | 1 | ⏭️ internalBinding（`internal/test/binding`/`internal/linkedlist`，--expose-internals 类） |
+| test-timers-next-tick.js | 1 | 1 | ⏭️ internalBinding（`internal/test/binding`/`internal/linkedlist`，--expose-internals 类） |
+| test-timers-non-integer-delay.js | 0 | 0 | ✅（修：1.1ms 重排 + 顺序门） |
+| test-timers-not-emit-duration-zero.js | 0 | 0 | ✅ |
+| test-timers-now.js | 1 | 1 | ⏭️ internalBinding（`internal/test/binding`/`internal/linkedlist`，--expose-internals 类） |
+| test-timers-ordering.js | 1 | 1 | ⏭️ internalBinding（`internal/test/binding`/`internal/linkedlist`，--expose-internals 类） |
+| test-timers-process-tampering.js | 0 | 0 | ✅（修：process 方法 this 基（common 载入期捕获，§4.97）） |
+| test-timers-promises-scheduler.js | 0 | 0 | ✅（修：Scheduler 类（ERR_ILLEGAL_CONSTRUCTOR/ERR_INVALID_THIS）+ PromiseReject 残留（§4.96）） |
+| test-timers-promises.js | 0 | 0 | ✅（修：去 default——require(esm) namespace 与 .promises 同一对象） |
+| test-timers-refresh-in-callback.js | 0 | 0 | ✅ |
+| test-timers-refresh.js | 1 | 1 | ⏭️ internalBinding（`internal/test/binding`/`internal/linkedlist`，--expose-internals 类） |
+| test-timers-reset-process-domain-on-throw.js | 0 | 0 | ✅（修：域 error 路由（e.domain）+ process.domain 两态（null/undefined）） |
+| test-timers-same-timeout-wrong-list-deleted.js | 0 | 0 | ✅ |
+| test-timers-setimmediate-infinite-loop.js | 0 | 0 | ✅ |
+| test-timers-socket-timeout-removes-other-socket-unref-timer.js | 0 | 0 | ✅（修：socket.setTimeout 真实现（单发 timeout 事件不关连接，内部 timer 恒 unref）） |
+| test-timers-this.js | 0 | 0 | ✅（修：回调 this=Timeout/Immediate 实例） |
+| test-timers-throw-when-cb-not-function.js | 0 | 0 | ✅（修：validateCallback → ERR_INVALID_ARG_TYPE） |
+| test-timers-timeout-promisified.js | 1 | 1 | ⏭️ internalBinding（`internal/test/binding`/`internal/linkedlist`，--expose-internals 类） |
+| test-timers-timeout-to-interval.js | 0 | 0 | ✅ |
+| test-timers-timeout-with-non-integer.js | 0 | 0 | ✅ |
+| test-timers-to-primitive.js | 0 | 0 | ✅（修：字符串 id 清除（`${+t}`）） |
+| test-timers-uncaught-exception.js | 0 | 0 | ✅（修：uncaught 路由（后继定时器照跑）） |
+| test-timers-unenroll-unref-interval.js | 0 | 0 | ✅（修：`_onTimeout`/`_idleTimeout=-1` live 门（缺 close 补 close）） |
+| test-timers-unref-throw-then-ref.js | 0 | 0 | ✅（修：uncaught（once）+ ref 恢复） |
+| test-timers-unref.js | 0 | 0 | ✅（修：unref 真语义（next_wake/存活分家 + progressed 不含 unrefed，§4.94）） |
+| test-timers-unrefd-interval-still-fires.js | 0 | 0 | ✅（修：next_wake（unrefed 到点须醒）） |
+| test-timers-unrefed-in-beforeexit.js | 0 | 0 | ✅ |
+| test-timers-unrefed-in-callback.js | 0 | 0 | ✅（修：触发期 unref 侧账 unrefed_ids（entry 已摘表，§4.94）） |
+| test-timers-user-call.js | 0 | 0 | ✅（修：Reflect.apply 直调内建（回调 .call/.apply 可被补丁，§4.95）） |
+| test-timers-zero-timeout.js | 0 | 0 | ✅ |
+| test-timers.js | 0 | 0 | ✅（修：溢出钳 1 非上限（>2^31-1 按下一跳，原文直译）） |

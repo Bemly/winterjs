@@ -51,7 +51,10 @@ fn run_missing_file_reports_chain() {
 fn run_file_from_tempdir() {
     let dir = assert_fs::TempDir::new().unwrap();
     let script = dir.child("app.js");
-    script.write_str("1 + 41").unwrap();
+    // node 口径（真机 26.8.2 实测 `node app.js` 无完成值回显）：typeless .js
+    // 入口走 CJS require 主模块（b701cf6）后无 rval——静默退出即对等行为，
+    // 执行效应断言改走 console.log（§4.72 旧断言对真机翻转）。
+    script.write_str("console.log(1 + 41)").unwrap();
 
     assert_eq!(
         stdout_of(&mut winterjs().arg("--run").arg(script.path())),
@@ -62,10 +65,10 @@ fn run_file_from_tempdir() {
 
 #[test]
 fn run_script_in_tempdir_workdir() {
-    // tempfile 直用：cwd 下的相对脚本
+    // tempfile 直用：cwd 下的相对脚本（完成值回显同上，改执行效应断言）
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("rel.js");
-    std::fs::write(&path, "'ok'").unwrap();
+    std::fs::write(&path, "console.log('ok')").unwrap();
 
     assert_eq!(
         stdout_of(

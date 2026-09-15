@@ -269,3 +269,98 @@ fn phase10a_immediate_and_timeout_class() {
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }
 }
+
+#[test]
+fn phase10f_timer_face_unref_uncaught() {
+    // 10f 对拍定案面：this 绑定/_destroyed 生命周期/dispose+close/字符串 id/
+    // validateCallback 码/三态警告/uncaughtException 路由/ALS 传播/域路由/
+    // unref 不续命/node:timers delete-proof。套件断言原文逐项对拍
+    // （test-timers{,-this,-unref,-destroyed,-to-primitive,-throw-when-cb,
+    //   -api-refs,-uncaught-exception,-immediate-queue-throw}/
+    //  test-timers-clearImmediate-als/-nan-duration-warning 等）。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        "const tthis = await new Promise((res) => {\n\
+         \x20 setTimeout(function () { res(this !== undefined && typeof this.hasRef === 'function' && this._destroyed === false); }, 1);\n\
+         });\n\
+         console.log('this', tthis === true);\n\
+         const tf = setTimeout(() => {}, 1);\n\
+         await new Promise((r) => setTimeout(r, 30));\n\
+         console.log('destroyed-fired', tf._destroyed === true);\n\
+         const tc = setTimeout(() => {}, 1000);\n\
+         clearTimeout(tc);\n\
+         console.log('destroyed-cleared', tc._destroyed === true, tc.hasRef() === true);\n\
+         const ivd = setInterval(() => {}, 1000);\n\
+         clearInterval(ivd);\n\
+         console.log('destroyed-interval', ivd._destroyed === true);\n\
+         const tdisp = setTimeout(() => {}, 1000);\n\
+         console.log('dispose', typeof tdisp[Symbol.dispose] === 'function', typeof tdisp.close === 'function');\n\
+         tdisp[Symbol.dispose]();\n\
+         console.log('disposed', tdisp._destroyed === true);\n\
+         globalThis.__bad = false;\n\
+         clearTimeout(`${+setTimeout(() => { globalThis.__bad = true; }, 5)}`);\n\
+         const codes = [];\n\
+         try { setTimeout('x', 1); } catch (e) { codes.push(e.code, e instanceof TypeError); }\n\
+         try { setInterval(null, 1); } catch (e) { codes.push(e.code); }\n\
+         try { setImmediate({}); } catch (e) { codes.push(e.code); }\n\
+         console.log('validate', codes.join(','));\n\
+         const warned = [];\n\
+         process.on('warning', (w) => warned.push(w.name));\n\
+         setTimeout(() => {}, NaN); setTimeout(() => {}, -1); setTimeout(() => {}, -2);\n\
+         setTimeout(() => {}, 3e9); setTimeout(() => {}, 4e9);\n\
+         console.log('warn', JSON.stringify(warned));\n\
+         await new Promise((r) => setTimeout(r, 40));\n\
+         console.log('string-clear', globalThis.__bad === false);\n\
+         let caught = '';\n\
+         let origins = '';\n\
+         process.on('uncaughtException', (e, origin) => { caught += e.message; origins += origin; });\n\
+         setTimeout(() => { throw new Error('boom1'); }, 1);\n\
+         setTimeout(() => {}, 2);\n\
+         await new Promise((r) => setTimeout(r, 50));\n\
+         console.log('uncaught', caught === 'boom1', origins === 'uncaughtException');\n\
+         const { AsyncLocalStorage } = await import('node:async_hooks');\n\
+         const als = new AsyncLocalStorage();\n\
+         let alsv = '';\n\
+         als.run(new Map([['k', 'v']]), () => {\n\
+         \x20 setTimeout(() => { alsv = als.getStore() ? als.getStore().get('k') : ''; }, 5);\n\
+         });\n\
+         await new Promise((r) => setTimeout(r, 40));\n\
+         console.log('als', alsv === 'v');\n\
+         const domain = await import('node:domain');\n\
+         let domOk = false;\n\
+         const d = domain.create();\n\
+         d.on('error', (e) => { domOk = e.domain === d; });\n\
+         d.run(() => setImmediate(() => { throw new Error('dom-err'); }));\n\
+         await new Promise((r) => setTimeout(r, 40));\n\
+         console.log('domain', domOk === true, process.domain === null);\n\
+         const spin = setInterval(() => {}, 1); spin.unref();\n\
+         await new Promise((r) => setTimeout(r, 20));\n\
+         const timers = await import('node:timers');\n\
+         delete globalThis.setTimeout; delete globalThis.clearTimeout;\n\
+         delete globalThis.setInterval; delete globalThis.clearInterval;\n\
+         delete globalThis.setImmediate; delete globalThis.clearImmediate;\n\
+         let apicount = 0;\n\
+         timers.setTimeout(() => {\n\
+         \x20 apicount++;\n\
+         \x20 timers.clearInterval(timers.setInterval(() => {}, 1000));\n\
+         \x20 timers.clearImmediate(timers.setImmediate(() => {}));\n\
+         }, 1);\n\
+         await new Promise((r) => timers.setTimeout(r, 40));\n\
+         console.log('api-refs', apicount === 1, typeof globalThis.setTimeout === 'undefined');"]));
+    for line in [
+        "this true",
+        "destroyed-fired true",
+        "destroyed-cleared true true",
+        "destroyed-interval true",
+        "dispose true true",
+        "disposed true",
+        "validate ERR_INVALID_ARG_TYPE,true,ERR_INVALID_ARG_TYPE,ERR_INVALID_ARG_TYPE",
+        "warn [\"TimeoutNaNWarning\",\"TimeoutNegativeWarning\",\"TimeoutOverflowWarning\",\"TimeoutOverflowWarning\"]",
+        "string-clear true",
+        "uncaught true true",
+        "als true",
+        "domain true true",
+        "api-refs true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+}

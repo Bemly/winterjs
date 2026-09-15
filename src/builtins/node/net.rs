@@ -672,16 +672,32 @@ class Socket extends EventEmitter {
     // cork/uncork no-op（JS 层写本就不聚合，行为等价）；setNoDelay/
     // setKeepAlive no-op（tokio 写半直通，无 Nagle 可关）；_readableState
     // 最小桩（socketOnClose/socketOnEnd 读 endEmitted/length 判收尾路径）；
-    // pause/resume/setTimeout no-op（读流无 JS 侧缓冲，整包即达）；
+    // pause/resume no-op（读流无 JS 侧缓冲，整包即达）；
     // read 恒 null（数据已全经 data 事件投递，无缓冲可取——M5 dev 实测
     // `stream.resume is not a function`，缺桩即 TypeError）。
+    // setTimeout 真实现见下（10f timers 对拍）。
     this.cork = () => this;
     this.uncork = () => this;
     this.setNoDelay = () => this;
     this.setKeepAlive = () => this;
     this.pause = () => this;
     this.resume = () => this;
-    this.setTimeout = () => this;
+    // 10f timers 对拍：setTimeout(ms[, cb]) 真实现——单发内部 timer 到期
+    // emit('timeout')（Node 口径：不关连接、不杀 socket；cb 注册为 once 监听；
+    // 0/负值 = 解除）。内部 timer 恒 unref：连接生死不归它管，socket 在场时
+    // 事件循环照常泵到点（fire 不因 unrefed 豁免）。活动重置（node 收包即重置
+    // idle 计时）未做——整收口径记档。
+    this.setTimeout = (ms, cb) => {
+      const delay = Number(ms) || 0;
+      if (this.__wjs_stimer) { clearTimeout(this.__wjs_stimer); this.__wjs_stimer = null; }
+      if (delay > 0) {
+        const t = setTimeout(() => { this.__wjs_stimer = null; this.emit("timeout"); }, delay);
+        t.unref();
+        this.__wjs_stimer = t;
+      }
+      if (typeof cb === "function") this.once("timeout", cb);
+      return this;
+    };
     this.read = () => null;
     this._readableState = { endEmitted: false, length: 0 };
   }

@@ -221,6 +221,18 @@ AsyncResource.AsyncResource = AsyncResource;
 
 const asyncWrapProviders = Object.freeze({ __proto__: null });
 
+// 10f timers 对拍：跨事件循环的异步上下文快照挂载点——定时器注册时 capture、
+// 触发时 restore（套件 clearImmediate-als）。快照拷贝 Map 外层（ALS→store 映射），
+// store 对象同一性保留（node 口径）；无活跃上下文时 capture 回 undefined，
+// 挂载侧（prelude timers）据此走零开销直调。
+globalThis.__wjs_als_capture = () =>
+  currentContext.size === 0 ? undefined : new Map(currentContext);
+globalThis.__wjs_als_restore = (snap, fn) => {
+  const prev = currentContext;
+  currentContext = snap;
+  try { return fn(); } finally { currentContext = prev; }
+};
+
 export {
   AsyncLocalStorage,
   AsyncResource,

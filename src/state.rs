@@ -19,12 +19,16 @@ use crate::loader::sourcemap::remap_location;
 
 /// 一个已注册的定时器。`at` 为触发时刻（interval 为上次触发 + 间隔，漂移校正）。
 /// `callback`/`args` 经 `Box` 定址（mozjs `Heap::set` 后禁移动，见 §4.40）。
+/// `period` 为注册时的钳制延迟（refresh 用）；`unrefed` 为 node ref 语义位
+/// （事件循环 idle 判定忽略，触发不因它豁免）。
 pub struct TimerEntry {
     pub id: u32,
     pub callback: Box<Heap<JSVal>>,
     pub args: Box<Heap<JSVal>>, // JS 数组，由 prelude 打包
     pub at: Instant,
     pub interval: Option<Duration>,
+    pub period: Duration,
+    pub unrefed: bool,
 }
 
 // SAFETY: 只追踪 GC 字段；Instant/Duration/u32 无 GC 指针。
@@ -349,6 +353,8 @@ pub struct RootedState {
     pub make_response_fn: Heap<JSVal>, // prelude 的 __wjs_make_response
     pub make_fetch_error_fn: Heap<JSVal>, // prelude 的 __wjs_make_fetch_error
     pub ws_emit_fn: Heap<JSVal>, // prelude 的 __wjs_ws_emit
+    pub uncaught_fn: Heap<JSVal>, // prelude 的 __wjs_uncaught（timer 回调未捕获异常分发）
+    pub uncaught_count_fn: Heap<JSVal>, // prelude 的 __wjs_uncaught_count（监听器探针）
     pub napi: Option<crate::napi::env::NapiEnv>, // napi 会话单例（首个 .node require 建起；plan-napi §2）
 }
 
@@ -381,6 +387,8 @@ unsafe impl Traceable for RootedState {
         self.make_response_fn.trace(trc);
         self.make_fetch_error_fn.trace(trc);
         self.ws_emit_fn.trace(trc);
+        self.uncaught_fn.trace(trc);
+        self.uncaught_count_fn.trace(trc);
         self.napi.trace(trc);
     }}
 }
@@ -390,6 +398,8 @@ unsafe impl Traceable for RootedState {
 pub struct PlainState {
     pub next_timer_id: u32,
     pub cleared_during_fire: HashSet<u32>,
+    /// 触发期 unref 侧账（entry 已摘表时旗的落点；id 单调不复用，残留无害）。
+    pub unrefed_ids: HashSet<u32>,
     pub console_counts: HashMap<String, u32>,
     pub console_times: HashMap<String, Instant>,
     pub console_indent: usize,

@@ -1441,3 +1441,31 @@ cargo build
   堆栈/输出采集，且一律落盘读。
 - 推广为铁律：无退出码的 hang 结论不可信；自然退出（idle 收敛正确）与 hang
   在输出上看起来一样，区分只认退出码。
+
+### 4.94 park 唤醒集与存活判定集必须分家：unrefed 到点要醒、不续命、不算 progress（2026-09-15，10f timers）
+
+- 症状三连：① unrefd-interval-still-fires 的 1ms unrefed interval 迟到 1s 才触发（睡到 refed 看门 1s 到点）；② unref.js 的 1ms unrefed interval 空转整整 10 秒（单轮 pump ≈1.1ms > interval 1ms，每轮都到期 → `progressed` 永真 → 永不 idle，LONG_TIME mustNotCall 必炸）；③ unrefed-in-callback 永 hang（callback 内 `unref()` 时 entry 已摘表，native noop，重排丢旗 → interval 恒 refed）。
+- 根因：park 目标、存活判定、progressed 三个概念混用同一个 `next_deadline`/timers 计数。node 口径：uv poll 超时含 unrefed timer（要醒）、`uv_loop_alive` 只看 refed（要退）、unrefed 触发不算续命（防转），但其回调的 microtask 仍要一轮 RunJobs（§4.18）。
+- 修法：`next_wake()`（含 unrefed，只给 park）与 `next_deadline()`（refed-only，给 idle）分家（`src/builtins/timers.rs` + `runtime.rs` park 点）；`PumpStats` 拆 `timers`/`timers_unrefed`，progressed 只数 refed，`idle && unrefed-only` 给**一轮** grace continue 后即 break；unref 旗加 plain 侧账 `unrefed_ids`（触发期 unref 落账，重排时并读）。
+- 复现：`tests/builtins.rs::phase10f_timer_face_unref_uncaught`（修前分别迟到 1s/空转 10s/永 hang）。
+- 推广为铁律：凡事件源带 ref 语义，"到点唤醒"与"存活判定"必须显式分家；progressed 只统计能续命的源，任何触发的 microtask 都要一轮 RunJobs 兜底——§4.18 完整形态的 ref 版。
+
+### 4.95 宿主调用户回调一律 Reflect.apply，禁走实例属性查找（2026-09-15，10f timers）
+
+- 症状：user-call 套件挂——回调 `fn.call/.apply` 被猴子补丁成字符串后，`self._onTimeout.apply(...)` 报 not a function（node 同套件全过）。
+- 根因：实例上的方法查找先命中自有补丁；node 用内部 ReflectApply（内建，无视补丁）。
+- 修法：prelude timers 触发改 `Reflect.apply(self._onTimeout, self, self._timerArgs)`（实参也 live 读，套件 unenroll 直改字段同源）。
+- 推广为铁律：宿主侧凡"以方法形式"调用用户提供的函数，一律走 Reflect/内建引用；用户对象上的同名属性是它的数据，不是我们的调用机制。
+
+### 4.96 CJS→ESM 移植的 primordials 残留：未定义符号在错误路径换错误类型（2026-09-15，10f timers）
+
+- 症状：promises-scheduler 套件报 `rejects: unexpected throw`——真因是移植稿里 `return PromiseReject(...)`（node primordials 名）未随行，运行时 ReferenceError，assert.rejects 把它当 mismatch 报——两层错掩盖一层。
+- 修法：`Promise.reject(...)`；移植面收尾 grep primordials 名单残留（PromiseReject/PromiseResolve/NumberIsNaN/MathMax…）。
+- 教训：错误文案不可信（§4.66 Either 兜底同源）；"mismatch" 类报错先打印实际 rejection 值再动断言。
+
+### 4.97 全局单例的方法族必须 this 基；`--run` 完成值回显随 CJS 主模块化消失（2026-09-15，10f timers）
+
+- 症状一：process-tampering（`globalThis.process = {}` 后 setImmediate）——node common 载入期 `const process = globalThis.process` 捕获真身，我们的 on/emit 等方法体读**全局** process 绑定，tamper 后 `undefined["exit"]` 炸。
+- 修法：process 监听器族方法一律 `this` 基（`__wjs_emit` 顺带回监听数，供 `__wjs_uncaught` 判"是否已处理"——探针为 0 时 native 保持 pending 原样走 fatal，错误信息不降级）。
+- 症状二：`run_file_from_tempdir` 断言 `--run` 回显完成值 `42`——b701cf6 typeless .js 入口走 CJS require 主模块后无 rval，回显消失（HEAD 实测同红，非本轮回归）。真机 `node app.js` 本就无回显——静默才是对等，测试改执行效应断言（§4.82 老断言翻转）。
+- 推广为铁律：全局单例的方法族，方法体禁解引用全局绑定（`this` 或载入期捕获二选一）；"回显类"断言在入口语义升级后逐个对真机。

@@ -24,7 +24,9 @@ console.log("timers-prom", typeof tp.setTimeout);
 console.log("strict", typeof strict.ok, strict === assetStrict, sequal(1, 1) === undefined, sok(true) === undefined);
 console.log("dns-prom", typeof dnsPromises.lookup, typeof dnsLookup, !!(await dnsPromises.lookup("localhost"))?.address);
 const t = st(() => console.log("NO-FIRE"), 50);
-console.log("timeout-obj", typeof t.unref === "function" && t.unref() === t && t.hasRef() === true);
+// 10f timers 对拍翻转（真机口径）：unref 后 hasRef 为 false，ref 恢复 true
+// （旧断言编码的是 no-op unref 的伪语义）。
+console.log("timeout-obj", typeof t.unref === "function" && t.unref() === t && t.hasRef() === false && t.ref().hasRef() === true);
 ct(t);
 si(() => console.log("immediate-ok"));
 try { await import("node:path/nope"); console.log("NO-ERR"); }

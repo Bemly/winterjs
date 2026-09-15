@@ -38,7 +38,9 @@ async function timersSetTimeout(after = 1, value, options = {}) {
   checkOptions(options);
   const signal = options.signal;
   if (signal?.aborted) {
-    return PromiseReject(new AbortError(undefined, { cause: signal.reason }));
+    // 已中止路径同步拒绝（原移植稿的 primordials `PromiseReject` 未随行——
+    // ReferenceError 反被 assert.rejects 吃成 mismatch，10f 现形）。
+    return Promise.reject(new AbortError(undefined, { cause: signal.reason }));
   }
   const delay = normalizeDelay(after);
   let timerId, resolve_, reject_;
@@ -99,14 +101,28 @@ function setInterval(delay = 1, value, options = {}) {
   return intervalsSetInterval(delay, value, options);
 }
 
-const scheduler = {
+class Scheduler {
+  constructor() {
+    throw new errors.codes.ERR_ILLEGAL_CONSTRUCTOR();
+  }
   yield(value) {
+    __validateSchedulerThis(this);
     return timersSetImmediate(value);
-  },
-  wait(delay = 0, options) {
-    return timersSetTimeout(delay, undefined, options);
-  },
-};
+  }
+  wait(delay, options) {
+    __validateSchedulerThis(this);
+    return timersSetTimeout(delay ?? 0, undefined, options);
+  }
+}
+function __validateSchedulerThis(self) {
+  if (!(self instanceof Scheduler)) {
+    throw new errors.codes.ERR_INVALID_THIS('Scheduler');
+  }
+}
+// 单例绕过构造器（node 同款：不可 new，但方法保留 Scheduler 牌 this 校验）。
+const scheduler = Object.create(Scheduler.prototype, {
+  [Symbol.toStringTag]: { value: 'Scheduler' },
+});
 
 export {
   timersSetTimeout as setTimeout,
@@ -114,5 +130,7 @@ export {
   setInterval,
   scheduler,
 };
-export default { setTimeout: timersSetTimeout, setImmediate: timersSetImmediate, setInterval, scheduler };
+// 无 default 导出（10f 对拍定案）：require('node:timers/promises') 走
+// namespace 回落，与 node:timers 的 .promises（同 namespace）deepStrictEqual
+// 一致（真机 require(esm) 返回 namespace 本体）。
 "#;

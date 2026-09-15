@@ -23,11 +23,22 @@ export class Domain extends EventEmitter {
     this.members = [];
   }
   _emitError(err) {
+    // node _errorHandler 口径（lib/domain.js）：错误挂 domain/domainThrown 标记；
+    // 先弹掉栈顶相邻的自身（处理器运行在 active=栈上更高一位或 undefined 下）；
+    // 处理完清栈归 null（domainUncaughtExceptionClear：两轮事件循环间不留活域，
+    // 套件 reset-process-domain-on-throw 分别断言 undefined 与 null 两态）。
+    try { err.domain = this; err.domainThrown = true; } catch {}
+    while (__stack[__stack.length - 1] === this) __stack.pop();
+    active = __stack.length === 0 ? undefined : __stack[__stack.length - 1];
+    let caught = false;
     if (this.listenerCount("error") > 0) {
-      this.emit("error", err);
+      caught = this.emit("error", err);
     } else {
       throw err;
     }
+    __stack.length = 0;
+    active = null;
+    return caught;
   }
   run(fn, ...args) {
     if (typeof fn !== "function") {
@@ -152,6 +163,17 @@ export function createDomain() {
 export function getActive() {
   return active;
 }
+// node lib/domain.js 原文口径：本模块载入即接管 process.domain（读/写活绑定）。
+// 初始 null（模块载入前 undefined）；exit 到空栈为 undefined——两个"无域"态
+// 有区别，套件 reset-process-domain-on-throw 分别断言。
+Object.defineProperty(globalThis.process, "domain", {
+  enumerable: true,
+  configurable: true,
+  get() { return active; },
+  set(v) { active = v; },
+});
+// 定时器面（prelude timers）的域捕获点：登记期取活域，回调抛错先路由域。
+globalThis.__wjs_domain_capture = () => active;
 const __api = {
   Domain, create, createDomain,
   get active() { return active; },

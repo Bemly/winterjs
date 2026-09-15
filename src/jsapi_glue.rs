@@ -8,7 +8,7 @@ use std::ffi::{CStr, CString};
 use mozjs::conversions::{ConversionResult, FromJSValConvertible as _, ToJSValConvertible as _};
 use mozjs::context::JSContext;
 use mozjs::gc::ValueArray;
-use mozjs::jsapi::{HandleValueArray, JS_CallFunctionValue, JSObject};
+use mozjs::jsapi::{HandleValueArray, JS_CallFunctionValue, JS_GetPendingException, JSObject};
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 use mozjs::typedarray::{CreateWith, TypedArray, Uint8};
@@ -257,6 +257,18 @@ pub fn pending_exception_error(
 // ── 集中边界调用（UNSAFE-BOUNDARY 登记区）─────────────────────────────────
 // 规则：业务模块禁直接调本节之外的裸 JSAPI；新增收敛函数必须带
 // `UNSAFE-BOUNDARY` 标签（前置条件 + 覆盖测试名），供黑盒重点回归。
+
+/// UNSAFE-BOUNDARY: 取走当前 pending exception（JS_GetPendingException 语义：
+/// 成功取走即清除 pending）。前置：cx 在 realm 内；刚一次失败的 JSAPI 调用；
+/// 取出的值必须 rooted 后再用于后续 JS 调用（§4.80 链式调用铁律）。
+/// 覆盖：`tests/node/timers.rs::phase10f_timer_uncaught_routing`（有监听分发）
+/// 与无监听 fatal 路径（探针保证不进本函数）。
+pub fn take_pending_exception(cx: &mut JSContext) -> Option<JSVal> {
+    rooted!(&in(cx) let mut val = UndefinedValue());
+    // SAFETY: cx 有效；出参为 rooted 槽位
+    let got = unsafe { JS_GetPendingException(cx.raw_cx(), raw_handle_mut(val.as_ptr())) };
+    if got { Some(val.get()) } else { None }
+}
 
 /// UNSAFE-BOUNDARY: 调单参函数 `fun(arg)`（this=global；返回 rval；失败 None）。
 /// 前置：cx 在 realm 内；fun 为可调用；调用后 pending exception 由调用方处理。

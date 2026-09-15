@@ -399,6 +399,8 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
             (c"__wjs_make_response", 2u8),
             (c"__wjs_make_fetch_error", 3u8),
             (c"__wjs_ws_emit", 4u8),
+            (c"__wjs_uncaught", 5u8),
+            (c"__wjs_uncaught_count", 6u8),
         ] {
             rooted!(&in(&mut realm) let mut v = UndefinedValue());
             // SAFETY: global 为有效 rooted 对象
@@ -417,7 +419,9 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
                 1 => s.entries_fn.set(got),
                 2 => s.make_response_fn.set(got),
                 3 => s.make_fetch_error_fn.set(got),
-                _ => s.ws_emit_fn.set(got),
+                4 => s.ws_emit_fn.set(got),
+                5 => s.uncaught_fn.set(got),
+                _ => s.uncaught_count_fn.set(got),
             });
         }
     }
@@ -882,6 +886,10 @@ struct PumpStats {
     /// 本轮结算过（§4.18：结算后必须再跑一轮 RunJobs，不可直接退）。
     progressed: bool,
     timers: usize,
+    /// 本轮触发的 unrefed 定时器数（不计入 progressed——存活判定与 node
+    /// uv_loop_alive 同口径只看 refed 面；套件 unref.js 的 1ms unrefed
+    /// interval 否则空转到 LONG_TIME 才退）。
+    timers_unrefed: usize,
     fetch: usize,
     ws: usize,
     watch: usize,
@@ -1001,7 +1009,9 @@ async fn pump_once(
 
     {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
-        st.timers = timers::fire_due(&mut realm, global.get(), err)?;
+        let (fired, fired_unrefed) = timers::fire_due(&mut realm, global.get(), err)?;
+        st.timers = fired;
+        st.timers_unrefed = fired_unrefed;
     }
     Ok(st)
 }
@@ -1026,6 +1036,7 @@ async fn event_loop(
     use crate::napi::asyncwork as napi_aw;
     let mut iterations: u64 = 0;
     let mut timers_fired: usize = 0;
+    let mut unrefed_grace = false;
     let mut fetches_settled: usize = 0;
     let mut ws_settled: usize = 0;
     let mut watches_settled: usize = 0;
@@ -1123,7 +1134,12 @@ async fn event_loop(
         dispatches_settled += st.dispatch;
         // timer 触发同样排队 microtask（回调内决议 promise），必须算 progress，
         // 否则 idle 检查提前退出、反应 job 被丢（§4.18 同类，TLA 必挂）。
-        let progressed = st.progressed || st.timers > 0;
+        // unrefed 触发不算推进（node 存活判定只看 refed 面）：否则 idle 后的
+        // 1ms unrefed interval 每轮都到点，循环空转到 LONG_TIME 才退（套件
+        // unref.js 现形）。其 microtask 由下方 grace 轮保证排空。
+        let progressed = st.progressed || st.timers > st.timers_unrefed;
+        let progressed_unrefed_only =
+            !st.progressed && st.timers > 0 && st.timers == st.timers_unrefed;
 
         let timers_empty = timers::next_deadline().is_none();
         let idle = timers_empty
@@ -1138,6 +1154,12 @@ async fn event_loop(
             && state::napi_pending() == 0
             && crate::dispatch::pending() == 0;
         if idle && !progressed {
+            if progressed_unrefed_only && !unrefed_grace {
+                // §4.18 完整形态：unrefed 回调排的 microtask 也要一轮 RunJobs
+                // ——给一轮宽限再退，不无限宽限（否则 unrefed interval 空转）。
+                unrefed_grace = true;
+                continue;
+            }
             break;
         }
         // §4.18 推广：本轮结算/触发过就不能直接 park——结算可能只排了 microtask
@@ -1147,7 +1169,10 @@ async fn event_loop(
         if progressed {
             continue;
         }
-        match timers::next_deadline() {
+        // park 唤醒目标用 next_wake（含 unrefed：到点须醒去触发，套件
+        // unrefd-interval-still-fires）；存活/idle 判定上面已用 refed-only
+        // 的 next_deadline 定案，走到这里说明循环确有存活理由。
+        match timers::next_wake() {
             Some(at) => {
                 let tokio_at = tokio::time::Instant::from_std(at);
                 tokio::select! {

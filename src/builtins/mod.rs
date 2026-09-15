@@ -41,43 +41,177 @@ globalThis.queueMicrotask = function (cb) {
   // 与引擎内部 job queue 同一条微任务队列；回调抛错 → 未处理 rejection（由 runtime 上报）
   Promise.resolve().then(cb);
 };
-// Node 口径 Timeout/Immediate 对象（unref/ref/hasRef/refresh no-op——keep-alive
-// 语义由 Rust 侧定时器表决定；[Symbol.toPrimitive] 保数字 id 算术兼容）。
-// vite cleanupDepsCacheStaleDirs 用 `setTimeout(...).unref()`。
-// 10a：真类（constructor.name === 'Timeout'/'Immediate'，真机口径）。
+// Node 口径 Timeout/Immediate 对象（10f 对拍定案）：真类 + unref 真语义
+// （native 表 unrefed 位，事件循环 idle 判定忽略未 ref 项——keep-alive 归宿
+// 与 node 一致）+ 触发期 this=Timeout 实例 + Symbol.dispose/close +
+// Node lib/internal/timers.js 原文的 delay 钳制与三态警告。
 // 类本体不出块作用域（真机 globalThis.Timeout === undefined，不污染全局）。
 {
+  let __warnedNegative = false;
+  let __warnedNaN = false;
+  // Node 原文直译：`!(after >= 1 && after <= TIMEOUT_MAX)` 一律钳 1（含
+  // NaN/±Infinity/0/负数/溢出）；警告三态——溢出每次发、负数/NaN 每进程一次。
+  globalThis.__wjs_timer_after = (ms) => {
+    const after = ms * 1;
+    if (!(after >= 1 && after <= 2147483647)) {
+      const warn = (msg, name) => {
+        try { globalThis.process?.emitWarning?.(msg, name); } catch {}
+      };
+      if (after > 2147483647) {
+        warn(`${after} does not fit into a 32-bit signed integer.\nTimeout duration was set to 1.`, "TimeoutOverflowWarning");
+      } else if (after < 0 && !__warnedNegative) {
+        __warnedNegative = true;
+        warn(`${after} is a negative number.\nTimeout duration was set to 1.`, "TimeoutNegativeWarning");
+      } else if (Number.isNaN(after) && !__warnedNaN) {
+        __warnedNaN = true;
+        warn(`${after} is not a number.\nTimeout duration was set to 1.`, "TimeoutNaNWarning");
+      }
+      return 1;
+    }
+    return after;
+  };
+  // Node validateCallback 口径：TypeError + ERR_INVALID_ARG_TYPE 码
+  // （套件按 {code,name} 匹配，§4.51 校验在包装外先抛）。
+  globalThis.__wjs_timer_validate_cb = (cb) => {
+    if (typeof cb !== "function") {
+      const e = new TypeError(`The "callback" argument must be of type function. Received type ${typeof cb}`);
+      e.code = "ERR_INVALID_ARG_TYPE";
+      throw e;
+    }
+  };
   class Timeout {
-    constructor(id) { this.__wjs_id = id; }
-    unref() { return this; }
-    ref() { return this; }
-    hasRef() { return true; }
-    refresh() { return this; }
+    constructor(id) {
+      this.__wjs_id = id;
+      this._destroyed = false;
+      this._idleTimeout = 1;
+      this._idleStart = 0;
+      this._onTimeout = null;
+      this._timerArgs = undefined;
+      this._repeat = null;
+      this.__wjs_unrefed = false;
+    }
+    unref() { this.__wjs_unrefed = true; __wjs_timer_ref(this.__wjs_id, false); return this; }
+    ref() { this.__wjs_unrefed = false; __wjs_timer_ref(this.__wjs_id, true); return this; }
+    hasRef() { return !this.__wjs_unrefed; }
+    refresh() { __wjs_timer_refresh(this.__wjs_id); this._destroyed = false; return this; }
+    close() { __clear(this); return this; }
     [Symbol.toPrimitive]() { return this.__wjs_id; }
+    [Symbol.dispose]() { __clear(this); }
   }
   class Immediate extends Timeout {}
-  globalThis.__wjs_timer_wrap = (id) => new Timeout(id);
-  globalThis.__wjs_immediate_wrap = (id) => new Immediate(id);
+  // ALS 快照挂载点：async_hooks 模块载入时安装 capture/restore；未载入则
+  // 定时器回调无异步上下文（缺省口径）。
+  const __alsRun = (snap, fn) =>
+    snap !== undefined && globalThis.__wjs_als_restore ? __wjs_als_restore(snap, fn) : fn();
+  // 域内回调执行（10f 对拍 immediate-queue-throw）：登记期捕获活域
+  // （node AsyncContextFrame 同口径），回调抛错先路由域 error，无域再抛。
+  const __runCb = (self, snap, dom) => {
+    try {
+      __alsRun(snap, () => Reflect.apply(self._onTimeout, self, self._timerArgs));
+    } catch (err) {
+      if (dom && typeof dom._emitError === "function") {
+        dom._emitError(err);
+      } else {
+        throw err;
+      }
+    }
+  };
+  // 注册 + 触发闭包。触发语义对齐 node processTimers：
+  // - 回调 this=Timeout 实例、实参 live 读 _timerArgs（套件 unenroll 直改）；
+  // - Reflect.apply 直调内建（套件 user-call：回调自身 .call/.apply 可被
+  //   猴子补丁成非函数，Instance 上的方法查找会炸）；
+  // - 超时/immediate 触发即 _destroyed=true；
+  // - interval 重排门走返回值（false = 不重排）：`_onTimeout` 失效或
+  //   `_repeat` 清失或 `_idleTimeout === -1`（legacy unenroll 技法），
+  //   native 侧见布尔 false 即不重排。
+  const __arm = (self, delay, interval) => {
+    const snap = globalThis.__wjs_als_capture?.();
+    const dom = globalThis.__wjs_domain_capture?.();
+    const step = interval
+      ? () => {
+          if (typeof self._onTimeout !== "function") { self._destroyed = true; return false; }
+          __runCb(self, snap, dom);
+          if (!self._repeat || self._idleTimeout === -1) { self._destroyed = true; return false; }
+          return true;
+        }
+      : () => {
+          if (typeof self._onTimeout !== "function") { self._destroyed = true; return false; }
+          try { __runCb(self, snap, dom); } finally { self._destroyed = true; }
+          return false;
+        };
+    const id = interval ? __wjs_setInterval(step, delay, []) : __wjs_setTimeout(step, delay, []);
+    self.__wjs_id = id;
+  };
+  globalThis.setTimeout = function (cb, ms, ...rest) {
+    __wjs_timer_validate_cb(cb);
+    const after = ms === undefined ? 1 : __wjs_timer_after(ms);
+    const self = new Timeout(0);
+    self._idleTimeout = after;
+    self._onTimeout = cb;
+    self._timerArgs = rest;
+    self._repeat = null;
+    __arm(self, after, false);
+    return self;
+  };
+  globalThis.setInterval = function (cb, ms, ...rest) {
+    __wjs_timer_validate_cb(cb);
+    const after = ms === undefined ? 1 : __wjs_timer_after(ms);
+    const self = new Timeout(0);
+    self._idleTimeout = after;
+    self._onTimeout = cb;
+    self._timerArgs = rest;
+    self._repeat = after;
+    __arm(self, after, true);
+    return self;
+  };
+  // 三清同体（套件 api-refs：delete 全局后 clearInterval/clearImmediate
+  // 不得二次解引用 globalThis.clearTimeout——那正是 131 报错的根）。
+  const __clear = (id) => {
+    if (id !== null && id !== undefined && typeof id === "object" && "__wjs_id" in id) {
+      id._destroyed = true;
+    }
+    __wjs_clearTimeout(__wjs_timer_id(id));
+  };
+  globalThis.clearTimeout = __clear;
+  globalThis.clearInterval = __clear;
+  globalThis.clearImmediate = __clear;
+  // 10a：全局 setImmediate/clearImmediate（本仓无 macrotask 分层，setTimeout(0)
+  // 近似——与 node:timers 同口径，check 阶段语义记档；clearImmediate 复用同表）。
+  globalThis.setImmediate = function (cb, ...rest) {
+    __wjs_timer_validate_cb(cb);
+    const self = new Immediate(0);
+    self._idleTimeout = 0;
+    self._onTimeout = cb;
+    self._timerArgs = rest;
+    self._repeat = null;
+    __arm(self, 0, false);
+    return self;
+  };
+  // clearImmediate 已并入上方 __clear 三清同体。
 }
-globalThis.__wjs_timer_id = (id) =>
-  id === null || id === undefined ? 0 : typeof id === "object" ? (id.__wjs_id ?? 0) : typeof id === "number" ? id : 0;
-globalThis.setTimeout = function (cb, ms, ...rest) {
-  if (typeof cb !== "function") throw new TypeError("setTimeout: callback must be a function");
-  return __wjs_timer_wrap(__wjs_setTimeout(cb, Number(ms) || 0, rest));
+globalThis.__wjs_timer_id = (id) => {
+  if (id === null || id === undefined) return 0;
+  if (typeof id === "object") return id.__wjs_id ?? 0;
+  if (typeof id === "number") return Number.isFinite(id) && id >= 0 ? id : 0;
+  if (typeof id === "string") { const n = Number(id); return Number.isFinite(n) && n >= 0 ? n : 0; }
+  return 0;
 };
-globalThis.setInterval = function (cb, ms, ...rest) {
-  if (typeof cb !== "function") throw new TypeError("setInterval: callback must be a function");
-  return __wjs_timer_wrap(__wjs_setInterval(cb, Number(ms) || 0, rest));
+// 未捕获异常分发（timer 等异步回调抛错时由 native 调）。
+// __wjs_uncaught_count 先探监听器数——为 0 时 native 保持 pending 原样走
+// fatal 上报（错误信息/栈不经中转，不降级）；>0 时 native 取走异常经
+// __wjs_uncaught 逐个调用（Node 口径第二参 origin='uncaughtException'）。
+globalThis.__wjs_uncaught_count = () => {
+  const p = globalThis.process;
+  const ls = p && p.__wjs_listeners ? p.__wjs_listeners["uncaughtException"] : undefined;
+  return ls ? ls.length : 0;
 };
-globalThis.clearTimeout = function (id) { __wjs_clearTimeout(__wjs_timer_id(id)); };
-globalThis.clearInterval = function (id) { __wjs_clearTimeout(__wjs_timer_id(id)); };
-// 10a：全局 setImmediate/clearImmediate（本仓无 macrotask 分层，setTimeout(0)
-// 近似——与 node:timers 同口径，check 阶段语义记档；clearImmediate 复用同表）。
-globalThis.setImmediate = function (cb, ...rest) {
-  if (typeof cb !== "function") throw new TypeError("setImmediate: callback must be a function");
-  return __wjs_immediate_wrap(__wjs_setTimeout(cb, 0, rest));
+globalThis.__wjs_uncaught = (err) => {
+  const p = globalThis.process;
+  if (p && typeof p.__wjs_emit === "function") {
+    return p.__wjs_emit("uncaughtException", err, "uncaughtException") > 0;
+  }
+  return false;
 };
-globalThis.clearImmediate = function (id) { __wjs_clearTimeout(__wjs_timer_id(id)); };
 // 事件循环触发定时器 / structuredClone 枚举属性用的内部辅助
 globalThis.__wjs_call = (cb, args) => cb(...args);
 // napi_call_function：recv 语义的参数展开（Function.prototype.apply）
@@ -2238,6 +2372,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_setTimeout", Some(timers::set_timeout), 3),
             ("__wjs_setInterval", Some(timers::set_interval), 3),
             ("__wjs_clearTimeout", Some(timers::clear_timeout), 1),
+            ("__wjs_timer_ref", Some(timers::timer_ref), 2),
+            ("__wjs_timer_refresh", Some(timers::timer_refresh), 1),
         ];
         for (name, native, nargs) in timers {
             let cname = CString::new(*name).expect("no NUL");

@@ -172,14 +172,22 @@ thread_local! {
 }
 
 /// 调用方 base（脚本文件名 → URL；eval/prelude 等非 URL 返回 None）。
+/// 10f：入口经典脚本的 filename 是裸文件路径（非 file:// URL，见 runtime 入口
+/// 求值），此处回落文件路径 → file URL，否则 CJS 入口的相对 require 全挂。
 fn caller_base(cx: &mozjs::context::JSContext) -> Option<Url> {
     let caller = mozjs::rust::describe_scripted_caller(cx).ok()?;
     tracing::debug!(target: "winterjs::require", caller = caller.filename, "scripted caller");
-    let url = Url::parse(&caller.filename).ok()?;
-    match url.scheme() {
-        "file" | "node" => Some(url),
-        _ => None,
+    if let Ok(url) = Url::parse(&caller.filename) {
+        return match url.scheme() {
+            "file" | "node" => Some(url),
+            _ => None,
+        };
     }
+    let path = std::path::Path::new(&caller.filename);
+    if path.is_absolute() {
+        return Url::from_file_path(path).ok();
+    }
+    None
 }
 
 /// pending 异常 → 消息串（消费异常；无则兜底）。

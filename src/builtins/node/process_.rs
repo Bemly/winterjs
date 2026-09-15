@@ -255,6 +255,37 @@ pub unsafe extern "C" fn pid(
     true
 }
 
+/// `__wjs_umask()` → 旧掩码 Int32；`__wjs_umask(mask)` 置新掩码并回旧值。
+/// 10f：unix 经 libc 真改（test/common load 期置 0o22，fs 模式测试依赖）；
+/// 非 unix 回 0o22 常量（记档）。
+pub unsafe extern "C" fn umask(
+    _cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 仅访问调用帧（无 cx 上的 JSAPI 调用）
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    #[cfg(unix)]
+    {
+        let set = frame.argc() >= 1 && frame.arg(0).is_number();
+        let mask = if set { frame.arg(0).to_number() as u16 } else { 0 };
+        // libc umask 回旧值：读时先取后恢复，两路都回调用前的值。
+        //（10f 修：旧写法回的是第二次调用前的值，读恒得 0。）
+        let prev = unsafe { libc::umask(if set { mask } else { 0 }) };
+        if !set {
+            unsafe { libc::umask(prev) };
+        }
+        frame.set_rval(mozjs::jsval::Int32Value(prev as i32));
+        true
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = argc;
+        frame.set_rval(mozjs::jsval::Int32Value(0o22));
+        true
+    }
+}
+
 /// `__wjs_uptime()` → 启动至今秒（f64）。
 pub unsafe extern "C" fn uptime(
     _cx_raw: *mut mozjs::jsapi::JSContext,
@@ -412,11 +443,37 @@ globalThis.process = {
   // versions.node = Node API 兼容水位（Bun 同哲学：process.version 是自家版本，
   // versions.node 报兼容等级）。22.12 = vite 8 的最低地板（22 && minor>=12），
   // 22.x 大版本保 `^22` caret 区间可用；22.0.0 过不了 vite checkNodeVersion。
-  versions: { node: "22.12.0", winterjs: "26.9.13", mozjs: "153" },
+  // openssl/sqlite 为兼容水位（套件门控 `hasCrypto/hasSQLite` 用；TLS 底座实为
+  // rustls/ring、DB 实为 turso，引擎差异见模块头注；10f 跑 test/common 前置）。
+  versions: { node: "22.12.0", winterjs: "26.9.13", mozjs: "153", openssl: "3.6.4", sqlite: "3.53.4" },
+  // 构建配置（10f 跑 test/common 前置；键集按套件读取面收敛，非全量 115 键）。
+  config: {
+    target_defaults: { default_configuration: "Release" },
+    variables: {
+      asan: 0,
+      node_shared: false,
+      node_use_ffi: false,
+      v8_enable_i18n_support: 1,
+      v8_enable_temporal_support: 1,
+      v8_use_perfetto: false,
+    },
+  },
+  // 特性门控（套件 hasInspector/hasQuic 等用；inspector 本仓为薄层故 false，
+  // quic 真机 26 亦 false；10f 前置）。
+  features: {
+    inspector: false, debug: false, uv: true, ipv6: true,
+    tls: true, tls_alpn: true, tls_sni: true, tls_ocsp: true,
+    cached_builtins: true, require_module: true, quic: false,
+  },
   execPath: __wjs_exec_path(),
   // node 选项透传（M5 vitest 牵引：本仓无 node 旗标，恒空数组，真机口径）。
   execArgv: [],
   pid: __wjs_pid(),
+  // 文件创建掩码（10f：读无参回当前，置数回旧值；真机口径）。
+  umask(mask) {
+    if (mask === undefined) return __wjs_umask();
+    return __wjs_umask(Number(mask));
+  },
   uptime() { return __wjs_uptime(); },
   hrtime: Object.assign(
     (t) => {
@@ -596,6 +653,8 @@ export const platform = p.platform;
 export const arch = p.arch;
 export const version = p.version;
 export const versions = p.versions;
+export const config = p.config;
+export const features = p.features;
 export const execPath = p.execPath;
 export const execArgv = p.execArgv;
 export function cwd() { return p.cwd(); }

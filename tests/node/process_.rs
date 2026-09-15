@@ -152,3 +152,30 @@ console.log("perf", typeof performance.now() === "number" && performance.timeOri
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_process_config_features_umask() {
+    // 10f：process.config/features/umask（跑 test/common 前置）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import process from "node:process";
+console.log("config", process.config.target_defaults.default_configuration, process.config.variables.node_shared === false);
+console.log("features", process.features.uv, process.features.debug === false, typeof process.features.quic);
+console.log("versions", typeof process.versions.openssl, typeof process.versions.sqlite);
+const before = process.umask();
+process.umask(0o027);
+console.log("umask-set", process.umask().toString(8));
+process.umask(before);
+console.log("umask-back", process.umask() === before);
+"#,
+    );
+    assert!(out.contains("config Release true"), "out: {out}");
+    assert!(out.contains("features true true boolean"), "out: {out}");
+    assert!(out.contains("versions string string"), "out: {out}");
+    assert!(out.contains("umask-set 27"), "out: {out}");
+    assert!(out.contains("umask-back true"), "out: {out}");
+    dir.close().unwrap();
+}

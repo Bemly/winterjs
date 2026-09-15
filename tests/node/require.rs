@@ -386,3 +386,27 @@ fn phase9m_require_resolve_caller_relative() {
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "res true\n");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_require_cjs_entry_relative() {
+    // 10f：CJS 入口（typeless .js）相对 require 以入口文件为 base
+    //（caller_base 裸路径回落；修前 "eval has no file base URL"）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("b.js").write_str("module.exports = 42;\n").unwrap();
+    dir.child("a.js")
+        .write_str("const x = require(\"./b.js\");\nconsole.log(\"entry\", x);\n")
+        .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(dir.child("a.js").path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "entry 42\n");
+    dir.close().unwrap();
+}

@@ -5,13 +5,18 @@
 /// 内嵌 ESM 源。
 pub const SOURCE: &str = r#"
 export class AssertionError extends Error {
-  constructor(message, actual, expected, operator) {
+  constructor(options) {
+    // 10f：真机只收 options 对象（非对象即 ERR_INVALID_ARG_TYPE 文案逐字，套件点名）。
+    if (options !== undefined && (typeof options !== "object" || options === null)) {
+      __errInvalidArg("options", "object", options);
+    }
+    const message = options?.message;
     super(message);
     this.name = "AssertionError";
     this.code = "ERR_ASSERTION";
-    this.actual = actual;
-    this.expected = expected;
-    this.operator = operator || "==";
+    this.actual = options?.actual;
+    this.expected = options?.expected;
+    this.operator = options?.operator || "==";
   }
 }
 function __fmt(v) {
@@ -24,10 +29,24 @@ function __fmt(v) {
   }
 }
 function __fail(actual, expected, message, operator) {
-  throw new AssertionError(
-    message || `Expected ${__fmt(actual)} ${operator} ${__fmt(expected)}`,
+  // 10f：Error 消息原样重抛（含跨域，`toString` tag 透出 `[object Error]`；
+  // 真机 `isError` 同款语义，test-assert.js 点名）。
+  if (__isErr(message)) throw message;
+  throw new AssertionError({
+    message: message || `Expected ${__fmt(actual)} ${operator} ${__fmt(expected)}`,
     actual, expected, operator,
-  );
+  });
+}
+function __isErr(v) {
+  if (v === null || (typeof v !== 'object' && typeof v !== 'function')) return false;
+  try {
+    if (v instanceof Error) return true;
+  } catch {}
+  try {
+    return Object.prototype.toString.call(v) === '[object Error]';
+  } catch {
+    return false;
+  }
 }
 function __isObj(v) { return typeof v === "object" && v !== null; }
 function __deep(a, b, strict, seen) {
@@ -88,11 +107,15 @@ export function notDeepStrictEqual(actual, expected, message) {
   if (__deep(actual, expected, true, [])) __fail(actual, expected, message, "notDeepStrictEqual");
 }
 export function fail(message) {
-  throw new AssertionError(message instanceof Error ? message.message : String(message ?? "Failed"), undefined, undefined, "fail");
+  // 10f：Error 消息原样重抛（含跨域；真机口径）。
+  if (__isErr(message)) throw message;
+  throw new AssertionError({ message: String(message ?? "Failed"), operator: "fail" });
 }
 export function ifError(value) {
   if (value !== null && value !== undefined) {
-    throw value instanceof Error ? value : new AssertionError(String(value), value, null, "ifError");
+    // 10f：跨域 Error 同样重抛（`instanceof` 跨 compartment 恒 false，见 §4.57）。
+    if (__isErr(value)) throw value;
+    throw new AssertionError({ message: String(value), actual: value, expected: null, operator: "ifError" });
   }
 }
 function __checkThrow(e, expected, prefix) {
@@ -120,11 +143,35 @@ function __checkThrow(e, expected, prefix) {
     ok = Object.entries(expected).every(([k, v]) => (e && e[k]) == v);
   }
   if (!ok) {
-    throw new AssertionError(`${prefix}: unexpected throw`, e, expected, prefix);
+    throw new AssertionError({ message: `${prefix}: unexpected throw`, actual: e, expected, operator: prefix });
   }
+}
+function __needFn(fn, what) {
+  // 10f：throws 族只收函数（真机 ERR_INVALID_ARG_TYPE 文案逐字，套件点名）。
+  if (typeof fn !== "function") {
+    __errInvalidArg(what, "function", fn);
+  }
+}
+function __received(v) {
+  // 真机 invalidArgTypeHelper 口径（test-assert.js 逐字断言）。
+  if (v === null) return "null";
+  if (v === undefined) return "undefined";
+  const t = typeof v;
+  if (t === "string") return `type string ('${v}')`;
+  if (t === "object") {
+    const n = v.constructor && v.constructor.name ? v.constructor.name : "Object";
+    return `an instance of ${n}`;
+  }
+  return `type ${t} (${String(v)})`;
+}
+function __errInvalidArg(name, expected, actual) {
+  const err = new TypeError(`The "${name}" argument must be of type ${expected}. Received ${__received(actual)}`);
+  err.code = "ERR_INVALID_ARG_TYPE";
+  throw err;
 }
 export function throws(fn, expected, message) {
   if (typeof expected === "string") { message = expected; expected = undefined; }
+  __needFn(fn, "fn");
   try {
     fn();
   } catch (e) {
@@ -134,6 +181,7 @@ export function throws(fn, expected, message) {
   __fail(undefined, expected, message || "Missing expected exception", "throws");
 }
 export function doesNotThrow(fn, message) {
+  __needFn(fn, "fn");
   try {
     fn();
   } catch (e) {
@@ -143,6 +191,9 @@ export function doesNotThrow(fn, message) {
 export async function rejects(fn, expected, message) {
   // 10f：真机收 promise 或函数（旧实现只收函数，套件点名抓到）。
   if (typeof expected === "string") { message = expected; expected = undefined; }
+  if (typeof fn !== "function" && (!fn || (typeof fn.then !== "function"))) {
+    __errInvalidArg("promiseFn", "function or an instance of Promise", fn);
+  }
   const p = typeof fn === "function" ? fn() : fn;
   try {
     await p;
@@ -153,6 +204,9 @@ export async function rejects(fn, expected, message) {
   __fail(undefined, expected, message || "Missing expected rejection", "rejects");
 }
 export async function doesNotReject(fn, message) {
+  if (typeof fn !== "function" && (!fn || (typeof fn.then !== "function"))) {
+    __errInvalidArg("promiseFn", "function or an instance of Promise", fn);
+  }
   const p = typeof fn === "function" ? fn() : fn;
   try {
     await p;

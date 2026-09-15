@@ -38,3 +38,24 @@ assert.throws(() => { throw new Error("boom"); }, /boom/);
 console.log("regex-sub true");"#]));
     assert_eq!(out, "regex-name true\nregex-sub true\n", "assert: {out}");
 }
+
+#[test]
+fn phase10f_assert_validation_xrealm() {
+    // 10f：throws 族参数校验 + AssertionError 构造器校验 + Error 消息跨域重抛。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        r#"const assert = (await import("node:assert")).default;
+const vm = (await import("node:vm")).default;
+try { assert.throws(42); } catch (e) { console.log("t42", e.code); }
+try { assert.doesNotThrow(42); } catch (e) { console.log("dnt42", e.code); }
+try { await assert.rejects(42); } catch (e) { console.log("rej42", e.code); }
+try { new assert.AssertionError(42); } catch (e) { console.log("ae42", e.code); }
+const ctx = vm.createContext({});
+const xerr = vm.runInContext("new SyntaxError('custom error')", ctx);
+try { assert(false, xerr); } catch (e) { console.log("xrealm", e.name, e.message); }
+try { assert.fail(xerr); } catch (e) { console.log("fail-err", e.name); }"#]));
+    assert_eq!(
+        out,
+        "t42 ERR_INVALID_ARG_TYPE\ndnt42 ERR_INVALID_ARG_TYPE\nrej42 ERR_INVALID_ARG_TYPE\nae42 ERR_INVALID_ARG_TYPE\nxrealm SyntaxError custom error\nfail-err SyntaxError\n",
+        "assert: {out}"
+    );
+}

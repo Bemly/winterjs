@@ -328,3 +328,45 @@ console.log("methods", typeof sites[0].getFileName, typeof sites[0].getLineNumbe
     assert!(out.contains("methods function function"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_util_deep_separator_depth() {
+    // 10f 套件点名修：skipPrototype 第三参 + 装箱槽判定 + numericSeparator + %s + depth。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import util from "node:util";
+function A(v) { this.v = v; }
+function B(v) { this.v = v; }
+console.log("skip", util.isDeepStrictEqual(new A(1), new B(1)), util.isDeepStrictEqual(new A(1), new B(1), true));
+const spoof = new Boolean(true);
+Object.defineProperty(spoof, Symbol.toStringTag, { value: "String" });
+Object.setPrototypeOf(spoof, String.prototype);
+console.log("spoof", util.isDeepStrictEqual(spoof, new String("true")));
+const t1 = new Uint8Array(2), t2 = new Uint8Array(2);
+const s = Symbol();
+t1[s] = 1; t2[s] = 2;
+console.log("ta-keys", util.isDeepStrictEqual(t1, t2));
+console.log("ta-u8buf", util.isDeepStrictEqual(new Uint8Array([1]), Buffer.from([1]), true));
+util.inspect.defaultOptions.numericSeparator = true;
+console.log("sep", util.inspect(1234567), util.format("%d", 1234567));
+util.inspect.defaultOptions.numericSeparator = false;
+console.log("s-custom", util.format("%s", { toString() { return "Foo"; } }));
+console.log("s-plain", util.format("%s", { a: [1, 2, 3] }));
+console.log("s-buf", util.format("%s", Buffer.from("hi")));
+console.log("depth0", util.inspect({ a: [1] }, { depth: 0 }));
+"#,
+    );
+    assert!(out.contains("skip false true"), "out: {out}");
+    assert!(out.contains("spoof false"), "out: {out}");
+    assert!(out.contains("ta-keys false"), "out: {out}");
+    assert!(out.contains("ta-u8buf true"), "out: {out}");
+    assert!(out.contains("sep 1_234_567 1_234_567"), "out: {out}");
+    assert!(out.contains("s-custom Foo"), "out: {out}");
+    assert!(out.contains("s-plain { a: [Array] }"), "out: {out}");
+    assert!(out.contains("s-buf hi"), "out: {out}");
+    assert!(out.contains("depth0 { a: [Array] }"), "out: {out}");
+    dir.close().unwrap();
+}

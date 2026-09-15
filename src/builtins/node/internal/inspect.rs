@@ -17,11 +17,12 @@
 pub const SOURCE: &str = r#"
 // Copyright Joyent, Inc. and other Node contributors. MIT.
 // Port of node:internal/util/inspect (subset; deviations documented in module docs).
-const inspectDefaultOptions = Object.freeze({
+const inspectDefaultOptions = {
   showHidden: false, depth: 2, colors: false, customInspect: true,
+  showProxy: false,
   maxArrayLength: 100, maxStringLength: 10000, breakLength: 80,
   compact: 3, sorted: false, getters: false, numericSeparator: false,
-});
+};
 const stylizeNoColor = (str, _style) => str;
 const ansi = new RegExp(
   '(?:\\u001B\\][\\s\\S]*?(?:\\u0007|\\u001B\\u005C|\\u009C))' +
@@ -82,6 +83,42 @@ function getStringWidth(str, removeControlChars = true) {
 function formatNumberNoColor(number) {
   return Object.is(number, -0) ? '-0' : `${number}`;
 }
+// hasBuiltInToString（10f 真机逐字移植：%s 遇内建 toString 走 inspect，
+// 自定义 toString 走 String()；proxy/不可探测对象按原文简化）。
+const __builtInObjects = new Set(
+  Object.getOwnPropertyNames(globalThis).filter((e) => /^[A-Z][a-zA-Z0-9]+$/.test(e)),
+);
+// 10f：真机集是启动快照（`Buffer`/`URL`/`URLSearchParams` 等迟装全局不在其内，
+// `%s` 对它们走 String()）；本仓预置全局早已齐，需显式剔除以对齐（实测校准）。
+for (const late of ['Buffer', 'URL', 'URLSearchParams']) __builtInObjects.delete(late);
+function __hasBuiltInToString(value) {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return true;
+  let checkToString = true;
+  if (typeof value.toString !== 'function') {
+    if (typeof value[Symbol.toPrimitive] !== 'function') return true;
+    if (Object.prototype.hasOwnProperty.call(value, Symbol.toPrimitive)) return false;
+    checkToString = false;
+  } else if (Object.prototype.hasOwnProperty.call(value, 'toString')) {
+    return false;
+  } else if (typeof value[Symbol.toPrimitive] !== 'function') {
+    checkToString = true;
+  } else if (Object.prototype.hasOwnProperty.call(value, Symbol.toPrimitive)) {
+    return false;
+  }
+  let pointer = value;
+  for (;;) {
+    pointer = Object.getPrototypeOf(pointer);
+    if (pointer === null) return true;
+    if ((checkToString && Object.prototype.hasOwnProperty.call(pointer, 'toString')) ||
+        Object.prototype.hasOwnProperty.call(pointer, Symbol.toPrimitive)) {
+      break;
+    }
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(pointer, 'constructor');
+  return descriptor !== undefined &&
+    typeof descriptor.value === 'function' &&
+    __builtInObjects.has(descriptor.value.name);
+}
 function formatBigIntNoColor(bigint) {
   return `${bigint}n`;
 }
@@ -94,6 +131,13 @@ function formatWithOptionsInternal(inspectOptions, args) {
   let a = 0;
   let str = '';
   let join = '';
+  // 10f：numericSeparator 同步 format 的数字输出（真机口径；options 缺省守卫）。
+  const __sepOn = !!(inspectOptions && inspectOptions.numericSeparator);
+  const __num = (n) => __sepOn ? __addNumericSeparator(formatNumberNoColor(n)) : formatNumberNoColor(n);
+  const __big = (b) => {
+    const s = formatBigIntNoColor(b);
+    return __sepOn ? __addNumericSeparator(s.slice(0, -1)) + 'n' : s;
+  };
 
   if (typeof first === 'string') {
     if (args.length === 1) return first;
@@ -106,10 +150,11 @@ function formatWithOptionsInternal(inspectOptions, args) {
           switch (nextChar) {
             case 115: { // 's'
               const tempArg = args[++a];
-              if (typeof tempArg === 'number') tempStr = formatNumberNoColor(tempArg);
-              else if (typeof tempArg === 'bigint') tempStr = formatBigIntNoColor(tempArg);
-              else if (typeof tempArg !== 'object' || tempArg === null ||
-                       typeof tempArg.toString !== 'function') {
+              if (typeof tempArg === 'number') tempStr = __num(tempArg);
+              else if (typeof tempArg === 'bigint') tempStr = __big(tempArg);
+              else if (typeof tempArg !== 'object' ||
+                       tempArg === null ||
+                       !__hasBuiltInToString(tempArg)) {
                 tempStr = String(tempArg);
               } else {
                 tempStr = inspect(tempArg, { ...inspectOptions, compact: 3, colors: false, depth: 0 });
@@ -119,9 +164,9 @@ function formatWithOptionsInternal(inspectOptions, args) {
             case 106: tempStr = tryStringify(args[++a]); break; // 'j'
             case 100: { // 'd'
               const tempNum = args[++a];
-              if (typeof tempNum === 'bigint') tempStr = formatBigIntNoColor(tempNum);
+              if (typeof tempNum === 'bigint') tempStr = __big(tempNum);
               else if (typeof tempNum === 'symbol') tempStr = 'NaN';
-              else tempStr = formatNumberNoColor(Number(tempNum));
+              else tempStr = __num(Number(tempNum));
               break;
             }
             case 79: tempStr = inspect(args[++a], inspectOptions); break; // 'O'
@@ -130,15 +175,15 @@ function formatWithOptionsInternal(inspectOptions, args) {
               break;
             case 105: { // 'i'
               const tempInteger = args[++a];
-              if (typeof tempInteger === 'bigint') tempStr = formatBigIntNoColor(tempInteger);
+              if (typeof tempInteger === 'bigint') tempStr = __big(tempInteger);
               else if (typeof tempInteger === 'symbol') tempStr = 'NaN';
-              else tempStr = formatNumberNoColor(Number.parseInt(tempInteger));
+              else tempStr = __num(Number.parseInt(tempInteger));
               break;
             }
             case 102: { // 'f'
               const tempFloat = args[++a];
               if (typeof tempFloat === 'symbol') tempStr = 'NaN';
-              else tempStr = formatNumberNoColor(Number.parseFloat(tempFloat));
+              else tempStr = __num(Number.parseFloat(tempFloat));
               break;
             }
             case 99: a += 1; tempStr = ''; break; // 'c'
@@ -175,7 +220,8 @@ function formatWithOptionsInternal(inspectOptions, args) {
 }
 
 function format(...args) {
-  return formatWithOptionsInternal(undefined, args);
+  // 10f：合入活默认表（`defaultOptions.numericSeparator` 突变对 format 可见，真机口径）。
+  return formatWithOptionsInternal({ ...inspectDefaultOptions }, args);
 }
 
 function formatWithOptions(inspectOptions, ...args) {
@@ -238,11 +284,23 @@ function formatNumber(value) {
   return Object.is(value, -0) ? '-0' : `${value}`;
 }
 
+// numericSeparator（10f 真机口径）：纯十进制串的整数部自右、分数部自左每三位
+// 加 `_`；指数形式不动；符号保留。
+function __addNumericSeparator(s) {
+  const m = s.match(/^(-?)(\d+)(?:\.(\d+))?$/);
+  if (!m) return s;
+  const grpR = (d) => d.replace(/\B(?=(\d{3})+$)/g, '_');
+  const grpL = (d) => d.replace(/(\d{3})(?=\d)/g, '$1_');
+  return m[1] + grpR(m[2]) + (m[3] === undefined ? '' : '.' + grpL(m[3]));
+}
+
 function formatPrimitive(value, ctx) {
   switch (typeof value) {
     case 'string': return inspectString(value, ctx);
-    case 'number': return formatNumber(value);
-    case 'bigint': return `${value}n`;
+    case 'number':
+      return ctx.numericSeparator ? __addNumericSeparator(formatNumber(value)) : formatNumber(value);
+    case 'bigint':
+      return ctx.numericSeparator ? __addNumericSeparator(`${value}`) + 'n' : `${value}n`;
     case 'boolean': return `${value}`;
     case 'undefined': return 'undefined';
     case 'symbol': return value.toString();
@@ -289,13 +347,13 @@ function formatPlainObject(value, ctx, depth, seen) {
       const hasGetter = desc.get !== undefined;
       const hasSetter = desc.set !== undefined;
       if (ctx.getters === true || ctx.getters === 'always') {
-        try { valStr = inspect2(hasGetter ? desc.get.call(value) : undefined, ctx, depth + 1, seen); }
+        try { valStr = inspect2(hasGetter ? desc.get.call(value) : undefined, ctx, depth - 1, seen); }
         catch (err) { valStr = `[Exception: ${err?.message ?? err}]`; }
       } else {
         valStr = hasGetter && hasSetter ? '[Getter/Setter]' : hasGetter ? '[Getter]' : '[Setter]';
       }
     } else {
-      valStr = inspect2(desc.value, ctx, depth + 1, seen);
+      valStr = inspect2(desc.value, ctx, depth - 1, seen);
     }
     const shown = typeof key === 'symbol' ? name :
       (/^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name));
@@ -342,7 +400,7 @@ function inspect2(value, ctx, depth, seen) {
       let i = 0;
       for (const [k, v] of value) {
         if (ctx.maxArrayLength !== Infinity && i >= ctx.maxArrayLength) break;
-        entries.push(`${inspect2(k, ctx, depth + 1, seen)} => ${inspect2(v, ctx, depth + 1, seen)}`);
+        entries.push(`${inspect2(k, ctx, depth - 1, seen)} => ${inspect2(v, ctx, depth - 1, seen)}`);
         i++;
       }
       let extra = '';
@@ -357,7 +415,7 @@ function inspect2(value, ctx, depth, seen) {
       let i = 0;
       for (const v of value) {
         if (ctx.maxArrayLength !== Infinity && i >= ctx.maxArrayLength) break;
-        entries.push(inspect2(v, ctx, depth + 1, seen));
+        entries.push(inspect2(v, ctx, depth - 1, seen));
         i++;
       }
       let extra = '';
@@ -377,7 +435,7 @@ function inspect2(value, ctx, depth, seen) {
       }
       const entries = [];
       const limit = ctx.maxArrayLength === Infinity ? value.length : Math.min(value.length, ctx.maxArrayLength);
-      for (let i = 0; i < limit; i++) entries.push(inspect2(value[i], ctx, depth + 1, seen));
+      for (let i = 0; i < limit; i++) entries.push(inspect2(value[i], ctx, depth - 1, seen));
       let extra = '';
       if (value.length > limit) {
         const more = value.length - limit;
@@ -398,7 +456,7 @@ function inspect2(value, ctx, depth, seen) {
           entries.push(holeCount === 1 ? '<1 empty item>' : `<${holeCount} empty items>`);
           holeCount = 0;
         }
-        entries.push(inspect2(value[i], ctx, depth + 1, seen));
+        entries.push(inspect2(value[i], ctx, depth - 1, seen));
       }
       if (holeCount > 0 && limit === value.length) {
         entries.push(holeCount === 1 ? '<1 empty item>' : `<${holeCount} empty items>`);
@@ -409,6 +467,17 @@ function inspect2(value, ctx, depth, seen) {
         extra = `... ${more} more item${more > 1 ? 's' : ''}`;
       }
       if (entries.length === 0 && extra === '' && p === '') return '[]';
+      // 10f：数组自有非索引属性一并打印（`new Foobar(5)` 的 `aaa`，真机口径）。
+      for (const k of Reflect.ownKeys(value)) {
+        if (typeof k !== 'symbol') {
+          const n = Number(k);
+          if (Number.isInteger(n) && n >= 0 && n < 4294967295 && String(n) === k) continue;
+          if (!Object.prototype.propertyIsEnumerable.call(value, k)) continue;
+        } else if (!Object.prototype.propertyIsEnumerable.call(value, k)) continue;
+        const shown = typeof k === 'symbol' ? `[${k.toString()}]` :
+          (/^[A-Za-z_$][\w$]*$/.test(k) ? k : JSON.stringify(k));
+        entries.push(`${shown}: ${inspect2(value[k], ctx, depth - 1, seen)}`);
+      }
       return `${p}[ ${entries.join(', ')}${extra ? `, ${extra}` : ''} ]`;
     }
     // 普通对象
@@ -421,7 +490,9 @@ function inspect2(value, ctx, depth, seen) {
 function inspect(value, options) {
   const opts = typeof options === 'boolean' ? { ...inspectDefaultOptions, showHidden: options } :
     { ...inspectDefaultOptions, ...(options ?? {}) };
-  return inspect2(value, opts, opts.depth, []);
+  // 10f：depth 语义与真机一致（剩余层数，null/undefined 表无穷；旧实现 +1 永不到 cut）。
+  const startDepth = opts.depth ?? Infinity;
+  return inspect2(value, opts, startDepth, []);
 }
 
 export {

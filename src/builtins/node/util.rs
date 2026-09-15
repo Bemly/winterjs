@@ -54,6 +54,8 @@ const {
   inspect,
   stripVTControlCharacters,
 } = inspectModule;
+// 10f：`inspect.defaultOptions` 与内部默认表同引用（可变活对象，真机口径）。
+inspect.defaultOptions = inspectModule.inspectDefaultOptions;
 
 // ── getCallSites（10f：test/common `mustNotCall` 前置；V8 CallSite 最佳努力）──
 //! 口径：解析 SpiderMonkey `fn@file:line:col` 栈（首帧自身丢弃，[0] 为调用方，
@@ -267,13 +269,28 @@ function typedArraysEqual(a, b) {
   return true;
 }
 
-function innerDeepStrictEqual(val1, val2, memos) {
+// 装箱原始值内部槽嗅探（10f）：`Symbol.toStringTag` 可伪造、`valueOf` 可能掉包，
+// 一律显式 `.call` 逐类型试读内部槽；返回 [类型名, 原始值] 或 null。
+function __boxedSlot(v) {
+  const probes = [
+    [Boolean, 'Boolean'], [Number, 'Number'], [String, 'String'],
+    [BigInt, 'BigInt'], [Symbol, 'Symbol'],
+  ];
+  for (const [ctor, name] of probes) {
+    try {
+      return [name, ctor.prototype.valueOf.call(v)];
+    } catch {}
+  }
+  return null;
+}
+
+function innerDeepStrictEqual(val1, val2, memos, skipProto) {
   // 数值/原始值（Object.is：-0/NaN 语义）
   if (Object.is(val1, val2)) return true;
   if (!isObjectLike(val1) || !isObjectLike(val2)) return false;
 
-  // 原型必须同一
-  if (Object.getPrototypeOf(val1) !== Object.getPrototypeOf(val2)) return false;
+  // 原型必须同一（skipPrototype 真值跳过，真机第三参口径，10f 套件点名）
+  if (!skipProto && Object.getPrototypeOf(val1) !== Object.getPrototypeOf(val2)) return false;
 
   // 循环引用 memo
   let pair;
@@ -291,21 +308,31 @@ function innerDeepStrictEqual(val1, val2, memos) {
       return val1.source === val2.source && val1.flags === val2.flags &&
         val1.lastIndex === val2.lastIndex;
     }
-    if (types.isBoxedPrimitive(val1) && types.isBoxedPrimitive(val2)) {
-      return Object.is(val1.valueOf(), val2.valueOf());
+    // 10f：装箱对按内部槽比（`Symbol.toStringTag` 可伪造、`valueOf` 可能掉包，
+    // 故显式 `.call` 嗅探；类型不同/值不同即不等；同值仍继续比自有键，
+    // 如挂载 slow 属性的 boxedString 用例）。
+    const __b1 = __boxedSlot(val1);
+    const __b2 = __boxedSlot(val2);
+    if (__b1 !== null || __b2 !== null) {
+      if (__b1 === null || __b2 === null || __b1[0] !== __b2[0] ||
+          !Object.is(__b1[1], __b2[1])) {
+        return false;
+      }
     }
     if (val1 instanceof Error && val2 instanceof Error) {
       return val1.message === val2.message && val1.name === val2.name &&
-        innerDeepStrictEqual(val1.cause, val2.cause, memos);
+        innerDeepStrictEqual(val1.cause, val2.cause, memos, skipProto);
     }
     if (ArrayBuffer.isView(val1) && ArrayBuffer.isView(val2)) {
       if (val1 instanceof DataView && val2 instanceof DataView) {
         if (val1.byteLength !== val2.byteLength || val1.byteOffset !== val2.byteOffset) return false;
-        return innerDeepStrictEqual(val1.buffer, val2.buffer, memos);
+        return innerDeepStrictEqual(val1.buffer, val2.buffer, memos, skipProto);
       }
       if (val1 instanceof DataView || val2 instanceof DataView) return false;
-      if (isArrayOfTypedArrays(val1, val2)) return typedArraysEqual(val1, val2);
-      return false;
+      // skipPrototype 下构造器可不同（Uint8Array vs Buffer 同内容即等，真机口径）
+      if (!skipProto && !isArrayOfTypedArrays(val1, val2)) return false;
+      if (!typedArraysEqual(val1, val2)) return false;
+      // 10f：不断言返回——附加自有键（symbol 等）继续按下比（套件点名）。
     }
     if ((val1 instanceof ArrayBuffer) && (val2 instanceof ArrayBuffer)) {
       if (val1.byteLength !== val2.byteLength) return false;
@@ -319,7 +346,7 @@ function innerDeepStrictEqual(val1, val2, memos) {
         let matched = -1;
         for (let i = 0; i < entries2.length; i++) {
           const [k2, v2] = entries2[i];
-          if (innerDeepStrictEqual(k1, k2, memos) && innerDeepStrictEqual(v1, v2, memos)) {
+          if (innerDeepStrictEqual(k1, k2, memos, skipProto) && innerDeepStrictEqual(v1, v2, memos, skipProto)) {
             matched = i;
             break;
           }
@@ -335,7 +362,7 @@ function innerDeepStrictEqual(val1, val2, memos) {
       for (const v1 of val1) {
         let matched = -1;
         for (let i = 0; i < values2.length; i++) {
-          if (innerDeepStrictEqual(v1, values2[i], memos)) {
+          if (innerDeepStrictEqual(v1, values2[i], memos, skipProto)) {
             matched = i;
             break;
           }
@@ -348,7 +375,7 @@ function innerDeepStrictEqual(val1, val2, memos) {
     if (Array.isArray(val1) && Array.isArray(val2)) {
       if (val1.length !== val2.length) return false;
       for (let i = 0; i < val1.length; i++) {
-        if (!innerDeepStrictEqual(val1[i], val2[i], memos)) return false;
+        if (!innerDeepStrictEqual(val1[i], val2[i], memos, skipProto)) return false;
       }
       // 稀疏洞一致性
       return keySet(val1).length === keySet(val2).length;
@@ -361,7 +388,7 @@ function innerDeepStrictEqual(val1, val2, memos) {
     if (keys1.length !== keys2.length) return false;
     for (const key of keys1) {
       if (!Object.prototype.hasOwnProperty.call(val2, key) ||
-          !innerDeepStrictEqual(val1[key], val2[key], memos)) {
+          !innerDeepStrictEqual(val1[key], val2[key], memos, skipProto)) {
         return false;
       }
     }
@@ -371,8 +398,8 @@ function innerDeepStrictEqual(val1, val2, memos) {
   }
 }
 
-function isDeepStrictEqual(a, b) {
-  return innerDeepStrictEqual(a, b, []);
+function isDeepStrictEqual(a, b, skipPrototype) {
+  return innerDeepStrictEqual(a, b, [], !!skipPrototype);
 }
 
 // ── 信号 → 退出码（convertProcessSignalToExitCode 面）────────────────────

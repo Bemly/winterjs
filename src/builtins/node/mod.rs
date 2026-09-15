@@ -15,6 +15,7 @@ pub mod cluster;
 pub mod console;
 pub mod crypto;
 pub mod diagnostics_channel;
+pub mod domain;
 pub mod dgram;
 pub mod dns;
 pub mod dns_promises;
@@ -118,6 +119,8 @@ const BUILTINS: &[(&str, &str)] = &[
     // M5 vitest 牵引：回调形态
     ("node:timers", timers::SOURCE),
     ("node:diagnostics_channel", diagnostics_channel::SOURCE),
+    // 10e：node:domain（遗留薄面；同步路由）
+    ("node:domain", domain::SOURCE),
     ("node:trace_events", trace_events::SOURCE),
     ("node:tty", tty::SOURCE),
     // Phase 9d-5
@@ -190,6 +193,8 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "quic" => Some("node:quic"),
         "string_decoder" => Some("node:string_decoder"),
         "diagnostics_channel" => Some("node:diagnostics_channel"),
+        // 10e
+        "domain" => Some("node:domain"),
         "trace_events" => Some("node:trace_events"),
         "tty" => Some("node:tty"),
         // Phase 9b
@@ -289,6 +294,10 @@ mod tests {
         assert!(source("node:quic").is_some());
         assert!(source("node:string_decoder").is_some());
         assert_eq!(normalize_spec("diagnostics_channel"), Some("node:diagnostics_channel"));
+        // 10e：node:domain
+        assert_eq!(normalize_spec("domain"), Some("node:domain"));
+        assert_eq!(normalize_spec("node:domain"), Some("node:domain"));
+        assert!(source("node:domain").is_some());
         assert_eq!(normalize_spec("node:trace_events"), Some("node:trace_events"));
         assert_eq!(normalize_spec("tty"), Some("node:tty"));
         assert!(source("node:diagnostics_channel").is_some());

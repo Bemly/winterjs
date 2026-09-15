@@ -23,6 +23,8 @@ mod dgram;
 mod diagnostics_channel;
 #[path = "node/dns.rs"]
 mod dns;
+#[path = "node/domain.rs"]
+mod domain;
 #[path = "node/events.rs"]
 mod events;
 #[path = "node/fs.rs"]

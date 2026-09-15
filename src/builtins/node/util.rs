@@ -6,6 +6,10 @@
 //! `_extend`（DEP0060）、`isDeepStrictEqual`（严格面）、`toUSVString`、
 //! `parseEnv`（9j 差分移植，真机 26.8.2 全例对过）、
 //! `convertProcessSignalToExitCode`、legacy is* 判定、`debuglog`、`deprecate`。
+//! 10a 新增（真机 26.8.2 逐项对过码与文案）：`parseArgs`（strict/nonstrict/
+//! 短项组/tokens 全形态）、`MIMEType`/`MIMEParams`（essence no-op setter、
+//! 无 size/sort/forEach、delete 回 undefined）、`getSystemErrorName/Message/Map`
+//!（85 条 UV errno 定表由真机导出嵌入；Map 每次返回新拷贝）。
 //!
 //! 偏差（9a 口径，逐条记档）：
 //! - `isDeepStrictEqual` 为务实重写（comparisons.js 引擎的严格面算法，含
@@ -13,9 +17,8 @@
 //!   宽松 `isDeepEqual` 非公开面未移植。
 //! - `styleText` 最小实现（内联 ANSI 表；NO_COLOR/isTTY 判色；inspect.colors
 //!   未暴露——本仓 inspect 无色）。
-//! - 未移植（后续切片按需）：`parseArgs`、`MIMEType/MIMEParams`、
-//!   `getSystemErrorName/Message/Map`（需 uv errno 表，随 9c fs 错误映射）、
-//!   `getCallSites`/`markPromiseAsHandled`/`aborted`/transferable 系列（引擎绑定）。
+//! - 未移植（后续切片按需）：`getCallSites`/`markPromiseAsHandled`/`aborted`/
+//!   transferable 系列（引擎绑定）。
 //! - `TextEncoder`/`TextDecoder` 直通全局（本仓 prelude 实现）。
 
 /// 内嵌 ESM 源。
@@ -37,7 +40,12 @@ const {
   codes: {
     ERR_FALSY_VALUE_REJECTION: { HideStackFramesError: ERR_FALSY_VALUE_REJECTION },
     ERR_INVALID_ARG_TYPE: { HideStackFramesError: ERR_INVALID_ARG_TYPE },
+    ERR_INVALID_ARG_VALUE: { HideStackFramesError: ERR_INVALID_ARG_VALUE },
+    ERR_INVALID_MIME_SYNTAX: { HideStackFramesError: ERR_INVALID_MIME_SYNTAX },
     ERR_OUT_OF_RANGE: { HideStackFramesError: ERR_OUT_OF_RANGE },
+    ERR_PARSE_ARGS_UNKNOWN_OPTION: { HideStackFramesError: ERR_PARSE_ARGS_UNKNOWN_OPTION },
+    ERR_PARSE_ARGS_INVALID_OPTION_VALUE: { HideStackFramesError: ERR_PARSE_ARGS_INVALID_OPTION_VALUE },
+    ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL: { HideStackFramesError: ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL },
   },
 } = errors;
 const {
@@ -484,6 +492,315 @@ function parseEnv(content) {
   return obj;
 }
 
+// ── getSystemError*（UV errno 定表；85 条数据由真机 26.8.2
+// `getSystemErrorMap()` 导出嵌入，非手抄，见 plan3 10a）────────────────────
+const systemErrorEntries = [[-4095,['EOF','end of file']],[-4094,['UNKNOWN','unknown error']],[-4080,['ECHARSET','invalid Unicode character']],[-4056,['ENONET','machine is not on the network']],[-4030,['EREMOTEIO','remote I/O error']],[-4023,['EUNATCH','protocol driver not attached']],[-3014,['EAI_PROTOCOL','resolved protocol is unknown']],[-3013,['EAI_BADHINTS','invalid value for hints']],[-3011,['EAI_SOCKTYPE','socket type not supported']],[-3010,['EAI_SERVICE','service not available for socket type']],[-3009,['EAI_OVERFLOW','argument buffer overflow']],[-3008,['EAI_NONAME','unknown node or service']],[-3007,['EAI_NODATA','no address']],[-3006,['EAI_MEMORY','out of memory']],[-3005,['EAI_FAMILY','ai_family not supported']],[-3004,['EAI_FAIL','permanent failure']],[-3003,['EAI_CANCELED','request canceled']],[-3002,['EAI_BADFLAGS','bad ai_flags value']],[-3001,['EAI_AGAIN','temporary failure']],[-3000,['EAI_ADDRFAMILY','address family not supported']],[-100,['EPROTO','protocol error']],[-96,['ENODATA','no data available']],[-92,['EILSEQ','illegal byte sequence']],[-89,['ECANCELED','operation canceled']],[-84,['EOVERFLOW','value too large for defined data type']],[-79,['EFTYPE','inappropriate file type or format']],[-78,['ENOSYS','function not implemented']],[-66,['ENOTEMPTY','directory not empty']],[-65,['EHOSTUNREACH','host is unreachable']],[-64,['EHOSTDOWN','host is down']],[-63,['ENAMETOOLONG','name too long']],[-62,['ELOOP','too many symbolic links encountered']],[-61,['ECONNREFUSED','connection refused']],[-60,['ETIMEDOUT','connection timed out']],[-58,['ESHUTDOWN','cannot send after transport endpoint shutdown']],[-57,['ENOTCONN','socket is not connected']],[-56,['EISCONN','socket is already connected']],[-55,['ENOBUFS','no buffer space available']],[-54,['ECONNRESET','connection reset by peer']],[-53,['ECONNABORTED','software caused connection abort']],[-51,['ENETUNREACH','network is unreachable']],[-50,['ENETDOWN','network is down']],[-49,['EADDRNOTAVAIL','address not available']],[-48,['EADDRINUSE','address already in use']],[-47,['EAFNOSUPPORT','address family not supported']],[-45,['ENOTSUP','operation not supported on socket']],[-44,['ESOCKTNOSUPPORT','socket type not supported']],[-43,['EPROTONOSUPPORT','protocol not supported']],[-42,['ENOPROTOOPT','protocol not available']],[-41,['EPROTOTYPE','protocol wrong type for socket']],[-40,['EMSGSIZE','message too long']],[-39,['EDESTADDRREQ','destination address required']],[-38,['ENOTSOCK','socket operation on non-socket']],[-37,['EALREADY','connection already in progress']],[-35,['EAGAIN','resource temporarily unavailable']],[-34,['ERANGE','result too large']],[-32,['EPIPE','broken pipe']],[-31,['EMLINK','too many links']],[-30,['EROFS','read-only file system']],[-29,['ESPIPE','invalid seek']],[-28,['ENOSPC','no space left on device']],[-27,['EFBIG','file too large']],[-26,['ETXTBSY','text file is busy']],[-25,['ENOTTY','inappropriate ioctl for device']],[-24,['EMFILE','too many open files']],[-23,['ENFILE','file table overflow']],[-22,['EINVAL','invalid argument']],[-21,['EISDIR','illegal operation on a directory']],[-20,['ENOTDIR','not a directory']],[-19,['ENODEV','no such device']],[-18,['EXDEV','cross-device link not permitted']],[-17,['EEXIST','file already exists']],[-16,['EBUSY','resource busy or locked']],[-14,['EFAULT','bad address in system call argument']],[-13,['EACCES','permission denied']],[-12,['ENOMEM','not enough memory']],[-9,['EBADF','bad file descriptor']],[-8,['ENOEXEC','exec format error']],[-7,['E2BIG','argument list too long']],[-6,['ENXIO','no such device or address']],[-5,['EIO','i/o error']],[-4,['EINTR','interrupted system call']],[-3,['ESRCH','no such process']],[-2,['ENOENT','no such file or directory']],[-1,['EPERM','operation not permitted']]];
+const systemErrorMap = new Map(systemErrorEntries);
+function checkSystemErrno(err) {
+  if (typeof err !== 'number') throw new ERR_INVALID_ARG_TYPE('err', 'number', err);
+  if (!Number.isInteger(err) || err > -1) throw new ERR_OUT_OF_RANGE('err', 'a negative integer', err);
+}
+function getSystemErrorName(err) {
+  checkSystemErrno(err);
+  const hit = systemErrorMap.get(err);
+  return hit ? hit[0] : `Unknown system error ${err}`;
+}
+function getSystemErrorMessage(err) {
+  checkSystemErrno(err);
+  const hit = systemErrorMap.get(err);
+  return hit ? hit[1] : `Unknown system error ${err}`;
+}
+function getSystemErrorMap() {
+  // 真机每次返回新 Map（同一性 false），条目数组同样拷贝。
+  return new Map(systemErrorEntries.map(([code, pair]) => [code, [pair[0], pair[1]]]));
+}
+
+// ── MIMEType/MIMEParams（WHATWG MIME 解析子集；真机 26.8.2 逐项对过）──────
+// essence 错：`for a type/subtype in "<essence>" is invalid[ at N]`（空串无 at）；
+// setter 同口径（shown = 所赋值）；type/subtype 小写化；essence setter 是 no-op；
+// 无 `=` 的参数段跳过；名小写化、值大小写保留；空值/特殊字符序列化加引号；
+// MIMEParams 无 size/sort/forEach，delete 回 undefined。
+function mimeBadCharIndex(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    const ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+      c === 33 || c === 35 || c === 36 || c === 37 || c === 38 || c === 39 || c === 42 ||
+      c === 43 || c === 45 || c === 46 || c === 94 || c === 95 || c === 96 || c === 124 || c === 126;
+    if (!ok) return i;
+  }
+  return -1;
+}
+function mimeCheckToken(kind, shown, value) {
+  if (value === '') throw new ERR_INVALID_MIME_SYNTAX(kind, shown);
+  const bad = mimeBadCharIndex(value);
+  if (bad !== -1) throw new ERR_INVALID_MIME_SYNTAX(kind, shown, bad);
+}
+function mimeQuoteValue(value) {
+  if (value === '' || /[^!#$%&'*+\-.^_`|~0-9A-Za-z]/.test(value)) {
+    return '"' + value.replace(/(["\\])/g, '\\$1') + '"';
+  }
+  return value;
+}
+class MIMEParams {
+  #pairs;
+  constructor(pairs = []) { this.#pairs = pairs; }
+  get(name) {
+    name = String(name).toLowerCase();
+    for (const [k, v] of this.#pairs) {
+      if (k === name) return v;
+    }
+    return null;
+  }
+  set(name, value) {
+    name = String(name).toLowerCase();
+    value = String(value);
+    mimeCheckToken('parameter name', name, name);
+    this.#pairs = this.#pairs.filter(([k]) => k !== name);
+    this.#pairs.push([name, value]);
+  }
+  has(name) {
+    name = String(name).toLowerCase();
+    return this.#pairs.some(([k]) => k === name);
+  }
+  delete(name) {
+    name = String(name).toLowerCase();
+    this.#pairs = this.#pairs.filter(([k]) => k !== name);
+  }
+  keys() { return this.#pairs.map(([k]) => k).values(); }
+  values() { return this.#pairs.map(([, v]) => v).values(); }
+  entries() { return this.#pairs.map(([k, v]) => [k, v]).values(); }
+  toString() {
+    return this.#pairs.map(([k, v]) => `${k}=${mimeQuoteValue(v)}`).join(';');
+  }
+}
+class MIMEType {
+  #type;
+  #subtype;
+  #params;
+  constructor(input) {
+    if (typeof input !== 'string') throw new ERR_INVALID_ARG_TYPE('input', 'string', input);
+    const semi = input.indexOf(';');
+    const ess = (semi === -1 ? input : input.slice(0, semi)).trim();
+    const slash = ess.indexOf('/');
+    const type = (slash === -1 ? ess : ess.slice(0, slash)).trim();
+    const subtype = slash === -1 ? '' : ess.slice(slash + 1).trim();
+    if (slash === -1 || type === '') {
+      throw new ERR_INVALID_MIME_SYNTAX('type', ess);
+    }
+    mimeCheckToken('type', ess, type);
+    if (subtype === '') {
+      throw new ERR_INVALID_MIME_SYNTAX('subtype', ess);
+    }
+    mimeCheckToken('subtype', ess, subtype);
+    this.#type = type.toLowerCase();
+    this.#subtype = subtype.toLowerCase();
+    const pairs = [];
+    if (semi !== -1) {
+      for (const part of input.slice(semi + 1).split(';')) {
+        const eq = part.indexOf('=');
+        if (eq === -1) continue;
+        const name = part.slice(0, eq).trim().toLowerCase();
+        if (name === '') continue;
+        mimeCheckToken('parameter name', name, name);
+        let value = part.slice(eq + 1).trim();
+        if (value.length >= 2 && value[0] === '"' && value[value.length - 1] === '"') {
+          value = value.slice(1, -1).replace(/\\(.)/g, '$1');
+        }
+        pairs.push([name, value]);
+      }
+    }
+    this.#params = new MIMEParams(pairs);
+  }
+  get type() { return this.#type; }
+  set type(v) {
+    v = String(v);
+    mimeCheckToken('type', v, v);
+    this.#type = v.toLowerCase();
+  }
+  get subtype() { return this.#subtype; }
+  set subtype(v) {
+    v = String(v);
+    mimeCheckToken('subtype', v, v);
+    this.#subtype = v.toLowerCase();
+  }
+  get essence() { return `${this.#type}/${this.#subtype}`; }
+  set essence(_) {}
+  get params() { return this.#params; }
+  toString() {
+    const ps = this.#params.toString();
+    return ps ? `${this.essence};${ps}` : this.essence;
+  }
+}
+
+// ── parseArgs（Node lib/util.js 口径；真机 26.8.2 逐项对过码与文案）────────
+// strict 下未知项抛 ERR_PARSE_ARGS_UNKNOWN_OPTION；non-strict 下未知长项按
+// 有 `=` 进 string、无则进 true（短项未知进 true），未知不抛；
+// allowPositionals 缺省 = !strict；`--` 后全进 positionals；
+// token 形态：option{kind,name,rawName,index[,value,inlineValue]} /
+// positional{kind,index,value} / option-terminator{kind,index}（index 恒为选项位）。
+function parseArgs(config = {}) {
+  const {
+    args = process.argv.slice(2),
+    strict = true,
+    allowPositionals = !strict,
+    tokens = false,
+    options = {},
+  } = config;
+  if (!Array.isArray(args)) throw new ERR_INVALID_ARG_TYPE('args', 'Array', args);
+  if (typeof strict !== 'boolean') throw new ERR_INVALID_ARG_TYPE('strict', 'boolean', strict);
+  if (typeof allowPositionals !== 'boolean') {
+    throw new ERR_INVALID_ARG_TYPE('allowPositionals', 'boolean', allowPositionals);
+  }
+  if (typeof tokens !== 'boolean') throw new ERR_INVALID_ARG_TYPE('tokens', 'boolean', tokens);
+  const shortMap = { __proto__: null };
+  for (const longName of Object.keys(options)) {
+    const opt = options[longName];
+    const pfx = `options.${longName}`;
+    if (opt.type !== 'string' && opt.type !== 'boolean') {
+      throw new ERR_INVALID_ARG_TYPE(`${pfx}.type`, "('string|boolean')", opt.type);
+    }
+    if (opt.short !== undefined) {
+      if (typeof opt.short !== 'string') {
+        throw new ERR_INVALID_ARG_TYPE(`${pfx}.short`, 'string', opt.short);
+      }
+      if (opt.short.length !== 1) {
+        throw new ERR_INVALID_ARG_VALUE(`${pfx}.short`, opt.short, 'must be a single character');
+      }
+      shortMap[opt.short] = longName;
+    }
+    if (opt.multiple !== undefined && typeof opt.multiple !== 'boolean') {
+      throw new ERR_INVALID_ARG_TYPE(`${pfx}.multiple`, 'boolean', opt.multiple);
+    }
+    if (opt.default !== undefined) {
+      if (opt.multiple) {
+        if (!Array.isArray(opt.default)) {
+          throw new ERR_INVALID_ARG_TYPE(`${pfx}.default`, 'Array', opt.default);
+        }
+      } else if (opt.type === 'string' && typeof opt.default !== 'string') {
+        throw new ERR_INVALID_ARG_TYPE(`${pfx}.default`, 'string', opt.default);
+      } else if (opt.type === 'boolean' && typeof opt.default !== 'boolean') {
+        throw new ERR_INVALID_ARG_TYPE(`${pfx}.default`, 'boolean', opt.default);
+      }
+    }
+  }
+  const values = { __proto__: null };
+  for (const longName of Object.keys(options)) {
+    const opt = options[longName];
+    if (opt.default !== undefined) {
+      values[longName] = opt.multiple ? [...opt.default] : opt.default;
+    }
+  }
+  const setValue = (longName, value) => {
+    const opt = options[longName];
+    if (opt && opt.multiple) {
+      if (!Array.isArray(values[longName])) values[longName] = [];
+      values[longName].push(value);
+    } else {
+      values[longName] = value;
+    }
+  };
+  const positionals = [];
+  const toks = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--') {
+      if (tokens) toks.push({ kind: 'option-terminator', index: i });
+      i++;
+      for (; i < args.length; i++) {
+        if (!allowPositionals) throw new ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL(args[i]);
+        positionals.push(args[i]);
+        if (tokens) toks.push({ kind: 'positional', index: i, value: args[i] });
+      }
+      break;
+    }
+    if (arg.startsWith('--')) {
+      const optIndex = i;
+      const eq = arg.indexOf('=');
+      const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
+      const inline = eq === -1 ? undefined : arg.slice(eq + 1);
+      const opt = options[name];
+      if (opt === undefined) {
+        if (strict) throw new ERR_PARSE_ARGS_UNKNOWN_OPTION(`--${name}`);
+        if (inline !== undefined) {
+          values[name] = inline;
+          if (tokens) {
+            toks.push({ kind: 'option', name, rawName: `--${name}`, index: optIndex, value: inline, inlineValue: true });
+          }
+        } else {
+          values[name] = true;
+          if (tokens) toks.push({ kind: 'option', name, rawName: `--${name}`, index: optIndex });
+        }
+        continue;
+      }
+      if (opt.type === 'boolean') {
+        if (inline !== undefined) {
+          throw new ERR_PARSE_ARGS_INVALID_OPTION_VALUE(`Option '--${name}' does not take an argument`);
+        }
+        setValue(name, true);
+        if (tokens) toks.push({ kind: 'option', name, rawName: `--${name}`, index: optIndex });
+      } else {
+        let value = inline;
+        let inlineValue = inline !== undefined;
+        if (!inlineValue) {
+          if (i + 1 >= args.length) {
+            throw new ERR_PARSE_ARGS_INVALID_OPTION_VALUE(`Option '--${name} <value>' argument missing`);
+          }
+          value = args[i + 1];
+          i++;
+        }
+        setValue(name, value);
+        if (tokens) toks.push({ kind: 'option', name, rawName: `--${name}`, index: optIndex, value, inlineValue });
+      }
+      continue;
+    }
+    if (arg.length > 1 && arg.charCodeAt(0) === 45) {
+      let j = 1;
+      while (j < arg.length) {
+        const short = arg[j];
+        const longName = shortMap[short];
+        if (longName === undefined) {
+          if (strict) throw new ERR_PARSE_ARGS_UNKNOWN_OPTION(`-${short}`);
+          values[short] = true;
+          if (tokens) toks.push({ kind: 'option', name: short, rawName: `-${short}`, index: i });
+          j++;
+          continue;
+        }
+        const opt = options[longName];
+        if (opt.type === 'boolean') {
+          setValue(longName, true);
+          if (tokens) toks.push({ kind: 'option', name: longName, rawName: `-${short}`, index: i });
+          j++;
+        } else {
+          const optIndex = i;
+          let value;
+          let inlineValue;
+          if (j + 1 < arg.length) {
+            value = arg.slice(j + 1);
+            inlineValue = true;
+          } else {
+            if (i + 1 >= args.length) {
+              throw new ERR_PARSE_ARGS_INVALID_OPTION_VALUE(`Option '-${short}, --${longName} <value>' argument missing`);
+            }
+            value = args[i + 1];
+            i++;
+            inlineValue = false;
+          }
+          setValue(longName, value);
+          if (tokens) toks.push({ kind: 'option', name: longName, rawName: `-${short}`, index: optIndex, value, inlineValue });
+          break;
+        }
+      }
+      continue;
+    }
+    if (!allowPositionals) throw new ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL(arg);
+    positionals.push(arg);
+    if (tokens) toks.push({ kind: 'positional', index: i, value: arg });
+  }
+  const result = { values, positionals };
+  if (tokens) result.tokens = toks;
+  return result;
+}
+
 // ── 组装（Node module.exports 形态）───────────────────────────────────────
 const _extendDep = deprecate(_extend, 'The `util._extend` API is deprecated. Please use Object.assign() instead.', 'DEP0060');
 const isArrayDep = deprecate(isArray, 'The `util.isArray` API is deprecated. Please use `Array.isArray()` instead.', 'DEP0044');
@@ -532,6 +849,12 @@ const util = {
   isUndefined: isUndefinedDep,
   isDeepStrictEqual,
   parseEnv,
+  parseArgs,
+  getSystemErrorName,
+  getSystemErrorMessage,
+  getSystemErrorMap,
+  MIMEType,
+  MIMEParams,
   promisify,
   stripVTControlCharacters,
   toUSVString,
@@ -547,9 +870,15 @@ export {
   deprecate,
   format,
   formatWithOptions,
+  getSystemErrorMap,
+  getSystemErrorMessage,
+  getSystemErrorName,
   inherits,
   inspect,
   isDeepStrictEqual,
+  MIMEParams,
+  MIMEType,
+  parseArgs,
   parseEnv,
   promisify,
   stripVTControlCharacters,

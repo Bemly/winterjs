@@ -301,6 +301,12 @@ E('ERR_INVALID_URI', 'URI malformed', URIError);
 E('ERR_INVALID_URL_SCHEME', 'The URL must be of scheme %s', TypeError);
 E('ERR_INVALID_FILE_URL_HOST', 'File URL host must be "localhost" or empty on %s', TypeError);
 E('ERR_INVALID_URL', 'Invalid URL', TypeError);
+E('ERR_INVALID_MIME_SYNTAX',
+  (kind, input, pos) => {
+    let msg = `The MIME syntax for a ${kind} in "${input}" is invalid`;
+    if (pos !== undefined && pos !== null) msg += ` at ${pos}`;
+    return msg;
+  }, TypeError, HideStackFramesError);
 E('ERR_UNKNOWN_ENCODING', 'Unknown encoding: %s', TypeError, HideStackFramesError);
 E('ERR_OUT_OF_RANGE',
   (str, range, input, replaceDefaultBoolean = false) => {
@@ -334,6 +340,11 @@ E('ERR_UNHANDLED_ERROR',
     if (err === undefined) return msg;
     return `${msg} (${err})`;
   }, Error);
+E('ERR_PARSE_ARGS_UNKNOWN_OPTION', (option) => `Unknown option '${option}'`, TypeError, HideStackFramesError);
+E('ERR_PARSE_ARGS_INVALID_OPTION_VALUE', (detail) => detail, TypeError, HideStackFramesError);
+E('ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL',
+  (arg) => `Unexpected argument '${arg}'. This command does not take positional arguments`,
+  TypeError, HideStackFramesError);
 E('ERR_UNKNOWN_SIGNAL', 'Unknown signal: %s', TypeError, HideStackFramesError);
 
 // ── Phase 9b：streams 系错误码（定义逐字自 node internal/errors.js）────────

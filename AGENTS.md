@@ -1416,3 +1416,28 @@ cargo build
 - 复现：`tests/node/sqlite.rs::phase10d_sqlite_errors_boundary`（`prep-err` 行修前缺席）。
 - 推广为铁律：宿主底座"懒"的面（prepare/query 构造），对齐 Node eager 语义时
   必须显式加一次无副作用的校验调用；校验调用本身不得有副作用（不步进/不执行）。
+
+### 4.92 RustCrypto 泛型顺序与 AEAD 两侧：ccm 的 M/N 反直觉 + 解密 GHASH over 密文（2026-09-15，10e）
+
+- 症状一：`ccm::Ccm<Aes128, U12, U8>` 编不过（`SealedTag for U12` 不满足）。
+- 根因：`Ccm<C, M, N>` 的 M=tag 长、N=nonce 长（文档注记，非直觉顺序；
+  例 `Ccm<Aes256, U10, U13>` 是 tag 10 + nonce 13）。
+- 修法：分发宏按 `(key → tag → nonce)` 逐级 match（`src/builtins/node/crypto.rs`
+  `ccm_crypt`，注释写明顺序）。
+- 症状二：GCM-J0 手工路径加密与真机逐字节一致，解密自家密文即拒收。
+- 根因：GHASH 的输入写成了解密输出（明文）——tag 是 over **密文**算的，
+  加解密两分支必须各取各的输入（`gcm_manual` 的 `(gct, glen)` 分流）。
+- 复现：`crypto_gcm_j0_known_answer`（修前解密断言挂；加密向量先绿极具误导性——
+  加密绿 ≠ 路径对，AEAD 必须加解密双向断言）。
+- 推广为铁律：AEAD 手工路径的测试必须含"自加密自解密 + 真机交叉"双向；
+  泛型顺序以库文档注记为准，不按直觉（Ccm/Ctr32BE 这类双长度泛型先查）。
+
+### 4.93 后台 sleep/kill 判 hang 必看退出码（2026-09-15，10e，§4.62/§4.67 姊妹篇）
+
+- 症状：cluster 探针 `sleep 10; kill` 后输出停在中间，误判事件循环 hang。
+- 根因：进程早已正常退出（EXIT=0），sleep 到点 kill 扑空——输出截断是杀时
+  机问题，不是 hang；直接跑取 `$?` 即见 0。
+- 修法：凡判 hang，先直接跑取退出码（+ 超时门）；后台法只用于必现 hang 的
+  堆栈/输出采集，且一律落盘读。
+- 推广为铁律：无退出码的 hang 结论不可信；自然退出（idle 收敛正确）与 hang
+  在输出上看起来一样，区分只认退出码。

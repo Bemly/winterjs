@@ -36,9 +36,9 @@
 | dns | 🟢（缺 resolveTlsa） | 🟡（std 底座） | CNAME/MX/TXT/SRV 深件经 hickory-resolver（已在树内；✅ 2026-09-15 拍板：全套+系统配置） | 10d |
 | sqlite | 🟢 | ✅ bun:sqlite／— node:sqlite | `node:sqlite` 注册 + DatabaseSync/StatementSync 口径对齐（turso 底座，不跟系统 libsqlite） | 10d |
 | dgram | 🟢 | ✅（10a-6 收官：connect/组播投递/ref 真计数；剩 recvbuf 系另切片） | 组播全家（addMembership/dropMembership/setBroadcast/组播 TTL/loopback）、connect/disconnect、ref 真计数 | 10a |
-| cluster | 🟡（http 多绑限 Linux） | — | Bun 🟡 对等面：primary/worker、fork/disconnect、scheduling 策略（骑 fork/worker 底座，不做真多进程超集） | 10e |
-| domain | 🟡 | — | 遗留薄面：create/run/bind/intercept + error 路由（小） | 10e |
-| crypto | 🟡（缺 ed448/secp256k1/CCM 等） | ✅（缺口不重合：GCM iv 限 12B、无 ccm/ocb） | 差集：✅ 2026-09-15 用户全批——`ccm` 0.6 + `ghash` 0.6 直引 + `ed448-goldilocks` 特批钉 `=0.14.0-pre.15`（上游稳定版后回 caret）+ bf-cbc 实测后定；ocb 非 Node 面出局。采购单见 `docs/dependencies3.md` §1 | 10e |
+| cluster | 🟡（http 多绑限 Linux） | ✅（线程底座） | Bun 🟡 对等面已齐：primary/worker、fork/disconnect、scheduling 策略 | 10e |
+| domain | 🟡 | 🟡（薄面） | 遗留薄面已齐：create/run/bind/intercept + error 路由（同步；异步不路由记档） | 10e |
+| crypto | 🟡（缺 ed448/secp256k1/CCM 等） | ✅（差集已闭） | 差集已闭：✅ 2026-09-15 用户全批——`ccm` 0.6 + `ghash` 0.6 直引 + `ed448-goldilocks` 特批钉 `=0.14.0-pre.15` + GCM 任意 iv（J0 手工）+ bf-cbc 删项（真机无 bf 系）+ Ed448/X509；ocb 非 Node 面出局。采购单见 `docs/dependencies3.md` §1 | 10e |
 | test | 🟡 | 🟡（起步） | parity 确认（10f 对拍定深浅，不预设切片） | 10f |
 | v8 | 🟡（堆统计 JSC 口径） | 🟡（最小桥） | 堆统计/serialize 双方数字皆引擎口径、不可比——书面偏离，不做（见 §4） | — |
 | vm | 🟢（全+ESM classes） | ✅（Module/SourceText/Synthetic 全链） | parity 确认（10f 对拍；`compileFunction`/`measureMemory` 行为差即修） | 10f |
@@ -114,6 +114,12 @@
   与 `bun:sqlite` 行为一致性断言）。
 
 ### 10e 新域与差集（设计先行）
+
+> ✅ 2026-09-15 收官：crypto 差集（CCM 三档 + GCM 任意 iv + Ed448，
+> 真机逐字节交叉）+ cluster 🟡对等面（fork/message/exit/disconnect，
+> 线程底座）+ domain 薄面（同步路由，异步不路由记档）。
+> `cargo test` 全绿 0 警告，冒烟 5/5。bf-cbc 删项（真机 26 无 bf 系）。
+> 踩坑见 AGENTS §4.92–4.93。
 
 - 做：cluster Bun 🟡 对等面（primary/worker、fork/env、disconnect/suicide、
   scheduling 策略 RR；骑 fork/worker 线程底座——真多进程语义不做，书面记档）；

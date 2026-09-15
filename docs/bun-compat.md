@@ -61,9 +61,9 @@ winterjs 列（2026-09-15 现状回填，证据见后表注记；注册表以
 | zlib 98% | ✅ | 🟢 | 🟡 | JS+内 | ✅ | gzip/deflate/br + zstd（恒 Fastest，记档）；crc32/zip 实验不做 |
 | async_hooks | ✅ | 🟡（仅 ALS/AsyncResource 实） | 🟡 | JS+内 | 🟡 | Bun 同款口径：ALS/AsyncResource 实，createHook stub，跨 await 传播不支持 |
 | child_process | ✅ | 🟡（IPC 若干缺口） | ✅ | JS+内 | ✅ | spawn/exec 真进程 + fork（线程底座，stdio 恒 null 等记档） |
-| cluster | ✅ | 🟡（http 多绑限 Linux） | ❌ | JS+内 | — | 排后（多进程语义重） |
-| crypto | ✅ | 🟡（BoringSSL 缺口：ed448/secp256k1/CCM 等） | ✅ | JS+内 | ✅ | Hash/Hmac/对称/非对称 + ml-kem/ml-dsa + X509 verify；GCM iv 限 12B、ccm/ocb 不做（记档） |
-| domain | ✅ | 🟡 | ❌ | JS | — | 遗留语义，排后 |
+| cluster | ✅ | 🟡（http 多绑限 Linux） | ❌ | JS+内 | ✅ | fork/message/exit/disconnect/settings/scheduling（线程底座记档；listening 不发） |
+| crypto | ✅ | 🟡（BoringSSL 缺口：ed448/secp256k1/CCM 等） | ✅ | JS+内 | ✅ | Hash/Hmac/对称/非对称 + ml-kem/ml-dsa + X509 verify + CCM/GCM-任意iv/Ed448；ocb 不做（记档） |
+| domain | ✅ | 🟡 | ❌ | JS | 🟡 | create/run/bind/intercept + error 路由（同步；异步不路由记档） |
 | http2 94% | ✅ | 🟢 | 🟡 | JS+内 | ✅ | h2c prior-knowledge + H3 分支（串行记档）；无 push（Web 已死）/trailer（等流式切片）/Upgrade（浏览器不用） |
 | module | ✅ | 🟡（缺 load/registerHooks 等） | ✅ | JS+内 | ✅ | require（CJS/type 口径/require(esm)）+ createRequire + registerHooks/import.meta.resolve + 静态具名发现 |
 | net | ✅ | 🟢 | 🟡 | JS+内 | ✅ | 回环 + allowHalfOpen/destroy 语义全对；port 0 hermetic |

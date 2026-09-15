@@ -14,7 +14,10 @@
   上游发稳定版后第一时间回 caret，见下表注）。
   bf-cbc：零新依赖（`blowfish 0.10` + `cbc 0.2` 全在树内），真机 26
   `getCiphers()` 有 bf 系则做、无则删项（10e 开工时实测）。
-  `ocb`：非 Node 面，直接出局，不评估。
+   `ocb`：非 Node 面，直接出局，不评估。
+- **2026-09-15 bf-cbc 删项（10e 收官）**：真机 26.8.2 `getCiphers()` 实测无
+  `bf` 系（OpenSSL 3 默认 provider 已移出 Blowfish），按立项条件"有则做、无则删"
+  直接删项，零代码、零依赖。
 - **2026-09-15 用户已批（10d dns 深件）**：hickory-resolver 接线做全套
   （Cname/Mx/Txt/Srv/Ns/Ptr + resolveAny + getServers/setServers/
   setDefaultResultOrder），读系统 DNS 配置，`lookup` 维持 std

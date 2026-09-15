@@ -1402,3 +1402,17 @@ cargo build
 - 推广为铁律：凡"每次调用前全量同步"的设计，必须回答"已存在项怎么办"——
   define-if-absent + set-if-present 两条路，缺回落即二次调用必炸；
   旧测试只跑一次的面，新功能复用即现形（§4.24 多 run 教训的 vm 版）。
+
+### 4.91 turso 懒执行 vs Node prepare eager：校验走只备不步进的 cols（2026-09-15，10d）
+
+- 症状：`db.prepare("NOPE SYNTAX @@")` 不抛（真机 `ERR_SQLITE_ERROR` 在 prepare 期）。
+- 根因：turso `conn.query` 只备语句不步进——坏 SQL 要到首次 `next()` 才暴露；
+  本仓 prepare 纯 JS 构造，从不碰 Rust，错误自然延迟到 run/get/all。
+- 修法：Rust 加 `Cols` op（只调 `query()` 取 `columns()` 元数据，不 `next()`，
+  无副作用、INSERT 亦不执行）；`DatabaseSync.prepare()` 内先调一次校验，
+  坏 SQL 即抛；`columns()` 复用同一 op。
+- 附带同案：hickory `Name.to_string()` 带 FQDN 尾点（`localhost.`）——Node 口径
+  无尾点，Rust 侧统一 `trim_dot`（`src/builtins/node/dns.rs`）。
+- 复现：`tests/node/sqlite.rs::phase10d_sqlite_errors_boundary`（`prep-err` 行修前缺席）。
+- 推广为铁律：宿主底座"懒"的面（prepare/query 构造），对齐 Node eager 语义时
+  必须显式加一次无副作用的校验调用；校验调用本身不得有副作用（不步进/不执行）。

@@ -39,6 +39,7 @@ pub mod readline;
 /// 10c-3: node:repl（REPLServer/start/Recoverable，骑 readline Interface）。
 pub mod repl;
 pub mod require;
+pub mod sqlite;
 pub mod stream;
 pub mod stream_consumers;
 pub mod stream_promises;
@@ -133,6 +134,8 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:readline", readline::SOURCE),
     ("node:repl", repl::SOURCE),
     ("node:url", url::SOURCE),
+    // 10d：node:sqlite（turso 底座；DatabaseSync/StatementSync）
+    ("node:sqlite", sqlite::SOURCE),
 ];
 
 /// spec 规范化（`node:` 前缀可选；internal 走 `internal::normalize_internal`；
@@ -210,6 +213,8 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "readline" => Some("node:readline"),
         "repl" => Some("node:repl"),
         "url" => Some("node:url"),
+        // 10d
+        "sqlite" => Some("node:sqlite"),
         _ => None,
     }
 }
@@ -327,6 +332,10 @@ mod tests {
         assert_eq!(normalize_spec("url"), Some("node:url"));
         assert_eq!(normalize_spec("node:url"), Some("node:url"));
         assert!(source("node:url").is_some());
+        // 10d：node:sqlite
+        assert_eq!(normalize_spec("sqlite"), Some("node:sqlite"));
+        assert_eq!(normalize_spec("node:sqlite"), Some("node:sqlite"));
+        assert!(source("node:sqlite").is_some());
         // M5 vitest 牵引：子路径 + 回调 timers + console 模块面
         assert_eq!(normalize_spec("path/posix"), Some("node:path/posix"));
         assert_eq!(normalize_spec("node:path/win32"), Some("node:path/win32"));

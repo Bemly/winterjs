@@ -2571,6 +2571,13 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_sqlite_rows", Some(bun::sqlite::sqlite_rows), 4),
             ("__wjs_sqlite_txn", Some(bun::sqlite::sqlite_txn), 1),
             ("__wjs_sqlite_close", Some(bun::sqlite::sqlite_close), 1),
+            // 10d：node:sqlite（turso 底座；DatabaseSync/StatementSync）
+            ("__wjs_nsqlite_open", Some(node::sqlite::nsqlite_open), 1),
+            ("__wjs_nsqlite_exec", Some(node::sqlite::nsqlite_exec), 2),
+            ("__wjs_nsqlite_run", Some(node::sqlite::nsqlite_run), 4),
+            ("__wjs_nsqlite_rows", Some(node::sqlite::nsqlite_rows), 4),
+            ("__wjs_nsqlite_cols", Some(node::sqlite::nsqlite_cols), 2),
+            ("__wjs_nsqlite_close", Some(node::sqlite::nsqlite_close), 1),
             // Phase 7-e6: bun:ffi（动态调用引擎见 ffi.rs 头注；UNSAFE-BOUNDARY 密集区）
             ("__wjs_ffi_dlopen", Some(bun::ffi::ffi_dlopen), 2),
             ("__wjs_ffi_ptr_str", Some(bun::ffi::ffi_ptr_str), 1),

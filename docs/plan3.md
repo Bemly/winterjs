@@ -98,6 +98,11 @@
 
 ### 10d 数据与目录（拍板门×2）
 
+> ✅ 2026-09-15 收官：dns 深件（hickory 全套：Cname/Mx/Txt/Srv/Ns/Ptr +
+> resolveAny + getServers/setServers/setDefaultResultOrder，系统配置直读，
+> `lookup` 维持 std）+ `node:sqlite`（DatabaseSync/StatementSync：turso 底座，
+> CRUD/命名参数/迭代器/列元数据/BigInt 口径全绿）。`cargo test` 全绿 0 警告，冒烟 5/5。
+
 - 做：dns 深件经 hickory-resolver（CNAME/MX/TXT/SRV + promises 面；
   ✅ 2026-09-15 用户拍板：接线做全套——Cname/Mx/Txt/Srv/Ns/Ptr + resolveAny +
   getServers/setServers/setDefaultResultOrder，读系统 DNS 配置（/etc/resolv.conf），

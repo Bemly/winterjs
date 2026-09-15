@@ -57,6 +57,8 @@ mod readline;
 mod repl;
 #[path = "node/require.rs"]
 mod require;
+#[path = "node/sqlite.rs"]
+mod sqlite;
 #[path = "node/stream.rs"]
 mod stream;
 #[path = "node/string_decoder.rs"]

@@ -43,7 +43,7 @@ winterjs 列（2026-09-15 现状回填，证据见后表注记；注册表以
 | console | ✅ | 🟢 | ✅ | 原生（builtins） | ✅ | 具名全表 + `Console` 类；`table` 无列对齐（记档） |
 | dgram 99% | ✅ | 🟢 | 🟡 | JS+内 | ✅ | 回环/connect/组播投递 + close 语义（§4.36 checklist 三查）；未做 recvbuf 系（另切片） |
 | diagnostics_channel | ✅ | 🟡（缺 bounded/多数组内置通道） | ✅ | JS | ✅ | 全语义移植（含 TracingChannel/BoundedChannel），Bun 缺口本仓无 |
-| dns | ✅ | 🟢（缺 resolveTlsa） | 🟡 | JS+内 | 🟡 | `lookup/resolve4/6`（std 底座）；CNAME/MX/TXT 深件待 hickory（§0.5 待拍板） |
+| dns | ✅ | 🟢（缺 resolveTlsa） | 🟡 | JS+内 | ✅ | `lookup/resolve4/6`（std）+ CNAME/MX/TXT/SRV/NS/PTR/Any/servers/order（hickory 全套，10d） |
 | events 95% | ✅ | 🟢 | ✅ | JS（6 内部件） | ✅ | 全语义移植（`once/on` 迭代器、AsyncResource 挂载） |
 | fs 98% | ✅ | 🟢 | ✅ | JS+内（binding 另有） | ✅ | 同步全家 + `fs/promises` + watch；promises 底层同步实现（记档） |
 | http | ✅ | 🟢 | 🟡 | JS+内（7 文件） | ✅ | Server/Client 回环；整收口径（无 keep-alive、体整收、非流全家，记档） |
@@ -77,7 +77,7 @@ winterjs 列（2026-09-15 现状回填，证据见后表注记；注册表以
 | worker_threads | ✅ | 🟡 | 🟡 | JS+内 | ✅ | MessageChannel/Worker + 循环引用信封（已超 deno 🟡） |
 | inspector | ✅ | 🟡 | 🟡 | JS+内 | 🟡 | 薄层（Runtime.evaluate 真求值，domains 仅 ack） |
 | repl | ✅ | 🟡 | ❌ | JS | ✅ CLI + ✅ 模块 | CLI `--repl` 全功能；`node:repl`（REPLServer/start/Recoverable/内建命令，无 caret 行） |
-| sqlite | ✅ | 🟢 | ✅ | 原生 | ✅ bun／— node | `bun:sqlite`（turso 路线）；`node:sqlite`（Node 22+ 实验面）未注册 |
+| sqlite | ✅ | 🟢 | ✅ | 原生 | ✅ bun/✅ node | `bun:sqlite`（turso 路线）+ `node:sqlite`（DatabaseSync/StatementSync，10d；高级 Session/backup 未做） |
 | test | ✅ | 🟡 | ✅ | JS（test_runner） | 🟡 | `node:test` 起步 + `winterjs test` runner；reporter/diff 深度欠账 |
 | trace_events | ✅ | 🟢 | ❌ | JS | ✅ | 全语义移植（类别集 JS 侧） |
 | quic | ✅（实验性） | 🟢 99%（Node 实验性） | —（deno 无此模块） | 原生 | ✅ | 实验性全链（secure 回环 + H3 headers；串行记档） |

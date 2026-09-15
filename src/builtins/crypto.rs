@@ -1959,62 +1959,105 @@ pub unsafe extern "C" fn pss_verify(
 /// RFC 8410 定长 DER 编解码（Ed25519 oid …70 / X25519 …6e；纯函数，可单测）。
 /// PKCS#8: `30 2E 02 01 00 30 05 06 03 2B 65 OID 04 22 04 20 <32B>`；
 /// SPKI: `30 2A 30 05 06 03 2B 65 OID 03 21 00 <32B>`。
+/// 10e Ed448（oid …71，57B）：PKCS#8 `30 47 … 04 3B 04 39 <57B>`（73B）；
+/// SPKI `30 43 … 03 3A 00 <57B>`（69B；真机逐字节对）。
 fn okp_oid_byte(kind: &str) -> Result<u8, String> {
     // prelude 统一传大写名（generateKey 内 `toUpperCase`）；此处按大写匹配
     match kind.to_ascii_uppercase().as_str() {
         "ED25519" => Ok(0x70),
         "X25519" => Ok(0x6E),
+        "ED448" => Ok(0x71),
+        _ => Err(format!("NotSupportedError: unsupported OKP key '{kind}'")),
+    }
+}
+
+/// OKP 裸密钥长（Ed25519/X25519 32B；Ed448 57B）。
+fn okp_key_len(kind: &str) -> Result<usize, String> {
+    match kind.to_ascii_uppercase().as_str() {
+        "ED25519" | "X25519" => Ok(32),
+        "ED448" => Ok(57),
         _ => Err(format!("NotSupportedError: unsupported OKP key '{kind}'")),
     }
 }
 
 fn okp_wrap_pkcs8(kind: &str, seed: &[u8]) -> Result<Vec<u8>, String> {
     let oid = okp_oid_byte(kind)?;
-    if seed.len() != 32 {
-        return Err(format!("DataError: bad {kind} seed (must be 32 bytes)"));
+    let n = okp_key_len(kind)?;
+    if seed.len() != n {
+        return Err(format!("DataError: bad {kind} seed (must be {n} bytes)"));
     }
-    let mut v = vec![
-        0x30, 0x2E, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x04, 0x22,
-        0x04, 0x20,
-    ];
+    // 10e Ed448 头 16B（`04 3B{04 39 seed}` 嵌套 OCTET，与 32B 档同形放大）。
+    let mut v = if n == 57 {
+        vec![
+            0x30, 0x47, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x04,
+            0x3B, 0x04, 0x39,
+        ]
+    } else {
+        vec![
+            0x30, 0x2E, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x04,
+            0x22, 0x04, 0x20,
+        ]
+    };
     v.extend_from_slice(seed);
     Ok(v)
 }
 
 fn okp_wrap_spki(kind: &str, publ: &[u8]) -> Result<Vec<u8>, String> {
     let oid = okp_oid_byte(kind)?;
-    if publ.len() != 32 {
-        return Err(format!("DataError: bad {kind} public key (must be 32 bytes)"));
+    let n = okp_key_len(kind)?;
+    if publ.len() != n {
+        return Err(format!("DataError: bad {kind} public key (must be {n} bytes)"));
     }
-    let mut v = vec![0x30, 0x2A, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x03, 0x21, 0x00];
+    // 10e Ed448 头 12B（BITSTRING `03 3A{00 pub}`）。
+    let mut v = if n == 57 {
+        vec![0x30, 0x43, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x03, 0x3A, 0x00]
+    } else {
+        vec![0x30, 0x2A, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x03, 0x21, 0x00]
+    };
     v.extend_from_slice(publ);
     Ok(v)
 }
 
-fn okp_unwrap_pkcs8(kind: &str, der: &[u8]) -> Result<[u8; 32], String> {
+fn okp_unwrap_pkcs8(kind: &str, der: &[u8]) -> Result<Vec<u8>, String> {
     let oid = okp_oid_byte(kind)?;
-    let mut want = vec![
-        0x30, 0x2E, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x04, 0x22,
-        0x04, 0x20,
-    ];
-    want.extend_from_slice(&[0u8; 32]);
-    if der.len() != 48 || der[..16] != want[..16] {
+    let n = okp_key_len(kind)?;
+    const HEAD_LEN: usize = 16;
+    let mut want = if n == 57 {
+        vec![
+            0x30, 0x47, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x04,
+            0x3B, 0x04, 0x39,
+        ]
+    } else {
+        vec![
+            0x30, 0x2E, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x04,
+            0x22, 0x04, 0x20,
+        ]
+    };
+    want.extend_from_slice(&vec![0u8; n]);
+    if der.len() != HEAD_LEN + n || der[..HEAD_LEN] != want[..HEAD_LEN] {
         return Err(format!("DataError: bad {kind} private key (PKCS#8)"));
     }
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&der[16..]);
-    Ok(seed)
+    Ok(der[HEAD_LEN..].to_vec())
 }
 
-fn okp_unwrap_spki(kind: &str, der: &[u8]) -> Result<[u8; 32], String> {
+fn okp_unwrap_spki(kind: &str, der: &[u8]) -> Result<Vec<u8>, String> {
     let oid = okp_oid_byte(kind)?;
-    let prefix = [0x30, 0x2A, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x03, 0x21, 0x00];
-    if der.len() != 44 || der[..12] != prefix {
+    let n = okp_key_len(kind)?;
+    let (head_len, prefix): (usize, Vec<u8>) = if n == 57 {
+        (
+            12,
+            vec![0x30, 0x43, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x03, 0x3A, 0x00],
+        )
+    } else {
+        (
+            12,
+            vec![0x30, 0x2A, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x03, 0x21, 0x00],
+        )
+    };
+    if der.len() != head_len + n || der[..head_len] != prefix[..] {
         return Err(format!("DataError: bad {kind} public key (SPKI)"));
     }
-    let mut publ = [0u8; 32];
-    publ.copy_from_slice(&der[12..]);
-    Ok(publ)
+    Ok(der[head_len..].to_vec())
 }
 
 fn okp_kind_arg(cx: &mut JSContext, frame: &Frame, idx: u32) -> Option<String> {
@@ -2252,6 +2295,128 @@ pub unsafe extern "C" fn ed_verify(
             true
         }
         // 非法点/验签失败一律 false（WebCrypto 口径：verify 不抛，只回布尔）
+        _ => {
+            frame.set_rval(mozjs::jsval::BooleanValue(false));
+            true
+        }
+    }
+}
+
+// ── 10e Ed448（`ed448-goldilocks =0.14.0-pre.15` 特批钉版；RFC 8032 纯签名）───
+// 口径：seed 57B（`ed25519` 32B 的放大版）；签名 114B 确定性档；验签失败回
+// false（`ed_verify` 同款）；DER 经上方 `okp_*` 57B 分支（真机逐字节对）。
+
+/// `__wjs_ed448_generate()` → 57B seed。
+pub unsafe extern "C" fn ed448_generate(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if !rng_probe(&mut cx) {
+        return false;
+    }
+    let mut seed = [0u8; 57];
+    if getrandom::fill(&mut seed).is_err() {
+        report_error(&mut cx, "OperationError: cannot get random values");
+        return false;
+    }
+    tracing::debug!(target: "winterjs::crypto", "Ed448 key generated");
+    set_rval_bytes(&mut cx, &frame, &seed)
+}
+
+/// `__wjs_ed448_public(seedU8)` → 57B pub。
+pub unsafe extern "C" fn ed448_public(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 {
+        report_error(&mut cx, "TypeError: Ed448 public needs a seed");
+        return false;
+    }
+    let Some(seed) = view_bytes(&mut cx, frame.arg(0), "Ed448 seed") else {
+        return false;
+    };
+    let Ok(sk) = ed448_goldilocks::SigningKey::try_from(seed.as_slice()) else {
+        report_error(&mut cx, "DataError: bad Ed448 seed (must be 57 bytes)");
+        return false;
+    };
+    let vk = sk.verifying_key();
+    let publ: &[u8] = vk.as_ref();
+    set_rval_bytes(&mut cx, &frame, publ)
+}
+
+/// `__wjs_ed448_sign(seedU8, dataU8)` → 114B 签名（确定性纯签名，真机同款）。
+pub unsafe extern "C" fn ed448_sign(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: Ed448 sign needs seed and data");
+        return false;
+    }
+    let (Some(seed), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "Ed448 seed"),
+        view_bytes(&mut cx, frame.arg(1), "Ed448 data"),
+    ) else {
+        return false;
+    };
+    let Ok(sk) = ed448_goldilocks::SigningKey::try_from(seed.as_slice()) else {
+        report_error(&mut cx, "DataError: bad Ed448 seed (must be 57 bytes)");
+        return false;
+    };
+    let sig = sk.sign_raw(&data);
+    set_rval_bytes(&mut cx, &frame, &sig.to_bytes())
+}
+
+/// `__wjs_ed448_verify(pubU8, sigU8, dataU8)` → boolean。
+pub unsafe extern "C" fn ed448_verify(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: Ed448 verify needs key, signature and data");
+        return false;
+    }
+    let (Some(publ), Some(sig), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "Ed448 public key"),
+        view_bytes(&mut cx, frame.arg(1), "Ed448 signature"),
+        view_bytes(&mut cx, frame.arg(2), "Ed448 data"),
+    ) else {
+        return false;
+    };
+    let (Ok(publ), Ok(sig)) = (
+        <[u8; 57]>::try_from(publ.as_slice()),
+        <[u8; 114]>::try_from(sig.as_slice()),
+    ) else {
+        report_error(&mut cx, "DataError: bad Ed448 key/signature length");
+        return false;
+    };
+    let ok = (|| {
+        let vk = ed448_goldilocks::VerifyingKey::from_bytes(&publ).ok()?;
+        let sig = ed448_goldilocks::Signature::from_slice(&sig).ok()?;
+        vk.verify_raw(&sig, &data).ok()
+    })();
+    match ok {
+        Some(()) => {
+            frame.set_rval(mozjs::jsval::BooleanValue(true));
+            true
+        }
+        // 非法点/验签失败一律 false（`ed_verify` 同款口径）
         _ => {
             frame.set_rval(mozjs::jsval::BooleanValue(false));
             true
@@ -2592,7 +2757,8 @@ fn der_ecdsa_sig_to_raw(sig: &[u8], size: usize) -> Option<Vec<u8>> {
 }
 
 /// `__wjs_x509_verify(certDer, keyBytes, keyType)` → boolean。
-/// keyBytes：rsa/rsa-pss/ec 为 SPKI DER，ed25519 为裸 32B；其余 keyType 一律 false
+/// keyBytes：rsa/rsa-pss/ec 为 SPKI DER，ed25519 为裸 32B，ed448 为裸 57B（10e）；
+/// 其余 keyType 一律 false
 /// （真机口径：错钥/异族 → false 不抛，private 入参的拒绝在 JS 壳做）。
 pub unsafe extern "C" fn x509_verify(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -2711,6 +2877,24 @@ fn x509_verify_impl(der: &[u8], key: &[u8], key_type: &str) -> Result<bool, Stri
                 vk.verify(tbs, &sig).is_ok().then_some(true)
             })()
             .unwrap_or(false))
+        }
+        // 10e Ed448（OID 1.3.101.113；57B 钥/114B 签，纯签名）。
+        "ed448" => {
+            if oid != "1.3.101.113" {
+                return Ok(false);
+            }
+            let (Ok(publ), Ok(sigb)) = (
+                <[u8; 57]>::try_from(key),
+                <[u8; 114]>::try_from(sig),
+            ) else {
+                return Ok(false);
+            };
+            Ok((|| {
+                let vk = ed448_goldilocks::VerifyingKey::from_bytes(&publ).ok()?;
+                let sig = ed448_goldilocks::Signature::from_slice(&sigb).ok()?;
+                vk.verify_raw(&sig, tbs).ok()
+            })()
+            .is_some())
         }
         kt if kt.starts_with("ml-dsa-") => {
             // 9i-6：证书签名 OID 与密钥 OID 同族（2.16.840.1.101.3.4.3.17/18/19），纯签名。
@@ -2845,6 +3029,32 @@ mod c4x_tests {
         assert!(okp_unwrap_spki("Ed25519", &hex(ED_SPKI)[..40]).is_err());
         assert!(okp_wrap_pkcs8("ED448", &[0u8; 32]).is_err());
         assert!(okp_wrap_pkcs8("Ed25519", &[0u8; 31]).is_err());
+    }
+
+    // 真机取证向量（Ed448 seed=01‖42×56；SPKI 69B/PKCS#8 73B 逐字节对；
+    // SIG 为 "determinism-check" 的确定性签名，真机同值）。
+    const E448_SEED: &str = "014242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242";
+    const E448_PUB: &str = "75cb897328ba2e61dcba2a4e0d9c496594d55978478e3d7d865b8834b02b8230f9aae29cddd7f4f01ad6cedead3bdd0708c0f8297686d0c000";
+    const E448_SPKI: &str = "3043300506032b6571033a0075cb897328ba2e61dcba2a4e0d9c496594d55978478e3d7d865b8834b02b8230f9aae29cddd7f4f01ad6cedead3bdd0708c0f8297686d0c000";
+    const E448_PKCS8: &str = "3047020100300506032b6571043b0439014242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242";
+    const E448_SIG: &str = "390f63c4e8ccaa3e9dce99084c5a8716caf1be49eeb40e452cec29a576f4dcec6fef3a39fd44da6d561277738e75acc162ef69e846230571802e93bcb4966519c15a1c1417adfb1bb70a8c87a1e873843cc1afbdbcf87442839b190f5a45ac21600122c2fd6ddb81b5f1bc3b36843c410400";
+
+    #[test]
+    fn okp_der_ed448_matches_node_fixtures() {
+        assert_eq!(okp_wrap_pkcs8("ED448", &hex(E448_SEED)).unwrap(), hex(E448_PKCS8));
+        assert_eq!(okp_wrap_spki("ED448", &hex(E448_PUB)).unwrap(), hex(E448_SPKI));
+        assert_eq!(okp_unwrap_pkcs8("ED448", &hex(E448_PKCS8)).unwrap(), hex(E448_SEED).as_slice());
+        assert_eq!(okp_unwrap_spki("ED448", &hex(E448_SPKI)).unwrap(), hex(E448_PUB).as_slice());
+        // 异族互斥（48/73B 长度即分水岭）
+        assert!(okp_unwrap_pkcs8("Ed25519", &hex(E448_PKCS8)).is_err());
+        assert!(okp_unwrap_spki("ED448", &hex(ED_SPKI)).is_err());
+        // 签名确定性（同种子同消息，真机同值）+ 验签自洽
+        let sk = ed448_goldilocks::SigningKey::try_from(hex(E448_SEED).as_slice()).unwrap();
+        let sig = sk.sign_raw(b"determinism-check");
+        assert_eq!(const_hex::encode(sig.to_bytes()), E448_SIG);
+        let vk = sk.verifying_key();
+        assert!(vk.verify_raw(&sig, b"determinism-check").is_ok());
+        assert!(vk.verify_raw(&sig, b"tampered").is_err());
     }
 
     // openssl 实测 DER（P-256 SPKI/PKCS8 + secp256k1 SPKI；9h-1 OID 直判回归）。

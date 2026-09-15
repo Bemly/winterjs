@@ -909,13 +909,11 @@ t("xi-issued-str", () => leaf.checkIssued("x"));
 t("xi-priv-noarg", () => leaf.checkPrivateKey());
 t("xi-priv-pub", () => leaf.checkPrivateKey(goodPub()));
 function goodPub() { return crypto.createPublicKey(crypto.generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey); }
-// OKP 私钥匹配（material 裸 32B → 手工 SPKI 包装比较）
+// OKP 导出即标准 DER（10e 起直吐 PKCS#8/SPKI，不再经 raw 手工包）
 const edpair = crypto.generateKeyPairSync("ed25519");
-const edSelf = (() => {
-  const spki = Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), edpair.publicKey.export({ format: "der", type: "raw" })]);
-  return spki;
-})();
-console.log("xi-okp-shape", edSelf.length === 44, edSelf[0] === 0x30);
+console.log("xi-okp-shape",
+  edpair.privateKey.export({ format: "der", type: "pkcs8" }).length === 48,
+  edpair.publicKey.export({ format: "der", type: "spki" }).length === 44);
 // PQ 私钥在证书上不匹配即 false（derive 链走 PQ 分支）
 const pqcert = new crypto.X509Certificate(fs.readFileSync("mldsa-cert.pem", "utf8"));
 const pqpair = crypto.generateKeyPairSync("ml-dsa-65");
@@ -1144,5 +1142,85 @@ try {
     assert!(out.contains("wide-aes-256-gcm true"), "out: {out}");
     assert!(out.contains("emptyiv ERR_CRYPTO_INVALID_IV"), "out: {out}");
     assert!(out.contains("badtag8 true true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10e_crypto_ed448() {
+    // 10e Ed448：真机取证向量（确定性签名逐字节）+ 全链 + 报错/边界三件 + 证书
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("ed448-cert.pem")
+        .write_str(include_str!("../fixtures/ed448-cert.pem"))
+        .unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import crypto, { generateKeyPairSync, generateKeyPair, sign, verify, createPrivateKey, createPublicKey } from "node:crypto";
+import fs from "node:fs";
+const { publicKey, privateKey } = generateKeyPairSync("ed448");
+console.log("types", publicKey.asymmetricKeyType, privateKey.type, publicKey.type);
+const sig = sign(null, Buffer.from("hello"), privateKey);
+console.log("sig", sig.length === 114, verify(null, Buffer.from("hello"), publicKey, sig));
+// 已知向量（定种子的确定性签名，真机同值）
+const seed = Buffer.concat([Buffer.from([1]), Buffer.alloc(56, 0x42)]);
+const fixPriv = createPrivateKey({ key: Buffer.concat([Buffer.from("3047020100300506032b6571043b0439", "hex"), seed]), format: "der", type: "pkcs8" });
+const fixSig = sign(null, Buffer.from("determinism-check"), fixPriv);
+console.log("vec", fixSig.toString("hex") === "390f63c4e8ccaa3e9dce99084c5a8716caf1be49eeb40e452cec29a576f4dcec6fef3a39fd44da6d561277738e75acc162ef69e846230571802e93bcb4966519c15a1c1417adfb1bb70a8c87a1e873843cc1afbdbcf87442839b190f5a45ac21600122c2fd6ddb81b5f1bc3b36843c410400");
+// JWK 进出 + DER 形态（73/69B）+ 重导入
+const jwk = publicKey.export({ format: "jwk" });
+console.log("jwk", jwk.kty === "OKP" && jwk.crv === "Ed448" && typeof jwk.x === "string");
+const pub2 = createPublicKey({ key: publicKey.export({ format: "der", type: "spki" }), format: "der", type: "spki" });
+console.log("der-pub", pub2.asymmetricKeyType === "ed448", publicKey.export({ format: "der", type: "spki" }).length === 69);
+const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+console.log("der-priv", privDer.length === 73);
+const priv2 = createPrivateKey({ key: privDer, format: "der", type: "pkcs8" });
+console.log("reimport", verify(null, Buffer.from("hello"), createPublicKey(priv2), sig));
+const jwkPriv = privateKey.export({ format: "jwk" });
+const priv3 = createPrivateKey({ key: jwkPriv, format: "jwk" });
+console.log("jwk-priv", verify(null, Buffer.from("hello"), createPublicKey(priv3), sig));
+// async 形态
+generateKeyPair("ed448", (e, pub, priv) => {
+  console.log("async", e === null, pub.asymmetricKeyType === "ed448", priv.type === "private");
+});
+// 报错三件
+try { sign("sha256", Buffer.from("m"), privateKey); } catch (e) { console.log("sign-alg", e.code); }
+try { verify("sha256", Buffer.from("m"), publicKey, sig); } catch (e) { console.log("verify-alg", e.code); }
+try { sign(null, Buffer.from("m"), publicKey); } catch (e) { console.log("sign-pub", e.code); }
+try { verify(null, Buffer.from("m"), privateKey, sig); } catch (e) { console.log("verify-priv", e.code); }
+try { createPrivateKey({ key: Buffer.alloc(10), format: "der", type: "pkcs8" }); } catch (e) { console.log("bad-der", e.code); }
+try { publicKey.export({ format: "der", type: "spki" }).length; console.log("exp-ok", true); } catch (e) { console.log("exp-ok", false); }
+try { publicKey.export({ format: "der", type: "pkcs8" }); } catch (e) { console.log("exp-pub-pkcs8", e.code); }
+// 边界：错签/错钥回 false；空消息往返
+const bad = Buffer.from(sig); bad[0] ^= 0xff;
+console.log("tamper", verify(null, Buffer.from("hello"), publicKey, bad) === false);
+const { publicKey: other } = generateKeyPairSync("ed448");
+console.log("wrongkey", verify(null, Buffer.from("hello"), other, sig) === false);
+console.log("empty", verify(null, Buffer.alloc(0), publicKey, sign(null, Buffer.alloc(0), privateKey)));
+// 证书（openssl ed448 自签固件）
+const x = new crypto.X509Certificate(fs.readFileSync("ed448-cert.pem", "utf8"));
+console.log("cert", x.verify(x.publicKey), x.publicKey.asymmetricKeyType === "ed448", x.verify(other) === false);
+"#,
+    );
+    assert!(out.contains("types ed448 private public"), "out: {out}");
+    assert!(out.contains("sig true true"), "out: {out}");
+    assert!(out.contains("vec true"), "out: {out}");
+    assert!(out.contains("jwk true"), "out: {out}");
+    assert!(out.contains("der-pub true true"), "out: {out}");
+    assert!(out.contains("der-priv true"), "out: {out}");
+    assert!(out.contains("reimport true"), "out: {out}");
+    assert!(out.contains("jwk-priv true"), "out: {out}");
+    assert!(out.contains("async true true true"), "out: {out}");
+    assert!(out.contains("sign-alg ERR_OSSL_INVALID_DIGEST"), "out: {out}");
+    assert!(out.contains("verify-alg ERR_OSSL_INVALID_DIGEST"), "out: {out}");
+    assert!(out.contains("sign-pub ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("verify-priv ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("bad-der ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("exp-ok true"), "out: {out}");
+    assert!(out.contains("exp-pub-pkcs8 ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("tamper true"), "out: {out}");
+    assert!(out.contains("wrongkey true"), "out: {out}");
+    assert!(out.contains("empty true"), "out: {out}");
+    assert!(out.contains("cert true true true"), "out: {out}");
     dir.close().unwrap();
 }

@@ -3953,6 +3953,28 @@ function __exportDer(kobj, options) {
     }
     return __b64dec(parts.pubDer);
   }
+  // OKP 私钥是裸 seed（非 DER），导出时包 PKCS#8/SPKI（真机口径；
+  // 9e 存量曾直吐裸料，10e 起修正，ed25519/x25519/ed448 同路径）。
+  // 类型严格（真机口径：private 只收 pkcs8、public 只收 spki；sec1 私钥另码）。
+  if (kobj.__keyType === "ed25519" || kobj.__keyType === "x25519" || kobj.__keyType === "ed448") {
+    const want = kobj.__kind === "private" ? "pkcs8" : "spki";
+    const t = options?.type;
+    if (t !== undefined && t !== want) {
+      if (t === "sec1" && kobj.__kind === "private") {
+        const err = new Error("Incompatible key options");
+        err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+        throw err;
+      }
+      const err = new TypeError(`Unknown export type ${t}`);
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    const kind = kobj.__keyType === "ed25519" ? "ED25519" : kobj.__keyType === "x25519" ? "X25519" : "ED448";
+    if (kobj.__kind === "private") {
+      return Buffer.from(__cryptCall(() => __wjs_okp_pkcs8_from_seed(kind, kobj.__material)));
+    }
+    return Buffer.from(__cryptCall(() => __wjs_okp_spki_from_pub(kind, kobj.__material)));
+  }
   return kobj.__material;
 }
 function __exportJwk(kobj) {
@@ -3976,10 +3998,15 @@ function __exportJwk(kobj) {
     if (isPriv) jwk.d = parts.d;
     return jwk;
   }
-  if (kobj.__keyType === "ed25519" || kobj.__keyType === "x25519") {
-    const crv = kobj.__keyType === "ed25519" ? "Ed25519" : "X25519";
+  if (kobj.__keyType === "ed25519" || kobj.__keyType === "x25519" || kobj.__keyType === "ed448") {
+    // 10e Ed448：OKP crv 同形（57B，b64url）。
+    const crv = kobj.__keyType === "ed25519" ? "Ed25519" : kobj.__keyType === "x25519" ? "X25519" : "Ed448";
     const pubBytes = isPriv
-      ? (kobj.__keyType === "ed25519" ? __wjs_ed_public(kobj.__material) : __wjs_x_public(kobj.__material))
+      ? (kobj.__keyType === "ed25519"
+        ? __wjs_ed_public(kobj.__material)
+        : kobj.__keyType === "x25519"
+          ? __wjs_x_public(kobj.__material)
+          : __wjs_ed448_public(kobj.__material))
       : kobj.__material;
     const jwk = { kty: "OKP", crv, x: b64u(pubBytes) };
     if (isPriv) jwk.d = b64u(kobj.__material);
@@ -4084,7 +4111,8 @@ function __parseKeyMaterial(key, format, type, want) {
       return k;
     }
     if (key.kty === "OKP") {
-      const kt = key.crv === "Ed25519" ? "ed25519" : key.crv === "X25519" ? "x25519" : null;
+      // 10e Ed448（OKP 同形）。
+      const kt = key.crv === "Ed25519" ? "ed25519" : key.crv === "X25519" ? "x25519" : key.crv === "Ed448" ? "ed448" : null;
       if (kt === null) {
         const err = new Error(`Unsupported OKP curve ${key.crv}`);
         err.code = "ERR_NOT_SUPPORTED";
@@ -4137,9 +4165,10 @@ function __parseKeyMaterial(key, format, type, want) {
         return __dsaKeyObject(env, "private");
       }],
       ["okp", () => {
-        for (const kt of ["ed25519", "x25519"]) {
+        for (const kt of ["ed25519", "x25519", "ed448"]) {
           try {
-            const seed = __cryptCall(() => __wjs_okp_seed_from_pkcs8(kt === "ed25519" ? "ED25519" : "X25519", der));
+            const kind = kt === "ed25519" ? "ED25519" : kt === "x25519" ? "X25519" : "ED448";
+            const seed = __cryptCall(() => __wjs_okp_seed_from_pkcs8(kind, der));
             return new KeyObject("private", kt, Buffer.from(seed));
           } catch {}
         }
@@ -4180,9 +4209,10 @@ function __parseKeyMaterial(key, format, type, want) {
         return __dsaKeyObject(env, "public");
       },
       () => {
-        for (const kt of ["ed25519", "x25519"]) {
+        for (const kt of ["ed25519", "x25519", "ed448"]) {
           try {
-            const pub = __cryptCall(() => __wjs_okp_pub_from_spki(kt === "ed25519" ? "ED25519" : "X25519", der));
+            const kind = kt === "ed25519" ? "ED25519" : kt === "x25519" ? "X25519" : "ED448";
+            const pub = __cryptCall(() => __wjs_okp_pub_from_spki(kind, der));
             return new KeyObject("public", kt, Buffer.from(pub));
           } catch {}
         }
@@ -4273,6 +4303,10 @@ function __derivePublic(priv) {
   if (priv.__keyType === "ed25519") {
     return new KeyObject("public", "ed25519", Buffer.from(__cryptCall(() => __wjs_ed_public(priv.__material))));
   }
+  // 10e Ed448（OKP 同形）。
+  if (priv.__keyType === "ed448") {
+    return new KeyObject("public", "ed448", Buffer.from(__cryptCall(() => __wjs_ed448_public(priv.__material))));
+  }
   if (priv.__keyType === "x25519") {
     return new KeyObject("public", "x25519", Buffer.from(__cryptCall(() => __wjs_x_public(priv.__material))));
   }
@@ -4336,10 +4370,10 @@ function __genPairSync(type, options) {
     pub.__detail = { namedCurve: curve };
     return { privateKey: priv, publicKey: pub };
   }
-  if (type === "ed25519" || type === "x25519") {
-    const isEd = type === "ed25519";
-    const seed = __cryptCall(() => isEd ? __wjs_ed_generate() : __wjs_x_generate());
-    const pubB = __cryptCall(() => isEd ? __wjs_ed_public(seed) : __wjs_x_public(seed));
+  if (type === "ed25519" || type === "x25519" || type === "ed448") {
+    const isEd = type === "ed25519", is448 = type === "ed448";
+    const seed = __cryptCall(() => isEd ? __wjs_ed_generate() : is448 ? __wjs_ed448_generate() : __wjs_x_generate());
+    const pubB = __cryptCall(() => isEd ? __wjs_ed_public(seed) : is448 ? __wjs_ed448_public(seed) : __wjs_x_public(seed));
     return {
       privateKey: new KeyObject("private", type, Buffer.from(seed)),
       publicKey: new KeyObject("public", type, Buffer.from(pubB)),
@@ -4374,7 +4408,7 @@ function __genPairSync(type, options) {
       publicKey: new KeyObject("public", type, Buffer.from(__b64dec(parts.spki))),
     };
   }
-  const err = new Error(`generateKeyPair type '${type}' not supported (rsa/rsa-pss/ec/ed25519/x25519/dsa/ml-kem-512/768/1024/ml-dsa-44/65/87)`);
+  const err = new Error(`generateKeyPair type '${type}' not supported (rsa/rsa-pss/ec/ed25519/x25519/ed448/dsa/ml-kem-512/768/1024/ml-dsa-44/65/87)`);
   err.code = "ERR_NOT_SUPPORTED";
   throw err;
 }
@@ -4393,6 +4427,11 @@ export function generateKeyPairSync(type, options, publicEncoding, privateEncodi
   return __applyEncoding(__genPairSync(type, options), publicEncoding, privateEncoding);
 }
 export function generateKeyPair(type, options, ...rest) {
+  // 真机口径：generateKeyPair(type, callback) 二参合法（10e 修）。
+  if (typeof options === "function") {
+    rest = [options, ...rest];
+    options = {};
+  }
   let cb = rest.find((a) => typeof a === "function");
   let pubEnc, privEnc;
   if (typeof options === "object" && options !== null) {
@@ -4456,6 +4495,20 @@ function __derToRawSig(der, size) {
 function __signCore(alg, data, keyObj, dsaEncoding, saltLength) {
   const dataB = __cryptBytes(data, "data");
   const kt = keyObj.__keyType;
+  if (kt === "ed448") {
+    // 10e Ed448 纯签名（真机口径：非 null 即 ERR_OSSL_INVALID_DIGEST，ml-dsa 同款）。
+    if (alg !== null && alg !== undefined) {
+      const err = new Error("Invalid digest");
+      err.code = "ERR_OSSL_INVALID_DIGEST";
+      throw err;
+    }
+    if (keyObj.__kind !== "private") {
+      const err = new TypeError("sign requires a private key");
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    return __cryptCall(() => __wjs_ed448_sign(keyObj.__material, dataB));
+  }
   if (kt === "ed25519") {
     // EdDSA 无摘要算法（真 Node：非 null 即 ERR_OSSL_INVALID_DIGEST；
     // 此处用 CRYPTO 扁平码，Sign 类同口径，记档）
@@ -4546,6 +4599,20 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
   const dataB = __cryptBytes(data, "data");
   const sigB = __cryptBytes(sig, "signature");
   const kt = keyObj.__keyType;
+  if (kt === "ed448") {
+    // 10e Ed448 纯验签（真机口径同 sign：非 null 即 ERR_OSSL_INVALID_DIGEST）。
+    if (alg !== null && alg !== undefined) {
+      const err = new Error("Invalid digest");
+      err.code = "ERR_OSSL_INVALID_DIGEST";
+      throw err;
+    }
+    if (keyObj.__kind === "private") {
+      const err = new TypeError("verify requires a public key");
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    return __cryptCall(() => __wjs_ed448_verify(keyObj.__material, sigB, dataB));
+  }
   if (kt === "ed25519") {
     if (alg !== null && alg !== undefined) {
       const err = new Error("Invalid digest");
@@ -5340,12 +5407,16 @@ class X509Certificate {
       err.code = "ERR_INVALID_ARG_VALUE";
       throw err;
     }
-    // 派生公钥后与证书 SPKI 逐字节比（ed25519/x25519 material 是裸 32B，手工包 SPKI）。
+    // 派生公钥后与证书 SPKI 逐字节比（ed25519/x25519 material 是裸 32B，手工包 SPKI；
+    // 10e ed448 裸 57B 同形）。
     const pub = createPublicKey(privateKey);
     let spki;
-    if (pub.__keyType === "ed25519" || pub.__keyType === "x25519") {
-      const oidHex = pub.__keyType === "ed25519" ? "2b6570" : "2b656e";
-      spki = Buffer.concat([Buffer.from(`302a30050603${oidHex}032100`, "hex"), Buffer.from(pub.__material)]);
+    if (pub.__keyType === "ed25519" || pub.__keyType === "x25519" || pub.__keyType === "ed448") {
+      // 10e ed448 头 12B（`3043…033a00`，57B）；ed/x 头 12B（`302a…032100`，32B）。
+      const headHex = pub.__keyType === "ed448"
+        ? "3043300506032b6571033a00"
+        : `302a30050603${pub.__keyType === "ed25519" ? "2b6570" : "2b656e"}032100`;
+      spki = Buffer.concat([Buffer.from(headHex, "hex"), Buffer.from(pub.__material)]);
     } else if (pub.__keyType === "dsa") {
       const env = JSON.parse(Buffer.from(pub.__material).toString("utf8"));
       const parts = JSON.parse(__cryptCall(() => __wjs_dsa_export(JSON.stringify(env))));

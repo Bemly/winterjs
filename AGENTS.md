@@ -1301,3 +1301,24 @@ cargo build
 - 推广为铁律：宿主实现 napi 面时，"官方套件怎么写"本身就是契约的一部分——
   选点回归（M6）不是仪式，是抓这类暗契约的唯一网；遇 addon 读"没给出的
   参数"先查宿主填充语义再骂 addon。
+
+### 4.85 定时器实参从未展开：`fire_due` 直调 + 缓存的 helper 从未被读（2026-09-15，10a）
+
+- 症状：`setTimeout((a, b) => ..., 0, 'x', 7)` 的回调收到 `(cb自身, args数组)`，
+  而非 `('x', 7)`——定时器实参透传全灭。
+- 根因：`fire_due` 用 `JS_CallFunctionValue(fun, [cb, args])` 直调回调
+  （§4.9 禁 `Rooted<ValueArray>` 的语境下写错了调用形状）；而 prelude 的
+  `__wjs_call(cb, args)` 展开器虽有缓存位（`RootedState::call_fn`，runtime 起
+  即 set + trace），却没有任何读者——set 时没人接线，读侧永远直调。
+  旧用例全用闭包传参（`setTimeout(() => resolve(v))`），躲过全部回归。
+- 修法：`fire_due` 经 `call_two(cx, global, call_fn, cb, args)` 走 `__wjs_call`
+  展开（`src/builtins/timers.rs`；`call_two` 的 UNSAFE-BOUNDARY 覆盖 + 本条）。
+- 复现：`tests/builtins.rs::phase10a_immediate_and_timeout_class`
+  （`args x 7` 行；修前为 `args <fn> x,7`）。
+- 推广为铁律："缓存了" ≠ "用上了"——新增缓存位必须同时提交第一个读者，
+  reviewer 按"set 有无 get"逐项对；回调传参形态（闭包 vs 实参）是两种覆盖，
+  只测一种等于没测。
+- 附带（同批 10a-3）：全局 `setImmediate` 缺失即补（setTimeout(0) 近似，
+  check 语义记档）；Timeout/Immediate 改真类（constructor.name 真机口径，
+  类本体不出 prelude 块作用域——真机 `globalThis.Timeout === undefined`，
+  污染全局即错）；plan.md 9b"裸 number"记档同步勘误（M5 起已返回对象）。

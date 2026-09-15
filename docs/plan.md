@@ -554,8 +554,9 @@
   scheduler.yield/wait，AbortError 口径；setImmediate≈setTimeout(0) 记档）。
   修复：internal/errors 补 `aggregateTwoErrors`（4 模块在用而未导出，静默雷）；
   compose Duplex 懒解环漏收口；SlowBuffer `new Buffer.alloc` 静态非构造。
-  记档缺口（非 9b）：全局 setTimeout 返回裸 number（无 Timeout 对象
-  refresh/unref/ref）、全局 setImmediate 缺失（process/timers 全局面）。
+  记档缺口（非 9b；2026-09-15 勘误：M5 起全局 setTimeout 已返回 Timeout 对象，
+  10a-3 补齐全局 setImmediate + Timeout/Immediate 真类，见 AGENTS §4.85；
+  本行保留为历史口径）。
   黑盒 +7（buffer 六编码+报错三件/Blob/RW 核心/duplex-transform-pipeline/
   from-iterator/web+consumers/timers-promises）；`cargo test` 102+202 全绿，
   冒烟 5/5。踩坑记 AGENTS §4.32。

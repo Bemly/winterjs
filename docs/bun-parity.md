@@ -172,3 +172,39 @@
 | test-timers-user-call.js | 0 | 0 | ✅（修：Reflect.apply 直调内建（回调 .call/.apply 可被补丁，§4.95）） |
 | test-timers-zero-timeout.js | 0 | 0 | ✅ |
 | test-timers.js | 0 | 0 | ✅（修：溢出钳 1 非上限（>2^31-1 按下一跳，原文直译）） |
+
+## url
+
+> 10f 收官：18 点名 = 13 ✅ + 5 ⏭️（3 件 URLPattern 整面未实现（node 26 内建 ada 系，
+> 体量另案）+ 1 件自 spawn 裸文件参数 + 1 件 isURL 内部面双 1 对齐），红 0。本轮改动主体：legacy parse/format/
+> resolve/resolveObject 按 node lib/url.js 逐字对齐（首尾修剪扫描器/nonHost 扫描/
+> getHostname/parseHost/autoEscapeStr/noEscapeAuth 表/escapedCodes 表）、IDNA
+> 校验（NFKC + ignored 软连字符 + 违禁扫描 + punycode，badIDNA 29 码点全拦）、
+> pathToFileURL windows 选项全套（扩展 UNC/UNC hostname 状态机/盘符/posix 尾
+> 分隔符，__encodePathSegment 按 ada file-path 表）、fileURLToPath posix 只查
+> %2F、DEP0169 警告（once + isInsideNodeModules 栈走查）、urlToHttpOptions 逐字。
+> 连带基建（对拍牵引）：assert.throws 函数形期望的 instanceof 门（§4.99）、
+> ChildProcess exit/close 双参 (code, signal)、spawn 默认 stdio pipe、stdout/
+> stderr legacy Readable 面（§4.101）、process.emitWarning 异步派发（§4.102）。
+
+| 文件 | winterjs | node | 结论 |
+|---|---|---|---|
+| test-url-domain-ascii-unicode.js | 0 | 0 | ✅（修：testmod 三参形态 test(name,{skip},fn)——选项对象此前被当 fn 收队） |
+| test-url-format-whatwg.js | 0 | 0 | ✅（修：WHATWG format options Boolean 化逐件剥离） |
+| test-url-format.js | 0 | 0 | ✅（修：noEscapeAuth 0x70 行抄错 + auth 代理对整体编码（encodeURIComponent 对孤立代理抛 URIError）） |
+| test-url-fileurltopath.js | 0 | 0 | ✅（修：posix 路径误查 %5C——%5C 检查属 win32 专查，posix 下 file:///foo%5Cbar 合法） |
+| test-url-invalid-file-url-path-input.js | 0 | 0 | ✅（修：%2F 抛 ERR_INVALID_FILE_URL_PATH + input 挂 URL 对象） |
+| test-url-parse-format.js | 0 | 0 | ✅（修：IDNA 用 NFKC（规范组合回预组合 ü，xn--bcher-kva）+ escapedCodes 表 100-119 行多一空串整体错位） |
+| test-url-parse-invalid-input.js | 0 | 0 | ✅（修：IDNA 拒绝族 + assert.throws 箭头校验器门（§4.99）+ spawn 默认 stdio pipe） |
+| test-url-parse-query.js | 0 | 0 | ✅（修：parse 空白修剪） |
+| test-url-relative.js | 0 | 0 | ✅（修：resolveObject 空源短路 `if (!source) return relative` + noLeadingSlashes 块（非斜杠协议相对路径爬升进 host）+ relative.host 抬升目标） |
+| test-url-pathtofileurl.js | 0 | 0 | ✅（修：windows 选项全套 + __encodePathSegment（^|[|]~ 编码；encodeURIComponent 对 ~ 放行须手动 %7E，§4.98）+ UNC tail 反斜杠转分隔符） |
+| test-url-urltooptions.js | 0 | 0 | ✅（urlToHttpOptions 逐字移植） |
+| test-url-revokeobjecturl.js | 0 | 0 | ✅（revokeObjectURL/createObjectURL 缺参 ERR_MISSING_ARGS） |
+| test-url-format-invalid-input.js | 0 | 0 | ✅ |
+| test-url-is-url-internal.js | 1 | 1 | ⏭️ isURL 内部面（`internal/url` 同义双 1 对齐，不展开） |
+| test-urlpattern.js | 1 | 1 | ⏭️ URLPattern 未实现（node 26 内建，整面另案） |
+| test-urlpattern-types.js | 1 | 1 | ⏭️ URLPattern 未实现（同上） |
+| test-urlpattern-invalidthis.js | 1 | 1 | ⏭️ URLPattern 未实现（同上） |
+| test-url-parse-deprecation.js | 1 | 1 | ⏭️ 自 spawn 裸文件参数（fixtures/node_modules 直跑，全 flag CLI 设计；DEP0169 警告部分已绿——expectWarning 序列通过，仅 spawn 断言红） |
+

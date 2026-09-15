@@ -1469,3 +1469,78 @@ cargo build
 - 修法：process 监听器族方法一律 `this` 基（`__wjs_emit` 顺带回监听数，供 `__wjs_uncaught` 判"是否已处理"——探针为 0 时 native 保持 pending 原样走 fatal，错误信息不降级）。
 - 症状二：`run_file_from_tempdir` 断言 `--run` 回显完成值 `42`——b701cf6 typeless .js 入口走 CJS require 主模块后无 rval，回显消失（HEAD 实测同红，非本轮回归）。真机 `node app.js` 本就无回显——静默才是对等，测试改执行效应断言（§4.82 老断言翻转）。
 - 推广为铁律：全局单例的方法族，方法体禁解引用全局绑定（`this` 或载入期捕获二选一）；"回显类"断言在入口语义升级后逐个对真机。
+
+### 4.98 自写编码器不能指望 `encodeURIComponent` 兜底：unreserved 恒放行（2026-09-16，10f url）
+
+- 症状：`pathToFileURL('/foo~')` 出 `file:///foo~`，套件期望 `%7E`；条件表里明明有 `ch === '~'`。
+- 根因：`encodeURIComponent` 对 unreserved（`~ ! ' ( ) * - . _` + 字母数字）**恒原样放行**——
+  条件命中了，编码函数却吐回原字符。同理 `noEscapeAuth` 逐字符手工编码里 `%XX` 由
+  `toString(16)` 生成是安全的，但混用 `encodeURIComponent` 的分支必须逐字符核对其放行集。
+- 修法：被收字符里凡 unreserved 者手动给字面量（`out += ch === '~' ? '%7E' : encodeURIComponent(ch)`）。
+- 推广为铁律：凡"自选编码集 + 借 encodeURIComponent 执行"的编码器，放行集 = 自己的表
+  ∩ encodeURIComponent 的放行集，交集外字符一律手动字面量；新增编码集先对真机
+  逐字符 diff（本轮 `~`/`^`/`|`/`[`/`]` 全是套件期望反推出来的）。
+- 复现：`test-url-pathtofileurl.js` 尾部 `'/foo\r\n\t<>"#%{}|^[\\~]`?bar'` 用例（修前 `%5C~`）。
+
+### 4.99 `assert.throws` 函数形期望：`instanceof` 必须以 Error 子类为门（2026-09-16，10f url）
+
+- 症状：`assert.throws(fn, (e) => e instanceof URIError)` 报 "unexpected throw"，
+  校验器**从未被调用**（打点实证）；同一校验器直接调用全过。
+- 根因：旧实现先做 `e instanceof expected` 再回落校验器——箭头函数无
+  `prototype`，`e instanceof arrow` 按 OrdinaryHasInstance 取 `C.prototype`
+  即抛 TypeError，被外层 `catch { ok = false }` 整体吞掉，校验器永不到达。
+  类（有 prototype）不受影响，故旧套件全绿掩盖。
+- 修法：`expected.prototype !== undefined && expected.prototype instanceof Error`
+  才走 instanceof（node 口径：Error 子类 = 构造器形，其余 = 校验器形）；
+  instanceof 失败仍回落校验器调用。
+- 复现：`tests/node/url.rs::phase10f_url_parity_suite`（`urierr` 行；修前 REJECTED）。
+- 推广为铁律：对"函数既可能是构造器也可能是校验器"的双形态参数，形态判定
+  （prototype 链）必须先于使用形态的运算符；`instanceof` 右侧无 prototype
+  是抛错不是 false，凡 try/catch 包 instanceof 都要想到这一层。
+
+### 4.100 肉眼同形异码点：探针先核对码点，NFKD/NFKC 跟 UTS46 走（2026-09-16，10f url）
+
+- 症状一：探 `'℀'` 用 `\u2440` 白转一轮（`instanceof URIError` 校验块其实早修好了）——
+  U+2100 与 U+2440 打印**一模一样**（都是 ℀），但 NFKD 分解迥异
+  （U+2100→`a/c` 真斜杠、U+2440 不分解）；套件用的是 U+2100（hexdump 才实锤）。
+- 症状二：IDNA 映射用 NFKD 后 punycode 出 `xn--bucher-xyd`，真机期望
+  `xn--bcher-kva`——分解态没做**规范组合**，`u+◌̈` 没回到预组合 `ü`。
+- 修法：IDNA 标签走 `normalize('NFKC')`（NFKD 分解 + 组合，两套件关注点都覆盖：
+  badIDNA 靠分解段、punycode 形靠组合段）；ignored 码点（软连字符 U+00AD）删除
+  后空标签即抛。
+- 推广为铁律：凡"同形字符"对比实验（对拍/探针/fixture），先 `hexdump`/码点核对
+  再下结论；Unicode 归一化选 NFD/NFKD/NFC/NFKC 不是口味——语义对齐哪个标准
+  （UTS46=分解+组合）就用哪个，分解态直接喂下游（punycode/hex 表）必错形。
+
+### 4.101 `exit`/`close` 事件 node 是双参 `(code, signal)`；spawn 默认 stdio 是 pipe（2026-09-16，10f url）
+
+- 症状：`spawnPromisified` 解构 `close(code, signal)` 全收 undefined（`{status:1}`
+  透进断言）；`child.stderr.setEncoding` 报 not a function / is null。
+- 根因（三连）：① 派发把 `{status, signal}` 单对象当唯一实参（fork 文档曾把它
+  合理化为"与 spawn 同形"——两处错互相印证≠对）；② spawn 默认 stdio 写成
+  `inherit×3`（node 缺省 `pipe×3`，数组缺项也补 pipe）；③ stdout/stderr 给的是
+  Web ReadableStream（无 `on('data')/setEncoding`）——自家黑盒用 `getReader()`
+  编码了实现偏差（§4.65 同源）。
+- 修法：派发走 `call_two(handler, status, signal)`；fork 路径同翻；访问器 wrap
+  改双参落定 exitCode/signalCode；默认 stdio pipe；流面改 legacy Readable
+  （`on/once/off/setEncoding/pause/resume/destroy`，data 缺省 Buffer
+  （§4.83）、setEncoding 后为串），自家黑盒 2 处 `getReader()` 同步翻转。
+- 推广为铁律：事件回调的**实参形状**是跨边界契约（用户代码逐名解构），移植时
+  以真机签名逐字对拍，不做"对象打包"的自作主张；旧文档的"同形"引用链要溯源
+  到真机，不能拿自家另一处偏差当依据。
+
+### 4.102 `process.emitWarning` 是 nextTick 异步派发（2026-09-16，10f url）
+
+- 症状：`test-url-parse-deprecation` 的"先 `url.parse('foo')` 后
+  `expectWarning`（挂监听）"序列在同步派发下警告丢失（监听挂上前已走 stderr）。
+- 根因：node 口径 warning 经 nextTick 异步派发（真机实证：emitWarning 后同步
+  读收集器为空、setImmediate 后才见）——同步派发是实现偏差；10f timers 的
+  `phase10f_timer_face` 黑盒同步收集 `warn []` 也在全量回归现形。
+- 修法：`process_.rs` emitWarning 改 `queueMicrotask` 派发（监听列表**现读**，
+  microtask 前挂的监听有效）；timers 黑盒收集点同步移到 await 之后（真机
+  口径翻转）。
+- 复现：`tests/node/url.rs::phase10f_url_parity_suite`（`dep0169` 行）+
+  `tests/builtins.rs::phase10f_timer_face_unref_uncaught`（`warn` 行）。
+- 推广为铁律：凡 node 文档写明"异步派发/异步回调"的面（warning/写入回调等
+  §4.74 同族），即便宿主能同步完成也必须异步触发；同步完成的便捷性不是契约，
+  套件时序（先触发后挂监听）就是按异步写的。

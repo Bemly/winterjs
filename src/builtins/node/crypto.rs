@@ -4,8 +4,10 @@
 //! 新增仅增量 Hash/Cipher 注册表（`encoding.rs` `STREAM_DECODERS` 同款线程本地表）。
 //! 偏差记档（9e-1a）：
 //! - 摘要集合 = RustCrypto 已接线：sha1/sha256/sha384/sha512/md5/sha3-256/384/512/
-//!   blake2b512/blake2s256。`ripemd160`（无 crate）、XOF（shake/cshake/turboshake/
-//!   kangaroo：`Digest` 接口无 XOF 形态）不支持 → `createHash` 报原文
+//!   blake2b512/blake2s256 + `ripemd160`（9h-2，`ripemd` crate）+ XOF
+//!   `shake128/256`（9h-2，`tiny-keccak`；缺省输出长 shake128→16/shake256→32
+//!   + DEP0198 警告，非法即 `ERR_INVALID_ARG_VALUE`）；其余 XOF（cshake/
+//!   turboshake/kangaroo）不支持 → `createHash` 报原文
 //!   `Digest method not supported`（无 code，Node 同款）；`getHashes` 只列已支持。
 //! - 别名：大小写不敏感、`-`/`_` 可选、`RSA-` 前缀可剥（如 `RSA-SHA256`，Node 同款）。
 //! - `Hmac` 更新攒 JS 侧（`digest` 时 oneshot），二次 `digest` 回空（Node 同款）；

@@ -3,6 +3,10 @@
 > 立项 2026-09-12（用户拍板）。目标：`node:` 兼容先到 **deno 高度**
 > （全 23 + 半 16，见 §3 对标矩阵），终局全实现（除 §4 不做项）。
 > v1 不含 napi（`.node` 原生插件另案）。
+> 状态（2026-09-15）：deno 高度自评已达——半 16 全达/超（含 `vm`/
+> `worker_threads` 反超 deno 🟡），全 23 剩 5 处欠账（`readline`/
+> `node:sqlite`/`node:test` 深度/`tty`/`url-legacy`，见 §3 尾）。
+> §4 两项（napi/quic）已反转落地，见尾注。
 >
 > 方法（三源对照，详 `docs/bun-compat.md §4`）：**node 定语义**
 > （`lib/` 原文 + `test/parallel` 断言原文入库），**bun 当词典**
@@ -15,6 +19,8 @@
 > 测试断言取 Node 套件原文（`test/parallel/test-<mod>-*.js` 按需单文件取）。
 
 ## 切片
+
+> 状态（2026-09-15）：9a–9f 切片全部收官（含 M5 vitest 牵引加餐）；下为原切片计划，存档。
 
 ### 9a 纯 JS 先行（零 syscall）
 
@@ -59,47 +65,55 @@
 
 ## §3 对标矩阵（deno 高度 = 全 23 + 半 16）
 
-现状列：✅ = 已有。切片列见上。
+现状列（2026-09-15 回填）：✅ = 落地可用；🟡 = 部分/薄桥（欠账见注）；— = 无。
+切片列为原切片归属，收官项不再开工。
 
 | 模块 | deno | 现状 | 切片 |
 |---|---|---|---|
 | assert | ✅ | ✅ | — |
-| buffer | ✅ | 有全局 | 9b |
-| child_process | ✅ | ✅ | 9e（角落） |
+| buffer | ✅ | ✅（模块面） | 9b 收官 |
+| child_process | ✅ | ✅（fork 线程底座记档） | 9e+M5 收官 |
 | console | ✅ | ✅ | — |
-| crypto | ✅ | ✅ | 9e（差集） |
-| diagnostics_channel | ✅ | — | 9a |
-| events | ✅ | — | 9a |
-| fs | ✅ | ✅ | 9c（补齐） |
-| module | ✅ | 有 require | 9e（语义借鉴） |
+| crypto | ✅ | ✅ | 9e/9h/9i 收官 |
+| diagnostics_channel | ✅ | ✅ | 9a 收官 |
+| events | ✅ | ✅ | 9a 收官 |
+| fs | ✅ | ✅ | 9c 收官 |
+| module | ✅ | ✅（require 全家） | 9j 收官 |
 | os | ✅ | ✅ | — |
 | path | ✅ | ✅ | — |
-| punycode | ✅ | — | 9a |
-| querystring | ✅ | — | 9a |
-| readline | ✅ | — | 9a |
-| sqlite | ✅ | 有 bun:sqlite | —（turso 路线） |
-| stream | ✅ | — | 9b |
-| string_decoder | ✅ | 有 TextDecoder | 9a（wrapper） |
-| test | ✅ | ✅ | — |
-| timers | ✅ | ✅ | 9b（promises 面） |
-| tty | ✅ | — | 9a |
-| url | ✅ | ✅ | — |
-| async_hooks | 🟡 | — | 9a（stub 口径） |
-| dgram | 🟡 | — | 9d |
-| dns | 🟡 | — | 9d |
-| http | 🟡 | — | 9d |
-| http2 | 🟡 | — | 9d |
-| https | 🟡 | — | 9d |
-| inspector | 🟡 | — | 9e（薄） |
-| net | 🟡 | — | 9d（前置） |
-| perf_hooks | 🟡 | — | 9e |
-| process | 🟡 | ✅ | 9e（细节） |
-| tls | 🟡 | — | 9d |
-| util | 🟡 | — | 9a（先行） |
-| v8 | 🟡 | — | 不做（§9f） |
-| vm | 🟡 | — | 9f |
-| worker_threads | 🟡 | — | 9f |
-| zlib | 🟡 | — | 9d |
+| punycode | ✅ | ✅ | 9a 收官 |
+| querystring | ✅ | ✅ | 9a 收官 |
+| readline | ✅ | 🟡（最小桥；question/行编辑欠账） | 9j（vite 解挡） |
+| sqlite | ✅ | ✅ bun:sqlite／— node:sqlite（turso 路线，欠账） | — |
+| stream | ✅ | ✅ | 9b 收官 |
+| string_decoder | ✅ | ✅ | 9a 收官 |
+| test | ✅ | 🟡（起步；reporter/diff 欠账） | — |
+| timers | ✅ | ✅ | 9b+M5 收官 |
+| tty | ✅ | 🟡（薄面；termios 欠账） | 9a |
+| url | ✅ | ✅（WHATWG+file 系；legacy 欠账） | 9j |
+| async_hooks | 🟡 | 🟡（Bun 同款 stub 口径） | 9a（stub 口径） |
+| dgram | 🟡 | ✅ | 9d 收官 |
+| dns | 🟡 | 🟡（base 面；深件欠账） | 9d |
+| http | 🟡 | ✅（整收口径） | 9d 收官 |
+| http2 | 🟡 | ✅（h2c+H3；无 push） | 9d/9i 收官 |
+| https | 🟡 | ✅（同 http 记档） | 9d 收官 |
+| inspector | 🟡 | 🟡（薄层） | 9e（薄） |
+| net | 🟡 | ✅ | 9d 收官（前置） |
+| perf_hooks | 🟡 | 🟡（简化采样记档） | 9e |
+| process | 🟡 | ✅ | 9e（细节收官） |
+| tls | 🟡 | ✅（自建 roots；缺 SecureContext） | 9d 收官 |
+| util | 🟡 | ✅ | 9a 收官（先行） |
+| v8 | 🟡 | 🟡（最小桥；口径跳过） | 不做（§9f） |
+| vm | 🟡 | ✅ | 9f 收官 |
+| worker_threads | 🟡 | ✅ | 9f 收官 |
+| zlib | 🟡 | ✅（zstd 恒 Fastest） | 9d 收官 |
+
+> 到线结论（2026-09-15 自评）：半 16 全达/超（`vm`/`worker_threads`/
+> `http`/`https`/`net`/`tls`/`util`/`zlib`/`dgram` 已超 deno 🟡，
+> 其余口径对齐）；全 23 剩 5 处欠账——`readline`（最小桥）、
+> `node:sqlite`（仅 `bun:sqlite`）、`node:test`（起步深度）、`tty`（薄面）、
+> `url`（legacy 面）；`v8` 口径双方同跳过，不计差距。偏差明细见
+> `docs/bun-compat.md` §1 注记与各模块头注。
 
 ## §4 v1 明确不做
 

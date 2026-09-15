@@ -5,8 +5,7 @@
 //! ReadStream/WriteStream 静态 isatty 便捷、getColorDepth/hasColors（internal/tty 面）。
 //!
 //! 偏差（记档）：
-//! - 基座为 EventEmitter 而非 net.Socket（node:net 未落地，9d 随 http 栈补齐后
-//!   可换基座）；无底层 TTY handle：setRawMode 只跟踪标志位（无 termios），
+//! - 基座为 EventEmitter 而非 net.Socket（net 已于 9d 落地，换基座待排期）；无底层 TTY handle：setRawMode 只跟踪标志位（无 termios），
 //!   WriteStream.write 仅 fd 1/2 直通 stdout/stderr natives，其余 fd 报错。
 //! - columns/rows 取 env（COLUMNS/LINES），无 ioctl winsize。
 

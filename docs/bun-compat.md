@@ -32,61 +32,64 @@
 `JS+内` = 另吃 `src/js/internal/` 子件；`原生` = 主体在 native 底座。
 node 列全 ✅（它是参照系，无例外）；deno 列数据源 `docs.deno.com`
 （全 23 + 半 16 + 无 6，Deno 2.7/2.8 口径）。
-winterjs 列：✅ = 已有（立项时点 2026-09-12 为 `src/builtins/node/` 8 件；
-**本表 frozen 在立项时点**，现状是 48 件 + `src/napi/`，`events/dgram/dns/http/
-https/http2/tls/zlib/vm/worker` 等均已落地，以 src 为准，不再回填此表）。
+winterjs 列（2026-09-15 现状回填，证据见后表注记；注册表以
+`src/builtins/node/mod.rs` `BUILTINS` 为准）：✅ = 落地可用（黑盒覆盖）；
+🟡 = 部分/薄桥（缺口见注记）；— = 无/不做。
 
 | 模块 | node | Bun | deno | 形态 | winterjs | 移植注记 |
 |---|---|---|---|---|---|---|
-| assert | ✅ | 🟢 | ✅ | JS | ✅ | 已有；深 equal 语义对齐另算 |
-| buffer | ✅ | 🟢（单体 4GiB 上限） | ✅ | 原生（builtins） | 有全局（Uint8Array 子类） | `node:buffer` 模块面另补，多为 JS |
-| console | ✅ | 🟢 | ✅ | 原生（builtins） | ✅ | 已有 |
-| dgram 99% | ✅ | 🟢 | 🟡 | JS+内 | — | 需 UDP 底座（`tokio net` 在树内） |
-| diagnostics_channel | ✅ | 🟡（缺 bounded/多数组内置通道） | ✅ | JS | — | 纯 JS，好啃，排前 |
-| dns | ✅ | 🟢（缺 resolveTlsa） | 🟡 | JS+内 | — | `hickory-resolver` 在树内 |
-| events 95% | ✅ | 🟢 | ✅ | JS（6 内部件） | — | **最先啃**：零 syscall，纯映射 |
-| fs 98% | ✅ | 🟢 | ✅ | JS+内（binding 另有） | ✅（同步核心） | binding 底座 winterjs 已有（fs-err/std），补 JS 语义 + 异步面 |
-| http | ✅ | 🟢 | 🟡 | JS+内（7 文件） | — | `reqwest`/`axum` 底座在树内，面大，排中 |
-| https | ✅ | 🟡（无 SNI 回调等） | 🟡 | JS+内 | — | 随 http，`tokio-rustls` 在树内 |
-| os | ✅ | 🟢 | ✅ | JS | ✅ | 已有 |
-| path | ✅ | 🟢 | ✅ | JS（posix/win32 分文件） | ✅（纯 JS） | 已有；glob 语义差另算 |
-| punycode | ✅ | 🟢 100% | ✅ | JS | — | 冻结小模块，随手捡 |
-| querystring | ✅ | 🟢 100% | ✅ | JS | — | 冻结小模块，随手捡 |
-| readline | ✅ | 🟢 | ✅ | JS | — | `rustyline` 在树内（REPL 侧已用） |
-| stream | ✅ | 🟢 | ✅ | JS+内（20+ 文件） | — | 面大但纯 JS；`internal/streams` 整套值得整批映射 |
-| string_decoder | ✅ | 🟢 100% | ✅ | 原生（无 JS 外壳） | 有 TextDecoder | 薄 wrapper，多为转调 |
-| timers | ✅ | 🟢（含 promises/scheduler） | ✅ | JS+内 | ✅（核心 timers） | 已有；promises 面另补 |
-| tty | ✅ | 🟢 | ✅ | JS | — | 薄，多为类型判定 |
-| url | ✅ | 🟢 | ✅ | JS | ✅（URL 系） | 已有；`url pattern` 见 `urlpattern` 轮子 |
-| zlib 98% | ✅ | 🟢 | 🟡 | JS+内 | — | `flate2`/`brotli`/`ruzstd` 全在树内 |
-| async_hooks | ✅ | 🟡（仅 ALS/AsyncResource 实） | 🟡 | JS+内 | — | events 的依赖，先行件 |
-| child_process | ✅ | 🟡（IPC 若干缺口） | ✅ | JS+内 | ✅（同步+spawn） | 已有；IPC/stdio 细节另算 |
+| assert | ✅ | 🟢 | ✅ | JS | ✅ | `assert` + `assert/strict` 双注册；深 equal 语义对齐另算 |
+| buffer | ✅ | 🟢（单体 4GiB 上限） | ✅ | 原生（builtins） | ✅ | 全局子类 + 模块面 + 整数/浮点读写 32 方法（DataView 直通，9h） |
+| console | ✅ | 🟢 | ✅ | 原生（builtins） | ✅ | 具名全表 + `Console` 类；`table` 无列对齐（记档） |
+| dgram 99% | ✅ | 🟢 | 🟡 | JS+内 | ✅ | 回环 + close 语义（§4.36 checklist 三查）；TypeError 带 code |
+| diagnostics_channel | ✅ | 🟡（缺 bounded/多数组内置通道） | ✅ | JS | ✅ | 全语义移植（含 TracingChannel/BoundedChannel），Bun 缺口本仓无 |
+| dns | ✅ | 🟢（缺 resolveTlsa） | 🟡 | JS+内 | 🟡 | `lookup/resolve4/6`（std 底座）；CNAME/MX/TXT 深件待 hickory（§0.5 待拍板） |
+| events 95% | ✅ | 🟢 | ✅ | JS（6 内部件） | ✅ | 全语义移植（`once/on` 迭代器、AsyncResource 挂载） |
+| fs 98% | ✅ | 🟢 | ✅ | JS+内（binding 另有） | ✅ | 同步全家 + `fs/promises` + watch；promises 底层同步实现（记档） |
+| http | ✅ | 🟢 | 🟡 | JS+内（7 文件） | ✅ | Server/Client 回环；整收口径（无 keep-alive、体整收、非流全家，记档） |
+| https | ✅ | 🟡（无 SNI 回调等） | 🟡 | JS+内 | ✅ | 与 http 同帧层 + tokio-rustls；`ca` 零证书 fail fast |
+| os | ✅ | 🟢 | ✅ | JS | ✅ | 全同步 natives |
+| path | ✅ | 🟢 | ✅ | JS（posix/win32 分文件） | ✅ | 纯 JS 双空间 + 子路径双注册；glob 语义差另算 |
+| punycode | ✅ | 🟢 100% | ✅ | JS | ✅ | 冻结小模块全移植 |
+| querystring | ✅ | 🟢 100% | ✅ | JS | ✅ | 全移植 |
+| readline | ✅ | 🟢 | ✅ | JS | 🟡 | 最小桥（`question` 抛未实现、无行编辑；vite import 解挡） |
+| stream | ✅ | 🟢 | ✅ | JS+内（20+ 文件） | ✅ | lib 逐字内嵌 + Duplex/Transform/pipeline/compose 全链 |
+| string_decoder | ✅ | 🟢 100% | ✅ | 原生（无 JS 外壳） | ✅ | 纯 JS 重写（含遗产 lastNeed/lastChar 面） |
+| timers | ✅ | 🟢（含 promises/scheduler） | ✅ | JS+内 | ✅ | 回调 + `timers/promises` 双面；`setImmediate` 近似、`scheduler` 未导出（记档） |
+| tty | ✅ | 🟢 | ✅ | JS | 🟡 | 薄面（isatty/ReadStream/WriteStream/色深）；无 termios，基座仍 EE |
+| url | ✅ | 🟢 | ✅ | JS | ✅ | WHATWG 全局 + file 系（真机逐项对码）；legacy parse/format 不导出（记档） |
+| zlib 98% | ✅ | 🟢 | 🟡 | JS+内 | ✅ | gzip/deflate/br + zstd（恒 Fastest，记档）；crc32/zip 实验不做 |
+| async_hooks | ✅ | 🟡（仅 ALS/AsyncResource 实） | 🟡 | JS+内 | 🟡 | Bun 同款口径：ALS/AsyncResource 实，createHook stub，跨 await 传播不支持 |
+| child_process | ✅ | 🟡（IPC 若干缺口） | ✅ | JS+内 | ✅ | spawn/exec 真进程 + fork（线程底座，stdio 恒 null 等记档） |
 | cluster | ✅ | 🟡（http 多绑限 Linux） | ❌ | JS+内 | — | 排后（多进程语义重） |
-| crypto | ✅ | 🟡（BoringSSL 缺口：ed448/secp256k1/CCM 等） | ✅ | JS+内 | ✅（subtle 全家） | winterjs 用 RustCrypto，缺口与 Bun **不重合**，逐项对 |
+| crypto | ✅ | 🟡（BoringSSL 缺口：ed448/secp256k1/CCM 等） | ✅ | JS+内 | ✅ | Hash/Hmac/对称/非对称 + ml-kem/ml-dsa + X509 verify；GCM iv 限 12B、ccm/ocb 不做（记档） |
 | domain | ✅ | 🟡 | ❌ | JS | — | 遗留语义，排后 |
-| http2 94% | ✅ | 🟢 | 🟡 | JS+内 | — | `reqwest http2` 在树内；面大排中 |
-| module | ✅ | 🟡（缺 load/registerHooks 等） | ✅ | JS+内 | 有 require | 自家 loader 另有体系，只借鉴 `require.cache` 语义 |
-| net | ✅ | 🟢 | 🟡 | JS+内 | — | `tokio net` 在树内；http 的前置 |
-| perf_hooks | ✅ | 🟡 | 🟡 | JS+内 | — | 排后（观测向） |
-| process | ✅ | 🟡 | 🟡 | JS+内 | ✅（全局） | 已有；细节对齐另算 |
-| tls | ✅ | 🟡（无 psk/OCSP/resume） | 🟡 | JS+内 | — | 随 net/http |
-| util | ✅ | 🟢 | 🟡 | JS | — | **先行件**：半数模块的前置（含 `util/types`） |
-| v8 | ✅ | 🟡（堆统计是 JSC 口径） | 🟡 | 原生 | — | 大部分无意义（引擎相关）；`serialize` 口径与 mozjs 不同，**跳过** |
-| vm | ✅ | 🟢（全，连 ESM classes） | 🟡 | 原生（JSC Context） | — | 绑引擎最深，排后（要 compartment/realm 设计） |
+| http2 94% | ✅ | 🟢 | 🟡 | JS+内 | ✅ | h2c prior-knowledge + H3 分支（串行记档）；无 push/trailer（记档） |
+| module | ✅ | 🟡（缺 load/registerHooks 等） | ✅ | JS+内 | ✅ | require（CJS/type 口径/require(esm)）+ createRequire + registerHooks/import.meta.resolve + 静态具名发现 |
+| net | ✅ | 🟢 | 🟡 | JS+内 | ✅ | 回环 + allowHalfOpen/destroy 语义全对；port 0 hermetic |
+| perf_hooks | ✅ | 🟡 | 🟡 | JS+内 | 🟡 | performance/计时全家可用；monitorEventLoopDelay 简化、eventLoopUtilization 恒值（记档） |
+| process | ✅ | 🟡 | 🟡 | JS+内 | ✅ | 全局 + 模块面（argv/env/stdio/exit 哨兵） |
+| tls | ✅ | 🟡（无 psk/OCSP/resume） | 🟡 | JS+内 | ✅ | 自建 roots + rejectUnauthorized 口径；无 SecureContext/getPeerCertificate（记档） |
+| util | ✅ | 🟢 | 🟡 | JS | ✅ | format/inspect/promisify/parseEnv（真机全例对拍）；parseArgs/MIMEType/getSystemError* 按需未移植 |
+| v8 | ✅ | 🟡（堆统计是 JSC 口径） | 🟡 | 原生 | 🟡 | startupSnapshot 最小桥（vite 解挡）；堆统计/serialize 跳过（双方同为口径缺口） |
+| vm | ✅ | 🟢（全，连 ESM classes） | 🟡 | 原生（JSC Context） | ✅ | SourceText/Synthetic/linker 全链 + thenable 认领；CCW 记档（已超 deno 🟡） |
 | wasi | ✅ | 🟡 | ❌ | 原生 | — | `wasmtime` 已否决（§14），**不做** |
-| worker_threads | ✅ | 🟡 | 🟡 | JS+内 | — | 线程模型要另设计（§6），排后 |
-| inspector | ✅ | 🟡 | 🟡 | JS+内 | — | 排后（调试向） |
-| repl | ✅ | 🟡 | ❌ | JS | 有 REPL | 已有；补 Node 口径另算 |
-| sqlite | ✅ | 🟢 | ✅ | 原生 | 有 bun:sqlite | turso 路线已定，不跟 Bun（系统 libsqlite 口径不同） |
-| test | ✅ | 🟡 | ✅ | JS（test_runner） | ✅（node:test 起步） | 已有；reporter/diff 另算 |
-| trace_events | ✅ | 🟢 | ❌ | JS | — | 小，`tracing` 在树内，随手捡 |
-| quic | ✅（实验性） | 🟢 99%（Node 实验性） | —（deno 无此模块） | 原生 | — | 排后（实验性） |
+| worker_threads | ✅ | 🟡 | 🟡 | JS+内 | ✅ | MessageChannel/Worker + 循环引用信封（已超 deno 🟡） |
+| inspector | ✅ | 🟡 | 🟡 | JS+内 | 🟡 | 薄层（Runtime.evaluate 真求值，domains 仅 ack） |
+| repl | ✅ | 🟡 | ❌ | JS | ✅ CLI／— 模块 | CLI `--repl` 全功能；`node:repl` 模块面未注册 |
+| sqlite | ✅ | 🟢 | ✅ | 原生 | ✅ bun／— node | `bun:sqlite`（turso 路线）；`node:sqlite`（Node 22+ 实验面）未注册 |
+| test | ✅ | 🟡 | ✅ | JS（test_runner） | 🟡 | `node:test` 起步 + `winterjs test` runner；reporter/diff 深度欠账 |
+| trace_events | ✅ | 🟢 | ❌ | JS | ✅ | 全语义移植（类别集 JS 侧） |
+| quic | ✅（实验性） | 🟢 99%（Node 实验性） | —（deno 无此模块） | 原生 | ✅ | 实验性全链（secure 回环 + H3 headers；串行记档） |
 | sea | ✅ | 🔴（指去 `bun build --compile`） | ❌ | — | — | 不做 |
-| sys | ✅（即 util） | 🟢（即 util） | ✅（即 util） | — | — | 同 util |
+| sys | ✅（即 util） | 🟢（即 util） | ✅（即 util） | — | 同 util | `node:sys` 别名未单注册（走 `node:util`） |
 
 子路径（`fs/promises`、`timers/promises`、`dns.promises`、`stream/*`、
 `inspector/promises`、`path.posix/win32`）Bun 侧全有 JS 文件，
-winterjs 侧仅 `fs/promises` 有，其余随主表。
+winterjs 侧已全注册（`fs/promises`、`dns/promises`、`stream/promises`、
+`stream/consumers`、`stream/web`、`timers/promises`、`assert/strict`、
+`path/posix`、`path/win32`、`inspector/promises`、`util/types`，
+见 `node/mod.rs` `BUILTINS`）；其余随主表。
 
 ## 2. “JSC 兼容 mozjs 更舒服” verdict：半对
 
@@ -102,7 +105,11 @@ winterjs 侧仅 `fs/promises` 有，其余随主表。
   `unsafe` 收敛）在 mozjs 上**一件都省不掉**，换 V8 也一样。
 - 一句话：好移植性来自“兼容面是引擎无关的 JS”，不是来自引擎相似。
 
-## 3. 移植排序（Phase 9′ 用）
+## 3. 移植排序（Phase 9′ 用，已收官，存档）
+
+> 状态（2026-09-15）：N1/N2 全收官，N3 收官大半（`vm`/`worker_threads`/
+> `crypto` 差集/`child_process`/`inspector`/`perf_hooks` 均落地；`cluster`
+> 仍排后）。下为切片时的原排序，保留为过程记录。
 
 - N1 纯 JS 先行（零 syscall）：`events` → `util`（含 types）→
   `querystring`/`punycode`/`string_decoder` → `diagnostics_channel`/
@@ -110,12 +117,13 @@ winterjs 侧仅 `fs/promises` 有，其余随主表。
   套件断言入库（三件套照旧）。
 - N2 有轮子的 native-backed：`fs` 语义补齐（底座已有）→ `stream`
   整批（`internal/streams` 对着 map）→ `zlib`/`dns`/`net`→`http/https`
- （底座全在树内，见 `dependencies.md` §6/§8/§10）。
+  （底座全在树内，见 `dependencies.md` §6/§8/§10）。
 - N3 排后：`vm`/`worker_threads`（要引擎/线程设计）、`crypto` 差集对齐、
   `child_process` IPC 角落、`cluster`、`inspector`、`perf_hooks`。
 - 永不：`v8`（引擎口径）、`wasi`（§14 已否决）、`sea`（无对等需求）。
 - napi（`.node` 原生插件，如 rolldown binding）不在本表——Bun 跑
-  `node:` 自家面也不需要 napi；napi 是第三方原生包的事，另案评估。
+  `node:` 自家面也不需要 napi；napi 是第三方原生包的事，另案评估
+  （已于 M0–M6 另案收官，见 `docs/plan-napi.md`）。
 
 ## 4. 三源对照（node × Bun × deno，2026-09-12）
 

@@ -33,7 +33,7 @@
 | timers | 🟢（promises/scheduler） | ✅（setImmediate 近似） | setImmediate check 语义定案（`scheduler.yield/wait` 已有；无 macrotask 分层，近似验收或偏离） | 10a |
 | util | 🟢 | ✅（三件未移植） | `parseArgs`、`MIMEType/MIMEParams`、`getSystemErrorName/Message/Map`（uv errno 表随 fs 错误映射） | 10a |
 | zlib | 🟢 | ✅（zstd 恒 Fastest） | `crc32`（flate2 自带 `Crc`，零新依赖）；非 Fastest 档等上游 ruzstd（偏离，复议） | 10a |
-| dns | 🟢（缺 resolveTlsa） | 🟡（std 底座） | CNAME/MX/TXT/SRV 深件经 hickory-resolver（已在树内，**接线前按 §0.5 问用户拍板**） | 10d |
+| dns | 🟢（缺 resolveTlsa） | 🟡（std 底座） | CNAME/MX/TXT/SRV 深件经 hickory-resolver（已在树内；✅ 2026-09-15 拍板：全套+系统配置） | 10d |
 | sqlite | 🟢 | ✅ bun:sqlite／— node:sqlite | `node:sqlite` 注册 + DatabaseSync/StatementSync 口径对齐（turso 底座，不跟系统 libsqlite） | 10d |
 | dgram | 🟢 | ✅（base 面） | 组播全家（addMembership/dropMembership/setBroadcast/组播 TTL/loopback）、connect/disconnect、ref 真计数 | 10a |
 | cluster | 🟡（http 多绑限 Linux） | — | Bun 🟡 对等面：primary/worker、fork/disconnect、scheduling 策略（骑 fork/worker 底座，不做真多进程超集） | 10e |
@@ -86,7 +86,9 @@
 ### 10d 数据与目录（拍板门×2）
 
 - 做：dns 深件经 hickory-resolver（CNAME/MX/TXT/SRV + promises 面；
-  **开工前按 §0.5 问用户拍板接线**，crate 已在树内）；`node:sqlite`
+  ✅ 2026-09-15 用户拍板：接线做全套——Cname/Mx/Txt/Srv/Ns/Ptr + resolveAny +
+  getServers/setServers/setDefaultResultOrder，读系统 DNS 配置（/etc/resolv.conf），
+  `lookup` 维持 std `ToSocketAddrs`（真机 getaddrinfo 口径）；crate 已在树内）；
   注册 + DatabaseSync/StatementSync 口径对齐（turso 底座；Node 22+ 实验面
   为准，StatementSync 迭代器/命名参数逐项对）。
 - 验收：`test-dns-*.js` 深件子集（hermetic：本地 stub DNS？无则只断 localhost

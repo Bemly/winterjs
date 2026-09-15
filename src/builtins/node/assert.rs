@@ -108,7 +108,14 @@ function __checkThrow(e, expected, prefix) {
       ok = false;
     }
   } else if (expected instanceof RegExp) {
-    ok = expected.test(String((e && e.message) || e));
+    // 10f：真机测 String(err)（"RangeError: Invalid input" 含名；旧实现只测 message）。
+    let s;
+    try {
+      s = String(e);
+    } catch {
+      s = String((e && e.message) || e);
+    }
+    ok = expected.test(s);
   } else if (typeof expected === "object" && expected !== null) {
     ok = Object.entries(expected).every(([k, v]) => (e && e[k]) == v);
   }

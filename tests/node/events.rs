@@ -257,3 +257,39 @@ console.log("after", listenerCount(ac.signal, "abort"), ee.listenerCount("error"
     assert!(out.contains("after 0 0"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_events_max_listeners_target() {
+    // 10f：getMaxListeners(EventTarget) 回默认、AbortSignal 回 0（test-events-getmaxlisteners 点名）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { getMaxListeners, setMaxListeners, defaultMaxListeners, EventEmitter, captureRejections, usingDomains, init } from "node:events";
+const ee = new EventEmitter();
+console.log("ee", getMaxListeners(ee) === defaultMaxListeners);
+setMaxListeners(101, ee);
+console.log("ee-set", getMaxListeners(ee));
+const et = new EventTarget();
+console.log("et", getMaxListeners(et) === defaultMaxListeners);
+setMaxListeners(101, et);
+console.log("et-set", getMaxListeners(et));
+const sig = new AbortController().signal;
+console.log("sig", getMaxListeners(sig));
+setMaxListeners(5, sig);
+console.log("sig-set", getMaxListeners(sig));
+try { setMaxListeners(-1, et); } catch (e) { console.log("neg", e.code); }
+console.log("named", captureRejections === false, usingDomains === false, typeof init, defaultMaxListeners);
+"#,
+    );
+    assert!(out.contains("ee true"), "out: {out}");
+    assert!(out.contains("ee-set 101"), "out: {out}");
+    assert!(out.contains("et true"), "out: {out}");
+    assert!(out.contains("et-set 101"), "out: {out}");
+    assert!(out.contains("sig 0"), "out: {out}");
+    assert!(out.contains("sig-set 5"), "out: {out}");
+    assert!(out.contains("neg ERR_OUT_OF_RANGE"), "out: {out}");
+    assert!(out.contains("named true true function 10"), "out: {out}");
+    dir.close().unwrap();
+}

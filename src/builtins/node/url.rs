@@ -17,7 +17,19 @@ pub const SOURCE: &str = r#"
 // Port of node lib/url.js (partial face; see module docs for deviations).
 import { resolve as resolvePath } from 'node:path';
 import { parse as qsParse, stringify as qsStringify } from 'node:querystring';
-import { toASCII as punyToASCII, toUnicode as punyToUnicode } from 'node:punycode';
+// 10f：punycode 懒加载（顶层 import 会在 require('node:url') 时连带求值
+// node:punycode，提前触发 DEP0040；真机同款懒加载，test-punycode.js 点名）。
+import { createRequire } from 'node:module';
+const __urlRequire = createRequire('node:url');
+let __puny = null;
+function __punyToASCII(s) {
+  if (__puny === null) __puny = __urlRequire('node:punycode');
+  return __puny.toASCII(s);
+}
+function __punyToUnicode(s) {
+  if (__puny === null) __puny = __urlRequire('node:punycode');
+  return __puny.toUnicode(s);
+}
 import errors from 'node:internal/errors';
 
 const {
@@ -158,7 +170,7 @@ class Url {
           } else if (/[^\x00-\x7f]/.test(hostname)) {
             // IDNA：非 ASCII 标号逐个 punycode。
             hostname = hostname.split('.').map((label) =>
-              /[^\x00-\x7f]/.test(label) ? punyToASCII(label) : label).join('.');
+              /[^\x00-\x7f]/.test(label) ? __punyToASCII(label) : label).join('.');
           }
           this.hostname = hostname;
         }
@@ -412,14 +424,14 @@ function domainToASCII(domain) {
   if (typeof domain !== 'string') {
     throw new ERR_INVALID_ARG_TYPE('domain', 'string', domain);
   }
-  return punyToASCII(domain);
+  return __punyToASCII(domain);
 }
 
 function domainToUnicode(domain) {
   if (typeof domain !== 'string') {
     throw new ERR_INVALID_ARG_TYPE('domain', 'string', domain);
   }
-  return punyToUnicode(domain);
+  return __punyToUnicode(domain);
 }
 
 function urlToHttpOptions(url) {

@@ -1,6 +1,7 @@
 //! tests/node/punycode.rs — 对齐 src/builtins/node/punycode.rs（node:punycode）。
 
 use crate::common::*;
+use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
@@ -35,5 +36,29 @@ try { punycode.decode("!!!!!"); } catch (e) { console.log("err", e instanceof Ra
     assert!(out.contains("true 3"), "out: {out}");
     assert!(out.contains("xn--bcher-kva.de"), "out: {out}");
     assert!(out.contains("err true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_punycode_dep0040_warning() {
+    // 10f：require('punycode') 发 DEP0040（test-punycode.js 点名；url 改懒加载不断链）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import process from "node:process";
+let seen = null;
+process.on("warning", (w) => { seen = `${w.name} ${w.code} ${w.message.slice(0, 20)}`; });
+const punycode = (await import("node:punycode")).default;
+console.log("warn", seen);
+console.log("works", punycode.encode("ü") === "tda");
+await import("node:url");
+console.log("url-ok", (await import("node:url")).domainToASCII("münchen.de") === "xn--mnchen-3ya.de");
+"#,
+    );
+    assert!(out.contains("warn DeprecationWarning DEP0040 The `punycode` modul"), "out: {out}");
+    assert!(out.contains("works true"), "out: {out}");
+    assert!(out.contains("url-ok true"), "out: {out}");
     dir.close().unwrap();
 }

@@ -52,6 +52,8 @@ import buffer, { Buffer, constants, SlowBuffer, kMaxLength, INSPECT_MAX_BYTES } 
 const b = Buffer.from("hi", "utf8");
 console.log("enc", b.toString("hex"), b.toString("base64"), b.toString("base64url"),
   b.toString("utf8"), b.toString("latin1"), b.toString("ascii"));
+// 10f：ascii 解码掩 0x7F（真机口径；旧实现与 latin1 同形）。
+console.log("ascii-mask", JSON.stringify(Buffer.from([0x81, 0x99, 0xE5, 0xC0]).toString("ascii")));
 // statics
 console.log("blen", Buffer.byteLength("héllo"), Buffer.byteLength(new ArrayBuffer(4)),
   Buffer.byteLength(new Uint8Array(3)), Buffer.byteLength("中", "utf16le"));
@@ -89,6 +91,7 @@ try { Buffer.alloc(1).copy("no"); } catch (e) { console.log("e6", e.constructor.
     );
     let out = String::from_utf8(out.stdout).unwrap();
     assert!(out.contains("enc 6869 aGk= aGk hi hi hi"), "out: {out}");
+    assert!(out.contains("ascii-mask \"\\u0001\\u0019e@\""), "out: {out}");
     assert!(out.contains("blen 6 4 3 2"), "out: {out}");
     assert!(out.contains("isbuf true false true"), "out: {out}");
     assert!(out.contains("concat abcde 0 ab"), "out: {out}");

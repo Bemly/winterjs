@@ -673,6 +673,10 @@ function getMaxListeners(emitterOrTarget) {
     return _getMaxListeners(emitterOrTarget);
   } else if (typeof emitterOrTarget?.[kMaxEventTargetListeners] === 'number') {
     return emitterOrTarget[kMaxEventTargetListeners];
+  } else if (isEventTarget(emitterOrTarget)) {
+    // 10f：未显式设置时 EventTarget 回默认，AbortSignal 回 0（真机口径）。
+    if (typeof AbortSignal === 'function' && emitterOrTarget instanceof AbortSignal) return 0;
+    return defaultMaxListeners;
   }
 
   throw new ERR_INVALID_ARG_TYPE('emitter', ['EventEmitter', 'EventTarget'], emitterOrTarget);
@@ -926,5 +930,11 @@ function listenersController() {
 }
 
 export default EventEmitter;
-export { EventEmitter, EventEmitterAsyncResource, once, on, getEventListeners, getMaxListeners, listenerCount, addAbortListener, kErrorMonitor as errorMonitor, kRejection as captureRejectionSymbol, kFirstEventParam };
+// 10f：补齐真机具名导出（test-events-getmaxlisteners 点名；captureRejections/
+// usingDomains 薄值，init 转调 EventEmitter.init）。
+let captureRejections = false;
+const usingDomains = false;
+const setMaxListeners = EventEmitter.setMaxListeners;
+const init = EventEmitter.init;
+export { EventEmitter, EventEmitterAsyncResource, once, on, getEventListeners, getMaxListeners, setMaxListeners, defaultMaxListeners, captureRejections, init, usingDomains, listenerCount, addAbortListener, kErrorMonitor as errorMonitor, kRejection as captureRejectionSymbol, kFirstEventParam };
 "#;

@@ -450,8 +450,14 @@ function __wjs_bufEncode(u8, enc) {
     return s;
   }
   if (enc === "ascii") {
+    // 10f：ascii 解码掩 0x7F（真机口径；旧实现与 latin1 同形漏掩，套件 fuzz 点名）。
     let s = "";
-    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+    for (let i = 0; i < u8.length; i += 0x8000) {
+      const part = u8.subarray(i, i + 0x8000);
+      const masked = new Uint8Array(part.length);
+      for (let j = 0; j < part.length; j++) masked[j] = part[j] & 127;
+      s += String.fromCharCode(...masked);
+    }
     return s;
   }
   if (enc === "ucs2" || enc === "utf16le" || enc === "utf16") {

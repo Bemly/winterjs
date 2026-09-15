@@ -7,6 +7,12 @@ pub const SOURCE: &str = r#"
 // Port of node lib/punycode.js (punycode.js 2.1.0, verbatim).
 'use strict';
 
+// 10f：DEP0040 弃用警告（真机 require 期即发；test-punycode.js 点名）。
+if (typeof process === 'object' && typeof process.emitWarning === 'function') {
+  process.emitWarning(
+    'The `punycode` module is deprecated. Please use a userland alternative instead.',
+    { type: 'DeprecationWarning', code: 'DEP0040' });
+}
 const maxInt = 2147483647; // aka. 0x7FFFFFFF or 2^31-1
 
 /** Bootstring parameters */

@@ -26,3 +26,15 @@ await assert.doesNotReject(Promise.resolve(1));
 console.log("done");"#]));
     assert_eq!(out, "mismatch true\ndone\n", "assert: {out}");
 }
+
+#[test]
+fn phase10f_assert_throws_regex_string() {
+    // 10f：throws 正则测 String(err)（含名；旧实现只测 message，套件点名）。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        r#"const assert = (await import("node:assert")).default;
+assert.throws(() => { const e = new RangeError("Invalid input"); throw e; }, /^RangeError: Invalid input$/);
+console.log("regex-name true");
+assert.throws(() => { throw new Error("boom"); }, /boom/);
+console.log("regex-sub true");"#]));
+    assert_eq!(out, "regex-name true\nregex-sub true\n", "assert: {out}");
+}

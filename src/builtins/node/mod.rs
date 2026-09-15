@@ -170,6 +170,9 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "events" => Some("node:events"),
         "util" => Some("node:util"),
         "util/types" => Some("node:util/types"),
+        // 10a：`node:sys` 是 util 的废弃别名（真机同一模块实例；无运行时警告）。
+        // 规范到同一 canonical，走同一源 + 同一注册表单例。
+        "sys" => Some("node:util"),
         "querystring" => Some("node:querystring"),
         "punycode" => Some("node:punycode"),
         // Phase 9g-1
@@ -250,6 +253,9 @@ mod tests {
         assert_eq!(normalize_spec("async_hooks"), Some("node:async_hooks"));
         assert_eq!(normalize_spec("node:util"), Some("node:util"));
         assert_eq!(normalize_spec("util"), Some("node:util"));
+        // 10a：sys 别名（import/require 双形态同实例，见黑盒 phase10a_sys_alias）。
+        assert_eq!(normalize_spec("sys"), Some("node:util"));
+        assert_eq!(normalize_spec("node:sys"), Some("node:util"));
         assert_eq!(normalize_spec("node:util/types"), Some("node:util/types"));
         assert_eq!(normalize_spec("util/types"), Some("node:util/types"));
         assert!(source("node:util").is_some());

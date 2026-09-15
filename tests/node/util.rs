@@ -147,3 +147,41 @@ try { parseEnv(42); } catch (e) { console.log("pe-t", e.code); }
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10a_sys_alias() {
+    // 10a：`node:sys` 是 util 的废弃别名——import 与 require 同实例，无运行时警告。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("s.mjs");
+    file.write_str(
+        r#"import sysDefault, { format } from "node:sys";
+import utilDefault from "node:util";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const sysReq = require("sys");
+const utilReq = require("util");
+console.log("fmt", sysDefault.format("%s", "ok"), format("%d", 7));
+console.log("same-import", sysDefault === utilDefault);
+console.log("same-require", sysReq === utilReq);
+console.log("same-cross", sysDefault === utilReq);
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "fmt ok 7",
+        "same-import true",
+        "same-require true",
+        "same-cross true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

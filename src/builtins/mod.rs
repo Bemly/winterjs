@@ -2387,6 +2387,12 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_net_ref", Some(node::net::net_ref), 1),
             ("__wjs_net_unref", Some(node::net::net_unref), 1),
             ("__wjs_dns_lookup", Some(node::dns::dns_lookup), 1),
+            // 10d：dns 深件（hickory 全套；lookup 维持 std）
+            ("__wjs_dns_query", Some(node::dns::dns_query), 2),
+            ("__wjs_dns_servers_get", Some(node::dns::dns_servers_get), 0),
+            ("__wjs_dns_servers_set", Some(node::dns::dns_servers_set), 1),
+            ("__wjs_dns_order_get", Some(node::dns::dns_order_get), 0),
+            ("__wjs_dns_order_set", Some(node::dns::dns_order_set), 1),
             // Phase 9d-6: node:tls（握手底座；读写复用 net_* natives）
             ("__wjs_tls_connect", Some(node::tls::tls_connect), 4),
             ("__wjs_tls_listen", Some(node::tls::tls_listen), 4),

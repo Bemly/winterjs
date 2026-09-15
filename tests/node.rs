@@ -51,6 +51,8 @@ mod process_;
 mod punycode;
 #[path = "node/querystring.rs"]
 mod querystring;
+#[path = "node/readline.rs"]
+mod readline;
 #[path = "node/require.rs"]
 mod require;
 #[path = "node/stream.rs"]

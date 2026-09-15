@@ -43,13 +43,17 @@
 | v8 | 🟡（堆统计 JSC 口径） | 🟡（最小桥） | 堆统计/serialize 双方数字皆引擎口径、不可比——书面偏离，不做（见 §4） | — |
 | vm | 🟢（全+ESM classes） | ✅（Module/SourceText/Synthetic 全链） | parity 确认（10f 对拍；`compileFunction`/`measureMemory` 行为差即修） | 10f |
 | events/fs/stream等 | 🟢 | ✅ | parity 确认（10f 对拍，不预设改动） | 10f |
-| sys | 🟢（即 util） | —（未单注册） | `node:sys` 别名注册（一行，9x 顺手级） | 10a |
+| sys | 🟢（即 util） | ✅（10a-1：同 util 单例，import/require 双形态） | `node:sys` 别名注册（一行，9x 顺手级） | 10a |
 | wasi | 🟡 | — | 不做（plan2 §4 维持否决） | — |
 | sea | 🔴 | — | 不做（无对等需求） | — |
 
 ## 切片
 
 ### 10a 注册与小面（零新依赖，全 JS/既有轮子）
+
+> ✅ 2026-09-15 收官：sys 别名/url legacy/setImmediate+Timeout 真类（附带修
+> fire_due 实参展开，见 AGENTS §4.85）/util 三件/crc32/dgram 全家全绿，
+> `cargo test` 全绿 0 警告，冒烟 5/5。
 
 - 做：`node:sys` 别名注册；url legacy 面（parse/format/resolve/Url/domainTo*，
   真机逐项对码与文案）；setImmediate 口径定案（`scheduler.yield/wait` 已有，

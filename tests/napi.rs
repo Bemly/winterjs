@@ -828,3 +828,76 @@ setTimeout(() => { server.close().then(() => console.log("CLOSED")); }, 8000);
     }
     dir.close().unwrap();
 }
+
+/// M6 选点回归：Node 官方 `test/js-native-api` 原文 verbatim（套件
+/// common.h/common-inl.h/entry_point.h 同源 vendored，MIT 头原样）。
+/// 编译即验 vendored 头忠实度；断言取官方 test.js 子集（strict 驱动）。
+#[cfg(unix)]
+fn build_official_dylib(dir: &assert_fs::TempDir, sub: &str, c_file: &str) -> std::path::PathBuf {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = manifest
+        .join("tests/fixtures/napi/official")
+        .join(sub)
+        .join(c_file);
+    let out = dir.child(format!("{sub}.node"));
+    let mut cmd = std::process::Command::new("cc");
+    if cfg!(target_os = "macos") {
+        cmd.arg("-dynamiclib");
+    } else {
+        cmd.args(["-shared", "-fPIC"]);
+    }
+    cmd.arg("-undefined").arg("dynamic_lookup");
+    cmd.arg("-DNAPI_VERSION=10");
+    cmd.arg("-I").arg(manifest.join("src/napi/include"));
+    let status = cmd.arg("-o").arg(out.path()).arg(&src).status().expect("cc runs");
+    assert!(status.success(), "cc failed for {sub}");
+    out.path().to_path_buf()
+}
+
+#[cfg(unix)]
+#[test]
+fn phase_napi_m6_official_js_native_api_spot_check() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let m2 = build_official_dylib(&dir, "2_function_arguments", "2_function_arguments.c");
+    let m3 = build_official_dylib(&dir, "3_callbacks", "3_callbacks.c");
+    let m2p = m2.to_string_lossy().replace('\\', "/");
+    let m3p = m3.to_string_lossy().replace('\\', "/");
+    let file = dir.child("p.mjs");
+    file.write_str(&format!(
+        r#""use strict";
+import {{ createRequire }} from "node:module";
+import assert from "node:assert";
+const require = createRequire(import.meta.url);
+const m2 = require("{m2p}");
+assert.strictEqual(m2.add(3, 5), 8);
+try {{ m2.add(1); assert.fail("must throw"); }}
+catch (e) {{ assert.strictEqual(e.message, "assertion (argc >= 2) failed: Wrong number of arguments"); }}
+try {{ m2.add("a", "b"); assert.fail("must throw"); }}
+catch (e) {{ assert.strictEqual(e.message, "assertion (valuetype0 == napi_number && valuetype1 == napi_number) failed: Wrong argument type. Numbers expected."); }}
+const m3 = require("{m3p}");
+let called = 0;
+m3.RunCallback((msg) => {{ called++; assert.strictEqual(msg, "hello world"); }});
+assert.strictEqual(called, 1);
+for (const recv of [undefined, null, 5, true, "Hello", [], {{}}]) {{
+  let self = "unset";
+  m3.RunCallbackWithRecv(function () {{ self = this; }}, recv);
+  assert.strictEqual(self === recv || (recv == null && self == null), true, "recv passthrough");
+}}
+console.log("official-ok");
+"#,
+    ))
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "official-ok\n");
+    dir.close().unwrap();
+}

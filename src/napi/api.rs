@@ -536,11 +536,17 @@ pub unsafe extern "C" fn napi_get_cb_info(
             if argv.is_null() {
                 *argc = ci.argc as usize;
             } else {
-                let n = (*argc).min(ci.argc as usize);
-                *argc = n;
-                for i in 0..n {
-                    *argv.add(i) = ci.argv[i];
+                let requested = *argc;
+                let actual = ci.argc as usize;
+                // Node 口径（js_native_api_v8.cc `Args()`）：请求槽位多于实际
+                // 参数时，余下槽位全部填同一 undefined——官方 js-native-api
+                // 套件（3_callbacks）在 argc==1 断言后照读 args[1]，留垃圾
+                // 槽位 = addon 侧 UB 读（139）；undefined 槽位在回调窗口内存活。
+                let undef = e(env).put(mozjs::jsval::UndefinedValue());
+                for i in 0..requested {
+                    *argv.add(i) = if i < actual { ci.argv[i] } else { undef };
                 }
+                *argc = actual;
             }
         }
         if !this_arg.is_null() {

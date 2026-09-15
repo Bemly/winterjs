@@ -310,6 +310,7 @@ E('ERR_INVALID_THIS', 'Value of "this" must be of type %s', TypeError, HideStack
 E('ERR_INVALID_URI', 'URI malformed', URIError);
 E('ERR_INVALID_URL_SCHEME', 'The URL must be of scheme %s', TypeError);
 E('ERR_INVALID_FILE_URL_HOST', 'File URL host must be "localhost" or empty on %s', TypeError);
+E('ERR_INVALID_FILE_URL_PATH', 'File URL path must not include encoded \\ or / characters', TypeError);
 E('ERR_INVALID_URL', 'Invalid URL', TypeError);
 E('ERR_TTY_INIT_FAILED', 'TTY initialization failed: %s', Error);
 E('ERR_INVALID_MIME_SYNTAX',

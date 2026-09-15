@@ -156,3 +156,89 @@ try { urlToHttpOptions(42); } catch (e) { console.log("o-t", e.code, e.message);
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_url_parity_suite() {
+    // 10f 对拍定案面（node lib/url.js 逐字口径）：parse 校验族（消息逐字/URIError
+    // 无码/ERR_INVALID_URL+input/IDNA NFKC/软连字符/evil 端口）、resolveObject
+    // 空源短路 + 非斜杠协议爬升、format auth 表（noEscapeAuth/代理对）、
+    // pathToFileURL windows 全套（UNC/盘符/^~[] 编码）+ posix 尾分隔符与
+    // %5C 合法性 + %2F 抛、DEP0169 异步 once、autoEscape 表。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("p.mjs");
+    file.write_str(
+        r#"
+import url, { parse, format, resolve, resolveObject, pathToFileURL, fileURLToPath } from "node:url";
+const L = [];
+const chk = (tag, got, want) => L.push(`${tag} ${got === want}`);
+try { parse(undefined); } catch (e) { chk("v-undef", e.message, 'The "url" argument must be of type string. Received undefined'); }
+try { parse([1]); } catch (e) { chk("v-arr", e.message, 'The "url" argument must be of type string. Received an instance of Array'); }
+try { parse("http://%E0%A4%A@fail"); } catch (e) { chk("v-uri", e instanceof URIError && e.code === undefined, true); }
+try { parse("http://[127.0.0.1\x00c8763]:8000/"); } catch (e) { chk("v-ipv6", e.code === "ERR_INVALID_URL" && e.input === "http://[127.0.0.1\x00c8763]:8000/", true); }
+try { parse("http://fail\u2100fail.com/"); } catch (e) { chk("v-idna", e.code === "ERR_INVALID_URL", true); }
+try { parse("http://\u00AD/bad.com/"); } catch (e) { chk("v-shy", e.code === "ERR_INVALID_URL", true); }
+try { parse("https://evil.com:.example.com"); } catch (e) { chk("v-evil", e.code === "ERR_INVALID_ARG_VALUE", true); }
+chk("ro-empty", resolveObject("", "foo"), "foo");
+chk("ro-type", typeof resolveObject(null, "http://a/b"), "string");
+chk("r-crawl", resolve("foo:a/b", "../c"), "foo:c");
+chk("r-https1", resolve("http://example.com/b//c//d;p?q#blarg", "https:/p/a/t/h?s#hash2"), "https://p/a/t/h?s#hash2");
+chk("f-auth", format("http://atpass:foo%40bar@127.0.0.1/"), "http://atpass:foo%40bar@127.0.0.1/");
+chk("f-emoji", format("http://%F0%9F%98%80@www.example.com/"), "http://%F0%9F%98%80@www.example.com/");
+chk("p-unc", pathToFileURL("\\\\host\\share\\file.txt", { windows: true }).href, "file://host/share/file.txt");
+chk("p-drive", pathToFileURL("C:\\foo", { windows: true }).href, "file:///C:/foo");
+chk("p-caret", pathToFileURL("C:\\foo^bar", { windows: true }).href, "file:///C:/foo%5Ebar");
+chk("p-tilde", pathToFileURL("/foo~").href, "file:///foo%7E");
+chk("p-trail", pathToFileURL("/tmp/a/").href, "file:///tmp/a/");
+chk("p-bslash", pathToFileURL("/foo\\bar").href, "file:///foo%5Cbar");
+try { fileURLToPath("file:///a%2F/"); } catch (e) { chk("p-f2p", e.code === "ERR_INVALID_FILE_URL_PATH" && e.input instanceof URL && e.input.href === "file:///a%2F/", true); }
+chk("p-f2p5c", fileURLToPath("file:///foo%5Cbar"), "/foo\\bar");
+const warns = [];
+process.on("warning", (w) => warns.push(w.code + "|" + w.message.slice(0, 13)));
+url.parse("foo"); url.parse("bar");
+await new Promise((r) => setTimeout(r, 30));
+// node 口径：emitWarning nextTick 异步 + 每进程一次（先 parse 后挂监听仍可收）。
+chk("w-dep", warns.length === 1 && warns[0] === "DEP0169|`url.parse()`", true);
+chk("n-puny", parse("http://example.Bücher.com/").hostname, "example.xn--bcher-kva.com");
+chk("a-esc", parse("http://x:1/' <>\"`/{}|\\^~`/").pathname, "/%27%20%3C%3E%22%60/%7B%7D%7C/%5E~%60/");
+console.log(L.join("\n"));
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "v-undef true",
+        "v-arr true",
+        "v-uri true",
+        "v-ipv6 true",
+        "v-idna true",
+        "v-shy true",
+        "v-evil true",
+        "ro-empty true",
+        "ro-type true",
+        "r-crawl true",
+        "r-https1 true",
+        "f-auth true",
+        "f-emoji true",
+        "p-unc true",
+        "p-drive true",
+        "p-caret true",
+        "p-tilde true",
+        "p-trail true",
+        "p-bslash true",
+        "p-f2p true",
+        "p-f2p5c true",
+        "w-dep true",
+        "n-puny true",
+        "a-esc true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

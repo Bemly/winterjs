@@ -44,7 +44,14 @@ function __failOne(t, e) {
   __fail++;
   globalThis.process.exitCode = 1;
   console.log(`not ok - ${t.name}`);
-  console.log(String((e && e.stack) || (e && e.message) || e).split("\n").slice(0, 4).join("\n"));
+  // message 在前（stack 头是内部帧，10f url 对拍曾被吞掉断言详情）；
+  // stack 只挑 @ 帧行补定位。
+  const msg = e && e.message !== undefined ? String(e.message) : String(e);
+  console.log(msg.split("\n").slice(0, 4).join("\n"));
+  if (e && e.stack) {
+    const frames = String(e.stack).split("\n").filter((l) => l.includes("@")).slice(0, 3).join("\n");
+    if (frames) console.log(frames);
+  }
 }
 async function __fireBefore(suite) {
   if (suite.beforeFired) return;
@@ -119,13 +126,29 @@ function __hook(kind, fn) {
   if (typeof fn !== "function") throw new TypeError(`${kind} needs a function`);
   __curSuite().hooks[kind].push(fn);
 }
-export function test(name, fn) {
-  if (typeof name === "function") { fn = name; name = fn.name || "<anonymous>"; }
-  __enqueue(name, fn || (() => {}), "run");
+// 10f url 对拍：三参形态 `test(name, { skip/todo/only }, fn)`——node 套件
+// 普遍用选项对象注册（skip: 条件表达式），此前把选项对象当 fn 收进队列。
+function __normArgs(args) {
+  let [name, second, third] = args;
+  if (typeof name === "function") { third = name; name = name.name || "<anonymous>"; second = undefined; }
+  let opts = {};
+  if (typeof second === "function") { third = second; }
+  else if (second && typeof second === "object") { opts = second; }
+  return { name: String(name), opts, fn: third };
 }
-test.skip = (name, fn) => __enqueue(name, fn || (() => {}), "skip");
-test.todo = (name, fn) => __enqueue(name, fn || (() => {}), "todo");
-test.only = (name, fn) => __enqueue(name, fn || (() => {}), "only");
+function __modeOf(opts, fallback) {
+  if (opts && opts.only === true) return "only";
+  if (opts && opts.skip) return "skip";
+  if (opts && opts.todo) return "todo";
+  return fallback;
+}
+export function test(...args) {
+  const { name, opts, fn } = __normArgs(args);
+  __enqueue(name, typeof fn === "function" ? fn : () => {}, __modeOf(opts, "run"));
+}
+test.skip = (...args) => { const { name, opts, fn } = __normArgs(args); __enqueue(name, typeof fn === "function" ? fn : () => {}, __modeOf(opts, "skip")); };
+test.todo = (...args) => { const { name, opts, fn } = __normArgs(args); __enqueue(name, typeof fn === "function" ? fn : () => {}, __modeOf(opts, "todo")); };
+test.only = (...args) => { const { name, opts, fn } = __normArgs(args); __enqueue(name, typeof fn === "function" ? fn : () => {}, __modeOf(opts, "only")); };
 export function describe(name, fn) {
   if (typeof fn !== "function") throw new TypeError("describe needs a function");
   const suite = __mkSuite(String(name));

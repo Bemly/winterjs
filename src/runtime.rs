@@ -1444,7 +1444,7 @@ unsafe extern "C" fn rejection_tracker(
 ) {
     match state_ {
         PromiseRejectionHandlingState::Unhandled => {
-            // `Heap::boxed` 定址（set 后禁移动，见 §4.39）。
+            // `Heap::boxed` 定址（set 后禁移动，见 §4.40）。
             tracing::debug!(target: "winterjs::promise", promise = ?promise.get(), "rejection unhandled");
             state::with_rooted(|s| s.unhandled.push(mozjs::jsapi::Heap::boxed(promise.get())));
         }

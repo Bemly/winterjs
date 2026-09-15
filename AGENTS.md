@@ -21,10 +21,13 @@
 7. **测试三件套随功能落地**：新功能必须同时带三层测试，完工标准含三绿——
    模块测试（`src/` 内 `#[cfg(test)]`，覆盖纯 Rust 可测逻辑：解析/转译/状态机/编解码）、
    黑盒测试（`tests/`，经 CLI 断言用户可见行为；**文件按 src 对齐**：
-   `cli/builtins/crypto/fetch/ws/loader/node/pm/serve/acme/testrun/initpkg/repl/bun/permissions/lintfmt/sentry_report.rs`，
+   `cli/builtins/crypto/fetch/ws/loader/node/pm/serve/acme/testrun/initpkg/repl/bun/permissions/lintfmt/sentry_report/alloc_probe/napi/quic.rs`，
    共享 helper 进 `tests/common/mod.rs`（`use common::*;`），新 API 的黑盒进对应域文件，
    node 域二层按 `src/builtins/node/*.rs` 对齐（`tests/node/<mod>.rs` 经 `#[path]` 挂壳，
-   域内共享脚手架进 `tests/node/helpers.rs`），
+   域内共享脚手架进 `tests/node/helpers.rs`；`quic` 由顶层 `tests/quic.rs` 覆盖，
+   其余无二层壳的模块（`assert_strict`/`dns_promises`/`path_win32`/`readline`/
+   `stream_consumers`/`stream_promises`/`stream_web`/`timers`）暂由相邻域用例覆盖，
+   补壳前不得称"对齐完成"），
    每个新 API 必含正常 + 报错 + 边界三件；`UNSAFE-BOUNDARY` 新增必须配 panic 路径用例）、
    冒烟（§3 探针命令，构建后必跑，不过不提交）。
 8. **CLI 全 flag 规范**：无裸子命令、无裸位置参数——所有动作一律 `-x/--xxx`
@@ -37,13 +40,13 @@
 
 - `mozjs = "=0.26.0"`（Gecko 153，crates.io 最新发布版），`Cargo.lock` 入库。
 - Rust stable 最新（现 1.98），edition 2024（即 stable 最新；2027 尚不存在）。
-- 版本号用 CalVer `YY.MM.PATCH`（如 `26.9.0`，cargo 可解析；`^26.9.0` 即年内自动升）。
+- 版本号用 CalVer `YY.MM.PATCH`（如 `26.9.13`，cargo 可解析；`^26.9.0` 即年内自动升）。
   依赖清单与 10-target 矩阵见 `docs/dependencies.md`。
 - 无 `rust-toolchain` pin、无 spiderfire/ion 依赖、无 server/request_handlers。
 - CLI（全 flag，§0.8）：`winterjs --run <file|script>`（带脚本后缀→文件直跑；
   裸名→package.json `scripts` 优先、同名文件回落；JS bin 递归自身执行，零 node）/ `winterjs --eval <code>` /
   `winterjs --config [--schema]` / `winterjs --completions <shell>` / `winterjs --man` 等，
-  见 `src/`（cli/runner/error/logging/settings/alloc 模块）。
+   见 `src/`（cli/runtime/dispatch/error/logging/settings/alloc 模块；`runner.rs` 已由 `runtime.rs` 接替，见 plan.md）。
 - 依赖 2026-09-10 起全量入库（docs/dependencies.md 头部决策记录），代码按 Phase 接线。
 
 ## 2. 依赖铁律
@@ -259,7 +262,7 @@ cargo build
   一律 `mkdir -p /tmp/wjs-*-probe && cd` 进去再跑。
 - 推广为铁律：黑盒测试不受影响（assert_cmd 设了 `current_dir`），只约束手工实测。
 
-### 4.21 同一文件的 edit 与 append 禁并行（2026-09-10）
+### 4.21 同一文件的 edit 与 append 禁并行（2026-09-10，工具约束注记·非代码坑）
 
 - 症状：给 `tests/cli.rs` 同时发 edit（改 man 计数）与 bash heredoc append
   （加 4 个 init 测试），append 的内容全部丢失，测试数 127 不增。
@@ -340,7 +343,7 @@ cargo build
   撞上 `["init", ` 模式。修法：脚本断言计数 + 事后按命令名复核 bare 残留；
   跨工具同名（git init）逐个手改（`src/cli.rs` 全 flag 重写，`tests/cli.rs`）。
 
-### 4.28 空工具调用可能回滚工作区（2026-09-11）
+### 4.28 空工具调用可能回滚工作区（2026-09-11，工具约束注记·非代码坑）
 
 - 症状：一次无参数的 edit 调用被 abort 后，工作区 4 个文件被回滚到旧快照
   （`mod.rs -190`/`fs.rs -47`/`tests -89`/`child.rs` 重现已删 PIPEDBG；
@@ -407,7 +410,7 @@ cargo build
   修法：`const self = this` 闭包捕获。
 - 症状三：`dc.subscribe` 不返回退订函数（Node 同款返回 undefined），黑盒想当然存
   返回值致退订恒 false。教训：黑盒设计前先核对 Node 套件原文断言，勿凭记忆。
-- 复现：`tests/node.rs::phase9a_diagnostics_channel_surface`（修前 `outside [object Object]`；拆分前在 tests/cli.rs）。
+- 复现：`tests/node/diagnostics_channel.rs::phase9a_diagnostics_channel_surface`（修前 `outside [object Object]`；拆分前在 tests/cli.rs）。
 
 ### 4.32 逐字移植的解环/形态坑（2026-09-12，Phase 9b）
 
@@ -432,7 +435,7 @@ cargo build
   `chunk.constructor.name` 是 "Buffer" 非 "Uint8Array"；
   ④ close 事件时点 `isDestroyed` 已为 true。
   实现侧零 bug——全部先实测真 Node 再改断言，勿在黑盒里编码记忆里的语义。
-- 复现：`tests/node.rs::phase9b_stream_duplex_transform_pipeline`
+- 复现：`tests/node/stream.rs::phase9b_stream_duplex_transform_pipeline`
   （compose Duplex 分支修前报 `Duplex is not a constructor`）。
 
 ### 4.33 fs 补齐三坑（2026-09-12，Phase 9c）
@@ -450,7 +453,7 @@ cargo build
   修法：严格嵌套链 + 内容断言只放链内确定点；另核实三个"断言错、实现对"：
   `"hello!"` 是 6 字节、`statSync` 对 symlink `isSymbolicLink()` 为 false（跟随
   语义，Node 同款）、readFile ENOENT 的 `err.syscall` 是 `"open"`。
-- 复现：`tests/node.rs::phase9c_fs_sync_extras`（wx 修前 ENOENT）。
+- 复现：`tests/node/fs.rs::phase9c_fs_sync_extras`（wx 修前 ENOENT）。
 
 ### 4.34 net 事件循环收尾四坑（2026-09-12，Phase 9d-1）
 
@@ -475,7 +478,7 @@ cargo build
 - 附：serde `SocketAddr` 序列化为 `"ip:port"` 串（IPv6 `[ip]:port`）；
   io_code 的 EADDRINUSE 是双 errno（macOS 48 / Linux 98）——平台差异 errno
   映射一律双码同列 + 单测双断言。
-- 复现：`tests/node.rs::phase9d_net_echo_loopback`（allowHalfOpen 修前 hang）。
+- 复现：`tests/node/net.rs::phase9d_net_echo_loopback`（allowHalfOpen 修前 hang）。
 
 ### 4.35 node:http 回环两坑（2026-09-12，Phase 9d-3）
 
@@ -490,7 +493,7 @@ cargo build
   收尾连接（sock.end + req 'close'）。
 - 黑盒教训：请求**无监听 error 事件即抛错**是 Node 正确行为——错误路径黑盒
   要补 `req.on("error", () => {})` 空监听，而不是改实现吞错。
-- 复现：`tests/node.rs::phase9d_http_loopback`（喂体时序修前 POST 挂死）。
+- 复现：`tests/node/http.rs::phase9d_http_loopback`（喂体时序修前 POST 挂死）。
 
 ### 4.36 新事件域 checklist（2026-09-12，Phase 9d-4 dgram 二进宫沉淀）
 
@@ -503,7 +506,7 @@ cargo build
   ③ native 数值返回（id/fd）JS 侧记得 `Number()` 包装。
 - 另：构造器参数校验的 TypeError 要带 `e.code`（Node 口径），黑盒断言 code 而非
   message 前缀。
-- 复现：`tests/node.rs::phase9d_dgram_loopback`（修前 'close' 丢/`bad-type undefined`）。
+- 复现：`tests/node/dgram.rs::phase9d_dgram_loopback`（修前 'close' 丢/`bad-type undefined`）。
 
 ### 4.37 zlib 两坑（2026-09-12，Phase 9d-5）
 
@@ -516,7 +519,7 @@ cargo build
   实测 `encoding/mod.rs` 只有 `Fastest` 可用（`Default`/`Better`/`Best` 标
   `UNIMPLEMENTED`）。修法：zstd 编码恒 `Fastest`，`level` 接受忽略并记档；
   教训：轮子能力断言以源码/实测为准，不抄 README 一句话（§4.32 教训延续）。
-- 复现：`tests/node.rs::phase9d_zlib_errors_boundary`（`lv-hi` 行修前为
+- 复现：`tests/node/zlib.rs::phase9d_zlib_errors_boundary`（`lv-hi` 行修前为
   `Z_DATA_ERROR`）。
 
 ### 4.38 https/tls 三坑（2026-09-12，Phase 9d-6）
@@ -534,7 +537,7 @@ cargo build
   `CaUsedAsEndEntity`。教训：hermetic TLS 测试证书须 end-entity
   （`basicConstraints=CA:FALSE` + serverAuth EKU），或直接用 rcgen
  （`generate_simple_self_signed`，自带正确扩展；serve 黑盒同款）。
-- 复现：`tests/node.rs::phase9d_https_loopback`（三参修前 hang）。
+- 复现：`tests/node/https.rs::phase9d_https_loopback`（三参修前 hang）。
 
 ### 4.39 http2 请求事件双发：构造器与包层别双注册（2026-09-12，Phase 9d-7）
 
@@ -542,7 +545,7 @@ cargo build
 - 根因：`Http2Server` 构造器内 `if (typeof options === "function") this.on(...)`
   与 `createServer/createSecureServer` 包层接线重复——函数首参同时命中两处。
 - 修法：构造器不再碰 request 监听器，只由包层接线（`src/builtins/node/http2.rs`）。
-- 复现：3 流探针（修前每流双 `srv-req`）；`tests/node.rs::phase9d_http2_cleartext`。
+- 复现：3 流探针（修前每流双 `srv-req`）；`tests/node/http2.rs::phase9d_http2_cleartext`。
 
 ### 4.40 `Heap::set` 后禁移动，违者 nursery GC 必崩（2026-09-12，Phase 9d-7 总根因）
 
@@ -558,8 +561,10 @@ cargo build
 - 修法：全部持 JS 值的 Vec 元素字段改 `Box<Heap<T>>`（Box 移动只搬指针，
   槽地址恒稳；`drop` 自带 clearing barrier，摘除安全）；构造点一律
   `Heap::boxed(v)`；读侧 `.get()` 经 Deref 零改；trace impl 零改（`Box` blanket）；
-  `RootedState` 直属单值字段不动（已在 `RootedTraceableBox` 内稳定）。
-  （`src/state.rs` + `timers.rs`/`modules.rs`/`runtime.rs` 共 11 构造点。）
+   `RootedState` 直属单值字段不动（已在 `RootedTraceableBox` 内稳定）。
+   （`src/state.rs` + `timers.rs`/`modules.rs`/`runtime.rs` + napi 面
+   `env/class/asyncwork/loader/promise/refcount.rs`，共 32 构造点，
+   以 `rg -o "Heap::boxed" src/ | wc -l` 实测为准，不再手写死数。）
 - 复现：`tests/builtins.rs::phase1_gc_pressure_keeps_rooted_targets`
   （修前 exit=139；探针 `setTimeout` 内 2 万对象分配）。
 - 推广为铁律：新增跨 GC 存活的 JS 值存储，一律 `Box<Heap>` 定址；
@@ -584,7 +589,7 @@ cargo build
 - 症状一（空转）：`assert!(out.contains("md5 true"))` 恒过——输出里另有一行
   `hmac-md5 true`，子串命中，md5 哈希路径坏了也测不出。
   修法：纯哈希标签改名 `md5vec`，使任一标签都不构成另一标签的子串
-  （`tests/node.rs::phase9e_crypto_hash_hmac`，`hmac`/`hmac-md5`/`hmac-s3`/
+  （`tests/node/crypto.rs::phase9e_crypto_hash_hmac`，`hmac`/`hmac-md5`/`hmac-s3`/
   `md5vec` 四标签互不包含）。
 - 症状二（弱断言）：`console.log("empty", a && b && c)` 只打一个布尔——
   挂了不知挂在哪项，且复制粘贴时易漏项。
@@ -613,7 +618,7 @@ cargo build
 - 症状：测试想把大段 PEM/JS 经 `format!` 拼进探针脚本，JS 的 `{`/`}` 全被当
   占位符——转义 `{{}}` 满屏且一漏就编译错/运行时串错。
 - 修法：大块载荷（X509 内嵌证书）改文件落盘——`dir.child("c.pem").write_str(pem)`，
-  JS 侧 `fs.readFileSync("c.pem")` 读回（`tests/node.rs::phase9e_crypto_x509`）；
+  JS 侧 `fs.readFileSync("c.pem")` 读回（`tests/node/crypto.rs::phase9e_crypto_x509`）；
   `format!` 只拼小标量（路径/数字）。
 - 推广为铁律：`format!` 与 JS 模板字符串/对象字面量同现时，默认选文件落盘，
   不选 `{{}}` 转义。
@@ -642,7 +647,7 @@ cargo build
   `if progressed { continue; }`——回顶下一轮 pump 先 `RunJobs`，无新进展才 park，
   不忙转（progressed 源皆有限：通道缓冲/timer 触发）；None 分支内
   `if idle { continue; }` 已不可达，删除。
-- 复现：`w11.mjs`（监听 + 投递，无 timer，修前 hang；`tests/node.rs` 落盒时已修）。
+- 复现：`w11.mjs`（监听 + 投递，无 timer，修前 hang；`tests/node/worker.rs` 落盒时已修）。
 - 推广为铁律：§4.18 铁律的完整形态——结算点之后**到 park 之前**必须保证至少一轮
   `RunJobs`；新增事件域若结算只排 microtask，必走此路径验证（无 timer 用例）。
 
@@ -782,7 +787,7 @@ cargo build
 - 推广为铁律：跨 compartment 的值一律按结构判形态（thenable/数组用
   `Array.isArray` 跨域安全），禁 `instanceof`；凡 `evaluate` 族 API 的壳必须
   同时兼容同步完成值与 promise 两种 rval。
-- 复现：`tests/node.rs::phase9i_vm_module_boundary`（`m9iB-evthrow` 行修前为
+- 复现：`tests/node/vm.rs::phase9i_vm_module_boundary`（`m9iB-evthrow` 行修前为
   `OK` + 进程 exit=1）。
 
 ### 4.58 迁移排空三件套：offer 留 target + forwarded 排空 + 分发回退（2026-09-13，Phase 9i-2）
@@ -801,7 +806,7 @@ cargo build
 - 推广为铁律：凡"先摘后建"的跨会话移交，必须回答"在途消息去哪"——排空点
   + 分发回退缺一不可；引擎能力断言（structuredClone/BigInt/SAB）以上手实测
   为准，不抄文档记忆。
-- 复现：`tests/node.rs::phase9i_worker_transfer_cross_thread_and_broadcast`
+- 复现：`tests/node/worker.rs::phase9i_worker_transfer_cross_thread_and_broadcast`
  （`w9i-xfer` 第二项修前为 false）。
 
 ### 4.59 CJS 互操作垫片吞掉纯 TLA 的 `.js` 依赖（2026-09-13，Phase 9j）
@@ -818,7 +823,7 @@ cargo build
   下仍会对无歧义顶层 `await` 置模块升级信号（Babel 式 `sawUnambiguousESM`，
   `set_module_syntax` + 延迟错丢弃）——所以试解析必须同时看
   `!has_module_syntax`，只看"无错"不够（`src/modules.rs`）。
-- 复现：`tests/node.rs::phase9j_tla_dep_stays_esm`（修前 TLA 依赖进垫片炸）。
+- 复现：`tests/node/require.rs::phase9j_tla_dep_stays_esm`（修前 TLA 依赖进垫片炸）。
 - 推广为铁律：oxc `with_module(false)` ≠"无模块信号"——`module_record.
   has_module_syntax` 才是升级真相；任何"经典/CJS 兜底"判定都要先过 TLA
   专属文件这一关（入口 `tla.js` 即现成探针）。
@@ -831,7 +836,7 @@ cargo build
   大小写敏感大写在前），与 JS 对象插入序直觉相反。
 - 修法：解析期 `Map` 收集，组装期 `[...keys()].sort()` 再写入
   （`src/builtins/node/util.rs` `parseEnv`）。
-- 复现：`tests/node.rs::phase9j_util_parse_env` 首断言
+- 复现：`tests/node/util.rs::phase9j_util_parse_env` 首断言
   （`{"A":"1","B":"1"}` 顺；修前为插入序）。
 - 推广为铁律：§4.32 教训延续——"顺序"也是语义，真机差分必须连键序一起
   `diff`，逐行 `JSON.stringify` 对拍（本仓即靠它抓到）。
@@ -851,7 +856,7 @@ cargo build
 - 推广为铁律：黑盒 fixture 的脚本参数不得与 winterjs 动作 flag 同名；
   新增动作 flag 时 grep 测试 fixtures 有无撞名。
 
-### 4.62 stash 期间构建会污染 target，pop 后必须重编再探（2026-09-13）
+### 4.62 stash 期间构建会污染 target，pop 后必须重编再探（2026-09-13，通用构建卫生·非本仓代码坑）
 
 - 症状：`git stash → cargo build → git stash pop` 后，`./target/debug/winterjs`
   探针报旧行为（`'node:module' is not a builtin`），而 `cargo test` 全绿——
@@ -948,12 +953,10 @@ cargo build
   ③ TSFN dispatch 无 pending 守卫（M4-③ loader 同类，net/worker 系均有
   `failed(cx)` 收敛）→ `TsfnDrain/AsyncDone` 回调后查 pending 即转可读错
   （本次未触发——崩溃在回调**内**，属防御性收敛）。
-- 未闭环：fsevents 原生回调同步 JS 路径的崩溃根因未定（napi 层无异常遗留；
-  0x4b 高位恒定、低位浮动； suspects 剩堆损坏延迟引信/形状损坏，待深入）。
-  M5 dev 验证暂走 polling（`server.watch.usePolling`，HMR `CHOK-CHANGE` +
-  干净退出已验证）；默认 fsevents 路径记档待修。
-  **→ 已闭环（2026-09-14，见 §4.68：`NapiEnv::trace` 漏标 `tsfns.js_cb`），
-  默认 fsevents 路径 `hmr-min9.mjs` 修后 full-reload + `EXIT:0`。**
+- 根因已闭环（2026-09-14，见 §4.68：`NapiEnv::trace` 漏标 `tsfns.js_cb`），
+  默认 fsevents 路径 `hmr-min9.mjs` 修后 full-reload + `EXIT:0`。
+  （此前曾记"未闭环/待深入"——系根因未定时的过程口径，现以 §4.68 为准；
+  上方隔离矩阵保留为定位过程记录。）
 - 复现：`hmr-min11.mjs` 形（transform fetch + WS 握手 + 真 append，三件齐崩；
   任缺一件即过）；崩溃报告见 `~/Library/Logs/DiagnosticReports/winterjs-*.ips`
  （`0x4b4b4b4b` 高位恒定）。
@@ -1083,12 +1086,12 @@ cargo build
   的那一个。
 
 
-## 5. 路线图（按序）
+## 5. 路线图（已收官，现状以 plan 为准）
 
-1. `console` / timers（含 `queueMicrotask`）
-2. Promise job queue（microtask drain，直连 `JSContext`，禁 `&mut` 别名，见 winterjs-old §7.9 教训）
-3. ESM loader（resolve/fetch/compile/link）
-4. `fs` / `path` / `process`（Node 兼容垫片起点）
+- §5 初版四项（`console`/timers → job queue → ESM loader → `fs`/`path`/`process`）
+  均已完工；其后 Phase 5（pm）/6（serve）/7（sqlite/REPL/test/FFI）/8/9a–9k
+ （node 全家）+ napi M0–M6 全收官。后续动工前先读 `docs/plan.md`（Phase 0–9）
+  与 `docs/plan-napi.md`（M0–M6）的头部状态，不再在此另起路线。
 
 ## 6. 架构原则：runtime 纯 Rust，mozjs 是墙（2026-09-09 决策）
 
@@ -1104,10 +1107,11 @@ cargo build
   （先走 §0.5 找轮子）？② 能把 `unsafe` 收敛进构造器、对外只暴露 safe 访问器吗
   （`Frame` 模式：`from_raw` unsafe，`arg`/`set_rval` safe + 越界断言）？
   ③ 前置条件写进注释了吗？
-- 存量基线（2026-09-10 实数，`rg` 文本值；`console_sink!` 宏展开后更多）：
-  `unsafe extern "C"` 50（C ABI 强制，不可去；Phase 3a 起每新增 native +1）、
-  `unsafe impl Traceable` 2（GC 协议，不可去）；
-  `unsafe{}` 块 132，其中每个 JSNative 入口固定 2 个边界块
+- 存量基线（2026-09-15 实数，`rg` 文本值；`console_sink!` 宏展开后更多）：
+  `unsafe extern "C"` 450（C ABI 强制，不可去；其中 napi N-API 面 ~133，
+  其余随 native 数线性增长，每个 JSNative 入口 +1）、
+  `unsafe impl Traceable` 17（GC 协议，不可去）；
+  `unsafe{}` 块 1067，其中每个 JSNative 入口固定 2 个边界块
   （`wrap_cx` + `Frame::from_raw`，随 native 数线性增长，结构性不可去）；
   `wrap_cx` 维持 unsafe（`from_ptr` 本质 unsafe）；
   其余 FFI 体（`JS_GetProperty`/`JS_CallFunctionValue`/`evaluate_script`/
@@ -1201,7 +1205,8 @@ cargo build
   env 表 + Heap clearing barrier，即 GC 期间写堆，GC 元数据腐坏风险。
 - 修法（`class.rs`/`buffer.rs`/`asyncwork.rs`/`lifecycle.rs`）：sweep 内只
   **入队** `pending_finalizers`（纯 Rust push，不碰 JSAPI/不写堆）；
-  `asyncwork::dispatch` 入口 / end_session 安全点排空（JS 线程、无 GC 活动期）。
+  `asyncwork::dispatch` 入口（`class::drain_pending_finalizers`）/
+  end_session 安全点（`lifecycle::run_wrap_finalizers`，JS 线程、无 GC 活动期）排空。
   external AB 的 contents 释放随 cb 一并延迟（external 语义：data 归 addon）。
 - 复现：m2_finalize drain 形（GC 期入队 → 安全点全量 free）。
 - 推广为铁律：GC 回调（finalize op）内只许纯 Rust 簿记；凡会触 JSAPI/写堆/

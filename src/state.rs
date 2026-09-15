@@ -18,7 +18,7 @@ use crate::jsapi_glue::{Frame, get_prop_string, get_prop_u32, value_to_string};
 use crate::loader::sourcemap::remap_location;
 
 /// 一个已注册的定时器。`at` 为触发时刻（interval 为上次触发 + 间隔，漂移校正）。
-/// `callback`/`args` 经 `Box` 定址（mozjs `Heap::set` 后禁移动，见 §4.39）。
+/// `callback`/`args` 经 `Box` 定址（mozjs `Heap::set` 后禁移动，见 §4.40）。
 pub struct TimerEntry {
     pub id: u32,
     pub callback: Box<Heap<JSVal>>,
@@ -35,7 +35,7 @@ unsafe impl Traceable for TimerEntry {
     }}
 }
 
-/// 一个已编译的模块：URL（spec 键）+ 跨 GC 保活的模块记录（`Box` 定址，见 §4.39）。
+/// 一个已编译的模块：URL（spec 键）+ 跨 GC 保活的模块记录（`Box` 定址，见 §4.40）。
 pub struct ModuleEntry {
     pub url: String,
     pub record: Box<Heap<*mut JSObject>>,
@@ -659,7 +659,7 @@ pub fn entry_native_values() -> (JSVal, JSVal) {
 /// 存入一组 fetch 回调（调用方已分配 id）。
 pub fn push_fetch_callback(id: u64, resolve: JSVal, reject: JSVal) {
     with_rooted(|s| {
-        // `Heap::boxed` 定址（set 后禁移动，见 §4.39；Vec push 会搬运元素）。
+        // `Heap::boxed` 定址（set 后禁移动，见 §4.40；Vec push 会搬运元素）。
         s.fetch_callbacks.push(FetchCallback {
             id,
             resolve: Heap::boxed(resolve),

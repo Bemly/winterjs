@@ -44,3 +44,23 @@
   Bun 同缺 ed448，不挡 Bun 高度；本单属超配。
 - 矩阵依据：三家全 RustCrypto 纯 Rust、无平台相关代码，与树内 `aes`/
   `sha2` 同级；mobile 列随其余 RustCrypto 行按 ✅ 计（待 CI 转正）。
+
+## §2 10a–10f 轮子审计（2026-09-15，除 §1 外零新 crate）
+
+- 10a：`node:sys` 别名/url-legacy/setImmediate/`util` 三件/dgram 组播——
+  零新依赖（tokio 已在树内）。
+  `getSystemErrorName/Message/Map`：手写 UV errno 定表（~100 条固定数据，
+  Node `lib/` + `uv_errno_t` 对抄；libuv 系轮子全是 C binding，§2 禁，无轮子可找）。
+- 10b：http 流式化无新轮子（hyper/h2 全在闭包，h2 0.4.19 经 hyper 带入）；
+  server push 若需直引 `h2`，10b 开工时先查 Bun http2 自身是否含 push
+  （Bun 94%，大概率不在其面内 → 不做），届时另走 §0.5。
+- 10c：winsize 取 `nix` 0.31 的 `ioctl` 特性（空依赖列表：纯 macros + libc，
+  libc 已是 nix 必需依赖，零新 crate；macros 全平台可编译，unix 下使用，
+  win 记档）→ 仅 Cargo.toml features 加 `"ioctl"`（同 crate 开特性，
+  ✅ 2026-09-15 用户拍板，已开）。
+- 10d：hickory-resolver 0.26 的 default 特性已含 `system-config` + `tokio`
+  （注册表 Cargo.toml 实测），10d 零改动直接开工。
+- 10e：cluster/domain 零轮子；crypto 见 §1。
+- 10f：无。
+- `mime` 0.3.17 虽在闭包（reqwest/hyper 带入），`util.MIMEType` 是 WHATWG
+  纯算法解析，不需要它，不直引。

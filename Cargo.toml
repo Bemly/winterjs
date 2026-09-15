@@ -306,7 +306,7 @@ ml-dsa = "0.1.1"
 
 # ── 平台专用行（§8 矩阵 ❌ 的按 cfg 门控）───────────────────────────────
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", features = ["process", "signal", "fs"] }
+nix = { version = "0.31", features = ["process", "signal", "fs", "ioctl"] }  # 10c（2026-09-15 用户拍板）：tty winsize（TIOCGWINSZ）；空依赖列表，零新 crate
 
 
 

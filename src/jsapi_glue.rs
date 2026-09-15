@@ -269,9 +269,11 @@ pub fn call_one(
     if ok { Some(rval.get()) } else { None }
 }
 
-/// UNSAFE-BOUNDARY: 调双参函数 `fun(a, b)`（fire_due 的 ValueArray 模式）。
-/// 前置：cx 在 realm 内；仅事件循环上下文可用（native 内禁 `Rooted<ValueArray>`，§4.9）。
-/// 覆盖：`phase3_fetch_http_get`、`phase3_fetch_data_and_file`（经 fetch deliver）。
+/// UNSAFE-BOUNDARY: 调双参函数 `fun(a, b)`（timer fire 经 `__wjs_call(cb, args)`
+/// 展开实参；native 内禁 `Rooted<ValueArray>`，§4.9）。
+/// 前置：cx 在 realm 内；fun 为可调用；调用后 pending exception 由调用方处理。
+/// 覆盖：`phase3_fetch_http_get`、`phase3_fetch_data_and_file`（经 fetch deliver）、
+/// `tests/builtins.rs::phase10a_immediate_and_timeout_class`（经 timer fire）。
 pub fn call_two(
     cx: &mut JSContext,
     global: *mut JSObject,

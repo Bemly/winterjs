@@ -234,3 +234,38 @@ fn phase9m_global_dom_exception_file_message_channel_sab() {
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }
 }
+
+#[test]
+fn phase10a_immediate_and_timeout_class() {
+    // 10a：全局 setImmediate/clearImmediate + Timeout/Immediate 真类。
+    // 近似口径：setImmediate ≈ setTimeout(0)，同 delay(0) 队列 FIFO；
+    // check 分层上线时改 order 断言。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        "console.log('noleak', typeof Timeout, typeof Immediate);\n\
+         const order = [];\n\
+         setTimeout(() => order.push('timeout'), 0);\n\
+         setImmediate(() => order.push('immediate'));\n\
+         setImmediate((a, b) => console.log('args', a, b), 'x', 7);\n\
+         const t = setTimeout(() => {}, 50);\n\
+         console.log('cls', t.constructor.name, typeof t.unref, typeof t.ref, typeof t.hasRef, typeof t.refresh);\n\
+         console.log('prim', (t + 0) === t.__wjs_id, typeof (t + 0));\n\
+         console.log('chain', t.unref() === t, t.ref() === t, t.refresh() === t, t.hasRef());\n\
+         const im = setImmediate(() => {});\n\
+         console.log('imm', im.constructor.name, im.hasRef());\n\
+         clearImmediate(im);\n\
+         let cancelled = false;\n\
+         clearImmediate(setImmediate(() => { cancelled = true; }));\n\
+         clearTimeout(t);\n\
+         setTimeout(() => console.log('order', order.join(','), 'cancelled', cancelled), 30);"]));
+    for line in [
+        "noleak undefined undefined",
+        "args x 7",
+        "cls Timeout function function function function",
+        "prim true number",
+        "chain true true true true",
+        "imm Immediate true",
+        "order timeout,immediate cancelled false",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+}

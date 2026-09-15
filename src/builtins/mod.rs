@@ -41,20 +41,24 @@ globalThis.queueMicrotask = function (cb) {
   // 与引擎内部 job queue 同一条微任务队列；回调抛错 → 未处理 rejection（由 runtime 上报）
   Promise.resolve().then(cb);
 };
-// Node 口径 Timeout/Interval 对象（unref/ref/hasRef/refresh no-op——keep-alive
+// Node 口径 Timeout/Immediate 对象（unref/ref/hasRef/refresh no-op——keep-alive
 // 语义由 Rust 侧定时器表决定；[Symbol.toPrimitive] 保数字 id 算术兼容）。
 // vite cleanupDepsCacheStaleDirs 用 `setTimeout(...).unref()`。
-globalThis.__wjs_timer_wrap = (id) => {
-  const t = {
-    __wjs_id: id,
-    unref() { return t; },
-    ref() { return t; },
-    hasRef() { return true; },
-    refresh() { return t; },
-    [Symbol.toPrimitive]() { return id; },
-  };
-  return t;
-};
+// 10a：真类（constructor.name === 'Timeout'/'Immediate'，真机口径）。
+// 类本体不出块作用域（真机 globalThis.Timeout === undefined，不污染全局）。
+{
+  class Timeout {
+    constructor(id) { this.__wjs_id = id; }
+    unref() { return this; }
+    ref() { return this; }
+    hasRef() { return true; }
+    refresh() { return this; }
+    [Symbol.toPrimitive]() { return this.__wjs_id; }
+  }
+  class Immediate extends Timeout {}
+  globalThis.__wjs_timer_wrap = (id) => new Timeout(id);
+  globalThis.__wjs_immediate_wrap = (id) => new Immediate(id);
+}
 globalThis.__wjs_timer_id = (id) =>
   id === null || id === undefined ? 0 : typeof id === "object" ? (id.__wjs_id ?? 0) : typeof id === "number" ? id : 0;
 globalThis.setTimeout = function (cb, ms, ...rest) {
@@ -67,6 +71,13 @@ globalThis.setInterval = function (cb, ms, ...rest) {
 };
 globalThis.clearTimeout = function (id) { __wjs_clearTimeout(__wjs_timer_id(id)); };
 globalThis.clearInterval = function (id) { __wjs_clearTimeout(__wjs_timer_id(id)); };
+// 10a：全局 setImmediate/clearImmediate（本仓无 macrotask 分层，setTimeout(0)
+// 近似——与 node:timers 同口径，check 阶段语义记档；clearImmediate 复用同表）。
+globalThis.setImmediate = function (cb, ...rest) {
+  if (typeof cb !== "function") throw new TypeError("setImmediate: callback must be a function");
+  return __wjs_immediate_wrap(__wjs_setTimeout(cb, 0, rest));
+};
+globalThis.clearImmediate = function (id) { __wjs_clearTimeout(__wjs_timer_id(id)); };
 // 事件循环触发定时器 / structuredClone 枚举属性用的内部辅助
 globalThis.__wjs_call = (cb, args) => cb(...args);
 // napi_call_function：recv 语义的参数展开（Function.prototype.apply）

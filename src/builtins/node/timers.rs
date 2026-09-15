@@ -17,8 +17,8 @@ function setTimeout(cb, ms, ...args) { return globalThis.setTimeout(cb, ms, ...a
 function clearTimeout(id) { return globalThis.clearTimeout(id); }
 function setInterval(cb, ms, ...args) { return globalThis.setInterval(cb, ms, ...args); }
 function clearInterval(id) { return globalThis.clearInterval(id); }
-function setImmediate(cb, ...args) { return globalThis.setTimeout(cb, 0, ...args); }
-function clearImmediate(id) { return globalThis.clearTimeout(id); }
+function setImmediate(cb, ...args) { return globalThis.setImmediate(cb, ...args); }
+function clearImmediate(id) { return globalThis.clearImmediate(id); }
 
 const __api = { setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, clearImmediate, promises };
 export default __api;

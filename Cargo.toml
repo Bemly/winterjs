@@ -185,7 +185,16 @@ ctr = "0.10"
 des = "0.9"
 blowfish = "0.10"
 aes-gcm = "0.11"
+# 10e（2026-09-15 用户拍板）：AES-CCM 三档（aes-128/192/256-ccm）；
+# deps（aead 0.6/cipher 0.5/ctr 0.10）与树内零版本墙，见 dependencies3.md §1。
+ccm = "0.6"
+# 10e（2026-09-15 用户拍板）：GCM 任意 iv 的 J0 构造（NIST SP 800-38D）；
+# 闭包内已有精确 0.6.0（aes-gcm 0.11 带入），直引零新增传递依赖。
+ghash = "0.6"
 chacha20poly1305 = "0.11"
+# 10e（2026-09-15 用户特批）：Ed448 签名；稳定版停在 0.9.0（rand_core 0.6
+# 不兼容本仓栈），钉预发布 =0.14.0-pre.15，上游发稳定版后回 caret。
+ed448-goldilocks = "=0.14.0-pre.15"
 ed25519-dalek = "3"
 x25519-dalek = { version = "3", features = ["static_secrets"] }  # c-4x：按值 secret（from>+diffie_hellman），纯 Rust 特性门
 # c-4（2026-09-10 用户拍板）：ecdh/pkcs8 显式声明。之前靠 russh→ssh-key 的

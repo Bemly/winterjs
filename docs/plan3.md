@@ -38,7 +38,7 @@
 | dgram | 🟢 | ✅（base 面） | 组播全家（addMembership/dropMembership/setBroadcast/组播 TTL/loopback）、connect/disconnect、ref 真计数 | 10a |
 | cluster | 🟡（http 多绑限 Linux） | — | Bun 🟡 对等面：primary/worker、fork/disconnect、scheduling 策略（骑 fork/worker 底座，不做真多进程超集） | 10e |
 | domain | 🟡 | — | 遗留薄面：create/run/bind/intercept + error 路由（小） | 10e |
-| crypto | 🟡（缺 ed448/secp256k1/CCM 等） | ✅（缺口不重合：GCM iv 限 12B、无 ccm/ocb） | 差集评估：ed448（ed448-goldilocks）、CCM（ccm crate）、GCM 任意 iv；**新 crate 走 §0.5，先评估后问用户** | 10e |
+| crypto | 🟡（缺 ed448/secp256k1/CCM 等） | ✅（缺口不重合：GCM iv 限 12B、无 ccm/ocb） | 差集：✅ 2026-09-15 用户全批——`ccm` 0.6 + `ghash` 0.6 直引 + `ed448-goldilocks` 特批钉 `=0.14.0-pre.15`（上游稳定版后回 caret）+ bf-cbc 实测后定；ocb 非 Node 面出局。采购单见 `docs/dependencies3.md` §1 | 10e |
 | test | 🟡 | 🟡（起步） | parity 确认（10f 对拍定深浅，不预设切片） | 10f |
 | v8 | 🟡（堆统计 JSC 口径） | 🟡（最小桥） | 堆统计/serialize 双方数字皆引擎口径、不可比——书面偏离，不做（见 §4） | — |
 | vm | 🟢（全+ESM classes） | ✅（Module/SourceText/Synthetic 全链） | parity 确认（10f 对拍；`compileFunction`/`measureMemory` 行为差即修） | 10f |
@@ -99,8 +99,8 @@
 
 - 做：cluster Bun 🟡 对等面（primary/worker、fork/env、disconnect/suicide、
   scheduling 策略 RR；骑 fork/worker 线程底座——真多进程语义不做，书面记档）；
-  domain 遗留薄面；crypto 差集评估报告（ed448/CCM/GCM-任意-iv 三项的
-  crate 候选 + 纯度 + 量级，**评完问用户再开工**，不开工也算交付）。
+  domain 遗留薄面；crypto 差集开工（✅ 2026-09-15 全批落锁：ccm/ghash/
+  ed448-pre.15，bf-cbc 真机实测后定，见 `docs/dependencies3.md` §1）。
 - 验收：`test-cluster-*.js` 基础项（fork+message+exit 码）；
   `test-domain-*.js` 薄面项；crypto 评估报告进 `docs/dependencies.md` 候选节。
 

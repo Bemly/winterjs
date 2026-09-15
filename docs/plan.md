@@ -1068,6 +1068,12 @@
     打版本横幅（AGENTS §4.63）。
   - `cargo test` 433 全绿 0 失败，build 0 警告（5 预存），冒烟 5/5。
 
+## Phase 10 — Bun 高度（`docs/plan3.md`，2026-09-15 立项）
+
+- 目标：`node:` 兼容从 deno 高度再到 Bun 高度（Bun 🟢 对齐、🟡 parity、差集偏离）。
+  缺口清单/切片 10a–10f/不做项见 `docs/plan3.md`；对标总表见
+  `docs/bun-compat.md` §1（2026-09-15 回填版）。
+
 ## 全局纪律
 
 - 每 Phase 开工前更新本计划对应节；完工打钩并 commit。

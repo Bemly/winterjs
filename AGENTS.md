@@ -1322,3 +1322,66 @@ cargo build
   check 语义记档）；Timeout/Immediate 改真类（constructor.name 真机口径，
   类本体不出 prelude 块作用域——真机 `globalThis.Timeout === undefined`，
   污染全局即错）；plan.md 9b"裸 number"记档同步勘误（M5 起已返回对象）。
+
+### 4.86 Writable 默认 `autoDestroy:true` 会杀保活连接（2026-09-15，10b）
+
+- 症状：客户端请求发出去服务端永远收不到（`ref-got` 缺席），`_final` 后跟一条
+  无来由的 `_destroy`（堆栈：`finish@writable → destroy@http_framing`）。
+- 根因：`autoDestroy` 默认 true——upload 一 finish 就自动 destroy，而本仓
+  `_destroy` 负责杀 socket（连接未建好即杀，请求死在半路）。
+  连带：`emitClose` 默认 true 会在 upload finish 后自动发 req 'close'，
+  与 9d 口径（close 在响应收齐后）冲突，造成双 close。
+- 修法：`ServerResponse`/`OutgoingMessage` 一律
+  `super({ autoDestroy: false })`（销毁只显式：server.close/agent.destroy/
+  用户 destroy/对端死亡）；`OutgoingMessage` 另加 `emitClose: false`，
+  req 'close' 由 `__finishResponse`/`__onSockCloseEv` 手动在 res 'end' 后发。
+- 复现：任意 `http.get`（修前服务端零收到；`tests/node/http.rs` 全挂）。
+- 推广为铁律：凡把"连接"装进 stream 壳，`autoDestroy/emitClose` 默认值先按
+  连接语义重审一遍——流的生死 ≠ 连接的生死。
+
+### 4.87 增量泵的"等更多数据"必须带空 rest（2026-09-15，10b）
+
+- 症状：GET→POST 交界 flaky hang（约 1/3；单 POST 全过，加日志全过）。
+- 根因：`__pumpChunked` 等数据的 `return { done: false }` 不带 `rest`，
+  调用方 `st.buf = r.rest` 把缓冲置 `undefined`——下个包一到
+  `__concat(undefined, …)` 抛错，外层 catch 直接 `sock.destroy()`。
+  包不拆就全到（`done:true` 带 rest），一拆就炸，故 flaky。
+- 修法：6 处 `return { done: false, rest: new Uint8Array(0) }`（余字节已进
+  `fr.buf` 内部态，调用方覆盖为空即对）；CL 泵本就带 rest，无事。
+- 定位手法：可复现的 ping-pong 循环（20 轮，成功打点、卡住即停）比反复跑
+  原测试更快——`pp.mjs` 式"窄探针 + 全事件追踪"三轮即抓到（本次还抓到
+  `cli-close` 早于服务端完工，顺藤摸到 destroy 链）。
+- 推广为铁律：增量解析器的返回形状必须全字段齐备（含"无进展"分支）；
+  flaky hang 先怀疑包边界，再怀疑逻辑（`pp.mjs` 留档思路，不入库）。
+
+### 4.88 TLS 写半部 drop 不发 close_notify，双边读端永 block（2026-09-15，10b）
+
+- 症状：https keep-alive 功能全对（复用计数/`reusedSocket` 全绿），但进程
+  永不退出（lsof 双边 ESTABLISHED；destroy 全送达、purge 全缺席）。
+- 根因：tokio TCP 写半部 drop 自带 FIN，tokio-rustls 写半部 drop 不发
+  close_notify——destroy 后双边读端各 block 各的，Close 永不到（9d 纯 TCP
+  从未暴露）。
+- 修法（`src/builtins/node/net.rs` writer task）：`NetCmd::Close` 路径先
+  `w.shutdown().await` 再 break（TLS 发 close_notify + 关 TCP 写；
+  TCP 侧与 drop 语义重复，无害）。
+- 连带（同案第二漏）：对端 FIN 到达**池化空闲** socket 时只发 End（写端活着
+  不收尾），而池 socket 永不会再有人 end——`net.js`/`tls.js` 的 end 处理器
+  首行加池检查：`__inPool` 即 destroy（半关不可复用，Node 同样踢出池）；
+  Agent 侧 `__release/__acquire` 置 `__inPool` 位；泵层加 `reader_done` 旗，
+  writer 退出时读端已走则补 Close（`close_once` 防双发，与既有 EOF 路径收敛）。
+- 复现：`tests/node/https.rs::phase10b_https_keepalive_reuse`（修前永 hang；
+  http 同形不 hang 是 TCP FIN 掩盖，不是语义对）。
+- 推广为铁律：传输换底座（TCP→TLS）后，"关闭收敛"必须重走一遍——drop/
+  shutdown/EOF 三者的底座语义各不相同，9d 的 TCP 经验不自动继承。
+
+### 4.89 `end()` 与 connect 竞速：`_final` 时 socket 未就绪则请求永不发出（2026-09-15，10b）
+
+- 症状：`http.get` 后服务端零收到、无报错、无 error，进程空转到 watchdog。
+- 根因：`Writable.end()` 同步走完 `_final` 时 socket 尚未连通（连通要过事件
+  循环），旧代码只管"连通时发出"，未连通分支置了 `pendingFinal` 旗却无人消费。
+- 修法：connect/secureConnect/复用 attach 三处统一收敛——先 `__tryFlush()`
+  （holdback 转 chunked），再消费 `pendingFinal`（`__flushFinal`：头未发走 CL
+  快捷，已发补 0-chunk；漏后者即 POST 交界 hang，见 §4.87 同源）。
+- 推广为铁律：凡"构造即发"（请求/连接）遇"异步就绪"（connect/握手），就绪
+  回调必须同时服务"已就绪数据"与"已结束标记"两件，缺一件即半吊子挂起。
+  定位时先分清"没发出去"（服务端零收到，curl 对照）还是"没解析出来"。

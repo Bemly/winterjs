@@ -433,6 +433,11 @@ class TLSSocket extends EventEmitter {
       }
       case "end": {
         this.readable = false;
+        // 池化空闲 socket 见 FIN 即销毁（同 net.js，10b）。
+        if (this.__inPool) {
+          this.destroy();
+          break;
+        }
         this.emit("end");
         if (!this.allowHalfOpen && this.__id) __wjs_net_end(this.__id);
         break;

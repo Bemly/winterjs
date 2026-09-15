@@ -25,7 +25,7 @@
 |---|---|---|---|---|
 | http | 🟢 | ✅（整收口径） | keep-alive、流式 req/res 体、IncomingMessage/ServerResponse 流全家 | 10b |
 | https | 🟡（无 SNI 等） | ✅（同 http 记档） | 随 http 流式化走；SNI 回调等与 Bun 同缺，不追 | 10b |
-| http2 | 🟢 | ✅（h2c+H3；无 push/trailer） | trailer/push/Upgrade 三件评估（能做做、不能偏离） | 10b |
+| http2 | 🟢 | ✅（h2c+H3；无 push/trailer/Upgrade，10b-4 triage 全偏离） | trailer/push/Upgrade 三件评估：push 系 Web 已死特性、trailer 等 h2 流式切片、Upgrade 浏览器不用 | 10b |
 | readline | 🟢 | 🟡（最小桥） | `question` 真实现、行编辑/history/异步迭代器、Emacs 快捷键子集 | 10c |
 | tty | 🟢 | 🟡（薄面） | net.Socket 基座、ioctl winsize、setRawMode 真标志（termios 按平台记档） | 10c |
 | repl（模块面） | 🟡 | ✅ CLI／— 模块 | `node:repl` 注册：REPLServer/start/Recoverable（复用 10c 的 Interface） | 10c |
@@ -66,6 +66,11 @@
   组播项（回环组播 hermetic：`239.0.0.x` 本机环回）点名绿；黑盒三件套照旧。
 
 ### 10b HTTP 流式化（深水，http 栈重构）
+
+> ✅ 2026-09-15 收官：帧层重写（IM/Res/Req 进 stream 全家）+ keep-alive
+> （Agent 池/`reusedSocket`）+ chunked 双向 + 1MB 大体 + https 随行；
+> http2 三件 triage 全偏离。`cargo test` 全绿 0 警告，冒烟 5/5。
+> 踩坑见 AGENTS §4.86–4.89。
 
 - 做：http 整收改流式——keep-alive 连接复用、req/res 体流式（IncomingMessage/
   ServerResponse 进 `node:stream` 全家，可 pipe/for-await）、分块编码；

@@ -7,6 +7,10 @@
 //! - h2c 仅 prior-knowledge（无 Upgrade/h1c 回落）；`allowHTTP1` 不做。
 //! - 体整收（server 收齐才发 request，client 收齐才发 data/end；http 记档同款）。
 //! - 服务端推送（pushStream）、trailer、优先级/流控调参、ping/settings 细 knob 不做。
+//!   （10b-4 triage：push 系 Web 已死特性——Chrome 106+ 移除，Safari/Firefox
+//!   从未发货，为死特性做兼容无意义；trailer 等 h2 流式切片（整收下半 baked，
+//!   另案）；h1 Upgrade: h2c 浏览器不用（只走 prior-knowledge），且本仓 h1
+//!   upgrade 管线归 ws，另案。）
 //! - `session.socket`/`alpnProtocol` 等反射面仅 `encrypted` 布尔；`getPeerCertificate` 不做。
 //! - 状态码/头非法（JS 侧）→ 500 兜底（不断连）。
 

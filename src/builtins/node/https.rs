@@ -1,6 +1,7 @@
 //! `node:https`：HTTPS Server/Client——帧层复用 `node:internal/http_framing`
-//! （与 `node:http` 同语义），传输经 `node:tls`（Phase 9d-6）。
-//! 偏差记档（`node:http` 记档沿用：无 keep-alive、体整收、IncomingMessage 非流全家）：
+//! （与 `node:http` 同语义，含 10b keep-alive/流式体/chunked），传输经
+//! `node:tls`（Phase 9d-6）。
+//! 偏差记档（帧层头注沿用）：
 //! - 客户端 TLS 选项透传：`servername`/`ca`（PEM 串）/`rejectUnauthorized`
 //!   （`tls.connect` 同口径）；缺省系统 roots 校验。
 //! - 服务端 `createServer({ key, cert }, listener)`（PEM 串必填）。
@@ -26,7 +27,15 @@ const ClientRequest = withClientRequest(
   FLAVOR,
 );
 class Agent extends BaseAgent {}
+Agent.prototype.__openSocket = (host, port, extra) => tls.connect({
+  port, host,
+  servername: extra.servername,
+  ca: extra.ca,
+  rejectUnauthorized: extra.rejectUnauthorized,
+});
+Agent.prototype.__defaultPort = 443;
 const globalAgent = new Agent();
+FLAVOR.defaultAgent = globalAgent;
 
 export function request(a, b, c) {
   const [options, cb] = normalizeRequestArgs(a, b, c, FLAVOR);

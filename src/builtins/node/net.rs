@@ -154,7 +154,13 @@ pub(crate) fn spawn_pumps<R, W>(
                     }
                     break;
                 }
-                NetCmd::Close => break,
+                NetCmd::Close => {
+                    // 显式 shutdown 再退（10b https 保活案：tokio-rustls 写半部
+                    // drop 不发 close_notify，对端读端永 block，双边死锁；
+                    // TCP 写半部 drop 自带 FIN，故 9d 从未暴露）。
+                    let _ = w.shutdown().await;
+                    break;
+                },
                 NetCmd::SendTo { .. } => {} // dgram 专用（net socket 不产生）
                 // 10a dgram sockopt 全家（同上，net socket 不产生）
                 NetCmd::DgramBroadcast(_)
@@ -170,6 +176,11 @@ pub(crate) fn spawn_pumps<R, W>(
             }
         }
         state::net_writer_exit(id);
+        // 读端已先走（EOF/错后 break）：写端是最后一个退出者，补发 Close
+        // （10b https 保活案：destroy 后读端见 FIN 先退，写端退出时无人收尾）。
+        if state::net_reader_gone(id) && state::net_close_once(id) {
+            let _ = ev_w.send(NetEvent { id, kind: NetKind::Close });
+        }
     });
     // 读端 task：EOF → End（两侧半关齐则 Close 收尾）；错 → Error + Close。
     handle.spawn(async move {
@@ -184,6 +195,7 @@ pub(crate) fn spawn_pumps<R, W>(
                     if state::net_writer_dead(id) && state::net_close_once(id) {
                         let _ = ev_tx.send(NetEvent { id, kind: NetKind::Close });
                     }
+                    state::net_reader_done(id);
                     break;
                 }
                 Ok(n) => {
@@ -198,6 +210,7 @@ pub(crate) fn spawn_pumps<R, W>(
                         id,
                         kind: NetKind::Error { code: code.into(), msg: format!("{code}: {e}") },
                     });
+                    state::net_reader_done(id);
                     if state::net_close_once(id) {
                         let _ = ev_tx.send(NetEvent { id, kind: NetKind::Close });
                     }
@@ -711,6 +724,12 @@ class Socket extends EventEmitter {
       }
       case "end": {
         this.readable = false;
+        // 池化空闲 socket 见 FIN 即销毁（半关不可复用；否则写端永活、条目永泄，
+        // 10b https 保活案；Node 同样把 end 掉的 socket 踢出池）。
+        if (this.__inPool) {
+          this.destroy();
+          break;
+        }
         this.emit("end");
         // Node 口径：非 allowHalfOpen 时收 FIN 即自动回 FIN（'close' 随后）
         if (!this.allowHalfOpen && this.__id) __wjs_net_end(this.__id);

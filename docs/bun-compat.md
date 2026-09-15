@@ -64,7 +64,7 @@ winterjs 列（2026-09-15 现状回填，证据见后表注记；注册表以
 | cluster | ✅ | 🟡（http 多绑限 Linux） | ❌ | JS+内 | — | 排后（多进程语义重） |
 | crypto | ✅ | 🟡（BoringSSL 缺口：ed448/secp256k1/CCM 等） | ✅ | JS+内 | ✅ | Hash/Hmac/对称/非对称 + ml-kem/ml-dsa + X509 verify；GCM iv 限 12B、ccm/ocb 不做（记档） |
 | domain | ✅ | 🟡 | ❌ | JS | — | 遗留语义，排后 |
-| http2 94% | ✅ | 🟢 | 🟡 | JS+内 | ✅ | h2c prior-knowledge + H3 分支（串行记档）；无 push/trailer（记档） |
+| http2 94% | ✅ | 🟢 | 🟡 | JS+内 | ✅ | h2c prior-knowledge + H3 分支（串行记档）；无 push（Web 已死）/trailer（等流式切片）/Upgrade（浏览器不用） |
 | module | ✅ | 🟡（缺 load/registerHooks 等） | ✅ | JS+内 | ✅ | require（CJS/type 口径/require(esm)）+ createRequire + registerHooks/import.meta.resolve + 静态具名发现 |
 | net | ✅ | 🟢 | 🟡 | JS+内 | ✅ | 回环 + allowHalfOpen/destroy 语义全对；port 0 hermetic |
 | perf_hooks | ✅ | 🟡 | 🟡 | JS+内 | 🟡 | performance/计时全家可用；monitorEventLoopDelay 简化、eventLoopUtilization 恒值（记档） |

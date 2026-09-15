@@ -253,6 +253,8 @@ pub struct NetEntry {
     pub close_sent: bool,
     /// 写端 task 是否存活（destroy 后死亡；读端见 EOF 时若已死则直接收尾）。
     pub writer_alive: bool,
+    /// 读端 task 是否已退出（EOF/错后 break；写端退出时若读端已走则补 Close）。
+    pub reader_done: bool,
     /// ref 计数位（10a 真计数：unref 摘循环续命，ref 装回；默认 true）。
     pub refed: bool,
 }
@@ -1153,7 +1155,7 @@ pub fn net_socket_add(
     with_rooted(|s| s.net_targets.push(NetTarget { id, target: Heap::boxed(target) }));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     with_plain(|p| {
-        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true, refed: true });
+        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true, reader_done: false, refed: true });
         p.net_open += 1;
     });
     rx
@@ -1165,7 +1167,7 @@ pub fn net_conn_add() -> (u64, tokio::sync::mpsc::UnboundedReceiver<crate::built
     let id = with_plain(|p| {
         p.net_next_id += 1;
         let id = p.net_next_id;
-        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true, refed: true });
+        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true, reader_done: false, refed: true });
         p.net_open += 1;
         id
     });
@@ -1219,6 +1221,20 @@ pub fn net_writer_exit(id: u64) -> bool {
             false
         }
     })
+}
+
+/// 标记读端 task 退出（EOF/错后 break；写端已死则此处不补——写端退出侧补）。
+pub fn net_reader_done(id: u64) {
+    with_plain(|p| {
+        if let Some(e) = p.net_sockets.get_mut(&id) {
+            e.reader_done = true;
+        }
+    });
+}
+
+/// 读端是否已退出（写端退出时若读端已走则补发 Close，close_once 防双发）。
+pub fn net_reader_gone(id: u64) -> bool {
+    with_plain(|p| p.net_sockets.get(&id).is_some_and(|e| e.reader_done))
 }
 
 /// 写端是否已死（死则读端 EOF 需代行收尾，End 命令无人消费）。

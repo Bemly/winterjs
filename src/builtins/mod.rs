@@ -2526,6 +2526,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_zlib_brotli_decompress", Some(node::zlib::zlib_brotli_decompress), 1),
             ("__wjs_zlib_zstd_compress", Some(node::zlib::zlib_zstd_compress), 1),
             ("__wjs_zlib_zstd_decompress", Some(node::zlib::zlib_zstd_decompress), 1),
+            // 10a：crc32（ISO-HDLC 自实现；flate2::Crc 不收 seed）
+            ("__wjs_zlib_crc32", Some(node::zlib::zlib_crc32), 2),
             ("__wjs_cp_exec", Some(node::child::cp_exec), 2),
             ("__wjs_cp_spawn", Some(node::child::cp_spawn), 3),
             // Phase 4d: 异步 spawn（c-4x 加 pipe：stdin 写/关 natives）

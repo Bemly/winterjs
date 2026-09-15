@@ -165,3 +165,36 @@ console.log("stored", gunzipSync(gzipSync(big, { level: 0 })).toString() === big
     assert!(out.contains("stored true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10a_zlib_crc32() {
+    // 10a：crc32（ISO-HDLC；真机值对拍：空串/链式/双报错）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "c.mjs",
+        r#"import zlib, { crc32 } from "node:zlib";
+console.log("base", crc32("hello"), crc32("hello", 0).toString(16));
+console.log("buf", crc32(Buffer.from("hello")), crc32(new Uint8Array([104, 105])));
+console.log("view", crc32(new DataView(new Uint8Array([104, 101, 108, 108, 111]).buffer)));
+console.log("empty", crc32(""));
+console.log("chain", crc32("world", crc32("hello")));
+console.log("named", zlib.crc32("hello") === crc32("hello"), zlib.crc32Table);
+try { crc32(42); } catch (e) { console.log("t-data", e.code, e.message); }
+try { crc32("a", "x"); } catch (e) { console.log("t-value", e.code, e.message); }
+"#,
+    );
+    for line in [
+        "base 907060870 3610a686",
+        "buf 907060870 3633523372",
+        "view 907060870",
+        "empty 0",
+        "chain 4192936109",
+        "named true undefined",
+        "t-data ERR_INVALID_ARG_TYPE The \"data\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received type number (42)",
+        "t-value ERR_INVALID_ARG_TYPE The \"value\" argument must be of type number. Received type string ('x')",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

@@ -9,7 +9,8 @@
 //! - 异步回调底层同步实现（`queueMicrotask` 派发；`node:fs` 同款"同步底层"口径，
 //!   无线程池；大块阻塞 JS 线程，文档记录）。
 //! - 流式类（Deflate/Inflate/Gzip…/`createXxx`）顺延（需 Transform 集成，另切片）。
-//! - `crc32`、Zip 实验面（上游 experimental）不做。
+//! - Zip 实验面（上游 experimental）不做。
+//! - 10a：`crc32` 落地（ISO-HDLC 自实现——`flate2::Crc` 不收 seed；同步纯函数）。
 //! - options 只 honor `level`（gzip/deflate 系，-1..9）与 `quality`/`params[1]`
 //!   （brotli，0..11）；windowBits/memLevel/strategy/dictionary/flush 系接受忽略。
 //! - zstd 编码恒用 `CompressionLevel::Fastest`——ruzstd 0.9.0 的 Default/Better/
@@ -87,6 +88,60 @@ fn read_all<R: std::io::Read>(r: R) -> Result<Vec<u8>, String> {
         .read_to_end(&mut out)
         .map_err(|e| format!("Z_DATA_ERROR: {e}"))?;
     Ok(out)
+}
+
+/// CRC-32/ISO-HDLC 表（const 生成；`flate2::Crc` 同算法但其 API 不收 seed，
+/// 链式 `crc32(b, crc32(a))` 口径需自实现——真机值对拍钉住，见黑盒）。
+const fn crc32_table_entry(i: u32) -> u32 {
+    let mut crc = i;
+    let mut k = 0;
+    while k < 8 {
+        crc = if crc & 1 == 1 {
+            0xEDB8_8320 ^ (crc >> 1)
+        } else {
+            crc >> 1
+        };
+        k += 1;
+    }
+    crc
+}
+const fn crc32_table() -> [u32; 256] {
+    let mut t = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        t[i] = crc32_table_entry(i as u32);
+        i += 1;
+    }
+    t
+}
+static CRC32_TABLE: [u32; 256] = crc32_table();
+
+/// `__wjs_zlib_crc32(dataU8, seedU32)` → uint32（真机值对拍：
+/// crc32("hello")=907060870，链式与空串口径同）。
+/// JS 侧已验类型（ERR_INVALID_ARG_TYPE 原文），此处只做防御式取值。
+pub unsafe extern "C" fn zlib_crc32(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(data) = arg_bytes(&mut cx, &frame, 0, "crc32") else {
+        return false;
+    };
+    let seed = if frame.argc() > 1 && frame.arg(1).is_number() {
+        frame.arg(1).to_number() as u32
+    } else {
+        0
+    };
+    // 链式：state = !seed（seed 为上一段终值时恰为其内部态）。
+    let mut state = !seed;
+    for &b in &data {
+        state = CRC32_TABLE[((state ^ b as u32) & 0xFF) as usize] ^ (state >> 8);
+    }
+    frame.set_rval(mozjs::jsval::DoubleValue((!state) as f64));
+    true
 }
 
 /// `__wjs_zlib_deflate_lv(dataU8, level)`（level -1=默认；JS 侧已验 -1..9）。
@@ -382,6 +437,14 @@ pub unsafe extern "C" fn zlib_zstd_decompress(
 
 /// 内嵌 ESM 源（`node:zlib`）。
 pub const SOURCE: &str = r#"
+import errors from 'node:internal/errors';
+
+const {
+  codes: {
+    ERR_INVALID_ARG_TYPE: { HideStackFramesError: ERR_INVALID_ARG_TYPE },
+  },
+} = errors;
+
 function __zBytes(input, what) {
   if (typeof input === "string") return new TextEncoder().encode(input);
   if (input instanceof Uint8Array) return input;
@@ -467,6 +530,26 @@ export function deflate(buf, opts, cb) {
 export function inflateSync(buf) {
   const data = __zBytes(buf, "inflate");
   return __zCall(() => __wjs_zlib_inflate(data));
+}
+// 10a：crc32（同步纯函数；真机逐项对过：空串 0、链式 seed、双报错）。
+export function crc32(data, value = 0) {
+  let bytes;
+  if (typeof data === "string") {
+    bytes = new TextEncoder().encode(data);
+  } else if (data instanceof Uint8Array) {
+    bytes = data;
+  } else if (data instanceof ArrayBuffer) {
+    bytes = new Uint8Array(data);
+  } else if (ArrayBuffer.isView(data)) {
+    bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  } else {
+    throw new ERR_INVALID_ARG_TYPE(
+      "data", ["string", "Buffer", "TypedArray", "DataView"], data);
+  }
+  if (typeof value !== "number") {
+    throw new ERR_INVALID_ARG_TYPE("value", "number", value);
+  }
+  return __wjs_zlib_crc32(bytes, value >>> 0);
 }
 export function inflate(buf, cb) {
   __zNeedCb(cb, "inflate");
@@ -597,6 +680,7 @@ const __api = {
   gzip, gzipSync, gunzip, gunzipSync, unzip, unzipSync,
   brotliCompress, brotliCompressSync, brotliDecompress, brotliDecompressSync,
   zstdCompress, zstdCompressSync, zstdDecompress, zstdDecompressSync,
+  crc32,
   constants, codes,
 };
 // 顶层非 BROTLI 别名（Node 遗留口径，非枚举）。

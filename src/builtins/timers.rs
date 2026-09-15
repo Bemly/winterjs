@@ -5,7 +5,6 @@
 use std::time::{Duration, Instant};
 
 use mozjs::context::JSContext;
-use mozjs::gc::ValueArray;
 use mozjs::jsapi::{Heap, JSObject};
 use mozjs::jsval::{Int32Value, JSVal, UndefinedValue};
 

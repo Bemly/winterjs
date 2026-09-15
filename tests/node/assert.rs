@@ -11,3 +11,18 @@ fn phase4_node_assert_subset() {
         "assert: {out}"
     );
 }
+
+#[test]
+fn phase10f_assert_rejects_promise_or_fn() {
+    // 10f：rejects/doesNotReject 收 promise 或函数（旧实现只收函数，套件点名抓到）。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        r#"const assert = (await import("node:assert")).default;
+await assert.rejects(Promise.reject(new TypeError("p")), TypeError);
+await assert.rejects(async () => { throw new RangeError("f"); }, { code: undefined });
+let threw = false;
+try { await assert.rejects(Promise.reject(new TypeError("p")), RangeError); } catch (e) { threw = e.code === "ERR_ASSERTION"; }
+console.log("mismatch", threw);
+await assert.doesNotReject(Promise.resolve(1));
+console.log("done");"#]));
+    assert_eq!(out, "mismatch true\ndone\n", "assert: {out}");
+}

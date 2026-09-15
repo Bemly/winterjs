@@ -1,6 +1,7 @@
 //! tests/node/util.rs — 对齐 src/builtins/node/util.rs（node:util（含 parseEnv））。
 
 use crate::common::*;
+use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
@@ -300,5 +301,30 @@ console.log("same-cross", sysDefault === utilReq);
     ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_util_getcallsites() {
+    // 10f：util.getCallSites（SM 栈解析；test/common mustNotCall 前置）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { getCallSites } from "node:util";
+function inner() { return getCallSites(); }
+function outer() { return inner(); }
+const sites = outer();
+console.log("len", sites.length >= 2);
+console.log("frame0", sites[0].functionName, typeof sites[0].scriptName, typeof sites[0].lineNumber);
+console.log("frame1", sites[1].functionName === "outer", sites[1].scriptName.endsWith("p.mjs"));
+console.log("methods", typeof sites[0].getFileName, typeof sites[0].getLineNumber);
+"#,
+    );
+    assert!(out.contains("len true"), "out: {out}");
+    assert!(out.contains("frame0 inner string number"), "out: {out}");
+    assert!(out.contains("frame1 true true"), "out: {out}");
+    assert!(out.contains("methods function function"), "out: {out}");
     dir.close().unwrap();
 }

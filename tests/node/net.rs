@@ -129,3 +129,28 @@ console.log("res", res.cork() === res, res.uncork() === res);"#])
         "sock true true true true true true true true\nisip 4 6 0 true true\nreq true true true\nres true true\n"
     );
 }
+
+#[test]
+fn phase10f_net_autoselect_timeout() {
+    // 10f：get/setDefaultAutoSelectFamilyAttemptTimeout（存值面；test/common 前置）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+console.log("def", net.getDefaultAutoSelectFamilyAttemptTimeout());
+net.setDefaultAutoSelectFamilyAttemptTimeout(1000);
+console.log("set", net.getDefaultAutoSelectFamilyAttemptTimeout());
+try { net.setDefaultAutoSelectFamilyAttemptTimeout(-1); } catch (e) { console.log("neg", e.code); }
+try { net.setDefaultAutoSelectFamilyAttemptTimeout("x"); } catch (e) { console.log("str", e.code); }
+console.log("kept", net.getDefaultAutoSelectFamilyAttemptTimeout());
+"#,
+    );
+    assert!(out.contains("def 500"), "out: {out}");
+    assert!(out.contains("set 1000"), "out: {out}");
+    assert!(out.contains("neg ERR_OUT_OF_RANGE"), "out: {out}");
+    assert!(out.contains("str ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("kept 1000"), "out: {out}");
+    dir.close().unwrap();
+}

@@ -870,6 +870,22 @@ export const Stream = Socket;
 export function isIP(input) { return Number(__wjs_net_isip(String(input))); }
 export function isIPv4(input) { return isIP(input) === 4; }
 export function isIPv6(input) { return isIP(input) === 6; }
-const __api = { Socket, Server, createServer, createConnection, connect, Stream, isIP, isIPv4, isIPv6 };
+// Happy-eyeballs 超时存值（10f：test/common 前置；连接侧暂不实现自动族选择，记档）。
+let __autoSelectTimeout = 500;
+export function getDefaultAutoSelectFamilyAttemptTimeout() { return __autoSelectTimeout; }
+export function setDefaultAutoSelectFamilyAttemptTimeout(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    const err = new TypeError("timeout must be a number");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (!Number.isFinite(value) || value < 0) {
+    const err = new RangeError("timeout must be >= 0");
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  __autoSelectTimeout = value;
+}
+const __api = { Socket, Server, createServer, createConnection, connect, Stream, isIP, isIPv4, isIPv6, getDefaultAutoSelectFamilyAttemptTimeout, setDefaultAutoSelectFamilyAttemptTimeout };
 export default __api;
 "#;

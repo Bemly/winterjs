@@ -99,9 +99,11 @@ function __checkThrow(e, expected, prefix) {
   if (expected === undefined) return;
   let ok = false;
   if (typeof expected === "function") {
+    // 10f：真机口径——先 instanceof，不过再当校验函数调且须严格回 true
+    //（旧实现 `!!expected(e)` 把构造器调用的真值对象当通过）。
     try {
       ok = e instanceof expected;
-      if (!ok) ok = !!expected(e);
+      if (!ok) ok = expected(e) === true;
     } catch {
       ok = false;
     }
@@ -132,9 +134,11 @@ export function doesNotThrow(fn, message) {
   }
 }
 export async function rejects(fn, expected, message) {
+  // 10f：真机收 promise 或函数（旧实现只收函数，套件点名抓到）。
   if (typeof expected === "string") { message = expected; expected = undefined; }
+  const p = typeof fn === "function" ? fn() : fn;
   try {
-    await fn();
+    await p;
   } catch (e) {
     __checkThrow(e, expected, "rejects");
     return;
@@ -142,8 +146,9 @@ export async function rejects(fn, expected, message) {
   __fail(undefined, expected, message || "Missing expected rejection", "rejects");
 }
 export async function doesNotReject(fn, message) {
+  const p = typeof fn === "function" ? fn() : fn;
   try {
-    await fn();
+    await p;
   } catch (e) {
     __fail(e, undefined, message || `Got unwanted rejection: ${String((e && e.message) || e)}`, "doesNotReject");
   }

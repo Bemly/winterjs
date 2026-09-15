@@ -15,7 +15,9 @@
 //!   `kEnhanceStackBeforeInspector` 符号预留（inspector 未做，enhanceStackTrace
 //!   的 capture 用 `Error.captureStackTrace`（SM 支持，探针实测））。
 //! - EventTarget 形态经 `node:internal/event_target` 鸭子类型（本仓 AbortSignal
-//!   为极简实现）；`getEventListeners(target)` 对 Web EventTarget 返回空数组。
+//!   为极简实现）；`getEventListeners(target)` 对 Web EventTarget 返回空数组；
+//!   `listenerCount(target)` 读原生侧表（10f：仅经帮助函数挂载的可见，用户直调
+//!   `addEventListener` 不可见）。
 //! - `process.emitWarning` 已补进 process prelude（warning 监听面 + stderr 打印）。
 
 /// 内嵌 ESM 源。
@@ -43,7 +45,7 @@ import {
   validateObject,
   validateString,
 } from 'node:internal/validators';
-import { addAbortListener } from 'node:internal/events/abort_listener';
+import { addAbortListener, __etAdd, __etRemove, __etCount } from 'node:internal/events/abort_listener';
 import FixedQueue from 'node:internal/fixed_queue';
 import { kFirstEventParam } from 'node:internal/events/symbols';
 import { kResistStopPropagation, isEventTarget } from 'node:internal/event_target';
@@ -684,7 +686,9 @@ function listenerCount(emitterOrTarget, type) {
     return emitterOrTarget.listenerCount(type);
   }
   if (isEventTarget(emitterOrTarget)) {
-    return 0; // 本仓 Web EventTarget 无 kEvents 存储（偏差见模块头注）
+    // 10f：原生 EventTarget 读侧表（经帮助函数挂载的监听可见；
+    // 用户直调 addEventListener 不可见，记档）。
+    return __etCount(emitterOrTarget, type);
   }
   throw new ERR_INVALID_ARG_TYPE('emitter', ['EventEmitter', 'EventTarget'], emitterOrTarget);
 }
@@ -724,6 +728,11 @@ async function once(emitter, name, options = kEmptyObject) {
       emitter.once('error', errorListener);
     }
     function abortListener() {
+      // 10f：先自摘（原生 addEventListener 忽略 once 选项，侧表靠显式摘除；
+      // 不摘则 abort 后 listenerCount 仍为 1，套件点名）。
+      if (signal != null) {
+        eventTargetAgnosticRemoveListener(signal, 'abort', abortListener);
+      }
       eventTargetAgnosticRemoveListener(emitter, name, resolver);
       eventTargetAgnosticRemoveListener(emitter, 'error', errorListener);
       reject(new AbortError(undefined, { cause: signal?.reason }));
@@ -744,6 +753,8 @@ function eventTargetAgnosticRemoveListener(emitter, name, listener, flags) {
     emitter.removeListener(name, listener);
   } else if (typeof emitter.removeEventListener === 'function') {
     emitter.removeEventListener(name, listener, flags);
+    // 10f：原生 EventTarget 侧表同步摘除（`listenerCount` 可读）。
+    __etRemove(emitter, name, listener);
   } else {
     throw new ERR_INVALID_ARG_TYPE('emitter', 'EventEmitter', emitter);
   }
@@ -758,6 +769,8 @@ function eventTargetAgnosticAddListener(emitter, name, listener, flags) {
     }
   } else if (typeof emitter.addEventListener === 'function') {
     emitter.addEventListener(name, listener, flags);
+    // 10f：原生 EventTarget 侧表同步登记（`listenerCount` 可读）。
+    __etAdd(emitter, name, listener);
   } else {
     throw new ERR_INVALID_ARG_TYPE('emitter', 'EventEmitter', emitter);
   }

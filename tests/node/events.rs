@@ -1,6 +1,7 @@
 //! tests/node/events.rs — 对齐 src/builtins/node/events.rs（node:events）。
 
 use crate::common::*;
+use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
@@ -230,5 +231,29 @@ try { getEventListeners(42, "a"); } catch (e) { console.log(e.code); }
         out.contains("true 1") && out.contains("ERR_INVALID_ARG_TYPE"),
         "out: {out}"
     );
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_events_signal_listenercount() {
+    // 10f：once() 的 abort 接线对 listenerCount 可见（原生侧表；test-events-once 点名）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { once, listenerCount, EventEmitter } from "node:events";
+const ee = new EventEmitter();
+const ac = new AbortController();
+const p = once(ee, "x", { signal: ac.signal });
+console.log("pending", listenerCount(ac.signal, "abort"), ee.listenerCount("error"));
+ac.abort();
+try { await p; } catch (e) { console.log("aborted", e.name); }
+console.log("after", listenerCount(ac.signal, "abort"), ee.listenerCount("error"));
+"#,
+    );
+    assert!(out.contains("pending 1 1"), "out: {out}");
+    assert!(out.contains("aborted AbortError"), "out: {out}");
+    assert!(out.contains("after 0 0"), "out: {out}");
     dir.close().unwrap();
 }

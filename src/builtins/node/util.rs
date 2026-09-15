@@ -55,6 +55,36 @@ const {
   stripVTControlCharacters,
 } = inspectModule;
 
+// ── getCallSites（10f：test/common `mustNotCall` 前置；V8 CallSite 最佳努力）──
+//! 口径：解析 SpiderMonkey `fn@file:line:col` 栈（首帧自身丢弃，[0] 为调用方，
+//! 与 V8 `[1]` 取测试位对齐）；返回数据对象（属性 + 方法双形态）。
+function getCallSites() {
+  const raw = String(new Error().stack || '').split('\n');
+  const out = [];
+  for (let i = 1; i < raw.length; i++) {
+    const m = raw[i].match(/^(.*)@(.*):(\d+):(\d+)$/);
+    if (!m) continue;
+    const fnName = m[1] === '' ? undefined : m[1];
+    const file = m[2];
+    const line = Number(m[3]);
+    const col = Number(m[4]);
+    out.push({
+      functionName: fnName,
+      scriptName: file,
+      lineNumber: line,
+      column: col,
+      getFunctionName() { return fnName; },
+      getFileName() { return file; },
+      getScriptNameOrSourceURL() { return file; },
+      getLineNumber() { return line; },
+      getColumnNumber() { return col; },
+      isNative() { return false; },
+      isToplevel() { return fnName === undefined; },
+    });
+  }
+  return out;
+}
+
 // ── inherits / _extend ────────────────────────────────────────────────────
 function inherits(ctor, superCtor) {
   if (ctor === undefined || ctor === null)
@@ -830,6 +860,7 @@ const util = {
   deprecate,
   format,
   formatWithOptions,
+  getCallSites,
   inherits,
   inspect,
   isArray: isArrayDep,
@@ -870,6 +901,7 @@ export {
   deprecate,
   format,
   formatWithOptions,
+  getCallSites,
   getSystemErrorMap,
   getSystemErrorMessage,
   getSystemErrorName,

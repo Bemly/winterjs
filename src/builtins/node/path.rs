@@ -249,7 +249,6 @@ function makePosix() {
   return { sep, delimiter: ":", normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format, toNamespacedPath, _makeLong };
 }
 // ---- win32 ----
-function winSplit(p) { return p.split(/[\\/]/); }
 function winDevice(p) {
   // 返回 { device, rest }：盘符 `C:` / UNC `\\s\s` / 无
   if (/^[a-zA-Z]:/.test(p)) return { device: p.slice(0, 2), rest: p.slice(2) };
@@ -260,70 +259,206 @@ function winDevice(p) {
   }
   return { device: "", rest: p };
 }
-function winNormalizeParts(parts, allowAboveRoot) {
-  const out = [];
-  for (const part of parts) {
-    if (part === "" || part === ".") continue;
-    if (part === "..") {
-      if (out.length && out[out.length - 1] !== "..") out.pop();
-      else if (allowAboveRoot) out.push("..");
-    } else out.push(part);
-  }
-  return out;
-}
 function makeWin32() {
   const sep = "\\";
-  function splitRoot(p) {
-    p = String(p);
-    const { device, rest } = winDevice(p);
-    const absolute = rest.length > 0 && (rest[0] === "\\" || rest[0] === "/");
-    return { device, absolute, rest };
-  }
   function normalize(p) {
-    p = String(p);
-    if (p === "") return ".";
-    const { device, absolute, rest } = splitRoot(p);
-    const trailing = /[\\/]$/.test(rest) && rest.length > 1;
-    const parts = winNormalizeParts(winSplit(rest), !absolute && !device);
-    let out = parts.join("\\");
-    if (absolute) out = "\\" + out;
-    if (device) out = device + (absolute || out ? "\\" + out.replace(/^\\/, "") : out || (absolute ? "" : "."));
-    if (out === "" || out === device) out = device || ".";
-    else if (trailing && !/[\\/]$/.test(out)) out += "\\";
-    if (device && !absolute && out === device) return out;
-    return out;
-  }
-  function join(...parts) {
-    if (parts.length === 0) return ".";
-    return normalize(parts.map(String).join("\\"));
-  }
-  function resolve(...parts) {
-    let device = "", resolved = "", absolute = false;
-    for (let i = parts.length - 1; i >= 0; i--) {
-      let p = String(parts[i]);
-      if (p === "") continue;
-      const r = splitRoot(p);
-      if (r.device && device && r.device.toLowerCase() !== device.toLowerCase()) continue;
-      if (r.device && !device) device = r.device;
-      resolved = resolved ? p.slice(r.device.length) + "\\" + resolved : p.slice(r.device.length);
-      if (r.absolute) { absolute = true; break; }
+    validateString(p, "path");
+    const len = p.length;
+    if (len === 0) return ".";
+    let rootEnd = 0, device, isAbsolute = false;
+    const code = p.charCodeAt(0);
+    if (len === 1) return code === 47 ? "\\" : p;
+    if (isSep(code)) {
+      isAbsolute = true;
+      if (isSep(p.charCodeAt(1))) {
+        let j = 2, last = j;
+        while (j < len && !isSep(p.charCodeAt(j))) j++;
+        if (j < len && j !== last) {
+          const firstPart = p.slice(last, j);
+          last = j;
+          while (j < len && isSep(p.charCodeAt(j))) j++;
+          if (j < len && j !== last) {
+            last = j;
+            while (j < len && !isSep(p.charCodeAt(j))) j++;
+            if (j === len || j !== last) {
+              if (firstPart === "." || firstPart === "?") {
+                device = `\\\\${firstPart}`;
+                rootEnd = 4;
+                const colonIndex = p.indexOf(":");
+                const possibleDevice = p.slice(4, colonIndex + 1);
+                if (isWindowsReservedName(possibleDevice, possibleDevice.length - 1)) {
+                  device = `\\\\?\\${possibleDevice}`;
+                  rootEnd = 4 + possibleDevice.length;
+                }
+              } else if (j === len) {
+                return `\\\\${firstPart}\\${p.slice(last)}\\`;
+              } else {
+                device = `\\\\${firstPart}\\${p.slice(last, j)}`;
+                rootEnd = j;
+              }
+            }
+          }
+        }
+      } else rootEnd = 1;
+    } else {
+      const colonIndex = p.indexOf(":");
+      if (colonIndex > 0) {
+        if (isWinDeviceRoot(code) && colonIndex === 1) {
+          device = p.slice(0, 2);
+          rootEnd = 2;
+          if (len > 2 && isSep(p.charCodeAt(2))) { isAbsolute = true; rootEnd = 3; }
+        } else if (isWindowsReservedName(p, colonIndex)) {
+          device = p.slice(0, colonIndex + 1);
+          rootEnd = colonIndex + 1;
+        }
+      }
     }
-    if (!absolute) {
-      const cwd = globalThis.process ? globalThis.process.cwd() : "C:\\";
-      const r = splitRoot(cwd);
-      if (!device) device = r.device;
-      resolved = r.rest.replace(/^[\\/]/, "") + "\\" + resolved;
-      absolute = true;
+    let tail = rootEnd < len ? normalizeString(p.slice(rootEnd), !isAbsolute, "\\", isSep) : "";
+    if (tail.length === 0 && !isAbsolute) tail = ".";
+    if (tail.length > 0 && isSep(p.charCodeAt(len - 1))) tail += "\\";
+    if (!isAbsolute && device === undefined && p.includes(":")) {
+      // CVE-2024-36139：相对路径不得被整形成盘符绝对形。
+      if (tail.length >= 2 && isWinDeviceRoot(tail.charCodeAt(0)) && tail.charCodeAt(1) === 58) {
+        return `.\\${tail}`;
+      }
+      let index = p.indexOf(":");
+      do {
+        if (index === len - 1 || isSep(p.charCodeAt(index + 1))) return `.\\${tail}`;
+      } while ((index = p.indexOf(":", index + 1)) !== -1);
     }
-    const trailing = /[\\/]$/.test(resolved);
-    const parts2 = winNormalizeParts(winSplit(resolved), false);
-    let out = (device ? device + "\\" : "\\") + parts2.join("\\");
-    if (trailing && !/[\\/]$/.test(out)) out += "\\";
-    return out;
+    const colonIndex = p.indexOf(":");
+    if (isWindowsReservedName(p, colonIndex)) return `.\\${device ?? ""}${tail}`;
+    if (device === undefined) return isAbsolute ? `\\${tail}` : tail;
+    return isAbsolute ? `${device}\\${tail}` : `${device}${tail}`;
+  }
+  function join(...args) {
+    if (args.length === 0) return ".";
+    const path = [];
+    for (let i = 0; i < args.length; ++i) {
+      const arg = args[i];
+      validateString(arg, "path");
+      if (arg.length > 0) path.push(arg);
+    }
+    if (path.length === 0) return ".";
+    const firstPart = path[0];
+    let joined = path.join("\\");
+    // 首部多余斜杠会误导 normalize 判 UNC；真 UNC 首部（恰两条+非斜杠）保留。
+    let needsReplace = true, slashCount = 0;
+    if (isSep(firstPart.charCodeAt(0))) {
+      ++slashCount;
+      const firstLen = firstPart.length;
+      if (firstLen > 1 && isSep(firstPart.charCodeAt(1))) {
+        ++slashCount;
+        if (firstLen > 2) {
+          if (isSep(firstPart.charCodeAt(2))) ++slashCount;
+          else needsReplace = false;
+        }
+      }
+    }
+    if (needsReplace) {
+      while (slashCount < joined.length && isSep(joined.charCodeAt(slashCount))) slashCount++;
+      if (slashCount >= 2) joined = `\\${joined.slice(slashCount)}`;
+    }
+    // 保留字设备名在场时跳过归一（Node 口径：原样回，仅统一 `/`→`\`）。
+    const parts = [];
+    let part = "";
+    for (let i = 0; i < joined.length; i++) {
+      if (joined[i] === "\\") {
+        if (part) parts.push(part);
+        part = "";
+        while (i + 1 < joined.length && joined[i + 1] === "\\") i++;
+      } else part += joined[i];
+    }
+    if (part) parts.push(part);
+    if (parts.some((q) => {
+      const ci = q.indexOf(":");
+      return ci !== -1 && isWindowsReservedName(q, ci);
+    })) {
+      let result = "";
+      for (let i = 0; i < joined.length; i++) result += joined[i] === "/" ? "\\" : joined[i];
+      return result;
+    }
+    return normalize(joined);
+  }
+  function resolve(...args) {
+    const isWinPlat = typeof globalThis.process !== "undefined" && globalThis.process.platform === "win32";
+    let resolvedDevice = "", resolvedTail = "", resolvedAbsolute = false;
+    for (let i = args.length - 1; i >= -1; i--) {
+      let path;
+      if (i >= 0) {
+        path = args[i];
+        validateString(path, `paths[${i}]`);
+        if (path.length === 0) continue;
+      } else if (resolvedDevice.length === 0) {
+        path = globalThis.process ? globalThis.process.cwd() : "C:\\";
+        if (args.length === 0 || (args.length === 1 && (args[0] === "" || args[0] === ".")) &&
+            isSep(path.charCodeAt(0))) {
+          if (!isWinPlat) path = path.replace(/\//g, "\\");
+          return path;
+        }
+      } else {
+        // 盘符相对 cwd（`D:foo` 形）；取不到回盘符根。
+        path = (globalThis.process && globalThis.process.env[`=${resolvedDevice}`]) ||
+          (globalThis.process ? globalThis.process.cwd() : `${resolvedDevice}\\`);
+        if (path === undefined ||
+            (path.slice(0, 2).toLowerCase() !== resolvedDevice.toLowerCase() &&
+             path.charCodeAt(2) === 92)) {
+          path = `${resolvedDevice}\\`;
+        }
+      }
+      const len = path.length;
+      let rootEnd = 0, device = "", isAbsolute = false;
+      const code = path.charCodeAt(0);
+      if (len === 1) {
+        if (isSep(code)) { rootEnd = 1; isAbsolute = true; }
+      } else if (isSep(code)) {
+        isAbsolute = true;
+        if (isSep(path.charCodeAt(1))) {
+          let j = 2, last = j;
+          while (j < len && !isSep(path.charCodeAt(j))) j++;
+          if (j < len && j !== last) {
+            const firstPart = path.slice(last, j);
+            last = j;
+            while (j < len && isSep(path.charCodeAt(j))) j++;
+            if (j < len && j !== last) {
+              last = j;
+              while (j < len && !isSep(path.charCodeAt(j))) j++;
+              if (j === len || j !== last) {
+                if (firstPart !== "." && firstPart !== "?") {
+                  device = `\\\\${firstPart}\\${path.slice(last, j)}`;
+                  rootEnd = j;
+                } else {
+                  device = `\\\\${firstPart}`;
+                  rootEnd = 4;
+                }
+              }
+            }
+          }
+        } else rootEnd = 1;
+      } else if (isWinDeviceRoot(code) && path.charCodeAt(1) === 58) {
+        device = path.slice(0, 2);
+        rootEnd = 2;
+        if (len > 2 && isSep(path.charCodeAt(2))) { isAbsolute = true; rootEnd = 3; }
+      }
+      if (device.length > 0) {
+        if (resolvedDevice.length > 0) {
+          if (device.toLowerCase() !== resolvedDevice.toLowerCase()) continue;
+        } else resolvedDevice = device;
+      }
+      if (resolvedAbsolute) {
+        if (resolvedDevice.length > 0) break;
+      } else {
+        resolvedTail = `${path.slice(rootEnd)}\\${resolvedTail}`;
+        resolvedAbsolute = isAbsolute;
+        if (isAbsolute && resolvedDevice.length > 0) break;
+      }
+    }
+    resolvedTail = normalizeString(resolvedTail, !resolvedAbsolute, "\\", isSep);
+    return resolvedAbsolute ? `${resolvedDevice}\\${resolvedTail}` : `${resolvedDevice}${resolvedTail}` || ".";
   }
   function dirname(p) {
     // Node `lib/path.js` win32.dirname 直译（分隔符原样保留；UNC 根直回）。
-    p = String(p);
+    validateString(p, "path");
     const len = p.length;
     if (len === 0) return ".";
     const isSep = (c) => c === "\\" || c === "/";
@@ -362,7 +497,8 @@ function makeWin32() {
     return p.slice(0, end);
   }
   function basename(p, suffix) {
-    p = String(p);
+    if (suffix !== undefined) validateString(suffix, "suffix");
+    validateString(p, "path");
     const { rest } = winDevice(p);
     let noTrail = rest;
     while (noTrail.length > 1 && /[\\/]$/.test(noTrail)) noTrail = noTrail.slice(0, -1);
@@ -377,14 +513,15 @@ function makeWin32() {
     return base;
   }
   function extname(p) {
-    p = basename(String(p));
+    validateString(p, "path");
+    p = basename(p);
     if (p === "..") return "";
     const idx = p.lastIndexOf(".");
     if (idx <= 0) return "";
     return p.slice(idx);
   }
   function isAbsolute(p) {
-    p = String(p);
+    validateString(p, "path");
     if (p.length === 0) return false;
     const { device, rest } = winDevice(p);
     if (/^[\\/]{2}/.test(p)) return true;
@@ -392,38 +529,157 @@ function makeWin32() {
     return /^[\\/]/.test(p);
   }
   function relative(from, to) {
-    const rf = resolve(from), rt = resolve(to);
-    const df = splitRoot(rf), dt = splitRoot(rt);
-    if (df.device.toLowerCase() !== dt.device.toLowerCase()) return rt;
-    if (rf === rt) return "";
-    const f = df.rest.split(/[\\/]/).filter((s) => s !== "");
-    const t = dt.rest.split(/[\\/]/).filter((s) => s !== "");
-    let i = 0;
-    while (i < f.length && i < t.length && f[i].toLowerCase() === t[i].toLowerCase()) i++;
-    return f.slice(i).map(() => "..").concat(t.slice(i)).join("\\") || ".";
+    validateString(from, "from");
+    validateString(to, "to");
+    if (from === to) return "";
+    const fromOrig = resolve(from), toOrig = resolve(to);
+    if (fromOrig === toOrig) return "";
+    from = fromOrig.toLowerCase();
+    to = toOrig.toLowerCase();
+    if (from === to) return "";
+    if (fromOrig.length !== from.length || toOrig.length !== to.length) {
+      const fromSplit = fromOrig.split("\\"), toSplit = toOrig.split("\\");
+      if (fromSplit[fromSplit.length - 1] === "") fromSplit.pop();
+      if (toSplit[toSplit.length - 1] === "") toSplit.pop();
+      const fromLen = fromSplit.length, toLen = toSplit.length;
+      const length = fromLen < toLen ? fromLen : toLen;
+      let k;
+      for (k = 0; k < length; k++) {
+        if (fromSplit[k].toLowerCase() !== toSplit[k].toLowerCase()) break;
+      }
+      if (k === 0) return toOrig;
+      else if (k === length) {
+        if (toLen > length) return toSplit.slice(k).join("\\");
+        if (fromLen > length) return "..\\".repeat(fromLen - 1 - k) + "..";
+        return "";
+      }
+      return "..\\".repeat(fromLen - k) + toSplit.slice(k).join("\\");
+    }
+    let fromStart = 0;
+    while (fromStart < from.length && from.charCodeAt(fromStart) === 92) fromStart++;
+    let fromEnd = from.length;
+    while (fromEnd - 1 > fromStart && from.charCodeAt(fromEnd - 1) === 92) fromEnd--;
+    const fromLen = fromEnd - fromStart;
+    let toStart = 0;
+    while (toStart < to.length && to.charCodeAt(toStart) === 92) toStart++;
+    let toEnd = to.length;
+    while (toEnd - 1 > toStart && to.charCodeAt(toEnd - 1) === 92) toEnd--;
+    const toLen = toEnd - toStart;
+    const length = fromLen < toLen ? fromLen : toLen;
+    let lastCommonSep = -1, i = 0;
+    for (; i < length; i++) {
+      const fromCode = from.charCodeAt(fromStart + i);
+      if (fromCode !== to.charCodeAt(toStart + i)) break;
+      else if (fromCode === 92) lastCommonSep = i;
+    }
+    if (i !== length) {
+      if (lastCommonSep === -1) return toOrig;
+    } else {
+      if (toLen > length) {
+        if (to.charCodeAt(toStart + i) === 92) return toOrig.slice(toStart + i + 1);
+        if (i === 2) return toOrig.slice(toStart + i);
+      }
+      if (fromLen > length) {
+        if (from.charCodeAt(fromStart + i) === 92) lastCommonSep = i;
+        else if (i === 2) lastCommonSep = 3;
+      }
+      if (lastCommonSep === -1) lastCommonSep = 0;
+    }
+    let out = "";
+    for (i = fromStart + lastCommonSep + 1; i <= fromEnd; ++i) {
+      if (i === fromEnd || from.charCodeAt(i) === 92) {
+        out += out.length === 0 ? ".." : "\\..";
+      }
+    }
+    toStart += lastCommonSep;
+    if (out.length > 0) return `${out}${toOrig.slice(toStart, toEnd)}`;
+    if (toOrig.charCodeAt(toStart) === 92) ++toStart;
+    return toOrig.slice(toStart, toEnd);
   }
   function parse(p) {
-    p = String(p);
-    const { device, rest } = winDevice(p);
-    const root = rest.length > 0 && (rest[0] === "\\" || rest[0] === "/") ? device + "\\" : device;
-    const dir = dirname(p);
-    const base = basename(p);
-    const ext = extname(p);
-    return { root, dir, base, ext, name: ext ? base.slice(0, -ext.length) : base };
+    validateString(p, "path");
+    const ret = { root: "", dir: "", base: "", ext: "", name: "" };
+    if (p.length === 0) return ret;
+    const len = p.length;
+    let rootEnd = 0, code = p.charCodeAt(0);
+    if (len === 1) {
+      if (isSep(code)) { ret.root = ret.dir = p; return ret; }
+      ret.base = ret.name = p;
+      return ret;
+    }
+    if (isSep(code)) {
+      rootEnd = 1;
+      if (isSep(p.charCodeAt(1))) {
+        let j = 2, last = j;
+        while (j < len && !isSep(p.charCodeAt(j))) j++;
+        if (j < len && j !== last) {
+          last = j;
+          while (j < len && isSep(p.charCodeAt(j))) j++;
+          if (j < len && j !== last) {
+            last = j;
+            while (j < len && !isSep(p.charCodeAt(j))) j++;
+            if (j === len) rootEnd = j;
+            else if (j !== last) rootEnd = j + 1;
+          }
+        }
+      }
+    } else if (isWinDeviceRoot(code) && p.charCodeAt(1) === 58) {
+      if (len <= 2) { ret.root = ret.dir = p; return ret; }
+      rootEnd = 2;
+      if (isSep(p.charCodeAt(2))) {
+        if (len === 3) { ret.root = ret.dir = p; return ret; }
+        rootEnd = 3;
+      }
+    }
+    if (rootEnd > 0) ret.root = p.slice(0, rootEnd);
+    let startDot = -1, startPart = rootEnd, end = -1, matchedSlash = true, preDotState = 0;
+    for (let i = p.length - 1; i >= rootEnd; --i) {
+      code = p.charCodeAt(i);
+      if (isSep(code)) {
+        if (!matchedSlash) { startPart = i + 1; break; }
+        continue;
+      }
+      if (end === -1) { matchedSlash = false; end = i + 1; }
+      if (code === 46) {
+        if (startDot === -1) startDot = i;
+        else if (preDotState !== 1) preDotState = 1;
+      } else if (startDot !== -1) preDotState = -1;
+    }
+    if (end !== -1) {
+      if (startDot === -1 || preDotState === 0 ||
+          (preDotState === 1 && startDot === end - 1 && startDot === startPart + 1)) {
+        ret.base = ret.name = p.slice(startPart, end);
+      } else {
+        ret.name = p.slice(startPart, startDot);
+        ret.base = p.slice(startPart, end);
+        ret.ext = p.slice(startDot, end);
+      }
+    }
+    if (startPart > 0 && startPart !== rootEnd) ret.dir = p.slice(0, startPart - 1);
+    else ret.dir = ret.root;
+    return ret;
   }
-  function format(o) {
-    if (typeof o === "string") return o;
-    const dir = o.dir || "", base = o.base || ((o.name || "") + (o.ext || ""));
-    if (dir) return /[\\/]$/.test(dir) ? dir + base : dir + "\\" + base;
-    return (o.root || "") + base;
-  }
+  function format(o) { return fmtPath("\\", o); }
   function toNamespacedPath(p) {
-    if (p == null) return p;
-    const n = normalize(String(p));
-    const m = /^[a-zA-Z]:\\/.exec(n);
-    return m ? "\\\\?\\" + n : n;
+    if (typeof p !== "string" || p.length === 0) return p;
+    const resolvedPath = resolve(p);
+    if (resolvedPath.length <= 2) return p;
+    if (resolvedPath.charCodeAt(0) === 92) {
+      if (resolvedPath.charCodeAt(1) === 92) {
+        const code = resolvedPath.charCodeAt(2);
+        if (code !== 63 && code !== 46) {
+          return `\\\\?\\UNC\\${resolvedPath.slice(2)}`;
+        }
+      }
+    } else if (isWinDeviceRoot(resolvedPath.charCodeAt(0)) &&
+               resolvedPath.charCodeAt(1) === 58 &&
+               resolvedPath.charCodeAt(2) === 92) {
+      return `\\\\?\\${resolvedPath}`;
+    }
+    return resolvedPath;
   }
-  return { sep, delimiter: ";", normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format, toNamespacedPath };
+  function _makeLong(p) { return toNamespacedPath(p); }
+  return { sep, delimiter: ";", normalize, join, resolve, dirname, basename, extname, isAbsolute, relative, parse, format, toNamespacedPath, _makeLong };
 }
 const posix = makePosix();
 const win32 = makeWin32();

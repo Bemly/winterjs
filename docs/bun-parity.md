@@ -54,8 +54,9 @@
 
 ## path
 
-> 10f 首批：`basename/dirname/extname/isabsolute` 全绿（含 win32 UNC/后缀整吞/`..`/`//` 根）；
-> `join/normalize/resolve/relative/parse-format` 系下一批（Node 原文直译）。
+> 10f 收官（除 glob）：posix/win32 六件全按 Node `lib/path.js` 直译
+> （`normalizeString` 核心 + validateString/validateObject 精确码）；
+> `matchesGlob` 需 `internal/fs/glob`，另切片。
 
 | 文件 | winterjs | node | 结论 |
 |---|---|---|---|
@@ -67,14 +68,14 @@
 | test-path-win32-exists.js | 0 | 0 | ✅ |
 | test-path-posix-relative-on-windows.js | 0 | 0 | ✅ |
 | test-path-win32-normalize-device-names.js | 0 | 0 | ✅ |
-| test-path-glob.js | 1 | 0 | 🟡 差集：`matchesGlob` 未实现（新 API，另切片） |
-| test-path-join.js | 1 | 0 | 🟡 待修：空段/尾斜杠口径（下批直译） |
-| test-path-normalize.js | 1 | 0 | 🟡 待修：同 join 系（下批直译） |
-| test-path-resolve.js | 1 | 0 | 🟡 待修：win32 drive 继承/尾斜杠（下批直译） |
-| test-path-relative.js | 1 | 0 | 🟡 待修：win32 大小写等价/UNC（下批直译） |
-| test-path-parse-format.js | 1 | 0 | 🟡 待修：parse/format 回环（下批随 normalize 系） |
-| test-path-makelong.js | 1 | 0 | 🟡 待查（下批） |
-| test-path-zero-length-strings.js | 1 | 0 | 🟡 待修：空串 join/normalize（下批，同 join） |
+| test-path-join.js | 0 | 0 | ✅（修：空段过滤/尾斜杠/win32 首部防 UNC 误判，直译） |
+| test-path-normalize.js | 0 | 0 | ✅（修：drive 相对/CVE-2024-36139/保留字，直译） |
+| test-path-resolve.js | 0 | 0 | ✅（修：win32 drive 继承/尾斜杠，直译） |
+| test-path-relative.js | 0 | 0 | ✅（修：win32 大小写等价/UNC，直译） |
+| test-path-parse-format.js | 0 | 0 | ✅（修：parse 单遍直译/_format/validateObject 精确文案） |
+| test-path-makelong.js | 0 | 0 | ✅（修：非 string 原样穿透） |
+| test-path-zero-length-strings.js | 0 | 0 | ✅（修：空串 join/normalize，同直译） |
+| test-path-glob.js | 1 | 0 | 🟡 差集：`matchesGlob` 未实现（需 `internal/fs/glob`，另切片） |
 
 ## assert
 

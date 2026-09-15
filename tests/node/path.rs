@@ -153,3 +153,47 @@ catch (e) { console.log("THROW", e.name, e.code); }
     );
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_path_win32_port() {
+    // win32 直译真值表（真机 26.8.2 逐字节对码；JS 内自比对，22 行全 ok）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import path from "node:path";
+const w = path.win32;
+const eq = (a, b) => console.log(a === b ? "ok" : "FAIL " + JSON.stringify(a));
+eq(w.join(".\\"), ".\\");
+eq(w.join(".", ".\\"), ".\\");
+eq(w.join("", "."), ".");
+eq(w.join("C:\\a", "b"), "C:\\a\\b");
+eq(w.join("//server", "share"), "\\\\server\\share\\");
+eq(w.normalize("C:\\a\\.\\b\\"), "C:\\a\\b\\");
+eq(w.normalize("C:..\\abc"), "C:..\\abc");
+eq(w.normalize(""), ".");
+eq(w.resolve("c:/ignore", "C:/a/b"), "C:\\a\\b");
+eq(w.resolve("C:\\a", "b"), "C:\\a\\b");
+eq(w.relative("c:/AaAa/bbbb", "c:/aaaa/bbbb"), "");
+eq(w.relative("C:\\orandea\\test\\aaa", "C:\\orandea\\impl\\bbb"), "..\\..\\impl\\bbb");
+eq(w.relative("\\\\foo\\bar", "\\\\foo\\bar\\baz"), "baz");
+eq(JSON.stringify(w.parse("C:\\path\\dir\\index.html")), "{\"root\":\"C:\\\\\",\"dir\":\"C:\\\\path\\\\dir\",\"base\":\"index.html\",\"ext\":\".html\",\"name\":\"index\"}");
+eq(JSON.stringify(w.parse("C:")), "{\"root\":\"C:\",\"dir\":\"C:\",\"base\":\"\",\"ext\":\"\",\"name\":\"\"}");
+eq(w.format({ dir: "some\\dir" }), "some\\dir\\");
+eq(w.format({ root: "C:\\" }), "C:\\");
+eq(w.toNamespacedPath("C:\\a\\b"), "\\\\?\\C:\\a\\b");
+for (const [m, a] of [["parse", [null]], ["format", [""]], ["join", [1]], ["resolve", [null]]]) {
+  try { w[m](...a); console.log("NO-THROW"); }
+  catch (e) { console.log(e.name === "TypeError" && e.code === "ERR_INVALID_ARG_TYPE" ? "ok" : "FAIL " + e.name + " " + e.code); }
+}
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "ok\n".repeat(22),);
+    dir.close().unwrap();
+}

@@ -306,7 +306,10 @@ ml-dsa = "0.1.1"
 
 # ── 平台专用行（§8 矩阵 ❌ 的按 cfg 门控）───────────────────────────────
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", features = ["process", "signal", "fs", "ioctl"] }  # 10c（2026-09-15 用户拍板）：tty winsize（TIOCGWINSZ）；空依赖列表，零新 crate
+nix = { version = "0.31", features = ["process", "signal", "fs", "ioctl", "term"] }  # 10c（2026-09-15 用户拍板）：tty winsize（TIOCGWINSZ）；空依赖列表，零新 crate；term：setRawMode 真标志（同 crate 开特性，零新 crate）
+# 10c（2026-09-15 用户拍板）：TIOCGWINSZ ioctl 的类型与常量（纯 FFI，无代码；unix-only 用）
+# 版本走 0.2（与锁内 0.2.189 同线，零新增传递依赖）
+libc = "0.2"
 
 
 

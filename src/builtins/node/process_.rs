@@ -353,7 +353,7 @@ pub unsafe extern "C" fn stderr_write(
     true
 }
 
-/// `__wjs_stdio_istty(fd)` → boolean（fd: 1=out, 2=err）。
+/// `__wjs_stdio_istty(fd)` → boolean（0=stdin，1=stdout，2=stderr；其余 false）。
 pub unsafe extern "C" fn stdio_istty(
     _cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -366,10 +366,12 @@ pub unsafe extern "C" fn stdio_istty(
     } else {
         1
     };
-    let tty = if fd == 2 {
-        std::io::IsTerminal::is_terminal(&std::io::stderr())
-    } else {
-        std::io::IsTerminal::is_terminal(&std::io::stdout())
+    // 10c-1 勘误：旧实现把 fd 0 也按 stdout 查；其余 fd 按 stdout 回（应 false）。
+    let tty = match fd {
+        0 => std::io::IsTerminal::is_terminal(&std::io::stdin()),
+        1 => std::io::IsTerminal::is_terminal(&std::io::stdout()),
+        2 => std::io::IsTerminal::is_terminal(&std::io::stderr()),
+        _ => false,
     };
     frame.set_rval(mozjs::jsval::BooleanValue(tty));
     true

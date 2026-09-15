@@ -47,6 +47,8 @@
 
 ## §2 10a–10f 轮子审计（2026-09-15，除 §1 外零新 crate）
 
+> 勘误（2026-09-15，10c-1）：本节"零新 crate"已过期——`libc` 直引获批新增
+> （见 §3），`nix` 开 `term` 特性（同 crate，仍零新 crate）。
 - 10a：`node:sys` 别名/url-legacy/setImmediate/`util` 三件/dgram 组播——
   零新依赖（tokio 已在树内）。
   `getSystemErrorName/Message/Map`：手写 UV errno 定表（~100 条固定数据，
@@ -64,3 +66,15 @@
 - 10f：无。
 - `mime` 0.3.17 虽在闭包（reqwest/hyper 带入），`util.MIMEType` 是 WHATWG
   纯算法解析，不需要它，不直引。
+
+## §3 tty 底座（10c-1，2026-09-15 用户拍板两项）
+
+| 用途 | crate | 最新版本 | 建库时间 | 最新维护 | 纯 Rust | macA64 | macX64 | linA64 | linX64 | winA64 | winX64 | andA64 | andX64 | ohA64 | ohX64 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| TIOCGWINSZ 类型与常量（ioctl winsize；纯 FFI，无代码） | `libc` | 0.2.189（走 0.2 线，与锁同版） | 2015-01-11 | 2026-08-29 | ✅（FFI 声明） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| termios 真 raw 模式（tcgetattr/cfmakeraw/tcsetattr） | `nix`（开 `term` 特性，同 crate） | 0.31.3（树内现版） | — | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+注：`nix` 0.31 无 winsize 现成件（`tiocgwinsz` 须自写 `ioctl_read_bad!`，
+故须直引 `libc` 取类型与常量）；`term` 特性空依赖（纯 libc 包装）。
+`libc 1.x` 因本地 index 无稳定版元数据暂不可解析，走 0.2 线（锁内已有，
+零新增传递依赖）。unix-only 使用，win 回落记档（见 `node/tty.rs` 头注）。

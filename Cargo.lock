@@ -11929,6 +11929,7 @@ dependencies = [
  "jsonc-parser",
  "junction",
  "k256",
+ "libc",
  "libloading 0.9.0",
  "linkme",
  "local-ip-address",

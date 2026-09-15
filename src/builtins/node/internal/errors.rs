@@ -301,6 +301,7 @@ E('ERR_INVALID_URI', 'URI malformed', URIError);
 E('ERR_INVALID_URL_SCHEME', 'The URL must be of scheme %s', TypeError);
 E('ERR_INVALID_FILE_URL_HOST', 'File URL host must be "localhost" or empty on %s', TypeError);
 E('ERR_INVALID_URL', 'Invalid URL', TypeError);
+E('ERR_TTY_INIT_FAILED', 'TTY initialization failed: %s', Error);
 E('ERR_INVALID_MIME_SYNTAX',
   (kind, input, pos) => {
     let msg = `The MIME syntax for a ${kind} in "${input}" is invalid`;

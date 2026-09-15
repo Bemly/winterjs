@@ -27,7 +27,7 @@
 | https | 🟡（无 SNI 等） | ✅（同 http 记档） | 随 http 流式化走；SNI 回调等与 Bun 同缺，不追 | 10b |
 | http2 | 🟢 | ✅（h2c+H3；无 push/trailer/Upgrade，10b-4 triage 全偏离） | trailer/push/Upgrade 三件评估：push 系 Web 已死特性、trailer 等 h2 流式切片、Upgrade 浏览器不用 | 10b |
 | readline | 🟢 | 🟡（最小桥） | `question` 真实现、行编辑/history/异步迭代器、Emacs 快捷键子集 | 10c |
-| tty | 🟢 | 🟡（薄面） | net.Socket 基座、ioctl winsize、setRawMode 真标志（termios 按平台记档） | 10c |
+| tty | 🟢 | ✅（10c-1：net.Socket 基座 + ioctl winsize + 真 raw；构造器非 TTY 即抛与真机同） | net.Socket 基座、ioctl winsize、setRawMode 真标志（termios 按平台记档） | 10c |
 | repl（模块面） | 🟡 | ✅ CLI／— 模块 | `node:repl` 注册：REPLServer/start/Recoverable（复用 10c 的 Interface） | 10c |
 | url | 🟢 | ✅（WHATWG+file 系） | legacy `parse/format/resolve` + `Url` 类 + domainTo*（follow-redirects 已走原生分支，低风险） | 10a |
 | timers | 🟢（promises/scheduler） | ✅（setImmediate 近似） | setImmediate check 语义定案（`scheduler.yield/wait` 已有；无 macrotask 分层，近似验收或偏离） | 10a |

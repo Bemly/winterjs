@@ -56,7 +56,7 @@ winterjs 列（2026-09-15 现状回填，证据见后表注记；注册表以
 | stream | ✅ | 🟢 | ✅ | JS+内（20+ 文件） | ✅ | lib 逐字内嵌 + Duplex/Transform/pipeline/compose 全链 |
 | string_decoder | ✅ | 🟢 100% | ✅ | 原生（无 JS 外壳） | ✅ | 纯 JS 重写（含遗产 lastNeed/lastChar 面） |
 | timers | ✅ | 🟢（含 promises/scheduler） | ✅ | JS+内 | ✅ | 回调 + `timers/promises` 双面；`setImmediate` 近似、`scheduler` 未导出（记档） |
-| tty | ✅ | 🟢 | ✅ | JS | 🟡 | 薄面（isatty/ReadStream/WriteStream/色深）；无 termios，基座仍 EE |
+| tty | ✅ | 🟢 | ✅ | JS | ✅ | net.Socket 基座 + ioctl winsize + 真 raw + 方法全家；构造器非 TTY 即抛（真机同） |
 | url | ✅ | 🟢 | ✅ | JS | ✅ | WHATWG 全局 + file 系（真机逐项对码）；legacy parse/format 不导出（记档） |
 | zlib 98% | ✅ | 🟢 | 🟡 | JS+内 | ✅ | gzip/deflate/br + zstd（恒 Fastest，记档）；crc32/zip 实验不做 |
 | async_hooks | ✅ | 🟡（仅 ALS/AsyncResource 实） | 🟡 | JS+内 | 🟡 | Bun 同款口径：ALS/AsyncResource 实，createHook stub，跨 await 传播不支持 |

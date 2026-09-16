@@ -1678,6 +1678,12 @@ import { EventEmitter } from 'node:events';
 
 function __fsErr(e, syscall, path) {
   const m = String((e && e.message) || e);
+  // JS 侧已带 code 的类型/范围错误直通（__fsCall 闭包内抛的校验错误
+  // 不得被重包成 UNKNOWN——fchmod '123x' 套件现形）。
+  if (e && typeof e.code === "string" && e.code !== "" && e.code !== "UNKNOWN") {
+    if (e.path === undefined) e.path = path;
+    throw e;
+  }
   // 权限拒绝直通（不套 io 形状；Deno NotCapable 同款可读错）
   if (m.startsWith("PermissionError:")) {
     const perr = new Error(m.slice("PermissionError: ".length));
@@ -1879,15 +1885,46 @@ function __fsReadWhole(p, flag) {
     __wjs_fs_close(fd);
   }
 }
+function __fsFdOf(p) {
+  // node readFile/writeFile 系：fd number 或带 .fd 的句柄 → fd；否则 null。
+  if (typeof p === "number" && Number.isInteger(p)) return __vFd(p);
+  if (p && typeof p === "object" && typeof p.fd === "number") return p.fd;
+  return null;
+}
 export function readFileSync(p, opts) {
-  p = __fsPath(p, "readFile");
   const enc = __fsEncoding(opts);
+  const fd = __fsFdOf(p);
+  if (fd !== null) {
+    // fd 形：从当前位读到 EOF（node readFileHandle 同口径）。
+    const parts = [];
+    for (;;) {
+      const chunk = __fsCall("read", "", () => __wjs_fs_read_fd(fd, 1 << 20, -1));
+      if (chunk.length === 0) break;
+      parts.push(chunk);
+    }
+    const out = new Uint8Array(parts.reduce((a, c) => a + c.length, 0));
+    let off = 0;
+    for (const c of parts) { out.set(c, off); off += c.length; }
+    return __fsDecode(out, enc, "readFile");
+  }
+  p = __fsPath(p, "readFile");
   const flag = opts && typeof opts === "object" ? opts.flag : undefined;
   return __fsCall("open", p, () => __fsDecode(__fsReadWhole(p, flag), enc, "readFile"));
 }
 export function writeFileSync(p, data, opts) {
-  p = __fsPath(p, "writeFile");
   __fsEncoding(opts);
+  // node 口径：signal.aborted 即 AbortError（走回调拒绝路径，writefile-with-fd 点名）。
+  if (opts && typeof opts === "object" && opts.signal && opts.signal.aborted) {
+    throw __fsAbortErr(opts.signal.reason);
+  }
+  const fd = __fsFdOf(p);
+  if (fd !== null) {
+    // fd 形：写现位（node writeFileHandle 同口径）。
+    const bytes = __fsData(data, "writeFile");
+    writeSync(fd, bytes, 0, bytes.byteLength, null);
+    return;
+  }
+  p = __fsPath(p, "writeFile");
   const flag = opts && typeof opts === "object" ? opts.flag : undefined;
   const bytes = __fsData(data, "writeFile");
   __fsCall("open", p, () => {
@@ -2357,13 +2394,9 @@ function __fsTimeMs(t, what) {
 }
 function __fsModeNum(mode) {
   if (typeof mode === "string") {
-    const n = parseInt(mode, 8);
-    if (!Number.isInteger(n) || n < 0) throw new TypeError("chmod: invalid mode");
-    return n;
+    return __fsParseMode(mode);
   }
-  const n = Number(mode);
-  if (!Number.isInteger(n) || n < 0) throw new TypeError("chmod: mode must be an integer");
-  return n;
+  return __vIntRange(mode, "mode", 0, 4294967295);
 }
 export function accessSync(p, mode = 0) {
   if (mode !== undefined && typeof mode !== "number") {
@@ -2466,9 +2499,33 @@ function __vErrType(name, expected, v) {
   const e = new TypeError(`The "${name}" argument must be of type ${expected}. Received ${__vReceived(v)}`);
   e.code = "ERR_INVALID_ARG_TYPE"; throw e;
 }
+function __vIntRange(v, name, min, max) {
+  if (typeof v !== "number") __vErrType(name, "number", v);
+  if (!Number.isInteger(v)) {
+    const e = new RangeError(`The value of "${name}" is out of range. It must be an integer. Received ${v}`);
+    e.code = "ERR_OUT_OF_RANGE"; throw e;
+  }
+  if (v < min || v > max) {
+    const e = new RangeError(`The value of "${name}" is out of range. It must be >= ${min} && <= ${max}. Received ${v}`);
+    e.code = "ERR_OUT_OF_RANGE"; throw e;
+  }
+  return v;
+}
 function __vFd(fd) {
-  if (typeof fd !== "number" || !Number.isInteger(fd)) __vErrType("fd", "number", fd);
-  return fd;
+  // node getValidatedFd：int32 正数域（fchmod 套件点名 -1 / 2**32）。
+  return __vIntRange(fd, "fd", 0, 2147483647);
+}
+function __fsParseMode(mode) {
+  // node parseFileMode：number 直用，string 须全数字（八进制语义），余者 ARG_VALUE。
+  if (typeof mode === "number") return __vIntRange(mode, "mode", 0, 4294967295);
+  if (typeof mode === "string") {
+    if (!/^[0-9]+$/.test(mode)) {
+      const e = new RangeError(`The value of "mode" is out of range. It must be an integer. Received ${mode}`);
+      e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+    }
+    return parseInt(mode, 8);
+  }
+  __vErrType("mode", "number or string", mode);
 }
 function __vModeArg(mode) {
   if (typeof mode !== "number" && typeof mode !== "string") __vErrType("mode", "number or string", mode);
@@ -2715,7 +2772,17 @@ export class FileHandle extends EventEmitter {
   createWriteStream(options) {
     return new WriteStream(undefined, { ...options, fd: this });
   }
-  stat() { return Promise.resolve().then(() => fstatSync(this.fd)); }
+  stat() {
+    // node 口径：close 后 fd=-1 → binding 层 EBADF（非范围校验错误）。
+    return Promise.resolve().then(() => {
+      if (this.fd === -1) {
+        const e = new Error("EBADF: bad file descriptor, fstat");
+        e.code = "EBADF"; e.errno = -9; e.syscall = "fstat";
+        throw e;
+      }
+      return fstatSync(this.fd);
+    });
+  }
   truncate(len) { return Promise.resolve().then(() => ftruncateSync(this.fd, len ?? 0)); }
   chmod(mode) { return Promise.resolve().then(() => fchmodSync(this.fd, mode)); }
   utimes(atime, mtime) { return Promise.resolve().then(() => futimesSync(this.fd, atime, mtime)); }
@@ -2890,13 +2957,29 @@ export const symlink = __cb1(symlinkSync, "symlink", __id);
 export const readlink = __cb1(readlinkSync, "readlink", __id);
 export const opendir = __cb1(opendirSync, "opendir", __id);
 export const chown = __cb1(chownSync, "chown", __id);
-export const fchown = __cb1(fchownSync, "fchown", __id);
-export const fchmod = __cb1(fchmodSync, "fchmod", __id);
-export const fstat = __cb1(fstatSync, "fstat", __id);
-export const ftruncate = __cb1(ftruncateSync, "ftruncate", __id);
-export const fsync = __cb1(fsyncSync, "fsync", __id);
-export const fdatasync = __cb1(fdatasyncSync, "fdatasync", __id);
-export const futimes = __cb1(futimesSync, "futimes", __id);
+// f 系回调包装：node 口径 fd/mode 等实参校验先于 cb（fchmod(1,'123x') →
+// ARG_VALUE 而非 cb 错误），cb 缺省仍抛 callback 类型错。
+const __fdCb = (syncFn, name) => function (...args) {
+  let cb = args[args.length - 1];
+  const rest = typeof cb === "function" ? args.slice(0, -1) : args;
+  let p;
+  try {
+    p = Promise.resolve(syncFn(...rest));
+    if (typeof cb !== "function") __vCbArg(cb);
+  } catch (e) {
+    if (e && typeof e.code === "string" &&
+        (e.code === "ERR_INVALID_ARG_TYPE" || e.code === "ERR_INVALID_ARG_VALUE" || e.code === "ERR_OUT_OF_RANGE")) throw e;
+    p = Promise.reject(e);
+  }
+  __nodeify(p, cb);
+};
+export const fchown = __fdCb(fchownSync, "fchown");
+export const fchmod = __fdCb(fchmodSync, "fchmod");
+export const fstat = __fdCb(fstatSync, "fstat");
+export const ftruncate = __fdCb(ftruncateSync, "ftruncate");
+export const fsync = __fdCb(fsyncSync, "fsync");
+export const fdatasync = __fdCb(fdatasyncSync, "fdatasync");
+export const futimes = __fdCb(futimesSync, "futimes");
 // mkdtempDisposable（10f，node 26 口径）：{ path, remove, [Symbol.dispose /
 // asyncDispose] }。remove 锁创建期绝对路径（"Stash the full path in case of
 // process.chdir()"）；promises 版 remove 为 async（assert.rejects 契约）。

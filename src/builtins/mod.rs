@@ -4587,6 +4587,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_fs_ftruncate", Some(node::fs::fs_ftruncate), 2),
             ("__wjs_fs_fstat", Some(node::fs::fs_fstat), 1),
             ("__wjs_fs_fchmod", Some(node::fs::fs_fchmod), 2),
+            ("__wjs_fs_chown", Some(node::fs::fs_chown), 3),
+            ("__wjs_fs_fchown", Some(node::fs::fs_fchown), 3),
             ("__wjs_fs_futimes", Some(node::fs::fs_futimes), 3),
             ("__wjs_fs_fsync", Some(node::fs::fs_fsync), 2),
             ("__wjs_watch_start", Some(node::fs::watch_start), 4),

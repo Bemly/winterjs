@@ -119,8 +119,43 @@ fn arg_bytes(
 }
 
 /// `io::Error` 上报（`{CODE}: {syscall} '{path}': {detail}`；prelude 拆 CODE）。
+/// errno → node/uv 错误消息（libuv uv_err_name 小节选；message 对拍用）。
+fn uv_msg(e: &std::io::Error) -> &'static str {
+    if let Some(errno) = e.raw_os_error() {
+        return match errno {
+            1 => "operation not permitted",
+            2 => "no such file or directory",
+            9 => "bad file descriptor",
+            13 => "permission denied",
+            17 => "file already exists",
+            20 => "not a directory",
+            21 => "illegal operation on a directory",
+            22 => "invalid argument",
+            24 => "too many open files",
+            28 => "no space left on device",
+            32 => "broken pipe",
+            36 => "name too long",
+            39 => "directory not empty",
+            40 => "too many symbolic links encountered",
+            _ => "unknown error",
+        };
+    }
+    match e.kind() {
+        std::io::ErrorKind::NotFound => "no such file or directory",
+        std::io::ErrorKind::PermissionDenied => "permission denied",
+        std::io::ErrorKind::AlreadyExists => "file already exists",
+        std::io::ErrorKind::IsADirectory => "illegal operation on a directory",
+        std::io::ErrorKind::InvalidInput => "invalid argument",
+        _ => "unknown error",
+    }
+}
+
 fn report_io(cx: &mut mozjs::context::JSContext, syscall: &str, path: &str, e: std::io::Error) {
-    report_error(cx, &format!("{}: {syscall} '{path}': {e}", io_code(&e)));
+    // node lib/internal/errors 形状：`CODE: <uv msg>, <syscall> '<path>'`。
+    report_error(
+        cx,
+        &format!("{}: {}, {syscall} '{path}'", io_code(&e), uv_msg(&e)),
+    );
 }
 
 /// Uint8Array 返回值（`crypto` 同款小 helper，不跨模块引）。
@@ -386,7 +421,8 @@ pub unsafe extern "C" fn fs_mkdir(
         return false;
     };
     let recursive = frame.argc() > 1 && frame.arg(1).to_boolean();
-    let r = if recursive { fs_err::create_dir_all(&path) } else { fs_err::create_dir(&path) };
+    // std 直用（fs_err 包装吞 raw errno → io_code 落 UNKNOWN，ENOTDIR 对拍现形）
+    let r = if recursive { std::fs::create_dir_all(&path) } else { std::fs::create_dir(&path) };
     match r {
         Ok(()) => {
             frame.set_rval(UndefinedValue());
@@ -1153,6 +1189,69 @@ pub unsafe extern "C" fn fs_fstat(
     }
 }
 
+/// `__wjs_fs_chown(path, uid, gid)` → std chown（safe；-1 = 不变更）。
+pub unsafe extern "C" fn fs_chown(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "chown", PermClass::Write) else {
+        return false;
+    };
+    let uid = opt_f64(&frame, 1).unwrap_or(-1.0) as i64;
+    let gid = opt_f64(&frame, 2).unwrap_or(-1.0) as i64;
+    match std::os::unix::fs::chown(
+        &path,
+        if uid < 0 { None } else { Some(uid as u32) },
+        if gid < 0 { None } else { Some(gid as u32) },
+    ) {
+        Ok(()) => true,
+        Err(e) => {
+            report_io(&mut cx, "chown", &path, e);
+            false
+        }
+    }
+}
+
+/// `__wjs_fs_fchown(fd, uid, gid)` → libc fchown（UNSAFE-BOUNDARY：fd 来自
+/// fd_table 的真实 fd，as_raw_fd 取裸号后立刻调用，不跨 GC/线程存活；
+/// 覆盖测试：tests/node/fs.rs phase10f fs chown/fchown 族 + 真机对拍）。
+pub unsafe extern "C" fn fs_fchown(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(fd) = fd_num(&mut cx, &frame, 0, "fchown") else {
+        return false;
+    };
+    let uid = opt_f64(&frame, 1).unwrap_or(-1.0) as i64;
+    let gid = opt_f64(&frame, 2).unwrap_or(-1.0) as i64;
+    let raw = {
+        let table = fd_table();
+        match table.get(&fd) {
+            Some(f) => std::os::unix::io::AsRawFd::as_raw_fd(f),
+            None => {
+                bad_fd(&mut cx, "fchown");
+                return false;
+            }
+        }
+    };
+    // SAFETY: libc 系统调用；raw fd 在上块作用域内取出后立即使用，
+    // uid/gid 已由 JS 侧校验为整数；-1 表示不变更（POSIX 口径）。
+    let rc = unsafe { libc::fchown(raw, uid as libc::uid_t, gid as libc::gid_t) };
+    if rc == 0 {
+        true
+    } else {
+        let err = std::io::Error::last_os_error();
+        report_io(&mut cx, "fchown", "", err);
+        false
+    }
+}
+
 /// `__wjs_fs_fchmod(fd, mode)` → File::set_permissions。
 pub unsafe extern "C" fn fs_fchmod(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -1587,8 +1686,17 @@ function __fsErr(e, syscall, path) {
     throw perr;
   }
   const code = (m.match(/^([A-Z_]+): /) || [])[1] || "UNKNOWN";
+  // native report_io 已产出 node 形状（`CODE: msg, syscall 'path'`）→ 直通，
+  // 否则旧 JS 侧错误按 node 形状重包（去双前缀）。
+  if (new RegExp(`^${code}: .*, ${syscall} '`).test(m)) {
+    const err = new Error(m);
+    err.code = code;
+    err.syscall = syscall;
+    err.path = path;
+    throw err;
+  }
   const rest = m.replace(/^[A-Z_]+: /, "");
-  const err = new Error(`${code}: ${syscall} '${path}' ${rest}`.trim());
+  const err = new Error(`${code}: ${rest}, ${syscall} '${path}'`);
   err.code = code;
   err.syscall = syscall;
   err.path = path;
@@ -1608,7 +1716,8 @@ function __fsPath(p, what) {
     return p;
   }
   if (ArrayBuffer.isView(p)) return Buffer.from(p).toString("utf8");
-  throw new TypeError(`${what}: path must be a string or Buffer or file: URL`);
+  // node getValidatedPath 口径（test-fs-buffer 点名 message 逐字）。
+  __vErrType("path", "string or an instance of Buffer or URL", p);
 }
 function __fsAbortErr(reason) {
   const e = new Error("The operation was aborted");
@@ -1622,11 +1731,27 @@ function __fsData(d, what) {
   if (d instanceof Uint8Array) return d;
   if (d instanceof ArrayBuffer) return new Uint8Array(d);
   if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
-  throw new TypeError(`${what}: data must be string or BufferSource`);
+  // node validateBufferData 口径：fs.write/writeSync 参数名 "buffer"，
+  // writeFile/appendFile 系 "data"（append-file/buffertype 套件 message 断言）。
+  __vErrType(what === "write" ? "buffer" : "data",
+             "string or an instance of Buffer, TypedArray, or DataView", d);
 }
+const __fsEncodings = new Set([
+  "utf8", "utf-8", "utf16le", "utf-16le", "ucs2", "ucs-2", "ascii", "latin1",
+  "binary", "base64", "base64url", "hex", "buffer",
+]);
 function __fsEncoding(opts) {
+  const check = (enc) => {
+    if (typeof enc === "string" && !__fsEncodings.has(enc.toLowerCase())) {
+      // node validateEncoding：`ERR_INVALID_ARG_VALUE` + TypeError。
+      const e = new TypeError(`The argument 'encoding' is invalid encoding. Received '${enc}'`);
+      e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+    }
+    return enc;
+  };
   if (opts === undefined || opts === null) return null;
-  if (typeof opts === "string") return opts;
+  if (typeof opts === "string") return check(opts);
+  if (opts.encoding !== undefined && opts.encoding !== null) check(opts.encoding);
   return opts.encoding ?? null;
 }
 function __fsMode(opts) {
@@ -1762,6 +1887,7 @@ export function readFileSync(p, opts) {
 }
 export function writeFileSync(p, data, opts) {
   p = __fsPath(p, "writeFile");
+  __fsEncoding(opts);
   const flag = opts && typeof opts === "object" ? opts.flag : undefined;
   const bytes = __fsData(data, "writeFile");
   __fsCall("open", p, () => {
@@ -1778,8 +1904,19 @@ export function writeFileSync(p, data, opts) {
   if (mode > 0 && !existsSync(p)) chmodSync(p, mode);
 }
 export function appendFileSync(p, data, opts) {
+  __fsEncoding(opts);
+  // node 口径：data 校验先于 open（非法 data 不得留下已创建的文件）。
+  const bytes = __fsData(data, "appendFile");
+  if (typeof p === "number" && Number.isInteger(p)) {
+    // fd 形：写现位（fd 'a+' 打开即尾）。
+    __vFd(p);
+    return writeSync(p, bytes, 0, bytes.byteLength, null) && undefined;
+  }
+  if (p && typeof p === "object" && typeof p.fd === "number") {
+    return writeSync(p.fd, bytes, 0, bytes.byteLength, null) && undefined;
+  }
   p = __fsPath(p, "appendFile");
-  __fsCall("open", p, () => __wjs_fs_append_file(p, __fsData(data, "appendFile"), __fsMode(opts)));
+  __fsCall("open", p, () => __wjs_fs_append_file(p, bytes, __fsMode(opts)));
 }
 export function statSync(p) {
   p = __fsPath(p, "stat");
@@ -1805,10 +1942,32 @@ export function existsSync(p) {
     return false;
   }
 }
+function __firstMissing(p) {
+  // node 递归 mkdir 返回首个**新建**路径 = 最浅的不存在祖先。
+  const abs = p.startsWith("/");
+  const segs = p.split("/").filter((x) => x !== "");
+  let acc = abs ? "/" : "";
+  for (const seg of segs) {
+    acc = acc === "/" ? "/" + seg : acc + "/" + seg;
+    if (!existsSync(acc)) return acc;
+  }
+  return null;
+}
 export function mkdirSync(p, opts) {
   p = __fsPath(p, "mkdir");
-  const recursive = !!(opts && (opts.recursive ?? false));
+  const recursive = opts && opts.recursive !== undefined
+    ? __vBooleanProp(opts.recursive, "options.recursive")
+    : false;
+  // node 口径：recursive 只容忍已存在的**目录**；路径是文件即 EEXIST
+  //（syscall 'mkdir'，test-fs-mkdir 点名）。
+  if (recursive && existsSync(p) && !statSync(p).isDirectory()) {
+    const e = new Error(`EEXIST: file already exists, mkdir '${p}'`);
+    e.code = "EEXIST"; e.errno = -17; e.syscall = "mkdir"; e.path = p;
+    throw e;
+  }
+  const firstCreated = recursive ? __firstMissing(p) : null;
   __fsCall("mkdir", p, () => __wjs_fs_mkdir(p, recursive));
+  return firstCreated ?? undefined;
 }
 export function rmSync(p, opts) {
   p = __fsPath(p, "rm");
@@ -1828,7 +1987,8 @@ export function unlinkSync(p) {
 export function readdirSync(p, opts) {
   p = __fsPath(p, "readdir");
   const withTypes = !!(opts && (opts.withFileTypes ?? false));
-  const asBuf = opts && typeof opts === "object" && opts.encoding === "buffer";
+  const enc = __fsEncoding(opts);
+  const asBuf = enc === "buffer";
   const out = JSON.parse(__fsCall("scandir", p, () => __wjs_fs_readdir(p, withTypes)));
   if (!withTypes) return asBuf ? out.map((n) => Buffer.from(n)) : out;
   return out.map(([name, isDir, isFile, isLink]) => new __Dirent(asBuf ? Buffer.from(name) : name, isDir, isFile, isLink));
@@ -1847,14 +2007,16 @@ export function copyFileSync(src, dst, mode) {
   dst = __fsPath(dst, "copyFile");
   __fsCall("copyfile", src, () => __wjs_fs_copy_file(src, dst));
 }
-export function realpathSync(p) {
+export function realpathSync(p, opts) {
+  __fsEncoding(opts);
   p = __fsPath(p, "realpath");
   return __fsCall("lstat", p, () => __wjs_fs_realpath(p));
 }
 // Node 口径：.native = binding 级 realpath（无 JS 层缓存/规范化）。本仓两者
 // 同底座（std canonicalize），直接自引用（vite 8 的 safeRealpathSync 取此面）。
 realpathSync.native = realpathSync;
-export function mkdtempSync(prefix) {
+export function mkdtempSync(prefix, opts) {
+  __fsEncoding(opts);
   return __fsCall("mkdir", String(prefix), () => __wjs_fs_mkdtemp(String(prefix)));
 }
 export const constants = {
@@ -1878,6 +2040,7 @@ class __FSWatcher extends EventEmitter {
 export function watch(p, opts, listener) {
   if (typeof opts === "function") { listener = opts; opts = {}; }
   if (listener !== undefined && typeof listener !== "function") throw new TypeError("watch: listener must be a function");
+  if (opts !== undefined && opts !== null && typeof opts !== "function") __fsEncoding(opts);
   p = __fsPath(p, "watch");
   const recursive = !!(opts && opts.recursive);
   const persistent = !(opts && opts.persistent === false);
@@ -1977,6 +2140,7 @@ export function unwatchFile(p, listener) {
 class __ReadStream extends Readable {
   constructor(p, opts) {
     opts = opts ?? {};
+    __fsEncoding(opts);
     const hwm = opts.highWaterMark !== undefined ? Number(opts.highWaterMark) : 65536;
     const size = Number.isFinite(hwm) && hwm > 0 ? Math.floor(hwm) : 65536;
     super({ highWaterMark: size, autoDestroy: true, emitClose: true });
@@ -2101,6 +2265,7 @@ export function createReadStream(p, opts) {
 class __WriteStream extends Writable {
   constructor(p, opts) {
     opts = opts ?? {};
+    __fsEncoding(opts);
     super({ autoDestroy: true, emitClose: true });
     this.path = p;
     this.flags = opts.flags ?? "w";
@@ -2218,8 +2383,22 @@ export function utimesSync(p, atime, mtime) {
 }
 export function chmodSync(p, mode) {
   p = __fsPath(p, "chmod");
+  __vModeArg(mode);
   __fsCall("chmod", p, () => __wjs_fs_chmod(p, __fsModeNum(mode)));
 }
+export function chownSync(p, uid, gid) {
+  p = __fsPath(p, "chown");
+  __vIdNum(uid, "uid");
+  __vIdNum(gid, "gid");
+  __fsCall("chown", p, () => __wjs_fs_chown(p, uid, gid));
+}
+export function fchownSync(fd, uid, gid) {
+  __vFd(fd);
+  __vIdNum(uid, "uid");
+  __vIdNum(gid, "gid");
+  __fsCall("fchown", "", () => __wjs_fs_fchown(fd, uid, gid));
+}
+
 export function linkSync(a, b) {
   a = __fsPath(a, "link");
   b = __fsPath(b, "link");
@@ -2230,9 +2409,12 @@ export function symlinkSync(target, p) {
   p = __fsPath(p, "symlink");
   __fsCall("symlink", p, () => __wjs_fs_symlink(target, p));
 }
-export function readlinkSync(p) {
+export function readlinkSync(p, opts) {
   p = __fsPath(p, "readlink");
-  return __fsCall("readlink", p, () => __wjs_fs_read_link(p));
+  const enc = __fsEncoding(opts);
+  const link = __fsCall("readlink", p, () => __wjs_fs_read_link(p));
+  if (enc === "buffer") return Buffer.from(link);
+  return link;
 }
 export function cpSync(src, dst, opts = {}) {
   src = __fsPath(src, "cp");
@@ -2261,14 +2443,55 @@ export function openSync(p, flags, mode) {
   return __fsCall("open", p, () => Number(__wjs_fs_open(p, __fsFlags(flags, "open"))));
 }
 export function closeSync(fd) {
+  __vFd(fd);
   __fsCall("close", "", () => __wjs_fs_close(fd));
 }
-// ── 10f：read/write 参数校验族（node lib/fs.js 口径；code 级对拍，文案近似）──
-function __vInteger(v, name, min) {
-  if (typeof v !== "number" || !Number.isInteger(v)) {
-    const e = new TypeError(`The "${name}" argument must be of type number. Received ${typeof v}`);
+// ── 10f：参数校验族（node lib/internal/validators 口径；code+message 对拍）──
+function __vReceived(v) {
+  if (v === null) return "null";
+  if (v === undefined) return "undefined";
+  const t = typeof v;
+  if (t === "string") return `type string ('${v}')`;
+  if (t === "boolean") return `type boolean (${v})`;
+  if (t === "number") return `type number (${v})`;
+  if (t === "object") {
+    if (Array.isArray(v)) return "an instance of Array";
+    const n = v.constructor && v.constructor.name ? v.constructor.name : "Object";
+    return `an instance of ${n}`;
+  }
+  if (t === "function") return `function ${v.name}`;
+  return `type ${t} (${String(v)})`;
+}
+function __vErrType(name, expected, v) {
+  const e = new TypeError(`The "${name}" argument must be of type ${expected}. Received ${__vReceived(v)}`);
+  e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+}
+function __vFd(fd) {
+  if (typeof fd !== "number" || !Number.isInteger(fd)) __vErrType("fd", "number", fd);
+  return fd;
+}
+function __vModeArg(mode) {
+  if (typeof mode !== "number" && typeof mode !== "string") __vErrType("mode", "number or string", mode);
+  return mode;
+}
+function __vIdNum(v, name) {
+  if (typeof v !== "number" || !Number.isInteger(v)) __vErrType(name, "number", v);
+  return v;
+}
+function __vCbArg(cb) {
+  if (typeof cb !== "function") __vErrType("callback", "function", cb);
+  return cb;
+}
+function __vBooleanProp(v, name) {
+  // node validateBoolean：属性校验文案用 "property"（test-fs-mkdir 逐字断言）。
+  if (typeof v !== "boolean") {
+    const e = new TypeError(`The "${name}" property must be of type boolean. Received ${__vReceived(v)}`);
     e.code = "ERR_INVALID_ARG_TYPE"; throw e;
   }
+  return v;
+}
+function __vInteger(v, name, min) {
+  if (typeof v !== "number" || !Number.isInteger(v)) __vErrType(name, "number", v);
   if (min !== undefined && v < min) {
     const e = new RangeError(`The value of "${name}" is out of range. It must be >= ${min}. Received ${v}`);
     e.code = "ERR_OUT_OF_RANGE"; throw e;
@@ -2295,6 +2518,7 @@ function __vEmptyBuffer(buffer) {
   }
 }
 export function readSync(fd, buffer, offset, length, position) {
+  __vFd(fd);
   __vBuffer(buffer);
   offset ??= 0;
   __vInteger(offset, "offset", 0);
@@ -2308,6 +2532,7 @@ export function readSync(fd, buffer, offset, length, position) {
   return chunk.length;
 }
 export function writeSync(fd, buffer, offset, length, position) {
+  __vFd(fd);
   let data;
   let pos = -1;
   if (typeof buffer === "string") {
@@ -2326,21 +2551,28 @@ export function writeSync(fd, buffer, offset, length, position) {
   return Number(__fsCall("write", "", () => __wjs_fs_write_fd(fd, data, pos)));
 }
 export function ftruncateSync(fd, len) {
+  __vFd(fd);
   __fsCall("ftruncate", "", () => __wjs_fs_ftruncate(fd, len ?? 0));
 }
 export function fsyncSync(fd) {
+  __vFd(fd);
   __fsCall("fsync", "", () => __wjs_fs_fsync(fd, false));
 }
 export function fdatasyncSync(fd) {
+  __vFd(fd);
   __fsCall("fsync", "", () => __wjs_fs_fsync(fd, true));
 }
 export function fstatSync(fd) {
+  __vFd(fd);
   return new __Stats(JSON.parse(__fsCall("fstat", "", () => __wjs_fs_fstat(fd))));
 }
 export function fchmodSync(fd, mode) {
+  __vFd(fd);
+  __vModeArg(mode);
   __fsCall("fchmod", "", () => __wjs_fs_fchmod(fd, __fsModeNum(mode)));
 }
 export function futimesSync(fd, atime, mtime) {
+  __vFd(fd);
   __fsCall("futimes", "", () => __wjs_fs_futimes(fd, __fsTimeMs(atime, "futimes"), __fsTimeMs(mtime, "futimes")));
 }
 // ---- 9c：opendir / Dir（惰性游标，readdir 底座，记档非真流式）----
@@ -2382,7 +2614,8 @@ export class Dir {
     return { next: (v) => Promise.resolve(it.next(v)) };
   }
 }
-export function opendirSync(p) {
+export function opendirSync(p, opts) {
+  __fsEncoding(opts);
   p = __fsPath(p, "opendir");
   return __fsCall("opendir", p, () => new Dir(p));
 }
@@ -2608,7 +2841,7 @@ export const promises = {
 };
 // ---- 9c：回调全家（err-first；promise 底座经 queueMicrotask 派发）----
 function __nodeify(p, cb) {
-  if (typeof cb !== "function") throw new TypeError("Callback must be a function");
+  __vCbArg(cb);
   p.then(
     // node 口径：无结果 API（close/access 等）回调只带 (err)，不补 undefined
     //（test-fs-close：deepStrictEqual(args, [null]) 点名）。
@@ -2618,9 +2851,19 @@ function __nodeify(p, cb) {
 }
 const __cb1 = (syncFn, name, before) => function (...args) {
   let cb = args[args.length - 1];
-  if (typeof cb !== "function") throw new TypeError(`fs.${name}: callback must be a function`);
+  __vCbArg(cb);
   const rest = args.slice(0, -1);
-  __nodeify(Promise.resolve().then(() => syncFn(...before(rest))), cb);
+  // node 口径：参数校验错误（ERR_INVALID_ARG_* / ERR_OUT_OF_RANGE）同步抛，
+  // 操作错误（ENOENT 等）走回调（syncFn 立即执行，回调仍经 queueMicrotask）。
+  let p;
+  try {
+    p = Promise.resolve(syncFn(...before(rest)));
+  } catch (e) {
+    if (e && typeof e.code === "string" &&
+        (e.code === "ERR_INVALID_ARG_TYPE" || e.code === "ERR_INVALID_ARG_VALUE" || e.code === "ERR_OUT_OF_RANGE")) throw e;
+    p = Promise.reject(e);
+  }
+  __nodeify(p, cb);
 };
 const __id = (a) => a;
 export const readFile = __cb1(readFileSync, "readFile", __id);
@@ -2646,6 +2889,14 @@ export const link = __cb1(linkSync, "link", __id);
 export const symlink = __cb1(symlinkSync, "symlink", __id);
 export const readlink = __cb1(readlinkSync, "readlink", __id);
 export const opendir = __cb1(opendirSync, "opendir", __id);
+export const chown = __cb1(chownSync, "chown", __id);
+export const fchown = __cb1(fchownSync, "fchown", __id);
+export const fchmod = __cb1(fchmodSync, "fchmod", __id);
+export const fstat = __cb1(fstatSync, "fstat", __id);
+export const ftruncate = __cb1(ftruncateSync, "ftruncate", __id);
+export const fsync = __cb1(fsyncSync, "fsync", __id);
+export const fdatasync = __cb1(fdatasyncSync, "fdatasync", __id);
+export const futimes = __cb1(futimesSync, "futimes", __id);
 // mkdtempDisposable（10f，node 26 口径）：{ path, remove, [Symbol.dispose /
 // asyncDispose] }。remove 锁创建期绝对路径（"Stash the full path in case of
 // process.chdir()"）；promises 版 remove 为 async（assert.rejects 契约）。
@@ -2680,9 +2931,15 @@ async function mkdtempDisposableProm(prefix, opts) {
 }
 export const cp = __cb1(cpSync, "cp", __id);
 export const open = __cb1(openSync, "open", __id);
-export const close = __cb1(closeSync, "close", __id);
+export function close(fd, cb) {
+  __vFd(fd);
+  if (cb === undefined) cb = __nop;
+  __vCbArg(cb);
+  __nodeify(Promise.resolve().then(() => closeSync(fd)), cb);
+}
+function __nop() {}
 export function exists(p, cb) {
-  if (typeof cb !== "function") throw new TypeError("fs.exists: callback must be a function");
+  __vCbArg(cb);
   queueMicrotask(() => cb(existsSync(p)));
 }
 // promisify(fs.exists) → boolean（node：回调非 err-first，走 custom promisified）。
@@ -2694,6 +2951,7 @@ exists[Symbol.for("nodejs.util.promisify.custom")] = function (path) {
 // read(fd, cb) / read(fd, params, cb) / read(fd, buffer, options, cb) /
 // read(fd, buffer, offset, length, position, cb)；write 同族 + 字符串形态。
 export function read(fd, buffer, offsetOrOptions, length, position, callback) {
+  __vFd(fd);
   let cb = callback;
   let offset = offsetOrOptions;
   let params = null;
@@ -2738,6 +2996,7 @@ export function read(fd, buffer, offsetOrOptions, length, position, callback) {
 read[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesRead", "buffer"];
 
 export function write(fd, buffer, offsetOrOptions, length, position, callback) {
+  __vFd(fd);
   let offset = offsetOrOptions;
   if (ArrayBuffer.isView(buffer)) {
     callback ||= position || length || offset;
@@ -2784,6 +3043,7 @@ write[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesWritten", "buffer
 
 // readv/writev（10f：JS 顺序合成，非原子——测试可见面 {bytesRead, buffers} 同构）
 export function readvSync(fd, buffers, position) {
+  __vFd(fd);
   let total = 0;
   for (const b of buffers) {
     const n = readSync(fd, b, 0, b.byteLength, typeof position === "number" ? position + total : -1);
@@ -2793,6 +3053,7 @@ export function readvSync(fd, buffers, position) {
   return total;
 }
 export function writevSync(fd, buffers, position) {
+  __vFd(fd);
   let total = 0;
   for (const b of buffers) {
     const n = writeSync(fd, b, 0, b.byteLength, typeof position === "number" ? position + total : -1);
@@ -2826,13 +3087,13 @@ const __api = {
   mkdirSync, rmSync, rmdirSync, unlinkSync, readdirSync, renameSync, copyFileSync,
   realpathSync, mkdtempSync, watch, watchFile, unwatchFile, constants, createReadStream, createWriteStream, ReadStream, WriteStream,
   // 同步（Phase 9c 增补）
-  accessSync, truncateSync, utimesSync, chmodSync, linkSync, symlinkSync, readlinkSync,
+  accessSync, truncateSync, utimesSync, chmodSync, chownSync, fchownSync, linkSync, symlinkSync, readlinkSync,
   cpSync, opendirSync, openSync, closeSync, readSync, writeSync, ftruncateSync,
   fstatSync, fchmodSync, futimesSync, fsyncSync, fdatasyncSync, statfsSync,
   // 回调面（Phase 9c）
   readFile, writeFile, appendFile, stat, statfs, lstat, exists, mkdir, rmdir, rm, unlink,
   readdir, rename, copyFile, realpath, mkdtemp, access, truncate, utimes, chmod,
-  link, symlink, readlink, open, close, read, write, readv, writev, opendir, cp,
+  link, symlink, readlink, open, close, read, write, readv, writev, chown, fchown, fchmod, fstat, ftruncate, fsync, fdatasync, futimes, opendir, cp,
   mkdtempDisposable: mkdtempDisposableSync,
   // 类 + promises
   Stats: __Stats, Dirent: __Dirent, StatsFs: __StatsFs, Dir, FileHandle, promises,

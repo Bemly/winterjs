@@ -1692,3 +1692,60 @@ cargo build
   `rejectionHandled`，急 emit 即错上加错）。
 - 推广为铁律：事件面缺口（emit 点在运行时）不在功能切片内用功能侧补丁绕过；
   绕过能过当前用例、必坏相邻语义（handled/unhandled 双生面）。
+
+### 4.112 阻塞 native 停转事件循环：定制查询改投递+轮询（2026-09-16，10f dns）
+
+- 症状：stub-DNS 套件（multi-channel/resolveany 系）全 hang——查询包明明已发出
+  （对端 python 可收），stub 回包/自发包却永不到 JS。
+- 根因：定制查询是 microtask 内**阻塞** native（`rx.recv()` 等 helper 线程）——
+  JS 线程停转期间 dgram 到包无人分发；待 native 超时返回，测试早已错过收包窗口
+  （server 永不 close 即 hang）。§4.46/§4.18 的 DNS 版：10d"同步阻塞与 lookup
+  同哲学"在 stub 并发下不成立。
+- 修法：投递即返 + 5ms refed 轮询收割——`__wjs_dns_job_start`（spawn 线程跑查询，
+  结果进 `dns_jobs` 表）/`__wjs_dns_job_poll`（取走即摘）/`__wjs_dns_job_forget`
+  （cancel 摘除）；cancel 纯 JS 即刻合成 ECANCELLED（线程迟归自然沉底，不多等
+  一轮超时）；运行时零改动（未动 pump/idle：轮询 interval 自带保活）。
+- 复现：`wjs-dns-stub` 探针（修前 `stub got` 缺席 + ETIMEOUT；修后即达）。
+- 推广为铁律：凡"查询等回包"与"回包靠本循环分发"同现，查询路径永不阻塞——
+  投递/轮询/遗忘三件是最小闭环；"线程迟归自然沉底 + JS 侧即刻合成"是 cancel
+  的标准形（强杀线程不可取）。
+
+### 4.113 `assert.throws(fn, Error)` 裸类须先 `instanceof`，门错即全灭（2026-09-16，10f dns）
+
+- 症状：`setlocaladdress` 全线 `throws: unexpected throw`——抛的明明是 Error。
+- 根因：§4.99 的门写成 `expected.prototype instanceof Error`（仅 Error 子类为真）——
+  裸 `Error` 本体（`Error.prototype` 的原型是 `Object.prototype`）被踢进校验函数分支，
+  `Error(e)` 回对象 `!== true` 永假。真机（lib/assert.js）门是
+  `expected.prototype !== undefined && actual instanceof expected`，再以
+  "是否 Error 构造器族"分流（是则直接不过，不当校验器调）。
+- 修法：照抄真机三段（`src/builtins/node/assert.rs` `__checkThrow`；Error 族判定走
+  `getPrototypeOf` 链找 `Error`，箭头函数无 prototype 照旧落校验器，§4.99 不动）。
+- 复现：`assert.throws(() => { throw new TypeError("x"); }, Error)`（修前不过）。
+- 推广为铁律：§4.99 的延续——转译断言库的形态判定必须与 lib 原文逐行对拍，
+  "看起来等价"的门（`X.prototype instanceof Error` vs `actual instanceof X`）
+  在本体/子类边界上必然分叉；改断言库必跑全量（本轮全绿才敢合）。
+
+### 4.114 双 `Received` 口径：ARG_TYPE 用 helper 形，ARG_VALUE 用 inspect 形（2026-09-16，10f dns）
+
+- 症状：`setservers-type-check`（`Received type string ('x')`）与
+  `lookupService`（`Received 'fasdfdsaf'`）对字符串期望互斥——统一即顾此失彼。
+- 根因：Node 两处文案源不同：`ERR_INVALID_ARG_TYPE` 用 invalidArgTypeHelper
+  （字符串 `type string ('x')`），`ERR_INVALID_ARG_VALUE` 用 kInspect
+  （字符串裸 `'x'`）。移植时合写成一个 `__dnsReceived` 即撞墙。
+- 修法：`__dnsReceived`（helper 形）与 `__dnsInspectValue`（inspect 形）分家，
+  前者供 ARG_TYPE，后者供 ARG_VALUE（`src/builtins/node/dns.rs`）。
+- 复现：上两个套件行（修前各对一半）。
+- 推广为铁律：同词（`Received`）不同源（helper vs inspect）的文案，初见即分家；
+  报错文案的"源头函数"与"调用点"同等重要，抄文案先问出自哪个函数。
+
+### 4.115 移植先读全文件：文件头校验段漏读=返工三轮（2026-09-16，10f 过程教训·非代码坑）
+
+- 症状：`channel-timeout` 修完"主体"仍红——漏读文件头 20 行构造器校验段
+  （`{timeout: null/true/...}` 与 `-2/4.2/2**31` 两批）；`resolveany.js` 漏读
+  `validateResults` 的 SOA-`type` 键（误作裸对象）；`setlocaladdress` 漏读
+  `ERR_INVALID_ARG_VALUE` 全文（自编 `invalid IPv4` 错两遍）。
+- 根因：`sed -n '25,60p` 式抽查只看了"主体"，校验段恰在文件头注释之后。
+- 修法：以后套件先 `cat` 全文（本轮三个文件皆 <120 行有效段），再列需求表；
+  本条即 hunger：需求表（test-dns.js 花了整轮）之后零返工。
+- 推广为铁律：点名前通读套件全文（含头 30 行的校验表）；"先跑再读"只适用于
+  找崩点，不适用于定需求。

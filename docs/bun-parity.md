@@ -405,3 +405,52 @@
 | test-trace-events-dynamic-enable.js | 0 | 1 | ⏭️ 真机需 flag/底座（本仓空过，不计绿） |
 | 其余 29 件（fs/http/net/v8/vm/worker/threadpool/console/`-binding`/exit/sigint 等） | ≠0 | 0 | 🟡 偏离：需 V8 tracing 底座 + CLI flags（`--trace-event-categories`、自 spawn `-e` 位置参数即全 flag 设计） + 各模块插桩 |
 
+## dns
+
+> 10f 收官：31 点名 = 20 ✅ + 10 ⏭️（全 `--expose-internals`）+ 1 🟡（空过，另案），红 0。本轮改动主体：
+> `Resolver`/`promises.Resolver` 独立实例（Node internal/dns/utils 口径：自有
+> servers/timeout/tries/maxTimeout + `_handle` 垫片 + pending 计数/setServers
+> 互斥 + 代际 cancel）+ 定制 servers 经自建 UDP 单问（`hickory-proto` 编解码 +
+> tokio 传输，零新依赖——hickory-resolver 的 NameServerConfig 无端口面；
+> 投递即返 + 5ms 轮询收割，阻塞 native 会停转事件循环饿死 stub 分发）+
+> 超时退避（无 maxTimeout 翻倍/有则截顶）+ Node 精确校验全套（name/hostname/
+> callback/rrtype/servers/options/timeout/maxTimeout/ports/hints/family）+
+> `lookupService`（PTR + 服务静态表）+ 错误全文 `${syscall} ${code} ${hostname}` +
+> resolve4/6-DNS 化（含 ttl）+ resolveSoa/CAA 形态 + ETIMEOUT 正名。
+> 偏离记档：定制路径无 CNAME 跟随（stub 口径）；系统路径端口忽略（hickory 面）；
+> `perf_hooks` 文件空过（`exit` 钩另案，见下）。
+
+| 文件 | winterjs | node | 结论 |
+|---|---|---|---|
+| test-dns-cancel-reverse-lookup.js | 0 | 0 | ✅（修：cancel 即刻 ECANCELLED） |
+| test-dns-channel-cancel-promise.js | 0 | 0 | ✅（修：同上，promise 形） |
+| test-dns-channel-cancel.js | 0 | 0 | ✅（修：同上） |
+| test-dns-channel-timeout.js | 0 | 0 | ✅（修：timeout/tries 原生透传 + 构造器校验） |
+| test-dns-default-order-ipv4.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-dns-default-order-ipv6.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-dns-default-order-verbatim.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-dns-get-server.js | 0 | 0 | ✅（修：Resolver + `_handle` 垫片） |
+| test-dns-lookup-promises-options-deprecated.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-dns-lookup-promises.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-dns-lookup.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-dns-lookupService-promises.js | 0 | 0 | ✅（修：lookupService + NODATA→ENOTFOUND） |
+| test-dns-lookupService.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-dns-memory-error.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-dns-multi-channel.js | 0 | 0 | ✅（修：定制 servers 真查询 + 同型过滤） |
+| test-dns-negative-zero.js | 0 | 0 | ✅（修：falsy options 跳过 + -0 归零） |
+| test-dns-perf_hooks.js | 0 | 0 | 🟡 空过：`exit` 钩不支持致 exit 断言永不执行（另案；dns entries 亦无） |
+| test-dns-promises-exists.js | 0 | 0 | ✅ |
+| test-dns-resolve-promises.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-dns-resolveany-bad-ancount.js | 0 | 0 | ✅（修：坏包 EBADRESP/超时 ETIMEOUT 双形） |
+| test-dns-resolveany-ttl-overflow.js | 0 | 0 | ✅（修：64KB 收包 + TTL 透传，257 条） |
+| test-dns-resolveany.js | 0 | 0 | ✅（修：ANY 单问 + A/AAAA-ttl/SOA/CAA 形态） |
+| test-dns-resolvens-typeerror.js | 0 | 0 | ✅（修：同步校验 + name/callback 精确码） |
+| test-dns-resolver-max-timeout.js | 0 | 0 | ✅（修：退避/截顶，3113ms vs 517ms） |
+| test-dns-resolvesrv-econnrefused.js | 0 | 0 | ✅（修：SRV 收发 + 同型过滤） |
+| test-dns-resolvesrv.js | 0 | 0 | ✅ |
+| test-dns-set-default-order.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-dns-setlocaladdress.js | 0 | 0 | ✅（修：setLocalAddress 真机六形） |
+| test-dns-setserver-when-querying.js | 0 | 0 | ✅（修：pending 互斥 ERR_DNS_SET_SERVERS_FAILED） |
+| test-dns-setservers-type-check.js | 0 | 0 | ✅（修：servers/servers[i] 精确码 + 双 Resolver） |
+| test-dns.js | 0 | 0 | ✅（修：setServers 全套/IP 表/端口/lookup 家族/错误全文/ttl） |
+

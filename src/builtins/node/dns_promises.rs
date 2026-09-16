@@ -8,5 +8,5 @@ pub const SOURCE: &str = r#"
 // Re-export of the promises namespace from node:dns (see module docs).
 import { promises } from 'node:dns';
 export default promises;
-export const { lookup, resolve4, resolve6 } = promises;
+export const { lookup, lookupService, resolve4, resolve6, resolveSoa, resolveAny, Resolver } = promises;
 "#;

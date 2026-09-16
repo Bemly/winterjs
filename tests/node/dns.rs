@@ -3,6 +3,84 @@
 use crate::helpers::*;
 
 #[test]
+fn phase10f_dns_parity_fixes() {
+    // 10f 对拍牵引回归（test-dns-* 套件门，hermetic：localhost + 形状断言）：
+    // 正常：Resolver 构造/getServers/lookupService 回环/setServers  canonical；
+    // 报错：resolveNs 非串同步抛（callback+promises）/setServers 非数组/
+    //   setLocalAddress 非串/lookupService 坏端口；
+    // 边界：family -0 直通/holes 压实/cancel 即刻 ECANCELLED（无应答 stub）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import dns, { Resolver } from "node:dns";
+console.log("consts", dns.V4MAPPED === 2048, dns.ADDRCONFIG === 1024, dns.ALL === 256);
+const r = new Resolver();
+console.log("srv", r.getServers().length > 0, typeof r.cancel);
+r.setServers(["127.0.0.1"]);
+console.log("set", JSON.stringify(r.getServers()));
+dns.lookupService("127.0.0.1", 22, (e, h, s) => {
+  console.log("ls", e === null, typeof h === "string" && h.length > 0, ["ssh", "22"].includes(s));
+});
+dns.lookup("localhost", -0, (e, a) => {
+  console.log("negzero", e === null, typeof a === "string");
+});
+try { dns.resolveNs([]); console.log("BAD1"); }
+catch (e) { console.log("e1", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { dns.promises.resolveNs([]); console.log("BAD2"); }
+catch (e) { console.log("e2", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { dns.setServers("x"); console.log("BAD3"); }
+catch (e) { console.log("e3", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { r.setLocalAddress(123); console.log("BAD4"); }
+catch (e) { console.log("e4", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { dns.lookupService("127.0.0.1", -1, () => {}); console.log("BAD5"); }
+catch (e) { console.log("e5", e.code === "ERR_SOCKET_BAD_PORT"); }
+try { dns.lookup("", () => {}); console.log("BAD6"); }
+catch (e) { console.log("e6", e.code === "ERR_INVALID_ARG_VALUE"); }
+// holes 压实 + 非法 IP 文案
+r.setServers(["127.0.0.1", , "0.0.0.0"]);
+console.log("holes", JSON.stringify(r.getServers()));
+try { r.setServers(["foobar"]); console.log("BAD7"); }
+catch (e) { console.log("e7", e.code === "ERR_INVALID_IP_ADDRESS", e.message === "Invalid IP address: foobar"); }
+// cancel：无应答 stub + 即刻 ECANCELLED（不等待超时）
+const dgram = await import("node:dgram");
+const server = dgram.createSocket("udp4");
+server.bind(0, () => {
+  const rc = new Resolver({ timeout: 8000, tries: 1 });
+  rc.setServers([`127.0.0.1:${server.address().port}`]);
+  rc.resolve4("example.invalid", (e) => {
+    console.log("cancel", e && e.code === "ECANCELLED", e && e.syscall === "queryA");
+    server.close();
+  });
+  rc.cancel();
+});
+setTimeout(() => console.log("end-ok"), 500);
+"#,
+    );
+    for line in [
+        "consts true true true",
+        "srv true function",
+        r#"set ["127.0.0.1"]"#,
+        "ls true true true",
+        "negzero true true",
+        "e1 true",
+        "e2 true",
+        "e3 true",
+        "e4 true",
+        "e5 true",
+        "e6 true",
+        r#"holes ["127.0.0.1","0.0.0.0"]"#,
+        "e7 true true",
+        "cancel true true",
+        "end-ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase9d_dns_localhost() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -32,10 +110,10 @@ dns.promises.lookup("localhost").then((r) => {
 dns.promises.lookup("localhost", { all: true }).then((r) => {
   console.log("p-lookup-all", Array.isArray(r));
 });
-// 空主机名 → 报错带 code（平台错误码不定，断言 Error 形状）
-lookup("", (err) => {
-  console.log("empty-err", err instanceof Error, typeof err.code === "string", err.syscall === "getaddrinfo");
-});
+// 空主机名 → 同步抛 ERR_INVALID_ARG_VALUE（真机口径，test-dns.js；
+// 旧断言按回调错编码，系实现偏差 contemporaneous，已翻转见 §4.x）
+try { lookup("", () => {}); console.log("empty-err BAD"); }
+catch (e) { console.log("empty-err", e instanceof Error, e.code === "ERR_INVALID_ARG_VALUE"); }
 setTimeout(() => console.log("end-ok"), 50);
 "#,
     );
@@ -46,7 +124,7 @@ setTimeout(() => console.log("end-ok"), 50);
     assert!(out.contains("resolve6 true"), "out: {out}");
     assert!(out.contains("p-lookup true true"), "out: {out}");
     assert!(out.contains("p-lookup-all true"), "out: {out}");
-    assert!(out.contains("empty-err true true true"), "out: {out}");
+    assert!(out.contains("empty-err true true"), "out: {out}");
     assert!(out.contains("end-ok"), "out: {out}");
     dir.close().unwrap();
 }

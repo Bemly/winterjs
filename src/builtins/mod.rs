@@ -4547,6 +4547,10 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_dns_lookup", Some(node::dns::dns_lookup), 1),
             // 10d：dns 深件（hickory 全套；lookup 维持 std）
             ("__wjs_dns_query", Some(node::dns::dns_query), 2),
+            // 10f：Resolver 定制查询（投递/轮询/遗忘，见 dns.rs job 表）
+            ("__wjs_dns_job_start", Some(node::dns::dns_job_start), 6),
+            ("__wjs_dns_job_poll", Some(node::dns::dns_job_poll), 1),
+            ("__wjs_dns_job_forget", Some(node::dns::dns_job_forget), 1),
             ("__wjs_dns_servers_get", Some(node::dns::dns_servers_get), 0),
             ("__wjs_dns_servers_set", Some(node::dns::dns_servers_set), 1),
             ("__wjs_dns_order_get", Some(node::dns::dns_order_get), 0),

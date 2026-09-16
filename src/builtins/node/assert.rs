@@ -122,26 +122,41 @@ function __checkThrow(e, expected, prefix) {
   if (expected === undefined) return;
   let ok = false;
   if (typeof expected === "function") {
-    // 10f：真机口径——Error 子类先 instanceof，不过再当校验函数调且须严格
-    // 回 true（旧实现 `!!expected(e)` 把构造器调用的真值对象当通过）。
-    // instanceof 须以 prototype 为 Error 为门——箭头函数无 prototype，
-    // `e instanceof arrow` 本身就抛 TypeError，被 catch 吞后校验器永不到达
-    //（test-url-parse-invalid-input 的 `(e) => e instanceof URIError` 形现形）。
+    // 10f：真机口径（lib/assert.js expectedException）：先 `actual instanceof
+    // expected`（Error 本体亦走此门——`Error.prototype instanceof Error` 为
+    // false，旧门把裸 Error 踢进校验函数分支，`Error(e)` 回对象≠true 永假，
+    // setlocaladdress 全线现形）；再判是否为 Error 构造器族（是则直接不过，
+    // 不当校验器调）；余下才当校验函数调且须严格回 true。
+    // 箭头函数无 prototype，`instanceof` 右值即抛——先验门再运算（§4.99）。
+    const __isErrorCtor = (f) => {
+      let p = f;
+      while (p !== null && p !== undefined) {
+        if (p === Error) return true;
+        p = Object.getPrototypeOf(p);
+      }
+      return false;
+    };
     try {
-      if (expected.prototype !== undefined && expected.prototype instanceof Error) {
-        ok = e instanceof expected;
-        if (!ok) ok = expected(e) === true;
-      } else {
+      if (expected.prototype !== undefined && e instanceof expected) {
+        ok = true;
+      } else if (!__isErrorCtor(expected)) {
         ok = expected(e) === true;
+      } else {
+        ok = false;
       }
     } catch {
       ok = false;
     }
   } else if (expected instanceof RegExp) {
-    // 10f：真机测 String(err)（"RangeError: Invalid input" 含名；旧实现只测 message）。
+    // 10f：真机测 String(err)；V8 的 String(带码错) 含 `[CODE]`
+    // （如 `RangeError [ERR_OUT_OF_RANGE]: …`），SM 无——此处补齐后测，
+    // 全局 toString 不动（爆破半径最小，dns max-timeout 套件门）。
     let s;
     try {
       s = String(e);
+      if (e && typeof e.code === "string" && e.code !== "" && !s.includes(`[${e.code}]`)) {
+        s = `${e.constructor?.name ?? "Error"} [${e.code}]: ${e.message ?? ""}`;
+      }
     } catch {
       s = String((e && e.message) || e);
     }

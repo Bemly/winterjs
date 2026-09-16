@@ -9,7 +9,7 @@ use mozjs::jsapi::JSObject;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 
-use crate::jsapi_glue::{call_one, call_two, pending_exception_error, report_error, value_to_string, wrap_cx, Frame};
+use crate::jsapi_glue::{call_one, call_two, report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
 
 /// 进程启动时刻（uptime/hrtime 基准）。

@@ -148,7 +148,9 @@ function deprecate(fn, msg, code, { modifyPrototype } = {}) {
 
 // ── promisify（逐字移植）──────────────────────────────────────────────────
 const kCustomPromisifiedSymbol = Symbol.for('nodejs.util.promisify.custom');
-const kCustomPromisifyArgsSymbol = Symbol('customPromisifyArgs');
+// 10f：fs.read/write 等跨模块挂 args 名单（fs.rs 同名 Symbol.for）——
+// 注册符号走全局表，普通 Symbol 跨模块取不到。
+const kCustomPromisifyArgsSymbol = Symbol.for('nodejs.util.promisify.customArgs');
 
 function promisify(original) {
   validateFunction(original, 'original');

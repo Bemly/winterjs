@@ -265,7 +265,8 @@ const fh = await fs.promises.open("f.txt", "w+");
 console.log("fh", fh instanceof FileHandle, fh.fd > 2);
 await fh.write(new TextEncoder().encode("handle-data"));
 const rb = new Uint8Array(11);
-console.log("fh-read", await fh.read(rb, 0, 11, 0), new TextDecoder().decode(rb));
+const rr = await fh.read(rb, 0, 11, 0);
+console.log("fh-read", rr.bytesRead, new TextDecoder().decode(rr.buffer));
 console.log("fh-stat", (await fh.stat()).size);
 await fh.chmod(0o640);
 console.log("fh-chmod", (fs.statSync("f.txt").mode & 0o777).toString(8));
@@ -283,8 +284,9 @@ console.log("fh-readFile", await fh2.readFile("utf8"));
 await fh2.appendFile("XYZ");
 console.log("fh-append", fs.readFileSync("f.txt", "utf8"));
 await fh2.close();
-// 重复 close/stat → EBADF
-try { await fh2.close(); } catch (e) { console.log("fh-ebadf", e.message.startsWith("EBADF")); }
+// 重复 close：node 口径幂等（缓存同 promise，不抛）；stat 才 EBADF
+await fh2.close();
+console.log("fh-ebadf", "idem");
 try { await fh2.stat(); } catch (e) { console.log("fh-ebadf2", e.message.startsWith("EBADF")); }
 // promises 新件
 await fs.promises.truncate("f.txt", 2);
@@ -312,14 +314,14 @@ console.log("end-ok");
     assert!(out.contains("fh-chmod 640"), "out: {out}");
     assert!(out.contains("fh-utimes true"), "out: {out}");
     assert!(out.contains("fh-trunc handle"), "out: {out}");
-    assert!(out.contains("fh-overwrite def"), "out: {out}");
+    assert!(out.contains("fh-overwrite abcdef"), "out: {out}");
     assert!(out.contains("fh-readFile "), "out: {out}");
-    assert!(out.contains("fh-append defXYZ"), "out: {out}");
-    assert!(out.contains("fh-ebadf true"), "out: {out}");
+    assert!(out.contains("fh-append abcdefXYZ"), "out: {out}");
+    assert!(out.contains("fh-ebadf idem"), "out: {out}");
     assert!(out.contains("fh-ebadf2 true"), "out: {out}");
     assert!(out.contains("p-trunc 2"), "out: {out}");
     assert!(out.contains("p-readlink f.txt"), "out: {out}");
-    assert!(out.contains("p-cp de"), "out: {out}");
+    assert!(out.contains("p-cp ab"), "out: {out}");
     assert!(out.contains("p-access ENOENT"), "out: {out}");
     assert!(out.contains("p-opendir true true"), "out: {out}");
     assert!(out.contains("end-ok"), "out: {out}");

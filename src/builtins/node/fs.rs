@@ -608,7 +608,7 @@ pub unsafe extern "C" fn fs_realpath(
     }
 }
 
-/// `__wjs_fs_mkdtemp(prefix)` → 唯一目录串（pid+随机 8 字节 hex；0700）。
+/// `__wjs_fs_mkdtemp(prefix)` → 唯一目录串（prefix + 6 随机 alnum；0700）。
 pub unsafe extern "C" fn fs_mkdtemp(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -621,12 +621,19 @@ pub unsafe extern "C" fn fs_mkdtemp(
         return false;
     };
     for _ in 0..8 {
-        let mut rand = [0u8; 8];
+        // node 口径（libuv mkdtemp）：prefix + 6 个随机 alnum 字符（test-fs-promises-
+        // mkdtempDisposable 断言 basename 长度 == 'foo.XXXXXX'.length）。
+        let mut rand = [0u8; 6];
         if getrandom::fill(&mut rand).is_err() {
             report_error(&mut cx, "OperationError: cannot get random values");
             return false;
         }
-        let name = format!("{prefix}{}-{:x}", std::process::id(), u64::from_ne_bytes(rand));
+        const ALPHA: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let suffix: String = rand
+            .iter()
+            .map(|b| ALPHA[*b as usize % ALPHA.len()] as char)
+            .collect();
+        let name = format!("{prefix}{suffix}");
         match std::fs::create_dir(&name) {
             Ok(()) => {
                 #[cfg(unix)]
@@ -1600,7 +1607,15 @@ function __fsPath(p, what) {
     if (p.protocol !== "file:") throw new TypeError(`${what}: only file: URLs supported`);
     return p;
   }
-  throw new TypeError(`${what}: path must be a string or file: URL`);
+  if (ArrayBuffer.isView(p)) return Buffer.from(p).toString("utf8");
+  throw new TypeError(`${what}: path must be a string or Buffer or file: URL`);
+}
+function __fsAbortErr(reason) {
+  const e = new Error("The operation was aborted");
+  e.name = "AbortError";
+  e.code = "ABORT_ERR";
+  if (reason !== undefined) e.cause = reason;
+  return e;
 }
 function __fsData(d, what) {
   if (typeof d === "string") return new TextEncoder().encode(d);
@@ -1723,7 +1738,7 @@ function __fsFlags(flag, what) {
 }
 function __fsReadWhole(p, flag) {
   if (flag === undefined || flag === "r") return __wjs_fs_read_file(p);
-  const fd = __wjs_fs_open(p, __fsFlags(flag, "readFile"));
+  const fd = Number(__wjs_fs_open(p, __fsFlags(flag, "readFile")));
   try {
     const parts = [];
     while (true) {
@@ -1754,7 +1769,7 @@ export function writeFileSync(p, data, opts) {
       __wjs_fs_write_file(p, bytes, __fsMode(opts));
       return;
     }
-    const fd = __wjs_fs_open(p, __fsFlags(flag, "writeFile"));
+    const fd = Number(__wjs_fs_open(p, __fsFlags(flag, "writeFile")));
     try { __wjs_fs_write_fd(fd, bytes, flag.startsWith("a") ? -1 : 0); }
     finally { __wjs_fs_close(fd); }
   });
@@ -1772,6 +1787,10 @@ export function statSync(p) {
 }
 // 文件系统级状态（M5 vitest 牵引；unix 经 statvfs，type 取 filesystem_id 记档）。
 export function statfsSync(p) {
+  if (typeof p !== "string" && !(p instanceof URL)) {
+    const e = new TypeError(`The "path" argument must be of type string or an instance of Buffer or URL. Received ${p === null ? "null" : typeof p}`);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
   p = __fsPath(p, "statfs");
   return new __StatsFs(JSON.parse(__fsCall("statfs", p, () => __wjs_fs_statfs(p))));
 }
@@ -1809,16 +1828,21 @@ export function unlinkSync(p) {
 export function readdirSync(p, opts) {
   p = __fsPath(p, "readdir");
   const withTypes = !!(opts && (opts.withFileTypes ?? false));
+  const asBuf = opts && typeof opts === "object" && opts.encoding === "buffer";
   const out = JSON.parse(__fsCall("scandir", p, () => __wjs_fs_readdir(p, withTypes)));
-  if (!withTypes) return out;
-  return out.map(([name, isDir, isFile, isLink]) => new __Dirent(name, isDir, isFile, isLink));
+  if (!withTypes) return asBuf ? out.map((n) => Buffer.from(n)) : out;
+  return out.map(([name, isDir, isFile, isLink]) => new __Dirent(asBuf ? Buffer.from(name) : name, isDir, isFile, isLink));
 }
 export function renameSync(a, b) {
   a = __fsPath(a, "rename");
   b = __fsPath(b, "rename");
   __fsCall("rename", a, () => __wjs_fs_rename(a, b));
 }
-export function copyFileSync(src, dst) {
+export function copyFileSync(src, dst, mode) {
+  if (mode !== undefined && typeof mode !== "number") {
+    const e = new TypeError(`The "mode" argument must be of type number. Received ${typeof mode} (${JSON.stringify(String(mode))})`);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
   src = __fsPath(src, "copyFile");
   dst = __fsPath(dst, "copyFile");
   __fsCall("copyfile", src, () => __wjs_fs_copy_file(src, dst));
@@ -1962,6 +1986,39 @@ class __ReadStream extends Readable {
     this.autoClose = opts.autoClose !== false;
     this.bytesRead = 0;
     this.fd = null;
+    if (opts.fd !== undefined && opts.fd !== null) {
+      // 10f：fd 形（FileHandle.createReadStream / { fd }）——不 open，增量读；
+      // start/end 不适用（偏差记档）。fd 为 FileHandle 时读/关走 handle 方法
+      //（node streams.js FileHandleOperations 同构；write-stream-2 以 spy 断言）。
+      if (opts.fs) {
+        const e = new Error("The FileHandle with fs method is not implemented");
+        e.code = "ERR_METHOD_NOT_IMPLEMENTED"; throw e;
+      }
+      this.__fh = typeof opts.fd === "object" ? opts.fd : null;
+      this.fd = this.__fh ? this.__fh.fd : opts.fd;
+      this.__fdMode = true;
+      this.__opened = false;
+      this.__hwm = size;
+      if (opts.signal !== undefined) {
+        // node validateAbortSignal：undefined 跳过，null/非 signal 即抛。
+        if (opts.signal === null || typeof opts.signal.addEventListener !== "function") {
+          const e = new TypeError("The 'signal' option must be an AbortSignal-like object");
+          e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+        }
+        if (opts.signal.aborted) {
+          queueMicrotask(() => { if (!this.destroyed) this.destroy(__fsAbortErr(opts.signal.reason)); });
+          return;
+        }
+        opts.signal.addEventListener("abort", () => this.destroy(__fsAbortErr(opts.signal.reason)), { once: true });
+      }
+      // node 口径：FileHandle 被（用户/他人）close 即毁流——handle 关后再读
+      // 是 EBADF，不是可恢复错误（read-stream-file-handle data→close 用例）。
+      // 位置：signal 校验之后——无效 signal 的构造器抛错不得积累监听。
+      if (this.__fh && typeof this.__fh.on === "function") {
+        this.__fh.on("close", () => { if (!this.destroyed) this.destroy(); });
+      }
+      return;
+    }
     const bytes = __fsCall("open", p, () => __wjs_fs_read_file(p));
     let start = opts.start !== undefined ? Math.max(0, Math.floor(Number(opts.start) || 0)) : 0;
     let end = opts.end !== undefined ? Math.floor(Number(opts.end)) : bytes.length - 1;
@@ -1972,14 +2029,49 @@ class __ReadStream extends Readable {
     this.__hwm = size;
     this.__opened = false;
   }
+  close(cb) {
+    // node ReadStream.close：毁流 → 'close'；裸 fd 在此收口（destroy 不带钩）。
+    if (this.__fdMode && !this.__fh && this.autoClose && this.fd != null && this.fd !== -1) {
+      try { __wjs_fs_close(this.fd); } catch { }
+      this.fd = -1;
+    }
+    this.destroy();
+    if (typeof cb === "function") this.once("close", cb);
+    return this;
+  }
   _read() {
     // node 口径事件序 open → ready → data …：首次 _read 前派发（sync 底座下
     // 若走 microtask，流在监听器挂载的同一同步链上已流到 close，事件被
-    // destroyed 早退吞掉；fd 恒 null，偏差记档）。
+    // destroyed 早退吞掉）。
     if (!this.__opened) {
       this.__opened = true;
       this.emit("open", null);
       this.emit("ready");
+    }
+    if (this.__fdMode) {
+      const buf = Buffer.alloc(this.__hwm);
+      if (this.__fh) {
+        this.__fh.read(buf, 0, this.__hwm, null).then(
+          (r) => {
+            if (this.destroyed) return;
+            if (!r || r.bytesRead <= 0) { this.push(null); return; }
+            this.bytesRead += r.bytesRead;
+            this.push(r.bytesRead === r.buffer.byteLength ? r.buffer : Buffer.from(r.buffer.subarray(0, r.bytesRead)));
+          },
+          (e) => this.destroy(e),
+        );
+        return;
+      }
+      let n;
+      try { n = readSync(this.fd, buf, 0, this.__hwm, null); } catch (e) { this.destroy(e); return; }
+      if (n <= 0) {
+        if (this.autoClose) { try { __wjs_fs_close(this.fd); } catch { } this.fd = -1; }
+        this.push(null);
+        return;
+      }
+      this.bytesRead += n;
+      this.push(n === this.__hwm ? buf : Buffer.from(buf.subarray(0, n)));
+      return;
     }
     if (this.__off >= this.__bytes.length) {
       this.push(null);
@@ -1999,7 +2091,8 @@ export const ReadStream = new Proxy(__ReadStream, {
 });
 
 export function createReadStream(p, opts) {
-  p = __fsPath(p, "createReadStream");
+  // node 口径：{ fd } 形下 path 可 null（test-fs-promises-file-handle-read 点名）。
+  if (!(opts && opts.fd != null)) p = __fsPath(p, "createReadStream");
   return new ReadStream(p, opts);
 }
 // WriteStream（10f，node 口径镜像 ReadStream）：open(fd)/ready/finish/close 事件序
@@ -2017,6 +2110,20 @@ class __WriteStream extends Writable {
     this.fd = null;
     this.__chunks = [];
     this.__opened = false;
+    if (opts.fd !== undefined && opts.fd !== null) {
+      // 10f：fd 形（FileHandle.createWriteStream）——增量直写，非 path 攒块；
+      // fd 为 FileHandle 时写/关走 handle 方法（FileHandleOperations 同构）。
+      if (opts.fs) {
+        const e = new Error("The FileHandle with fs method is not implemented");
+        e.code = "ERR_METHOD_NOT_IMPLEMENTED"; throw e;
+      }
+      this.__fh = typeof opts.fd === "object" ? opts.fd : null;
+      this.fd = this.__fh ? this.__fh.fd : opts.fd;
+      this.__fdMode = true;
+      if (this.__fh && typeof this.__fh.on === "function") {
+        this.__fh.on("close", () => { if (!this.destroyed) this.destroy(); });
+      }
+    }
   }
   __emitOpen() {
     if (this.__opened) return;
@@ -2027,12 +2134,32 @@ class __WriteStream extends Writable {
   _write(chunk, enc, cb) {
     this.__emitOpen();
     const u8 = __fsData(chunk, "createWriteStream");
+    if (this.__fdMode) {
+      if (this.__fh) {
+        this.__fh.write(u8).then(
+          (r) => { this.bytesWritten += r ? r.bytesWritten : u8.length; cb(); },
+          (e) => cb(e),
+        );
+        return;
+      }
+      try { this.bytesWritten += writeSync(this.fd, u8); cb(); }
+      catch (e) { cb(e); }
+      return;
+    }
     this.__chunks.push(u8);
     this.bytesWritten += u8.length;
     cb();
   }
   _final(cb) {
     this.__emitOpen();
+    if (this.__fdMode) {
+      if (this.autoClose) {
+        if (this.__fh) { this.__fh.close().catch(() => { }); }
+        else { try { __wjs_fs_close(this.fd); } catch { } this.fd = -1; }
+      }
+      cb();
+      return;
+    }
     const total = this.__chunks.reduce((n, c) => n + c.length, 0);
     const out = new Uint8Array(total);
     let off = 0;
@@ -2053,7 +2180,7 @@ export const WriteStream = new Proxy(__WriteStream, {
 });
 
 export function createWriteStream(p, opts) {
-  p = __fsPath(p, "createWriteStream");
+  if (!(opts && opts.fd != null)) p = __fsPath(p, "createWriteStream");
   return new WriteStream(p, opts);
 }
 // ---- Phase 9c：同步面增补（link 系/时间戳/权限/access/fd 系/cp/opendir）----
@@ -2074,6 +2201,10 @@ function __fsModeNum(mode) {
   return n;
 }
 export function accessSync(p, mode = 0) {
+  if (mode !== undefined && typeof mode !== "number") {
+    const e = new TypeError(`The "mode" argument must be of type number. Received ${typeof mode} (${JSON.stringify(String(mode))})`);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
   p = __fsPath(p, "access");
   __fsCall("access", p, () => __wjs_fs_access(p, mode));
 }
@@ -2132,9 +2263,45 @@ export function openSync(p, flags, mode) {
 export function closeSync(fd) {
   __fsCall("close", "", () => __wjs_fs_close(fd));
 }
+// ── 10f：read/write 参数校验族（node lib/fs.js 口径；code 级对拍，文案近似）──
+function __vInteger(v, name, min) {
+  if (typeof v !== "number" || !Number.isInteger(v)) {
+    const e = new TypeError(`The "${name}" argument must be of type number. Received ${typeof v}`);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
+  if (min !== undefined && v < min) {
+    const e = new RangeError(`The value of "${name}" is out of range. It must be >= ${min}. Received ${v}`);
+    e.code = "ERR_OUT_OF_RANGE"; throw e;
+  }
+  return v;
+}
+function __vOffsetLength(offset, length, byteLength) {
+  if (offset < 0 || length < 0 || byteLength - offset < length) {
+    const bad = offset < 0 ? "offset" : "length";
+    const e = new RangeError(`The value of "${bad}" is out of range. It must be >= 0. Received ${bad === "offset" ? offset : length}`);
+    e.code = "ERR_OUT_OF_RANGE"; throw e;
+  }
+}
+function __vBuffer(buffer) {
+  if (!ArrayBuffer.isView(buffer)) {
+    const e = new TypeError(`The "buffer" argument must be of type Buffer, TypedArray, or DataView. Received ${buffer === null ? "null" : typeof buffer}`);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
+}
+function __vEmptyBuffer(buffer) {
+  if (buffer.byteLength === 0) {
+    const e = new RangeError(`The argument "buffer" is empty and cannot be written. Received an instance of ${buffer.constructor?.name ?? "Object"}`);
+    e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+  }
+}
 export function readSync(fd, buffer, offset, length, position) {
+  __vBuffer(buffer);
   offset ??= 0;
-  length ??= buffer.length - offset;
+  __vInteger(offset, "offset", 0);
+  length ??= buffer.byteLength - offset;
+  length |= 0;
+  if (length > 0) __vEmptyBuffer(buffer);
+  __vOffsetLength(offset, length, buffer.byteLength);
   const chunk = __fsCall("read", "", () =>
     __wjs_fs_read_fd(fd, length, typeof position === "number" ? position : -1));
   buffer.set(chunk, offset);
@@ -2148,12 +2315,15 @@ export function writeSync(fd, buffer, offset, length, position) {
     data = __fsData(buffer, "write");
   } else {
     offset ??= 0;
+    __vInteger(offset, "offset", 0);
     const u8 = __fsData(buffer, "write");
     length ??= u8.length - offset;
+    length |= 0;
+    __vOffsetLength(offset, length, u8.length);
     data = u8.subarray(offset, offset + length);
     pos = typeof position === "number" ? position : -1;
   }
-  return __fsCall("write", "", () => __wjs_fs_write_fd(fd, data, pos));
+  return Number(__fsCall("write", "", () => __wjs_fs_write_fd(fd, data, pos)));
 }
 export function ftruncateSync(fd, len) {
   __fsCall("ftruncate", "", () => __wjs_fs_ftruncate(fd, len ?? 0));
@@ -2232,26 +2402,85 @@ export class FileHandle extends EventEmitter {
     await this.close();
   }
   close() {
+    // node 口径：close 幂等——缓存 close promise，二次调用返回同一 promise
+    //（流收尾会代调 handle.close()，test-fs-promises-file-handle-read 显式
+    // 二次 close 不炸不重发）。
+    if (this.__closePromise) return this.__closePromise;
     const fd = this.fd;
-    return Promise.resolve()
+    this.__closePromise = Promise.resolve()
       .then(() => __fsCall("close", "", () => __wjs_fs_close(fd)))
       .then(() => {
         this.fd = -1;
         this.emit("close");
       });
+    return this.__closePromise;
   }
+  // node internal/fs/promises.js read()/write() 同构（10f）：params 形 /
+  // (buffer, options) 形 / null 位置归 -1，返回 { bytesRead, buffer }。
   read(buffer, offset, length, position) {
-    return Promise.resolve().then(() => readSync(this.fd, buffer, offset, length, position));
-  }
-  write(buffer, offset, length, position) {
     return Promise.resolve().then(() => {
-      if (typeof buffer === "string") {
-        const n = writeSync(this.fd, buffer, offset);
-        return { bytesWritten: n, buffer };
+      let b = buffer;
+      if (!ArrayBuffer.isView(b)) {
+        // fh.read(params)
+        ({ buffer: b = Buffer.alloc(16384), offset = 0, length = b.byteLength - offset, position = null } = buffer ?? {});
       }
-      const n = writeSync(this.fd, buffer, offset, length, position);
-      return { bytesWritten: n, buffer };
+      if (offset !== null && typeof offset === "object") {
+        // fh.read(buffer, options)
+        ({ offset = 0, length = b.byteLength - offset, position = null } = offset);
+      }
+      if (offset == null) offset = 0;
+      length ??= b.byteLength - offset;
+      if (position == null) position = -1;
+      if (length === 0) return { bytesRead: 0, buffer: b };
+      const n = readSync(this.fd, b, offset, length, position);
+      return { bytesRead: n || 0, buffer: b };
     });
+  }
+  write(buffer, offsetOrOptions, length, position) {
+    return Promise.resolve().then(() => {
+      if (typeof buffer !== "string" && !ArrayBuffer.isView(buffer)) {
+        const e = new TypeError(`The "buffer" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ${typeof buffer}`);
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
+      if (buffer?.byteLength === 0) return { bytesWritten: 0, buffer };
+      let offset = offsetOrOptions;
+      if (ArrayBuffer.isView(buffer)) {
+        if (typeof offset === "object" && offset !== null) {
+          ({ offset = 0, length = buffer.byteLength - offset, position = null } = offsetOrOptions ?? {});
+        }
+        if (offset == null) offset = 0;
+        if (typeof length !== "number") length = buffer.byteLength - offset;
+        if (typeof position !== "number") position = null;
+        const n = writeSync(this.fd, buffer, offset, length, position);
+        return { bytesWritten: n || 0, buffer };
+      }
+      // 字符串形态：(str[, position[, encoding]])
+      const pos = typeof offset === "number" ? offset : -1;
+      const enc = typeof length === "string" ? length : "utf8";
+      const bytes = enc === "utf8" ? __fsData(buffer, "write") : Buffer.from(buffer, enc);
+      const n = __fsCall("write", "", () => __wjs_fs_write_fd(this.fd, bytes, pos));
+      return { bytesWritten: n || 0, buffer };
+    });
+  }
+  chown(uid, gid) { return Promise.resolve().then(() => fchownSync(this.fd, uid, gid)); }
+  readv(buffers, position) {
+    return Promise.resolve().then(() => {
+      const n = readvSync(this.fd, buffers, typeof position === "number" ? position : null);
+      return { bytesRead: n || 0, buffers };
+    });
+  }
+  writev(buffers, position) {
+    return Promise.resolve().then(() => {
+      const n = writevSync(this.fd, buffers, typeof position === "number" ? position : null);
+      return { bytesWritten: n || 0, buffers };
+    });
+  }
+  createReadStream(options) {
+    // node 口径：fs 流 + { ...options, fd: this }（fd 形流，非 path）。
+    return new ReadStream(undefined, { ...options, fd: this });
+  }
+  createWriteStream(options) {
+    return new WriteStream(undefined, { ...options, fd: this });
   }
   stat() { return Promise.resolve().then(() => fstatSync(this.fd)); }
   truncate(len) { return Promise.resolve().then(() => ftruncateSync(this.fd, len ?? 0)); }
@@ -2274,9 +2503,66 @@ export class FileHandle extends EventEmitter {
       return __fsDecode(out, enc, "readFile");
     });
   }
-  writeFile(data) {
-    const bytes = __fsData(data, "writeFile");
-    return Promise.resolve().then(() => __fsCall("write", "", () => __wjs_fs_write_fd(this.fd, bytes, 0)));
+  async writeFile(data, opts) {
+    // node 口径：流/同步+异步可迭代逐块收；signal abort 即 AbortError
+    //（cause=reason）；第二参可 string（encoding）或 { encoding, signal }。
+    if (typeof data !== "string" && !ArrayBuffer.isView(data) &&
+        !(data && typeof data[Symbol.asyncIterator] === "function") &&
+        !(data && typeof data[Symbol.iterator] === "function")) {
+      const e = new TypeError(`The "data" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ${data === null ? "null" : typeof data}`);
+      e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+    }
+    const enc = typeof opts === "string" ? opts : (opts && opts.encoding);
+    const isChunk = (c) => typeof c === "string" || ArrayBuffer.isView(c);
+    let parts = null;
+    if (data && typeof data[Symbol.asyncIterator] === "function") {
+      parts = [];
+      for await (const c of data) {
+        if (!isChunk(c)) { const e = new TypeError(`The "chunk" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ${c === null ? "null" : typeof c}`); e.code = "ERR_INVALID_ARG_TYPE"; throw e; }
+        parts.push(c);
+      }
+    } else if (data && !ArrayBuffer.isView(data) && typeof data[Symbol.iterator] === "function") {
+      parts = [];
+      for (const c of data) {
+        if (!isChunk(c)) { const e = new TypeError(`The "chunk" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ${c === null ? "null" : typeof c}`); e.code = "ERR_INVALID_ARG_TYPE"; throw e; }
+        parts.push(c);
+      }
+    }
+    const encChunk = (c) => {
+      const u8 = typeof c === "string" && enc && enc !== "utf8" ? Buffer.from(c, enc) : __fsData(c, "writeFile");
+      return new Uint8Array(u8.buffer, u8.byteOffset, u8.byteLength);
+    };
+    const bytes = parts
+      ? (() => { const out = new Uint8Array(parts.reduce((a, c) => a + encChunk(c).length, 0)); let off = 0; for (const c of parts) { const u8 = encChunk(c); out.set(u8, off); off += u8.length; } return out; })()
+      : __fsData(data, "writeFile");
+    const signal = opts && typeof opts === "object" ? opts.signal : undefined;
+    if (signal) {
+      if (typeof signal.addEventListener !== "function") {
+        const e = new TypeError("The 'signal' option must be an AbortSignal-like object");
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
+      if (signal.aborted) throw __fsAbortErr(signal.reason);
+    }
+    if (signal) {
+      await Promise.race([
+        new Promise((resolve, reject) => {
+          // node 写经线程池异步完成；本仓为同步写——落宏任务使 abort 的
+          // nextTick 检查点先于写触发（doWriteBufferAndCancel 点名）。
+          setTimeout(() => {
+            try {
+              if (signal.aborted) { reject(__fsAbortErr(signal.reason)); return; }
+              resolve(__fsCall("write", "", () => __wjs_fs_write_fd(this.fd, bytes, 0)));
+            } catch (e) { reject(e); }
+          }, 0);
+        }),
+        new Promise((_, reject) =>
+          signal.addEventListener("abort", () => reject(__fsAbortErr(signal.reason)), { once: true })),
+      ]);
+      return;
+    }
+    // position -1 = 当前位（writeFile 无 position；O_APPEND fd 落尾，
+    // doWriteFileAndAppend 'HelloWorld' 点名）。
+    await Promise.resolve().then(() => __fsCall("write", "", () => __wjs_fs_write_fd(this.fd, bytes, -1)));
   }
   appendFile(data) {
     const bytes = __fsData(data, "appendFile");
@@ -2309,6 +2595,9 @@ export const promises = {
   rename: __as(renameSync),
   rm: __as(rmSync),
   rmdir: __as(rmdirSync),
+  mkdtempDisposable: mkdtempDisposableProm,
+  readv: (fd, buffers, position) => Promise.resolve().then(() => ({ bytesRead: readvSync(fd, buffers, position) || 0, buffers })),
+  writev: (fd, buffers, position) => Promise.resolve().then(() => ({ bytesWritten: writevSync(fd, buffers, position) || 0, buffers })),
   stat: __as(statSync),
   statfs: __as(statfsSync),
   symlink: __as(symlinkSync),
@@ -2357,6 +2646,38 @@ export const link = __cb1(linkSync, "link", __id);
 export const symlink = __cb1(symlinkSync, "symlink", __id);
 export const readlink = __cb1(readlinkSync, "readlink", __id);
 export const opendir = __cb1(opendirSync, "opendir", __id);
+// mkdtempDisposable（10f，node 26 口径）：{ path, remove, [Symbol.dispose /
+// asyncDispose] }。remove 锁创建期绝对路径（"Stash the full path in case of
+// process.chdir()"）；promises 版 remove 为 async（assert.rejects 契约）。
+function __pathResolve(p) {
+  if (typeof p === "string" && p.startsWith("/")) return p;
+  const cwd = process.cwd();
+  return cwd.endsWith("/") ? cwd + p : cwd + "/" + p;
+}
+export function mkdtempDisposableSync(prefix, opts) {
+  const p = mkdtempSync(prefix, opts);
+  const fullPath = __pathResolve(p);
+  return {
+    path: p,
+    remove() { rmSync(fullPath, { recursive: true, force: true }); },
+    [Symbol.dispose]() { this.remove(); },
+    async [Symbol.asyncDispose]() { this.remove(); },
+  };
+}
+async function mkdtempDisposableProm(prefix, opts) {
+  const p = mkdtempSync(prefix, opts);
+  const fullPath = __pathResolve(p);
+  return {
+    path: p,
+    async remove() {
+      // node rimraf：缺失路径静默（幂等）；EACCES/EPERM 等真实错误必须透传
+      //（只读父目录用例断言 rejects /EACCES|EPERM/）。
+      try { rmSync(fullPath, { recursive: true, force: true }); }
+      catch (e) { if (e && e.code === "ENOENT") return; throw e; }
+    },
+    async [Symbol.asyncDispose]() { await this.remove(); },
+  };
+}
 export const cp = __cb1(cpSync, "cp", __id);
 export const open = __cb1(openSync, "open", __id);
 export const close = __cb1(closeSync, "close", __id);
@@ -2364,36 +2685,140 @@ export function exists(p, cb) {
   if (typeof cb !== "function") throw new TypeError("fs.exists: callback must be a function");
   queueMicrotask(() => cb(existsSync(p)));
 }
-export function read(fd, buffer, offset, length, position, cb) {
-  if (typeof position === "function") { cb = position; position = null; }
+// promisify(fs.exists) → boolean（node：回调非 err-first，走 custom promisified）。
+exists[Symbol.for("nodejs.util.promisify.custom")] = function (path) {
+  // 内层引外层导出（不得命名内函数——遮蔽后自递归，promisified 套件现形）。
+  return new Promise((resolve) => exists(path, resolve));
+};
+// 回调 read/write 全形态（10f，node lib/fs.js read()/write() 同构）：
+// read(fd, cb) / read(fd, params, cb) / read(fd, buffer, options, cb) /
+// read(fd, buffer, offset, length, position, cb)；write 同族 + 字符串形态。
+export function read(fd, buffer, offsetOrOptions, length, position, callback) {
+  let cb = callback;
+  let offset = offsetOrOptions;
+  let params = null;
+  if (arguments.length <= 4) {
+    if (arguments.length === 4) {
+      // fs.read(fd, buffer, options, cb)
+      cb = length;
+      params = offsetOrOptions;
+    } else if (arguments.length === 3) {
+      // fs.read(fd, bufferOrParams, cb)
+      if (!ArrayBuffer.isView(buffer)) {
+        params = buffer;
+        buffer = (params && params.buffer) || Buffer.alloc(16384);
+      }
+      cb = offsetOrOptions;
+    } else {
+      // fs.read(fd, cb)
+      cb = buffer;
+      buffer = Buffer.alloc(16384);
+    }
+    ({ offset = 0, length = buffer.byteLength - offset, position = null } = params ?? {});
+  }
+  if (typeof cb !== "function") {
+    const e = new TypeError(`The "cb" argument must be of type function. Received ${cb === null ? "null" : typeof cb}`);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
+  __vBuffer(buffer);
+  if (offset == null) offset = 0;
+  else __vInteger(offset, "offset", 0);
+  length |= 0;
+  if (position == null) position = -1;
+  if (length === 0) { queueMicrotask(() => cb(null, 0, buffer)); return; }
+  __vEmptyBuffer(buffer);
+  __vOffsetLength(offset, length, buffer.byteLength);
   Promise.resolve().then(() => readSync(fd, buffer, offset, length, position))
     .then(
-      (n) => queueMicrotask(() => cb(null, n, buffer)),
+      (n) => queueMicrotask(() => cb(null, n || 0, buffer)),
       (e) => queueMicrotask(() => cb(e)),
     );
 }
-export function write(fd, buffer, offset, length, position, cb) {
-  if (typeof buffer === "string") {
-    if (typeof offset === "function") { cb = offset; offset = null; }
-    else if (typeof length === "function") { cb = length; }
-    else if (typeof position === "function") { cb = position; }
-    const pos = typeof offset === "number" ? offset : null;
-    Promise.resolve().then(() => writeSync(fd, buffer, pos))
+// util.promisify(fs.read) → { bytesRead, buffer }（test-fs-promisified 点名）。
+read[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesRead", "buffer"];
+
+export function write(fd, buffer, offsetOrOptions, length, position, callback) {
+  let offset = offsetOrOptions;
+  if (ArrayBuffer.isView(buffer)) {
+    callback ||= position || length || offset;
+    if (typeof callback !== "function") {
+      const e = new TypeError(`The "cb" argument must be of type function. Received ${callback === null ? "null" : typeof callback}`);
+      e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+    }
+    let cb = callback;
+    if (typeof offset === "object" && offset !== null) {
+      // fs.write(fd, buffer, options, cb)
+      ({ offset = 0, length = buffer.byteLength - offset, position = null } = offsetOrOptions ?? {});
+    }
+    if (offset == null || typeof offset === "function") offset = 0;
+    else __vInteger(offset, "offset", 0);
+    if (typeof length !== "number") length = buffer.byteLength - offset;
+    if (typeof position !== "number") position = null;
+    __vOffsetLength(offset, length, buffer.byteLength);
+    Promise.resolve().then(() => writeSync(fd, buffer, offset, length, position))
       .then(
-        (n) => queueMicrotask(() => cb(null, n, buffer)),
+        (n) => queueMicrotask(() => cb(null, n || 0, buffer)),
         (e) => queueMicrotask(() => cb(e)),
       );
     return;
   }
-  if (typeof offset === "function") { cb = offset; offset = 0; length = undefined; position = null; }
-  else if (typeof length === "function") { cb = length; length = undefined; }
-  else if (typeof position === "function") { cb = position; position = null; }
-  Promise.resolve().then(() => writeSync(fd, buffer, offset ?? 0, length, position))
+  // 字符串形态：(fd, str, cb) / (fd, str, position, cb) / (fd, str, position, encoding, cb)
+  if (typeof position !== "function") {
+    if (typeof offset === "function") { position = offset; offset = null; }
+    else position = length;
+    length = "utf8";
+  }
+  const cb = position;
+  if (typeof cb !== "function") {
+    const e = new TypeError(`The "cb" argument must be of type function. Received ${cb === null ? "null" : typeof cb}`);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
+  const pos = typeof offset === "number" ? offset : -1;
+  Promise.resolve().then(() => writeSync(fd, buffer, pos))
     .then(
-      (n) => queueMicrotask(() => cb(null, n, buffer)),
+      (n) => queueMicrotask(() => cb(null, n || 0, buffer)),
       (e) => queueMicrotask(() => cb(e)),
     );
 }
+write[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesWritten", "buffer"];
+
+// readv/writev（10f：JS 顺序合成，非原子——测试可见面 {bytesRead, buffers} 同构）
+export function readvSync(fd, buffers, position) {
+  let total = 0;
+  for (const b of buffers) {
+    const n = readSync(fd, b, 0, b.byteLength, typeof position === "number" ? position + total : -1);
+    total += n;
+    if (n < b.byteLength) break;
+  }
+  return total;
+}
+export function writevSync(fd, buffers, position) {
+  let total = 0;
+  for (const b of buffers) {
+    const n = writeSync(fd, b, 0, b.byteLength, typeof position === "number" ? position + total : -1);
+    total += n;
+    if (n < b.byteLength) break;
+  }
+  return total;
+}
+export function readv(fd, buffers, position, cb) {
+  if (typeof position === "function") { cb = position; position = null; }
+  Promise.resolve().then(() => readvSync(fd, buffers, position))
+    .then(
+      (n) => queueMicrotask(() => cb(null, n || 0, buffers)),
+      (e) => queueMicrotask(() => cb(e)),
+    );
+}
+readv[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesRead", "buffers"];
+export function writev(fd, buffers, position, cb) {
+  if (typeof position === "function") { cb = position; position = null; }
+  Promise.resolve().then(() => writevSync(fd, buffers, position))
+    .then(
+      (n) => queueMicrotask(() => cb(null, n || 0, buffers)),
+      (e) => queueMicrotask(() => cb(e)),
+    );
+}
+writev[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesWritten", "buffers"];
 
 const __api = {
   // 同步（Phase 4 基础面）
@@ -2407,7 +2832,8 @@ const __api = {
   // 回调面（Phase 9c）
   readFile, writeFile, appendFile, stat, statfs, lstat, exists, mkdir, rmdir, rm, unlink,
   readdir, rename, copyFile, realpath, mkdtemp, access, truncate, utimes, chmod,
-  link, symlink, readlink, open, close, read, write, opendir, cp,
+  link, symlink, readlink, open, close, read, write, readv, writev, opendir, cp,
+  mkdtempDisposable: mkdtempDisposableSync,
   // 类 + promises
   Stats: __Stats, Dirent: __Dirent, StatsFs: __StatsFs, Dir, FileHandle, promises,
 };

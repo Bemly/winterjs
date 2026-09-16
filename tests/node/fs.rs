@@ -128,7 +128,8 @@ fn phase4_fs_watch_fires_and_closes() {
 
 #[test]
 fn node_fs_streams() {
-    // createReadStream 分块 + createWriteStream 落盘/追加。
+    // createReadStream 分块 + createWriteStream 落盘/追加（10f 起真 WriteStream：
+    // write/end/finish 事件面，Web 流 getWriter 口径退役——node 真机无此面）。
     let dir = assert_fs::TempDir::new().unwrap();
     std::fs::write(dir.path().join("in.txt"), b"hello-fs-stream").unwrap();
     let code = r#"import fs from "node:fs";
@@ -137,15 +138,13 @@ let s = "";
 for await (const c of rs) s += new TextDecoder().decode(c);
 if (s !== "hello-fs-stream") throw new Error("read failed: " + s);
 const ws = fs.createWriteStream("out.txt");
-const w = ws.getWriter();
-await w.write(new TextEncoder().encode("ab"));
-await w.write(new TextEncoder().encode("cd"));
-await w.close();
+ws.write("ab");
+ws.write("cd");
+await new Promise((res) => ws.end(res));
 if (fs.readFileSync("out.txt", "utf8") !== "abcd") throw new Error("write failed");
 const wa = fs.createWriteStream("out.txt", { flags: "a" });
-const w2 = wa.getWriter();
-await w2.write("ef");
-await w2.close();
+wa.write("ef");
+await new Promise((res) => wa.end(res));
 if (fs.readFileSync("out.txt", "utf8") !== "abcdef") throw new Error("append failed: " + fs.readFileSync("out.txt", "utf8"));
 console.log("fs-stream-ok");
 "#;

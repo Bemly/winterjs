@@ -1567,7 +1567,8 @@ mod tests {
 
 /// 内嵌 ESM 源（`node:fs`；错误带 `.code/.syscall/.path`；偏差见头注）。
 pub const SOURCE: &str = r#"
-import { Readable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
+import { EventEmitter } from 'node:events';
 
 function __fsErr(e, syscall, path) {
   const m = String((e && e.message) || e);
@@ -1838,20 +1839,38 @@ export const constants = {
   S_IFMT: 61440, S_IFREG: 32768, S_IFDIR: 16384, S_IFLNK: 40960,
   COPYFILE_EXCL: 1, COPYFILE_FICLONE: 2, COPYFILE_FICLONE_FORCE: 4,
 };
-class __FSWatcher {
+// FSWatcher（10f，node 口径）：EventEmitter 形（'change'/'close' 事件面 +
+// on/once/off），options.listener 可选、{ signal } abort 即 close。
+class __FSWatcher extends EventEmitter {
   #id;
-  constructor(id) { this.#id = id; }
-  close() { __wjs_watch_close(this.#id); }
-  get closed() { return false; }
+  constructor() { super(); this.#id = 0; }
+  __attach(id) { this.#id = id; return this; }
+  close() {
+    if (this.#id !== 0) { __wjs_watch_close(this.#id); this.#id = 0; }
+    this.emit("close");
+  }
+  get closed() { return this.#id === 0; }
 }
 export function watch(p, opts, listener) {
   if (typeof opts === "function") { listener = opts; opts = {}; }
-  if (typeof listener !== "function") throw new TypeError("watch: listener must be a function");
+  if (listener !== undefined && typeof listener !== "function") throw new TypeError("watch: listener must be a function");
   p = __fsPath(p, "watch");
   const recursive = !!(opts && opts.recursive);
   const persistent = !(opts && opts.persistent === false);
-  const id = __fsCall("watch", p, () => __wjs_watch_start(p, recursive, persistent, listener));
-  return new __FSWatcher(id);
+  const watcher = new __FSWatcher();
+  if (typeof listener === "function") watcher.on("change", listener);
+  // node 26 口径：options.ignore(filename) 命中即不派发（watch-ignore-function 点名）
+  const ignore = opts && typeof opts.ignore === "function" ? opts.ignore : null;
+  const id = __fsCall("watch", p, () => __wjs_watch_start(p, recursive, persistent, (ev, fn) => {
+    if (ignore && ignore(fn)) return;
+    watcher.emit("change", ev, fn);
+  }));
+  watcher.__attach(id);
+  if (opts && opts.signal) {
+    if (opts.signal.aborted) watcher.close();
+    else opts.signal.addEventListener("abort", () => watcher.close(), { once: true });
+  }
+  return watcher;
 }
 // stat 轮询表（watchFile 底座；interval 経 setInterval，statSync 取样）。
 // 偏差记档：persistent:false 不实际 unref（定时器 keep-alive 由 Rust 表决定，
@@ -1931,7 +1950,7 @@ export function unwatchFile(p, listener) {
 // start/end 选项；chunk 为 Buffer（§4.83）。sync 底座偏差记档：'open' 的
 // fd 恒 null（无真异步 fd 生命周期），sync 读错误在构造期抛而非 'error' 事件。
 // createWriteStream 维持 Web 流外形（口径见下注）。----
-class ReadStream extends Readable {
+class __ReadStream extends Readable {
   constructor(p, opts) {
     opts = opts ?? {};
     const hwm = opts.highWaterMark !== undefined ? Number(opts.highWaterMark) : 65536;
@@ -1973,32 +1992,69 @@ class ReadStream extends Readable {
   }
 }
 
+// node legacy 形：fs.ReadStream(file) 无 new 可调（自 new）+ instanceof 成立——
+// Proxy apply 转 construct。
+export const ReadStream = new Proxy(__ReadStream, {
+  apply(_t, _this, args) { return new __ReadStream(...args); },
+});
+
 export function createReadStream(p, opts) {
   p = __fsPath(p, "createReadStream");
   return new ReadStream(p, opts);
 }
+// WriteStream（10f，node 口径镜像 ReadStream）：open(fd)/ready/finish/close 事件序
+// + path/flags/autoClose/bytesWritten；sync 底座偏差记档：fd 恒 null、块在内存
+// 攒至 _final 一次性落盘（无增量 flush）、open/ready 于首个 _write/_final 前派发。
+class __WriteStream extends Writable {
+  constructor(p, opts) {
+    opts = opts ?? {};
+    super({ autoDestroy: true, emitClose: true });
+    this.path = p;
+    this.flags = opts.flags ?? "w";
+    this.mode = opts.mode ?? 0o666;
+    this.autoClose = opts.autoClose !== false;
+    this.bytesWritten = 0;
+    this.fd = null;
+    this.__chunks = [];
+    this.__opened = false;
+  }
+  __emitOpen() {
+    if (this.__opened) return;
+    this.__opened = true;
+    this.emit("open", null);
+    this.emit("ready");
+  }
+  _write(chunk, enc, cb) {
+    this.__emitOpen();
+    const u8 = __fsData(chunk, "createWriteStream");
+    this.__chunks.push(u8);
+    this.bytesWritten += u8.length;
+    cb();
+  }
+  _final(cb) {
+    this.__emitOpen();
+    const total = this.__chunks.reduce((n, c) => n + c.length, 0);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const c of this.__chunks) { out.set(c, off); off += c.length; }
+    const append = this.flags === "a" || this.flags === "a+" ||
+      __fsCall("stat", this.path, () => { try { __wjs_fs_stat(this.path, true); return true; } catch { return false; } });
+    if (append) {
+      __fsCall("open", this.path, () => __wjs_fs_append_file(this.path, out, 0));
+    } else {
+      __fsCall("open", this.path, () => __wjs_fs_write_file(this.path, out, 0));
+    }
+    cb();
+  }
+}
+
+export const WriteStream = new Proxy(__WriteStream, {
+  apply(_t, _this, args) { return new __WriteStream(...args); },
+});
+
 export function createWriteStream(p, opts) {
   p = __fsPath(p, "createWriteStream");
-  const append = !!(opts && (opts.flags === "a" || opts.flags === "a+"));
-  const chunks = [];
-  let total = 0;
-  return new WritableStream({
-    write(chunk) {
-      const u8 = __fsData(chunk, "createWriteStream");
-      chunks.push(u8);
-      total += u8.length;
-    },
-    close() {
-      const out = new Uint8Array(total);
-      let off = 0;
-      for (const c of chunks) { out.set(c, off); off += c.length; }
-      if (append && __fsCall("stat", p, () => { try { __wjs_fs_stat(p, true); return true; } catch { return false; } })) {
-        __fsCall("open", p, () => __wjs_fs_append_file(p, out, 0));
-      } else {
-        __fsCall("open", p, () => __wjs_fs_write_file(p, out, 0));
-      }
-    },
-  });
+  return new WriteStream(p, opts);
 }
 // ---- Phase 9c：同步面增补（link 系/时间戳/权限/access/fd 系/cp/opendir）----
 function __fsTimeMs(t, what) {
@@ -2121,14 +2177,27 @@ export function futimesSync(fd, atime, mtime) {
 export class Dir {
   #entries;
   #cursor = 0;
+  #closed = false;
   constructor(path) {
     this.path = path;
     this.#entries = readdirSync(path, { withFileTypes: true });
   }
-  readSync() { return this.#cursor < this.#entries.length ? this.#entries[this.#cursor++] : null; }
+  #dirClosed() {
+    const err = new Error("Directory handle was closed");
+    err.code = "ERR_DIR_CLOSED";
+    throw err;
+  }
+  readSync() {
+    if (this.#closed) this.#dirClosed();
+    return this.#cursor < this.#entries.length ? this.#entries[this.#cursor++] : null;
+  }
+  // node 口径：目录项立即读（同步）再包 promise——延迟读会在 close() 后才
+  // 执行抛 ERR_DIR_CLOSED（phase9c 现形）。
   read() { return Promise.resolve(this.readSync()); }
-  closeSync() {}
-  close() { return Promise.resolve(); }
+  closeSync() { this.#closed = true; }
+  close() { return Promise.resolve(this.closeSync()); }
+  [Symbol.dispose]() { this.closeSync(); }
+  async [Symbol.asyncDispose]() { await this.close(); }
   [Symbol.iterator]() {
     const self = this;
     return {
@@ -2149,11 +2218,27 @@ export function opendirSync(p) {
 }
 // ---- 9c：FileHandle + fs.promises（promises 挂 node:fs 本体，fs/promises 反向
 // re-export 免环；底层同步实现，文档口径不变）----
-export class FileHandle {
-  constructor(fd) { this.fd = fd; }
+// node 口径：FileHandle 即 EventEmitter（'close' 事件）+ [Symbol.dispose]
+// （触发 close，不 await——node 26 explicit resource management 面）。
+export class FileHandle extends EventEmitter {
+  constructor(fd) {
+    super();
+    this.fd = fd;
+  }
+  [Symbol.dispose]() {
+    this.close();
+  }
+  async [Symbol.asyncDispose]() {
+    await this.close();
+  }
   close() {
     const fd = this.fd;
-    return Promise.resolve().then(() => __fsCall("close", "", () => __wjs_fs_close(fd)));
+    return Promise.resolve()
+      .then(() => __fsCall("close", "", () => __wjs_fs_close(fd)))
+      .then(() => {
+        this.fd = -1;
+        this.emit("close");
+      });
   }
   read(buffer, offset, length, position) {
     return Promise.resolve().then(() => readSync(this.fd, buffer, offset, length, position));
@@ -2236,7 +2321,9 @@ export const promises = {
 function __nodeify(p, cb) {
   if (typeof cb !== "function") throw new TypeError("Callback must be a function");
   p.then(
-    (v) => queueMicrotask(() => cb(null, v)),
+    // node 口径：无结果 API（close/access 等）回调只带 (err)，不补 undefined
+    //（test-fs-close：deepStrictEqual(args, [null]) 点名）。
+    (v) => queueMicrotask(() => v === undefined ? cb(null) : cb(null, v)),
     (e) => queueMicrotask(() => cb(e)),
   );
 }
@@ -2312,7 +2399,7 @@ const __api = {
   // 同步（Phase 4 基础面）
   readFileSync, writeFileSync, appendFileSync, statSync, lstatSync, existsSync,
   mkdirSync, rmSync, rmdirSync, unlinkSync, readdirSync, renameSync, copyFileSync,
-  realpathSync, mkdtempSync, watch, watchFile, unwatchFile, constants, createReadStream, createWriteStream,
+  realpathSync, mkdtempSync, watch, watchFile, unwatchFile, constants, createReadStream, createWriteStream, ReadStream, WriteStream,
   // 同步（Phase 9c 增补）
   accessSync, truncateSync, utimesSync, chmodSync, linkSync, symlinkSync, readlinkSync,
   cpSync, opendirSync, openSync, closeSync, readSync, writeSync, ftruncateSync,

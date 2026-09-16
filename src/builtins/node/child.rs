@@ -764,6 +764,7 @@ pub unsafe extern "C" fn cp_spawn(
 pub const SOURCE: &str = r#"
 import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
+import * as fs from "node:fs";
 function __b64dec(s) {
   s = String(s).replace(/-/g, "+").replace(/_/g, "/");
   while (s.length % 4) s += "=";
@@ -980,7 +981,9 @@ export class ChildProcess {
     } else this.stdin = null;
     return this;
   }
-  get pid() { return __wjs_child_pid(this.#id); }
+  // node 口径：spawn 未成功（#id=0 占位）pid 恒 undefined（execFile ENOENT
+  // 套件 typeof 点名；真机 ChildProcess 在 spawn 成功前根本无 pid 属性）
+  get pid() { return this.#id === 0 ? undefined : __wjs_child_pid(this.#id); }
   get killed() { return this.#killed; }
   kill(signal) {
     if (this.__forkChild) {
@@ -1174,37 +1177,135 @@ function __asyncOneShot(kind, run) {
     return undefined;
   };
 }
-export const exec = __asyncOneShot("exec", (cmd, opts) => {
+// exec 族（10f 重写，node 架构：execFile = spawn + 收集 + close 回调 + 返回
+// live ChildProcess；exec = execFile('/bin/sh', ['-c', cmd])（normalizeExecArgs
+// 口径）。旧 __asyncOneShot 一次性内核退役——"无 live 句柄"偏差消账。
+// maxBuffer 超限 kill（真机 ERR_CHILD_PROCESS_STDIO_MAXBUFFER）；timeout 走
+// spawn 既有 timeout_ms（killSignal 自定值偏差记档）；错误 cmd/code/killed/
+// signal 照真机挂载。execFile 无回调即抛 ERR_INVALID_ARG_TYPE（真机口径）。
+function __execCollect(child, o, cmdStr, cb) {
+  const chunks = { stdout: [], stderr: [] };
+  const sizes = { stdout: 0, stderr: 0 };
+  let over = null;
+  const watch = (name) => {
+    const st = child[name];
+    if (!st) return;
+    st.on("data", (c) => {
+      const u8 = c instanceof Uint8Array ? c : new TextEncoder().encode(String(c));
+      sizes[name] += u8.length;
+      if (sizes[name] <= o.maxBuffer) chunks[name].push(u8);
+      else if (over === null) {
+        over = name;
+        child.kill();
+      }
+    });
+  };
+  watch("stdout");
+  watch("stderr");
+  const dec = (u8s) => {
+    const all = Buffer.concat(u8s);
+    return o.encoding === "buffer" || o.encoding === null ? all : new TextDecoder(String(o.encoding || "utf8")).decode(all);
+  };
+  const finish = (err) => {
+    cb(err, dec(chunks.stdout), dec(chunks.stderr));
+  };
+  child.once("error", (e) => { finish(e); child.once("close", () => {}); });
+  child.once("close", (code, signal) => {
+    if (over !== null) {
+      const err = new Error(`${over} maxBuffer length exceeded`);
+      err.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+      err.cmd = cmdStr;
+      finish(err);
+      return;
+    }
+    if (code === 0 && signal === null) { finish(null); return; }
+    const err = new Error(`Command failed: ${cmdStr}\n${dec(chunks.stderr)}`);
+    err.code = code ?? signal;
+    err.killed = child.killed;
+    err.signal = signal;
+    err.cmd = cmdStr;
+    finish(err);
+  });
+}
+
+// spawn 预检（execFile 专用）：绝对/相对路径直查；裸名沿 PATH 找（node
+// spawn 的 PATH 解析在 fork 失败即 ENOENT，pid 不发号——本仓 id 先发，故补查）。
+function __canSpawnFile(file) {
+  if (file.includes("/")) {
+    try { fs.accessSync(file); return true; } catch { return false; }
+  }
+  const path = String(globalThis.process.env.PATH || "").split(":");
+  for (const d of path) {
+    if (!d) continue;
+    try { fs.accessSync(d + "/" + file); return true; } catch { /* next */ }
+  }
+  return false;
+}
+
+export function execFile(file, args, opts, cb) {
+  if (args !== undefined && typeof args !== "object" && typeof args !== "function") {
+    throw new TypeError("execFile: args must be an array");
+  }
+  if (typeof args === "function") { cb = args; args = undefined; opts = undefined; }
+  else if (typeof opts === "function") { cb = opts; opts = undefined; }
+  if (typeof cb !== "function") {
+    const err = new TypeError("The \"callback\" argument must be of type function");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
   const o = __normExecOpts(opts);
-  const r = JSON.parse(__wjs_cp_exec(String(cmd), JSON.stringify({
-    cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
-    shell: !!o.shell, input_b64: o.inputB64, max_buffer: o.maxBuffer,
-  })));
-  if (r.spawnErr || r.timedOut || r.status !== 0) {
-    try {
-      __spawnError(cmd, r, o.encoding);
-    } catch (e) {
-      return [e, __toOut(r.stdout_b64, o.encoding), __toOut(r.stderr_b64, o.encoding)];
-    }
+  const argv = (args ?? []).map(String);
+  const cmdStr = [String(file), ...argv].join(" ");
+  // node 口径：spawn 失败走异步 'error' 事件 + 回调（不抛）；本仓 spawn 异步
+  // 失败（id 先发、error 事件后到——pid 已置数）而 node ENOENT 时 pid 恒
+  // undefined——在此同步预检（PATH 解析）转 node 形：死句柄 + 回调。
+  if (!__canSpawnFile(String(file))) {
+    const err = new Error(`spawn ${file} ENOENT`);
+    err.code = "ENOENT";
+    err.errno = -2;
+    err.syscall = `spawn ${file}`;
+    err.path = String(file);
+    err.cmd = cmdStr;
+    queueMicrotask(() => cb(err, "", ""));
+    return new ChildProcess();
   }
-  return [null, __toOut(r.stdout_b64, o.encoding), __toOut(r.stderr_b64, o.encoding)];
-});
-export const execFile = __asyncOneShot("execFile", (file, args, opts) => {
-  if (args !== undefined && !Array.isArray(args)) { opts = args; args = []; }
-  const o = __normSpawnOpts(opts);
-  const r = JSON.parse(__wjs_cp_spawn(String(file), JSON.stringify([...(args || [])].map(String)), JSON.stringify({
-    cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
-    shell: false, input_b64: o.inputB64, max_buffer: o.maxBuffer,
-  })));
-  if (r.spawnErr || r.timedOut || r.status !== 0) {
-    try {
-      __spawnError(file, r, o.encoding);
-    } catch (e) {
-      return [e, __toOut(r.stdout_b64, o.encoding), __toOut(r.stderr_b64, o.encoding)];
+  let child;
+  try {
+    child = spawn(String(file), argv, {
+      cwd: o.cwd,
+      env: o.env,
+      timeout: o.timeoutMs || undefined,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (e) {
+    if (e && typeof e === "object" && e.code === undefined) {
+      e.code = (String(e.message).match(/^([A-Z_]+): /) || [])[1] || "ENOENT";
+      e.path = String(file);
+      e.syscall = `spawn ${file}`;
     }
+    queueMicrotask(() => cb(e, "", ""));
+    return new ChildProcess();
   }
-  return [null, __toOut(r.stdout_b64, o.encoding), __toOut(r.stderr_b64, o.encoding)];
-});
+  child.__cmdStr = cmdStr;
+  __execCollect(child, o, cmdStr, cb);
+  return child;
+}
+
+export function exec(command, opts, cb) {
+  if (typeof opts === "function") { cb = opts; opts = undefined; }
+  if (typeof cb !== "function") {
+    const err = new TypeError("The \"callback\" argument must be of type function");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  const o = __normExecOpts(opts);
+  const cmdStr = String(command);
+  const child = execFile("/bin/sh", ["-c", cmdStr], { ...o, encoding: o.encoding }, (err, stdout, stderr) => {
+    if (err) err.cmd = cmdStr;
+    cb(err, stdout, stderr);
+  });
+  return child;
+}
 export function execFileSync(file, args, opts) {
   if (args !== undefined && !Array.isArray(args)) { opts = args; args = []; }
   const o = __normSpawnOpts(opts);

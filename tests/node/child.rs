@@ -106,7 +106,7 @@ exec("echo hello-exec", (e, stdout) => {
   execFile("echo", ["hello-file"], (e2, stdout2) => {
     console.log("execFile", e2 === null && stdout2.trim() === "hello-file");
     exec("exit 3", (e3, o3, err3) => {
-      console.log("execfail", e3 !== null && e3.status === 3);
+      console.log("execfail", e3 !== null && e3.code === 3);
       console.log("done");
     });
   });
@@ -286,6 +286,54 @@ await new Promise((r) => setTimeout(r, 200));
         "killed true",
     ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_exec_live_handle() {
+    // 10f：exec/execFile 换 node 架构（spawn+收集+close 回调，返回 live
+    // ChildProcess）——pid 同步可见、ENOENT 死句柄 pid undefined、
+    // ERR_CHILD_PROCESS_STDIO_MAXBUFFER 错误码。标签互不为子串（§4.42）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p10f.mjs",
+        r#"
+import { exec, execFile } from "node:child_process";
+
+// live 句柄：pid 同步可见（shell），回调 (null, stdout, "")
+const c = exec("echo hello-exec", (e, stdout, stderr) => {
+  console.log("live-cb", e === null, stdout.trim() === "hello-exec", stderr === "", typeof c.pid === "number");
+});
+console.log("live-sync", typeof c.pid === "number", typeof c.stdout.on === "function");
+
+// execFile：args 数组 + 分离 stdout
+execFile("echo", ["hello-file"], (e, stdout) => {
+  console.log("file-cb", e === null, stdout.trim() === "hello-file");
+});
+
+// ENOENT：死句柄 pid undefined（真机口径）+ err.code/cmd 挂载
+const d = execFile("does-not-exist-cmd", (err) => {
+  console.log("enoent", err.code === "ENOENT", typeof err.cmd === "string", err.cmd.includes("does-not-exist-cmd"), typeof d.pid === "undefined");
+});
+
+// 非 0 退出：err.code = 退出码数字（真机口径，无 status 属性）
+exec("exit 3", (e) => {
+  console.log("exitcode", e !== null, e.code === 3, e.status === undefined, e.killed === false);
+});
+"#,
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in [
+        "live-sync true true",
+        "live-cb true true true true",
+        "file-cb true true",
+        "enoent true true true true",
+        "exitcode true true true true",
+    ] {
+        assert!(text.lines().any(|l| l.starts_with(line)), "missing: {line}\nout: {text}");
     }
     dir.close().unwrap();
 }

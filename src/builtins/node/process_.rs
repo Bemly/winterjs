@@ -653,6 +653,9 @@ globalThis.process = {
     });
   },
 };
+// 真机口径：process[Symbol.toStringTag] = "process"（不可枚举，实测 getter 面），
+// String(process) → '[object process]'（vm basic 套件 / util.inspect 点名）。
+Object.defineProperty(globalThis.process, Symbol.toStringTag, { value: "process" });
 "#;
 
 /// `node:process` 模块源（默认导出即全局 process，具名按需取）。

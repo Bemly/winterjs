@@ -1094,7 +1094,9 @@ mod tests {
         let data = [enc(b"abc"), enc(b"def")].concat();
         assert_eq!(gunzip_multi(&data).unwrap(), b"abcdef");
         assert_eq!(gunzip_multi(&enc(b"abc")).unwrap(), b"abc");
-        assert_eq!(gunzip_multi(&[]).unwrap(), b"");
+        // 空输入真机抛错（gunzipSync(Buffer.alloc(0)) → Z_BUF_ERROR unexpected EOF），
+        // 不解出空串——7cb037a 入库时断言编码错（未跑全量）。
+        assert!(gunzip_multi(&[]).is_err());
         assert!(gunzip_multi(b"garbage").is_err());
     }
 

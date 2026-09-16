@@ -355,6 +355,7 @@ pub struct RootedState {
     pub ws_emit_fn: Heap<JSVal>, // prelude 的 __wjs_ws_emit
     pub uncaught_fn: Heap<JSVal>, // prelude 的 __wjs_uncaught（timer 回调未捕获异常分发）
     pub uncaught_count_fn: Heap<JSVal>, // prelude 的 __wjs_uncaught_count（监听器探针）
+    pub vm_last_error: Heap<JSVal>, // vm_run 暂存的原始异常对象（JS 侧 __vmCall 取走重建，保 realm 身份）
     pub napi: Option<crate::napi::env::NapiEnv>, // napi 会话单例（首个 .node require 建起；plan-napi §2）
 }
 
@@ -369,6 +370,7 @@ unsafe impl Traceable for RootedState {
         self.on_rejected.trace(trc);
         self.entry_fulfilled.trace(trc);
         self.entry_rejected.trace(trc);
+        self.vm_last_error.trace(trc);
         self.modules.trace(trc);
         self.cjs_modules.trace(trc);
         self.watch_listeners.trace(trc);

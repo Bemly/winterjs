@@ -66,7 +66,7 @@ import vm from "node:vm";
 try { new vm.Script("}{"); } catch (e) { console.log("w-ctor", e.constructor.name === "SyntaxError"); }
 try { vm.compileFunction("}{"); } catch (e) { console.log("w-cf", e.constructor.name === "SyntaxError"); }
 try { vm.runInNewContext("throw new RangeError('nope')"); } catch (e) { console.log("w-range", e.constructor.name === "RangeError", e.message === "nope"); }
-try { vm.runInNewContext("throw 'strval'"); } catch (e) { console.log("w-str", e.constructor.name === "Error", e.message.includes("strval")); }
+try { vm.runInNewContext("throw 'strval'"); } catch (e) { console.log("w-str", typeof e === "string", e === "strval"); }
 try { vm.runInNewContext("noSuchVar + 1"); } catch (e) { console.log("w-ref", e.constructor.name === "ReferenceError"); }
 try { vm.runInContext("1", {}); } catch (e) { console.log("w-badctx", e.code === "ERR_INVALID_ARG_TYPE"); }
 try { vm.runInNewContext("1", 42); } catch (e) { console.log("w-badsb", e.code === "ERR_INVALID_ARG_TYPE"); }
@@ -362,6 +362,86 @@ console.log("mix", vm.runInContext("f()", d), vm.runInContext("seed + 1", d));
     );
     for line in ["a 2 3", "fn 1", "vr 6", "mix 18 10"] {
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+
+#[test]
+fn phase10f_vm_parity_sync_and_errors() {
+    // 10f vm 对拍收口面：簿记不落沙箱键（ownkeys 族）、symbol 键/访问器同步、
+    // 描述符保形（nonWritable + strict 赋值文案桥）、沙箱自指键（window）、
+    // 错误原物透传（跨域 instanceof + 非对象 throw 原样 + ReferenceError 文案）。
+    // 断言标签互不为子串、多布尔分参（§4.42）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p10f.mjs",
+        r#"
+import vm from "node:vm";
+
+// ownkeys：簿记键不落沙箱（createContext 前后键集/符号数不变）
+const sym1 = Symbol("s1");
+const sb = { a: 1, [sym1]: true };
+Object.defineProperty(sb, "b", { value: true, writable: false, enumerable: false, configurable: false });
+const before = Reflect.ownKeys(sb).length;
+const ctx = vm.createContext(sb);
+console.log("keys-keep", before === Reflect.ownKeys(sb).length, Object.getOwnPropertySymbols(sb).length === 1);
+// symbol 键同步进 vm global；非默认描述符（b 不可写不可枚举）保形
+const vmSym = vm.runInContext("Reflect.ownKeys(this).some(k => typeof k === 'symbol')", ctx);
+const vmB = vm.runInContext("const d = Object.getOwnPropertyDescriptor(this, 'b'); d.writable === false && d.enumerable === false", ctx);
+console.log("keys-vm", vmSym, vmB);
+
+// 描述符保形 + strict 赋值桥接文案（vm_set 只读静默跳过，值不被覆盖）
+const ctx2 = vm.createContext({});
+Object.defineProperty(ctx2, "nw", { value: 51, writable: false, enumerable: true });
+let threw = "", msg = "";
+try { vm.runInContext('"use strict"; nw = 0', ctx2); } catch (e) { threw = e.constructor.name; msg = e.message; }
+console.log("nw-throw", threw === "TypeError", msg.startsWith("Cannot assign to read only property 'nw'"), vm.runInContext("nw", ctx2) === 51);
+
+// symbol 访问器：经 vm global（CCW）读写都触发沙箱侧 get/set
+const sAcc = Symbol("acc");
+let stored = 0;
+const ctx3 = vm.createContext({});
+Object.defineProperty(ctx3, sAcc, { get: () => stored + 40, set: (v) => { stored = v; }, configurable: true });
+const gp = vm.runInContext("this", ctx3);
+gp[sAcc] = 7;
+console.log("sym-acc", stored === 7, gp[sAcc] === 47);
+
+// 自指键：ctx.window = ctx → vm 侧 this/window 同身份，且 sandbox.window 不被换
+const ctx4 = vm.createContext();
+ctx4.window = ctx4;
+const tv = vm.runInContext("this", ctx4);
+const wv = vm.runInContext("window", ctx4);
+console.log("selfref", tv === wv, ctx4.window === ctx4);
+
+// 错误透传：vm 域 SyntaxError 身份（instanceof 跨域）+ 非对象 throw 原样
+const ctx5 = vm.createContext({});
+vm.runInContext("Object.defineProperty(this, 'foo', { value: 1, configurable: false })", ctx5);
+let realmSyn = false;
+try { vm.runInContext("let foo = 2", ctx5); } catch (e) { realmSyn = e instanceof vm.runInContext("SyntaxError", ctx5); }
+console.log("err-realm", realmSyn);
+let prim = false;
+try { vm.runInNewContext("throw 'sv'"); } catch (e) { prim = e === "sv"; }
+console.log("err-prim", prim);
+let refMsg = "";
+try { vm.runInNewContext('"use strict"; zz = 1'); } catch (e) { refMsg = e.message; }
+console.log("err-ref", refMsg === "zz is not defined");
+"#,
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in [
+        "keys-keep true true",
+        "keys-vm true true",
+        "nw-throw true true true",
+        "sym-acc true true",
+        "selfref true true",
+        "err-realm true",
+        "err-prim true",
+        "err-ref true",
+    ] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
     }
     dir.close().unwrap();
 }

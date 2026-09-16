@@ -7,13 +7,14 @@
 
 use mozjs::glue::{CallValueTracer, CreateJobQueue, JobQueueTraps};
 use mozjs::jsapi::{
-    IsJSMicroTask, JSObject, JSTracer, PeekNextMicroTask, RunJSMicroTask, SetJobQueue,
-    ToUnwrappedJSMicroTask,
+    GetExecutionGlobalFromJSMicroTask, IsJSMicroTask, JSObject, JSTracer, PeekNextMicroTask,
+    RunJSMicroTask, SetJobQueue, ToUnwrappedJSMicroTask,
 };
 use mozjs::jsval::JSVal;
+use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 
-use crate::jsapi_glue::raw_handle;
+use crate::jsapi_glue::{raw_handle, wrap_cx};
 
 /// SAFETY: 引擎回调；只读陷阱，无 GC。
 unsafe extern "C" fn get_host_defined_data(
@@ -47,7 +48,20 @@ unsafe extern "C" fn run_jobs(cx: *mut mozjs::jsapi::JSContext) { unsafe {
             let entry = ToUnwrappedJSMicroTask(&task);
             // SAFETY: entry 摘自队列后立即 rooted，RunJSMicroTask 期间 GC 安全
             rooted!(in(cx) let entry_root: *mut JSObject = entry);
-            let ok = RunJSMicroTask(cx, raw_handle(entry_root.as_ptr()));
+            // SM 内部队 runJobs 同款：先取任务执行 global 并 AutoRealm 进去再跑。
+            // RunJSMicroTask 的 DEBUG assert（execution global == cx->global()）
+            // 要求调用方先进任务 realm——vm 等 cross-compartment 微任务在主域
+            // 排空时漏这步即 assert abort（exit 139，test-vm-script-after-evaluate
+            // 现形）；无执行 global 的任务 SM 内部队同款 continue 跳过。
+            let eg = GetExecutionGlobalFromJSMicroTask(entry_root.get());
+            if eg.is_null() {
+                continue;
+            }
+            rooted!(in(cx) let eg_root: *mut JSObject = eg);
+            let mut cxw = wrap_cx(cx);
+            let mut realm = AutoRealm::new(&mut cxw, std::ptr::NonNull::new(eg).unwrap());
+            // SAFETY: 任务与执行 global 均 rooted，realm 内调用
+            let ok = RunJSMicroTask(realm.raw_cx(), raw_handle(entry_root.as_ptr()));
             if !ok {
                 // 微任务内抛异常：状态留在 pending exception，由上层 rejection/错误
                 // 路径处理；继续排空避免队列阻塞。

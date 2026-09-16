@@ -454,3 +454,146 @@
 | test-dns-setservers-type-check.js | 0 | 0 | ✅（修：servers/servers[i] 精确码 + 双 Resolver） |
 | test-dns.js | 0 | 0 | ✅（修：setServers 全套/IP 表/端口/lookup 家族/错误全文/ttl） |
 
+
+## vm
+
+> 10f 收官：100 点名 = 47 ✅ + 27 ⏭️（24 件 `--experimental-vm-modules` 家族 +
+> 3 件 `--expose-gc`（`globalThis.gc`），双 1 对齐）+ 26 🟡 偏离（逐件理由见下），
+> 红 0（真机同条件亦红的全对齐）。本轮改动主体：沙箱簿记 WeakMap 化（ctx id 从
+> 沙箱自有键撤进 `__vmBookkeeping`，ownkeys×3/definer-interception 的"沙箱键集
+> 不变"口径）+ symbol 键同步与描述符保形（`__vmStageAndDefine` 暂存位过域 +
+> 目标域内 defineProperty 落定；非默认数据描述符 writable/enumerable/configurable
+> 保形）+ syncOut 收紧（源端访问器键不读不写——getter/setter mustCall 精确计数、
+> 目标只读数据跳过、自指键（`window`）不回写、`globalThis`/`global` 永不同步）+
+> 错误原物透传（native take→`vm_last_error` 槽暂存→恢复 pending 读 error_info→
+> `__wjs_vm_take_error` 取原物：跨域 `instanceof SyntaxError`、非对象 `throw`
+> 原样；信封重建只作兜底）+ node 文案桥四族（undeclared-variable/read-only/
+> redefine/proxy 不变量 + `__recv` Received 描述）+ 信封栈前缀（`filename:line\n
+> 源行\ncaret\n\n`，displayErrors `startsWith` 点名）+ jobqueue SEGV 根修（跨域
+> 微任务先取执行 global 进 AutoRealm 再 `RunJSMicroTask`——SM 内部队 runJobs
+> 同款，DEBUG assert；script-after-evaluate 139 → 1）+ CJS 顶层 return
+> （`script_goal_probe` 双值分类 + `cjs_goal_probe` 裸文本复核（包络形禁用）+
+> `load_cjs_js`（`with_commonjs`）require 分流，§4.59 姊妹）+ options 校验面
+> （lineOffset/columnOffset 类型/范围分报、timeout 正数、cachedData Bufferish
+> 类型门、createContext name/origin、runInNewContext contextName/contextOrigin、
+> Script 方法层拒 null/'bad'/42）+ compileFunction 体级声明位预检（表达式包络被
+> `});` 提前闭合吸收面）+ wrapper 真机形（`function (p) {\n…\n}`，toString/name）
+> + contextExtensions 文案逐字 + 杂项（process toStringTag、"an vm.Context" 冠词
+> 怪癖、zlib 空输入断言按真机 Z_BUF_ERROR 修正）。
+> 偏离记档（26 件）：① 引擎不可比 7 件——解析器恢复策略（basic，V8/SM 报错
+> token 不同）、lineOffset/columnOffset 栈帧未布线（context.js，另案）、
+> measure-memory 契约（本仓 reject vs 真机 resolve ×2）、字节码/sourcemap/
+> codegen 面（cached-data/source-map-url/codegen，既有记档）；② copy 模型固有
+> 9 件（拦截器/活绑定/原型链方法语义，jsdom 级工程另案：global-property-{
+> enumerator,interceptors,prototype}/harmony-symbols/proxies/symbols/
+> property-not-on-sandbox/proxy-sandbox-property-query/property-definer-partial-update）；
+> ③ 微任务模式 2 件（本仓恒排空 vs 真机 per-context 队列不排；异步回写无
+> syncOut 点：script-after-evaluate/context-async-script）；④ 自 spawn/stdio
+> 阵列面（sigint×2）+ execFile 自身（api-handles-getter-errors）+
+> `--experimental-vm-modules` 缺省文案面（dynamic-import-callback×2，真机无
+> flag 走校验文案，本仓 rejection 形）共 5 件；⑤ timeout 家族 3 件（timeout
+> 只校验不执行，既有记档；escape ×2 记偏离，test-vm-timeout.js 本仓 TIMEOUT
+> 单列）。
+
+| 文件 | winterjs | node | 结论 |
+|---|---|---|---|
+| test-vm-access-process-env.js | 0 | 0 | ✅ |
+| test-vm-api-handles-getter-errors.js | 1 | 0 | 🟡 偏离：execFile 自身（自 spawn 面，全 flag CLI 设计） |
+| test-vm-attributes-property-not-on-sandbox.js | 0 | 0 | ✅ |
+| test-vm-basic.js | 1 | 0 | 🟡 偏离：解析器恢复策略（V8 `Unexpected token '}'` vs SM `expected expression, got ')'`——报错 token 都不同，跨引擎不可比） |
+| test-vm-cached-data.js | 1 | 0 | 🟡 偏离：字节码面不做（cachedData 产物校验，既有记档） |
+| test-vm-codegen.js | 1 | 0 | 🟡 偏离：codegen 面不做（既有记档） |
+| test-vm-context-async-script.js | 1 | 0 | 🟡 偏离：微任务模式（异步回写无 syncOut 点） |
+| test-vm-context-dont-contextify.js | 0 | 0 | ✅ |
+| test-vm-context-property-forwarding.js | 0 | 0 | ✅ |
+| test-vm-context.js | 1 | 0 | 🟡 偏离：lineOffset/columnOffset 栈帧偏移未布线（晚场重构不值，另案） |
+| test-vm-create-and-run-in-context.js | 1 | 1 | ⏭️ 需 `--expose-gc`（`globalThis.gc`，双 1 对齐） |
+| test-vm-create-context-accessors.js | 0 | 0 | ✅ |
+| test-vm-create-context-arg.js | 0 | 0 | ✅ |
+| test-vm-create-context-circular-reference.js | 0 | 0 | ✅ |
+| test-vm-createcacheddata.js | 0 | 0 | ✅ |
+| test-vm-cross-context.js | 0 | 0 | ✅ |
+| test-vm-data-property-writable.js | 0 | 0 | ✅ |
+| test-vm-deleting-property.js | 0 | 0 | ✅ |
+| test-vm-dynamic-import-callback-missing-flag.js | 1 | 0 | 🟡 偏离：`--experimental-vm-modules` 缺省文案面（真机无 flag 走校验文案，本仓 rejection 形） |
+| test-vm-function-declaration.js | 0 | 0 | ✅ |
+| test-vm-function-redefinition.js | 0 | 0 | ✅ |
+| test-vm-getters.js | 0 | 0 | ✅ |
+| test-vm-global-assignment.js | 0 | 0 | ✅ |
+| test-vm-global-configurable-properties.js | 0 | 0 | ✅ |
+| test-vm-global-contextual-store.js | 0 | 0 | ✅ |
+| test-vm-global-define-property.js | 0 | 0 | ✅ |
+| test-vm-global-get-own.js | 0 | 0 | ✅ |
+| test-vm-global-identity.js | 0 | 0 | ✅ |
+| test-vm-global-non-writable-properties.js | 0 | 0 | ✅ |
+| test-vm-global-property-enumerator.js | 1 | 0 | 🟡 偏离：copy 模型固有（拦截器/活绑定，jsdom 级工程另案） |
+| test-vm-global-property-interceptors.js | 1 | 0 | 🟡 偏离：copy 模型固有（同上） |
+| test-vm-global-property-prototype.js | 1 | 0 | 🟡 偏离：copy 模型固有（同上） |
+| test-vm-global-restricted-property.js | 0 | 0 | ✅ |
+| test-vm-global-setter.js | 0 | 0 | ✅ |
+| test-vm-harmony-symbols.js | 1 | 0 | 🟡 偏离：copy 模型固有（原型链方法/活绑定） |
+| test-vm-indexed-properties.js | 0 | 0 | ✅ |
+| test-vm-inherited_properties.js | 0 | 0 | ✅ |
+| test-vm-is-context.js | 0 | 0 | ✅ |
+| test-vm-low-stack-space.js | 0 | 0 | ✅ |
+| test-vm-measure-memory-lazy.js | 1 | 1 | ⏭️ 需 `--expose-gc`（同上） |
+| test-vm-measure-memory-multi-context.js | 1 | 0 | 🟡 偏离：measure-memory 契约（本仓 reject vs 真机 resolve） |
+| test-vm-measure-memory.js | 1 | 0 | 🟡 偏离：measure-memory 契约（同上） |
+| test-vm-module-after-evaluate.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（双 1 对齐） |
+| test-vm-module-basic.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-cached-data.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-dynamic-import-promise.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-dynamic-import.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-dynamic-namespace.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-errors.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-evaluate-source-text-module.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-evaluate-synthethic-module-rejection.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-evaluate-synthethic-module.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-evaluate-while-evaluating.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-hasasyncgraph.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-hastoplevelawait.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-import-meta.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-instantiate.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-link-shared-deps.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-link.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-linkmodulerequests-circular.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-linkmodulerequests-deep.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-linkmodulerequests.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-modulerequests.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-reevaluate.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-module-synthetic.js | 1 | 1 | ⏭️ `--experimental-vm-modules`（同上） |
+| test-vm-new-script-new-context.js | 0 | 0 | ✅ |
+| test-vm-new-script-this-context.js | 0 | 0 | ✅ |
+| test-vm-no-dynamic-import-callback.js | 1 | 0 | 🟡 偏离：`--experimental-vm-modules` 缺省文案面（同 missing-flag） |
+| test-vm-not-strict.js | 0 | 0 | ✅ |
+| test-vm-options-validation.js | 0 | 0 | ✅ |
+| test-vm-ownkeys.js | 0 | 0 | ✅ |
+| test-vm-ownpropertynames.js | 0 | 0 | ✅ |
+| test-vm-ownpropertysymbols.js | 0 | 0 | ✅ |
+| test-vm-parse-abort-on-uncaught-exception.js | 0 | 0 | ✅（直跑稳定绿；classify 并发负载下偶抖，计绿） |
+| test-vm-preserves-property.js | 0 | 0 | ✅ |
+| test-vm-property-definer-interception.js | 0 | 0 | ✅ |
+| test-vm-property-definer-partial-update.js | 1 | 0 | 🟡 偏离：copy 模型固有（definer 部分更新语义） |
+| test-vm-property-not-on-sandbox.js | 1 | 0 | 🟡 偏离：copy 模型固有 |
+| test-vm-proxies.js | 1 | 0 | 🟡 偏离：copy 模型固有（原型链方法） |
+| test-vm-proxy-failure-CP.js | 0 | 0 | ✅ |
+| test-vm-proxy-sandbox-property-query.js | 1 | 0 | 🟡 偏离：copy 模型固有 |
+| test-vm-run-in-new-context.js | 1 | 1 | ⏭️ 需 `--expose-gc`（同上） |
+| test-vm-script-after-evaluate.js | 1 | 0 | 🟡 偏离：微任务模式（本仓恒排空 vs 真机 per-context 队列不排，mustNotCall 被调） |
+| test-vm-script-throw-in-tostring.js | 0 | 0 | ✅ |
+| test-vm-set-property-proxy.js | 0 | 0 | ✅ |
+| test-vm-set-proto-null-on-globalthis.js | 0 | 0 | ✅ |
+| test-vm-sigint-existing-handler.js | 1 | 0 | 🟡 偏离：自 spawn（stdio 阵列面，全 flag CLI 设计） |
+| test-vm-sigint.js | 1 | 0 | 🟡 偏离：自 spawn（同上） |
+| test-vm-source-map-url.js | 1 | 0 | 🟡 偏离：sourcemap 面不做（既有记档） |
+| test-vm-static-this.js | 0 | 0 | ✅ |
+| test-vm-strict-assign.js | 0 | 0 | ✅ |
+| test-vm-strict-mode.js | 0 | 0 | ✅ |
+| test-vm-symbols.js | 1 | 0 | 🟡 偏离：copy 模型固有（原型链方法） |
+| test-vm-syntax-error-message.js | 0 | 0 | ✅ |
+| test-vm-syntax-error-stderr.js | 0 | 0 | ✅ |
+| test-vm-timeout-escape-promise-2.js | 1 | 0 | 🟡 偏离：timeout 只校验不执行（既有记档） |
+| test-vm-timeout-escape-promise-module.js | 1 | 1 | ⏭️ `--experimental-vm-modules` 家族 + timeout escape 语义（双 1 对齐） |
+| test-vm-timeout-escape-promise.js | 1 | 0 | 🟡 偏离：timeout 只校验不执行（同上） |
+| test-vm-timeout.js | TIMEOUT | 0 | 🟡 偏离：timeout 只校验不执行（本仓 TIMEOUT，单列） |
+| test-vm-util-lazy-properties.js | 0 | 0 | ✅ |

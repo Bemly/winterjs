@@ -410,3 +410,48 @@ fn phase10f_require_cjs_entry_relative() {
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "entry 42\n");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_cjs_top_level_return_entry_and_dep() {
+    // CJS 函数包装语义（node 口径）：顶层 return 合法——入口 typeless .js
+    // 与 require 依赖双形。export 文件不被误判 CJS（cjs_goal_probe 的模块
+    // 信号拒绝；phase9k require(esm) 同源）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let entry = dir.child("early.js");
+    entry.write_str("if (1 === 1) {\n  return;\n}\nconsole.log(\"unreachable\");\n").unwrap();
+    let out = winterjs().arg("--run").arg(entry.path()).output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(stdout, "", "early return 应静默退出: {stdout}");
+
+    let main = dir.child("dep-main.cjs");
+    main.write_str(
+        "const r = require(\"./retdep.js\");\nconsole.log(\"dep-ret\", r === \"early\");\nconst esm = require(\"./esmdep.js\");\nconsole.log(\"esm-ok\", esm.default === 1);\n",
+    )
+    .unwrap();
+    // node：wrapper 的 return 值被丢弃，exports 面由 module.exports 决定——
+    // return 用于提前终止，exports 先挂再 return。
+    dir.child("retdep.js")
+        .write_str("module.exports = \"early\";\nif (true) return;\nmodule.exports = \"late\";\n")
+        .unwrap();
+    dir.child("esmdep.js")
+        .write_str("export default 1;\n")
+        .unwrap();
+    let out2 = winterjs().arg("--run").arg(main.path()).output().unwrap();
+    assert!(
+        out2.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+    let stdout2 = String::from_utf8(out2.stdout).unwrap();
+    assert_eq!(
+        stdout2,
+        "dep-ret true\nesm-ok true\n",
+        "return 提前终止 + require(esm) 成功: {stdout2}"
+    );
+    dir.close().unwrap();
+}

@@ -24,7 +24,7 @@ use crate::error::Error;
 use crate::jsapi_glue::{
     call_one, get_prop_value, parse_json, report_error, value_to_string, wrap_cx, Frame,
 };
-use crate::loader::load_js;
+use crate::loader::{load_cjs_js, load_js};
 use crate::loader::resolve::resolve_require;
 use crate::state;
 
@@ -401,7 +401,16 @@ fn require_value(
                 // require(esm)（Node ≥22.12，26 无条件）：type==module 的 .js
                 // 或带模块语法的文件走同步求值返回 namespace；其余强制 CJS
                 // （ESM 语法在包装执行期自然报 SyntaxError）。
+                // CJS 分类经 `cjs_interop`（含顶层 return 的函数体 goal 重试，
+                // 同 runtime 入口口径）——命中即走 CJS goal 转译，module goal
+                // 对此类文件必报 "return not in function"。
                 let type_module = ext == "js" && nearest_pkg_type(&path).as_deref() == Some("module");
+                if !type_module && crate::modules::cjs_interop(&url, false, &text) {
+                    let loaded = load_cjs_js(&text, url.as_str(), &path).map_err(|e| {
+                        Error::Other(format!("Cannot load '{spec}' ({e})"))
+                    })?;
+                    return require_cjs_file(cx, global, &url, &loaded.js).map_err(Error::Other);
+                }
                 let loaded = load_js(&text, url.as_str(), &path).map_err(|e| {
                     Error::Other(format!("Cannot load '{spec}' ({e})"))
                 })?;

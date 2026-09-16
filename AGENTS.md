@@ -1749,3 +1749,44 @@ cargo build
   本条即 hunger：需求表（test-dns.js 花了整轮）之后零返工。
 - 推广为铁律：点名前通读套件全文（含头 30 行的校验表）；"先跑再读"只适用于
   找崩点，不适用于定需求。
+
+### 4.116 跨域微任务先 AutoRealm 进执行 global 再 RunJSMicroTask（2026-09-17，10f vm）
+
+- 症状：vm 沙箱内 `queueMicrotask`/promise 反应在排空点 SEGV（exit 139）——
+  test-vm-script-after-evaluate 探针必现；纯主域微任务从不出事。
+- 根因：`RunJSMicroTask` 带 DEBUG assert：任务的执行 global 必须等于
+  `cx->global()`。本仓 RustJobQueue glue（§4.7）在**主域**排空整个队列，
+  vm 的 cross-compartment 微任务未进任务 realm 即 assert abort（SM 内部队的
+  runJobs 从不犯此错——它逐任务进对应 realm）。
+- 修法（`src/jobqueue.rs` `run_jobs`）：逐任务先
+  `GetExecutionGlobalFromJSMicroTask`（null 则同 SM 内部队 `continue` 跳过），
+  `AutoRealm::new` 进执行 global，再 `RunJSMicroTask(realm.raw_cx(), …)`；
+  realm 对象随迭代丢弃自动还原。
+- 复现：vm 沙箱内 `queueMicrotask(() => …)` 后排空（修前 139，修后 exit=1
+  可读错；余下 mustNotCall 文案面属微任务模式偏离，bun-parity vm 节记档）；
+  `tests/node/vm.rs::phase10f_vm_parity_sync_and_errors` 同路回归。
+- 推广为铁律：§4.1 的微任务版——"之后要调 JSAPI 先回 realm"不只适用于
+  evaluate 返回后，**逐任务**的引擎回调同样适用；凡引擎 API 的 DEBUG assert
+  写明上下文前提，宿主 glue 照 SM 内部队同款实现即免踩（读引擎源码找 assert
+  前提比猜崩点快）。
+
+### 4.117 cjs goal 探测禁包络形：包装会吞语句语义（2026-09-17，10f vm，§4.59 姊妹）
+
+- 症状：CJS 分类的 cjs goal 复核若用 `(function(){ … })` 包络（想顺便容忍
+  顶层 return），phase9k require(esm) 的 `export default 2` fixture 被误判
+  CJS——export 藏进函数体后 oxc 无错也无模块信号，探测"通过"。
+- 根因：包装改变语句的顶层性：包络形里 `export` 不再是顶层语句，oxc 既不报
+  错也不置 `has_module_syntax`；顶层 `return` 本就无需包装容忍——
+  `SourceType::with_commonjs(true)` 即 node 函数包装语义。§4.59 已钉
+  `with_module(false)` ≠ 无模块信号，真相在 `module_record`。
+- 修法（`src/modules.rs` `cjs_goal_probe`）：**裸文本** + `with_commonjs(true)`
+  解析，`无错 && !has_module_syntax` 才判 CJS；歧义集分类改双值
+  `script_goal_probe`（可解析/模块信号分读）——有模块信号判 ESM、可解析判
+  CJS、解析失败（顶层 return 等 CJS 体专属语法）才落 cjs goal 复核；require
+  侧经 `load_cjs_js`（`src/loader/transpile.rs`，`with_commonjs` 同 goal）转译。
+- 复现：`tests/node/require.rs::phase10f_cjs_top_level_return_entry_and_dep`
+  （入口/依赖顶层 return 双形 + `export default` 不误判；修前 ESM 进 CJS 垫片）。
+- 推广为铁律：解析探测永不包装——包络形会吞语句的顶层性（export 信号消失），
+  也会反向吸收体（compileFunction 的 `});` 提前闭合，同轮实证）；"想容忍什么"
+  就用对应 goal（`with_commonjs`）表达，不手写包装。oxc 的**信号位**
+  （`module_record.has_module_syntax`）才是分类真相，"无错"从来不是。

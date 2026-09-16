@@ -149,22 +149,55 @@ pub(crate) fn cjs_interop(url: &Url, is_module: bool, text: &str) -> bool {
     match ext.as_deref() {
         Some("cjs") => true,
         Some("js" | "jsx") => {
-            !is_module
-                && crate::builtins::node::require::nearest_pkg_type(&path).as_deref()
-                    != Some("module")
-                && parses_as_script(text, &path)
+            if is_module || crate::builtins::node::require::nearest_pkg_type(&path).as_deref()
+                == Some("module")
+            {
+                false
+            } else {
+                // 经典 goal 探测：能解且无模块信号 → CJS；有模块信号（TLA 升级
+                // 等，§4.59）→ ESM；解析失败（顶层 return 等 CJS 体专属语法）→
+                // 裸文本 cjs goal 复核（node 的 CJS 函数包装语义，真机
+                // `if (x) return;` 入口实跑支持）。
+                let (script_ok, script_modsyn) = script_goal_probe(text, &path);
+                if script_modsyn {
+                    false
+                } else if script_ok {
+                    true
+                } else {
+                    cjs_goal_probe(text, &path)
+                }
+            }
         }
         _ => false,
     }
 }
 
-/// 经典脚本目标试解析（oxc script/unambiguous goal）：TLA/import/export 任一
-/// 即失败或升级为模块信号（`has_module_syntax`，oxc 无歧义 await 自动升级）。
-/// 纯函数；只在上述歧义集上调用（ESM 已定文件不走这里，无额外开销）。
-fn parses_as_script(text: &str, path: &std::path::Path) -> bool {
+/// 经典 goal 探测：`(能否无错解析, 是否有模块语法信号)`。
+/// oxc 在 script goal 下对无歧义 ESM 语法置升级信号并延迟丢错（§4.59），
+/// 故"能否解析"与"有无模块信号"必须分读，不能只看无错。
+fn script_goal_probe(text: &str, path: &std::path::Path) -> (bool, bool) {
     use oxc::{allocator::Allocator, parser::Parser, span::SourceType};
     let allocator = Allocator::default();
     let Ok(source_type) = SourceType::from_path(path).map(|t| t.with_module(false)) else {
+        // 方言定不了 → 按"有模块信号"处理（走 ESM 兜底，不误吞 import/export）
+        return (false, true);
+    };
+    let ret = Parser::new(&allocator, text, source_type).parse();
+    (
+        !ret.fatal_error && !ret.diagnostics.has_errors(),
+        ret.module_record.has_module_syntax,
+    )
+}
+
+/// CJS goal 探测（裸文本）：`SourceType::cjs` 即 node 函数包装语义——顶层
+/// `return` 合法。import/export 在 cjs goal 下必带模块信号（实测
+/// `export default 2` → has_module_syntax=true）→ 拒。**禁用包络形**：
+/// `(function(){ export … })` 会把 export 藏进函数体，oxc 无错无信号
+/// （实测）→ 误判 CJS（phase9k require(esm) 现形）。
+fn cjs_goal_probe(text: &str, path: &std::path::Path) -> bool {
+    use oxc::{allocator::Allocator, parser::Parser, span::SourceType};
+    let allocator = Allocator::default();
+    let Ok(source_type) = SourceType::from_path(path).map(|t| t.with_commonjs(true)) else {
         return false;
     };
     let ret = Parser::new(&allocator, text, source_type).parse();

@@ -8,7 +8,7 @@ use std::ffi::{CStr, CString};
 use mozjs::conversions::{ConversionResult, FromJSValConvertible as _, ToJSValConvertible as _};
 use mozjs::context::JSContext;
 use mozjs::gc::ValueArray;
-use mozjs::jsapi::{HandleValueArray, JS_CallFunctionValue, JS_GetPendingException, JSObject};
+use mozjs::jsapi::{HandleValueArray, JS_CallFunctionValue, JS_GetPendingException, JS_SetPendingException, JSObject};
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 use mozjs::typedarray::{CreateWith, TypedArray, Uint8};
@@ -268,6 +268,21 @@ pub fn take_pending_exception(cx: &mut JSContext) -> Option<JSVal> {
     // SAFETY: cx 有效；出参为 rooted 槽位
     let got = unsafe { JS_GetPendingException(cx.raw_cx(), raw_handle_mut(val.as_ptr())) };
     if got { Some(val.get()) } else { None }
+}
+
+/// UNSAFE-BOUNDARY: 恢复 pending exception（JS_SetPendingException，Capture 栈）。
+/// 前置：cx 在目标 realm 内；v 由调用方 rooted 后传入（§4.80）。
+/// 覆盖：`tests/node/vm.rs` vm 对拍黑盒（原始异常透传，与 take 成对）。
+pub fn set_pending_exception(cx: &mut JSContext, v: JSVal) {
+    rooted!(&in(cx) let vroot: JSVal = v);
+    // SAFETY: cx 有效；入参为 rooted 槽位；Capture 保留异常栈语义
+    unsafe {
+        JS_SetPendingException(
+            cx.raw_cx(),
+            raw_handle(vroot.as_ptr()),
+            mozjs::jsapi::JS::ExceptionStackBehavior::Capture,
+        )
+    };
 }
 
 /// UNSAFE-BOUNDARY: 调单参函数 `fun(arg)`（this=global；返回 rval；失败 None）。

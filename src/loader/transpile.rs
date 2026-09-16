@@ -81,6 +81,18 @@ fn first_diagnostic(text: &str, filename: &str, diags: Vec<oxc::diagnostics::Oxc
 
 /// 解析 +（TS 系）转译。`filename` 只用于报错展示（取 URL 字符串）。
 pub fn load_js(text: &str, filename: &str, path: &Path) -> Result<LoadedSource, Error> {
+    load_js_goal(text, filename, path, false)
+}
+
+/// CJS goal 转译：node 的 CJS 恒函数包装执行，顶层 `return`/`arguments` 合法
+/// （`SourceType::with_commonjs` 口径）；`load_js` 的 module goal 对此类文件
+/// 必报 "return not in function"。CJS/ESM 分类由调用方 `cjs_interop` 定，
+/// 缓存与 `load_js` 同键（同一文本分类确定，只走单一 goal）。
+pub fn load_cjs_js(text: &str, filename: &str, path: &Path) -> Result<LoadedSource, Error> {
+    load_js_goal(text, filename, path, true)
+}
+
+fn load_js_goal(text: &str, filename: &str, path: &Path, cjs_goal: bool) -> Result<LoadedSource, Error> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -94,7 +106,7 @@ pub fn load_js(text: &str, filename: &str, path: &Path) -> Result<LoadedSource, 
             map: hit.map,
         });
     }
-    let loaded = load_js_uncached(text, filename, path)?;
+    let loaded = load_js_uncached(text, filename, path, cjs_goal)?;
     super::cache::put(
         text,
         &ext,
@@ -108,10 +120,16 @@ pub fn load_js(text: &str, filename: &str, path: &Path) -> Result<LoadedSource, 
     Ok(loaded)
 }
 
-fn load_js_uncached(text: &str, filename: &str, path: &Path) -> Result<LoadedSource, Error> {
+fn load_js_uncached(
+    text: &str,
+    filename: &str,
+    path: &Path,
+    cjs_goal: bool,
+) -> Result<LoadedSource, Error> {
     let allocator = Allocator::default();
     // 无扩展名入口（`type: module` 包的 extensionless bin）按 `.js` 解析；
-    // 模块/经典由调用方定（此处只定语法方言，`with_module(true)` 统一）。
+    // 模块/经典由调用方定（此处只定语法方言）。CJS goal 保 from_path 的
+    // 方言（.jsx JSX、.ts TS）只把 kind 钉成 CommonJS（顶层 return 合法）。
     let source_type = SourceType::from_path(path)
         .or_else(|_| {
             if path.extension().is_none() {
@@ -120,8 +138,12 @@ fn load_js_uncached(text: &str, filename: &str, path: &Path) -> Result<LoadedSou
                 SourceType::from_path(path)
             }
         })
-        .map_err(|_| Error::Other(format!("unsupported module extension: {}", path.display())))?
-        .with_module(true);
+        .map_err(|_| Error::Other(format!("unsupported module extension: {}", path.display())))?;
+    let source_type = if cjs_goal {
+        source_type.with_commonjs(true)
+    } else {
+        source_type.with_module(true)
+    };
     let ret = Parser::new(&allocator, text, source_type).parse();
     if ret.fatal_error {
         let diags = ret.diagnostics.into_vec();
@@ -190,7 +212,7 @@ mod tests {
     #[test]
     fn snap_ts_transpile_output() {
         let ts = fixture("loader_sample.ts");
-        let loaded = load_js_uncached(&ts, "loader_sample.ts", Path::new("loader_sample.ts")).unwrap();
+        let loaded = load_js_uncached(&ts, "loader_sample.ts", Path::new("loader_sample.ts"), false).unwrap();
         assert!(loaded.is_module);
         insta::assert_snapshot!(loaded.js);
     }
@@ -198,7 +220,7 @@ mod tests {
     #[test]
     fn snap_ts_import_extraction() {
         let ts = fixture("loader_sample.ts");
-        let loaded = load_js_uncached(&ts, "loader_sample.ts", Path::new("loader_sample.ts")).unwrap();
+        let loaded = load_js_uncached(&ts, "loader_sample.ts", Path::new("loader_sample.ts"), false).unwrap();
         // type-only 整包请求被过滤（config.js/types.js 不在内），其余保留
         insta::assert_debug_snapshot!(loaded.imports);
     }
@@ -206,7 +228,7 @@ mod tests {
     #[test]
     fn snap_js_passthrough_meta_and_dynamic() {
         let js = "console.log(import.meta.url);\nconst m = await import(\"./lazy.js\");\n";
-        let loaded = load_js_uncached(js, "m.js", Path::new("m.js")).unwrap();
+        let loaded = load_js_uncached(js, "m.js", Path::new("m.js"), false).unwrap();
         assert!(loaded.is_module);
         assert_eq!(loaded.js, js);
         insta::assert_debug_snapshot!(loaded.imports);
@@ -214,7 +236,7 @@ mod tests {
 
     #[test]
     fn syntax_error_has_location() {
-        let err = load_js_uncached("const = 1;\n", "bad.js", Path::new("bad.js")).unwrap_err();
+        let err = load_js_uncached("const = 1;\n", "bad.js", Path::new("bad.js"), false).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("bad.js:1:7"), "location: {msg}");
     }

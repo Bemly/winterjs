@@ -7,4 +7,4 @@ pub mod resolve;
 pub mod sourcemap;
 pub mod transpile;
 
-pub use transpile::load_js;
+pub use transpile::{load_cjs_js, load_js};

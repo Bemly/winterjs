@@ -47,6 +47,45 @@ fn throw_vm(cx: &mut mozjs::context::JSContext, name: &str, message: &str) {
     report_error(cx, &format!("__wjs_vm_error:{name}\n{clean}"));
 }
 
+/// vm 求值路径的赋值类 TypeError 文案桥：SM 引擎文案 → node contextify 拦截器
+/// 口径（真机该文案出自 node 的 global 属性拦截器，非引擎——套件按 node 文案
+/// regex 断言；仅 vm_run 用，主域/主 global 求值不改写引擎文案）。
+fn bridge_vm_assign_message(message: &str) -> String {
+    // SM "assignment to undeclared variable z" → node "z is not defined"
+    //（strict 隐式全局赋值的 ReferenceError，真机文案）。
+    if let Some(key) = message.strip_prefix("assignment to undeclared variable ") {
+        return format!("{key} is not defined");
+    }
+    let Some(rest) = message.strip_prefix('"') else {
+        return message.to_string();
+    };
+    let Some((key, tail)) = rest.split_once("\" is ") else {
+        return message.to_string();
+    };
+    match tail {
+        "read-only" => {
+            format!("Cannot assign to read only property '{key}' of object '[object Object]'")
+        }
+        "non-configurable and can't be redefined" => format!("Cannot redefine property: {key}"),
+        _ => message.to_string(),
+    }
+}
+
+/// vm 运行期错误的信封消息：文案桥 + 位置标记（`__wjs_vm_stk:{json}`）。
+/// node displayErrors 口径——vm 错误的 err.stack 以 `filename:line` 前缀开头
+/// （checkErr 类 `startsWith(filename)` 校验点名）；JS 侧 __vmUnwrap 剥标记
+/// 重建栈。栈内帧格式仍是引擎口径（SM `@` vs V8 `at`，记档偏离）。
+fn vm_stk_envelope(filename: &str, code: &str, info: &mozjs::rust::ErrorInfo) -> String {
+    let line = info.line.max(1);
+    let col = info.col.max(1);
+    let srcline = code
+        .split('\n')
+        .nth((line as usize).saturating_sub(1))
+        .unwrap_or("");
+    let stk = serde_json::json!({ "f": filename, "l": line, "c": col, "s": srcline }).to_string();
+    format!("{}\n__wjs_vm_stk:{stk}", bridge_vm_assign_message(&info.message))
+}
+
 /// 字符串实参（缺省/非串 → TypeError 错，None）。
 fn arg_string(
     cx: &mut mozjs::context::JSContext,
@@ -204,11 +243,20 @@ pub unsafe extern "C" fn vm_run(
     };
     rooted!(&in(cx) let global = ptr);
     rooted!(&in(cx) let mut rval = UndefinedValue());
-    let filename = std::ffi::CString::new(filename.as_str()).unwrap_or_else(|_| c"vm.js".to_owned());
-    let options = CompileOptionsWrapper::new(&cx, filename, 1);
+    let filename_c =
+        std::ffi::CString::new(filename.as_str()).unwrap_or_else(|_| c"vm.js".to_owned());
+    let options = CompileOptionsWrapper::new(&cx, filename_c, 1);
     if mozjs::rust::evaluate_script(&mut cx, global.handle(), &code, rval.handle_mut(), options).is_err() {
         // §4.1：evaluate 返回后已出 realm，重进目标 realm 再读异常
         let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+        // 先取原始异常对象暂存（take 即清 pending），再恢复 pending 供 error_info
+        // 读 name/message/位置（读完再清）——__vmCall 优先取原物（保 vm realm
+        // 身份/原型/栈，跨域 instanceof 点名），信封重建只作兜底。
+        if let Some(v) = crate::jsapi_glue::take_pending_exception(&mut realm) {
+            rooted!(&in(&mut realm) let orig_root: JSVal = v);
+            state::with_rooted(|s| s.vm_last_error.set(orig_root.get()));
+            crate::jsapi_glue::set_pending_exception(&mut realm, orig_root.get());
+        }
         rooted!(&in(&mut realm) let mut exc = UndefinedValue());
         let (name, message) = match mozjs::rust::error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
             Some(info) => {
@@ -216,7 +264,7 @@ pub unsafe extern "C" fn vm_run(
                     .into_iter()
                     .find(|n| exc_name_is(&mut realm, exc.get(), n))
                     .unwrap_or("Error");
-                (name.to_string(), info.message)
+                (name.to_string(), vm_stk_envelope(&filename, &code, &info))
             }
             None => ("Error".to_string(), value_to_string(&mut realm, exc.get())),
         };
@@ -250,10 +298,17 @@ pub unsafe extern "C" fn vm_run_this(
     let filename = arg_string(&mut cx, &frame, 1, "vm run").unwrap_or_default();
     rooted!(&in(cx) let global = state::global());
     rooted!(&in(cx) let mut rval = UndefinedValue());
-    let filename = std::ffi::CString::new(filename.as_str()).unwrap_or_else(|_| c"vm.js".to_owned());
-    let options = CompileOptionsWrapper::new(&cx, filename, 1);
+    let filename_c =
+        std::ffi::CString::new(filename.as_str()).unwrap_or_else(|_| c"vm.js".to_owned());
+    let options = CompileOptionsWrapper::new(&cx, filename_c, 1);
     if mozjs::rust::evaluate_script(&mut cx, global.handle(), &code, rval.handle_mut(), options).is_err() {
         let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+        // 同 vm_run：取原物暂存 + 恢复 pending。
+        if let Some(v) = crate::jsapi_glue::take_pending_exception(&mut realm) {
+            rooted!(&in(&mut realm) let orig_root: JSVal = v);
+            state::with_rooted(|s| s.vm_last_error.set(orig_root.get()));
+            crate::jsapi_glue::set_pending_exception(&mut realm, orig_root.get());
+        }
         rooted!(&in(&mut realm) let mut exc = UndefinedValue());
         let (name, message) = match mozjs::rust::error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
             Some(info) => {
@@ -261,7 +316,7 @@ pub unsafe extern "C" fn vm_run_this(
                     .into_iter()
                     .find(|n| exc_name_is(&mut realm, exc.get(), n))
                     .unwrap_or("Error");
-                (name.to_string(), info.message)
+                (name.to_string(), vm_stk_envelope(&filename, &code, &info))
             }
             None => ("Error".to_string(), value_to_string(&mut realm, exc.get())),
         };
@@ -315,11 +370,33 @@ pub unsafe extern "C" fn vm_compile_fn(
         return false;
     }
     rooted!(&in(cx) let global = ptr);
-    // 包成匿名函数表达式求值（`new Function` 口径：params 为形参，body 为函数体）。
-    let wrapped = format!("(function anonymous({params}\n) {{\n{code}\n}})");
     rooted!(&in(cx) let mut rval = UndefinedValue());
-    let filename = std::ffi::CString::new(filename.as_str()).unwrap_or_else(|_| c"vm.js".to_owned());
-    let options = CompileOptionsWrapper::new(&cx, filename, 1);
+    let filename_c =
+        std::ffi::CString::new(filename.as_str()).unwrap_or_else(|_| c"vm.js".to_owned());
+    let options = CompileOptionsWrapper::new(&cx, filename_c, 1);
+    // 体级语法预检（声明位包络）：compileFunction 的体必须能独立作为函数体解析。
+    // 表达式包络 `(function(){ … })` 会被体首 `});` 提前闭合吸收（测试
+    // `});\n(function(){…})();\n(function() {` 套件点名）——真机 V8 以声明位
+    // 包络编译，未闭合括号悬到 EOF 即错；声明位同构，预检失败即 SyntaxError。
+    // 预检产物弃置，实编译仍走表达式包络（toString === `function (p) {\n…\n}`）。
+    let wrapped_chk = format!("function __wjs_vm_body_chk({params}) {{\n{code}\n}}");
+    {
+        let mut src_chk = transform_str_to_source_text(&wrapped_chk);
+        // SAFETY: cx 在 realm 内；options/src 存活到调用返回；空指针即语法失败
+        let chk = unsafe { mozjs::rust::wrappers2::Compile1(&mut cx, options.ptr, &mut src_chk) };
+        if chk.is_null() {
+            rooted!(&in(cx) let mut exc = UndefinedValue());
+            let msg = match mozjs::rust::error_info_from_exception_stack(&mut cx, exc.handle_mut()) {
+                Some(info) => info.message,
+                None => "invalid function".to_string(),
+            };
+            throw_vm(&mut cx, "SyntaxError", &msg);
+            return false;
+        }
+    }
+    // 包成匿名函数表达式求值（toString 对真机：`function (p) {\n…\n}`——
+    // 无 "anonymous" 名、params 后无换行，真机 compileFunction fn.name === ""）。
+    let wrapped = format!("(function ({params}) {{\n{code}\n}})");
     if mozjs::rust::evaluate_script(&mut cx, global.handle(), &wrapped, rval.handle_mut(), options).is_err() {
         let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
         rooted!(&in(&mut realm) let mut exc = UndefinedValue());
@@ -339,6 +416,9 @@ pub unsafe extern "C" fn vm_compile_fn(
 }
 
 /// 沙箱属性写入目标 global（sync-in 用；值可跨 compartment，引擎包 CCW）。
+/// 语义：`define` 优先（可枚举数据描述符）；已有属性重定义失败回落赋值；
+/// 双失败（目标只读无 setter）即跳过——真机以目标描述符为准（`inherited_properties`
+/// 只读继承、`preserves-property` 等），源端不同步，不抛（10c-3 回落的静默形）。
 /// `__wjs_vm_set(id, key, value)` → undefined。
 pub unsafe extern "C" fn vm_set(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -373,11 +453,9 @@ pub unsafe extern "C" fn vm_set(
     };
     if !define_prop(&mut realm, global.get(), &c_key, val) {
         // 已有属性的重定义在跨 compartment 值（sync-out 又 sync-in 的函数等）
-        // 下失败：回落赋值语义（更新值、保留既有描述符；双失败才抛，10c-3）。
-        if !crate::jsapi_glue::set_prop_value(&mut realm, global.get(), &c_key, val) {
-            throw_vm(&mut realm, "Error", "vm could not define sandbox property");
-            return false;
-        }
+        // 下失败：回落赋值语义（更新值、保留既有描述符；双失败（如只读无 setter）
+        // 即跳过——真机口径以目标描述符为准，源端只读不同步，见 vm_set 头注）。
+        let _ = crate::jsapi_glue::set_prop_value(&mut realm, global.get(), &c_key, val);
     }
     frame.set_rval(UndefinedValue());
     true
@@ -578,6 +656,29 @@ pub unsafe extern "C" fn vm_release(
     };
     let _ = &mut cx;
     frame.set_rval(BooleanValue(state::vm_release(id)));
+    true
+}
+
+/// 取 vm_run/vm_run_this 暂存的原始异常对象并清槽：
+/// `__wjs_vm_take_error()` → value（无则 undefined）。
+/// UNSAFE-BOUNDARY: 槽值经 RootedState.vm_last_error（Heap，trace 覆盖）保活；
+/// JS 单线程专用；读后即清（信封/原物一一对应）。
+/// 覆盖：`tests/node/vm.rs` vm 对拍黑盒（跨域 SyntaxError instanceof）。
+pub unsafe extern "C" fn vm_take_error(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 vm_create
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let _ = &mut cx;
+    let mut out = UndefinedValue();
+    state::with_rooted(|s| {
+        out = s.vm_last_error.get();
+        s.vm_last_error.set(UndefinedValue());
+    });
+    frame.set_rval(out);
     true
 }
 
@@ -900,16 +1001,21 @@ pub unsafe extern "C" fn vm_mod_settled(
 pub const SOURCE: &str = r#"
 import { EventEmitter } from "node:events";
 
-const __kCtx = "__wjs_vm_ctx_id";
-
+// 簿记（ctx id / 快照）一律挂 WeakMap，不落沙箱自有键——真机 contextify 不给
+// 沙箱加任何键（ownkeys/ownpropertynames/ownpropertysymbols 三件 + Proxy
+// definer-interception 的 trap 计数都点名"沙箱键集不变"）。
 const __vmBookkeeping = new WeakMap();
 function __vmStdKeys(obj) {
   let rec = __vmBookkeeping.get(obj);
   if (!rec) {
-    rec = { std: null, init: new Map() };
+    rec = { id: undefined, std: null, init: new Map() };
     __vmBookkeeping.set(obj, rec);
   }
   return rec;
+}
+function __vmCtxId(obj) {
+  const rec = __vmBookkeeping.get(obj);
+  return rec ? rec.id : undefined;
 }
 
 function __vmUnwrap(e) {
@@ -920,15 +1026,70 @@ function __vmUnwrap(e) {
     err.code = "ERR_VM_ERROR";
     throw err;
   }
-  const [, name, message] = mm;
+  const [, name, body] = mm;
+  // 位置标记（native vm_stk_envelope 附带）：剥出后重建 node displayErrors
+  // 形态的栈——`filename:line\n源行\ncaret\n\nName: message\n    at f:l:c`。
+  // checkErr 类 `err.stack.startsWith(filename)` 校验靠首行；帧格式引擎口径记档。
+  let message = body;
+  let stk = null;
+  const sm = body.match(/^([\s\S]*)\n__wjs_vm_stk:(\{.*\})$/);
+  if (sm) {
+    message = sm[1];
+    try { stk = JSON.parse(sm[2]); } catch { stk = null; }
+  }
   const Ctor = globalThis[name] || Error;
   const err = new Ctor(message);
+  if (stk && stk.f) {
+    const caret = " ".repeat(Math.max(0, (stk.c | 0) - 1)) + "^";
+    err.stack = `${stk.f}:${stk.l}\n${stk.s ?? ""}\n${caret}\n\n${name}: ${message}\n    at ${stk.f}:${stk.l}:${stk.c}`;
+  }
   throw err;
 }
 function __vmCall(fn) {
   try {
     return fn();
   } catch (e) {
+    // native 暂存的原始异常对象优先（保 vm realm 身份/原型/栈——跨域
+    // `instanceof vmCtx.SyntaxError` 与栈断言点名）；信封重建只作兜底。
+    let orig;
+    try { orig = __wjs_vm_take_error(); } catch { orig = undefined; }
+    if (orig !== undefined && orig !== null) {
+      // 赋值类 TypeError 文案桥（native bridge_vm_assign_message 同源规则——
+      // 原物透传绕过了 native 侧桥，按 node contextify 拦截器口径补齐）。
+      if (orig && typeof orig === "object") {
+        try {
+          const m = orig.message;
+          if (typeof m === "string") {
+            const am = m.match(/^assignment to undeclared variable (\S+)$/);
+            if (am) {
+              orig.message = `${am[1]} is not defined`;
+            } else {
+              const bm = m.match(/^"([^"]+)" is (read-only|non-configurable and can't be redefined)$/);
+              if (bm) {
+                orig.message = bm[2] === "read-only"
+                  ? `Cannot assign to read only property '${bm[1]}' of object '[object Object]'`
+                  : `Cannot redefine property: ${bm[1]}`;
+              }
+            }
+          }
+        } catch { /* 保留原文案 */ }
+        // 信封带位置标记时给原物栈补 node displayErrors 前缀
+        //（`f:l\n源行\ncaret\n\n` + 原栈首行 Name: message 同构拼接）。
+        const m = String((e && e.message) || e);
+        // 组序：1=name、2=message、3=json 栈标记（与 __vmUnwrap 的双组序不同！）
+        const sm = m.match(/^__wjs_vm_error:([A-Za-z]+)\n([\s\S]*)\n__wjs_vm_stk:(\{.*\})$/);
+        if (sm) {
+          try {
+            const stk = JSON.parse(sm[3]);
+            if (stk && stk.f) {
+              const caret = " ".repeat(Math.max(0, (stk.c | 0) - 1)) + "^";
+              orig.stack = `${stk.f}:${stk.l}\n${stk.s ?? ""}\n${caret}\n\n${orig.stack}`;
+            }
+          } catch { /* 保留原栈 */ }
+        }
+      }
+      throw orig;
+    }
     __vmUnwrap(e);
   }
 }
@@ -964,9 +1125,10 @@ function __validateCtx(obj) {
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
-  const id = obj[__kCtx];
+  const id = __vmCtxId(obj);
   if (typeof id !== "string") {
-    const err = new TypeError("The \"contextifiedObject\" argument must be a vm.Context");
+    // 真机 26 冠词即 "an vm.Context"（怪癖逐字）+ Received 实例描述
+    const err = new TypeError(`The "contextifiedObject" argument must be an vm.Context. Received ${__recv(obj)}`);
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
@@ -978,7 +1140,7 @@ export function isContext(obj) {
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
-  return typeof obj[__kCtx] === "string";
+  return typeof __vmCtxId(obj) === "string";
 }
 
 function __vmSnapshot(id, obj) {
@@ -998,16 +1160,138 @@ function __vmSnapshot(id, obj) {
     rec.init.set(k, __vmCall(() => __wjs_vm_get(id, k)));
   }
 }
+// symbol 键通道：键（symbol 本体作值）与完整描述符经字符串暂存位过域，
+// 目标域内 defineProperty 落定（defineProperty 不触发访问器，无 mustCall 污染；
+// 描述符对象过域照常工作，p38 实证）。
+const __kTmpKey = "__wjs_vm_tmp_key";
+const __kTmpDesc = "__wjs_vm_tmp_desc";
+function __vmStageAndDefine(id, key, dd) {
+  __vmCall(() => __wjs_vm_set(id, __kTmpKey, key));
+  __vmCall(() => __wjs_vm_set(id, __kTmpDesc, dd));
+  __vmCall(() => __wjs_vm_run(id,
+    `Object.defineProperty(globalThis, globalThis[${JSON.stringify(__kTmpKey)}], globalThis[${JSON.stringify(__kTmpDesc)}]); delete globalThis[${JSON.stringify(__kTmpKey)}]; delete globalThis[${JSON.stringify(__kTmpDesc)}];`,
+    "vm-sync-in.js"));
+}
+// 描述符读取（可抛）：SM proxy 不变量文案 → V8 口径（套件按 trap 名子串
+// 断言；仅限本模块 sync 路径的窄桥，不改引擎全局文案）。
+function __vmDescOrThrow(obj, k) {
+  try {
+    return Object.getOwnPropertyDescriptor(obj, k);
+  } catch (e) {
+    if (e && typeof e.message === "string") {
+      const m = e.message.match(/^proxy can't report a non-existent property '"(.*)"' as non-configurable$/);
+      if (m) {
+        const err = new TypeError(`'getOwnPropertyDescriptor' on proxy: trap reported non-configurability for property '${m[1]}' which is either non-existent or configurable in the proxy target`);
+        throw err;
+      }
+    }
+    throw e;
+  }
+}
 function __syncIn(id, obj) {
   // 主域侧全部自有字符串键（含不可枚举；与目标 global 的 HIDDEN 枚举口径对齐）。
   // 纯 Object.keys 会漏沙箱不可枚举种子（defineProperty value 形），vm 内即 undefined。
-  // 描述符值直传（d.value）；访问器走 obj[k] 触发主域 getter（真机口径：值拷贝，此时求值）。
+  // 描述符携带：数据描述符传 d.value（值拷贝，此时求值）；访问器传描述符对象本身——
+  // 经 __wjs_vm_set 过 CCW 后在目标域内 Object.defineProperty 落定，getter/setter
+  // 身份由引擎 CCW 透明代理（真机"访问器活绑定"同效：主域改 getter 实现即 vm 内可见；
+  // 实证见 p38：描述符对象过沙箱属性中转后 define 照常工作）。
+  // 只写目标缺席键（目标已有——首轮 define 产物或标准内建——即跳过）：
+  // define+赋值双失败（目标只读）由 vm_set 静默跳过，但预检可省一次跨域调用；
+  // 更重要的是预检以目标描述符为准，不以源值为准。
+  // 注意：__wjs_vm_keys 只回可枚举键；不可枚举目标键不在此集——
+  // 该分支漏检时 vm_set 的静默跳过是最后一道防线（本行注释钉住两层关系）。
+  // 【10f 修订】预检取消：真机 contextify 的拦截器让 sandbox 自有键**遮蔽**
+  // vm realm 内建（harmony-symbols/proxies：sandbox {Symbol} 后 vm 内读
+  // Symbol 得主域 Symbol）——源键必须每次重落。目标已有的只读/不可配置键
+  // 由 vm_set 的 define 失败→赋值失败→静默跳过兜底（global-non-writable
+  // 的 vm 侧只读 x 不被沙箱可写值覆盖）。
   const keys = Object.getOwnPropertyNames(obj);
   for (const k of keys) {
-    if (k === __kCtx) continue;
-    const d = Object.getOwnPropertyDescriptor(obj, k);
-    if (d && "value" in d) __vmCall(() => __wjs_vm_set(id, k, d.value));
-    else __vmCall(() => __wjs_vm_set(id, k, obj[k]));
+    // 主域 globalThis 自指（globalThis/global）永不同步——值是主域 global 本体，
+    // define 进目标即把目标 globalThis 换成主域 CCW，后续一切 set 全写错域
+    //（BQ1：set globalThis 后 probe 即 undefined，而 set global 无事）。
+    // 真机口径：目标自有 globalThis 恒为自身（AL1 mc-exists 同源），无需同步。
+    if (k === "globalThis" || k === "global") continue;
+    // 沙箱自指键（ctx.window = ctx）：真机沙箱即 global proxy，this/window 恒同
+    // 身份——目标域内挂 vm global 本体（CCW 缓存保证 thisVal === windowVal），
+    // 并记账 selfRefs 让 syncOut 不回写（回写会把 sandbox.window 换成 CCW）。
+    let selfRef = false;
+    try { selfRef = obj[k] === obj; } catch { selfRef = false; }
+    if (selfRef) {
+      try {
+        const g = __vmCall(() => __wjs_vm_global(id));
+        __vmCall(() => __wjs_vm_set(id, k, g));
+        const rec0 = __vmStdKeys(obj);
+        (rec0.selfRefs ??= new Set()).add(k);
+      } catch { /* 跳过该键 */ }
+      continue;
+    }
+    // globalThis 等宿主对象有"名无描述符"键（getOwnPropertyNames 列得出、
+    // getOwnPropertyDescriptor 回 undefined）：无描述符即按值语义走 obj[k]。
+    // 描述符读取错误必须容错——真机 contextify 不在 sync 期查询属性描述符
+    //（proxy-failure-CP：trap 恒抛的 sandbox 照常 create/run）；set 期的
+    // 不变量错误由 syncOut 的传播路径负责（set-property-proxy）。
+    let d = null;
+    try { d = __vmDescOrThrow(obj, k); } catch { d = null; }
+    if (d && ("get" in d || "set" in d)) {
+      // 键形态以"有无可调用 get/set"为准，不以 key 存在为准——
+      // 宿主懒访问器（MessageChannel 等）可能是 {get: fn, set: undefined}，
+      // set: undefined 必须剔除，否则目标域 defineProperty 读到
+      // set: undefined 即判"描述符非对象"（AB3 实证；真机侧同键是数据描述符）。
+      const hasGet = "get" in d && typeof d.get === "function";
+      const hasSet = "set" in d && typeof d.set === "function";
+      if (!hasGet && !hasSet) {
+        // 伪访问器（get/set 皆不可调用）：按值语义走 obj[k]（此时求值）。
+        try { __vmCall(() => __wjs_vm_set(id, k, obj[k])); } catch { /* 跳过该键 */ }
+        continue;
+      }
+      // 真访问器：描述符对象暂存 + 目标域内 defineProperty 落定后删暂存。
+      // 不删则数据暂存遮蔽访问器（setter 永不触发，p45 实证）。
+      const t = `__wjs_vm_tmp_${k}`;
+      const dd = { enumerable: false, configurable: true };
+      if (hasGet) dd.get = d.get;
+      if (hasSet) dd.set = d.set;
+      dd.enumerable = !!d.enumerable;
+      dd.configurable = !!d.configurable;
+      __vmCall(() => __wjs_vm_set(id, t, dd));
+      __vmCall(() => __wjs_vm_run(id, `Object.defineProperty(globalThis, ${JSON.stringify(k)}, globalThis[${JSON.stringify(t)}]); delete globalThis[${JSON.stringify(t)}]`, "vm-sync-in.js"));
+    } else if (d && "value" in d) {
+      if (d.writable === true && d.enumerable === true && d.configurable === true) {
+        // 默认属性快路径（define_prop 即 {w,e,c}=true，无损失）。
+        __vmCall(() => __wjs_vm_set(id, k, d.value));
+      } else {
+        // 非默认属性（nonWritableProp 等）走描述符 staging：真机按源描述符落定，
+        // vm 侧 writable:false 不可写/不可枚举都要保形（global-setter descriptor10）。
+        const dd = { value: d.value, writable: !!d.writable, enumerable: !!d.enumerable, configurable: !!d.configurable };
+        try { __vmStageAndDefine(id, k, dd); } catch { /* 跳过该键 */ }
+      }
+    }
+    else if (d) __vmCall(() => __wjs_vm_set(id, k, obj[k]));
+    else {
+      // 无描述符键：读值失败即跳过（globalThis 宿主键），不中断整表。
+      try { __vmCall(() => __wjs_vm_set(id, k, obj[k])); } catch { /* 跳过该键 */ }
+    }
+  }
+  // symbol 键同步（真机 contextify 转发 symbol 面；ownkeys/ownpropertysymbols/
+  // global-setter 的 symbol 描述符都点名）。不可重定义等失败跳过该键，不中断。
+  const syms = Object.getOwnPropertySymbols(obj);
+  for (const s of syms) {
+    let d = null;
+    try { d = Object.getOwnPropertyDescriptor(obj, s); } catch { d = null; }
+    if (!d) continue;
+    const dd = { enumerable: !!d.enumerable, configurable: !!d.configurable };
+    const hasGet = "get" in d && typeof d.get === "function";
+    const hasSet = "set" in d && typeof d.set === "function";
+    if (hasGet || hasSet) {
+      if (hasGet) dd.get = d.get;
+      if (hasSet) dd.set = d.set;
+    } else {
+      dd.value = d.value;
+      dd.writable = !!d.writable;
+    }
+    try {
+      __vmStageAndDefine(id, s, dd);
+    } catch { /* 跳过该键 */ }
   }
 }
 function __syncOut(id, obj) {
@@ -1019,12 +1303,27 @@ function __syncOut(id, obj) {
     // symbol 占位无跨 realm 身份：只维护存在性（ownkeys 计数口径），不做值同步。
     if (entry !== null && typeof entry === "object") continue;
     const k = entry;
-    // 簿记键只活在主域侧（DONT_CONTEXTIFY 下它同时是 vm global 自有键）：永不回写。
-    if (k === __kCtx) continue;
     // global 自有只读常量（undefined/NaN/Infinity，非枚举、不可写、值恒同）：永不同步。
     // 旧 keys（仅可枚举）路径从未见过它们；keys_all 含 HIDDEN 后必须显式跳过，
     // 否则 DONT_CONTEXTIFY（obj 即 vm global 本体）写只读属性直接抛。
+    //（簿记键自 symbol 化起不再进字符串快照，无需再跳过。）
     if (k === "undefined" || k === "NaN" || k === "Infinity") continue;
+    // syncIn 记账的自指键（window 等）：不回写（值是 vm global 本体，
+    // 回写会把 sandbox 侧同键换成 CCW，破坏沙箱自指身份）。
+    if (rec && rec.selfRefs && rec.selfRefs.has(k)) continue;
+    // 源端访问器键：不读不写——syncIn 已装同款访问器，syncOut 再读/写即各多触发
+    // 一次 getter/setter（global-setter 的 mustCall 精确计数口径）；值面归源端管。
+    // 描述符查询语义：trap 自身抛的异常容错（proxy-failure-CP：不意外查询属性）；
+    // 引擎不变量 TypeError 照真机传播（set-property-proxy：trap 返回 {} 报
+    // non-configurability）。
+    let d = null;
+    try {
+      d = __vmDescOrThrow(obj, k);
+    } catch (e) {
+      if (e && e.name === "TypeError") throw e;
+      d = null;
+    }
+    if (d && ("get" in d || "set" in d)) continue;
     const cur = __vmCall(() => __wjs_vm_get(id, k));
     if (std !== null && std.has(k)) {
       // 快照内键：仅当与创建快照发生 SameValue 变化时回写（this.Symbol = Symbol 等）；
@@ -1032,7 +1331,16 @@ function __syncOut(id, obj) {
       const before = init.get(k);
       if (__vmCall(() => __wjs_vm_same(cur, before))) continue;
     }
-    obj[k] = cur;
+    // 目标描述符优先：主域侧已有同名只读数据（源端 defineProperty 默认不可写不可配置，
+    // 首轮 sync-in 的 define 产物即如此）则赋值抛——只读数据即跳过。
+    // 可写数据才赋值（保留既有描述符，10c-3 回落语义）；目标缺席（全新键）直接挂载。
+    if (d && d.writable === false) continue;
+    try {
+      obj[k] = cur;
+    } catch {
+      // 主域 getter-only（无 setter）赋值抛：真机静默不写（VV），此处同效跳过。
+      // 有 setter 但 setter 内抛则会误吞——setter 抛的用例另案（套件无此形，记档）。
+    }
   }
 }
 
@@ -1047,8 +1355,28 @@ function __normStr(v, what, dflt) {
 }
 function __normUint(v, what) {
   if (v === undefined) return undefined;
-  if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 4294967295) {
-    const err = new TypeError(`The "options.${what}" property must be an integer in range. Received ${String(v)}`);
+  if (typeof v !== "number") {
+    const err = new TypeError(`The "options.${what}" property must be of type number. Received ${__recv(v)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (!Number.isInteger(v) || v < 0 || v > 4294967295) {
+    const err = new RangeError(`The "options.${what}" property must be an integer in the range 0 to 4294967295. Received ${String(v)}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  return v;
+}
+// timeout：真机 validateUint32(…, positive=true)——0/负数/NaN 也 RangeError。
+function __normTimeout(v, what) {
+  if (v === undefined) return undefined;
+  if (typeof v !== "number") {
+    const err = new TypeError(`The "options.${what}" property must be of type number. Received ${__recv(v)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (!Number.isInteger(v) || v <= 0 || v > 4294967295) {
+    const err = new RangeError(`The "options.${what}" property must be an integer in the range 1 to 4294967295. Received ${String(v)}`);
     err.code = "ERR_OUT_OF_RANGE";
     throw err;
   }
@@ -1063,6 +1391,18 @@ function __normBool(v, what) {
   }
   return v;
 }
+// ERR_INVALID_ARG_TYPE 的 Received 描述（node 真机口径：null → "null"、
+// 原始值 → "type T (值)"、字符串带引号）。
+function __recv(v) {
+  if (v === null) return "null";
+  if (typeof v === "string") return `type string ('${v}')`;
+  if (typeof v === "function") return "type function";
+  if (typeof v === "object") {
+    if (Array.isArray(v)) return "an instance of Array";
+    return "an instance of Object";
+  }
+  return `type ${typeof v} (${String(v)})`;
+}
 
 function __runArgs(contextifiedObject, options) {
   if (typeof options === "string") options = { filename: options };
@@ -1073,7 +1413,7 @@ function __runArgs(contextifiedObject, options) {
     throw err;
   }
   const filename = __normStr(options.filename, "filename", "evalmachine.<anonymous>");
-  __normUint(options.timeout, "timeout");
+  __normTimeout(options.timeout, "timeout");
   __normBool(options.displayErrors, "displayErrors");
   __normBool(options.breakOnSigint, "breakOnSigint");
   return { filename };
@@ -1088,7 +1428,7 @@ export function createContext(contextObject = {}, options = {}) {
   if (contextObject === __dontCtx) {
     const id = __vmCall(() => __wjs_vm_create());
     const g = __vmCall(() => __wjs_vm_global(id));
-    Object.defineProperty(g, __kCtx, { value: id, enumerable: false, writable: false, configurable: true });
+    __vmStdKeys(g).id = id;
     return g;
   }
   if (contextObject !== null && (typeof contextObject !== "object" && typeof contextObject !== "function")) {
@@ -1097,9 +1437,17 @@ export function createContext(contextObject = {}, options = {}) {
     throw err;
   }
   if (options === null || ((typeof options !== "object" && typeof options !== "function"))) {
-    const err = new TypeError(`The "options" argument must be of type object. Received ${options === null ? "null" : typeof options}`);
+    const err = new TypeError(`The "options" argument must be of type object. Received ${__recv(options)}`);
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
+  }
+  // name/origin 字符串校验（真机 ERR_INVALID_ARG_TYPE 文案逐字，basic 套件点名）。
+  for (const k of ["name", "origin"]) {
+    if (options[k] !== undefined && typeof options[k] !== "string") {
+      const err = new TypeError(`The "options.${k}" property must be of type string. Received ${__recv(options[k])}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
   }
   if (isContext(contextObject)) return contextObject;
   const name = typeof options.name === "string" ? options.name : undefined;
@@ -1110,7 +1458,7 @@ export function createContext(contextObject = {}, options = {}) {
     throw err;
   }
   const id = __vmCall(() => __wjs_vm_create());
-  Object.defineProperty(contextObject, __kCtx, { value: id, enumerable: false, writable: false, configurable: true });
+  __vmStdKeys(contextObject).id = id;
   __vmSnapshot(id, contextObject);
   if (contextObject !== null && contextObject !== undefined) __syncIn(id, contextObject);
   __vmAutoRelease(contextObject, id);
@@ -1128,7 +1476,17 @@ export function runInContext(code, contextifiedObject, options) {
 
 export function runInNewContext(code, contextObject, options) {
   if (typeof options === "string") options = { filename: options };
-  const ctx = createContext(contextObject ?? {}, options ?? {});
+  options = options ?? {};
+  // contextName/contextOrigin（createContext name/origin 的 run 侧别名）字符串校验。
+  for (const k of ["contextName", "contextOrigin"]) {
+    if (options[k] !== undefined && typeof options[k] !== "string") {
+      const err = new TypeError(`The "options.${k}" property must be of type string. Received ${__recv(options[k])}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+  }
+  if (contextObject === undefined) return runInContext(code, createContext({}, options ?? {}), options);
+  const ctx = createContext(contextObject, options ?? {});
   return runInContext(code, ctx, options);
 }
 
@@ -1142,25 +1500,51 @@ export class Script {
     code = String(code);
     if (typeof options === "string") options = { filename: options };
     if (options === null || (typeof options !== "object" && typeof options !== "function")) {
-      const err = new TypeError(`The "options" argument must be of type object. Received ${options === null ? "null" : typeof options}`);
+      const err = new TypeError(`The "options" argument must be of type object. Received ${__recv(options)}`);
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
     this.__code = code;
     this.__filename = __normStr(options.filename, "filename", "evalmachine.<anonymous>");
-    void __normUint(options.timeout, "timeout");
+    void __normUint(options.lineOffset, "lineOffset");
+    void __normUint(options.columnOffset, "columnOffset");
+    void __normTimeout(options.timeout, "timeout");
     void __normBool(options.displayErrors, "displayErrors");
     void __normBool(options.breakOnSigint, "breakOnSigint");
+    void __normBool(options.produceCachedData, "produceCachedData");
+    // cachedData 类型门（真机 validateBufferish：Buffer/TypedArray/DataView）；
+    // 字节码本体接受忽略（无缓存引擎，记档），类型不对仍按真机拒。
+    if (options.cachedData !== undefined &&
+        !(typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(options.cachedData)) &&
+        !(options.cachedData instanceof ArrayBuffer)) {
+      const err = new TypeError('The "options.cachedData" property must be one of Buffer, TypedArray, or DataView');
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
     __vmCall(() => __wjs_vm_compile(code, this.__filename));
   }
-  runInContext(contextifiedObject, options) {
-    return runInContext(this.__code, contextifiedObject, { ...(options ?? {}), filename: this.__filename });
+  // Script 方法层 options 只收 object/function/undefined（真机 assertErrors：
+  // 'bad'/42/null 即 TypeError）。
+  __normOpts(options) {
+    if (options !== undefined &&
+        (options === null || (typeof options !== "object" && typeof options !== "function"))) {
+      const err = new TypeError(`The "options" argument must be of type object. Received ${__recv(options)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    return options ?? {};
   }
+  runInContext(contextifiedObject, options) {
+    return runInContext(this.__code, contextifiedObject, { ...this.__normOpts(options), filename: this.__filename });
+  }
+  // 真机形态：`this.runInContext(...)` 的成员访问先于实参求值——this 非对象时
+  // 即报 `this.runInContext is not a function`（new-script-new-context 末块
+  // `.call('hello')` 点名）；options 形状由 createContext 侧校验。
   runInNewContext(contextObject, options) {
-    return runInNewContext(this.__code, contextObject, { ...(options ?? {}), filename: this.__filename });
+    return this.runInContext(createContext(contextObject, options), options);
   }
   runInThisContext(options) {
-    return runInThisContext(this.__code, { ...(options ?? {}), filename: this.__filename });
+    return runInThisContext(this.__code, { ...this.__normOpts(options), filename: this.__filename });
   }
   createCachedData() {
     return Buffer.alloc(0);
@@ -1204,15 +1588,18 @@ export function compileFunction(code, params, options = {}) {
   if (options.parsingContext !== undefined) {
     ctxId = __validateCtx(options.parsingContext);
   }
-  const exts = options.contextExtensions ?? [];
-  if (!Array.isArray(exts)) {
-    const err = new TypeError(`The "options.contextExtensions" property must be an array.`);
+  // undefined → 默认 []；null/非数组 → 抛（真机 null 不给 ?? 吞掉）。
+  const extOpt = options.contextExtensions;
+  if (extOpt !== undefined && !Array.isArray(extOpt)) {
+    const err = new TypeError(`The "options.contextExtensions" property must be an instance of Array. Received ${__recv(extOpt)}`);
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
-  for (const ext of exts) {
+  const exts = extOpt ?? [];
+  for (let ei = 0; ei < exts.length; ei++) {
+    const ext = exts[ei];
     if (ext === null || (typeof ext !== "object" && typeof ext !== "function")) {
-      const err = new TypeError(`The "options.contextExtensions" array must only contain objects.`);
+      const err = new TypeError(`The "options.contextExtensions[${ei}]" property must be of type object. Received type ${typeof ext} (${String(ext)})`);
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
@@ -1285,7 +1672,7 @@ export class SourceTextModule extends Module {
     } else {
       ctxId = __vmCall(() => __wjs_vm_create());
       const holder = {};
-      Object.defineProperty(holder, __kCtx, { value: ctxId });
+      __vmStdKeys(holder).id = ctxId;
       __vmSnapshot(ctxId, holder);
       __vmAutoRelease(holder, ctxId);
       this.__context = undefined;

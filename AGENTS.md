@@ -1544,3 +1544,92 @@ cargo build
 - 推广为铁律：凡 node 文档写明"异步派发/异步回调"的面（warning/写入回调等
   §4.74 同族），即便宿主能同步完成也必须异步触发；同步完成的便捷性不是契约，
   套件时序（先触发后挂监听）就是按异步写的。
+
+### 4.103 Proxy 包 Uint8Array 必须透传 newTarget，否则子类化全灭（2026-09-16，10f buffer）
+
+- 症状：`Readable.fromWeb` 回的 chunk `constructor.name` 是 `Uint8Array` 非
+  `Buffer`（`phase9b_stream_web_and_consumers` 的 `f2w 1 Uint8Array`；真机 `Buffer`）。
+- 根因：`Uint8Array` 文案桥 Proxy 的 `construct(target, args)` 未收第三参
+  `newTarget`，`Reflect.construct(target, args)` 即按基类构造——`class X extends
+  Uint8Array`（含内部 `FastBuffer` 的显式 `super(...args)` 与空构造器两形）
+  全灭为基类原型。注释还写了"extends 透传不受影响"，想当然，未实测。
+- 修法：`construct(target, args, newTarget)` + `Reflect.construct(target, args,
+  newTarget)`（`src/builtins/mod.rs`）。
+- 复现：`new (class E extends Uint8Array {})(4)` 的 `proto===E.prototype`
+  （修前 false；`tests/node/buffer.rs::phase10f_buffer_parity_fixes` 的 `subclass` 行）。
+- 推广为铁律：凡包装全局构造器的 Proxy，`construct`/`get` 的后位参
+  （`newTarget`/`receiver`）默认透传，不确定即全透；"不受影响"类断言必须配
+  子类化探针（`extends` + `new` + `proto===` 三件），不能只测直接构造。
+
+### 4.104 伪 ArrayBuffer 须品牌拒收，不能信 tag（2026-09-16，10f buffer）
+
+- 症状：`Buffer.from(fakeAB)`（`Object.setPrototypeOf(AB, ArrayBuffer)` 伪造）
+  报 `incompatible Object` 引擎文案，与套件 `ERR_INVALID_ARG_TYPE / an instance
+  of AB` 对不上。
+- 根因：`__wjs_bufIsAnyAB` 只看 `instanceof` + `toString` tag——伪造链两者全过；
+  真机走 V8 `IsArrayBuffer` 内部槽检查，伪造即拒。直接进 `FromArrayBuffer` 即在
+  引擎内抛 incompatible，断言对不上。
+- 修法：`Buffer.from` 的 AB 分支先 `void value.byteLength` 试探（真槽可读，
+  伪造抛），失败落空到尾部统一 invalid-arg（`__wjs_bufSpecificType` 的
+  `an instance of AB` 口径正好对上）（`src/builtins/mod.rs`）。
+- 复现：`tests/node/buffer.rs::phase10f_buffer_parity_fixes` 的 `brand` 行；
+  套件 `test-buffer-arraybuffer.js`（修前 `incompatible`）。
+- 推广为铁律：凡"is-X"判定走 `instanceof`/tag 的，伪造原型链即视为已撞——
+  关键入口（`from`/`isUtf8` 等）必须加一次内部槽试探（读 `byteLength`/`slice`
+  等）；§4.54"看 OID 不看坐标"的 JS 品牌版。
+
+### 4.105 全局 structuredClone 的 transfer 须 detach，否则 isAscii 视残留为真（2026-09-16，10f buffer）
+
+- 症状：`isAscii`/`isUtf8` 的 detach 段修前 `after false false false`
+  （应全 true）——`structuredClone(ab, {transfer:[ab]})` 后 `ab.byteLength` 仍 1。
+- 根因：`src/builtins/clone.rs` 的 JSON 中转实现完全忽略 `options.transfer`，
+  只克隆不 detach；`__wjs_bufAsU8` 的 detached 容错（视空）永无触发机会。
+- 修法：`structured_clone` 入口先走 transfer 列表（`transfer` 数组 + 
+  `IsArrayBufferObject` 品牌 + `DetachArrayBuffer`，失败跳过不致命），再走既有
+  JSON 中转（返回值仍中转语义，detach 系副作用为准）。
+- 复现：`tests/node/buffer.rs::phase10f_buffer_parity_fixes` 的 `detached` 行；
+  套件 `test-buffer-isascii.js`/`test-buffer-isutf8.js`（修前 `Expected false
+  strictEqual true`，行号恒 `254:53` 系 common 断言包装）。
+- 推广为铁律：凡"带选项的克隆/投递"（transfer/neutering），副作用（detach）
+  与返回值同等重要；JSON 中转实现上线新选项必须先问"源端状态变了吗"。
+
+### 4.106 池 AB 不可转移：共享要池化、转移要拒收，两件缺一即挂池套件（2026-09-16，10f buffer）
+
+- 症状：`test-buffer-pool-untransferable.js` 修前 `a.buffer !== b.buffer`
+  首断言即挂（本仓直接分配，无池）。
+- 根因：Node 小串（`< poolSize/2`）走 64KB 池（`fromStringFast` 口径，8 字节对齐，
+  满即新池），池 AB 经 V8 `markAsUntransferable` 标记——`postMessage(..., [pool])`
+  抛 `DataCloneError(25)`、`pool.transfer()` 抛 `TypeError`，且事后不 detach。
+  本仓三件全缺。
+- 修法（纯 JS + worker 拒收，零新依赖）：prelude 建池（`__wjs_bufPoolAB`/
+  `__wjs_bufPooled: WeakSet` 全局暴露/`__wjs_bufPoolOffset` + 对齐/满转）+
+  `fromStringFast` 小串走池（`scratch` 视图写入 + 实长推进）+
+  `ArrayBuffer.prototype.transfer` 对池内抛 TypeError +
+  worker `__normTransfer` 对池内抛 `DataCloneError(25)`（`__dataCloneErr` 补
+  `code=25`；视图取 `buffer` 同判）。
+- 复现：`tests/node/buffer.rs::phase10f_buffer_parity_fixes` 的
+  `pool-share/post/still/xfer/still2` 五行；套件修前首断言挂、修后 `0/0 ✅`。
+- 推广为铁律：凡"性能优化有可观察共享"（池化/缓存/复用），对拍前先查"共享 +
+  不可转移/不可变"二元组——只做共享不做拒收，转移套件必挂；`code`（25）与
+  `name` 同为契约，补一漏一即红。
+
+### 4.107 `util.inspect` depth -1 空容器显体 + 函数不走 primitives（2026-09-16，10f buffer）
+
+- 症状：`test-buffer-from.js` 的 `{__proto__:null}` 期望
+  `[Object: null prototype] {}`，本仓 common  helper 算出 `[Object]`——
+  `Buffer.from` 的实际报错是对的（`__wjs_bufSpecificType` 口径），期望串错了，
+  两边对不上。
+- 根因（二连）：① `inspect2` 的 `depth<0` 一刀切回 `[Array]`/`[Object]`——
+  真机空容器仍显体（`[]`/`{}`/`Foo {}`/`[Object: null prototype] {}`），非空才
+  显 `[Prefix]`（`[Object]`/`[Foo]`/`[Object: null prototype]`/`[Array]`/
+  `[Map]`/`[Set]`/`[Uint8Array]`）；Date/Error/RegExp/Promise/函数照常展开。
+  ② `typeof value !== 'object'` 把函数送进 `formatPrimitive` 回 `unknown`——
+  Node `formatValue` 明确排除函数（`!== 'object' && !== 'function'`）。
+- 修法（`src/builtins/node/internal/inspect.rs`）：`depth<0` 按空/非空分流
+  （空走 `prefix+{}`/`[]`/`Map(0) {}`，非空走 `[Prefix]`；`constructorName null`
+  即 null-proto）；primitives 门加 `&& !== 'function'`。
+- 复现：`tests/node/buffer.rs::phase10f_buffer_parity_fixes` 间接（`from` 门）；
+  探针 `inspect({__proto__:null},{depth:-1})` 修前 `[Object]`、修后与真机同串。
+- 推广为铁律：`depth` 是"剩余层数"不是"开关"——空与非空在截断点语义不同；
+  `typeof` 三态（object/function/primitive）写早退条件必须三态全列，漏 function
+  即 `unknown`。

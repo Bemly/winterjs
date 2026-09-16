@@ -876,6 +876,8 @@ const isFunctionDep = deprecate(isFunction, 'The `util.isFunction` API is deprec
 const isPrimitiveDep = deprecate(isPrimitive, 'The `util.isPrimitive` API is deprecated. Please use `arg === null || (typeof arg !== "object" && typeof arg !== "function")` instead.', 'DEP0057');
 const isBufferDep = deprecate(isBuffer, 'The `util.isBuffer` API is deprecated. Please use `Buffer.isBuffer()` instead.', 'DEP0038');
 
+const TextEncoder = globalThis.TextEncoder;
+const TextDecoder = globalThis.TextDecoder;
 const util = {
   _errnoException: undefined, // 需 uv errno 面（9c），先占位 undefined
   _exceptionWithHostPort: undefined,
@@ -918,10 +920,14 @@ const util = {
   toUSVString,
   types,
   styleText,
+  TextEncoder,
+  TextDecoder,
 };
 
 export default util;
 export {
+  TextEncoder,
+  TextDecoder,
   callbackify,
   convertProcessSignalToExitCode,
   debuglog,
@@ -947,4 +953,6 @@ export {
   kCustomPromisifiedSymbol as promisify_custom,
 };
 export { debuglog as debug };
+// prelude Buffer custom inspect 的 re-entrant 钩子（extras 段回调 util.inspect）
+globalThis.__wjs_inspect = inspect;
 "#;

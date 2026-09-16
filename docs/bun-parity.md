@@ -40,6 +40,97 @@
 | test-string-decoder-fuzz.js | 0 | 0 | ✅（修：ascii 掩码——实为 Buffer 侧） |
 | test-string-decoder-utf8-large.js | 0 | 0 | ✅ |
 
+## buffer
+
+> 10f 收官：72 点名 = 63 ✅ + 9 ⏭️（6 件 expose-internals/allow-natives 类 + 2 件
+> 自 spawn 裸文件参数 + 1 件 zero-fill flag），红 0。本轮改动主体：Buffer 全局
+> 按 node lib/buffer.js v26.8.2 逐字移植（prelude）+ 模块面 exports 对齐
+> （SlowBuffer 移除/kMaxLength=MAX_SAFE_INTEGER/INSPECT_MAX_BYTES 具名 +
+> transcode/isUtf8/isAscii/btoa/atob/constants/File/Blob）；
+> 伪 AB 品牌拒收（`void v.byteLength` 试探）、`structuredClone` transfer-detach
+> （Rust `DetachArrayBuffer`）、小串池化（64KB 池/8 字节对齐/满即新池 +
+> `transfer()` 抛 TypeError + worker 拒收 DataCloneError(25)）、
+> `Uint8Array` Proxy 透传 `newTarget`（子类化不断链，stream fromWeb 回归）、
+> `util.inspect` depth -1 空容器显体 + 函数直通（`{__proto__:null}` 空回
+> `[Object: null prototype] {}`，`from` 套件门）。
+> 偏离维持记档：`allocUnsafe` 恒零填（无未初始化内存暴露）、pool 仅 from(string)
+> 小串（alloc 系未池化）、`alignment` 形参不做。
+
+| 文件 | winterjs | node | 结论 |
+|---|---|---|---|
+| test-buffer-alloc-alignment.js | 1 | 1 | ⏭️ `--expose-internals`（`internal/test/binding`） |
+| test-buffer-alloc-unsafe-is-initialized-with-zero-fill-flag.js | 0 | 0 | ✅ |
+| test-buffer-alloc-unsafe-is-uninitialized.js | 0 | 0 | ✅ |
+| test-buffer-alloc.js | 0 | 0 | ✅ |
+| test-buffer-arraybuffer.js | 0 | 0 | ✅（修：伪 AB 品牌拒收 `an instance of AB`） |
+| test-buffer-ascii.js | 0 | 0 | ✅ |
+| test-buffer-backing-arraybuffer.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-buffer-badhex.js | 0 | 0 | ✅ |
+| test-buffer-bigint64.js | 0 | 0 | ✅ |
+| test-buffer-bytelength.js | 0 | 0 | ✅ |
+| test-buffer-compare-offset.js | 0 | 0 | ✅ |
+| test-buffer-compare.js | 0 | 0 | ✅ |
+| test-buffer-concat.js | 0 | 0 | ✅ |
+| test-buffer-constants.js | 0 | 0 | ✅（修：kMaxLength=MAX_SAFE_INTEGER，真机 26 口径） |
+| test-buffer-constructor-deprecation-error.js | 0 | 0 | ✅ |
+| test-buffer-constructor-node-modules-paths.js | 1 | 0 | ⏭️ 自 spawn 裸文件参数（全 flag CLI 设计） |
+| test-buffer-constructor-node-modules.js | 1 | 0 | ⏭️ 自 spawn 裸文件参数（全 flag CLI 设计） |
+| test-buffer-constructor-outside-node-modules.js | 0 | 0 | ✅ |
+| test-buffer-copy-immutable.js | 0 | 0 | ✅ |
+| test-buffer-copy.js | 0 | 0 | ✅ |
+| test-buffer-equals.js | 0 | 0 | ✅ |
+| test-buffer-failed-alloc-typed-arrays.js | 0 | 0 | ✅ |
+| test-buffer-fakes.js | 0 | 0 | ✅ |
+| test-buffer-fill.js | 1 | 1 | ⏭️ `--expose-internals`（`internal/errors`） |
+| test-buffer-from.js | 0 | 0 | ✅（修：空 null-proto `inspect` depth -1 + `copyBytesFrom` 门） |
+| test-buffer-generic-methods.js | 0 | 0 | ✅ |
+| test-buffer-includes.js | 0 | 0 | ✅ |
+| test-buffer-indexof.js | 0 | 0 | ✅ |
+| test-buffer-inheritance.js | 0 | 0 | ✅ |
+| test-buffer-inspect.js | 0 | 0 | ✅ |
+| test-buffer-isascii.js | 0 | 0 | ✅（修：`structuredClone` transfer-detach，视空为真） |
+| test-buffer-isencoding.js | 0 | 0 | ✅ |
+| test-buffer-isutf8-isascii-fast.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-buffer-isutf8.js | 0 | 0 | ✅（修：同 isascii） |
+| test-buffer-iterator.js | 0 | 0 | ✅ |
+| test-buffer-new.js | 0 | 0 | ✅ |
+| test-buffer-no-negative-allocation.js | 0 | 0 | ✅ |
+| test-buffer-nopendingdep-map.js | 0 | 0 | ✅ |
+| test-buffer-of-no-deprecation.js | 0 | 0 | ✅ |
+| test-buffer-over-max-length.js | 0 | 0 | ✅ |
+| test-buffer-parent-property.js | 0 | 0 | ✅ |
+| test-buffer-pending-deprecation.js | 0 | 0 | ✅ |
+| test-buffer-pool-untransferable.js | 0 | 0 | ✅（修：小串池化共享 + 拒收 25/TypeError） |
+| test-buffer-prototype-inspect.js | 0 | 0 | ✅ |
+| test-buffer-read.js | 0 | 0 | ✅ |
+| test-buffer-readdouble.js | 0 | 0 | ✅ |
+| test-buffer-readfloat.js | 0 | 0 | ✅ |
+| test-buffer-readint.js | 0 | 0 | ✅ |
+| test-buffer-readuint.js | 0 | 0 | ✅ |
+| test-buffer-resizable.js | 0 | 0 | ✅ |
+| test-buffer-safe-unsafe.js | 0 | 0 | ✅ |
+| test-buffer-set-inspect-max-bytes.js | 0 | 0 | ✅（修：INSPECT_MAX_BYTES 具名导出 live） |
+| test-buffer-sharedarraybuffer.js | 0 | 0 | ✅ |
+| test-buffer-slice.js | 0 | 0 | ✅ |
+| test-buffer-slow.js | 0 | 0 | ✅（修：SlowBuffer 移除，真机 26 `undefined`） |
+| test-buffer-swap-fast.js | 1 | 1 | ⏭️ `--expose-internals` + `--allow-natives-syntax` |
+| test-buffer-swap.js | 0 | 0 | ✅ |
+| test-buffer-tojson.js | 0 | 0 | ✅ |
+| test-buffer-tostring-4gb.js | 0 | 0 | ✅ |
+| test-buffer-tostring-range.js | 0 | 0 | ✅ |
+| test-buffer-tostring-rangeerror.js | 0 | 0 | ✅ |
+| test-buffer-tostring.js | 0 | 0 | ✅ |
+| test-buffer-write-fast.js | 1 | 1 | ⏭️ `--expose-internals` |
+| test-buffer-write-utf8-two-byte.js | 0 | 0 | ✅ |
+| test-buffer-write.js | 0 | 0 | ✅ |
+| test-buffer-writedouble.js | 0 | 0 | ✅ |
+| test-buffer-writefloat.js | 0 | 0 | ✅ |
+| test-buffer-writeint.js | 0 | 0 | ✅ |
+| test-buffer-writeuint.js | 0 | 0 | ✅ |
+| test-buffer-zero-fill-cli.js | 0 | 1 | ⏭️ 需 `--zero-fill-buffers` flag（未实现；本仓 allocUnsafe 恒零填，无 flag 即过，真机无 flag 即挂） |
+| test-buffer-zero-fill-reset.js | 0 | 0 | ✅ |
+| test-buffer-zero-fill.js | 0 | 0 | ✅ |
+
 ## util
 
 | 文件 | winterjs | node | 结论 |

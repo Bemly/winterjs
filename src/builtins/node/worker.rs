@@ -963,6 +963,7 @@ export function markAsUncloneable(obj) {
 function __dataCloneErr(what) {
   const err = new Error(`${what} could not be cloned.`);
   err.name = "DataCloneError";
+  err.code = 25; // DOMException DATA_CLONE_ERR（池不可转移套件门断 code）
   throw err;
 }
 
@@ -1024,11 +1025,14 @@ function __normTransfer(transfer) {
       const b = t.buffer;
       if (__isSAB(b)) __dataCloneErr("SharedArrayBuffer transfer");
       if (b.detached) __dataCloneErr("Detached buffer transfer");
+      // 10f：池 AB 不可转移（Buffer.from 小串池化；真机 markAsUntransferable 口径）
+      if (globalThis.__wjs_bufPooled?.has(b)) __dataCloneErr("Pooled buffer");
       out.push({ kind: "view", obj: t });
     } else if (__isSAB(t)) {
       __dataCloneErr("SharedArrayBuffer transfer");
     } else if (t instanceof ArrayBuffer) {
       if (t.detached) __dataCloneErr("Detached buffer transfer");
+      if (globalThis.__wjs_bufPooled?.has(t)) __dataCloneErr("Pooled buffer");
       out.push({ kind: "buf", obj: t });
     } else {
       __dataCloneErr("Transfer item");

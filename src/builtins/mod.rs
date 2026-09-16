@@ -484,40 +484,302 @@ globalThis.TextDecoder = class TextDecoder {
     return __wjs_td_decode(this.#label, this.#fatal ? 1 : 0, this.#ignoreBOM ? 1 : 0, view);
   }
 };
-// ---- Buffer 全局（Node 子集；Uint8Array 子类，见头注口径）----
-// 口径（文档记录）：from/alloc/concat/isBuffer/byteLength/toString(hex/base64/
-// base64url/utf8/latin1/ascii/utf16le）+ 定长整数/浮点读写系（M5 dev 实测补齐）；
-// 其余 TypedArray 行为全部继承；
-// allocUnsafe 为零填（无未初始化内存暴露）；inspect 自定义；pool 概念无（直接分配）。
-function __wjs_bufFromBytes(u8) {
-  const b = new Buffer(u8.length);
-  b.set(u8);
-  return b;
-}
-// 定长读写越界检查（noAssert 真值即跳过，Node 口径；返回数值化 offset）
-function __wjs_bufO(buf, o, size, noAssert) {
-  const off = o === undefined ? 0 : Number(o);
-  if (!noAssert && (!Number.isInteger(off) || off < 0 || off + size > buf.length)) {
-    throw new RangeError("Buffer: out of range");
+// ---- Buffer 全局（10f：node lib/buffer.js v26.8.2 + lib/internal/buffer.js 逐字移植，MIT）----
+const __wjs_bufTAFill = Uint8Array.prototype.fill; // 原生 fill（Buffer.prototype.fill 会遮蔽，内部一律走它）
+// native 片（slice/write 静态、_compare、indexOf 族）以纯 JS 重实现；
+// pool 不做（直接分配，Buffer.poolSize 仅作值）；allocUnsafe 恒零填（无未初始化
+// 内存暴露，记档）；kMaxLength/kStringMaxLength 取引擎实测边界（SM
+// MaxStringLength=2^30-2；node 26 64-bit kMaxLength=MAX_SAFE_INTEGER）。
+// 错误工厂自含（prelude 不能 import node:internal/errors；消息逐字对齐，
+// 实现摘自 errors.rs 同源移植）。__wjs_bufDecode/Encode 为 string_decoder
+// 依赖的全局 helper，原样保留。
+const kMaxLength = 9007199254740991; // node 26 64-bit 实测 = MAX_SAFE_INTEGER
+const kStringMaxLength = 1073741822; // SM MaxStringLength = 2^30 - 2（实测探针钉住，
+                                     // 套件门：repeat(MAX+1) 须抛、repeat(MAX) 须过）
+(() => {
+function __wjs_bufFormatList(array, type = 'and') {
+  switch (array.length) {
+    case 0: return '';
+    case 1: return `${array[0]}`;
+    case 2: return `${array[0]} ${type} ${array[1]}`;
+    case 3: return `${array[0]}, ${array[1]}, ${type} ${array[2]}`;
+    default: return `${array.slice(0, -1).join(', ')}, ${type} ${array[array.length - 1]}`;
   }
-  return off;
 }
-// 数值写（值域检查 + DataView 落盘，返回 offset+size）
-function __wjs_bufW(buf, v, o, size, lo, hi, noAssert, set) {
-  const n = Number(v);
-  const off = __wjs_bufO(buf, o, size, noAssert);
-  if (!noAssert && (!Number.isInteger(n) || n < lo || n > hi)) {
-    throw new RangeError("Buffer: value out of range");
+// node util.inspect 最小替身（错误消息 Received 兜底；depth=-1 不展开嵌套）
+function __wjs_bufInspect(value, depth = -1) {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  const t = typeof value;
+  if (t === 'string') {
+    if (value.length > 28) value = value.slice(0, 25) + '...';
+    return `'${value}'`;
   }
-  set(buf.__wjs_bufV(), off, n);
-  return off + size;
+  if (t === 'number' || t === 'boolean' || t === 'bigint' || t === 'symbol') return String(value);
+  if (t === 'function') return value.name ? `[Function: ${value.name}]` : '[Function (anonymous)]';
+  if (t !== 'object') return String(value);
+  const ctor = value.constructor?.name;
+  if (Array.isArray(value)) {
+    if (depth === -1) return `[Array(${value.length})]`;
+    const items = value.slice(0, 7).map((v) => __wjs_bufInspect(v, depth - 1));
+    if (value.length > 7) items.push(`... ${value.length - 7} more item${value.length - 7 > 1 ? 's' : ''}`);
+    return `[ ${items.join(', ')} ]`;
+  }
+  if (value instanceof Error) {
+    return ctor === 'Error' ? (value.stack || String(value)).split('\n')[0] : `${ctor || 'Error'}: ${value.message}`;
+  }
+  if (value instanceof Date) return isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString();
+  const keys = Object.keys(value);
+  if (depth === -1) {
+    if (keys.length > 0) return '[Object]';
+    if (Object.getPrototypeOf(value) === null) return '[Object: null prototype] {}';
+    return ctor === 'Object' || ctor === undefined ? '{}' : `${ctor} {}`;
+  }
+  const proto = Object.getPrototypeOf(value);
+  const head = proto === null ? '[Object: null prototype] ' : (ctor === 'Object' || ctor === undefined ? '' : `${ctor} `);
+  if (keys.length === 0) return `${head}{}`;
+  const parts = keys.slice(0, 7).map((k) => `${k}: ${__wjs_bufInspect(value[k], depth - 1)}`);
+  if (keys.length > 7) parts.push(`... ${keys.length - 7} more item${keys.length - 7 > 1 ? 's' : ''}`);
+  return `${head}{ ${parts.join(', ')} }`;
 }
-function __wjs_bufWB(buf, v, o, lo, hi, noAssert, set) {
-  const n = typeof v === "bigint" ? v : BigInt(Number(v));
-  const off = __wjs_bufO(buf, o, 8, noAssert);
-  if (!noAssert && (n < lo || n > hi)) throw new RangeError("Buffer: value out of range");
-  set(buf.__wjs_bufV(), off, n);
-  return off + 8;
+function __wjs_bufSpecificType(value) {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  const type = typeof value;
+  switch (type) {
+    case 'bigint': return `type bigint (${value}n)`;
+    case 'number':
+      if (value === 0) {
+        return 1 / value === -Infinity ? 'type number (-0)' : 'type number (0)';
+      } else if (value !== value) {
+        return 'type number (NaN)';
+      } else if (value === Infinity) {
+        return 'type number (Infinity)';
+      } else if (value === -Infinity) {
+        return 'type number (-Infinity)';
+      }
+      return `type number (${value})`;
+    case 'boolean': return value ? 'type boolean (true)' : 'type boolean (false)';
+    case 'symbol': return `type symbol (${String(value)})`;
+    case 'function': return `function ${value.name}`;
+    case 'object': {
+      const name = value.constructor?.name;
+      if (typeof name === 'string' && name !== '') return `an instance of ${name}`;
+      return `${__wjs_bufInspect(value)}`;
+    }
+    case 'string':
+      if (value.length > 28) value = `${value.slice(0, 25)}...`;
+      if (value.indexOf("'") === -1) return `type string ('${value}')`;
+      return `type string (${JSON.stringify(value)})`;
+    default: {
+      let inspected = __wjs_bufInspect(value, 0);
+      if (inspected.length > 28) inspected = `${inspected.slice(0, 25)}...`;
+      return `type ${type} (${inspected})`;
+    }
+  }
+}
+// ERR_INVALID_ARG_TYPE（errors.rs 同源；prelude 自含）
+// 跨 realm ArrayBuffer 品牌检查（vm.runInNewContext 产物 instanceof 不可靠；
+// Object.prototype.toString tag 全 realm 稳定）
+function __wjs_bufIsAnyAB(v) {
+  if (v instanceof ArrayBuffer) return true;
+  if (typeof SharedArrayBuffer !== 'undefined' && v instanceof SharedArrayBuffer) return true;
+  const tag = Object.prototype.toString.call(v);
+  return tag === '[object ArrayBuffer]' || tag === '[object SharedArrayBuffer]';
+}
+// detached 容错视图（detached 视空；isAscii/isUtf8 套件口径）
+function __wjs_bufAsU8(v) {
+  try {
+    if (v instanceof ArrayBuffer || Object.prototype.toString.call(v) === '[object ArrayBuffer]') return new Uint8Array(v);
+    if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+  } catch {
+    return new Uint8Array(0);
+  }
+  return null;
+}
+const __wjs_bufKTypes = ['string', 'function', 'number', 'object', 'Function', 'Object', 'boolean', 'bigint', 'symbol'];
+const __wjs_bufClassRegExp = /^[A-Z][a-zA-Z0-9]*$/;
+function __wjs_bufArgTypeErr(name, expected, actual) {
+  if (!Array.isArray(expected)) expected = [expected];
+  let msg = 'The ';
+  if (name.endsWith(' argument')) {
+    msg += `${name} `;
+  } else {
+    msg += `"${name}" ${name.includes('.') ? 'property' : 'argument'} `;
+  }
+  msg += 'must be ';
+  const types = [];
+  const instances = [];
+  const other = [];
+  for (const value of expected) {
+    if (__wjs_bufKTypes.includes(value)) types.push(value.toLowerCase());
+    else if (__wjs_bufClassRegExp.test(value)) instances.push(value);
+    else other.push(value);
+  }
+  if (instances.length > 0) {
+    const pos = types.indexOf('object');
+    if (pos !== -1) {
+      types.splice(pos, 1);
+      instances.push('Object');
+    }
+  }
+  if (types.length > 0) {
+    msg += `${types.length > 1 ? 'one of type' : 'of type'} ${__wjs_bufFormatList(types, 'or')}`;
+    if (instances.length > 0 || other.length > 0) msg += ' or ';
+  }
+  if (instances.length > 0) {
+    msg += `an instance of ${__wjs_bufFormatList(instances, 'or')}`;
+    if (other.length > 0) msg += ' or ';
+  }
+  if (other.length > 0) {
+    if (other.length > 1) {
+      msg += `one of ${__wjs_bufFormatList(other, 'or')}`;
+    } else {
+      if (other[0].toLowerCase() !== other[0]) msg += 'an ';
+      msg += `${other[0]}`;
+    }
+  }
+  msg += `. Received ${__wjs_bufSpecificType(actual)}`;
+  const e = new TypeError(msg);
+  e.code = 'ERR_INVALID_ARG_TYPE';
+  return e;
+}
+function __wjs_bufNumSep(val) {
+  let res = '';
+  let i = val.length;
+  const start = val[0] === '-' ? 1 : 0;
+  for (; i >= start + 4; i -= 3) res = `_${val.slice(i - 3, i)}${res}`;
+  return `${val.slice(0, i)}${res}`;
+}
+function __wjs_bufRangeErr(str, range, input, replaceDefault = false) {
+  let msg = replaceDefault ? str : `The value of "${str}" is out of range.`;
+  let received;
+  if (Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
+    received = __wjs_bufNumSep(String(input));
+  } else if (typeof input === 'bigint') {
+    received = String(input);
+    if (input > 2n ** 32n || input < -(2n ** 32n)) received = __wjs_bufNumSep(received);
+    received += 'n';
+  } else {
+    received = __wjs_bufInspect(input);
+  }
+  msg += ` It must be ${range}. Received ${received}`;
+  const e = new RangeError(msg);
+  e.code = 'ERR_OUT_OF_RANGE';
+  return e;
+}
+function __wjs_bufOobErr(name = undefined) {
+  const msg = name ? `"${name}" is outside of buffer bounds`
+                   : 'Attempt to access memory outside buffer bounds';
+  const e = new RangeError(msg);
+  e.code = 'ERR_BUFFER_OUT_OF_BOUNDS';
+  return e;
+}
+function __wjs_bufArgValueErr(name, value, reason = 'is invalid') {
+  let inspected = __wjs_bufInspect(value);
+  if (inspected.length > 128) inspected = `${inspected.slice(0, 128)}...`;
+  const type = name.includes('.') ? 'property' : 'argument';
+  const e = new TypeError(`The ${type} '${name}' ${reason}. Received ${inspected}`);
+  e.code = 'ERR_INVALID_ARG_VALUE';
+  return e;
+}
+function __wjs_bufEncErr(encoding) {
+  const e = new TypeError(`Unknown encoding: ${encoding}`);
+  e.code = 'ERR_UNKNOWN_ENCODING';
+  return e;
+}
+function __wjs_bufSizeErr(bits) {
+  const e = new RangeError(`Buffer size must be a multiple of ${bits}`);
+  e.code = 'ERR_INVALID_BUFFER_SIZE';
+  return e;
+}
+function __wjs_bufMissingArgsErr(...args) {
+  let msg = 'The ';
+  const wrapped = args.map((a) => Array.isArray(a) ? a.map((x) => `"${x}"`).join(' or ') : `"${a}"`);
+  msg += `${__wjs_bufFormatList(wrapped)} argument${args.length > 1 ? 's' : ''} must be specified`;
+  const e = new TypeError(msg);
+  e.code = 'ERR_MISSING_ARGS';
+  return e;
+}
+// validators（validators.js 原文口径）
+function __wjs_bufValidateNumber(value, name, min = undefined, max) {
+  if (typeof value !== 'number') throw __wjs_bufArgTypeErr(name, 'number', value);
+  if ((min != null && value < min) || (max != null && value > max) ||
+      ((min != null || max != null) && Number.isNaN(value))) {
+    throw __wjs_bufRangeErr(
+      name,
+      `${min != null ? `>= ${min}` : ''}${min != null && max != null ? ' && ' : ''}${max != null ? `<= ${max}` : ''}`,
+      value);
+  }
+}
+function __wjs_bufValidateInteger(value, name, min = -Number.MAX_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER) {
+  if (typeof value !== 'number') throw __wjs_bufArgTypeErr(name, 'number', value);
+  if (!Number.isInteger(value)) throw __wjs_bufRangeErr(name, 'an integer', value);
+  if (value < min || value > max) throw __wjs_bufRangeErr(name, `>= ${min} && <= ${max}`, value);
+}
+function __wjs_bufValidateString(value, name) {
+  if (typeof value !== 'string') throw __wjs_bufArgTypeErr(name, 'string', value);
+}
+function __wjs_bufValidateArray(value, name, minLength = 0) {
+  if (!Array.isArray(value)) throw __wjs_bufArgTypeErr(name, 'Array', value);
+  if (value.length < minLength) {
+    throw __wjs_bufArgValueErr(name, value, `must have a length of at least ${minLength}`);
+  }
+}
+function __wjs_bufValidateBuffer(buffer, name = 'buffer') {
+  if (!ArrayBuffer.isView(buffer)) {
+    throw __wjs_bufArgTypeErr(name, ['Buffer', 'TypedArray', 'DataView'], buffer);
+  }
+}
+// normalizeEncoding（internal/util.js 原文）
+function __wjs_bufNormalizeEncoding(enc) {
+  if (enc == null || enc === 'utf8' || enc === 'utf-8') return 'utf8';
+  return __wjs_bufSlowCases(enc);
+}
+function __wjs_bufSlowCases(enc) {
+  switch (enc.length) {
+    case 4:
+      if (enc === 'UTF8') return 'utf8';
+      if (enc === 'ucs2' || enc === 'UCS2') return 'utf16le';
+      enc = enc.toLowerCase();
+      if (enc === 'utf8') return 'utf8';
+      if (enc === 'ucs2') return 'utf16le';
+      break;
+    case 3:
+      if (enc === 'hex' || enc === 'HEX' || enc.toLowerCase() === 'hex') return 'hex';
+      break;
+    case 5:
+      if (enc === 'ascii') return 'ascii';
+      if (enc === 'ucs-2') return 'utf16le';
+      if (enc === 'UTF-8') return 'utf8';
+      if (enc === 'ASCII') return 'ascii';
+      if (enc === 'UCS-2') return 'utf16le';
+      enc = enc.toLowerCase();
+      if (enc === 'utf-8') return 'utf8';
+      if (enc === 'ascii') return 'ascii';
+      if (enc === 'ucs-2') return 'utf16le';
+      break;
+    case 6:
+      if (enc === 'base64') return 'base64';
+      if (enc === 'latin1' || enc === 'binary') return 'latin1';
+      if (enc === 'BASE64') return 'base64';
+      if (enc === 'LATIN1' || enc === 'BINARY') return 'latin1';
+      enc = enc.toLowerCase();
+      if (enc === 'base64') return 'base64';
+      if (enc === 'latin1' || enc === 'binary') return 'latin1';
+      break;
+    case 7:
+      if (enc === 'utf16le' || enc === 'UTF16LE' || enc.toLowerCase() === 'utf16le') return 'utf16le';
+      break;
+    case 8:
+      if (enc === 'utf-16le' || enc === 'UTF-16LE' || enc.toLowerCase() === 'utf-16le') return 'utf16le';
+      break;
+    case 9:
+      if (enc === 'base64url' || enc === 'BASE64URL' || enc.toLowerCase() === 'base64url') return 'base64url';
+      break;
+    default:
+      if (enc === '') return 'utf8';
+  }
 }
 function __wjs_bufDecode(str, enc) {
   enc = String(enc || "utf8").toLowerCase().replace(/[-_]/g, "");
@@ -548,9 +810,10 @@ function __wjs_bufDecode(str, enc) {
     return out;
   }
   if (enc === "ascii") {
+    // node 实测：ascii 写/解码不掩码（读侧 __wjs_bufEncode 掩 0x7F）
     const s = String(str);
     const out = new Uint8Array(s.length);
-    for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 127;
+    for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 255;
     return out;
   }
   if (enc === "ucs2" || enc === "utf16le" || enc === "utf16") {
@@ -601,150 +864,1891 @@ function __wjs_bufEncode(u8, enc) {
   }
   throw new TypeError(`Unknown encoding: ${enc}`);
 }
-globalThis.Buffer = class Buffer extends Uint8Array {
-  static isBuffer(v) { return v instanceof Buffer; }
-  static byteLength(s, enc) {
-    if (typeof s === "string") return __wjs_bufDecode(s, enc).length;
-    if (s instanceof ArrayBuffer) return s.byteLength;
-    if (ArrayBuffer.isView(s)) return s.byteLength;
-    throw new TypeError("byteLength: string or BufferSource required");
+// ---- encoding write/slice 静态实现（node C++ binding 的 JS 重实现）----
+function __wjs_bufUtf8WriteStatic(buf, string, offset, length) {
+  const bytes = new TextEncoder().encode(string);
+  let k = Math.min(bytes.length, length);
+  // 截断必须落在字符边界（下一字节须为 lead byte，套件 "split char" 门）
+  while (k > 0 && k < bytes.length && (bytes[k] & 0xC0) === 0x80) k--;
+  if (k > 0) buf.set(bytes.subarray(0, k), offset);
+  return k;
+}
+function __wjs_bufAsciiWriteStatic(buf, string, offset, length) {
+  // node 实测：ascii 写不掩码（'über' → [0xFC]）；只有读/slice 掩 0x7F
+  let n = 0;
+  const L = string.length;
+  for (; n < length && n < L; n++) buf[offset + n] = string.charCodeAt(n) & 0xFF;
+  return n;
+}
+function __wjs_bufLatin1WriteStatic(buf, string, offset, length) {
+  let n = 0;
+  const L = string.length;
+  for (; n < length && n < L; n++) buf[offset + n] = string.charCodeAt(n) & 0xFF;
+  return n;
+}
+function __wjs_bufUcs2WriteStatic(buf, string, offset, length) {
+  let n = 0;
+  const L = string.length;
+  for (let i = 0; i < L && n + 1 < length; i++) {
+    const c = string.charCodeAt(i);
+    buf[offset + n] = c & 255;
+    buf[offset + n + 1] = (c >> 8) & 255;
+    n += 2;
   }
-  static from(v, enc) {
-    if (typeof v === "string") return __wjs_bufFromBytes(__wjs_bufDecode(v, enc));
-    if (Array.isArray(v)) return __wjs_bufFromBytes(new Uint8Array(v));
-    if (v instanceof ArrayBuffer) return __wjs_bufFromBytes(new Uint8Array(v.slice(0)));
-    if (ArrayBuffer.isView(v)) return __wjs_bufFromBytes(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
-    throw new TypeError("Buffer.from: string/array/BufferSource required");
+  return n;
+}
+function __wjs_bufHexVal(c) {
+  if (c >= 48 && c <= 57) return c - 48;
+  if (c >= 97 && c <= 102) return c - 87;
+  if (c >= 65 && c <= 70) return c - 55;
+  return -1;
+}
+function __wjs_bufHexWriteStatic(buf, string, offset, length) {
+  let n = 0;
+  for (let i = 0; i + 1 < string.length && n < length; i += 2) {
+    const a = __wjs_bufHexVal(string.charCodeAt(i));
+    const b = __wjs_bufHexVal(string.charCodeAt(i + 1));
+    if (a === -1 || b === -1) break;
+    buf[offset + n++] = a * 16 + b;
   }
-  static alloc(size, fill, enc) {
-    const n = Number(size);
-    if (!Number.isInteger(n) || n < 0) throw new RangeError("Buffer.alloc: bad size");
-    const b = new Buffer(n);
-    if (fill !== undefined) {
-      if (typeof fill === "string") {
-        const pat = __wjs_bufDecode(fill, enc);
-        if (pat.length) for (let i = 0; i < n; i++) b[i] = pat[i % pat.length];
-      } else if (typeof fill === "number") {
-        b.fill(fill & 255);
-      } else if (fill instanceof Uint8Array || ArrayBuffer.isView(fill)) {
-        const pat = new Uint8Array(fill.buffer, fill.byteOffset, fill.byteLength);
-        if (pat.length) for (let i = 0; i < n; i++) b[i] = pat[i % pat.length];
+  return n;
+}
+const __wjs_bufB64Std = new Int8Array(128).fill(-1);
+{
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (let i = 0; i < chars.length; i++) __wjs_bufB64Std[chars.charCodeAt(i)] = i;
+}
+const __wjs_bufB64Url = new Int8Array(128).fill(-1);
+{
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  for (let i = 0; i < chars.length; i++) __wjs_bufB64Url[chars.charCodeAt(i)] = i;
+}
+const __wjs_bufB64Lenient = new Int8Array(128).fill(-1);
+{
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/-_';
+  for (let i = 0; i < chars.length; i++) {
+    const c = chars.charCodeAt(i);
+    if (c === 0x2B || c === 0x2D) __wjs_bufB64Lenient[c] = 62;      // '+' '-' → 62
+    else if (c === 0x2F || c === 0x5F) __wjs_bufB64Lenient[c] = 63; // '/' '_' → 63
+    else __wjs_bufB64Lenient[c] = i % 64;
+  }
+}
+function __wjs_bufB64WriteStatic(buf, string, offset, length, url) {
+  // node simdutf 口径：解码双字母表均收（'base64' 也接受 -_，反之亦然）；
+  // 只有输出（slice）按 flag 选字母表/是否补 padding
+  const dec = __wjs_bufB64Lenient;
+  let n = 0;
+  let carry = -1; // 组内进度：-1 组头；0..2 = 已攒字节数
+  let group = 0;
+  for (let i = 0; i < string.length && n < length; i++) {
+    const c = string.charCodeAt(i);
+    if (c === 0x3D) break; // '=' 终止
+    if (c >= 128) continue; // 非 ASCII 忽略（node simdutf 忽略无效字符）
+    const v = dec[c];
+    if (v === -1) continue;
+    group = (group << 6) | v;
+    carry++;
+    if (carry === 3) {
+      buf[offset + n++] = (group >> 16) & 255;
+      if (n < length) buf[offset + n++] = (group >> 8) & 255;
+      if (n < length) buf[offset + n++] = group & 255;
+      carry = -1;
+      group = 0;
+    }
+  }
+  if (carry === 1 && n < length) buf[offset + n++] = (group >> 4) & 255;
+  else if (carry === 2 && n < length) {
+    buf[offset + n++] = (group >> 10) & 255;
+    if (n < length) buf[offset + n++] = (group >> 2) & 255;
+  }
+  return n;
+}
+function __wjs_bufB64Slice(u8, start, end, url) {
+  const chars = url
+    ? 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+    : 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let s = '';
+  for (let i = start; i < end; i += 3) {
+    const b0 = u8[i];
+    const b1 = i + 1 < end ? u8[i + 1] : 0;
+    const b2 = i + 2 < end ? u8[i + 2] : 0;
+    const n = Math.min(3, end - i);
+    s += chars[b0 >> 2];
+    s += chars[((b0 & 3) << 4) | (b1 >> 4)];
+    if (n > 1) s += chars[((b1 & 15) << 2) | (b2 >> 6)]; else if (!url) s += '=';
+    if (n > 2) s += chars[b2 & 63]; else if (!url) s += '=';
+  }
+  return s;
+}
+function __wjs_bufB64ByteLength(str, bytes) {
+  if (str.charCodeAt(bytes - 1) === 0x3D) bytes--;
+  if (bytes > 1 && str.charCodeAt(bytes - 1) === 0x3D) bytes--;
+  return (bytes * 3) >>> 2;
+}
+// ---- 定长整数/浮点读写（lib/internal/buffer.js 逐字；错误消息真机口径）----
+function __wjs_bufCheckBounds(buf, offset, byteLength) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  if (buf[offset] === undefined || buf[offset + byteLength] === undefined)
+    __wjs_bufBoundsError(offset, buf.length - (byteLength + 1));
+}
+function __wjs_bufCheckInt(value, min, max, buf, offset, byteLength) {
+  if (value > max || value < min) {
+    const n = typeof min === 'bigint' ? 'n' : '';
+    let range;
+    if (byteLength > 3) {
+      if (min === 0 || min === 0n) {
+        range = `>= 0${n} and < 2${n} ** ${(byteLength + 1) * 8}${n}`;
+      } else {
+        range = `>= -(2${n} ** ${(byteLength + 1) * 8 - 1}${n}) and < 2${n} ** ${(byteLength + 1) * 8 - 1}${n}`;
+      }
+    } else {
+      range = `>= ${min}${n} and <= ${max}${n}`;
+    }
+    throw __wjs_bufRangeErr('value', range, value);
+  }
+  __wjs_bufCheckBounds(buf, offset, byteLength);
+}
+function __wjs_bufBoundsError(value, length, type) {
+  if (Math.floor(value) !== value) {
+    __wjs_bufValidateNumber(value, type);
+    throw __wjs_bufRangeErr(type || 'offset', 'an integer', value);
+  }
+  if (length < 0)
+    throw __wjs_bufOobErr();
+  throw __wjs_bufRangeErr(type || 'offset', `>= ${type ? 1 : 0} and <= ${length}`, value);
+}
+function __wjs_bufReadBigUInt64LE(offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = this[offset];
+  const last = this[offset + 7];
+  if (first === undefined || last === undefined)
+    __wjs_bufBoundsError(offset, this.length - 8);
+  const lo = first + this[++offset] * 2 ** 8 + this[++offset] * 2 ** 16 + this[++offset] * 2 ** 24;
+  const hi = this[++offset] + this[++offset] * 2 ** 8 + this[++offset] * 2 ** 16 + last * 2 ** 24;
+  return BigInt(lo) + (BigInt(hi) << 32n);
+}
+function __wjs_bufReadBigUInt64BE(offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = this[offset];
+  const last = this[offset + 7];
+  if (first === undefined || last === undefined)
+    __wjs_bufBoundsError(offset, this.length - 8);
+  const hi = first * 2 ** 24 + this[++offset] * 2 ** 16 + this[++offset] * 2 ** 8 + this[++offset];
+  const lo = this[++offset] * 2 ** 24 + this[++offset] * 2 ** 16 + this[++offset] * 2 ** 8 + last;
+  return (BigInt(hi) << 32n) + BigInt(lo);
+}
+function __wjs_bufReadBigInt64LE(offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = this[offset];
+  const last = this[offset + 7];
+  if (first === undefined || last === undefined)
+    __wjs_bufBoundsError(offset, this.length - 8);
+  const val = this[offset + 4] +
+    this[offset + 5] * 2 ** 8 +
+    this[offset + 6] * 2 ** 16 +
+    (last << 24); // Overflow
+  return (BigInt(val) << 32n) +
+    BigInt(first +
+    this[++offset] * 2 ** 8 +
+    this[++offset] * 2 ** 16 +
+    this[++offset] * 2 ** 24);
+}
+function __wjs_bufReadBigInt64BE(offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = this[offset];
+  const last = this[offset + 7];
+  if (first === undefined || last === undefined)
+    __wjs_bufBoundsError(offset, this.length - 8);
+  const val = (first << 24) + // Overflow
+    this[++offset] * 2 ** 16 +
+    this[++offset] * 2 ** 8 +
+    this[++offset];
+  return (BigInt(val) << 32n) +
+    BigInt(this[++offset] * 2 ** 24 +
+    this[++offset] * 2 ** 16 +
+    this[++offset] * 2 ** 8 +
+    last);
+}
+function __wjs_bufReadUIntLE(offset, byteLength) {
+  if (offset === undefined) throw __wjs_bufArgTypeErr('offset', 'number', offset);
+  if (byteLength === 6) return __wjs_bufReadUInt48LE(this, offset);
+  if (byteLength === 5) return __wjs_bufReadUInt40LE(this, offset);
+  if (byteLength === 3) return __wjs_bufReadUInt24LE(this, offset);
+  if (byteLength === 4) return __wjs_bufReadUInt32LE(this, offset);
+  if (byteLength === 2) return __wjs_bufReadUInt16LE(this, offset);
+  if (byteLength === 1) return __wjs_bufReadUInt8(this, offset);
+  __wjs_bufBoundsError(byteLength, 6, 'byteLength');
+}
+function __wjs_bufReadUInt48LE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 5];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 6);
+  return first + buf[++offset] * 2 ** 8 + buf[++offset] * 2 ** 16 + buf[++offset] * 2 ** 24 +
+    (buf[++offset] + last * 2 ** 8) * 2 ** 32;
+}
+function __wjs_bufReadUInt40LE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 4];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 5);
+  return first + buf[++offset] * 2 ** 8 + buf[++offset] * 2 ** 16 + buf[++offset] * 2 ** 24 + last * 2 ** 32;
+}
+function __wjs_bufReadUInt32LE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 3];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 4);
+  return first + buf[++offset] * 2 ** 8 + buf[++offset] * 2 ** 16 + last * 2 ** 24;
+}
+function __wjs_bufReadUInt24LE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 2];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 3);
+  return first + buf[++offset] * 2 ** 8 + last * 2 ** 16;
+}
+function __wjs_bufReadUInt16LE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 1];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 2);
+  return first + last * 2 ** 8;
+}
+function __wjs_bufReadUInt8(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const val = buf[offset];
+  if (val === undefined) __wjs_bufBoundsError(offset, buf.length - 1);
+  return val;
+}
+function __wjs_bufReadUIntBE(offset, byteLength) {
+  if (offset === undefined) throw __wjs_bufArgTypeErr('offset', 'number', offset);
+  if (byteLength === 6) return __wjs_bufReadUInt48BE(this, offset);
+  if (byteLength === 5) return __wjs_bufReadUInt40BE(this, offset);
+  if (byteLength === 3) return __wjs_bufReadUInt24BE(this, offset);
+  if (byteLength === 4) return __wjs_bufReadUInt32BE(this, offset);
+  if (byteLength === 2) return __wjs_bufReadUInt16BE(this, offset);
+  if (byteLength === 1) return __wjs_bufReadUInt8(this, offset);
+  __wjs_bufBoundsError(byteLength, 6, 'byteLength');
+}
+function __wjs_bufReadUInt48BE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 5];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 6);
+  return (first * 2 ** 8 + buf[++offset]) * 2 ** 32 + buf[++offset] * 2 ** 24 +
+    buf[++offset] * 2 ** 16 + buf[++offset] * 2 ** 8 + last;
+}
+function __wjs_bufReadUInt40BE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 4];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 5);
+  return first * 2 ** 32 + buf[++offset] * 2 ** 24 + buf[++offset] * 2 ** 16 + buf[++offset] * 2 ** 8 + last;
+}
+function __wjs_bufReadUInt32BE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 3];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 4);
+  return first * 2 ** 24 + buf[++offset] * 2 ** 16 + buf[++offset] * 2 ** 8 + last;
+}
+function __wjs_bufReadUInt24BE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 2];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 3);
+  return first * 2 ** 16 + buf[++offset] * 2 ** 8 + last;
+}
+function __wjs_bufReadUInt16BE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 1];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 2);
+  return first * 2 ** 8 + last;
+}
+function __wjs_bufReadIntLE(offset, byteLength) {
+  if (offset === undefined) throw __wjs_bufArgTypeErr('offset', 'number', offset);
+  if (byteLength === 6) return __wjs_bufReadInt48LE(this, offset);
+  if (byteLength === 5) return __wjs_bufReadInt40LE(this, offset);
+  if (byteLength === 3) return __wjs_bufReadInt24LE(this, offset);
+  if (byteLength === 4) return __wjs_bufReadInt32LE(this, offset);
+  if (byteLength === 2) return __wjs_bufReadInt16LE(this, offset);
+  if (byteLength === 1) return __wjs_bufReadInt8(this, offset);
+  __wjs_bufBoundsError(byteLength, 6, 'byteLength');
+}
+function __wjs_bufReadInt48LE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 5];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 6);
+  const val = buf[offset + 4] + last * 2 ** 8;
+  return (val | (val & 2 ** 15) * 0x1fffe) * 2 ** 32 + first + buf[++offset] * 2 ** 8 +
+    buf[++offset] * 2 ** 16 + buf[++offset] * 2 ** 24;
+}
+function __wjs_bufReadInt40LE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 4];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 5);
+  return (last | (last & 2 ** 7) * 0x1fffffe) * 2 ** 32 + first + buf[++offset] * 2 ** 8 +
+    buf[++offset] * 2 ** 16 + buf[++offset] * 2 ** 24;
+}
+function __wjs_bufReadInt32LE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 3];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 4);
+  return first + buf[++offset] * 2 ** 8 + buf[++offset] * 2 ** 16 + (last << 24);
+}
+function __wjs_bufReadInt24LE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 2];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 3);
+  const val = first + buf[++offset] * 2 ** 8 + last * 2 ** 16;
+  return val | (val & 2 ** 23) * 0x1fe;
+}
+function __wjs_bufReadInt16LE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 1];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 2);
+  const val = first + last * 2 ** 8;
+  return val | (val & 2 ** 15) * 0x1fffe;
+}
+function __wjs_bufReadInt8(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const val = buf[offset];
+  if (val === undefined) __wjs_bufBoundsError(offset, buf.length - 1);
+  return val | (val & 2 ** 7) * 0x1fffffe;
+}
+function __wjs_bufReadIntBE(offset, byteLength) {
+  if (offset === undefined) throw __wjs_bufArgTypeErr('offset', 'number', offset);
+  if (byteLength === 6) return __wjs_bufReadInt48BE(this, offset);
+  if (byteLength === 5) return __wjs_bufReadInt40BE(this, offset);
+  if (byteLength === 3) return __wjs_bufReadInt24BE(this, offset);
+  if (byteLength === 4) return __wjs_bufReadInt32BE(this, offset);
+  if (byteLength === 2) return __wjs_bufReadInt16BE(this, offset);
+  if (byteLength === 1) return __wjs_bufReadInt8(this, offset);
+  __wjs_bufBoundsError(byteLength, 6, 'byteLength');
+}
+function __wjs_bufReadInt48BE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 5];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 6);
+  const val = buf[++offset] + first * 2 ** 8;
+  return (val | (val & 2 ** 15) * 0x1fffe) * 2 ** 32 + buf[++offset] * 2 ** 24 +
+    buf[++offset] * 2 ** 16 + buf[++offset] * 2 ** 8 + last;
+}
+function __wjs_bufReadInt40BE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 4];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 5);
+  return (first | (first & 2 ** 7) * 0x1fffffe) * 2 ** 32 + buf[++offset] * 2 ** 24 +
+    buf[++offset] * 2 ** 16 + buf[++offset] * 2 ** 8 + last;
+}
+function __wjs_bufReadInt32BE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 3];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 4);
+  return (first << 24) + buf[++offset] * 2 ** 16 + buf[++offset] * 2 ** 8 + last;
+}
+function __wjs_bufReadInt24BE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 2];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 3);
+  const val = first * 2 ** 16 + buf[++offset] * 2 ** 8 + last;
+  return val | (val & 2 ** 23) * 0x1fe;
+}
+function __wjs_bufReadInt16BE(buf, offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = buf[offset];
+  const last = buf[offset + 1];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, buf.length - 2);
+  const val = first * 2 ** 8 + last;
+  return val | (val & 2 ** 15) * 0x1fffe;
+}
+// 浮点（float32Array 转换板，原文同款）
+const __wjs_bufF32 = new Float32Array(1);
+const __wjs_bufU8F32 = new Uint8Array(__wjs_bufF32.buffer);
+const __wjs_bufF64 = new Float64Array(1);
+const __wjs_bufU8F64 = new Uint8Array(__wjs_bufF64.buffer);
+__wjs_bufF32[0] = -1;
+function __wjs_bufReadFloatLE(offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = this[offset];
+  const last = this[offset + 3];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, this.length - 4);
+  __wjs_bufU8F32[0] = first;
+  __wjs_bufU8F32[1] = this[++offset];
+  __wjs_bufU8F32[2] = this[++offset];
+  __wjs_bufU8F32[3] = last;
+  return __wjs_bufF32[0];
+}
+function __wjs_bufReadFloatBE(offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = this[offset];
+  const last = this[offset + 3];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, this.length - 4);
+  __wjs_bufU8F32[3] = first;
+  __wjs_bufU8F32[2] = this[++offset];
+  __wjs_bufU8F32[1] = this[++offset];
+  __wjs_bufU8F32[0] = last;
+  return __wjs_bufF32[0];
+}
+function __wjs_bufReadDoubleLE(offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = this[offset];
+  const last = this[offset + 7];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, this.length - 8);
+  __wjs_bufU8F64[0] = first;
+  __wjs_bufU8F64[1] = this[++offset];
+  __wjs_bufU8F64[2] = this[++offset];
+  __wjs_bufU8F64[3] = this[++offset];
+  __wjs_bufU8F64[4] = this[++offset];
+  __wjs_bufU8F64[5] = this[++offset];
+  __wjs_bufU8F64[6] = this[++offset];
+  __wjs_bufU8F64[7] = last;
+  return __wjs_bufF64[0];
+}
+function __wjs_bufReadDoubleBE(offset = 0) {
+  __wjs_bufValidateNumber(offset, 'offset');
+  const first = this[offset];
+  const last = this[offset + 7];
+  if (first === undefined || last === undefined) __wjs_bufBoundsError(offset, this.length - 8);
+  __wjs_bufU8F64[7] = first;
+  __wjs_bufU8F64[6] = this[++offset];
+  __wjs_bufU8F64[5] = this[++offset];
+  __wjs_bufU8F64[4] = this[++offset];
+  __wjs_bufU8F64[3] = this[++offset];
+  __wjs_bufU8F64[2] = this[++offset];
+  __wjs_bufU8F64[1] = this[++offset];
+  __wjs_bufU8F64[0] = last;
+  return __wjs_bufF64[0];
+}
+function __wjs_bufWriteBigU64LE(buf, value, offset, min, max) {
+  __wjs_bufCheckInt(value, min, max, buf, offset, 7);
+  let lo = Number(value & 0xffffffffn);
+  buf[offset++] = lo;
+  lo = lo >> 8;
+  buf[offset++] = lo;
+  lo = lo >> 8;
+  buf[offset++] = lo;
+  lo = lo >> 8;
+  buf[offset++] = lo;
+  let hi = Number(value >> 32n & 0xffffffffn);
+  buf[offset++] = hi;
+  hi = hi >> 8;
+  buf[offset++] = hi;
+  hi = hi >> 8;
+  buf[offset++] = hi;
+  hi = hi >> 8;
+  buf[offset++] = hi;
+  return offset;
+}
+function __wjs_bufWriteBigU64BE(buf, value, offset, min, max) {
+  __wjs_bufCheckInt(value, min, max, buf, offset, 7);
+  let lo = Number(value & 0xffffffffn);
+  buf[offset + 7] = lo;
+  lo = lo >> 8;
+  buf[offset + 6] = lo;
+  lo = lo >> 8;
+  buf[offset + 5] = lo;
+  lo = lo >> 8;
+  buf[offset + 4] = lo;
+  let hi = Number(value >> 32n & 0xffffffffn);
+  buf[offset + 3] = hi;
+  hi = hi >> 8;
+  buf[offset + 2] = hi;
+  hi = hi >> 8;
+  buf[offset + 1] = hi;
+  hi = hi >> 8;
+  buf[offset] = hi;
+  return offset + 8;
+}
+function __wjs_bufWriteUIntLE(value, offset, byteLength) {
+  if (byteLength === 6) return __wjs_bufWriteU48LE(this, value, offset, 0, 0xffffffffffff);
+  if (byteLength === 5) return __wjs_bufWriteU40LE(this, value, offset, 0, 0xffffffffff);
+  if (byteLength === 3) return __wjs_bufWriteU24LE(this, value, offset, 0, 0xffffff);
+  if (byteLength === 4) return __wjs_bufWriteU32LE(this, value, offset, 0, 0xffffffff);
+  if (byteLength === 2) return __wjs_bufWriteU16LE(this, value, offset, 0, 0xffff);
+  if (byteLength === 1) return __wjs_bufWriteU8(this, value, offset, 0, 0xff);
+  __wjs_bufBoundsError(byteLength, 6, 'byteLength');
+}
+function __wjs_bufWriteU48LE(buf, value, offset, min, max) {
+  value = +value;
+  __wjs_bufCheckInt(value, min, max, buf, offset, 5);
+  const newVal = Math.floor(value * 2 ** -32);
+  buf[offset++] = value;
+  value = value >>> 8;
+  buf[offset++] = value;
+  value = value >>> 8;
+  buf[offset++] = value;
+  value = value >>> 8;
+  buf[offset++] = value;
+  buf[offset++] = newVal;
+  buf[offset++] = (newVal >>> 8);
+  return offset;
+}
+function __wjs_bufWriteU40LE(buf, value, offset, min, max) {
+  value = +value;
+  __wjs_bufCheckInt(value, min, max, buf, offset, 4);
+  const newVal = value;
+  buf[offset++] = value;
+  value = value >>> 8;
+  buf[offset++] = value;
+  value = value >>> 8;
+  buf[offset++] = value;
+  value = value >>> 8;
+  buf[offset++] = value;
+  buf[offset++] = Math.floor(newVal * 2 ** -32);
+  return offset;
+}
+function __wjs_bufWriteU32LE(buf, value, offset, min, max) {
+  value = +value;
+  __wjs_bufCheckInt(value, min, max, buf, offset, 3);
+  buf[offset++] = value;
+  value = value >>> 8;
+  buf[offset++] = value;
+  value = value >>> 8;
+  buf[offset++] = value;
+  value = value >>> 8;
+  buf[offset++] = value;
+  return offset;
+}
+function __wjs_bufWriteU24LE(buf, value, offset, min, max) {
+  value = +value;
+  __wjs_bufCheckInt(value, min, max, buf, offset, 2);
+  buf[offset++] = value;
+  value = value >>> 8;
+  buf[offset++] = value;
+  value = value >>> 8;
+  buf[offset++] = value;
+  return offset;
+}
+function __wjs_bufWriteU16LE(buf, value, offset, min, max) {
+  value = +value;
+  __wjs_bufCheckInt(value, min, max, buf, offset, 1);
+  buf[offset++] = value;
+  buf[offset++] = (value >>> 8);
+  return offset;
+}
+function __wjs_bufWriteU8(buf, value, offset, min, max) {
+  value = +value;
+  __wjs_bufValidateNumber(offset, 'offset');
+  if (value > max || value < min) {
+    throw __wjs_bufRangeErr('value', `>= ${min} and <= ${max}`, value);
+  }
+  if (buf[offset] === undefined) __wjs_bufBoundsError(offset, buf.length - 1);
+  buf[offset] = value;
+  return offset + 1;
+}
+function __wjs_bufWriteUIntBE(value, offset, byteLength) {
+  if (byteLength === 6) return __wjs_bufWriteU48BE(this, value, offset, 0, 0xffffffffffff);
+  if (byteLength === 5) return __wjs_bufWriteU40BE(this, value, offset, 0, 0xffffffffff);
+  if (byteLength === 3) return __wjs_bufWriteU24BE(this, value, offset, 0, 0xffffff);
+  if (byteLength === 4) return __wjs_bufWriteU32BE(this, value, offset, 0, 0xffffffff);
+  if (byteLength === 2) return __wjs_bufWriteU16BE(this, value, offset, 0, 0xffff);
+  if (byteLength === 1) return __wjs_bufWriteU8(this, value, offset, 0, 0xff);
+  __wjs_bufBoundsError(byteLength, 6, 'byteLength');
+}
+function __wjs_bufWriteU48BE(buf, value, offset, min, max) {
+  value = +value;
+  __wjs_bufCheckInt(value, min, max, buf, offset, 5);
+  const newVal = Math.floor(value * 2 ** -32);
+  buf[offset++] = (newVal >>> 8);
+  buf[offset++] = newVal;
+  buf[offset + 3] = value;
+  value = value >>> 8;
+  buf[offset + 2] = value;
+  value = value >>> 8;
+  buf[offset + 1] = value;
+  value = value >>> 8;
+  buf[offset] = value;
+  return offset + 4;
+}
+function __wjs_bufWriteU40BE(buf, value, offset, min, max) {
+  value = +value;
+  __wjs_bufCheckInt(value, min, max, buf, offset, 4);
+  buf[offset++] = Math.floor(value * 2 ** -32);
+  buf[offset + 3] = value;
+  value = value >>> 8;
+  buf[offset + 2] = value;
+  value = value >>> 8;
+  buf[offset + 1] = value;
+  value = value >>> 8;
+  buf[offset] = value;
+  return offset + 4;
+}
+function __wjs_bufWriteU32BE(buf, value, offset, min, max) {
+  value = +value;
+  __wjs_bufCheckInt(value, min, max, buf, offset, 3);
+  buf[offset + 3] = value;
+  value = value >>> 8;
+  buf[offset + 2] = value;
+  value = value >>> 8;
+  buf[offset + 1] = value;
+  value = value >>> 8;
+  buf[offset] = value;
+  return offset + 4;
+}
+function __wjs_bufWriteU24BE(buf, value, offset, min, max) {
+  value = +value;
+  __wjs_bufCheckInt(value, min, max, buf, offset, 2);
+  buf[offset + 2] = value;
+  value = value >>> 8;
+  buf[offset + 1] = value;
+  value = value >>> 8;
+  buf[offset] = value;
+  return offset + 3;
+}
+function __wjs_bufWriteU16BE(buf, value, offset, min, max) {
+  value = +value;
+  __wjs_bufCheckInt(value, min, max, buf, offset, 1);
+  buf[offset++] = (value >>> 8);
+  buf[offset++] = value;
+  return offset;
+}
+function __wjs_bufWriteFloatLE(val, offset = 0) {
+  val = +val;
+  __wjs_bufCheckBounds(this, offset, 3);
+  __wjs_bufF32[0] = val;
+  this[offset++] = __wjs_bufU8F32[0];
+  this[offset++] = __wjs_bufU8F32[1];
+  this[offset++] = __wjs_bufU8F32[2];
+  this[offset++] = __wjs_bufU8F32[3];
+  return offset;
+}
+function __wjs_bufWriteFloatBE(val, offset = 0) {
+  val = +val;
+  __wjs_bufCheckBounds(this, offset, 3);
+  __wjs_bufF32[0] = val;
+  this[offset++] = __wjs_bufU8F32[3];
+  this[offset++] = __wjs_bufU8F32[2];
+  this[offset++] = __wjs_bufU8F32[1];
+  this[offset++] = __wjs_bufU8F32[0];
+  return offset;
+}
+function __wjs_bufWriteDoubleLE(val, offset = 0) {
+  val = +val;
+  __wjs_bufCheckBounds(this, offset, 7);
+  __wjs_bufF64[0] = val;
+  this[offset++] = __wjs_bufU8F64[0];
+  this[offset++] = __wjs_bufU8F64[1];
+  this[offset++] = __wjs_bufU8F64[2];
+  this[offset++] = __wjs_bufU8F64[3];
+  this[offset++] = __wjs_bufU8F64[4];
+  this[offset++] = __wjs_bufU8F64[5];
+  this[offset++] = __wjs_bufU8F64[6];
+  this[offset++] = __wjs_bufU8F64[7];
+  return offset;
+}
+function __wjs_bufWriteDoubleBE(val, offset = 0) {
+  val = +val;
+  __wjs_bufCheckBounds(this, offset, 7);
+  __wjs_bufF64[0] = val;
+  this[offset++] = __wjs_bufU8F64[7];
+  this[offset++] = __wjs_bufU8F64[6];
+  this[offset++] = __wjs_bufU8F64[5];
+  this[offset++] = __wjs_bufU8F64[4];
+  this[offset++] = __wjs_bufU8F64[3];
+  this[offset++] = __wjs_bufU8F64[2];
+  this[offset++] = __wjs_bufU8F64[1];
+  this[offset++] = __wjs_bufU8F64[0];
+  return offset;
+}
+// write 静态包装（internal/buffer.js utf8Write 等的越界校验口径）
+function __wjs_bufUtf8Write(buf, string, offset = 0, length) {
+  offset = Number(offset);
+  if (offset < 0 || offset > buf.byteLength) throw __wjs_bufOobErr('offset');
+  if (length === undefined) length = buf.byteLength - offset;
+  else length = Number(length);
+  if (length < 0 || length > buf.byteLength - offset) throw __wjs_bufOobErr('length');
+  return __wjs_bufUtf8WriteStatic(buf, string, offset, length);
+}
+function __wjs_bufAsciiWrite(buf, string, offset = 0, length) {
+  offset = Number(offset);
+  if (offset < 0 || offset > buf.byteLength) throw __wjs_bufOobErr('offset');
+  if (length === undefined) length = buf.byteLength - offset;
+  else length = Number(length);
+  if (length < 0 || length > buf.byteLength - offset) throw __wjs_bufOobErr('length');
+  return __wjs_bufAsciiWriteStatic(buf, string, offset, length);
+}
+function __wjs_bufLatin1Write(buf, string, offset = 0, length) {
+  offset = Number(offset);
+  if (offset < 0 || offset > buf.byteLength) throw __wjs_bufOobErr('offset');
+  if (length === undefined) length = buf.byteLength - offset;
+  else length = Number(length);
+  if (length < 0 || length > buf.byteLength - offset) throw __wjs_bufOobErr('length');
+  return __wjs_bufLatin1WriteStatic(buf, string, offset, length);
+}
+function __wjs_bufUcs2Write(buf, string, offset = 0, length) {
+  offset = Number(offset);
+  if (offset < 0 || offset > buf.byteLength) throw __wjs_bufOobErr('offset');
+  if (length === undefined) length = buf.byteLength - offset;
+  else length = Number(length);
+  if (length < 0 || length > buf.byteLength - offset) throw __wjs_bufOobErr('length');
+  return __wjs_bufUcs2WriteStatic(buf, string, offset, length);
+}
+function __wjs_bufHexWrite(buf, string, offset = 0, length) {
+  offset = Number(offset);
+  if (offset < 0 || offset > buf.byteLength) throw __wjs_bufOobErr('offset');
+  if (length === undefined) length = buf.byteLength - offset;
+  else length = Number(length);
+  if (length < 0 || length > buf.byteLength - offset) throw __wjs_bufOobErr('length');
+  return __wjs_bufHexWriteStatic(buf, string, offset, length);
+}
+function __wjs_bufBase64Write(buf, string, offset = 0, length) {
+  offset = Number(offset);
+  if (offset < 0 || offset > buf.byteLength) throw __wjs_bufOobErr('offset');
+  if (length === undefined) length = buf.byteLength - offset;
+  else length = Number(length);
+  if (length < 0 || length > buf.byteLength - offset) throw __wjs_bufOobErr('length');
+  return __wjs_bufB64WriteStatic(buf, string, offset, length, false);
+}
+function __wjs_bufBase64urlWrite(buf, string, offset = 0, length) {
+  offset = Number(offset);
+  if (offset < 0 || offset > buf.byteLength) throw __wjs_bufOobErr('offset');
+  if (length === undefined) length = buf.byteLength - offset;
+  else length = Number(length);
+  if (length < 0 || length > buf.byteLength - offset) throw __wjs_bufOobErr('length');
+  return __wjs_bufB64WriteStatic(buf, string, offset, length, true);
+}
+// slice 静态（utf8 用 TextDecoder；ascii 掩 0x7F，10f 真机口径）
+function __wjs_bufUtf8Slice(u8, start, end) {
+  // 预检先于 decode（utf8 串长 ≤ 字节数；>1GB decode 会撞 SM 崩溃面，
+  // 不给引擎机会）——node kStringMaxLength 字节等同口径的保守近似
+  if (end - start > kStringMaxLength) {
+    const e = new Error(`Cannot create a string longer than ${kStringMaxLength} characters`);
+    e.code = 'ERR_STRING_TOO_LONG';
+    throw e;
+  }
+  const s = new TextDecoder().decode(u8.subarray(start, end));
+  if (s.length > kStringMaxLength) {
+    // node 引擎级字串上限在 SM 更高，按 node 口径在 slice 层模拟
+    // （E('ERR_STRING_TOO_LONG', 'Cannot create a string longer than %s characters', Error)）
+    const e = new Error(`Cannot create a string longer than ${kStringMaxLength} characters`);
+    e.code = 'ERR_STRING_TOO_LONG';
+    throw e;
+  }
+  return s;
+}
+function __wjs_bufAsciiSlice(u8, start, end) {
+  let s = '';
+  for (let i = start; i < end; i++) s += String.fromCharCode(u8[i] & 0x7F);
+  return s;
+}
+function __wjs_bufLatin1Slice(u8, start, end) {
+  let s = '';
+  for (let i = start; i < end; i++) s += String.fromCharCode(u8[i]);
+  return s;
+}
+function __wjs_bufUcs2Slice(u8, start, end) {
+  let s = '';
+  for (let i = start; i + 1 < end; i += 2) s += String.fromCharCode(u8[i] | (u8[i + 1] << 8));
+  return s;
+}
+function __wjs_bufHexSlice(u8, start, end) {
+  let s = '';
+  for (let i = start; i < end; i++) s += u8[i].toString(16).padStart(2, '0');
+  return s;
+}
+// indexOf 族（C++ SearchString 的 JS 重实现）
+function __wjs_bufIndexOfNumber(buf, val, byteOffset, dir, end) {
+  val = val >>> 0;
+  val = val & 0xFF;
+  const len = buf.length;
+  const limit = Math.min(end === undefined ? len : end, len);
+  if (dir) {
+    // 负偏移 = 距尾偏移（node SearchString 口径；越界收敛到 0）
+    if (byteOffset < 0) byteOffset = Math.max(len + byteOffset, 0);
+    if (byteOffset >= limit) return -1;
+    for (let i = byteOffset; i < limit; i++) {
+      if (buf[i] === val) return i;
+    }
+    return -1;
+  }
+  if (byteOffset < 0) {
+    byteOffset = len + byteOffset;
+    if (byteOffset < 0) return -1;
+  }
+  let i = Math.min(byteOffset, limit - 1);
+  for (; i >= 0; i--) {
+    if (buf[i] === val) return i;
+  }
+  return -1;
+}
+function __wjs_bufIndexOfBytes(buf, needle, byteOffset, dir, end, align = 1) {
+  const len = buf.length;
+  const nlen = needle.length;
+  if (nlen === 0) {
+    // 空 needle 钳到搜索上限 end（套件 "clamp to search_end" 门）
+    const lim0 = Math.min(end === undefined ? len : end, len);
+    return Math.min(Math.max(byteOffset, 0), lim0);
+  }
+  const limit = Math.min(end === undefined ? len : end, len);
+  if (dir) {
+    let i = byteOffset < 0 ? Math.max(len + byteOffset, 0) : Math.max(byteOffset, 0);
+    // utf16le 对齐搜索（node C++ 口径：只在偶字节偏移命中，套件 allChars 门）
+    if (align === 2 && i % 2 !== 0) i++;
+    for (; i <= limit - nlen; i += align) {
+      let ok = true;
+      for (let j = 0; j < nlen; j++) {
+        if (buf[i + j] !== needle[j]) { ok = false; break; }
+      }
+      if (ok) return i;
+    }
+    return -1;
+  }
+  if (byteOffset < 0) {
+    byteOffset = len + byteOffset;
+    if (byteOffset < 0) return -1;
+  }
+  let i = Math.min(byteOffset, limit - nlen);
+  if (align === 2 && i % 2 !== 0) i--;
+  for (; i >= 0; i -= align) {
+    let ok = true;
+    for (let j = 0; j < nlen; j++) {
+      if (buf[i + j] !== needle[j]) { ok = false; break; }
+    }
+    if (ok) return i;
+  }
+  return -1;
+}
+function __wjs_bufIndexOfString(buf, val, byteOffset, enc, dir, end) {
+  const ops = __wjs_bufEncodingOps[enc];
+  return __wjs_bufIndexOfBytes(buf, __wjs_bufEncodeStr(val, ops), byteOffset, dir, end,
+                               ops.encoding === 'utf16le' ? 2 : 1);
+}
+function __wjs_bufEncodeStr(str, ops) {
+  const tmp = new __wjs_bufFastBuffer(ops.byteLength(str) || 1);
+  const actual = ops.write(tmp, str, 0, tmp.length);
+  return tmp.subarray(0, actual);
+}
+// ---- encodingOps（lib/buffer.js 原文结构）----
+function __wjs_bufByteLengthUtf8(string) {
+  return new TextEncoder().encode(string).length;
+}
+const __wjs_bufEncodingOps = {
+  utf8: {
+    encoding: 'utf8',
+    byteLength: __wjs_bufByteLengthUtf8,
+    write: __wjs_bufUtf8Write,
+    slice: __wjs_bufUtf8Slice,
+    indexOf: (buf, val, byteOffset, dir, end) =>
+      __wjs_bufIndexOfString(buf, val, byteOffset, 'utf8', dir, end),
+  },
+  ucs2: {
+    encoding: 'utf16le',
+    byteLength: (string) => string.length * 2,
+    write: __wjs_bufUcs2Write,
+    slice: __wjs_bufUcs2Slice,
+    indexOf: (buf, val, byteOffset, dir, end) =>
+      __wjs_bufIndexOfString(buf, val, byteOffset, 'utf16le', dir, end),
+  },
+  utf16le: {
+    encoding: 'utf16le',
+    byteLength: (string) => string.length * 2,
+    write: __wjs_bufUcs2Write,
+    slice: __wjs_bufUcs2Slice,
+    indexOf: (buf, val, byteOffset, dir, end) =>
+      __wjs_bufIndexOfString(buf, val, byteOffset, 'utf16le', dir, end),
+  },
+  latin1: {
+    encoding: 'latin1',
+    byteLength: (string) => string.length,
+    write: __wjs_bufLatin1Write,
+    slice: __wjs_bufLatin1Slice,
+    indexOf: (buf, val, byteOffset, dir, end) =>
+      __wjs_bufIndexOfString(buf, val, byteOffset, 'latin1', dir, end),
+  },
+  ascii: {
+    encoding: 'ascii',
+    byteLength: (string) => string.length,
+    write: __wjs_bufAsciiWrite,
+    slice: __wjs_bufAsciiSlice,
+    indexOf: (buf, val, byteOffset, dir, end) =>
+      __wjs_bufIndexOfBytes(buf, __wjs_bufEncodeStr(val, __wjs_bufEncodingOps.ascii), byteOffset, dir, end),
+  },
+  base64: {
+    encoding: 'base64',
+    byteLength: (string) => __wjs_bufB64ByteLength(string, string.length),
+    write: __wjs_bufBase64Write,
+    slice: (u8, start, end) => __wjs_bufB64Slice(u8, start, end, false),
+    indexOf: (buf, val, byteOffset, dir, end) =>
+      __wjs_bufIndexOfBytes(buf, __wjs_bufEncodeStr(val, __wjs_bufEncodingOps.base64), byteOffset, dir, end),
+  },
+  base64url: {
+    encoding: 'base64url',
+    byteLength: (string) => __wjs_bufB64ByteLength(string, string.length),
+    write: __wjs_bufBase64urlWrite,
+    slice: (u8, start, end) => __wjs_bufB64Slice(u8, start, end, true),
+    indexOf: (buf, val, byteOffset, dir, end) =>
+      __wjs_bufIndexOfBytes(buf, __wjs_bufEncodeStr(val, __wjs_bufEncodingOps.base64url), byteOffset, dir, end),
+  },
+  hex: {
+    encoding: 'hex',
+    byteLength: (string) => string.length >>> 1,
+    write: __wjs_bufHexWrite,
+    slice: __wjs_bufHexSlice,
+    indexOf: (buf, val, byteOffset, dir, end) =>
+      __wjs_bufIndexOfBytes(buf, __wjs_bufEncodeStr(val, __wjs_bufEncodingOps.hex), byteOffset, dir, end),
+  },
+};
+function __wjs_bufGetEncodingOps(encoding) {
+  encoding += '';
+  switch (encoding.length) {
+    case 4:
+      if (encoding === 'utf8') return __wjs_bufEncodingOps.utf8;
+      if (encoding === 'ucs2') return __wjs_bufEncodingOps.ucs2;
+      encoding = encoding.toLowerCase();
+      if (encoding === 'utf8') return __wjs_bufEncodingOps.utf8;
+      if (encoding === 'ucs2') return __wjs_bufEncodingOps.ucs2;
+      break;
+    case 5:
+      if (encoding === 'utf-8') return __wjs_bufEncodingOps.utf8;
+      if (encoding === 'ascii') return __wjs_bufEncodingOps.ascii;
+      if (encoding === 'ucs-2') return __wjs_bufEncodingOps.ucs2;
+      encoding = encoding.toLowerCase();
+      if (encoding === 'utf-8') return __wjs_bufEncodingOps.utf8;
+      if (encoding === 'ascii') return __wjs_bufEncodingOps.ascii;
+      if (encoding === 'ucs-2') return __wjs_bufEncodingOps.ucs2;
+      break;
+    case 7:
+      if (encoding === 'utf16le' || encoding.toLowerCase() === 'utf16le')
+        return __wjs_bufEncodingOps.utf16le;
+      break;
+    case 8:
+      if (encoding === 'utf-16le' || encoding.toLowerCase() === 'utf-16le')
+        return __wjs_bufEncodingOps.utf16le;
+      break;
+    case 6:
+      if (encoding === 'latin1' || encoding === 'binary') return __wjs_bufEncodingOps.latin1;
+      if (encoding === 'base64') return __wjs_bufEncodingOps.base64;
+      encoding = encoding.toLowerCase();
+      if (encoding === 'latin1' || encoding === 'binary') return __wjs_bufEncodingOps.latin1;
+      if (encoding === 'base64') return __wjs_bufEncodingOps.base64;
+      break;
+    case 3:
+      if (encoding === 'hex' || encoding.toLowerCase() === 'hex') return __wjs_bufEncodingOps.hex;
+      break;
+    case 9:
+      if (encoding === 'base64url' || encoding.toLowerCase() === 'base64url')
+        return __wjs_bufEncodingOps.base64url;
+      break;
+  }
+}
+// ---- Buffer 类本体（lib/buffer.js 原文）----
+class __wjs_bufFastBuffer extends Uint8Array {}
+let __wjs_bufWarned = false;
+function __wjs_bufShowFlaggedDeprecation() {
+  if (__wjs_bufWarned) return;
+  // isInsideNodeModules(3) 的栈走查近似（SM 栈格式；DEP0169 同法）
+  const saved = Error.stackTraceLimit;
+  Error.stackTraceLimit = 5;
+  const stack = new Error().stack || '';
+  Error.stackTraceLimit = saved;
+  const frames = stack.split('\n').slice(1, 5);
+  if (frames.some((f) => f.includes('node_modules'))) return;
+  __wjs_bufWarned = true;
+  try {
+    process.emitWarning(
+      'Buffer() is deprecated due to security and usability issues. ' +
+      'Please use the Buffer.alloc(), Buffer.allocUnsafe(), or Buffer.from() ' +
+      'methods instead.', 'DeprecationWarning', 'DEP0005');
+  } catch { }
+}
+function Buffer(arg, encodingOrOffset, length) {
+  __wjs_bufShowFlaggedDeprecation();
+  if (typeof arg === 'number') {
+    if (typeof encodingOrOffset === 'string') {
+      throw __wjs_bufArgTypeErr('string', 'string', arg);
+    }
+    return Buffer.alloc(arg);
+  }
+  return Buffer.from(arg, encodingOrOffset, length);
+}
+Object.defineProperty(Buffer, Symbol.species, {
+  enumerable: false,
+  configurable: true,
+  get() { return __wjs_bufFastBuffer; },
+});
+Object.setPrototypeOf(Buffer, Uint8Array);
+Buffer.prototype = __wjs_bufFastBuffer.prototype;
+Buffer.prototype.constructor = Buffer;
+Buffer.poolSize = 64 * 1024;
+// 10f：小串池化（Node lib/buffer.js fromStringFast 口径：< poolSize/2 走池，
+// 8 字节对齐，满即新池；`a.buffer === b.buffer` 套件门）。池 AB 进
+// `__wjs_bufPooled`（WeakSet，全局暴露供 worker  transfer 拒收），
+// `ArrayBuffer.prototype.transfer` 对池内 AB 抛 TypeError（真机同款不可转移）。
+let __wjs_bufPoolAB = new ArrayBuffer(Buffer.poolSize);
+const __wjs_bufPooled = new WeakSet([__wjs_bufPoolAB]);
+globalThis.__wjs_bufPooled = __wjs_bufPooled;
+let __wjs_bufPoolOffset = 0;
+function __wjs_bufPoolAlign() {
+  if (__wjs_bufPoolOffset & 0x7) __wjs_bufPoolOffset = (__wjs_bufPoolOffset + 7) & ~7;
+}
+{
+  const __wjs_bufOrigTransfer = ArrayBuffer.prototype.transfer;
+  Object.defineProperty(ArrayBuffer.prototype, 'transfer', {
+    value: function() {
+      if (__wjs_bufPooled.has(this)) {
+        throw new TypeError('Cannot transfer a pooled Buffer ArrayBuffer');
+      }
+      return __wjs_bufOrigTransfer.call(this);
+    },
+    writable: true, configurable: true,
+  });
+}
+function __wjs_bufToInteger(n, defaultVal) {
+  n = +n;
+  if (!Number.isNaN(n) && n >= Number.MIN_SAFE_INTEGER && n <= Number.MAX_SAFE_INTEGER) {
+    return ((n % 1) === 0 ? n : Math.floor(n));
+  }
+  return defaultVal;
+}
+function __wjs_bufCopyImpl(source, target, targetStart, sourceStart, sourceEnd) {
+  if (!ArrayBuffer.isView(source))
+    throw __wjs_bufArgTypeErr('source', ['Buffer', 'Uint8Array'], source);
+  if (!ArrayBuffer.isView(target))
+    throw __wjs_bufArgTypeErr('target', ['Buffer', 'Uint8Array'], target);
+  if (targetStart === undefined) {
+    targetStart = 0;
+  } else {
+    targetStart = Number.isInteger(targetStart) ? targetStart : __wjs_bufToInteger(targetStart, 0);
+    if (targetStart < 0) throw __wjs_bufRangeErr('targetStart', '>= 0', targetStart);
+  }
+  if (sourceStart === undefined) {
+    sourceStart = 0;
+  } else {
+    sourceStart = Number.isInteger(sourceStart) ? sourceStart : __wjs_bufToInteger(sourceStart, 0);
+    if (sourceStart < 0 || sourceStart > source.byteLength)
+      throw __wjs_bufRangeErr('sourceStart', `>= 0 && <= ${source.byteLength}`, sourceStart);
+  }
+  if (sourceEnd === undefined) {
+    sourceEnd = source.byteLength;
+  } else {
+    sourceEnd = Number.isInteger(sourceEnd) ? sourceEnd : __wjs_bufToInteger(sourceEnd, 0);
+    if (sourceEnd < 0) throw __wjs_bufRangeErr('sourceEnd', '>= 0', sourceEnd);
+  }
+  if (targetStart >= target.byteLength || sourceStart >= sourceEnd)
+    return 0;
+  return __wjs_bufCopyActual(source, target, targetStart, sourceStart, sourceEnd);
+}
+function __wjs_bufCopyActual(source, target, targetStart, sourceStart, sourceEnd) {
+  if (sourceEnd - sourceStart > target.byteLength - targetStart)
+    sourceEnd = sourceStart + target.byteLength - targetStart;
+  let nb = sourceEnd - sourceStart;
+  const sourceLen = source.byteLength - sourceStart;
+  if (nb > sourceLen) nb = sourceLen;
+  if (nb <= 0) return 0;
+  // 字节级拷贝（node _copy memmove 口径；目标非 u8 时 targetStart 按元素索引
+  // 换算字节偏移，如 Uint16Array——test-buffer-copy "packed into 16-bit" 门）
+  const elemSize = target.length ? (target.byteLength / target.length) : 1;
+  const byteStart = targetStart * elemSize;
+  const room = target.byteLength - byteStart;
+  if (nb > room) nb = room;
+  if (nb <= 0) return 0;
+  const dst = new Uint8Array(target.buffer, target.byteOffset + byteStart, nb);
+  const src = new Uint8Array(source.buffer, source.byteOffset + sourceStart, nb);
+  dst.set(src); // 同 buffer 时 set 按 memmove 语义
+  return nb;
+}
+Buffer.from = function from(value, encodingOrOffset, length) {
+  if (typeof value === 'string')
+    return __wjs_bufFromString(value, encodingOrOffset);
+  if (typeof value === 'object' && value !== null) {
+    if (__wjs_bufIsAnyAB(value)) {
+      // 10f：伪 AB（原型链伪造、无内部槽，如 `Object.setPrototypeOf(AB, ArrayBuffer)`）
+      // 须拒为 ERR_INVALID_ARG_TYPE（V8 IsArrayBuffer 品牌检查口径）；直接进
+      // FromArrayBuffer 会在引擎内抛 incompatible 文案，断言对不上。
+      let branded = true;
+      try { void value.byteLength; } catch { branded = false; }
+      if (branded)
+        return __wjs_bufFromArrayBuffer(value, encodingOrOffset, length);
+      // 落空到尾部统一 invalid-arg（`an instance of AB`，__wjs_bufSpecificType 口径）
+    } else {
+      const valueOf = value.valueOf && value.valueOf();
+      if (valueOf != null && valueOf !== value &&
+          (typeof valueOf === 'string' || typeof valueOf === 'object')) {
+        return from(valueOf, encodingOrOffset, length);
+      }
+      const b = __wjs_bufFromObject(value);
+      if (b) return b;
+      if (typeof value[Symbol.toPrimitive] === 'function') {
+        const primitive = value[Symbol.toPrimitive]('string');
+        if (typeof primitive === 'string') {
+          return __wjs_bufFromString(primitive, encodingOrOffset);
+        }
       }
     }
+  }
+  throw __wjs_bufArgTypeErr(
+    'first argument',
+    ['string', 'Buffer', 'ArrayBuffer', 'Array', 'Array-like Object'],
+    value,
+  );
+};
+Buffer.copyBytesFrom = function copyBytesFrom(view, offset, length) {
+  if (!ArrayBuffer.isView(view) || view instanceof DataView) {
+    throw __wjs_bufArgTypeErr('view', ['TypedArray'], view);
+  }
+  const viewLength = view.length;
+  if (viewLength === 0) return new __wjs_bufFastBuffer();
+  let start = 0;
+  let end = viewLength;
+  if (offset !== undefined) {
+    __wjs_bufValidateInteger(offset, 'offset', 0);
+    if (offset >= viewLength) return new __wjs_bufFastBuffer();
+    start = offset;
+  }
+  if (length !== undefined) {
+    __wjs_bufValidateInteger(length, 'length', 0);
+    end = Math.min(start + length, viewLength);
+  }
+  if (end <= start) return new __wjs_bufFastBuffer();
+  const viewByteLength = view.byteLength;
+  const elementSize = viewByteLength / viewLength;
+  const srcByteOffset = view.byteOffset + start * elementSize;
+  const srcByteLength = (end - start) * elementSize;
+  return __wjs_bufFromArrayLike(new Uint8Array(view.buffer, srcByteOffset, srcByteLength));
+};
+const __wjs_bufOf = (...items) => {
+  const len = items.length;
+  const newObj = new __wjs_bufFastBuffer(len);
+  for (let k = 0; k < len; k++) newObj[k] = items[k];
+  return newObj;
+};
+Buffer.of = __wjs_bufOf;
+Buffer.alloc = function alloc(size, fill, encoding) {
+  __wjs_bufValidateNumber(size, 'size', 0, kMaxLength);
+  if (fill !== undefined && fill !== 0 && size > 0) {
+    const buf = new __wjs_bufFastBuffer(size);
+    return __wjs_bufFill(buf, fill, 0, buf.length, encoding);
+  }
+  return new __wjs_bufFastBuffer(size);
+};
+Buffer.allocUnsafe = function allocUnsafe(size) {
+  // alignment 形参不做（无 O_DIRECT 场景；真机 26 有，记档）
+  __wjs_bufValidateNumber(size, 'size', 0, kMaxLength);
+  return size <= 0 ? new __wjs_bufFastBuffer() : new __wjs_bufFastBuffer(size);
+};
+Buffer.allocUnsafeSlow = function allocUnsafeSlow(size) {
+  __wjs_bufValidateNumber(size, 'size', 0, kMaxLength);
+  return size <= 0 ? new __wjs_bufFastBuffer() : new __wjs_bufFastBuffer(size);
+};
+function __wjs_bufFromStringFast(string, ops) {
+  const length = ops.byteLength(string);
+  // 池路径（小串共享池 AB；actual 按写入实长推进，与 Node fromStringFast 同口径）
+  if (length > 0 && length < (Buffer.poolSize >>> 1)) {
+    __wjs_bufPoolAlign();
+    if (length > __wjs_bufPoolAB.byteLength - __wjs_bufPoolOffset) {
+      __wjs_bufPoolAB = new ArrayBuffer(Buffer.poolSize);
+      __wjs_bufPooled.add(__wjs_bufPoolAB);
+      __wjs_bufPoolOffset = 0;
+    }
+    const scratch = new Uint8Array(__wjs_bufPoolAB);
+    const actual = ops.write(scratch, string, __wjs_bufPoolOffset, length);
+    const b = new __wjs_bufFastBuffer(__wjs_bufPoolAB, __wjs_bufPoolOffset, actual);
+    __wjs_bufPoolOffset += actual;
     return b;
   }
-  static allocUnsafe(size) {
-    // 零填（无未初始化内存暴露，见头注）
-    const n = Number(size);
-    if (!Number.isInteger(n) || n < 0) throw new RangeError("Buffer.allocUnsafe: bad size");
-    return new Buffer(n);
+  const buf = Buffer.allocUnsafeSlow(length);
+  const actual = ops.write(buf, string, 0, length);
+  return actual < length ? new __wjs_bufFastBuffer(buf.buffer, 0, actual) : buf;
+}
+function __wjs_bufFromString(string, encoding) {
+  let ops;
+  if (!encoding || encoding === 'utf8' || typeof encoding !== 'string') {
+    ops = __wjs_bufEncodingOps.utf8;
+  } else {
+    ops = __wjs_bufGetEncodingOps(encoding);
+    if (ops === undefined) throw __wjs_bufEncErr(encoding);
   }
-  static allocUnsafeSlow(size) { return Buffer.allocUnsafe(size); }
-  static concat(list, total) {
-    if (!Array.isArray(list)) throw new TypeError("Buffer.concat: list must be an array");
-    const parts = list.map((p) => {
-      if (p instanceof Uint8Array) return p;
-      if (ArrayBuffer.isView(p)) return new Uint8Array(p.buffer, p.byteOffset, p.byteLength);
-      throw new TypeError("Buffer.concat: list must be Buffers");
-    });
-    const want = total === undefined ? parts.reduce((a, p) => a + p.length, 0) : Number(total);
-    if (!Number.isInteger(want) || want < 0) throw new RangeError("Buffer.concat: bad totalLength");
-    const out = new Buffer(Math.min(want, parts.reduce((a, p) => a + p.length, 0)));
-    let off = 0;
-    for (const p of parts) {
-      if (off >= want) break;
-      const n = Math.min(p.length, want - off);
-      out.set(p.subarray(0, n), off);
-      off += n;
+  return string.length === 0 ? new __wjs_bufFastBuffer() : __wjs_bufFromStringFast(string, ops);
+}
+function __wjs_bufFromArrayBuffer(obj, byteOffset, length) {
+  if (byteOffset === undefined) {
+    byteOffset = 0;
+  } else {
+    byteOffset = +byteOffset;
+    if (Number.isNaN(byteOffset)) byteOffset = 0;
+  }
+  const maxLength = obj.byteLength - byteOffset;
+  if (maxLength < 0) throw __wjs_bufOobErr('offset');
+  if (length !== undefined) {
+    length = +length;
+    if (length > 0) {
+      if (length > maxLength) throw __wjs_bufOobErr('length');
+    } else {
+      length = 0;
     }
-    return out;
   }
-  static compare(a, b) {
-    const x = Buffer.from(a), y = Buffer.from(b);
-    const n = Math.min(x.length, y.length);
-    for (let i = 0; i < n; i++) { if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1; }
-    return x.length === y.length ? 0 : (x.length < y.length ? -1 : 1);
+  return new __wjs_bufFastBuffer(obj, byteOffset, length);
+}
+function __wjs_bufFromArrayLike(obj) {
+  const { length } = obj;
+  if (length <= 0) return new __wjs_bufFastBuffer();
+  return new __wjs_bufFastBuffer(obj);
+}
+function __wjs_bufFromObject(obj) {
+  if (obj.length !== undefined || (obj.buffer != null && __wjs_bufIsAnyAB(obj.buffer))) {
+    if (typeof obj.length !== 'number') {
+      return new __wjs_bufFastBuffer();
+    }
+    return __wjs_bufFromArrayLike(obj);
   }
-  toString(enc, start, end) {
-    const s = start === undefined ? 0 : Number(start);
-    const e = end === undefined ? this.length : Number(end);
-    return __wjs_bufEncode(this.subarray(s, e), enc);
+  if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
+    return __wjs_bufFromArrayLike(obj.data);
   }
-  subarray(begin, end) {
-    // 保持 Buffer 类型（Node 口径），底层仍共享
-    const v = super.subarray(begin, end);
-    Object.setPrototypeOf(v, Buffer.prototype);
-    return v;
-  }
-  slice(begin, end) { return this.subarray(begin, end); }
-  write(str, offset, length, enc) {
-    if (typeof offset === "string") { enc = offset; offset = 0; length = this.length; }
-    else if (typeof length === "string") { enc = length; length = this.length; }
-    offset = offset === undefined ? 0 : Number(offset);
-    const src = __wjs_bufDecode(String(str), enc);
-    const n = Math.min(src.length, length === undefined ? this.length - offset : Number(length), this.length - offset);
-    if (offset < 0 || n < 0) throw new RangeError("Buffer.write: out of bounds");
-    this.set(src.subarray(0, Math.max(0, n)), offset);
-    return Math.max(0, n);
-  }
-  // 定长整数/浮点读写系（M5 dev 实测 `writeUInt16BE is not a function`——
-  // sourcemap 等链路直调；DataView 直通，越界/值域即 RangeError，Node 口径）。
-  readUInt8(o, na) { return this.__wjs_bufV().getUint8(__wjs_bufO(this, o, 1, na)); }
-  readUInt16LE(o, na) { return this.__wjs_bufV().getUint16(__wjs_bufO(this, o, 2, na), true); }
-  readUInt16BE(o, na) { return this.__wjs_bufV().getUint16(__wjs_bufO(this, o, 2, na), false); }
-  readUInt32LE(o, na) { return this.__wjs_bufV().getUint32(__wjs_bufO(this, o, 4, na), true); }
-  readUInt32BE(o, na) { return this.__wjs_bufV().getUint32(__wjs_bufO(this, o, 4, na), false); }
-  readInt8(o, na) { return this.__wjs_bufV().getInt8(__wjs_bufO(this, o, 1, na)); }
-  readInt16LE(o, na) { return this.__wjs_bufV().getInt16(__wjs_bufO(this, o, 2, na), true); }
-  readInt16BE(o, na) { return this.__wjs_bufV().getInt16(__wjs_bufO(this, o, 2, na), false); }
-  readInt32LE(o, na) { return this.__wjs_bufV().getInt32(__wjs_bufO(this, o, 4, na), true); }
-  readInt32BE(o, na) { return this.__wjs_bufV().getInt32(__wjs_bufO(this, o, 4, na), false); }
-  readBigUInt64LE(o, na) { return this.__wjs_bufV().getBigUint64(__wjs_bufO(this, o, 8, na), true); }
-  readBigUInt64BE(o, na) { return this.__wjs_bufV().getBigUint64(__wjs_bufO(this, o, 8, na), false); }
-  readBigInt64LE(o, na) { return this.__wjs_bufV().getBigInt64(__wjs_bufO(this, o, 8, na), true); }
-  readBigInt64BE(o, na) { return this.__wjs_bufV().getBigInt64(__wjs_bufO(this, o, 8, na), false); }
-  readFloatLE(o, na) { return this.__wjs_bufV().getFloat32(__wjs_bufO(this, o, 4, na), true); }
-  readFloatBE(o, na) { return this.__wjs_bufV().getFloat32(__wjs_bufO(this, o, 4, na), false); }
-  readDoubleLE(o, na) { return this.__wjs_bufV().getFloat64(__wjs_bufO(this, o, 8, na), true); }
-  readDoubleBE(o, na) { return this.__wjs_bufV().getFloat64(__wjs_bufO(this, o, 8, na), false); }
-  writeUInt8(v, o = 0, na) { return __wjs_bufW(this, v, o, 1, 0, 0xff, na, (vw, oo, vv) => vw.setUint8(oo, vv)); }
-  writeUInt16LE(v, o = 0, na) { return __wjs_bufW(this, v, o, 2, 0, 0xffff, na, (vw, oo, vv) => vw.setUint16(oo, vv, true)); }
-  writeUInt16BE(v, o = 0, na) { return __wjs_bufW(this, v, o, 2, 0, 0xffff, na, (vw, oo, vv) => vw.setUint16(oo, vv, false)); }
-  writeUInt32LE(v, o = 0, na) { return __wjs_bufW(this, v, o, 4, 0, 0xffffffff, na, (vw, oo, vv) => vw.setUint32(oo, vv, true)); }
-  writeUInt32BE(v, o = 0, na) { return __wjs_bufW(this, v, o, 4, 0, 0xffffffff, na, (vw, oo, vv) => vw.setUint32(oo, vv, false)); }
-  writeInt8(v, o = 0, na) { return __wjs_bufW(this, v, o, 1, -0x80, 0x7f, na, (vw, oo, vv) => vw.setInt8(oo, vv)); }
-  writeInt16LE(v, o = 0, na) { return __wjs_bufW(this, v, o, 2, -0x8000, 0x7fff, na, (vw, oo, vv) => vw.setInt16(oo, vv, true)); }
-  writeInt16BE(v, o = 0, na) { return __wjs_bufW(this, v, o, 2, -0x8000, 0x7fff, na, (vw, oo, vv) => vw.setInt16(oo, vv, false)); }
-  writeInt32LE(v, o = 0, na) { return __wjs_bufW(this, v, o, 4, -0x80000000, 0x7fffffff, na, (vw, oo, vv) => vw.setInt32(oo, vv, true)); }
-  writeInt32BE(v, o = 0, na) { return __wjs_bufW(this, v, o, 4, -0x80000000, 0x7fffffff, na, (vw, oo, vv) => vw.setInt32(oo, vv, false)); }
-  writeBigUInt64LE(v, o = 0, na) { return __wjs_bufWB(this, v, o, 0n, (1n << 64n) - 1n, na, (vw, oo, vv) => vw.setBigUint64(oo, vv, true)); }
-  writeBigUInt64BE(v, o = 0, na) { return __wjs_bufWB(this, v, o, 0n, (1n << 64n) - 1n, na, (vw, oo, vv) => vw.setBigUint64(oo, vv, false)); }
-  writeBigInt64LE(v, o = 0, na) { return __wjs_bufWB(this, v, o, -(1n << 63n), (1n << 63n) - 1n, na, (vw, oo, vv) => vw.setBigInt64(oo, vv, true)); }
-  writeBigInt64BE(v, o = 0, na) { return __wjs_bufWB(this, v, o, -(1n << 63n), (1n << 63n) - 1n, na, (vw, oo, vv) => vw.setBigInt64(oo, vv, false)); }
-  writeFloatLE(v, o = 0, na) { const oo = __wjs_bufO(this, o, 4, na); this.__wjs_bufV().setFloat32(oo, Number(v), true); return oo + 4; }
-  writeFloatBE(v, o = 0, na) { const oo = __wjs_bufO(this, o, 4, na); this.__wjs_bufV().setFloat32(oo, Number(v), false); return oo + 4; }
-  writeDoubleLE(v, o = 0, na) { const oo = __wjs_bufO(this, o, 8, na); this.__wjs_bufV().setFloat64(oo, Number(v), true); return oo + 8; }
-  writeDoubleBE(v, o = 0, na) { const oo = __wjs_bufO(this, o, 8, na); this.__wjs_bufV().setFloat64(oo, Number(v), false); return oo + 8; }
-  __wjs_bufV() { return new DataView(this.buffer, this.byteOffset, this.byteLength); }
-  copy(target, tStart, sStart, sEnd) {
-    if (!(target instanceof Uint8Array)) throw new TypeError("Buffer.copy: target must be a Buffer");
-    tStart = tStart === undefined ? 0 : Number(tStart);
-    sStart = sStart === undefined ? 0 : Number(sStart);
-    sEnd = sEnd === undefined ? this.length : Number(sEnd);
-    const n = Math.min(sEnd - sStart, target.length - tStart);
-    if (n <= 0) return 0;
-    target.set(this.subarray(sStart, sStart + n), tStart);
-    return n;
-  }
-  equals(other) {
-    const o = other instanceof Uint8Array ? other : Buffer.from(other);
-    if (this.length !== o.length) return false;
-    for (let i = 0; i < this.length; i++) if (this[i] !== o[i]) return false;
-    return true;
-  }
-  compare(other) { return Buffer.compare(this, other); }
-  toJSON() { return { type: "Buffer", data: [...this] }; }
+}
+Buffer.isBuffer = function isBuffer(b) {
+  return b instanceof Buffer;
 };
+Buffer.compare = function compare(buf1, buf2) {
+  if (!__wjs_bufIsU8(buf1)) throw __wjs_bufArgTypeErr('buf1', ['Buffer', 'Uint8Array'], buf1);
+  if (!__wjs_bufIsU8(buf2)) throw __wjs_bufArgTypeErr('buf2', ['Buffer', 'Uint8Array'], buf2);
+  if (buf1 === buf2) return 0;
+  return __wjs_bufCompare(buf1, buf2);
+};
+function __wjs_bufIsU8(v) { return v instanceof Uint8Array; }
+function __wjs_bufCompare(a, b) {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+  }
+  return a.length === b.length ? 0 : (a.length < b.length ? -1 : 1);
+}
+Buffer.isEncoding = function isEncoding(encoding) {
+  return typeof encoding === 'string' && encoding.length !== 0 &&
+         __wjs_bufNormalizeEncoding(encoding) !== undefined;
+};
+Buffer.concat = function concat(list, length) {
+  __wjs_bufValidateArray(list, 'list');
+  if (list.length === 0) return new __wjs_bufFastBuffer();
+  if (length === undefined) {
+    length = 0;
+    for (let i = 0; i < list.length; i++) {
+      const buf = list[i];
+      if (!__wjs_bufIsU8(buf)) {
+        throw __wjs_bufArgTypeErr(`list[${i}]`, ['Buffer', 'Uint8Array'], buf);
+      }
+      length += buf.byteLength;
+    }
+    const buffer = length <= 0 ? new __wjs_bufFastBuffer() : new __wjs_bufFastBuffer(length);
+    let pos = 0;
+    for (let i = 0; i < list.length; i++) {
+      const buf = list[i];
+      buffer.set(buf, pos);
+      pos += buf.byteLength;
+    }
+    return buffer;
+  }
+  __wjs_bufValidateInteger(length, 'length', 0);
+  for (let i = 0; i < list.length; i++) {
+    if (!__wjs_bufIsU8(list[i])) {
+      throw __wjs_bufArgTypeErr(`list[${i}]`, ['Buffer', 'Uint8Array'], list[i]);
+    }
+  }
+  const buffer = length <= 0 ? new __wjs_bufFastBuffer() : new __wjs_bufFastBuffer(length);
+  let pos = 0;
+  for (let i = 0; i < list.length; i++) {
+    const buf = list[i];
+    const bufLength = buf.byteLength;
+    if (pos + bufLength > length) {
+      buffer.set(buf.subarray(0, length - pos), pos);
+      pos = length;
+      break;
+    }
+    buffer.set(buf, pos);
+    pos += bufLength;
+  }
+  if (pos < length) {
+    __wjs_bufTAFill.call(buffer, 0, pos, length);
+  }
+  return buffer;
+};
+function __wjs_bufByteLengthUtf8(string) { return new TextEncoder().encode(string).length; }
+function __wjs_bufByteLength(string, encoding) {
+  if (typeof string !== 'string') {
+    if (ArrayBuffer.isView(string) || __wjs_bufIsAnyAB(string)) {
+      try {
+        return string.byteLength;
+      } catch {
+        return 0; // detached 视空
+      }
+    }
+    throw __wjs_bufArgTypeErr('string', ['string', 'Buffer', 'ArrayBuffer'], string);
+  }
+  const len = string.length;
+  if (len === 0) return 0;
+  if (!encoding || encoding === 'utf8') {
+    return __wjs_bufByteLengthUtf8(string);
+  }
+  if (encoding === 'ascii') {
+    return len;
+  }
+  const ops = __wjs_bufGetEncodingOps(encoding);
+  if (ops === undefined) {
+    return __wjs_bufByteLengthUtf8(string);
+  }
+  return ops.byteLength(string);
+}
+Buffer.byteLength = __wjs_bufByteLength;
+Buffer.prototype.copy = function copy(target, targetStart, sourceStart, sourceEnd) {
+  return __wjs_bufCopyImpl(this, target, targetStart, sourceStart, sourceEnd);
+};
+Buffer.prototype.toString = function toString(encoding, start, end) {
+  if (arguments.length === 0) {
+    return __wjs_bufUtf8Slice(this, 0, this.length);
+  }
+  const bufferLength = this.length;
+  if (start <= 0) start = 0;
+  else if (start >= bufferLength) return '';
+  else start = Math.trunc(start) || 0;
+  if (end === undefined || end > bufferLength) end = bufferLength;
+  else end = Math.trunc(end) || 0;
+  if (end <= start) return '';
+  if (encoding === undefined) return __wjs_bufUtf8Slice(this, start, end);
+  const ops = __wjs_bufGetEncodingOps(encoding);
+  if (ops === undefined) throw __wjs_bufEncErr(encoding);
+  return ops.slice(this, start, end);
+};
+Buffer.prototype.equals = function equals(otherBuffer) {
+  if (!__wjs_bufIsU8(otherBuffer)) {
+    throw __wjs_bufArgTypeErr('otherBuffer', ['Buffer', 'Uint8Array'], otherBuffer);
+  }
+  if (this === otherBuffer) return true;
+  const len = this.byteLength;
+  if (len !== otherBuffer.byteLength) return false;
+  return len === 0 || __wjs_bufCompare(this, otherBuffer) === 0;
+};
+let INSPECT_MAX_BYTES = 50;
+const __wjs_bufCustomInspect = Symbol.for('nodejs.util.inspect.custom');
+Buffer.prototype[__wjs_bufCustomInspect] = function inspect(recurseTimes, ctx) {
+  const max = INSPECT_MAX_BYTES;
+  const actualMax = Math.min(max, this.length);
+  const remaining = this.length - max;
+  let str = __wjs_bufHexSlice(this, 0, actualMax).replace(/(.{2})/g, '$1 ').trim();
+  if (remaining > 0) str += ` ... ${remaining} more byte${remaining > 1 ? 's' : ''}`;
+  // Inspect special properties as well, if possible（lib/buffer.js extras 段）。
+  if (ctx && typeof globalThis.__wjs_inspect === 'function') {
+    let extras = false;
+    const obj = { };
+    Object.keys(this).forEach((key) => {
+      if (/^\d+$/.test(key)) return;
+      extras = true;
+      obj[key] = this[key];
+    });
+    if (extras) {
+      if (this.length !== 0) str += ', ';
+      str += Object.keys(obj)
+        .map((key) => `${key}: ${globalThis.__wjs_inspect(obj[key], { ...ctx, breakLength: Infinity, compact: true })}`)
+        .join(', ');
+    }
+  }
+  let constructorName = 'Buffer';
+  try {
+    const { constructor } = this;
+    if (typeof constructor === 'function' &&
+        Object.prototype.hasOwnProperty.call(constructor, 'name')) {
+      constructorName = constructor.name;
+    }
+  } catch { }
+  return `<${constructorName} ${str}>`;
+};
+Buffer.prototype.inspect = Buffer.prototype[__wjs_bufCustomInspect];
+function __wjs_bufCompareOffset(source, target, targetStart, sourceStart, targetEnd, sourceEnd) {
+  const tlen = targetEnd - targetStart;
+  const slen = sourceEnd - sourceStart;
+  const n = Math.min(tlen, slen);
+  for (let i = 0; i < n; i++) {
+    const a = source[sourceStart + i];
+    const b = target[targetStart + i];
+    if (a !== b) return a < b ? -1 : 1;
+  }
+  return slen === tlen ? 0 : (slen < tlen ? -1 : 1);
+}
+Buffer.prototype.compare = function compare(target, targetStart, targetEnd, sourceStart, sourceEnd) {
+  if (!__wjs_bufIsU8(target)) {
+    throw __wjs_bufArgTypeErr('target', ['Buffer', 'Uint8Array'], target);
+  }
+  if (arguments.length === 1) return __wjs_bufCompare(this, target);
+  if (targetStart === undefined) targetStart = 0;
+  else __wjs_bufValidateOffset(targetStart, 'targetStart');
+  if (targetEnd === undefined) targetEnd = target.length;
+  else __wjs_bufValidateOffset(targetEnd, 'targetEnd', 0, target.length);
+  if (sourceStart === undefined) sourceStart = 0;
+  else __wjs_bufValidateOffset(sourceStart, 'sourceStart');
+  if (sourceEnd === undefined) sourceEnd = this.length;
+  else __wjs_bufValidateOffset(sourceEnd, 'sourceEnd', 0, this.length);
+  if (sourceStart >= sourceEnd) return (targetStart >= targetEnd ? 0 : -1);
+  if (targetStart >= targetEnd) return 1;
+  return __wjs_bufCompareOffset(this, target, targetStart, sourceStart, targetEnd, sourceEnd);
+};
+function __wjs_bufBidirectionalIndexOf(buffer, val, byteOffset, end, encoding, dir) {
+  __wjs_bufValidateBuffer(buffer);
+  if (typeof byteOffset === 'string') {
+    encoding = byteOffset;
+    byteOffset = undefined;
+  } else if (byteOffset > 0x7fffffff) {
+    byteOffset = 0x7fffffff;
+  } else if (byteOffset < -0x80000000) {
+    byteOffset = -0x80000000;
+  }
+  byteOffset = +byteOffset;
+  if (Number.isNaN(byteOffset)) {
+    byteOffset = dir ? 0 : (buffer.length || buffer.byteLength);
+  }
+  dir = !!dir;
+  if (typeof val === 'number') {
+    return __wjs_bufIndexOfNumber(buffer, val >>> 0, byteOffset, dir, end);
+  }
+  let ops;
+  if (encoding === undefined) ops = __wjs_bufEncodingOps.utf8;
+  else ops = __wjs_bufGetEncodingOps(encoding);
+  if (typeof val === 'string') {
+    if (ops === undefined) throw __wjs_bufEncErr(encoding);
+    return ops.indexOf(buffer, val, byteOffset, dir, end);
+  }
+  if (__wjs_bufIsU8(val)) {
+    // node indexOfBuffer：needle 按给定 encoding 重编码（'ucs2' 把 'f' 编成
+    // [0x66,0x00] 两字节——奇尾字节补零，非丢弃）
+    if (ops !== undefined && ops.encoding === 'utf16le') {
+      const out = new Uint8Array(val.length + (val.length % 2));
+      for (let i = 0; i < val.length; i++) out[i] = val[i];
+      return __wjs_bufIndexOfBytes(buffer, out, byteOffset, dir, end, 2);
+    }
+    if (ops !== undefined && ops.encoding !== 'utf8') {
+      const reencoded = __wjs_bufEncodeStr(ops.slice(val, 0, val.length), ops);
+      return __wjs_bufIndexOfBytes(buffer, reencoded, byteOffset, dir, end);
+    }
+    return __wjs_bufIndexOfBytes(buffer, val, byteOffset, dir, end);
+  }
+  throw __wjs_bufArgTypeErr('value', ['number', 'string', 'Buffer', 'Uint8Array'], val);
+}
+Buffer.prototype.indexOf = function indexOf(val, offset, end, encoding) {
+  if (typeof end === 'string') {
+    encoding = end;
+    end = this.length;
+  } else if (end === undefined) {
+    end = this.length;
+  }
+  return __wjs_bufBidirectionalIndexOf(this, val, offset, end, encoding, true);
+};
+Buffer.prototype.lastIndexOf = function lastIndexOf(val, offset, end, encoding) {
+  if (typeof end === 'string') {
+    encoding = end;
+    end = this.length;
+  } else if (end === undefined) {
+    end = this.length;
+  }
+  return __wjs_bufBidirectionalIndexOf(this, val, offset, end, encoding, false);
+};
+Buffer.prototype.includes = function includes(val, offset, end, encoding) {
+  if (typeof end === 'string') {
+    encoding = end;
+    end = this.length;
+  } else if (end === undefined) {
+    end = this.length;
+  }
+  return __wjs_bufBidirectionalIndexOf(this, val, offset, end, encoding, true) !== -1;
+};
+function __wjs_bufValidateOffset(value, name, min = 0, max = kMaxLength) {
+  __wjs_bufValidateInteger(value, name, min, max);
+}
+function __wjs_bufFill(buf, value, offset, end, encoding) {
+  if (value === undefined) value = 0; // node fill() 无参零填（bindingFill undefined 口径）
+  if (typeof value === 'string') {
+    if (offset === undefined || typeof offset === 'string') {
+      encoding = offset;
+      offset = 0;
+      end = buf.length;
+    } else if (typeof end === 'string') {
+      encoding = end;
+      end = buf.length;
+    }
+    const normalizedEncoding = __wjs_bufNormalizeEncoding(encoding);
+    if (normalizedEncoding === undefined) {
+      __wjs_bufValidateString(encoding, 'encoding');
+      throw __wjs_bufEncErr(encoding);
+    }
+    if (value.length === 0) {
+      value = 0;
+    } else if (value.length === 1) {
+      if (normalizedEncoding === 'utf8' || normalizedEncoding === 'ascii') {
+        const code = value.charCodeAt(0);
+        if (code < 128) value = code;
+      } else if (normalizedEncoding === 'latin1') {
+        value = value.charCodeAt(0);
+      }
+    }
+  } else {
+    encoding = undefined;
+  }
+  if (offset === undefined) {
+    offset = 0;
+    end = buf.length;
+  } else {
+    __wjs_bufValidateOffset(offset, 'offset');
+    if (end === undefined) {
+      end = buf.length;
+    } else {
+      __wjs_bufValidateOffset(end, 'end', 0, buf.length);
+    }
+    if (offset >= end) return buf;
+  }
+  if (typeof value === 'number') {
+    const byteLen = buf.byteLength;
+    const fillLength = end - offset;
+    if (offset > end || fillLength + offset > byteLen) throw __wjs_bufOobErr();
+    __wjs_bufTAFill.call(buf, value, offset, end);
+  } else {
+    const res = __wjs_bufBindingFill(buf, value, offset, end, encoding);
+    if (res < 0) {
+      if (res === -1) throw __wjs_bufArgValueErr('value', value);
+      throw __wjs_bufOobErr();
+    }
+  }
+  return buf;
+}
+function __wjs_bufBindingFill(buf, value, offset, end, encoding) {
+  let bytes;
+  if (typeof value === 'string') {
+    const ops = __wjs_bufGetEncodingOps(encoding === undefined ? 'utf8' : encoding);
+    if (ops === undefined) return -1;
+    const tmp = new __wjs_bufFastBuffer(ops.byteLength(value) || 1);
+    const actual = ops.write(tmp, value, 0, tmp.length);
+    bytes = tmp.subarray(0, actual);
+  } else if (__wjs_bufIsU8(value)) {
+    if (value.length === 0) return -1;
+    bytes = value;
+  } else {
+    return -1;
+  }
+  if (bytes.length === 0) return -1;
+  const room = end - offset;
+  if (room < bytes.length) bytes = bytes.subarray(0, room);
+  buf.set(bytes, offset);
+  for (let i = offset + bytes.length; i < end; i += bytes.length) {
+    const n = Math.min(bytes.length, end - i);
+    buf.set(bytes.subarray(0, n), i);
+  }
+  return 0;
+}
+Buffer.prototype.fill = function fill(value, offset, end, encoding) {
+  return __wjs_bufFill(this, value, offset, end, encoding);
+};
+Buffer.prototype.write = function write(string, offset, length, encoding) {
+  const bufferLength = this.length;
+  if (offset === undefined) {
+    return __wjs_bufUtf8Write(this, string, 0, bufferLength);
+  }
+  if (length === undefined && typeof offset === 'string') {
+    encoding = offset;
+    length = bufferLength;
+    offset = 0;
+  } else {
+    __wjs_bufValidateOffset(offset, 'offset', 0, bufferLength);
+    const remaining = bufferLength - offset;
+    if (length === undefined) {
+      length = remaining;
+    } else if (typeof length === 'string') {
+      encoding = length;
+      length = remaining;
+    } else {
+      __wjs_bufValidateOffset(length, 'length', 0, bufferLength);
+      if (length > remaining) length = remaining;
+    }
+  }
+  if (!encoding || encoding === 'utf8') return __wjs_bufUtf8Write(this, string, offset, length);
+  if (encoding === 'ascii') return __wjs_bufAsciiWrite(this, string, offset, length);
+  const ops = __wjs_bufGetEncodingOps(encoding);
+  if (ops === undefined) throw __wjs_bufEncErr(encoding);
+  return ops.write(this, string, offset, length);
+};
+Buffer.prototype.toJSON = function toJSON() {
+  const bufferLength = this.length;
+  if (bufferLength > 0) {
+    const data = new Array(bufferLength);
+    for (let i = 0; i < bufferLength; ++i) data[i] = this[i];
+    return { type: 'Buffer', data };
+  }
+  return { type: 'Buffer', data: [] };
+};
+function __wjs_bufAdjustOffset(offset, length) {
+  offset = Math.trunc(offset);
+  if (offset === 0) return 0;
+  if (offset < 0) {
+    offset += length;
+    return offset > 0 ? offset : 0;
+  }
+  if (offset < length) return offset;
+  return Number.isNaN(offset) ? 0 : length;
+}
+Buffer.prototype.subarray = function subarray(start, end) {
+  const srcLength = this.length;
+  start = __wjs_bufAdjustOffset(start, srcLength);
+  end = end !== undefined ? __wjs_bufAdjustOffset(end, srcLength) : srcLength;
+  const newLength = end > start ? end - start : 0;
+  return new __wjs_bufFastBuffer(this.buffer, this.byteOffset + start, newLength);
+};
+Buffer.prototype.slice = function slice(start, end) {
+  return this.subarray(start, end);
+};
+function __wjs_bufSwap(b, n, m) {
+  const i = b[n];
+  b[n] = b[m];
+  b[m] = i;
+}
+Buffer.prototype.swap16 = function swap16() {
+  const len = this.length;
+  if (len % 2 !== 0) throw __wjs_bufSizeErr('16-bits');
+  for (let i = 0; i < len; i += 2) __wjs_bufSwap(this, i, i + 1);
+  return this;
+};
+Buffer.prototype.swap32 = function swap32() {
+  const len = this.length;
+  if (len % 4 !== 0) throw __wjs_bufSizeErr('32-bits');
+  for (let i = 0; i < len; i += 4) {
+    __wjs_bufSwap(this, i, i + 3);
+    __wjs_bufSwap(this, i + 1, i + 2);
+  }
+  return this;
+};
+Buffer.prototype.swap64 = function swap64() {
+  const len = this.length;
+  if (len % 8 !== 0) throw __wjs_bufSizeErr('64-bits');
+  for (let i = 0; i < len; i += 8) {
+    __wjs_bufSwap(this, i, i + 7);
+    __wjs_bufSwap(this, i + 1, i + 6);
+    __wjs_bufSwap(this, i + 2, i + 5);
+    __wjs_bufSwap(this, i + 3, i + 4);
+  }
+  return this;
+};
+Buffer.prototype.toLocaleString = Buffer.prototype.toString;
+// parent/offset getter（lib/buffer.js 原文；prototype 上，非自有属性）
+Object.defineProperty(Buffer.prototype, 'parent', {
+  enumerable: true,
+  get() {
+    if (!(this instanceof Buffer)) return undefined;
+    return this.buffer;
+  },
+});
+Object.defineProperty(Buffer.prototype, 'offset', {
+  enumerable: true,
+  get() {
+    if (!(this instanceof Buffer)) return undefined;
+    return this.byteOffset;
+  },
+});
+// read/write 原型方法挂载（addBufferPrototypeMethods 原文结构）
+Buffer.prototype.readBigUInt64LE = __wjs_bufReadBigUInt64LE;
+Buffer.prototype.readBigUInt64BE = __wjs_bufReadBigUInt64BE;
+Buffer.prototype.readBigUint64LE = __wjs_bufReadBigUInt64LE;
+Buffer.prototype.readBigUint64BE = __wjs_bufReadBigUInt64BE;
+Buffer.prototype.readBigInt64LE = __wjs_bufReadBigInt64LE;
+Buffer.prototype.readBigInt64BE = __wjs_bufReadBigInt64BE;
+Buffer.prototype.writeBigUInt64LE = function (value, offset = 0) {
+  return __wjs_bufWriteBigU64LE(this, value, offset, 0n, 0xffffffffffffffffn);
+};
+Buffer.prototype.writeBigUInt64BE = function (value, offset = 0) {
+  return __wjs_bufWriteBigU64BE(this, value, offset, 0n, 0xffffffffffffffffn);
+};
+Buffer.prototype.writeBigUint64LE = Buffer.prototype.writeBigUInt64LE;
+Buffer.prototype.writeBigUint64BE = Buffer.prototype.writeBigUInt64BE;
+Buffer.prototype.writeBigInt64LE = function (value, offset = 0) {
+  return __wjs_bufWriteBigU64LE(this, value, offset, -0x8000000000000000n, 0x7fffffffffffffffn);
+};
+Buffer.prototype.writeBigInt64BE = function (value, offset = 0) {
+  return __wjs_bufWriteBigU64BE(this, value, offset, -0x8000000000000000n, 0x7fffffffffffffffn);
+};
+Buffer.prototype.readUIntLE = __wjs_bufReadUIntLE;
+Buffer.prototype.readUInt32LE = function (offset) { return __wjs_bufReadUInt32LE(this, offset); };
+Buffer.prototype.readUInt16LE = function (offset) { return __wjs_bufReadUInt16LE(this, offset); };
+Buffer.prototype.readUInt8 = function (offset) { return __wjs_bufReadUInt8(this, offset); };
+Buffer.prototype.readUIntBE = __wjs_bufReadUIntBE;
+Buffer.prototype.readUInt32BE = function (offset) { return __wjs_bufReadUInt32BE(this, offset); };
+Buffer.prototype.readUInt16BE = function (offset) { return __wjs_bufReadUInt16BE(this, offset); };
+Buffer.prototype.readUintLE = __wjs_bufReadUIntLE;
+Buffer.prototype.readUint32LE = Buffer.prototype.readUInt32LE;
+Buffer.prototype.readUint16LE = Buffer.prototype.readUInt16LE;
+Buffer.prototype.readUint8 = Buffer.prototype.readUInt8;
+Buffer.prototype.readUintBE = __wjs_bufReadUIntBE;
+Buffer.prototype.readUint32BE = Buffer.prototype.readUInt32BE;
+Buffer.prototype.readUint16BE = Buffer.prototype.readUInt16BE;
+Buffer.prototype.readIntLE = __wjs_bufReadIntLE;
+Buffer.prototype.readInt32LE = function (offset) { return __wjs_bufReadInt32LE(this, offset); };
+Buffer.prototype.readInt16LE = function (offset) { return __wjs_bufReadInt16LE(this, offset); };
+Buffer.prototype.readInt8 = function (offset) { return __wjs_bufReadInt8(this, offset); };
+Buffer.prototype.readIntBE = __wjs_bufReadIntBE;
+Buffer.prototype.readInt32BE = function (offset) { return __wjs_bufReadInt32BE(this, offset); };
+Buffer.prototype.readInt16BE = function (offset) { return __wjs_bufReadInt16BE(this, offset); };
+Buffer.prototype.writeUIntLE = __wjs_bufWriteUIntLE;
+Buffer.prototype.writeUInt32LE = function (value, offset = 0) { return __wjs_bufWriteU32LE(this, value, offset, 0, 0xffffffff); };
+Buffer.prototype.writeUInt16LE = function (value, offset = 0) { return __wjs_bufWriteU16LE(this, value, offset, 0, 0xffff); };
+Buffer.prototype.writeUInt8 = function (value, offset = 0) { return __wjs_bufWriteU8(this, value, offset, 0, 0xff); };
+Buffer.prototype.writeUIntBE = __wjs_bufWriteUIntBE;
+Buffer.prototype.writeUInt32BE = function (value, offset = 0) { return __wjs_bufWriteU32BE(this, value, offset, 0, 0xffffffff); };
+Buffer.prototype.writeUInt16BE = function (value, offset = 0) { return __wjs_bufWriteU16BE(this, value, offset, 0, 0xffff); };
+Buffer.prototype.writeUintLE = __wjs_bufWriteUIntLE;
+Buffer.prototype.writeUint32LE = Buffer.prototype.writeUInt32LE;
+Buffer.prototype.writeUint16LE = Buffer.prototype.writeUInt16LE;
+Buffer.prototype.writeUint8 = Buffer.prototype.writeUInt8;
+Buffer.prototype.writeUintBE = __wjs_bufWriteUIntBE;
+Buffer.prototype.writeUint32BE = Buffer.prototype.writeUInt32BE;
+Buffer.prototype.writeUint16BE = Buffer.prototype.writeUInt16BE;
+Buffer.prototype.writeIntLE = __wjs_bufWriteIntLE;
+function __wjs_bufWriteIntBE(value, offset, byteLength) {
+  if (byteLength === 6) return __wjs_bufWriteU48BE(this, value, offset, -0x800000000000, 0x7fffffffffff);
+  if (byteLength === 5) return __wjs_bufWriteU40BE(this, value, offset, -0x8000000000, 0x7fffffffff);
+  if (byteLength === 3) return __wjs_bufWriteU24BE(this, value, offset, -0x800000, 0x7fffff);
+  if (byteLength === 4) return __wjs_bufWriteU32BE(this, value, offset, -0x80000000, 0x7fffffff);
+  if (byteLength === 2) return __wjs_bufWriteU16BE(this, value, offset, -0x8000, 0x7fff);
+  if (byteLength === 1) return __wjs_bufWriteU8(this, value, offset, -0x80, 0x7f);
+  __wjs_bufBoundsError(byteLength, 6, 'byteLength');
+}
+function __wjs_bufWriteIntLE(value, offset, byteLength) {
+  if (byteLength === 6) return __wjs_bufWriteU48LE(this, value, offset, -0x800000000000, 0x7fffffffffff);
+  if (byteLength === 5) return __wjs_bufWriteU40LE(this, value, offset, -0x8000000000, 0x7fffffffff);
+  if (byteLength === 3) return __wjs_bufWriteU24LE(this, value, offset, -0x800000, 0x7fffff);
+  if (byteLength === 4) return __wjs_bufWriteU32LE(this, value, offset, -0x80000000, 0x7fffffff);
+  if (byteLength === 2) return __wjs_bufWriteU16LE(this, value, offset, -0x8000, 0x7fff);
+  if (byteLength === 1) return __wjs_bufWriteU8(this, value, offset, -0x80, 0x7f);
+  __wjs_bufBoundsError(byteLength, 6, 'byteLength');
+}
+Buffer.prototype.writeInt32LE = function (value, offset = 0) { return __wjs_bufWriteU32LE(this, value, offset, -0x80000000, 0x7fffffff); };
+Buffer.prototype.writeInt16LE = function (value, offset = 0) { return __wjs_bufWriteU16LE(this, value, offset, -0x8000, 0x7fff); };
+Buffer.prototype.writeInt8 = function (value, offset = 0) { return __wjs_bufWriteU8(this, value, offset, -0x80, 0x7f); };
+Buffer.prototype.writeIntBE = __wjs_bufWriteIntBE;
+Buffer.prototype.writeInt32BE = function (value, offset = 0) { return __wjs_bufWriteU32BE(this, value, offset, -0x80000000, 0x7fffffff); };
+Buffer.prototype.writeInt16BE = function (value, offset = 0) { return __wjs_bufWriteU16BE(this, value, offset, -0x8000, 0x7fff); };
+Buffer.prototype.readFloatLE = __wjs_bufReadFloatLE;
+Buffer.prototype.readFloatBE = __wjs_bufReadFloatBE;
+Buffer.prototype.readDoubleLE = __wjs_bufReadDoubleLE;
+Buffer.prototype.readDoubleBE = __wjs_bufReadDoubleBE;
+Buffer.prototype.writeFloatLE = __wjs_bufWriteFloatLE;
+Buffer.prototype.writeFloatBE = __wjs_bufWriteFloatBE;
+Buffer.prototype.writeDoubleLE = __wjs_bufWriteDoubleLE;
+Buffer.prototype.writeDoubleBE = __wjs_bufWriteDoubleBE;
+Buffer.prototype.asciiWrite = function (string, offset, length) { return __wjs_bufAsciiWrite(this, string, offset, length); };
+Buffer.prototype.base64Write = function (string, offset, length) { return __wjs_bufBase64Write(this, string, offset, length); };
+Buffer.prototype.base64urlWrite = function (string, offset, length) { return __wjs_bufBase64urlWrite(this, string, offset, length); };
+Buffer.prototype.latin1Write = function (string, offset, length) { return __wjs_bufLatin1Write(this, string, offset, length); };
+Buffer.prototype.hexWrite = function (string, offset, length) { return __wjs_bufHexWrite(this, string, offset, length); };
+Buffer.prototype.ucs2Write = function (string, offset, length) { return __wjs_bufUcs2Write(this, string, offset, length); };
+Buffer.prototype.utf8Write = function (string, offset, length) { return __wjs_bufUtf8Write(this, string, offset, length); };
+Buffer.prototype.asciiSlice = function (start, end) { return __wjs_bufAsciiSlice(this, start, end); };
+Buffer.prototype.base64Slice = function (start, end) { return __wjs_bufB64Slice(this, start, end, false); };
+Buffer.prototype.base64urlSlice = function (start, end) { return __wjs_bufB64Slice(this, start, end, true); };
+Buffer.prototype.latin1Slice = function (start, end) { return __wjs_bufLatin1Slice(this, start, end); };
+Buffer.prototype.hexSlice = function (start, end) { return __wjs_bufHexSlice(this, start, end); };
+Buffer.prototype.ucs2Slice = function (start, end) { return __wjs_bufUcs2Slice(this, start, end); };
+Buffer.prototype.utf8Slice = function (start, end) { return __wjs_bufUtf8Slice(this, start, end); };
+globalThis.__wjs_bufApi = {
+  get INSPECT_MAX_BYTES() { return INSPECT_MAX_BYTES; },
+  set INSPECT_MAX_BYTES(v) {
+    __wjs_bufValidateNumber(v, 'INSPECT_MAX_BYTES', 0);
+    INSPECT_MAX_BYTES = v;
+  },
+  kMaxLength,
+  kStringMaxLength,
+  isUtf8(input) {
+    if ((ArrayBuffer.isView(input) && !(input instanceof DataView)) || __wjs_bufIsAnyAB(input)) {
+      const u8 = __wjs_bufAsU8(input) ?? new Uint8Array(0);
+      try {
+        new TextDecoder('utf-8', { fatal: true }).decode(u8);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    throw __wjs_bufArgTypeErr('input', ['ArrayBuffer', 'Buffer', 'TypedArray'], input);
+  },
+  isAscii(input) {
+    if ((ArrayBuffer.isView(input) && !(input instanceof DataView)) || __wjs_bufIsAnyAB(input)) {
+      const u8 = __wjs_bufAsU8(input) ?? new Uint8Array(0);
+      for (let i = 0; i < u8.length; i++) {
+        if (u8[i] > 0x7f) return false;
+      }
+      return true;
+    }
+    throw __wjs_bufArgTypeErr('input', ['ArrayBuffer', 'Buffer', 'TypedArray'], input);
+  },
+  btoa(input) {
+    if (arguments.length === 0) throw __wjs_bufMissingArgsErr('input');
+    return globalThis.btoa(`${input}`);
+  },
+  atob(input) {
+    if (arguments.length === 0) throw __wjs_bufMissingArgsErr('input');
+    return globalThis.atob(`${input}`);
+  },
+  transcode(source, fromEncoding, toEncoding) {
+    if (!__wjs_bufIsU8(source)) {
+      throw __wjs_bufArgTypeErr('source', ['Buffer', 'Uint8Array'], source);
+    }
+    if (source.length === 0) return new __wjs_bufFastBuffer();
+    fromEncoding = __wjs_bufNormalizeEncoding(fromEncoding) || fromEncoding;
+    toEncoding = __wjs_bufNormalizeEncoding(toEncoding) || toEncoding;
+    const fromOps = __wjs_bufGetEncodingOps(fromEncoding);
+    const toOps = __wjs_bufGetEncodingOps(toEncoding);
+    if (fromOps === undefined || toOps === undefined) {
+      const e = new RangeError(`Unable to transcode Buffer [U_UNKNOWN_ENCODING]`);
+      e.code = 'ERR_UNKNOWN_ENCODING';
+      e.errno = -1;
+      throw e;
+    }
+    const decoded = fromOps.slice(source, 0, source.length);
+    return __wjs_bufFromStringFast(decoded, toOps);
+  },
+};
+
+// Uint8Array 构造失败文案桥（V8 "Invalid typed array length: N" 口径；
+// SM 抛自有文案，套件按 V8 插值断言；newTarget 必须透传，否则 TypedArray
+// 子类化（`class X extends Uint8Array`）全灭为基类原型——10f buffer 实测）。
+(() => {
+  const U8 = globalThis.Uint8Array;
+  globalThis.Uint8Array = new Proxy(U8, {
+    construct(target, args, newTarget) {
+      try {
+        return Reflect.construct(target, args, newTarget);
+      } catch (e) {
+        throw new RangeError(`Invalid typed array length: ${args[0]}`);
+      }
+    },
+  });
+})();
+
+// String.prototype.repeat 的 RangeError 文案桥（V8 口径："Invalid string length"/
+// "Invalid count value: N"；SM 文案不同，套件正则按 V8 断言）
+(() => {
+  const rep = String.prototype.repeat;
+  Object.defineProperty(String.prototype, 'repeat', {
+    value: function (count) {
+      if (typeof count === 'number' && count < 0) {
+        throw new RangeError(`Invalid count value: ${count}`);
+      }
+      try {
+        return rep.call(this, count);
+      } catch (e) {
+        throw e instanceof RangeError ? new RangeError('Invalid string length') : e;
+      }
+    },
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
+})();
+globalThis.__wjs_bufDecode = __wjs_bufDecode;
+globalThis.__wjs_bufEncode = __wjs_bufEncode;
+globalThis.Buffer = Buffer;
+})();
 const __wjs_keyState = new WeakMap();
 function NotSupportedError_(what) { return new Error(`NotSupportedError: unsupported ${what}`); }
 function __wjs_normHash(h) {

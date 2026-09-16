@@ -28,8 +28,8 @@ const w = Buffer.alloc(8);
 if (w.write("hi", 2) !== 2 || w.slice(2, 4).toString() !== "hi") throw new Error("write failed");
 if (JSON.parse(JSON.stringify(b)).type !== "Buffer") throw new Error("toJSON failed");
 // fs 互操作：Buffer 进出 writeFile/readFile
-try { Buffer.from("zz", "hex"); throw new Error("must throw"); }
-catch (e) { if (!String(e.message).includes("hex")) throw e; }
+// 10f：坏 hex 不抛（真机 26 口径：非 hex 字符截断/空回，与旧实现抛错不同）；
+if (Buffer.from("zz", "hex").length !== 0) throw new Error("bad-hex should be empty");
 try { Buffer.from("x", "nope-enc"); throw new Error("must throw"); }
 catch (e) { if (!String(e.message).includes("encoding")) throw e; }
 console.log("buffer-ok");
@@ -47,7 +47,7 @@ fn phase9b_buffer_module_surface() {
         &dir,
         "p.mjs",
         r#"
-import buffer, { Buffer, constants, SlowBuffer, kMaxLength, INSPECT_MAX_BYTES } from "node:buffer";
+import buffer, { Buffer, constants, kMaxLength, INSPECT_MAX_BYTES } from "node:buffer";
 // from + 编码面（口径：hex/base64/base64url/utf8/latin1/ascii/utf16le）
 const b = Buffer.from("hi", "utf8");
 console.log("enc", b.toString("hex"), b.toString("base64"), b.toString("base64url"),
@@ -72,9 +72,9 @@ console.log("subarray-share", t[2] === 120, t.slice(2, 6).length);
 const d = Buffer.alloc(4); t.copy(d, 0, 2, 6);
 console.log("copy", d.toString("latin1"));
 console.log("eq", Buffer.from("x").equals(Buffer.from("x")), Buffer.from("x").equals(Buffer.from("y")));
-// 模块面
+// 模块面（10f：SlowBuffer 真机 26 已移除，断言 undefined）
 console.log("mod", typeof buffer.Buffer, constants.MAX_LENGTH === kMaxLength, INSPECT_MAX_BYTES,
-  SlowBuffer(4).length, buffer.kStringMaxLength > 0);
+  typeof buffer.SlowBuffer, buffer.kStringMaxLength > 0);
 // 报错三件
 try { Buffer.from(42); } catch (e) { console.log("e1", e.constructor.name); }
 try { Buffer.alloc(-1); } catch (e) { console.log("e2", e.constructor.name); }
@@ -102,7 +102,7 @@ try { Buffer.alloc(1).copy("no"); } catch (e) { console.log("e6", e.constructor.
     assert!(out.contains("subarray-share true 4"), "out: {out}");
     assert!(out.contains("copy xbcd"), "out: {out}");
     assert!(out.contains("eq true false"), "out: {out}");
-    assert!(out.contains("mod function true 50 4 true"), "out: {out}");
+    assert!(out.contains("mod function true 50 undefined true"), "out: {out}");
     assert!(out.contains("e1 TypeError"), "out: {out}");
     assert!(out.contains("e2 RangeError"), "out: {out}");
     assert!(out.contains("e3 TypeError"), "out: {out}");
@@ -241,6 +241,86 @@ console.log("filemod", typeof buffer.File);
         "view true true",
         "err TypeError",
         "filemod function",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_buffer_parity_fixes() {
+    // 10f buffer 对拍牵引的回归（test-buffer-* 套件门）：
+    // 正常：伪 AB 品牌拒收/真 AB 直通/transfer detach 后 isAscii 真/池共享/
+    //   INSPECT_MAX_BYTES 具名 50/Uint8Array 子类化透传；
+    // 报错：池 postMessage DataCloneError(25)/池 transfer TypeError；
+    // 边界：INSPECT_MAX_BYTES 负值 RangeError/空串池化不崩。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import buffer, { Buffer, INSPECT_MAX_BYTES } from "node:buffer";
+import { MessageChannel } from "node:worker_threads";
+// 品牌：伪 AB（原型链伪造）拒收，真 AB 放行
+function AB() {}
+Object.setPrototypeOf(AB, ArrayBuffer);
+Object.setPrototypeOf(AB.prototype, ArrayBuffer.prototype);
+try { Buffer.from(new AB()); console.log("brand BAD"); }
+catch (e) { console.log("brand", e.code === "ERR_INVALID_ARG_TYPE", /an instance of AB/.test(e.message)); }
+console.log("real", Buffer.from(new ArrayBuffer(5)).length === 5);
+// detach：transfer 即归零，isAscii/isUtf8 视空为真
+{
+  const ab = new ArrayBuffer(1);
+  const ta = new Uint8Array(ab); ta[0] = 0xff;
+  const { isAscii } = buffer;
+  console.log("pre", isAscii(ab) === false);
+  structuredClone(ab, { transfer: [ab] });
+  console.log("detached", ab.byteLength === 0, ta.length === 0, isAscii(ab) === true);
+}
+// 池：小串共享池 AB；postMessage 拒收 25；transfer 拒收 TypeError；事后仍共享
+{
+  const a = Buffer.from("hello world");
+  const b = Buffer.from("hello world");
+  console.log("pool-share", a.buffer === b.buffer, a.length === 11);
+  const { port1 } = new MessageChannel();
+  try { port1.postMessage(a, [a.buffer]); console.log("post BAD"); }
+  catch (e) { console.log("post", e.name === "DataCloneError", e.code === 25); }
+  console.log("still", a.buffer === b.buffer, a.length === 11);
+  try { a.buffer.transfer(); console.log("xfer BAD"); }
+  catch (e) { console.log("xfer", e.name === "TypeError"); }
+  console.log("still2", a.buffer === b.buffer);
+}
+// INSPECT_MAX_BYTES：具名 50；负值 RangeError（边界）
+console.log("imb", INSPECT_MAX_BYTES === 50, buffer.INSPECT_MAX_BYTES === 50);
+try { buffer.INSPECT_MAX_BYTES = -1; console.log("imb-set BAD"); }
+catch (e) { console.log("imb-err", e.constructor.name === "RangeError"); }
+// Proxy newTarget：用户子类化不断链（stream fromWeb 回归）
+{
+  class E extends Uint8Array {}
+  const e = new E(new ArrayBuffer(4), 0, 2);
+  console.log("subclass", Object.getPrototypeOf(e) === E.prototype, e.constructor.name === "E");
+}
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "brand true true",
+        "real true",
+        "pre true",
+        "detached true true true",
+        "pool-share true true",
+        "post true true",
+        "still true true",
+        "xfer true",
+        "still2 true",
+        "imb true true",
+        "imb-err true",
+        "subclass true true",
     ] {
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }

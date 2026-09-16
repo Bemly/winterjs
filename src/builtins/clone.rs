@@ -2,9 +2,11 @@
 //! 已知偏差（文档记录）：顶层 undefined → undefined（直通）；对象属性里的 undefined
 //! 按 JSON 语义丢弃；Map/Set/Date 等非纯对象 Phase 1 不支持（DataCloneError）；
 //! NaN/±Infinity → DataCloneError（JSON 无法表示）。
+//! 10f：`{ transfer: [ab] }` 支持 ArrayBuffer detach（isAscii/isUtf8 套件口径；
+//! 返回值仍按 JSON 中转，transfer 的克隆语义以 detach 副作用为准）。
 
 use mozjs::context::JSContext;
-use mozjs::jsapi::{HandleValueArray, JS_GetElement, JS_ParseJSON, JSObject};
+use mozjs::jsapi::{HandleValueArray, JS_GetElement, JS_GetProperty, JS_ParseJSON, JSObject};
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 
@@ -169,6 +171,64 @@ pub unsafe extern "C" fn structured_clone(
         return false;
     }
     let input = frame.arg(0);
+
+    // 10f：transfer 列表的 ArrayBuffer 即 detach（源归零，真机同款）。
+    // 只做副作用（返回仍 JSON 中转）；非数组/无 transfer 即跳过。
+    if argc >= 2 {
+        let opts = frame.arg(1);
+        if opts.is_object() {
+            rooted!(&in(cx) let opts_obj: *mut JSObject = opts.to_object());
+            rooted!(&in(cx) let mut transfer_v = UndefinedValue());
+            let ok = JS_GetProperty(
+                cx.raw_cx(),
+                raw_handle(opts_obj.as_ptr()),
+                c"transfer".as_ptr(),
+                raw_handle_mut(transfer_v.as_ptr()),
+            );
+            if ok && transfer_v.is_object() {
+                rooted!(&in(cx) let transfer_root = transfer_v.get());
+                let mut is_array = false;
+                let ok = mozjs::jsapi::IsArrayObject(
+                    cx.raw_cx(),
+                    raw_handle(transfer_root.as_ptr()),
+                    &mut is_array,
+                );
+                if ok && is_array {
+                    rooted!(&in(cx) let transfer_obj: *mut JSObject = transfer_root.to_object());
+                    let mut len = 0u32;
+                    let ok = mozjs::jsapi::GetArrayLength(
+                        cx.raw_cx(),
+                        raw_handle(transfer_obj.as_ptr()),
+                        &mut len,
+                    );
+                    if ok {
+                        for i in 0..len {
+                            rooted!(&in(cx) let mut elem = UndefinedValue());
+                            let ok = JS_GetElement(
+                                cx.raw_cx(),
+                                raw_handle(transfer_obj.as_ptr()),
+                                i,
+                                raw_handle_mut(elem.as_ptr()),
+                            );
+                            if !ok || !elem.is_object() {
+                                continue;
+                            }
+                            let obj = elem.to_object();
+                            // 只 detach 真 AB（品牌检查；伪造/已 detach 即跳过）
+                            if mozjs::jsapi::JS::IsArrayBufferObject(obj) {
+                                rooted!(&in(cx) let ab_root: *mut JSObject = obj);
+                                // 失败即跳过（后续 JSON 路径按原语义；detach 幂等）
+                                let _ = mozjs::jsapi::JS::DetachArrayBuffer(
+                                    cx.raw_cx(),
+                                    raw_handle(&ab_root.get()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // 顶层 undefined 直通（规范行为；JSON 无法表示）
     if input.is_undefined() {

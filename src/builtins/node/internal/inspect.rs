@@ -370,8 +370,42 @@ function inspect2(value, ctx, depth, seen) {
     const idx = seen.indexOf(value);
     if (idx !== -1) return `[Circular * ${idx + 1}]`;
   }
-  if (typeof value !== 'object' || value === null) return formatPrimitive(value, ctx);
-  if (depth < 0) return Array.isArray(value) ? '[Array]' : '[Object]';
+  // 10f：函数不走 primitives（Node formatValue 亦然；否则 '[Function]' 变 'unknown'）
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return formatPrimitive(value, ctx);
+  // 10f：depth<0 只截断容器（Array/普通对象/Map/Set/TypedArray/AB），Date/Error/
+  // RegExp/Promise/函数照常展开（真机口径）；空容器仍显体，非空显 `[Prefix]`。
+  if (depth < 0) {
+    if (value instanceof Error || value instanceof Date || value instanceof RegExp ||
+        value instanceof Promise || typeof value === 'function') {
+      // 落空到下述正常格式化
+    } else if (value instanceof Map) {
+      return value.size === 0 ? 'Map(0) {}' : '[Map]';
+    } else if (value instanceof Set) {
+      return value.size === 0 ? 'Set(0) {}' : '[Set]';
+    } else if (Array.isArray(value)) {
+      if (value.length === 0) {
+        const extra = Reflect.ownKeys(value).filter((k) => k !== 'length' &&
+          !(typeof k === 'string' && /^[0-9]+$/.test(k)));
+        if (extra.length === 0) return '[]';
+      }
+      return '[Array]';
+    } else if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer ||
+        (typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer)) {
+      const cn = constructorName(value);
+      return `[${cn ?? 'ArrayBuffer'}]`;
+    } else {
+      let keys;
+      try { keys = Reflect.ownKeys(value); } catch { return '[Object]'; }
+      if (keys.length === 0) {
+        const p = prefixOf(value) || (Object.getPrototypeOf(value) === null ? '[Object: null prototype] ' : '');
+        return p ? `${p}{}` : '{}';
+      }
+      const cn = constructorName(value);
+      if (cn === null) return '[Object: null prototype]';
+      if (cn === 'Object' || cn === '') return '[Object]';
+      return `[${cn}]`;
+    }
+  }
 
   // custom inspect（customInspect:false 关闭；返回自身则继续普通格式化；异常传播）
   if (ctx.customInspect && typeof value[kCustom] === 'function') {

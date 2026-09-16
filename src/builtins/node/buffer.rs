@@ -1,75 +1,48 @@
-//! `node:buffer`——全局 Buffer（Uint8Array 子类，prelude 实现）的模块面。
-/// 源：nodejs/node（MIT）对应件最小实现；偏差见 docs/plan.md Phase 9b。
-pub const SOURCE: &str = r#"const Buffer = globalThis.Buffer;
-
-const kMaxLength = 2147483647;
-const kStringMaxLength = 536870888;
+//! `node:buffer`——全局 Buffer（prelude 逐字移植实现，见 builtins/mod.rs 头注）
+//! 的模块面。Node `lib/buffer.js` exports 原文口径：Buffer/transcode/isUtf8/
+//! isAscii/kMaxLength/kStringMaxLength/btoa/atob + constants/INSPECT_MAX_BYTES
+//! (getter/setter)/File/Blob。SlowBuffer 已移除（真机 26 `typeof undefined`，§4.65）。
+pub const SOURCE: &str = r#"
+const Buffer = globalThis.Buffer;
+const api = globalThis.__wjs_bufApi;
 
 const constants = {
-  MAX_LENGTH: kMaxLength,
-  MAX_STRING_LENGTH: kStringMaxLength,
-  kMaxLength,
-  kStringMaxLength,
+  MAX_LENGTH: api.kMaxLength,
+  MAX_STRING_LENGTH: api.kStringMaxLength,
 };
-
-// Deprecated alias（Node 口径）：等价 new Buffer(size)。
-// 注意不能写 `new Buffer.alloc`——class 静态方法无 [[Construct]]，直接 TypeError。
-const SlowBuffer = function SlowBuffer(size) {
-  return new Buffer(size);
-};
-
-// isAscii/isUtf8（Node 21.1+/22+；@exodus/bytes 等取此面；真机 26.8.2 全集
-// 就这两个——isUtf16Le/Be 非 Node 面，曾超集误加已删，§4.65 纪律）：
-// 实参收 ArrayBuffer/视图，非法形 TypeError（validateBuffer 口径），
-// detached 视 false。校验用 fatal TextDecoder（解码抛错即非法）。
-function toU8(value) {
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) {
-    const ab = value.buffer;
-    if (ab && ab.detached) return null;
-    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  }
-  throw new TypeError(
-    `The "value" argument must be an ArrayBuffer or ArrayBufferView`,
-  );
-}
-function isValidWith(label, value) {
-  const u8 = toU8(value);
-  if (u8 === null) return false;
-  try {
-    new TextDecoder(label, { fatal: true }).decode(u8);
-    return true;
-  } catch {
-    return false;
-  }
-}
-export function isAscii(value) {
-  const u8 = toU8(value);
-  if (u8 === null) return false;
-  for (let i = 0; i < u8.length; i++) {
-    if (u8[i] > 0x7f) return false;
-  }
-  return true;
-}
-export function isUtf8(value) {
-  return isValidWith("utf-8", value);
-}
 
 const buffer = {
   Buffer,
-  SlowBuffer,
+  transcode: api.transcode,
+  isUtf8: api.isUtf8,
+  isAscii: api.isAscii,
+  kMaxLength: api.kMaxLength,
+  kStringMaxLength: api.kStringMaxLength,
+  btoa: api.btoa,
+  atob: api.atob,
   constants,
-  INSPECT_MAX_BYTES: 50,
-  kMaxLength,
-  kStringMaxLength,
-  isAscii,
-  isUtf8,
   File: globalThis.File,
+  Blob: globalThis.Blob,
 };
+// 10f：具名 `INSPECT_MAX_BYTES` 真机 26 可 import（值为 50）；ESM live 性经
+// 默认对象 setter 回写（import 侧只读，真机同款）。
+export let INSPECT_MAX_BYTES = api.INSPECT_MAX_BYTES;
+Object.defineProperty(buffer, 'INSPECT_MAX_BYTES', {
+  enumerable: true,
+  configurable: true,
+  get() { return INSPECT_MAX_BYTES; },
+  set(val) { api.INSPECT_MAX_BYTES = val; INSPECT_MAX_BYTES = api.INSPECT_MAX_BYTES; },
+});
 
 export default buffer;
-export { Buffer, SlowBuffer, constants, kMaxLength, kStringMaxLength };
+export { Buffer, constants };
+export const transcode = api.transcode;
+export const isUtf8 = api.isUtf8;
+export const isAscii = api.isAscii;
+export const kMaxLength = api.kMaxLength;
+export const kStringMaxLength = api.kStringMaxLength;
+export const btoa = api.btoa;
+export const atob = api.atob;
 export const File = globalThis.File;
-export const INSPECT_MAX_BYTES = 50;
-
+export const Blob = globalThis.Blob;
 "#;

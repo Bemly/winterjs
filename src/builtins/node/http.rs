@@ -15,13 +15,24 @@ import {
 } from "node:internal/http_framing";
 
 const FLAVOR = { protocol: "http:", defaultPort: 80, other: "node:https" };
-const Server = withHttpServer(net.Server);
+const __HttpServerBase = withHttpServer(net.Server);
+// Server 首参 listener 形态（Node: `new Server(cb)`/`Server(cb)` 即 request 监听）。
+// withHttpServer 的包装只透传基类构造实参（connection 监听），request 监听在此接。
+function Server(...args) {
+  const s = new __HttpServerBase();
+  const first = args[0];
+  if (typeof first === "function") s.on("request", first);
+  else if (args.length > 1 && typeof args[1] === "function") s.on("request", args[1]);
+  return s;
+}
+Object.setPrototypeOf(Server, __HttpServerBase);
+Server.prototype = __HttpServerBase.prototype;
 const ClientRequest = withClientRequest(
   (host, port) => net.connect(port, host),
   FLAVOR,
 );
 class Agent extends BaseAgent {}
-Agent.prototype.__openSocket = (host, port) => net.connect(port, host);
+Agent.prototype.__openSocket = (host, port) => net.connect({ port, host, noDelay: true });
 Agent.prototype.__defaultPort = 80;
 const globalAgent = new Agent();
 FLAVOR.defaultAgent = globalAgent;
@@ -35,7 +46,7 @@ export function get(a, b, c) {
   return getFrom(ClientRequest, options, cb);
 }
 export function createServer(options, cb) {
-  const server = new Server();
+  const server = new __HttpServerBase();
   if (typeof options === "function") server.on("request", options);
   else if (typeof cb === "function") server.on("request", cb);
   return server;

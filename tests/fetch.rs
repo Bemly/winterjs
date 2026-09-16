@@ -131,7 +131,7 @@ fn phase3_fetch_in_flight_abort() {
         (200, vec![], b"too-late".to_vec())
     });
     let code = format!(
-        r#"const c = new AbortController(); const p = fetch("http://127.0.0.1:{port}/slow", {{ signal: c.signal }}); setTimeout(() => c.abort(), 50); try {{ await p; console.log("no-throw"); }} catch (e) {{ console.log("aborted:" + String(e && e.message || e).includes("AbortError")); }}"#
+        r#"const c = new AbortController(); const p = fetch("http://127.0.0.1:{port}/slow", {{ signal: c.signal }}); setTimeout(() => c.abort(), 50); try {{ await p; console.log("no-throw"); }} catch (e) {{ console.log("aborted:" + (e && e.name === "AbortError")); }}"#
     );
     assert_eq!(
         stdout_of(&mut winterjs().args(["--eval", &code])),

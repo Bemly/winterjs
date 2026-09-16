@@ -3424,7 +3424,9 @@ function __wjs_abortFire(signal, reason) {
   const st = __wjs_abortState.get(signal);
   if (!st || st.aborted) return;
   st.aborted = true;
-  st.reason = reason === undefined ? new Error("AbortError: signal aborted") : reason;
+  st.reason = reason === undefined
+    ? new DOMException("This operation was aborted", "AbortError")
+    : reason;
   const event = new Event("abort");
   // onabort 独立属性路径（Node 同为 getter/setter 而非 EventTarget on* 表）；
   // 沿既有口径吞错（abort 链失败不该炸用户回调）。
@@ -3455,7 +3457,7 @@ globalThis.AbortSignal = class AbortSignal extends EventTarget {
     const c = new AbortController();
     const t = Number(ms);
     if (!Number.isFinite(t) || t < 0) throw new TypeError("AbortSignal.timeout needs a non-negative delay");
-    setTimeout(() => c.abort(new Error("TimeoutError: signal timed out")), t);
+    setTimeout(() => c.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), t);
     return c.signal;
   }
   static any(signals) {

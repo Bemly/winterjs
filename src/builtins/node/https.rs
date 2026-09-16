@@ -16,7 +16,17 @@ import {
 } from "node:internal/http_framing";
 
 const FLAVOR = { protocol: "https:", defaultPort: 443, other: "node:http" };
-const Server = withHttpServer(tls.Server);
+const __HttpServerBase = withHttpServer(tls.Server);
+// Server 首参 listener 形态（Node 口径，与 node:http 同）。
+function Server(...args) {
+  const s = new __HttpServerBase(args[0] ?? {});
+  const first = args[0];
+  if (typeof first === "function") s.on("request", first);
+  else if (args.length > 1 && typeof args[1] === "function") s.on("request", args[1]);
+  return s;
+}
+Object.setPrototypeOf(Server, __HttpServerBase);
+Server.prototype = __HttpServerBase.prototype;
 const ClientRequest = withClientRequest(
   (host, port, extra) => tls.connect({
     port, host,
@@ -46,7 +56,7 @@ export function get(a, b, c) {
   return getFrom(ClientRequest, options, cb);
 }
 export function createServer(options, cb) {
-  const server = new Server(options ?? {});
+  const server = new __HttpServerBase(options ?? {});
   if (typeof options === "function") server.on("request", options);
   else if (typeof cb === "function") server.on("request", cb);
   return server;

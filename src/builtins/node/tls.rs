@@ -206,7 +206,11 @@ pub unsafe extern "C" fn tls_connect(
     let servername = opts.servername.unwrap_or_else(|| host.clone());
     handle.spawn(async move {
         let tcp = match tokio::net::TcpStream::connect((host.as_str(), port as u16)).await {
-            Ok(s) => s,
+            Ok(s) => {
+                // https 客户端默认 noDelay（Node https.js 口径）。
+                let _ = s.set_nodelay(true);
+                s
+            }
             Err(e) => {
                 let code = crate::builtins::node::fs::io_code(&e);
                 let _ = ev_tx.send(NetEvent {

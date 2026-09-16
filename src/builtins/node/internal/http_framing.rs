@@ -353,7 +353,7 @@ export class OutgoingMessage extends Writable {
 
 // 服务端混入：Base = net.Server / tls.Server（构造实参原样透传基类）。
 export function withHttpServer(Base) {
-  return class HttpServer extends Base {
+  class __HttpServer extends Base {
     constructor(...args) {
       super(...args);
       this.__closing = false;
@@ -364,6 +364,11 @@ export function withHttpServer(Base) {
         sock.__httpState = st;
         sock.on("close", () => {
           this.__sockets.delete(sock);
+          // 连接断时未完的req/res一起收尾：req destroy触发pipeline的
+          // PREMATURE_CLOSE（客户端中断上传用例），res destroy防写半开。
+          if (st.req !== null && !st.req.complete && !st.req.destroyed) {
+            st.req.destroy();
+          }
           if (st.res !== null && !st.res.writableEnded && !st.res.destroyed) {
             st.res.destroy();
           }
@@ -470,7 +475,15 @@ export function withHttpServer(Base) {
       super.close();
       return this;
     }
-  };
+  }
+  // Node 口径：Server 裸调用返回新实例（lib/net.js 原文）。
+  function HttpServer(...args) {
+    if (!(this instanceof __HttpServer)) return new __HttpServer(...args);
+    return Reflect.construct(__HttpServer, args, new.target ?? __HttpServer);
+  }
+  Object.setPrototypeOf(HttpServer, __HttpServer);
+  HttpServer.prototype = __HttpServer.prototype;
+  return HttpServer;
 }
 
 // 客户端工厂：openSocket(host, port, extra) 开传输 socket；
@@ -616,19 +629,20 @@ export function withClientRequest(openSocket, flavor) {
       }
     }
     // 连接就绪或刷盘时机到：holdback 未决且已连通则按 chunked 刷出。
+    // 队列逐帧发出（不合并）：保 TCP 分包，与连通后直发一致（blk09 计数型套件依赖）。
     __tryFlush() {
       if (!this.__connected || this.__sock === null || this.__headSent || this.__buf1 === null) return;
       if (this.destroyed) return;
       this.__chunked = true;
       this.__sendHead();
-      const b = this.__buf1;
+      const q = this.__buf1;
       this.__buf1 = null;
-      this.__frame(b);
+      for (const b of q) this.__frame(b);
     }
     _write(chunk, encoding, cb) {
       const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk));
       if (this.__buf1 === null && !this.__headSent) {
-        this.__buf1 = u8;
+        this.__buf1 = [u8];
         this.__holdTimer = setTimeout(() => {
           this.__holdTimer = null;
           if (this.__buf1 !== null && !this.__headSent && !this.destroyed) this.__tryFlush();
@@ -642,13 +656,13 @@ export function withClientRequest(openSocket, flavor) {
           this.__chunked = true;
           this.__sendHead();
           if (this.__buf1 !== null) {
-            const b = this.__buf1;
+            const q = this.__buf1;
             this.__buf1 = null;
-            this.__frame(b);
+            for (const b of q) this.__frame(b);
           }
         } else {
-          // 未连通：保持缓冲（连通后 chunked 刷出，见 __tryFlush）。
-          this.__buf1 = __concat(this.__buf1 ?? new Uint8Array(0), u8);
+          // 未连通：逐块排队（连通后逐帧刷出保分包，见 __tryFlush）。
+          this.__buf1.push(u8);
           cb();
           return;
         }
@@ -656,7 +670,7 @@ export function withClientRequest(openSocket, flavor) {
       if (this.__connected && this.__sock !== null && !this.destroyed) {
         this.__frame(u8);
       } else {
-        this.__buf1 = __concat(this.__buf1 ?? new Uint8Array(0), u8);
+        (this.__buf1 ??= []).push(u8);
       }
       cb();
     }
@@ -685,18 +699,19 @@ export function withClientRequest(openSocket, flavor) {
       cb();
     }
     // 收尾刷新（调用方保证已连通）：头未发走 CL 快捷，已发（chunked）补终结块。
+    // CL 快捷合并发出（整收语义，9d 字节流一致）；chunked 终结块单发。
     __flushFinal() {
       if (this.__sock === null || this.destroyed) return;
       if (!this.__headSent) {
-        const total = this.__buf1 !== null ? this.__buf1.length : 0;
+        const total = this.__buf1 !== null ? this.__buf1.reduce((a, b) => a + b.length, 0) : 0;
         if (this.__headers["content-length"] === undefined) {
           this.__headers["content-length"] = String(total);
         }
         this.__sendHead();
         if (this.__buf1 !== null) {
-          const b = this.__buf1;
+          const q = this.__buf1;
           this.__buf1 = null;
-          this.__frame(b);
+          this.__frame(__join(q));
         }
       } else if (this.__chunked && !this.__rawCL) {
         this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));

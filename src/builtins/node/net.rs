@@ -251,6 +251,8 @@ pub unsafe extern "C" fn net_connect(
     };
     let cmd_rx = state::net_socket_add(id, target);
     set_rval_str(&mut cx, &frame, &id.to_string());
+    // 第4参 noDelay（http agent 默认 true；Node net 默认 false；tokio set_nodelay 零依赖）。
+    let no_delay = frame.argc() > 3 && frame.arg(3).is_boolean() && frame.arg(3).to_boolean();
     handle.spawn(async move {
         match tokio::net::TcpStream::connect((host.as_str(), port as u16)).await {
             Err(e) => {
@@ -262,6 +264,7 @@ pub unsafe extern "C" fn net_connect(
                 let _ = ev_tx.send(NetEvent { id, kind: NetKind::Close });
             }
             Ok(stream) => {
+                let _ = stream.set_nodelay(no_delay);
                 let local = stream.local_addr().ok();
                 let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local } });
                 let (r, w) = stream.into_split();
@@ -351,6 +354,8 @@ pub unsafe extern "C" fn net_listen(
                     match acc {
                         Err(_) => continue, // 瞬时 accept 错误（记档：不细分）
                         Ok((stream, peer)) => {
+                            // 服务端 accept 的 socket 默认 noDelay（Node _http_server 口径）。
+                            let _ = stream.set_nodelay(true);
                             let conn_local = stream
                                 .local_addr()
                                 .unwrap_or_else(|_| "0.0.0.0:0".parse::<std::net::SocketAddr>().expect("literal addr"));
@@ -702,9 +707,9 @@ class Socket extends EventEmitter {
     this._readableState = { endEmitted: false, length: 0 };
   }
   connect(...args) {
-    let port, host, cb;
+    let port, host, cb, __noDelay;
     if (typeof args[0] === "object" && args[0] !== null) {
-      ({ port, host = "127.0.0.1" } = args[0]);
+      ({ port, host = "127.0.0.1", noDelay: __noDelay } = args[0]);
       cb = typeof args[1] === "function" ? args[1] : undefined;
     } else {
       port = args[0];
@@ -714,7 +719,8 @@ class Socket extends EventEmitter {
     if (cb) this.once("connect", cb);
     this.remoteAddress = String(host);
     this.remotePort = Number(port);
-    this.__id = Number(__wjs_net_connect(this.remoteAddress, this.remotePort, this));
+    // noDelay 经 native 直达 setsockopt（http agent 默认 true；Node net 默认 false）。
+    this.__id = Number(__wjs_net_connect(this.remoteAddress, this.remotePort, this, __noDelay === true));
     return this;
   }
   // 事件循环派发钩子（Rust dispatch 调用；kind/data 均为字符串）
@@ -794,7 +800,7 @@ class Socket extends EventEmitter {
   unref() { if (this.__id) __wjs_net_unref(this.__id); return this; }
 }
 
-class Server extends EventEmitter {
+class __ServerClass extends EventEmitter {
   constructor(options, cb) {
     super();
     this.__id = 0;
@@ -878,6 +884,14 @@ Socket.prototype.unshift = function (chunk) {
 export function createServer(options, cb) {
   return new Server(options, cb);
 }
+// Node 口径：Server/Socket 裸调用返回新实例（lib/net.js 原文
+// `if (!(this instanceof Server)) return new Server(...)`）。
+function Server(...args) {
+  if (!(this instanceof __ServerClass)) return new __ServerClass(...args);
+  return Reflect.construct(__ServerClass, args, new.target ?? __ServerClass);
+}
+Object.setPrototypeOf(Server, __ServerClass);
+Server.prototype = __ServerClass.prototype;
 export function createConnection(...args) { return new Socket().connect(...args); }
 export const connect = createConnection;
 export { Socket, Server };

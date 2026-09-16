@@ -4,6 +4,7 @@ pub const SOURCE: &str = r#"// （Node 版 1172 行重在逐字节泵与错误�
 // 主路径；背压经 drain 等待，偏差记档。）
 import * as __readable_ns from 'node:internal/streams/readable';
 import * as __writable_ns from 'node:internal/streams/writable';
+import * as __duplex_ns from 'node:internal/streams/duplex';
 // 循环依赖：readable/writable →(懒)→ 本模块 →(懒)→ readable/writable；
 // 类在调用期取（eval 顺序已就绪），静态边不再指向 node:stream（否则把
 // node:stream 的求值拖进 pipeline/readable 中间，node:stream body 急切
@@ -98,17 +99,195 @@ function newStreamWritableFromWritableStream(writableStream, options = {}) {
   });
 }
 
+// Duplex 双桥（Node internal/webstreams/adapters.js 原文结构移植；
+// primordials 用内建等价：Promise.then 直调、process.nextTick 透传）。
+// 来源：nodejs/node（MIT）。
+function newReadableWritablePairFromDuplex(duplex, options = {}) {
+  if (typeof duplex?._writableState !== "object" ||
+      typeof duplex?._readableState !== "object") {
+    const err = new TypeError(`The "duplex" argument must be of type stream.Duplex. Received ${duplex === null ? "null" : typeof duplex}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (options !== undefined && options !== null && typeof options !== "object") {
+    const err = new TypeError(`The "options" argument must be of type object. Received type ${typeof options}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  const readableType = options.readableType ?? options.type;
+  const isRd = typeof duplex.read === "function" && duplex.readable !== false;
+  const isWr = typeof duplex.write === "function" && duplex.writable !== false;
+  if (duplex.destroyed) {
+    const writable = new WritableStream();
+    const readable = new ReadableStream(readableType === undefined ? {} : { type: readableType });
+    writable.close();
+    readable.cancel();
+    return { readable, writable };
+  }
+  const writable = isWr
+    ? newWritableStreamFromStreamWritable(duplex, {})
+    : new WritableStream();
+  if (!isWr) writable.close();
+  const readable = isRd
+    ? newReadableStreamFromStreamReadable(duplex, readableType === undefined ? {} : { type: readableType })
+    : new ReadableStream(readableType === undefined ? {} : { type: readableType });
+  if (!isRd) readable.cancel();
+  return { writable, readable };
+}
+
+function newStreamDuplexFromReadableWritablePair(pair = {}, options = {}) {
+  if (pair === null || typeof pair !== "object") {
+    const err = new TypeError(`The "pair" argument must be of type object. Received ${pair === null ? "null" : typeof pair}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  const { readable: readableStream, writable: writableStream } = pair;
+  if (!(readableStream instanceof ReadableStream)) {
+    const err = new TypeError("The \"pair.readable\" argument must be of type ReadableStream.");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (!(writableStream instanceof WritableStream)) {
+    const err = new TypeError("The \"pair.writable\" argument must be of type WritableStream.");
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (options !== undefined && options !== null && typeof options !== "object") {
+    const err = new TypeError(`The "options" argument must be of type object. Received type ${typeof options}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  const {
+    allowHalfOpen = false,
+    objectMode = false,
+    encoding,
+    decodeStrings = true,
+    highWaterMark,
+    signal,
+  } = options ?? {};
+  if (typeof objectMode !== "boolean") {
+    const err = new TypeError(`The "options.objectMode" property must be of type boolean. Received type ${typeof objectMode}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (encoding !== undefined && !Buffer.isEncoding(encoding)) {
+    const err = new TypeError(`The "options.encoding" property must be a valid encoding. Received '${encoding}'`);
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  const writer = writableStream.getWriter();
+  const reader = readableStream.getReader();
+  let writableClosed = false;
+  let readableClosed = false;
+  const duplex = new (__duplex_ns.default)({
+    allowHalfOpen,
+    highWaterMark,
+    objectMode,
+    encoding,
+    decodeStrings,
+    signal,
+    writev(chunks, callback) {
+      function done(error) {
+        try {
+          callback(error);
+        } catch (error) {
+          process.nextTick(() => duplex.destroy(error));
+        }
+      }
+      Promise.resolve(writer.ready).then(
+        () => Promise.all(chunks.map((data) => writer.write(data.chunk))).then(() => undefined),
+        done).then(done, done);
+    },
+    write(chunk, encoding, callback) {
+      if (typeof chunk === "string" && decodeStrings && !objectMode) {
+        chunk = Buffer.from(chunk, encoding);
+        chunk = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      }
+      function done(error) {
+        try {
+          callback(error);
+        } catch (error) {
+          duplex.destroy(error);
+        }
+      }
+      Promise.resolve(writer.ready).then(() => writer.write(chunk)).then(done, done);
+    },
+    final(callback) {
+      function done(error) {
+        try {
+          callback(error);
+        } catch (error) {
+          process.nextTick(() => duplex.destroy(error));
+        }
+      }
+      if (!writableClosed) {
+        Promise.resolve(writer.close()).then(done, done);
+      }
+    },
+    read() {
+      Promise.resolve(reader.read()).then(
+        (chunk) => {
+          if (chunk.done) duplex.push(null);
+          else duplex.push(chunk.value);
+        },
+        (error) => duplex.destroy(error));
+    },
+    destroy(error, callback) {
+      function done() {
+        try {
+          callback(error);
+        } catch (error) {
+          process.nextTick(() => { throw error; });
+        }
+      }
+      async function closeWriter() {
+        if (!writableClosed) await writer.abort(error);
+      }
+      async function closeReader() {
+        if (!readableClosed) await reader.cancel(error);
+      }
+      if (!writableClosed || !readableClosed) {
+        Promise.all([closeWriter(), closeReader()]).then(done, done);
+        return;
+      }
+      done();
+    },
+  });
+  Promise.resolve(writer.closed).then(
+    () => {
+      writableClosed = true;
+      if (!duplex.writableEnded) duplex.destroy(new Error("ERR_STREAM_PREMATURE_CLOSE: premature close"));
+    },
+    (error) => {
+      writableClosed = true;
+      readableClosed = true;
+      duplex.destroy(error);
+    });
+  Promise.resolve(reader.closed).then(
+    () => { readableClosed = true; },
+    (error) => {
+      writableClosed = true;
+      readableClosed = true;
+      duplex.destroy(error);
+    });
+  return duplex;
+}
+
 export {
   newReadableStreamFromStreamReadable,
   newStreamReadableFromReadableStream,
   newWritableStreamFromStreamWritable,
   newStreamWritableFromWritableStream,
+  newReadableWritablePairFromDuplex,
+  newStreamDuplexFromReadableWritablePair,
 };
 export default {
   newReadableStreamFromStreamReadable,
   newStreamReadableFromReadableStream,
   newWritableStreamFromStreamWritable,
   newStreamWritableFromWritableStream,
+  newReadableWritablePairFromDuplex,
+  newStreamDuplexFromReadableWritablePair,
 };
 
 "#;

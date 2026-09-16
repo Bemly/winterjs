@@ -29,7 +29,7 @@ const primordials = {
   ObjectSetPrototypeOf: Object.setPrototypeOf,
   Promise,
   PromisePrototypeThen: (p, f, r) => p.then(f, r),
-  PromiseReject: Promise.reject,
+  PromiseReject: (e) => Promise.reject(e),
   PromiseResolve: (v) => Promise.resolve(v),
   PromiseWithResolvers: () => {
     let resolve, reject;

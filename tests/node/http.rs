@@ -318,6 +318,61 @@ setTimeout(() => console.log("end-ok"), 1500);
 }
 
 #[test]
+fn phase10f_http_pipeline_upload_interrupt_and_dechunk() {
+    // 10f：上传中断（pipeline(req,res) + 客户端 11 块 chunked 上传 + 读 10 块后 destroy）。
+    // 真机 11 次 data（Agent noDelay 默认 + 未连通缓冲逐帧刷出保分包）；合包即 hang（blk09）。
+    // 另断言连通后逐写 11 块 → 服务端 11 次 data（分包回归）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http, { createServer } from "node:http";
+import { Readable, pipeline } from "node:stream";
+// 分包回归：连通后逐写 11 块 → 11 次 data。
+const s2 = createServer((req, res) => {
+  let n = 0;
+  req.on("data", () => { n++; });
+  req.on("end", () => { console.log("dechunk", n); res.end("x"); s2.close(); });
+});
+s2.listen(0, "127.0.0.1", () => {
+  const port = s2.address().port;
+  const req = http.request({ port, path: "/", method: "POST" }, (res) => {
+    res.resume();
+    res.on("end", () => {
+      // 中断回归：blk09 原文（11 块上传 + 读 10 块后 destroy 源）。
+      const server = createServer((q, r) => {
+        pipeline(q, r, (err) => console.log("srv-pipe", err?.code));
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const p2 = server.address().port;
+        const req2 = http.request({ port: p2 });
+        let sent = 0;
+        const rs = new Readable({ read() { if (sent++ > 10) return; rs.push("hello"); } });
+        pipeline(rs, req2, () => { console.log("cli-pipe-done"); server.close(); });
+        req2.on("response", (resp) => {
+          let cnt = 10;
+          resp.on("data", () => { if (--cnt === 0) rs.destroy(); });
+          resp.resume();
+        });
+      });
+    });
+  });
+  setTimeout(() => {
+    for (let i = 0; i < 11; i++) req.write("hello");
+    req.end();
+  }, 300);
+});
+setTimeout(() => console.log("end-ok"), 3000);
+"#,
+    );
+    for line in ["dechunk 11", "srv-pipe ERR_STREAM_PREMATURE_CLOSE", "cli-pipe-done", "end-ok"] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase10b_http_big_body() {
     // 10b：大体压测（≥1MB 上下行；GC 压力回归 §4.40）。
     let dir = assert_fs::TempDir::new().unwrap();

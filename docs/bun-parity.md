@@ -644,3 +644,52 @@
 | test-stream-promises.js | 1 | 0 | 🟡 偏离：ENOENT 预期形态差（promises 错误路由）——另案 |
 | test-stream-readable-async-iterators.js | TIMEOUT | 0 | 🟡 偏离：TIMEOUT：async iterator 边角——另案 |
 | test-stream-readable-to-web-byob.js | 1 | 0 | 🟡 偏离：toWeb BYOB 缺异常路径——另案 |
+
+## fs
+
+> 三轮对拍（2026-09-17，263 件，`/tmp/wjs-10f-fs*.txt`）：
+> 同绿 39 → 54 → 96 → **123**；双红 76 → 73 → 28 → **28**；DIFF 148 → 136 → 139 → **112**。
+> 双红为真机同条件亦红（fixture/环境），对齐不算欠账。
+
+### 已修（每项经真机 26.8.2 对拍）
+
+- **WriteStream 真类**（write/end/finish/close 事件序 + bytesWritten/flags/autoClose）
+  + ReadStream/WriteStream Proxy 自 new 形（node legacy：`fs.ReadStream(file)` 可调）。
+- **read/write 全形态**（node lib/fs.js 同构）：`read(fd,cb)`/`read(fd,params,cb)`/
+  `read(fd,buf,options,cb)`/6 参全形；write 字符串三形 + options 形；返回
+  `{bytesRead|bytesWritten, buffer}`；`util.promisify` args 符号
+  （`Symbol.for('nodejs.util.promisify.customArgs')` 跨模块桥 + fs.read/write/exists
+  挂名单，`promisify(fs.exists)` → boolean）。
+- **FileHandle 全家**：read/write params+options 形、`{bytesRead,buffer}` 返回、
+  close 幂等（缓存 promise 二次 close 不抛不重发）、chown/fchown/readv/writev/
+  `createReadStream/createWriteStream`（fd 为 FileHandle 时走 handle 方法——
+  node streams.js FileHandleOperations 同构）、fh close 事件毁流、writeFile 流/
+  同步+异步可迭代/encoding/signal abort（宏任务写位——nextTick 检查点先于写）。
+- **fs 流 fd 形**：`fs.createReadStream(null, {fd})`（path 可 null）、start/end 记档。
+- **mkdtempDisposable**（sync + promises）：`{path, remove, [Symbol.dispose|asyncDispose]}`、
+  remove 锁创建期绝对路径（chdir 隔离）、promises 版 remove 为 async（assert.rejects 契约）、
+  mkdtemp 后缀 6 随机 alnum（libuv 口径）。
+- **参数校验族全面对齐**（node validators 口径，code+message 逐字）：
+  path（Buffer/URL 收录）、fd（int32 正数域）、mode（number/string/范围 0..2^32）、
+  `options.recursive`（"property" 文案）、callback；错误消息 node 形状
+  （`CODE: <uv msg>, <syscall> '<path>'`，errno→uv 消息表）；
+  `__fsErr` 对 JS 侧已带 code 的错误直通（`__fsCall` 闭包内校验错误不得重包 UNKNOWN）。
+- **chown/fchown/lchown 落地**（std chown 安全路线 + libc fchown/lchown 边界）。
+- **mkdir recursive**：返回首建路径、目录外 EEXIST、父为文件 ENOTDIR、
+  recursive 布尔校验、fs_err 去 raw errno。
+- **fd 形 readFile/writeFile/appendFile**（current position 语义、只读 fd EBADF、
+  signal abort）；readdir `encoding:'buffer'`、readlink/readdir/realpath/mkdtemp/watch/
+  streams 编码校验（`is invalid encoding` 逐字）。
+
+### 剩余红项（DIFF 112 + 双红 28，均另案或记档）
+
+- **Missing expected / unexpected throw 长尾**（~25 件）：open/opendir/mkdtemp-prefix/
+  non-number 逐 API 校验缺口，沿本轮 validators 族续补；lchmod/lchown 真 syscall 面。
+- **hang 9 件**：promises-watch/watch-encoding/watch-recursive、read-stream-pos、
+  readfile-utf8-fast-path——watch 事件流 + fast-path 另案。
+- **pipe 系 4 件**（readfile-pipe/eof）：stdin 管道读形，另案。
+- **watch-ignore-glob 系 6 件**：node 26 glob ignore 语义，另案。
+- **"test is not a function" 4 件**（flush 系）：writeFile/appendFile flush 选项，另案。
+- **unhandled-rej 16 件**：readdir-buffer hex 断言、promises-appendfile、dispose 收尾等
+  尾部件，沿簇续修。
+- **双红 28 件**：真机同红（fixture 依赖/内部面），对齐。

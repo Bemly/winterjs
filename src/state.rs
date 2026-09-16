@@ -81,6 +81,21 @@ unsafe impl Traceable for WatchCallback {
     }}
 }
 
+/// process.nextTick 原生队列条目（args 为 JS 数组；`Box` 定址 §4.40；
+/// 排空在 pump 的 RunJobs 前后各一轮——node 口径 tick/微任务双层调度）。
+pub struct NextTickEntry {
+    pub cb: Box<Heap<JSVal>>,
+    pub args: Box<Heap<JSVal>>,
+}
+
+// SAFETY: 追踪全部 JS 值槽位。
+unsafe impl Traceable for NextTickEntry {
+    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
+        self.cb.trace(trc);
+        self.args.trace(trc);
+    }}
+}
+
 /// 一个异步子进程的 JS 目标对象（`onexit/onclose/onerror` 走属性读；close 前保留；`Box` 定址）。
 pub struct ChildTarget {
     pub id: u64,
@@ -355,6 +370,7 @@ pub struct RootedState {
     pub ws_emit_fn: Heap<JSVal>, // prelude 的 __wjs_ws_emit
     pub uncaught_fn: Heap<JSVal>, // prelude 的 __wjs_uncaught（timer 回调未捕获异常分发）
     pub uncaught_count_fn: Heap<JSVal>, // prelude 的 __wjs_uncaught_count（监听器探针）
+    pub next_ticks: Vec<NextTickEntry>, // process.nextTick 原生队列（pump RunJobs 前后各收割一轮）
     pub vm_last_error: Heap<JSVal>, // vm_run 暂存的原始异常对象（JS 侧 __vmCall 取走重建，保 realm 身份）
     pub napi: Option<crate::napi::env::NapiEnv>, // napi 会话单例（首个 .node require 建起；plan-napi §2）
 }
@@ -371,6 +387,7 @@ unsafe impl Traceable for RootedState {
         self.entry_fulfilled.trace(trc);
         self.entry_rejected.trace(trc);
         self.vm_last_error.trace(trc);
+        self.next_ticks.trace(trc);
         self.modules.trace(trc);
         self.cjs_modules.trace(trc);
         self.watch_listeners.trace(trc);

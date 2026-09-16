@@ -5,10 +5,11 @@
 use std::sync::OnceLock;
 
 use mozjs::conversions::ToJSValConvertible as _;
+use mozjs::jsapi::JSObject;
 use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 
-use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
+use crate::jsapi_glue::{call_one, call_two, pending_exception_error, report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
 
 /// 进程启动时刻（uptime/hrtime 基准）。
@@ -22,6 +23,93 @@ fn set_rval_str(cx: &mut mozjs::context::JSContext, frame: &Frame, s: &str) {
     rooted!(&in(cx) let mut v = UndefinedValue());
     s.to_jsval(cx, v.handle_mut());
     frame.set_rval(v.get());
+}
+
+/// `__wjs_next_tick(cb, args)` → undefined：nextTick 入原生队列（pump 在
+/// RunJobs 前后各收割一轮——node 口径 tick/微任务双层调度，10f stream 对拍）。
+pub unsafe extern "C" fn next_tick_queue(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let _ = &mut cx;
+    let (cb, args) = (frame.arg(0), frame.arg(1));
+    state::with_rooted(|s| {
+        s.next_ticks.push(state::NextTickEntry {
+            cb: mozjs::jsapi::Heap::boxed(cb),
+            args: mozjs::jsapi::Heap::boxed(args),
+        });
+    });
+    frame.set_rval(UndefinedValue());
+    true
+}
+
+/// 收割 nextTick 原生队列（pump 专用：RunJobs 前后各一轮）。
+/// 回调经 prelude `__wjs_call(cb, args)` 展开；抛错走 uncaughtException 路由
+/// （有监听分发即吞，无监听保持 pending 走 fatal——fire_due 同款）。
+/// **逐条摘取立即 rooting**（fire_due 同款纪律）：批内裸 JSVal 横跨回调即
+/// 悬垂——回调可触发 GC（§4.80；实测 batch 形即 SIGSEGV）。node 语义核心：
+/// 微任务期入队的 tick 必须**等整轮微任务排空**后才跑（V8 checkpoint 原子性）
+/// ——queueMicrotask 同队列 FIFO 做不到，此即原生队列的存在理由
+/// （compose/pipeline post-loop throw 全族对拍现形）。
+pub fn drain_next_ticks(
+    cx: &mut mozjs::context::JSContext,
+    global: *mut JSObject,
+    err: crate::runtime::ErrorSource<'_>,
+) -> Result<(), crate::error::Error> {
+    loop {
+        let next = state::with_rooted(|s| {
+            if s.next_ticks.is_empty() {
+                None
+            } else {
+                Some(s.next_ticks.remove(0))
+            }
+        });
+        let Some(entry) = next else { return Ok(()) };
+        {
+            // 条目已摘离队列（Box 定址随移动稳定），值先 rooted 再调
+            rooted!(&in(cx) let cb_root = entry.cb.get());
+            rooted!(&in(cx) let args_root = entry.args.get());
+            drop(entry);
+            let call_fn_v = state::with_rooted(|s| s.call_fn.get());
+            if call_two(cx, global, call_fn_v, cb_root.get(), args_root.get()).is_none() {
+                // 未捕获异常：Node 口径先探 process 'uncaughtException' 监听器；
+                // 无监听保持 pending 原样走 fatal（错误信息/栈不降级）。
+                let count_fn = state::with_rooted(|s| s.uncaught_count_fn.get());
+                let count = call_one(cx, global, count_fn, UndefinedValue())
+                    .and_then(|v| if v.is_number() { Some(v.to_number() as usize) } else { None })
+                    .unwrap_or(0);
+                let handled = if count > 0 {
+                    match crate::jsapi_glue::take_pending_exception(cx) {
+                        Some(err_v) => {
+                            rooted!(&in(cx) let err_root = err_v);
+                            let uncaught_fn = state::with_rooted(|s| s.uncaught_fn.get());
+                            matches!(
+                                call_two(cx, global, uncaught_fn, err_root.get(), UndefinedValue()),
+                                Some(r) if r.is_boolean() && r.to_boolean()
+                            )
+                        }
+                        None => false,
+                    }
+                } else {
+                    false
+                };
+                if !handled {
+                    return Err(match err {
+                        crate::runtime::ErrorSource::Script { source, filename } => {
+                            crate::jsapi_glue::pending_exception_error(cx, global, source, filename)
+                        }
+                        crate::runtime::ErrorSource::Module { url } => {
+                            crate::modules::module_error(cx, url)
+                        }
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// `__wjs_argv_json()` → argv 数组 JSON。
@@ -410,6 +498,73 @@ pub unsafe extern "C" fn stdio_istty(
 
 /// 启动期全局 `process`（`NODE_PRELUDE` 经 `runtime` 在主 PRELUDE 后求值）。
 pub const PROCESS_PRELUDE: &str = r#"
+// stdout/stderr 造形（10f stream 对拍）：node Socket 形——写直通 fd + EE 全表面
+//（on/once/off/addListener/prependListener/removeAllListeners/listenerCount/
+// listeners/emit/end/destroy）。写完成回调 microtask 异步回（§4.74）。
+function __wjs_stdio_stream(fd) {
+  return {
+    __wjs_fd: fd,
+    write(s, ...rest) {
+      const r = fd === 1 ? __wjs_stdout_write(String(s)) : __wjs_stderr_write(String(s));
+      const cb = rest.find((a) => typeof a === "function");
+      if (cb) queueMicrotask(() => cb());
+      return r;
+    },
+    get isTTY() { return __wjs_stdio_istty(fd); },
+    clearLine() { return __wjs_stdio_istty(fd); },
+    cursorTo() { return __wjs_stdio_istty(fd); },
+    getColorDepth() { return __wjs_stdio_istty(fd) ? 8 : 1; },
+    __wjs_listeners: {},
+    on(type, cb) {
+      if (typeof cb !== "function") throw new TypeError("stdio.on: listener must be a function");
+      (this.__wjs_listeners[String(type)] ??= []).push(cb);
+      return this;
+    },
+    addListener(type, cb) { return this.on(type, cb); },
+    once(type, cb) {
+      const self = this;
+      const wrapped = (...a) => { self.off(type, wrapped); cb(...a); };
+      wrapped.__wjs_orig = cb;
+      return self.on(type, wrapped);
+    },
+    prependListener(type, cb) {
+      if (typeof cb !== "function") throw new TypeError("stdio.prependListener: listener must be a function");
+      (this.__wjs_listeners[String(type)] ??= []).unshift(cb);
+      return this;
+    },
+    off(type, cb) {
+      const list = this.__wjs_listeners[String(type)];
+      if (list) {
+        let i = list.findIndex((l) => l === cb || l.__wjs_orig === cb);
+        while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb || l.__wjs_orig === cb); }
+      }
+      return this;
+    },
+    removeListener(type, cb) { return this.off(type, cb); },
+    removeAllListeners(type) {
+      if (type === undefined) this.__wjs_listeners = {};
+      else delete this.__wjs_listeners[String(type)];
+      return this;
+    },
+    listenerCount(type) { return (this.__wjs_listeners[String(type)] || []).length; },
+    listeners(type) { return (this.__wjs_listeners[String(type)] || []).slice(); },
+    emit(type, ...args) {
+      const list = (this.__wjs_listeners[String(type)] || []).slice();
+      for (const l of list) l(...args);
+      return list.length > 0;
+    },
+    end(...rest) {
+      const cb = rest.find((a) => typeof a === "function");
+      if (cb) queueMicrotask(() => cb());
+      return this;
+    },
+    destroy() { return this; },
+    __wjs_maxListeners: 10,
+    getMaxListeners() { return this.__wjs_maxListeners; },
+    setMaxListeners(n) { this.__wjs_maxListeners = Number(n); return this; },
+  };
+}
+
 globalThis.process = {
   argv: JSON.parse(__wjs_argv_json()),
   env: new Proxy({}, {
@@ -496,45 +651,14 @@ globalThis.process = {
     const spec = String(id);
     return globalThis.require(spec.startsWith("node:") ? spec : `node:${spec}`);
   },
-  // stdout/stderr 富流（vite dev：clearLine/cursorTo/getColorDepth——非 TTY
-  // no-op，TTY 下走 ANSI 转义的调用方（node:readline）自己写；rows/columns
-  // 留 undefined（Node 非 TTY 口径，调用方均有守卫））。stdin：监听登记 +
+  // stdout/stderr 富流（真 node 是 Socket；10f 起 helper 造形：直写 fd +
+  // EE 全表面——pipe 的 dest.on/emit('pipe')/close/finish 登记接得住；
+  // 事件面空转（无 data/end 发射）偏差记档）。clearLine/cursorTo/getColorDepth
+  // 非 TTY no-op（vite dev；TTY 下调用方自写 ANSI）。stdin：监听登记 +
   // isTTY + EOF read()（偏差记档：stdin EOF/data 不投递、信号不投递——
   // 注册表只收不发，SIGTERM 默认行为不变（OS 默认终止））。
-  stdout: {
-    // 写完成回调（M5 vitest 牵引：worker 线程 `flushStdio` 以 `write("", cb)`
-    // 等前序块落定；直写恒成功，回调经 microtask 异步回，真机口径）。
-    write(s, ...rest) {
-      const r = __wjs_stdout_write(String(s));
-      const cb = rest.find((a) => typeof a === "function");
-      if (cb) queueMicrotask(() => cb());
-      return r;
-    },
-    get isTTY() { return __wjs_stdio_istty(1); },
-    clearLine() { return __wjs_stdio_istty(1); },
-    cursorTo() { return __wjs_stdio_istty(1); },
-    getColorDepth() { return __wjs_stdio_istty(1) ? 8 : 1; },
-    // EventEmitter 记账面（M5 vitest 牵引：threads 池调 set/getMaxListeners；
-    // 本体无事件发射，仅记数，Node 默认 10）。
-    __wjs_maxListeners: 10,
-    getMaxListeners() { return this.__wjs_maxListeners; },
-    setMaxListeners(n) { this.__wjs_maxListeners = Number(n); return this; },
-  },
-  stderr: {
-    write(s, ...rest) {
-      const r = __wjs_stderr_write(String(s));
-      const cb = rest.find((a) => typeof a === "function");
-      if (cb) queueMicrotask(() => cb());
-      return r;
-    },
-    get isTTY() { return __wjs_stdio_istty(2); },
-    clearLine() { return __wjs_stdio_istty(2); },
-    cursorTo() { return __wjs_stdio_istty(2); },
-    getColorDepth() { return __wjs_stdio_istty(2) ? 8 : 1; },
-    __wjs_maxListeners: 10,
-    getMaxListeners() { return this.__wjs_maxListeners; },
-    setMaxListeners(n) { this.__wjs_maxListeners = Number(n); return this; },
-  },
+  stdout: __wjs_stdio_stream(1),
+  stderr: __wjs_stdio_stream(2),
   stdin: {
     get isTTY() { return __wjs_stdio_istty(0); },
     __wjs_listeners: {},
@@ -562,7 +686,11 @@ globalThis.process = {
   },
   nextTick(cb, ...args) {
     if (typeof cb !== "function") throw new TypeError("nextTick: callback must be a function");
-    queueMicrotask(() => cb(...args));
+    // 原生队列（node 口径）：tick 由 pump 在 RunJobs 前后收割——同步期入队的
+    // tick 先于微任务、微任务期入队的等整轮微任务排空（V8 checkpoint 原子性）。
+    // 回调抛错经 drain 侧 uncaughtException 路由（destroy/emitErrorNT 等内建
+    // 全走 nextTick，throw 落成 rejection 即全族套件反红）。
+    __wjs_next_tick(cb, args);
   },
   // Phase 9a（node:events MaxListenersExceededWarning 路径）：warning 监听 + emitWarning。
   // Node 语义收敛：string → 包 Error（name=type||'Warning'，code/detail 挂载）；

@@ -1567,6 +1567,8 @@ mod tests {
 
 /// 内嵌 ESM 源（`node:fs`；错误带 `.code/.syscall/.path`；偏差见头注）。
 pub const SOURCE: &str = r#"
+import { Readable } from 'node:stream';
+
 function __fsErr(e, syscall, path) {
   const m = String((e && e.message) || e);
   // 权限拒绝直通（不套 io 形状；Deno NotCapable 同款可读错）
@@ -1924,27 +1926,56 @@ export function unwatchFile(p, listener) {
     __statWatchers.delete(p);
   }
 }
-// ---- fs 流（同步底层 + Web 流外形；口径见头注）----
-// 口径（文档记录）：createReadStream 返回 Web ReadableStream（整文件读入后按
-// highWaterMark 切块；async 迭代/getReader 可用；Node 的 .on('data') 事件式
-// 接口不在此列，用 for await 替代）；createWriteStream 返回 Web WritableStream
-//（块先攒，close 时一次性落盘；flags `a` 表追加，其余覆盖）。
+// ---- fs 流（10f：createReadStream 换 node ReadStream——真机 26 口径
+// open(fd)/ready/data(Buffer)/end/close 事件序 + path/flags/autoClose/
+// start/end 选项；chunk 为 Buffer（§4.83）。sync 底座偏差记档：'open' 的
+// fd 恒 null（无真异步 fd 生命周期），sync 读错误在构造期抛而非 'error' 事件。
+// createWriteStream 维持 Web 流外形（口径见下注）。----
+class ReadStream extends Readable {
+  constructor(p, opts) {
+    opts = opts ?? {};
+    const hwm = opts.highWaterMark !== undefined ? Number(opts.highWaterMark) : 65536;
+    const size = Number.isFinite(hwm) && hwm > 0 ? Math.floor(hwm) : 65536;
+    super({ highWaterMark: size, autoDestroy: true, emitClose: true });
+    this.path = p;
+    this.flags = opts.flags ?? "r";
+    this.mode = opts.mode ?? 0o666;
+    this.autoClose = opts.autoClose !== false;
+    this.bytesRead = 0;
+    this.fd = null;
+    const bytes = __fsCall("open", p, () => __wjs_fs_read_file(p));
+    let start = opts.start !== undefined ? Math.max(0, Math.floor(Number(opts.start) || 0)) : 0;
+    let end = opts.end !== undefined ? Math.floor(Number(opts.end)) : bytes.length - 1;
+    if (!Number.isFinite(start) || start < 0) start = 0;
+    if (!Number.isFinite(end) || end >= bytes.length) end = bytes.length - 1;
+    this.__bytes = bytes.subarray(start, end + 1);
+    this.__off = 0;
+    this.__hwm = size;
+    this.__opened = false;
+  }
+  _read() {
+    // node 口径事件序 open → ready → data …：首次 _read 前派发（sync 底座下
+    // 若走 microtask，流在监听器挂载的同一同步链上已流到 close，事件被
+    // destroyed 早退吞掉；fd 恒 null，偏差记档）。
+    if (!this.__opened) {
+      this.__opened = true;
+      this.emit("open", null);
+      this.emit("ready");
+    }
+    if (this.__off >= this.__bytes.length) {
+      this.push(null);
+      return;
+    }
+    const end = Math.min(this.__bytes.length, this.__off + this.__hwm);
+    this.push(Buffer.from(this.__bytes.subarray(this.__off, end)));
+    this.bytesRead = end;
+    this.__off = end;
+  }
+}
+
 export function createReadStream(p, opts) {
   p = __fsPath(p, "createReadStream");
-  const hwm = opts && opts.highWaterMark !== undefined ? Number(opts.highWaterMark) : 65536;
-  const bytes = __fsCall("open", p, () => __wjs_fs_read_file(p));
-  const size = Number.isFinite(hwm) && hwm > 0 ? Math.floor(hwm) : 65536;
-  let off = 0;
-  return new ReadableStream({
-    pull(c) {
-      if (off >= bytes.length) { c.close(); return; }
-      const end = Math.min(bytes.length, off + size);
-      c.enqueue(bytes.slice(off, end));
-      off = end;
-      if (off >= bytes.length) c.close();
-    },
-    cancel() {},
-  });
+  return new ReadStream(p, opts);
 }
 export function createWriteStream(p, opts) {
   p = __fsPath(p, "createWriteStream");

@@ -111,7 +111,9 @@ module.exports = function compose(...streams) {
 
   let ondrain;
   let onfinish;
-  let onclose;
+  // node 口径初始即 null（_destroy 以 === null 判“直调/暂存回调”；
+  // undefined 会把 destroy 回调永久搁浅——composed 流 error/close 双丢）
+  let onclose = null;
   let d;
 
   function onfinished(err) {

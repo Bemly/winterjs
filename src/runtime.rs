@@ -930,10 +930,23 @@ async fn pump_once(
         st.dispatch += 1;
         st.progressed = true;
     }
-    {
-        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
-        // SAFETY: realm 内排空内部 job queue
-        unsafe { RunJobs((&mut realm).raw_cx()) };
+    // nextTick/微任务双层排空（node 口径，10f）：先收割同步期入队的 tick，
+    // 再 RunJobs 排微任务；微任务期新入队的 tick（promise 链内的 nextTick）由
+    // 循环再次收割——即 node 的"微任务排空后才跑它们"语义（V8 checkpoint
+    // 原子性；queueMicrotask 同队列 FIFO 做不到，compose/pipeline 对拍现形）。
+    loop {
+        {
+            let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+            crate::builtins::node::process_::drain_next_ticks(&mut realm, global.get(), err)?;
+        }
+        {
+            let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+            // SAFETY: realm 内排空内部 job queue
+            unsafe { RunJobs((&mut realm).raw_cx()) };
+        }
+        if state::with_rooted(|s| s.next_ticks.is_empty()) {
+            break;
+        }
     }
     // process.exit() 被 catch 后的兜底：检查点照退（`run` 外层转 Exit）。
     // 注意顺序：必须在 RunJobs 之后——抛错的 job 会截断当轮排空，

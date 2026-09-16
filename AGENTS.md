@@ -1790,3 +1790,30 @@ cargo build
   也会反向吸收体（compileFunction 的 `});` 提前闭合，同轮实证）；"想容忍什么"
   就用对应 goal（`with_commonjs`）表达，不手写包装。oxc 的**信号位**
   （`module_record.has_module_syntax`）才是分类真相，"无错"从来不是。
+
+### 4.118 nextTick 双层调度：原生队列收割，microtask 合并队列语义必反（2026-09-17，10f stream）
+
+- 症状：stream 对拍 10 件 DIFF 全族——pipe-error-unhandled 等 5 件把
+  `process.on('uncaughtException')` 期望的同步 throw 落成 unhandledRejection；
+  compose post-loop throw 1 件管线提前 clean 收工拆 error 监听（composed 流
+  error/close 双丢、toArray 永悬）；修 nextTick 后另现 139（SIGSEGV）。
+- 根因（两层）：① node 的 tick/微任务是**两层队列**——同步期入队的 tick 先于
+  微任务、微任务期入队的 tick 等**整轮微任务排空**后才跑（V8 checkpoint 原子性，
+  RunMicrotasks 不可被 nextTick 插队）；旧实现 `queueMicrotask(() => cb())` 把
+  两层并成 FIFO——destroy 的 `nextTick(emitErrorNT)` 抛错变 rejection、
+  duplexify 的 finish 信号抢在 generator 续体前（② 的直接受害者）。
+  ② 修复时的 batch-drain 把多条目裸 JSVal 攥在 Rust Vec 里横跨回调——回调触发
+  GC 即悬垂（§4.80 完整形态 N 连击：fire_due 是逐条摘取立即 rooting，没照抄）。
+- 修法：① `process.nextTick(cb, args)` 入**原生队列**
+  （`RootedState.next_ticks: Vec<NextTickEntry>`，`Box<Heap>` 定址）；
+  `pump_once` 内 `drain → RunJobs → drain` 循环（微任务期入队的 tick 由下一轮
+  drain 收割）——node 双层语义自然成立；回调抛错照 fire_due 口径路由
+  （探 `__wjs_uncaught_count` → 分发/fatal）。② drain 改**逐条摘取立即
+  rooting**（`remove(0)` + rooted! 后再调，§4.80 纪律）。
+- 复现：`tests/node/stream.rs::phase10f_stream_parity_tick_scheduler_and_fs_readstream`
+  （tick-order 行：`start,micro,tick` 序——microtask 期入队的 tick 恒后于既有
+  微任务；修前为 `start,tick,micro` 反转序）；batch 形即 139（pe2 探针 3/3）。
+- 推广为铁律：移植 node 异步 API 先问"它排在 tick 队列还是微任务队列"——
+  `queueMicrotask` 一把梭对 nextTick/微任务**互相入队**的场景必然语义反转；
+  原生队列 + pump 前后收割是最小正解。**§4.80 三进宫**：从队列批量取出的
+  JSVal 一律当场逐条 rooting，"先攒一批再逐个处理"在 JS 值上永远不成立。

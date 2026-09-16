@@ -303,3 +303,95 @@ try { await consumers.json(Readable.from(["nope"])); } catch (e) { console.log("
 }
 
 // ── Phase 9b-5：node:timers/promises ────────────────────────────────────────
+
+#[test]
+fn phase10f_stream_parity_tick_scheduler_and_fs_readstream() {
+    // 10f stream 对拍收口面：nextTick 原生队列（实参展开/uncaughtException
+    // 路由/微任务期入队 tick 恒后于整轮微任务——V8 checkpoint 原子性）、
+    // compose post-loop throw 经管线 reject、fs.ReadStream 事件序、stdout
+    // EE 表面（pipe dest）、QueuingStrategy 双全局。标签互不为子串（§4.42）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p10f.mjs",
+        r#"
+import { Readable, Writable } from "node:stream";
+import fs from "node:fs";
+import assert from "node:assert";
+
+// nextTick：实参展开（fire_due 同款展开器路径）
+process.nextTick((a, b) => console.log("tick-args", a === "x", b === 7), "x", 7);
+
+// nextTick 抛错 → uncaughtException 监听（不是 rejection）
+process.on("uncaughtException", (e) => {
+  if (e.message === "tickboom") console.log("tick-caught", true);
+});
+
+// 微任务期入队的 tick：恒后于既有微任务（promise 链先排空）——compose/pipeline
+// 竞速的根；真机 V8 checkpoint 原子性
+Promise.resolve().then(() => {
+  process.nextTick(() => order.push("tick"));
+  order.push("micro");
+});
+const order = ["start"];
+setTimeout(() => console.log("tick-order", order.join(",")), 20);
+
+// compose：源耗尽后抛错 → toArray reject（错误不被管线提前收工吞掉）
+Readable.from([1, 2, 3, 4, 5]).compose(async function* (src) {
+  for await (const c of src) {}
+  throw new Error("postloop");
+}).toArray().then(
+  () => console.log("compose-postloop", false),
+  (e) => console.log("compose-postloop", e.message === "postloop"),
+);
+
+// fs.ReadStream：事件序 open→ready→data(Buffer)→end→close + path/autoClose
+const rs = fs.createReadStream("/etc/hosts", { highWaterMark: 8 });
+const ev = [];
+rs.on("open", () => ev.push("open"));
+rs.on("ready", () => ev.push("ready"));
+rs.on("data", (c) => { if (!ev.some((x) => x.startsWith("data"))) ev.push("data:" + (c.constructor.name === "Buffer")); });
+rs.on("end", () => ev.push("end"));
+rs.on("close", () => {
+  ev.push("close");
+  console.log("rs-order", ev.join(",") === "open,ready,data:true,end,close", rs.path === "/etc/hosts", rs.autoClose === true);
+});
+
+// stdout：EE 表面接得住 pipe 的 dest（on/emit/write）；Writable pipe 到 stdout
+// 走 ERR_STREAM_CANNOT_PIPE（真机口径）
+console.log("stdout-ee", typeof process.stdout.on === "function", typeof process.stdout.write === "function", typeof process.stdout.emit === "function");
+const w = new Writable({ autoDestroy: false });
+w._write = () => {};
+let pipeErr = null;
+w.on("error", (e) => { pipeErr = e; });
+w.pipe(process.stdout);
+console.log("cannot-pipe", pipeErr !== null && pipeErr.code === "ERR_STREAM_CANNOT_PIPE");
+
+// QueuingStrategy 双全局（真机口径：hwm 原型 getter、size 稳定共享函数）
+const bl = new ByteLengthQueuingStrategy({ highWaterMark: 3 });
+const cq = new CountQueuingStrategy({ highWaterMark: 4 });
+console.log("qs-bl", bl.highWaterMark === 3, bl.size({ byteLength: 5 }) === 5, bl.size({}) === undefined);
+console.log("qs-cq", cq.highWaterMark === 4, cq.size({}) === 1, bl.size === new ByteLengthQueuingStrategy({ highWaterMark: 1 }).size);
+process.nextTick(() => { throw new Error("tickboom"); });
+"#,
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in [
+        "tick-args true true",
+        "tick-caught true",
+        "tick-order start,micro,tick",
+        "compose-postloop true",
+        "rs-order true true true",
+        "stdout-ee true true true",
+        "cannot-pipe true",
+        "qs-bl true true true",
+        "qs-cq true true true",
+    ] {
+        assert!(
+            text.lines().any(|l| l.starts_with(line) || l == line),
+            "missing: {line}\nout: {text}"
+        );
+    }
+    dir.close().unwrap();
+}

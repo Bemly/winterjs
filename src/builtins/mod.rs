@@ -4207,6 +4207,57 @@ function __wjs_wsPump(stream) {
     );
   } catch (e) { st.writing = false; item.reject(e); __wjs_wsError(stream, e); }
 }
+// ---- QueuingStrategy 双类（Web 全局；WHATWG streams。真机 26 口径：highWaterMark
+// 是原型 getter 非自有键、size 是可枚举 accessor 且全实例共享同一函数、构造器
+// ARG_TYPE 文案 + highWaterMark 缺失 ERR_MISSING_OPTION；size 对 undefined/null
+// 抛 TypeError、其余回 chunk.byteLength（原始值/普通对象 → undefined）；10f）----
+const __wjs_qsState = new WeakMap();
+function __wjs_qsArg(init) {
+  if (init === null) return "null";
+  if (typeof init === "string") return `type string ('${init}')`;
+  if (typeof init === "number") return `type number (${init})`;
+  if (typeof init === "function") return "type function";
+  return `type ${typeof init}`;
+}
+const __wjs_qsSizeBL = (chunk) => {
+  if (chunk === undefined || chunk === null) throw new TypeError("chunk must not be undefined or null");
+  return chunk.byteLength;
+};
+const __wjs_qsSizeCount = () => 1;
+globalThis.ByteLengthQueuingStrategy = class ByteLengthQueuingStrategy {
+  constructor(init) {
+    if (init === null || (typeof init !== "object" && typeof init !== "function")) {
+      const err = new TypeError(`The "init" argument must be of type object. Received ${__wjs_qsArg(init)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    if (init.highWaterMark === undefined) {
+      const err = new TypeError("init.highWaterMark is required");
+      err.code = "ERR_MISSING_OPTION";
+      throw err;
+    }
+    __wjs_qsState.set(this, init.highWaterMark);
+  }
+  get highWaterMark() { return __wjs_qsState.get(this); }
+  get size() { return __wjs_qsSizeBL; }
+};
+globalThis.CountQueuingStrategy = class CountQueuingStrategy {
+  constructor(init) {
+    if (init === null || (typeof init !== "object" && typeof init !== "function")) {
+      const err = new TypeError(`The "init" argument must be of type object. Received ${__wjs_qsArg(init)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    if (init.highWaterMark === undefined) {
+      const err = new TypeError("init.highWaterMark is required");
+      err.code = "ERR_MISSING_OPTION";
+      throw err;
+    }
+    __wjs_qsState.set(this, init.highWaterMark);
+  }
+  get highWaterMark() { return __wjs_qsState.get(this); }
+  get size() { return __wjs_qsSizeCount; }
+};
 globalThis.TransformStream = class TransformStream {
   constructor(transformer = {}, writableStrategy, readableStrategy) {
     let rsCtrl;
@@ -4476,6 +4527,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_os_prio_get", Some(node::os::os_prio_get), 1),
             ("__wjs_os_prio_set", Some(node::os::os_prio_set), 2),
             ("__wjs_argv_json", Some(node::process_::argv_json), 0),
+            ("__wjs_next_tick", Some(node::process_::next_tick_queue), 2),
             ("__wjs_env_get", Some(node::process_::env_get), 1),
             ("__wjs_env_set", Some(node::process_::env_set), 2),
             ("__wjs_env_del", Some(node::process_::env_del), 1),

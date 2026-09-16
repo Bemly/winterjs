@@ -3,7 +3,7 @@
 //! 口径（plan2 拍板：ALS/AsyncResource 实，其余 stub，Bun 同款）：
 //! - `AsyncResource`：真类——asyncId 单调计数、triggerAsyncId、runInAsyncScope
 //!   （作用域内 ALS 上下文可见）、bind、emitDestroy。
-//! - `AsyncLocalStorage`：真类——getStore/run/enter/exit/bind/snapshot/disable。
+//! - `AsyncLocalStorage`：真类——getStore/run/enterWith/enter/exit/bind/snapshot/disable。
 //! - 上下文模型：模块级 `Map<ALS, store>` 快照；AsyncResource 构造期拍照，
 //!   runInAsyncScope 期间以拷贝生效（不改写父作用域，与 Node 传播语义同向）。
 //! - 偏差（记档）：**跨 await/microtask 传播不支持**——事件循环 job 边界无
@@ -155,6 +155,14 @@ class AsyncLocalStorage {
   }
 
   enter(store) {
+    this.#exitStack.push(currentContext.get(this));
+    if (store !== undefined) currentContext.set(this, store);
+    else currentContext.delete(this);
+  }
+
+  // 10f：`enterWith` 为文档化主入口（`enter` 系遗留别名），语义同 enter——
+  // 进入 store 直至被 run/exit 切换（run-stores-scope 套件门）。
+  enterWith(store) {
     this.#exitStack.push(currentContext.get(this));
     if (store !== undefined) currentContext.set(this, store);
     else currentContext.delete(this);

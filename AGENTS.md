@@ -1633,3 +1633,62 @@ cargo build
 - 推广为铁律：`depth` 是"剩余层数"不是"开关"——空与非空在截断点语义不同；
   `typeof` 三态（object/function/primitive）写早退条件必须三态全列，漏 function
   即 `unknown`。
+
+### 4.108 `process.nextTick` 裸 throw 变 unhandled rejection：uncaught 路由须先探监听（2026-09-16，10f diagnostics_channel）
+
+- 症状：`bind-store`/`safe-subscriber-errors` 修前报 `unhandled rejection: Error:
+  fail/nope` exit=1，而套件等的是 `uncaughtException` 监听触发后 exit=0。
+- 根因：移植稿把 Node 的 `triggerUncaughtException(err)` 转译成
+  `process.nextTick(() => { throw err; })`——本仓 nextTick 系 microtask，
+  回调内 throw 落进 rejection 表，循环尾按 fatal 收割；真机 nextTick 回调抛错
+  走 uncaughtException（有监听即交付）。
+- 修法：`__dcUncaught(err)`——nextTick 内先探
+  `process.listenerCount('uncaughtException')`，有则 `emit`，无则 throw
+  走既有 fatal（`src/builtins/node/diagnostics_channel.rs`，两处 throw 点同改）。
+- 复现：`tests/node/diagnostics_channel.rs::phase10f_diagnostics_channel_parity_fixes`
+  的 `uncaught` 行（修前 `["sub-boom"]` 缺席 + exit=1）。
+- 推广为铁律：凡转译 `triggerUncaughtException`/`_fatalException`，一律经
+  "探监听 → emit/throw" 两件套，不许裸 throw 赌运行时语义（timers 的 Rust 侧
+  `uncaught_fn` 同族，见 `src/builtins/timers.rs`）。
+
+### 4.109 `AsyncLocalStorage.enterWith` 是文档化主入口，`enter` 只是别名（2026-09-16，10f diagnostics_channel）
+
+- 症状：`run-stores-scope` 首错即 `store.enterWith is not a function`——移植稿只给了
+  遗留 `enter`。
+- 根因：Node 文档化的是 `enterWith`（`enter` 系遗留），套件只调前者；两者语义同
+  （进入 store 直至被 run/exit 切换）。
+- 修法：`enterWith` 与 `enter` 同体并列（`src/builtins/node/async_hooks.rs`，
+  头注同步）。
+- 复现：同上 `phase10f_…_fixes` 的 `enter/restored` 行。
+- 推广为铁律：移植"公开面"以真机文档方法名为准，不以内部实现名（`enter`）为准；
+  遗留别名与文档主入口并存时两个都要给。
+
+### 4.110 `instanceof` 右侧自定义 `hasInstance` 内禁裸调 `getPrototypeOf`（2026-09-16，10f diagnostics_channel）
+
+- 症状：`tracing-channel-args-types` 的 `tracingChannel({})` 期望
+  `Cannot convert undefined or null to object`，本仓出小写 `can't convert…`。
+- 根因：`Channel[Symbol.hasInstance]` 内 `Object.getPrototypeOf(undefined)`——
+  同一操作两引擎文案不同（SM 小写/V8 大写），而 Node 恰把该引擎错原样抛给用户，
+  套件用正则钉住（§4.99 的 `instanceof` 右侧形态门是另一面：那是右值为函数时的
+  抛错，本条是 hasInstance 内部操作的文案）。
+- 修法：空值（`undefined`/`null`）先行直抛 V8 文案
+  `Cannot convert undefined or null to object`（`diagnostics_channel.rs`；
+  非空值沿旧路，`getPrototypeOf('')` 等装箱语义两边一致，无需桥）。
+- 复现：同上 `t1` 行；探针 `dc.tracingChannel({})` 修前小写、修后与真机同串。
+- 推广为铁律：文案桥只桥"套件正则钉住且真机可观测"的位点；桥的触发条件能窄则窄
+  （本条仅空值），不全局 patch 引擎内建（`Object.getPrototypeOf` 本体不动）。
+
+### 4.111 运行时从不 emit `unhandledRejection`：tracePromise 无 catch 即 fatal（2026-09-16，10f diagnostics_channel，偏离另案）
+
+- 症状：`tracing-channel-promise-unhandled`（注册 `process.on('unhandledRejection')`
+  后故意不接 tracePromise 的拒绝）修前 `unhandled rejection: Error: test` exit=1，
+  监听永不触发。
+- 根因：本仓 rejection 只在循环尾收割报 fatal（`runtime.rs`
+  `report_unhandled_rejections`），从无 `emit('unhandledRejection')` 面；
+  `src/` 全 grep 无该事件名。补齐需运行时收割点加"探监听 → emit，无则 fatal"
+  （`__wjs_uncaught` 同族的新 `__wjs_unhandled`），属跨切片改动。
+- 修法（本切片）：不修，记 🟡偏离（`docs/bun-parity.md` diagnostics_channel 节）；
+  不在 dc 侧用"急于 emit"伪造语义（调用方后接 `.catch` 时真机还会有
+  `rejectionHandled`，急 emit 即错上加错）。
+- 推广为铁律：事件面缺口（emit 点在运行时）不在功能切片内用功能侧补丁绕过；
+  绕过能过当前用例、必坏相邻语义（handled/unhandled 双生面）。

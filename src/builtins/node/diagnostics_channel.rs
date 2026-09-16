@@ -9,8 +9,10 @@
 //! - `using`/DisposableStack 依赖改手动 try/finally + `[SymbolDispose]()` 直调
 //!   （语义等价，避免转译层差异）；WeakRefMap/FinalizationRegistry → 普通 Map
 //!   （具名通道有限集，无 GC 清理需求，记档）。
-//! - `triggerUncaughtException` → `process.nextTick(() => { throw err; })`
-//!   （走本仓未捕获错误路径）。
+//! - `triggerUncaughtException` → `__dcUncaught`（nextTick 内探
+//!   `uncaughtException` 监听：有则 emit，无则 throw 走本仓未捕获路径；
+//!   裸 throw 经本仓 nextTick（microtask）会变 unhandled rejection，
+//!   与真机 uncaughtException 对不上——10f 对拍修）。
 //! - native 通道链接面（dc_binding.linkNativeChannel/notifyChannelActive）无——
 //!   无 native dc 底座，`_index` 恒 undefined（分支保留）。
 
@@ -29,6 +31,19 @@ const {
 } = errors;
 
 const SymbolDispose = Symbol.dispose ?? Symbol.for('Symbol.dispose');
+
+// 10f：triggerUncaughtException 转译（真机：有监听即 emit，无则 fatal；
+// 本仓 nextTick 系 microtask，裸 throw 会变 unhandled rejection，故先探监听）
+function __dcUncaught(err) {
+  try {
+    if (typeof process?.listenerCount === 'function' &&
+        process.listenerCount('uncaughtException') > 0) {
+      process.emit('uncaughtException', err);
+      return;
+    }
+  } catch { /* 探监听失败即落空到 throw */ }
+  throw err;
+}
 
 // 具名通道注册表（Node 为 WeakRefMap；具名通道有限集，Map 即可）
 const channels = new Map();
@@ -56,7 +71,7 @@ function enterStores(activeChannel, data, exits) {
         try {
           newContext = transform(data);
         } catch (err) {
-          process.nextTick(() => { throw err; });
+          process.nextTick(() => { __dcUncaught(err); });
           continue;
         }
       }
@@ -113,7 +128,7 @@ class ActiveChannel {
         const onMessage = subscribers[i];
         onMessage(data, this.name);
       } catch (err) {
-        process.nextTick(() => { throw err; });
+        process.nextTick(() => { __dcUncaught(err); });
       }
     }
   }
@@ -149,6 +164,12 @@ class Channel {
   }
 
   static [Symbol.hasInstance](instance) {
+    if (instance === undefined || instance === null) {
+      // V8 文案桥（`Object.getPrototypeOf(undefined)` SM 文案为小写 "can't
+      // convert…"，套件 `tracing-channel-args-types` 按 V8 "Cannot convert
+      // undefined or null to object" 正则断言；true-node 同款抛错位点）
+      throw new TypeError('Cannot convert undefined or null to object');
+    }
     const prototype = Object.getPrototypeOf(instance);
     return prototype === Channel.prototype ||
            prototype === ActiveChannel.prototype;

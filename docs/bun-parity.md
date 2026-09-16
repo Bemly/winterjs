@@ -299,3 +299,109 @@
 | test-urlpattern-invalidthis.js | 1 | 1 | ⏭️ URLPattern 未实现（同上） |
 | test-url-parse-deprecation.js | 1 | 1 | ⏭️ 自 spawn 裸文件参数（fixtures/node_modules 直跑，全 flag CLI 设计；DEP0169 警告部分已绿——expectWarning 序列通过，仅 spawn 断言红） |
 
+## diagnostics_channel
+
+> 10f 收官：69 点名 = 37 ✅ + 2 ⏭️（`--expose-gc`）+ 30 🟡偏离，红 0（红即修或记 §4，
+> 无第三种状态）。本轮改动主体：订阅者/transform 抛错改走 `__dcUncaught`
+> （nextTick 内探 `uncaughtException` 监听，有则 emit——裸 throw 经本仓 microtask
+> 会变 unhandled rejection，与真机对不上）+ `AsyncLocalStorage.enterWith`
+> （文档化主入口，`enter` 同语义）+ `Channel[Symbol.hasInstance]` 空值 V8 文案桥。
+> 偏离三类：① http/http2/net/child_process/module/udp 外的跨模块插桩（各通道事件
+> 需对应模块在收发路径 publish，本仓无——http/net 对拍另案时可顺带点名）；
+> ② `tracing-channel-promise-run-stores`（`await setTimeout` 后 store 保持——ALS
+> 跨 await/microtask 传播不支持，`async_hooks.rs` 头注既有记档）；
+> ③ `tracing-channel-promise-unhandled`（需运行时 `unhandledRejection` 事件面：
+> 本仓 rejection 只在循环尾收割报 fatal，从不 emit——另案，不在 dc 切片内伪造
+> 快照语义）。
+
+| 文件 | winterjs | node | 结论 |
+|---|---|---|---|
+| test-diagnostics-channel-bind-store.js | 0 | 0 | ✅（修：transform 抛错 `__dcUncaught` 路由） |
+| test-diagnostics-channel-bounded-channel-run-transform-error.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-bounded-channel-run.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-bounded-channel-scope-error.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-bounded-channel-scope-nested.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-bounded-channel-scope-transform-error.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-bounded-channel-scope.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-bounded-channel.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-child-process.js | 1 | 0 | 🟡 偏离：需 child_process 收发插桩（`childprocess.*` 通道） |
+| test-diagnostics-channel-gc-maintains-subcriptions.js | 1 | 1 | ⏭️ `--expose-gc`（`queryObjects`） |
+| test-diagnostics-channel-gc-race-condition.js | 1 | 1 | ⏭️ `--expose-gc` |
+| test-diagnostics-channel-has-subscribers.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-http-server-start.js | TIMEOUT | 0 | 🟡 偏离：需 http server 插桩（事件永不到，hang） |
+| test-diagnostics-channel-http.js | TIMEOUT | 0 | 🟡 偏离：需 http client/server 双插桩 |
+| test-diagnostics-channel-http2-client-stream-body-multiple-buffers-and-strings.js | 1 | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-client-stream-body-multiple-buffers.js | 1 | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-client-stream-body-no-chunks.js | 1 | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-client-stream-body-single-buffer.js | 1 | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-client-stream-body-single-string.js | 1 | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-client-stream-close-error.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-client-stream-close.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-client-stream-created.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-client-stream-error.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-client-stream-finish.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-client-stream-start.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-server-stream-close-error.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-server-stream-close.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-server-stream-created-start-timing.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-server-stream-created.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-server-stream-error.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-server-stream-finish.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-http2-server-stream-start.js | TIMEOUT | 0 | 🟡 偏离：需 http2 插桩 |
+| test-diagnostics-channel-many-channels.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-memory-leak.js | 1 | 0 | ⏭️ 需 `--max-old-space-size` 小堆 flag（泄漏观测前提） |
+| test-diagnostics-channel-module-import-error.js | 1 | 0 | 🟡 偏离：需 ESM loader 插桩（`module.import` 通道） |
+| test-diagnostics-channel-module-import.js | 1 | 0 | 🟡 偏离：需 ESM loader 插桩 |
+| test-diagnostics-channel-module-require-error.js | 1 | 0 | 🟡 偏离：需 CJS loader 插桩（`module.require` 通道） |
+| test-diagnostics-channel-module-require.js | 1 | 0 | 🟡 偏离：需 CJS loader 插桩 |
+| test-diagnostics-channel-net-client-socket-tls.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-net.js | TIMEOUT | 0 | 🟡 偏离：需 net 连接插桩 |
+| test-diagnostics-channel-object-channel-pub-sub.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-process.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-pub-sub.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-run-stores-scope-transform-error.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-run-stores-scope.js | 0 | 0 | ✅（修：`enterWith` 别名） |
+| test-diagnostics-channel-safe-subscriber-errors.js | 0 | 0 | ✅（修：订阅者抛错 `__dcUncaught` 路由） |
+| test-diagnostics-channel-symbol-named.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-sync-unsubscribe.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-args-types.js | 0 | 0 | ✅（修：`Symbol.hasInstance` 空值 V8 文案桥） |
+| test-diagnostics-channel-tracing-channel-callback-early-exit.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-callback-error.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-callback-run-stores.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-callback.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-has-subscribers.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-promise-early-exit.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-promise-error.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-promise-non-thenable.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-promise-run-stores.js | 1 | 0 | 🟡 偏离：ALS 跨 await 传播（`async_hooks.rs` 既有记档） |
+| test-diagnostics-channel-tracing-channel-promise-spoofed-constructor.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-promise-thenable.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-promise-unhandled.js | 1 | 0 | 🟡 偏离：需运行时 `unhandledRejection` 事件面（另案） |
+| test-diagnostics-channel-tracing-channel-promise.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-sync-early-exit.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-sync-error.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-sync-run-stores.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-tracing-channel-sync.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-udp.js | 0 | 0 | ✅ |
+| test-diagnostics-channel-web-locks.js | 1 | 0 | 🟡 偏离：Web Locks 未实现（无插桩源） |
+| test-diagnostics-channel-worker-threads.js | 0 | 0 | ✅ |
+
+## trace_events
+
+> 薄面确认（非深水）：本仓 `trace_events` 为 JS 类别集（`createTracing`/
+> `getEnabledCategories`），无 V8 tracing 底座、无 `--trace-event-categories`
+> CLI、无各模块插桩——与 `bun-compat.md` "类别集 JS 侧"口径一致，点名仅覆盖
+> 表面形态（🟡，不逐文件展开；深件须 tracing 底座另案）。
+> `test-trace-events-dynamic-enable.js` 真机侧挂（需 inspector/flag），本仓空过，
+> 属"双方皆非绿"的对齐，不计 ✅。
+
+| 文件 | winterjs | node | 结论 |
+|---|---|---|---|
+| test-trace-events-api-worker-disabled.js | 0 | 0 | ✅ |
+| test-trace-events-api.js | 1 | 1 | ⏭️ 需 `--expose-gc --expose-internals` flag（双 1 对齐） |
+| test-trace-events-get-category-enabled-buffer.js | 1 | 1 | ⏭️ 需 `--expose-internals`（`internal/test/binding`，双 1 对齐） |
+| test-trace-events-net-abstract-socket.js | 0 | 0 | ✅ |
+| test-trace-events-perfetto-pftrace.js | 0 | 0 | ✅ |
+| test-trace-events-dynamic-enable.js | 0 | 1 | ⏭️ 真机需 flag/底座（本仓空过，不计绿） |
+| 其余 29 件（fs/http/net/v8/vm/worker/threadpool/console/`-binding`/exit/sigint 等） | ≠0 | 0 | 🟡 偏离：需 V8 tracing 底座 + CLI flags（`--trace-event-categories`、自 spawn `-e` 位置参数即全 flag 设计） + 各模块插桩 |
+

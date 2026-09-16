@@ -53,3 +53,61 @@ try { dc.subscribe("t-ch2", "nope"); } catch (e) { console.log("e2", e.message.i
     assert!(out.contains("e2 true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_diagnostics_channel_parity_fixes() {
+    // 10f 对拍牵引回归（test-diagnostics-channel-* 套件门）：
+    // 正常：订阅者抛错走 uncaughtException（非 unhandled rejection）/
+    //   transform 抛错同路由/enterWith 进入 + withStoreScope 恢复；
+    // 报错：tracingChannel(0) ERR_INVALID_ARG_TYPE；
+    // 边界：tracingChannel({}) V8 文案 TypeError。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("d2.mjs");
+    file.write_str(
+        r#"import dc, { channel, tracingChannel } from "node:diagnostics_channel";
+import { AsyncLocalStorage } from "node:async_hooks";
+const seen = [];
+process.on("uncaughtException", (e) => seen.push(e.message));
+// 订阅者抛错 → uncaughtException（mustCall 式计数）
+channel("e-sub").subscribe(() => { throw new Error("sub-boom"); });
+channel("e-sub").publish({});
+// transform 抛错 → uncaughtException，store 不进作用域
+const als = new AsyncLocalStorage();
+channel("e-tr").bindStore(als, () => { throw new Error("tr-boom"); });
+channel("e-tr").runStores({}, () => {});
+// enterWith + withStoreScope 恢复
+const st = new AsyncLocalStorage();
+st.enterWith("initial");
+console.log("enter", st.getStore());
+{
+  const ch = channel("scope-x");
+  ch.subscribe(() => {});
+  ch.bindStore(st, (d) => d);
+  using scope = ch.withStoreScope("scoped");
+  console.log("scoped", st.getStore());
+}
+console.log("restored", st.getStore());
+// 参数校验
+try { tracingChannel(0); console.log("t0 BAD"); }
+catch (e) { console.log("t0", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { tracingChannel({}); console.log("t1 BAD"); }
+catch (e) { console.log("t1", /Cannot convert undefined or null to object/.test(e.message)); }
+setTimeout(() => console.log("uncaught", JSON.stringify(seen)), 20);
+"#,
+    )
+    .unwrap();
+    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "enter initial",
+        "scoped scoped",
+        "restored initial",
+        "t0 true",
+        "t1 true",
+        r#"uncaught ["sub-boom","tr-boom"]"#,
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

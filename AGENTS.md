@@ -1817,3 +1817,78 @@ cargo build
   `queueMicrotask` 一把梭对 nextTick/微任务**互相入队**的场景必然语义反转；
   原生队列 + pump 前后收割是最小正解。**§4.80 三进宫**：从队列批量取出的
   JSVal 一律当场逐条 rooting，"先攒一批再逐个处理"在 JS 值上永远不成立。
+
+### 4.119 `__fsCall` 闭包内抛的校验错误被 `__fsErr` 重包成 UNKNOWN（2026-09-17，10f fs）
+
+- 症状：`fs.fchmod(1, '123x')` 期望 `ERR_INVALID_ARG_VALUE`，实测 `UNKNOWN`。
+- 根因：`__fsModeNum` 在 `__fsCall("fchmod", ..., () => __wjs_fs_fchmod(fd, __fsModeNum(mode)))`
+  闭包内求值，抛出的 JS 错误（已带 code）被 `__fsErr` 按"native 消息无 code"路径
+  再包一层 → code 落 UNKNOWN。
+- 修法：`__fsErr` 先查 `e.code`——JS 侧已带 code（≠UNKNOWN）的错误直通
+  （补 path 后原样重抛）；仅 native report_error 产的无 code 消息走 node 形状重包。
+- 复现：`test-fs-fchmod.js`（修前 `throws: unexpected throw`）。
+- 推广为铁律：错误包装函数必须区分"JS 侧语义错误（已有 code）"与
+  "native io 消息（无 code 需整形）"，后者才重包（§4.37 症状一同源第三例）。
+
+### 4.120 `__cb1` 末参即 cb 的校验次序与 node 相反：f 系 fd/mode 先于 cb（2026-09-17，10f fs）
+
+- 症状：`fs.fchmod(1, '123x')` 期望 `ERR_INVALID_ARG_VALUE`（mode 校验先抛），
+  实测 `ERR_INVALID_ARG_TYPE`（callback）——`__cb1` 先验末参为函数，把 `'123x'`
+  当 cb 报了错。
+- 根因：node 回调 API 的校验次序分两族——readFile 族 cb 先验，f 系（fchmod/
+  fchown/fstat/ftruncate/fsync/fdatasync/futimes）fd/mode 实参先验、cb 最后。
+- 修法：f 系手写 `__fdCb` 包装（syncFn 先跑、cb 缺省再补 callback 类型错）；
+  `__cb1` 保持 cb 先验（readFile 族语义）。
+- 复现：`test-fs-fchmod.js` M5；模块探针 `fs.fchmod(1,'123x')` 单独跑必现。
+- 推广为铁律：移植 node 校验次序必须逐 API 对 `lib/fs.js` 原文——"统一先验 cb"
+  在 f 系全错；黑盒断言 message/code 时先真机实测错误种类再写。
+
+### 4.121 `fs_err` 包装吞 raw errno：io_code 落 UNKNOWN（2026-09-17，10f fs）
+
+- 症状：`fs.mkdirSync(file/sub, {recursive:true})` 期望 `ENOTDIR`，实测 `UNKNOWN`
+  （消息里还是 fs_err 的双层 Display）。
+- 根因：native 用 `fs_err::create_dir_all`——其 `Error` 的 Display 带自身上下文且
+  raw errno 不在 `io_code` 期待的位置。
+- 修法：native 改 `std::fs::create_dir_all/create_dir` 直用（report_io 拿到真
+  io::Error → raw_os_error → ENOTDIR）；配套 `uv_msg` errno→node 消息表 +
+  report_io 产 node 形状（`CODE: <uv msg>, <syscall> '<path>'`）+ `__fsErr` 直通。
+- 复现：`test-fs-mkdir.js` 父为文件/父链含文件两件。
+- 推广为铁律：新 syscall native 禁引 fs_err 系包装（io_code/uv_msg 依赖
+  raw_os_error）；错误消息形状一次性对 node（`CODE: msg, syscall 'path'`），
+  JS 层只补属性不重排。
+
+### 4.122 对拍并行跑分未设 TEST_THREAD_ID：全进程共享 `.tmp.0` 互踩（2026-09-17，10f fs）
+
+- 症状：mkdtempDisposable 套件单独跑全过，与其它 fs 件并行跑恒挂——
+  teardown 报 `EACCES: rm '.tmp.N'`，残留 0444/0644 目录连锁污染后续轮次。
+- 根因：node `common/tmpdir.js` 的目录名 = `.tmp.` + `TEST_SERIAL_ID ||
+  TEST_THREAD_ID || '0'`——缺省全部进程共用 `.tmp.0`；某件 chmod 共享目录
+  0444 后，其它件的 `tmpdir.refresh()` 全炸，错误又被归因到当前件。
+- 修法：跑分脚本 `run1` 按线程注入唯一 `TEST_THREAD_ID`；手工并行探针同样
+  显式设；清理残留目录 `chmod -R u+rwx`（u+w 不含遍历位，rm 不掉）。
+- 复现：`wjs-10f-par.py` 未注入版并行跑 test-fs 全域（互踩随机现形）。
+- 推广为铁律：并行跑 node 套件必须逐进程设 TEST_THREAD_ID/TEST_SERIAL_ID；
+  "单独跑过、并行挂"先查共享临时目录，再怀疑代码（§4.41 读全局态姊妹篇）。
+
+### 4.123 命名函数表达式遮蔽外层绑定 → custom promisify 无限递归（2026-09-17，10f fs）
+
+- 症状：`promisify(fs.exists)` 拒绝原因就是 `true`（回调首参当 err）+ 
+  `InternalError: too much recursion`。
+- 根因：`exists[Symbol.for(...)] = function exists(path) { ... exists(path, resolve) }`
+  ——内层命名遮蔽外层导出，自递归；拒绝值恰是 truthy 的 `true`。
+- 修法：内层匿名（`function (path) { ... 外层 exists ... }`）。
+- 复现：`test-fs-promisified.js`。
+- 推广为铁律：给既有函数挂 `promisify.custom` 时内层**禁用同名命名函数表达式**
+  ——命名 FE 的名字在其作用域内遮蔽外层绑定， lexically 就地自指。
+
+### 4.124 Buffer/TypedArray 自带 `Symbol.iterator`（吐数字）：视图必须排除在"可迭代 data"分支外（2026-09-17，10f fs）
+
+- 症状：`fh.writeFile(Buffer)` 报 `The "chunk" argument ... Received number`。
+- 根因：`typeof data[Symbol.iterator] === "function"` 对 Buffer/TypedArray 也成立
+  （迭代出 number）——Buffer 被当逐块可迭代收集，块校验当场拒绝。
+- 修法：可迭代分支加 `!ArrayBuffer.isView(data)` 前置门；块校验
+  （string/Buffer/TypedArray/DataView）照 node 逐字（`ERR_INVALID_ARG_TYPE`，
+  write 系参数名 "buffer"、writeFile/appendFile 系 "data"）。
+- 复现：`test-fs-promises-file-handle-writeFile.js` doWriteBuffer。
+- 推广为铁律：`Symbol.iterator` 存在性 ≠ "集合类型"判据——TypedArray 全家都是
+  iterator；分支判据按"视图先收、迭代器次之"排序，视图门永远在前。

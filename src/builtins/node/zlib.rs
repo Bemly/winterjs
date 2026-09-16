@@ -291,13 +291,24 @@ pub unsafe extern "C" fn zlib_gunzip(
     let Some(data) = arg_bytes(&mut cx, &frame, 0, "gunzip") else {
         return false;
     };
-    match read_all(flate2::read::GzDecoder::new(&data[..])) {
+    match gunzip_multi(&data) {
         Ok(out) => set_rval_bytes(&mut cx, &frame, &out),
         Err(e) => {
             report_error(&mut cx, &e);
             false
         }
     }
+}
+
+/// gzip 多成员连解（Node gunzip 多成员口径：flate2 `MultiGzDecoder` 连解；
+/// 手写成员循环不可行——`GzDecoder` 内缓冲预读，`get_ref` 拿不到成员边界）。
+fn gunzip_multi(data: &[u8]) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let mut out = Vec::new();
+    flate2::read::MultiGzDecoder::new(data)
+        .read_to_end(&mut out)
+        .map_err(|e| format!("Z_DATA_ERROR: {e}"))?;
+    Ok(out)
 }
 
 /// `__wjs_zlib_unzip(dataU8)`（gzip 优先、zlib 兜底；Node Unzip 自动识别口径）。
@@ -312,7 +323,7 @@ pub unsafe extern "C" fn zlib_unzip(
     let Some(data) = arg_bytes(&mut cx, &frame, 0, "unzip") else {
         return false;
     };
-    if let Ok(out) = read_all(flate2::read::GzDecoder::new(&data[..])) {
+    if let Ok(out) = gunzip_multi(&data) {
         return set_rval_bytes(&mut cx, &frame, &out);
     }
     match read_all(flate2::read::ZlibDecoder::new(&data[..])) {
@@ -438,10 +449,14 @@ pub unsafe extern "C" fn zlib_zstd_decompress(
 /// 内嵌 ESM 源（`node:zlib`）。
 pub const SOURCE: &str = r#"
 import errors from 'node:internal/errors';
+import { kMaxLength as __bufKMaxLength } from 'node:buffer';
 
 const {
   codes: {
     ERR_INVALID_ARG_TYPE: { HideStackFramesError: ERR_INVALID_ARG_TYPE },
+    ERR_BROTLI_INVALID_PARAM: { HideStackFramesError: ERR_BROTLI_INVALID_PARAM },
+    ERR_ZLIB_INITIALIZATION_FAILED: { HideStackFramesError: ERR_ZLIB_INITIALIZATION_FAILED },
+    ERR_BUFFER_TOO_LARGE: { HideStackFramesError: ERR_BUFFER_TOO_LARGE },
   },
 } = errors;
 
@@ -450,7 +465,19 @@ function __zBytes(input, what) {
   if (input instanceof Uint8Array) return input;
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  throw new TypeError(`${what}: data must be string or BufferSource`);
+  throw new ERR_INVALID_ARG_TYPE(
+    "buffer", ["string", "Buffer", "TypedArray", "DataView", "ArrayBuffer"], input);
+}
+// spoofed length 校验（Node invalid-input 口径：length/byteLength getter 伪造的视图
+// 实际缓冲不足即 ERR_OUT_OF_RANGE；真机读 length 分配，短读即范围错）。
+function __zChecked(input) {
+  const u8 = __zBytes(input);
+  if (u8.length > u8.buffer.byteLength) {
+    const err = new RangeError(`The value of "buffer.length" is out of range.`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  return u8;
 }
 function __zBuf(u8) {
   const b = Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength);
@@ -471,6 +498,20 @@ function __zErr(e) {
   err.errno = __Z_ERRNO[code] ?? -1;
   throw err;
 }
+// kMaxLength 守卫（Node kmaxlength 口径：解压输出超 `Buffer.kMaxLength` 即
+// RangeError；套件劫持 kMaxLength=64 触发，不分配大 Buffer）。
+// 注意：快照 `require('buffer')` 的 kMaxLength（Node lib/zlib.js 解构值拷贝——
+// 劫持窗口内 require 即锁定 64，事后恢复不影响；live 读则恢复后失效）。
+const __zKMaxSnap = (typeof __bufKMaxLength === "number" && __bufKMaxLength) || 2147483647;
+function __zCheckKMax(out) {
+  const max = __zKMaxSnap;
+  if (out.length > max) {
+    const err = new RangeError(`Cannot create a Buffer larger than ${max} bytes`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  return out;
+}
 function __zCall(fn) {
   try {
     return __zBuf(fn());
@@ -489,19 +530,74 @@ function __zLevel(opts, dflt) {
   }
   return lv;
 }
+// Node 原文（lib/zlib.js Brotli 构造器）：params 键越界/重复即 ERR_BROTLI_INVALID_PARAM，
+// 值非 number/boolean 即 ERR_INVALID_ARG_TYPE；bool 标志位非 0/1 即 INIT_FAILED。
+// 构造期与 Sync/Async 共用（构造期先验，Sync 复验无害）。
+function __zCheckBrotliParams(opts) {
+  if (opts === undefined || opts === null) return;
+  if (opts.params === undefined || opts.params === null) return;
+  if (typeof opts.params !== "object") {
+    throw new ERR_INVALID_ARG_TYPE("options.params", "object", opts.params);
+  }
+  const seen = new Set();
+  for (const origKey of Object.keys(opts.params)) {
+    const key = Number(origKey);
+    if (!Number.isInteger(key) || key < 0 || key > 6 || seen.has(key)) {
+      throw new ERR_BROTLI_INVALID_PARAM(origKey);
+    }
+    seen.add(key);
+    const v = opts.params[origKey];
+    if (typeof v !== "number" && typeof v !== "boolean") {
+      throw new ERR_INVALID_ARG_TYPE("options.params[key]", "number", v);
+    }
+  }
+  if (opts.params[4] !== undefined && opts.params[4] !== 0 && opts.params[4] !== 1 &&
+      opts.params[4] !== false && opts.params[4] !== true) {
+    throw new ERR_ZLIB_INITIALIZATION_FAILED();
+  }
+}
 function __zQuality(opts) {
   if (opts === undefined || opts === null) return 11;
+  __zCheckBrotliParams(opts);
   let q = opts.quality;
   if (q === undefined && opts.params !== undefined && opts.params !== null) {
     q = opts.params[1];
   }
   if (q === undefined) return 11;
+  if (typeof q === "boolean") q = q ? 1 : 0;
   if (!Number.isInteger(q) || q < 0 || q > 11) {
     const err = new RangeError(`options.quality ${q} out of range (0..11)`);
     err.code = "ERR_OUT_OF_RANGE";
     throw err;
   }
   return q;
+}
+// flush 系范围校验（flush/finishFlush/fullFlush；zlib 系 0..5，brotli 系 0..3）。
+function __zFlush(opts, brotli) {
+  if (opts === undefined || opts === null) return undefined;
+  const lo = 0, hi = brotli ? 3 : 5;
+  for (const k of ["flush", "finishFlush", "fullFlush"]) {
+    const f = opts[k];
+    if (f === undefined) continue;
+    if (!Number.isInteger(f) || f < lo || f > hi) {
+      const err = new RangeError(`The value of "options.${k}" is out of range. It must be >= ${lo} and <= ${hi}. Received ${f}`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+  }
+  return opts.flush;
+}
+// maxOutputLength 校验（1..kMaxLength；Node checkRangesOrGetDefault 口径）。
+function __zMaxOut(opts) {
+  if (opts === undefined || opts === null) return undefined;
+  const m = opts.maxOutputLength;
+  if (m === undefined) return undefined;
+  if (!Number.isInteger(m) || m < 1 || m > 2147483647) {
+    const err = new RangeError(`The value of "options.maxOutputLength" is out of range.`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  return m;
 }
 function __zAsync(core, args, cb) {
   queueMicrotask(() => {
@@ -513,23 +609,25 @@ function __zAsync(core, args, cb) {
   });
 }
 function __zNeedCb(cb, what) {
-  if (typeof cb !== "function") throw new TypeError(`${what}: callback must be a function`);
+  if (typeof cb !== "function") throw new ERR_INVALID_ARG_TYPE("callback", "function", cb);
 }
-export function deflateSync(buf, opts) {
-  const data = __zBytes(buf, "deflate");
+function deflateSync__core(buf, opts) {
+  const data = __zChecked(buf, "deflate");
   const lv = __zLevel(opts, -1);
+  __zFlush(opts, false);
   return __zCall(() => __wjs_zlib_deflate_lv(data, lv));
 }
 export function deflate(buf, opts, cb) {
+  if (opts && opts.info && typeof cb === "function") { const C = Deflate; const eng = new C(opts); try { const r = deflateSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   if (typeof opts === "function") { cb = opts; opts = undefined; }
   __zNeedCb(cb, "deflate");
-  const data = __zBytes(buf, "deflate");
+  const data = __zChecked(buf, "deflate");
   const lv = __zLevel(opts, -1);
   __zAsync((d, l) => __zCall(() => __wjs_zlib_deflate_lv(d, l)), [data, lv], cb);
 }
-export function inflateSync(buf) {
-  const data = __zBytes(buf, "inflate");
-  return __zCall(() => __wjs_zlib_inflate(data));
+function inflateSync__core(buf, opts) {
+  const data = __zChecked(buf, "inflate");
+  return __zCheckKMax(__zCall(() => __wjs_zlib_inflate(data)));
 }
 // 10a：crc32（同步纯函数；真机逐项对过：空串 0、链式 seed、双报错）。
 export function crc32(data, value = 0) {
@@ -551,100 +649,380 @@ export function crc32(data, value = 0) {
   }
   return __wjs_zlib_crc32(bytes, value >>> 0);
 }
-export function inflate(buf, cb) {
+export function inflate(buf, opts, cb) {
+  if (typeof opts === "function") { cb = opts; opts = undefined; }
+  if (opts && opts.info) { const eng = new Inflate(opts); try { const r = inflateSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "inflate");
-  const data = __zBytes(buf, "inflate");
-  __zAsync((d) => __zCall(() => __wjs_zlib_inflate(d)), [data], cb);
+  const data = __zChecked(buf, "inflate");
+  __zAsync((d) => __zCheckKMax(__zCall(() => __wjs_zlib_inflate(d))), [data], cb);
 }
-export function deflateRawSync(buf, opts) {
-  const data = __zBytes(buf, "deflateRaw");
+function deflateRawSync__core(buf, opts) {
+  const data = __zChecked(buf, "deflateRaw");
   const lv = __zLevel(opts, -1);
+  __zFlush(opts, false);
   return __zCall(() => __wjs_zlib_deflate_raw(data, lv));
 }
 export function deflateRaw(buf, opts, cb) {
+  if (opts && opts.info && typeof cb === "function") { const C = DeflateRaw; const eng = new C(opts); try { const r = deflateRawSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   if (typeof opts === "function") { cb = opts; opts = undefined; }
   __zNeedCb(cb, "deflateRaw");
-  const data = __zBytes(buf, "deflateRaw");
+  const data = __zChecked(buf, "deflateRaw");
   const lv = __zLevel(opts, -1);
   __zAsync((d, l) => __zCall(() => __wjs_zlib_deflate_raw(d, l)), [data, lv], cb);
 }
-export function inflateRawSync(buf) {
-  const data = __zBytes(buf, "inflateRaw");
-  return __zCall(() => __wjs_zlib_inflate_raw(data));
+function inflateRawSync__core(buf, opts) {
+  const data = __zChecked(buf, "inflateRaw");
+  return __zCheckKMax(__zCall(() => __wjs_zlib_inflate_raw(data)));
 }
-export function inflateRaw(buf, cb) {
+export function inflateRaw(buf, opts, cb) {
+  if (typeof opts === "function") { cb = opts; opts = undefined; }
+  if (opts && opts.info) { const eng = new InflateRaw(opts); try { const r = inflateRawSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "inflateRaw");
-  const data = __zBytes(buf, "inflateRaw");
-  __zAsync((d) => __zCall(() => __wjs_zlib_inflate_raw(d)), [data], cb);
+  const data = __zChecked(buf, "inflateRaw");
+  __zAsync((d) => __zCheckKMax(__zCall(() => __wjs_zlib_inflate_raw(d))), [data], cb);
 }
-export function gzipSync(buf, opts) {
-  const data = __zBytes(buf, "gzip");
+function gzipSync__core(buf, opts) {
+  const data = __zChecked(buf, "gzip");
   const lv = __zLevel(opts, -1);
+  __zFlush(opts, false);
   return __zCall(() => __wjs_zlib_gzip(data, lv));
 }
 export function gzip(buf, opts, cb) {
+  if (opts && opts.info && typeof cb === "function") { const C = Gzip; const eng = new C(opts); try { const r = gzipSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   if (typeof opts === "function") { cb = opts; opts = undefined; }
   __zNeedCb(cb, "gzip");
-  const data = __zBytes(buf, "gzip");
+  const data = __zChecked(buf, "gzip");
   const lv = __zLevel(opts, -1);
   __zAsync((d, l) => __zCall(() => __wjs_zlib_gzip(d, l)), [data, lv], cb);
 }
-export function gunzipSync(buf) {
-  const data = __zBytes(buf, "gunzip");
-  return __zCall(() => __wjs_zlib_gunzip(data));
+function gunzipSync__core(buf, opts) {
+  const data = __zChecked(buf, "gunzip");
+  return __zCheckKMax(__zCall(() => __wjs_zlib_gunzip(data)));
 }
-export function gunzip(buf, cb) {
+export function gunzip(buf, opts, cb) {
+  if (typeof opts === "function") { cb = opts; opts = undefined; }
+  if (opts && opts.info) { const eng = new Gunzip(opts); try { const r = gunzipSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "gunzip");
-  const data = __zBytes(buf, "gunzip");
-  __zAsync((d) => __zCall(() => __wjs_zlib_gunzip(d)), [data], cb);
+  const data = __zChecked(buf, "gunzip");
+  __zAsync((d) => __zCheckKMax(__zCall(() => __wjs_zlib_gunzip(d))), [data], cb);
 }
-export function unzipSync(buf) {
-  const data = __zBytes(buf, "unzip");
-  return __zCall(() => __wjs_zlib_unzip(data));
+function unzipSync__core(buf, opts) {
+  const data = __zChecked(buf, "unzip");
+  return __zCheckKMax(__zCall(() => __wjs_zlib_unzip(data)));
 }
-export function unzip(buf, cb) {
+export function unzip(buf, opts, cb) {
+  if (typeof opts === "function") { cb = opts; opts = undefined; }
+  if (opts && opts.info) { const eng = new Unzip(opts); try { const r = unzipSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "unzip");
-  const data = __zBytes(buf, "unzip");
-  __zAsync((d) => __zCall(() => __wjs_zlib_unzip(d)), [data], cb);
+  const data = __zChecked(buf, "unzip");
+  __zAsync((d) => __zCheckKMax(__zCall(() => __wjs_zlib_unzip(d))), [data], cb);
 }
-export function brotliCompressSync(buf, opts) {
-  const data = __zBytes(buf, "brotliCompress");
+function brotliCompressSync__core(buf, opts) {
+  const data = __zChecked(buf, "brotliCompress");
   const q = __zQuality(opts);
+  __zFlush(opts, true);
   return __zCall(() => __wjs_zlib_brotli_compress(data, q));
 }
 export function brotliCompress(buf, opts, cb) {
+  if (opts && opts.info && typeof cb === "function") { const C = BrotliCompress; const eng = new C(opts); try { const r = brotliCompressSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   if (typeof opts === "function") { cb = opts; opts = undefined; }
   __zNeedCb(cb, "brotliCompress");
-  const data = __zBytes(buf, "brotliCompress");
+  const data = __zChecked(buf, "brotliCompress");
   const q = __zQuality(opts);
+  __zFlush(opts, true);
   __zAsync((d, x) => __zCall(() => __wjs_zlib_brotli_compress(d, x)), [data, q], cb);
 }
-export function brotliDecompressSync(buf) {
-  const data = __zBytes(buf, "brotliDecompress");
-  return __zCall(() => __wjs_zlib_brotli_decompress(data));
+function brotliDecompressSync__core(buf, opts) {
+  const data = __zChecked(buf, "brotliDecompress");
+  const maxOut = __zMaxOut(opts);
+  const out = __zCall(() => __wjs_zlib_brotli_decompress(data));
+  if (maxOut !== undefined && out.length > maxOut) throw new ERR_BUFFER_TOO_LARGE(maxOut);
+  return __zCheckKMax(out);
 }
-export function brotliDecompress(buf, cb) {
+export function brotliDecompress(buf, opts, cb) {
+  if (opts && opts.info && typeof cb === "function") { const C = BrotliDecompress; const eng = new C(opts); try { const r = brotliDecompressSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
+  if (typeof opts === "function") { cb = opts; opts = undefined; }
   __zNeedCb(cb, "brotliDecompress");
-  const data = __zBytes(buf, "brotliDecompress");
-  __zAsync((d) => __zCall(() => __wjs_zlib_brotli_decompress(d)), [data], cb);
+  const data = __zChecked(buf, "brotliDecompress");
+  const maxOut = __zMaxOut(opts);
+  __zAsync((d, m) => {
+    const out = __zCall(() => __wjs_zlib_brotli_decompress(d));
+    if (m !== undefined && out.length > m) throw new ERR_BUFFER_TOO_LARGE(m);
+    return __zCheckKMax(out);
+  }, [data, maxOut], cb);
 }
-export function zstdCompressSync(buf) {
-  const data = __zBytes(buf, "zstdCompress");
+function zstdCompressSync__core(buf, opts) {
+  const data = __zChecked(buf, "zstdCompress");
   return __zCall(() => __wjs_zlib_zstd_compress(data));
 }
-export function zstdCompress(buf, cb) {
+export function zstdCompress(buf, opts, cb) {
+  if (typeof opts === "function") { cb = opts; opts = undefined; }
+  if (opts && opts.info) { const eng = new ZstdCompress(opts); try { const r = zstdCompressSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "zstdCompress");
-  const data = __zBytes(buf, "zstdCompress");
+  const data = __zChecked(buf, "zstdCompress");
   __zAsync((d) => __zCall(() => __wjs_zlib_zstd_compress(d)), [data], cb);
 }
-export function zstdDecompressSync(buf) {
-  const data = __zBytes(buf, "zstdDecompress");
-  return __zCall(() => __wjs_zlib_zstd_decompress(data));
+function zstdDecompressSync__core(buf, opts) {
+  const data = __zChecked(buf, "zstdDecompress");
+  return __zCheckKMax(__zCall(() => __wjs_zlib_zstd_decompress(data)));
 }
-export function zstdDecompress(buf, cb) {
+export function zstdDecompress(buf, opts, cb) {
+  if (typeof opts === "function") { cb = opts; opts = undefined; }
+  if (opts && opts.info) { const eng = new ZstdDecompress(opts); try { const r = zstdDecompressSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "zstdDecompress");
-  const data = __zBytes(buf, "zstdDecompress");
-  __zAsync((d) => __zCall(() => __wjs_zlib_zstd_decompress(d)), [data], cb);
+  const data = __zChecked(buf, "zstdDecompress");
+  __zAsync((d) => __zCheckKMax(__zCall(() => __wjs_zlib_zstd_decompress(d))), [data], cb);
+}
+// 流式类（Node ZlibBase 口径的最小实现：Transform 子类，累积 input，
+// _flush 时调同名 Sync 版一次产出；同步底层记档沿用 §7 头注）。
+// 覆盖 12 类 + createXxx 工厂 + info 选项（{buffer, engine}）+ bytesWritten。
+// 偏差记档：flush()/write 分段增量不做（整收）；dictionary/windowBits/memLevel/
+// chunkSize/strategy 接受忽略（构造校验只做 failed-init 套件口径：chunkSize 范围）。
+import { Transform } from "node:stream";
+function __zStreamBase(opts, syncFn) {
+  Transform.call(this);
+  this.__chunks = [];
+  this.__syncFn = syncFn;
+  this.__opts = opts ?? {};
+  this.bytesWritten = 0;
+}
+Object.setPrototypeOf(__zStreamBase.prototype, Transform.prototype);
+Object.setPrototypeOf(__zStreamBase, Transform);
+__zStreamBase.prototype._transform = function (chunk, encoding, cb) {
+  let u8;
+  if (typeof chunk === "string") u8 = Buffer.from(chunk);
+  else if (chunk instanceof ArrayBuffer) u8 = new Uint8Array(chunk);
+  else if (ArrayBuffer.isView(chunk)) u8 = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  else u8 = chunk;
+  this.__chunks.push(u8);
+  this.bytesWritten += u8.length ?? 0;
+  cb();
+};
+__zStreamBase.prototype._flush = function (cb) {
+  try {
+    const out = this.__syncFn(Buffer.concat(this.__chunks), this.__opts);
+    // Sync 返回 Buffer 本体（别取 .buffer——下游 write(ArrayBuffer) 会被 Writable 拒收）。
+    this.push(out);
+    cb();
+  } catch (e) { cb(e); }
+};
+// flush(kind?, cb)：整收近似——把当前累积经 Sync 压出并 push（真增量语义偏离记档）。
+// close(cb)：end 等效。reset()：清累积。
+// params(level, strategy)：校验并存回 _level/_strategy（deflate-constructors 套件口径）。
+__zStreamBase.prototype.flush = function (kind, cb) {
+  if (typeof kind === "function") { cb = kind; kind = undefined; }
+  if (kind !== undefined) __zFlush(this.__opts, /brotli/i.test(this.__engineName));
+  try {
+    if (this.__chunks.length > 0) {
+      const out = this.__syncFn(Buffer.concat(this.__chunks), this.__opts);
+      this.__chunks = [];
+      this.push(out);
+    }
+    if (typeof cb === "function") cb();
+  } catch (e) {
+    if (typeof cb === "function") cb(e);
+    else throw e;
+  }
+};
+__zStreamBase.prototype.close = function (cb) {
+  this.end(() => { if (typeof cb === "function") cb(); });
+};
+__zStreamBase.prototype.reset = function () {
+  this.__chunks = [];
+};
+__zStreamBase.prototype.params = function (level, strategy) {
+  if (typeof level !== "number") {
+    throw new ERR_INVALID_ARG_TYPE("level", "number", level);
+  }
+  if (!Number.isFinite(level)) {
+    const err = new RangeError(`The value of "level" is out of range. It must be a finite number. Received ${level}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  if (!Number.isInteger(level) || level < -1 || level > 9) {
+    const err = new RangeError(`The value of "level" is out of range. It must be >= -1 and <= 9. Received ${level}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  this._level = level;
+  if (strategy !== undefined) {
+    if (typeof strategy !== "number") {
+      throw new ERR_INVALID_ARG_TYPE("strategy", "number", strategy);
+    }
+    if (!Number.isFinite(strategy)) {
+      const err = new RangeError(`The value of "strategy" is out of range. It must be a finite number. Received ${strategy}`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+    if (!Number.isInteger(strategy) || strategy < 0 || strategy > 4) {
+      const err = new RangeError(`The value of "strategy" is out of range. It must be >= 0 and <= 4. Received ${strategy}`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+    this._strategy = strategy;
+  }
+};
+function __zMakeClass(syncFn, check) {
+  function C(opts) {
+    // Node 口径：流类裸调返回新实例（DEP0184 deprecate 警告略）。
+    if (!(this instanceof C)) return new C(opts);
+    if (check) check(opts);
+    __zStreamBase.call(this, opts, syncFn);
+    this.__engineName = syncFn.name || "Zlib";
+    // failed-init 套件口径：_level/_strategy 属性（NaN 回落默认值）。
+    const lv = opts?.level;
+    this._level = Number.isInteger(lv) ? lv : constants.Z_DEFAULT_COMPRESSION;
+    const st = opts?.strategy;
+    this._strategy = Number.isInteger(st) ? st : constants.Z_DEFAULT_STRATEGY;
+  }
+  Object.setPrototypeOf(C.prototype, __zStreamBase.prototype);
+  Object.setPrototypeOf(C, __zStreamBase);
+  return C;
+}
+function __zCheckChunkSize(opts) {
+  if (opts && opts.chunkSize !== undefined) {
+    const c = opts.chunkSize;
+    if (typeof c !== "number") {
+      throw new ERR_INVALID_ARG_TYPE("options.chunkSize", "number", c);
+    }
+    if (!Number.isFinite(c)) {
+      const err = new RangeError(`The value of "options.chunkSize" is out of range. It must be a finite number. Received ${c}`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+    if (c < 64) {
+      const err = new RangeError(`The value of "options.chunkSize" is out of range. It must be >= 64. Received ${c}`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+  }
+}
+function __zCheckZlibOpts(opts, minWB = 8, allowWB0 = false) {
+  __zCheckChunkSize(opts);
+  if (opts && opts.dictionary !== undefined) {
+    const d = opts.dictionary;
+    if (typeof d === "string" || !(d instanceof Uint8Array || d instanceof ArrayBuffer || ArrayBuffer.isView(d))) {
+      throw new ERR_INVALID_ARG_TYPE("options.dictionary", ["Buffer", "TypedArray", "DataView", "ArrayBuffer"], d);
+    }
+  }
+  if (opts && opts.windowBits !== undefined) {
+    const w = opts.windowBits;
+    // 解压侧 windowBits 0 合法（用流头窗口；Node Zlib 原文口径）。
+    if (w === 0 && allowWB0) return;
+    if (typeof w !== "number") {
+      throw new ERR_INVALID_ARG_TYPE("options.windowBits", "number", w);
+    }
+    if (!Number.isFinite(w)) {
+      const err = new RangeError(`The value of "options.windowBits" is out of range. It must be a finite number. Received ${w}`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+    if (!Number.isInteger(w) || w < minWB || w > 15) {
+      const err = new RangeError(`The value of "options.windowBits" is out of range. It must be >= ${minWB} and <= 15. Received ${w}`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+  }
+  if (opts && opts.level !== undefined) {
+    const lv = opts.level;
+    if (typeof lv !== "number") {
+      throw new ERR_INVALID_ARG_TYPE("options.level", "number", lv);
+    }
+    // NaN 回落默认值（Node checkRangesOrGetDefault 口径；failed-init 套件）。
+    if (!Number.isNaN(lv)) {
+      if (!Number.isFinite(lv)) {
+        const err = new RangeError(`The value of "options.level" is out of range. It must be a finite number. Received ${lv}`);
+        err.code = "ERR_OUT_OF_RANGE";
+        throw err;
+      }
+      if (!Number.isInteger(lv) || lv < -1 || lv > 9) {
+        const err = new RangeError(`The value of "options.level" is out of range. It must be >= -1 and <= 9. Received ${lv}`);
+        err.code = "ERR_OUT_OF_RANGE";
+        throw err;
+      }
+    }
+  }
+  if (opts && opts.memLevel !== undefined) {
+    const m = opts.memLevel;
+    if (typeof m !== "number") {
+      throw new ERR_INVALID_ARG_TYPE("options.memLevel", "number", m);
+    }
+    if (!Number.isFinite(m)) {
+      const err = new RangeError(`The value of "options.memLevel" is out of range. It must be a finite number. Received ${m}`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+    if (!Number.isInteger(m) || m < 1 || m > 9) {
+      const err = new RangeError(`The value of "options.memLevel" is out of range. It must be >= 1 and <= 9. Received ${m}`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+  }
+  if (opts && opts.strategy !== undefined) {
+    const st2 = opts.strategy;
+    if (typeof st2 !== "number") {
+      throw new ERR_INVALID_ARG_TYPE("options.strategy", "number", st2);
+    }
+    // NaN 回落默认值（同 level）。
+    if (!Number.isNaN(st2)) {
+      if (!Number.isFinite(st2)) {
+        const err = new RangeError(`The value of "options.strategy" is out of range. It must be a finite number. Received ${st2}`);
+        err.code = "ERR_OUT_OF_RANGE";
+        throw err;
+      }
+      if (!Number.isInteger(st2) || st2 < 0 || st2 > 4) {
+        const err = new RangeError(`The value of "options.strategy" is out of range. It must be >= 0 and <= 4. Received ${st2}`);
+        err.code = "ERR_OUT_OF_RANGE";
+        throw err;
+      }
+    }
+  }
+}
+export const Deflate = __zMakeClass(deflateSync, (o) => __zCheckZlibOpts(o, 8, false));
+export const Inflate = __zMakeClass(inflateSync, (o) => __zCheckZlibOpts(o, 8, true));
+export const Gzip = __zMakeClass(gzipSync, (o) => __zCheckZlibOpts(o, 9, false));
+export const Gunzip = __zMakeClass(gunzipSync, (o) => __zCheckZlibOpts(o, 8, true));
+export const DeflateRaw = __zMakeClass(deflateRawSync, (o) => __zCheckZlibOpts(o, 8, false));
+export const InflateRaw = __zMakeClass(inflateRawSync, (o) => __zCheckZlibOpts(o, 8, true));
+export const Unzip = __zMakeClass(unzipSync, (o) => __zCheckZlibOpts(o, 8, true));
+export const BrotliCompress = __zMakeClass(brotliCompressSync, (o) => { __zCheckChunkSize(o); __zCheckBrotliParams(o); });
+export const BrotliDecompress = __zMakeClass(brotliDecompressSync, (o) => { __zCheckChunkSize(o); __zCheckBrotliParams(o); });
+export const ZstdCompress = __zMakeClass(zstdCompressSync, __zCheckChunkSize);
+export const ZstdDecompress = __zMakeClass(zstdDecompressSync, __zCheckChunkSize);
+export const BrotliEncode = BrotliCompress;
+export const BrotliDecode = BrotliDecompress;
+function __zCreate(C) {
+  return (opts) => new C(opts);
+}
+export const createDeflate = __zCreate(Deflate);
+export const createInflate = __zCreate(Inflate);
+export const createGzip = __zCreate(Gzip);
+export const createGunzip = __zCreate(Gunzip);
+export const createDeflateRaw = __zCreate(DeflateRaw);
+export const createInflateRaw = __zCreate(InflateRaw);
+export const createUnzip = __zCreate(Unzip);
+export const createBrotliCompress = __zCreate(BrotliCompress);
+export const createBrotliDecompress = __zCreate(BrotliDecompress);
+export const createZstdCompress = __zCreate(ZstdCompress);
+export const createZstdDecompress = __zCreate(ZstdDecompress);
+export function deflateSync(buf, opts) { if (opts && opts.info) return __zInfoWrap(deflateSync__core, Deflate, opts, buf); return deflateSync__core(buf, opts); }
+export function inflateSync(buf, opts) { if (opts && opts.info) return __zInfoWrap(inflateSync__core, Inflate, opts, buf); return inflateSync__core(buf, opts); }
+export function deflateRawSync(buf, opts) { if (opts && opts.info) return __zInfoWrap(deflateRawSync__core, DeflateRaw, opts, buf); return deflateRawSync__core(buf, opts); }
+export function inflateRawSync(buf, opts) { if (opts && opts.info) return __zInfoWrap(inflateRawSync__core, InflateRaw, opts, buf); return inflateRawSync__core(buf, opts); }
+export function gzipSync(buf, opts) { if (opts && opts.info) return __zInfoWrap(gzipSync__core, Gzip, opts, buf); return gzipSync__core(buf, opts); }
+export function gunzipSync(buf, opts) { if (opts && opts.info) return __zInfoWrap(gunzipSync__core, Gunzip, opts, buf); return gunzipSync__core(buf, opts); }
+export function unzipSync(buf, opts) { if (opts && opts.info) return __zInfoWrap(unzipSync__core, Unzip, opts, buf); return unzipSync__core(buf, opts); }
+export function brotliCompressSync(buf, opts) { if (opts && opts.info) return __zInfoWrap(brotliCompressSync__core, BrotliCompress, opts, buf); return brotliCompressSync__core(buf, opts); }
+export function brotliDecompressSync(buf, opts) { if (opts && opts.info) return __zInfoWrap(brotliDecompressSync__core, BrotliDecompress, opts, buf); return brotliDecompressSync__core(buf, opts); }
+export function zstdCompressSync(buf, opts) { if (opts && opts.info) return __zInfoWrap(zstdCompressSync__core, ZstdCompress, opts, buf); return zstdCompressSync__core(buf, opts); }
+export function zstdDecompressSync(buf, opts) { if (opts && opts.info) return __zInfoWrap(zstdDecompressSync__core, ZstdDecompress, opts, buf); return zstdDecompressSync__core(buf, opts); }
+// convenience 的 info 选项：{buffer, engine}（Node zlibBuffer/zlibBufferSync 口径）。
+function __zInfoWrap(syncFn, C, opts, buf) {
+  if (opts && opts.info) {
+    const engine = new C(opts);
+    return { buffer: syncFn(buf, opts), engine };
+  }
+  return syncFn(buf, opts);
 }
 export const constants = {
   Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1, Z_STREAM_ERROR: -2,
@@ -658,6 +1036,7 @@ export const constants = {
   Z_DEFAULT_WINDOWBITS: 15, Z_MIN_WINDOWBITS: 8, Z_MAX_WINDOWBITS: 15,
   Z_MIN_MEMLEVEL: 1, Z_MAX_MEMLEVEL: 9, Z_DEFAULT_MEMLEVEL: 8,
   Z_DEFAULT_CHUNK: 16384,
+  Z_MAX_CHUNK: Infinity,
   BROTLI_OPERATION_PROCESS: 0, BROTLI_OPERATION_FLUSH: 1,
   BROTLI_OPERATION_FINISH: 2, BROTLI_OPERATION_EMIT_METADATA: 3,
   BROTLI_PARAM_MODE: 0, BROTLI_PARAM_QUALITY: 1, BROTLI_PARAM_LGWIN: 2,
@@ -681,18 +1060,43 @@ const __api = {
   brotliCompress, brotliCompressSync, brotliDecompress, brotliDecompressSync,
   zstdCompress, zstdCompressSync, zstdDecompress, zstdDecompressSync,
   crc32,
+  Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, Unzip,
+  BrotliCompress, BrotliDecompress, BrotliEncode, BrotliDecode,
+  ZstdCompress, ZstdDecompress,
+  createDeflate, createInflate, createGzip, createGunzip,
+  createDeflateRaw, createInflateRaw, createUnzip,
+  createBrotliCompress, createBrotliDecompress,
+  createZstdCompress, createZstdDecompress,
   constants, codes,
 };
+Object.defineProperty(__api, "codes", { writable: false });
 // 顶层非 BROTLI 别名（Node 遗留口径，非枚举）。
 for (const [k, v] of Object.entries(constants)) {
   if (!k.startsWith("BROTLI")) Object.defineProperty(__api, k, { value: v, enumerable: false });
 }
+Object.freeze(constants);
+Object.freeze(codes);
 export default __api;
 "#;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zlib_gunzip_multi_members() {
+        use std::io::Write as _;
+        let enc = |s: &[u8]| {
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(s).unwrap();
+            e.finish().unwrap()
+        };
+        let data = [enc(b"abc"), enc(b"def")].concat();
+        assert_eq!(gunzip_multi(&data).unwrap(), b"abcdef");
+        assert_eq!(gunzip_multi(&enc(b"abc")).unwrap(), b"abc");
+        assert_eq!(gunzip_multi(&[]).unwrap(), b"");
+        assert!(gunzip_multi(b"garbage").is_err());
+    }
 
     #[test]
     fn zlib_level_maps() {

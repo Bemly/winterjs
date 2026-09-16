@@ -395,6 +395,9 @@ E('ERR_STREAM_WRITE_AFTER_END', 'write after end', Error);
 E('ERR_SYSTEM_ERROR',
   (syscall, code, message) => `A system error occurred: ${syscall} returned ${code} (${message})`,
   SystemError, HideStackFramesError);
+E('ERR_BROTLI_INVALID_PARAM', '%s is not a valid Brotli parameter', RangeError, HideStackFramesError);
+E('ERR_ZLIB_INITIALIZATION_FAILED', 'Initialization failed', Error, HideStackFramesError);
+E('ERR_BUFFER_TOO_LARGE', 'Cannot create a Buffer larger than %s bytes', RangeError, HideStackFramesError);
 
 // errors.js:172 同款（AggregateError 聚合；errors.errors 已是聚合体则吸收）
 const aggregateTwoErrors = (innerError, outerError) => {

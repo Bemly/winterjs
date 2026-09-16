@@ -39,8 +39,22 @@ export { Buffer, constants };
 export const transcode = api.transcode;
 export const isUtf8 = api.isUtf8;
 export const isAscii = api.isAscii;
-export const kMaxLength = api.kMaxLength;
-export const kStringMaxLength = api.kStringMaxLength;
+// kMaxLength/kStringMaxLength 可劫持（zlib kmaxlength 套件改模块导出触发；
+// Node lib/buffer.js 同款可写，const 导出赋值即抛，真机口径为准）。
+export let kMaxLength = api.kMaxLength;
+Object.defineProperty(buffer, 'kMaxLength', {
+  enumerable: true,
+  configurable: true,
+  get() { return kMaxLength; },
+  set(val) { kMaxLength = val; },
+});
+export let kStringMaxLength = api.kStringMaxLength;
+Object.defineProperty(buffer, 'kStringMaxLength', {
+  enumerable: true,
+  configurable: true,
+  get() { return kStringMaxLength; },
+  set(val) { kStringMaxLength = val; },
+});
 export const btoa = api.btoa;
 export const atob = api.atob;
 export const File = globalThis.File;

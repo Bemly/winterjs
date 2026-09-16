@@ -258,6 +258,86 @@ console.log("sab", typeof w.SharedArrayBuffer, typeof w.Atomics);
 }
 
 #[test]
+fn phase10f_vm_sync_snapshot() {
+    // 10f：创建快照 + sync-out 全键口径（不可枚举串键回写、symbol 只存在性、
+    // 标准构造器未改不污染、改了回写；`undefined/NaN/Infinity` 只读常量永不碰）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+// 不可枚举串键：创建即 sync-in，vm 内可见；vm 内新建不可枚举串键 sync-out 回写。
+const sb = {};
+Object.defineProperty(sb, "h", { value: 41, writable: true, configurable: true });
+const c = vm.createContext(sb);
+console.log("hidden-in", vm.runInContext("h", c));
+vm.runInContext('Object.defineProperty(this, "ni", { value: 7, configurable: true });', c);
+console.log("hidden-out", c.ni, Object.getOwnPropertyNames(c).includes("ni"));
+// 标准构造器未改不污染、改了回写；只读常量永不碰。
+const sb2 = {};
+const c2 = vm.createContext(sb2);
+vm.runInContext("Array.__probe = 1", c2);
+console.log("std", sb2.Array, "__probe" in sb2);
+vm.runInContext("this.foo = 123", c2);
+console.log("newkey", c2.foo);
+// 种子覆盖回写、标准替换回写。
+const sb3 = { keep: 1 };
+const c3 = vm.createContext(sb3);
+vm.runInContext("keep = 2; Array = 5", c3);
+console.log("seed", sb3.keep, sb3.Array);
+// DONT_CONTEXTIFY：簿记键 + 只读常量不抛。
+const w = vm.createContext(vm.constants.DONT_CONTEXTIFY);
+console.log("dont", vm.runInContext("1 + 1", w) === 2, typeof w.Object === "function");
+"#,
+    );
+    for line in [
+        "hidden-in 41",
+        "hidden-out 7 true",
+        "std undefined false",
+        "newkey 123",
+        "seed 2 5",
+        "dont true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_vm_sync_all_keys() {
+    // 10f：UNSAFE-BOUNDARY panic 路径（坏 id → TypeError 包络；same 缺参 → TypeError）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+const bad = (n, f) => { try { f(); console.log(n, "NO-THROW"); } catch (e) { console.log(n, e.constructor.name); } };
+bad("keysall", () => __wjs_vm_keys_all("999999"));
+bad("keyscount", () => __wjs_vm_keys_count("999999"));
+bad("same-arity", () => __wjs_vm_same(1));
+console.log("same-ok", __wjs_vm_same(1, 2) === false, __wjs_vm_same(NaN, NaN) === true);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "keysall Error",
+        "keyscount Error",
+        "same-arity Error",
+        "same-ok true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase10c_vm_rerun_with_new_globals() {
     // 10c-3：同 context 重复 runInContext（前轮新建的全局须可复用；
     // sync-in 的重定义走赋值回落，见 vm_set）。

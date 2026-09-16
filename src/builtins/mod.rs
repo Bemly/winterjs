@@ -4628,6 +4628,9 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_vm_set", Some(node::vm::vm_set), 3),
             ("__wjs_vm_get", Some(node::vm::vm_get), 2),
             ("__wjs_vm_keys", Some(node::vm::vm_keys), 1),
+            ("__wjs_vm_keys_all", Some(node::vm::vm_keys_all), 1),
+            ("__wjs_vm_keys_count", Some(node::vm::vm_keys_count), 1),
+            ("__wjs_vm_same", Some(node::vm::vm_same), 2),
             ("__wjs_vm_release", Some(node::vm::vm_release), 1),
             // Phase 9i-1: vm 模块系（SourceText；Synthetic 纯 JS）
             ("__wjs_vm_compile_mod", Some(node::vm::vm_mod_compile), 3),

@@ -34,8 +34,8 @@ use mozjs::rooted;
 use mozjs::rust::{CompileOptionsWrapper, RealmOptions, SIMPLE_GLOBAL_CLASS, transform_str_to_source_text};
 
 use crate::jsapi_glue::{
-    define_prop, exc_name_is, get_prop_value, report_error, value_to_string,
-    wrap_cx, Frame,
+    define_prop, exc_name_is, get_prop_value, own_keys_json, report_error, same_value,
+    value_to_string, wrap_cx, Frame,
 };
 use crate::state;
 
@@ -449,6 +449,119 @@ pub unsafe extern "C" fn vm_keys(
     true
 }
 
+/// 目标 global 全部自有字符串键（sync-out/创建快照用；含不可枚举，JSON 数组回传）。
+/// `__wjs_vm_keys_all(id)` → `'["a","b"]'`。
+/// UNSAFE-BOUNDARY: 前置同 `vm_keys`；`GetPropertyKeys` 失败 None（覆盖测试同 `vm_keys`）。
+pub unsafe extern "C" fn vm_keys_all(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 vm_create
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    let ptr = match lookup_global(&mut cx, id) {
+        Some(p) => p,
+        None => return false,
+    };
+    rooted!(&in(cx) let global = ptr);
+    let json = {
+        let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+        own_keys_json(&mut realm, global.get()).unwrap_or_default()
+    };
+    if json.is_empty() {
+        report_error(&mut cx, "OperationError: vm could not enumerate context keys");
+        return false;
+    }
+    json.to_jsval(&mut cx, frame.rval_mut());
+    true
+}
+
+/// 目标 global 自有键计数快照（仅调试/探针用；`{"strings": [...], "symbols": n}` JSON 回传，
+/// symbol 只计数——跨 realm 无字符串身份，存在性由计数断言）。
+/// `__wjs_vm_keys_count(id)` → `'{"strings":[...],"symbols":0}'`。
+/// UNSAFE-BOUNDARY: 前置同 `vm_keys`；枚举经 `own_keys_json` 同源（覆盖测试 `phase10f_vm_sync_all_keys`）。
+pub unsafe extern "C" fn vm_keys_count(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 vm_create
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    let ptr = match lookup_global(&mut cx, id) {
+        Some(p) => p,
+        None => return false,
+    };
+    rooted!(&in(cx) let global = ptr);
+    let json = {
+        let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+        match own_keys_json(&mut realm, global.get()) {
+            Some(json) => {
+                let v: serde_json::Value =
+                    serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
+                let (strings, symbols) = match v {
+                    serde_json::Value::Array(items) => {
+                        let mut strings = Vec::new();
+                        let mut symbols = 0usize;
+                        for it in items {
+                            match it {
+                                serde_json::Value::String(s) => strings.push(s),
+                                _ => symbols += 1,
+                            }
+                        }
+                        (strings, symbols)
+                    }
+                    _ => (Vec::new(), 0usize),
+                };
+                serde_json::json!({ "strings": strings, "symbols": symbols }).to_string()
+            }
+            None => String::new(),
+        }
+    };
+    if json.is_empty() {
+        report_error(&mut cx, "OperationError: vm could not enumerate context keys");
+        return false;
+    }
+    json.to_jsval(&mut cx, frame.rval_mut());
+    true
+}
+
+/// 跨 compartment SameValue 比较（sync-out 快照比较用；`__wjs_vm_same(a, b)` → boolean）。
+/// UNSAFE-BOUNDARY: 前置——cx 在 realm 内；a/b 由 Frame rooted 后传入（§4.80）。
+/// 覆盖：`tests/node/vm.rs::phase10f_vm_sync_snapshot`。
+pub unsafe extern "C" fn vm_same(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 vm_create；a/b 由 Frame rooted 后传入（§4.80）
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: vm SameValue needs two arguments");
+        return false;
+    }
+    match same_value(&mut cx, frame.arg(0), frame.arg(1)) {
+        Some(same) => {
+            same.to_jsval(&mut cx, frame.rval_mut());
+            true
+        }
+        None => {
+            report_error(&mut cx, "OperationError: vm SameValue comparison failed");
+            false
+        }
+    }
+}
+
 /// 摘除上下文（FinalizationRegistry/显式释放用；重复释放 false）。
 /// `__wjs_vm_release(id)` → boolean。
 pub unsafe extern "C" fn vm_release(
@@ -788,7 +901,16 @@ pub const SOURCE: &str = r#"
 import { EventEmitter } from "node:events";
 
 const __kCtx = "__wjs_vm_ctx_id";
-const __kStd = "__wjs_vm_std_keys";
+
+const __vmBookkeeping = new WeakMap();
+function __vmStdKeys(obj) {
+  let rec = __vmBookkeeping.get(obj);
+  if (!rec) {
+    rec = { std: null, init: new Map() };
+    __vmBookkeeping.set(obj, rec);
+  }
+  return rec;
+}
 
 function __vmUnwrap(e) {
   const m = String((e && e.message) || e);
@@ -859,18 +981,58 @@ export function isContext(obj) {
   return typeof obj[__kCtx] === "string";
 }
 
+function __vmSnapshot(id, obj) {
+  // 创建期快照：目标 global 全部自有字符串键集合 + 各键 SameValue 基线。
+  // 值经 CCW 取回主域；跨 compartment 同底层恒同一引用，SameValue 可比（§4.57）。
+  // 键枚举用 GetPropertyKeys（OWNONLY+HIDDEN），不可枚举的 defineProperty 产物同样覆盖。
+  const rec = __vmStdKeys(obj);
+  let std = [];
+  try {
+    std = JSON.parse(__vmCall(() => __wjs_vm_keys_all(id)));
+  } catch {
+    std = JSON.parse(__vmCall(() => __wjs_vm_keys(id)));
+  }
+  rec.std = new Set(std);
+  rec.init = new Map();
+  for (const k of std) {
+    rec.init.set(k, __vmCall(() => __wjs_vm_get(id, k)));
+  }
+}
 function __syncIn(id, obj) {
-  for (const k of Object.keys(obj)) {
-    if (k === __kCtx || k === __kStd) continue;
-    __vmCall(() => __wjs_vm_set(id, k, obj[k]));
+  // 主域侧全部自有字符串键（含不可枚举；与目标 global 的 HIDDEN 枚举口径对齐）。
+  // 纯 Object.keys 会漏沙箱不可枚举种子（defineProperty value 形），vm 内即 undefined。
+  // 描述符值直传（d.value）；访问器走 obj[k] 触发主域 getter（真机口径：值拷贝，此时求值）。
+  const keys = Object.getOwnPropertyNames(obj);
+  for (const k of keys) {
+    if (k === __kCtx) continue;
+    const d = Object.getOwnPropertyDescriptor(obj, k);
+    if (d && "value" in d) __vmCall(() => __wjs_vm_set(id, k, d.value));
+    else __vmCall(() => __wjs_vm_set(id, k, obj[k]));
   }
 }
 function __syncOut(id, obj) {
-  const std = new Set(obj[__kStd] || []);
-  const keys = JSON.parse(__vmCall(() => __wjs_vm_keys(id)));
-  for (const k of keys) {
-    if (std.has(k)) continue;
-    obj[k] = __vmCall(() => __wjs_vm_get(id, k));
+  const rec = __vmBookkeeping.get(obj);
+  const std = rec ? rec.std : null;
+  const init = rec ? rec.init : null;
+  const snap = JSON.parse(__vmCall(() => __wjs_vm_keys_all(id)));
+  for (const entry of snap) {
+    // symbol 占位无跨 realm 身份：只维护存在性（ownkeys 计数口径），不做值同步。
+    if (entry !== null && typeof entry === "object") continue;
+    const k = entry;
+    // 簿记键只活在主域侧（DONT_CONTEXTIFY 下它同时是 vm global 自有键）：永不回写。
+    if (k === __kCtx) continue;
+    // global 自有只读常量（undefined/NaN/Infinity，非枚举、不可写、值恒同）：永不同步。
+    // 旧 keys（仅可枚举）路径从未见过它们；keys_all 含 HIDDEN 后必须显式跳过，
+    // 否则 DONT_CONTEXTIFY（obj 即 vm global 本体）写只读属性直接抛。
+    if (k === "undefined" || k === "NaN" || k === "Infinity") continue;
+    const cur = __vmCall(() => __wjs_vm_get(id, k));
+    if (std !== null && std.has(k)) {
+      // 快照内键：仅当与创建快照发生 SameValue 变化时回写（this.Symbol = Symbol 等）；
+      // 未改即跳过，防标准构造器污染沙箱。SameValue 经引擎比较（NaN 自等，±0 区分）。
+      const before = init.get(k);
+      if (__vmCall(() => __wjs_vm_same(cur, before))) continue;
+    }
+    obj[k] = cur;
   }
 }
 
@@ -921,11 +1083,12 @@ export function createContext(contextObject = {}, options = {}) {
   // Node 24+ DONT_CONTEXTIFY（真机实测语义）：新建独立 context，返回其 global
   // 对象本体——不等于主 globalThis、写入不穿透主域、runInContext("this")===返回值。
   // jsdom 29（vitest jsdom 环境）拿它当 window 直装 DOM 全局。
+  // 注意：新 global 只有 SpiderMonkey 标准内建（Object/Array/Symbol 等），
+  // 无 winterjs 主域扩展（process/console/Buffer 等）——真机 vanilla 口径（§4.90 同源）。
   if (contextObject === __dontCtx) {
     const id = __vmCall(() => __wjs_vm_create());
     const g = __vmCall(() => __wjs_vm_global(id));
     Object.defineProperty(g, __kCtx, { value: id, enumerable: false, writable: false, configurable: true });
-    Object.defineProperty(g, __kStd, { value: [], enumerable: false, writable: false, configurable: true });
     return g;
   }
   if (contextObject !== null && (typeof contextObject !== "object" && typeof contextObject !== "function")) {
@@ -947,9 +1110,8 @@ export function createContext(contextObject = {}, options = {}) {
     throw err;
   }
   const id = __vmCall(() => __wjs_vm_create());
-  const std = JSON.parse(__vmCall(() => __wjs_vm_keys(id)));
   Object.defineProperty(contextObject, __kCtx, { value: id, enumerable: false, writable: false, configurable: true });
-  Object.defineProperty(contextObject, __kStd, { value: std, enumerable: false, writable: false, configurable: true });
+  __vmSnapshot(id, contextObject);
   if (contextObject !== null && contextObject !== undefined) __syncIn(id, contextObject);
   __vmAutoRelease(contextObject, id);
   return contextObject;
@@ -1122,10 +1284,9 @@ export class SourceTextModule extends Module {
       this.__context = options.context;
     } else {
       ctxId = __vmCall(() => __wjs_vm_create());
-      const std = JSON.parse(__vmCall(() => __wjs_vm_keys(ctxId)));
       const holder = {};
       Object.defineProperty(holder, __kCtx, { value: ctxId });
-      Object.defineProperty(holder, __kStd, { value: std });
+      __vmSnapshot(ctxId, holder);
       __vmAutoRelease(holder, ctxId);
       this.__context = undefined;
     }

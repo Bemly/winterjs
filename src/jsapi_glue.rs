@@ -409,6 +409,78 @@ pub fn view_bytes(cx: &mut JSContext, v: JSVal, what: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// UNSAFE-BOUNDARY: 取对象全部自有键（含不可枚举字符串键；symbol 键以占位对象透传）。
+/// 以 JSON 数组回传（字符串键为 JSON 串、symbol 键为 `{"__wjs_symbol":true}` 占位；
+/// 空对象回 `"[]"`）。占位无跨 realm 身份，调用方只做存在性/计数口径。
+/// 前置：cx 在 obj 所属 realm 内；obj 为有效对象；调用后 pending 由调用方处理。
+/// 覆盖：`tests/node/vm.rs::phase10f_vm_sync_all_keys`（经 vm sync-out/创建快照）。
+pub fn own_keys_json(cx: &mut JSContext, obj: *mut JSObject) -> Option<String> {
+    use mozjs::rust::IdVector;
+    // SAFETY: realm 内；obj 有效；IdVector 为 rooted 槽（§4.40 定址纪律同源）
+    let mut ids = IdVector::new(cx);
+    // JSITER_OWNONLY | JSITER_HIDDEN | JSITER_SYMBOLS（自有 + 不可枚举 + symbol；
+    // symbol 经 IdToValue 透传，主域侧按 opaque 占位处理）。
+    const FLAGS: u32 = 0x8 | 0x10 | 0x20;
+    let ok = unsafe {
+        mozjs::rust::wrappers2::GetPropertyKeys(
+            cx,
+            mozjs::gc::Handle::from_marked_location(&obj),
+            FLAGS,
+            ids.handle_mut(),
+        )
+    };
+    if !ok {
+        return None;
+    }
+    let mut out = String::from("[");
+    let mut first = true;
+    rooted!(&in(cx) let mut v = UndefinedValue());
+    for id in ids.iter() {
+        // SAFETY: id 来自引擎枚举；v 为 rooted 出参（root.rs handle_mut 同款）。
+        // symbol id 经 IdToValue 透传为 symbol 值，由调用方 JSON 侧按 opaque 占位。
+        let ok = unsafe { mozjs::rust::wrappers2::JS_IdToValue(cx, *id, v.handle_mut()) };
+        if !ok {
+            return None;
+        }
+        if v.get().is_symbol() {
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str("{\"__wjs_symbol\":true}");
+            continue;
+        }
+        let s = value_to_string(cx, v.get());
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push_str(&serde_json::Value::String(s).to_string());
+    }
+    out.push(']');
+    Some(out)
+}
+
+/// UNSAFE-BOUNDARY: 跨 compartment SameValue 比较（`JS::SameValue` 语义：NaN 自等，
+/// +0/-0 不等；CCW 参数由引擎自动解包比对底层身份）。
+/// 前置：cx 在 realm 内；a/b 为 rooted 值（调用方 rooted 后传入 §4.80）。
+/// 覆盖：`tests/node/vm.rs::phase10f_vm_sync_snapshot`（经 vm sync-out 快照比较）。
+pub fn same_value(cx: &mut JSContext, a: JSVal, b: JSVal) -> Option<bool> {
+    rooted!(&in(cx) let a_root = a);
+    rooted!(&in(cx) let b_root = b);
+    let mut same = false;
+    // SAFETY: 谓词无副作用；a/b 为 rooted 槽（napi StrictlyEqual 同款 raw 形态）
+    let ok = unsafe {
+        mozjs::jsapi::JS::SameValue(
+            cx.raw_cx(),
+            raw_handle(a_root.as_ptr()),
+            raw_handle(b_root.as_ptr()),
+            &mut same,
+        )
+    };
+    if ok { Some(same) } else { None }
+}
+
 /// UNSAFE-BOUNDARY: 在对象上定义可枚举属性（值可跨 compartment，引擎自动包 CCW）。
 /// 前置：cx 在 obj 所属 realm 内；obj 为有效对象；name 无 NUL。
 /// 覆盖：`phase9f_vm_context_spawns_and_isolates`、`phase9f_vm_sandbox_sync`

@@ -321,7 +321,8 @@ console.log("prime", checkPrimeSync(13n) === true && checkPrimeSync(15n) === fal
 console.log("primebuf", checkPrimeSync(Buffer.from([13])) === true);
 try { generateKeyPairSync("dsa", {}); console.log("dsa", true); } catch (e) { console.log("dsa", false); }
 try { createECDH("secp256k1"); console.log("k1", true); } catch (e) { console.log("k1", false); }
-try { createDiffieHellmanGroup("modp1"); } catch (e) { console.log("modp1", e.code === "ERR_NOT_SUPPORTED"); }
+// 10f crypto二轮翻转（真机口径）：modp1 已支持（768B 素数），旧拒绝系伪语义。
+console.log("modp1", createDiffieHellmanGroup("modp1").getPrime("buffer").length === 96);
 try { createDiffieHellmanGroup("modp99"); } catch (e) { console.log("modp99", e.code === "ERR_NOT_SUPPORTED"); }
 // 10f crypto首轮翻转（真机口径）：数值位长形同步生成素数（旧 ERR_NOT_SUPPORTED 系伪语义）。
 console.log("dhsize", createDiffieHellman(512).getPrime("buffer").length === 64);
@@ -1190,7 +1191,8 @@ generateKeyPair("ed448", (e, pub, priv) => {
 try { sign("sha256", Buffer.from("m"), privateKey); } catch (e) { console.log("sign-alg", e.code); }
 try { verify("sha256", Buffer.from("m"), publicKey, sig); } catch (e) { console.log("verify-alg", e.code); }
 try { sign(null, Buffer.from("m"), publicKey); } catch (e) { console.log("sign-pub", e.code); }
-try { verify(null, Buffer.from("m"), privateKey, sig); } catch (e) { console.log("verify-priv", e.code); }
+// 10f crypto二轮翻转（真机口径）：私钥验签合法（派生公钥），错消息回 false。
+console.log("verify-priv", verify(null, Buffer.from("m"), privateKey, sig) === false);
 try { createPrivateKey({ key: Buffer.alloc(10), format: "der", type: "pkcs8" }); } catch (e) { console.log("bad-der", e.code); }
 try { publicKey.export({ format: "der", type: "spki" }).length; console.log("exp-ok", true); } catch (e) { console.log("exp-ok", false); }
 try { publicKey.export({ format: "der", type: "pkcs8" }); } catch (e) { console.log("exp-pub-pkcs8", e.code); }
@@ -1217,7 +1219,7 @@ console.log("cert", x.verify(x.publicKey), x.publicKey.asymmetricKeyType === "ed
     assert!(out.contains("sign-alg ERR_OSSL_INVALID_DIGEST"), "out: {out}");
     assert!(out.contains("verify-alg ERR_OSSL_INVALID_DIGEST"), "out: {out}");
     assert!(out.contains("sign-pub ERR_INVALID_ARG_TYPE"), "out: {out}");
-    assert!(out.contains("verify-priv ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("verify-priv true"), "out: {out}");
     assert!(out.contains("bad-der ERR_INVALID_ARG_VALUE"), "out: {out}");
     assert!(out.contains("exp-ok true"), "out: {out}");
     assert!(out.contains("exp-pub-pkcs8 ERR_INVALID_ARG_VALUE"), "out: {out}");
@@ -1363,5 +1365,134 @@ setTimeout(() => console.log("dep-warn", warns.includes("DEP0179"), warns.includ
     assert!(out.contains(r#"needstr-undef ERR_INVALID_ARG_TYPE "The \"algorithm\" argument must be of type string. Received undefined""#), "out: {out}");
     assert!(out.contains(r#"ciph-null ERR_INVALID_ARG_TYPE "The \"cipher\" argument must be of type string. Received null""#), "out: {out}");
     assert!(out.contains("dep-warn true true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_crypto_round2_parity() {
+    // 10f crypto二轮：DH 组/KeyObject 品牌/RSA 位长/pkcs1/加密 PEM/混合 OAEP
+    //（正常/报错/边界三件；慢操作一律小参数）
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import crypto, { KeyObject, createDiffieHellman, createDiffieHellmanGroup,
+  getDiffieHellman, generateKeyPairSync, createSecretKey, createPublicKey,
+  createPrivateKey, publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt,
+  randomBytes } from "node:crypto";
+import { types } from "node:util";
+// DH 组与 flavor
+console.log("r2-modp", getDiffieHellman("modp1").getPrime("hex").length === 192,
+  getDiffieHellman("modp2").getPrime("hex").length === 256);
+const r2g = getDiffieHellman("modp2");
+console.log("r2-flav", r2g.constructor === crypto.DiffieHellmanGroup,
+  r2g.setPrivateKey === undefined, r2g.setPublicKey === undefined);
+console.log("r2-gen", createDiffieHellman(getDiffieHellman("modp14").getPrime(), Buffer.from([2])).getGenerator("hex") === "02");
+// RSA 位长与 details
+const r2rsa = generateKeyPairSync("rsa", { modulusLength: 512 });
+console.log("r2-rsa512", r2rsa.publicKey.asymmetricKeyDetails.modulusLength === 512,
+  typeof r2rsa.publicKey.asymmetricKeyDetails.publicExponent === "bigint");
+try { generateKeyPairSync("rsa", { modulusLength: 511 }); console.log("r2-small", "NO-THROW"); }
+catch (e) { console.log("r2-small", e.code); }
+// KeyObject 品牌面
+const r2sec = createSecretKey(Buffer.alloc(16));
+console.log("r2-noown", Object.getOwnPropertyNames(r2sec).length === 0,
+  Object.getOwnPropertySymbols(r2sec).length === 0);
+console.log("r2-tag", String(r2sec) === "[object KeyObject]");
+console.log("r2-isKO", types.isKeyObject(r2sec) === true, types.isKeyObject({}) === false);
+try { crypto.KeyObject.prototype.type.call({}); console.log("r2-brand", "NO-THROW"); }
+catch (e) { console.log("r2-brand", e.code); }
+const r2asymGet = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Object.getPrototypeOf(r2rsa.publicKey)), "asymmetricKeyType").get;
+try { r2asymGet.call(r2sec); console.log("r2-secasym", "NO-THROW"); }
+catch (e) { console.log("r2-secasym", e.code); }
+console.log("r2-eq", r2sec.equals(r2sec) === true);
+try { r2sec.equals({}); console.log("r2-eqbad", "NO-THROW"); }
+catch (e) { console.log("r2-eqbad", e.code); }
+try { KeyObject.from("x"); console.log("r2-from", "NO-THROW"); }
+catch (e) { console.log("r2-from", e.code); }
+try { new KeyObject("nope"); console.log("r2-ctor", "NO-THROW"); }
+catch (e) { console.log("r2-ctor", e.code); }
+// ESM 具名导出 + 回调异步形
+console.log("r2-esm", typeof KeyObject === "function");
+crypto.sign("sha256", Buffer.from("m"), r2rsa.privateKey, (e, s) =>
+  console.log("r2-async", e === null, s.length === 64));
+// pkcs1 与派生规则
+const r2pkcs1 = r2rsa.publicKey.export({ type: "pkcs1", format: "pem" });
+console.log("r2-pkcs1pem", r2pkcs1.split("\n")[0] === "-----BEGIN RSA PUBLIC KEY-----");
+console.log("r2-derive", createPublicKey(r2rsa.privateKey).type === "public");
+try { createPublicKey(r2rsa.publicKey); console.log("r2-pubpub", "NO-THROW"); }
+catch (e) { console.log("r2-pubpub", e.code); }
+try { createPrivateKey(r2rsa.privateKey); console.log("r2-privpriv", "NO-THROW"); }
+catch (e) { console.log("r2-privpriv", e.code); }
+// 加密 PEM 往返 + 缺/错口令
+const r2enc = r2rsa.privateKey.export({ type: "pkcs1", format: "pem", cipher: "aes-128-cbc", passphrase: "pw" });
+console.log("r2-enchdr", r2enc.split("\n")[1] === "Proc-Type: 4,ENCRYPTED");
+const r2back = createPrivateKey({ key: r2enc, passphrase: "pw" });
+console.log("r2-encrt", r2back.type === "private");
+try { createPrivateKey({ key: r2enc }); console.log("r2-nopass", "NO-THROW"); }
+catch (e) { console.log("r2-nopass", e.code); }
+try { createPrivateKey({ key: r2enc, passphrase: "bad" }); console.log("r2-badpass", "NO-THROW"); }
+catch (e) { console.log("r2-badpass", e.code); }
+// 混合 OAEP + 反向操作 + NO_PADDING
+const r2msg = Buffer.from("hello-mgf1");
+const r2rsa1k = generateKeyPairSync("rsa", { modulusLength: 1024 });
+const r2ct = publicEncrypt({ key: r2rsa1k.publicKey, padding: 4, oaepHash: "sha256", mgf1Hash: "sha1" }, r2msg);
+console.log("r2-mgf1", privateDecrypt({ key: r2rsa1k.privateKey, padding: 4, oaepHash: "sha256", mgf1Hash: "sha1" }, r2ct).toString() === "hello-mgf1");
+try { publicEncrypt({ key: r2rsa1k.publicKey, padding: 4, oaepHash: "sha256", mgf1Hash: 1 }, r2msg); console.log("r2-mgf1bad", "NO-THROW"); }
+catch (e) { console.log("r2-mgf1bad", e.code); }
+const r2pe = privateEncrypt(r2rsa.privateKey, r2msg);
+console.log("r2-privenc", publicDecrypt(r2rsa.publicKey, r2pe).toString() === "hello-mgf1");
+const r2raw = publicEncrypt({ key: r2rsa.publicKey, padding: 3 }, Buffer.alloc(64, 7));
+console.log("r2-nopad", privateDecrypt({ key: r2rsa.privateKey, padding: 3 }, r2raw).equals(Buffer.alloc(64, 7)));
+// 验签形态错回 false + 输出编码形
+const r2sig = crypto.sign("sha256", r2msg, r2rsa.privateKey);
+console.log("r2-verifyfalse", crypto.verify("sha256", r2msg, r2rsa.publicKey, Buffer.alloc(0)) === false);
+const r2s = crypto.createSign("SHA256"); r2s.update(r2msg);
+console.log("r2-signenc", typeof r2s.sign(r2rsa.privateKey, "hex") === "string");
+// export 门与 JWK 非法形
+try { r2rsa.publicKey.export(undefined); console.log("r2-expopt", "NO-THROW"); }
+catch (e) { console.log("r2-expopt", e.code); }
+try { r2rsa.publicKey.export({ format: "der", type: "pkcs8" }); console.log("r2-expmat", "NO-THROW"); }
+catch (e) { console.log("r2-expmat", e.code); }
+try { createPrivateKey({ key: { kty: "RSA", n: "AQAB", e: "AQAB" }, format: "jwk" }); console.log("r2-jwkbad", "NO-THROW"); }
+catch (e) { console.log("r2-jwkbad", e.code); }
+setTimeout(() => console.log("r2-done"), 20);
+"#,
+    );
+    assert!(out.contains("r2-modp true true"), "out: {out}");
+    assert!(out.contains("r2-flav true true true"), "out: {out}");
+    assert!(out.contains("r2-gen true"), "out: {out}");
+    assert!(out.contains("r2-rsa512 true true"), "out: {out}");
+    assert!(out.contains("r2-small ERR_OSSL_KEY_SIZE_TOO_SMALL"), "out: {out}");
+    assert!(out.contains("r2-noown true true"), "out: {out}");
+    assert!(out.contains("r2-tag true"), "out: {out}");
+    assert!(out.contains("r2-isKO true true"), "out: {out}");
+    assert!(out.contains("r2-brand ERR_INVALID_THIS"), "out: {out}");
+    assert!(out.contains("r2-secasym ERR_INVALID_THIS"), "out: {out}");
+    assert!(out.contains("r2-eq true"), "out: {out}");
+    assert!(out.contains("r2-eqbad ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("r2-from ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("r2-ctor ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("r2-esm true"), "out: {out}");
+    assert!(out.contains("r2-async true true"), "out: {out}");
+    assert!(out.contains("r2-pkcs1pem true"), "out: {out}");
+    assert!(out.contains("r2-derive true"), "out: {out}");
+    assert!(out.contains("r2-pubpub ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE"), "out: {out}");
+    assert!(out.contains("r2-privpriv ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("r2-enchdr true"), "out: {out}");
+    assert!(out.contains("r2-encrt true"), "out: {out}");
+    assert!(out.contains("r2-nopass ERR_MISSING_PASSPHRASE"), "out: {out}");
+    assert!(out.contains("r2-badpass ERR_OSSL_BAD_DECRYPT"), "out: {out}");
+    assert!(out.contains("r2-mgf1 true"), "out: {out}");
+    assert!(out.contains("r2-mgf1bad ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("r2-privenc true"), "out: {out}");
+    assert!(out.contains("r2-nopad true"), "out: {out}");
+    assert!(out.contains("r2-verifyfalse true"), "out: {out}");
+    assert!(out.contains("r2-signenc true"), "out: {out}");
+    assert!(out.contains("r2-expopt ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("r2-expmat ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("r2-jwkbad ERR_CRYPTO_INVALID_JWK"), "out: {out}");
+    assert!(out.contains("r2-done"), "out: {out}");
     dir.close().unwrap();
 }

@@ -518,8 +518,10 @@ pub unsafe extern "C" fn rsa_generate(
     }
     let bits = frame.arg(0).to_number() as usize;
     let e = frame.arg(1).to_number() as u64;
-    if ![2048, 3072, 4096].contains(&bits) {
-        report_error(&mut cx, "NotSupportedError: RSA modulusLength must be 2048/3072/4096");
+    // 10f crypto二轮：位长下限 512（真机口径；subtle 面 JS 门仍限 2048/3072/4096，
+    // 此处仅为 node:crypto 开口，见 `src/builtins/mod.rs` 门控注释）。
+    if bits < 512 {
+        report_error(&mut cx, "ERR_OSSL_KEY_SIZE_TOO_SMALL: error:1C8000AB:Provider routines::key size too small");
         return false;
     }
     if !(2..=(1 << 33) - 1).contains(&e) {
@@ -612,8 +614,21 @@ pub unsafe extern "C" fn rsa_sign(
     };
     let out: Result<Vec<u8>, String> = rsa_hash_dispatch!(hash.as_str(), D, {
         use rsa::signature::Signer as _;
-        let sk = rsa::pkcs1v15::SigningKey::<D>::new(priv_key);
-        Ok(Box::<[u8]>::from(sk.sign(&data)).into_vec())
+        // 10f crypto二轮：`Signer::sign` 内部 unwrap（摘要+11 超钥长即 panic→139），
+        // 先验长度转可读错（UNSAFE-BOUNDARY panic 路径；sha256/384/512 = 32/48/64）。
+        let need = match hash.as_str() {
+            "SHA-384" => 48 + 11,
+            "SHA-512" => 64 + 11,
+            _ => 32 + 11,
+        };
+        use rsa::traits::PublicKeyParts as _;
+        let k = priv_key.size();
+        if need > k {
+            Err("ERR_OSSL_RSA_DIGEST_TOO_BIG_FOR_RSA_KEY: error:02000070:rsa routines::digest too big for rsa key".to_string())
+        } else {
+            let sk = rsa::pkcs1v15::SigningKey::<D>::new(priv_key);
+            Ok(Box::<[u8]>::from(sk.sign(&data)).into_vec())
+        }
     });
     match out {
         Ok(sig) => set_rval_bytes(&mut cx, &frame, &sig),
@@ -784,7 +799,8 @@ pub unsafe extern "C" fn rsa_decrypt(
         };
         priv_key
             .decrypt(padding, &data)
-            .map_err(|_| "OperationError: RSA decrypt failed (bad key/label/data?)".to_string())
+            // 10f crypto二轮：解密失败（错钥/错标签/错哈希/篡改）统一口径（真机逐字）。
+            .map_err(|_| "ERR_OSSL_RSA_OAEP_DECODING_ERROR: error:02000079:rsa routines::oaep decoding error".to_string())
     });
     match out {
         Ok(pt) => set_rval_bytes(&mut cx, &frame, &pt),
@@ -1792,7 +1808,10 @@ pub unsafe extern "C" fn dsa_verify(
     let out: Result<bool, String> = (|| {
         use dsa::signature::hazmat::PrehashVerifier as _;
         let (vk, _) = dsa_envelope(&env, false)?;
-        let sig = dsa::Signature::try_from(sig.as_slice()).map_err(|_| "OperationError: bad DSA signature".to_string())?;
+        // 10f crypto二轮：签名形态错回 false，不抛（空签名套件点名；UNSAFE-BOUNDARY 同族）。
+        let Ok(sig) = dsa::Signature::try_from(sig.as_slice()) else {
+            return Ok(false);
+        };
         Ok(vk.verify_prehash(&digest, &sig).is_ok())
     })();
     match out {

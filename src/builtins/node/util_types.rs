@@ -47,5 +47,6 @@ export const {
   isModuleNamespaceObject,
   isProxy,
   isWebAssemblyCompiledModule,
+  isKeyObject,
 } = types;
 "#;

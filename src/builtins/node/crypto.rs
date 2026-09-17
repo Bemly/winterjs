@@ -1600,7 +1600,7 @@ pub unsafe extern "C" fn node_rsa_oaep(
         use rsa::traits::PublicKeyParts as _;
         let k = key.size();
         if data.len() > k - 2 * HLEN - 2 {
-            report_error(&mut cx, "OperationError: RSA encrypt failed: message too long");
+            report_error(&mut cx, "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE: error:0200006E:rsa routines::data too large for key size");
             return false;
         }
         let lhash = sha1_bytes(label_ref);
@@ -1673,7 +1673,284 @@ pub unsafe extern "C" fn node_rsa_oaep(
     }
 }
 
-/// v1.5 签名 DigestInfo 前缀（SHA-1/MD5；SHA-2 系走既有 natives）。
+/// OAEP-SHA1 编码（EME-OAEP-ENCODE）；返回 k 字节 EM（10f crypto二轮抽取，
+/// 既有 `node_rsa_oaep` 主干不动，反向 native 复用）。
+fn oaep_sha1_encode(k: usize, data: &[u8], label: &[u8]) -> Result<Vec<u8>, String> {
+    const HLEN: usize = 20;
+    if data.len() > k - 2 * HLEN - 2 {
+        return Err("ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE: error:0200006E:rsa routines::data too large for key size".to_string());
+    }
+    let lhash = sha1_bytes(label);
+    let ps_len = k - data.len() - 2 * HLEN - 2;
+    let mut db = Vec::with_capacity(k - HLEN - 1);
+    db.extend_from_slice(&lhash);
+    db.extend(std::iter::repeat(0u8).take(ps_len));
+    db.push(1);
+    db.extend_from_slice(data);
+    let mut seed = vec![0u8; HLEN];
+    if getrandom::fill(&mut seed).is_err() {
+        return Err("OperationError: cannot get random values".to_string());
+    }
+    let db_mask = mgf1_sha1(&seed, k - HLEN - 1);
+    let masked_db: Vec<u8> = db.iter().zip(db_mask.iter()).map(|(a, b)| a ^ b).collect();
+    let seed_mask = mgf1_sha1(&masked_db, HLEN);
+    let masked_seed: Vec<u8> =
+        seed.iter().zip(seed_mask.iter()).map(|(a, b)| a ^ b).collect();
+    let mut em = Vec::with_capacity(k);
+    em.push(0);
+    em.extend_from_slice(&masked_seed);
+    em.extend_from_slice(&masked_db);
+    Ok(em)
+}
+
+/// OAEP-SHA1 解码（em 须已定长 k）；返回明文（10f crypto二轮抽取，同上）。
+fn oaep_sha1_decode(k: usize, em: &[u8], label: &[u8]) -> Result<Vec<u8>, String> {
+    const HLEN: usize = 20;
+    let err = || "OperationError: RSA decrypt failed: decryption error".to_string();
+    if em.len() != k || em[0] != 0 {
+        return Err(err());
+    }
+    let (masked_seed, masked_db) = (&em[1..1 + HLEN], &em[1 + HLEN..]);
+    let seed_mask = mgf1_sha1(masked_db, HLEN);
+    let seed: Vec<u8> =
+        masked_seed.iter().zip(seed_mask.iter()).map(|(a, b)| a ^ b).collect();
+    let db_mask = mgf1_sha1(&seed, k - HLEN - 1);
+    let db: Vec<u8> =
+        masked_db.iter().zip(db_mask.iter()).map(|(a, b)| a ^ b).collect();
+    let lhash = sha1_bytes(label);
+    if db[..HLEN] != lhash {
+        return Err(err());
+    }
+    let rest = &db[HLEN..];
+    let one = rest.iter().position(|&b| b == 1);
+    match one {
+        Some(i) if rest[..i].iter().all(|&b| b == 0) => Ok(rest[i + 1..].to_vec()),
+        _ => Err(err()),
+    }
+}
+
+/// v1.5 type-1 填充（签名式；10f crypto二轮，`privateEncrypt` 用）。
+fn v15_type1_pad(k: usize, data: &[u8]) -> Result<Vec<u8>, String> {
+    if data.len() > k - 11 {
+        return Err("ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE: error:0200006E:rsa routines::data too large for key size".to_string());
+    }
+    let mut em = vec![0u8; k];
+    em[1] = 1;
+    let ps_len = k - data.len() - 3;
+    for b in &mut em[2..2 + ps_len] {
+        *b = 0xFF;
+    }
+    em[k - data.len()..].copy_from_slice(data);
+    Ok(em)
+}
+
+/// v1.5 type-1 去填充（10f crypto二轮，`publicDecrypt` 用）。
+fn v15_type1_unpad(em: &[u8]) -> Result<Vec<u8>, String> {
+    let err = || "OperationError: RSA decrypt failed: decryption error".to_string();
+    if em.len() < 11 || em[0] != 0 || em[1] != 1 {
+        return Err(err());
+    }
+    let rest = &em[2..];
+    let one = rest.iter().position(|&b| b == 0).ok_or_else(err)?;
+    if one < 8 {
+        return Err(err());
+    }
+    Ok(rest[one + 1..].to_vec())
+}
+
+/// `__wjs_node_rsa_oaep_flip(keyDerU8, dataU8, labelOrNull, privEncNum)`：
+/// OAEP-SHA1 反向（privEnc=1 私钥加密 / 0 公钥解密；10f crypto二轮）。
+pub unsafe extern "C" fn node_rsa_oaep_flip(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: RSA-OAEP-SHA1 flip needs key, data, label and mode");
+        return false;
+    }
+    let (Some(der), Some(data), Some(label)) = (
+        view_bytes(&mut cx, frame.arg(0), "RSA key"),
+        view_bytes(&mut cx, frame.arg(1), "RSA data"),
+        opt_view(&mut cx, frame.arg(2), "RSA label"),
+    ) else {
+        return false;
+    };
+    let priv_enc = !(frame.arg(3).is_number() && frame.arg(3).to_number() == 0.0);
+    let label_ref = label.as_deref().unwrap_or(&[]);
+    if priv_enc {
+        let key = match rsa_priv_from_der(&der) {
+            Ok(k) => k,
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        };
+        use rsa::traits::{PrivateKeyParts as _, PublicKeyParts as _};
+        let k = key.size();
+        let em = match oaep_sha1_encode(k, &data, label_ref) {
+            Ok(em) => em,
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        };
+        let m = rsa::BigUint::from_bytes_be(&em);
+        let c = m.modpow(key.d(), key.n());
+        set_rval_bytes(&mut cx, &frame, &pad_be(&c.to_bytes_be(), k))
+    } else {
+        let key = match rsa_pub_from_der(&der) {
+            Ok(k) => k,
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        };
+        use rsa::traits::PublicKeyParts as _;
+        let k = key.size();
+        if data.len() != k {
+            report_error(&mut cx, "OperationError: RSA decrypt failed: decryption error");
+            return false;
+        }
+        let m = rsa::BigUint::from_bytes_be(&data);
+        let em = pad_be(&m.modpow(key.e(), key.n()).to_bytes_be(), k);
+        match oaep_sha1_decode(k, &em, label_ref) {
+            Ok(pt) => set_rval_bytes(&mut cx, &frame, &pt),
+            Err(e) => {
+                report_error(&mut cx, &e);
+                false
+            }
+        }
+    }
+}
+
+/// `__wjs_rsa_v15_flip(keyDerU8, dataU8, privEncNum)`：
+/// v1.5 反向（1 私钥加密 / 0 公钥解密；10f crypto二轮）。
+pub unsafe extern "C" fn rsa_v15_flip(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: RSA v1.5 flip needs key, data and mode");
+        return false;
+    }
+    let (Some(der), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "RSA key"),
+        view_bytes(&mut cx, frame.arg(1), "RSA data"),
+    ) else {
+        return false;
+    };
+    let priv_enc = !(frame.arg(2).is_number() && frame.arg(2).to_number() == 0.0);
+    if priv_enc {
+        let key = match rsa_priv_from_der(&der) {
+            Ok(k) => k,
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        };
+        use rsa::traits::{PrivateKeyParts as _, PublicKeyParts as _};
+        let k = key.size();
+        let em = match v15_type1_pad(k, &data) {
+            Ok(em) => em,
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        };
+        let m = rsa::BigUint::from_bytes_be(&em);
+        let c = m.modpow(key.d(), key.n());
+        set_rval_bytes(&mut cx, &frame, &pad_be(&c.to_bytes_be(), k))
+    } else {
+        let key = match rsa_pub_from_der(&der) {
+            Ok(k) => k,
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        };
+        use rsa::traits::PublicKeyParts as _;
+        let k = key.size();
+        if data.len() != k {
+            report_error(&mut cx, "OperationError: RSA decrypt failed: decryption error");
+            return false;
+        }
+        let m = rsa::BigUint::from_bytes_be(&data);
+        let em = pad_be(&m.modpow(key.e(), key.n()).to_bytes_be(), k);
+        match v15_type1_unpad(&em) {
+            Ok(pt) => set_rval_bytes(&mut cx, &frame, &pt),
+            Err(e) => {
+                report_error(&mut cx, &e);
+                false
+            }
+        }
+    }
+}
+
+/// `__wjs_rsa_raw(keyDerU8, dataU8, privNum)`：RSA 无填充裸运算
+///（priv=1 私钥 d 次幂 / 0 公钥 e 次幂；10f crypto二轮，NO_PADDING 用）。
+pub unsafe extern "C" fn rsa_raw(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: RSA raw needs key, data and mode");
+        return false;
+    }
+    let (Some(der), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "RSA key"),
+        view_bytes(&mut cx, frame.arg(1), "RSA data"),
+    ) else {
+        return false;
+    };
+    let is_priv = !(frame.arg(2).is_number() && frame.arg(2).to_number() == 0.0);
+    if is_priv {
+        let key = match rsa_priv_from_der(&der) {
+            Ok(k) => k,
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        };
+        use rsa::traits::{PrivateKeyParts as _, PublicKeyParts as _};
+        let k = key.size();
+        if data.len() > k {
+            report_error(&mut cx, "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE: error:0200006E:rsa routines::data too large for key size");
+            return false;
+        }
+        let m = rsa::BigUint::from_bytes_be(&data);
+        let c = m.modpow(key.d(), key.n());
+        set_rval_bytes(&mut cx, &frame, &pad_be(&c.to_bytes_be(), k))
+    } else {
+        let key = match rsa_pub_from_der(&der) {
+            Ok(k) => k,
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        };
+        use rsa::traits::PublicKeyParts as _;
+        let k = key.size();
+        if data.len() > k {
+            report_error(&mut cx, "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE: error:0200006E:rsa routines::data too large for key size");
+            return false;
+        }
+        let m = rsa::BigUint::from_bytes_be(&data);
+        let c = m.modpow(key.e(), key.n());
+        set_rval_bytes(&mut cx, &frame, &pad_be(&c.to_bytes_be(), k))
+    }
+}
 fn v15_prefix(hash: &str) -> Option<&'static [u8]> {
     match hash {
         "SHA-1" => Some(&[
@@ -3435,7 +3712,8 @@ class HmacImpl {
     // 10f crypto首轮：参数名真机为 "hmac"（非 "algorithm"）。
     __needStr(hamc, "hmac");
     // 10f crypto首轮：secret KeyObject 可作 key（裸字节即 material）。
-    if (key instanceof KeyObject) {
+    // 10f crypto二轮：品牌检查（原型伪造即落回 ARG_TYPE，brand-check 套件）。
+    if (__isKeyObject(key)) {
       if (key.type !== "secret") {
         const err = new Error(`Invalid key object type ${key.type}, expected secret.`);
         err.code = "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE";
@@ -3556,6 +3834,8 @@ export function hash(algorithm, data, outputEncoding) {
   __cryptCall(() => __wjs_crypto_hash_update(probe, bytes));
   const out = __cryptCall(() => __wjs_crypto_hash_digest(probe));
   if (outputEncoding === undefined) return __outBuf(out, undefined);
+  // 10f crypto二轮：'buffer' 编码（大小写不敏感）即回 Buffer（真机口径）。
+  if (String(outputEncoding).toLowerCase() === "buffer") return __outBuf(out, undefined);
   const valid = ["hex", "base64", "base64url", "latin1", "binary", "ascii", "utf8", "utf-8", "ucs2", "utf16le"];
   if (!valid.includes(String(outputEncoding).toLowerCase().replace(/[-_]/g, "")) &&
       !valid.includes(String(outputEncoding).toLowerCase())) {
@@ -3797,7 +4077,10 @@ function __needCipher(cipher) {
   return info;
 }
 function __needKeyIv(info, key, iv, what) {
-  const kb = __cryptBytes(key, "key");
+  // 10f crypto二轮：secret KeyObject 可作对称钥（裸字节；真机口径）。
+  const kb = __isKeyObject(key)
+    ? (__koBrand(key).kind === "secret" ? Buffer.from(__koBrand(key).material) : __cryptBytes(key, "key"))
+    : __cryptBytes(key, "key");
   if (kb.length !== info.key) {
     const err = new Error("Invalid key length");
     err.code = "ERR_CRYPTO_INVALID_KEYLEN";
@@ -4151,7 +4434,10 @@ export function getCipherInfo(name) {
 // ── 9e-1c 非对称 ──────────────────────────────────────────────────────────
 
 const __DH_GROUPS = {
-  // 素数取自真 Node `getPrime('hex')`（RFC 7919），generator 恒 2
+  // 素数取自真 Node `getPrime('hex')`（modp1/2 为 RFC 2409，余为 RFC 7919），generator 恒 2
+  // 10f crypto二轮：补 modp1（768B）/modp2（1024B）。
+  "modp1": "ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a63a3620ffffffffffffffff",
+  "modp2": "ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece65381ffffffffffffffff",
   "modp5": "ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca237327ffffffffffffffff",
   "modp14": "ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca18217c32905e462e36ce3be39e772c180e86039b2783a2ec07a28fb5c55df06f4c52c9de2bcbf6955817183995497cea956ae515d2261898fa051015728e5a8aacaa68ffffffffffffffff",
   "modp15": "ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca18217c32905e462e36ce3be39e772c180e86039b2783a2ec07a28fb5c55df06f4c52c9de2bcbf6955817183995497cea956ae515d2261898fa051015728e5a8aaac42dad33170d04507a33a85521abdf1cba64ecfb850458dbef0a8aea71575d060c7db3970f85a6e1e4c7abf5ae8cdb0933d71e8c94e04a25619dcee3d2261ad2ee6bf12ffa06d98a0864d87602733ec86a64521f2b18177b200cbbe117577a615d6c770988c0bad946e208e24fa074e5ab3143db5bfce0fd108e4b82d120a93ad2caffffffffffffffff",
@@ -4199,13 +4485,120 @@ function __derChildren(buf) {
 function __pemDecode(text) {
   const m = String(text).match(/-----BEGIN ([^-]+)-----([\s\S]*?)-----END \1-----/);
   if (!m) return null;
-  return { label: m[1].trim(), der: __b64dec(m[2].replace(/\s+/g, "")) };
+  // 10f crypto二轮：RFC1421 头行（Proc-Type/DEK-Info）跳过记取，空行跳过。
+  let dek = null;
+  const b64 = [];
+  for (let line of m[2].split("\n")) {
+    line = line.trim();
+    if (line === "") continue;
+    if (line.startsWith("Proc-Type:")) continue;
+    if (line.startsWith("DEK-Info:")) {
+      const rest = line.slice(9).trim();
+      const comma = rest.indexOf(",");
+      if (comma < 0) return null;
+      dek = { cipher: rest.slice(0, comma).trim(), ivHex: rest.slice(comma + 1).trim() };
+      continue;
+    }
+    b64.push(line.replace(/\s+/g, ""));
+  }
+  return { label: m[1].trim(), der: __b64dec(b64.join("")), dek };
 }
 function __pemEncode(label, der) {
   const b64 = __b64enc(der);
   let body = "";
   for (let i = 0; i < b64.length; i += 64) body += b64.slice(i, i + 64) + "\n";
   return `-----BEGIN ${label}-----\n${body}-----END ${label}-----\n`;
+}
+// 10f crypto二轮：传统 OpenSSL 加密 PEM（EVP_BytesToKey/MD5 + AES-CBC；轮子全在树内）。
+// 引擎原文逐字（缺口令/坏解码）见各抛点注释——本仓报 openssl 3.x 版，与真机同条件对拍。
+function __md5bytes(data) {
+  const id = Number(__cryptCall(() => __wjs_crypto_hash_new("md5", "0")));
+  __cryptCall(() => __wjs_crypto_hash_update(String(id), Buffer.from(data)));
+  return Buffer.from(__cryptCall(() => __wjs_crypto_hash_digest(String(id))));
+}
+function __evpBytesToKey(pass, salt8, keyLen) {
+  let out = Buffer.alloc(0), prev = Buffer.alloc(0);
+  while (out.length < keyLen) {
+    prev = __md5bytes(Buffer.concat([prev, Buffer.from(pass), Buffer.from(salt8)]));
+    out = Buffer.concat([out, prev]);
+  }
+  return out.slice(0, keyLen);
+}
+function __pemCipherTable() {
+  return {
+    "AES-128-CBC": { native: "aes-128-cbc", keyLen: 16, ivLen: 16 },
+    "AES-256-CBC": { native: "aes-256-cbc", keyLen: 32, ivLen: 16 },
+    "DES-EDE3-CBC": { native: "des-ede3-cbc", keyLen: 24, ivLen: 8 },
+  };
+}
+function __pemPassBytes(pass) {
+  if (typeof pass === "string") return Buffer.from(pass, "utf8");
+  if (pass instanceof Uint8Array) return Buffer.from(pass.buffer, pass.byteOffset, pass.byteLength);
+  if (pass instanceof ArrayBuffer) return Buffer.from(pass);
+  if (ArrayBuffer.isView(pass)) return Buffer.from(pass.buffer, pass.byteOffset, pass.byteLength);
+  const err = new TypeError("The passphrase argument must be of type string or an instance of Buffer, TypedArray, or DataView");
+  err.code = "ERR_INVALID_ARG_TYPE";
+  throw err;
+}
+function __pemMissingPassphrase() {
+  // 缺口令：openssl 3.x 原文（本仓报 3.x 版；1.x 的 ERR_MISSING_PASSPHRASE 见 plan3 记档）。
+  const err = new Error("error:07880109:common libcrypto routines::interrupted or cancelled");
+  err.code = "ERR_MISSING_PASSPHRASE";
+  throw err;
+}
+function __pemBadDecrypt() {
+  // 错口令/坏块：openssl 3.x 原文（套件 message 点名）。
+  const err = new Error("error:1C800064:Provider routines::bad decrypt");
+  err.code = "ERR_OSSL_BAD_DECRYPT";
+  throw err;
+}
+function __pemEncryptTraditional(der, label, options) {
+  const table = __pemCipherTable();
+  const c = table[String(options.cipher).toUpperCase()];
+  if (!c) {
+    const err = new Error("Unknown cipher");
+    err.code = "ERR_CRYPTO_UNKNOWN_CIPHER";
+    throw err;
+  }
+  if (options.passphrase === undefined) __pemMissingPassphrase();
+  const passB = __pemPassBytes(options.passphrase);
+  const iv = __randFill(new Uint8Array(c.ivLen));
+  const key = __evpBytesToKey(passB, iv.slice(0, 8), c.keyLen);
+  const id = Number(__cryptCall(() => __wjs_cipher_new(c.native, Buffer.from(key), Buffer.from(iv), 1, 1)));
+  const head = __cryptCall(() => __wjs_cipher_update(String(id), Buffer.from(der)));
+  const tail = __cryptCall(() => __wjs_cipher_final(String(id)));
+  const ct = Buffer.concat([Buffer.from(head), Buffer.from(tail)]);
+  const b64 = ct.toString("base64");
+  let body = "";
+  for (let i = 0; i < b64.length; i += 64) body += b64.slice(i, i + 64) + "\n";
+  const ivHex = Buffer.from(iv).toString("hex").toUpperCase();
+  const dekName = String(options.cipher).toUpperCase();
+  return `-----BEGIN ${label}-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: ${dekName},${ivHex}\n\n${body}-----END ${label}-----\n`;
+}
+function __pemDecryptTraditional(pem, options) {
+  const table = __pemCipherTable();
+  const c = pem.dek && table[String(pem.dek.cipher).toUpperCase()];
+  if (!c) {
+    const err = new Error("Unknown cipher");
+    err.code = "ERR_CRYPTO_UNKNOWN_CIPHER";
+    throw err;
+  }
+  if (!options || options.passphrase === undefined) __pemMissingPassphrase();
+  const passB = __pemPassBytes(options.passphrase);
+  let iv;
+  try {
+    iv = Buffer.from(pem.dek.ivHex, "hex");
+  } catch { __pemBadDecrypt(); }
+  if (iv.length !== c.ivLen) __pemBadDecrypt();
+  const key = __evpBytesToKey(passB, iv.slice(0, 8), c.keyLen);
+  try {
+    const id = Number(__cryptCall(() => __wjs_cipher_new(c.native, Buffer.from(key), Buffer.from(iv), 0, 1)));
+    const head = __cryptCall(() => __wjs_cipher_update(String(id), Buffer.from(pem.der)));
+    const tail = __cryptCall(() => __wjs_cipher_final(String(id)));
+    return Buffer.concat([Buffer.from(head), Buffer.from(tail)]);
+  } catch {
+    __pemBadDecrypt();
+  }
 }
 function __normCurve(name) {
   const s = String(name ?? "").trim().toLowerCase().replace(/[-_]/g, "");
@@ -4272,7 +4665,8 @@ function __parseDsaDer(der, want) {
   return { p, q, g, y };
 }
 function __dsaKeyObject(env, kind) {
-  const k = new KeyObject(kind, "dsa", Buffer.from(JSON.stringify(env)));
+  const Cls = kind === "secret" ? SecretKeyObject : kind === "public" ? PublicKeyObject : PrivateKeyObject;
+  const k = new Cls(kind, "dsa", Buffer.from(JSON.stringify(env)));
   const pLen = Buffer.from(env.p, "base64").length, qLen = Buffer.from(env.q, "base64").length;
   k.__detail = { modulusLength: pLen * 8, divisorLength: qLen * 8 };
   return k;
@@ -4283,37 +4677,266 @@ function __normHashName(alg) {
   const up = s.trim().toUpperCase().replace(/[-_]/g, "");
   const bare = up.startsWith("RSA") ? up.slice(3) : up;
   const table = {
-    "SHA1": "SHA-1", "SHA256": "SHA-256", "SHA384": "SHA-384", "SHA512": "SHA-512",
+    "SHA1": "SHA-1", "DSS1": "SHA-1", "SHA256": "SHA-256", "SHA384": "SHA-384", "SHA512": "SHA-512",
     "MD5": "MD5", "SHA3256": "SHA3-256", "SHA3384": "SHA3-384", "SHA3512": "SHA3-512",
   };
   return table[bare];
 }
 
+// 10f crypto二轮：KeyObject 四层原型链（真机口径）+ WeakMap 状态（实例零自有属性）。
+// 链：SecretKeyObject→KeyObject；PublicKeyObject→AsymmetricKeyObject→KeyObject
+// （PrivateKeyObject 同）。`__kind` 系经原型访问器读写，旧 `x.__foo` 文本零改动；
+// 品牌 = WeakMap 成员（原型伪造/自有属性伪造一律不认，§4.23 同款）。
+const __koState = new WeakMap();
+function __koBrand(o) {
+  if ((typeof o !== "object" && typeof o !== "function") || o === null) return null;
+  return __koState.get(o) ?? null;
+}
+function __isKeyObject(o) {
+  return KeyObject.__brandCheck(o);
+}
+function __invalidThis() {
+  const err = new TypeError('Value of "this" must be of type KeyObject');
+  err.code = "ERR_INVALID_THIS";
+  throw err;
+}
+function __koReceived(v) {
+  if (v === null) return "null";
+  if (v === undefined) return "undefined";
+  const t = typeof v;
+  if (t === "object" || t === "function") return `an instance of ${v.constructor?.name ?? "Object"}`;
+  return `type ${t} (${String(v)})`;
+}
 class KeyObject {
+  // 品牌静态检查（供 `util.types.isKeyObject`；手动走链，`Symbol.hasInstance`
+  // 覆盖期同样有效）。
+  static __brandCheck(o) {
+    if (__koBrand(o) === null) return false;
+    let p = Object.getPrototypeOf(Object(o));
+    while (p !== null) {
+      if (p === KeyObject.prototype) return true;
+      p = Object.getPrototypeOf(p);
+    }
+    return false;
+  }
+  // 10f crypto二轮：`KeyObject.from`（CryptoKey 互转；宿主无 CryptoKey 品牌，
+  // 非法输入口径先行，有效输入另案）。
+  static from(key) {
+    const recv = typeof key === "string" ? `type string ('${key}')`
+      : key === null ? "null"
+      : key === undefined ? "undefined"
+      : `an instance of ${key.constructor?.name ?? "Object"}`;
+    const err = new TypeError(
+      `The "key" argument must be an instance of CryptoKey. Received ${recv}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
   constructor(kind, keyType, material) {
-    this.__kind = kind; // 'secret' | 'public' | 'private'
-    this.__keyType = keyType; // 'secret' | 'rsa' | 'rsa-pss' | 'ec' | 'ed25519' | 'x25519' | 'dh'
-    this.__material = material; // Uint8Array（DER 或裸密钥字节）
-    this.__detail = null; // 附加参数（namedCurve / prime+g / pss）
+    // 10f crypto二轮：直接构造校验（真机口径；子类内部构造经 new.target 放行）。
+    if (new.target === KeyObject) {
+      if (kind !== "secret" && kind !== "public" && kind !== "private") {
+        const recv = kind === undefined ? "undefined"
+          : typeof kind === "string" ? `'${kind}'`
+          : String(kind);
+        const err = new TypeError(`The argument 'type' is invalid. Received ${recv}`);
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      }
+      // handle 须为原生句柄对象，用户值恒非法。
+      const hrecv = keyType === undefined ? "undefined"
+        : typeof keyType === "string" ? `type string ('${keyType}')`
+        : `an instance of ${keyType.constructor?.name ?? "Object"}`;
+      const herr = new TypeError(
+        `The "handle" argument must be of type object. Received ${hrecv}`);
+      herr.code = "ERR_INVALID_ARG_TYPE";
+      throw herr;
+    }
+    __koState.set(this, { kind: undefined, keyType: undefined, material: undefined, detail: null });
+    this.__kind = kind;
+    this.__keyType = keyType;
+    this.__material = material;
   }
-  get type() { return this.__kind; }
-  get asymmetricKeyType() { return this.__kind === "secret" ? undefined : this.__keyType; }
-  get symmetricKeySize() {
-    return this.__kind === "secret" ? this.__material.length : undefined;
+  get type() {
+    const s = __koBrand(this);
+    if (s === null) __invalidThis();
+    return s.kind;
   }
+  // 10f crypto二轮：`Object.prototype.toString` 口径（全 flavor 同一）。
+  get [Symbol.toStringTag]() { return "KeyObject"; }
   export(options) {
+    const s = __koBrand(this);
+    if (s === null) __invalidThis();
+    // 真机口径：secret 无参即回裸 Buffer；其余 options 须为对象。
+    if (s.kind === "secret" && options === undefined) return Buffer.from(s.material);
+    if (typeof options !== "object" || options === null) {
+      const recv = options === undefined ? "undefined"
+        : options === null ? "null"
+        : `type ${typeof options} (${typeof options === "string" ? `'${options}'` : String(options)})`;
+      const err = new TypeError(`The "options" argument must be of type object. Received ${recv}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    // 10f crypto二轮：RSA 导出 type 矩阵（public: pkcs1/spki；private: pkcs1/pkcs8）。
+    if ((s.keyType === "rsa" || s.keyType === "rsa-pss") && options?.type !== undefined) {
+      const t = options.type;
+      const ok = (s.kind === "public" ? ["pkcs1", "spki"] : ["pkcs1", "pkcs8"]).includes(t);
+      if (!ok) {
+        if (t === "sec1" && s.kind === "private") {
+          const err = new Error("Incompatible key options");
+          err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+          throw err;
+        }
+        const err = new TypeError(`Unknown export type ${t}`);
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      }
+    }
     const format = options?.format ?? "pem";
+    // 10f crypto二轮：JWK 不支持加密（真机口径）。
+    if (format === "jwk" && (options.passphrase !== undefined || options.cipher !== undefined)) {
+      const err = new Error("The selected key encoding jwk does not support encryption.");
+      err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+      throw err;
+    }
     if (format === "jwk") return __exportJwk(this);
+    // 10f crypto二轮：RSA pkcs1（RSAPublicKey/RSAPrivateKey，真机口径）。
+    if ((s.keyType === "rsa" || s.keyType === "rsa-pss") && options?.type === "pkcs1") {
+      const der = __rsaPkcs1(s);
+      if (format === "der") return Buffer.from(der);
+      if (format === "pem") {
+        const label = s.kind === "private" ? "RSA PRIVATE KEY" : "RSA PUBLIC KEY";
+        // 10f crypto二轮：传统加密 PEM（cipher+passphrase）。
+        if (options.cipher !== undefined && s.kind === "private") {
+          return __pemEncryptTraditional(der, label, options);
+        }
+        return __pemEncode(label, der);
+      }
+    }
     const der = __exportDer(this, options);
     if (format === "der") return Buffer.from(der);
     if (format === "pem") {
-      const label = this.__kind === "private" ? "PRIVATE KEY" : "PUBLIC KEY";
+      // 10f crypto二轮：pkcs8 私钥加密导出（dsa-legacy 沿 label；EC sec1 同）。
+      if (options.cipher !== undefined && s.kind === "private") {
+        const t = options.type;
+        const label = t === "pkcs1" ? "RSA PRIVATE KEY"
+          : t === "sec1" ? "EC PRIVATE KEY"
+          : "PRIVATE KEY";
+        return __pemEncryptTraditional(der, label, options);
+      }
+      const label = s.kind === "private" ? "PRIVATE KEY" : "PUBLIC KEY";
       return __pemEncode(label, der);
     }
     const err = new TypeError(`Unknown export format ${format}`);
     err.code = "ERR_INVALID_ARG_VALUE";
     throw err;
   }
+  equals(other) {
+    const a = __koBrand(this);
+    if (a === null) __invalidThis();
+    if (!__isKeyObject(other)) {
+      const err = new TypeError(
+        `The "otherKeyObject" argument must be an instance of KeyObject. Received ${__koReceived(other)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    const b = __koBrand(other);
+    return a.kind === b.kind && a.keyType === b.keyType &&
+      Buffer.from(a.material).equals(Buffer.from(b.material));
+  }
+}
+class SecretKeyObject extends KeyObject {
+  get symmetricKeySize() {
+    const s = __koBrand(this);
+    if (s === null || s.kind !== "secret") __invalidThis();
+    return s.material.length;
+  }
+}
+class AsymmetricKeyObject extends KeyObject {
+  get asymmetricKeyType() {
+    const s = __koBrand(this);
+    if (s === null || s.kind === "secret") __invalidThis();
+    return s.keyType;
+  }
+  get asymmetricKeyDetails() {
+    const s = __koBrand(this);
+    if (s === null || s.kind === "secret") __invalidThis();
+    // RSA 系回 {modulusLength, publicExponent}（generation 期落 __detail；
+    // 导入键无 __detail 即从材料现算；其余类型另案）。
+    if (s.keyType === "rsa" || s.keyType === "rsa-pss") {
+      if (s.detail !== null && typeof s.detail.modulusLength === "number") {
+        return { modulusLength: s.detail.modulusLength, publicExponent: BigInt(s.detail.publicExponent) };
+      }
+      const d = __rsaDetailsFromMaterial(s.kind, s.material);
+      if (d !== null) return d;
+    }
+    return undefined;
+  }
+}
+// 10f crypto二轮：RSA 材料现算 details（private 取 PKCS#8 内层 n/e；
+// public 取 SPKI 内层 n/e；坏料回 null）。
+function __rsaDetailsFromMaterial(kind, material) {
+  try {
+    const top = __derRead(material, 0);
+    if (top.tag !== 48) return null;
+    const kids = __derChildren(top.body);
+    const last = kids[kids.length - 1];
+    let seq;
+    if (kind === "private") {
+      if (last.tag !== 4) return null;
+      seq = __derChildren(__derRead(last.body, 0).body);
+      if (seq.length < 3) return null;
+      seq = [seq[1], seq[2]];
+    } else if (kind === "public") {
+      if (last.tag !== 3 || last.body.length < 1 || last.body[0] !== 0) return null;
+      seq = __derChildren(__derRead(last.body.slice(1), 0).body);
+      if (seq.length < 2) return null;
+    } else {
+      return null;
+    }
+    const strip = (t) => {
+      let v = t.body;
+      while (v.length > 1 && v[0] === 0) v = v.slice(1);
+      return v;
+    };
+    const n = strip(seq[0]), e = strip(seq[1]);
+    let exp = 0n;
+    for (const b of e) exp = (exp << 8n) | BigInt(b);
+    return { modulusLength: n.length * 8, publicExponent: exp };
+  } catch {
+    return null;
+  }
+}
+class PublicKeyObject extends AsymmetricKeyObject {}
+class PrivateKeyObject extends AsymmetricKeyObject {}
+// `__kind` 系原型访问器（实例零自有属性；`Object(this)` 防原始值 receiver 抛错）。
+for (const __k of ["__kind", "__keyType", "__material", "__detail"]) {
+  Object.defineProperty(KeyObject.prototype, __k, {
+    configurable: true,
+    get() { return __koState.get(Object(this))?.[__k.slice(2)]; },
+    set(v) { const s = __koState.get(Object(this)); if (s !== undefined) s[__k.slice(2)] = v; },
+  });
+}
+// 10f crypto二轮：RSA pkcs1 内层提取（public 取 SPKI 的 BITSTRING 内层；
+// private 取 PKCS#8 的 OCTET 内层，即 RSAPrivateKey 本体）。
+function __rsaPkcs1(s) {
+  const fail = () => {
+    const err = new Error("Invalid RSA key material for pkcs1 export");
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  };
+  let top;
+  try {
+    top = __derRead(s.material, 0);
+  } catch { fail(); }
+  if (top.tag !== 48) fail();
+  const kids = __derChildren(top.body);
+  const last = kids[kids.length - 1];
+  if (s.kind === "public") {
+    if (last.tag !== 3 || last.body.length < 1 || last.body[0] !== 0) fail();
+    return last.body.slice(1);
+  }
+  if (last.tag !== 4) fail();
+  return last.body;
 }
 function __exportDer(kobj, options) {
   // DH 私钥是 JS 侧三元组（无 DER 形态，记档）；其余直接吐 material
@@ -4430,17 +5053,23 @@ function __exportJwk(kobj) {
   throw err;
 }
 export function createSecretKey(key) {
-  return new KeyObject("secret", "secret", __cryptBytes(key, "key"));
+  return new SecretKeyObject("secret", "secret", __cryptBytes(key, "key"));
 }
-function __parseKeyMaterial(key, format, type, want) {
+function __parseKeyMaterial(key, format, type, want, options) {
   // → { keyType, material, detail }；want: 'private' | 'public'
-  if (key instanceof KeyObject) {
-    if (key.type !== want && !(want === "private" && key.type === "private")) {
-      const err = new TypeError("KeyObject type mismatch");
-      err.code = "ERR_INVALID_ARG_TYPE";
+  // 10f crypto二轮：KeyObject 互传规则（真机逐字）——public 侧私钥派生公钥，
+  // 其余组合按码表拒绝（`createPrivateKey(privKO)` 同禁）。
+  if (__isKeyObject(key)) {
+    if (want === "public") {
+      if (key.type === "private") return __derivePublic(key);
+      const err = new TypeError(`Invalid key object type ${key.type}, expected private.`);
+      err.code = "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE";
       throw err;
     }
-    return key;
+    const err = new TypeError(
+      `The "key" argument must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, DataView, or URL. Received an instance of ${key.constructor.name}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
   }
   if (format === "jwk") {
     if (typeof key !== "object" || key === null) {
@@ -4448,29 +5077,48 @@ function __parseKeyMaterial(key, format, type, want) {
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
-    if (key.kty === "oct") return new KeyObject("secret", "secret", __b64urlDec(key.k));
+    if (key.kty === "oct") return new SecretKeyObject("secret", "secret", __b64urlDec(key.k));
     if (key.kty === "RSA") {
       const n = __b64urlDec(key.n), e = __b64urlDec(key.e);
+      // 10f crypto二轮：JWK 私钥规则（真机逐字）——缺 d 即无私钥料；坏参数即 Invalid；
+      // 公钥侧要私钥 JWK 即派生。
+      const __badRsaJwk = () => {
+        const err = new TypeError("Invalid JWK RSA key");
+        err.code = "ERR_CRYPTO_INVALID_JWK";
+        throw err;
+      };
       if (key.d !== undefined) {
         const d = __b64urlDec(key.d);
-        const privDer = __cryptCall(() => __wjs_rsa_import_priv(n, e, d));
-        const k = new KeyObject("private", "rsa", Buffer.from(privDer));
+        let privDer;
+        try {
+          privDer = __cryptCall(() => __wjs_rsa_import_priv(n, e, d));
+        } catch { __badRsaJwk(); }
+        const k = new PrivateKeyObject("private", "rsa", Buffer.from(privDer));
+        if (want === "public") return __derivePublic(k);
         return k;
       }
-      const pubDer = __cryptCall(() => __wjs_rsa_import_pub(n, e));
-      return new KeyObject("public", "rsa", Buffer.from(pubDer));
+      if (want === "private") {
+        const err = new TypeError("JWK does not contain private key material");
+        err.code = "ERR_CRYPTO_INVALID_JWK";
+        throw err;
+      }
+      let pubDer;
+      try {
+        pubDer = __cryptCall(() => __wjs_rsa_import_pub(n, e));
+      } catch { __badRsaJwk(); }
+      return new PublicKeyObject("public", "rsa", Buffer.from(pubDer));
     }
     if (key.kty === "EC") {
       const curve = __normCurve(key.crv);
       const x = __b64urlDec(key.x), y = __b64urlDec(key.y);
       if (key.d !== undefined) {
         const privDer = __cryptCall(() => __wjs_ec_import_priv(curve, __b64urlDec(key.d)));
-        const k = new KeyObject("private", "ec", Buffer.from(privDer));
+        const k = new PrivateKeyObject("private", "ec", Buffer.from(privDer));
         k.__detail = { namedCurve: curve };
         return k;
       }
       const pubDer = __cryptCall(() => __wjs_ec_import_pub(curve, x, y));
-      const k = new KeyObject("public", "ec", Buffer.from(pubDer));
+      const k = new PublicKeyObject("public", "ec", Buffer.from(pubDer));
       k.__detail = { namedCurve: curve };
       return k;
     }
@@ -4488,7 +5136,7 @@ function __parseKeyMaterial(key, format, type, want) {
       if (key.x !== undefined) env.x = std(key.x);
       // 信封合法性经轮子校验（坐标对参数）。
       __cryptCall(() => __wjs_dsa_export(JSON.stringify(env)));
-      const k = new KeyObject(key.x !== undefined ? "private" : "public", "dsa", Buffer.from(JSON.stringify(env)));
+      const k = new (key.x !== undefined ? PrivateKeyObject : PublicKeyObject)(key.x !== undefined ? "private" : "public", "dsa", Buffer.from(JSON.stringify(env)));
       const pLen = Buffer.from(env.p, "base64").length, qLen = Buffer.from(env.q, "base64").length;
       k.__detail = { modulusLength: pLen * 8, divisorLength: qLen * 8 };
       return k;
@@ -4502,43 +5150,137 @@ function __parseKeyMaterial(key, format, type, want) {
         throw err;
       }
       if (key.d !== undefined) {
-        const k = new KeyObject("private", kt, __b64urlDec(key.d));
+        const k = new PrivateKeyObject("private", kt, __b64urlDec(key.d));
         return k;
       }
-      return new KeyObject("public", kt, __b64urlDec(key.x));
+      return new PublicKeyObject("public", kt, __b64urlDec(key.x));
     }
     const err = new TypeError("Unsupported JWK kty");
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
   let der;
+  let pem = null;
   if (typeof key === "string") {
-    const pem = __pemDecode(key);
+    pem = __pemDecode(key);
     if (!pem) {
+      // 10f crypto二轮：空串即 DECODER 原文（openssl 3.x，套件点名）。
+      if (key === "") {
+        const err = new Error("error:1E08010C:DECODER routines::unsupported");
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      }
       const err = new TypeError("PEM decode failed");
       err.code = "ERR_INVALID_ARG_VALUE";
       throw err;
     }
     der = pem.der;
+  } else {
+    der = __cryptBytes(key, "key");
+    // 10f crypto二轮：PEM 装甲裹在 Buffer 里同样嗅探解码（fixtures 无编码读回即此形）。
+    if (der.length > 11 && String.fromCharCode(...der.subarray(0, 11)) === "-----BEGIN ") {
+      pem = __pemDecode(Buffer.from(der).toString("utf8"));
+      if (!pem) {
+        const err = new TypeError("PEM decode failed");
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      }
+      der = pem.der;
+    }
+  }
+  if (pem !== null) {
     if (pem.label === "PRIVATE KEY") type = type ?? "pkcs8";
     else if (pem.label === "PUBLIC KEY") type = type ?? "spki";
     else if (pem.label === "RSA PRIVATE KEY") type = type ?? "pkcs1";
     else if (pem.label === "RSA PUBLIC KEY") type = type ?? "pkcs1-pub";
+    else if (pem.label === "DSA PRIVATE KEY") type = type ?? "dsa-legacy";
     else if (pem.label === "EC PRIVATE KEY") type = type ?? "sec1";
-  } else {
-    der = __cryptBytes(key, "key");
+    else if (pem.label === "CERTIFICATE") {
+      // 10f crypto二轮：证书提 SPKI 作公钥（既有 `__wjs_x509_parse` 轮子，真机口径）。
+      const info = JSON.parse(__cryptCall(() => __wjs_x509_parse(Buffer.from(der))));
+      der = Buffer.from(info.spkiB64, "base64");
+      type = type ?? "spki";
+    }
+    // 10f crypto二轮：传统加密 PEM 即解密（口令经 options 透传）。
+    if (pem.dek) {
+      der = __pemDecryptTraditional(pem, options);
+    }
   }
   type = type ?? (want === "private" ? "pkcs8" : "spki");
+  // 10f crypto二轮：pkcs1 导入（private 存 PKCS#8 / public 存 SPKI，正则存；
+  // 坏 DER 报 Invalid PKCS#1（引擎 ASN1 文案不可比，记档）。
+  const __RSA_OID = new Uint8Array([6, 9, 42, 134, 72, 134, 247, 13, 1, 1, 1]);
+  const __DER_NULL = new Uint8Array([5, 0]);
+  const __derSeq = (...parts) => {
+    let total = 0;
+    for (const p of parts) total += p.length;
+    const head = __derLen(total);
+    const out = new Uint8Array(1 + head.length + total);
+    out[0] = 48;
+    out.set(head, 1);
+    let off = 1 + head.length;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  };
+  const __badPkcs1 = () => {
+    const err = new TypeError("Invalid PKCS#1 key");
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  };
+  if (type === "pkcs1") {
+    // 10f crypto二轮：RSAPrivateKey（9 INT）/RSAPublicKey（2 INT）按内容区分
+    //（真机口径；want 侧由 createPublicKey 派生收口）。
+    let isPriv = null;
+    try {
+      const top = __derRead(der, 0);
+      if (top.tag === 48) {
+        const kids = __derChildren(top.body);
+        if (kids.length === 9 && kids.every((t) => t.tag === 2)) isPriv = true;
+        else if (kids.length === 2 && kids.every((t) => t.tag === 2)) isPriv = false;
+      }
+    } catch { isPriv = null; }
+    if (isPriv === null) __badPkcs1();
+    // 10f crypto二轮：公钥料作私钥即 DECODER 错（openssl 3.x 原文+library，套件点名）。
+    if (!isPriv && want === "private") {
+      const err = new Error("error:1E08010C:DECODER routines::unsupported");
+      err.code = "ERR_OSSL_UNSUPPORTED";
+      err.library = "DECODER routines";
+      throw err;
+    }
+    if (isPriv) {
+      const pkcs8 = __derSeq(__derInt(new Uint8Array([0])), __derSeq(__RSA_OID, __DER_NULL),
+        new Uint8Array([4, ...__derLen(der.length), ...der]));
+      __cryptCall(() => __wjs_rsa_public(pkcs8));
+      return new PrivateKeyObject("private", "rsa", Buffer.from(pkcs8));
+    }
+    const bitStr = new Uint8Array([3, ...__derLen(der.length + 1), 0, ...der]);
+    const spki = __derSeq(__derSeq(__RSA_OID, __DER_NULL), bitStr);
+    __cryptCall(() => __wjs_rsa_jwk_pub(spki));
+    return new PublicKeyObject("public", "rsa", Buffer.from(spki));
+  }
+  if (type === "pkcs1-pub") {
+    let seq;
+    try {
+      const top = __derRead(der, 0);
+      if (top.tag !== 48) __badPkcs1();
+      seq = __derChildren(top.body);
+      if (seq.length !== 2 || seq.some((t) => t.tag !== 2)) __badPkcs1();
+    } catch (e) { if (e && e.code) throw e; __badPkcs1(); }
+    const bitStr = new Uint8Array([3, ...__derLen(der.length + 1), 0, ...der]);
+    const spki = __derSeq(__derSeq(__RSA_OID, __DER_NULL), bitStr);
+    __cryptCall(() => __wjs_rsa_jwk_pub(spki));
+    return new PublicKeyObject("public", "rsa", Buffer.from(spki));
+  }
   if (type === "pkcs8") {
     // 以 RSA/EC/OKP 逐一试解（DER 自描述不足，顺序即优先级；失败信息统一）
     const tries = [
-      ["rsa", () => { __cryptCall(() => __wjs_rsa_public(der)); return new KeyObject("private", "rsa", der); }],
+      ["rsa", () => { __cryptCall(() => __wjs_rsa_public(der)); return new PrivateKeyObject("private", "rsa", der); }],
       ["ec", () => {
         // SPKI 算法 OID 直判（试解靠坐标长度会把 secp256k1 误判成 P-256，同 32 字节）。
         const g = __cryptCall(() => __wjs_ec_guess_curve(der));
         if (g === "") throw new Error("no");
         __cryptCall(() => __wjs_ec_public(g, der));
-        const k = new KeyObject("private", "ec", der);
+        const k = new PrivateKeyObject("private", "ec", der);
         k.__detail = { namedCurve: g };
         return k;
       }],
@@ -4552,7 +5294,7 @@ function __parseKeyMaterial(key, format, type, want) {
           try {
             const kind = kt === "ed25519" ? "ED25519" : kt === "x25519" ? "X25519" : "ED448";
             const seed = __cryptCall(() => __wjs_okp_seed_from_pkcs8(kind, der));
-            return new KeyObject("private", kt, Buffer.from(seed));
+            return new PrivateKeyObject("private", kt, Buffer.from(seed));
           } catch {}
         }
         throw new Error("no");
@@ -4560,12 +5302,12 @@ function __parseKeyMaterial(key, format, type, want) {
       ["ml-kem", () => {
         // 9i-4：种子形 PKCS#8（LAMPS 口径，[0] 64B 种子；展开即校验）。
         const parts = JSON.parse(__cryptCall(() => __wjs_mlkem_seed_from_pkcs8(der)));
-        return new KeyObject("private", parts.kind, der);
+        return new PrivateKeyObject("private", parts.kind, der);
       }],
       ["ml-dsa", () => {
         // 9i-6：种子形 PKCS#8（[0] 32B 种子；展开即校验）。
         const parts = JSON.parse(__cryptCall(() => __wjs_mldsa_seed_from_pkcs8(der)));
-        return new KeyObject("private", parts.kind, der);
+        return new PrivateKeyObject("private", parts.kind, der);
       }],
     ];
     for (const [, fn] of tries) {
@@ -4577,12 +5319,12 @@ function __parseKeyMaterial(key, format, type, want) {
   }
   if (type === "spki") {
     const tries = [
-      () => { __cryptCall(() => __wjs_rsa_jwk_pub(der)); return new KeyObject("public", "rsa", der); },
+      () => { __cryptCall(() => __wjs_rsa_jwk_pub(der)); return new PublicKeyObject("public", "rsa", der); },
       () => {
         const g = __cryptCall(() => __wjs_ec_guess_curve(der));
         if (g === "") throw new Error("no");
         __cryptCall(() => __wjs_ec_jwk_pub(g, der));
-        const k = new KeyObject("public", "ec", der);
+        const k = new PublicKeyObject("public", "ec", der);
         k.__detail = { namedCurve: g };
         return k;
       },
@@ -4596,7 +5338,7 @@ function __parseKeyMaterial(key, format, type, want) {
           try {
             const kind = kt === "ed25519" ? "ED25519" : kt === "x25519" ? "X25519" : "ED448";
             const pub = __cryptCall(() => __wjs_okp_pub_from_spki(kind, der));
-            return new KeyObject("public", kt, Buffer.from(pub));
+            return new PublicKeyObject("public", kt, Buffer.from(pub));
           } catch {}
         }
         throw new Error("no");
@@ -4604,12 +5346,12 @@ function __parseKeyMaterial(key, format, type, want) {
       () => {
         const kind = __cryptCall(() => __wjs_mlkem_kind_from_spki(der));
         if (kind === "") throw new Error("no");
-        return new KeyObject("public", kind, der);
+        return new PublicKeyObject("public", kind, der);
       },
       () => {
         const kind = __cryptCall(() => __wjs_mldsa_kind_from_spki(der));
         if (kind === "") throw new Error("no");
-        return new KeyObject("public", kind, der);
+        return new PublicKeyObject("public", kind, der);
       },
     ];
     for (const fn of tries) {
@@ -4618,6 +5360,26 @@ function __parseKeyMaterial(key, format, type, want) {
     const err = new TypeError("Invalid SPKI key");
     err.code = "ERR_INVALID_ARG_VALUE";
     throw err;
+  }
+  // 10f crypto二轮：legacy DSA 私钥（`DSA PRIVATE KEY` 标签，
+  // SEQ{ version, p, q, g, y, x }，转内部信封存）。
+  if (type === "dsa-legacy") {
+    const bad = () => {
+      const err = new TypeError("Invalid DSA key");
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    };
+    let kids;
+    try {
+      const top = __derRead(der, 0);
+      if (top.tag !== 48) bad();
+      kids = __derChildren(top.body);
+      if (kids.length !== 6 || kids.some((t) => t.tag !== 2)) bad();
+    } catch (e) { if (e && e.code) throw e; bad(); }
+    const [p, q, g, y, x] = __dsaInts(kids.slice(1));
+    const env = { p, q, g, y, x };
+    __cryptCall(() => __wjs_dsa_export(JSON.stringify(env)));
+    return __dsaKeyObject(env, "private");
   }
   if (type === "sec1") {
     // SEC1 EC 私钥：SEQ{ INTEGER 1, OCTET scalar, [0] curveOID?, [1] pub BITSTRING? }
@@ -4645,7 +5407,7 @@ function __parseKeyMaterial(key, format, type, want) {
     for (const c of curves) {
       try {
         const privDer = __cryptCall(() => __wjs_ec_import_priv(c, scalar.body));
-        const k = new KeyObject("private", "ec", Buffer.from(privDer));
+        const k = new PrivateKeyObject("private", "ec", Buffer.from(privDer));
         k.__detail = { namedCurve: c };
         return k;
       } catch {}
@@ -4654,59 +5416,79 @@ function __parseKeyMaterial(key, format, type, want) {
     err.code = "ERR_INVALID_ARG_VALUE";
     throw err;
   }
-  const err = new TypeError(`Unsupported key type ${type} (der sec1/pkcs8/spki supported)`);
+  const err = new TypeError(`Unsupported key type ${type} (der sec1/pkcs1/pkcs8/spki supported)`);
   err.code = "ERR_INVALID_ARG_VALUE";
   throw err;
 }
 export function createPrivateKey(key) {
-  if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof ArrayBuffer) && !ArrayBuffer.isView(key) && !(key instanceof KeyObject)) {
-    return __parseKeyMaterial(key.key ?? key, key.format, key.type, "private");
+  if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof ArrayBuffer) && !ArrayBuffer.isView(key) && !__isKeyObject(key)) {
+    // 10f crypto二轮：显式 type 门（真机逐字；spki/pkcs1-pub 非私钥形）。
+    if (key.type === "spki" || key.type === "pkcs1-pub") {
+      const err = new TypeError(`The property 'key.type' is invalid. Received '${key.type}'`);
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    // 10f crypto二轮：字符串 key 按 options.encoding 预解码（真机口径，dsa 套件点名）。
+    if (typeof key.key === "string" && typeof key.encoding === "string") {
+      key = { ...key, key: Buffer.from(key.key, key.encoding) };
+    }
+    return __parseKeyMaterial(key.key ?? key, key.format, key.type, "private", key);
   }
-  return __parseKeyMaterial(key, undefined, undefined, "private");
+  return __parseKeyMaterial(key, undefined, undefined, "private", undefined);
 }
 export function createPublicKey(key) {
-  if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof ArrayBuffer) && !ArrayBuffer.isView(key) && !(key instanceof KeyObject)) {
+  if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof ArrayBuffer) && !ArrayBuffer.isView(key) && !__isKeyObject(key)) {
     // 允许从私钥对象派生公钥（Node 同款）
-    if (key.key instanceof KeyObject && key.key.type === "private") {
+    if (__isKeyObject(key.key) && key.key.type === "private") {
       return __derivePublic(key.key);
     }
-    return __parseKeyMaterial(key.key ?? key, key.format, key.type, "public");
+    // 10f crypto二轮：字符串 key 按 options.encoding 预解码（真机口径）。
+    if (typeof key.key === "string" && typeof key.encoding === "string") {
+      key = { ...key, key: Buffer.from(key.key, key.encoding) };
+    }
+    // 10f crypto二轮：DER 私钥材料一律派生公钥（真机口径，加密 PEM 同）。
+    const k = __parseKeyMaterial(key.key ?? key, key.format, key.type, "public", key);
+    if (k.type === "private") return __derivePublic(k);
+    return k;
   }
-  if (key instanceof KeyObject && key.type === "private") return __derivePublic(key);
-  return __parseKeyMaterial(key, undefined, undefined, "public");
+  if (__isKeyObject(key) && key.type === "private") return __derivePublic(key);
+  // 10f crypto二轮：DER 私钥材料一律派生公钥（真机口径）。
+  const k = __parseKeyMaterial(key, undefined, undefined, "public", undefined);
+  if (k.type === "private") return __derivePublic(k);
+  return k;
 }
 function __derivePublic(priv) {
   if (priv.__keyType === "rsa" || priv.__keyType === "rsa-pss") {
-    return new KeyObject("public", priv.__keyType, Buffer.from(__cryptCall(() => __wjs_rsa_public(priv.__material))));
+    return new PublicKeyObject("public", priv.__keyType, Buffer.from(__cryptCall(() => __wjs_rsa_public(priv.__material))));
   }
   if (priv.__keyType === "ec") {
     const c = priv.__detail.namedCurve;
-    return Object.assign(new KeyObject("public", "ec", Buffer.from(__cryptCall(() => __wjs_ec_public(c, priv.__material)))), { __detail: { namedCurve: c } });
+    return Object.assign(new PublicKeyObject("public", "ec", Buffer.from(__cryptCall(() => __wjs_ec_public(c, priv.__material)))), { __detail: { namedCurve: c } });
   }
   if (priv.__keyType === "ed25519") {
-    return new KeyObject("public", "ed25519", Buffer.from(__cryptCall(() => __wjs_ed_public(priv.__material))));
+    return new PublicKeyObject("public", "ed25519", Buffer.from(__cryptCall(() => __wjs_ed_public(priv.__material))));
   }
   // 10e Ed448（OKP 同形）。
   if (priv.__keyType === "ed448") {
-    return new KeyObject("public", "ed448", Buffer.from(__cryptCall(() => __wjs_ed448_public(priv.__material))));
+    return new PublicKeyObject("public", "ed448", Buffer.from(__cryptCall(() => __wjs_ed448_public(priv.__material))));
   }
   if (priv.__keyType === "x25519") {
-    return new KeyObject("public", "x25519", Buffer.from(__cryptCall(() => __wjs_x_public(priv.__material))));
+    return new PublicKeyObject("public", "x25519", Buffer.from(__cryptCall(() => __wjs_x_public(priv.__material))));
   }
   if (priv.__keyType === "dsa") {
     const env = JSON.parse(Buffer.from(priv.__material).toString("utf8"));
     const pubEnv = { p: env.p, q: env.q, g: env.g, y: env.y };
-    const k = new KeyObject("public", "dsa", Buffer.from(JSON.stringify(pubEnv)));
+    const k = new PublicKeyObject("public", "dsa", Buffer.from(JSON.stringify(pubEnv)));
     k.__detail = priv.__detail;
     return k;
   }
   if (typeof priv.__keyType === "string" && priv.__keyType.startsWith("ml-kem-")) {
     const parts = JSON.parse(__cryptCall(() => __wjs_mlkem_seed_from_pkcs8(priv.__material)));
-    return new KeyObject("public", priv.__keyType, Buffer.from(__b64dec(parts.spki)));
+    return new PublicKeyObject("public", priv.__keyType, Buffer.from(__b64dec(parts.spki)));
   }
   if (typeof priv.__keyType === "string" && priv.__keyType.startsWith("ml-dsa-")) {
     const spki = __cryptCall(() => __wjs_mldsa_public(priv.__material));
-    return new KeyObject("public", priv.__keyType, Buffer.from(spki));
+    return new PublicKeyObject("public", priv.__keyType, Buffer.from(spki));
   }
   const err = new Error("Cannot derive public key for this key type");
   err.code = "ERR_NOT_SUPPORTED";
@@ -4716,9 +5498,19 @@ function __genPairSync(type, options) {
   options = options ?? {};
   if (type === "rsa" || type === "rsa-pss") {
     const bits = options.modulusLength ?? 2048;
-    if (![2048, 3072, 4096].includes(bits)) {
-      const err = new Error("RSA modulusLength must be 2048/3072/4096");
-      err.code = "ERR_NOT_SUPPORTED";
+    // 10f crypto二轮：位长下限 512（真机口径；旧 2048/3072/4096 白名单记档修）。
+    if (typeof bits !== "number") {
+      const recv = bits === null ? "null"
+        : typeof bits === "string" ? `type string ('${bits}')`
+        : `type ${typeof bits} (${String(bits)})`;
+      const err = new TypeError(
+        `The "options.modulusLength" property must be of type number. Received ${recv}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    if (bits < 512) {
+      const err = new Error("error:1C8000AB:Provider routines::key size too small");
+      err.code = "ERR_OSSL_KEY_SIZE_TOO_SMALL";
       throw err;
     }
     let e = options.publicExponent ?? 65537;
@@ -4730,11 +5522,16 @@ function __genPairSync(type, options) {
     const privDer = __cryptCall(() => __wjs_rsa_generate(bits, Number(e)));
     const pubDer = __cryptCall(() => __wjs_rsa_public(privDer));
     const kt = type === "rsa-pss" ? "rsa-pss" : "rsa";
-    const priv = new KeyObject("private", kt, Buffer.from(privDer));
-    const pub = new KeyObject("public", kt, Buffer.from(pubDer));
+    const priv = new PrivateKeyObject("private", kt, Buffer.from(privDer));
+    const pub = new PublicKeyObject("public", kt, Buffer.from(pubDer));
+    // 10f crypto二轮：asymmetricKeyDetails 口径（modulusLength + publicExponent）。
+    priv.__detail = { modulusLength: bits, publicExponent: e };
+    pub.__detail = { modulusLength: bits, publicExponent: e };
     if (type === "rsa-pss") {
-      priv.__detail = { hash: options.hash ?? "sha256", saltLength: options.saltLength };
-      pub.__detail = priv.__detail;
+      priv.__detail.hash = options.hash ?? "sha256";
+      priv.__detail.saltLength = options.saltLength;
+      pub.__detail.hash = priv.__detail.hash;
+      pub.__detail.saltLength = priv.__detail.saltLength;
     }
     return { privateKey: priv, publicKey: pub };
   }
@@ -4747,9 +5544,9 @@ function __genPairSync(type, options) {
     }
     const privDer = __cryptCall(() => __wjs_ec_generate(curve));
     const pubDer = __cryptCall(() => __wjs_ec_public(curve, privDer));
-    const priv = new KeyObject("private", "ec", Buffer.from(privDer));
+    const priv = new PrivateKeyObject("private", "ec", Buffer.from(privDer));
     priv.__detail = { namedCurve: curve };
-    const pub = new KeyObject("public", "ec", Buffer.from(pubDer));
+    const pub = new PublicKeyObject("public", "ec", Buffer.from(pubDer));
     pub.__detail = { namedCurve: curve };
     return { privateKey: priv, publicKey: pub };
   }
@@ -4758,8 +5555,8 @@ function __genPairSync(type, options) {
     const seed = __cryptCall(() => isEd ? __wjs_ed_generate() : is448 ? __wjs_ed448_generate() : __wjs_x_generate());
     const pubB = __cryptCall(() => isEd ? __wjs_ed_public(seed) : is448 ? __wjs_ed448_public(seed) : __wjs_x_public(seed));
     return {
-      privateKey: new KeyObject("private", type, Buffer.from(seed)),
-      publicKey: new KeyObject("public", type, Buffer.from(pubB)),
+      privateKey: new PrivateKeyObject("private", type, Buffer.from(seed)),
+      publicKey: new PublicKeyObject("public", type, Buffer.from(pubB)),
     };
   }
   if (type === "dsa") {
@@ -4768,10 +5565,10 @@ function __genPairSync(type, options) {
     let divisorLength = options.divisorLength;
     if (divisorLength === undefined) divisorLength = modulusLength === 1024 ? 160 : 256;
     const env = JSON.parse(__cryptCall(() => __wjs_dsa_generate(modulusLength, divisorLength)));
-    const priv = new KeyObject("private", "dsa", Buffer.from(JSON.stringify(env)));
+    const priv = new PrivateKeyObject("private", "dsa", Buffer.from(JSON.stringify(env)));
     priv.__detail = { modulusLength, divisorLength };
     const pubEnv = { p: env.p, q: env.q, g: env.g, y: env.y };
-    const pub = new KeyObject("public", "dsa", Buffer.from(JSON.stringify(pubEnv)));
+    const pub = new PublicKeyObject("public", "dsa", Buffer.from(JSON.stringify(pubEnv)));
     pub.__detail = priv.__detail;
     return { privateKey: priv, publicKey: pub };
   }
@@ -4779,16 +5576,16 @@ function __genPairSync(type, options) {
     // 9i-4：FIPS 203 PQ KEM（真机 generateKey 不收 ml-kem，此处 generateKeyPair 专属）。
     const parts = JSON.parse(__cryptCall(() => __wjs_mlkem_gen(type)));
     return {
-      privateKey: new KeyObject("private", type, Buffer.from(__b64dec(parts.pkcs8))),
-      publicKey: new KeyObject("public", type, Buffer.from(__b64dec(parts.spki))),
+      privateKey: new PrivateKeyObject("private", type, Buffer.from(__b64dec(parts.pkcs8))),
+      publicKey: new PublicKeyObject("public", type, Buffer.from(__b64dec(parts.spki))),
     };
   }
   if (type === "ml-dsa-44" || type === "ml-dsa-65" || type === "ml-dsa-87") {
     // 9i-6：FIPS 204 PQ 签名（纯签名，hash=null）。
     const parts = JSON.parse(__cryptCall(() => __wjs_mldsa_gen(type)));
     return {
-      privateKey: new KeyObject("private", type, Buffer.from(__b64dec(parts.pkcs8))),
-      publicKey: new KeyObject("public", type, Buffer.from(__b64dec(parts.spki))),
+      privateKey: new PrivateKeyObject("private", type, Buffer.from(__b64dec(parts.pkcs8))),
+      publicKey: new PublicKeyObject("public", type, Buffer.from(__b64dec(parts.spki))),
     };
   }
   const err = new Error(`generateKeyPair type '${type}' not supported (rsa/rsa-pss/ec/ed25519/x25519/ed448/dsa/ml-kem-512/768/1024/ml-dsa-44/65/87)`);
@@ -4807,6 +5604,9 @@ function __applyEncoding(pair, publicEncoding, privateEncoding) {
 }
 export function generateKeyPairSync(type, options, publicEncoding, privateEncoding) {
   if (typeof options === "string" || options === undefined) options = {};
+  // 10f crypto二轮：encoding 可放 options 内（真机双形态）。
+  if (publicEncoding === undefined) publicEncoding = options.publicKeyEncoding;
+  if (privateEncoding === undefined) privateEncoding = options.privateKeyEncoding;
   return __applyEncoding(__genPairSync(type, options), publicEncoding, privateEncoding);
 }
 export function generateKeyPair(type, options, ...rest) {
@@ -4923,6 +5723,8 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength) {
   }
   const hash = __normHashName(alg);
   if (hash === undefined) {
+    // 10f crypto二轮：x25519 无签名原语，报错优先于摘要校验（套件点名）。
+    if (kt === "x25519") __osslKeytypeError();
     const err = new Error("Invalid digest");
     err.code = "ERR_CRYPTO_INVALID_DIGEST";
     throw err;
@@ -4974,14 +5776,26 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength) {
     const qLen = Buffer.from(JSON.parse(envStr).q, "base64").length;
     return Buffer.from(__derToRawSig(Buffer.from(der), qLen));
   }
+  if (kt === "x25519") __osslKeytypeError();
   const err = new Error(`sign not supported for ${kt}`);
   err.code = "ERR_NOT_SUPPORTED";
+  throw err;
+}
+function __osslKeytypeError() {
+  // 10f crypto二轮：X25519 等无签名原语的键（真机口径，套件正则点名）。
+  const err = new Error("operation not supported for this keytype");
+  err.code = "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE";
   throw err;
 }
 function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
   const dataB = __cryptBytes(data, "data");
   const sigB = __cryptBytes(sig, "signature");
   const kt = keyObj.__keyType;
+  // 10f crypto二轮：OKP 验签收私钥（派生公钥，真机口径；旧"verify requires a public key"记档修）。
+  if ((kt === "ed448" || kt === "ed25519" || (typeof kt === "string" && kt.startsWith("ml-dsa-"))) &&
+      keyObj.__kind === "private") {
+    keyObj = __derivePublic(keyObj);
+  }
   if (kt === "ed448") {
     // 10e Ed448 纯验签（真机口径同 sign：非 null 即 ERR_OSSL_INVALID_DIGEST）。
     if (alg !== null && alg !== undefined) {
@@ -4994,6 +5808,8 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
+    // 10f crypto二轮：签名形态错（非 114B）回 false，不抛（空签名套件点名）。
+    if (sigB.length !== 114) return false;
     return __cryptCall(() => __wjs_ed448_verify(keyObj.__material, sigB, dataB));
   }
   if (kt === "ed25519") {
@@ -5007,6 +5823,8 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
+    // 10f crypto二轮：签名形态错（非 64B）回 false，不抛（空签名套件点名）。
+    if (sigB.length !== 64) return false;
     return __cryptCall(() => __wjs_ed_verify(keyObj.__material, sigB, dataB));
   }
   if (typeof kt === "string" && kt.startsWith("ml-dsa-")) {
@@ -5025,6 +5843,8 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
   }
   const hash = __normHashName(alg);
   if (hash === undefined) {
+    // 10f crypto二轮：x25519 无签名原语，报错优先于摘要校验（套件点名）。
+    if (kt === "x25519") __osslKeytypeError();
     const err = new Error("Invalid digest");
     err.code = "ERR_CRYPTO_INVALID_DIGEST";
     throw err;
@@ -5032,6 +5852,9 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
   // 公钥派生（私钥亦可验，Node 同款）
   const pubDer = keyObj.__kind === "private" ? __derivePublic(keyObj).__material : keyObj.__material;
   if (kt === "rsa" || kt === "rsa-pss") {
+    // 10f crypto二轮：签名长短 != 钥长即 false，不抛（空签名套件点名）。
+    const det = __rsaDetailsFromMaterial("public", pubDer);
+    if (det !== null && sigB.length !== det.modulusLength / 8) return false;
     if (hash === "SHA-1" || hash === "MD5") {
       if (kt === "rsa-pss") {
         const err = new Error("RSA-PSS with SHA-1/MD5 not supported");
@@ -5051,7 +5874,14 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
   if (kt === "ec") {
     const curve = keyObj.__detail.namedCurve;
     const size = __curveSize(curve);
-    const raw = (dsaEncoding ?? "der") === "der" ? __derToRawSig(sigB, size) : sigB;
+    // 10f crypto二轮：签名形态错回 false，不抛（空签名套件点名）。
+    let raw;
+    try {
+      raw = (dsaEncoding ?? "der") === "der" ? __derToRawSig(sigB, size) : sigB;
+    } catch {
+      return false;
+    }
+    if (raw.length !== 2 * size) return false;
     return __cryptCall(() => __wjs_ecdsa_verify(curve, hash, pubDer, raw, dataB));
   }
   if (kt === "dsa") {
@@ -5059,33 +5889,50 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
     const der = (dsaEncoding ?? "der") === "der" ? sigB : __rawToDerSig(sigB);
     return __cryptCall(() => __wjs_dsa_verify(hash, envStr, der, dataB));
   }
+  if (kt === "x25519") __osslKeytypeError();
   const err = new Error(`verify not supported for ${kt}`);
   err.code = "ERR_NOT_SUPPORTED";
   throw err;
 }
 function __keyArg(key, what) {
-  if (key instanceof KeyObject) return key;
+  if (__isKeyObject(key)) return key;
   if (typeof key === "string" || key instanceof Uint8Array || key instanceof ArrayBuffer || ArrayBuffer.isView(key)) {
     try { return createPrivateKey(key); } catch { return createPublicKey(key); }
   }
   if (typeof key === "object" && key !== null) {
     const inner = key.key ?? key;
-    if (inner instanceof KeyObject) return inner;
+    if (__isKeyObject(inner)) return inner;
     try { return createPrivateKey(key); } catch { return createPublicKey(key); }
   }
   const err = new TypeError(`The "${what}" argument must be a KeyObject or key material`);
   err.code = "ERR_INVALID_ARG_TYPE";
   throw err;
 }
-export function sign(alg, data, key) {
+export function sign(alg, data, key, callback) {
+  // 10f crypto二轮：callback 异步形（真机口径；同步核复用）。
+  if (typeof callback === "function") {
+    queueMicrotask(() => {
+      try { callback(null, sign(alg, data, key)); }
+      catch (e) { callback(e); }
+    });
+    return undefined;
+  }
   const k = __keyArg(key, "key");
-  const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof KeyObject)) ? key : {};
+  const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key)) ? key : {};
   const out = __signCore(alg, data, k, opts.dsaEncoding, opts.saltLength);
   return Buffer.from(out);
 }
-export function verify(alg, data, key, signature) {
+export function verify(alg, data, key, signature, callback) {
+  // 10f crypto二轮：callback 异步形（真机口径；同步核复用）。
+  if (typeof callback === "function") {
+    queueMicrotask(() => {
+      try { callback(null, verify(alg, data, key, signature)); }
+      catch (e) { callback(e); }
+    });
+    return undefined;
+  }
   const k = __keyArg(key, "key");
-  const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof KeyObject)) ? key : {};
+  const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key)) ? key : {};
   return __verifyCore(alg, data, k, signature, opts.dsaEncoding, opts.saltLength);
 }
 class Sign {
@@ -5108,21 +5955,24 @@ class Sign {
     return this;
   }
   sign(key, ...rest) {
-    let dsaEncoding, saltLength;
+    // 10f crypto二轮：rest 串 = 输出编码（真机口径；dsaEncoding/saltLength 只收
+    // key-options 对象）；key-options 整体透传（passphrase 同）。
+    let outputEncoding, dsaEncoding, saltLength;
     for (const r of rest) {
-      if (typeof r === "string") dsaEncoding = r;
+      if (typeof r === "string") outputEncoding = r;
       else if (typeof r === "number") saltLength = r;
       else if (r && typeof r === "object") { dsaEncoding = r.dsaEncoding ?? dsaEncoding; saltLength = r.saltLength ?? saltLength; }
     }
     const flat = __joinParts(this.__parts);
-    if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof KeyObject) && !ArrayBuffer.isView(key)) {
-      const inner = key.key ?? key;
-      const k = __keyArg(inner, "key");
+    if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key) && !ArrayBuffer.isView(key)) {
+      const k = __keyArg(key, "key");
       const out = __signCore(this.__alg, flat, k, key.dsaEncoding ?? dsaEncoding, key.saltLength ?? saltLength);
-      return Buffer.from(out);
+      const buf = Buffer.from(out);
+      return outputEncoding === undefined ? buf : buf.toString(outputEncoding);
     }
     const out = __signCore(this.__alg, flat, __keyArg(key, "key"), dsaEncoding, saltLength);
-    return Buffer.from(out);
+    const buf = Buffer.from(out);
+    return outputEncoding === undefined ? buf : buf.toString(outputEncoding);
   }
 }
 class Verify {
@@ -5145,49 +5995,195 @@ class Verify {
     return this;
   }
   verify(key, signature, ...rest) {
-    let dsaEncoding, saltLength;
+    // 10f crypto二轮：rest 串 = 签名编码（真机口径；余同 sign）。
+    let signatureEncoding, dsaEncoding, saltLength;
     for (const r of rest) {
-      if (typeof r === "string") dsaEncoding = r;
+      if (typeof r === "string") signatureEncoding = r;
       else if (typeof r === "number") saltLength = r;
       else if (r && typeof r === "object") { dsaEncoding = r.dsaEncoding ?? dsaEncoding; saltLength = r.saltLength ?? saltLength; }
     }
     const flat = __joinParts(this.__parts);
-    if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof KeyObject) && !ArrayBuffer.isView(key)) {
-      const inner = key.key ?? key;
-      const k = __keyArg(inner, "key");
-      return __verifyCore(this.__alg, flat, k, signature, key.dsaEncoding ?? dsaEncoding, key.saltLength ?? saltLength);
+    const sigB = signatureEncoding !== undefined ? Buffer.from(String(signature), signatureEncoding) : signature;
+    if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key) && !ArrayBuffer.isView(key)) {
+      const k = __keyArg(key, "key");
+      return __verifyCore(this.__alg, flat, k, sigB, key.dsaEncoding ?? dsaEncoding, key.saltLength ?? saltLength);
     }
-    return __verifyCore(this.__alg, flat, __keyArg(key, "key"), signature, dsaEncoding, saltLength);
+    return __verifyCore(this.__alg, flat, __keyArg(key, "key"), sigB, dsaEncoding, saltLength);
   }
 }
 export function createSign(alg, options) { return new Sign(alg, options); }
 export function createVerify(alg, options) { return new Verify(alg, options); }
+// 10f crypto二轮：混合 OAEP 编解码（oaepHash ≠ mgf1Hash；几何经真机预言机定案：
+// 种子长取 oaep 哈希长、掩码走 mgf1Hash、界为 k-2*hLen-2；双向真机交叉见黑盒）。
+const __OAEP_HLEN = { "SHA-1": 20, "SHA-224": 28, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 };
+function __oaepTooLarge() {
+  const err = new Error("error:0200006E:rsa routines::data too large for key size");
+  err.code = "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE";
+  throw err;
+}
+function __oaepDecodingError() {
+  const err = new Error("error:02000079:rsa routines::oaep decoding error");
+  err.code = "ERR_OSSL_RSA_OAEP_DECODING_ERROR";
+  throw err;
+}
+function __oaepMixedEncode(oaepName, mgfName, k, data, labelB) {
+  const hLen = __OAEP_HLEN[oaepName];
+  if (data.length > k - 2 * hLen - 2) __oaepTooLarge();
+  const lHash = __dgstBytes(oaepName, labelB ?? Buffer.alloc(0));
+  const psLen = k - data.length - 2 * hLen - 2;
+  const db = Buffer.concat([lHash, Buffer.alloc(psLen), Buffer.from([1]), Buffer.from(data)]);
+  const seed = __randFill(new Uint8Array(hLen));
+  const dbMask = __mgf1Bytes(mgfName, seed, db.length);
+  const maskedDB = Buffer.from(db.map((b, i) => b ^ dbMask[i]));
+  const seedMask = __mgf1Bytes(mgfName, maskedDB, hLen);
+  const maskedSeed = Buffer.from(seed.map((b, i) => b ^ seedMask[i]));
+  return Buffer.concat([Buffer.from([0]), maskedSeed, maskedDB]);
+}
+function __oaepMixedDecode(oaepName, mgfName, k, em, labelB) {
+  const hLen = __OAEP_HLEN[oaepName];
+  if (em.length !== k || em[0] !== 0) __oaepDecodingError();
+  const maskedSeed = em.slice(1, 1 + hLen), maskedDB = em.slice(1 + hLen);
+  const seedMask = __mgf1Bytes(mgfName, maskedDB, hLen);
+  const seed = Buffer.from(maskedSeed.map((b, i) => b ^ seedMask[i]));
+  const dbMask = __mgf1Bytes(mgfName, seed, maskedDB.length);
+  const db = Buffer.from(maskedDB.map((b, i) => b ^ dbMask[i]));
+  const lHash = __dgstBytes(oaepName, labelB ?? Buffer.alloc(0));
+  if (!db.slice(0, hLen).equals(lHash)) __oaepDecodingError();
+  const rest = db.slice(hLen);
+  const one = rest.indexOf(1);
+  if (one < 0 || !rest.slice(0, one).equals(Buffer.alloc(one))) __oaepDecodingError();
+  return rest.slice(one + 1);
+}
+function __dgstBytes(name, data) {
+  return createHash(name).update(Buffer.from(data)).digest();
+}
+function __mgf1Bytes(name, seed, outLen) {
+  const hLen = __OAEP_HLEN[name];
+  let out = Buffer.alloc(0);
+  let counter = 0;
+  while (out.length < outLen) {
+    const c = Buffer.alloc(4);
+    c.writeUInt32BE(counter++);
+    out = Buffer.concat([out, __dgstBytes(name, Buffer.concat([Buffer.from(seed), c]))]);
+  }
+  return out.slice(0, outLen);
+}
 function __rsaCrypt(key, data, isPublic, isEncrypt) {
-  const k = __keyArg(key, "key");
-  const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !(key instanceof KeyObject)) ? key : {};
-  const padding = opts.padding ?? 4;
-  const dataB = __cryptBytes(data, "data");
+  let k = __keyArg(key, "key");
+  // 10f crypto二轮：public 方向遇私钥即派生公钥（`publicEncrypt(privPem)` 真机口径）。
+  if (isPublic && k.type === "private") k = __derivePublic(k);
+  const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key)) ? key : {};
+  // 10f crypto二轮：默认 padding 按方向（加解密 OAEP=4；签式 v1.5=1，真机口径）。
+  const padding = opts.padding ?? (isEncrypt === isPublic ? 4 : 1);
+  // 10f crypto二轮：key 对象带 encoding 时字符串 data 同解码（真机实证口径）。
+  const dataB = (typeof data === "string" && typeof opts.encoding === "string")
+    ? Buffer.from(data, opts.encoding)
+    : __cryptBytes(data, "data");
   if (padding === 4) {
+    // 10f crypto二轮：oaepHash/oaepLabel 校验（真机逐字，dsa 套件点名）。
+    const __recvAny = (v) => {
+      if (v === null || v === undefined) return String(v);
+      const t = typeof v;
+      if (t === "object" || t === "function") return `an instance of ${v.constructor?.name ?? "Object"}`;
+      let s;
+      try { s = (t === "string") ? `'${v}'` : String(v); } catch { s = t; }
+      return `type ${t} (${s})`;
+    };
+    if (opts.oaepHash !== undefined && typeof opts.oaepHash !== "string") {
+      const err = new TypeError(
+        `The "key.oaepHash" property must be of type string. Received ${__recvAny(opts.oaepHash)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
     const hashFlat = opts.oaepHash ?? "sha1";
     const hash = __normHashName(hashFlat);
-    if (hash === undefined || hash === "MD5") {
+    if (hash === undefined) {
+      const err = new Error("Invalid digest used");
+      err.code = "ERR_OSSL_EVP_INVALID_DIGEST";
+      throw err;
+    }
+    if (hash === "MD5") {
       const err = new Error(`Unsupported OAEP hash ${opts.oaepHash}`);
       err.code = "ERR_NOT_SUPPORTED";
       throw err;
     }
-    const label = opts.oaepLabel !== undefined ? __cryptBytes(opts.oaepLabel, "label") : null;
+    let label = null;
+    if (opts.oaepLabel !== undefined) {
+      const ol = opts.oaepLabel;
+      if (!(typeof ol === "string" || ol instanceof Uint8Array ||
+            ol instanceof ArrayBuffer || ArrayBuffer.isView(ol))) {
+        const err = new TypeError(
+          `The "key.oaepLabel" property must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received ${__recvAny(ol)}`);
+        err.code = "ERR_INVALID_ARG_TYPE";
+        throw err;
+      }
+      label = __cryptBytes(ol, "label");
+    }
+    // 10f crypto二轮：mgf1Hash（真机口径；缺省跟随 oaepHash；未知即 INVALID_DIGEST）。
+    let mgfHash = hash;
+    if (opts.mgf1Hash !== undefined) {
+      if (typeof opts.mgf1Hash !== "string") {
+        const err = new TypeError(
+          `The "key.mgf1Hash" property must be of type string. Received ${__recvAny(opts.mgf1Hash)}`);
+        err.code = "ERR_INVALID_ARG_TYPE";
+        throw err;
+      }
+      const mg = __normHashName(opts.mgf1Hash);
+      if (mg === undefined || __OAEP_HLEN[mg] === undefined) {
+        const err = new Error("Invalid digest used");
+        err.code = "ERR_OSSL_EVP_INVALID_DIGEST";
+        throw err;
+      }
+      mgfHash = mg;
+    }
+    // 混合哈希（mgf ≠ oaep）走 JS 编解码 + 裸 RSA（真机互操作另行交叉验证，见注释）。
+    const mixedHash = mgfHash !== hash;
     // SHA-1 走手写 OAEP（digest 0.10 版本面，见 Rust 侧记）；SHA-2 走既有 natives
     if (isPublic && isEncrypt) {
+      // 10f crypto二轮：混合哈希走 JS 编解码 + 裸 RSA（mgf1Hash 套件）。
+      if (mixedHash) {
+        const det = __rsaDetailsFromMaterial(k.type, k.__material);
+        if (det !== null && __OAEP_HLEN[hash] !== undefined) {
+          const em = __oaepMixedEncode(hash, mgfHash, det.modulusLength / 8, dataB, label);
+          return Buffer.from(__cryptCall(() => __wjs_rsa_raw(k.__material, em, 0)));
+        }
+      }
       if (hash === "SHA-1") {
         return Buffer.from(__cryptCall(() => __wjs_node_rsa_oaep(k.__material, dataB, label, 1)));
       }
       return Buffer.from(__cryptCall(() => __wjs_rsa_encrypt(hash, k.__material, dataB, label)));
     }
     if (!isPublic && !isEncrypt) {
+      // 10f crypto二轮：混合哈希解码（同上）。
+      if (mixedHash) {
+        const det = __rsaDetailsFromMaterial(k.type, k.__material);
+        if (det !== null && __OAEP_HLEN[hash] !== undefined) {
+          const em = Buffer.from(__cryptCall(() => __wjs_rsa_raw(k.__material, dataB, 1)));
+          return __oaepMixedDecode(hash, mgfHash, det.modulusLength / 8, em, label);
+        }
+      }
       if (hash === "SHA-1") {
         return Buffer.from(__cryptCall(() => __wjs_node_rsa_oaep(k.__material, dataB, label, 0)));
       }
       return Buffer.from(__cryptCall(() => __wjs_rsa_decrypt(hash, k.__material, dataB, label)));
+    }
+    // 10f crypto二轮：私钥加密（OAEP-SHA1 反向 native；SHA-2 系另案）。
+    if (!isPublic && isEncrypt) {
+      if (hash === "SHA-1") {
+        return Buffer.from(__cryptCall(() => __wjs_node_rsa_oaep_flip(k.__material, dataB, label, 1)));
+      }
+      const err = new Error("RSA privateEncrypt not supported");
+      err.code = "ERR_NOT_SUPPORTED";
+      throw err;
+    }
+    // 10f crypto二轮：公钥解密（同上）。
+    if (isPublic && !isEncrypt) {
+      if (hash === "SHA-1") {
+        return Buffer.from(__cryptCall(() => __wjs_node_rsa_oaep_flip(k.__material, dataB, label, 0)));
+      }
+      const err = new Error("RSA publicDecrypt not supported");
+      err.code = "ERR_NOT_SUPPORTED";
+      throw err;
     }
   }
   if (padding === 1) {
@@ -5197,18 +6193,17 @@ function __rsaCrypt(key, data, isPublic, isEncrypt) {
     if (!isPublic && !isEncrypt) {
       return Buffer.from(__cryptCall(() => __wjs_rsa_decrypt_v15(k.__material, dataB)));
     }
+    // 10f crypto二轮：v1.5 反向 native。
     if (!isPublic && isEncrypt) {
-      // 私钥加密（签名式填充）：本仓无 RSA 私钥加密 native，经 sign 原语不适用；
-      // 此处明确不支持（Node 允许，记档缺口）
-      const err = new Error("RSA privateEncrypt not supported");
-      err.code = "ERR_NOT_SUPPORTED";
-      throw err;
+      return Buffer.from(__cryptCall(() => __wjs_rsa_v15_flip(k.__material, dataB, 1)));
     }
     if (isPublic && !isEncrypt) {
-      const err = new Error("RSA publicDecrypt not supported");
-      err.code = "ERR_NOT_SUPPORTED";
-      throw err;
+      return Buffer.from(__cryptCall(() => __wjs_rsa_v15_flip(k.__material, dataB, 0)));
     }
+  }
+  // 10f crypto二轮：NO_PADDING 裸运算（3；私钥 d 次幂/公钥 e 次幂）。
+  if (padding === 3) {
+    return Buffer.from(__cryptCall(() => __wjs_rsa_raw(k.__material, dataB, isPublic ? 0 : 1)));
   }
   const err = new Error(`Unsupported RSA padding ${padding} for this operation`);
   err.code = "ERR_NOT_SUPPORTED";
@@ -5302,15 +6297,17 @@ ECDH.prototype = ECDHImpl.prototype;
 ECDH.prototype.constructor = ECDH;
 
 class DiffieHellmanImpl {
-  constructor(prime, generator) {
+  constructor(prime, generator, generatorEncoding) {
     // 10f crypto首轮：数值位长形同步生成素数（真机口径；`generatePrimeSync` 复用）。
     if (typeof prime === "number") {
       prime = generatePrimeSync(prime);
     }
     const primeB = (typeof prime === "string") ? __cryptBytes(prime, "prime", "hex") : __cryptBytes(prime, "prime");
     this.__prime = primeB;
-    // 字符串 generator 系编码位（prime 非串时忽略），真机口径（旧 Number(串)=NaN 记档修）。
-    this.__gen = (generator === undefined || typeof generator === "string") ? 2 : Number(generator);
+    // 10f crypto二轮：generator 字节语义——数字即值；字符串按 generatorEncoding
+    // （缺省 latin1）解码；Buffer/视图即裸字节（真机逐项对拍；旧 Number(串) 记档修）。
+    this.__genBytes = __dhGenBytes(generator, generatorEncoding);
+    this.__gen = __dhGenNum(this.__genBytes);
     this.__priv = null;
     this.__pub = null;
     this.__verifyError = 0;
@@ -5318,7 +6315,7 @@ class DiffieHellmanImpl {
   static group(name) {
     const hex = __DH_GROUPS[String(name).toLowerCase()];
     if (hex === undefined) {
-      const err = new Error(`Unknown DH group ${name} (modp5/14/15/16)`);
+      const err = new Error(`Unknown DH group ${name} (modp1/2/5/14/15/16)`);
       err.code = "ERR_NOT_SUPPORTED";
       throw err;
     }
@@ -5354,8 +6351,9 @@ class DiffieHellmanImpl {
     return Buffer.from(this.__prime).toString(encoding);
   }
   getGenerator(encoding) {
-    const g = new Uint8Array([this.__gen & 255]);
-    if (encoding === undefined) return Buffer.from(g);
+    // 10f crypto二轮：回存的 generator 字节（非单字节截断）。
+    const g = this.__genBytes;
+    if (encoding === undefined || String(encoding).toLowerCase() === "buffer") return Buffer.from(g);
     return Buffer.from(g).toString(encoding);
   }
   setPublicKey(pub) { this.__pub = __cryptBytes(pub, "public key"); return this; }
@@ -5373,22 +6371,47 @@ class DiffieHellmanImpl {
   }
   verifyError() { return this.__verifyError; }
 }
-export function createDiffieHellman(prime, generator) {
+export function createDiffieHellman(prime, generator, generatorEncoding) {
   if (typeof prime === "string" && __DH_GROUPS[prime.toLowerCase()] !== undefined && generator === undefined) {
     return DiffieHellmanImpl.group(prime);
   }
-  return new DiffieHellmanImpl(prime, generator);
+  return new DiffieHellmanImpl(prime, generator, generatorEncoding);
 }
-export function createDiffieHellmanGroup(name) { return DiffieHellmanImpl.group(name); }
-export function getDiffieHellman(name) { return DiffieHellmanImpl.group(name); }
+// 10f crypto二轮：generator 字节语义 helpers（见构造注释）。
+function __dhGenBytes(gen, genEnc) {
+  if (gen === undefined) return new Uint8Array([2]);
+  if (typeof gen === "number") {
+    if (!Number.isInteger(gen) || gen < 0) return new Uint8Array([2]);
+    if (gen === 0) return new Uint8Array([0]);
+    const out = [];
+    let v = gen;
+    while (v > 0) { out.unshift(v & 255); v = Math.floor(v / 256); }
+    return new Uint8Array(out);
+  }
+  if (typeof gen === "string") return __cryptBytes(gen, "generator", genEnc ?? "latin1");
+  return __cryptBytes(gen, "generator");
+}
+function __dhGenNum(bytes) {
+  let v = 0n;
+  for (const b of bytes) v = (v << 8n) | BigInt(b);
+  return v <= 0xFFFFFFFFFFFFFFFFn ? Number(v) : NaN;
+}
+export function createDiffieHellmanGroup(name) { return __dhGroup(DiffieHellmanImpl.group(name)); }
+export function getDiffieHellman(name) { return __dhGroup(DiffieHellmanImpl.group(name)); }
 // 10f crypto首轮：真机 `crypto.DiffieHellman/DiffieHellmanGroup/ECDH` 均可无 new 调用。
 function DiffieHellman(...args) { return new DiffieHellmanImpl(...args); }
 Object.setPrototypeOf(DiffieHellman, DiffieHellmanImpl);
 DiffieHellman.prototype = DiffieHellmanImpl.prototype;
 DiffieHellman.prototype.constructor = DiffieHellman;
-function DiffieHellmanGroup(name) { return DiffieHellmanImpl.group(name); }
+function DiffieHellmanGroup(name) { return __dhGroup(DiffieHellmanImpl.group(name)); }
 Object.setPrototypeOf(DiffieHellmanGroup, DiffieHellmanImpl);
-DiffieHellmanGroup.prototype = DiffieHellmanImpl.prototype;
+// 10f crypto二轮：Group 自立原型（链向 Impl 原型）：constructor 归 Group、
+// setters 置 undefined（真机口径：Group 无 setters，其余方法继承可用）。
+DiffieHellmanGroup.prototype = Object.create(DiffieHellmanImpl.prototype);
+DiffieHellmanGroup.prototype.constructor = DiffieHellmanGroup;
+DiffieHellmanGroup.prototype.setPrivateKey = undefined;
+DiffieHellmanGroup.prototype.setPublicKey = undefined;
+function __dhGroup(inst) { Object.setPrototypeOf(inst, DiffieHellmanGroup.prototype); return inst; }
 export function diffieHellman(options) {
   const priv = options?.privateKey;
   const pub = options?.publicKey;
@@ -5396,7 +6419,7 @@ export function diffieHellman(options) {
   if (dh !== null && pub instanceof DiffieHellman) {
     return dh.computeSecret(pub.getPublicKey());
   }
-  if (priv instanceof KeyObject && pub instanceof KeyObject) {
+  if (__isKeyObject(priv) && __isKeyObject(pub)) {
     if (priv.__keyType === "x25519") {
       const out = __cryptCall(() => __wjs_x_derive(priv.__material, pub.__material));
       return Buffer.from(out);
@@ -5691,7 +6714,7 @@ export function encapsulate(key, ...rest) {
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
-  if (key instanceof KeyObject && __MLKEM_KINDS.includes(key.__keyType)) {
+  if (__isKeyObject(key) && __MLKEM_KINDS.includes(key.__keyType)) {
     const isPriv = key.type === "private" ? 1 : 0;
     const r = JSON.parse(__cryptCall(() => __wjs_mlkem_encaps(key.__material, isPriv)));
     return { sharedKey: Buffer.from(__b64dec(r.sk)), ciphertext: Buffer.from(__b64dec(r.ct)) };
@@ -5701,7 +6724,7 @@ export function encapsulate(key, ...rest) {
   throw err;
 }
 export function decapsulate(key, ciphertext) {
-  if (!(key instanceof KeyObject)) {
+  if (!__isKeyObject(key)) {
     const err = new Error("unsupported key for decapsulation");
     err.code = "ERR_OSSL_UNSUPPORTED";
     throw err;
@@ -5770,7 +6793,7 @@ class X509Certificate {
   verify(publicKey) {
     // 9i-3 真机口径：无参/非 KeyObject → ERR_INVALID_ARG_TYPE；私钥 → ERR_INVALID_ARG_VALUE；
     // 错钥/异族/不支持算法 → false 不抛。
-    if (!(publicKey instanceof KeyObject)) {
+    if (!__isKeyObject(publicKey)) {
       const err = new TypeError(`The "publicKey" argument must be an instance of KeyObject. Received ${publicKey === null ? "null" : typeof publicKey}`);
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
@@ -5795,7 +6818,7 @@ class X509Certificate {
   }
   checkPrivateKey(privateKey) {
     // 9i-7 真机口径：非 KeyObject → ERR_INVALID_ARG_TYPE；公钥 → ERR_INVALID_ARG_VALUE。
-    if (!(privateKey instanceof KeyObject)) {
+    if (!__isKeyObject(privateKey)) {
       const err = new TypeError(`The "privateKey" argument must be an instance of KeyObject. Received ${privateKey === null ? "null" : typeof privateKey}`);
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
@@ -5857,6 +6880,9 @@ function __dnsMatch(host, pattern) {
   return left.length > 0 && !left.includes(".");
 }
 export { X509Certificate };
+// 10f crypto二轮：类式 API 具名导出（真机 `node:crypto` 导出表口径；
+// `internal/util/types` 的 isKeyObject 静态引用亦需此门）。
+export { Hash, Hmac, Cipheriv, Decipheriv, KeyObject, ECDH, DiffieHellman, DiffieHellmanGroup, Sign, Verify };
 export class Certificate {
   constructor() {
     const err = new Error("legacy Certificate/SPKAC not supported");

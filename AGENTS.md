@@ -2032,3 +2032,33 @@ cargo build
   对拍 133 件 17→24 绿（`docs/bun-parity.md` crypto 节）。
 - 推广为铁律：对拍修文案先探真机逐字（含大小写/标点/Received 形态），
   别凭记忆拼；"全绿旧测试"在语义升级面前先对真机再信。
+
+### 4.130 crypto 二轮八坑（2026-09-17，10f crypto 二轮）
+
+- 坑一（品牌≠原型）：`instanceof` 是纯原型检查，品牌另算——定制
+  `hasInstance` 把两者绑死即坏 `spoofed instanceof === true` 断言。
+  修法：`instanceof` 保持默认，内部 15 处改显式 `__isKeyObject`
+  （WeakMap 品牌 + 手动走链，override 期免疫）；实例零自有属性经
+  WeakMap + 原型访问器（131 处 `x.__foo` 文本零改动）。
+- 坑二（Group 与实例同形不同命）：`getDiffieHellman` 回 Group Flavor
+  （constructor 归 Group、setters 置 undefined），`createDiffieHellman`
+  回 DH Flavor——同源不同命，探真机才分得清；另手抄素数丢字节
+  即环错，改脚本精确替换。
+- 坑三（`Signer::sign` 内 unwrap）：钥短于摘要即 panic→139（非 catchable）。
+  修法：先验长度转可读错（`rsa_sign`，`PrivateKeyParts::size` 既有先例；
+  `TrySigner` 在所钉版本不存在，别硬引）。
+- 坑四（验签形态错须回 false）：空/短签名抛错即挂"mustSucceed 永不到"——
+  ed/RSA/EC/DSA 四处预检回 false（真机逐项）；顺带 `sign/verify` 补 callback
+  异步形（旧同步独占，回调永不到）。
+- 坑五（混合 OAEP 几何）：种子长取 oaep 哈希长（非 mgf）——自交全绿掩盖，
+  真机预言机（双候选 EM 投真机解密）一锤定音；双向交叉必做（§4.43 再进宫）。
+- 坑六（默认 padding 按方向）：加解密 OAEP/签式 v1.5——统一默认 4 即错半边。
+- 坑七（key 对象 encoding 双解码）：`{key: hex串, encoding}` 的 data 串同解码
+  （真机实证，非文档臆测）；PEM 装甲裹 Buffer 同嗅探（fixtures 无编码读回）。
+- 坑八（旧断言翻转四件）：copy 保留源长/asym throw 面/KeyObject 互传规则/
+  export 无参——翻转前逐项真机实测（§4.65 四进宫）。
+- 复现：`tests/node/crypto.rs::phase10f_crypto_round2_parity`（34 断言）；
+  对拍 133 件 24→38 绿（`docs/bun-parity.md` crypto 节）；x448 无轮子卡
+  `key-objects.js`（§0.5 待拍板）。
+- 推广为铁律：到了"看起来都对但文件还红"时，停手写新探针——把**原文段**
+  整体抽出来跑，交互污染（二分头段全绿、全文件红）只认整体复刻。

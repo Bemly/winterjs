@@ -4656,6 +4656,9 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_dsa_export", Some(crypto::dsa_export), 1),
             // Phase 9e-1c: RSA-SHA1 手工件（digest 0.10 版本面，§0.5 未批新行）
             ("__wjs_node_rsa_oaep", Some(node::crypto::node_rsa_oaep), 4),
+            ("__wjs_node_rsa_oaep_flip", Some(node::crypto::node_rsa_oaep_flip), 4),
+            ("__wjs_rsa_v15_flip", Some(node::crypto::rsa_v15_flip), 3),
+            ("__wjs_rsa_raw", Some(node::crypto::rsa_raw), 3),
             ("__wjs_node_rsa_v15_sign", Some(node::crypto::node_rsa_v15_sign), 3),
             ("__wjs_node_rsa_v15_verify", Some(node::crypto::node_rsa_v15_verify), 4),
             // Phase 9e-1d: KDF + X509（全员树内轮子）

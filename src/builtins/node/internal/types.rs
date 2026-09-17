@@ -10,6 +10,7 @@
 pub const SOURCE: &str = r#"
 // Copyright Joyent, Inc. and other Node contributors. MIT.
 // Port of node:internal/util/types + the V8 internalBinding('types') face.
+import { KeyObject } from 'node:crypto';
 function tagOf(value) {
   return Object.prototype.toString.call(value);
 }
@@ -120,6 +121,16 @@ function isProxy(_value) { return false; }
 // 偏差：WebAssembly 编译模块检查未做（无引擎接口）；恒 false。
 function isWebAssemblyCompiledModule(_value) { return false; }
 
+// 10f crypto二轮：KeyObject 原生品牌检查（经 `node:crypto` 静态口径，
+// `Symbol.hasInstance` 覆盖期同样有效；`node:crypto` 零导入，无环）。
+function isKeyObject(value) {
+  try {
+    return KeyObject.__brandCheck(value);
+  } catch {
+    return false;
+  }
+}
+
 export {
   isArrayBufferView,
   isDataView,
@@ -162,6 +173,7 @@ export {
   isModuleNamespaceObject,
   isProxy,
   isWebAssemblyCompiledModule,
+  isKeyObject,
 };
 export default {
   isArrayBufferView, isDataView, isTypedArray, isUint8Array, isUint8ClampedArray,
@@ -172,6 +184,6 @@ export default {
   isWeakSet, isDate, isRegExp, isMapIterator, isSetIterator, isArgumentsObject,
   isBooleanObject, isNumberObject, isStringObject, isSymbolObject, isBigIntObject,
   isBoxedPrimitive, isNativeError, isModuleNamespaceObject, isProxy,
-  isWebAssemblyCompiledModule,
+  isWebAssemblyCompiledModule, isKeyObject,
 };
 "#;

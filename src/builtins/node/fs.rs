@@ -1777,6 +1777,11 @@ function __fsDecode(bytes, encoding, what) {
     // "byte,byte,…"（vite PostCSS 配置加载 JSON.parse(buf) 实测误判）。
     return Buffer.from(bytes);
   }
+  // 10f crypto二轮：hex/base64 系经 Buffer（TextDecoder 无此表，读 hex 固件点名）。
+  const enc = String(encoding).toLowerCase();
+  if (enc === "hex" || enc === "base64" || enc === "base64url") {
+    return Buffer.from(bytes).toString(enc);
+  }
   return new TextDecoder(String(encoding)).decode(bytes);
 }
 class __Stats {

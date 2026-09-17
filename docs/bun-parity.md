@@ -854,8 +854,10 @@
 ## crypto
 
 > 首轮对拍（2026-09-17，133 件，`/tmp/wjs-10f-crypto1/2.txt`，2 worker）：
-> 同绿 17 → **24**（+7：hash/hmac/cipheriv-decipheriv/dh-constructor/
-> randomuuid/randomuuidv7/dh-odd-key）；SAME1=8（双边同码）；DIFF 108 → **101**。
+> 同绿 17 → **24**（+7，见下）；二轮（`/tmp/wjs-10f-crypto3-8.txt`）同绿 24 → **38**
+> （+14，见下）；SAME1=8（双边同码）；DIFF 108 → **87**。
+>
+> ### 首轮已修（每项经真机 26.8.2 对拍）
 >
 > ### 已修（每项经真机 26.8.2 对拍）
 >
@@ -891,12 +893,47 @@
 > - 回归：`tests/node/crypto.rs::phase10f_crypto_round1_parity`（40 断言，
 >   正常/报错/边界三件）。
 >
-> ### 剩余红项（约 101，分簇，均下轮或另案）
+> ### 二轮已修（+14：dh×3、RSA×6、导入导出×5）
 >
-> - **校验长尾**（~21）：Missing expected ×11 / unexpected throw ×10，逐 API 续补。
-> - **RSA keygen 位长墙**（×6）：modulusLength 限 2048/3072/4096（测试要小位长），下轮。
-> - **密钥导入三件**（pkcs1 ×3、PKCS#8 ×3、SPKI ×2），下轮。
-> - **DH 组**（modp1/modp2 ×3），下轮。
-> - **真流式面**（×4：hasher pipe/dest.on/tls.Server 无 new/stdio 桩），另案。
-> - **零散**：scrypt 钥长、raw-public 导出、outputEncoding 对象形、ECDH getters
->   的 'buffer'、pss salt、oaep mgf1、secure-heap（自 spawn 面）等，下轮。
+> - **DH 组与 flavor**：modp1/modp2 素数（真机逐字节；手抄丢字节即环错，
+>   改脚本精确替换）+ Group 自立原型（constructor 归 Group、setters 置
+>   undefined，余法继承）+ generator 字节语义（三参；`'02'` hex 解 2，
+>   `'02'` 裸串即 0x3032，真机逐项）+ 数值 `getPrime('buffer')` 即回 Buffer。
+> - **RSA 位长**：下限 512（真机口径；subtle 面 JS 门不动）+ `asymmetricKeyDetails`
+>   （modulusLength + publicExponent；导入键从材料现算）+ 位长过小真机原文。
+> - **KeyObject 四层链**：Secret/Public/Private/AsymmetricKeyObject（真机原型
+>   形状）+ WeakMap 状态（实例零自有属性；131 处 `x.__foo` 文本零改动，经原型
+>   访问器）+ 原生品牌（`isKeyObject`/getters 全认品牌；`instanceof` 保持纯原型
+>   语义，15 处内部点改显式 `__isKeyObject`）+ `equals`/`from`/`toStringTag`/
+>   构造校验/secret 无参裸回。
+> - **pkcs1 双向**：导出（RSAPublicKey/RSAPrivateKey 内层提取 + 标签）+ 导入
+>   （9/2 整数按内容区分；公钥料作私钥报 DECODER 原文）+ 公钥侧私钥材料派生
+>   （`publicEncrypt(privPem)` 同款）+ 导出 type 矩阵（RSA 公 pkcs1/spki、
+>   私 pkcs1/pkcs8）+ ESM 具名导出补齐（Hash 等 10 名，真机导出表口径）。
+> - **加密 PEM**：EVP_BytesToKey/MD5 + AES-CBC（零新依赖；双向真机交叉）+
+>   缺口令/错口令 openssl 3.x 原文（套件点名；`__pemDecode` 头行感知）。
+> - **sign/verify 补齐**：callback 异步形；验签形态错回 false（ed/RSA/EC/DSA；
+>   空签名套件点名）；x25519 无原语错（摘要校验之前）；RSA 钥短错真机原文；
+>   `rsa_sign` panic 根修（`sign`→先验长度，139 转可读错）；Sign/Verify 类
+>   rest 串改输出/签名编码 + key-options 整体透传（passphrase 同）。
+> - **编解码面**：`hash()` 的 'buffer' 编码；`readFileSync` hex/base64 解码；
+>   证书提 SPKI；key/der 的 `encoding: 'hex'`（key 串 + data 串双解码）；
+>   `createPublicKey` 私钥材料一律派生；JWK 私钥规则（缺 d/坏参 INVALID_JWK
+>   真机逐字）；显式 type 门（priv+spki 等）；空串 DECODER 原文。
+> - **混合 OAEP**：`mgf1Hash` 校验 + JS 编解码（几何经真机预言机定案：种子长
+>   取 oaep 哈希长；自交 + 双向真机交叉）+ 私钥加密/公钥解密反向 natives
+>   （OAEP-SHA1/v1.5）+ NO_PADDING 裸 RSA + 默认 padding 按方向（加解密
+>   OAEP/签式 v1.5）+ OAEP 校验矩阵（oaepHash/oaepLabel 真机逐字）+
+>   解密失败/超长真机原文。
+> - 回归：`tests/node/crypto.rs::phase10f_crypto_round2_parity`（34 断言）；
+>   旧伪语义翻转（copy 默认长/DH 数值形/shake 负长；§4.65/§4.82 再进宫）。
+>
+> ### 剩余红项（约 87，分簇，均下轮或另案）
+>
+> - **key-objects.js**：x448 无轮子（§0.5 待拍板）+ EC raw 格式，下轮。
+> - **校验长尾**（~15）：Missing expected / unexpected throw 逐 API 续补。
+> - **密钥导入零散**（pkcs1-pub 显式形、pub+pkcs8 wrong-tag、pub+sec1 等 type 门全表），下轮。
+> - **真流式面**（hasher pipe/dest.on/tls.Server 无 new/stdio 桩），另案。
+> - **subtle 面**（RSA-OAEP SHA-1 等 WebCrypto 差集），另案（`oaep-zero-length`）。
+> - **零散**：scrypt 钥长、raw-public 导出、ECDH getters 的 'buffer'、
+>   outputEncoding 对象形等，下轮。

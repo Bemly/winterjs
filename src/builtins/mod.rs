@@ -4595,7 +4595,10 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_watch_close", Some(node::fs::watch_close), 1),
             // Phase 4c: child_process
             // Phase 9d: node:net + node:dns
-            ("__wjs_net_connect", Some(node::net::net_connect), 3),
+            ("__wjs_net_connect", Some(node::net::net_connect), 5),
+            ("__wjs_net_bind", Some(node::net::net_bind), 3),
+            ("__wjs_net_unhold", Some(node::net::net_unhold), 1),
+            ("__wjs_net_fd", Some(node::net::net_fd), 1),
             ("__wjs_net_isip", Some(node::net::net_isip), 1),
             ("__wjs_net_listen", Some(node::net::net_listen), 3),
             ("__wjs_net_attach", Some(node::net::net_attach), 2),

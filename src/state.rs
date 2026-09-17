@@ -460,6 +460,9 @@ pub struct PlainState {
     /// 存活 socket/server 数（Close 结算时减；事件循环退出条件用）。
     pub net_open: usize,
     pub net_sockets: HashMap<u64, NetEntry>,
+    /// BoundSocket TCP 占位 listener 保活表（token → listener；close/adopt/listen 消费释放）。
+    pub net_held: HashMap<u64, std::net::TcpListener>,
+    pub net_hold_next: u64,
     /// worker 驱动端点（MessagePort/Worker；接收端由事件循环持有）。
     pub worker_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::worker::WorkerEvent>>,
     pub worker_next_id: u64,
@@ -1357,6 +1360,48 @@ pub fn net_purge(id: u64) -> bool {
 /// 存活 socket/server 数（事件循环退出条件用）。
 pub fn net_open() -> usize {
     with_plain(|p| p.net_open)
+}
+
+/// BoundSocket 占位保活：存入 listener 回 token；取出消费；丢弃释放。
+pub fn net_hold_add() -> u64 {
+    with_plain(|p| {
+        p.net_hold_next += 1;
+        p.net_hold_next
+    })
+}
+pub fn net_hold_put(token: u64, l: std::net::TcpListener) {
+    with_plain(|p| {
+        p.net_held.insert(token, l);
+    });
+}
+pub fn net_hold_take(token: u64) -> bool {
+    with_plain(|p| p.net_held.remove(&token).is_some())
+}
+
+/// 占位 listener 的 fd（dup 出独立 fd；未知 token 回 -1）。
+/// win 无 as_fd：回 -1（套件 win 侧不断 fd>=0，只断类型）。
+pub fn net_hold_fd(token: u64) -> i32 {
+    with_plain(|p| {
+        let Some(l) = p.net_held.get(&token) else {
+            return -1;
+        };
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsFd as _;
+            match l.as_fd().try_clone_to_owned() {
+                Ok(owned) => {
+                    use std::os::fd::IntoRawFd as _;
+                    owned.into_raw_fd()
+                }
+                Err(_) => -1,
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = l;
+            -1
+        }
+    })
 }
 
 /// napi 异步 keep-alive（未完成 async_work + refed TSFN；事件循环退出条件用）。

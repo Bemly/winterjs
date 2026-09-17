@@ -604,6 +604,12 @@ async fn run_inner(
     // 未包装成功的场景（含全部 Script 与无顶层 await 的 Eval）：
     // 完成值就是 rval（老行为）；仅 async IIFE 包装路径才读 __wjs_value。
     event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await?;
+    // 自然退出：派发 process 'exit'（common.mustCall 计数结算点；Node 口径）。
+    // 显式 process.exit 已在 JS 侧派发过（process_exited 旗），此处跳过防双发。
+    if state::with_plain(|p| p.process_exited.is_none()) {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        crate::builtins::node::process_::emit_exit(&mut realm, global.get());
+    }
     let r = print_completion(&mut rt, &global, rval.get());
     // §4.8：跳过引擎/运行时析构（带 timer 的路径在 JS_DestroyContext 里 SEGV）。
     // CLI 进程即将退出，内存由 OS 回收；见 AGENTS §4.8。

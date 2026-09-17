@@ -187,3 +187,180 @@ server.listen(0, "127.0.0.1", () => {
     assert!(out.contains("closed"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_net_write_after_destroy_cb() {
+    // 10f net 对拍：destroy 后 write 有 cb 走 cb(err)+false、无 cb 才同步抛；
+    // WRITE_AFTER_END（end 后）与 DESTROYED（destroy 后）双码；destroy 无参不发 error。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+const s = new net.Socket();
+let errEv = 0;
+s.on("error", () => { errEv++; });
+s.destroy();
+s.write("x", (e) => console.log("cb-code", e && e.code));
+try { s.write("x"); console.log("no-throw BAD"); } catch (e) { console.log("threw", e.code); }
+const srv = net.createServer((sock) => { sock.resume(); sock.on("end", () => sock.end()); });
+srv.listen(0, "127.0.0.1", () => {
+  const c = net.connect(srv.address().port, "127.0.0.1", () => {
+    c.end("hello");
+    c.write("x", (e) => console.log("wae-cb", e && e.code));
+    try { c.write("y"); console.log("wae-ret BAD"); } catch (e) { console.log("wae-threw", e.code); }
+    c.on("error", () => {});
+    setTimeout(() => { console.log("errEv", errEv); srv.close(); }, 300);
+  });
+});
+"#,
+    );
+    assert!(out.contains("cb-code ERR_STREAM_DESTROYED"), "out: {out}");
+    assert!(out.contains("threw ERR_STREAM_DESTROYED"), "out: {out}");
+    // write-after-end 无 cb 形：同步抛（真机 ret=false + error 事件；本仓抛 WRITE_AFTER_END，
+    // 偏离记档——error 事件已发，抛码与真机 ret 形不同，见 bun-parity）。
+    assert!(out.contains("wae-threw ERR_STREAM_WRITE_AFTER_END"), "out: {out}");
+    assert!(out.contains("wae-cb ERR_STREAM_WRITE_AFTER_END"), "out: {out}");
+
+    assert!(out.contains("errEv 0"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_net_blocklist_and_lookup() {
+    // 10f net 对拍：connect { blockList } 命中即 ERR_IP_BLOCKED；自定义 lookup 生效。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+const bl = new net.BlockList();
+bl.addAddress("127.0.0.1");
+console.log("check", bl.check("127.0.0.1"), bl.check("127.0.0.2"), bl.size);
+const s = net.connect({ port: 9999, host: "127.0.0.1", blockList: bl });
+s.on("error", (e) => console.log("blocked", e.code));
+const srv = net.createServer((sock) => { sock.resume(); sock.on("data", (d) => sock.end(d)); });
+srv.listen(0, "127.0.0.1", () => {
+  const port = srv.address().port;
+  const c = net.connect({ port, host: "localhost", lookup: (_, __, cb) => cb(null, "127.0.0.1", 4) });
+  c.on("connect", () => { console.log("lookup-conn"); c.end("ping"); });
+  c.on("data", (d) => console.log("lookup-got", String(d)));
+  c.on("close", () => srv.close(() => console.log("done")));
+  c.on("error", (e) => console.log("lookup-err", e.code));
+});
+"#,
+    );
+    assert!(out.contains("check true false 1"), "out: {out}");
+    assert!(out.contains("blocked ERR_IP_BLOCKED"), "out: {out}");
+    assert!(out.contains("lookup-conn"), "out: {out}");
+    assert!(out.contains("lookup-got ping"), "out: {out}");
+    assert!(out.contains("done"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_net_isip_zone_and_pending() {
+    // 10f net 对拍：isIP zone 尾（%eth0 收 / %@ 拒）+ pending/readyState/connecting 三态。
+    let out = winterjs()
+        .args(["--eval",
+        r#"const net = await import("node:net");
+console.log("zone", net.isIP("fe80::2008%eth0"), net.isIP("fe80::2008%eth0@1"), net.isIP("::1"), net.isIP("1.2.3.4"), net.isIP("nope"));
+const s = new net.Socket();
+console.log("pre", s.pending, s.readyState, s.connecting);
+console.log("exit-ok");"#])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("zone 6 0 6 4 0"), "out: {text}");
+    assert!(text.contains("pre true open false"), "out: {text}");
+}
+
+#[test]
+fn phase10f_net_unix_socket_roundtrip() {
+    // 10f net 对拍：listen(path)/connect(path) UDS 回环（地址全 undefined，address() 回 {} / path 串）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.cjs",
+        r#"
+const net = require("node:net");
+const path = require("node:path");
+const P = path.join(__dirname || ".", "t10f.sock");
+const srv = net.createServer((s) => {
+  console.log("srv-remote", String(s.remoteAddress), "family", String(s.remoteFamily), "addr", JSON.stringify(s.address()));
+  s.resume();
+  s.on("data", (d) => { console.log("srv-got", d.toString()); s.write("hi-uds"); });
+  s.on("end", () => s.end());
+});
+srv.listen(P, () => {
+  console.log("srv-addr", JSON.stringify(srv.address()));
+  const c = net.connect(P, () => {
+    console.log("cli-remote", String(c.remoteAddress), "addr", JSON.stringify(c.address()), "pending", c.pending, "state", c.readyState);
+    c.write("hello");
+    c.on("data", (d) => { console.log("cli-got", d.toString()); c.end(); });
+    c.on("close", () => srv.close(() => console.log("done")));
+  });
+  c.on("error", (e) => console.log("cli-err", e.code));
+});
+srv.on("error", (e) => console.log("srv-err", e.code));
+"#,
+    );
+    assert!(out.contains("srv-remote undefined family undefined addr {}"), "out: {out}");
+    assert!(out.contains("t10f.sock\""), "out: {out}");
+    assert!(out.contains("cli-remote undefined addr {} pending false state open"), "out: {out}");
+    assert!(out.contains("srv-got hello"), "out: {out}");
+    assert!(out.contains("cli-got hi-uds"), "out: {out}");
+    assert!(out.contains("done"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_net_boundsocket_surface() {
+    // 10f net 对拍：BoundSocket 校验族 + fd 真值 + adopt 失效 + EADDRINUSE 逐字形。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+console.log("typeof", typeof net.BoundSocket, "isPipe-proto", "isPipe" in net.BoundSocket.prototype);
+const b = new net.BoundSocket({ host: "127.0.0.1", port: 0 });
+console.log("addr", b.address().address, b.address().family, b.address().port > 0, b.isPipe);
+console.log("fd", typeof b.fd() === "number" && b.fd() >= 0);
+b.close();
+try { b.address(); console.log("adopt BAD"); } catch (e) { console.log("adopt", e.code); }
+try { new net.BoundSocket(0); } catch (e) { console.log("num", e.code); }
+try { new net.BoundSocket({ host: "localhost", port: 0 }); } catch (e) { console.log("localhost", e.code, e.name); }
+try { new net.BoundSocket({ host: 1234 }); } catch (e) { console.log("hostnum", e.code); }
+try { new net.BoundSocket({ path: 1234 }); } catch (e) { console.log("pathnum", e.code); }
+try { new net.BoundSocket({ path: "x.sock", port: 0 }); } catch (e) { console.log("pathtcp", e.code); }
+const srv = net.createServer();
+srv.listen(0, "127.0.0.1", () => {
+  const port = srv.address().port;
+  const b2 = new net.BoundSocket({ host: "127.0.0.1", port: 0 });
+  const lp = b2.address().port;
+  const c = new net.Socket({ handle: b2 });
+  c.connect({ host: "127.0.0.1", port }, () => {
+    console.log("adopt-conn", c.localPort === lp, c.localAddress);
+    c.destroy(); srv.close(() => console.log("done"));
+  });
+  c.on("error", (e) => console.log("adopt-err", e.code));
+});
+"#,
+    );
+    assert!(out.contains("typeof function isPipe-proto true"), "out: {out}");
+    assert!(out.contains("addr 127.0.0.1 IPv4 true false"), "out: {out}");
+    assert!(out.contains("fd true"), "out: {out}");
+    assert!(out.contains("adopt ERR_SOCKET_HANDLE_ADOPTED"), "out: {out}");
+    assert!(out.contains("num ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("localhost ERR_INVALID_ARG_VALUE TypeError"), "out: {out}");
+    assert!(out.contains("hostnum ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("pathnum ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("pathtcp ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("adopt-conn true 127.0.0.1"), "out: {out}");
+    assert!(out.contains("done"), "out: {out}");
+    dir.close().unwrap();
+}

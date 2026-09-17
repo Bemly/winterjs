@@ -101,6 +101,36 @@ pub unsafe extern "C" fn next_tick_queue(
     true
 }
 
+/// 自然退出派发 process 'exit'（事件循环排空后；mustCall 结算点）。
+/// 前置：cx 已进 global realm。异常一律吞（Node 口径：exit 监听抛错不改退出码）。
+pub fn emit_exit(cx: &mut mozjs::context::JSContext, global: *mut JSObject) {
+    use mozjs::conversions::ToJSValConvertible as _;
+    use crate::jsapi_glue::{get_prop_value, set_prop_value};
+    let Some(proc_v) = get_prop_value(cx, global, c"process") else {
+        return;
+    };
+    if !proc_v.is_object() {
+        return;
+    }
+    let proc_obj = proc_v.to_object();
+    // _exiting = true（common.mustCall 在 exit 处理器内禁调，真机同）。
+    rooted!(&in(cx) let mut flag_v = UndefinedValue());
+    true.to_jsval(cx, flag_v.handle_mut());
+    set_prop_value(cx, proc_obj, c"_exiting", flag_v.get());
+    let Some(emit_v) = get_prop_value(cx, proc_obj, c"__wjs_emit") else {
+        return;
+    };
+    if !emit_v.is_object() {
+        return;
+    }
+    let code = state::exit_code().unwrap_or(0);
+    rooted!(&in(cx) let mut code_v = UndefinedValue());
+    (code as f64).to_jsval(cx, code_v.handle_mut());
+    rooted!(&in(cx) let mut kind_v = UndefinedValue());
+    "exit".to_jsval(cx, kind_v.handle_mut());
+    let _ = call_two(cx, global, emit_v, kind_v.get(), code_v.get());
+}
+
 /// 收割 nextTick 原生队列（pump 专用：RunJobs 前后各一轮）。
 /// 回调经 prelude `__wjs_call(cb, args)` 展开；抛错走 uncaughtException 路由
 /// （有监听分发即吞，无监听保持 pending 走 fatal——fire_due 同款）。
@@ -639,7 +669,16 @@ globalThis.process = {
   }),
   cwd() { return __wjs_cwd(); },
   chdir(d) { __wjs_chdir(String(d)); },
-  exit(code) { __wjs_process_exit(code === undefined ? undefined : Number(code)); },
+  exit(code) {
+    // node 口径：'exit' 监听同步派发后再 unwind（mustCall 计数在监听内结算；
+    // _exiting 置位，监听内再 mustCall 即抛，真机同）。
+    this._exiting = true;
+    try { this.__wjs_emit("exit", code === undefined ? (this.exitCode || 0) : Number(code)); } catch {}
+    __wjs_process_exit(code === undefined ? undefined : Number(code));
+  },
+  // node 口径：退出中标志（common.mustCall 在 exit 处理器内禁调；真机 process._exiting）。
+  // 本仓 exit 经哨兵错 unwind：设旗后抛，'exit' 监听在 unwind 前同步派发（见下）。
+  _exiting: false,
   get exitCode() { return __wjs_exit_code_get(); },
   set exitCode(v) {
     const n = Number(v);

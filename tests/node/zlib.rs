@@ -198,3 +198,71 @@ try { crc32("a", "x"); } catch (e) { console.log("t-value", e.code, e.message); 
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_zlib_stream_teardown() {
+    // 10f zlib 流收尾与内部小面（真机 26.8.2 对拍）：_handle/_closed 生命周期、
+    // _processChunk（含 _outOffset 越界门）、空输入 flush 尺寸（20/1/9）、
+    // flush kind 逐族校验、reset 分发中/已关闭双形、ZSTD_e_* 常量。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import z from "node:zlib";
+const g = new z.Gzip();
+console.log("open", g._handle !== null, g._closed === false, g._chunkSize === 16384, typeof g._processChunk);
+g.destroy();
+console.log("dst", g._handle === null, g._closed === true);
+const g2 = new z.Gzip();
+g2.close(() => console.log("close-cb", g2._handle === null, g2._closed === true));
+const pc = new z.Gzip()._processChunk(Buffer.from("hi"), z.constants.Z_FINISH);
+console.log("pc", z.gunzipSync(pc).toString() === "hi");
+const bad = new z.Deflate();
+bad._outOffset = bad._chunkSize + 1;
+try { bad._processChunk(Buffer.alloc(1), z.constants.Z_FINISH); console.log("BAD no-throw"); }
+catch (e) { console.log("pc-range", e.code); }
+bad.close();
+console.log("empty", z.gzipSync(Buffer.alloc(0)).length, z.brotliCompressSync(Buffer.alloc(0)).length, z.zstdCompressSync(Buffer.alloc(0)).length);
+console.log("brotli-bytes", Buffer.from(z.brotliCompressSync(Buffer.from("Hello, world!".repeat(20)))).toString("hex") === "1b0301f88d946ed6540dc2825426d942de6a96c5aa010d6c966301");
+for (const [n, f, ok, badk] of [["gz", z.createGzip, [0, 4, 5], [-1, 6, 100]], ["br", z.createBrotliCompress, [0, 1, 2, 3], [-1, 4, 6, 100]], ["zs", z.createZstdCompress, [0, 1, 2], [-1, 3, 4, 100]]]) {
+  for (const k of ok) { const s = f(); s.on("error", () => {}); s.flush(k); }
+  for (const k of badk) { try { f().flush(k); console.log("BAD flush-nothrow", n, k); } catch (e) { console.log("flush-oor", n, k, e.code); } }
+  for (const k of ["x", null, {}]) { try { f().flush(k); console.log("BAD flush-nothrow2", n); } catch (e) { console.log("flush-arg", n, e.code); } }
+  const sn = f(); sn.on("error", () => {}); sn.flush(NaN); sn.flush(() => {});
+  console.log("flush-nan-ok", n);
+}
+const r = z.createDeflate();
+r.write(Buffer.alloc(16, 65), () => {});
+try { r._handle.reset(); console.log("BAD reset-nothrow"); }
+catch (e) { console.log("reset-busy", e.message === "Cannot reset zlib stream while a write is in progress"); }
+const rc = z.createDeflate();
+rc.close(() => {
+  try { rc.reset(); console.log("BAD closed-reset-nothrow"); }
+  catch (e) { console.log("reset-closed", e.code); }
+});
+console.log("zstd-const", z.constants.ZSTD_e_continue === 0, z.constants.ZSTD_e_flush === 1, z.constants.ZSTD_e_end === 2);
+"#,
+    );
+    for line in [
+        "open true true true function",
+        "dst true true",
+        "close-cb true true",
+        "pc true",
+        "pc-range ERR_OUT_OF_RANGE",
+        "empty 20 1 9",
+        "brotli-bytes true",
+        "flush-nan-ok gz",
+        "flush-nan-ok br",
+        "flush-nan-ok zs",
+        "reset-busy true",
+        "reset-closed ERR_INTERNAL_ASSERTION",
+        "zstd-const true true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    assert!(!out.contains("BAD "), "out: {out}");
+    assert_eq!(out.matches("flush-oor").count(), 3 + 4 + 4, "out: {out}");
+    assert_eq!(out.matches("flush-arg").count(), 3 + 3 + 3, "out: {out}");
+    dir.close().unwrap();
+}

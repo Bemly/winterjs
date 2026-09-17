@@ -1947,3 +1947,27 @@ cargo build
   ③ 本仓不执行 common mustCall 的 exit 钩——只靠退出码时，"mustCall 未触发"
   类失败恒为假绿（ready-without-cb：不发射也 exit=0）；以后对拍报告注明此局限，
   关键语义必须另写内容断言黑盒（本轮 `phase10f_net_remote_surface` 即此路）。
+
+### 4.127 zlib 轮子 framing 与收尾四坑（2026-09-17，10f zlib 首轮）
+
+- 坑一（brotli 显式 `flush()` 多包 2 字节）：`CompressorWriter` 的 `flush()`
+  只吐非终结同步块，终结靠 drop 的 FINISH——`write+flush+drop` 比 Node
+  one-shot（单 FINISH）恒多头尾 framing（空输入 3B vs 1B、非空头尾各异、
+  中段载荷逐字节一致）。修法：删显式 flush（`src/builtins/node/zlib.rs`
+  `zlib_brotli_compress`），非空与真机逐字节一致才算对。
+- 坑二（ruzstd 默认 `hash` 特性带 checksum）：`default = ["hash","std"]` 使每帧
+  补 4 字节 content_checksum（空帧 13B），Node/libzstd 默认无校验（9B）。
+  修法：`ruzstd = { default-features = false, features = ["std"] }`
+  （`Cargo.toml`；解码侧有无校验自适应，既有往返不受影响）。
+- 坑三（`Z_BLOCK` 是 5 不是 2）：flush kind 集按引擎各异——zlib {0,4,5} /
+  brotli {0,1,2,3} / zstd {0,1,2}（真机逐项实测；2 是 `Z_SYNC_FLUSH`，
+  别当 `Z_BLOCK`）。另补缺失的 `ZSTD_e_continue/flush/end` 常量（0/1/2）。
+- 坑四（zlib `close()` 是撕毁不是 end）：真机 `write+close` 无 data/finish/
+  end、只有 close+cb（待刷数据直接丢）。`end` 等效是伪语义。修法：
+  close = 置旗 + 无错 destroy + cb 落 close（已销毁只等）；`reset()` 已关闭
+  即 `ERR_INTERNAL_ASSERTION`（真机实测，非臆测）。
+- 复现：`tests/node/zlib.rs::phase10f_zlib_stream_teardown`（7 套件附带修好；
+  `test-zlib-flush` 需真增量状态机，整收架构下另案）。
+- 推广为铁律：压缩轮子的"完成"语义（flush vs finish/drop）先对空输入逐字节，
+  再对非空——空帧是 framing 的最小探针；改 framing 类输出前先 grep 自家黑盒
+  有无精确字节断言（本轮全是相对/往返断言，故零回归）。

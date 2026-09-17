@@ -153,7 +153,7 @@ tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 async-compression = { version = "0.4", default-features = false, features = ["gzip", "brotli", "deflate"] }
 flate2 = "1"        # 默认后端 miniz_oxide（纯 Rust），禁 zlib/zlib-ng
 brotli = "9"
-ruzstd = "0.9"
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }   # 禁 hash：content_checksum 会给每帧补 4 字节（空帧 13B），与 Node/libzstd 默认无校验（9B）对不上
 ipnet = "2"
 regex = "1"
 memchr = "2"

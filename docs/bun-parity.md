@@ -759,3 +759,41 @@
 > 58 DIFF 均为既有分类（校验族长尾/server 时序/TIMEOUT/Happy Eyeballs/
 > worker 投递/大串 2 字节差/环境双红），large-string 单跑同错（确定性残留，
 > 非回归）。
+
+## zlib
+
+> 首轮对拍（2026-09-17，83 件，`/tmp/wjs-10f-zlib2.txt`，2 worker）：
+> SAME0=34 + SAME1=13，DIFF=36。本轮（流收尾与内部小面，
+> `tests/node/zlib.rs::phase10f_zlib_stream_teardown`）修 7 件：
+> destroy/close-after-error/sync-no-event/invalid-input/zero-byte/
+> reset-during-write/brotli-flush-invalid-kind（单文件逐个实测 exit=0），
+> 余约 29 件（未复测，以簇计，见下）。
+>
+> ### 已修（每项经真机 26.8.2 对拍）
+>
+> - **轮子 framing 双修**（Rust，逐字节对齐）：brotli 去显式 `flush()`
+>   （flush 先吐非终结同步块，空输入 3B/非空头尾多包；drop 的 FINISH 即完整
+>   终结——空输入 1B、非空与真机逐字节一致）；ruzstd 去 `hash` 特性
+>   （content_checksum 给每帧补 4B，空帧 13B；Node/libzstd 默认无校验 9B）。
+> - **流收尾面**（纯 JS）：`_handle`（开流 stub 对象，close/destroy 置空）+
+>   `_closed`（构造 false，`_destroy`/close 同步置 true）+ `_destroy` 覆写透传 +
+>   `close(cb)` 改撕毁语义（真机：不落数据、无 finish/end，只有 close+cb；
+>   已销毁则只等 close）+ `reset()` 双形（分发中抛原文、已关闭抛
+>   ERR_INTERNAL_ASSERTION，均真机实测）+ `_processChunk`（含 `_chunkSize`/
+>   `_outOffset` 越界门）+ `_handle.reset()` 分发中抛原文。
+> - **flush kind 逐族校验**：zlib {0,4,5} / brotli {0,1,2,3} / zstd {0,1,2}；
+>   undefined/NaN/函数直通；非 number → ARG_TYPE；越界 → OUT_OF_RANGE；
+>   另补 `ZSTD_e_continue/flush/end` 常量（0/1/2）。
+>
+> ### 剩余红项（约 29，均另案或记档）
+>
+> - **Zip 归档 API 约 15 件**（`ZipEntry`/`ZipFile`/`ZipBuffer`/
+>   `createZipArchive(+Sync)`/`zipFiles`/`crc`/zip64/注释放置/安全加固）：
+>   整面未实现。轮子已在树内（`zip = "2"`，deflate 特性，§2 禁 bzip2），
+>   零新依赖可做，另起特征轮（zstd-93 档经 ruzstd、ZipFile 落 fs）。
+> - **增量语义约 7 件**（flush/premature-end/reject-garbage-after-end/
+>   truncated/write-after-close/write-after-end/from-gzip-trailing-garbage）：
+>   需真流式编解码状态机，与本轮外既有"整收"架构冲突，另案。
+> - **杂项**：brotli-dictionary（字典面）、zstd-pledged-src-size、
+>   end-without-connect、type-error（Web `DecompressionStream` 缺失，另切片）、
+>   brotli-16GB（16G 量级用例，本机资源门控不跑，逻辑上属流式分块面）。

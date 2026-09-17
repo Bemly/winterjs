@@ -357,7 +357,9 @@ pub unsafe extern "C" fn zlib_brotli_compress(
     let r = (|| -> std::io::Result<()> {
         let mut w = brotli::CompressorWriter::new(&mut out, 4096, q, 22);
         w.write_all(&data)?;
-        w.flush()?;
+        // 禁显式 flush：flush 会先吐一个非终结同步块（空输入多 2 字节 framing，
+        // 非空头尾亦与 one-shot 不一致）；drop 时的 FINISH 即完整终结，
+        // 与 Node one-shot 逐字节一致（zero-byte 套件：空输入 1 字节）。
         Ok(())
     })();
     match r {
@@ -785,6 +787,21 @@ function __zStreamBase(opts, syncFn) {
   this.__syncFn = syncFn;
   this.__opts = opts ?? {};
   this.bytesWritten = 0;
+  // node Zlib 口径（destroy/close-after-error/reset-during-write 套件点名）：
+  // _handle 开流非空、close/destroy 后置空；_closed 同步；_chunkSize/_outOffset
+  // 内部计数（_processChunk 越界门）；__writeActive 标记分发中的写
+  // （reset-during-write 套件：同 tick 内 reset 即抛）。
+  const self = this;
+  this._handle = {
+    reset: () => {
+      if (self.__writeActive) throw new Error("Cannot reset zlib stream while a write is in progress");
+      self.__chunks = [];
+    },
+  };
+  this._closed = false;
+  this._chunkSize = (opts && Number.isInteger(opts.chunkSize)) ? opts.chunkSize : 16384;
+  this._outOffset = 0;
+  this.__writeActive = false;
 }
 Object.setPrototypeOf(__zStreamBase.prototype, Transform.prototype);
 Object.setPrototypeOf(__zStreamBase, Transform);
@@ -796,6 +813,10 @@ __zStreamBase.prototype._transform = function (chunk, encoding, cb) {
   else u8 = chunk;
   this.__chunks.push(u8);
   this.bytesWritten += u8.length ?? 0;
+  // 写分发标记（reset-during-write 套件）：microtask 清零——同 tick 内 reset 可见，
+  // 下 tick 已落定不再抛（与真机"分发中"窗口对等）。
+  this.__writeActive = true;
+  queueMicrotask(() => { this.__writeActive = false; });
   cb();
 };
 __zStreamBase.prototype._flush = function (cb) {
@@ -807,11 +828,27 @@ __zStreamBase.prototype._flush = function (cb) {
   } catch (e) { cb(e); }
 };
 // flush(kind?, cb)：整收近似——把当前累积经 Sync 压出并 push（真增量语义偏离记档）。
-// close(cb)：end 等效。reset()：清累积。
+// kind 逐族校验（flush-invalid-kind 套件，真机口径）：undefined/NaN/函数直通；
+// 非 number → ARG_TYPE；zlib 族 {0,2,4} / brotli {0,1,2,3} / zstd {0,1,2} 之外 → OUT_OF_RANGE。
+// close(cb)：置 _closed/空柄 + end（已销毁则只等 close）；cb 落 'close'。
+// reset()：经 _handle.reset（分发中即抛，同上）。
 // params(level, strategy)：校验并存回 _level/_strategy（deflate-constructors 套件口径）。
 __zStreamBase.prototype.flush = function (kind, cb) {
   if (typeof kind === "function") { cb = kind; kind = undefined; }
-  if (kind !== undefined) __zFlush(this.__opts, /brotli/i.test(this.__engineName));
+  if (kind !== undefined && !(typeof kind === "number" && Number.isNaN(kind))) {
+    if (typeof kind !== "number") {
+      throw new ERR_INVALID_ARG_TYPE("flush", "number", kind);
+    }
+    const nm = this.__engineName || "";
+    // 真机集（flush-invalid-kind 套件逐字）：zlib {Z_NO_FLUSH,Z_FINISH,Z_BLOCK}={0,4,5}，
+    // brotli {PROCESS,FLUSH,FINISH,EMIT_METADATA}={0,1,2,3}，zstd {continue,flush,end}={0,1,2}。
+    const valid = /brotli/i.test(nm) ? [0, 1, 2, 3] : (/zstd/i.test(nm) ? [0, 1, 2] : [0, 4, 5]);
+    if (!valid.includes(kind)) {
+      const err = new RangeError(`The value of "flush" is out of range. It must be one of ${valid.join(", ")}. Received ${kind}`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+  }
   try {
     if (this.__chunks.length > 0) {
       const out = this.__syncFn(Buffer.concat(this.__chunks), this.__opts);
@@ -824,11 +861,43 @@ __zStreamBase.prototype.flush = function (kind, cb) {
     else throw e;
   }
 };
+__zStreamBase.prototype._destroy = function (err, cb) {
+  // 收尾旗与柄同 _destroy 点置位（与 Node 同步点一致：destroy() 后同步可见）。
+  this._closed = true;
+  this._handle = null;
+  if (typeof Transform.prototype._destroy === "function") Transform.prototype._destroy.call(this, err, cb);
+  else cb(err);
+};
 __zStreamBase.prototype.close = function (cb) {
-  this.end(() => { if (typeof cb === "function") cb(); });
+  // 真机口径（实测）：close 即撕毁、不落数据（write 后 close 无 data/finish/end，
+  // 只有 close+cb），等价无错 destroy；_closed/空柄同步置位。
+  this._closed = true;
+  this._handle = null;
+  if (typeof cb === "function") {
+    if (this.closed) queueMicrotask(cb);
+    else this.once("close", cb);
+  }
+  if (!this.destroyed) this.destroy();
+  return this;
 };
 __zStreamBase.prototype.reset = function () {
-  this.__chunks = [];
+  // 真机口径（实测）：已关闭即 ERR_INTERNAL_ASSERTION（zlib binding closed）。
+  if (!this._handle) {
+    const e = new Error("zlib binding closed");
+    e.code = "ERR_INTERNAL_ASSERTION";
+    throw e;
+  }
+  this._handle.reset();
+};
+// _processChunk(chunk, flushFlag)：同步内部处理（sync-no-event/invalid-input 套件）。
+// 真增量不做（整收 Sync 一次产出，flag 仅收不释）；_outOffset 越界即 RangeError。
+__zStreamBase.prototype._processChunk = function (chunk, flag) {
+  if (this._outOffset > this._chunkSize) {
+    const err = new RangeError(`The value of "_outOffset" is out of range. It must be <= ${this._chunkSize}. Received ${this._outOffset}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  return this.__syncFn(__zChecked(chunk), this.__opts);
 };
 __zStreamBase.prototype.params = function (level, strategy) {
   if (typeof level !== "number") {
@@ -1045,6 +1114,7 @@ export const constants = {
   BROTLI_MODE_GENERIC: 0, BROTLI_MODE_TEXT: 1, BROTLI_MODE_FONT: 2,
   BROTLI_DEFAULT_QUALITY: 11, BROTLI_MIN_QUALITY: 0, BROTLI_MAX_QUALITY: 11,
   BROTLI_DECODE: 0, BROTLI_ENCODE: 1,
+  ZSTD_e_continue: 0, ZSTD_e_flush: 1, ZSTD_e_end: 2,
 };
 export const codes = {
   Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1, Z_STREAM_ERROR: -2,

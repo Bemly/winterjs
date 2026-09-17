@@ -1496,3 +1496,105 @@ setTimeout(() => console.log("r2-done"), 20);
     assert!(out.contains("r2-done"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_crypto_x448_parity() {
+    // 10f crypto三轮：X448 全链（用户拍板引 x448 =0.14.0-pre.12，见
+    // docs/dependencies3.md §5）——生成/导入/DER/JWK/raw/DH/低阶点，
+    // 正常/报错/边界三件；每项真机 26.8.2 对拍。
+    let dir = assert_fs::TempDir::new().unwrap();
+    // node 套件 fixture（test/fixtures/keys/x448_*.pem，MIT）落盘（§4.44）。
+    let priv_pem = "-----BEGIN PRIVATE KEY-----\nMEYCAQAwBQYDK2VvBDoEOLTDbazv6vHZWOmODQ3kk8TUOQgApB4j75rpInT5zSLl\n/xJHK8ixF7f+4uo+mGTCrK1sktI5UmCZ\n-----END PRIVATE KEY-----\n";
+    let pub_pem = "-----BEGIN PUBLIC KEY-----\nMEIwBQYDK2VvAzkAioHSHVpTs6hMvghosEJDIR7ceFiE3+Xccxati64oOVJ7NWjf\nozE7ae31PXIUFq6cVYgvSKsDFPA=\n-----END PUBLIC KEY-----\n";
+    dir.child("x448_priv.pem").write_str(priv_pem).unwrap();
+    dir.child("x448_pub.pem").write_str(pub_pem).unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import crypto, { generateKeyPairSync, createPrivateKey, createPublicKey,
+  diffieHellman } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { deepStrictEqual } from "node:assert";
+const log = (...a) => console.log(...a);
+const privPem = readFileSync("x448_priv.pem", "ascii");
+const pubPem = readFileSync("x448_pub.pem", "ascii");
+// 生成 + 类型面
+const { publicKey, privateKey } = generateKeyPairSync("x448");
+log("x448-gen", privateKey.asymmetricKeyType, publicKey.asymmetricKeyType,
+  privateKey.type, publicKey.type, privateKey.symmetricKeySize);
+// fixture 导入 → PEM 逐字导出（套件 x448 行断言）
+const fk = createPrivateKey(privPem);
+log("x448-fixture", fk.asymmetricKeyType, fk.export({ type: "pkcs8", format: "pem" }) === privPem);
+const fpk = createPublicKey(pubPem);
+log("x448-fixturepub", fpk.asymmetricKeyType, fpk.export({ type: "spki", format: "pem" }) === pubPem);
+// JWK 双向（deepStrictEqual 不看键序，与真机一致）
+const jwk = fk.export({ format: "jwk" });
+deepStrictEqual(jwk, { crv: "X448",
+  x: "ioHSHVpTs6hMvghosEJDIR7ceFiE3-Xccxati64oOVJ7NWjfozE7ae31PXIUFq6cVYgvSKsDFPA",
+  d: "tMNtrO_q8dlY6Y4NDeSTxNQ5CACkHiPvmukidPnNIuX_EkcryLEXt_7i6j6YZMKsrWyS0jlSYJk",
+  kty: "OKP" });
+log("x448-jwk", true);
+const jk = createPrivateKey({ key: jwk, format: "jwk" });
+log("x448-jwkimp", jk.asymmetricKeyType, jk.export({ type: "pkcs8", format: "pem" }) === privPem);
+// DH 双侧一致（56B）
+const { publicKey: pb2, privateKey: pv2 } = generateKeyPairSync("x448");
+const s1 = diffieHellman({ privateKey, publicKey: pb2 });
+const s2 = diffieHellman({ privateKey: pv2, publicKey });
+log("x448-dh", s1.length, s2.length, Buffer.compare(s1, s2) === 0);
+// raw 往返 + 私钥建公钥
+const rp = privateKey.export({ format: "raw-private" });
+const ru = publicKey.export({ format: "raw-public" });
+const k3 = createPrivateKey({ key: rp, format: "raw-private", asymmetricKeyType: "x448" });
+const pu3 = createPublicKey({ key: rp, format: "raw-private", asymmetricKeyType: "x448" });
+log("x448-raw", Buffer.isBuffer(rp), rp.length, ru.length,
+  k3.asymmetricKeyType, Buffer.compare(k3.export({ format: "raw-private" }), rp) === 0,
+  pu3.asymmetricKeyType, Buffer.compare(pu3.export({ format: "raw-public" }), ru) === 0);
+// 低阶点（全零 u）→ 真机同码
+try {
+  const kz = createPublicKey({ key: Buffer.alloc(56), format: "raw-public", asymmetricKeyType: "x448" });
+  diffieHellman({ privateKey, publicKey: kz });
+  log("x448-loworder", "NO-THROW");
+} catch (e) { log("x448-loworder", e.code, e.message.startsWith("error:1C8000A4")); }
+// sign/verify 无原语
+try { crypto.sign(null, Buffer.alloc(8), privateKey); log("x448-sign", "NO-THROW"); }
+catch (e) { log("x448-sign", e.code); }
+// 报错矩阵（真机逐项）
+const t = (f) => { try { f(); return "NO-THROW"; } catch (e) { return e.code; } };
+log("x448-raw-noakt", t(() => createPrivateKey({ key: rp, format: "raw-private" })));
+log("x448-raw-wrongtype", t(() => createPrivateKey({ key: rp, format: "raw-private", asymmetricKeyType: "x25519" })));
+log("x448-raw-badlen", t(() => createPublicKey({ key: Buffer.alloc(32), format: "raw-public", asymmetricKeyType: "x448" })));
+log("x448-rawpub-priv", t(() => createPrivateKey({ key: ru, format: "raw-public", asymmetricKeyType: "x448" })));
+log("x448-priv-rawpub", t(() => privateKey.export({ format: "raw-public" })));
+const rsa = generateKeyPairSync("rsa", { modulusLength: 512 });
+log("x448-rsa-raw", t(() => rsa.privateKey.export({ format: "raw-private" })));
+log("x448-gen-nope", t(() => generateKeyPairSync("nope")));
+// 边界：x25519/ed448 无回归 + 编码参数生成
+const x = generateKeyPairSync("x25519");
+log("x448-x25519-ok", diffieHellman({ privateKey: x.privateKey, publicKey: generateKeyPairSync("x25519").publicKey }).length);
+const { publicKey: encPub } = generateKeyPairSync("x448", { publicKeyEncoding: { type: "spki", format: "pem" } });
+log("x448-enc", typeof encPub === "string" && encPub.startsWith("-----BEGIN PUBLIC KEY-----"), encPub ? encPub.length > 40 : false);
+log("x448-done");
+"#,
+    );
+    assert!(out.contains("x448-gen x448 x448 private public undefined"), "out: {out}");
+    assert!(out.contains("x448-fixture x448 true"), "out: {out}");
+    assert!(out.contains("x448-fixturepub x448 true"), "out: {out}");
+    assert!(out.contains("x448-jwk true"), "out: {out}");
+    assert!(out.contains("x448-jwkimp x448 true"), "out: {out}");
+    assert!(out.contains("x448-dh 56 56 true"), "out: {out}");
+    assert!(out.contains("x448-raw true 56 56 x448 true x448 true"), "out: {out}");
+    assert!(out.contains("x448-loworder ERR_OSSL_FAILED_DURING_DERIVATION true"), "out: {out}");
+    assert!(out.contains("x448-sign ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE"), "out: {out}");
+    assert!(out.contains("x448-raw-noakt ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("x448-raw-wrongtype ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("x448-raw-badlen ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("x448-rawpub-priv ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("x448-priv-rawpub ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("x448-rsa-raw ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS"), "out: {out}");
+    assert!(out.contains("x448-gen-nope ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("x448-x25519-ok 32"), "out: {out}");
+    assert!(out.contains("x448-enc true true"), "out: {out}");
+    assert!(out.contains("x448-done"), "out: {out}");
+    dir.close().unwrap();
+}

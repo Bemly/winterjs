@@ -1986,14 +1986,16 @@ fn okp_oid_byte(kind: &str) -> Result<u8, String> {
         "ED25519" => Ok(0x70),
         "X25519" => Ok(0x6E),
         "ED448" => Ok(0x71),
+        "X448" => Ok(0x6F),
         _ => Err(format!("NotSupportedError: unsupported OKP key '{kind}'")),
     }
 }
 
-/// OKP 裸密钥长（Ed25519/X25519 32B；Ed448 57B）。
+/// OKP 裸密钥长（Ed25519/X25519 32B；X448 56B；Ed448 57B）。
 fn okp_key_len(kind: &str) -> Result<usize, String> {
     match kind.to_ascii_uppercase().as_str() {
         "ED25519" | "X25519" => Ok(32),
+        "X448" => Ok(56),
         "ED448" => Ok(57),
         _ => Err(format!("NotSupportedError: unsupported OKP key '{kind}'")),
     }
@@ -2005,18 +2007,26 @@ fn okp_wrap_pkcs8(kind: &str, seed: &[u8]) -> Result<Vec<u8>, String> {
     if seed.len() != n {
         return Err(format!("DataError: bad {kind} seed (must be {n} bytes)"));
     }
-    // 10e Ed448 头 16B（`04 3B{04 39 seed}` 嵌套 OCTET，与 32B 档同形放大）。
-    let mut v = if n == 57 {
-        vec![
-            0x30, 0x47, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x04,
-            0x3B, 0x04, 0x39,
-        ]
-    } else {
-        vec![
-            0x30, 0x2E, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x04,
-            0x22, 0x04, 0x20,
-        ]
-    };
+    // 三档同构：`30 (14+n){02 01 00 30 05 06 03 2B 65 {oid} 04 (n+2) 04 n}`——
+    // 32B 档 0x2E、56B 档 0x46（10f X448）、57B 档 0x47（10e Ed448）。
+    let mut v = vec![
+        0x30,
+        (14 + n) as u8,
+        0x02,
+        0x01,
+        0x00,
+        0x30,
+        0x05,
+        0x06,
+        0x03,
+        0x2B,
+        0x65,
+        oid,
+        0x04,
+        (n + 2) as u8,
+        0x04,
+        n as u8,
+    ];
     v.extend_from_slice(seed);
     Ok(v)
 }
@@ -2027,12 +2037,22 @@ fn okp_wrap_spki(kind: &str, publ: &[u8]) -> Result<Vec<u8>, String> {
     if publ.len() != n {
         return Err(format!("DataError: bad {kind} public key (must be {n} bytes)"));
     }
-    // 10e Ed448 头 12B（BITSTRING `03 3A{00 pub}`）。
-    let mut v = if n == 57 {
-        vec![0x30, 0x43, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x03, 0x3A, 0x00]
-    } else {
-        vec![0x30, 0x2A, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x03, 0x21, 0x00]
-    };
+    // 三档同构：`30 (10+n){30 05 06 03 2B 65 {oid} 03 (n+1) 00}`（BIT STRING
+    // 含 1 个 unused-bits 字节）。
+    let mut v = vec![
+        0x30,
+        (10 + n) as u8,
+        0x30,
+        0x05,
+        0x06,
+        0x03,
+        0x2B,
+        0x65,
+        oid,
+        0x03,
+        (n + 1) as u8,
+        0x00,
+    ];
     v.extend_from_slice(publ);
     Ok(v)
 }
@@ -2041,17 +2061,24 @@ fn okp_unwrap_pkcs8(kind: &str, der: &[u8]) -> Result<Vec<u8>, String> {
     let oid = okp_oid_byte(kind)?;
     let n = okp_key_len(kind)?;
     const HEAD_LEN: usize = 16;
-    let mut want = if n == 57 {
-        vec![
-            0x30, 0x47, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x04,
-            0x3B, 0x04, 0x39,
-        ]
-    } else {
-        vec![
-            0x30, 0x2E, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x04,
-            0x22, 0x04, 0x20,
-        ]
-    };
+    let mut want = vec![
+        0x30,
+        (14 + n) as u8,
+        0x02,
+        0x01,
+        0x00,
+        0x30,
+        0x05,
+        0x06,
+        0x03,
+        0x2B,
+        0x65,
+        oid,
+        0x04,
+        (n + 2) as u8,
+        0x04,
+        n as u8,
+    ];
     want.extend_from_slice(&vec![0u8; n]);
     if der.len() != HEAD_LEN + n || der[..HEAD_LEN] != want[..HEAD_LEN] {
         return Err(format!("DataError: bad {kind} private key (PKCS#8)"));
@@ -2062,17 +2089,21 @@ fn okp_unwrap_pkcs8(kind: &str, der: &[u8]) -> Result<Vec<u8>, String> {
 fn okp_unwrap_spki(kind: &str, der: &[u8]) -> Result<Vec<u8>, String> {
     let oid = okp_oid_byte(kind)?;
     let n = okp_key_len(kind)?;
-    let (head_len, prefix): (usize, Vec<u8>) = if n == 57 {
-        (
-            12,
-            vec![0x30, 0x43, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x03, 0x3A, 0x00],
-        )
-    } else {
-        (
-            12,
-            vec![0x30, 0x2A, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, oid, 0x03, 0x21, 0x00],
-        )
-    };
+    let head_len = 12;
+    let prefix = vec![
+        0x30,
+        (10 + n) as u8,
+        0x30,
+        0x05,
+        0x06,
+        0x03,
+        0x2B,
+        0x65,
+        oid,
+        0x03,
+        (n + 1) as u8,
+        0x00,
+    ];
     if der.len() != head_len + n || der[..head_len] != prefix[..] {
         return Err(format!("DataError: bad {kind} public key (SPKI)"));
     }
@@ -3003,13 +3034,105 @@ pub unsafe extern "C" fn x_derive(
     set_rval_bytes(&mut cx, &frame, secret.as_bytes())
 }
 
+/// `__wjs_x448_generate()` → 56B 私钥（node 口径：生成即 RFC 7748 clamp，
+/// raw-private 导出与真机同形——`b[0] &= 252; b[55] |= 128`）。
+pub unsafe extern "C" fn x448_generate(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let mut privb = [0u8; 56];
+    if getrandom::fill(&mut privb).is_err() {
+        report_error(&mut cx, "OperationError: cannot get random values");
+        return false;
+    }
+    privb[0] &= 252;
+    privb[55] |= 128;
+    tracing::debug!(target: "winterjs::crypto", "X448 key generated");
+    set_rval_bytes(&mut cx, &frame, &privb)
+}
+
+/// `__wjs_x448_public(privU8)` → 56B pub。
+pub unsafe extern "C" fn x448_public(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 {
+        report_error(&mut cx, "TypeError: X448 public needs a private key");
+        return false;
+    }
+    let Some(privb) = view_bytes(&mut cx, frame.arg(0), "X448 private key") else {
+        return false;
+    };
+    let Ok(privb) = <[u8; 56]>::try_from(privb.as_slice()) else {
+        report_error(&mut cx, "DataError: bad X448 private key (must be 56 bytes)");
+        return false;
+    };
+    let publ = x448::PublicKey::from(&x448::StaticSecret::from(privb));
+    set_rval_bytes(&mut cx, &frame, publ.as_bytes())
+}
+
+/// 纯函数 X448 DH（RFC 7748：clamp 在内；低阶点/长度错 → None）。
+/// native 与单测共用（`x448` 轮子自带低阶点检查）。
+fn x448_dh(privb: &[u8], publ: &[u8]) -> Option<[u8; 56]> {
+    let privb = <[u8; 56]>::try_from(privb).ok()?;
+    let publ = <[u8; 56]>::try_from(publ).ok()?;
+    x448::x448(privb, publ)
+}
+
+/// `__wjs_x448_derive(privU8, pubU8)` → 56B 共享秘密；低阶点/全零输出 None →
+/// node 口径 FAILED_DURING_DERIVATION（真机 26 实测文案）。
+pub unsafe extern "C" fn x448_derive(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: X448 derive needs private and public keys");
+        return false;
+    }
+    let (Some(privb), Some(publ)) = (
+        view_bytes(&mut cx, frame.arg(0), "X448 private key"),
+        view_bytes(&mut cx, frame.arg(1), "X448 public key"),
+    ) else {
+        return false;
+    };
+    let (Ok(privb), Ok(publ)) = (
+        <[u8; 56]>::try_from(privb.as_slice()),
+        <[u8; 56]>::try_from(publ.as_slice()),
+    ) else {
+        report_error(&mut cx, "DataError: bad X448 key length");
+        return false;
+    };
+    match x448_dh(&privb, &publ) {
+        Some(secret) => set_rval_bytes(&mut cx, &frame, &secret),
+        None => {
+            report_error(
+                &mut cx,
+                "ERR_OSSL_FAILED_DURING_DERIVATION: error:1C8000A4:Provider routines::failed during derivation",
+            );
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod c4x_tests {
     use super::{
         der_ecdsa_sig_to_raw, der_tlv, ec_curve_name, okp_unwrap_pkcs8, okp_unwrap_spki,
         mgf1_with, okp_wrap_pkcs8, okp_wrap_spki, rsa_pss_verify_manual, rsa_v15_verify_manual,
         x509_ecdsa_sig_hash, x509_hash_oid_name, x509_pss_params, x509_rsa_sig_hash,
-        x509_tbs_bytes, SystemRng,
+        x509_tbs_bytes, SystemRng, x448_dh,
     };
 
     fn hex(s: &str) -> Vec<u8> {
@@ -3025,6 +3148,13 @@ mod c4x_tests {
     const XA_PUB: &str = "8751eff746df600cb3f29b4e608b76d4c7cf6f08311f294bc9d0160af4354936";
     const XA_PKCS8: &str = "302e020100300506032b656e04220420a0e63ac582ee05d53337ba21c948389dc4e3bc0825fd506e2fa0719e038cc84d";
     const XA_SPKI: &str = "302a300506032b656e0321008751eff746df600cb3f29b4e608b76d4c7cf6f08311f294bc9d0160af4354936";
+    // 真机取证向量（node 26.8.2 fixture x448_*.pem 导出；SELF_DH 为真机
+    // diffieHellman 产物同值）。
+    const X4_SEED: &str = "b4c36dacefeaf1d958e98e0d0de493c4d4390800a41e23ef9ae92274f9cd22e5ff12472bc8b117b7fee2ea3e9864c2acad6c92d239526099";
+    const X4_PKCS8: &str = "3046020100300506032b656f043a0438b4c36dacefeaf1d958e98e0d0de493c4d4390800a41e23ef9ae92274f9cd22e5ff12472bc8b117b7fee2ea3e9864c2acad6c92d239526099";
+    const X4_PUB: &str = "8a81d21d5a53b3a84cbe0868b04243211edc785884dfe5dc7316ad8bae2839527b3568dfa3313b69edf53d721416ae9c55882f48ab0314f0";
+    const X4_SPKI: &str = "3042300506032b656f0339008a81d21d5a53b3a84cbe0868b04243211edc785884dfe5dc7316ad8bae2839527b3568dfa3313b69edf53d721416ae9c55882f48ab0314f0";
+    const X4_SELF_DH: &str = "a1a343b2b66655d0b5ebc67950baf8c892f9bf951b8f7da2a2b0d1e10ccb1f338cdbea38a74140ff74e3bf69f8860d5ca566b55de1091a09";
 
     #[test]
     fn okp_der_matches_openssl_fixtures() {
@@ -3036,6 +3166,20 @@ mod c4x_tests {
         assert_eq!(okp_wrap_spki("X25519", &hex(XA_PUB)).unwrap(), hex(XA_SPKI));
         assert_eq!(okp_unwrap_pkcs8("X25519", &hex(XA_PKCS8)).unwrap(), hex(XA_PRIV).as_slice());
         assert_eq!(okp_unwrap_spki("X25519", &hex(XA_SPKI)).unwrap(), hex(XA_PUB).as_slice());
+        // 10f X448（node 26.8.2 fixture x448_*.pem 导出的 DER，56B 档）。
+        assert_eq!(okp_wrap_pkcs8("X448", &hex(X4_SEED)).unwrap(), hex(X4_PKCS8));
+        assert_eq!(okp_wrap_spki("X448", &hex(X4_PUB)).unwrap(), hex(X4_SPKI));
+        assert_eq!(okp_unwrap_pkcs8("X448", &hex(X4_PKCS8)).unwrap(), hex(X4_SEED).as_slice());
+        assert_eq!(okp_unwrap_spki("X448", &hex(X4_SPKI)).unwrap(), hex(X4_PUB).as_slice());
+    }
+
+    #[test]
+    fn x448_dh_cross_checks() {
+        // RFC 7748 §5.2 双 X448 DH（真机 26.8.2 diffieHellman 产物同值）。
+        let a = x448_dh(&hex(X4_SEED), &hex(X4_PUB)).unwrap();
+        assert_eq!(a, hex(X4_SELF_DH).as_slice());
+        // 低阶点（全零 u）→ None（RFC 7748 拒收；node 口径 FAILED_DURING_DERIVATION）
+        assert!(x448_dh(&hex(X4_SEED), &[0u8; 56]).is_none());
     }
 
     #[test]

@@ -857,6 +857,25 @@
 > 同绿 17 → **24**（+7，见下）；二轮（`/tmp/wjs-10f-crypto3-8.txt`）同绿 24 → **38**
 > （+14，见下）；SAME1=8（双边同码）；DIFF 108 → **87**。
 >
+> ### 三轮已修（2026-09-18，x448 采购落地）
+>
+> - **x448 全链**（用户拍板引 `x448 =0.14.0-pre.12` + `static_secrets`，
+>   零新增传递依赖，见 `docs/dependencies3.md` §5）：三 native（生成即 RFC 7748
+>   clamp、PublicKey 派生、DH 经 `x448()` 自带低阶点检查）+ OKP DER 层通用化
+>   三档（32/56/57B 统一公式，X448=1.3.101.111）+ JWK crv X448 双向 + raw
+>   private/public 导入导出（四 OKP 键通用；缺 asymmetricKeyType → ARG_TYPE、
+>   类型错/坏长 → Invalid key data、raw-public 建私钥 → format 无效、非 OKP →
+>   INCOMPATIBLE，真机 26 逐项）+ diffieHellman 低阶点抛
+>   `ERR_OSSL_FAILED_DURING_DERIVATION`（`error:1C8000A4` 文案逐字）+ sign/verify
+>   无原语门 + 证书 SPKI 头 + `generateKeyPairSync('nope')` 改真机原文
+>   （`The argument 'type' must be a supported key type.`，旧自编文案退役）。
+> - 回归：`tests/node/crypto.rs::phase10f_crypto_x448_parity`（19 断言，含
+>   fixture PEM 逐字/JWK deepStrictEqual/DH 双侧一致/低阶点/x25519 无回归）；
+>   单测 `x448_dh_cross_checks`（RFC 7748 向量 + 全零 None）。
+> - 套件侧：`test-crypto-key-objects.js` x448 行断言经 fixture 探针逐项验绿
+>   （PEM 逐字/JWK/raw 段）；整文件仍红在 RSA pkcs1 段（313 行族，见剩余簇）
+>   —— 对拍计数不变，阻塞项消一块。
+>
 > ### 首轮已修（每项经真机 26.8.2 对拍）
 >
 > ### 已修（每项经真机 26.8.2 对拍）
@@ -930,7 +949,8 @@
 >
 > ### 剩余红项（约 87，分簇，均下轮或另案）
 >
-> - **key-objects.js**：x448 无轮子（§0.5 待拍板）+ EC raw 格式，下轮。
+> - **key-objects.js**：x448 已闭（三轮）；剩 RSA pkcs1 段（pkcs1-pub 显式形
+>   type 门等，313 行族）+ EC raw 格式，下轮。
 > - **校验长尾**（~15）：Missing expected / unexpected throw 逐 API 续补。
 > - **密钥导入零散**（pkcs1-pub 显式形、pub+pkcs8 wrong-tag、pub+sec1 等 type 门全表），下轮。
 > - **真流式面**（hasher pipe/dest.on/tls.Server 无 new/stdio 桩），另案。

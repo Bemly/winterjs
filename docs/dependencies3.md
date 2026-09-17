@@ -70,6 +70,40 @@
 - `mime` 0.3.17 虽在闭包（reqwest/hyper 带入），`util.MIMEType` 是 WHATWG
   纯算法解析，不需要它，不直引。
 
+## §5 x448（10f crypto，2026-09-18 调研并拍板 ✅）
+
+> 背景：crypto 对拍二轮记档"key-objects.js：x448 无轮子"——**勘误：有**，且与
+> 树内钉版完美咬合（当时调研漏检了 elliptic-curves 仓库的 x448 子 crate）。
+> **2026-09-18 用户拍板：引**（钉 `=0.14.0-pre.12` + `static_secrets` 特性门，
+> 与 x25519-dalek 同款按值 secret）。落地当日全链转绿：三 native + OKP DER
+> 三档 + JWK/raw 面 + 低阶点拒收（`tests/node/crypto.rs::phase10f_crypto_x448_parity`）。
+
+## §5.1 决策记录（追加）
+
+- **2026-09-18 用户拍板（10f crypto x448）**：引 `x448` crate（X448 DH，
+  RFC 7748；RustCrypto/elliptic-curves 正家，零新增传递依赖）。
+
+| 用途 | crate | 最新版本 | 建库时间 | 最新维护 | 纯 Rust | macA64 | macX64 | linA64 | linX64 | winA64 | winX64 | andA64 | andX64 | ohA64 | ohX64 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| X448 DH（RFC 7748：clamp 内置 + low-order/全零输出检查） | `x448` | 0.14.0-pre.12 | 2019（RustCrypto/elliptic-curves） | 2026-06-24（与 ed448-goldilocks 同列车发版） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+注：
+
+- **零新增传递依赖**：deps = `ed448-goldilocks ^0.14.0-pre.15`（树内已特批钉
+  `=0.14.0-pre.15`，精确命中）+ `zeroize ^1`（锁内 1.9.0 已有）+
+  `serdect ^0.4`（optional，serde 面，默认关）。
+- API 即 node DH 所需：`x448::x448(scalar[56], point[56]) -> Option<[u8;56]>`
+  （clamp 在内，全零输出 None → node 口径映射）；`Secret/Public/
+  diffie_hellman` 全家（generateKeyPair/deriveKey 两条路都省了）。
+- 钉版模式与 ed448-goldilocks 同款：`0.14.0-pre` 滚动预发布线，建议钉
+  `=0.14.0-pre.12`，上游发稳定版后随 ed448-goldilocks 一并回 caret。
+- 备选（不引 crate）：树内 ed448-goldilocks 的 `MontgomeryPoint` 自架——但
+  `EdwardsScalar` 只有 mod-L 约减构造器（clamped 标量永不 canonical），素数
+  子群键与 OpenSSL 等价、任意 u 语义不严格；要精确 RFC 7748 须用其
+  `FieldElement` 手写 ladder ~40 行（H 档，零依赖）。
+- node 面：`test-crypto-key-objects.js` x448 DH 段（生成/导入/derive/
+  asymmetricKeyType 'x448'）。
+
 ## §3 tty 底座（10c-1，2026-09-15 用户拍板两项）
 
 | 用途 | crate | 最新版本 | 建库时间 | 最新维护 | 纯 Rust | macA64 | macX64 | linA64 | linX64 | winA64 | winX64 | andA64 | andX64 | ohA64 | ohX64 |

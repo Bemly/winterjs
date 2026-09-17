@@ -12050,6 +12050,7 @@ dependencies = [
  "wide",
  "windows-service",
  "x25519-dalek",
+ "x448",
  "x509-cert",
  "xxhash-rust",
  "yaml-rust2 0.12.0",
@@ -12120,6 +12121,16 @@ checksum = "e7e8131a03190127fb2263afc72b322ecadae46b6ff8c6f399ff5d02f5559af6"
 dependencies = [
  "curve25519-dalek 5.0.0",
  "rand_core 0.10.1",
+ "zeroize",
+]
+
+[[package]]
+name = "x448"
+version = "0.14.0-pre.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c166d06b9fa4328c890d46bda797269fb6aeca96393aeaad0e74b4b11550e06"
+dependencies = [
+ "ed448-goldilocks",
  "zeroize",
 ]
 

@@ -26,6 +26,7 @@
 pub const SOURCE: &str = r#"
 import { EventEmitter } from "node:events";
 import { Readable, Writable } from "node:stream";
+import { codes } from "node:internal/errors";
 
 export const STATUS_CODES = {
   100: "Continue", 101: "Switching Protocols", 102: "Processing", 103: "Early Hints",
@@ -81,7 +82,7 @@ function __parseHead(headText) {
   for (const line of lines) {
     if (line === "") continue;
     const c = line.indexOf(":");
-    if (c <= 0) continue;
+    if (c <= 0) throw __mkParseError("malformed header line");
     const k = line.slice(0, c).trim();
     const v = line.slice(c + 1).trim();
     rawHeaders.push(k, v);
@@ -101,6 +102,31 @@ function __lowerHeaders(obj) {
   const out = Object.create(null);
   for (const [k, v] of Object.entries(obj ?? {})) out[k.toLowerCase()] = String(v);
   return out;
+}
+// node lib/_http_client.js 同款（INVALID_PATH_REGEX）：控制字符与空格等禁入 path。
+const INVALID_PATH_REGEX = /[^\u0021-\u00ff]/;
+function __validateInteger(v, name, min = 0) {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < min) {
+    throw new codes.ERR_OUT_OF_RANGE(name, `an integer >= ${min}`, v);
+  }
+  return v;
+}
+// 解析期校验失败哨兵：连接层捕到后回 400 + 销毁（Node clientError 默认行为）。
+function __mkParseError(msg) {
+  const e = new Error(msg ?? "parse error");
+  e.__httpParse = true;
+  return e;
+}
+const __TOKEN_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+// 请求行 + 头行校验（RFC token/版本形；Node llhttp 拒收面，失配即 400）。
+function __validateRequestHead(first, headers) {
+  if (first.length !== 3 || !__TOKEN_RE.test(first[0]) || /\s/.test(first[1]) ||
+      !/^HTTP\/\d(\.\d)?$/.test(first[2])) {
+    throw __mkParseError("bad request line");
+  }
+  for (const k of Object.keys(headers)) {
+    if (!__TOKEN_RE.test(k)) throw __mkParseError("bad header name");
+  }
 }
 
 // ---- 增量体帧 ----
@@ -183,6 +209,13 @@ export class IncomingMessage extends Readable {
     this.complete = false;
   }
   _read() {}
+  // node lib/_http_incoming.js 口径：转发 socket 空闲计时（'timeout' 由 socket
+  // 发出；cb 注册为 once 监听）。
+  setTimeout(msecs, callback) {
+    if (typeof callback === "function") this.once("timeout", callback);
+    if (this.socket !== undefined && this.socket !== null) return this.socket.setTimeout(msecs);
+    return this;
+  }
   // 一次性喂体（兼容口）：推流 + 结束。
   __feed(body) {
     if (body.length > 0) this.push(globalThis.Buffer.from(body));
@@ -200,7 +233,10 @@ export class ServerResponse extends Writable {
     // autoDestroy 关：finish 后连接必须活着（keep-alive 复用/优雅关由显式
     // destroy 负责；自动销毁会把保活连接一起杀掉）。
     super({ autoDestroy: false });
-    this.__sock = sock;
+    // 构造首参：server 流程传 socket；独立构造传 req 形信息对象（node 口径
+    // `new ServerResponse(req)`，standalone 套件）——非 socket 一律不入 __sock。
+    this.__sock = sock && typeof sock.write === "function" ? sock : null;
+    this.__sockAssigned = false;
     this.statusCode = 200;
     this.statusMessage = undefined;
     this.__headers = Object.create(null);
@@ -245,8 +281,30 @@ export class ServerResponse extends Writable {
   // 可写流最小面（ws Sender 的 cork/uncork；本仓写直通无聚合，no-op）。
   cork() { return this; }
   uncork() { return this; }
-  __sendHead() {
-    if (this.__headSent) return;
+  // 立即发头（Node flushHeaders：body 可经 chunked 帧，end 后补终结块）。
+  flushHeaders() {
+    if (this.__headSent || this.__noBody || this.__headOnly) return;
+    if (this.__headers["content-length"] === undefined) this.__chunked = true;
+    this.__sendHead();
+    if (this.__buf1 !== null) {
+      const b = this.__buf1;
+      this.__buf1 = null;
+      this.__frame(b);
+    }
+  }
+  // 独立构造的 res 后挂 socket（standalone 套件）；双挂即 ERR_HTTP_SOCKET_ASSIGNED。
+  assignSocket(sock) {
+    if (this.__sockAssigned) {
+      const e = new Error("Socket is already assigned");
+      e.code = "ERR_HTTP_SOCKET_ASSIGNED";
+      throw e;
+    }
+    this.__sockAssigned = true;
+    this.__sock = sock;
+    this.socket = sock;
+  }
+  __headBytes() {
+    if (this.__headSent) return new Uint8Array(0);
     this.__headSent = true;
     this.headersSent = true;
     if (this.statusCode === 204 || this.statusCode === 304) this.__noBody = true;
@@ -261,7 +319,12 @@ export class ServerResponse extends Writable {
       this.__headers["connection"] = this.__keepAlive ? "keep-alive" : "close";
     }
     for (const [k, v] of Object.entries(this.__headers)) head.push(`${k}: ${v}`);
-    this.__sock.write(new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n"));
+    return new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n");
+  }
+  __sendHead() {
+    // node 口径：header 独立成 write；首块合并只发生在 _final/flushFinal 快捷路。
+    const head = this.__headBytes();
+    if (head.length > 0) this.__sock.write(head);
   }
   __frame(u8) {
     if (this.__noBody || this.__headOnly) return;
@@ -314,11 +377,23 @@ export class ServerResponse extends Writable {
       if (!this.__noBody && !this.__headOnly && this.__headers["content-length"] === undefined) {
         this.__headers["content-length"] = String(total);
       }
-      this.__sendHead();
-      if (this.__buf1 !== null) {
-        const b = this.__buf1;
-        this.__buf1 = null;
-        this.__frame(b);
+      const head = this.__headBytes();
+      if (this.__sock !== null) {
+        if (this.__buf1 !== null) {
+          const b = this.__buf1;
+          this.__buf1 = null;
+          if (head.length === 0) {
+            this.__frame(b);
+          } else if (!this.__noBody && !this.__headOnly && b.length > 0) {
+            // node 口径：头 + 首块合并为一次 write（standalone 套件断言单 chunk）。
+            this.__sock.write(__concat(head, b));
+          } else {
+            this.__sock.write(head);
+            this.__frame(b);
+          }
+        } else if (head.length > 0) {
+          this.__sock.write(head);
+        }
       }
     } else if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
       this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));
@@ -348,21 +423,55 @@ export class OutgoingMessage extends Writable {
     // 上传 finish 不等于请求结束），见 __finishResponse/__onSockCloseEv。
     super({ autoDestroy: false, emitClose: false });
     this.headersSent = false;
+    this.socket = null;
+    // 独立构造（`new OutgoingMessage()`，outgoing-properties 系套件）：无 socket
+    // 时 _write 缓冲不落盘——cb 不调（writableLength 保持，Node outputData 口径），
+    // 有子类 socket 面时由子类 _write 覆写。
+    this.__outputData = [];
+  }
+  _write(chunk, encoding, cb) {
+    this.__outputData.push([chunk, encoding, cb]);
+  }
+  _implicitHeader() {
+    throw new Error("_implicitHeader() method is not implemented");
   }
 }
 
 // 服务端混入：Base = net.Server / tls.Server（构造实参原样透传基类）。
+// http 面选项（10f 对拍，node lib/_http_server.js 口径）：requestTimeout 默认
+// 300000、headersTimeout 默认 min(60000, requestTimeout)、keepAliveTimeout 5000、
+// keepAliveTimeoutBuffer 1000；headersTimeout > requestTimeout 即 ERR_OUT_OF_RANGE。
 export function withHttpServer(Base) {
   class __HttpServer extends Base {
     constructor(...args) {
       super(...args);
+      const o = (args[0] && typeof args[0] === "object" && !Array.isArray(args[0])) ? args[0] : {};
+      this.timeout = 0;
+      this.requestTimeout = 300_000;
+      this.headersTimeout = 60_000;
+      this.keepAliveTimeout = 5_000;
+      this.keepAliveTimeoutBuffer = 1_000;
+      this.maxRequestsPerSocket = 0;
+      const rt = o.requestTimeout !== undefined ? __validateInteger(o.requestTimeout, "requestTimeout") : undefined;
+      if (rt !== undefined) this.requestTimeout = rt;
+      const ht = o.headersTimeout !== undefined ? __validateInteger(o.headersTimeout, "headersTimeout") : undefined;
+      this.headersTimeout = ht !== undefined ? ht : Math.min(60_000, this.requestTimeout);
+      if (this.requestTimeout > 0 && this.headersTimeout > 0 && this.headersTimeout > this.requestTimeout) {
+        throw new codes.ERR_OUT_OF_RANGE("headersTimeout", "<= requestTimeout", o.headersTimeout);
+      }
+      const kt = o.keepAliveTimeout !== undefined ? __validateInteger(o.keepAliveTimeout, "keepAliveTimeout") : undefined;
+      if (kt !== undefined) this.keepAliveTimeout = kt;
+      const kb = o.keepAliveTimeoutBuffer !== undefined ? __validateInteger(o.keepAliveTimeoutBuffer, "keepAliveTimeoutBuffer") : undefined;
+      if (kb !== undefined) this.keepAliveTimeoutBuffer = kb;
+      if (o.maxRequestsPerSocket !== undefined) this.maxRequestsPerSocket = o.maxRequestsPerSocket;
       this.__closing = false;
       this.__sockets = new Set();
       this.on("connection", (sock) => {
         this.__sockets.add(sock);
-        const st = { buf: new Uint8Array(0), req: null, framing: null, res: null };
+        const st = { buf: new Uint8Array(0), req: null, framing: null, res: null, __hdT: null, __rqT: null, __kaT: null };
         sock.__httpState = st;
         sock.on("close", () => {
+          this.__clearReqTimers(st);
           this.__sockets.delete(sock);
           // 连接断时未完的req/res一起收尾：req destroy触发pipeline的
           // PREMATURE_CLOSE（客户端中断上传用例），res destroy防写半开。
@@ -373,25 +482,105 @@ export function withHttpServer(Base) {
             st.res.destroy();
           }
         });
+        // server.timeout：per-socket 空闲计时（10f；单发 timer，data 到达即重臂，
+        // 见 data 处理器）。到期 server 发 'timeout'(socket)，不杀连接（net 口径）。
+        if (this.timeout > 0) sock.setTimeout(this.timeout);
+        sock.on("timeout", () => {
+          if (!sock.destroyed) this.emit("timeout", sock);
+        });
         sock.on("data", (chunk) => {
           if (this.__closing || sock.__upgraded) return;
+          if (this.timeout > 0) sock.setTimeout(this.timeout);
           try {
             this.__feed(sock, st, chunk);
-          } catch {
-            sock.destroy();
+          } catch (e) {
+            if (e && e.__httpParse) this.__badRequest(sock);
+            else sock.destroy();
           }
         });
+        // 连接即开 headers 计时（headersTimeout 内须收到完整头，否则 408）。
+        this.__armIdleTimers(st, sock);
       });
+    }
+    // 400 Bad Request（Node clientError 默认响应）+ 销毁。
+    __badRequest(sock) {
+      try { sock.write(new TextEncoder().encode("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
+      try { sock.destroy(); } catch { /* gone */ }
+    }
+    // 408 Request Timeout（requestTimeout/headersTimeout 到期；精确字节见
+    // test-http-server-request-timeout-delayed-headers 套件）+ 销毁。
+    __reqTimeout(sock) {
+      try { sock.write(new TextEncoder().encode("HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
+      try { sock.destroy(); } catch { /* gone */ }
+    }
+    __clearReqTimers(st) {
+      if (st.__hdT !== null) { clearTimeout(st.__hdT); st.__hdT = null; }
+      if (st.__rqT !== null) { clearTimeout(st.__rqT); st.__rqT = null; }
+      if (st.__kaT !== null) { clearTimeout(st.__kaT); st.__kaT = null; }
+    }
+    // 空闲期（等下一请求头）：headersTimeout → 408；keepAliveTimeout → 静默销毁
+    // （ka 只在响应完成后臂，withKa——体齐响应未完时挂 ka 会误杀在途响应）。
+    // 消息期（头已到、体未齐）：requestTimeout → 408。Node 口径：消息期计时器
+    // 不因部分数据重置（interrupted/delayed 系套件依赖）。
+    __armIdleTimers(st, sock, withKa = false) {
+      this.__clearReqTimers(st);
+      if (this.headersTimeout > 0) {
+        st.__hdT = setTimeout(() => { st.__hdT = null; this.__reqTimeout(sock); }, this.headersTimeout);
+        st.__hdT.unref();
+      }
+      if (withKa && st.sawRequest && this.keepAliveTimeout > 0) {
+        st.__kaT = setTimeout(() => { st.__kaT = null; try { sock.destroy(); } catch { /* gone */ } }, this.keepAliveTimeout + this.keepAliveTimeoutBuffer);
+        st.__kaT.unref();
+      }
+    }
+    __armMsgTimer(st, sock) {
+      this.__clearReqTimers(st);
+      if (this.requestTimeout > 0) {
+        st.__rqT = setTimeout(() => { st.__rqT = null; this.__reqTimeout(sock); }, this.requestTimeout);
+        st.__rqT.unref();
+      }
+    }
+    setTimeout(msecs, callback) {
+      this.timeout = msecs;
+      if (typeof callback === "function") this.on("timeout", callback);
+      return this;
+    }
+    closeIdleConnections() {
+      for (const sock of this.__sockets) {
+        const st = sock.__httpState;
+        if (!st || st.req === null) {
+          try { sock.destroy(); } catch { /* gone */ }
+        }
+      }
+    }
+    closeAllConnections() {
+      for (const sock of this.__sockets) {
+        try { sock.destroy(); } catch { /* gone */ }
+      }
     }
     __feed(sock, st, chunk) {
       st.buf = __concat(st.buf, chunk);
       while (true) {
         if (st.req === null) {
           const headEnd = __findHeadEnd(st.buf);
-          if (headEnd === -1) return;
+          if (headEnd === -1) {
+            // 头未齐也可先校验请求行（llhttp 增量语义；管线残渣 "hello world\r\n"
+            // 之类在行终结时就该 400，等不到 \r\n\r\n——blank-header 套件）。
+            for (let i = 0; i + 1 < st.buf.length; i++) {
+              if (st.buf[i] === 13 && st.buf[i + 1] === 10) {
+                const lineText = __latin1(st.buf.slice(0, i)).split(" ");
+                if (lineText.length !== 3 || !__TOKEN_RE.test(lineText[0]) ||
+                    !/^HTTP\/\d(\.\d)?$/.test(lineText[2] ?? "")) {
+                  throw __mkParseError("bad request line");
+                }
+                break;
+              }
+            }
+            return;
+          }
           const headText = __latin1(st.buf.slice(0, headEnd));
           const { first, headers, rawHeaders } = __parseHead(headText);
-          if (first.length < 3) throw new Error("bad request line");
+          __validateRequestHead(first, headers);
           const req = new IncomingMessage();
           req.method = first[0];
           req.url = first[1];
@@ -421,15 +610,22 @@ export function withHttpServer(Base) {
           const conn = (headers.connection || "").toLowerCase();
           const keepAlive = req.httpVersion === "1.1" ? conn !== "close" : conn === "keep-alive";
           const res = new ServerResponse(sock);
+          res.req = req;
+          req.res = res;
           res.__keepAlive = keepAlive && !this.__closing;
           res.__headOnly = req.method === "HEAD";
           st.req = req;
           st.framing = framing;
           st.res = res;
+          // 头已齐、体在途：消息期 requestTimeout 计时。
+          this.__armMsgTimer(st, sock);
           res.__onDone = () => {
             st.req = null;
             st.framing = null;
             st.res = null;
+            st.sawRequest = true;
+            // 请求+响应完整落地：回空闲期（headersTimeout/keepAliveTimeout 双计时）。
+            this.__armIdleTimers(st, sock, true);
             this.__feed(sock, st, new Uint8Array(0));
           };
           if (this.__closing) {
@@ -449,6 +645,7 @@ export function withHttpServer(Base) {
           st.req.__complete();
           st.req = null;
           st.framing = null;
+          this.__armIdleTimers(st, sock);
           continue;
         }
         let r;
@@ -456,13 +653,14 @@ export function withHttpServer(Base) {
           r = __pumpCL(fr, st.req, st.buf);
         } else {
           r = __pumpChunked(fr, st.req, st.buf);
-          if (r.error) throw new Error("bad chunked body");
+          if (r.error) throw __mkParseError("bad chunked body");
         }
         st.buf = r.rest;
         if (!r.done) return;
         st.req.__complete();
         st.req = null;
         st.framing = null;
+        this.__armIdleTimers(st, sock);
       }
     }
     close(cb) {
@@ -506,17 +704,24 @@ export function withClientRequest(openSocket, flavor) {
         extra = {};
       } else {
         method = (options.method ?? "GET").toUpperCase();
-        host = options.host ?? options.hostname ?? "127.0.0.1";
+        host = options.host ?? options.hostname ?? "localhost";
         port = Number(options.port ?? flavor.defaultPort);
         path = options.path ?? "/";
         if (!path.startsWith("/")) path = "/" + path;
         userHeaders = options.headers ?? {};
         extra = options;
       }
+      // node lib/_http_client.js：path 控制字符/空格即 ERR_UNESCAPED_CHARACTERS。
+      if (INVALID_PATH_REGEX.test(path)) {
+        throw new codes.ERR_UNESCAPED_CHARACTERS("Request path");
+      }
       this.method = method;
       this.host = host;
-      this.port = port;
+      // node 口径：.port 不是自有属性（req.port === undefined；取值走 getPort()）。
+      this.__port = port;
       this.path = path;
+      this.timeout = options.timeout !== undefined ? Number(options.timeout) : undefined;
+      this.socket = null;
       this.agent = options.agent === undefined ? (flavor.defaultAgent ?? null) : (options.agent || null);
       this.__headers = __lowerHeaders(userHeaders);
       if (this.__headers.host === undefined) {
@@ -539,10 +744,25 @@ export function withClientRequest(openSocket, flavor) {
       this.__resBuf = new Uint8Array(0);
       this.__respDone = false;
       this.__closeEmitted = false;
-      this.__key = `${host}:${port}`;
+      // 池键与 agent 键位统一（getName 形；keep-alive 测试以 agent.getName 命中；
+      // 全量 extra 进键——https 的 TLS 选项字段参与去重）。
+      this.__key = this.agent !== null
+        ? this.agent.getName({ host, port, ...(extra ?? {}) })
+        : `${host}:${port}`;
       this.reusedSocket = false;
       if (typeof cb === "function") this.on("response", cb);
-      if (this.agent !== null) {
+      if (typeof options.createConnection === "function") {
+        // request 级 createConnection（node _http_client 口径）：绕 agent 直建。
+        this.__createConn = options.createConnection;
+        let out;
+        let settled = false;
+        const oncreate = (err, s) => {
+          settled = true;
+          if (s) this.__attach(s, false);
+        };
+        const maybe = this.__createConn({ host, port, ...(extra ?? {}) }, oncreate);
+        if (!settled && maybe) this.__attach(maybe, false);
+      } else if (this.agent !== null) {
         this.agent.__acquire(this, host, port, extra, (sock, reused) => this.__attach(sock, reused));
       } else {
         this.__attach(openSocket(host, port, extra), false);
@@ -554,7 +774,20 @@ export function withClientRequest(openSocket, flavor) {
         return;
       }
       this.__sock = sock;
+      this.socket = sock;
       this.reusedSocket = reused === true;
+      this.emit("socket", sock);
+      if (this.__pendingNoDelay !== undefined) {
+        try { sock.setNoDelay(this.__pendingNoDelay); } catch { /* gone */ }
+      }
+      if (this.__pendingKeepAlive !== undefined) {
+        try { sock.setKeepAlive(this.__pendingKeepAlive[0], this.__pendingKeepAlive[1]); } catch { /* gone */ }
+      }
+      if (this.__reqTimeoutMs !== undefined) {
+        sock.on("timeout", () => this.emit("timeout"));
+        // 假 socket（createConnection 注入的 Duplex）无 setTimeout 面则跳过。
+        if (typeof sock.setTimeout === "function") sock.setTimeout(this.__reqTimeoutMs);
+      }
       this.__onSockClose = () => this.__onSockCloseEv();
       sock.on("connect", () => {
         this.__connected = true;
@@ -592,6 +825,51 @@ export function withClientRequest(openSocket, flavor) {
     getHeader(name) { return this.__headers[String(name).toLowerCase()]; }
     removeHeader(name) { delete this.__headers[String(name).toLowerCase()]; return this; }
     getHeaderNames() { return Object.keys(this.__headers); }
+    getPort() { return this.__port; }
+    getHost() { return this.host; }
+    // node 口径：连接后落到 socket；未连接先存 pending（deferToConnect 语义）。
+    setNoDelay(noDelay) {
+      this.__pendingNoDelay = noDelay ?? true;
+      if (this.__sock !== null && this.__sock !== undefined && typeof this.__sock.setNoDelay === "function") {
+        try { this.__sock.setNoDelay(this.__pendingNoDelay); } catch { /* gone */ }
+      }
+      return this;
+    }
+    setSocketKeepAlive(enable, initialDelay) {
+      this.__pendingKeepAlive = [enable ?? true, initialDelay ?? 0];
+      if (this.__sock !== null && this.__sock !== undefined && typeof this.__sock.setKeepAlive === "function") {
+        try { this.__sock.setKeepAlive(enable ?? true, initialDelay ?? 0); } catch { /* gone */ }
+      }
+      return this;
+    }
+    // node lib/_http_client.js：once('timeout') + socket 空闲计时（已连即臂，
+    // 未连记位，__attach 落地）。
+    setTimeout(msecs, callback) {
+      if (typeof callback === "function") this.once("timeout", callback);
+      const ms = Number(msecs) || 0;
+      this.__reqTimeoutMs = ms > 0 ? ms : undefined;
+      // 假 socket（createConnection 注入的 Duplex）无 setTimeout 面则跳过。
+      if (this.__sock !== null && this.__sock !== undefined && typeof this.__sock.setTimeout === "function") {
+        this.__sock.setTimeout(ms);
+      }
+      return this;
+    }
+    clearTimeout(cb) { return this.setTimeout(0, cb); }
+    // 立即发头（node flushHeaders：_implicitHeader + 强制刷）。
+    flushHeaders() {
+      if (this.__headSent) return;
+      if (this.__connected && this.__sock !== null && this.__sock !== undefined && !this.destroyed) {
+        if (this.__buf1 !== null) this.__chunked = true;
+        this.__sendHead();
+        if (this.__buf1 !== null) {
+          const q = this.__buf1;
+          this.__buf1 = null;
+          for (const b of q) this.__frame(b);
+        }
+      } else {
+        this.__forceHead = true;
+      }
+    }
     write(chunk, encoding) {
       if (this.__userEnded) throw new Error("ERR_STREAM_WRITE_AFTER_END: write after end");
       return super.write(chunk, encoding);
@@ -628,16 +906,18 @@ export function withClientRequest(openSocket, flavor) {
         this.__sock.write(u8);
       }
     }
-    // 连接就绪或刷盘时机到：holdback 未决且已连通则按 chunked 刷出。
+    // 连接就绪或刷盘时机到：holdback 未决或 flushHeaders 逼头则刷出。
     // 队列逐帧发出（不合并）：保 TCP 分包，与连通后直发一致（blk09 计数型套件依赖）。
     __tryFlush() {
-      if (!this.__connected || this.__sock === null || this.__headSent || this.__buf1 === null) return;
+      if (!this.__connected || this.__sock === null || this.__headSent) return;
       if (this.destroyed) return;
-      this.__chunked = true;
+      if (this.__buf1 === null && !this.__forceHead) return;
+      if (this.__buf1 !== null) this.__chunked = true;
+      this.__forceHead = false;
       this.__sendHead();
       const q = this.__buf1;
       this.__buf1 = null;
-      for (const b of q) this.__frame(b);
+      if (q !== null) for (const b of q) this.__frame(b);
     }
     _write(chunk, encoding, cb) {
       const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk));
@@ -668,6 +948,7 @@ export function withClientRequest(openSocket, flavor) {
         }
       }
       if (this.__connected && this.__sock !== null && !this.destroyed) {
+        if (!this.__chunked && !this.__rawCL) this.__chunked = true;
         this.__frame(u8);
       } else {
         (this.__buf1 ??= []).push(u8);
@@ -749,15 +1030,19 @@ export function withClientRequest(openSocket, flavor) {
           if (headEnd === -1) return;
           const headText = __latin1(this.__resBuf.slice(0, headEnd));
           const { first, headers, rawHeaders } = __parseHead(headText);
-          if (first.length < 3 || !first[0].startsWith("HTTP/")) {
+          if (!first[0].startsWith("HTTP/") || !/^\d{3}$/.test(first[1] ?? "")) {
             this.destroy(new Error("HPE_INVALID_CONSTANT: invalid HTTP response line"));
             return;
           }
           const res = new IncomingMessage();
           res.statusCode = Number(first[1]);
-          res.statusMessage = first.slice(2).join(" ");
+          // 状态行无短语合法（"HTTP/1.1 200\r\n"）：短语空串（status-message 套件）。
+          res.statusMessage = first.length >= 3 ? first.slice(2).join(" ") : "";
           res.headers = headers;
           res.rawHeaders = rawHeaders;
+          res.socket = this.__sock;
+          res.connection = this.__sock;
+          res.req = this;
           this.__framing = __framingFor(headers, true, res.statusCode, this.method);
           this.__res = res;
           this.__resBuf = this.__resBuf.slice(headEnd + 4);
@@ -847,139 +1132,229 @@ export function withClientRequest(openSocket, flavor) {
   };
 }
 
-export class Agent extends EventEmitter {
-  constructor(options = {}) {
-    super();
-    this.keepAlive = options.keepAlive ?? false;
-    this.maxSockets = options.maxSockets ?? Infinity;
-    this.maxFreeSockets = options.maxFreeSockets ?? 256;
-    this.scheduling = options.scheduling ?? "lifo";
-    this.sockets = {};
-    this.freeSockets = {};
-    this.requests = {};
-    // __openSocket/__defaultPort 由 flavor 子类经 prototype 提供（本类不设 own
-    // 属性，否则遮蔽子类覆盖；裸 BaseAgent 直接用即 TypeError）。
+// Agent：node lib/_http_agent.js 口径的函数式构造器——`http.Agent({...})` 无 new
+// 亦合法（keepalive-client/free/override 系套件点名）。键位统一走 getName 形
+// （'host:port:localAddress(:family)'，缺省位仍带分隔冒号——agent-getname 套件）。
+function Agent(options = {}) {
+  if (!(this instanceof Agent)) return new Agent(options);
+  Agent.prototype.__init.call(this, options);
+}
+Object.setPrototypeOf(Agent.prototype, EventEmitter.prototype);
+Object.setPrototypeOf(Agent, EventEmitter);
+Agent.prototype.__init = function (options = {}) {
+  EventEmitter.call(this);
+  this.options = options ?? {};
+  this.keepAlive = options.keepAlive ?? false;
+  this.keepAliveMsecs = options.keepAliveMsecs ?? 1000;
+  this.maxSockets = options.maxSockets ?? Infinity;
+  this.maxFreeSockets = options.maxFreeSockets ?? 256;
+  this.maxTotalSockets = options.maxTotalSockets ?? Infinity;
+  this.totalSocketCount = 0;
+  this.scheduling = options.scheduling ?? "lifo";
+  this.sockets = {};
+  this.freeSockets = {};
+  this.requests = {};
+  // __openSocket/__defaultPort 由 flavor 子类经 prototype 提供（本类不设 own
+  // 属性，否则遮蔽子类覆盖；裸 BaseAgent 直接用即 TypeError）。
+};
+// node 口径：createConnection 是 agent 的建连钩（测试以假 Duplex 覆盖做黑洞/
+// 依此注入 socket）；默认回落 flavor 的 __openSocket。同步回值与 cb 双形态，
+// settled 旗防双取。
+Agent.prototype.createConnection = function (options, cb) {
+  const s = this.__openSocket(options.host, options.port, options);
+  if (typeof cb === "function") cb(null, s);
+  return s;
+};
+Agent.prototype.getName = function (options = {}) {
+  let name = options.host ?? options.hostname ?? "localhost";
+  name += ":";
+  if (options.port) name += options.port;
+  name += ":";
+  if (options.localAddress) name += options.localAddress;
+  if (options.family === 4 || options.family === 6) name += ":" + options.family;
+  return name;
+};
+Agent.prototype.__list = function (map, key) {
+  if (map[key] === undefined) map[key] = [];
+  return map[key];
+};
+Agent.prototype.__liveCount = function (key) {
+  const all = this.__list(this.sockets, key).filter((s) => !s.destroyed);
+  return all.length;
+};
+// 建连：走 createConnection 钩（同步回值/cb 双形态），返回 socket 或 undefined。
+Agent.prototype.__createSock = function (options) {
+  let out;
+  let settled = false;
+  const oncreate = (err, s) => {
+    settled = true;
+    if (!err && s) out = s;
+  };
+  const maybe = this.createConnection(options, oncreate);
+  if (!settled && maybe) out = maybe;
+  return out;
+};
+Agent.prototype.__trackSocket = function (sock, key) {
+  this.__list(this.sockets, key).push(sock);
+  this.totalSocketCount++;
+  const cleaner = () => this.__noteClosed(sock);
+  sock.__poolCleaner = cleaner;
+  sock.on("close", cleaner);
+};
+Agent.prototype.__unpool = function (sock) {
+  sock.__inPool = false;
+  if (sock.__poolCleaner !== undefined) {
+    try { sock.removeListener("close", sock.__poolCleaner); } catch { /* gone */ }
+    sock.__poolCleaner = undefined;
   }
-  getName(options = {}) {
-    const host = options.host ?? options.hostname ?? "localhost";
-    const port = options.port ?? this.__defaultPort ?? 80;
-    return `${host}:${port}`;
-  }
-  __list(map, key) {
-    if (map[key] === undefined) map[key] = [];
-    return map[key];
-  }
-  __liveCount(key) {
-    const all = this.__list(this.sockets, key).filter((s) => !s.destroyed);
-    return all.length;
-  }
-  // 取空闲或新建；满额则排队（release 时续行）。onSocket(sock, reused)。
-  __acquire(req, host, port, extra, onSocket) {
-    const key = `${host}:${port}`;
-    const free = this.__list(this.freeSockets, key);
-    while (free.length > 0) {
-      const sock = this.scheduling === "fifo" ? free.shift() : free.pop();
-      if (!sock.destroyed) {
-        sock.__inPool = false;
-        if (sock.__poolCleaner !== undefined) {
-          try { sock.removeListener("close", sock.__poolCleaner); } catch { /* gone */ }
-          sock.__poolCleaner = undefined;
-        }
-        req.__poolKey = key;
-        onSocket(sock, true);
-        return;
-      }
-    }
-    if (this.__liveCount(key) >= this.maxSockets) {
-      this.__list(this.requests, key).push({ req, host, port, extra, onSocket });
+};
+// 取空闲或新建；满额则排队（release 时续行）。onSocket(sock, reused)。
+Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
+  const key = this.getName({ host, port, ...(extra ?? {}) });
+  const free = this.__list(this.freeSockets, key);
+  while (free.length > 0) {
+    const sock = this.scheduling === "fifo" ? free.shift() : free.pop();
+    if (!sock.destroyed) {
+      this.__unpool(sock);
       req.__poolKey = key;
-      req.__queued = true;
+      onSocket(sock, true);
       return;
     }
-    const sock = this.__openSocket(host, port, extra);
-    sock.__poolKey = key;
-    this.__list(this.sockets, key).push(sock);
-    const cleaner = () => this.__noteClosed(sock);
-    sock.__poolCleaner = cleaner;
-    sock.on("close", cleaner);
-    req.__queued = false;
-    onSocket(sock, false);
   }
-  __noteClosed(sock) {
-    const key = sock.__poolKey;
-    if (key === undefined) return;
-    const drop = (map) => {
-      const arr = map[key];
-      if (arr !== undefined) {
-        const i = arr.indexOf(sock);
-        if (i !== -1) arr.splice(i, 1);
-      }
-    };
-    drop(this.sockets);
-    drop(this.freeSockets);
+  if (this.__liveCount(key) >= this.maxSockets) {
+    this.__list(this.requests, key).push({ req, host, port, extra, onSocket });
+    req.__poolKey = key;
+    req.__queued = true;
+    return;
   }
-  __release(sock, key, req) {
-    if (req !== null && req !== undefined) req.__queued = false;
-    if (sock.destroyed || !this.keepAlive) {
-      if (!sock.destroyed) {
-        try { sock.destroy(); } catch { /* gone */ }
-      }
+  req.__poolKey = key;
+  req.__queued = false;
+  const sock = this.__createSock({ host, port, ...(extra ?? {}) });
+  if (!sock) {
+    const err = new Error("socket hang up");
+    err.code = "ECONNREFUSED";
+    req.destroy(err);
+    return;
+  }
+  this.__trackSocket(sock, key);
+  onSocket(sock, false);
+};
+Agent.prototype.__noteClosed = function (sock) {
+  const key = sock.__poolKey;
+  if (key === undefined) return;
+  const drop = (map) => {
+    const arr = map[key];
+    if (arr !== undefined) {
+      const i = arr.indexOf(sock);
+      if (i !== -1) arr.splice(i, 1);
+    }
+  };
+  drop(this.sockets);
+  drop(this.freeSockets);
+};
+Agent.prototype.__release = function (sock, key, req) {
+  if (req !== null && req !== undefined) req.__queued = false;
+  if (sock.destroyed || !this.keepAlive) {
+    if (!sock.destroyed) {
+      try { sock.destroy(); } catch { /* gone */ }
+    }
+    this.__noteClosed(sock);
+  } else {
+    const free = this.__list(this.freeSockets, key);
+    if (free.length >= this.maxFreeSockets) {
+      try { sock.destroy(); } catch { /* gone */ }
       this.__noteClosed(sock);
     } else {
-      const free = this.__list(this.freeSockets, key);
-      if (free.length >= this.maxFreeSockets) {
-        try { sock.destroy(); } catch { /* gone */ }
-        this.__noteClosed(sock);
-      } else {
-        sock.__inPool = true;
-        free.push(sock);
-        if (sock.__poolCleaner === undefined) {
-          const cleaner = () => this.__noteClosed(sock);
-          sock.__poolCleaner = cleaner;
-          sock.on("close", cleaner);
-        }
+      sock.__inPool = true;
+      free.push(sock);
+      if (sock.__poolCleaner === undefined) {
+        const cleaner = () => this.__noteClosed(sock);
+        sock.__poolCleaner = cleaner;
+        sock.on("close", cleaner);
       }
     }
-    // 续行排队请求。
-    const q = this.__list(this.requests, key);
-    while (q.length > 0) {
-      const next = q.shift();
-      if (next.req.destroyed) continue;
-      next.req.__queued = false;
-      this.__acquire(next.req, next.host, next.port, next.extra, next.onSocket);
-      break;
-    }
   }
-  __cancel(req) {
-    const key = req.__poolKey;
-    if (key === undefined || !req.__queued) return;
+  // 续行排队请求。
+  const q = this.__list(this.requests, key);
+  while (q.length > 0) {
+    const next = q.shift();
+    if (next.req.destroyed) continue;
+    next.req.__queued = false;
+    this.__acquire(next.req, next.host, next.port, next.extra, next.onSocket);
+    break;
+  }
+};
+Agent.prototype.__cancel = function (req) {
+  const key = req.__poolKey;
+  if (key === undefined || !req.__queued) return;
+  req.__queued = false;
+  const q = this.__list(this.requests, key);
+  const i = q.findIndex((e) => e.req === req);
+  if (i !== -1) q.splice(i, 1);
+};
+// node lib/_http_agent.js addRequest 口径（freeSockets 直投/建连/排队三路）：
+// 外部直塞 freeSockets 再 addRequest 即复用（agent-uninitialized 套件）。
+Agent.prototype.addRequest = function (req, options, port, localAddress) {
+  if (typeof options === "string") options = { host: options, port, localAddress };
+  options = { ...(options ?? {}), ...(this.options ?? {}) };
+  if (options.socketPath) options.path = options.socketPath;
+  const name = this.getName(options);
+  this.__list(this.sockets, name);
+  const free = this.freeSockets[name];
+  let sock;
+  if (free) {
+    while (free.length > 0 && free[0].destroyed) free.shift();
+    sock = this.scheduling === "fifo" ? free.shift() : free.pop();
+    if (free.length === 0) delete this.freeSockets[name];
+  }
+  if (sock) {
+    this.__unpool(sock);
+    this.__list(this.sockets, name).push(sock);
+    req.__poolKey = name;
     req.__queued = false;
-    const q = this.__list(this.requests, key);
-    const i = q.findIndex((e) => e.req === req);
-    if (i !== -1) q.splice(i, 1);
+    if (typeof req.__attach === "function") req.__attach(sock, true);
+    return;
   }
-  destroy() {
-    for (const key of Object.keys(this.requests)) {
-      const q = this.requests[key];
-      this.requests[key] = [];
-      for (const { req } of q) {
-        if (!req.destroyed) {
-          const err = new Error("socket hang up");
-          err.code = "ECONNRESET";
-          req.destroy(err);
-        }
+  if (this.__liveCount(name) >= this.maxSockets) {
+    this.__list(this.requests, name).push({ req, host: options.host, port: options.port, extra: options, onSocket: (s, reused) => req.__attach(s, reused) });
+    req.__poolKey = name;
+    req.__queued = true;
+    return;
+  }
+  req.__poolKey = name;
+  req.__queued = false;
+  const s = this.__createSock({ host: options.host ?? options.hostname ?? "localhost", port: options.port ?? this.__defaultPort ?? 80, ...options });
+  if (!s) {
+    const err = new Error("socket hang up");
+    err.code = "ECONNREFUSED";
+    req.destroy(err);
+    return;
+  }
+  this.__trackSocket(s, name);
+  if (typeof req.__attach === "function") req.__attach(s, false);
+};
+Agent.prototype.destroy = function () {
+  for (const key of Object.keys(this.requests)) {
+    const q = this.requests[key];
+    this.requests[key] = [];
+    for (const { req } of q) {
+      if (!req.destroyed) {
+        const err = new Error("socket hang up");
+        err.code = "ECONNRESET";
+        req.destroy(err);
       }
     }
-    for (const key of Object.keys(this.sockets)) {
-      const arr = this.sockets[key];
-      this.sockets[key] = [];
-      for (const sock of arr) {
-        try { sock.destroy(); } catch { /* gone */ }
-      }
-    }
-    this.freeSockets = {};
   }
-}
+  for (const key of Object.keys(this.sockets)) {
+    const arr = this.sockets[key];
+    this.sockets[key] = [];
+    for (const sock of arr) {
+      try { sock.destroy(); } catch { /* gone */ }
+    }
+  }
+  this.freeSockets = {};
+};
+export { Agent };
 
 // request/get 三形态归一：(url[, options][, cb]) / (options[, cb]) → [options, cb]。
 // url 与 options 并存时 options 优先；跨协议即 ERR_INVALID_PROTOCOL（Node 口径）。

@@ -937,3 +937,92 @@
 > - **subtle 面**（RSA-OAEP SHA-1 等 WebCrypto 差集），另案（`oaep-zero-length`）。
 > - **零散**：scrypt 钥长、raw-public 导出、ECDH getters 的 'buffer'、
 >   outputEncoding 对象形等，下轮。
+
+## http
+
+> 两轮对拍（2026-09-18，404 件，`/tmp/wjs-10f-http1/2.txt`）：
+> 同绿 95 → **125**（+30）；SAME1=13（双边同码）；DIFF 296 → **266**。
+> 首轮 DIFF 聚类：TIMEOUT 97 / createConnection 缺失 13（假 socket 用例全灭于
+> ECONNREFUSED:80）/ req.setTimeout 等方法面 ~100 / server timeout 三件套
+> 属性缺失 13+ / 400 Bad Request 未发射 6+ / 内部别名 `_http_*` 等。
+> 回归：`tests/node/http.rs::phase10f_http_parity_round1`（13 组面，
+> 正常/报错/边界）。
+>
+> ### 首轮已修（每项经真机 26.8.2 对拍）
+>
+> - **Agent 函数化（no-new）**：`http.Agent({...})` 裸调用合法（keepalive-client/
+>   free/override 套件）；BaseAgent/子类同改（函数 + `__init` + 原型链挂 EE）。
+> - **createConnection 钩**：agent 级（node lib/_http_agent.js 口径，同步回值/cb
+>   双形态，settled 旗防双取）+ request 级 `options.createConnection` 绕 agent；
+>   假 Duplex 黑洞 socket 全链（client-readable/generic-streams 套件）。
+> - **Agent 键位统一 getName 形**：`host:port:localAddress(:family)`（缺省位仍带
+>   分隔冒号，agent-getname 套件）；池键/release/acquire/addRequest 全同键；
+>   ClientRequest 缺省 host 127.0.0.1 → `localhost`（node 口径，键位一致性）。
+> - **addRequest 落地**：freeSockets 直投复用 / 建连 / maxSockets 排队三路
+>   （agent-uninitialized 套件：外部直塞 freeSockets + addRequest）。
+> - **server timeout 三件套**：`requestTimeout`(300000)/`headersTimeout`
+>   (min(60000, requestTimeout))/`keepAliveTimeout`(5000)/`keepAliveTimeoutBuffer`
+>   (1000) 选项持久化 + `validateInteger` 形校验 + headersTimeout > requestTimeout
+>   即 ERR_OUT_OF_RANGE；`server.timeout`/`setTimeout(msecs, cb)`（per-socket 单发
+>   idle timer + data 到达重臂，'timeout'(socket) 透传）。
+> - **408/400 发射**：头未齐过 headersTimeout → `HTTP/1.1 408 Request Timeout`
+>   精确字节 + 销毁；体在途过 requestTimeout 同；请求行/头行校验（RFC token 形
+>   + 头行无冒号即拒）失败 → `HTTP/1.1 400 Bad Request` 精确字节（管线残渣
+>   "hello world\r\n" 在行终结即 400，不等 \r\n\r\n——blank-header 套件）。
+>   消息期计时器不因部分数据重置（interrupted/delayed 系套件）；ka 计时器只在
+>   响应完成后臂（体齐响应未完时挂 ka 会误杀在途响应）。
+> - **IncomingMessage.setTimeout**（转发 socket）+ 客户端 `res.socket`/
+>   `res.req`/服务端 `req.res` 回填 + `res.req = req` 双向。
+> - **状态行无短语**：`HTTP/1.1 200\r\n` 合法，statusMessage 空串
+>   （response-status-message 套件）。
+> - **flushHeaders 双侧**：req 连通即发头/未连通记 `__forceHead` 位（连通时
+>   `__tryFlush` 兜住）；res 立即 chunked 头 + holdback 首块刷出。
+> - **ClientRequest 面**：`setNoDelay`/`setSocketKeepAlive`（deferToConnect 语义，
+>   pending 位 attach 落地）/`setTimeout`（once('timeout') + socket 转发）/`clearTimeout`/
+>   `getPort`/`getHost`/`'socket'` 事件 + `options.timeout` 存储；`.port` 移出自有
+>   属性（真机 `req.port === undefined`，取值走 getPort）。
+> - **OutgoingMessage 独立可用**：基类 `_write` 缓冲不落盘（cb 不调，writableLength
+>   保持——node outputData 口径）+ `_implicitHeader` 桩；`assignSocket` +
+>   ERR_HTTP_SOCKET_ASSIGNED 双拒（构造首参是 req 形对象非 socket，非 socket
+>   一律不入 `__sock`）。
+> - **头+首块合并写**：`res.end(data)` 头未发时 head+body 合并为一次 socket
+>   write（node `_send` 合并口径；standalone 套件断言单 chunk 以 body 结尾）。
+> - **closeIdleConnections/closeAllConnections**（空闲=无在途 req）。
+> - **path 校验**：控制字符/空格即 ERR_UNESCAPED_CHARACTERS（node
+>   INVALID_PATH_REGEX 同款，errors 表补码）。
+>
+> ### 剩余红项（DIFF 266，分簇）
+>
+> - **TIMEOUT 110 件**：expect-continue/upgrade 深件/trailer/管线背压/
+>   max-connections 系——多数需流式深化，另轮。
+> - **校验长尾 ~30**：`Missing expected exception`/`throws: unexpected throw`/
+>   write-after-destroy 时序等逐 API 续补。
+> - **假 socket 深件 2**：`socket.push`（net.Socket 非 Duplex，read-in-error/
+>   header-overflow）——需 net.Socket 流式化，另轮。
+> - **内部别名**：`_http_common`/`_http_server`/`_http_agent`（HTTPParser 内省面，
+>   2+ 件）——映射无谓（我们无 llhttp），记档偏离。
+> - **ECONNREFUSED localhost:80 残 7 件**：createConnection cb 形/timeout-option
+>   交叉——逐个另查。
+> - **chunk 限深 2 件**：chunk-extensions-limit/extensions 总量限（llhttp
+>   计数语义）。
+> - ** flakes**：full-response 并行跑偶发（单跑 rc=0，重负载族 §4.126）。
+
+## https
+
+> 同 http 域随行（帧层共用，67 件）：同绿 8 → **13**（+5：Agent no-new/
+> getName TLS 全键/server timeout 三件套随行）；SAME1=2；DIFF 57 → **52**。
+> 剩余红项多为 TLS 深件：pfx（2）、createSecureContext（缺 API）、SNI 回调、
+> session reuse（getSession/getTicketKeys）、`res.socket.getSession`/
+> `socket.authorized` 深链、unix socket self-signed（ECONNREFUSED）、
+> checkServerIdentity 面等——随 tls 域深化另轮；`https.Agent.getName` 已按
+> node lib/https.js 23 字段全键落地（agent-getname ✅）。
+
+## http2
+
+> 首轮点名（2026-09-18，276 件，`/tmp/wjs-10f-http1/2.txt`）：
+> 同绿 7 → **8**；SAME1=30；DIFF 239 → **238**。
+> 主簇（~105 件）：compat 层 `Http2ServerRequest/Response` 为 EventEmitter 薄壳
+> （整收口径直发 data/end），缺 resume/setEncoding/pipe/背压全流面——与 10b
+> http 流式化同型工程，另轮；次簇：`stream.respond/respondWithFile` 等
+> server 流面（~11）、settings/priority/ALPN 校验面、TIMEOUT（背压/内存限）。
+> h2c/HTTP3 既有黑盒全绿无回归（`tests/node/http2.rs`）。

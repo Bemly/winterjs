@@ -18,8 +18,10 @@ const FLAVOR = { protocol: "http:", defaultPort: 80, other: "node:https" };
 const __HttpServerBase = withHttpServer(net.Server);
 // Server 首参 listener 形态（Node: `new Server(cb)`/`Server(cb)` 即 request 监听）。
 // withHttpServer 的包装只透传基类构造实参（connection 监听），request 监听在此接。
+// options 为对象时透传基类（timeout 三件套等 http 面选项在帧层解析）。
 function Server(...args) {
-  const s = new __HttpServerBase();
+  const opts = args[0] !== null && typeof args[0] === "object" && !Array.isArray(args[0]) ? args[0] : undefined;
+  const s = new __HttpServerBase(opts);
   const first = args[0];
   if (typeof first === "function") s.on("request", first);
   else if (args.length > 1 && typeof args[1] === "function") s.on("request", args[1]);
@@ -31,7 +33,13 @@ const ClientRequest = withClientRequest(
   (host, port) => net.connect(port, host),
   FLAVOR,
 );
-class Agent extends BaseAgent {}
+// Agent 函数式构造器（node 口径：`http.Agent({...})` 无 new 亦合法）。
+function Agent(options = {}) {
+  if (!(this instanceof Agent)) return new Agent(options);
+  BaseAgent.prototype.__init.call(this, options);
+}
+Object.setPrototypeOf(Agent.prototype, BaseAgent.prototype);
+Object.setPrototypeOf(Agent, BaseAgent);
 Agent.prototype.__openSocket = (host, port) => net.connect({ port, host, noDelay: true });
 Agent.prototype.__defaultPort = 80;
 const globalAgent = new Agent();
@@ -46,7 +54,8 @@ export function get(a, b, c) {
   return getFrom(ClientRequest, options, cb);
 }
 export function createServer(options, cb) {
-  const server = new __HttpServerBase();
+  const opts = options !== null && typeof options === "object" && !Array.isArray(options) ? options : undefined;
+  const server = new __HttpServerBase(opts);
   if (typeof options === "function") server.on("request", options);
   else if (typeof cb === "function") server.on("request", cb);
   return server;

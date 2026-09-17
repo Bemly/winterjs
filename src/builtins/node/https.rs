@@ -17,9 +17,10 @@ import {
 
 const FLAVOR = { protocol: "https:", defaultPort: 443, other: "node:http" };
 const __HttpServerBase = withHttpServer(tls.Server);
-// Server 首参 listener 形态（Node 口径，与 node:http 同）。
+// Server 首参 listener 形态（Node 口径，与 node:http 同）；options 对象才透传。
 function Server(...args) {
-  const s = new __HttpServerBase(args[0] ?? {});
+  const opts = args[0] !== null && typeof args[0] === "object" && !Array.isArray(args[0]) ? args[0] : undefined;
+  const s = new __HttpServerBase(opts);
   const first = args[0];
   if (typeof first === "function") s.on("request", first);
   else if (args.length > 1 && typeof args[1] === "function") s.on("request", args[1]);
@@ -36,7 +37,13 @@ const ClientRequest = withClientRequest(
   }),
   FLAVOR,
 );
-class Agent extends BaseAgent {}
+// Agent 函数式构造器（node 口径：`https.Agent({...})` 无 new 亦合法）。
+function Agent(options = {}) {
+  if (!(this instanceof Agent)) return new Agent(options);
+  BaseAgent.prototype.__init.call(this, options);
+}
+Object.setPrototypeOf(Agent.prototype, BaseAgent.prototype);
+Object.setPrototypeOf(Agent, BaseAgent);
 Agent.prototype.__openSocket = (host, port, extra) => tls.connect({
   port, host,
   servername: extra.servername,
@@ -44,6 +51,62 @@ Agent.prototype.__openSocket = (host, port, extra) => tls.connect({
   rejectUnauthorized: extra.rejectUnauthorized,
 });
 Agent.prototype.__defaultPort = 443;
+// https 键位在 http 基础上加 TLS 会话面字段（node lib/https.js 口径；pfx/cert
+// 等进键——不同证书不同池位，agent-getname 套件逐字段对拍）。
+Agent.prototype.getName = function (options = {}) {
+  let name = BaseAgent.prototype.getName.call(this, options);
+  name += ":";
+  if (options.ca) name += options.ca;
+  name += ":";
+  if (options.cert) name += options.cert;
+  name += ":";
+  if (options.clientCertEngine) name += options.clientCertEngine;
+  name += ":";
+  if (options.ciphers) name += options.ciphers;
+  name += ":";
+  if (options.key) name += options.key;
+  name += ":";
+  if (options.pfx) name += __pfxAgentKey(options.pfx, options.passphrase);
+  name += ":";
+  if (options.rejectUnauthorized !== undefined) name += options.rejectUnauthorized;
+  name += ":";
+  if (options.servername && options.servername !== options.host) name += options.servername;
+  name += ":";
+  if (options.minVersion) name += options.minVersion;
+  name += ":";
+  if (options.maxVersion) name += options.maxVersion;
+  name += ":";
+  if (options.secureProtocol) name += options.secureProtocol;
+  name += ":";
+  if (options.crl) name += options.crl;
+  name += ":";
+  if (options.honorCipherOrder !== undefined) name += options.honorCipherOrder;
+  name += ":";
+  if (options.ecdhCurve) name += options.ecdhCurve;
+  name += ":";
+  if (options.dhparam) name += options.dhparam;
+  name += ":";
+  if (options.secureOptions !== undefined) name += options.secureOptions;
+  name += ":";
+  if (options.sessionIdContext) name += options.sessionIdContext;
+  name += ":";
+  if (options.sigalgs) name += JSON.stringify(options.sigalgs);
+  name += ":";
+  if (options.privateKeyIdentifier) name += options.privateKeyIdentifier;
+  name += ":";
+  if (options.privateKeyEngine) name += options.privateKeyEngine;
+  return name;
+};
+function __pfxAgentKey(pfx, passphrase) {
+  if (!Array.isArray(pfx)) return pfx;
+  let key = "";
+  for (const v of pfx) {
+    const raw = v?.buf || v;
+    const pass = v?.passphrase || passphrase;
+    key += `:${raw}:${pass}`;
+  }
+  return key;
+}
 const globalAgent = new Agent();
 FLAVOR.defaultAgent = globalAgent;
 
@@ -56,7 +119,8 @@ export function get(a, b, c) {
   return getFrom(ClientRequest, options, cb);
 }
 export function createServer(options, cb) {
-  const server = new __HttpServerBase(options ?? {});
+  const opts = options !== null && typeof options === "object" && !Array.isArray(options) ? options : undefined;
+  const server = new __HttpServerBase(opts);
   if (typeof options === "function") server.on("request", options);
   else if (typeof cb === "function") server.on("request", cb);
   return server;

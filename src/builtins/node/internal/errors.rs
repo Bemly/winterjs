@@ -320,6 +320,7 @@ E('ERR_INVALID_MIME_SYNTAX',
     return msg;
   }, TypeError, HideStackFramesError);
 E('ERR_UNKNOWN_ENCODING', 'Unknown encoding: %s', TypeError, HideStackFramesError);
+E('ERR_UNESCAPED_CHARACTERS', '%s contains unescaped characters', Error, HideStackFramesError);
 E('ERR_OUT_OF_RANGE',
   (str, range, input, replaceDefaultBoolean = false) => {
     if (!range) throw new TypeError('Missing "range" argument');

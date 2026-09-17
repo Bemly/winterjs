@@ -2062,3 +2062,46 @@ cargo build
   `key-objects.js`（§0.5 待拍板）。
 - 推广为铁律：到了"看起来都对但文件还红"时，停手写新探针——把**原文段**
   整体抽出来跑，交互污染（二分头段全绿、全文件红）只认整体复刻。
+
+### 4.131 http 对拍首轮八坑（2026-09-18，10f http 首轮）
+
+- 坑一（Agent 不是 class）：`http.Agent({...})` 无 new 裸调用是合法面（keepalive
+  系四套件）——node 的 Agent 是老式函数（`if (!(this instanceof Agent)) return
+  new Agent(options)`）。class 直出即 TypeError。修法：函数 + `__init` 方法 +
+  `Object.setPrototypeOf` 双挂（Agent.prototype→EE.prototype、Agent→EE）；
+  子类（http/https flavor）同形，函数体内调 `BaseAgent.prototype.__init.call`。
+- 坑二（键位就是 API）：agent 池键不是 `host:port` 而是 getName 形
+  `host:port:localAddress(:family)`——缺省位仍带分隔冒号（`localhost:80:`），
+  测试以 `agent.getName({port})` 命中 `agent.sockets`。修法：acquire/release/
+  addRequest 全走 getName；ClientRequest 缺省 host 同步改 `localhost`（否则键
+  对不上）。https 的 getName 是 23 字段 TLS 会话键（lib/https.js 全字段追加），
+  不是 http 形——照抄勿自创。
+- 坑三（createConnection 双形态）：agent 级/request 级 createConnection 的实现
+  可能同步回 socket、可能走 cb、可能都做——settled 旗 + `maybe` 回值双收口，
+  防双 attach。
+- 坑四（ServerResponse 构造首参是 req 形对象）：node 的
+  `new ServerResponse(req)` 首参是请求信息（method/httpVersion…），不是 socket
+  （standalone 套件）；把它当 socket 存即 assignSocket 首挂误拒
+  ERR_HTTP_SOCKET_ASSIGNED。修法：构造器只认 `typeof sock.write === "function"`
+  为 socket，其余存 req 形；双拒判定走独立 `__sockAssigned` 旗。
+- 坑五（头+首块合并写）：node 的 `_send` 在头未发时把 header 与首块**合并为一次
+  socket write**（standalone 套件断言单 chunk 以 body 结尾）——我们头/体分两次
+  write 即红。修法：`_final` CL 快捷路径合并（`__headBytes()` 拆出，`__sendHead`
+  保留独立写路径）；HEAD/204 等无体形态不合并。
+- 坑六（408 计时器不因数据重置）：requestTimeout/headersTimeout 是**逐消息
+  deadline**（消息起点到消息完结），部分数据到达**不重置**（interrupted/delayed
+  系套件依赖）；ka 计时器只在响应完成后臂——体齐响应未完时挂 ka 会误杀在途
+  响应（armIdleTimers 拆 withKa 两相）。
+- 坑七（408/400 字节逐字对拍）：`HTTP/1.1 408 Request Timeout\r\nConnection:
+  close\r\n\r\n` 与 400 同形精确断言；管线残渣（合法请求后跟 `hello world\r\n`）
+  在**行终结时**即 400，不等 `\r\n\r\n`（blank-header 套件）——头未齐也要
+  增量校验请求行。
+- 坑八（真机 paused 语义先行）：无 data 监听也不 resume 的 res，'end' 不发——
+  真机同款（node 26 实测同挂），黑盒想当然 `await end` 即挂死；测试侧
+  `res.resume()` 后再等 end。rc 陷阱再进宫（§4.45）：`cmd | tail; echo $?`
+  是 tail 的 rc——退出码断言必须 `>file; echo $?` 或 `${PIPESTATUS[0]}`。
+- 复现：`tests/node/http.rs::phase10f_http_parity_round1`（13 组）；
+  对拍 404 件 95→125 绿（`docs/bun-parity.md` http 节）；https 随行 8→13。
+- 推广为铁律：对拍修"缺方法"前先跑真机探针把**属性面**（自有属性有无/键形/
+  构造形态 no-new）逐项定型——node 老式函数面（Agent/Server 的 no-new）与
+  class 面（IncomingMessage 不可 no-new）混存，凭"都是构造器"猜必翻车。

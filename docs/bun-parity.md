@@ -697,7 +697,8 @@
 ## net
 
 > 五轮对拍（2026-09-17，157 件，`/tmp/wjs-10f-net*.txt`）：
-> 同绿 30 → 45 → 66 → 71 → **84**；DIFF 117 → 88 → 79 → 77 → **61**（net9），零回归。
+> 同绿 30 → 45 → 66 → 71 → 84 → **86**；DIFF 117 → 88 → 79 → 77 → 61 → **58**
+> （net11：2 worker 低并发复核，零回归）。
 > 一～四轮（UDS 全链/BoundSocket/blockList+lookup/write 语义/exit 派发/fd 真值/
 > listen 校验族/错误形状/server 回指/getConnections/localFamily/bufferSize/
 > finish/半开透传/write 校验/resetAndDestroy）见各提交；本轮（五轮）为
@@ -751,9 +752,10 @@
 >   child-process-connect-reset（spawn ipc 不支持）、dns-error（bogus 域名线）、
 >   listen-after-destroying-stdin（stdin.destroy 缺口）等。
 >
-> 六轮补记（2026-09-17，`phase10f_net_remote_surface`）：远端面发布时序
-> （连接完成前 remote* 全 undefined，完成后回填地址/端口/地址族；
-> remote-address 双件修）+ `connect(addressObj)` 取 address 键
+> 六轮补记（2026-09-17，`phase10f_net_remote_surface`，net11 实测）：
+> 远端面发布时序（连接完成前 remote* 全 undefined，完成后回填地址/端口/
+> 地址族；remote-address 双件修）+ `connect(addressObj)` 取 address 键
 > （ready-without-cb 套件连通；`ready` 事件本身暂不发射，见 AGENTS §4.126）。
-> 本轮未做全量复测（§4.126 纪律 + 套件目录已清），DIFF 数沿用 net10（61），
-> 待下次全量对拍复核。
+> 58 DIFF 均为既有分类（校验族长尾/server 时序/TIMEOUT/Happy Eyeballs/
+> worker 投递/大串 2 字节差/环境双红），large-string 单跑同错（确定性残留，
+> 非回归）。

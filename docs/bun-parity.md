@@ -1026,3 +1026,28 @@
 > http 流式化同型工程，另轮；次簇：`stream.respond/respondWithFile` 等
 > server 流面（~11）、settings/priority/ALPN 校验面、TIMEOUT（背压/内存限）。
 > h2c/HTTP3 既有黑盒全绿无回归（`tests/node/http2.rs`）。
+
+## worker
+
+> 首轮点名（2026-09-18，140 件，`/tmp/wjs-10f-worker1.txt`）：
+> 同绿 **35**；SAME1=7（双边同码）；DIFF **98**。长尾型分布——无单根因大簇。
+> 既有 9f/9i/M5 面（线程底座/端口迁移/循环信封）黑盒全绿无回归
+> （`tests/node/worker.rs`）。
+>
+> ### DIFF 分簇（首轮，均未动）
+>
+> - **TIMEOUT 21 件**：terminate 时机/共享面/长任务生命周期——另轮。
+> - **校验族 15 件**：`throws: unexpected throw` 8 + `Missing expected exception` 7
+>   （构造/terminate/postMessage 参数校验逐 API 续补）。
+> - **stdio 流面 2 件**：`w.stdout.setEncoding is not a function`——worker stdout/
+>   stderr 非 Readable（fork 线程底座 stdio 数据面记档欠账，plan3 §4 维持）。
+> - **错误形状 4 件**：syntax error 顶层错应报 SyntaxError（2）+ worker
+>   uncaught 异常消息前缀 'Error: Worker: ...' 形（2）。
+> - **小缺口长尾（各 1 件）**：MessageEvent 全局缺（message-event）、
+>   broadcastchannel addEventListener、getHeapSnapshot、`v8.serialize` 跨线程、
+>   handle.hasRef、data-url filename 形、esm-missing-main 错误消息、
+>   execargv stderr 流、exit-code/beforeexit throw、memory rss 口径（跨引擎
+>   不可比倾向，待定性）等。
+>
+> 全域收官策略：校验族+错误形状先行（纯面），stdio 流面与 TIMEOUT 的
+> terminate 生命周期深化随后（数据面欠账所致）。

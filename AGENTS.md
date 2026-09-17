@@ -1892,3 +1892,31 @@ cargo build
 - 复现：`test-fs-promises-file-handle-writeFile.js` doWriteBuffer。
 - 推广为铁律：`Symbol.iterator` 存在性 ≠ "集合类型"判据——TypedArray 全家都是
   iterator；分支判据按"视图先收、迭代器次之"排序，视图门永远在前。
+
+### 4.125 net 可观测表面五连坑（2026-09-17，10f net 五轮）
+
+- 坑一（`JSON.stringify` 吞 undefined）：`JSON.stringify([true,5,undefined])` 呈
+  `[true,5,null]`——探针误读为"真机转发 null"，险些把实现写错。修法：形态断言一律
+  `typeof` 逐项，禁 `JSON.stringify` 看 undefined（`wjs-10f-par.py` 的 W 行同理，
+  首行截断只看形状不看空位）。
+- 坑二（`EBADF` 含 `BAD`）：黑盒哨兵 `assert!(!out.contains("BAD"))` 被
+  `w1 write EBADF` 误触发（§4.42 自摆乌龙）。修法：哨兵一律带分隔符（`BAD `）。
+- 坑三（柄关 vs 柄空是两种状态）：`_handle.close()` 后写 → `write EBADF`，
+  `_handle = null` 后写 → `ERR_SOCKET_CLOSED`——同为"柄没了"，错误各异
+  （真机 26 实测）。修法：`close()` 只标 `__handleClosed` + 延迟 destroy
+  （同步 destroy 会提前置空，两态坍缩为一）；write 内先判空柄（CLOSED）再判
+  关柄（EBADF），destroyed 面保持 `__writeErr` 不动。
+- 坑四（销后噪声必吞）：destroy 后 Rust 侧 teardown 竞速错（RST/EOF，
+  `UNKNOWN` 整形）会以 error 事件迟到——双块并发下 1/3 flaky
+  （单块 8/8 绿，§4.122"单独过并行挂"姊妹篇）。修法：`__ev error` 见
+  `destroyed` 即吞派发（`__hadError` 照记，close(true) 口径不变）；
+  真机同为销后不派发（stream `errorOrDestroy` 语义）。
+- 坑五（真机 fresh 柄即 null）：`new net.Socket()._handle === null`
+  （预连接打补丁即 TypeError）——本仓构造期建桩是偏差。修法：_handle 只在
+  连接存活期非空（`__realConnect/__attach*` 建、`destroy/__ev-close` 置空），
+  无柄期的 setNoDelay/setKeepAlive 只缓存不转发。
+- 复现：`tests/node/net.rs::phase10f_net_socket_surface`（坑三/四修前 flaky 红）；
+  探针 `/tmp/wjs-nv-probe/p2.mjs`（双块并发，修前半数多一条 UNKNOWN error）。
+- 附带真机口径（同轮实测）：setKeepAlive ms→s 下取整、缺省位转发 undefined、
+  四元组全同跳过；TOS 三文案逐字；autoSelectFamily 默认 true/timeout 500；
+  server keepAlive 默认 false/0（`src/builtins/node/net.rs`）。

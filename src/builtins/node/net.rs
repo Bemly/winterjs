@@ -1020,10 +1020,23 @@ class Socket extends EventEmitter {
     this.__pendW = [];          // 连接完成前的缓冲写（node write 语义）
     // Node 默认 allowHalfOpen=false：收到远端 FIN（'end'）后自动 end 本端
     this.allowHalfOpen = !!(options && options.allowHalfOpen);
-    // node _handle 表面（10f：套件直接打补丁观测 setNoDelay/setKeepAlive 调用）
-    this._handle = {
-      setNoDelay: (enable) => { this.__noDelayApplied = enable; },
-      setKeepAlive: (enable, delay) => { this.__keepAliveApplied = [enable, delay]; },
+    // node 口径：_handle 只在连接存活期非空（构造时/close 后恒 null，真机 26 实测；
+    // after-close 套件点名 `c._handle === null`）。连接建立（__realConnect/__attach*）
+    // 时建桩，destroy/__ev-close 置空。setNoDelay/setKeepAlive 恒可调（无柄只缓存）。
+    this._handle = null;
+    this.__tos = 0;            // getTypeOfService 缓存（真机默认 0；连接前设置同样缓存）
+    this.__kaState = null;     // setKeepAlive 去重缓存 [enable, delaySec, intervalSec, count]
+    this.__hadError = false;   // close(hadError) 口径：error 发过即 true
+    this.__handleClosed = false;
+    // node _handle 表面（10f：套件直接打补丁观测 setNoDelay/setKeepAlive 调用；
+    // write-after-close 套件点名 _handle.close()；unref-timer 套件点名 _unrefTimer）。
+    this.__makeHandle = () => {
+      const self = this;
+      return {
+        setNoDelay: (enable) => { self.__noDelayApplied = enable; },
+        setKeepAlive: (enable, delay, interval, count) => { self.__keepAliveApplied = [enable, delay, interval, count]; },
+        close: () => { self.__handleClosed = true; queueMicrotask(() => self.destroy()); },
+      };
     };
     if (options && typeof options === "object") {
       if (options.readable !== undefined) this.readable = !!options.readable;
@@ -1046,8 +1059,60 @@ class Socket extends EventEmitter {
     // setTimeout 真实现见下（10f timers 对拍）。
     this.cork = () => this;
     this.uncork = () => this;
-    this.setNoDelay = (enable) => { this._handle.setNoDelay(enable !== false); return this; };
-    this.setKeepAlive = (enable, delay) => { this._handle.setKeepAlive(enable !== false, delay); return this; };
+    // _handle 为空（未连接/已关闭）时 no-op 只缓存（after-close 套件：close 后调不抛）。
+    this.setNoDelay = (enable) => { if (this._handle && typeof this._handle.setNoDelay === "function") { try { this._handle.setNoDelay(enable !== false); } catch {} } else { this.__noDelayApplied = enable !== false; } return this; };
+    // node 口径（真机 26 实测）：setKeepAlive(enable, initialDelay, interval, count) /
+    // setKeepAlive({enable, initialDelay, interval, count})；ms→s 下取整转发
+    // （5000→5），缺省 interval/count 转发 undefined（JSON 呈 null，typeof 仍 undefined）；
+    // 与上次四元组全同即跳过转发（server-keepalive 套件：同值首调被吞）。
+    this.setKeepAlive = (enable, initialDelay, interval, count) => {
+      if (enable !== null && typeof enable === "object") {
+        const o = enable;
+        enable = o.enable; initialDelay = o.initialDelay; interval = o.interval; count = o.count;
+      }
+      enable = enable === undefined ? false : !!enable;
+      const toSec = (ms) => ms === undefined ? undefined : Math.floor(Number(ms) / 1000);
+      const dSec = initialDelay === undefined ? 0 : toSec(initialDelay);
+      const iSec = toSec(interval);
+      const st = [enable, dSec, iSec, count];
+      const pv = this.__kaState;
+      const same = !!pv && pv[0] === st[0] && pv[1] === st[1] && pv[2] === st[2] && pv[3] === st[3];
+      this.__kaState = st;
+      if (!same && this._handle && typeof this._handle.setKeepAlive === "function") {
+        try { this._handle.setKeepAlive(enable, dSec, iSec, count); } catch {}
+      }
+      return this;
+    };
+    // node 口径（真机 26 实测）：setTypeOfService 校验逐字（invalidArgTypeHelper 形/
+    // OUT_OF_RANGE 双文案：非整数 "must be an integer"、越界 "must be >= 0 && <= 255"），
+    // 链式返回自身；getTypeOfService 读缓存（连接前设置同样生效，tos 套件 2a 项）。
+    this.setTypeOfService = (tos) => {
+      if (typeof tos !== "number" || Number.isNaN(tos)) {
+        const got = typeof tos === "string" ? `type string ('${tos}')` : `type ${typeof tos} (${String(tos)})`;
+        const e = new TypeError(`The "tos" argument must be of type number. Received ${got}`);
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
+      if (!Number.isInteger(tos)) {
+        const e = new RangeError(`The value of "tos" is out of range. It must be an integer. Received ${tos}`);
+        e.code = "ERR_OUT_OF_RANGE"; throw e;
+      }
+      if (tos < 0 || tos > 255) {
+        const e = new RangeError(`The value of "tos" is out of range. It must be >= 0 && <= 255. Received ${tos}`);
+        e.code = "ERR_OUT_OF_RANGE"; throw e;
+      }
+      this.__tos = tos;
+      return this;
+    };
+    this.getTypeOfService = () => this.__tos ?? 0;
+    // 最小 pipe 面（write-connect-write 套件：server 侧 socket.pipe(socket) 回显）；
+    // unpipe/_unrefTimer 桩（_parent 链安全，unref-timer 套件点名不抛）。
+    this.pipe = (dest, options) => {
+      this.on("data", (chunk) => { try { dest.write(chunk); } catch {} });
+      if (!options || options.end !== false) this.on("end", () => { try { dest.end(); } catch {} });
+      return dest;
+    };
+    this.unpipe = (dest) => this;
+    this._unrefTimer = () => {};
     this.pause = () => this;
     this.resume = () => this;
     // 10f timers 对拍：setTimeout(ms[, cb]) 真实现——单发内部 timer 到期
@@ -1188,6 +1253,10 @@ class Socket extends EventEmitter {
     // noDelay 经 native 直达 setsockopt（http agent 默认 true；Node net 默认 false）。
     // adopt-UDS：本端源 path 透 native 预 bind（localAddress 预置源 path）。
     if (sockPath !== null) this.__udsTarget = sockPath;
+    // 建柄（_handle 存活期起点；连接前缓存的 keepAlive 随建即直通新柄）。
+    this.__handleClosed = false;
+    this._handle = this.__makeHandle();
+    if (this.__kaState) { const [ke, kd, ki, kc] = this.__kaState; try { this._handle.setKeepAlive(ke, kd, ki, kc); } catch {} }
     if (sockPath !== null && this.__adoptUds) {
       this.localAddress = this.__adoptUds;
       this.__id = Number(__wjs_net_connect(sockPath, "", this, this.__adoptUds));
@@ -1247,6 +1316,10 @@ class Socket extends EventEmitter {
       case "error": {
         const o = JSON.parse(payload);
         const se = __netErr(o.code, o.msg);
+        this.__hadError = true;
+        // 已销毁 socket 的迟到 teardown 噪声不 chạm 用户监听（真机口径：destroy 后
+        // 底层 RST/EOF 竞速错不再派发；write-after-close 套件双块并发下必现 flaky）。
+        if (this.destroyed) break;
         // node connect 系标配：syscall + errno（uv 负值；ENOENT=-2/EACCES=-13/ECONNREFUSED=-61
         // /ENOTSOCK=-38/EADDRNOTAVAIL=-49；未知 -4094）。
         se.syscall = "connect";
@@ -1260,7 +1333,7 @@ class Socket extends EventEmitter {
         this.emit("error", se);
         break;
       }
-      case "close": this.destroyed = true; this.emit("close"); break;
+      case "close": this.destroyed = true; this._handle = null; this.emit("close", this.__hadError === true); break;
     }
   }
   // node 口径：pending = 尚无可用句柄——连接中 true、连接完成 false、
@@ -1323,6 +1396,21 @@ class Socket extends EventEmitter {
       throw e;
     }
     if (this.destroyed || !this.writable) return this.__writeErr(cb2);
+    // node 口径（write-after-close 套件双形，真机 26 实测均为异步 error 事件非同步抛）：
+    // 已连接但 _handle 被置空后写 → ERR_SOCKET_CLOSED('Socket is closed')；
+    // _handle.close() 后（柄关而对象在）写 → Error('write EBADF'，win 系 EPIPE)。
+    if (this.__connected && this._handle === null) {
+      const e2 = new Error("Socket is closed"); e2.code = "ERR_SOCKET_CLOSED";
+      if (typeof cb2 === "function") queueMicrotask(() => { try { cb2.call(this, e2); } catch {} });
+      queueMicrotask(() => this.emit("error", e2));
+      return false;
+    }
+    if (this.__handleClosed === true) {
+      const e = new Error(`write ${typeof process !== "undefined" && process.platform === "win32" ? "EPIPE" : "EBADF"}`);
+      if (typeof cb2 === "function") queueMicrotask(() => { try { cb2.call(this, e); } catch {} });
+      queueMicrotask(() => this.emit("error", e));
+      return false;
+    }
     const u8 = __chunkU8(data);
     this.bytesWritten += u8.length;
     if (!this.__connected) {
@@ -1358,8 +1446,9 @@ class Socket extends EventEmitter {
     if (!this.destroyed) {
       this.destroyed = true;
       this.writable = false; this.readable = false;
+      this._handle = null;
       if (this.__id) __wjs_net_destroy(this.__id);
-      if (err !== undefined && err !== null) this.emit("error", err);
+      if (err !== undefined && err !== null) { this.__hadError = true; this.emit("error", err); }
     }
     return this;
   }
@@ -1382,12 +1471,51 @@ class __ServerClass extends EventEmitter {
     this.__id = 0;
     this.__listening = null;
     this.allowHalfOpen = !!(options && typeof options === "object" && options.allowHalfOpen);
+    // node 口径（server-keepalive 套件点名）：keepAlive/keepAliveInitialDelay 存自身
+    // （默认 false/0，真机 26 实测）；_handle 在 listen 成功路径建桩（含 onconnection）。
+    this.keepAlive = !!(options && typeof options === "object" && options.keepAlive);
+    this.keepAliveInitialDelay = (options && typeof options === "object" && options.keepAliveInitialDelay !== undefined) ? options.keepAliveInitialDelay : 0;
+    this._handle = null;
+    this.__pendingConnPayload = null;
     if (typeof options === "function") { cb = options; options = undefined; }
     if (typeof cb === "function") this.on("connection", cb);
     // 派发钩子预绑定（同 Socket 注）
     this.__ev = this.__ev.bind(this);
   }
   get listening() { return this.__listening !== null; }
+  // _handle 建桩：onconnection 为箭头函数（构造/方法 this 捕获 server 本体，
+  // 用户 `.call(handle, …)` 改绑不影响）；连接创建逻辑收敛 __acceptConn，
+  // __ev connection 经此进入（套件包装 onconnection 即被调用）。
+  __setupHandle() {
+    this._handle = { onconnection: (err, clientHandle) => {
+      const payload = this.__pendingConnPayload; this.__pendingConnPayload = null;
+      if (err) { this.emit("error", err); return; }
+      if (this.keepAlive && clientHandle && typeof clientHandle.setKeepAlive === "function") {
+        try { clientHandle.setKeepAlive(true, this.keepAliveInitialDelay); } catch {}
+      }
+      this.__acceptConn(payload);
+    } };
+  }
+  __acceptConn(payload) {
+    const o = JSON.parse(payload);
+    const s = new Socket();
+    if (o.uds) s.__attachUds(o);
+    else s.__attachConn(o);
+    // 真机：server 侧 socket.server 全等 server 本体；本端地址族取监听地址。
+    s.server = this;
+    s.allowHalfOpen = !!this.allowHalfOpen;
+    // server keepAlive 落已接受 socket（去重缓存预置，首个同值显式调用被吞，
+    // server-keepalive 套件三调只进二）。
+    if (this.keepAlive) { try { s.setKeepAlive(true, this.keepAliveInitialDelay); } catch {} }
+    if (this.__listening && typeof this.__listening === "object") {
+      s.localAddress = this.__listening.address;
+      s.localPort = this.__listening.port;
+      s.localFamily = this.__listening.family;
+    }
+    this.__conns = (this.__conns ?? 0) + 1;
+    s.once("close", () => { this.__conns = Math.max(0, (this.__conns ?? 1) - 1); });
+    this.emit("connection", s);
+  }
   __doListen(port, host, cb) {
     if (port && typeof port === "object" && typeof port.address === "function" && port.__boundPort !== undefined) {
       // listen(bound)：adopt（旧柄失效；server 地址 = bound 地址）。
@@ -1399,6 +1527,7 @@ class __ServerClass extends EventEmitter {
       if (port.__udsPath !== undefined) __boundPaths.delete(port.__udsPath);
       if (port.__holdToken) { try { __wjs_net_unhold(port.__holdToken); } catch {} }
       if (cb) this.once("listening", cb);
+      this.__setupHandle();
       if (port.__isPipe) {
         this.__port = 0; this.__udsPath = port.__udsPath;
         this.__id = Number(__wjs_net_listen(0, "UDS:" + port.__udsPath, this));
@@ -1417,6 +1546,7 @@ class __ServerClass extends EventEmitter {
       }
       if (cb) this.once("listening", cb);
       this.__port = 0; this.__udsPath = String(p);
+      this.__setupHandle();
       this.__id = Number(__wjs_net_listen(0, "UDS:" + String(p) + "\n" + modeBits, this));
       return this;
     }
@@ -1424,6 +1554,7 @@ class __ServerClass extends EventEmitter {
     __vPort(port);
     if (cb) this.once("listening", cb);
     this.__port = Number(port);
+    this.__setupHandle();
     this.__id = Number(__wjs_net_listen(Number(port), host === null ? "0.0.0.0" : host, this));
     return this;
   }
@@ -1489,21 +1620,11 @@ class __ServerClass extends EventEmitter {
         break;
       }
       case "connection": {
-        const o = JSON.parse(payload);
-        const s = new Socket();
-        if (o.uds) s.__attachUds(o);
-        else s.__attachConn(o);
-        // 真机：server 侧 socket.server 全等 server 本体；本端地址族取监听地址。
-        s.server = this;
-        s.allowHalfOpen = !!this.allowHalfOpen;
-        if (this.__listening && typeof this.__listening === "object") {
-          s.localAddress = this.__listening.address;
-          s.localPort = this.__listening.port;
-          s.localFamily = this.__listening.family;
-        }
-        this.__conns = (this.__conns ?? 0) + 1;
-        s.once("close", () => { this.__conns = Math.max(0, (this.__conns ?? 1) - 1); });
-        this.emit("connection", s);
+        // 经 _handle.onconnection 进入（套件可包装观测；缺桩回落直建）。
+        this.__pendingConnPayload = payload;
+        const h = this._handle;
+        if (h && typeof h.onconnection === "function") h.onconnection(null, { setKeepAlive: (en, ms) => {} });
+        else this.__acceptConn(payload);
         break;
       }
       case "error": {
@@ -1540,6 +1661,8 @@ class __ServerClass extends EventEmitter {
 Socket.prototype.__attachConn = function (info) {
   this.__id = Number(info.connId);
   this.__connected = true;
+  this.__handleClosed = false;
+  this._handle = this.__makeHandle();
   this.remoteAddress = info.remoteAddress;
   this.remotePort = info.remotePort;
   this.remoteFamily = String(info.remoteAddress).includes(":") ? "IPv6" : "IPv4";
@@ -1555,6 +1678,8 @@ Socket.prototype.__attachConn = function (info) {
 Socket.prototype.__attachUds = function (info) {
   this.__id = Number(info.connId);
   this.__connected = true;
+  this.__handleClosed = false;
+  this._handle = this.__makeHandle();
   this.remoteAddress = undefined; this.remotePort = undefined;
   this.localAddress = undefined; this.localPort = undefined;
   this.remoteFamily = undefined;
@@ -1877,6 +2002,10 @@ export function isIPv4(input) { return isIP(input) === 4; }
 export function isIPv6(input) { return isIP(input) === 6; }
 // Happy-eyeballs 超时存值（10f：test/common 前置；连接侧暂不实现自动族选择，记档）。
 let __autoSelectTimeout = 500;
+// 默认自动族选择开关（真机 26 默认 true，实测）；连接侧 Happy Eyeballs 未实现，记档。
+let __autoSelectFamily = true;
+export function getDefaultAutoSelectFamily() { return __autoSelectFamily; }
+export function setDefaultAutoSelectFamily(value) { __autoSelectFamily = !!value; }
 export function getDefaultAutoSelectFamilyAttemptTimeout() { return __autoSelectTimeout; }
 export function setDefaultAutoSelectFamilyAttemptTimeout(value) {
   if (typeof value !== "number" || Number.isNaN(value)) {
@@ -1891,7 +2020,7 @@ export function setDefaultAutoSelectFamilyAttemptTimeout(value) {
   }
   __autoSelectTimeout = value;
 }
-const __api = { Socket, Server, BlockList, BoundSocket, createServer, createConnection, connect, Stream, isIP, isIPv4, isIPv6, getDefaultAutoSelectFamilyAttemptTimeout, setDefaultAutoSelectFamilyAttemptTimeout };
+const __api = { Socket, Server, BlockList, BoundSocket, createServer, createConnection, connect, Stream, isIP, isIPv4, isIPv6, getDefaultAutoSelectFamily, setDefaultAutoSelectFamily, getDefaultAutoSelectFamilyAttemptTimeout, setDefaultAutoSelectFamilyAttemptTimeout };
 export default __api;
 "#;
 

@@ -693,3 +693,59 @@
 - **unhandled-rej 16 件**：readdir-buffer hex 断言、promises-appendfile、dispose 收尾等
   尾部件，沿簇续修。
 - **双红 28 件**：真机同红（fixture 依赖/内部面），对齐。
+
+## net
+
+> 五轮对拍（2026-09-17，157 件，`/tmp/wjs-10f-net*.txt`）：
+> 同绿 30 → 45 → 66 → 71 → **84**；DIFF 117 → 88 → 79 → 77 → **61**（net9），零回归。
+> 一～四轮（UDS 全链/BoundSocket/blockList+lookup/write 语义/exit 派发/fd 真值/
+> listen 校验族/错误形状/server 回指/getConnections/localFamily/bufferSize/
+> finish/半开透传/write 校验/resetAndDestroy）见各提交；本轮（五轮）为
+> Socket/Server 可观测表面（`tests/node/net.rs::phase10f_net_socket_surface`）。
+>
+> ### 已修（每项经真机 26.8.2 对拍）
+>
+> - **_handle 生命周期**（真机 fresh 即 null）：构造 null → `__realConnect`/
+>   `__attachConn`/`__attachUds` 建桩 → `destroy`/`__ev-close` 置空；无柄期
+>   setNoDelay/setKeepAlive 只缓存不转发（after-close/`cli-close` 套件）。
+> - **close(hadError)**：`__hadError` 由 `destroy(err)`/`__ev error` 置位，
+>   `__ev close` 透传布尔（reconnect/after-close 套件点名 `false`）。
+> - **销后噪声吞派发**：`__ev error` 见 `destroyed` 即吞（`__hadError` 照记；
+>   双块并发 1/3 flaky 根除，见 AGENTS §4.125 坑四）。
+> - **柄关 vs 柄空双形**（异步 error 事件，非同步抛）：`_handle.close()` 后写 →
+>   `Error('write EBADF')`（win 系 EPIPE；`close()` 只标旗 + 延迟 destroy，
+>   同步 destroy 会使两态坍缩）；已连接 `_handle = null` 后写 →
+>   `ERR_SOCKET_CLOSED('Socket is closed')`；destroyed 面沿用 `__writeErr`。
+> - **pipe 最小面**（`socket.pipe(socket)` 回显，write-connect-write 套件）+
+>   `unpipe`/`_unrefTimer` 空桩。
+> - **TOS**：`setTypeOfService` 校验三文案逐字（ARG_TYPE helper 形 ×2、
+>   OUT_OF_RANGE "must be an integer"/"must be >= 0 && <= 255"），链式返回；
+>   `getTypeOfService` 读缓存（连接前设置生效）。
+> - **setKeepAlive**：位置四参 + 选项对象双形；ms→s 下取整；缺省位转发
+>   undefined（非 null）；四元组全同跳过转发（keepalive-interval-count/
+>   server-keepalive 套件）。
+> - **Server**：`keepAlive`/`keepAliveInitialDelay` 存自身（默认 false/0）；
+>   `_handle.onconnection` 接线（`__ev connection` 经此进入，套件可包装观测；
+>   keepAlive 经 clientHandle + 已接受 socket 双落）；已接受 socket 预置去重缓存。
+> - **autoSelectFamily 存值**：`get/setDefaultAutoSelectFamily`（默认 true；
+>   Happy Eyeballs 连接侧未实现，见下）。
+>
+> ### 剩余红项（DIFF 61，分类）
+>
+> - **TIMEOUT 9 件**：async-iter/max-connections×2/throttle/write-after-end-nt/
+>   bytes-stats/abort-controller/ipv6/listen-handle-cluster/listen-twice——
+>   背压/最大连接/中止语义另案。
+> - **Happy Eyeballs 3 件**：autoselectfamily-default（::1→127.0.0.1 回落，需
+>   `all:true` + 竞速）+ socket-connect-invalid-autoselectfamily×2（校验族）——另案。
+> - **worker 投递 3 件**：socket/server-transfer-worker×3（Socket 不可 clone）——另案。
+> - **校验族长尾**（~12 件）：boundsocket/connect-options-port/write-arguments/
+>   transfer-guards/socket-constructor/server-options/server-listen-options×2/
+>   localerror/options-lookup/server-call-listen-multiple——"Missing expected/
+>   unexpected throw" 逐 API 续补。
+> - **server close/listen 时序**（~10 件）：listen-close-server×2/drop-connections/
+>   pause-on-connect/server-blocklist/close-before-lookup/server-pause 等——另案。
+> - **远端地址 2 件**：remote-address/-port（已接受 socket 远端面回填）——下轮候选。
+> - **大串 2 字节差 1 件**：large-string（40962 vs 40960）——分包边界另案。
+> - **环境/双红**：autoselectfamily-commandline-option（w=0 n=1，真机自红）、
+>   child-process-connect-reset（spawn ipc 不支持）、dns-error（bogus 域名线）、
+>   listen-after-destroying-stdin（stdin.destroy 缺口）等。

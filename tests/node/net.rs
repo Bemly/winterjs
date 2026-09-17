@@ -446,3 +446,104 @@ srv.listen(0, "127.0.0.1", () => {
     assert!(!out.contains("BAD"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_net_socket_surface() {
+    // 10f net 五轮：Socket/Server 可观测表面（真机 26.8.2 逐项对拍）。
+    // _handle 生命周期（构造 null/连接建柄/close 置空）+ close(hadError) +
+    // pipe 最小回显 + TOS 校验 + keepAlive 四参/对象/ms→s/去重 + autoSelectFamily 存值 +
+    // _unrefTimer 空桩 + 柄关后写双形（EBADF/ERR_SOCKET_CLOSED，异步 error 事件）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+// — 存值面（无连接） —
+console.log("fresh-handle", new net.Socket()._handle === null);
+console.log("autofam", net.getDefaultAutoSelectFamily(), net.getDefaultAutoSelectFamilyAttemptTimeout());
+net.setDefaultAutoSelectFamily(false);
+console.log("autofam-set", net.getDefaultAutoSelectFamily());
+net.setDefaultAutoSelectFamily(true);
+const s0 = new net.Socket();
+console.log("unrefTimer", typeof s0._unrefTimer, typeof s0.pipe);
+s0._parent = undefined; s0._unrefTimer(); s0.destroy();
+console.log("unref-noop", s0.destroyed);
+try { s0.setKeepAlive(); s0.setNoDelay(); console.log("noarg ok"); }
+catch (e) { console.log("BAD noarg", e.code); }
+// — TOS 校验 —
+const t = new net.Socket();
+for (const [v, code] of [["x", "ERR_INVALID_ARG_TYPE"], [NaN, "ERR_INVALID_ARG_TYPE"], [256, "ERR_OUT_OF_RANGE"], [-1, "ERR_OUT_OF_RANGE"], [1.5, "ERR_OUT_OF_RANGE"]]) {
+  try { t.setTypeOfService(v); console.log("BAD tos-nothrow", String(v)); }
+  catch (e) { console.log("tos", e.code === code, e.code); }
+}
+console.log("tos-chain", t.setTypeOfService(16) === t, t.getTypeOfService());
+// — 连接面 —
+const srv = net.createServer({ keepAlive: true, keepAliveInitialDelay: 1000 }, (sock) => {
+  console.log("srv-ka", srv.keepAlive, srv.keepAliveInitialDelay, typeof srv._handle.onconnection);
+  sock.resume();
+  sock.pipe(sock);
+});
+srv.listen(0, "127.0.0.1", () => {
+  const c = net.connect(srv.address().port, "127.0.0.1", () => {
+    console.log("conn-handle", c._handle !== null);
+    // keepAlive 转发形状
+    const calls = [];
+    c._handle.setKeepAlive = (...a) => calls.push(a.map((x) => x === undefined ? "U" : String(x)).join(","));
+    c.setKeepAlive(true, 5000, 10000, 9);
+    c.setKeepAlive(true, 5000);
+    c.setKeepAlive({ enable: true, initialDelay: 5000 });
+    c.setKeepAlive(true, 1000); c.setKeepAlive(true, 1000); c.setKeepAlive(true, 2000);
+    console.log("ka", JSON.stringify(calls));
+    // pipe 回显
+    let got = "";
+    c.setEncoding("utf8");
+    c.on("data", (d) => { got += d; c.end(); });
+    c.on("end", () => console.log("echo", got === "hi!"));
+    c.on("close", (had) => {
+      console.log("cli-close", had, c._handle === null);
+      try { c.setNoDelay(); c.setKeepAlive(); c.bufferSize; c.pause(); c.resume(); c.address(); console.log("post-close ok"); }
+      catch (e) { console.log("BAD post-close", e.message); }
+      // 柄关后写双形
+      const srv2 = net.createServer();
+      srv2.listen(0, "127.0.0.1", () => {
+        const c2 = net.connect(srv2.address().port, "127.0.0.1", () => {
+          c2.on("error", (e) => console.log("w1", e.message));
+          c2._handle.close(); c2.write("foo");
+        });
+      });
+      srv2.on("error", () => {});
+      setTimeout(() => {
+        const srv3 = net.createServer();
+        srv3.listen(0, "127.0.0.1", () => {
+          const c3 = net.connect(srv3.address().port, "127.0.0.1", () => {
+            c3.on("error", (e) => { console.log("w2", e.code, e.message); srv2.close(); srv3.close(); srv.close(); });
+            c3._handle.close(); c3._handle = null; c3.write("foo");
+          });
+        });
+      }, 100);
+    });
+    c.write("hi!");
+  });
+});
+"#,
+    );
+    assert!(out.contains("fresh-handle true"), "out: {out}");
+    assert!(out.contains("autofam true 500"), "out: {out}");
+    assert!(out.contains("autofam-set false"), "out: {out}");
+    assert!(out.contains("unrefTimer function function"), "out: {out}");
+    assert!(out.contains("unref-noop true"), "out: {out}");
+    assert!(out.contains("noarg ok"), "out: {out}");
+    assert!(out.contains("tos-chain true 16"), "out: {out}");
+    assert!(!out.contains("BAD tos-nothrow"), "out: {out}");
+    assert!(out.contains("conn-handle true"), "out: {out}");
+    assert!(out.contains(r#"ka ["true,5,10,9","true,5,U,U","true,1,U,U","true,2,U,U"]"#), "out: {out}");
+    assert!(out.contains("srv-ka true 1000 function"), "out: {out}");
+    assert!(out.contains("echo true"), "out: {out}");
+    assert!(out.contains("cli-close false true"), "out: {out}");
+    assert!(out.contains("post-close ok"), "out: {out}");
+    assert!(out.contains("w1 write EBADF"), "out: {out}");
+    assert!(out.contains("w2 ERR_SOCKET_CLOSED Socket is closed"), "out: {out}");
+    assert!(!out.contains("BAD "), "out: {out}");
+    dir.close().unwrap();
+}

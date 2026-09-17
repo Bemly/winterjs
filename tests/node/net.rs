@@ -364,3 +364,45 @@ srv.listen(0, "127.0.0.1", () => {
     assert!(out.contains("done"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_net_server_attrs_finish() {
+    // 10f net 对拍：sock.server 全等/getConnections/localFamily/bufferSize/finish/allowHalfOpen。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+const server = net.createServer((socket) => {
+  console.log("server-eq", socket.server === server, "localFam", socket.localFamily);
+  console.log("getConn-ret", server.getConnections());
+  server.getConnections((e, n) => console.log("conns", n));
+  socket.resume();
+  socket.on("data", (d) => console.log("bytesRead", socket.bytesRead > 0, "bufSize", socket.bufferSize));
+  socket.on("end", () => { console.log("srv-end"); server.close(() => console.log("done")); });
+});
+server.listen(0, "127.0.0.1", () => {
+  const c = net.connect({ port: server.address().port, host: "127.0.0.1", allowHalfOpen: true }, () => {
+    console.log("cli localFam", c.localFamily, "bufSize", c.bufferSize);
+    c.on("finish", () => console.log("cli-finish"));
+    c.write("hi");
+    c.end();
+    c.on("data", () => {});
+    c.on("close", () => console.log("cli-close"));
+  });
+  c.on("error", (e) => console.log("cli-err", e.code));
+});
+server.on("error", (e) => console.log("srv-err", e.code));
+"#,
+    );
+    assert!(out.contains("server-eq true localFam IPv4"), "out: {out}");
+    assert!(out.contains("getConn-ret 1"), "out: {out}");
+    assert!(out.contains("conns 1"), "out: {out}");
+    assert!(out.contains("cli localFam IPv4 bufSize 0"), "out: {out}");
+    assert!(out.contains("bytesRead true bufSize 0"), "out: {out}");
+    assert!(out.contains("cli-finish"), "out: {out}");
+    assert!(out.contains("srv-end"), "out: {out}");
+    assert!(out.contains("done"), "out: {out}");
+    dir.close().unwrap();
+}

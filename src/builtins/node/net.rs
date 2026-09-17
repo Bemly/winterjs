@@ -1014,6 +1014,8 @@ class Socket extends EventEmitter {
     // node 写背压：write 返回值 = 未超 highWaterMark（默认 16KB；hwm 0 恒 false）
     this.__hwm = options && options.highWaterMark !== undefined ? Number(options.highWaterMark) || 0 : 16384;
     this.__pendBytes = 0;
+    // node 口径：bufferSize = 待刷写字节（本仓同步写队列，连接中缓冲计入，完成即 0）。
+    Object.defineProperty(this, "bufferSize", { get: () => this.__pendBytes, enumerable: true });
     // 事件循环派发钩子：dispatch 以 global 为 this 调用，须预绑定（self 语义）
     this.__ev = this.__ev.bind(this);
     // Node Writable/Readable 内部面（ws 等 npm 库直接翻字段/调用）：
@@ -1055,7 +1057,7 @@ class Socket extends EventEmitter {
       const e = new TypeError('The "options" or "port" or "path" argument must be specified');
       e.code = "ERR_MISSING_ARGS"; throw e;
     }
-    let port, host, cb, __noDelay, signal, sockPath = null, __blockList = null, __lookup = null;
+    let port, host, cb, __noDelay, signal, sockPath = null, __blockList = null, __lookup = null, __halfOpen;
     if (typeof args[0] === "object" && args[0] !== null) {
       if (args[0].fd !== undefined) {
         // node 口径：listen({fd}) 非法 fd 即异步 EINVAL（error 事件；真机实证）。
@@ -1078,7 +1080,8 @@ class Socket extends EventEmitter {
         sockPath = String(args[0].path); ({ noDelay: __noDelay, signal } = args[0]);
         cb = typeof args[1] === "function" ? args[1] : undefined;
       } else {
-        ({ port, host = "127.0.0.1", noDelay: __noDelay, signal, blockList: __blockList, lookup: __lookup } = args[0]);
+        ({ port, host = "127.0.0.1", noDelay: __noDelay, signal, blockList: __blockList, lookup: __lookup, allowHalfOpen: __halfOpen } = args[0]);
+        if (__halfOpen !== undefined) this.allowHalfOpen = !!__halfOpen;
         // host 校验（真机逐字）：非串→ARG_TYPE（Array 显实例形）；含 \0→ARG_VALUE。
         if (host !== undefined && typeof host !== "string") {
           const __got = Array.isArray(host) ? "an instance of Array" : (host !== null && typeof host === "object" ? `an instance of ${host.constructor?.name ?? "Object"}` : `type ${typeof host} (${String(host)})`);
@@ -1186,6 +1189,8 @@ class Socket extends EventEmitter {
             const m = o.local.match(/^\[?([^\]]+?)\]?:(\d+)$/);
             if (m) { this.localAddress = m[1]; this.localPort = Number(m[2]); }
           }
+          if (this.localAddress !== undefined && this.localAddress !== null)
+            this.localFamily = String(this.localAddress).includes(":") ? "IPv6" : "IPv4";
         } catch {}
         this.__connected = true;
         this.readable = true; this.writable = true;
@@ -1311,6 +1316,9 @@ class Socket extends EventEmitter {
     this.writable = false; this.__ended = true;
     if (this.__id && this.__connected) __wjs_net_end(this.__id);
     else this.__endAfterFlush = true; // node 口径：FIN 排队到连接完成+缓冲写冲刷之后
+    // node 口径：写侧刷完即 'finish'（早于 close；bytes-stats/bytes-read 套件点名）。
+    // 本仓同步写队列：FIN 已发即 microtask 派发 finish。
+    queueMicrotask(() => this.emit("finish"));
     if (cb2) this.once("close", cb2);
     return this;
   }
@@ -1343,6 +1351,7 @@ class __ServerClass extends EventEmitter {
     super();
     this.__id = 0;
     this.__listening = null;
+    this.allowHalfOpen = !!(options && typeof options === "object" && options.allowHalfOpen);
     if (typeof options === "function") { cb = options; options = undefined; }
     if (typeof cb === "function") this.on("connection", cb);
     // 派发钩子预绑定（同 Socket 注）
@@ -1454,6 +1463,16 @@ class __ServerClass extends EventEmitter {
         const s = new Socket();
         if (o.uds) s.__attachUds(o);
         else s.__attachConn(o);
+        // 真机：server 侧 socket.server 全等 server 本体；本端地址族取监听地址。
+        s.server = this;
+        s.allowHalfOpen = !!this.allowHalfOpen;
+        if (this.__listening && typeof this.__listening === "object") {
+          s.localAddress = this.__listening.address;
+          s.localPort = this.__listening.port;
+          s.localFamily = this.__listening.family;
+        }
+        this.__conns = (this.__conns ?? 0) + 1;
+        s.once("close", () => { this.__conns = Math.max(0, (this.__conns ?? 1) - 1); });
         this.emit("connection", s);
         break;
       }
@@ -1471,6 +1490,13 @@ class __ServerClass extends EventEmitter {
     }
   }
   address() { return this.__listening; }
+  // node 口径：getConnections(cb) 异步回现存连接数；无 cb 直回数（真机同）。
+  // 计数位由 connection/+socket-close 维护（server 侧 socket close 即减）。
+  getConnections(cb) {
+    const n = this.__conns ?? 0;
+    if (typeof cb === "function") { queueMicrotask(() => { try { cb(null, n); } catch {} }); return this; }
+    return n;
+  }
   close(cb) {
     if (typeof cb === "function") this.once("close", cb);
     if (this.__id) __wjs_net_destroy(this.__id);
@@ -1487,6 +1513,7 @@ Socket.prototype.__attachConn = function (info) {
   this.remoteAddress = info.remoteAddress;
   this.remotePort = info.remotePort;
   this.remoteFamily = String(info.remoteAddress).includes(":") ? "IPv6" : "IPv4";
+  if (info.serverId !== undefined) this.server = info.serverId;
   this.localAddress = info.localAddress;
   this.localPort = info.localPort;
   this.readable = true; this.writable = true;

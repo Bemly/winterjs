@@ -953,6 +953,24 @@ function __b64dec(s) {
   for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
   return u8;
 }
+function __chunkU8(chunk) {
+  // 真机逐字（write-arguments 套件）：'The "chunk" argument must be of type string
+  // or an instance of Buffer, TypedArray, or DataView.' + invalidArgTypeHelper。
+  if (typeof chunk === "string") return new TextEncoder().encode(chunk);
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(chunk)) return chunk;
+  if (ArrayBuffer.isView(chunk) && !(chunk instanceof DataView) || chunk instanceof DataView) {
+    if (chunk instanceof DataView) return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    return chunk;
+  }
+  if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
+  let __got;
+  if (chunk === null) __got = "null";
+  else if (chunk === undefined) __got = "undefined";
+  else if (typeof chunk === "object") __got = `an instance of ${chunk.constructor?.name ?? "Object"}`;
+  else __got = `type ${typeof chunk} (${String(chunk)})`;
+  const e = new TypeError(`The "chunk" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ${__got}`);
+  e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+}
 function __toU8(data, what) {
   if (typeof data === "string") return new TextEncoder().encode(data);
   if (data instanceof Uint8Array) return data;
@@ -1296,8 +1314,16 @@ class Socket extends EventEmitter {
   }
   write(data, enc, cb) {
     const cb2 = typeof enc === "function" ? enc : cb;
+    // 真机逐字：null/undefined 写即 TypeError（ERR_STREAM_NULL_VALUES；循环含 undefined）。
+    // 注意 __chunkU8 不可先行（undefined 进 helper 即 ARG_TYPE，与套件 NULL_VALUES 冲突）。
+    if (data === null || data === undefined) {
+      const e = new TypeError("May not write null values to stream");
+      e.code = "ERR_STREAM_NULL_VALUES";
+      if (typeof cb2 === "function") { queueMicrotask(() => { try { cb2.call(this, e); } catch {} }); return false; }
+      throw e;
+    }
     if (this.destroyed || !this.writable) return this.__writeErr(cb2);
-    const u8 = __toU8(data, "write");
+    const u8 = __chunkU8(data);
     this.bytesWritten += u8.length;
     if (!this.__connected) {
       // node 口径：连接完成前 write 缓冲（connect 完成时按序冲刷）
@@ -1322,6 +1348,10 @@ class Socket extends EventEmitter {
     if (cb2) this.once("close", cb2);
     return this;
   }
+  // node 口径：resetAndDestroy() = RST 硬关（本端无 error 即 close；
+  // 对端读侧 ECONNRESET）。本仓 TCP 无 RST 面：本端走 destroy 无 error，
+  // 对端侧由传输 FIN 收尾（ECONNRESET 偏离，见 bun-parity net 节）。
+  resetAndDestroy() { return this.destroy(); }
   // node 口径：error 事件只在 destroy(err) 带参时发（显式 destroy() 无参不发）。
   // 校验/状态 write 失败走 cb（__writeErr），不进 error 事件——lib/net.js 原文口径。
   destroy(err) {

@@ -406,3 +406,43 @@ server.on("error", (e) => console.log("srv-err", e.code));
     assert!(out.contains("done"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_net_write_validation() {
+    // 10f net 对拍：write(null/undefined)→ERR_STREAM_NULL_VALUES（cb 形走回调）；
+    // 非法 chunk→ERR_INVALID_ARG_TYPE（chunk 文案+helper 形）；resetAndDestroy 本端无 error 即关。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+const socket = net.Stream({ highWaterMark: 0 });
+socket.on("error", () => console.log("BAD error event"));
+try { socket.write(null); } catch (e) { console.log("null", e.code, e.message); }
+try { socket.write(undefined); } catch (e) { console.log("undef", e.code); }
+socket.write(null, (e) => console.log("null-cb", e && e.code));
+for (const v of [true, 1, [], {}]) {
+  try { socket.write(v); console.log("BAD no-throw", String(v)); }
+  catch (e) { console.log("chunk", e.code, e.message.startsWith('The "chunk" argument')); }
+}
+console.log("reset", typeof socket.resetAndDestroy);
+const srv = net.createServer((sock) => { sock.resume(); sock.on("data", () => {}); });
+srv.listen(0, "127.0.0.1", () => {
+  const c = net.connect(srv.address().port, "127.0.0.1", () => {
+    c.on("error", () => console.log("BAD reset error"));
+    c.on("close", () => { console.log("reset-close"); srv.close(); });
+    c.resetAndDestroy();
+  });
+});
+"#,
+    );
+    assert!(out.contains("null ERR_STREAM_NULL_VALUES May not write null values to stream"), "out: {out}");
+    assert!(out.contains("undef ERR_STREAM_NULL_VALUES"), "out: {out}");
+    assert!(out.contains("null-cb ERR_STREAM_NULL_VALUES"), "out: {out}");
+    assert!(out.contains("chunk ERR_INVALID_ARG_TYPE true"), "out: {out}");
+    assert!(out.contains("reset function"), "out: {out}");
+    assert!(out.contains("reset-close"), "out: {out}");
+    assert!(!out.contains("BAD"), "out: {out}");
+    dir.close().unwrap();
+}

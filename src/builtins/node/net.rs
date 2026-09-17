@@ -1057,12 +1057,45 @@ class Socket extends EventEmitter {
     }
     let port, host, cb, __noDelay, signal, sockPath = null, __blockList = null, __lookup = null;
     if (typeof args[0] === "object" && args[0] !== null) {
+      if (args[0].fd !== undefined) {
+        // node 口径：listen({fd}) 非法 fd 即异步 EINVAL（error 事件；真机实证）。
+        const cbFd = typeof args[1] === "function" ? args[1] : null;
+        if (cbFd) this.once("listening", cbFd);
+        queueMicrotask(() => {
+          const e = new Error(`listen EINVAL: invalid argument`);
+          e.code = "EINVAL"; e.syscall = "listen"; e.errno = -4071;
+          this.emit("error", e);
+        });
+        return this;
+      }
       if (args[0].path !== undefined) {
-        // node 口径：{path} 形走 unix socket（port 忽略不验）。
+        // node 口径：{path} 非串 → ERR_INVALID_ARG_TYPE（逐字形）；{path} 形走 unix socket。
+        if (typeof args[0].path !== "string") {
+          const __got = args[0].path === null ? "null" : (Array.isArray(args[0].path) ? "an instance of Array" : (typeof args[0].path === "object" ? `an instance of ${args[0].path.constructor?.name ?? "Object"}` : `type ${typeof args[0].path} (${String(args[0].path)})`));
+          const e = new TypeError(`The "options.path" property must be of type string. Received ${__got}`);
+          e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+        }
         sockPath = String(args[0].path); ({ noDelay: __noDelay, signal } = args[0]);
         cb = typeof args[1] === "function" ? args[1] : undefined;
       } else {
         ({ port, host = "127.0.0.1", noDelay: __noDelay, signal, blockList: __blockList, lookup: __lookup } = args[0]);
+        // host 校验（真机逐字）：非串→ARG_TYPE（Array 显实例形）；含 \0→ARG_VALUE。
+        if (host !== undefined && typeof host !== "string") {
+          const __got = Array.isArray(host) ? "an instance of Array" : (host !== null && typeof host === "object" ? `an instance of ${host.constructor?.name ?? "Object"}` : `type ${typeof host} (${String(host)})`);
+          const e = new TypeError(`The "options.host" property must be of type string. Received ${__got}`);
+          e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+        }
+        if (typeof host === "string" && host.includes("\0")) {
+          const e = new TypeError(`The property 'options.host' must be a string without null bytes. Received '${host.replaceAll("\0", "\\x00")}'`);
+          e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+        }
+        // 不支持键（真机逐字；lib/net.js 黑名单）。
+        for (const __k of ["objectMode", "readableObjectMode", "writableObjectMode"]) {
+          if (args[0][__k] !== undefined) {
+            const e = new TypeError(`The property 'options.${__k}' is not supported. Received ${String(args[0][__k])}`);
+            e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+          }
+        }
         cb = typeof args[1] === "function" ? args[1] : undefined;
       }
     } else if (typeof args[0] === "string" && (typeof args[1] !== "string" || args[1] === "")) {
@@ -1133,6 +1166,7 @@ class Socket extends EventEmitter {
     this.readable = true; this.writable = true;
     // noDelay 经 native 直达 setsockopt（http agent 默认 true；Node net 默认 false）。
     // adopt-UDS：本端源 path 透 native 预 bind（localAddress 预置源 path）。
+    if (sockPath !== null) this.__udsTarget = sockPath;
     if (sockPath !== null && this.__adoptUds) {
       this.localAddress = this.__adoptUds;
       this.__id = Number(__wjs_net_connect(sockPath, "", this, this.__adoptUds));
@@ -1189,7 +1223,18 @@ class Socket extends EventEmitter {
       }
       case "error": {
         const o = JSON.parse(payload);
-        this.emit("error", __netErr(o.code, o.msg));
+        const se = __netErr(o.code, o.msg);
+        // node connect 系标配：syscall + errno（uv 负值；ENOENT=-2/EACCES=-13/ECONNREFUSED=-61
+        // /ENOTSOCK=-38/EADDRNOTAVAIL=-49；未知 -4094）。
+        se.syscall = "connect";
+        se.errno = { ENOENT: -2, EACCES: -13, ECONNREFUSED: -61, ENOTSOCK: -38, EADDRNOTAVAIL: -49, EINVAL: -22, EADDRINUSE: -48 }[o.code] ?? -4094;
+        // node connect 错误消息形："connect CODE <target>"（target=host:port 或 path）。
+        // native msg 已是 "CODE: <os>"，此处按目标重塑（expectsError 逐字断言面）。
+        if (typeof o.msg === "string" && !o.msg.startsWith("connect ") && !o.msg.startsWith("IP(")) {
+          const tgt = this.__udsTarget ?? (this.remoteAddress !== undefined && this.remotePort !== undefined ? `${this.remoteAddress}:${this.remotePort}` : null);
+          if (tgt) se.message = `connect ${o.code} ${tgt}`;
+        }
+        this.emit("error", se);
         break;
       }
       case "close": this.destroyed = true; this.emit("close"); break;
@@ -1336,17 +1381,39 @@ class __ServerClass extends EventEmitter {
       this.__id = Number(__wjs_net_listen(0, "UDS:" + String(p) + "\n" + modeBits, this));
       return this;
     }
+    if (port === undefined || port === null) port = 0;
     __vPort(port);
     if (cb) this.once("listening", cb);
     this.__port = Number(port);
     this.__id = Number(__wjs_net_listen(Number(port), host === null ? "0.0.0.0" : host, this));
     return this;
   }
+  // node 口径：listen(cb)/listen()/listen(null) 即 listen(0)；listen(port[, host][, cb])
+  // 全形态（port 缺省 0；cb 可在任意位置）。
   listen(...args) {
     let port, host = null, cb = null;
+    if (typeof args[0] === "function") return this.__doListen(0, null, args[0]);
+    if (args[0] === undefined || args[0] === null) {
+      for (let i = 1; i < args.length; i++) {
+        if (typeof args[i] === "string" && host === null) host = args[i];
+        else if (typeof args[i] === "function") cb = args[i];
+      }
+      return this.__doListen(0, host, cb);
+    }
     if (args[0] && typeof args[0] === "object" && typeof args[0].address === "function" && args[0].__boundPort !== undefined)
       return this.__doListen(args[0], null, typeof args[1] === "function" ? args[1] : null);
     if (typeof args[0] === "object" && args[0] !== null) {
+      if (args[0].fd !== undefined) {
+        // node 口径：listen({fd}) 非法 fd 即异步 EINVAL（error 事件；真机实证）。
+        const cbFd = typeof args[1] === "function" ? args[1] : null;
+        if (cbFd) this.once("listening", cbFd);
+        queueMicrotask(() => {
+          const e = new Error(`listen EINVAL: invalid argument`);
+          e.code = "EINVAL"; e.syscall = "listen"; e.errno = -4071;
+          this.emit("error", e);
+        });
+        return this;
+      }
       if (args[0].path !== undefined) {
         const cb0 = typeof args[1] === "function" ? args[1] : null;
         const o0 = { path: String(args[0].path) };
@@ -1598,7 +1665,14 @@ function __vPort(p) {
   const ok = (typeof p === "number" && Number.isInteger(p) && p >= 0 && p <= 65535) ||
              (typeof p === "string" && /^[0-9]+$/.test(p) && Number(p) <= 65535);
   if (!ok) {
-    const e = new RangeError(`Port should be >= 0 and < 65536. Received ${p}`);
+    // 真机 invalidArgTypeHelper 口径：`Received type string ('x')` / `Received null` 等。
+    let __got;
+    if (p === null) __got = "null";
+    else if (p === undefined) __got = "undefined";
+    else if (typeof p === "string") __got = `type string ('${p}')`;
+    else if (typeof p === "object") __got = `an instance of ${p.constructor?.name ?? "Object"}`;
+    else __got = `type ${typeof p} (${String(p)})`;
+    const e = new RangeError(`Port should be >= 0 and < 65536. Received ${__got}`);
     e.code = "ERR_SOCKET_BAD_PORT"; throw e;
   }
   return Number(p);

@@ -467,15 +467,18 @@ async fn run_inner(
 ) -> Result<(), Error> {
     tracing::info!(target: "winterjs::runtime", filename, source_len = source.len(), ?mode, "run start");
     // process.argv（prelude 求值前就绪；execPath 失败回退名）。
+    // argv[0] 取真实 OS 值（spawn arg0 自举回显，spawn-argv0 套件点名），
+    // 余下按模式拼（execPath 缺失才回退）。
     let exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "winterjs".into());
+    let argv0 = std::env::args().next().unwrap_or_else(|| exe.clone());
     let argv: Vec<String> = match mode {
-        Mode::Script => std::iter::once(exe)
+        Mode::Script => std::iter::once(argv0)
             .chain(std::iter::once(filename.to_owned()))
             .chain(extra_args.iter().cloned())
             .collect(),
-        Mode::Eval => std::iter::once(exe).chain(extra_args.iter().cloned()).collect(),
+        Mode::Eval => std::iter::once(argv0).chain(extra_args.iter().cloned()).collect(),
     };
     let init = init_session(argv)?;
     // 声明顺序即 drop 逆序：`rt` 若先于 `engine` drop（`?` 早退路径），Runtime

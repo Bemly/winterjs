@@ -798,3 +798,55 @@
 >   premature-end/truncated/write-after-end/reject-garbage/from-gzip-trailing
 >   （增量解码面，同上另案）、type-error（Web `DecompressionStream` 缺失，另切片）、
 >   brotli-16GB（16G 量级用例，本机资源门控不跑，逻辑上属流式分块面）。
+
+## child_process
+
+> 首轮对拍（2026-09-17，110 件，`/tmp/wjs-10f-child3.txt`，2 worker，
+> 含 `test/fixtures` 稀疏检出——无 fixtures 时 SAME1 虚高 18→8）：
+> SAME0=12 + SAME1=8，DIFF=90。本轮（同步族口径，
+> `tests/node/child.rs::phase10f_child_sync_surface`）修 10 件：
+> spawnsync-validation-errors/timeout/input/maxbuf/spawnsync/args/env +
+> execfilesync-maxbuf/execsync-maxbuf/spawn-argv0（单文件逐个实测 exit=0），
+> 余约 80 件。
+>
+> ### 已修（每项经真机 26.8.2 对拍）
+>
+> - **自举翻译**（全 flag 铁律所迫，CLI 禁 `-e` 别名）：子进程即自身
+>   （`file === execPath`）时 argv 映射——`-e X` → `--eval X`、裸文件 →
+>   `--run <file>`；shell 串首（`"<execPath>" -e/-p/-pe`，`$NODE` token 同理）
+>   同规则改写；他家二进制原样透传（`cat` 等真程序不受影响）。
+> - **同步族错误形状**：`syscall` 带命令（`spawnSync <file>`）、`error.message`
+>   `spawnSync <file> <CODE>`、`error.path`、errno 表（ENOENT -2/EACCES -13/
+>   ENOBUFS -55/ETIMEDOUT -60，余 -4094）、`error.spawnargs` 为参数数组、
+>   起 spaw 失败 `pid` 为 0（非 -1）、失败 `output` 为 null（成功才
+>   `[null, stdout, stderr]`）。
+> - **缺省 Buffer**：spawnSync/execSync/execFileSync 缺省回真 Buffer
+>   （deepStrictEqual 裸 Uint8Array 即不等）；exec **异步**缺省仍 utf8——
+>   三处缺省各不同，禁想当然统一（旧测试两处伪语义已翻转）。
+> - **选项校验族**：cwd/argv0（string）、detached/windowsHide/
+>   windowsVerbatimArguments（boolean）、shell（boolean/string）、uid/gid
+>   （非负整数，值忽略）、timeout（非负整数）、maxBuffer（非负数/Infinity
+>   不限/小数下取整）、killSignal（类型先行 ARG_TYPE，再查 os.signals 表落空
+>   即 ERR_UNKNOWN_SIGNAL）、input（string/Buffer/视图/ArrayBuffer）。
+> - **killSignal 落地**：kill_signo 数字通道（libc 直杀，免枚举表）+
+>   kill_signame 回显；缺省 SIGTERM 并阻塞 wait（旧 SIGKILL 直杀为伪语义，
+>   旧测试已翻转）；detached 组杀同信号；argv0 经 unix arg0（+ runtime 取真
+>   argv[0]，自举回显对拍）。
+> - **管道死锁根修**：同步等待与读出并发（读出线程先行；等退出后才读 =
+>   1MB+ 输出永挂，maxbuf 套件现形）。`maxBuffer: Infinity` 即不限。
+> - **stdio 透传起步**：inherit 即继承不捕获（spawnchild 链路必需）；
+>   ignore/pipe 按旧路；校验面另案。
+> - **ChildProcess.emit**（exit/close/error/spawn 四位，经访问器 wrap）
+>   + `args=null` 不吞 opts（四处同修，含 async）。
+>
+> ### 剩余红项（约 80，分簇）
+>
+> - **fork/IPC 约 25 件**（多 TIMEOUT）：handle 传递（send/dgram/net-server
+>   共享）、高级序列化、ipc-next-tick——线程底座 IPC 语义另案。
+> - **async 中断面**：AbortSignal（execFile/exec abort/预中断/非法型、
+>   spawn-controller、fork-abort）——独立特征轮。
+> - **async 句柄面**：silent/stdin（stdio 句柄 write/pipe）、exit-code/cwd
+>   （事件序）、server-close 等——live 句柄轮。
+> - **exec 字符串族**：spawnsync-shell（DEP0190 + `-pe` shell 串映射 + 平台 mock）、
+>   exec-encoding/timeout 系列——随 async/exec 轮。
+> - **零散**：argv0 message 全文（已顺带对齐）、windows 专属、dgram-reuseport 等。

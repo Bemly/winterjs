@@ -651,6 +651,8 @@ function __wjs_stdio_stream(fd) {
 
 globalThis.process = {
   argv: JSON.parse(__wjs_argv_json()),
+  // 真机口径：argv0 缺省即 argv[0]（spawn-argv0 套件点名自举回显）。
+  argv0: JSON.parse(__wjs_argv_json())[0] ?? __wjs_exec_path(),
   env: new Proxy({}, {
     get(_, k) {
       if (typeof k !== "string") return undefined;

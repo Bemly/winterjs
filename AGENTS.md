@@ -1977,3 +1977,34 @@ cargo build
   ② `ERR_INVALID_ARG_TYPE` 的 property 形（`The "options.X" property …`）直接
   复用 errors 移植 helper，禁手写文案（`Received type string ('x')` 含引号，
   手写必错）。
+
+### 4.128 child 同步族六坑（2026-09-17，10f child 首轮）
+
+- 坑一（自举翻译）：`spawnSync(execPath, …)` 的子进程是 winterjs 自身，
+  Node 形 argv（`-e` 脚本/裸文件/shell 串首 `"<execPath>" -e`/`$NODE` 形）
+  进全 flag CLI 即死（input/timeout/maxbuf 全灭于此，与实现质量无关）。
+  修法：`__selfArgv`（数组形）+ `__selfCmd`（shell 串首形）两道映射到
+  `--eval`/`--run`；他家二进制（`cat` 等）原样透传。禁给 CLI 加 `-e` 别名
+  （全 flag 铁律 §0.8）。
+- 坑二（三处缺省各不同）：spawnSync/execSync/execFileSync 缺省 **Buffer**，
+  exec **异步**缺省 utf8——实测与文档字面（utf8）相反。修法：只改同步族；
+  动 async 即把 `phase10f_exec_live_handle` 打红（本轮亲测）。旧测试两处
+  `.trim()` 伪语义同步翻转（§4.65）。
+- 坑三（同步等待管道死锁）：等退出（try_wait 轮询）后才读输出 = 1MB+ 输出
+  永挂（子撑满 64K 管阻塞、父永不见退出）。修法：take 出 pipe 即起读出线程，
+  等与读并发（`run_command`）。
+- 坑四（killSignal 两层）：错型先行 ARG_TYPE，查表落空才 UNKNOWN_SIGNAL
+  （初版合一即挂 validation-errors，插桩二分半天才定位到 killsig 段——
+  "311:53" 系固定伪位置，禁按行号找断言，改四分文件）。
+- 坑五（视图输入）：`new Uint8Array(u16view)` 按元素拷（长度减半+内容错位），
+  须 `new Uint8Array(buf, byteOffset, byteLength)`（§4.124 姊妹篇；
+  DataView/多字节视图全中）。
+- 坑六（`args=null` 吞 opts）：`spawnSync(file, null, opts)` 的重载分流把
+  null 当 options 覆盖——四处（sync/async/execFile）同修；另 `error.spawnargs`
+  为参数数组（非 undefined）、`syscall` 带命令、起 spaw 失败 `pid` 为 0、
+  缺省 SIGTERM 阻塞 wait（旧 SIGKILL/直杀两处伪语义已翻转）。
+- 复现：`tests/node/child.rs::phase10f_child_sync_surface`；
+  另 `process.argv0` 缺省（runtime 取真 argv[0]）+ `ChildProcess.emit`
+  （四位分发）附带补齐（spawn-argv0/execfile 套件）。
+- 推广为铁律：子进程族"子是谁"先分类——自身/真程序/shell 串三条路，
+  翻译层只动自身路；"311:53" 式固定伪位置出现即改文件二分，不读行号。

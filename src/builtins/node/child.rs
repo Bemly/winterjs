@@ -40,14 +40,27 @@ struct SpawnOpts {
     cwd: Option<String>,
     /// 全量替换环境（None=继承；`{}`=清空，Node 同语义）。
     env: Option<std::collections::HashMap<String, String>>,
-    /// 超时毫秒（0/缺省=无限；超时杀直系，`signal="SIGKILL"`）。
+    /// 超时毫秒（0/缺省=无限；超时发 killSignal，缺省 SIGTERM，真机口径）。
     timeout_ms: u64,
     /// detached 组长化（unix setsid；kill 走组杀，见 `make_detached`）。
     detached: bool,
     /// shell（exec 由调用方拼好；spawn 经 shlex 拼）。
     shell: bool,
+    /// shell 路径（字符串 shell 用；None=默认 shell）。
+    shell_path: Option<String>,
+    /// argv0（unix arg0；None 不设）。
+    argv0: Option<String>,
+    /// 超时 kill 信号号（None=SIGTERM；JS 侧已按 os.signals 表校验归一）。
+    kill_signo: Option<i32>,
+    /// 超时 kill 信号名（上报用，与 kill_signo 同源；None=SIGTERM）。
+    kill_signame: Option<String>,
     /// stdin 输入（base64；None=null）。
     input_b64: Option<String>,
+    /// stdio 透传（inherit 即继承父端对应流，不捕获；缺省全 pipe）。
+    /// ignore 与缺省同（null + 空回），仅此处显式区分以便将来校验。
+    stdin_inherit: bool,
+    stdout_inherit: bool,
+    stderr_inherit: bool,
     /// 最大缓冲字节（默认 1MiB；超即 ENOBUFS）。
     max_buffer: Option<usize>,
 }
@@ -108,8 +121,25 @@ fn run_command(
     input: Option<Vec<u8>>,
 ) -> serde_json::Value {
     use std::process::Stdio;
-    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // stdio 语义（input 优先于 stdin 透传；inherit 即继承父端流、不捕获；
+    // 其余 pipe 捕获；ignore/null 空）。
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else if opts.stdin_inherit {
+        Stdio::inherit()
+    } else {
+        Stdio::null()
+    });
+    cmd.stdout(if opts.stdout_inherit {
+        Stdio::inherit()
+    } else {
+        Stdio::piped()
+    });
+    cmd.stderr(if opts.stderr_inherit {
+        Stdio::inherit()
+    } else {
+        Stdio::piped()
+    });
     if let Some(dir) = &opts.cwd {
         cmd.current_dir(dir);
     }
@@ -127,7 +157,7 @@ fn run_command(
             let code = crate::builtins::node::fs::io_code(&e);
             return serde_json::json!({
                 "spawnErr": format!("{code}: spawn: {e}"),
-                "pid": -1,
+                "pid": 0,
                 "status": null, "signal": null,
                 "stdout_b64": "", "stderr_b64": "",
                 "timedOut": false,
@@ -141,6 +171,23 @@ fn run_command(
             let _ = stdin.write_all(&data);
         }
     }
+    // 输出泵线程（maxbuf 套件现形）：1MB+ 输出会撑满 64K 管道——若等退出
+    // 后再读，子进程永阻塞、父进程永 try_wait，死锁。读与等必须并发。
+    // inherit 流无 pipe 即无线程（空回）。
+    let out_h = child.stdout.take().map(|mut out| {
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = out.read_to_end(&mut v);
+            v
+        })
+    });
+    let err_h = child.stderr.take().map(|mut err| {
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = err.read_to_end(&mut v);
+            v
+        })
+    });
     let deadline = if opts.timeout_ms > 0 {
         Some(Instant::now() + Duration::from_millis(opts.timeout_ms))
     } else {
@@ -153,29 +200,34 @@ fn run_command(
             Err(_) => break false,
         }
         if deadline.is_some_and(|d| Instant::now() >= d) {
-            // 超时杀（detached 组杀，unix；其余直杀；组杀顺延见头注）。
+            // 超时杀：killSignal（缺省 SIGTERM，真机口径；detached 组杀同信号，
+            // 组杀失败回退直杀）。直杀后阻塞 wait（忽略 SIGTERM 的子进程即等，
+            // 与真机同）。
+            let signo = opts.kill_signo.unwrap_or(15);
             #[cfg(unix)]
             if opts.detached {
                 let pid = child.id();
-                use nix::sys::signal::{kill, Signal};
-                use nix::unistd::Pid;
-                let _ = kill(Pid::from_raw(-(pid as i32)), Signal::SIGKILL)
-                    .or_else(|_| kill(Pid::from_raw(pid as i32), Signal::SIGKILL));
+                unsafe {
+                    if libc::kill(-(pid as i32), signo) != 0 {
+                        libc::kill(pid as i32, signo);
+                    }
+                }
             }
+            #[cfg(unix)]
+            if !opts.detached {
+                unsafe {
+                    libc::kill(child.id() as i32, signo);
+                }
+            }
+            #[cfg(not(unix))]
             let _ = child.kill();
             let _ = child.wait();
             break true;
         }
         std::thread::sleep(Duration::from_millis(5));
     };
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut out) = child.stdout.take() {
-        let _ = out.read_to_end(&mut stdout);
-    }
-    if let Some(mut err) = child.stderr.take() {
-        let _ = err.read_to_end(&mut stderr);
-    }
+    let stdout = out_h.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+    let stderr = err_h.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
     // wait 收尸（try_wait 已见退出则即返；超时路径已 wait）。
     let status = child.wait().ok();
     let (status_code, signal) = status.map(status_parts).unwrap_or((None, None));
@@ -193,7 +245,7 @@ fn run_command(
         "spawnErr": null,
         "pid": pid,
         "status": if timed_out { serde_json::Value::Null } else { status_code.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null) },
-        "signal": if timed_out { serde_json::Value::String("SIGKILL".into()) } else { signal.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null) },
+        "signal": if timed_out { serde_json::Value::String(opts.kill_signame.clone().unwrap_or_else(|| "SIGTERM".into())) } else { signal.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null) },
         "stdout_b64": b64(&stdout),
         "stderr_b64": b64(&stderr),
         "timedOut": timed_out,
@@ -730,7 +782,7 @@ pub unsafe extern "C" fn cp_spawn(
                 .map(|c| c.into_owned())
                 .unwrap_or_else(|_| format!("'{}'", a.replace('\'', "'\\''")))
         };
-        let mut c = std::process::Command::new(default_shell());
+        let mut c = std::process::Command::new(opts.shell_path.as_deref().unwrap_or(default_shell()));
         let line = std::iter::once(file.clone())
             .chain(args.clone())
             .map(|a| quote(&a))
@@ -745,6 +797,11 @@ pub unsafe extern "C" fn cp_spawn(
     } else {
         let mut c = std::process::Command::new(&file);
         c.args(&args);
+        #[cfg(unix)]
+        if let Some(a0) = &opts.argv0 {
+            use std::os::unix::process::CommandExt as _;
+            c.arg0(a0);
+        }
         c
     };
     let input = opts
@@ -765,6 +822,15 @@ pub const SOURCE: &str = r#"
 import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 import * as fs from "node:fs";
+import __osDefault from "node:os";
+import { getSystemErrorName as __uvName } from "node:util";
+import errors from 'node:internal/errors';
+const {
+  codes: {
+    ERR_INVALID_ARG_TYPE: { HideStackFramesError: ERR_INVALID_ARG_TYPE },
+  },
+} = errors;
+const __SIGS = __osDefault.constants.signals;
 function __b64dec(s) {
   s = String(s).replace(/-/g, "+").replace(/_/g, "/");
   while (s.length % 4) s += "=";
@@ -779,6 +845,7 @@ function __b64enc(u8) {
   return btoa(s);
 }
 function __normExecOpts(opts) {
+  // 缺省 utf8（真机实测；exec 异步族与同步族缺省不同：同步恒 buffer，禁串）。
   const o = { encoding: "utf8", timeoutMs: 0, shell: true, maxBuffer: 1024 * 1024, inputB64: null };
   if (opts === undefined || opts === null) return o;
   if (typeof opts === "string") { o.encoding = opts; return o; }
@@ -789,30 +856,158 @@ function __normExecOpts(opts) {
   if (opts.cwd !== undefined) o.cwd = String(opts.cwd);
   if (opts.env !== undefined) o.env = { ...opts.env };
   if (opts.input !== undefined && opts.input !== null) {
-    const b = typeof opts.input === "string" ? new TextEncoder().encode(opts.input) : opts.input;
-    o.inputB64 = __b64enc(b instanceof Uint8Array ? b : new Uint8Array(b));
+    const b = opts.input;
+    if (typeof b !== "string" && !(b instanceof Uint8Array) && !(b instanceof ArrayBuffer) && !ArrayBuffer.isView(b)) {
+      throw new ERR_INVALID_ARG_TYPE("options.input", ["string", "Buffer", "TypedArray", "DataView", "ArrayBuffer"], b);
+    }
+    const u8 = typeof b === "string" ? new TextEncoder().encode(b)
+      : (b instanceof Uint8Array ? b
+        : (b instanceof ArrayBuffer ? new Uint8Array(b)
+          : new Uint8Array(b.buffer, b.byteOffset, b.byteLength)));
+    o.inputB64 = __b64enc(u8);
   }
   return o;
 }
 function __normSpawnOpts(opts) {
-  const o = { encoding: "utf8", timeoutMs: 0, shell: false, maxBuffer: 1024 * 1024, inputB64: null };
+  // 缺省 encoding "buffer"（真机口径；exec 系另为 utf8，不串）。
+  const o = { encoding: "buffer", timeoutMs: 0, shell: false, shellPath: null, maxBuffer: 1024 * 1024, inputB64: null, killSigno: 15, killSigname: "SIGTERM", argv0: null, cwd: null, detached: false, stdioInherit: [false, false, false] };
   if (opts === undefined || opts === null) return o;
   if (opts.encoding !== undefined) o.encoding = opts.encoding;
-  if (opts.timeout !== undefined) o.timeoutMs = Number(opts.timeout);
-  if (opts.shell !== undefined) o.shell = !!opts.shell;
-  if (opts.maxBuffer !== undefined) o.maxBuffer = Number(opts.maxBuffer);
-  if (opts.cwd !== undefined) o.cwd = String(opts.cwd);
+  // 字符串选项（cwd/argv0）：undefined/null 过，余下非串即 ARG_TYPE。
+  for (const k of ["cwd", "argv0"]) {
+    const v = opts[k];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== "string") {
+      throw new ERR_INVALID_ARG_TYPE(`options.${k}`, "string", v);
+    }
+    o[k === "cwd" ? "cwd" : "argv0"] = v;
+  }
+  // 布尔选项（detached/windowsHide/windowsVerbatimArguments）：undefined/null/布尔过。
+  // detached 真传 native；windows 系 unix 忽略（记档）。
+  for (const k of ["detached", "windowsHide", "windowsVerbatimArguments"]) {
+    const v = opts[k];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== "boolean") {
+      throw new ERR_INVALID_ARG_TYPE(`options.${k}`, "boolean", v);
+    }
+    if (k === "detached") o.detached = v;
+  }
+  // shell：undefined/null/布尔/字符串过（字符串即 shell 路径）；余下 ARG_TYPE。
+  if (opts.shell !== undefined && opts.shell !== null) {
+    if (typeof opts.shell === "boolean") { o.shell = opts.shell; o.shellPath = null; }
+    else if (typeof opts.shell === "string") { o.shell = true; o.shellPath = opts.shell; }
+    else throw new ERR_INVALID_ARG_TYPE("options.shell", ["boolean", "string"], opts.shell);
+  }
+  // uid/gid：undefined/null/非负整数过（值忽略，记档）；非 number 即 ARG_TYPE，
+  // 非整数/负数/NaN/Inf 即 RANGE。
+  for (const k of ["uid", "gid"]) {
+    const v = opts[k];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== "number") throw new ERR_INVALID_ARG_TYPE(`options.${k}`, "number", v);
+    if (!Number.isInteger(v) || v < 0) {
+      const e = new RangeError(`The value of "options.${k}" is out of range. It must be a non-negative integer. Received ${v}`);
+      e.code = "ERR_OUT_OF_RANGE"; throw e;
+    }
+  }
+  // timeout：undefined/null/非负整数过；非 number 即 ARG_TYPE；
+  // 负数/NaN/Inf/小数即 RANGE。
+  if (opts.timeout !== undefined && opts.timeout !== null) {
+    const v = opts.timeout;
+    if (typeof v !== "number") throw new ERR_INVALID_ARG_TYPE("options.timeout", "number", v);
+    if (!Number.isInteger(v) || v < 0) {
+      const e = new RangeError(`The value of "options.timeout" is out of range. It must be a non-negative integer. Received ${v}`);
+      e.code = "ERR_OUT_OF_RANGE"; throw e;
+    }
+    o.timeoutMs = v;
+  }
+  // maxBuffer：undefined/null/非负数/Infinity/小数过（Infinity 即不限）；
+  // 非 number 即 ARG_TYPE；NaN/负数/-Inf 即 RANGE。小数下取整
+  //（整数长度下与原值等价，Rust 侧 u64 收敛）。
+  if (opts.maxBuffer !== undefined && opts.maxBuffer !== null) {
+    const v = opts.maxBuffer;
+    if (typeof v !== "number") throw new ERR_INVALID_ARG_TYPE("options.maxBuffer", "number", v);
+    if (Number.isNaN(v) || v < 0) {
+      const e = new RangeError(`The value of "options.maxBuffer" is out of range. It must be a non-negative number. Received ${v}`);
+      e.code = "ERR_OUT_OF_RANGE"; throw e;
+    }
+    o.maxBuffer = Number.isFinite(v) ? Math.floor(v) : null;
+  }
+  // killSignal：undefined/null/合法信号（名大小写不敏感/表中数字）过；
+  // 类型先行（布尔/数组/对象/函数即 ARG_TYPE，真机口径），
+  // 再查表落空即 ERR_UNKNOWN_SIGNAL。
+  if (opts.killSignal !== undefined && opts.killSignal !== null) {
+    const ks = opts.killSignal;
+    if (typeof ks !== "string" && typeof ks !== "number") {
+      throw new ERR_INVALID_ARG_TYPE("options.killSignal", ["string", "number"], ks);
+    }
+    const hit = __sigResolve(ks);
+    if (!hit) {
+      const e = new TypeError(`Unknown signal: ${String(ks)}`);
+      e.code = "ERR_UNKNOWN_SIGNAL"; throw e;
+    }
+    o.killSigno = hit.signo; o.killSigname = hit.name;
+  }
   if (opts.env !== undefined) o.env = { ...opts.env };
+  // stdio：字符串整体形（inherit/ignore/pipe）或三元数组（逐流；超界忽略）；
+  // 余下收敛 pipe（校验面另案）。同步族只用透传标记（inherit 即不捕获）。
+  o.stdioInherit = [false, false, false];
+  const __stdioOne = (v) => v === "inherit" ? "inherit" : "pipe";
+  if (opts.stdio !== undefined && opts.stdio !== null) {
+    if (typeof opts.stdio === "string") {
+      const m = __stdioOne(opts.stdio);
+      o.stdioInherit = [m === "inherit", m === "inherit", m === "inherit"];
+    } else if (Array.isArray(opts.stdio)) {
+      for (let i = 0; i < 3; i++) {
+        if (i < opts.stdio.length) o.stdioInherit[i] = __stdioOne(opts.stdio[i]) === "inherit";
+      }
+    }
+  }
   if (opts.input !== undefined && opts.input !== null) {
-    const b = typeof opts.input === "string" ? new TextEncoder().encode(opts.input) : opts.input;
-    o.inputB64 = __b64enc(b instanceof Uint8Array ? b : new Uint8Array(b));
+    const b = opts.input;
+    if (typeof b !== "string" && !(b instanceof Uint8Array) && !(b instanceof ArrayBuffer) && !ArrayBuffer.isView(b)) {
+      throw new ERR_INVALID_ARG_TYPE("options.input", ["string", "Buffer", "TypedArray", "DataView", "ArrayBuffer"], b);
+    }
+    const u8 = typeof b === "string" ? new TextEncoder().encode(b)
+      : (b instanceof Uint8Array ? b
+        : (b instanceof ArrayBuffer ? new Uint8Array(b)
+          : new Uint8Array(b.buffer, b.byteOffset, b.byteLength)));
+    o.inputB64 = __b64enc(u8);
   }
   return o;
 }
+// 信号归一（os.signals 表单源）：名大小写不敏感、数字须命中表值；
+// 命中回 {name, signo}，余下 null（含布尔/数组/对象/函数）。
+function __sigResolve(v) {
+  if (typeof v === "string") {
+    const up = v.toUpperCase();
+    for (const k of Object.keys(__SIGS)) if (k === up) return { name: k, signo: __SIGS[k] };
+    return null;
+  }
+  if (typeof v === "number" && Number.isInteger(v)) {
+    for (const k of Object.keys(__SIGS)) if (__SIGS[k] === v) return { name: k, signo: v };
+  }
+  return null;
+}
+// 自举翻译（input/timeout/maxbuf 套件：子进程即自身时，Node 形 argv
+// （`-e` 脚本/裸文件）映射到本仓全 flag CLI；他家二进制原样透传。
+// `-e`  extras 透传（本仓 --eval 尾参作脚本 argv，最佳 effort）。
+function __selfArgv(file, args) {
+  if (file !== process.execPath) return [file, args];
+  const a = [...args];
+  if (a[0] === "-e") return [file, ["--eval", ...a.slice(1)]];
+  if (a[0] !== undefined && !String(a[0]).startsWith("-")) return [file, ["--run", ...a]];
+  return [file, a];
+}
+// 同步族错误 errno 表（真机实测；余下 -4094）。
+function __syncErrno(code) {
+  return { ENOENT: -2, EACCES: -13, ENOBUFS: -55, ETIMEDOUT: -60 }[code] ?? -4094;
+}
 function __toOut(b64, encoding) {
   const bytes = __b64dec(b64 || "");
-  if (encoding === "buffer" || encoding === null) return bytes;
-  return new TextDecoder(String(encoding || "utf8")).decode(bytes);
+  // 真机口径：encoding 缺省（spawnSync）即 "buffer"，回真 Buffer
+  // （deepStrictEqual 裸 Uint8Array 即不等，原型不同）。
+  if (encoding === "buffer" || encoding === null || encoding === undefined) return Buffer.from(bytes);
+  return new TextDecoder(String(encoding)).decode(bytes);
 }
 function __spawnError(cmd, r, encoding) {
   const msg = r.timedOut
@@ -826,12 +1021,30 @@ function __spawnError(cmd, r, encoding) {
   if (r.spawnErr) {
     const code = (r.spawnErr.match(/^([A-Z_]+): /) || [])[1] || "UNKNOWN";
     err.code = code;
+    err.errno = __syncErrno(code);
   }
   throw err;
 }
+// shell 串首自举翻译（execsync-maxbuf 套件：`"<execPath>" -e/-p/-pe X`
+// 经 shell 跑自身；`$NODE` token（env 透传）同理）。仅串首二进制位 +
+// 纯 [pe] 组合旗才改写（`--eval` 回显 completion，与 -p 语义对等），
+// 余下一律原样（误伤用户脚本更糟）。
+function __selfCmd(cmd) {
+  const m = String(cmd).match(/^("[^"]*"|'[^']*'|\$NODE|\S+)\s+-([A-Za-z]+)\s?([\s\S]*)$/);
+  if (!m) return cmd;
+  let bin = m[1];
+  const flag = m[2], rest = m[3];
+  const unq = (bin.startsWith('"') && bin.endsWith('"')) || (bin.startsWith("'") && bin.endsWith("'")) ? bin.slice(1, -1) : bin;
+  if (unq !== process.execPath && unq !== "$NODE") return cmd;
+  if (!/^[pe]+$/.test(flag)) return cmd;
+  return `${bin} --eval ${rest}`;
+}
 export function execSync(cmd, opts) {
   const o = __normExecOpts(opts);
-  const r = JSON.parse(__wjs_cp_exec(String(cmd), JSON.stringify({
+  // execSync 缺省 Buffer（真机实测；exec 异步缺省 utf8）：未显式给编码即改 buffer。
+  if (typeof opts !== "string" && (opts === undefined || opts === null || opts.encoding === undefined)) o.encoding = "buffer";
+  cmd = __selfCmd(String(cmd));
+  const r = JSON.parse(__wjs_cp_exec(cmd, JSON.stringify({
     cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
     shell: !!o.shell, input_b64: o.inputB64, max_buffer: o.maxBuffer,
   })));
@@ -839,25 +1052,48 @@ export function execSync(cmd, opts) {
   return __toOut(r.stdout_b64, o.encoding);
 }
 export function spawnSync(file, args, opts) {
-  if (args !== undefined && !Array.isArray(args)) { opts = args; args = []; }
+  if (args !== undefined && args !== null && !Array.isArray(args)) { opts = args; args = []; }
   const o = __normSpawnOpts(opts);
-  const r = JSON.parse(__wjs_cp_spawn(String(file), JSON.stringify([...(args || [])].map(String)), JSON.stringify({
+  const f = String(file);
+  const origArgs = [...(args || [])].map(String);
+  const [f2, a2] = __selfArgv(f, origArgs);
+  const r = JSON.parse(__wjs_cp_spawn(f2, JSON.stringify(a2), JSON.stringify({
     cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
-    shell: o.shell, input_b64: o.inputB64, max_buffer: o.maxBuffer,
+    shell: o.shell, shell_path: o.shellPath, kill_signo: o.killSigno,
+    kill_signame: o.killSigname, argv0: o.argv0, detached: !!o.detached,
+    stdin_inherit: !!o.stdioInherit[0], stdout_inherit: !!o.stdioInherit[1],
+    stderr_inherit: !!o.stdioInherit[2],
+    input_b64: o.inputB64, max_buffer: o.maxBuffer,
   })));
+  const stdout = __toOut(r.stdout_b64, o.encoding);
+  const stderr = __toOut(r.stderr_b64, o.encoding);
+  // 真机口径（实测）：成功 output=[null, stdout, stderr]，失败 output=null；
+  // error 挂 code/errno/syscall/path（message 非枚举）.
   const out = {
     pid: r.pid,
+    output: null,
+    stdout, stderr,
     status: r.status,
-    signal: r.signal,
-    stdout: __toOut(r.stdout_b64, o.encoding),
-    stderr: __toOut(r.stderr_b64, o.encoding),
+    signal: r.timedOut ? o.killSigname : r.signal,
   };
+  if (!r.spawnErr && !r.timedOut) out.output = [null, stdout, stderr];
   if (r.spawnErr && !r.timedOut) {
     const code = (r.spawnErr.match(/^([A-Z_]+): /) || [])[1] || "UNKNOWN";
-    out.error = Object.assign(new Error(`${code}: spawn ${file}`), { code, syscall: "spawn" });
+    out.error = new Error(`spawnSync ${f} ${code}`);
+    out.error.code = code;
+    out.error.errno = __syncErrno(code);
+    out.error.syscall = `spawnSync ${f}`;
+    out.error.path = f;
+    // 真机口径（spawnsync.js 点名）：spawnargs 为参数数组（不含 file 本体）。
+    out.error.spawnargs = origArgs;
   }
   if (r.timedOut && !out.error) {
-    out.error = Object.assign(new Error(`Timed out: spawn ${file}`), { code: "ETIMEDOUT", syscall: "spawn" });
+    out.error = new Error(`spawnSync ${f} ETIMEDOUT`);
+    out.error.code = "ETIMEDOUT";
+    out.error.errno = -60;
+    out.error.syscall = `spawnSync ${f}`;
+    out.error.path = f;
+    out.error.spawnargs = origArgs;
   }
   return out;
 }
@@ -1031,6 +1267,15 @@ export class ChildProcess {
     return this;
   }
   removeListener(event, cb) { return this.off(event, cb); }
+  // 手动派发（execfile 套件直调 child.emit('close', …)；真机 EventEmitter 口径，
+  // 走访问器 wrap 以便 exitCode/signalCode 落定）。
+  emit(event, ...args) {
+    if (event === "exit" && typeof this.onexit === "function") { this.onexit(...args); return true; }
+    if (event === "close" && typeof this.onclose === "function") { this.onclose(...args); return true; }
+    if (event === "error" && typeof this.onerror === "function") { this.onerror(...args); return true; }
+    if (event === "spawn" && typeof this.onspawn === "function") { this.onspawn(...args); return true; }
+    return false;
+  }
   // exit/close 经访问器 wrap：落定退出码（直接赋值亦生效，Node 的 exitCode 语义）。
   // node 口径：回调双参 (code, signal)；null/undefined 的位不动（exit 用旧值，
   // close 用 null——真机 close 在 signal 死亡时 exitCode 仍 null）。
@@ -1146,7 +1391,7 @@ function __normSpawnAsyncOpts(opts) {
   return o;
 }
 export function spawn(file, args, opts) {
-  if (args !== undefined && !Array.isArray(args)) { opts = args; args = []; }
+  if (args !== undefined && args !== null && !Array.isArray(args)) { opts = args; args = []; }
   const o = __normSpawnAsyncOpts(opts);
   const proc = new ChildProcess();
   proc.spawnfile = String(file);
@@ -1220,7 +1465,8 @@ function __execCollect(child, o, cmdStr, cb) {
     }
     if (code === 0 && signal === null) { finish(null); return; }
     const err = new Error(`Command failed: ${cmdStr}\n${dec(chunks.stderr)}`);
-    err.code = code ?? signal;
+    // 真机口径（execfile 套件点名）：负退出码转 UV 名（如 -1 → EPERM）。
+    err.code = (typeof code === "number" && code < 0) ? __uvName(code) : (code ?? signal);
     err.killed = child.killed;
     err.signal = signal;
     err.cmd = cmdStr;
@@ -1307,11 +1553,17 @@ export function exec(command, opts, cb) {
   return child;
 }
 export function execFileSync(file, args, opts) {
-  if (args !== undefined && !Array.isArray(args)) { opts = args; args = []; }
+  if (args !== undefined && args !== null && !Array.isArray(args)) { opts = args; args = []; }
   const o = __normSpawnOpts(opts);
-  const r = JSON.parse(__wjs_cp_spawn(String(file), JSON.stringify([...(args || [])].map(String)), JSON.stringify({
+  const f = String(file);
+  const [f2, a2] = __selfArgv(f, [...(args || [])].map(String));
+  const r = JSON.parse(__wjs_cp_spawn(f2, JSON.stringify(a2), JSON.stringify({
     cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
-    shell: false, input_b64: o.inputB64, max_buffer: o.maxBuffer,
+    shell: false, kill_signo: o.killSigno, kill_signame: o.killSigname,
+    argv0: o.argv0, detached: !!o.detached,
+    stdin_inherit: !!o.stdioInherit[0], stdout_inherit: !!o.stdioInherit[1],
+    stderr_inherit: !!o.stdioInherit[2],
+    input_b64: o.inputB64, max_buffer: o.maxBuffer,
   })));
   if (r.spawnErr || r.timedOut || r.status !== 0) __spawnError(file, r, o.encoding);
   return __toOut(r.stdout_b64, o.encoding);
@@ -1391,7 +1643,7 @@ function __normForkOpts(opts) {
   return o;
 }
 export function fork(modulePath, args, opts) {
-  if (args !== undefined && !Array.isArray(args)) { opts = args; args = []; }
+  if (args !== undefined && args !== null && !Array.isArray(args)) { opts = args; args = []; }
   if (modulePath === undefined || modulePath === null ||
       (typeof modulePath !== "string" && !(modulePath instanceof URL))) {
     const err = new TypeError("The \"modulePath\" argument must be of type string or URL");

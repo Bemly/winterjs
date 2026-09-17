@@ -7,16 +7,17 @@ use assert_fs::prelude::*;
 #[test]
 fn phase4_cp_exec_spawn_sync() {
     // 回显/管道输入/env/cwd + 非零抛错形状 + spawn 缺失命令。
+    // （真机口径：execSync/spawnSync 缺省 Buffer；旧 .trim() 直调为伪语义，已翻转。）
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
         "cp.mjs",
         r#"
 import { execSync, spawnSync } from "node:child_process";
-console.log(execSync("echo hi").trim());
-console.log(execSync("cat", { input: "piped" }).trim());
+console.log(execSync("echo hi").toString().trim());
+console.log(execSync("cat", { input: "piped" }).toString().trim());
 const r = spawnSync("echo", ["a", "b"], { env: { PATH: process.env.PATH } });
-console.log(r.status, r.signal, r.stdout.trim(), r.pid > 0, r.error);
+console.log(r.status, r.signal, r.stdout.toString().trim(), r.pid > 0, r.error);
 const e = spawnSync("definitely-missing-binary-xyz", []);
 console.log(e.status, e.error.code);
 try {
@@ -36,10 +37,10 @@ try {
 
 #[test]
 fn phase4_cp_timeout_and_shell() {
-    // 超时杀直系（SIGKILL 形）+ shell:false 直跑。
+    // 超时杀（真机缺省 SIGTERM；旧 SIGKILL 形为伪语义，已翻转）+ shell:false 直跑。
     let out = stdout_of(&mut winterjs().args(["--eval",
-        r#"const { spawnSync, execSync } = await import("node:child_process"); const r = spawnSync("sleep", ["5"], { timeout: 200 }); console.log(r.signal, !!r.error); console.log(execSync("echo noshell", { shell: false }).trim());"#]));
-    assert_eq!(out, "SIGKILL true\nnoshell\n", "timeout: {out}");
+        r#"const { spawnSync, execSync } = await import("node:child_process"); const r = spawnSync("sleep", ["5"], { timeout: 200 }); console.log(r.signal, !!r.error); console.log(execSync("echo noshell", { shell: false }).toString().trim());"#]));
+    assert_eq!(out, "SIGTERM true\nnoshell\n", "timeout: {out}");
 }
 
 #[test]
@@ -100,7 +101,7 @@ fn phase9e_child_corners() {
         "p.mjs",
         r#"
 import { exec, execFile, execFileSync, spawn } from "node:child_process";
-console.log("sync", execFileSync("echo", ["sync-ok"]).trim() === "sync-ok");
+console.log("sync", execFileSync("echo", ["sync-ok"]).toString().trim() === "sync-ok");
 exec("echo hello-exec", (e, stdout) => {
   console.log("exec", e === null && stdout.trim() === "hello-exec");
   execFile("echo", ["hello-file"], (e2, stdout2) => {
@@ -335,5 +336,88 @@ exec("exit 3", (e) => {
     ] {
         assert!(text.lines().any(|l| l.starts_with(line)), "missing: {line}\nout: {text}");
     }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_child_sync_surface() {
+    // 10f child 同步族口径（真机 26.8.2 对拍）：选项校验族 + 错误形状
+    // （syscall/errno/message/path/pid/output）+ 自举翻译（-e/裸文件）+
+    // 缺省 Buffer + killSignal/timeout/ETIMEDOUT + ENOBUFS。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import cs from "node:child_process";
+import fs from "node:fs";
+import { getSystemErrorName } from "node:util";
+// — 校验族抽样 —
+for (const [k, v, code] of [["cwd", 0, "ERR_INVALID_ARG_TYPE"], ["detached", 1, "ERR_INVALID_ARG_TYPE"], ["uid", -3.1, "ERR_OUT_OF_RANGE"], ["shell", {}, "ERR_INVALID_ARG_TYPE"], ["argv0", 0, "ERR_INVALID_ARG_TYPE"], ["timeout", 3.1, "ERR_OUT_OF_RANGE"], ["timeout", "x", "ERR_INVALID_ARG_TYPE"], ["maxBuffer", -1, "ERR_OUT_OF_RANGE"], ["maxBuffer", true, "ERR_INVALID_ARG_TYPE"], ["killSignal", "NOSUCH", "ERR_UNKNOWN_SIGNAL"], ["killSignal", 0, "ERR_UNKNOWN_SIGNAL"], ["killSignal", [], "ERR_INVALID_ARG_TYPE"]]) {
+  try { cs.spawnSync("nope_xyz", { [k]: v }); console.log("BAD no-throw", k); }
+  catch (e) { console.log("v", k, e.code); }
+}
+// — 错误形状 —
+const e = cs.spawnSync("not_a_real_command_xyz", ["a"]).error;
+console.log("enoent", e.code, e.errno, getSystemErrorName(e.errno), e.syscall, e.path, JSON.stringify(e.spawnargs));
+const e2 = cs.spawnSync("not_a_real_command_xyz").error;
+console.log("enoent2", JSON.stringify(e2.spawnargs));
+// — 自举 + 缺省 Buffer —
+const r = cs.spawnSync(process.execPath, ["-e", 'console.log("self-ok")']);
+console.log("self", r.status, r.error, r.stdout.toString().trim(), Buffer.isBuffer(r.stdout), JSON.stringify(r.output && r.output.map((x) => x && x.toString())));
+console.log("inf", cs.spawnSync(process.execPath, ["-e", "1"], { maxBuffer: Infinity }).error);
+// — 超时/kill 信号 —
+const t = cs.spawnSync("sleep", ["5"], { timeout: 200 });
+console.log("tmout", t.error && t.error.code, t.error && t.error.errno, t.status, t.signal);
+const t2 = cs.spawnSync("sleep", ["5"], { timeout: 200, killSignal: "SIGKILL" });
+console.log("tmout2", t2.signal);
+// — maxBuffer 越限 —
+const m = cs.spawnSync(process.execPath, ["-e", "console.log('a'.repeat(100))"], { maxBuffer: 10 });
+console.log("maxbuf", m.error && m.error.code, m.error && m.error.errno, m.stdout.length > 10);
+// — args null 不吞 opts —
+const n = cs.spawnSync("pwd", null, { cwd: "/tmp" });
+console.log("nullargs", n.status === 0, n.stdout.toString().trim() === fs.realpathSync("/tmp"));
+// — argv0 回显（自举子报真 argv0；argv0 选项改写；错型校验） —
+const a0 = cs.spawnSync(process.execPath, ["-e", "console.log(process.argv0)"]);
+console.log("argv0-dflt", a0.stdout.toString().trim() === process.execPath);
+const a1 = cs.spawnSync(process.execPath, ["-e", "console.log(process.argv0)"], { argv0: "custom0" });
+console.log("argv0-set", a1.stdout.toString().trim() === "custom0");
+try { cs.spawnSync("nope_xyz", { argv0: [] }); console.log("BAD argv0-nothrow"); }
+catch (e) { console.log("argv0-err", e.code); }
+// — execSync 缺省 Buffer —
+console.log("exec-buf", Buffer.isBuffer(cs.execSync("echo hi")));
+// — error.spawnargs 为参数数组 —
+console.log("spawnargs", JSON.stringify(cs.spawnSync("nope_xyz", ["a", "b"]).error.spawnargs));
+"#,
+    );
+    for line in [
+        "v cwd ERR_INVALID_ARG_TYPE",
+        "v detached ERR_INVALID_ARG_TYPE",
+        "v uid ERR_OUT_OF_RANGE",
+        "v shell ERR_INVALID_ARG_TYPE",
+        "v argv0 ERR_INVALID_ARG_TYPE",
+        "v timeout ERR_OUT_OF_RANGE",
+        "v timeout ERR_INVALID_ARG_TYPE",
+        "v maxBuffer ERR_OUT_OF_RANGE",
+        "v maxBuffer ERR_INVALID_ARG_TYPE",
+        "v killSignal ERR_UNKNOWN_SIGNAL",
+    ] {
+        assert!(out.lines().any(|l| l.starts_with(line)), "missing: {line}\nout: {out}");
+    }
+    assert!(out.lines().any(|l| l == "enoent ENOENT -2 ENOENT spawnSync not_a_real_command_xyz not_a_real_command_xyz [\"a\"]"), "out: {out}");
+    assert!(out.lines().any(|l| l == "enoent2 []"), "out: {out}");
+    assert!(out.contains("self 0 undefined self-ok true"), "out: {out}");
+    assert!(out.contains("[null,\"self-ok\\n\",\"\"]"), "out: {out}");
+    assert!(out.contains("inf undefined"), "out: {out}");
+    assert!(out.contains("tmout ETIMEDOUT -60 null SIGTERM"), "out: {out}");
+    assert!(out.contains("tmout2 SIGKILL"), "out: {out}");
+    assert!(out.contains("maxbuf ENOBUFS -55 true"), "out: {out}");
+    assert!(out.contains("nullargs true true"), "out: {out}");
+    assert!(out.contains("argv0-dflt true"), "out: {out}");
+    assert!(out.contains("argv0-set true"), "out: {out}");
+    assert!(out.contains("argv0-err ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("exec-buf true"), "out: {out}");
+    assert!(out.contains("spawnargs [\"a\",\"b\"]"), "out: {out}");
+    assert!(!out.contains("BAD "), "out: {out}");
     dir.close().unwrap();
 }

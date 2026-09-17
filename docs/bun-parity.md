@@ -763,11 +763,11 @@
 ## zlib
 
 > 首轮对拍（2026-09-17，83 件，`/tmp/wjs-10f-zlib2.txt`，2 worker）：
-> SAME0=34 + SAME1=13，DIFF=36。本轮（流收尾与内部小面，
-> `tests/node/zlib.rs::phase10f_zlib_stream_teardown`）修 7 件：
-> destroy/close-after-error/sync-no-event/invalid-input/zero-byte/
-> reset-during-write/brotli-flush-invalid-kind（单文件逐个实测 exit=0），
-> 余约 29 件（未复测，以簇计，见下）。
+> SAME0=34 + SAME1=13，DIFF=36。本轮两批共修 9 件：流收尾与内部小面 7 件
+> （destroy/close-after-error/sync-no-event/invalid-input/zero-byte/
+> reset-during-write/brotli-flush-invalid-kind，`phase10f_zlib_stream_teardown`）
+> + flush-flags 构造期选项校验与 write-after-close（`phase10f_zlib_flush_opts`，
+> 后者为 close 改撕毁的附带修复），单文件逐个实测 exit=0，余约 27 件。
 >
 > ### 已修（每项经真机 26.8.2 对拍）
 >
@@ -791,9 +791,10 @@
 >   `createZipArchive(+Sync)`/`zipFiles`/`crc`/zip64/注释放置/安全加固）：
 >   整面未实现。轮子已在树内（`zip = "2"`，deflate 特性，§2 禁 bzip2），
 >   零新依赖可做，另起特征轮（zstd-93 档经 ruzstd、ZipFile 落 fs）。
-> - **增量语义约 7 件**（flush/premature-end/reject-garbage-after-end/
->   truncated/write-after-close/write-after-end/from-gzip-trailing-garbage）：
+> - **增量语义约 6 件**（flush/premature-end/reject-garbage-after-end/
+>   truncated/write-after-end/from-gzip-trailing-garbage）：
 >   需真流式编解码状态机，与本轮外既有"整收"架构冲突，另案。
 > - **杂项**：brotli-dictionary（字典面）、zstd-pledged-src-size、
->   end-without-connect、type-error（Web `DecompressionStream` 缺失，另切片）、
+>   premature-end/truncated/write-after-end/reject-garbage/from-gzip-trailing
+>   （增量解码面，同上另案）、type-error（Web `DecompressionStream` 缺失，另切片）、
 >   brotli-16GB（16G 量级用例，本机资源门控不跑，逻辑上属流式分块面）。

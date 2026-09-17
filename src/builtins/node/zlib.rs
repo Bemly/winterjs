@@ -783,6 +783,21 @@ export function zstdDecompress(buf, opts, cb) {
 import { Transform } from "node:stream";
 function __zStreamBase(opts, syncFn) {
   Transform.call(this);
+  // 构造期 flush 系选项校验（flush-flags 套件，真机逐字）：三键 undefined 即跳过；
+  // 非 number → ARG_TYPE；非整数/越界 → OUT_OF_RANGE（选项口径恒 0..5，
+  // 与 flush() 方法的逐族集不同；Sync 便捷函数暂不复验）。
+  for (const k of ["flush", "finishFlush", "fullFlush"]) {
+    const f = opts?.[k];
+    if (f === undefined) continue;
+    if (typeof f !== "number") {
+      throw new ERR_INVALID_ARG_TYPE(`options.${k}`, "number", f);
+    }
+    if (!Number.isInteger(f) || f < 0 || f > 5) {
+      const err = new RangeError(`The value of "options.${k}" is out of range. It must be >= 0 and <= 5. Received ${f}`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+  }
   this.__chunks = [];
   this.__syncFn = syncFn;
   this.__opts = opts ?? {};

@@ -1971,3 +1971,9 @@ cargo build
 - 推广为铁律：压缩轮子的"完成"语义（flush vs finish/drop）先对空输入逐字节，
   再对非空——空帧是 framing 的最小探针；改 framing 类输出前先 grep 自家黑盒
   有无精确字节断言（本轮全是相对/往返断言，故零回归）。
+- 追补（flush-flags/close-after-write 同轮）：① `flush()` 方法 kind 集与构造
+  `flush/finishFlush/fullFlush` 选项集是两套口径（方法 zlib {0,4,5}、选项恒
+  0..5），抄串了即把合法的 `Z_BLOCK=5` 判死——选项/方法分开核对；
+  ② `ERR_INVALID_ARG_TYPE` 的 property 形（`The "options.X" property …`）直接
+  复用 errors 移植 helper，禁手写文案（`Received type string ('x')` 含引号，
+  手写必错）。

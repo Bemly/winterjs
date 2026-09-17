@@ -266,3 +266,46 @@ console.log("zstd-const", z.constants.ZSTD_e_continue === 0, z.constants.ZSTD_e_
     assert_eq!(out.matches("flush-arg").count(), 3 + 3 + 3, "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_zlib_flush_opts() {
+    // 10f zlibFlush 选项校验（真机逐字）：flush/finishFlush/fullFlush 三键
+    // 构造期校验；另覆盖 write 后 close 即关（close-after-write 套件同形）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import z from "node:zlib";
+z.createGzip({ flush: 0, finishFlush: 2, fullFlush: 5 });
+console.log("valid-ok");
+for (const [k, v] of [["flush", "x"], ["finishFlush", null], ["fullFlush", {}]]) {
+  try { z.createGzip({ [k]: v }); console.log("BAD no-throw", k); }
+  catch (e) { console.log("arg", k, e.code, e.message); }
+}
+for (const [k, v] of [["flush", 6], ["finishFlush", -1], ["fullFlush", 2.5]]) {
+  try { z.createGzip({ [k]: v }); console.log("BAD no-throw2", k); }
+  catch (e) { console.log("oor", k, e.code, e.message); }
+}
+z.gzip("hello", (err, out) => {
+  const unzip = z.createGunzip();
+  unzip.write(out);
+  unzip.close(() => console.log("waclose"));
+});
+"#,
+    );
+    for line in [
+        "valid-ok",
+        "arg flush ERR_INVALID_ARG_TYPE The \"options.flush\" property must be of type number. Received type string ('x')",
+        "arg finishFlush ERR_INVALID_ARG_TYPE The \"options.finishFlush\" property must be of type number. Received null",
+        "arg fullFlush ERR_INVALID_ARG_TYPE The \"options.fullFlush\" property must be of type number. Received an instance of Object",
+        "oor flush ERR_OUT_OF_RANGE The value of \"options.flush\" is out of range. It must be >= 0 and <= 5. Received 6",
+        "oor finishFlush ERR_OUT_OF_RANGE The value of \"options.finishFlush\" is out of range. It must be >= 0 and <= 5. Received -1",
+        "oor fullFlush ERR_OUT_OF_RANGE The value of \"options.fullFlush\" is out of range. It must be >= 0 and <= 5. Received 2.5",
+        "waclose",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    assert!(!out.contains("BAD "), "out: {out}");
+    dir.close().unwrap();
+}

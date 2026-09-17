@@ -323,7 +323,8 @@ try { generateKeyPairSync("dsa", {}); console.log("dsa", true); } catch (e) { co
 try { createECDH("secp256k1"); console.log("k1", true); } catch (e) { console.log("k1", false); }
 try { createDiffieHellmanGroup("modp1"); } catch (e) { console.log("modp1", e.code === "ERR_NOT_SUPPORTED"); }
 try { createDiffieHellmanGroup("modp99"); } catch (e) { console.log("modp99", e.code === "ERR_NOT_SUPPORTED"); }
-try { createDiffieHellman(2048); } catch (e) { console.log("dhsize", e.code === "ERR_NOT_SUPPORTED"); }
+// 10f crypto首轮翻转（真机口径）：数值位长形同步生成素数（旧 ERR_NOT_SUPPORTED 系伪语义）。
+console.log("dhsize", createDiffieHellman(512).getPrime("buffer").length === 64);
 const p = generatePrimeSync(64, { checks: 3 });
 console.log("gen", p.length === 8 && checkPrimeSync(p, { checks: 3 }) === true);
 try { console.log("bigint", typeof generatePrimeSync(64, { bigint: true }) === "bigint"); } catch (e) { console.log("bigint", false); }
@@ -579,9 +580,11 @@ const h = createHash("shake256", { outputLength: 16 });
 h.update("a");
 const c2 = h.copy();
 h.update("bc"); c2.update("bc");
-console.log("x-copy", h.digest("hex") === c2.digest("hex") && h.digest === c2.digest);
+// 10f crypto首轮翻转（真机口径）：无参 copy 回默认长（32B），非保留源长 16B。
+console.log("x-copy", h.digest("hex").length === 32 && c2.digest("hex").length === 64);
 try { createHash("shake256", { outputLength: -1 }); console.log("x-badlen-never", false); }
-catch (e) { console.log("x-badlen", e.code === "ERR_INVALID_ARG_VALUE"); }
+// 10f crypto首轮翻转（真机口径）：负 outputLength 报 OUT_OF_RANGE（旧 ARG_VALUE 系伪语义）。
+catch (e) { console.log("x-badlen", e.code === "ERR_OUT_OF_RANGE"); }
 console.log("x-hashes", getHashes().includes("ripemd160") && getHashes().includes("shake128") && getHashes().includes("shake256"));
 console.log("x-dflt", createHash("shake256").update("abc").digest("hex").length === 64);
 console.log("x-dflt128", createHash("shake128").update("abc").digest("hex").length === 32);
@@ -1222,5 +1225,143 @@ console.log("cert", x.verify(x.publicKey), x.publicKey.asymmetricKeyType === "ed
     assert!(out.contains("wrongkey true"), "out: {out}");
     assert!(out.contains("empty true"), "out: {out}");
     assert!(out.contains("cert true true true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_crypto_round1_parity() {
+    // 10f crypto首轮：call-without-new + DEP0179/DEP0181 + uuid 校验 + 摘要别名 +
+    // outputLength 全套 + 流式鸭子面 + ECB + DH 数值形（正常/报错/边界三件）
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import crypto, { createHash, createHmac, createCipheriv, createDecipheriv, createSecretKey,
+  createDiffieHellman, randomUUID, randomUUIDv7 } from "node:crypto";
+// 无 new 调用（真机口径；Hash/Hmac 附 DEP0179/DEP0181 一次性警告）
+const warns = [];
+process.on("warning", (w) => warns.push(w.code));
+const h0 = crypto.Hash("sha256");
+console.log("cw-hash", h0 instanceof crypto.Hash);
+const m0 = crypto.Hmac("sha256", "Node");
+console.log("cw-hmac", m0 instanceof crypto.Hmac);
+const c0 = crypto.Cipheriv("aes-128-cbc", "1234567890123456", "1234567890123456");
+console.log("cw-civ", c0 instanceof crypto.Cipheriv);
+const d0 = crypto.Decipheriv("aes-128-cbc", "1234567890123456", "1234567890123456");
+console.log("cw-dcv", d0 instanceof crypto.Decipheriv);
+const e0 = crypto.ECDH("prime256v1");
+console.log("cw-ecdh", e0 instanceof crypto.ECDH);
+const g0 = crypto.DiffieHellmanGroup("modp14");
+console.log("cw-dhg", g0 instanceof crypto.DiffieHellmanGroup, g0 instanceof crypto.DiffieHellman);
+// uuid 选项校验（真机文案逐字对码）
+console.log("uuid-opt", typeof randomUUID({ disableEntropyCache: true }) === "string");
+console.log("uuid7-opt", typeof randomUUIDv7({ disableEntropyCache: true }) === "string");
+for (const [tag, fn] of [["u-bad-num", () => randomUUID(1)],
+    ["u-bad-prop", () => randomUUID({ disableEntropyCache: "" })],
+    ["u-bad-null", () => randomUUID(null)],
+    ["u7-bad-num", () => randomUUIDv7(1)],
+    ["u7-bad-prop", () => randomUUIDv7({ disableEntropyCache: "" })]]) {
+  try { fn(); console.log(tag, "NO-THROW"); } catch (e) { console.log(tag, e.code); }
+}
+// 摘要别名（逐字节对真机）
+console.log("dgst-alias224", createHash("sha224").update("abc").digest("hex") === "23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7");
+console.log("dgst-aliasrip", createHash("ripemd").update("abc").digest("hex") === "8eb208f7e05d987a9b044a8e98c6b087f15a0bfc");
+console.log("dgst-aliasdss1", createHmac("dss1", "key").update("The quick brown fox jumps over the lazy dog").digest("hex") === "de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9");
+// outputLength 全套
+console.log("olen-ok224", createHash("sha224", { outputLength: 28 }).update("abc").digest("hex").slice(0, 8) === "23097d22");
+try { createHash("sha256", { outputLength: 28 }); console.log("olen-notxof", "NO-THROW"); }
+catch (e) { console.log("olen-notxof", e.code); }
+try { createHash("sha256", { outputLength: null }); console.log("olen-argtype", "NO-THROW"); }
+catch (e) { console.log("olen-argtype", e.code); }
+try { createHash("sha256", { outputLength: -1 }); console.log("olen-range", "NO-THROW"); }
+catch (e) { console.log("olen-range", e.code); }
+console.log("copy-ovr", createHash("shake128", { outputLength: 5 }).copy({ outputLength: 0 }).digest("hex") === "");
+console.log("copy-dflt", createHash("shake256", { outputLength: 0 }).copy().digest("hex").length === 64);
+// 流式鸭子面
+let s1 = createHash("sha512"); s1.end("Test123");
+console.log("stm-hash", s1.read().toString("hex").slice(0, 16) === createHash("sha512").update("Test123").digest("hex").slice(0, 16));
+const s2 = createHmac("sha256", "key"); s2.end("The quick brown fox jumps over the lazy dog");
+console.log("stm-hmac", s2.read().toString("hex") === createHmac("sha256", "key").update("The quick brown fox jumps over the lazy dog").digest("hex"));
+const s3 = createCipheriv("des-ede3-cbc", "0123456789abcd0123456789", "12345678");
+s3.end("Test123Test123");
+const s3ct = s3.read();
+console.log("stm-rlen", s3ct.length === 16);
+const s4 = createDecipheriv("des-ede3-cbc", "0123456789abcd0123456789", "12345678");
+s4.end(s3ct);
+console.log("stm-ciph", s4.read().toString("utf8") === "Test123Test123");
+// ECB（真机向量前缀 + 往返 + iv 规则 + nid）
+const ek = Buffer.from("000102030405060708090a0b0c0d0e0f", "hex");
+const ept = Buffer.from("00112233445566778899aabbccddeeff", "hex");
+const ee = createCipheriv("aes-128-ecb", ek, null);
+console.log("ecb-rt", ee.update(ept).toString("hex").slice(0, 16) === "69c4e0d86a7b0430");
+const ecbCt = (() => { const x = createCipheriv("aes-128-ecb", ek, null); return Buffer.concat([x.update(ept), x.final()]); })();
+const ed = createDecipheriv("aes-128-ecb", ek, Buffer.alloc(0));
+console.log("ecb-rt2", Buffer.concat([ed.update(ecbCt), ed.final()]).equals(ept));
+console.log("ecb-nid", crypto.getCipherInfo("aes-128-ecb").nid === 418 && crypto.getCipherInfo("aes-128-ecb").ivLength === undefined);
+try { createCipheriv("aes-128-ecb", ek, Buffer.alloc(1)); console.log("ecb-ivbad", "NO-THROW"); }
+catch (e) { console.log("ecb-ivbad", e.code); }
+try { createCipheriv("aes-128-ecb", ek); console.log("ecb-ivundef", "NO-THROW"); }
+catch (e) { console.log("ecb-ivundef", e.code); }
+try { createCipheriv("aes-128-ecb", Buffer.alloc(17), null); console.log("ecb-keylen", "NO-THROW"); }
+catch (e) { console.log("ecb-keylen", e.code); }
+// DH 数值形 + prime buffer 形
+const dh1 = createDiffieHellman(256);
+console.log("dh-num", dh1.getPrime("buffer").length === 32);
+const dh2 = crypto.DiffieHellman(dh1.getPrime("buffer"), "buffer");
+console.log("cw-dh", dh2 instanceof crypto.DiffieHellman);
+// 'buffer' 编码与二次 digest 形态
+console.log("bufenc", Buffer.isBuffer(createHmac("sha1", "k").update("d").digest("buffer")));
+const hz = createHmac("sha1", "k"); hz.update("d"); hz.digest();
+console.log("bufenc2", Buffer.isBuffer(hz.digest("buffer")) && hz.digest("buffer").length === 0 && hz.digest("hex") === "");
+// KeyObject 作 HMAC key + 参数名文案
+console.log("hmac-keyobj", createHmac("sha256", createSecretKey(Buffer.from("key"))).update("msg").digest("hex") === createHmac("sha256", "key").update("msg").digest("hex"));
+try { createHmac(null); } catch (e) { console.log("needstr-hmac", e.code, JSON.stringify(e.message)); }
+try { createHash(); } catch (e) { console.log("needstr-undef", e.code, JSON.stringify(e.message)); }
+try { createCipheriv(null); } catch (e) { console.log("ciph-null", e.code, JSON.stringify(e.message)); }
+setTimeout(() => console.log("dep-warn", warns.includes("DEP0179"), warns.includes("DEP0181")), 20);
+"#,
+    );
+    assert!(out.contains("cw-hash true"), "out: {out}");
+    assert!(out.contains("cw-hmac true"), "out: {out}");
+    assert!(out.contains("cw-civ true"), "out: {out}");
+    assert!(out.contains("cw-dcv true"), "out: {out}");
+    assert!(out.contains("cw-ecdh true"), "out: {out}");
+    assert!(out.contains("cw-dhg true true"), "out: {out}");
+    assert!(out.contains("cw-dh true"), "out: {out}");
+    assert!(out.contains("uuid-opt true"), "out: {out}");
+    assert!(out.contains("uuid7-opt true"), "out: {out}");
+    assert!(out.contains("u-bad-num ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("u-bad-prop ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("u-bad-null ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("u7-bad-num ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("u7-bad-prop ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("dgst-alias224 true"), "out: {out}");
+    assert!(out.contains("dgst-aliasrip true"), "out: {out}");
+    assert!(out.contains("dgst-aliasdss1 true"), "out: {out}");
+    assert!(out.contains("olen-ok224 true"), "out: {out}");
+    assert!(out.contains("olen-notxof ERR_OSSL_EVP_NOT_XOF_OR_INVALID_LENGTH"), "out: {out}");
+    assert!(out.contains("olen-argtype ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("olen-range ERR_OUT_OF_RANGE"), "out: {out}");
+    assert!(out.contains("copy-ovr true"), "out: {out}");
+    assert!(out.contains("copy-dflt true"), "out: {out}");
+    assert!(out.contains("stm-hash true"), "out: {out}");
+    assert!(out.contains("stm-hmac true"), "out: {out}");
+    assert!(out.contains("stm-rlen true"), "out: {out}");
+    assert!(out.contains("stm-ciph true"), "out: {out}");
+    assert!(out.contains("ecb-rt true"), "out: {out}");
+    assert!(out.contains("ecb-rt2 true"), "out: {out}");
+    assert!(out.contains("ecb-nid true"), "out: {out}");
+    assert!(out.contains("ecb-ivbad ERR_CRYPTO_INVALID_IV"), "out: {out}");
+    assert!(out.contains("ecb-ivundef ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("ecb-keylen ERR_CRYPTO_INVALID_KEYLEN"), "out: {out}");
+    assert!(out.contains("dh-num true"), "out: {out}");
+    assert!(out.contains("bufenc true"), "out: {out}");
+    assert!(out.contains("bufenc2 true"), "out: {out}");
+    assert!(out.contains("hmac-keyobj true"), "out: {out}");
+    assert!(out.contains(r#"needstr-hmac ERR_INVALID_ARG_TYPE "The \"hmac\" argument must be of type string. Received null""#), "out: {out}");
+    assert!(out.contains(r#"needstr-undef ERR_INVALID_ARG_TYPE "The \"algorithm\" argument must be of type string. Received undefined""#), "out: {out}");
+    assert!(out.contains(r#"ciph-null ERR_INVALID_ARG_TYPE "The \"cipher\" argument must be of type string. Received null""#), "out: {out}");
+    assert!(out.contains("dep-warn true true"), "out: {out}");
     dir.close().unwrap();
 }

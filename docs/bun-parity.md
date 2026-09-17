@@ -850,3 +850,53 @@
 > - **exec 字符串族**：spawnsync-shell（DEP0190 + `-pe` shell 串映射 + 平台 mock）、
 >   exec-encoding/timeout 系列——随 async/exec 轮。
 > - **零散**：argv0 message 全文（已顺带对齐）、windows 专属、dgram-reuseport 等。
+
+## crypto
+
+> 首轮对拍（2026-09-17，133 件，`/tmp/wjs-10f-crypto1/2.txt`，2 worker）：
+> 同绿 17 → **24**（+7：hash/hmac/cipheriv-decipheriv/dh-constructor/
+> randomuuid/randomuuidv7/dh-odd-key）；SAME1=8（双边同码）；DIFF 108 → **101**。
+>
+> ### 已修（每项经真机 26.8.2 对拍）
+>
+> - **call-without-new**：Hash/Hmac/Cipheriv/Decipheriv/ECDH/DiffieHellman 可无
+>   new 调用（内类改 `XImpl` + 同名包装函数 + prototype 接线；`instanceof`/
+>   方法面不变）+ `DiffieHellmanGroup` 新导出；Hash/Hmac 附 DEP0179/DEP0181
+>   一次性警告（`deprecate()` once 语义，真机 `length 2/name deprecated` 伪装不抄）。
+> - **randomUUID/v7 选项校验**：非对象 → ARG_TYPE（null/undefined special-case），
+>   disableEntropyCache 非布尔 → ARG_TYPE（真机文案逐字）。
+> - **摘要别名**：dss1→sha1、ripemd→ripemd160（JS 表 + Rust `norm_hash`）+
+>   sha224 原生（RustCrypto `sha2::Sha224`，零新依赖；update/finalize/copy
+>   三 match + `crypto_hash_norm_table` 单测）。
+> - **'buffer' 编码**：digest/DH-getters 系 'buffer' 即回 Buffer；Hmac 二次
+>   digest 形态（undefined/'buffer' 精确小写回空 Buffer，其余回 ""；Hash 系恒抛
+>   FINALIZED，真机逐项对拍）。
+> - **最小流式鸭子面**：Hash/Hmac/Cipheriv/Decipheriv 加 write/end/read/
+>   readableLength（cipher 系 end 须拼 update-head + final-tail，丢 head 即少块；
+>   真 Duplex 的 pipe 等另案）。
+> - **ECB 三档**：Rust `CipherJob::Ecb`（`aes` 轮子块直调，`[u8; 16]` 中转，
+>   零新依赖）+ 流式 update/final（解密 autopad 扣尾块）+ iv 规则（undefined
+>   真机文案/null 视为空/ECB 仅空）+ nid 418/422/426 + getCipherInfo 去
+>   ivLength 键 + `cipher_params_table` 单测。
+> - **DH 数值形**：构造期经 `generatePrimeSync` 同步生成 + 字符串 generator
+>   编码位忽略（旧 `Number("buffer")=NaN` 记档修）。
+> - **校验文案**：`__needStr` null/undefined 的 Received 无 type 前缀；Hmac
+>   参数名 "hmac"；`__needCipher` 非串先报 ARG_TYPE；`__outBuf` encoding 先
+>   `String()` 显式转（用户 toString 抛错透传，坏编码串仍回 Buffer）；
+>   超长 update（≥2^31-1）无码错（nodejs/node#45757，精确边界）。
+> - **outputLength 全套**：`__checkOutputLength`（非数 ARG_TYPE/非整数或越界
+>   OUT_OF_RANGE，真机逐字，0..2^32-1）+ 非 XOF 须恰为摘要长（NOT_XOF 原文）
+>   + `copy(options)` 改长（XOF 经新 native `__wjs_crypto_hash_set_len`；
+>   无参 copy 回默认长，真机口径）。
+> - 回归：`tests/node/crypto.rs::phase10f_crypto_round1_parity`（40 断言，
+>   正常/报错/边界三件）。
+>
+> ### 剩余红项（约 101，分簇，均下轮或另案）
+>
+> - **校验长尾**（~21）：Missing expected ×11 / unexpected throw ×10，逐 API 续补。
+> - **RSA keygen 位长墙**（×6）：modulusLength 限 2048/3072/4096（测试要小位长），下轮。
+> - **密钥导入三件**（pkcs1 ×3、PKCS#8 ×3、SPKI ×2），下轮。
+> - **DH 组**（modp1/modp2 ×3），下轮。
+> - **真流式面**（×4：hasher pipe/dest.on/tls.Server 无 new/stdio 桩），另案。
+> - **零散**：scrypt 钥长、raw-public 导出、outputEncoding 对象形、ECDH getters
+>   的 'buffer'、pss salt、oaep mgf1、secure-heap（自 spawn 面）等，下轮。

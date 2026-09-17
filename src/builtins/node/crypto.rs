@@ -50,6 +50,7 @@ use crate::jsapi_glue::{report_error, value_to_string, view_bytes, wrap_cx, Fram
 /// SHAKE 系 `tiny_keccak::Shake` 同样 `Clone`，输出长存在注册时）。
 enum HashJob {
     Sha1(sha1::Sha1),
+    Sha224(sha2::Sha224),
     Sha256(sha2::Sha256),
     Sha384(sha2::Sha384),
     Sha512(sha2::Sha512),
@@ -81,7 +82,8 @@ fn norm_hash(name: &str, xof_len: usize) -> Option<HashJob> {
         .collect();
     let flat = flat.strip_prefix("rsa").unwrap_or(&flat);
     match flat {
-        "sha1" => Some(HashJob::Sha1(sha1::Sha1::new())),
+        "sha1" | "dss1" => Some(HashJob::Sha1(sha1::Sha1::new())),
+        "sha224" => Some(HashJob::Sha224(sha2::Sha224::new())),
         "sha256" => Some(HashJob::Sha256(sha2::Sha256::new())),
         "sha384" => Some(HashJob::Sha384(sha2::Sha384::new())),
         "sha512" => Some(HashJob::Sha512(sha2::Sha512::new())),
@@ -91,7 +93,7 @@ fn norm_hash(name: &str, xof_len: usize) -> Option<HashJob> {
         "sha3512" => Some(HashJob::Sha3_512(sha3::Sha3_512::new())),
         "blake2b512" => Some(HashJob::Blake2b512(blake2::Blake2b512::new())),
         "blake2s256" => Some(HashJob::Blake2s256(blake2::Blake2s256::new())),
-        "ripemd160" => Some(HashJob::Ripemd160(ripemd::Ripemd160::new())),
+        "ripemd160" | "ripemd" => Some(HashJob::Ripemd160(ripemd::Ripemd160::new())),
         "shake128" => Some(HashJob::Shake128(tiny_keccak::Shake::v128(), xof_len)),
         "shake256" => Some(HashJob::Shake256(tiny_keccak::Shake::v256(), xof_len)),
         _ => None,
@@ -213,6 +215,7 @@ pub unsafe extern "C" fn crypto_hash_update(
         };
         match job {
             HashJob::Sha1(h) => h.update(&data),
+            HashJob::Sha224(h) => h.update(&data),
             HashJob::Sha256(h) => h.update(&data),
             HashJob::Sha384(h) => h.update(&data),
             HashJob::Sha512(h) => h.update(&data),
@@ -253,6 +256,7 @@ pub unsafe extern "C" fn crypto_hash_digest(
     let out: Option<Vec<u8>> = HASHERS.with(|m| {
         m.borrow_mut().remove(&id).map(|job| match job {
             HashJob::Sha1(h) => h.finalize().to_vec(),
+            HashJob::Sha224(h) => h.finalize().to_vec(),
             HashJob::Sha256(h) => h.finalize().to_vec(),
             HashJob::Sha384(h) => h.finalize().to_vec(),
             HashJob::Sha512(h) => h.finalize().to_vec(),
@@ -301,6 +305,7 @@ pub unsafe extern "C" fn crypto_hash_copy(
             .get(&id)
             .map(|job| match job {
                 HashJob::Sha1(h) => HashJob::Sha1(h.clone()),
+                HashJob::Sha224(h) => HashJob::Sha224(h.clone()),
                 HashJob::Sha256(h) => HashJob::Sha256(h.clone()),
                 HashJob::Sha384(h) => HashJob::Sha384(h.clone()),
                 HashJob::Sha512(h) => HashJob::Sha512(h.clone()),
@@ -325,6 +330,48 @@ pub unsafe extern "C" fn crypto_hash_copy(
             report_error(&mut cx, "ERR_CRYPTO_HASH_FINALIZED: Digest already called");
             false
         }
+    }
+}
+
+/// `__wjs_crypto_hash_set_len(idStr, lenNum)` → "1"（仅 Shake 改输出长；其余报态错）。
+/// 10f crypto首轮：`copy({ outputLength })` 改长通道（JS 侧已校验，见 `__checkOutputLength`）。
+pub unsafe extern "C" fn crypto_hash_set_len(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(id) = arg_id(&frame, 0, "hash set length", &mut cx) else {
+        return false;
+    };
+    if frame.argc() < 2 || !frame.arg(1).is_number() {
+        report_error(&mut cx, "TypeError: hash set length needs a length");
+        return false;
+    }
+    let len = frame.arg(1).to_number() as usize;
+    let ok = HASHERS.with(|m| {
+        let mut m = m.borrow_mut();
+        match m.get_mut(&id) {
+            Some(HashJob::Shake128(_, n)) => {
+                *n = len;
+                true
+            }
+            Some(HashJob::Shake256(_, n)) => {
+                *n = len;
+                true
+            }
+            Some(_) => false,
+            None => false,
+        }
+    });
+    if ok {
+        set_rval_str(&mut cx, &frame, "1");
+        true
+    } else {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_STATE: Invalid state");
+        false
     }
 }
 
@@ -407,6 +454,8 @@ enum CipherJob {
     CbcEnc { job: Box<dyn CbcEncJob>, pending: Vec<u8>, block: usize },
     CbcDec { job: Box<dyn CbcDecJob>, pending: Vec<u8>, block: usize, autopad: bool },
     Ctr { job: Box<dyn CtrJob> },
+    // 10f crypto首轮：ECB（`aes` 轮子已在树内；填充由 final 处理，解密 autopad 扣尾块）。
+    Ecb { enc: bool, kind: u8, key: Vec<u8>, pending: Vec<u8>, autopad: bool },
 }
 
 thread_local! {
@@ -436,7 +485,47 @@ fn cipher_params(alg: &str) -> Option<(&'static str, usize, usize, usize)> {
         "aes-192-ctr" => Some(("ctr-aes192", 24, 16, 16)),
         "aes-256-ctr" => Some(("ctr-aes256", 32, 16, 16)),
         "des-ede3-cbc" => Some(("cbc-des3", 24, 8, 8)),
+        // 10f crypto首轮：ECB 三档（无 iv，iv 长记 0；nid 真机 418/422/426）。
+        "aes-128-ecb" => Some(("ecb-aes128", 16, 0, 16)),
+        "aes-192-ecb" => Some(("ecb-aes192", 24, 0, 16)),
+        "aes-256-ecb" => Some(("ecb-aes256", 32, 0, 16)),
         _ => None,
+    }
+}
+
+/// ECB 单块直通（`aes` 轮子已在树内，零新增；调用方保证整块，填充另行处理）。
+fn ecb_blocks(kind: u8, key: &[u8], enc: bool, chunk: &mut [u8]) {
+    use aes::cipher::KeyInit as _;
+    debug_assert!(chunk.len() % 16 == 0);
+    macro_rules! go {
+        ($e:ty, $d:ty) => {{
+            // 经 `[u8; 16]` 中转（`from_mut_slice` 已废弃、`TryFrom<&mut [u8]>`
+            // 在所钉版本未实现；`From<[u8; 16]>` 为稳定 API）。
+            if enc {
+                let c = <$e>::new_from_slice(key).expect("ecb key length checked at new");
+                for b in chunk.chunks_mut(16) {
+                    let mut arr = [0u8; 16];
+                    arr.copy_from_slice(b);
+                    let mut block = Block::<$e>::from(arr);
+                    c.encrypt_block(&mut block);
+                    b.copy_from_slice(block.as_slice());
+                }
+            } else {
+                let c = <$d>::new_from_slice(key).expect("ecb key length checked at new");
+                for b in chunk.chunks_mut(16) {
+                    let mut arr = [0u8; 16];
+                    arr.copy_from_slice(b);
+                    let mut block = Block::<$d>::from(arr);
+                    c.decrypt_block(&mut block);
+                    b.copy_from_slice(block.as_slice());
+                }
+            }
+        }};
+    }
+    match kind {
+        0 => go!(aes::Aes128, aes::Aes128),
+        1 => go!(aes::Aes192, aes::Aes192),
+        _ => go!(aes::Aes256, aes::Aes256),
     }
 }
 
@@ -525,6 +614,9 @@ pub unsafe extern "C" fn cipher_new(
         "cbc-aes192" => cbc_pair!(aes::Aes192, aes::Aes192),
         "cbc-aes256" => cbc_pair!(aes::Aes256, aes::Aes256),
         "cbc-des3" => cbc_pair!(des::TdesEde3, des::TdesEde3),
+        "ecb-aes128" => CipherJob::Ecb { enc, kind: 0, key: key.clone(), pending: Vec::new(), autopad },
+        "ecb-aes192" => CipherJob::Ecb { enc, kind: 1, key: key.clone(), pending: Vec::new(), autopad },
+        "ecb-aes256" => CipherJob::Ecb { enc, kind: 2, key: key.clone(), pending: Vec::new(), autopad },
         "ctr-aes128" => {
             let (Ok(ke), Ok(ive)) = (
                 Key::<aes::Aes128>::try_from(key.as_slice()),
@@ -618,6 +710,18 @@ pub unsafe extern "C" fn cipher_update(
                 job.apply(&mut chunk);
                 chunk
             }
+            CipherJob::Ecb { enc, kind, key, pending, autopad } => {
+                pending.extend_from_slice(&data);
+                // 解密 autopad 扣留尾块（final 定夺填充），余者整块直通。
+                let n = if !*enc && *autopad {
+                    pending.len().saturating_sub(16) / 16 * 16
+                } else {
+                    pending.len() / 16 * 16
+                };
+                let mut chunk: Vec<u8> = pending.drain(..n).collect();
+                ecb_blocks(*kind, key, *enc, &mut chunk);
+                chunk
+            }
         })
     });
     match out {
@@ -663,6 +767,32 @@ pub unsafe extern "C" fn cipher_final(
                 }
             }
             CipherJob::Ctr { .. } => Ok(Vec::new()),
+            CipherJob::Ecb { enc, kind, key, pending, autopad } => {
+                if *enc {
+                    let mut chunk = if *autopad {
+                        pkcs7_pad(16, std::mem::take(pending))
+                    } else if pending.len() % 16 == 0 {
+                        std::mem::take(pending)
+                    } else {
+                        return Err("ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: wrong final block length".into());
+                    };
+                    ecb_blocks(*kind, key, true, &mut chunk);
+                    Ok(chunk)
+                } else {
+                    if pending.len() % 16 != 0 || (*autopad && pending.is_empty()) {
+                        return Err("ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: wrong final block length".into());
+                    }
+                    let mut chunk = std::mem::take(pending);
+                    ecb_blocks(*kind, key, false, &mut chunk);
+                    if *autopad {
+                        pkcs7_unpad(16, &chunk).ok_or_else(|| {
+                            "ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: wrong final block length".to_string()
+                        })
+                    } else {
+                        Ok(chunk)
+                    }
+                }
+            }
         })
     });
     match out {
@@ -3075,29 +3205,75 @@ function __cryptBytes(input, what, inputEncoding) {
 function __outBuf(u8, encoding) {
   const b = Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength);
   if (encoding === undefined) return b;
+  // 10f crypto首轮：encoding 先 String() 显式转（用户 toString 抛错须透传，
+  // 真机口径）；非法编码串仍回 Buffer（§4.45 记档）。
+  const enc = String(encoding);
+  // 10f crypto首轮：digest/hmac 的 'buffer' 编码（大小写不敏感）即回 Buffer。
+  if (enc.toLowerCase() === "buffer") return b;
   try {
-    return b.toString(encoding);
+    return b.toString(enc);
   } catch {
     return b;
   }
 }
 function __needStr(v, what) {
   if (typeof v !== "string") {
-    const err = new TypeError(
-      `The "${what}" argument must be of type string. Received type ${typeof v} (${String(v)})`);
+    // 10f crypto首轮：null/undefined 的 Received 无 type 前缀（真机逐字）。
+    const recv = v === null ? "Received null"
+      : v === undefined ? "Received undefined"
+      : `Received type ${typeof v} (${String(v)})`;
+    const err = new TypeError(`The "${what}" argument must be of type string. ${recv}`);
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
   return v;
 }
 
-class Hash {
+// 10f crypto首轮：outputLength 校验（XOF/非 XOF 共用，真机逐字）。
+// 非数 → ARG_TYPE；非整数 → OUT_OF_RANGE（an integer）；越界 → OUT_OF_RANGE（范围）。
+function __checkOutputLength(v) {
+  if (typeof v !== "number") {
+    const recv = v === null ? "null"
+      : typeof v === "string" ? `type string ('${v}')`
+      : typeof v === "boolean" ? `type boolean (${String(v)})`
+      : typeof v === "undefined" ? "undefined"
+      : `an instance of ${v.constructor?.name ?? "Object"}`;
+    const err = new TypeError(
+      `The "options.outputLength" property must be of type number. Received ${recv}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (!Number.isInteger(v)) {
+    const err = new RangeError(
+      `The value of "options.outputLength" is out of range. It must be an integer. Received ${String(v)}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  if (v < 0 || v > 4294967295) {
+    const err = new RangeError(
+      `The value of "options.outputLength" is out of range. It must be >= 0 && <= 4294967295. Received ${String(v)}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  return v;
+}
+// 10f crypto首轮：定长摘要字节数（flat 名归一后查；未知回 undefined 走原生报错）。
+function __digestSize(flat) {
+  const table = {
+    "sha1": 20, "dss1": 20, "sha224": 28, "sha256": 32, "sha384": 48, "sha512": 64,
+    "md5": 16, "sha3256": 32, "sha3384": 48, "sha3512": 64,
+    "blake2b512": 64, "blake2s256": 32, "ripemd160": 20, "ripemd": 20,
+  };
+  return table[flat];
+}
+class HashImpl {
   constructor(algorithm, options) {
     __needStr(algorithm, "algorithm");
+    const flat = String(algorithm).trim().toLowerCase().replace(/[-_]/g, "");
+    const isXof = flat === "shake128" || flat === "shake256";
     // XOF 输出长（真机口径：缺省 shake128→16/shake256→32 + DEP0198 警告）。
     let xofLen = 0;
-    const flat = String(algorithm).trim().toLowerCase().replace(/[-_]/g, "");
-    if (flat === "shake128" || flat === "shake256") {
+    if (isXof) {
       const dflt = flat === "shake128" ? 16 : 32;
       if (options?.outputLength === undefined) {
         xofLen = dflt;
@@ -3108,16 +3284,24 @@ class Hash {
           );
         } catch {}
       } else {
-        xofLen = Number(options.outputLength);
-        if (!Number.isInteger(xofLen) || xofLen < 0) {
-          const err = new TypeError(`The "options.outputLength" property must be a non-negative integer.`);
-          err.code = "ERR_INVALID_ARG_VALUE";
+        xofLen = __checkOutputLength(options.outputLength);
+      }
+    } else {
+      // 非 XOF：outputLength 须恰为摘要长，否则 NOT_XOF 错（未知算法跳过，原生报错）。
+      const size = __digestSize(flat);
+      if (size !== undefined && options?.outputLength !== undefined) {
+        const v = __checkOutputLength(options.outputLength);
+        if (v !== size) {
+          const err = new Error("error:030000B2:digital envelope routines::not XOF or invalid length");
+          err.code = "ERR_OSSL_EVP_NOT_XOF_OR_INVALID_LENGTH";
           throw err;
         }
       }
     }
     this.__id = Number(__cryptCall(() => __wjs_crypto_hash_new(algorithm, String(xofLen))));
     this.__finalized = false;
+    this.__xof = isXof;
+    this.__flat = flat;
   }
   update(data, inputEncoding) {
     if (this.__finalized) {
@@ -3145,18 +3329,69 @@ class Hash {
     const out = __cryptCall(() => __wjs_crypto_hash_digest(String(this.__id)));
     return __outBuf(out, encoding);
   }
-  copy() {
+  copy(options) {
     if (this.__finalized) {
       const err = new Error("Digest already called");
       err.code = "ERR_CRYPTO_HASH_FINALIZED";
       throw err;
     }
-    const h = Object.create(Hash.prototype);
+    // 10f crypto首轮：copy 可带 outputLength 改长（XOF 经原生 setter；
+    // 非 XOF 沿构造口径须恰为摘要长；先验后克隆，不泄漏句柄）。
+    let v;
+    if (options?.outputLength !== undefined) {
+      v = __checkOutputLength(options.outputLength);
+      if (!this.__xof && v !== __digestSize(this.__flat)) {
+        const err = new Error("error:030000B2:digital envelope routines::not XOF or invalid length");
+        err.code = "ERR_OSSL_EVP_NOT_XOF_OR_INVALID_LENGTH";
+        throw err;
+      }
+    }
+    const h = Object.create(HashImpl.prototype);
     h.__id = Number(__cryptCall(() => __wjs_crypto_hash_copy(String(this.__id))));
     h.__finalized = false;
+    h.__xof = this.__xof;
+    h.__flat = this.__flat;
+    // XOF：无参 copy 回默认长（真机口径，套件点名）；有参则用给定值。
+    if (h.__xof) {
+      const dflt = h.__flat === "shake128" ? 16 : 32;
+      __cryptCall(() => __wjs_crypto_hash_set_len(String(h.__id), v === undefined ? dflt : v));
+    }
     return h;
   }
+  // 10f crypto首轮：最小流式鸭子面（write/end/read/readableLength；
+  // 真机为 Duplex，此处仅覆盖套件所用的同步形，pipe 等另案）。
+  write(chunk, encoding) { this.update(chunk, encoding); return true; }
+  end(chunk, encoding) {
+    if (this.__finalized) return this;
+    if (chunk !== undefined) this.update(chunk, encoding);
+    this.__finalized = true;
+    const out = __cryptCall(() => __wjs_crypto_hash_digest(String(this.__id)));
+    this.__streamOut = __outBuf(out, undefined);
+    return this;
+  }
+  read() {
+    const out = this.__streamOut ?? null;
+    this.__streamOut = null;
+    return out;
+  }
+  get readableLength() { return this.__streamOut ? this.__streamOut.length : 0; }
 }
+
+// 10f crypto首轮：真机 `crypto.Hash(...)` 可无 new 调用（DEP0179 一次性警告）。
+let __hashCtorWarned = false;
+function Hash(...args) {
+  if (!__hashCtorWarned) {
+    __hashCtorWarned = true;
+    try {
+      process.emitWarning("crypto.Hash constructor is deprecated.",
+        { type: "DeprecationWarning", code: "DEP0179" });
+    } catch {}
+  }
+  return new HashImpl(...args);
+}
+Object.setPrototypeOf(Hash, HashImpl);
+Hash.prototype = HashImpl.prototype;
+Hash.prototype.constructor = Hash;
 
 function __hmacBlockLen(flat) {
   switch (flat) {
@@ -3195,9 +3430,19 @@ function __hmacGeneric(flat, keyBytes, dataBytes) {
   return __wjs_crypto_hash_digest(String(ho));
 }
 
-class Hmac {
+class HmacImpl {
   constructor(hamc, key, options) {
-    __needStr(hamc, "algorithm");
+    // 10f crypto首轮：参数名真机为 "hmac"（非 "algorithm"）。
+    __needStr(hamc, "hmac");
+    // 10f crypto首轮：secret KeyObject 可作 key（裸字节即 material）。
+    if (key instanceof KeyObject) {
+      if (key.type !== "secret") {
+        const err = new Error(`Invalid key object type ${key.type}, expected secret.`);
+        err.code = "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE";
+        throw err;
+      }
+      key = key.__material;
+    }
     if (key === undefined || key === null ||
         !(typeof key === "string" || key instanceof Uint8Array ||
           key instanceof ArrayBuffer || ArrayBuffer.isView(key))) {
@@ -3214,10 +3459,11 @@ class Hmac {
       throw new Error(`Invalid digest: ${hamc}`);
     }
     const table = {
-      "sha1": "sha1", "sha256": "sha256", "sha384": "sha384", "sha512": "sha512",
+      "sha1": "sha1", "dss1": "sha1", "sha224": "sha224",
+      "sha256": "sha256", "sha384": "sha384", "sha512": "sha512",
       "md5": "md5", "sha3256": "sha3256", "sha3384": "sha3384", "sha3512": "sha3512",
       "blake2b512": "blake2b512", "blake2s256": "blake2s256",
-      "ripemd160": "ripemd160",
+      "ripemd160": "ripemd160", "ripemd": "ripemd160",
     };
     const norm = table[flat];
     if (norm === undefined) {
@@ -3245,27 +3491,63 @@ class Hmac {
     this.__parts.push(__cryptBytes(data, "data", inputEncoding));
     return this;
   }
-  digest(encoding) {
-    if (this.__finalized) {
-      return encoding === undefined ? Buffer.alloc(0) : "";
-    }
-    this.__finalized = true;
+  __finishBytes() {
     let total = 0;
     for (const p of this.__parts) total += p.length;
     const flat = new Uint8Array(total);
     let off = 0;
     for (const p of this.__parts) { flat.set(p, off); off += p.length; }
     this.__parts = [];
-    const out = __cryptCall(() => __hmacGeneric(this.__alg, this.__key, flat));
+    return __cryptCall(() => __hmacGeneric(this.__alg, this.__key, flat));
+  }
+  digest(encoding) {
+    if (this.__finalized) {
+      // 10f crypto首轮：二次 digest 形态（真机逐字：undefined/'buffer' 精确小写回空
+      // Buffer，其余回 ""；Hash 系恒抛，见 HashImpl）。
+      return (encoding === undefined || encoding === "buffer") ? Buffer.alloc(0) : "";
+    }
+    this.__finalized = true;
+    const out = this.__finishBytes();
     return __outBuf(out, encoding);
   }
+  // 10f crypto首轮：最小流式鸭子面（同 HashImpl 记档）。
+  write(chunk, encoding) { this.update(chunk, encoding); return true; }
+  end(chunk, encoding) {
+    if (this.__finalized) return this;
+    if (chunk !== undefined) this.update(chunk, encoding);
+    this.__finalized = true;
+    this.__streamOut = __outBuf(this.__finishBytes(), undefined);
+    return this;
+  }
+  read() {
+    const out = this.__streamOut ?? null;
+    this.__streamOut = null;
+    return out;
+  }
+  get readableLength() { return this.__streamOut ? this.__streamOut.length : 0; }
 }
 
+// 10f crypto首轮：真机 `crypto.Hmac(...)` 可无 new 调用（DEP0181 一次性警告）。
+let __hmacCtorWarned = false;
+function Hmac(...args) {
+  if (!__hmacCtorWarned) {
+    __hmacCtorWarned = true;
+    try {
+      process.emitWarning("crypto.Hmac constructor is deprecated.",
+        { type: "DeprecationWarning", code: "DEP0181" });
+    } catch {}
+  }
+  return new HmacImpl(...args);
+}
+Object.setPrototypeOf(Hmac, HmacImpl);
+Hmac.prototype = HmacImpl.prototype;
+Hmac.prototype.constructor = Hmac;
+
 export function createHash(algorithm, options) {
-  return new Hash(algorithm, options);
+  return new HashImpl(algorithm, options);
 }
 export function createHmac(hamc, key, options) {
-  return new Hmac(hamc, key, options);
+  return new HmacImpl(hamc, key, options);
 }
 export function hash(algorithm, data, outputEncoding) {
   __needStr(algorithm, "algorithm");
@@ -3401,10 +3683,35 @@ export function randomInt(min, max, callback) {
   });
   return undefined;
 }
-export function randomUUID() {
+// 10f crypto首轮：randomUUID/v7 的 options 校验（真机 26.8.2 文案逐字）。
+function __uuidReceived(v) {
+  if (v === null) return "Received null";
+  if (v === undefined) return "Received undefined";
+  const shown = typeof v === "string" ? `'${v}'` : String(v);
+  return `Received type ${typeof v} (${shown})`;
+}
+function __checkUuidOptions(options) {
+  if (options === undefined) return;
+  if (typeof options !== "object" || options === null) {
+    const err = new TypeError(
+      `The "options" argument must be of type object. ${__uuidReceived(options)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  const v = options.disableEntropyCache;
+  if (v !== undefined && typeof v !== "boolean") {
+    const err = new TypeError(
+      `The "options.disableEntropyCache" property must be of type boolean. ${__uuidReceived(v)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+}
+export function randomUUID(options) {
+  __checkUuidOptions(options);
   return __wjs_random_uuid();
 }
-export function randomUUIDv7() {
+export function randomUUIDv7(options) {
+  __checkUuidOptions(options);
   const ms = Date.now();
   const u8 = __randFill(new Uint8Array(16));
   u8[0] = Math.floor(ms / 2 ** 40) & 255;
@@ -3469,12 +3776,18 @@ const __CIPHERS = {
   "aes-256-ccm": { family: "ccm", key: 32, iv: 12, block: 16, mode: "ccm", nid: 898 },
   "chacha20-poly1305": { family: "chacha", key: 32, iv: 12, block: 16, mode: "chacha20-poly1305", nid: 1018 },
   "des-ede3-cbc": { family: "cbc", key: 24, iv: 8, block: 8, mode: "cbc", nid: 44 },
+  // 10f crypto首轮：ECB 三档（无 iv；nid 真机 418/422/426）。
+  "aes-128-ecb": { family: "ecb", key: 16, iv: 0, block: 16, mode: "ecb", nid: 418 },
+  "aes-192-ecb": { family: "ecb", key: 24, iv: 0, block: 16, mode: "ecb", nid: 422 },
+  "aes-256-ecb": { family: "ecb", key: 32, iv: 0, block: 16, mode: "ecb", nid: 426 },
 };
 function __cipherInfo(cipher) {
   const info = __CIPHERS[String(cipher).toLowerCase()];
   return info === undefined ? undefined : { name: String(cipher).toLowerCase(), ...info };
 }
 function __needCipher(cipher) {
+  // 10f crypto首轮：非串 cipher 先报 ARG_TYPE（真机口径，null 即 Received null）。
+  __needStr(cipher, "cipher");
   const info = __cipherInfo(cipher);
   if (info === undefined) {
     const err = new Error("Unknown cipher");
@@ -3490,10 +3803,24 @@ function __needKeyIv(info, key, iv, what) {
     err.code = "ERR_CRYPTO_INVALID_KEYLEN";
     throw err;
   }
-  const ivb = __cryptBytes(iv, "iv");
-  // 10e CCM：iv 7–13 可变（NIST SP 800-38D；`info.iv` 仅名义 12）
-  // 10e-2 GCM：任意非空 iv（12B 外走 J0 手工路径；`info.iv` 仅名义 12）
-  if (info.family === "ccm") {
+  // 10f crypto首轮：iv undefined 真机文案逐字（各族一致）；null 视为空（长短由各族判定）。
+  // 注意：undefined 须在 __cryptBytes 之前拦截（其 Received 形态与真机不同）。
+  if (iv === undefined) {
+    const err = new TypeError('The "iv" argument must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received undefined');
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  const ivb = iv === null ? new Uint8Array(0) : __cryptBytes(iv, "iv");
+  // 10f ECB：仅空 iv 合法。
+  if (info.family === "ecb") {
+    if (ivb.length !== 0) {
+      const err = new Error("Invalid initialization vector");
+      err.code = "ERR_CRYPTO_INVALID_IV";
+      throw err;
+    }
+  } else if (info.family === "ccm") {
+    // 10e CCM：iv 7–13 可变（NIST SP 800-38D；`info.iv` 仅名义 12）
+    // 10e-2 GCM：任意非空 iv（12B 外走 J0 手工路径；`info.iv` 仅名义 12）
     if (ivb.length < 7 || ivb.length > 13) {
       const err = new Error("Invalid initialization vector");
       err.code = "ERR_CRYPTO_INVALID_IV";
@@ -3530,7 +3857,7 @@ function __unsupportedState() {
   throw new Error("Trying to add data in unsupported state");
 }
 
-class Cipheriv {
+class CipherivImpl {
   constructor(cipher, key, iv, options) {
     const info = __needCipher(cipher);
     const [kb, ivb] = __needKeyIv(info, key, iv, "cipher");
@@ -3539,7 +3866,7 @@ class Cipheriv {
     this.__aadDone = false;
     this.__tag = null;
     this.__finalized = false;
-    if (info.family === "cbc" || info.family === "ctr") {
+    if (info.family === "cbc" || info.family === "ctr" || info.family === "ecb") {
       this.__id = Number(__cryptCall(() =>
         __wjs_cipher_new(info.name, kb, ivb, 1, options && options.autoPadding === false ? 0 : 1)));
       this.__parts = null;
@@ -3585,6 +3912,8 @@ class Cipheriv {
     const bytes = data === undefined
       ? (() => { const err = new TypeError('The "data" argument must be of type string or an instance of Buffer, TypedArray, or DataView.'); err.code = "ERR_INVALID_ARG_TYPE"; throw err; })()
       : __cryptBytes(data, "data", inputEncoding);
+    // 10f crypto首轮：超长输入（≥2^31-1）真机即抛无码错（套件点名，nodejs/node#45757）。
+    if (bytes.length > 2147483646) __unsupportedState();
     let out;
     if (this.__id !== null) {
       out = __cryptCall(() => __wjs_cipher_update(String(this.__id), bytes));
@@ -3624,9 +3953,30 @@ class Cipheriv {
     }
     return __outBuf(out, outputEncoding);
   }
+  // 10f crypto首轮：最小流式鸭子面（同 HashImpl 记档）。
+  // 注意 Cipher/Decipher 系 update 即增量吐块（CBC/CTR 真流式），end 须拼
+  // update 输出（head）+ final 输出（tail），丢 head 即少块（10f 首轮现形）。
+  write(chunk, inputEncoding) { this.update(chunk, inputEncoding); return true; }
+  end(chunk, inputEncoding) {
+    if (this.__finalized) return this;
+    let head = Buffer.alloc(0);
+    if (chunk !== undefined) {
+      const r = this.update(chunk, inputEncoding);
+      head = Buffer.isBuffer(r) ? r : Buffer.from(String(r ?? ""));
+    }
+    const tail = this.final();
+    this.__streamOut = Buffer.concat([head, tail]);
+    return this;
+  }
+  read() {
+    const out = this.__streamOut ?? null;
+    this.__streamOut = null;
+    return out;
+  }
+  get readableLength() { return this.__streamOut ? this.__streamOut.length : 0; }
 }
 
-class Decipheriv {
+class DecipherivImpl {
   constructor(cipher, key, iv, options) {
     const info = __needCipher(cipher);
     const [kb, ivb] = __needKeyIv(info, key, iv, "decipher");
@@ -3635,7 +3985,7 @@ class Decipheriv {
     this.__tag = null;
     this.__finalized = false;
     this.__autoPad = !(options && options.autoPadding === false);
-    if (info.family === "cbc" || info.family === "ctr") {
+    if (info.family === "cbc" || info.family === "ctr" || info.family === "ecb") {
       this.__id = Number(__cryptCall(() =>
         __wjs_cipher_new(info.name, kb, ivb, 0, this.__autoPad ? 1 : 0)));
       this.__parts = null;
@@ -3686,6 +4036,8 @@ class Decipheriv {
       throw err;
     }
     const bytes = __cryptBytes(data, "data", inputEncoding);
+    // 10f crypto首轮：超长输入（≥2^31-1）真机即抛无码错（套件点名，nodejs/node#45757）。
+    if (bytes.length > 2147483646) __unsupportedState();
     let out;
     if (this.__id !== null) {
       out = __cryptCall(() => __wjs_cipher_update(String(this.__id), bytes));
@@ -3736,7 +4088,36 @@ class Decipheriv {
     }
     return __outBuf(out, outputEncoding);
   }
+  // 10f crypto首轮：最小流式鸭子面（同 HashImpl 记档）。
+  write(chunk, inputEncoding) { this.update(chunk, inputEncoding); return true; }
+  end(chunk, inputEncoding) {
+    if (this.__finalized) return this;
+    let head = Buffer.alloc(0);
+    if (chunk !== undefined) {
+      const r = this.update(chunk, inputEncoding);
+      head = Buffer.isBuffer(r) ? r : Buffer.from(String(r ?? ""));
+    }
+    const tail = this.final();
+    this.__streamOut = Buffer.concat([head, tail]);
+    return this;
+  }
+  read() {
+    const out = this.__streamOut ?? null;
+    this.__streamOut = null;
+    return out;
+  }
+  get readableLength() { return this.__streamOut ? this.__streamOut.length : 0; }
 }
+
+// 10f crypto首轮：真机 `crypto.Cipheriv/Decipheriv(...)` 可无 new 调用（无废弃警告）。
+function Cipheriv(...args) { return new CipherivImpl(...args); }
+Object.setPrototypeOf(Cipheriv, CipherivImpl);
+Cipheriv.prototype = CipherivImpl.prototype;
+Cipheriv.prototype.constructor = Cipheriv;
+function Decipheriv(...args) { return new DecipherivImpl(...args); }
+Object.setPrototypeOf(Decipheriv, DecipherivImpl);
+Decipheriv.prototype = DecipherivImpl.prototype;
+Decipheriv.prototype.constructor = Decipheriv;
 
 function __joinParts(parts) {
   let total = 0;
@@ -3748,10 +4129,10 @@ function __joinParts(parts) {
 }
 
 export function createCipheriv(cipher, key, iv, options) {
-  return new Cipheriv(cipher, key, iv, options);
+  return new CipherivImpl(cipher, key, iv, options);
 }
 export function createDecipheriv(cipher, key, iv, options) {
-  return new Decipheriv(cipher, key, iv, options);
+  return new DecipherivImpl(cipher, key, iv, options);
 }
 export function getCiphers() {
   return Object.keys(__CIPHERS);
@@ -3759,9 +4140,11 @@ export function getCiphers() {
 export function getCipherInfo(name) {
   const info = __cipherInfo(name);
   if (info === undefined) return undefined;
+  // 10f crypto首轮：ECB 无 ivLength 键（真机口径）。
   return {
     name: info.name, mode: info.mode, keyLength: info.key,
-    ivLength: info.iv, blockSize: info.block, nid: info.nid,
+    ...(info.iv === 0 ? {} : { ivLength: info.iv }),
+    blockSize: info.block, nid: info.nid,
   };
 }
 
@@ -4836,7 +5219,7 @@ export function privateDecrypt(key, data) { return __rsaCrypt(key, data, false, 
 export function privateEncrypt(key, data) { return __rsaCrypt(key, data, false, true); }
 export function publicDecrypt(key, data) { return __rsaCrypt(key, data, true, false); }
 
-class ECDH {
+class ECDHImpl {
   constructor(curve) {
     this.__curve = __normCurve(curve);
     if (this.__curve !== "P-256" && this.__curve !== "P-384" && this.__curve !== "P-521" && this.__curve !== "secp256k1") {
@@ -4910,18 +5293,24 @@ class ECDH {
     return Buffer.from(secret).toString(outputEncoding);
   }
 }
-export function createECDH(curve, format) { return new ECDH(curve); }
+export function createECDH(curve, format) { return new ECDHImpl(curve); }
 
-class DiffieHellman {
+// 10f crypto首轮：真机 `crypto.ECDH(...)` 可无 new 调用（无废弃警告）。
+function ECDH(...args) { return new ECDHImpl(...args); }
+Object.setPrototypeOf(ECDH, ECDHImpl);
+ECDH.prototype = ECDHImpl.prototype;
+ECDH.prototype.constructor = ECDH;
+
+class DiffieHellmanImpl {
   constructor(prime, generator) {
+    // 10f crypto首轮：数值位长形同步生成素数（真机口径；`generatePrimeSync` 复用）。
     if (typeof prime === "number") {
-      const err = new Error("DH numeric size form needs parameter generation (use group or explicit prime)");
-      err.code = "ERR_NOT_SUPPORTED";
-      throw err;
+      prime = generatePrimeSync(prime);
     }
     const primeB = (typeof prime === "string") ? __cryptBytes(prime, "prime", "hex") : __cryptBytes(prime, "prime");
     this.__prime = primeB;
-    this.__gen = generator === undefined ? 2 : Number(generator);
+    // 字符串 generator 系编码位（prime 非串时忽略），真机口径（旧 Number(串)=NaN 记档修）。
+    this.__gen = (generator === undefined || typeof generator === "string") ? 2 : Number(generator);
     this.__priv = null;
     this.__pub = null;
     this.__verifyError = 0;
@@ -4933,7 +5322,7 @@ class DiffieHellman {
       err.code = "ERR_NOT_SUPPORTED";
       throw err;
     }
-    return new DiffieHellman(__cryptBytes(hex, "prime", "hex"), 2);
+    return new DiffieHellmanImpl(__cryptBytes(hex, "prime", "hex"), 2);
   }
   generateKeys() {
     const r = JSON.parse(__cryptCall(() => __wjs_dh_genkey(this.__prime, this.__gen, this.__prime.length)));
@@ -4947,7 +5336,8 @@ class DiffieHellman {
       err.code = "ERR_CRYPTO_INVALID_STATE";
       throw err;
     }
-    if (encoding === undefined) return Buffer.from(this.__pub);
+    // 10f crypto首轮：'buffer' 编码（大小写不敏感）即回 Buffer（真机口径）。
+    if (encoding === undefined || String(encoding).toLowerCase() === "buffer") return Buffer.from(this.__pub);
     return Buffer.from(this.__pub).toString(encoding);
   }
   getPrivateKey(encoding) {
@@ -4956,11 +5346,11 @@ class DiffieHellman {
       err.code = "ERR_CRYPTO_INVALID_STATE";
       throw err;
     }
-    if (encoding === undefined) return Buffer.from(this.__priv);
+    if (encoding === undefined || String(encoding).toLowerCase() === "buffer") return Buffer.from(this.__priv);
     return Buffer.from(this.__priv).toString(encoding);
   }
   getPrime(encoding) {
-    if (encoding === undefined) return Buffer.from(this.__prime);
+    if (encoding === undefined || String(encoding).toLowerCase() === "buffer") return Buffer.from(this.__prime);
     return Buffer.from(this.__prime).toString(encoding);
   }
   getGenerator(encoding) {
@@ -4985,12 +5375,20 @@ class DiffieHellman {
 }
 export function createDiffieHellman(prime, generator) {
   if (typeof prime === "string" && __DH_GROUPS[prime.toLowerCase()] !== undefined && generator === undefined) {
-    return DiffieHellman.group(prime);
+    return DiffieHellmanImpl.group(prime);
   }
-  return new DiffieHellman(prime, generator);
+  return new DiffieHellmanImpl(prime, generator);
 }
-export function createDiffieHellmanGroup(name) { return DiffieHellman.group(name); }
-export function getDiffieHellman(name) { return DiffieHellman.group(name); }
+export function createDiffieHellmanGroup(name) { return DiffieHellmanImpl.group(name); }
+export function getDiffieHellman(name) { return DiffieHellmanImpl.group(name); }
+// 10f crypto首轮：真机 `crypto.DiffieHellman/DiffieHellmanGroup/ECDH` 均可无 new 调用。
+function DiffieHellman(...args) { return new DiffieHellmanImpl(...args); }
+Object.setPrototypeOf(DiffieHellman, DiffieHellmanImpl);
+DiffieHellman.prototype = DiffieHellmanImpl.prototype;
+DiffieHellman.prototype.constructor = DiffieHellman;
+function DiffieHellmanGroup(name) { return DiffieHellmanImpl.group(name); }
+Object.setPrototypeOf(DiffieHellmanGroup, DiffieHellmanImpl);
+DiffieHellmanGroup.prototype = DiffieHellmanImpl.prototype;
 export function diffieHellman(options) {
   const priv = options?.privateKey;
   const pub = options?.publicKey;
@@ -5477,7 +5875,7 @@ const __api = {
   createSign, createVerify, sign, verify,
   publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt,
   createECDH, ECDH, createDiffieHellman, createDiffieHellmanGroup, getDiffieHellman,
-  DiffieHellman, diffieHellman, checkPrime, checkPrimeSync, generatePrime, generatePrimeSync,
+  DiffieHellman, DiffieHellmanGroup, diffieHellman, checkPrime, checkPrimeSync, generatePrime, generatePrimeSync,
   constants, getFips, setFips, setEngine, secureHeapUsed,
   pbkdf2, pbkdf2Sync, scrypt, scryptSync, hkdf, hkdfSync,
   argon2, argon2Sync, X509Certificate, Certificate,
@@ -5502,6 +5900,11 @@ mod tests {
         assert!(norm_hash("md5", 0).is_some());
         // 9h-2 落地：ripemd160 + SHAKE（长度注册时带）。
         assert!(norm_hash("ripemd160", 0).is_some());
+        // 10f crypto首轮：sha224 + 别名 dss1/ripemd。
+        assert!(norm_hash("sha224", 0).is_some());
+        assert!(norm_hash("dss1", 0).is_some());
+        assert!(norm_hash("DSS1", 0).is_some());
+        assert!(norm_hash("ripemd", 0).is_some());
         assert!(norm_hash("shake128", 16).is_some());
         assert!(norm_hash("shake256", 32).is_some());
         assert!(norm_hash("nope", 0).is_none());
@@ -5553,6 +5956,10 @@ mod tests {
         assert_eq!(cipher_params("AES-256-GCM"), None); // AEAD 不走流式注册表
         assert_eq!(cipher_params("aes-128-ctr"), Some(("ctr-aes128", 16, 16, 16)));
         assert_eq!(cipher_params("des-ede3-cbc"), Some(("cbc-des3", 24, 8, 8)));
+        // 10f crypto首轮：ECB 三档（无 iv，iv 长记 0）。
+        assert_eq!(cipher_params("aes-128-ecb"), Some(("ecb-aes128", 16, 0, 16)));
+        assert_eq!(cipher_params("aes-192-ecb"), Some(("ecb-aes192", 24, 0, 16)));
+        assert_eq!(cipher_params("aes-256-ecb"), Some(("ecb-aes256", 32, 0, 16)));
         assert!(cipher_params("aes-999-cbc").is_none());
         assert!(cipher_params("").is_none());
     }

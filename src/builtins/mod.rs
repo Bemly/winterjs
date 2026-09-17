@@ -4632,6 +4632,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_crypto_hash_update", Some(node::crypto::crypto_hash_update), 2),
             ("__wjs_crypto_hash_digest", Some(node::crypto::crypto_hash_digest), 1),
             ("__wjs_crypto_hash_copy", Some(node::crypto::crypto_hash_copy), 1),
+            ("__wjs_crypto_hash_set_len", Some(node::crypto::crypto_hash_set_len), 2),
             // Phase 9e-1b: node:crypto 对称密码（CBC/CTR 流式 + ChaCha oneshot）
             ("__wjs_cipher_new", Some(node::crypto::cipher_new), 5),
             ("__wjs_cipher_update", Some(node::crypto::cipher_update), 2),

@@ -2008,3 +2008,27 @@ cargo build
   （四位分发）附带补齐（spawn-argv0/execfile 套件）。
 - 推广为铁律：子进程族"子是谁"先分类——自身/真程序/shell 串三条路，
   翻译层只动自身路；"311:53" 式固定伪位置出现即改文件二分，不读行号。
+
+### 4.129 crypto 首轮六坑（2026-09-17，10f crypto 首轮）
+
+- 坑一（无 new 调用）：`crypto.Hash/Hmac/Cipheriv/DH` 系真机可无 new 调用，
+  class 直出即 TypeError。修法：内类改名 `XImpl` + 同名 `function X(...args)`
+  包装 + `prototype` 接线（`instanceof`/方法面不变）；Hash/Hmac 附 DEP0179/
+  DEP0181 一次性警告（`deprecate()` once 语义，真机 `length/name` 伪装不抄）。
+- 坑二（流式 end 丢 head）：Cipher 系 update 即增量吐块，end 只调 final 即少块
+  （`wrong final block length`）。修法：end 拼 update-head + final-tail；
+  Hash/Hmac 系 update 无输出，照旧只 final。
+- 坑三（copy 无参回默认长）：XOF `copy()` 不带 options 即回默认输出长
+  （非保留源长），真机实证。修法：copy 内 XOF 恒经新 native setter
+  （`__wjs_crypto_hash_set_len`，覆盖/默认两路）。
+- 坑四（超长 update）：输入 ≥2^31-1 真机抛无码 `Trying to add data in
+  unsupported state`（nodejs/node#45757，精确边界 2147483646 ok/2147483647 挂）。
+- 坑五（Received 裸形）：null/undefined 的 Received 无 type 前缀
+  （`Received null/undefined`），`__needStr` 全族统一；Hmac 参数名是 "hmac"
+  非 "algorithm"；`__outBuf` encoding 先 `String()` 显式转（用户 toString 抛错透传）。
+- 坑六（旧断言翻转三件）：copy 保留源长/DH 数值形抛 NOT_SUPPORTED/shake 负长
+  ARG_VALUE——三处旧黑盒全系伪语义，真机实证后翻转（§4.65/§4.82 三进宫）。
+- 复现：`tests/node/crypto.rs::phase10f_crypto_round1_parity`（40 断言）；
+  对拍 133 件 17→24 绿（`docs/bun-parity.md` crypto 节）。
+- 推广为铁律：对拍修文案先探真机逐字（含大小写/标点/Received 形态），
+  别凭记忆拼；"全绿旧测试"在语义升级面前先对真机再信。

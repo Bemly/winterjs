@@ -1920,3 +1920,25 @@ cargo build
 - 附带真机口径（同轮实测）：setKeepAlive ms→s 下取整、缺省位转发 undefined、
   四元组全同跳过；TOS 三文案逐字；autoSelectFamily 默认 true/timeout 500；
   server keepAlive 默认 false/0（`src/builtins/node/net.rs`）。
+
+### 4.126 重负载验证禁令：禁并行压力循环与重复全量子集（2026-09-17，机器约束）
+
+- 背景：为抓 pingpong 并行偶发静默死亡（exit -10），用 10-worker 对拍子集循环
+  15+ 遍（每遍 ~200 进程启动）+ 6~7 次全量构建，单轮烧掉 200G+ 内存 IO——
+  纯验证方法学开销，非代码泄漏（本轮改动全为纯 JS prelude 小字段），但机器扛不住。
+- 铁律：验证只用轻量三档——单文件直跑、小域子集
+  （`cargo test --test node net::`）、全量 `cargo test` 一次；对拍全量子集
+  （157 文件 ×2）每轮至多跑一遍；**禁并行压力循环**（同文件 ×N 并发、
+  后台负载围攻、repro 脚本反复跑、为攒统计样本重复子集）。
+- flaky 并行崩溃改走证据路线：抓到一份 `.ips` 栈即停手记档，不用"统计显著性"
+  去换根因。本次即例：`ready` 发射与 -10 强相关（有 1/8、无 22/22）但机制未定，
+  到此为止，不再追。
+- 附带技术记档（本轮未闭环三件）：
+  ① `emit("ready")`（connect → ready 真机序，已接受端不发）暂不发射——与并行
+  静默死亡强相关，待引擎侧闭环；`ready-without-cb` 对拍计数不受影响（见③）。
+  ② `.ips` 实证：`net dispatch → with_str_args → JS_CallFunctionValue →
+  js::Call` 内 SIGBUS（KERN_PROTECTION_FAILURE），疑存活期/GC 时序旧患
+  （§4.40 家族），与本轮纯 JS 改动无直接代码关联，另案。
+  ③ 本仓不执行 common mustCall 的 exit 钩——只靠退出码时，"mustCall 未触发"
+  类失败恒为假绿（ready-without-cb：不发射也 exit=0）；以后对拍报告注明此局限，
+  关键语义必须另写内容断言黑盒（本轮 `phase10f_net_remote_surface` 即此路）。

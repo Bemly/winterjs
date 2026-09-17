@@ -1029,25 +1029,64 @@
 
 ## worker
 
-> 首轮点名（2026-09-18，140 件，`/tmp/wjs-10f-worker1.txt`）：
-> 同绿 **35**；SAME1=7（双边同码）；DIFF **98**。长尾型分布——无单根因大簇。
-> 既有 9f/9i/M5 面（线程底座/端口迁移/循环信封）黑盒全绿无回归
-> （`tests/node/worker.rs`）。
+> 六轮对拍（2026-09-18，140 件，`/tmp/wjs-10f-worker1..6.txt`，2 worker）：
+> 同绿 35 → 43 → 51 → 49（回退轮，次轮修复）→ 53 → **55**；SAME1=8；DIFF
+> 98 → 90 → 81 → 85 → 79 → **77**。既有 9f/9i/M5 面（线程底座/端口迁移/循环
+> 信封）黑盒全绿无回归（`tests/node/worker.rs`）。
 >
-> ### DIFF 分簇（首轮，均未动）
+> ### 已修（每项经真机 26.8.2 对拍）
 >
-> - **TIMEOUT 21 件**：terminate 时机/共享面/长任务生命周期——另轮。
-> - **校验族 15 件**：`throws: unexpected throw` 8 + `Missing expected exception` 7
->   （构造/terminate/postMessage 参数校验逐 API 续补）。
-> - **stdio 流面 2 件**：`w.stdout.setEncoding is not a function`——worker stdout/
->   stderr 非 Readable（fork 线程底座 stdio 数据面记档欠账，plan3 §4 维持）。
-> - **错误形状 4 件**：syntax error 顶层错应报 SyntaxError（2）+ worker
->   uncaught 异常消息前缀 'Error: Worker: ...' 形（2）。
-> - **小缺口长尾（各 1 件）**：MessageEvent 全局缺（message-event）、
->   broadcastchannel addEventListener、getHeapSnapshot、`v8.serialize` 跨线程、
->   handle.hasRef、data-url filename 形、esm-missing-main 错误消息、
->   execargv stderr 流、exit-code/beforeexit throw、memory rss 口径（跨引擎
->   不可比倾向，待定性）等。
+> - **二轮（错误形状批）**：`DataCloneError` 改抛真 `DOMException`
+>   （constructor.name/code 25/instanceof Error 三面，transfer-self/closed 套件
+>   逐字）+ transfer 逐类型 node 文案（duplicate/source port/already
+>   detached）+ worker bootstrap `process.*` UNSUPPORTED_OPERATION 桩
+>   （unsupported-things 套件 disabled/() 形/无 () 属性形三态）+
+>   `__workerFilePath` 四路（data: URL eval/file: URL/ERR_WORKER_PATH 带 Wrap
+>   提示/ARG_TYPE）+ Worker 构造校验序（eval 门→filename→env/name/execArgv）
+>   + error 事件按类名还原错误类（SyntaxError 套件断
+>   `err.constructor === SyntaxError`；裸文本回 Error）。连带基建：
+>   `Error::Script` 加 `kind` 字段跨线程透传异常类名（`exc_name` 重构）。
+> - **三轮（视图/SAB 批，TDZ 级联根因）**：view 解码 `byteLength` 当**元素数**
+>   传——BPE>1 的 typed array（Int32/Float64 系）跨端全 OOB 静默丢消息，而
+>   worker 内 `workerData` 常量在 class 声明区**之前**求值，解码炸掉整模块，
+>   require 命中未初始化 `Worker` 绑定的 TDZ（报错文件名/行号还串到主脚本）。
+>   修法：wire 存 byteLength、解码按 `BYTES_PER_ELEMENT` 折算 + SAB 品牌
+>   信封（`k:"sab"`，副本语义——真共享内存需跨线程底座，记档）。
+> - **四/五轮（表面批）**：全局 `MessageEvent`（undici webidl 校验文案逐字，
+>   `inspect(v,{quotes:'double'})` 形值回显）+ MessagePort/BroadcastChannel
+>   EventTarget 双面（'message' 系收 MessageEvent(data)，自定义类型收
+>   CustomEvent(detail)，真机逐项实测）+ `threadName`（导出 + 属性 + 退出置
+>   null，boot 带 name 四件套）+ `resourceLimits` 透传 + missing-main 文案
+>   （`Cannot find module '<path>'`）+ error-primitive 原始值信封
+>   （`__wjs_prim:{json}`：number/string/bigint/bool/null/undefined/
+>   注册 Symbol 经 `Symbol.for` 还原跨线程同一性）+ `BroadcastChannel` 升
+>   Web 全局 + `markAsUntransferable`/`isMarkedAsUntransferable` 具名导出
+>   （标记端口/AB 拒转移且不 detach）+ BC this 品牌门（ERR_INVALID_THIS）+
+>   嵌套端口克隆文案分形（"Object that needs transfer was found"）。
+> - **同步收信（pending 表）**：node 的 `receiveMessageOnPort` 同步语义——
+>   `port_post` 本地 pair 直入对端 Rust pending 表（纯 Rust 串，无 GC 值），
+>   pump 逐轮统一派发。中试的 JS 直推+微任务/kick 两案均翻车：微任务链式
+>   ping-pong 饿死定时器（infinite-message-loop），kick 经 pump 收割仍同轮
+>   链式；pending 表案对齐 node 的 task 级节奏。
 >
-> 全域收官策略：校验族+错误形状先行（纯面），stdio 流面与 TIMEOUT 的
-> terminate 生命周期深化随后（数据面欠账所致）。
+> ### 剩余红项（DIFF 77，分簇）
+>
+> - **TIMEOUT ~17 件**：terminate 时机/共享面/长任务生命周期——terminate
+>   生命周期深化另轮。
+> - **校验族 ~7 件**：`Missing expected exception`/`unexpected throw` 长尾
+>   （broadcastchannel 深块/messaging/connection 面），下轮续补。
+> - **stdio 流面 5 件**：worker stdout/stderr 非 Readable（fork 线程底座
+>   stdio 数据面记档欠账，plan3 §4 维持）。
+> - **环境/进程面 4 件**：process-env 逐 worker env 快照、beforeexit-throw
+>   退出码、process-cwd/safe-getters 细节——随 terminate 轮。
+> - **Atomics.wait 2 件**：worker 内 futex 等待（引擎 SM 面，待查）。
+> - **跨引擎不可比/引擎口径 6 件**：memory rss、getHeapSnapshot、
+>   v8.serialize/setFlagsFromString、stack-overflow 栈深——记档。
+> - **自 spawn/flag 门控 3 件**：message-type-unknown（全 flag CLI 设计）、
+>   init-failure（256 worker 环境门控）、wasm 系列（unhandled rejection，
+>   另案）。
+> - **真机对齐双红 8 件**：真机同条件亦红，对齐不算欠账。
+>
+> 复现：`tests/node/worker.rs::phase10f_worker_error_shape_and_event_faces` +
+> `phase10f_worker_typed_view_and_sab_envelope`（修前 Int32Array 跨端静默丢/
+> TDZ 级联/rc=101 级联）。

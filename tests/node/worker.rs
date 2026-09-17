@@ -439,3 +439,208 @@ b.on("exit", (c) => console.log("stdio-exit", c === 0, ended === 2, b.stdout.rea
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_worker_error_shape_and_event_faces() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p10f.mjs",
+        r#"
+import { Worker, MessageChannel, MessagePort, BroadcastChannel, workerData, threadName, parentPort } from "node:worker_threads";
+import assert from "node:assert";
+
+// ── worker 分支：threadName 导出 + 抛原始值（number/string 各一 worker）──
+if (workerData?.throwKind === "num") {
+  parentPort.postMessage("armed");
+  throw 42;
+}
+if (workerData?.throwKind === "str") {
+  parentPort.postMessage("armed");
+  throw "boom";
+}
+
+// 1) MessageEvent 全局：默认面 + init 转换（WebIDL USVString/DOMString）。
+assert.strictEqual(typeof MessageEvent, "function");
+const ev = new MessageEvent("message", { data: 2, origin: 1, lastEventId: 0 });
+console.log("p1", `${ev.type}|${ev.data}|${ev.origin}|${ev.lastEventId}|${ev.source}|${JSON.stringify(ev.ports)}` === "message|2|1|0|null|[]");
+console.log("p1-inst", new MessageEvent("m") instanceof Event);
+let t1 = false;
+try { new MessageEvent("m", { source: 1 }); } catch (e) { t1 = /Expected eventInitDict\.source \("1"\) to be an instance of MessagePort\./.test(e.message); }
+let t2 = false;
+try { new MessageEvent("m", { ports: 0 }); } catch (e) { t2 = /eventInitDict\.ports \(0\) is not iterable\./.test(e.message); }
+let t3 = false;
+try { new MessageEvent("m", { ports: [null] }); } catch (e) { t3 = /Expected eventInitDict\.ports\[0\] \("null"\) to be an instance of MessagePort\./.test(e.message); }
+console.log("p1-err", t1, t2, t3);
+
+// 2) MessagePort EventTarget 双面：自定义类型 CustomEvent(detail)；EE 裸值不变；
+//    onmessage 收真 MessageEvent（data/target/ports）。
+{
+  const { port1, port2 } = new MessageChannel();
+  let etType = "", etDetail = "", eeVal = "";
+  port2.addEventListener("foo", (e) => { etType = e.type; etDetail = e.detail; });
+  port2.on("foo", (v) => { eeVal = v; });
+  port2.emit("foo", "bar");
+  console.log("p2", `${etType}|${etDetail}|${eeVal}` === "foo|bar|bar");
+  // removeEventListener 摘净
+  const fn = () => { etType = "BAD"; };
+  port2.addEventListener("foo", fn);
+  port2.removeEventListener("foo", fn);
+  port2.emit("foo", "x");
+  console.log("p2-rm", etType === "foo");
+  const got = await new Promise((res) => {
+    port1.onmessage = (m) => res(m);
+    port2.postMessage(4);
+  });
+  console.log("p2-om", got instanceof MessageEvent, got.data === 4, got.target === port1, Array.isArray(got.ports) && got.ports.length === 0);
+  port1.close(); port2.close();
+}
+
+// 3) BroadcastChannel：message 事件收 MessageEvent(data)；缺参/已关报错。
+{
+  const bc1 = new BroadcastChannel("ch-10f");
+  const bc2 = new BroadcastChannel("ch-10f");
+  const got = await new Promise((res) => {
+    bc1.addEventListener("message", (e) => res(e));
+    bc2.postMessage("hello");
+  });
+  console.log("p3", got instanceof MessageEvent, got.data === "hello");
+  bc1.close(); bc2.close();
+  const bcX = new BroadcastChannel("ch-10f");
+  bcX.close(); bcX.close();
+  let threw1 = "";
+  try { bcX.postMessage(null); } catch (e) { threw1 = e.message; }
+  let threw2 = "";
+  const bcY = new BroadcastChannel("ch-10f");
+  try { bcY.postMessage(); } catch (e) { threw2 = e.message; }
+  bcY.close();
+  console.log("p3-err", threw1 === "BroadcastChannel is closed", threw2 === 'The "message" argument must be specified');
+}
+
+// 4) threadName（属性 + 退出置 null）+ resourceLimits 缺省 {}。
+{
+  const w = new Worker(new URL(import.meta.url).pathname, { name: "tn-10f", workerData: { throwKind: "num" } });
+  console.log("p4-name", w.threadName === "tn-10f", JSON.stringify(w.resourceLimits) === "{}");
+  const errs = [];
+  w.on("error", (e) => errs.push(e));
+  w.on("exit", (c) => {
+    console.log("p4-prim", c === 1, errs.length === 1, typeof errs[0] === "number", errs[0] === 42);
+    console.log("p4-null", w.threadName === null);
+    // string 原始值
+    const w2 = new Worker(new URL(import.meta.url).pathname, { workerData: { throwKind: "str" } });
+    const errs2 = [];
+    w2.on("error", (e) => errs2.push(e));
+    w2.on("exit", (c2) => {
+      console.log("p4-str", c2 === 1, errs2.length === 1, errs2[0] === "boom");
+      run5();
+    });
+  });
+}
+
+// 5) 缺主模块：error 事件文案 node 形（Cannot find module '<abs>'）。
+function run5() {
+  const missing = new URL("file:///no/such/worker-10f-does-not-exist.js");
+  const w3 = new Worker(missing);
+  w3.on("error", (e) => console.log("p5", /Cannot find module .+worker-10f-does-not-exist\.js/.test(e.message)));
+  w3.on("exit", () => console.log("END"));
+}
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "p1 true",
+        "p1-inst true",
+        "p1-err true true true",
+        "p2 true",
+        "p2-rm true",
+        "p2-om true true true true",
+        "p3 true true",
+        "p3-err true true",
+        "p4-name true true",
+        "p4-prim true true true true",
+        "p4-null true",
+        "p4-str true true true",
+        "p5 true",
+        "END",
+    ] {
+        assert!(stdout.lines().any(|l| l == line), "missing line: {line}\nout: {stdout}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_worker_typed_view_and_sab_envelope() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p10f-view.mjs",
+        r#"
+import { MessageChannel, MessagePort } from "node:worker_threads";
+import assert from "node:assert";
+
+// 边界：BPE>1 的 typed array 跨端（byteLength → 元素数折算；修前 Int32/Float64
+// 全 OOB 静默丢消息）+ 子视图偏移 + DataView + SAB 品牌副本。
+const { port1, port2 } = new MessageChannel();
+port2.on("message", (m) => {
+  port2.postMessage(m);
+});
+const results = await new Promise((res) => {
+  const out = [];
+  let step = 0;
+  port1.on("message", (m) => {
+    out.push(m);
+    step++;
+    if (step === 4) res(out);
+  });
+  port1.postMessage(new Int32Array([1, 2, 3, 4]));
+  const f = new Float64Array([1.5, -2.5]);
+  port1.postMessage(f);
+  const ab = new ArrayBuffer(16);
+  port1.postMessage(new Uint8Array(ab, 4, 8));
+  port1.postMessage(new DataView(new ArrayBuffer(8)));
+});
+console.log(
+  "view-i32",
+  results[0] instanceof Int32Array, JSON.stringify([...results[0]]) === "[1,2,3,4]",
+);
+console.log("view-f64", results[1] instanceof Float64Array, JSON.stringify([...results[1]]) === "[1.5,-2.5]");
+console.log("view-sub", results[2] instanceof Uint8Array, results[2].byteOffset === 4, results[2].byteLength === 8, results[2].buffer.byteLength === 16);
+console.log("view-dv", results[3] instanceof DataView, results[3].byteLength === 8);
+
+// SAB：品牌 roundtrip（副本语义；真共享内存跨线程底座记档）。
+if (typeof SharedArrayBuffer === "function") {
+  const sab = new SharedArrayBuffer(8);
+  new Uint8Array(sab).set([7, 7]);
+  const got = await new Promise((res) => {
+    port1.on("message", (m) => { res(m); });
+    port1.postMessage(sab);
+  });
+  console.log("sab", got instanceof SharedArrayBuffer, got.byteLength === 8, new Uint8Array(got)[0] === 7);
+} else {
+  console.log("sab skip");
+}
+port1.close(); port2.close();
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "view-i32 true true",
+        "view-f64 true true",
+        "view-sub true true true true",
+        "view-dv true true",
+        "sab true true true",
+    ] {
+        assert!(stdout.lines().any(|l| l == line), "missing line: {line}\nout: {stdout}");
+    }
+    dir.close().unwrap();
+}

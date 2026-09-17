@@ -255,6 +255,9 @@ pub struct WorkerPort {
     pub moved: bool,
     /// 承接迁移的表项记源路由（本端 close 时发 `PortDrop` 拆转发器）。
     pub via: Option<(tokio::sync::mpsc::UnboundedSender<crate::builtins::node::worker::WorkerEvent>, u64)>,
+    /// 本地 pair 的待派发 wire（10f：`port_post` 本地路由——`receiveMessageOnPort`
+    /// 同步可收，事件派发由 pump 逐轮统一驱动；纯 Rust 串，无 GC 值）。
+    pub pending: Vec<String>,
 }
 
 // SAFETY: 只追踪 target（通道/旗无 GC 指针）。
@@ -476,6 +479,10 @@ pub struct PlainState {
     pub worker_session_seq: u64,
     /// worker 线程专有（主会话为 None）：克隆入参 JSON + 父端口 id。
     pub worker_data_json: Option<String>,
+    /// worker 线程专有：构造 `options.name`（`threadName` 导出用；10f）。
+    pub worker_name: Option<String>,
+    /// worker 线程专有：fork 子进程（有 IPC 通道，`process.send` 族不装桩；10f）。
+    pub worker_is_fork: bool,
     pub worker_parent_port: Option<u64>,
     /// worker 终止旗（`WTerminate` 到达置位；事件循环检查点退出，见 §4.18 顺序）。
     pub worker_terminated: bool,
@@ -1064,6 +1071,13 @@ unsafe extern "C" fn entry_rejected_native(
 /// rejection reason → `file:line:col: message`（无位置信息时退化为值串）。
 fn entry_reason_string(cx: &mut JSContext, reason: JSVal) -> String {
     if !reason.is_object() {
+        // 10f：worker 内非对象 rejection 走原始值信封（error-primitive 套件
+        // 断同一性；主进程完成值/报错显示不受影响）。
+        if !worker_is_main()
+            && let Some(m) = crate::jsapi_glue::exc_prim_marker(cx, reason)
+        {
+            return m;
+        }
         return value_to_string(cx, reason);
     }
     let obj = reason.to_object();
@@ -1437,8 +1451,8 @@ pub fn port_pair() -> Option<(u64, u64)> {
         p.worker_next_id += 1;
         let b = p.worker_next_id;
         with_rooted(|s| {
-            s.worker_ports.push(WorkerPort { id: a, peer: b, peer_tx: tx.clone(), target: None, open: true, refed: true, listening: false, counted: false, peer_closed: false, peer_is_worker: false, forward: None, moved: false, via: None });
-            s.worker_ports.push(WorkerPort { id: b, peer: a, peer_tx: tx, target: None, open: true, refed: true, listening: false, counted: false, peer_closed: false, peer_is_worker: false, forward: None, moved: false, via: None });
+            s.worker_ports.push(WorkerPort { id: a, peer: b, peer_tx: tx.clone(), target: None, open: true, refed: true, listening: false, counted: false, peer_closed: false, peer_is_worker: false, forward: None, moved: false, via: None, pending: Vec::new() });
+            s.worker_ports.push(WorkerPort { id: b, peer: a, peer_tx: tx, target: None, open: true, refed: true, listening: false, counted: false, peer_closed: false, peer_is_worker: false, forward: None, moved: false, via: None, pending: Vec::new() });
         });
         Some((a, b))
     })
@@ -1454,16 +1468,18 @@ pub fn port_alloc_cross(
         p.worker_next_id
     });
     with_rooted(|s| {
-        s.worker_ports.push(WorkerPort { id, peer: peer_worker, peer_tx, target: None, open: true, refed: true, listening: false, counted: false, peer_closed: false, peer_is_worker: true, forward: None, moved: false, via: None });
+        s.worker_ports.push(WorkerPort { id, peer: peer_worker, peer_tx, target: None, open: true, refed: true, listening: false, counted: false, peer_closed: false, peer_is_worker: true, forward: None, moved: false, via: None, pending: Vec::new() });
     });
     id
 }
 
 /// 按 `open && refed && listening` 重算，返回计数净变化（+1/0/-1）。
+/// 对端已关（peer_closed）不再续命——node 口径：对端关后本端口无法再收新
+/// 消息，receive-message 套件靠它收尾退出。
 fn port_recount(id: u64) -> i64 {
     with_rooted(|s| match s.worker_ports.iter_mut().find(|p| p.id == id) {
         Some(p) => {
-            let want = p.open && p.refed && p.listening && !p.moved && p.forward.is_none();
+            let want = p.open && p.refed && p.listening && !p.moved && p.forward.is_none() && !p.peer_closed;
             if want == p.counted {
                 0
             } else {
@@ -1547,12 +1563,39 @@ pub fn port_target(id: u64) -> Option<JSVal> {
     })
 }
 
+/// 同步收信口（10f：`receiveMessageOnPort` 底座）——取本端口 pending 队首
+/// wire；空即 None。纯 Rust 串进出，无 GC 值（§4.40 n/a）。
+pub fn port_try_recv(id: u64) -> Option<String> {
+    with_rooted(|s| {
+        s.worker_ports
+            .iter_mut()
+            .find(|p| p.id == id)
+            .and_then(|p| {
+                if p.pending.is_empty() { None } else { Some(p.pending.remove(0)) }
+            })
+    })
+}
+
+/// pump 逐轮派发用：取走全端口 pending（(port_id, wire) 平化，按表序）。
+pub fn take_port_pending() -> Vec<(u64, String)> {
+    with_rooted(|s| {
+        let mut out = Vec::new();
+        for p in s.worker_ports.iter_mut() {
+            if !p.pending.is_empty() {
+                out.extend(p.pending.drain(..).map(|w| (p.id, w)));
+            }
+        }
+        out
+    })
+}
+
 /// 发往对端（本端已关/对端已关即丢弃，Node 同款静默；parentPort 走 `WMsg`；
 /// 转发器表项改道新址，发送失败即自拆）。
-pub fn port_post(id: u64, json: String) -> bool {
-    enum Route {
+pub fn port_post(id: u64, json: String) -> bool {    enum Route {
         Direct { peer: u64, tx: tokio::sync::mpsc::UnboundedSender<crate::builtins::node::worker::WorkerEvent>, is_worker: bool },
         Forward { tx: tokio::sync::mpsc::UnboundedSender<crate::builtins::node::worker::WorkerEvent>, to: u64 },
+        /// 本地 pair：对端 pending 表直投（pump 逐轮派发；10f）。
+        Local { peer: u64 },
     }
     let route = with_rooted(|s| {
         s.worker_ports.iter().find(|p| p.id == id).and_then(|p| {
@@ -1562,10 +1605,27 @@ pub fn port_post(id: u64, json: String) -> bool {
             if let Some(f) = p.forward.as_ref() {
                 return Some(Route::Forward { tx: f.tx.clone(), to: f.to });
             }
+            // 10f：本地 pair 且对端表项在本会话 → 直入对端 pending（同步收信
+            // 口 + pump 逐轮派发；跨会话口仍走通道）。
+            if !p.peer_is_worker
+                && s.worker_ports.iter().any(|q| q.id == p.peer && q.open && !q.moved)
+            {
+                return Some(Route::Local { peer: p.peer });
+            }
             Some(Route::Direct { peer: p.peer, tx: p.peer_tx.clone(), is_worker: p.peer_is_worker })
         })
     });
     match route {
+        Some(Route::Local { peer }) => {
+            with_rooted(|s| {
+                if let Some(q) = s.worker_ports.iter_mut().find(|q| q.id == peer) {
+                    q.pending.push(json);
+                    true
+                } else {
+                    false
+                }
+            })
+        }
         Some(Route::Direct { peer, tx, is_worker: true }) => tx.send(crate::builtins::node::worker::WorkerEvent::WMsg { worker_id: peer, json }).is_ok(),
         Some(Route::Direct { peer, tx, is_worker: false }) => tx.send(crate::builtins::node::worker::WorkerEvent::PortMsg { to: peer, json }).is_ok(),
         Some(Route::Forward { tx, to }) => {
@@ -1644,19 +1704,26 @@ pub fn port_ref(id: u64) {
 /// 对端关闭到达：记 peer_closed（后续 post 静默丢弃；本端不派 close，Node 口径；
 /// 到达转发器则递往新址后自拆）。
 pub fn port_peer_closed(id: u64) {
-    let fwd = with_rooted(|s| {
+    let (fwd, recount) = with_rooted(|s| {
         let mut out = None;
+        let mut needs_recount = false;
         if let Some(p) = s.worker_ports.iter_mut().find(|p| p.id == id) {
             if p.forward.is_some() {
                 out = p.forward.as_ref().map(|f| (f.tx.clone(), f.to));
                 p.open = false;
                 p.forward = None;
             } else {
+                // 10f：对端关后本端口不再续命（receive-message 收尾）；recount
+                // 在 with_rooted 外补调（§4.14 禁嵌套）。
                 p.peer_closed = true;
+                needs_recount = true;
             }
         }
-        out
+        (out, needs_recount)
     });
+    if recount {
+        port_bump(port_recount(id));
+    }
     if let Some((tx, to)) = fwd {
         let _ = tx.send(crate::builtins::node::worker::WorkerEvent::PortClose { to });
     }
@@ -1755,6 +1822,7 @@ pub fn port_accept(nonce: &str) -> Option<u64> {
             forward: None,
             moved: false,
             via: Some((offer.source_tx.clone(), offer.source_id)),
+            pending: Vec::new(),
         });
     });
     let _ = offer.source_tx.send(crate::builtins::node::worker::WorkerEvent::PortForward {
@@ -1961,11 +2029,13 @@ pub fn worker_open() -> usize {
 // ── Worker 线程（9f-3；spawn/parentPort/workerData/exit/terminate）─────────
 
 /// worker 线程起后初始化（`runtime::run_worker_thread` 经 boot 槽调；含权限继承）。
-pub fn worker_boot(thread_id: u64, data_json: Option<String>, parent_port: u64) {
+pub fn worker_boot(thread_id: u64, data_json: Option<String>, name: Option<String>, is_fork: bool, parent_port: u64) {
     with_plain(|p| {
         p.worker_is_main = false;
         p.worker_thread_id = thread_id;
         p.worker_data_json = data_json;
+        p.worker_name = name;
+        p.worker_is_fork = is_fork;
         p.worker_parent_port = Some(parent_port);
         p.worker_terminated = false;
     });
@@ -1976,6 +2046,16 @@ pub fn worker_boot(thread_id: u64, data_json: Option<String>, parent_port: u64) 
 
 pub fn worker_data_json() -> Option<String> {
     with_plain(|p| p.worker_data_json.clone())
+}
+
+/// worker 构造名（`threadName`；主会话恒 None）。
+pub fn worker_name() -> Option<String> {
+    with_plain(|p| p.worker_name.clone())
+}
+
+/// fork 子进程标记（主会话恒 false）。
+pub fn worker_is_fork() -> bool {
+    with_plain(|p| p.worker_is_fork)
 }
 
 pub fn worker_parent_port() -> Option<u64> {

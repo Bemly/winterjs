@@ -217,17 +217,76 @@ pub fn report_error(cx: &mut JSContext, msg: &str) {
     unsafe { mozjs::jsapi::JS_ReportErrorASCII(cx.raw_cx(), c.as_ptr()) };
 }
 
-/// 检查异常值的 `name` 属性（如 "SyntaxError"）。非对象/无 name 返回 false。
-pub fn exc_name_is(cx: &mut JSContext, exc: JSVal, name: &str) -> bool {
+/// 读异常值的 `name` 属性（如 "SyntaxError"）。非对象/无 name 返回 None。
+pub fn exc_name(cx: &mut JSContext, exc: JSVal) -> Option<String> {
     if !exc.is_object() {
-        return false;
+        return None;
     }
     // SAFETY: is_object 已判定
     let obj = exc.to_object();
-    match get_prop_string(cx, obj, c"name") {
-        Some(n) => n == name,
-        None => false,
+    get_prop_string(cx, obj, c"name")
+}
+
+/// 检查异常值的 `name` 属性（如 "SyntaxError"）。非对象/无 name 返回 false。
+pub fn exc_name_is(cx: &mut JSContext, exc: JSVal, name: &str) -> bool {
+    exc_name(cx, exc).as_deref() == Some(name)
+}
+
+/// 非对象异常值的原始值信封（10f worker 错误透传：throw 42/"boom"/7n/Symbol
+/// 经 `__wjs_prim:{json}` 跨线程还原，error-primitive 套件断同一性）。
+/// 对象异常返回 None（走 `exc_name` 类名路径）。
+/// UNSAFE-BOUNDARY：JS_TypeOfValue 只读；exc 须已 rooted（调用方 rooted! 槽位
+/// `.get()` 传入）。覆盖测试：`tests/node/worker.rs` worker 错误形状。
+pub fn exc_prim_marker(cx: &mut JSContext, exc: JSVal) -> Option<String> {
+    if exc.is_object() {
+        return None;
     }
+    if exc.is_null() {
+        return Some("__wjs_prim:{\"t\":\"nil\"}".into());
+    }
+    if exc.is_undefined() {
+        return Some("__wjs_prim:{\"t\":\"undef\"}".into());
+    }
+    if exc.is_boolean() {
+        return Some(format!("__wjs_prim:{{\"t\":\"bool\",\"v\":{}}}", exc.to_boolean()));
+    }
+    if exc.is_int32() {
+        return Some(format!("__wjs_prim:{{\"t\":\"num\",\"v\":\"{}\"}}", exc.to_int32()));
+    }
+    if exc.is_double() {
+        let n = exc.to_number();
+        let v = if n.is_finite() { n.to_string() } else { "null".into() };
+        return Some(format!("__wjs_prim:{{\"t\":\"num\",\"v\":\"{v}\"}}"));
+    }
+    if exc.is_string() {
+        let s = value_to_string(cx, exc);
+        let json = serde_json::to_string(&s).unwrap_or_else(|_| "\"\"".into());
+        return Some(format!("__wjs_prim:{{\"t\":\"str\",\"v\":{json}}}"));
+    }
+    // BigInt/Symbol：jsval 谓词不覆盖，走引擎 TypeOf。
+    rooted!(&in(cx) let exc_root = exc);
+    // SAFETY: 只读调用；根槽位由 rooted! 保活
+    let t = unsafe { mozjs::jsapi::JS_TypeOfValue(cx.raw_cx(), raw_handle(exc_root.as_ptr())) };
+    use mozjs::jsapi::JSType;
+    if t == JSType::JSTYPE_BIGINT {
+        let s = value_to_string(cx, exc);
+        return Some(format!("__wjs_prim:{{\"t\":\"big\",\"v\":\"{s}\"}}"));
+    }
+    if t == JSType::JSTYPE_SYMBOL {
+        // 描述经 prelude `__wjs_symToString`（JS 的 toString 合法；注册 Symbol
+        // 跨线程同一性靠 Symbol.for(key)）。
+        let g = state::global();
+        rooted!(&in(cx) let g_root: *mut JSObject = g);
+        let s = get_prop_value(cx, g_root.get(), c"__wjs_symToString")
+            .and_then(|f| call_two(cx, g, f, exc_root.get(), UndefinedValue()))
+            .filter(|r| r.is_string())
+            .map(|r| value_to_string(cx, r))
+            .unwrap_or_else(|| "Symbol()".into());
+        let desc = s.strip_prefix("Symbol(").and_then(|r| r.strip_suffix(")")).unwrap_or("");
+        let json = serde_json::to_string(desc).unwrap_or_else(|_| "\"\"".into());
+        return Some(format!("__wjs_prim:{{\"t\":\"sym\",\"v\":{json}}}"));
+    }
+    None
 }
 
 /// 把当前 pending exception 转成 Error::Script（错误路径统一入口）。
@@ -247,8 +306,9 @@ pub fn pending_exception_error(
     rooted!(&in(&mut realm) let mut exc = mozjs::jsval::UndefinedValue());
     match mozjs::rust::error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
         Some(info) => {
+            let kind = exc_name(&mut realm, exc.get());
             let line = info.line.saturating_sub(state::line_adjust());
-            Error::script(filename, source, line, info.col, info.message)
+            Error::script_with_kind(filename, source, line, info.col, info.message, kind)
         }
         None => Error::Other("uncaught JS exception (no stack info)".into()),
     }

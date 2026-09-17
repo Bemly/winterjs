@@ -34,6 +34,9 @@ pub enum Error {
         line: u32,
         col: u32,
         message: String,
+        /// 异常类名（"SyntaxError"/"TypeError"/…；10f worker 错误形状透传用，
+        /// 主进程渲染不感知）。None = 引擎侧未取（旧路径）。
+        kind: Option<String>,
         #[label("uncaught here")]
         span: SourceSpan,
         #[source_code]
@@ -80,11 +83,24 @@ fn span_for(source: &str, line: u32, col: u32) -> SourceSpan {
 
 impl Error {
     pub fn script(filename: &str, source: &str, line: u32, col: u32, message: String) -> Self {
+        Self::script_with_kind(filename, source, line, col, message, None)
+    }
+
+    /// 带异常类名的变体（worker 错误形状：SyntaxError/TypeError 等跨线程还原）。
+    pub fn script_with_kind(
+        filename: &str,
+        source: &str,
+        line: u32,
+        col: u32,
+        message: String,
+        kind: Option<String>,
+    ) -> Self {
         Error::Script {
             filename: filename.to_owned(),
             line,
             col,
             message,
+            kind,
             span: span_for(source, line, col),
             source_code: NamedSource::new(filename, source.to_owned()),
         }

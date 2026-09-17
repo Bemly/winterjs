@@ -241,7 +241,7 @@ class Cluster extends EventEmitter {
       .replace("__CLUSTER_MOD__", () => JSON.stringify(fileUrl))
       .replace("__CLUSTER_ARGS__", () => JSON.stringify(argsArr))
       .replace("__CLUSTER_ENV__", () => JSON.stringify(envObj));
-    const w = new ThreadWorker(src, { eval: true, workerData: { __wjs_cluster: { id } } });
+    const w = new ThreadWorker(src, { eval: true, workerData: { __wjs_cluster: { id } }, __wjs_forkChild: true });
     const worker = new ClusterWorker(id, w);
     __workers[id] = worker;
     w.on("message", (m) => {

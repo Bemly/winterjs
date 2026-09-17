@@ -3355,6 +3355,77 @@ globalThis.CustomEvent = class CustomEvent extends Event {
   }
   get detail() { return this.#detail; }
 };
+// undici webidl 口径的值回显（MessageEvent 校验文案；真机逐形实测）：
+// instanceOf 消息 = `"` + inspect(v, {quotes:'double'}) + `"`（"str" 形串自带
+// 双引号故现 `""str""`；数字/容器仅外包一对）；not-iterable 用裸 inspect。
+// 覆盖套件点名的形状（标量/空容器/数组/类实例），完整 inspect 面在 util。
+const __wjs_insp = (v) => {
+  if (v === null) return "null";
+  if (v === undefined) return "undefined";
+  const t = typeof v;
+  if (t === "string") {
+    const body = v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return `"${body}"`;
+  }
+  if (t === "number" || t === "boolean" || t === "bigint") return String(v);
+  if (t === "symbol") return v.toString();
+  if (t === "function") return `[Function: ${v.name || "(anonymous)"}]`;
+  if (Array.isArray(v)) return `[ ${v.map((x) => __wjs_insp(x)).join(", ")} ]`;
+  const n = v.constructor && v.constructor.name && v.constructor.name !== "Object" ? v.constructor.name : null;
+  const keys = Object.keys(v);
+  const body = keys.length === 0 ? "" : ` ${keys.map((k) => `${k}: ${__wjs_insp(v[k])}`).join(", ")} `;
+  return n ? `${n} {${body}}` : `{${body}}`;
+};
+const __wjs_inspQuoted = (v) => `"${__wjs_insp(v)}"`;
+// Rust 侧取 symbol 描述（ToString 对 symbol 抛 TypeError；JS 侧 toString 合法）。
+globalThis.__wjs_symToString = (v) => (typeof v === "symbol") ? v.toString() : null;
+// 10f：全局 MessageEvent（node 26 主/worker 线程均全局；message-port/
+// message-event 套件逐项对拍）。source/ports 须 MessagePort 实例——品牌经
+// worker 模块求值期登记的 `__wjs_MessagePort` 隐藏槽判定（主线程无全局
+// MessagePort；求值前无从有端口，非 null source 即 TypeError 正确）。
+globalThis.MessageEvent = class MessageEvent extends Event {
+  #data; #origin; #lastEventId; #source; #ports;
+  constructor(type, init = {}) {
+    if (arguments.length === 0) throw new TypeError("MessageEvent requires at least 1 argument, but only 0 were passed");
+    super(type, init);
+    const o = init ?? {};
+    this.#data = o.data ?? null;
+    this.#origin = String(o.origin ?? "");
+    this.#lastEventId = String(o.lastEventId ?? "");
+    const src = o.source ?? null;
+    if (src !== null) {
+      const M = globalThis.__wjs_MessagePort;
+      if (!M || !(src instanceof M)) {
+        throw new TypeError(`MessageEvent constructor: Expected eventInitDict.source (${__wjs_inspQuoted(src)}) to be an instance of MessagePort.`);
+      }
+    }
+    this.#source = src;
+    let ports = o.ports;
+    if (ports !== undefined && ports !== null) {
+      if (typeof ports[Symbol.iterator] !== "function") {
+        throw new TypeError(`MessageEvent constructor: eventInitDict.ports (${__wjs_insp(ports)}) is not iterable.`);
+      }
+      const list = [...ports];
+      for (let i = 0; i < list.length; i++) {
+        const M2 = globalThis.__wjs_MessagePort;
+        if (!M2 || !(list[i] instanceof M2)) {
+          throw new TypeError(`MessageEvent constructor: Expected eventInitDict.ports[${i}] (${__wjs_inspQuoted(list[i])}) to be an instance of MessagePort.`);
+        }
+      }
+      this.#ports = list;
+    } else {
+      this.#ports = [];
+    }
+    // 内部派发目标（`__wjsTarget` 不属 WebIDL 字典面，仅宿主 port 桥使用）。
+    const tgt = o.__wjsTarget;
+    if (tgt) __wjs_eventState.get(this).target = tgt;
+  }
+  get data() { return this.#data; }
+  get origin() { return this.#origin; }
+  get lastEventId() { return this.#lastEventId; }
+  get source() { return this.#source; }
+  get ports() { return this.#ports; }
+};
 globalThis.EventTarget = class EventTarget {
   constructor() {
     __wjs_etState.set(this, new Map());
@@ -4711,6 +4782,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_port_pair", Some(node::worker::port_pair), 0),
             ("__wjs_port_attach", Some(node::worker::port_attach), 2),
             ("__wjs_port_post", Some(node::worker::port_post), 2),
+            ("__wjs_port_try_recv", Some(node::worker::port_try_recv), 1),
             ("__wjs_port_close", Some(node::worker::port_close), 1),
             ("__wjs_port_unref", Some(node::worker::port_unref), 1),
             ("__wjs_port_ref", Some(node::worker::port_ref), 1),
@@ -4726,6 +4798,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_bc_attach", Some(node::worker::bc_attach), 2),
             ("__wjs_worker_is_main", Some(node::worker::worker_is_main), 0),
             ("__wjs_worker_thread_id", Some(node::worker::worker_thread_id), 0),
+            ("__wjs_worker_name", Some(node::worker::worker_name), 0),
+            ("__wjs_worker_is_fork", Some(node::worker::worker_is_fork), 0),
             ("__wjs_worker_parent", Some(node::worker::worker_parent), 0),
             ("__wjs_worker_data", Some(node::worker::worker_data), 0),
             ("__wjs_worker_env_set", Some(node::worker::env_set), 2),

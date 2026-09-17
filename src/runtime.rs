@@ -31,7 +31,7 @@ use url::Url;
 use crate::builtins;
 use crate::builtins::timers;
 use crate::modules;use crate::error::Error;
-use crate::jsapi_glue::{exc_name_is, get_prop_string, get_prop_u32, raw_handle, raw_handle_mut, value_to_string};
+use crate::jsapi_glue::{exc_name, exc_name_is, get_prop_string, get_prop_u32, raw_handle, raw_handle_mut, value_to_string};
 use crate::state;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -545,7 +545,19 @@ async fn run_inner(
                         rooted!(&in(&mut realm) let mut exc = UndefinedValue());
                         // SAFETY: realm 内读取 pending exception（消费异常值）
                         match error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
-                            Some(info) => Error::script(filename, &main_src, info.line.max(1), info.col, info.message),
+                            Some(info) => {
+                                // 10f：worker 内非对象异常（throw 42 等）走原始值信封
+                                //（error-primitive 套件断同一性；主进程显示不受影响）。
+                                let prim = if !state::worker_is_main() {
+                                    crate::jsapi_glue::exc_prim_marker(&mut realm, exc.get())
+                                } else {
+                                    None
+                                };
+                                Error::script_with_kind(
+                                    filename, &main_src, info.line.max(1), info.col,
+                                    prim.unwrap_or(info.message),
+                                    crate::jsapi_glue::exc_name(&mut realm, exc.get()))
+                            }
                             None => Error::Other("uncaught JS exception (no stack info)".into()),
                         }
                     };
@@ -577,13 +589,20 @@ async fn run_inner(
             // 模块重试：经典 SyntaxError 且能按模块解析 → 改走模块求值。
             // （`await` 在参数位置按标识符解析，报的不是 await 错而是 missing-paren，
             // 故不能只认 await 文案；真语法错误则保留原始经典报错。见 §4.17。）
-            let (info_opt, is_syntax) = {
+            let (info_opt, is_syntax, kind, prim) = {
                 let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
                 rooted!(&in(&mut realm) let mut exc = UndefinedValue());
                 // SAFETY: realm 内读取 pending exception（消费异常值）
                 let info = error_info_from_exception_stack(&mut realm, exc.handle_mut());
-                let is_syntax = exc_name_is(&mut realm, exc.get(), "SyntaxError");
-                (info, is_syntax)
+                let kind = exc_name(&mut realm, exc.get());
+                let is_syntax = kind.as_deref() == Some("SyntaxError");
+                // 10f：worker 内非对象异常走原始值信封（同模块路径）。
+                let prim = if !state::worker_is_main() {
+                    crate::jsapi_glue::exc_prim_marker(&mut realm, exc.get())
+                } else {
+                    None
+                };
+                (info, is_syntax, kind, prim)
             };
             if is_syntax
                 && let Ok(url) = crate::loader::resolve::entry_url(std::path::Path::new(filename))
@@ -596,7 +615,9 @@ async fn run_inner(
                 return r;
             }
             let err = match info_opt {
-                Some(info) => Error::script(filename, source, info.line.max(1), info.col, info.message),
+                Some(info) => Error::script_with_kind(
+                    filename, source, info.line.max(1), info.col,
+                    prim.unwrap_or(info.message), kind),
                 None => Error::Other("uncaught JS exception (no stack info)".into()),
             };
             end_session(rt, engine);
@@ -698,8 +719,10 @@ pub fn run_worker_thread(spec: WorkerThreadSpec) {
                         };
                         match std::fs::read_to_string(&abs) {
                             Ok(s) => (s, abs.to_string_lossy().into_owned(), None),
-                            Err(e) => {
-                                fail_early(format!("Worker: cannot read file {} ({e})", abs.display()));
+                            Err(_) => {
+                                // 10f 对拍：node 缺主模块 error 事件文案
+                                // /Cannot find module '<path>'/（esm-missing-main 套件）。
+                                fail_early(format!("Cannot find module '{}'", abs.display()));
                                 return;
                             }
                         }
@@ -771,10 +794,20 @@ pub fn run_worker_thread(spec: WorkerThreadSpec) {
     }
 }
 
-/// worker 未捕获错误转文案（`WError` 用；定位信息尽量保留）。
+/// worker 未捕获错误转文案（`WError` 用）。
+/// 10f 对拍：error 事件透传**原错误**——Script 消息不带 "Worker: " 前缀
+/// （uncaught-exception 套件断 `String(err) === 'Error: foo'`）；kind 已知且非
+/// Error 时导出 "Kind: " 前缀，worker.js 侧按类名还原错误类（SyntaxError 套件
+/// 断 `err.constructor === SyntaxError`）。启动期失败（Other/`_`）维持
+/// "Worker: " 前缀（esm-missing-main 套件口径）。
 fn worker_error_text(e: &Error) -> String {
     match e {
-        Error::Script { message, .. } => format!("Worker: {message}"),
+        Error::Script { message, kind, .. } => match kind {
+            Some(k) if k != "Error" => format!("{k}: {message}"),
+            _ => message.clone(),
+        },
+        // 原始值信封直通（勿加前缀——JS 侧按 `__wjs_prim:` 还原）。
+        Error::Other(message) if message.starts_with("__wjs_prim:") => message.clone(),
         Error::Other(message) => format!("Worker: {message}"),
         _ => format!("Worker: {e}"),
     }
@@ -804,16 +837,18 @@ async fn eval_syntax_fallback(
         rooted!(&in(&mut realm) let mut exc = UndefinedValue());
         // realm 内读取 pending exception（会消费异常值）
         let info = error_info_from_exception_stack(&mut realm, exc.handle_mut());
-        let is_syntax = exc_name_is(&mut realm, exc.get(), "SyntaxError");
+        let exc_kind = exc_name(&mut realm, exc.get());
+        let is_syntax = exc_kind.as_deref() == Some("SyntaxError");
         if !is_syntax {
             // 非语法错误：直接用已捕获的信息报错（异常已被消费，勿再取）
             return match info {
-                Some(info) => Err(Error::script(
+                Some(info) => Err(Error::script_with_kind(
                     filename,
                     source,
                     info.line.saturating_sub(state::line_adjust()).max(1),
                     info.col,
                     info.message,
+                    exc_kind,
                 )),
                 None => Err(Error::Other("uncaught JS exception (no stack info)".into())),
             };
@@ -821,12 +856,13 @@ async fn eval_syntax_fallback(
         // SAFETY: 首次失败发生在解析期（无副作用），清除后重跑包装版
         unsafe { JS_ClearPendingException((&mut realm).raw_cx()) };
         info.map(|info| {
-            Error::script(
+            Error::script_with_kind(
                 filename,
                 source,
                 info.line.saturating_sub(state::line_adjust()).max(1),
                 info.col,
                 info.message,
+                exc_kind,
             )
         })
         .unwrap_or_else(|| Error::Other("uncaught JS exception (no stack info)".into()))
@@ -849,26 +885,28 @@ async fn eval_syntax_fallback(
             return r;
         }
         // 语法错误 → 换下一种包装；运行期错误 → 直接上报（勿重跑）
-        let (info, is_syntax) = {
+        let (info, is_syntax, exc_kind) = {
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
             rooted!(&in(&mut realm) let mut exc = UndefinedValue());
             // realm 内读取 pending exception（消费异常值）
             let info = error_info_from_exception_stack(&mut realm, exc.handle_mut());
-            let is_syntax = exc_name_is(&mut realm, exc.get(), "SyntaxError");
+            let exc_kind = exc_name(&mut realm, exc.get());
+            let is_syntax = exc_kind.as_deref() == Some("SyntaxError");
             if is_syntax {
                 // SAFETY: 解析期失败无副作用，清除后重试
                 unsafe { mozjs::jsapi::JS_ClearPendingException((&mut realm).raw_cx()) };
             }
-            (info, is_syntax)
+            (info, is_syntax, exc_kind)
         };
         if !is_syntax {
             return match info {
-                Some(info) => Err(Error::script(
+                Some(info) => Err(Error::script_with_kind(
                     filename,
                     source,
                     info.line.saturating_sub(adjust).max(1),
                     info.col,
                     info.message,
+                    exc_kind,
                 )),
                 None => Err(Error::Other("uncaught JS exception (no stack info)".into())),
             };
@@ -1013,6 +1051,14 @@ async fn pump_once(
     while let Ok(ev) = worker_rx.try_recv() {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         node_worker::dispatch(&mut realm, global.get(), ev, err)?;
+        st.worker += 1;
+        st.progressed = true;
+    }
+    // 本地 pair 的 pending wire（10f：postMessage 本地路由直投表；pump 逐轮
+    // 派发保持 task 级节奏——纯微任务链式 ping-pong 会饿死定时器）。
+    for (to, wire) in state::take_port_pending() {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        node_worker::dispatch(&mut realm, global.get(), crate::builtins::node::worker::WorkerEvent::PortMsg { to, json: wire }, err)?;
         st.worker += 1;
         st.progressed = true;
     }

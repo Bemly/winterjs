@@ -1662,7 +1662,7 @@ export function fork(modulePath, args, opts) {
   const src = __FORK_CHILD_SRC
     .replace("__FORK_MOD__", () => JSON.stringify(fileUrl))
     .replace("__FORK_ARGV__", () => JSON.stringify(argsArr));
-  const worker = new Worker(src, { eval: true });
+  const worker = new Worker(src, { eval: true, __wjs_forkChild: true });
   const proc = new ChildProcess();
   proc.__forkChild = true;
   proc.__worker = worker;

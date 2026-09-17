@@ -2105,3 +2105,43 @@ cargo build
 - 推广为铁律：对拍修"缺方法"前先跑真机探针把**属性面**（自有属性有无/键形/
   构造形态 no-new）逐项定型——node 老式函数面（Agent/Server 的 no-new）与
   class 面（IncomingMessage 不可 no-new）混存，凭"都是构造器"猜必翻车。
+
+### 4.132 worker 对拍五轮七坑（2026-09-18，10f worker 二轮起）
+- 坑一（wire 字段语义跨界即炸）：端口信封 view 分支存 `byteLength`，解码却把它当
+  typed array 第三参（**元素数**）——BPE>1（Int32/Float64 系）全 OOB。且异常在
+  worker 内 `workerData` 常量求值期炸出，而该常量位于模块 **class 声明区之前**，
+  求值中断即整模块 class 绑定 TDZ，require 命中报 `can't access lexical
+  declaration "Worker"`——TDZ 是下游症状，不是根因。修法：wire 存 byteLength、
+  解码按 `BYTES_PER_ELEMENT` 折算。教训：信封字段是跨端 ABI，编解码两侧的
+  语义（字节/元素）必须成对核对；模块顶部的"数据落地常量"是炸点，能懒则懒。
+- 坑二（报错归属三重错位）：worker 内异常经 `Error::Script` 上报，文件名是主脚本、
+  行号是内嵌模块行号（`313:53`/`665:59` 跨文件同值即此症）。定位时先认出"行号属于
+  内嵌模块源"，再用 `awk`/python 按内嵌源行号切片，别在测试文件里找 665 行。
+- 坑三（端口同步收信的三次试错）：node `receiveMessageOnPort` 是同步语义，而事件
+  派发是 task 级。JS 直推对端队列+微任务 flush → 微任务链式 ping-pong **饿死
+  定时器**（infinite-message-loop 10001 轮）；改 `setTimeout` flush → 与 close
+  定时器在轮内不保 FIFO；kick 事件经 pump 收割 → 收割在 RunJobs 前后各一轮仍同轮
+  链式。正解：**本地 pair 直入对端 Rust pending 表（纯串无 GC 值），pump 逐轮
+  统一派发**——事件节奏回归通道模型，同步收信走表。推广：跨 JS/Rust 的消息面
+  改投递节奏前，先画 pump 的收割/RunJobs/timer-check 顺序图，微任务链是
+  定时器杀手（§4.46 姊妹篇）。
+- 坑四（per-session id 空间相撞）：本地 pair 与 cross 口（parentPort）共用
+  各自会话的 `worker_next_id` 计数器——cross 口表项的 `peer` 是 worker id，
+  可与本地 pair id 相撞，按 peer 反查对端对象会拿错（甚至自指自旋）。本地路由
+  必须 `!peer_is_worker` 双向过滤。
+- 坑五（recount 只回差值不落账）：`port_recount` 返回计数净变化，落账靠调用方
+  `port_bump`——`port_peer_closed` 置 `peer_closed` 后忘了 bump，对端关后端口
+  仍续命循环（hang）。且在 `with_rooted` 闭包内直接调 `port_recount`（同样走
+  with_rooted）→ RefCell panic rc=101（§4.14 三进宫）。修法：闭包内只改字段，
+  差值闭包外 `port_bump(port_recount(id))`。
+- 坑六（undici webidl 文案）：node 26 的 MessageEvent 校验走 undici webidl 层，
+  值回显是 `inspect(v, {quotes:'double'})` 再外包一对引号（`1 → ("1")`、
+  `"str" → (""str"")`），not-iterable 用裸 inspect——照 V8 惯例猜必错，逐值
+  实测；instanceof 门经隐藏槽 `__wjs_MessagePort`（模块求值期登记）判定。
+- 坑七（原始值错误跨线程）：worker 顶层 `throw 42` 的 error 事件要收到**原始值
+  本身**（`err === 42`、注册 Symbol 同一性）——`Error::Script` 只有文本。修法：
+  捕获点对非对象异常打包 `__wjs_prim:{json}` 信封（kind=None 时 message 即信封，
+  `worker_error_text` 直通勿加前缀），JS 侧按类还原；Symbol 描述经 prelude
+  helper（`JS::ToString` 对 symbol 抛 TypeError，Rust 侧原生路不通）。
+  复现：`tests/node/worker.rs::phase10f_worker_*`（修前 Int32Array 跨端静默丢、
+  TDZ 级联、receive-message 收尾 hang）。

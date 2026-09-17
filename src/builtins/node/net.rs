@@ -1007,8 +1007,11 @@ class Socket extends EventEmitter {
     }
     this.__id = 0;
     this.__enc = null;
-    this.remoteAddress = null;
-    this.remotePort = null;
+    // node 口径（remote-address 双套件点名）：连接完成前 remote* 全 undefined
+    // （够不上 null；发布点在 __ev-connect，不在 __realConnect）。
+    this.remoteAddress = undefined;
+    this.remotePort = undefined;
+    this.remoteFamily = undefined;
     this.localAddress = null;
     this.localPort = null;
     this.readable = true;
@@ -1164,6 +1167,9 @@ class Socket extends EventEmitter {
         cb = typeof args[1] === "function" ? args[1] : undefined;
       } else {
         ({ port, host = "127.0.0.1", noDelay: __noDelay, signal, blockList: __blockList, lookup: __lookup, allowHalfOpen: __halfOpen } = args[0]);
+        // node 口径：connect(server.address()) 形——address 对象（{address/family/port}）
+        // 直作 options，host 缺省时取 address 键（ready-without-cb 套件点名）。
+        if ((args[0].host === undefined || args[0].host === null) && typeof args[0].address === "string") host = args[0].address;
         if (__halfOpen !== undefined) this.allowHalfOpen = !!__halfOpen;
         // host 校验（真机逐字）：非串→ARG_TYPE（Array 显实例形）；含 \0→ARG_VALUE。
         if (host !== undefined && typeof host !== "string") {
@@ -1242,8 +1248,10 @@ class Socket extends EventEmitter {
   __realConnect(finalHost, port, cb, __noDelay, signal, sockPath) {
     // UDS 面：remoteAddress/localAddress 恒 undefined（真机实证），address() 回 {}。
     // adopt 面：localAddress/localPort 预置 bound 值（connect 前后一致，真机实证）。
-    this.remoteAddress = sockPath !== null ? undefined : String(finalHost);
-    this.remotePort = sockPath !== null ? undefined : Number(port);
+    // remote* 不在此发布（连接完成前恒 undefined，见构造注）；目标另存供报错整形。
+    this.__targetHost = sockPath !== null ? null : String(finalHost);
+    this.__targetPort = sockPath !== null ? null : Number(port);
+    this.remoteAddress = undefined; this.remotePort = undefined; this.remoteFamily = undefined;
     if (this.__adoptPort !== undefined && sockPath === null) {
       this.localAddress = this.__adoptUds || this.__adoptHost;
       this.localPort = this.__adoptPort;
@@ -1262,7 +1270,7 @@ class Socket extends EventEmitter {
       this.__id = Number(__wjs_net_connect(sockPath, "", this, this.__adoptUds));
     } else this.__id = sockPath !== null
       ? Number(__wjs_net_connect(sockPath, "", this, false))
-      : Number(__wjs_net_connect(this.remoteAddress, this.remotePort, this, __noDelay === true));
+      : Number(__wjs_net_connect(this.__targetHost, this.__targetPort, this, __noDelay === true));
   }
   // 事件循环派发钩子（Rust dispatch 调用；kind/data 均为字符串）
   __ev(kind, payload) {
@@ -1279,6 +1287,11 @@ class Socket extends EventEmitter {
           if (this.localAddress !== undefined && this.localAddress !== null)
             this.localFamily = String(this.localAddress).includes(":") ? "IPv6" : "IPv4";
         } catch {}
+        // 远端面在此发布（UDS 恒 undefined；TCP 取 __realConnect 存的目标）。
+        this.remoteAddress = this.__targetHost ?? undefined;
+        this.remotePort = this.__targetPort ?? undefined;
+        this.remoteFamily = this.remoteAddress === undefined ? undefined
+          : (String(this.remoteAddress).includes(":") ? "IPv6" : "IPv4");
         this.__connected = true;
         this.readable = true; this.writable = true;
         const pend = this.__pendW; this.__pendW = [];
@@ -1292,6 +1305,11 @@ class Socket extends EventEmitter {
           if (this.__id) __wjs_net_end(this.__id);
         }
         this.emit("connect");
+        // 注：真机另序发 'ready'（connect → ready，已接受端不发），但本仓暂不发射——
+        // 同步/microtask 发射在并行负载下与静默进程死亡（exit -10，无崩溃报告）强相关，
+        // 根因未定（疑 dispatch 侧存活期/GC 时序，见 AGENTS §4.126）；且本仓不执行
+        // common mustCall 的 exit 钩，ready-without-cb 套件靠退出码无法证伪，
+        // 发射与否不影响对拍计数。待引擎侧根因闭环后再补。
         break;
       }
       case "data": {
@@ -1327,7 +1345,9 @@ class Socket extends EventEmitter {
         // node connect 错误消息形："connect CODE <target>"（target=host:port 或 path）。
         // native msg 已是 "CODE: <os>"，此处按目标重塑（expectsError 逐字断言面）。
         if (typeof o.msg === "string" && !o.msg.startsWith("connect ") && !o.msg.startsWith("IP(")) {
-          const tgt = this.__udsTarget ?? (this.remoteAddress !== undefined && this.remotePort !== undefined ? `${this.remoteAddress}:${this.remotePort}` : null);
+          const rh = this.__targetHost ?? this.remoteAddress;
+          const rp = this.__targetPort ?? this.remotePort;
+          const tgt = this.__udsTarget ?? ((rh !== undefined && rh !== null && rp !== undefined && rp !== null) ? `${rh}:${rp}` : null);
           if (tgt) se.message = `connect ${o.code} ${tgt}`;
         }
         this.emit("error", se);

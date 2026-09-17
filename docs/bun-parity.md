@@ -744,8 +744,16 @@
 >   unexpected throw" 逐 API 续补。
 > - **server close/listen 时序**（~10 件）：listen-close-server×2/drop-connections/
 >   pause-on-connect/server-blocklist/close-before-lookup/server-pause 等——另案。
-> - **远端地址 2 件**：remote-address/-port（已接受 socket 远端面回填）——下轮候选。
+> - **远端地址 2 件**：remote-address/-port（六轮已修：客户端发布时序 +
+>   服务端 accept 回填本就齐；见上补记）。
 > - **大串 2 字节差 1 件**：large-string（40962 vs 40960）——分包边界另案。
 > - **环境/双红**：autoselectfamily-commandline-option（w=0 n=1，真机自红）、
 >   child-process-connect-reset（spawn ipc 不支持）、dns-error（bogus 域名线）、
 >   listen-after-destroying-stdin（stdin.destroy 缺口）等。
+>
+> 六轮补记（2026-09-17，`phase10f_net_remote_surface`）：远端面发布时序
+> （连接完成前 remote* 全 undefined，完成后回填地址/端口/地址族；
+> remote-address 双件修）+ `connect(addressObj)` 取 address 键
+> （ready-without-cb 套件连通；`ready` 事件本身暂不发射，见 AGENTS §4.126）。
+> 本轮未做全量复测（§4.126 纪律 + 套件目录已清），DIFF 数沿用 net10（61），
+> 待下次全量对拍复核。

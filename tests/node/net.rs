@@ -547,3 +547,47 @@ srv.listen(0, "127.0.0.1", () => {
     assert!(!out.contains("BAD "), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_net_remote_surface() {
+    // 10f net 六轮：远端面发布时序（真机 26.8.2 对拍）——连接完成前 remote*
+    // 全 undefined（非 null），完成后回填地址/端口/地址族；connect(addressObj) 形
+    // 取 address 键作 host（ready-without-cb 套件）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+const srv = net.createServer((sock) => {
+  console.log("srv-remote", sock.remoteAddress, sock.remotePort > 0, sock.remoteFamily);
+  sock.resume();
+  sock.on("end", () => sock.end());
+});
+srv.listen(0, "127.0.0.1", () => {
+  const port = srv.address().port;
+  const c = net.connect({ port });
+  console.log("pre", c.remoteAddress === undefined, c.remoteFamily === undefined, c.remotePort === undefined, c.connecting);
+  c.on("connect", () => {
+    console.log("post", c.remoteAddress, c.remoteFamily, c.remotePort === port);
+    c.end();
+  });
+  c.on("close", () => {
+    const c2 = net.connect(srv.address());
+    console.log("addr-obj-pre", c2.remoteAddress === undefined);
+    // 注：真机另有 'ready'（connect 之后），本仓暂不发射（见 net.rs 注 + AGENTS §4.126），
+    // 此处只断 connect 可达与远端回填。
+    c2.on("connect", () => console.log("addr-obj-ready", c2.remoteAddress));
+    c2.on("connect", () => c2.end());
+    c2.on("close", () => srv.close());
+  });
+});
+"#,
+    );
+    assert!(out.contains("pre true true true true"), "out: {out}");
+    assert!(out.contains("post 127.0.0.1 IPv4 true"), "out: {out}");
+    assert!(out.contains("srv-remote 127.0.0.1 true IPv4"), "out: {out}");
+    assert!(out.contains("addr-obj-pre true"), "out: {out}");
+    assert!(out.contains("addr-obj-ready 127.0.0.1"), "out: {out}");
+    dir.close().unwrap();
+}

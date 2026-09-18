@@ -16,7 +16,8 @@
 //! - zstd 编码恒用 `CompressionLevel::Fastest`——ruzstd 0.9.0 的 Default/Better/
 //!   Best 标 UNIMPLEMENTED（源码实测），`level` 接受忽略；解码全量。
 
-use mozjs::jsval::JSVal;
+use mozjs::conversions::ToJSValConvertible as _;
+use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 
 use crate::jsapi_glue::{report_error, value_to_string, view_bytes, wrap_cx, Frame};
@@ -446,6 +447,1128 @@ pub unsafe extern "C" fn zlib_zstd_decompress(
             false
         }
     }
+}
+
+// ===== 增量流引擎（10f-g：真流式编解码状态机，零新依赖）=====
+// flate2 Compress/Decompress 分段 + 手工 gzip 成员机（trailing zeros/garbage/
+// magic 语义逐条真机对拍）+ brotli crate 状态机（enc compress_stream / dec
+// BrotliDecompressStream，字典双向）+ ruzstd 单帧一次性（能力记档）。
+// 注册表 thread_local（JS 会话线程一份；JS 侧 close/destroy/end 必须 free；
+// 线程生灭即回收，§4.24 隔离边界一致）。
+use std::io::Read as _;
+use brotli::SliceWrapperMut as _;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ZKind {
+    ZlibDeflate = 0,
+    RawDeflate = 1,
+    GzipDeflate = 2,
+    ZlibInflate = 3,
+    RawInflate = 4,
+    GzipInflate = 5,        // 多成员（Gunzip/Unzip）
+    GzipInflateSingle = 6,  // 单成员（Web DecompressionStream 'gzip'）
+    AutoInflate = 7,        // Unzip：1f8b → gzip 否则 zlib
+    BrotliEnc = 8,
+    BrotliDec = 9,
+    ZstdEnc = 10,
+    ZstdDec = 11,
+}
+
+/// 引擎错误（code = node 侧 err.code；msg = err.message）。
+#[derive(Debug)]
+struct ZErr {
+    code: String,
+    msg: String,
+}
+impl ZErr {
+    fn new(code: &str, msg: &str) -> ZErr {
+        ZErr { code: code.to_string(), msg: msg.to_string() }
+    }
+    fn data(msg: &str) -> ZErr {
+        ZErr::new("Z_DATA_ERROR", msg)
+    }
+    fn buf(msg: &str) -> ZErr {
+        // 真机口径：截断/空输入 = Z_BUF_ERROR "unexpected end of file"
+        ZErr::new("Z_BUF_ERROR", msg)
+    }
+    fn junk() -> ZErr {
+        ZErr::new(
+            "ERR_TRAILING_JUNK_AFTER_STREAM_END",
+            "Trailing junk found after the end of the compressed stream",
+        )
+    }
+}
+
+/// gzip 成员状态机。
+struct GzMember {
+    phase: u8, // 0=header 1=body 2=trailer 3=between
+    hdr: Vec<u8>,
+    zd: Option<flate2::Decompress>,
+    crc: u32, // 成员输出 CRC 运行态（!-form 起点 0xFFFF_FFFF）
+    outlen: u32,
+    trailer: Vec<u8>,
+}
+
+/// brotli 编码器。
+struct BrotliEnc {
+    st: brotli::enc::encode::BrotliEncoderStateStruct<brotli::enc::StandardAlloc>,
+}
+/// brotli 解码器。
+struct BrotliDec {
+    st: brotli_decompressor::BrotliState<
+        brotli::enc::StandardAlloc,
+        brotli::enc::StandardAlloc,
+        brotli::enc::StandardAlloc,
+    >,
+    done_flag: bool,
+}
+
+/// zstd 编码（ruzstd 只有一帧一次性：flush 边界分段出帧——偏离记档）。
+struct ZstdEnc {
+    buf: Vec<u8>,
+    flushed: usize,
+    pledged: Option<u64>,
+    total_in: u64,
+}
+/// zstd 解码（只累积，flush/end 时对已收前缀一次性解帧）。
+struct ZstdDec {
+    carried: Vec<u8>,
+    pos: usize,
+}
+
+struct ZEngine {
+    kind: ZKind,
+    level: i32,
+    dict: Vec<u8>,
+    zc: Option<flate2::Compress>,
+    zd: Option<flate2::Decompress>,
+    // gzip 编码
+    gz_hdr_written: bool,
+    gz_crc: u32,
+    gz_isize: u32,
+    // inflate 通用
+    pending: Vec<u8>,
+    pos: usize,
+    hdr_checked: bool,
+    first_byte: Option<u8>,
+    // gzip 成员机
+    gz: Option<GzMember>,
+    // brotli
+    be: Option<BrotliEnc>,
+    bd: Option<BrotliDec>,
+    // zstd
+    ze: Option<ZstdEnc>,
+    zd2: Option<ZstdDec>,
+    reject: bool,
+    done: bool,
+    out: Vec<u8>,
+}
+
+impl ZEngine {
+    fn new(kind: ZKind, level: i32, dict: &[u8], pledged: Option<u64>, reject: bool) -> ZEngine {
+        let mut e = ZEngine {
+            kind,
+            level,
+            dict: dict.to_vec(),
+            zc: None,
+            zd: None,
+            gz_hdr_written: false,
+            gz_crc: 0xFFFF_FFFF,
+            gz_isize: 0,
+            pending: Vec::new(),
+            pos: 0,
+            hdr_checked: false,
+            first_byte: None,
+            gz: None,
+            be: None,
+            bd: None,
+            ze: None,
+            zd2: None,
+            reject,
+            done: false,
+            out: Vec::new(),
+        };
+        match kind {
+            ZKind::BrotliEnc => {
+                let mut st = brotli::enc::encode::BrotliEncoderStateStruct::new(
+                    brotli::enc::StandardAlloc::default(),
+                );
+                st.set_parameter(
+                    brotli::enc::encode::BrotliEncoderParameter::BROTLI_PARAM_QUALITY,
+                    level.clamp(0, 11) as u32,
+                );
+                st.set_parameter(
+                    brotli::enc::encode::BrotliEncoderParameter::BROTLI_PARAM_LGWIN,
+                    22,
+                );
+                if !dict.is_empty() {
+                    st.set_custom_dictionary(dict.len(), dict);
+                }
+                e.be = Some(BrotliEnc { st });
+            }
+            ZKind::BrotliDec => {
+                let a8 = brotli::enc::StandardAlloc::default();
+                let a32 = brotli::enc::StandardAlloc::default();
+                let ahc = brotli::enc::StandardAlloc::default();
+                let st = if dict.is_empty() {
+                    brotli::BrotliState::new(a8, a32, ahc)
+                } else {
+                    let mut alloc = brotli::enc::StandardAlloc::default();
+                    let mut mem =
+                        <brotli::enc::StandardAlloc as brotli::Allocator<u8>>::alloc_cell(
+                            &mut alloc,
+                            dict.len(),
+                        );
+                    mem.slice_mut().copy_from_slice(dict);
+                    brotli::BrotliState::new_with_custom_dictionary(a8, a32, ahc, mem)
+                };
+                e.bd = Some(BrotliDec { st, done_flag: false });
+            }
+            ZKind::ZstdEnc => {
+                e.ze = Some(ZstdEnc { buf: Vec::new(), flushed: 0, pledged, total_in: 0 });
+            }
+            ZKind::ZstdDec => {
+                e.zd2 = Some(ZstdDec { carried: Vec::new(), pos: 0 });
+            }
+            _ => {}
+        }
+        e
+    }
+
+    fn unconsumed(&self) -> usize {
+        match self.kind {
+            ZKind::ZstdDec => {
+                self.zd2.as_ref().map(|z| z.carried.len() - z.pos).unwrap_or(0)
+            }
+            _ => self.pending.len() - self.pos,
+        }
+    }
+
+    /// 压缩侧喂入（flag：node 侧族内 flush kind）。
+    fn deflate_feed(&mut self, input: &[u8], flag: u32) -> Result<(), ZErr> {
+        if self.done {
+            return Ok(()); // 终结后静默吞掉（真机：write-after-end 回调照常触发）
+        }
+        let flush = match flag {
+            1 => flate2::FlushCompress::Partial,
+            2 => flate2::FlushCompress::Sync,
+            3 | 5 => flate2::FlushCompress::Full, // Z_BLOCK≈Full（miniz 无 Block，记档）
+            4 => flate2::FlushCompress::Finish,
+            _ => flate2::FlushCompress::None,
+        };
+        let gzip = self.kind == ZKind::GzipDeflate;
+        if gzip && !self.gz_hdr_written {
+            self.out.extend_from_slice(&gzip_header(self.level));
+            self.gz_hdr_written = true;
+        }
+        let zlib_wrap = self.kind == ZKind::ZlibDeflate;
+        let zc = self
+            .zc
+            .get_or_insert_with(|| flate2::Compress::new(zlib_level(self.level), zlib_wrap));
+        let mut src = input;
+        loop {
+            let tin = zc.total_in();
+            let ob = self.out.len();
+            let status = zc
+                .compress_vec(src, &mut self.out, flush)
+                .map_err(|e| ZErr::new("Z_STREAM_ERROR", &e.to_string()))?;
+            let consumed = (zc.total_in() - tin) as usize;
+            if gzip {
+                for &b in &self.out[ob..] {
+                    self.gz_crc =
+                        CRC32_TABLE[((self.gz_crc ^ b as u32) & 0xFF) as usize] ^ (self.gz_crc >> 8);
+                }
+                self.gz_isize = self.gz_isize.wrapping_add(consumed as u32);
+            }
+            src = &src[consumed..];
+            match status {
+                flate2::Status::StreamEnd => {
+                    self.done = true;
+                    break;
+                }
+                _ => {
+                    if src.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+        if gzip && self.done {
+            let crc = !self.gz_crc;
+            self.out.extend_from_slice(&crc.to_le_bytes());
+            self.out.extend_from_slice(&self.gz_isize.to_le_bytes());
+        }
+        Ok(())
+    }
+
+    /// 解压侧喂入（先入 pending，再按族泵出）。
+    fn inflate_feed(&mut self, input: &[u8], flag: u32) -> Result<(), ZErr> {
+        if self.kind == ZKind::ZstdDec {
+            let z = self.zd2.as_mut().unwrap();
+            z.carried.extend_from_slice(input);
+            if flag == 1 || flag == 2 {
+                return self.zstd_decode_pump(flag == 2);
+            }
+            return Ok(());
+        }
+        self.pending.extend_from_slice(input);
+        if self.first_byte.is_none() && self.pending.len() > self.pos {
+            self.first_byte = Some(self.pending[self.pos]);
+        }
+        match self.kind {
+            ZKind::ZlibInflate | ZKind::RawInflate => self.plain_inflate_pump(flag),
+            ZKind::GzipInflate | ZKind::GzipInflateSingle | ZKind::AutoInflate => {
+                self.gz_inflate_pump(flag)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// zlib/raw 解压泵。
+    fn plain_inflate_pump(&mut self, flag: u32) -> Result<(), ZErr> {
+        if self.done {
+            return Ok(());
+        }
+        let zlib = self.kind == ZKind::ZlibInflate;
+        let finish = flag == 4;
+        let tolerate = flag == 2; // finishFlush=Z_SYNC_FLUSH：截断容忍（truncated 套件）
+        if zlib && !self.hdr_checked {
+            let avail = self.pending.len() - self.pos;
+            if avail < 2 {
+                if finish {
+                    if tolerate {
+                        self.done = true;
+                        return Ok(());
+                    }
+                    return Err(ZErr::buf("unexpected end of file"));
+                }
+                return Ok(());
+            }
+            let b0 = self.pending[self.pos];
+            let b1 = self.pending[self.pos + 1];
+            let cm = b0 & 0x0f;
+            let cinfo = b0 >> 4;
+            if cm != 8 || cinfo > 7 || ((b0 as u16) * 256 + b1 as u16) % 31 != 0 {
+                return Err(ZErr::data("incorrect header check"));
+            }
+            self.hdr_checked = true;
+        }
+        if !self.hdr_checked && !zlib {
+            self.hdr_checked = true;
+        }
+        let zd = self.zd.get_or_insert_with(|| flate2::Decompress::new(zlib));
+        let mut err: Option<flate2::DecompressError> = None;
+        let mut ended = false;
+        loop {
+            let src = &self.pending[self.pos..];
+            let tin = zd.total_in();
+            let flush =
+                if finish { flate2::FlushDecompress::Finish } else { flate2::FlushDecompress::None };
+            match zd.decompress_vec(src, &mut self.out, flush) {
+                Ok(status) => {
+                    self.pos += (zd.total_in() - tin) as usize;
+                    match status {
+                        flate2::Status::StreamEnd => {
+                            ended = true;
+                            break;
+                        }
+                        _ => {
+                            if self.pos >= self.pending.len() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.pos += (zd.total_in() - tin) as usize;
+                    err = Some(e);
+                    break;
+                }
+            }
+        }
+        if let Some(e) = err {
+            return Err(self.classify_inflate_err(&e));
+        }
+        if ended {
+            self.done = true;
+            if self.reject && self.unconsumed() > 0 {
+                return Err(ZErr::junk());
+            }
+        } else if finish {
+            if tolerate {
+                self.done = true; // 部分输出即收尾（真机 finishFlush 口径）
+            } else {
+                return Err(ZErr::buf("unexpected end of file"));
+            }
+        }
+        self.compact();
+        Ok(())
+    }
+
+    fn classify_inflate_err(&self, e: &flate2::DecompressError) -> ZErr {
+        // 首块 BTYPE==3（保留块型）→ 真机 "invalid block type"（raw garbage 口径）
+        if let Some(b0) = self.first_byte {
+            if (b0 >> 1) & 3 == 3 {
+                return ZErr::data("invalid block type");
+            }
+        }
+        ZErr::data(&e.to_string())
+    }
+
+    /// gzip 多成员/单成员解压泵（trailing zeros/garbage/magic 语义真机对拍：
+    /// 全零尾 → 忽略；乱码 → "incorrect header check"；假 gzip 头 →
+    /// "unknown compression method"；截断 → Z_BUF_ERROR "unexpected end of file"；
+    /// rejectGarbageAfterEnd → ERR_TRAILING_JUNK_AFTER_STREAM_END）。
+    fn gz_inflate_pump(&mut self, flag: u32) -> Result<(), ZErr> {
+        let finish = flag == 4;
+        let tolerate = flag == 2;
+        let single = self.kind == ZKind::GzipInflateSingle;
+        if self.gz.is_none() {
+            self.gz = Some(GzMember {
+                phase: 0,
+                hdr: Vec::new(),
+                zd: None,
+                crc: 0xFFFF_FFFF,
+                outlen: 0,
+                trailer: Vec::new(),
+            });
+        }
+        // Auto 分流：1f8b → gzip；否则 zlib（一次性决定；真机 unzipSync(garbage) → zlib 路径）
+        if self.kind == ZKind::AutoInflate {
+            let avail = self.pending.len() - self.pos;
+            if avail == 0 {
+                if finish {
+                    if tolerate {
+                        self.done = true;
+                        return Ok(());
+                    }
+                    return Err(ZErr::buf("unexpected end of file"));
+                }
+                return Ok(());
+            }
+            let is_gz = (avail >= 2
+                && self.pending[self.pos] == 0x1f
+                && self.pending[self.pos + 1] == 0x8b)
+                || (avail == 1 && self.pending[self.pos] == 0x1f);
+            if !is_gz {
+                self.kind = ZKind::ZlibInflate;
+                return self.plain_inflate_pump(flag);
+            }
+            self.kind = ZKind::GzipInflate;
+        }
+        let trunc = |tolerate: bool, s: &mut Self| -> Result<(), ZErr> {
+            if tolerate {
+                s.done = true;
+                return Ok(());
+            }
+            Err(ZErr::buf("unexpected end of file"))
+        };
+        loop {
+            let phase = self.gz.as_ref().unwrap().phase;
+            match phase {
+                0 => {
+                    // header：固定 10B + 可选段（FEXTRA/FNAME/FCOMMENT/FHCRC）
+                    let mut need: usize = 10;
+                    let flg0;
+                    {
+                        let hdr = &self.gz.as_ref().unwrap().hdr;
+                        flg0 = if hdr.len() >= 4 { Some(hdr[3]) } else { None };
+                    }
+                    if let Some(flg) = flg0 {
+                        if flg & 4 != 0 {
+                            // FEXTRA
+                            if self.gz.as_ref().unwrap().hdr.len() >= 12 {
+                                let h = &self.gz.as_ref().unwrap().hdr;
+                                need = 12 + u16::from_le_bytes([h[10], h[11]]) as usize;
+                            } else {
+                                need = 12;
+                            }
+                        }
+                    }
+                    // 收集到 need 字节（除 FNAME/FCOMMENT/FHCRC 后段）
+                    while self.gz.as_ref().unwrap().hdr.len() < need && self.pos < self.pending.len() {
+                        let b = self.pending[self.pos];
+                        self.pos += 1;
+                        self.gz.as_mut().unwrap().hdr.push(b);
+                    }
+                    let hdr = &self.gz.as_ref().unwrap().hdr;
+                    if hdr.len() < 2 {
+                        if finish {
+                            return trunc(tolerate, self);
+                        }
+                        return Ok(());
+                    }
+                    if hdr[0] != 0x1f || hdr[1] != 0x8b {
+                        return Err(ZErr::data("incorrect header check"));
+                    }
+                    if hdr.len() < 3 {
+                        if finish {
+                            return trunc(tolerate, self);
+                        }
+                        return Ok(());
+                    }
+                    if hdr[2] != 8 {
+                        return Err(ZErr::data("unknown compression method"));
+                    }
+                    if hdr.len() < 10 {
+                        if finish {
+                            return trunc(tolerate, self);
+                        }
+                        return Ok(());
+                    }
+                    let flg = hdr[3];
+                    let extra = flg & 4 != 0;
+                    if extra && hdr.len() < 12 {
+                        if finish {
+                            return trunc(tolerate, self);
+                        }
+                        return Ok(());
+                    }
+                    if extra && hdr.len() < 12 + u16::from_le_bytes([hdr[10], hdr[11]]) as usize {
+                        if finish {
+                            return trunc(tolerate, self);
+                        }
+                        return Ok(());
+                    }
+                    // FNAME(8)/FCOMMENT(16)：收到 NUL 为止
+                    for sec in [(flg & 8 != 0), (flg & 16 != 0)] {
+                        if !sec {
+                            continue;
+                        }
+                        loop {
+                            if self.pos >= self.pending.len() {
+                                if finish {
+                                    return trunc(tolerate, self);
+                                }
+                                return Ok(());
+                            }
+                            let b = self.pending[self.pos];
+                            self.pos += 1;
+                            self.gz.as_mut().unwrap().hdr.push(b);
+                            if b == 0 {
+                                break;
+                            }
+                        }
+                    }
+                    // FHCRC(2)
+                    if flg & 2 != 0 {
+                        let mut got = 0;
+                        while got < 2 {
+                            if self.pos >= self.pending.len() {
+                                if finish {
+                                    return trunc(tolerate, self);
+                                }
+                                return Ok(());
+                            }
+                            let b = self.pending[self.pos];
+                            self.pos += 1;
+                            self.gz.as_mut().unwrap().hdr.push(b);
+                            got += 1;
+                        }
+                        // FHCRC 校验：crc16 over header（真机未测，记档不校验）
+                    }
+                    let m = self.gz.as_mut().unwrap();
+                    m.phase = 1;
+                    m.zd = Some(flate2::Decompress::new(false));
+                }
+                1 => {
+                    // body：raw inflate
+                    let mut ended = false;
+                    let mut err: Option<flate2::DecompressError> = None;
+                    {
+                        let m = self.gz.as_mut().unwrap();
+                        let zd = m.zd.as_mut().unwrap();
+                        let mut produced: Vec<Vec<u8>> = Vec::new();
+                        loop {
+                            let src = &self.pending[self.pos..];
+                            let tin = zd.total_in();
+                            let mut ob: Vec<u8> = Vec::new();
+                            match zd.decompress_vec(src, &mut ob, flate2::FlushDecompress::None)
+                            {
+                                Ok(status) => {
+                                    let consumed = (zd.total_in() - tin) as usize;
+                                    self.pos += consumed;
+                                    if !ob.is_empty() {
+                                        produced.push(ob);
+                                    }
+                                    match status {
+                                        flate2::Status::StreamEnd => {
+                                            ended = true;
+                                            break;
+                                        }
+                                        _ => {
+                                            if self.pos >= self.pending.len() {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    self.pos += (zd.total_in() - tin) as usize;
+                                    err = Some(e);
+                                    break;
+                                }
+                            }
+                        }
+                        let m = self.gz.as_mut().unwrap();
+                        for chunk in &produced {
+                            for &b in chunk.iter() {
+                                m.crc = CRC32_TABLE[((m.crc ^ b as u32) & 0xFF) as usize]
+                                    ^ (m.crc >> 8);
+                            }
+                            m.outlen = m.outlen.wrapping_add(chunk.len() as u32);
+                        }
+                        for chunk in produced.drain(..) {
+                            self.out.extend_from_slice(&chunk);
+                        }
+                    }
+                    if let Some(e) = err {
+                        return Err(self.classify_inflate_err(&e));
+                    }
+                    if ended {
+                        self.gz.as_mut().unwrap().phase = 2;
+                    } else if finish {
+                        return trunc(tolerate, self);
+                    } else {
+                        return Ok(());
+                    }
+                }
+                2 => {
+                    // trailer：crc32 + isize 各 4B
+                    while self.gz.as_ref().unwrap().trailer.len() < 8
+                        && self.pos < self.pending.len()
+                    {
+                        let b = self.pending[self.pos];
+                        self.pos += 1;
+                        self.gz.as_mut().unwrap().trailer.push(b);
+                    }
+                    if self.gz.as_ref().unwrap().trailer.len() < 8 {
+                        if finish {
+                            return trunc(tolerate, self);
+                        }
+                        return Ok(());
+                    }
+                    let t = self.gz.as_ref().unwrap().trailer.clone();
+                    let m = self.gz.as_ref().unwrap();
+                    let crc_expect = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
+                    let isize_expect = u32::from_le_bytes([t[4], t[5], t[6], t[7]]);
+                    if crc_expect != !m.crc {
+                        return Err(ZErr::data("incorrect data check"));
+                    }
+                    if isize_expect != m.outlen {
+                        return Err(ZErr::data("incorrect length check"));
+                    }
+                    let m = self.gz.as_mut().unwrap();
+                    m.phase = 3;
+                    m.hdr.clear();
+                    m.trailer.clear();
+                    m.zd = None;
+                    m.crc = 0xFFFF_FFFF;
+                    m.outlen = 0;
+                }
+                _ => {
+                    // between：成员完结后决定去向
+                    let avail = self.pending.len() - self.pos;
+                    if avail == 0 {
+                        if finish || single {
+                            self.done = true;
+                        }
+                        return Ok(());
+                    }
+                    if self.reject {
+                        return Err(ZErr::junk());
+                    }
+                    // trailing 全零 → 忽略（reject 已在上方报 junk，真机口径）
+                    if self.pending[self.pos..].iter().all(|&b| b == 0) {
+                        self.done = true;
+                        return Ok(());
+                    }
+                    if single {
+                        // 单成员（Web）：任何剩余输入即 junk → TypeError（JS 侧映射）
+                        return Err(ZErr::junk());
+                    }
+                    self.gz.as_mut().unwrap().phase = 0;
+                }
+            }
+        }
+    }
+
+    fn compact(&mut self) {
+        if self.pos > 0 && self.pos == self.pending.len() {
+            self.pending.clear();
+            self.pos = 0;
+        } else if self.pos > (1 << 20) {
+            self.pending.drain(..self.pos);
+            self.pos = 0;
+        }
+    }
+
+    /// brotli 编码泵。
+    fn brotli_enc_feed(&mut self, input: &[u8], flag: u32) -> Result<(), ZErr> {
+        let be = self.be.as_mut().unwrap();
+        if flag == 2 && be.st.is_finished() {
+            return Ok(()); // 终结后吞掉
+        }
+        let op = match flag {
+            1 => brotli::enc::encode::BrotliEncoderOperation::BROTLI_OPERATION_FLUSH,
+            2 => brotli::enc::encode::BrotliEncoderOperation::BROTLI_OPERATION_FINISH,
+            3 => brotli::enc::encode::BrotliEncoderOperation::BROTLI_OPERATION_EMIT_METADATA,
+            _ => brotli::enc::encode::BrotliEncoderOperation::BROTLI_OPERATION_PROCESS,
+        };
+        let mut avail_in = input.len();
+        let mut in_off = 0usize;
+        loop {
+            let mut outbuf = [0u8; 16384];
+            let mut avail_out = outbuf.len();
+            let mut out_off = 0usize;
+            let mut total_out: Option<usize> = None;
+            let ok = be.st.compress_stream(
+                op,
+                &mut avail_in,
+                input,
+                &mut in_off,
+                &mut avail_out,
+                &mut outbuf,
+                &mut out_off,
+                &mut total_out,
+                &mut |_, _, _, _| {},
+            );
+            if !ok {
+                return Err(ZErr::new("Z_DATA_ERROR", "Compression failed"));
+            }
+            self.out.extend_from_slice(&outbuf[..out_off]);
+            if avail_in == 0 && !be.st.has_more_output() {
+                break;
+            }
+        }
+        if flag == 2 && be.st.is_finished() {
+            self.done = true;
+        }
+        Ok(())
+    }
+
+    /// brotli 解码泵。
+    fn brotli_dec_feed(&mut self, input: &[u8]) -> Result<(), ZErr> {
+        let bd = self.bd.as_mut().unwrap();
+        if bd.done_flag {
+            return Ok(());
+        }
+        let mut avail_in = input.len();
+        let mut in_off = 0usize;
+        let mut total_out: usize = 0;
+        loop {
+            let mut outbuf = [0u8; 16384];
+            let mut avail_out = outbuf.len();
+            let mut out_off = 0usize;
+            let res = brotli::BrotliDecompressStream(
+                &mut avail_in,
+                &mut in_off,
+                input,
+                &mut avail_out,
+                &mut out_off,
+                &mut outbuf,
+                &mut total_out,
+                &mut bd.st,
+            );
+            self.out.extend_from_slice(&outbuf[..out_off]);
+            match res {
+                brotli::BrotliResult::ResultSuccess => {
+                    if brotli_decompressor::BrotliDecoderIsFinished(&bd.st) {
+                        bd.done_flag = true;
+                        self.done = true;
+                        if self.reject && avail_in > 0 {
+                            return Err(ZErr::junk());
+                        }
+                        break;
+                    }
+                    if avail_in == 0 {
+                        break;
+                    }
+                }
+                brotli::BrotliResult::NeedsMoreInput => {
+                    if brotli_decompressor::BrotliDecoderIsFinished(&bd.st) {
+                        bd.done_flag = true;
+                        self.done = true;
+                        if self.reject && avail_in > 0 {
+                            return Err(ZErr::junk());
+                        }
+                    }
+                    break;
+                }
+                brotli::BrotliResult::NeedsMoreOutput => {
+                    continue;
+                }
+                brotli::BrotliResult::ResultFailure => {
+                    return Err(brotli_dec_err(&bd.st));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// zstd 编码泵（flush 边界分段出帧；pledged 终检）。
+    fn zstd_enc_feed(&mut self, input: &[u8], flag: u32) -> Result<(), ZErr> {
+        let ze = self.ze.as_mut().unwrap();
+        ze.buf.extend_from_slice(input);
+        ze.total_in += input.len() as u64;
+        let end = flag == 2;
+        if flag == 1 || end {
+            if ze.buf.len() > ze.flushed {
+                let seg = ze.buf[ze.flushed..].to_vec();
+                ze.flushed = ze.buf.len();
+                let out = ruzstd::encoding::compress_to_vec(
+                    &seg[..],
+                    ruzstd::encoding::CompressionLevel::Fastest,
+                );
+                self.out.extend_from_slice(&out);
+            } else if end && ze.total_in == 0 {
+                const EMPTY: &[u8] = &[];
+                let out = ruzstd::encoding::compress_to_vec(
+                    EMPTY,
+                    ruzstd::encoding::CompressionLevel::Fastest,
+                );
+                self.out.extend_from_slice(&out);
+            }
+        }
+        if end {
+            let ze = self.ze.as_ref().unwrap();
+            if let Some(p) = ze.pledged {
+                if p != ze.total_in {
+                    return Err(ZErr::new("ZSTD_error_srcSize_wrong", "Src size is incorrect"));
+                }
+            }
+            self.done = true;
+        }
+        Ok(())
+    }
+
+    /// zstd 解码泵（一次性解 pos 前缀首帧；轮子无增量 API，记档）。
+    fn zstd_decode_pump(&mut self, tolerate_missing: bool) -> Result<(), ZErr> {
+        let z = self.zd2.as_mut().unwrap();
+        if z.pos >= z.carried.len() {
+            return Ok(());
+        }
+        let mut cur = std::io::Cursor::new(&z.carried[z.pos..]);
+        let mut fd = ruzstd::decoding::FrameDecoder::new();
+        // 注：ruzstd::decoding::{FrameDecoder, BlockDecodingStrategy}；FrameDecoder 自带 io::Read
+        if let Err(_e) = fd.init(&mut cur) {
+            let avail = z.carried.len() - z.pos;
+            let magic_ok = avail >= 4
+                && z.carried[z.pos] == 0x28
+                && z.carried[z.pos + 1] == 0xB5
+                && z.carried[z.pos + 2] == 0x2F
+                && z.carried[z.pos + 3] == 0xFD;
+            return Err(if avail < 4 || magic_ok {
+                if tolerate_missing {
+                    self.done = true;
+                    return Ok(());
+                }
+                ZErr::buf("unexpected end of file")
+            } else {
+                ZErr::new("ZSTD_error_prefix_unknown", "Unknown frame descriptor")
+            });
+        }
+        loop {
+            if fd.is_finished() {
+                break;
+            }
+            match fd.decode_blocks(&mut cur, ruzstd::decoding::BlockDecodingStrategy::UptoBytes(1 << 20)) {
+                Ok(_) => {
+                    let mut buf = [0u8; 65536];
+                    loop {
+                        match fd.read(&mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => self.out.extend_from_slice(&buf[..n]),
+                            Err(_) => break,
+                        }
+                    }
+                    let exhausted = cur.position() as usize >= z.carried.len() - z.pos;
+                    if exhausted && !fd.is_finished() && fd.can_collect() == 0 {
+                        if tolerate_missing {
+                            self.done = true;
+                            return Ok(());
+                        }
+                        return Err(ZErr::buf("unexpected end of file"));
+                    }
+                }
+                Err(_e) => {
+                    let exhausted = cur.position() as usize >= z.carried.len() - z.pos;
+                    if exhausted {
+                        if tolerate_missing {
+                            self.done = true;
+                            return Ok(());
+                        }
+                        return Err(ZErr::buf("unexpected end of file"));
+                    }
+                    return Err(ZErr::new("ZSTD_error_??", "corrupt zstd frame"));
+                }
+            }
+        }
+        let mut buf = [0u8; 65536];
+        loop {
+            match fd.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => self.out.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+        let consumed = cur.position() as usize;
+        z.pos += consumed;
+        self.done = true;
+        if self.reject && z.carried.len() > z.pos {
+            return Err(ZErr::junk());
+        }
+        Ok(())
+    }
+
+    /// 统一入口：返回 (unconsumed, done)。
+    fn feed(&mut self, input: &[u8], flag: u32) -> Result<(usize, bool), ZErr> {
+        let r = match self.kind {
+            ZKind::ZlibDeflate | ZKind::RawDeflate | ZKind::GzipDeflate => {
+                self.deflate_feed(input, flag)
+            }
+            ZKind::BrotliEnc => self.brotli_enc_feed(input, flag),
+            ZKind::BrotliDec => self.brotli_dec_feed(input),
+            ZKind::ZstdEnc => self.zstd_enc_feed(input, flag),
+            _ => self.inflate_feed(input, flag),
+        };
+        r?;
+        Ok((self.unconsumed(), self.done))
+    }
+
+    fn take_out(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.out)
+    }
+
+    fn reset(&mut self) {
+        let kind = self.kind;
+        let level = self.level;
+        let reject = self.reject;
+        let dict = std::mem::take(&mut self.dict);
+        let pledged = self.ze.as_ref().and_then(|z| z.pledged);
+        *self = ZEngine::new(kind, level, &dict, pledged, reject);
+    }
+}
+
+fn brotli_dec_err(st: &brotli_decompressor::BrotliState<
+    brotli::enc::StandardAlloc,
+    brotli::enc::StandardAlloc,
+    brotli::enc::StandardAlloc,
+>) -> ZErr {
+    // node 口径：ERR__<去掉 BROTLI_DECODER_ 前缀的枚举名>，message "Decompression failed"
+    let name = format!("{:?}", st.error_code);
+    let stripped = name.strip_prefix("BROTLI_DECODER_").unwrap_or(&name);
+    ZErr::new(&format!("ERR__{}", stripped), "Decompression failed")
+}
+
+/// gzip 流头（与 flate2 GzEncoder 逐字节一致，单测钉住）。
+fn gzip_header(level: i32) -> [u8; 10] {
+    let xfl: u8 = if level >= 9 {
+        2
+    } else if level >= 0 && level <= 1 {
+        4
+    } else {
+        0
+    };
+    [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, xfl, 255]
+}
+
+thread_local! {
+    static ZSTREAMS: std::cell::RefCell<std::collections::HashMap<u32, ZEngine>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static ZSTREAM_NEXT: std::cell::Cell<u32> = std::cell::Cell::new(1);
+}
+
+/// `__wjs_zlib_stream_new(kind, level, dict|null, pledged|-1, reject01)` → id。
+pub unsafe extern "C" fn zlib_stream_new(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let num = |i: u32| -> f64 {
+        if frame.argc() > i && frame.arg(i).is_number() {
+            frame.arg(i).to_number()
+        } else {
+            f64::NAN
+        }
+    };
+    let kind_v = num(0);
+    if !(0.0..=11.0).contains(&kind_v) {
+        report_error(&mut cx, "RangeError: invalid zlib stream kind");
+        return false;
+    }
+    let kind = match kind_v as u32 {
+        0 => ZKind::ZlibDeflate,
+        1 => ZKind::RawDeflate,
+        2 => ZKind::GzipDeflate,
+        3 => ZKind::ZlibInflate,
+        4 => ZKind::RawInflate,
+        5 => ZKind::GzipInflate,
+        6 => ZKind::GzipInflateSingle,
+        7 => ZKind::AutoInflate,
+        8 => ZKind::BrotliEnc,
+        9 => ZKind::BrotliDec,
+        10 => ZKind::ZstdEnc,
+        _ => ZKind::ZstdDec,
+    };
+    let level = num(1) as i32;
+    let dict: Vec<u8> = if frame.argc() > 2 && !frame.arg(2).is_null_or_undefined() {
+        match view_bytes(&mut cx, frame.arg(2), "dictionary") {
+            Some(v) => v,
+            None => return false,
+        }
+    } else {
+        Vec::new()
+    };
+    let pv = num(3);
+    let pledged = if pv.is_finite() && pv >= 0.0 { Some(pv as u64) } else { None };
+    let reject = frame.argc() > 4 && frame.arg(4).is_number() && frame.arg(4).to_number() != 0.0;
+    let id = ZSTREAM_NEXT.with(|n| {
+        let v = n.get();
+        n.set(v.wrapping_add(1));
+        v
+    });
+    ZSTREAMS.with(|s| {
+        s.borrow_mut().insert(id, ZEngine::new(kind, level, &dict, pledged, reject));
+    });
+    frame.set_rval(mozjs::jsval::DoubleValue(id as f64));
+    true
+}
+
+/// `__wjs_zlib_stream_feed(id, dataU8, flag)` → JSON `{"c":n,"d":bool[,"code","msg"]}`。
+pub unsafe extern "C" fn zlib_stream_feed(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = if frame.argc() > 0 && frame.arg(0).is_number() {
+        frame.arg(0).to_number() as u32
+    } else {
+        0
+    };
+    let data: Vec<u8> = if frame.argc() > 1 && !frame.arg(1).is_null_or_undefined() {
+        match view_bytes(&mut cx, frame.arg(1), "stream data") {
+            Some(v) => v,
+            None => return false,
+        }
+    } else {
+        Vec::new()
+    };
+    let flag = if frame.argc() > 2 && frame.arg(2).is_number() {
+        frame.arg(2).to_number() as u32
+    } else {
+        0
+    };
+    let r = ZSTREAMS.with(|s| {
+        let mut map = s.borrow_mut();
+        match map.get_mut(&id) {
+            Some(e) => e.feed(&data, flag),
+            None => Err(ZErr::new("Z_STREAM_ERROR", "unknown stream id")),
+        }
+    });
+    let json = match r {
+        Ok((c, d)) => format!(r#"{{"c":{c},"d":{d}}}"#),
+        Err(e) => format!(
+            r#"{{"c":0,"d":false,"code":{},"msg":{}}}"#,
+            json_str(&e.code),
+            json_str(&e.msg)
+        ),
+    };
+    rooted!(&in(cx) let mut v = UndefinedValue());
+    json.to_jsval(&mut cx, v.handle_mut());
+    frame.set_rval(v.get());
+    true
+}
+
+/// `__wjs_zlib_stream_out(id)` → Uint8Array（排空引擎累计输出）。
+pub unsafe extern "C" fn zlib_stream_out(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = if frame.argc() > 0 && frame.arg(0).is_number() {
+        frame.arg(0).to_number() as u32
+    } else {
+        0
+    };
+    let out = ZSTREAMS.with(|s| {
+        let mut map = s.borrow_mut();
+        match map.get_mut(&id) {
+            Some(e) => e.take_out(),
+            None => Vec::new(),
+        }
+    });
+    set_rval_bytes(&mut cx, &frame, &out)
+}
+
+/// `__wjs_zlib_stream_free(id)`。
+pub unsafe extern "C" fn zlib_stream_free(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let _ = cx_raw; // N-API 签名固定；free/reset 纯 Rust 表操作无 JSAPI
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = if frame.argc() > 0 && frame.arg(0).is_number() {
+        frame.arg(0).to_number() as u32
+    } else {
+        0
+    };
+    ZSTREAMS.with(|s| {
+        s.borrow_mut().remove(&id);
+    });
+    frame.set_rval(mozjs::jsval::UndefinedValue());
+    true
+}
+
+/// `__wjs_zlib_stream_reset(id)`。
+pub unsafe extern "C" fn zlib_stream_reset(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let _ = cx_raw; // N-API 签名固定；free/reset 纯 Rust 表操作无 JSAPI
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = if frame.argc() > 0 && frame.arg(0).is_number() {
+        frame.arg(0).to_number() as u32
+    } else {
+        0
+    };
+    ZSTREAMS.with(|s| {
+        if let Some(e) = s.borrow_mut().get_mut(&id) {
+            e.reset();
+        }
+    });
+    frame.set_rval(mozjs::jsval::UndefinedValue());
+    true
+}
+
+/// JSON 字符串字面量（引擎错误进 feed 的 JSON 载荷）。
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// 内嵌 ESM 源（`node:zlib`）。
@@ -1244,6 +2367,192 @@ export default __api;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 真机 26.8.2 对拍（probe-flush.js）：level-0 deflate
+    /// write+flush(Z_NO_FLUSH) → 7801；flush()(Z_FULL_FLUSH) → 存储块+数据+空存储块。
+    #[test]
+    fn zlib_stream_flush_framing_vectors() {
+        use ZKind::*;
+        let chunk: Vec<u8> = vec![
+            0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01,
+            0x00, 0x48,
+        ];
+        let mut e = ZEngine::new(ZlibDeflate, 0, &[], None, false);
+        e.feed(&chunk, 0).unwrap();
+        assert_eq!(e.take_out(), vec![0x78, 0x01], "NO_FLUSH 后只出 zlib 头");
+        e.feed(&[], 3).unwrap();
+        let mut want = vec![0x00, 0x10, 0x00, 0xef, 0xff];
+        want.extend_from_slice(&chunk);
+        want.extend_from_slice(&[0x00, 0x00, 0x00, 0xff, 0xff]);
+        assert_eq!(e.take_out(), want, "Z_FULL_FLUSH = 存储块+数据+空存储块");
+    }
+
+    /// 流式 gzip 帧与自家 GzEncoder（one-shot 真机对齐基线）逐字节一致。
+    #[test]
+    fn zlib_stream_gzip_matches_gzencoder() {
+        use std::io::Write as _;
+        use ZKind::*;
+        for level in [0i32, 1, 6, 9] {
+            let data = b"stream gzip framing probe 0123456789".repeat(3);
+            let mut e = ZEngine::new(GzipDeflate, level, &[], None, false);
+            e.feed(&data[..10], 0).unwrap();
+            e.feed(&data[10..], 4).unwrap();
+            let streamed = e.take_out();
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), zlib_level(level));
+            enc.write_all(&data).unwrap();
+            let oneshot = enc.finish().unwrap();
+            assert_eq!(streamed, oneshot, "level {level}");
+            // 自家 gunzip 成员机回解
+            let mut d = ZEngine::new(GzipInflate, -1, &[], None, false);
+            d.feed(&streamed, 4).unwrap();
+            assert!(d.done);
+            assert_eq!(d.take_out(), data);
+        }
+    }
+
+    /// 增量引擎族回归：deflate/inflate/raw/gzip 双向 + brotli + zstd + 截断语义。
+    #[test]
+    fn zlib_stream_engine_vectors() {
+        use ZKind::*;
+        let data = b"engine roundtrip vector -- the quick brown fox".repeat(20);
+        // zlib 包裹
+        let mut c = ZEngine::new(ZlibDeflate, 6, &[], None, false);
+        c.feed(&data, 0).unwrap();
+        c.feed(&[], 4).unwrap();
+        let z = c.take_out();
+        assert!(c.done);
+        let mut d = ZEngine::new(ZlibInflate, -1, &[], None, false);
+        d.feed(&z, 0).unwrap();
+        d.feed(&[], 4).unwrap();
+        assert!(d.done);
+        assert_eq!(d.take_out(), data);
+        // raw 截断 → Z_BUF_ERROR unexpected end of file（真机口径）
+        let mut raw = ZEngine::new(RawDeflate, 6, &[], None, false);
+        raw.feed(&data, 0).unwrap();
+        raw.feed(&[], 4).unwrap();
+        let r = raw.take_out();
+        let mut di = ZEngine::new(RawInflate, -1, &[], None, false);
+        let e = di.feed(&r[..r.len() / 2], 4).err().expect("截断应报错");
+        assert_eq!((e.code.as_str(), e.msg.as_str()), ("Z_BUF_ERROR", "unexpected end of file"));
+        // finishFlush=Sync 容忍截断（部分输出）
+        let mut dt = ZEngine::new(RawInflate, -1, &[], None, false);
+        dt.feed(&r[..r.len() / 2], 2).unwrap();
+        assert!(dt.done);
+        let partial = dt.take_out();
+        assert!(!partial.is_empty() && partial.len() < data.len());
+        assert_eq!(&data[..partial.len()], &partial[..]);
+        // brotli 双向
+        let mut be = ZEngine::new(BrotliEnc, 5, &[], None, false);
+        be.feed(&data, 0).unwrap();
+        be.feed(&[], 2).unwrap();
+        let b = be.take_out();
+        assert!(be.done);
+        let mut bd = ZEngine::new(BrotliDec, -1, &[], None, false);
+        bd.feed(&b, 0).unwrap();
+        assert!(bd.done);
+        assert_eq!(bd.take_out(), data);
+        // brotli 字典双向
+        let dict = b"engine dictionary shared context lorem ipsum";
+        let mut bed = ZEngine::new(BrotliEnc, 5, dict, None, false);
+        bed.feed(dict, 0).unwrap();
+        bed.feed(&[], 2).unwrap();
+        let bd2 = bed.take_out();
+        let mut bdd = ZEngine::new(BrotliDec, -1, dict, None, false);
+        bdd.feed(&bd2, 0).unwrap();
+        assert_eq!(bdd.take_out(), dict.to_vec());
+        // brotli 无字典解带字典流 → ERR__ 错误（真机 ERR__ERROR_FORMAT_DICTIONARY 形）
+        let mut bdn = ZEngine::new(BrotliDec, -1, &[], None, false);
+        let err = bdn.feed(&bd2, 0).err().expect("无字典应失败");
+        assert!(err.code.starts_with("ERR__"), "code: {}", err.code);
+        assert_eq!(err.msg, "Decompression failed");
+        // zstd 双向
+        let mut ze = ZEngine::new(ZstdEnc, -1, &[], None, false);
+        ze.feed(&data, 0).unwrap();
+        ze.feed(&[], 2).unwrap();
+        let zs = ze.take_out();
+        assert!(ze.done);
+        let mut zd = ZEngine::new(ZstdDec, -1, &[], None, false);
+        zd.feed(&zs, 2).unwrap();
+        assert_eq!(zd.take_out(), data);
+        // zstd 截断 → unexpected end of file；tolerate → 部分输出
+        let mut zt = ZEngine::new(ZstdDec, -1, &[], None, false);
+        let trunc = &zs[..zs.len() / 2];
+        zt.zd2.as_mut().unwrap().carried.extend_from_slice(trunc);
+        let e = zt.zstd_decode_pump(false).err().expect("截断应报错");
+        assert_eq!((e.code.as_str(), e.msg.as_str()), ("Z_BUF_ERROR", "unexpected end of file"));
+        let mut zt2 = ZEngine::new(ZstdDec, -1, &[], None, false);
+        zt2.zd2.as_mut().unwrap().carried.extend_from_slice(trunc);
+        zt2.zstd_decode_pump(true).unwrap();
+        assert!(zt2.done);
+        // zstd 前缀错误（真机 ZSTD_error_prefix_unknown / Unknown frame descriptor）
+        let mut zg = ZEngine::new(ZstdDec, -1, &[], None, false);
+        zg.zd2.as_mut().unwrap().carried.extend_from_slice(b"garbage data here");
+        let e = zg.zstd_decode_pump(false).err().expect("垃圾应报错");
+        assert_eq!((e.code.as_str(), e.msg.as_str()), ("ZSTD_error_prefix_unknown", "Unknown frame descriptor"));
+        // gunzip 成员机：多成员 + 尾零 + 尾垃圾 + reject
+        let mut g1 = ZEngine::new(GzipDeflate, 6, &[], None, false);
+        g1.feed(b"abc", 4).unwrap();
+        let ga = g1.take_out();
+        let mut g2 = ZEngine::new(GzipDeflate, 6, &[], None, false);
+        g2.feed(b"def", 4).unwrap();
+        let gb = g2.take_out();
+        let mut gm = ZEngine::new(GzipInflate, -1, &[], None, false);
+        let concat: Vec<u8> = [ga.as_slice(), gb.as_slice(), &[0u8; 10][..]].concat();
+        gm.feed(&concat, 4).unwrap();
+        assert!(gm.done);
+        assert_eq!(gm.take_out(), b"abcdef");
+        // 1f 8b ff ff 尾垃圾 → unknown compression method
+        let mut gmg = ZEngine::new(GzipInflate, -1, &[], None, false);
+        let concat2: Vec<u8> = [ga.as_slice(), &[0x1f, 0x8b, 0xff, 0xff][..]].concat();
+        let e = gmg.feed(&concat2, 4).err().unwrap();
+        assert_eq!((e.code.as_str(), e.msg.as_str()), ("Z_DATA_ERROR", "unknown compression method"));
+        // 非魔数乱码尾 → incorrect header check
+        let mut gmg2 = ZEngine::new(GzipInflate, -1, &[], None, false);
+        let concat3: Vec<u8> = [ga.as_slice(), &[1u8, 2, 3][..]].concat();
+        let e = gmg2.feed(&concat3, 4).err().unwrap();
+        assert_eq!((e.code.as_str(), e.msg.as_str()), ("Z_DATA_ERROR", "incorrect header check"));
+        // reject：第二成员也算 junk
+        let mut gmr = ZEngine::new(GzipInflate, -1, &[], None, true);
+        let concat4: Vec<u8> = [ga.as_slice(), gb.as_slice()].concat();
+        let e = gmr.feed(&concat4, 4).err().unwrap();
+        assert_eq!(e.code, "ERR_TRAILING_JUNK_AFTER_STREAM_END");
+        // 空输入 inflate → Z_BUF_ERROR unexpected end of file（真机口径）
+        let mut ei = ZEngine::new(ZlibInflate, -1, &[], None, false);
+        let e = ei.feed(&[], 4).err().unwrap();
+        assert_eq!((e.code.as_str(), e.msg.as_str()), ("Z_BUF_ERROR", "unexpected end of file"));
+    }
+
+    #[test]
+    fn zz_scratch_isolate_hang() {
+        // 直接探 flate2（zlib_rs 后端）compress_vec 各 flush 的行为
+        use flate2::{Compress, FlushCompress, Status};
+        let data = b"engine roundtrip vector -- the quick brown fox".repeat(20);
+        for (name, flush) in [("None", FlushCompress::None), ("Sync", FlushCompress::Sync), ("Full", FlushCompress::Full), ("Finish", FlushCompress::Finish)] {
+            let mut c = Compress::new(flate2::Compression::new(6), true);
+            let mut out = Vec::new();
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut iters = 0;
+                let mut src = &data[..];
+                loop {
+                    iters += 1;
+                    if iters > 50 { panic!("{name}: no progress after 50 iters"); }
+                    let tin = c.total_in();
+                    let ob = out.len();
+                    let st = c.compress_vec(src, &mut out, flush).unwrap();
+                    let consumed = (c.total_in() - tin) as usize;
+                    eprintln!("ZZ {name} iter{iters} st={st:?} consumed={consumed} produced={}", out.len() - ob);
+                    src = &src[consumed..];
+                    match st {
+                        Status::StreamEnd => break,
+                        _ => { if src.is_empty() { break; } }
+                    }
+                }
+            }));
+            if let Err(e) = r {
+                eprintln!("ZZ {name} LOOP: {e:?}");
+            }
+        }
+    }
 
     #[test]
     fn zlib_gunzip_multi_members() {

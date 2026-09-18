@@ -4868,6 +4868,12 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_zlib_zstd_decompress", Some(node::zlib::zlib_zstd_decompress), 1),
             // 10a：crc32（ISO-HDLC 自实现；flate2::Crc 不收 seed）
             ("__wjs_zlib_crc32", Some(node::zlib::zlib_crc32), 2),
+            // 10f 欠账轮：增量流式编解码状态机（flush 档位/premature-end/truncated）
+            ("__wjs_zlib_stream_new", Some(node::zlib::zlib_stream_new), 5),
+            ("__wjs_zlib_stream_feed", Some(node::zlib::zlib_stream_feed), 3),
+            ("__wjs_zlib_stream_out", Some(node::zlib::zlib_stream_out), 1),
+            ("__wjs_zlib_stream_free", Some(node::zlib::zlib_stream_free), 1),
+            ("__wjs_zlib_stream_reset", Some(node::zlib::zlib_stream_reset), 1),
             ("__wjs_cp_exec", Some(node::child::cp_exec), 2),
             ("__wjs_cp_spawn", Some(node::child::cp_spawn), 3),
             // Phase 4d: 异步 spawn（c-4x 加 pipe：stdin 写/关 natives）

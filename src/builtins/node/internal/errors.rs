@@ -399,13 +399,14 @@ E('ERR_SYSTEM_ERROR',
 E('ERR_BROTLI_INVALID_PARAM', '%s is not a valid Brotli parameter', RangeError, HideStackFramesError);
 E('ERR_ZLIB_INITIALIZATION_FAILED', 'Initialization failed', Error, HideStackFramesError);
 E('ERR_BUFFER_TOO_LARGE', 'Cannot create a Buffer larger than %s bytes', RangeError, HideStackFramesError);
-E('ERR_ZIP_ARCHIVE_TOO_LARGE', 'ZIP archive structure exceeds the allowed size: %s', RangeError);
-E('ERR_ZIP_ENTRY_CORRUPT', 'ZIP entry is corrupt: %s', Error);
-E('ERR_ZIP_ENTRY_NOT_FOUND', 'no such entry %j in the archive', Error);
-E('ERR_ZIP_ENTRY_TOO_LARGE', 'ZIP entry exceeds the allowed size: %s', RangeError);
-E('ERR_ZIP_INVALID_ARCHIVE', 'invalid ZIP archive: %s', Error);
-E('ERR_ZIP_NOT_WRITABLE', 'this archive was not opened for writing', TypeError);
-E('ERR_ZIP_UNSUPPORTED_FEATURE', 'unsupported ZIP feature: %s', Error);
+E('ERR_ZIP_ARCHIVE_TOO_LARGE', 'ZIP archive structure exceeds the allowed size: %s', RangeError, HideStackFramesError);
+E('ERR_ZIP_ENTRY_CORRUPT', 'ZIP entry is corrupt: %s', Error, HideStackFramesError);
+E('ERR_ZIP_ENTRY_NOT_FOUND', 'no such entry %j in the archive', Error, HideStackFramesError);
+E('ERR_ZIP_ENTRY_TOO_LARGE', 'ZIP entry exceeds the allowed size: %s', RangeError, HideStackFramesError);
+E('ERR_ZIP_INVALID_ARCHIVE', 'invalid ZIP archive: %s', Error, HideStackFramesError);
+E('ERR_ZIP_NOT_WRITABLE', 'this archive was not opened for writing', TypeError, HideStackFramesError);
+E('ERR_ZIP_UNSUPPORTED_FEATURE', 'unsupported ZIP feature: %s', Error, HideStackFramesError);
+E('ERR_INVALID_STATE', 'Invalid state: %s', Error, TypeError, RangeError, HideStackFramesError);
 // 10f http2 compat 面（node lib/internal/errors.js 文案逐字）
 E('ERR_HTTP2_HEADERS_SENT', 'Response has already been initiated.', Error);
 E('ERR_HTTP2_INVALID_STREAM', 'The stream has been destroyed.', Error);

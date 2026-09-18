@@ -309,3 +309,86 @@ z.gzip("hello", (err, out) => {
     assert!(!out.contains("BAD "), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_zlib_zip_archive() {
+    // 10f zlib Zip归档面（node lib/internal/zip逐字移植）：round-trip/store回落/
+    // ZipBuffer索引/maxSize与CRC门/坏档形状。正常+报错+边界三件。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import zlib from "node:zlib";
+async function buildArchive(entries, comment) {
+  const chunks = [];
+  for await (const chunk of zlib.createZipArchive(entries, comment)) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+const entries = [
+  await zlib.ZipEntry.create('hello.txt', Buffer.from('Hello, world!'.repeat(20))),
+  await zlib.ZipEntry.create('raw.bin', Buffer.from([1, 2, 3, 4, 5]), { method: 'store' }),
+  await zlib.ZipEntry.create('empty.txt', Buffer.alloc(0)),
+  await zlib.ZipEntry.create('dir/', Buffer.alloc(0)),
+];
+console.log("methods", entries.map((e) => e.method).join(","));
+const archive = await buildArchive(entries, 'test comment');
+const read = [...zlib.ZipEntry.read(archive)];
+console.log("read", read.length);
+const byName = new Map(read.map((e) => [e.name, e]));
+console.log("hello", (await byName.get('hello.txt').content()).toString() === 'Hello, world!'.repeat(20));
+console.log("raw", byName.get('raw.bin').method, (await byName.get('raw.bin').content()).length);
+console.log("dir", byName.get('dir/').isDirectory, byName.get('hello.txt').isFile);
+// ZipBuffer索引面
+{
+  const a2 = await buildArchive([
+    await zlib.ZipEntry.create('a.txt', Buffer.from('a')),
+    await zlib.ZipEntry.create('b.txt', Buffer.from('b')),
+  ]);
+  using zip = new zlib.ZipBuffer(a2);
+  console.log("zb", zip.size, zip.has('a.txt'), zip.has('missing.txt'),
+    (await zip.get('a.txt').content()).toString(), [...zip.keys()].sort().join(","));
+  try { zip.get('missing.txt'); console.log("BAD no-throw"); }
+  catch (e) { console.log("notfound", e.code); }
+}
+// 报错：坏档 + 目录带内容拒收
+try { [...zlib.ZipEntry.read(Buffer.from('nope'))]; console.log("BAD archive-nothrow"); }
+catch (e) { console.log("badarch", e.code); }
+try { await zlib.ZipEntry.create('dir/', Buffer.from('x')); console.log("BAD dir-nothrow"); }
+catch (e) { console.log("dircontent", e.code); }
+// 边界：maxSize门 + 篡改CRC + 同步往返
+{
+  const e = zlib.ZipEntry.createSync('a.txt', Buffer.from('hello world'), { method: 'store' });
+  try { e.contentSync({ maxSize: 1 }); console.log("BAD maxsize-nothrow"); }
+  catch (err) { console.log("maxsize", err.code); }
+  const syncArch = Buffer.concat([...zlib.createZipArchiveSync([e])]);
+  const tampered = Buffer.from(syncArch);
+  tampered[30 + 'a.txt'.length] ^= 0xff;
+  const [te] = zlib.ZipEntry.read(tampered);
+  try { te.contentSync(); console.log("BAD crc-nothrow"); }
+  catch (err) { console.log("corrupt", err.code); }
+  console.log("noverify", te.contentSync({ verify: false }).length);
+  console.log("maxsz", zlib.getMaxZipContentSize() > 0);
+}
+"#,
+    );
+    for line in [
+        "methods 8,0,0,0",
+        "read 4",
+        "hello true",
+        "raw 0 5",
+        "dir true true",
+        "zb 2 true false a a.txt,b.txt",
+        "notfound ERR_ZIP_ENTRY_NOT_FOUND",
+        "badarch ERR_ZIP_INVALID_ARCHIVE",
+        "dircontent ERR_INVALID_ARG_VALUE",
+        "maxsize ERR_ZIP_ENTRY_TOO_LARGE",
+        "corrupt ERR_ZIP_ENTRY_CORRUPT",
+        "noverify 11",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    assert!(!out.contains("BAD "), "out: {out}");
+    assert!(out.contains("maxsz true"), "out: {out}");
+    dir.close().unwrap();
+}

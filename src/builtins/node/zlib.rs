@@ -452,6 +452,11 @@ pub unsafe extern "C" fn zlib_zstd_decompress(
 pub const SOURCE: &str = r#"
 import errors from 'node:internal/errors';
 import { kMaxLength as __bufKMaxLength } from 'node:buffer';
+import zipEntryMod from 'node:internal/zip/entry';
+import zipArchiveMod from 'node:internal/zip/archive';
+import zipBufferMod from 'node:internal/zip/buffer';
+import zipFileMod from 'node:internal/zip/file';
+import zipContentSizeMod from 'node:internal/zip/content-size';
 
 const {
   codes: {
@@ -674,14 +679,22 @@ export function deflateRaw(buf, opts, cb) {
 }
 function inflateRawSync__core(buf, opts) {
   const data = __zChecked(buf, "inflateRaw");
-  return __zCheckKMax(__zCall(() => __wjs_zlib_inflate_raw(data)));
+  const maxOut = __zMaxOut(opts);
+  const out = __zCall(() => __wjs_zlib_inflate_raw(data));
+  if (maxOut !== undefined && out.length > maxOut) throw new ERR_BUFFER_TOO_LARGE(maxOut);
+  return __zCheckKMax(out);
 }
 export function inflateRaw(buf, opts, cb) {
   if (typeof opts === "function") { cb = opts; opts = undefined; }
   if (opts && opts.info) { const eng = new InflateRaw(opts); try { const r = inflateRawSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "inflateRaw");
   const data = __zChecked(buf, "inflateRaw");
-  __zAsync((d) => __zCheckKMax(__zCall(() => __wjs_zlib_inflate_raw(d))), [data], cb);
+  const maxOut = __zMaxOut(opts);
+  __zAsync((d, m) => {
+    const out = __zCall(() => __wjs_zlib_inflate_raw(d));
+    if (m !== undefined && out.length > m) throw new ERR_BUFFER_TOO_LARGE(m);
+    return __zCheckKMax(out);
+  }, [data, maxOut], cb);
 }
 function gzipSync__core(buf, opts) {
   const data = __zChecked(buf, "gzip");
@@ -766,14 +779,22 @@ export function zstdCompress(buf, opts, cb) {
 }
 function zstdDecompressSync__core(buf, opts) {
   const data = __zChecked(buf, "zstdDecompress");
-  return __zCheckKMax(__zCall(() => __wjs_zlib_zstd_decompress(data)));
+  const maxOut = __zMaxOut(opts);
+  const out = __zCall(() => __wjs_zlib_zstd_decompress(data));
+  if (maxOut !== undefined && out.length > maxOut) throw new ERR_BUFFER_TOO_LARGE(maxOut);
+  return __zCheckKMax(out);
 }
 export function zstdDecompress(buf, opts, cb) {
   if (typeof opts === "function") { cb = opts; opts = undefined; }
   if (opts && opts.info) { const eng = new ZstdDecompress(opts); try { const r = zstdDecompressSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "zstdDecompress");
   const data = __zChecked(buf, "zstdDecompress");
-  __zAsync((d) => __zCheckKMax(__zCall(() => __wjs_zlib_zstd_decompress(d))), [data], cb);
+  const maxOut = __zMaxOut(opts);
+  __zAsync((d, m) => {
+    const out = __zCall(() => __wjs_zlib_zstd_decompress(d));
+    if (m !== undefined && out.length > m) throw new ERR_BUFFER_TOO_LARGE(m);
+    return __zCheckKMax(out);
+  }, [data, maxOut], cb);
 }
 // 流式类（Node ZlibBase 口径的最小实现：Transform 子类，累积 input，
 // _flush 时调同名 Sync 版一次产出；同步底层记档沿用 §7 头注）。
@@ -1154,6 +1175,54 @@ const __api = {
   createZstdCompress, createZstdDecompress,
   constants, codes,
 };
+// Zip 实验面（node lib/zlib.js 口径：使用时警告，导入/访问不警告；
+// instanceof 经 Symbol.hasInstance 透传内部实现）。
+let __zipWarned = false;
+function __zipWarn() {
+  if (__zipWarned) return;
+  __zipWarned = true;
+  try {
+    if (typeof process !== 'undefined' && typeof process.emitWarning === 'function') {
+      process.emitWarning('The zlib ZIP archive API is an experimental feature and might change at any time', 'ExperimentalWarning');
+    }
+  } catch {}
+}
+function __zipFn(fn) {
+  return function(...args) { __zipWarn(); return Reflect.apply(fn, undefined, args); };
+}
+class __ZipEntry extends (zipEntryMod.ZipEntry ?? Object) {
+  static [Symbol.hasInstance](v) { try { return v instanceof (zipEntryMod.ZipEntry ?? Object); } catch { return false; } }
+}
+class __ZipFile extends (zipFileMod.ZipFile ?? Object) {
+  static [Symbol.hasInstance](v) { try { return v instanceof (zipFileMod.ZipFile ?? Object); } catch { return false; } }
+}
+class __ZipBuffer extends (zipBufferMod.ZipBuffer ?? Object) {
+  static [Symbol.hasInstance](v) { try { return v instanceof (zipBufferMod.ZipBuffer ?? Object); } catch { return false; } }
+  constructor(...args) { __zipWarn(); super(...args); }
+}
+for (const n of ['read', 'create', 'createSync', 'createStream', 'createSymlink']) {
+  if (typeof zipEntryMod.ZipEntry?.[n] === 'function') {
+    const raw = zipEntryMod.ZipEntry[n];
+    Object.defineProperty(__ZipEntry, n, { configurable: true, writable: true, value: __zipFn(raw.bind(zipEntryMod.ZipEntry)) });
+  }
+}
+for (const n of ['open', 'openSync']) {
+  if (typeof zipFileMod.ZipFile?.[n] === 'function') {
+    const raw = zipFileMod.ZipFile[n];
+    Object.defineProperty(__ZipFile, n, { configurable: true, writable: true, value: __zipFn(raw.bind(zipFileMod.ZipFile)) });
+  }
+}
+Object.defineProperty(__ZipEntry, 'name', { value: 'ZipEntry' });
+Object.defineProperty(__ZipFile, 'name', { value: 'ZipFile' });
+Object.defineProperty(__ZipBuffer, 'name', { value: 'ZipBuffer' });
+__api.ZipEntry = __ZipEntry;
+__api.ZipFile = __ZipFile;
+__api.ZipBuffer = __ZipBuffer;
+__api.createZipArchive = __zipFn(zipArchiveMod.createZipArchive);
+__api.createZipArchiveSync = __zipFn(zipArchiveMod.createZipArchiveSync);
+__api.zipFiles = __zipFn(zipArchiveMod.zipFiles);
+__api.getMaxZipContentSize = __zipFn(zipContentSizeMod.getMaxZipContentSize);
+__api.setMaxZipContentSize = __zipFn(zipContentSizeMod.setMaxZipContentSize);
 Object.defineProperty(__api, "codes", { writable: false });
 // 顶层非 BROTLI 别名（Node 遗留口径，非枚举）。
 for (const [k, v] of Object.entries(constants)) {
@@ -1161,6 +1230,14 @@ for (const [k, v] of Object.entries(constants)) {
 }
 Object.freeze(constants);
 Object.freeze(codes);
+export const ZipEntry = __api.ZipEntry;
+export const ZipFile = __api.ZipFile;
+export const ZipBuffer = __api.ZipBuffer;
+export const createZipArchive = __api.createZipArchive;
+export const createZipArchiveSync = __api.createZipArchiveSync;
+export const zipFiles = __api.zipFiles;
+export const getMaxZipContentSize = __api.getMaxZipContentSize;
+export const setMaxZipContentSize = __api.setMaxZipContentSize;
 export default __api;
 "#;
 

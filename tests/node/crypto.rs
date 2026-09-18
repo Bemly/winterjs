@@ -527,10 +527,12 @@ console.log("d-spki", createVerify("sha256").update(data).verify(pub2, sig) === 
 const priv2 = createPrivateKey({ key: pkcs8, format: "der", type: "pkcs8" });
 console.log("d-pkcs8", createSign("sha256").update(data).sign(priv2).length > 40);
 console.log("d-pem", publicKey.export({ format: "pem", type: "spki" }).startsWith("-----BEGIN PUBLIC KEY-----"));
-const jwk = publicKey.export({ format: "jwk" });
-console.log("d-jwk", jwk.kty === "DSA" && typeof jwk.p === "string" && typeof jwk.y === "string" && jwk.x === undefined);
-const pub3 = createPublicKey({ key: jwk, format: "jwk" });
-console.log("d-jwkim", createVerify("sha256").update(data).verify(pub3, sig) === true);
+// 10f 四轮翻转（真机口径）：DSA 无 JWK 面（RFC 7518 无 DSA kty）——导出
+// JWK_UNSUPPORTED_KEY_TYPE、导入 INVALID_JWK（§4.65 宽松 API 严格化翻旧断言）。
+try { publicKey.export({ format: "jwk" }); console.log("d-jwk", "NO-THROW"); }
+catch (e) { console.log("d-jwk", e.code === "ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE"); }
+try { createPublicKey({ key: { kty: "DSA", p: "AA", q: "AA", g: "AA", y: "AA" }, format: "jwk" }); console.log("d-jwkim", "NO-THROW"); }
+catch (e) { console.log("d-jwkim", e.code === "ERR_CRYPTO_INVALID_JWK"); }
 // 异步形态
 generateKeyPair("dsa", { modulusLength: 1024, divisorLength: 160 }, (e, pub, priv) => {
   console.log("d-async", e === null && pub.type === "public" && priv.type === "private");
@@ -748,9 +750,12 @@ const bad = Buffer.from(r.ciphertext);
 bad[10] ^= 0xff;
 console.log("mk-err-implicit", decapsulate(privateKey, bad).length === 32,
   Buffer.compare(decapsulate(privateKey, bad), Buffer.from(r.sharedKey)) !== 0);
-// PEM 导出（material 直通）与 X509 公钥链复用同一 try 表。
-console.log("mk-pem", privateKey.export({ format: "pem" }).startsWith("-----BEGIN PRIVATE KEY-----"),
-  publicKey.export({ format: "pem" }).startsWith("-----BEGIN PUBLIC KEY-----"));
+// 10f 四轮翻转（真机口径）：非对称导出必须显式 type（typeless → ARG_VALUE
+// 'options.type' is invalid；§4.65/§4.82 翻旧断言）。
+try { privateKey.export({ format: "pem" }); console.log("mk-pem", "NO-THROW"); }
+catch (e) { console.log("mk-pem", e.code === "ERR_INVALID_ARG_VALUE"); }
+console.log("mk-pem-typed", privateKey.export({ format: "pem", type: "pkcs8" }).startsWith("-----BEGIN PRIVATE KEY-----"),
+  publicKey.export({ format: "pem", type: "spki" }).startsWith("-----BEGIN PUBLIC KEY-----"));
 "#,
     );
     assert!(
@@ -782,7 +787,8 @@ console.log("mk-pem", privateKey.export({ format: "pem" }).startsWith("-----BEGI
         "mk-err-encap-str ERR_OSSL_UNSUPPORTED",
         "mk-err-encap-2arg ERR_INVALID_ARG_TYPE",
         "mk-err-implicit true true",
-        "mk-pem true true",
+        "mk-pem true",
+        "mk-pem-typed true true",
     ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }
@@ -1596,5 +1602,191 @@ log("x448-done");
     assert!(out.contains("x448-x25519-ok 32"), "out: {out}");
     assert!(out.contains("x448-enc true true"), "out: {out}");
     assert!(out.contains("x448-done"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_crypto_round4_parity() {
+    // 10f crypto四轮：key-objects 剩余阻塞簇——非对称导出 type/format 门矩阵、
+    // EC raw 导入导出往返、EC sec1 导出、asymmetricKeyDetails（EC/OKP/DSA）、
+    // OKP/EC JWK 校验矩阵、DSA JWK 面（无）。每项真机 26.8.2 对拍
+    //（/tmp/wjs-agentA-ko/probe-node*.js 逐项）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    // node 套件 fixture（test/fixtures/keys，MIT）落盘（§4.44）。
+    dir.child("ec_priv.pem").write_str(
+        "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgDxBsPQPIgMuMyQbx\nzbb9toew6Ev6e9O6ZhpxLNgmAEqhRANCAARfSYxhH+6V5lIg+M3O0iQBLf+53kuE\n2luIgWnp81/Ya1Gybj8tl4tJVu1GEwcTyt8hoA7vRACmCHnI5B1+bNpS\n-----END PRIVATE KEY-----\n",
+    ).unwrap();
+    dir.child("ec_pub.pem").write_str(
+        "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEX0mMYR/uleZSIPjNztIkAS3/ud5L\nhNpbiIFp6fNf2GtRsm4/LZeLSVbtRhMHE8rfIaAO70QApgh5yOQdfmzaUg==\n-----END PUBLIC KEY-----\n",
+    ).unwrap();
+    dir.child("ed_priv.pem").write_str(
+        "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIMFSujN0jIUIdzSvuxka0lfgVVkMdRTuaVvIYUHrvzXQ\n-----END PRIVATE KEY-----\n",
+    ).unwrap();
+    dir.child("ed_pub.pem").write_str(
+        "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAK1wIouqnuiA04b3WrMa+xKIKIpfHetNZRv3h9fBf768=\n-----END PUBLIC KEY-----\n",
+    ).unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createPrivateKey, createPublicKey, createSecretKey, generateKeyPairSync } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { deepStrictEqual } from "node:assert";
+const log = (...a) => console.log(...a);
+const throws = (fn) => { try { fn(); return "NO-THROW"; } catch (e) { return e.code ?? "no-code"; } };
+const ecPriv = createPrivateKey(readFileSync("ec_priv.pem", "ascii"));
+const ecPub = createPublicKey(readFileSync("ec_pub.pem", "ascii"));
+const edPriv = createPrivateKey(readFileSync("ed_priv.pem", "ascii"));
+const edPub = createPublicKey(readFileSync("ed_pub.pem", "ascii"));
+const { privateKey: rsaPriv, publicKey: rsaPub } = generateKeyPairSync("rsa", { modulusLength: 512 });
+
+// ── 正常件：EC raw 往返（raw-private=定长标量 32B；raw-public=04||X||Y 65B）──
+const rawPriv = ecPriv.export({ format: "raw-private" });
+const rawPub = ecPub.export({ format: "raw-public" });
+log("r4-raw-len", rawPriv.length, rawPub.length, rawPub[0] === 4);
+const impPriv = createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec", namedCurve: "prime256v1" });
+const impPub = createPublicKey({ key: rawPub, format: "raw-public", asymmetricKeyType: "ec", namedCurve: "prime256v1" });
+log("r4-raw-rt", impPriv.type, impPriv.equals(ecPriv), impPub.type, impPub.equals(ecPub));
+// raw-private 建公钥 → 派生；P-256 别名 'P-256' 同收
+const impPub2 = createPublicKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec", namedCurve: "P-256" });
+log("r4-raw-derive", impPub2.equals(ecPub), impPub2.asymmetricKeyDetails.namedCurve);
+// EC sec1 导出（真机逐字节头：307702010104200f；PEM 标签 EC PRIVATE KEY）
+const sec1 = ecPriv.export({ format: "der", type: "sec1" });
+log("r4-sec1", sec1.length > 100, sec1.subarray(0, 8).toString("hex"), ecPriv.export({ format: "pem", type: "sec1" }).startsWith("-----BEGIN EC PRIVATE KEY-----"));
+const sec1Back = createPrivateKey({ key: sec1, format: "der", type: "sec1" });
+log("r4-sec1-rt", sec1Back.equals(ecPriv), sec1Back.asymmetricKeyDetails.namedCurve);
+
+// ── 正常件：asymmetricKeyDetails（EC=OpenSSL 名；OKP={}；DSA 现状）──
+log("r4-details-ec", ecPriv.asymmetricKeyDetails.namedCurve, ecPub.asymmetricKeyDetails.namedCurve,
+  createPublicKey(ecPriv).asymmetricKeyDetails.namedCurve);
+log("r4-details-okp", typeof edPriv.asymmetricKeyDetails === "object",
+  Object.keys(edPriv.asymmetricKeyDetails).length, edPub.asymmetricKeyDetails !== undefined);
+
+// ── 报错件：导出 type 门矩阵（真机 26 逐项：ARG_VALUE 'options.type' / INCOMPATIBLE）──
+log("r4-gate-typeless", throws(() => rsaPriv.export({ format: "pem" })));
+log("r4-gate-banana", throws(() => ecPub.export({ format: "pem", type: "banana" })));
+log("r4-gate-pub-pkcs8", throws(() => ecPub.export({ format: "pem", type: "pkcs8" })));
+log("r4-gate-pub-sec1", throws(() => rsaPub.export({ format: "pem", type: "sec1" })));
+log("r4-gate-priv-spki", throws(() => ecPriv.export({ format: "der", type: "spki" })));
+log("r4-gate-ec-pkcs1", throws(() => ecPriv.export({ format: "pem", type: "pkcs1" })));
+log("r4-gate-ec-pub-pkcs1", throws(() => ecPub.export({ format: "pem", type: "pkcs1" })));
+log("r4-gate-rsa-sec1", throws(() => rsaPriv.export({ format: "pem", type: "sec1" })));
+log("r4-gate-pss-pkcs1", throws(() => {
+  generateKeyPairSync("rsa-pss", { modulusLength: 512 }).publicKey.export({ format: "pem", type: "pkcs1" });
+}));
+// format 门：非对称 'buffer'/缺 format → ARG_VALUE；secret 'pem' → must-be-one-of
+log("r4-gate-fmt-buffer", throws(() => ecPriv.export({ format: "buffer" })));
+log("r4-gate-fmt-undef", throws(() => ecPriv.export({ format: undefined })));
+log("r4-gate-sec-pem", throws(() => createSecretKey(Buffer.alloc(8)).export({ format: "pem" })));
+log("r4-gate-sec-ok", createSecretKey(Buffer.alloc(8)).export({ format: undefined }).length === 8);
+
+// ── 报错件：raw 门（kind 错位/非对称 raw 不支持/EC raw 坏形）──
+log("r4-raw-kind", throws(() => ecPub.export({ format: "raw-private" })));
+log("r4-raw-rsa", throws(() => rsaPriv.export({ format: "raw-private" })));
+log("r4-raw-noCurve", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec" })));
+log("r4-raw-badCurve", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec", namedCurve: "banana" })));
+log("r4-raw-secp256r1", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec", namedCurve: "secp256r1" })));
+log("r4-raw-aktBanana", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "banana", namedCurve: "prime256v1" })));
+log("r4-raw-aktRsa", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "rsa", namedCurve: "prime256v1" })));
+log("r4-raw-badPoint", throws(() => createPublicKey({ key: Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 7)]), format: "raw-public", asymmetricKeyType: "ec", namedCurve: "prime256v1" })));
+log("r4-raw-compressed", throws(() => createPublicKey({ key: Buffer.concat([Buffer.from([2]), rawPub.subarray(1)]), format: "raw-public", asymmetricKeyType: "ec", namedCurve: "prime256v1" })));
+log("r4-raw-wrongSize", throws(() => createPublicKey({ key: rawPub, format: "raw-public", asymmetricKeyType: "ec", namedCurve: "secp384r1" })));
+
+// ── 报错件：OKP JWK 校验矩阵（真机 26 逐项）──
+const edJwk = edPriv.export({ format: "jwk" });
+log("r4-okp-badx", throws(() => createPrivateKey({ key: { ...edJwk, x: "A" + edJwk.x.slice(1) }, format: "jwk" })));
+log("r4-okp-noD", throws(() => createPrivateKey({ key: { kty: edJwk.kty, crv: edJwk.crv, x: edJwk.x }, format: "jwk" })));
+log("r4-okp-noCrv", throws(() => createPublicKey({ key: { kty: edJwk.kty, x: edJwk.x }, format: "jwk" })));
+log("r4-okp-badCrv", throws(() => createPublicKey({ key: { ...edJwk, crv: "invalid" }, format: "jwk" })));
+log("r4-okp-badD", throws(() => createPublicKey({ key: { ...edJwk, d: "AAAA" }, format: "jwk" })));
+// 带 d 的 JWK 建公钥：x 必带（真机：d 无 x → INVALID_JWK）；x,d 齐即由 d 派生
+log("r4-okp-fromD", throws(() => createPublicKey({ key: { kty: "OKP", crv: "Ed25519", d: edJwk.d }, format: "jwk" })));
+log("r4-okp-fromDxd", createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: edJwk.x, d: edJwk.d }, format: "jwk" }).equals(edPub));
+log("r4-okp-privD", createPrivateKey({ key: { kty: "OKP", crv: "Ed25519", x: edJwk.x, d: edJwk.d }, format: "jwk" }).equals(edPriv));
+
+// ── 报错件：EC JWK 校验矩阵（真机 26 逐项；注意 crv 缺失=INVALID_JWK、非法=INVALID_CURVE）──
+const ecJwk = ecPriv.export({ format: "jwk" });
+deepStrictEqual(ecJwk, { kty: "EC", crv: "P-256",
+  x: "X0mMYR_uleZSIPjNztIkAS3_ud5LhNpbiIFp6fNf2Gs", y: "UbJuPy2Xi0lW7UYTBxPK3yGgDu9EAKYIecjkHX5s2lI",
+  d: "DxBsPQPIgMuMyQbxzbb9toew6Ev6e9O6ZhpxLNgmAEo" });
+log("r4-ec-jwkexp", true);
+log("r4-ec-badx", throws(() => createPrivateKey({ key: { ...ecJwk, x: "A" + ecJwk.x.slice(1) }, format: "jwk" })));
+log("r4-ec-bady", throws(() => createPrivateKey({ key: { ...ecJwk, y: "A" + ecJwk.y.slice(1) }, format: "jwk" })));
+log("r4-ec-noD", throws(() => createPrivateKey({ key: { kty: "EC", crv: ecJwk.crv, x: ecJwk.x, y: ecJwk.y }, format: "jwk" })));
+log("r4-ec-noCrv", throws(() => createPublicKey({ key: { kty: "EC", x: ecJwk.x, y: ecJwk.y }, format: "jwk" })));
+log("r4-ec-badCrv", throws(() => createPublicKey({ key: { ...ecJwk, crv: "invalid" }, format: "jwk" })));
+log("r4-ec-badD", throws(() => createPublicKey({ key: { ...ecJwk, d: "AAAA" }, format: "jwk" })));
+log("r4-ec-badPoint", throws(() => createPublicKey({ key: { kty: "EC", crv: "P-256", x: Buffer.alloc(32, 9).toString("base64url"), y: Buffer.alloc(32, 9).toString("base64url") }, format: "jwk" })));
+log("r4-ec-priv-rt", createPrivateKey({ key: ecJwk, format: "jwk" }).equals(ecPriv));
+log("r4-ec-pub-fromD", createPublicKey({ key: ecJwk, format: "jwk" }).equals(ecPub));
+
+// ── 报错件：DSA JWK 面（无）──
+const { publicKey: dsaPub } = generateKeyPairSync("dsa", { modulusLength: 1024, divisorLength: 160 });
+log("r4-dsa-jwkexp", throws(() => dsaPub.export({ format: "jwk" })));
+log("r4-dsa-jwkimp", throws(() => createPublicKey({ key: { kty: "DSA", p: "AA", q: "AA", g: "AA", y: "AA" }, format: "jwk" })));
+// DSA details（真机 {modulusLength, divisorLength}）
+log("r4-dsa-details", typeof dsaPub.asymmetricKeyDetails === "object",
+  typeof dsaPub.asymmetricKeyDetails.modulusLength === "number",
+  typeof dsaPub.asymmetricKeyDetails.divisorLength === "number",
+  dsaPub.asymmetricKeyDetails.publicExponent === undefined);
+log("r4-done");
+"#,
+    );
+    for line in [
+        "r4-raw-len 32 65 true",
+        "r4-raw-rt private true public true",
+        "r4-raw-derive true prime256v1",
+        "r4-sec1 true 307702010104200f true",
+        "r4-sec1-rt true prime256v1",
+        "r4-details-ec prime256v1 prime256v1 prime256v1",
+        "r4-details-okp true 0 true",
+        "r4-gate-typeless ERR_INVALID_ARG_VALUE",
+        "r4-gate-banana ERR_INVALID_ARG_VALUE",
+        "r4-gate-pub-pkcs8 ERR_INVALID_ARG_VALUE",
+        "r4-gate-pub-sec1 ERR_INVALID_ARG_VALUE",
+        "r4-gate-priv-spki ERR_INVALID_ARG_VALUE",
+        "r4-gate-ec-pkcs1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "r4-gate-ec-pub-pkcs1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "r4-gate-rsa-sec1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "r4-gate-pss-pkcs1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "r4-gate-fmt-buffer ERR_INVALID_ARG_VALUE",
+        "r4-gate-fmt-undef ERR_INVALID_ARG_VALUE",
+        "r4-gate-sec-pem ERR_INVALID_ARG_VALUE",
+        "r4-gate-sec-ok true",
+        "r4-raw-kind ERR_INVALID_ARG_VALUE",
+        "r4-raw-rsa ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "r4-raw-noCurve ERR_INVALID_ARG_TYPE",
+        "r4-raw-badCurve ERR_CRYPTO_INVALID_CURVE",
+        "r4-raw-secp256r1 ERR_CRYPTO_INVALID_CURVE",
+        "r4-raw-aktBanana ERR_INVALID_ARG_VALUE",
+        "r4-raw-aktRsa ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "r4-raw-badPoint ERR_INVALID_ARG_VALUE",
+        "r4-raw-compressed ERR_INVALID_ARG_VALUE",
+        "r4-raw-wrongSize ERR_INVALID_ARG_VALUE",
+        "r4-okp-badx ERR_CRYPTO_INVALID_JWK",
+        "r4-okp-noD ERR_CRYPTO_INVALID_JWK",
+        "r4-okp-noCrv ERR_CRYPTO_INVALID_JWK",
+        "r4-okp-badCrv ERR_CRYPTO_INVALID_JWK",
+        "r4-okp-badD ERR_CRYPTO_INVALID_JWK",
+        "r4-okp-fromD ERR_CRYPTO_INVALID_JWK",
+        "r4-okp-fromDxd true",
+        "r4-okp-privD true",
+        "r4-ec-jwkexp true",
+        "r4-ec-badx ERR_CRYPTO_INVALID_JWK",
+        "r4-ec-bady ERR_CRYPTO_INVALID_JWK",
+        "r4-ec-noD ERR_CRYPTO_INVALID_JWK",
+        "r4-ec-noCrv ERR_CRYPTO_INVALID_JWK",
+        "r4-ec-badCrv ERR_CRYPTO_INVALID_CURVE",
+        "r4-ec-badD ERR_CRYPTO_INVALID_JWK",
+        "r4-ec-badPoint ERR_CRYPTO_INVALID_JWK",
+        "r4-ec-priv-rt true",
+        "r4-ec-pub-fromD true",
+        "r4-dsa-jwkexp ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE",
+        "r4-dsa-jwkimp ERR_CRYPTO_INVALID_JWK",
+        "r4-dsa-details true true true true",
+        "r4-done",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
     dir.close().unwrap();
 }

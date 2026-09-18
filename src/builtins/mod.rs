@@ -4697,10 +4697,15 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_tls_connect", Some(node::tls::tls_connect), 4),
             ("__wjs_tls_listen", Some(node::tls::tls_listen), 4),
             // Phase 9d-7: node:http2（hyper 直引；关闭复用 __wjs_net_destroy）
+            // 10f 流式化：头/体/收尾/RST 分离（ChanBody 增量应答）
             ("__wjs_h2_listen", Some(node::http2::h2_listen), 4),
             ("__wjs_h2_connect", Some(node::http2::h2_connect), 4),
             ("__wjs_h2_open", Some(node::http2::h2_open), 4),
-            ("__wjs_h2_respond", Some(node::http2::h2_respond), 5),
+            ("__wjs_h2_open_trailers", Some(node::http2::h2_open_trailers), 3),
+            ("__wjs_h2_respond", Some(node::http2::h2_respond), 4),
+            ("__wjs_h2_data", Some(node::http2::h2_data), 3),
+            ("__wjs_h2_end", Some(node::http2::h2_end), 3),
+            ("__wjs_h2_reset", Some(node::http2::h2_reset), 3),
             // Phase 9e-1a: node:crypto 增量 Hash（oneshot 复用全局 __wjs_*）
             ("__wjs_crypto_hash_new", Some(node::crypto::crypto_hash_new), 1),
             ("__wjs_crypto_hash_update", Some(node::crypto::crypto_hash_update), 2),

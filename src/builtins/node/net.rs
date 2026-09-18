@@ -53,15 +53,20 @@ pub enum NetKind {
     DgramConnect,
     // ── http2（Phase 9d-7；与 net 共通道，零新 channel）─────────────────────
     /// h2 服务端收到完整请求（ev.id = server id；整收口径，http 记档同款）。
+    /// 10f：authority/trailers/peer 面（compat 伪头合成 + trailers 事件）。
     H2Request {
         conn_id: u64,
         stream_id: u64,
         method: String,
         path: String,
+        authority: String,
         headers: String,
+        trailers_json: String,
         body_b64: String,
+        peer: String,
     },
-    /// h2 客户端流事件（ev.id = session id；what ∈ headers/data/end/error）。
+    /// h2 流事件（客户端 ev.id = session id：response/data/trailers/end/error/
+    /// aborted；服务端 ev.id = server id：aborted）。
     H2Stream { stream_id: u64, what: String, payload: String },
     /// h2 客户端 session 终结（单次；派发后 purge）。
     H2SessionClose,
@@ -92,19 +97,30 @@ pub enum NetCmd {
     /// 清默认远端。
     DgramDisconnect,
     // ── http2 ─────────────────────────────────────────────────────────────
-    /// 服务端应答（发往 conn id；stream_id 由 H2Request 事件给出）。
+    /// 服务端应答头（发往 conn id；stream_id 由 H2Request 事件给出）。
+    /// 10f 流式化：头与体分离，体经 H2RespondData/H2RespondEnd 增量下发。
     H2Respond {
         stream_id: u64,
         status: u16,
         headers: String,
-        body_b64: String,
     },
+    /// 服务端应答体块（须在 H2Respond 之后；task 侧早到则暂存 outbox）。
+    H2RespondData { stream_id: u64, data_b64: String },
+    /// 服务端应答收尾（trailer 可空 `[]`）。
+    H2RespondEnd {
+        stream_id: u64,
+        trailers_json: String,
+    },
+    /// 服务端 RST_STREAM（code: 0=NO_ERROR 干净关，2=INTERNAL_ERROR）。
+    H2RespondReset { stream_id: u64, code: u32 },
     /// 客户端开流（发往 session id；stream_id 由 JS 侧会话内分配）。
     H2Open {
         stream_id: u64,
         headers: String,
         body_b64: String,
     },
+    /// 客户端上传 trailer 帧（waitForTrailers 口径；补发后 EOS）。
+    H2OpenTrailers { stream_id: u64, trailers_json: String },
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -176,7 +192,12 @@ pub(crate) fn spawn_pumps<R, W>(
                 | NetCmd::DgramConnect { .. }
                 | NetCmd::DgramDisconnect => {}
                 // http2 命令走 h2 conn/session task（本泵不产生，见 http2.rs）
-                NetCmd::H2Respond { .. } | NetCmd::H2Open { .. } => {}
+                NetCmd::H2Respond { .. }
+                | NetCmd::H2RespondData { .. }
+                | NetCmd::H2RespondEnd { .. }
+                | NetCmd::H2RespondReset { .. }
+                | NetCmd::H2Open { .. }
+                | NetCmd::H2OpenTrailers { .. } => {}
             }
         }
         state::net_writer_exit(id);
@@ -897,12 +918,13 @@ pub fn dispatch(
         ),
         NetKind::DgramConnect => ("connect", String::new()),
         // http2：request 派发给 server target；stream/session 派发给 session target
-        NetKind::H2Request { conn_id, stream_id, method, path, headers, body_b64 } => (
+        NetKind::H2Request { conn_id, stream_id, method, path, authority, headers, trailers_json, body_b64, peer } => (
             "request",
             serde_json::json!({
                 "connId": conn_id, "streamId": stream_id,
-                "method": method, "path": path,
-                "headers": headers, "body": body_b64,
+                "method": method, "path": path, "authority": authority,
+                "headers": headers, "trailers": trailers_json, "body": body_b64,
+                "peer": peer,
             })
             .to_string(),
         ),

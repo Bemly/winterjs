@@ -399,6 +399,14 @@ E('ERR_SYSTEM_ERROR',
 E('ERR_BROTLI_INVALID_PARAM', '%s is not a valid Brotli parameter', RangeError, HideStackFramesError);
 E('ERR_ZLIB_INITIALIZATION_FAILED', 'Initialization failed', Error, HideStackFramesError);
 E('ERR_BUFFER_TOO_LARGE', 'Cannot create a Buffer larger than %s bytes', RangeError, HideStackFramesError);
+// 10f http2 compat 面（node lib/internal/errors.js 文案逐字）
+E('ERR_HTTP2_HEADERS_SENT', 'Response has already been initiated.', Error);
+E('ERR_HTTP2_INVALID_STREAM', 'The stream has been destroyed.', Error);
+E('ERR_HTTP2_NO_SOCKET_MANIPULATION',
+  'HTTP/2 sockets should not be directly manipulated (e.g. read and written)', Error);
+E('ERR_HTTP2_INVALID_HEADER_VALUE', 'Invalid value "%s" for header "%s"', TypeError, HideStackFramesError);
+E('ERR_HTTP2_PUSH_DISABLED', 'Push streams are not enabled.', Error);
+E('ERR_INVALID_HTTP_TOKEN', 'Header name must be a valid HTTP token ["%s"]', TypeError, HideStackFramesError);
 
 // errors.js:172 同款（AggregateError 聚合；errors.errors 已是聚合体则吸收）
 const aggregateTwoErrors = (innerError, outerError) => {

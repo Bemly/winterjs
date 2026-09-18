@@ -4776,22 +4776,30 @@ class KeyObject {
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
-    // 10f crypto二轮：RSA 导出 type 矩阵（public: pkcs1/spki；private: pkcs1/pkcs8）。
-    if ((s.keyType === "rsa" || s.keyType === "rsa-pss") && options?.type !== undefined) {
-      const t = options.type;
-      const ok = (s.kind === "public" ? ["pkcs1", "spki"] : ["pkcs1", "pkcs8"]).includes(t);
-      if (!ok) {
-        if (t === "sec1" && s.kind === "private") {
-          const err = new Error("Incompatible key options");
-          err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
-          throw err;
-        }
-        const err = new TypeError(`Unknown export type ${t}`);
+    // 10f crypto四轮：format 门（真机 26 逐项）——secret ∈ {undefined→buffer,
+    // 'buffer', 'jwk'}；非对称 ∈ {'pem','der','jwk','raw-private','raw-public'}，
+    // 其余（含 undefined/'buffer'）→ ARG_VALUE 'options.format' is invalid。
+    const format = options?.format;
+    const __recvArg = (v) => v === undefined ? "undefined"
+      : v === null ? "null"
+      : typeof v === "string" ? `'${v}'`
+      : `type ${typeof v} (${String(v)})`;
+    if (s.kind === "secret") {
+      if (format !== undefined && format !== "buffer" && format !== "jwk") {
+        const err = new TypeError(
+          `The property 'options.format' must be one of: undefined, 'buffer', 'jwk'. Received ${__recvArg(format)}`);
         err.code = "ERR_INVALID_ARG_VALUE";
         throw err;
       }
+      if (format === "jwk") return __exportJwk(this);
+      return Buffer.from(s.material);
     }
-    const format = options?.format ?? "pem";
+    if (format !== "pem" && format !== "der" && format !== "jwk" &&
+        format !== "raw-private" && format !== "raw-public") {
+      const err = new TypeError(`The property 'options.format' is invalid. Received ${__recvArg(format)}`);
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
     // 10f crypto二轮：JWK 不支持加密（真机口径）。
     if (format === "jwk" && (options.passphrase !== undefined || options.cipher !== undefined)) {
       const err = new Error("The selected key encoding jwk does not support encryption.");
@@ -4800,13 +4808,29 @@ class KeyObject {
     }
     if (format === "jwk") return __exportJwk(this);
     // 10f X448：OKP raw 格式（真机口径：裸料 Buffer；kind 错位 → format 无效，
-    // 非 OKP → INCOMPATIBLE；真机 26 逐项）。
+    // 非 OKP → INCOMPATIBLE；真机 26 逐项）。10f 四轮：EC raw 同门——
+    // raw-private = 定长标量（曲线字节长）、raw-public = 非压缩点 04||X||Y。
     if (format === "raw-private" || format === "raw-public") {
       const wantKind = format === "raw-private" ? "private" : "public";
       if (s.kind !== wantKind) {
         const err = new TypeError(`The property 'options.format' is invalid. Received '${format}'`);
         err.code = "ERR_INVALID_ARG_VALUE";
         throw err;
+      }
+      if (s.keyType === "ec") {
+        const curve = s.detail?.namedCurve;
+        if (typeof curve !== "string") {
+          const err = new Error("The selected key encoding is incompatible with the key type");
+          err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+          throw err;
+        }
+        if (format === "raw-private") {
+          const pubDer = __cryptCall(() => __wjs_ec_public(curve, s.material));
+          const parts = JSON.parse(__cryptCall(() => __wjs_ec_jwk(curve, s.material, pubDer)));
+          return Buffer.from(__b64urlDec(parts.d));
+        }
+        const parts = JSON.parse(__cryptCall(() => __wjs_ec_jwk_pub(curve, s.material)));
+        return Buffer.concat([Buffer.from([4]), __b64urlDec(parts.x), __b64urlDec(parts.y)]);
       }
       if (!["ed25519", "x25519", "x448", "ed448"].includes(s.keyType)) {
         const err = new Error("The selected key encoding is incompatible with the key type");
@@ -4815,8 +4839,48 @@ class KeyObject {
       }
       return Buffer.from(s.material);
     }
+    // 10f 四轮：pem/der type 门矩阵（真机 26 逐项）——未知/缺 type →
+    // ARG_VALUE 'options.type' is invalid；kind 错位（public+pkcs8/sec1、
+    // private+spki）→ ARG_VALUE 同形；家族错位（pkcs1 非 RSA、sec1 非 EC 私钥）
+    // → INCOMPATIBLE 'can only be used for … keys.'。
+    const t = options?.type;
+    if (t !== "pkcs1" && t !== "spki" && t !== "pkcs8" && t !== "sec1") {
+      const err = new TypeError(`The property 'options.type' is invalid. Received ${__recvArg(t)}`);
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    if (t === "pkcs1" && s.keyType !== "rsa") {
+      const err = new Error("The selected key encoding pkcs1 can only be used for RSA keys.");
+      err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+      throw err;
+    }
+    if (t === "sec1" && s.kind === "private" && s.keyType !== "ec") {
+      const err = new Error("The selected key encoding sec1 can only be used for EC keys.");
+      err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+      throw err;
+    }
+    if ((t === "pkcs8" || t === "sec1") && s.kind === "public") {
+      const err = new TypeError(`The property 'options.type' is invalid. Received '${t}'`);
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    if (t === "spki" && s.kind === "private") {
+      const err = new TypeError("The property 'options.type' is invalid. Received 'spki'");
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    // 10f 四轮：EC 私钥 sec1（SEQ{ INT 1, OCTET d, [0] OID, [1] BITSTRING 点 }，
+    // 真机逐字节口径；导入侧同构，见 __parseKeyMaterial sec1）。
+    if (s.keyType === "ec" && t === "sec1") {
+      const der = __ecSec1Der(s);
+      if (format === "der") return Buffer.from(der);
+      if (options.cipher !== undefined) {
+        return __pemEncryptTraditional(der, "EC PRIVATE KEY", options);
+      }
+      return __pemEncode("EC PRIVATE KEY", der);
+    }
     // 10f crypto二轮：RSA pkcs1（RSAPublicKey/RSAPrivateKey，真机口径）。
-    if ((s.keyType === "rsa" || s.keyType === "rsa-pss") && options?.type === "pkcs1") {
+    if (s.keyType === "rsa" && t === "pkcs1") {
       const der = __rsaPkcs1(s);
       if (format === "der") return Buffer.from(der);
       if (format === "pem") {
@@ -4831,12 +4895,9 @@ class KeyObject {
     const der = __exportDer(this, options);
     if (format === "der") return Buffer.from(der);
     if (format === "pem") {
-      // 10f crypto二轮：pkcs8 私钥加密导出（dsa-legacy 沿 label；EC sec1 同）。
+      // 10f crypto二轮：pkcs8 私钥加密导出（dsa-legacy 沿 label）。
       if (options.cipher !== undefined && s.kind === "private") {
-        const t = options.type;
-        const label = t === "pkcs1" ? "RSA PRIVATE KEY"
-          : t === "sec1" ? "EC PRIVATE KEY"
-          : "PRIVATE KEY";
+        const label = t === "pkcs1" ? "RSA PRIVATE KEY" : "PRIVATE KEY";
         return __pemEncryptTraditional(der, label, options);
       }
       const label = s.kind === "private" ? "PRIVATE KEY" : "PUBLIC KEY";
@@ -4876,14 +4937,31 @@ class AsymmetricKeyObject extends KeyObject {
   get asymmetricKeyDetails() {
     const s = __koBrand(this);
     if (s === null || s.kind === "secret") __invalidThis();
-    // RSA 系回 {modulusLength, publicExponent}（generation 期落 __detail；
-    // 导入键无 __detail 即从材料现算；其余类型另案）。
+    // RSA/DSA 系回 {modulusLength, publicExponent|divisorLength}（generation
+    // 期落 __detail；RSA 导入键无 __detail 即从材料现算）。键按有无拼装
+    //（DSA 无 publicExponent；undefined 值键 deepStrictEqual 判不等）。
+    if ((s.keyType === "rsa" || s.keyType === "rsa-pss" || s.keyType === "dsa") &&
+        s.detail !== null && typeof s.detail === "object" &&
+        typeof s.detail.modulusLength === "number") {
+      const out = { modulusLength: s.detail.modulusLength };
+      if (s.detail.publicExponent !== undefined) out.publicExponent = BigInt(s.detail.publicExponent);
+      if (s.detail.divisorLength !== undefined) out.divisorLength = s.detail.divisorLength;
+      return out;
+    }
     if (s.keyType === "rsa" || s.keyType === "rsa-pss") {
-      if (s.detail !== null && typeof s.detail.modulusLength === "number") {
-        return { modulusLength: s.detail.modulusLength, publicExponent: BigInt(s.detail.publicExponent) };
-      }
       const d = __rsaDetailsFromMaterial(s.kind, s.material);
       if (d !== null) return d;
+    }
+    // 10f 四轮（真机 26 逐项）：EC → { namedCurve: <OpenSSL 名> }
+    //（prime256v1 形，非 JWK 名）；OKP → {}（空对象，非 undefined）。
+    if (s.keyType === "ec") {
+      const c = s.detail?.namedCurve;
+      if (typeof c !== "string") return undefined;
+      return { namedCurve: __EC_OPENSSL_NAMES[c] ?? c };
+    }
+    if (s.keyType === "ed25519" || s.keyType === "x25519" ||
+        s.keyType === "x448" || s.keyType === "ed448") {
+      return {};
     }
     return undefined;
   }
@@ -4931,6 +5009,56 @@ for (const __k of ["__kind", "__keyType", "__material", "__detail"]) {
     get() { return __koState.get(Object(this))?.[__k.slice(2)]; },
     set(v) { const s = __koState.get(Object(this)); if (s !== undefined) s[__k.slice(2)] = v; },
   });
+}
+// 10f 四轮：EC 私钥 sec1 DER 构造（真机逐字节口径；OID 表与导入侧 sec1 同源）。
+function __ecSec1Der(s) {
+  const curve = s.detail?.namedCurve;
+  const oids = {
+    "P-256": "2a8648ce3d030107", "P-384": "2b81040022",
+    "P-521": "2b81040023", "secp256k1": "2b8104000a",
+  };
+  const oidHex = oids[curve];
+  if (oidHex === undefined) {
+    const err = new Error("Invalid EC key material for sec1 export");
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  const pubDer = __cryptCall(() => __wjs_ec_public(curve, s.material));
+  const jwk = JSON.parse(__cryptCall(() => __wjs_ec_jwk(curve, s.material, pubDer)));
+  const d = __b64urlDec(jwk.d);
+  const point = Buffer.concat([Buffer.from([4]), __b64urlDec(jwk.x), __b64urlDec(jwk.y)]);
+  const oid = Buffer.from(oidHex, "hex");
+  const oidTlv = Buffer.concat([Buffer.from([6, oid.length]), oid]);
+  const bitStr = Buffer.concat([Buffer.from([3, ...__derLen(point.length + 1), 0]), point]);
+  const inner = Buffer.concat([
+    __derInt(new Uint8Array([1])),
+    Buffer.concat([Buffer.from([4, ...__derLen(d.length)]), d]),
+    Buffer.concat([Buffer.from([160, oidTlv.length]), oidTlv]),
+    Buffer.concat([Buffer.from([161, ...__derLen(bitStr.length)]), bitStr]),
+  ]);
+  return Buffer.concat([Buffer.from([48, ...__derLen(inner.length)]), inner]);
+}
+// 10f 四轮：曲线名表——内部统一存 JWK 名（crv）。真机 26：曲线名查找
+// JWK 与 raw 同一套（OpenSSL 名族：'P-256' 与 'prime256v1' 均收，'secp256r1'
+// /'banana' 拒 → INVALID_CURVE 'Invalid EC curve name'）。
+const __EC_CURVES = {
+  "prime256v1": "P-256", "P-256": "P-256",
+  "secp384r1": "P-384", "P-384": "P-384",
+  "secp521r1": "P-521", "P-521": "P-521",
+  "secp256k1": "secp256k1",
+};
+const __EC_OPENSSL_NAMES = {
+  "P-256": "prime256v1", "P-384": "secp384r1", "P-521": "secp521r1", "secp256k1": "secp256k1",
+};
+function __badEcCurve() {
+  const err = new Error("Invalid EC curve name");
+  err.code = "ERR_CRYPTO_INVALID_CURVE";
+  throw err;
+}
+function __ecCurve(name) {
+  const c = __EC_CURVES[name];
+  if (c === undefined) __badEcCurve();
+  return c;
 }
 // 10f crypto二轮：RSA pkcs1 内层提取（public 取 SPKI 的 BITSTRING 内层；
 // private 取 PKCS#8 的 OCTET 内层，即 RSAPrivateKey 本体）。
@@ -5043,17 +5171,11 @@ function __exportJwk(kobj) {
     return jwk;
   }
   if (kobj.__keyType === "dsa") {
-    const env = JSON.parse(Buffer.from(kobj.__material).toString("utf8"));
-    const jwk = { kty: "DSA", p: b64u(__b64dec(env.p)), q: b64u(__b64dec(env.q)), g: b64u(__b64dec(env.g)), y: b64u(__b64dec(env.y)) };
-    if (isPriv) {
-      if (!env.x) {
-        const err = new Error("DSA private key has no private material");
-        err.code = "ERR_INVALID_ARG_VALUE";
-        throw err;
-      }
-      jwk.x = b64u(__b64dec(env.x));
-    }
-    return jwk;
+    // 10f 四轮（真机口径）：DSA 无 JWK 面（RFC 7518 无 DSA kty）——
+    // 导出即 ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE 'Unsupported JWK Key Type.'。
+    const err = new Error("Unsupported JWK Key Type.");
+    err.code = "ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE";
+    throw err;
   }
   if (typeof kobj.__keyType === "string" && (kobj.__keyType.startsWith("ml-kem-") || kobj.__keyType.startsWith("ml-dsa-"))) {
     // 9i-4/9i-6 真机口径：kty "AKP"，alg 参数集名，pub=裸公钥 / priv=种子（均 b64url）。
@@ -5133,54 +5255,106 @@ function __parseKeyMaterial(key, format, type, want, options) {
       return new PublicKeyObject("public", "rsa", Buffer.from(pubDer));
     }
     if (key.kty === "EC") {
-      const curve = __normCurve(key.crv);
-      const x = __b64urlDec(key.x), y = __b64urlDec(key.y);
+      // 10f 四轮：JWK 校验矩阵（真机 26 逐项）——crv 缺失/非串 → INVALID_JWK
+      // 'Invalid JWK EC key'；crv 非法 → INVALID_CURVE 'Invalid EC curve name'；
+      // 私钥侧 d 坏/缺、x,y 与派生点不匹、点不在曲线 → INVALID_JWK；
+      // public-only 作私钥 → INVALID_JWK 'JWK does not contain private key
+      // material'。
+      const badEc = () => {
+        const err = new TypeError("Invalid JWK EC key");
+        err.code = "ERR_CRYPTO_INVALID_JWK";
+        throw err;
+      };
+      const noPriv = () => {
+        const err = new TypeError("JWK does not contain private key material");
+        err.code = "ERR_CRYPTO_INVALID_JWK";
+        throw err;
+      };
+      if (typeof key.crv !== "string") badEc();
+      const curve = __ecCurve(key.crv);
+      if (typeof key.x !== "string" || typeof key.y !== "string") badEc();
+      let dx, dy;
+      try {
+        dx = __b64urlDec(key.x);
+        dy = __b64urlDec(key.y);
+      } catch { badEc(); }
       if (key.d !== undefined) {
-        const privDer = __cryptCall(() => __wjs_ec_import_priv(curve, __b64urlDec(key.d)));
-        const k = new PrivateKeyObject("private", "ec", Buffer.from(privDer));
+        if (typeof key.d !== "string") badEc();
+        let privDer, pubDer, pt;
+        try {
+          privDer = __cryptCall(() => __wjs_ec_import_priv(curve, __b64urlDec(key.d)));
+          pubDer = __cryptCall(() => __wjs_ec_public(curve, privDer));
+          pt = JSON.parse(__cryptCall(() => __wjs_ec_jwk_pub(curve, pubDer)));
+        } catch { badEc(); }
+        try {
+          if (!Buffer.from(dx).equals(Buffer.from(__b64urlDec(pt.x))) ||
+              !Buffer.from(dy).equals(Buffer.from(__b64urlDec(pt.y)))) badEc();
+        } catch (e) { if (e && e.code) throw e; badEc(); }
+        if (want === "private") {
+          const k = new PrivateKeyObject("private", "ec", Buffer.from(privDer));
+          k.__detail = { namedCurve: curve };
+          return k;
+        }
+        const k = new PublicKeyObject("public", "ec", Buffer.from(pubDer));
         k.__detail = { namedCurve: curve };
         return k;
       }
-      const pubDer = __cryptCall(() => __wjs_ec_import_pub(curve, x, y));
+      if (want === "private") noPriv();
+      let pubDer;
+      try {
+        pubDer = __cryptCall(() => __wjs_ec_import_pub(curve, dx, dy));
+      } catch { badEc(); }
       const k = new PublicKeyObject("public", "ec", Buffer.from(pubDer));
       k.__detail = { namedCurve: curve };
       return k;
     }
     if (key.kty === "DSA") {
-      // JWK → 信封（b64url 转标准 b64 存；长度定档）。
-      const std = (s) => Buffer.from(__b64urlDec(s)).toString("base64");
-      for (const f of ["p", "q", "g", "y"]) {
-        if (typeof key[f] !== "string") {
-          const err = new TypeError(`Invalid DSA JWK (missing ${f})`);
-          err.code = "ERR_INVALID_ARG_VALUE";
-          throw err;
-        }
-      }
-      const env = { p: std(key.p), q: std(key.q), g: std(key.g), y: std(key.y) };
-      if (key.x !== undefined) env.x = std(key.x);
-      // 信封合法性经轮子校验（坐标对参数）。
-      __cryptCall(() => __wjs_dsa_export(JSON.stringify(env)));
-      const k = new (key.x !== undefined ? PrivateKeyObject : PublicKeyObject)(key.x !== undefined ? "private" : "public", "dsa", Buffer.from(JSON.stringify(env)));
-      const pLen = Buffer.from(env.p, "base64").length, qLen = Buffer.from(env.q, "base64").length;
-      k.__detail = { modulusLength: pLen * 8, divisorLength: qLen * 8 };
-      return k;
+      // 10f 四轮（真机口径）：DSA JWK 导入即 INVALID_JWK（RFC 7518 无 DSA）。
+      const err = new TypeError("DSA is not a supported JWK key type");
+      err.code = "ERR_CRYPTO_INVALID_JWK";
+      throw err;
     }
     if (key.kty === "OKP") {
-      // 10e Ed448（OKP 同形）；10f X448 同形。
+      // 10e Ed448（OKP 同形）；10f X448 同形。10f 四轮：校验矩阵（真机 26
+      // 逐项）——crv 缺失/非法 → INVALID_JWK 'Invalid JWK OKP key'（旧
+      // NOT_SUPPORTED 文案退役）；d 坏（派生失败）/x 与派生公钥不匹 →
+      // INVALID_JWK；public-only 作私钥 → INVALID_JWK 'JWK does not contain
+      // private key material'；want public 且带 d → 由 d 派生。
+      const badOkp = () => {
+        const err = new TypeError("Invalid JWK OKP key");
+        err.code = "ERR_CRYPTO_INVALID_JWK";
+        throw err;
+      };
+      const noPriv = () => {
+        const err = new TypeError("JWK does not contain private key material");
+        err.code = "ERR_CRYPTO_INVALID_JWK";
+        throw err;
+      };
       const kt = key.crv === "Ed25519" ? "ed25519"
         : key.crv === "X25519" ? "x25519"
         : key.crv === "X448" ? "x448"
         : key.crv === "Ed448" ? "ed448" : null;
-      if (kt === null) {
-        const err = new Error(`Unsupported OKP curve ${key.crv}`);
-        err.code = "ERR_NOT_SUPPORTED";
-        throw err;
-      }
+      if (kt === null) badOkp();
+      const derive = (d) => (kt === "ed25519" ? __wjs_ed_public(d)
+        : kt === "x25519" ? __wjs_x_public(d)
+        : kt === "x448" ? __wjs_x448_public(d)
+        : __wjs_ed448_public(d));
       if (key.d !== undefined) {
-        const k = new PrivateKeyObject("private", kt, __b64urlDec(key.d));
-        return k;
+        if (typeof key.d !== "string" || typeof key.x !== "string") badOkp();
+        let pubBytes, xBytes;
+        try {
+          pubBytes = __cryptCall(() => derive(__b64urlDec(key.d)));
+          xBytes = __b64urlDec(key.x);
+        } catch { badOkp(); }
+        if (!Buffer.from(xBytes).equals(Buffer.from(pubBytes))) badOkp();
+        if (want === "private") return new PrivateKeyObject("private", kt, __b64urlDec(key.d));
+        return new PublicKeyObject("public", kt, Buffer.from(pubBytes));
       }
-      return new PublicKeyObject("public", kt, __b64urlDec(key.x));
+      if (want === "private") noPriv();
+      if (typeof key.x !== "string") badOkp();
+      let xBytes;
+      try { xBytes = __b64urlDec(key.x); } catch { badOkp(); }
+      return new PublicKeyObject("public", kt, Buffer.from(xBytes));
     }
     const err = new TypeError("Unsupported JWK kty");
     err.code = "ERR_INVALID_ARG_TYPE";
@@ -5203,9 +5377,60 @@ function __parseKeyMaterial(key, format, type, want, options) {
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
+    if (akt === "ec") {
+      // 10f 四轮：EC raw 导入（真机 26 逐项）——namedCurve 必带 string
+      //（ARG_TYPE 'key.namedCurve'）；curve 走 OpenSSL 名表（'P-256' 收、
+      // 'secp256r1'/'banana' → INVALID_CURVE 'Invalid EC curve name'）；
+      // raw-private = 定长标量（native 校验值域）、raw-public = 非压缩点
+      //（04 头 + 1+2*size 长；压缩形/错长/不在曲线 → ARG_VALUE 'Invalid
+      // key data'）。
+      const nc = options?.namedCurve;
+      if (typeof nc !== "string") {
+        const recv = nc === undefined ? "undefined" : `type ${typeof nc} (${String(nc)})`;
+        const err = new TypeError(`The "key.namedCurve" property must be of type string. Received ${recv}`);
+        err.code = "ERR_INVALID_ARG_TYPE";
+        throw err;
+      }
+      const curve = __ecCurve(nc);
+      const material = __cryptBytes(key, "key");
+      const bad = () => {
+        const err = new TypeError("Invalid key data");
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      };
+      if (format === "raw-private") {
+        let privDer;
+        try { privDer = __cryptCall(() => __wjs_ec_import_priv(curve, material)); } catch { bad(); }
+        const k = new PrivateKeyObject("private", "ec", Buffer.from(privDer));
+        k.__detail = { namedCurve: curve };
+        if (want === "public") return __derivePublic(k);
+        return k;
+      }
+      const size = __curveSize(curve);
+      if (material.length !== 1 + 2 * size || material[0] !== 4) bad();
+      const x = material.slice(1, 1 + size), y = material.slice(1 + size);
+      let pubDer;
+      try { pubDer = __cryptCall(() => __wjs_ec_import_pub(curve, x, y)); } catch { bad(); }
+      const k = new PublicKeyObject("public", "ec", Buffer.from(pubDer));
+      k.__detail = { namedCurve: curve };
+      return k;
+    }
     const lens = { ed25519: 32, x25519: 32, x448: 56, ed448: 57 };
+    if (lens[akt] === undefined) {
+      // 10f 四轮：已知键型但 raw 不支持 → INCOMPATIBLE（真机逐项）；
+      // 未知键型 → ARG_VALUE 'Invalid asymmetricKeyType: X'。
+      if (akt === "rsa" || akt === "rsa-pss" || akt === "dsa" || akt === "dh" ||
+          akt.startsWith("ml-kem-") || akt.startsWith("ml-dsa-")) {
+        const err = new Error("The selected key encoding is incompatible with the key type");
+        err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+        throw err;
+      }
+      const err = new TypeError(`Invalid asymmetricKeyType: ${akt}`);
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
     const material = __cryptBytes(key, "key");
-    if (lens[akt] === undefined || material.length !== lens[akt]) {
+    if (material.length !== lens[akt]) {
       const err = new TypeError("Invalid key data");
       err.code = "ERR_INVALID_ARG_VALUE";
       throw err;

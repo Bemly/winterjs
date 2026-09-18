@@ -162,3 +162,45 @@
 - 既有记档维持（不因换高度而重做）：fork 线程底座（stdio 恒 null 等）、
   GCM iv 限 12B（除非 10e 批了重做）、promises 底层同步实现、CCW 跨域判定、
   H3 串行、`node:test` reporter 深度（Bun 同 🟡）。
+
+## §5 Bun 🟢 域欠账清单（2026-09-19 盘点，用户拍板："Bun 没实现的不做，
+## Bun 实现了的才是欠账"，先记档以后再说）
+
+> 口径修正（本轮起生效）：欠账判定以 **bun-compat.md 快照的 Bun 列**为准，
+> 不再以 node 套件红数为准——child_process（Bun 🟡：IPC 若干缺口）与
+> worker_threads（Bun 🟡）整体降级为"parity 确认"档，其 DIFF 中 Bun 同缺的
+> 簇**出局不算欠账**；仅下表所列 Bun 🟢 域的簇是真实欠账。
+
+### 已收官（Bun 🟢 且红 0 / 仅引擎边界偏离，无欠账）
+
+buffer、events、stream、url、path、querystring、punycode、string_decoder、
+os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界）、vm
+（26 偏离记档）、trace_events、dns、readline、tty、sqlite、repl、crypto
+（超 Bun 🟡）、sys、dgram（除 recvbuf 小簇，见下）。
+
+### 欠账（Bun 🟢 且我们有记档红簇，逐簇以后再说）
+
+| 域 | 欠账簇 | 规模 | 性质 |
+|---|---|---|---|
+| http | TIMEOUT 簇（expect-continue/upgrade/trailer/管线背压/max-connections） | ~110 件 | 流式深化，与 10b 整收口径的接缝工程 |
+| http | 校验长尾 / chunk 限深 / 假 socket 深件 | ~35 件 | 逐 API 续补，下轮可修 |
+| http2 | compat 层 `Http2ServerRequest/Response` 全流面 | ~105 件 | 最大单体簇，与 10b 同型工程 |
+| http2 | server 流面 / settings/priority/ALPN 校验 | ~15 件 | 随 compat 轮 |
+| fs | validators 尾件 / unhandled-rej 尾件 | ~40 件 | 逐 API 续补，下轮可修 |
+| fs | watch hang（promises-watch/recursive/encoding）/ watch-ignore-glob / flush 选项 / pipe 读形 | ~23 件 | watch 事件流 + glob 语义，中等工程 |
+| net | server close/listen 时序（drop-connections/pause-on-connect 等） | ~10 件 | 下轮可修 |
+| net | TIMEOUT 9 / Happy Eyeballs 3 / worker 投递 3 / large-string 1 | ~16 件 | 背压语义 + 竞速回落，另案 |
+| zlib | 增量语义（flush/premature-end/truncated/write-after-end/reject-garbage） | ~6 件 | 需真流式编解码状态机，与"整收"架构冲突 |
+| zlib | brotli 字典 / zstd pledged-src-size / Web `DecompressionStream` | ~4 件 | 零散，DecompressionStream 可另切片 |
+| dgram | recvbuf 系 | 小簇 | 快递轮顺手 |
+| child_process | async AbortSignal 尾件 / async 句柄面 / exec 多字节截断 | ~30 件 | Bun 实现了这些，欠；**fork/IPC handle 传递 ~25 件出局**（Bun 🟡 IPC 缺口，同缺不追） |
+| worker_threads | terminate 深水 / 环境面尾件 | 部分 | Bun 🟡 → parity 确认档；Atomics.wait（引擎面）与 stdio 流面（Bun 同缺倾向）另核 |
+
+### 待核对（1 项）
+
+- **URLPattern**（url 域 3 件 ⏭️）：bun-compat 快照无此行，需对 Bun 1.3 实测
+  确认其是否实现；实现了即入上表，没实现维持出局。
+
+> 验收口径：上表全部转绿/或逐簇书面偏离前，Phase 10 对"Bun 🟢 域"不算
+> 逐字节到位；10f 的收官（§1 矩阵/报告/终局门）不受影响——欠账已全部
+> 定位、定性、定量。

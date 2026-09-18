@@ -2145,3 +2145,30 @@ cargo build
   helper（`JS::ToString` 对 symbol 抛 TypeError，Rust 侧原生路不通）。
   复现：`tests/node/worker.rs::phase10f_worker_*`（修前 Int32Array 跨端静默丢、
   TDZ 级联、receive-message 收尾 hang）。
+
+### 4.133 crypto 四轮 + http2 流式化六坑（2026-09-18，10f crypto/http2 收尾）
+
+- 坑一（`Uint8Array.equals` 不存在）：`__b64urlDec` 回 `Uint8Array`（无
+  `.equals`），OKP/EC 的 JWK `x` 比对直调即 `xBytes.equals is not a function`。
+  修法：一律 `Buffer.from(x).equals(...)`（`crypto.rs` OKP/EC 两处）。
+- 坑二（`ChanBody.done` 初值吞体）：客户端上传 `Data+End` 已入队但 `done` 仍
+  `true`，首轮 `poll_frame` 即 `None`，POST 体恒空（服务端 `srv-end ""`）。
+  修法：有体即 `done=false`（空体无 trailer 才 `true`）。
+- 坑三（`try_recv` 丢 waker 饿死流式）：服务端应答 `ChanBody::poll_frame` 用
+  `try_recv` 空转 `Pending` 且忽略 `cx`，后到的体块永不唤醒（`res.write` 后
+  客户端零 `data`）。修法：改 `rx.poll_recv(cx)` 注册 waker（首版注释记坑）。
+- 坑四（Duplex 基类只读 `closed/destroyed`）：`ClientHttp2Stream extends Duplex`
+  后 `this.closed=false` 即 `setting getter-only property "closed"`（state 位图
+  只读；旧 EventEmitter 壳无此约束）。修法：自有 aboard 旗用 `__` 前缀，
+  `close()` 以 `destroyed` 只读判幂等、`destroy()` 置位（服务端
+  `Http2ServerStream` 同口径早已 `__closed`）。
+- 坑五（`Object.create(Socket.prototype)` 撞只读 `connecting`）：socket 代理
+  `base.connecting=false` 同样 getter-only 抛错。修法：
+  `Object.defineProperty(base,"connecting",{writable:true})` 自有遮蔽。
+- 坑六（`writeHead` 不发头）：本仓 `writeHead` 仅缓冲、`__sendHead` 在
+  `write/flush/end` 才发——双 `writeHead` 不抛（真机发头即抛
+  `ERR_HTTP2_HEADERS_SENT`）。测试用 `flushHeaders()` 先发头再断言抛错；
+  `write+end` 体会拼接收尾（断言须按全形 `"xgate:..."` 或改 `flush` 形）。
+- 复现：`tests/node/http2.rs::phase10f_http2_streaming`（修前 POST 空体/
+  流式零 data/`gate false`）；`tests/node/crypto.rs::phase10f_crypto_round4_parity`
+  （修前 `xBytes.equals`/`Invalid JWK EC key`）。

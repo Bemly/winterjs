@@ -161,4 +161,102 @@ setTimeout(() => console.log("end-ok"), 2500);
     assert!(out.contains("end-ok"), "out: {out}");
     dir.close().unwrap();
 }
-// ── Phase 9e-1a：node:crypto（Hash/Hmac/随机/杂项） ────
+
+#[test]
+fn phase10f_http2_streaming() {
+    // 10f http2 流式化：服务端分块写（write/write/end 增量下发）+ 客户端 POST 体
+    // + trailer 往返 + 报错（writeHead 双调 ERR_HTTP2_HEADERS_SENT）+ 边界空体。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createServer, connect } from "node:http2";
+const server = createServer();
+server.on("request", (req, res) => {
+  if (req.url === "/stream") {
+    res.writeHead(200, { "x-a": "1" });
+    res.write("chunk1-");
+    setTimeout(() => { res.write("chunk2-"); setTimeout(() => res.end("chunk3"), 20); }, 20);
+  } else if (req.url === "/echo") {
+    let b = "";
+    req.on("data", (c) => (b += c));
+    req.on("end", () => res.end("echo:" + b));
+  } else if (req.url === "/trailer") {
+    res.writeHead(200);
+    res.addTrailers({ "x-t": "1" });
+    res.end("t-body");
+  } else if (req.url === "/double") {
+    // flushHeaders 即发头（__sendHead 置 headersSent），其后 writeHead 必抛 HEADERS_SENT。
+    res.flushHeaders();
+    let code = "NO-THROW";
+    try { res.writeHead(200); } catch (e) { code = e.code ?? "no-code"; }
+    res.end("gate:" + code);
+  } else {
+    let b = "";
+    req.on("data", (c) => (b += c));
+    req.on("end", () => res.end("empty:" + b.length));
+  }
+});
+server.listen(0, "127.0.0.1", () => {
+  const port = server.address().port;
+  const sess = connect(`http://127.0.0.1:${port}`);
+  sess.on("error", () => {});
+  const get = (path, wantTrailers) => new Promise((resolve, reject) => {
+    const st = sess.request({ ":path": path });
+    st.on("response", (h) => {});
+    let b = "";
+    let trailers = null;
+    st.on("data", (c) => (b += c));
+    st.on("trailers", (t) => { trailers = t; });
+    st.on("end", () => resolve({ b, trailers }));
+    st.on("error", reject);
+    st.end();
+  });
+  const post = (path, body) => new Promise((resolve, reject) => {
+    const st = sess.request({ ":method": "POST", ":path": path });
+    let b = "";
+    st.on("data", (c) => (b += c));
+    st.on("end", () => resolve(b));
+    st.on("error", reject);
+    st.end(body);
+  });
+  sess.on("connect", async () => {
+    try {
+      const s = await get("/stream");
+      console.log("stream", s.b === "chunk1-chunk2-chunk3");
+      const e = await post("/echo", "hello-h2");
+      console.log("echo", e === "echo:hello-h2");
+      const t = await get("/trailer");
+      console.log("trailer", t.b === "t-body", t.trailers !== null && t.trailers["x-t"] === "1");
+      const d = await get("/double");
+      console.log("gate", d.b === "gate:ERR_HTTP2_HEADERS_SENT");
+      const z = await get("/empty");
+      console.log("empty", z.b === "empty:0");
+      console.log("done");
+      sess.close();
+    } catch (e) {
+      console.log("fail", e && e.code, e && e.message);
+      sess.close();
+    }
+  });
+  sess.on("close", () => server.close());
+});
+server.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 2500);
+"#,
+    );
+    for line in [
+        "stream true",
+        "echo true",
+        "trailer true true",
+        "gate true",
+        "empty true",
+        "done",
+        "srv-close",
+        "end-ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

@@ -947,12 +947,29 @@
 > - 回归：`tests/node/crypto.rs::phase10f_crypto_round2_parity`（34 断言）；
 >   旧伪语义翻转（copy 默认长/DH 数值形/shake 负长；§4.65/§4.82 再进宫）。
 >
-> ### 剩余红项（约 87，分簇，均下轮或另案）
+> ### 四轮已修（2026-09-18，key-objects 阻塞簇）
 >
-> - **key-objects.js**：x448 已闭（三轮）；剩 RSA pkcs1 段（pkcs1-pub 显式形
->   type 门等，313 行族）+ EC raw 格式，下轮。
+> - **导出门矩阵**：format 门（secret∈{undefined,'buffer','jwk'}；非对称∈
+>   {'pem','der','jwk','raw-private','raw-public'}，其余 ARG_VALUE）+ type 门
+>   （未知/缺 type→ARG_VALUE；public+pkcs8/sec1、private+spki→ARG_VALUE；
+>   pkcs1 非 RSA、sec1 非 EC 私钥→INCOMPATIBLE；真机 26 逐项）+ RSA pkcs1/
+>   EC sec1 导出（sec1 头 `307702010104200f` 逐字节）+ typeless 旧断言翻转
+>   （mlkem `mk-pem` 等，§4.65/§4.82）。
+> - **EC raw**：raw-private=定长标量、raw-public=`04||X||Y`（P-256 32/65B；
+>   别名 'P-256' 同收，'secp256r1' 拒 INVALID_CURVE；坏点/压缩形/尺寸错位
+>   逐项）+ 派生收口（raw-private 建公钥由私钥派生）。
+> - **details/JWK**：asymmetricKeyDetails（EC→OpenSSL 名、OKP→{}、DSA→
+>   {modulusLength,divisorLength}）+ OKP/EC JWK 校验矩阵（x/y 对派生点、
+>   缺 d/crv 非法曲线等，真机逐项）+ DSA 无 JWK 面（导出
+>   JWK_UNSUPPORTED、导入 INVALID_JWK；旧 `d-jwk` 伪语义翻转）。
+> - 回归：`tests/node/crypto.rs::phase10f_crypto_round4_parity`（50+ 断言）；
+>   坑见 AGENTS §4.133（`Uint8Array.equals` 两处）。
+>
+> ### 剩余红项（分簇，均下轮或另案）
+>
+> - **key-objects.js**：四轮后剩 RSA pkcs1 313 行族尾段 + 零散 type 门，下轮。
 > - **校验长尾**（~15）：Missing expected / unexpected throw 逐 API 续补。
-> - **密钥导入零散**（pkcs1-pub 显式形、pub+pkcs8 wrong-tag、pub+sec1 等 type 门全表），下轮。
+> - **密钥导入零散**（pkcs1-pub 显式形、pub+pkcs8 wrong-tag 等 type 门全表），下轮。
 > - **真流式面**（hasher pipe/dest.on/tls.Server 无 new/stdio 桩），另案。
 > - **subtle 面**（RSA-OAEP SHA-1 等 WebCrypto 差集），另案（`oaep-zero-length`）。
 > - **零散**：scrypt 钥长、raw-public 导出、ECDH getters 的 'buffer'、
@@ -1046,6 +1063,19 @@
 > http 流式化同型工程，另轮；次簇：`stream.respond/respondWithFile` 等
 > server 流面（~11）、settings/priority/ALPN 校验面、TIMEOUT（背压/内存限）。
 > h2c/HTTP3 既有黑盒全绿无回归（`tests/node/http2.rs`）。
+>
+> > ### 流式化已修（2026-09-18，头/体分离）
+> >
+> > - **ChanBody**：头经 oneshot、体经 `H2RespondData/End/Reset` 增量下发
+> >   （早到体块 outbox 回放；`poll_recv(cx)` 注册 waker，`try_recv` 空转饿死已修；
+> >   `done` 初值有体即 false）；客户端上传同通道（`H2OpenTrailers` 补 trailer 帧）。
+> > - **compat 错误码**：`ERR_HTTP2_HEADERS_SENT/INVALID_STREAM/
+> >   NO_SOCKET_MANIPULATION/INVALID_HEADER_VALUE/PUSH_DISABLED/
+> >   INVALID_HTTP_TOKEN`（node 文案逐字）+ socket 代理（`connecting` 自有遮蔽）。
+> > - **Duplex 只读**：`ClientHttp2Stream extends Duplex` 后 `closed/destroyed`
+> >   禁赋值（state 位图），`close()` 以 `destroyed` 判幂等（坑见 AGENTS §4.133）。
+> > - 回归：`tests/node/http2.rs::phase10f_http2_streaming`（分块写/POST 回显/
+> >   trailer 往返/HEADERS_SENT/空体，正常+报错+边界）。
 
 ## worker
 

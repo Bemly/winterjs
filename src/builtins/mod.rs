@@ -4555,6 +4555,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_ec_jwk_pub", Some(crypto::ec_jwk_pub), 2),
             ("__wjs_ec_import_priv", Some(crypto::ec_import_priv), 2),
             ("__wjs_ec_import_pub", Some(crypto::ec_import_pub), 3),
+            // 10f crypto五轮：压缩/混合 SEC1 点导入（轮子内解压+上曲线校验）
+            ("__wjs_ec_import_compressed", Some(crypto::ec_import_compressed), 2),
             // 9h-1：SPKI/PKCS#8 算法 OID 直判曲线（试解误判 secp256k1→P-256）
             ("__wjs_ec_guess_curve", Some(crypto::ec_guess_curve), 1),
             // 9i-3：X.509 证书验签（TBS 裸段 + 签名算法 OID 分发，复用验签底座）

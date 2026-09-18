@@ -965,9 +965,41 @@
 > - 回归：`tests/node/crypto.rs::phase10f_crypto_round4_parity`（50+ 断言）；
 >   坑见 AGENTS §4.133（`Uint8Array.equals` 两处）。
 >
+> ### 五轮已修（2026-09-18，raw 门收敛 → `key-objects-raw.js` 全绿）
+>
+> - **私钥加密门最前**：`passphrase` 有即仅 pem/der 放行，其余
+>   （jwk/raw-*/未知/缺 format）一律 INCOMPATIBLE `... does not support
+>   encryption`（`'banana'`/`undefined` 逐字；公钥/secret 侧忽略；
+>   cipher 单给忽略——jwk 旧 `||cipher` 收窄，附带修）。
+> - **raw-seed**：format 门收编；导出 ml 私钥走既有 seed natives、
+>   余下一律 INCOMPATIBLE（公钥侧 kind 门先判 ARG_VALUE）；导入同走 akt
+>   链后 INCOMPATIBLE（ml 见下）。
+> - **字符串导入拒收**：raw 导入字符串 key 即 ARG_TYPE（28 码点截断规则
+>   实测：超长截前 25 + `...`）；`createPrivateKey/PublicKey` 的 encoding
+>   预解码限 pem/der 系（raw 系先解码即洗白，门永不触发）。
+> - **ml raw**：公钥 raw-public = SPKI BIT STRING 裸料（768→1184B 等）；
+>   私钥 raw-seed = PKCS#8 种子（kem 64/dsa 32，既有 natives）；导入按集验长
+>   （错位 ARG_VALUE 'Invalid key data'，料回包 DER 存，derive 全通）；
+>   raw-private 一律 INCOMPATIBLE；展开形 PKCS#8
+>   （OCTET{ SEQ{ OCTET(seed), … } }，`ml_dsa_44_private.pem` 指纹）进
+>   `mlkem_pkcs8_seed`（Rust 单测钉住）。
+> - **slh 装载**（128f/192f 指纹 OID，余集仍 Invalid）：SPKI/PKCS#8 试解链
+>   + raw 尺寸门（pub 32/48、priv 64/96；raw-seed 私钥 INCOMPATIBLE）。
+> - **DH 装载**：PKCS#8 dhpublicnumber OID 建 KeyObject（p/g 不校验，
+>   raw 门只认 keyType）。
+> - **EC 压缩点**：导出 `type: compressed/uncompressed`（缺省非压缩；
+>   非法 type ARG_VALUE inspect 口径；raw-private 无视 type）+ 导入
+>   02/03（新 native `__wjs_ec_import_compressed`，轮子内解压+上曲线校验，
+>   p256/p384/p521/k256 全直引零新增）/06/07 直通（坏前缀/错长 ARG_VALUE）；
+>   压缩输出与真机逐字节一致（P-256/P-384 实测）。
+> - 回归：`tests/node/crypto.rs::phase10f_crypto_raw_seed_parity`（30 断言）；
+>   套件侧 `test-crypto-key-objects-raw.js` 由 DIFF 转 SAME0；
+>   坑见 AGENTS §4.134。
+>
 > ### 剩余红项（分簇，均下轮或另案）
 >
-> - **key-objects.js**：四轮后剩 RSA pkcs1 313 行族尾段 + 零散 type 门，下轮。
+> - **key-objects.js**：五轮后剩 RSA pkcs1 段尾 + 零散 type 门，下轮
+>   （同文件恒定位 `313:53` 系 assert 内部抛点，非套件位置——二分截断定位）。
 > - **校验长尾**（~15）：Missing expected / unexpected throw 逐 API 续补。
 > - **密钥导入零散**（pkcs1-pub 显式形、pub+pkcs8 wrong-tag 等 type 门全表），下轮。
 > - **真流式面**（hasher pipe/dest.on/tls.Server 无 new/stdio 桩），另案。

@@ -2172,3 +2172,31 @@ cargo build
 - 复现：`tests/node/http2.rs::phase10f_http2_streaming`（修前 POST 空体/
   流式零 data/`gate false`）；`tests/node/crypto.rs::phase10f_crypto_round4_parity`
   （修前 `xBytes.equals`/`Invalid JWK EC key`）。
+
+### 4.134 crypto 五轮 raw 门六坑（2026-09-18，10f crypto 五轮）
+
+- 坑一（恒定位 `313:53` 系 assert 内部抛点）：套件失败行号恒为
+  `assert.js:313:53`（`__checkThrow` 的 `unexpected throw` / `throws` 的
+  `Missing expected exception` 抛点），不是套件位置——读行号找断言必错。
+  修法：截断二分（按顶层 `}` 块逐段 `head -n` 落临时文件跑，§4.115 四分法
+  的机械版）；`hasOpenSSL(3,5)` 在本仓为 true，ml/slh 块全执行（别当跳过）。
+- 坑二（预解码洗白字符串门）：`createPublicKey` 的 encoding 预解码把 raw
+  字符串 key 先洗成 Buffer，`__parseKeyMaterial` 内的字符串门永不触发。
+  修法：预解码限 pem/der 系，raw 系（`raw-private/-public/-seed`）跳过。
+- 坑三（门序即语义，三层各异）：`want` 门（`key.format` 无效）→
+  字符串门（`key.key` 实例断言）→ akt 链（缺/坏 akt）→ seed/尺寸语义门，
+  逐层实测定序，不猜（如 `createPrivateKey({format:'raw-public'})` 报
+  format 门而非 akt 错；字符串门却排 akt 链之前）。
+- 坑四（ml 展开形 PKCS#8）：`ml_dsa_44_private.pem` 非种子形而是
+  OCTET{ SEQ{ OCTET(32 seed), OCTET(2560) } }——种子解析器只认 `[0]` 形即
+  `Invalid PKCS#8 key`。修法：`mlkem_pkcs8_seed` 加 SEQ 首子 OCTET 分支
+  （Rust 单测钉种子形/展开形/错长三件）。
+- 坑五（压缩点别手写 BigInt）：P-384/P-521 的 `b` 凭记忆必错——树内
+  p256/p384/p521/k256 全直引（零新增），新 native
+  `__wjs_ec_import_compressed` 经 `PublicKey::from_sec1_bytes`（固有方法，
+  含解压+上曲线校验）一行落地；JS 侧只做形态分流（02/03→native、
+  06/07→04 同道、坏前缀落 `bad()`）。
+- 坑六（zsh `===` 展开，§4.3 二进宫）：`echo ===` 裸写即 hemis——本轮
+  `grep ... | head` 后误跟裸 `===` 又炸一次；分隔符一律加引号。
+- 复现：`tests/node/crypto.rs::phase10f_crypto_raw_seed_parity`（`r5-*` 行；
+  另 `test-crypto-key-objects-raw.js` 修前 DIFF 修后 SAME0）。

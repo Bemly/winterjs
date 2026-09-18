@@ -2437,10 +2437,21 @@ fn mlkem_pkcs8_seed(der: &[u8], seed_len: usize) -> Option<(&[u8], &[u8])> {
     }
     let inner = &rest2[h4..h4 + c4];
     let (t5, h5, c5) = crate::builtins::crypto::der_tlv(inner)?;
-    if t5 != 0x80 || c5 != seed_len {
-        return None;
+    if t5 == 0x80 && c5 == seed_len {
+        return Some((oid, &inner[h5..h5 + c5]));
     }
-    Some((oid, &inner[h5..h5 + c5]))
+    // 10f crypto五轮：展开形（OneAsymmetricKey OCTET 内嵌 SEQ{ OCTET(seed), … }，
+    // 套件 ml_dsa_44_private.pem 指纹：SEQ{ OCTET(32), OCTET(2560) }）——
+    // 首子 OCTET 即种子；种子形错长仍 None（t5==0x80 不入此分支）。
+    if t5 == 0x30 {
+        let seq = &inner[h5..h5 + c5];
+        if let Some((u5, v5, w5)) = crate::builtins::crypto::der_tlv(seq) {
+            if u5 == 0x04 && w5 == seed_len {
+                return Some((oid, &seq[v5..v5 + w5]));
+            }
+        }
+    }
+    None
 }
 
 /// SPKI → `(OID, ek)`（BIT STRING 首字节须为 0 未用位）。
@@ -4460,6 +4471,12 @@ function __b64urlDec(s) {
   while (t.length % 4) t += "=";
   return __b64dec(t);
 }
+// 10f crypto五轮：Node inspect 小口径（raw type 回显；套件钉字符串，
+ // null/数字/布尔/对象按 inspect 形；深结构近似记档）。
+const __inspectSmall = (v) => typeof v === "string" ? `'${v}'`
+  : v === null || v === undefined ? String(v)
+  : typeof v !== "object" ? String(v)
+  : (() => { try { return JSON.stringify(v) ?? String(v); } catch { return String(v); } })();
 // 最小 DER 读器（SEC1/DH-PKCS8 解析用；完整 ASN.1 不做）
 function __derRead(buf, pos) {
   const tag = buf[pos];
@@ -4481,6 +4498,70 @@ function __derChildren(buf) {
     pos = t.next;
   }
   return out;
+}
+// 10f crypto五轮：SLH-DSA 装载（套件指纹：仅 sha2-128f/192f， DER 指纹见
+// /tmp/wjs-raw-probe 注释；余 10 集未实现，仍报 Invalid SPKI/PKCS#8）。
+// SPKI = SEQ{ SEQ{ OID }, BITSTRING(00||pk) }；PKCS#8 = SEQ{ INT 0, SEQ{ OID },
+// OCTET(sk) }。OID hex：128f=...0315（2.16.840.1.101.3.4.3.21）、
+// 192f=...0317（...3.23）。[privLen, pubLen] = 128f:[64,32]、192f:[96,48]。
+const __SLH_SETS = {
+  "608648016503040315": ["slh-dsa-sha2-128f", 64, 32],
+  "608648016503040317": ["slh-dsa-sha2-192f", 96, 48],
+};
+function __slhParse(der, want) {
+  // want: 'public' | 'private'；不合即回 null（调用方落 "no"，沿试解链）。
+  let kids;
+  try {
+    const top = __derRead(der, 0);
+    if (top.tag !== 48) return null;
+    kids = __derChildren(top.body);
+  } catch { return null; }
+  const oidOf = (algSeq) => {
+    let inner;
+    try { inner = __derChildren(algSeq.body); } catch { return null; }
+    if (inner.length !== 1 || inner[0].tag !== 6) return null;
+    return __SLH_SETS[Buffer.from(inner[0].body).toString("hex")] ?? null;
+  };
+  if (want === "public") {
+    if (kids.length !== 2 || kids[0].tag !== 48 || kids[1].tag !== 3) return null;
+    const set = oidOf(kids[0]);
+    if (!set) return null;
+    const bit = kids[1].body;
+    if (bit.length !== set[2] + 1 || bit[0] !== 0) return null;
+    return { name: set[0], raw: bit.subarray(1) };
+  }
+  if (kids.length !== 3 || kids[0].tag !== 2 || kids[1].tag !== 48 || kids[2].tag !== 4) return null;
+  if (kids[0].body.length !== 1 || kids[0].body[0] !== 0) return null;
+  const set = oidOf(kids[1]);
+  if (!set) return null;
+  if (kids[2].body.length !== set[1]) return null;
+  return { name: set[0], raw: kids[2].body };
+}
+// 10f crypto五轮：ML 参数集表（[oidHex, seedLen, pubLen]，Rust
+// mlkem_params/mldsa_params 同源指纹）+ 裸料回包 DER 构造
+//（SPKI = SEQ{ SEQ{ OID }, BITSTRING(00||ek) }；种子 PKCS#8 =
+// SEQ{ INT 0, SEQ{ OID }, OCTET{ [0] seed } }，Rust mlkem_pkcs8 同构）。
+const __ML_SETS = {
+  "ml-kem-512": ["608648016503040401", 64, 800],
+  "ml-kem-768": ["608648016503040402", 64, 1184],
+  "ml-kem-1024": ["608648016503040403", 64, 1568],
+  "ml-dsa-44": ["608648016503040311", 32, 1312],
+  "ml-dsa-65": ["608648016503040312", 32, 1952],
+  "ml-dsa-87": ["608648016503040313", 32, 2592],
+};
+const __tlv = (tag, body) => new Uint8Array([tag, ...__derLen(body.length), ...body]);
+function __mlSpki(akt, ek) {
+  const oid = Buffer.from(__ML_SETS[akt][0], "hex");
+  const alg = __tlv(0x30, __tlv(0x06, oid));
+  const bit = new Uint8Array([0, ...ek]);
+  return __tlv(0x30, new Uint8Array([...alg, ...__tlv(0x03, bit)]));
+}
+function __mlSeedPkcs8(akt, seed) {
+  const oid = Buffer.from(__ML_SETS[akt][0], "hex");
+  const alg = __tlv(0x30, __tlv(0x06, oid));
+  const oct = __tlv(0x04, __tlv(0x80, seed));
+  const zero = __tlv(0x02, new Uint8Array([0]));
+  return __tlv(0x30, new Uint8Array([...zero, ...alg, ...oct]));
 }
 function __pemDecode(text) {
   const m = String(text).match(/-----BEGIN ([^-]+)-----([\s\S]*?)-----END \1-----/);
@@ -4817,11 +4898,51 @@ class KeyObject {
     // 10f X448：OKP raw 格式（真机口径：裸料 Buffer；kind 错位 → format 无效，
     // 非 OKP → INCOMPATIBLE；真机 26 逐项）。10f 四轮：EC raw 同门——
     // raw-private = 定长标量（曲线字节长）、raw-public = 非压缩点 04||X||Y。
-    if (format === "raw-private" || format === "raw-public") {
-      const wantKind = format === "raw-private" ? "private" : "public";
+    // 10f crypto五轮：raw-seed 同为私钥专属（公钥侧 ARG_VALUE，真机同），
+    // 私钥 raw-seed 走 ml-seed / blanket INCOMPATIBLE。
+    if (format === "raw-private" || format === "raw-public" || format === "raw-seed") {
+      const wantKind = format === "raw-public" ? "public" : "private";
       if (s.kind !== wantKind) {
         const err = new TypeError(`The property 'options.format' is invalid. Received '${format}'`);
         err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      }
+      // 10f crypto五轮：ml raw 导出（真机 26 口径）——公钥 raw-public = SPKI
+      // BIT STRING 裸料（ml-kem-768 1184B 等）；私钥 raw-seed = PKCS#8 种子
+      //（既有 seed_from_pkcs8 natives，无新增）；其余组合 INCOMPATIBLE。
+      if (s.keyType.startsWith("ml-kem-") || s.keyType.startsWith("ml-dsa-")) {
+        const isKem = s.keyType.startsWith("ml-kem-");
+        if (format === "raw-public" && s.kind === "public") {
+          try {
+            const top = __derRead(s.material, 0);
+            const kids = __derChildren(top.body);
+            return Buffer.from(kids[1].body.subarray(1));
+          } catch {
+            const err = new Error("The selected key encoding is incompatible with the key type");
+            err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+            throw err;
+          }
+        }
+        if (format === "raw-seed" && s.kind === "private") {
+          const parts = JSON.parse(__cryptCall(() => (isKem
+            ? __wjs_mlkem_seed_from_pkcs8(s.material)
+            : __wjs_mldsa_seed_from_pkcs8(s.material))));
+          return Buffer.from(__b64dec(parts.seed));
+        }
+        const err = new Error("The selected key encoding is incompatible with the key type");
+        err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+        throw err;
+      }
+      // 10f crypto五轮：slh raw 导出（装载期已验尺寸，material 即裸料直返）。
+      if ((s.keyType === "slh-dsa-sha2-128f" || s.keyType === "slh-dsa-sha2-192f") &&
+          format !== "raw-seed") {
+        return Buffer.from(s.material);
+      }
+      // 10f crypto五轮：raw-seed 兜底（ml 私钥已上处理；EC/OKP/slh 不得下漏
+      // 取料——ec 私钥料调 jwk_pub 即 DataError 原形毕露）。
+      if (format === "raw-seed") {
+        const err = new Error("The selected key encoding is incompatible with the key type");
+        err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
         throw err;
       }
       if (s.keyType === "ec") {
@@ -4836,8 +4957,20 @@ class KeyObject {
           const parts = JSON.parse(__cryptCall(() => __wjs_ec_jwk(curve, s.material, pubDer)));
           return Buffer.from(__b64urlDec(parts.d));
         }
+        // 10f crypto五轮：raw-public 的 type 选项（真机 26 口径）——缺省/
+        // uncompressed 回 65B 非压缩；compressed 回 33B（y 末字节奇偶定前缀）；
+        // 其余一律 ARG_VALUE（inspect 小口径回显）；raw-private 无视 type。
+        const t = options?.type;
+        if (t !== undefined && t !== "uncompressed" && t !== "compressed") {
+          const err = new TypeError(
+            `The property 'options.type' must be one of: 'compressed', 'uncompressed'. Received ${__inspectSmall(t)}`);
+          err.code = "ERR_INVALID_ARG_VALUE";
+          throw err;
+        }
         const parts = JSON.parse(__cryptCall(() => __wjs_ec_jwk_pub(curve, s.material)));
-        return Buffer.concat([Buffer.from([4]), __b64urlDec(parts.x), __b64urlDec(parts.y)]);
+        const x = __b64urlDec(parts.x), y = __b64urlDec(parts.y);
+        if (t === "compressed") return Buffer.concat([Buffer.from([(y[y.length - 1] & 1) ? 3 : 2]), x]);
+        return Buffer.concat([Buffer.from([4]), x, y]);
       }
       if (!["ed25519", "x25519", "x448", "ed448"].includes(s.keyType)) {
         const err = new Error("The selected key encoding is incompatible with the key type");
@@ -4845,14 +4978,6 @@ class KeyObject {
         throw err;
       }
       return Buffer.from(s.material);
-    }
-    // 10f crypto五轮：raw-seed 导出（真机 26 口径）——本仓无 seed 键型
-    //（SLH-DSA/ML-KEM 未实现），一律 INCOMPATIBLE；type 旁路
-    //（'banana'/pkcs8/sec1 照抛 INCOMPATIBLE，故置 type 矩阵之前）。
-    if (format === "raw-seed") {
-      const err = new Error("The selected key encoding is incompatible with the key type");
-      err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
-      throw err;
     }
     // 10f 四轮：pem/der type 门矩阵（真机 26 逐项）——未知/缺 type →
     // ARG_VALUE 'options.type' is invalid；kind 错位（public+pkcs8/sec1、
@@ -5440,7 +5565,16 @@ function __parseKeyMaterial(key, format, type, want, options) {
         return k;
       }
       const size = __curveSize(curve);
-      if (material.length !== 1 + 2 * size || material[0] !== 4) bad();
+      // 10f crypto五轮：压缩点（02/03 + X）走轮子内解压 native；混合点
+      //（06/07 + 全坐标）与 04 同道；坏前缀/错长落 bad()（真机逐项）。
+      if ((material[0] === 2 || material[0] === 3) && material.length === 1 + size) {
+        let pubDer;
+        try { pubDer = __cryptCall(() => __wjs_ec_import_compressed(curve, material)); } catch { bad(); }
+        const k = new PublicKeyObject("public", "ec", Buffer.from(pubDer));
+        k.__detail = { namedCurve: curve };
+        return k;
+      }
+      if (material.length !== 1 + 2 * size || ![4, 6, 7].includes(material[0])) bad();
       const x = material.slice(1, 1 + size), y = material.slice(1 + size);
       let pubDer;
       try { pubDer = __cryptCall(() => __wjs_ec_import_pub(curve, x, y)); } catch { bad(); }
@@ -5448,10 +5582,67 @@ function __parseKeyMaterial(key, format, type, want, options) {
       k.__detail = { namedCurve: curve };
       return k;
     }
+    // 10f crypto五轮：SLH-DSA raw 导入（raw-seed 先判 INCOMPATIBLE，
+    // 与 OKP 同序；尺寸错位 → ARG_VALUE 'Invalid key data'；私钥 raw 建公钥
+    // 走 __derivePublic（ERR_NOT_SUPPORTED，套件外记档）。
+    if (akt === "slh-dsa-sha2-128f" || akt === "slh-dsa-sha2-192f") {
+      if (format === "raw-seed") {
+        const err = new Error("The selected key encoding is incompatible with the key type");
+        err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+        throw err;
+      }
+      const wantLen = akt === "slh-dsa-sha2-128f"
+        ? (format === "raw-private" ? 64 : 32)
+        : (format === "raw-private" ? 96 : 48);
+      const material = __cryptBytes(key, "key");
+      if (material.length !== wantLen) {
+        const err = new TypeError("Invalid key data");
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      }
+      if (format === "raw-private") {
+        const k = new PrivateKeyObject("private", akt, Buffer.from(material));
+        if (want === "public") return __derivePublic(k);
+        return k;
+      }
+      return new PublicKeyObject("public", akt, Buffer.from(material));
+    }
+    // 10f crypto五轮：ML raw 导入（真机 26 逐项）——raw-public 按集验长
+    //（错位 → ARG_VALUE 'Invalid key data'），料回包 SPKI DER 存；
+    // raw-seed 按种子长验，料回包种子形 PKCS#8 存（下游 seed_from_pkcs8/
+    // derivePublic 全通）；raw-private 一律 INCOMPATIBLE（ml 无此面）。
+    if (akt.startsWith("ml-kem-") || akt.startsWith("ml-dsa-")) {
+      const set = __ML_SETS[akt];
+      if (!set) {
+        const err = new TypeError(`Invalid asymmetricKeyType: ${akt}`);
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      }
+      const badData = () => {
+        const err = new TypeError("Invalid key data");
+        err.code = "ERR_INVALID_ARG_VALUE";
+        throw err;
+      };
+      const material = __cryptBytes(key, "key");
+      if (format === "raw-public") {
+        if (material.length !== set[2]) badData();
+        return new PublicKeyObject("public", akt, Buffer.from(__mlSpki(akt, material)));
+      }
+      if (format === "raw-private") {
+        const err = new Error("The selected key encoding is incompatible with the key type");
+        err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+        throw err;
+      }
+      if (material.length !== set[1]) badData();
+      const k = new PrivateKeyObject("private", akt, Buffer.from(__mlSeedPkcs8(akt, material)));
+      if (want === "public") return __derivePublic(k);
+      return k;
+    }
     const lens = { ed25519: 32, x25519: 32, x448: 56, ed448: 57 };
     if (lens[akt] === undefined) {
       // 10f 四轮：已知键型但 raw 不支持 → INCOMPATIBLE（真机逐项）；
       // 未知键型 → ARG_VALUE 'Invalid asymmetricKeyType: X'。
+      // 注：ml 系已上分支，此处 startsWith(ml-*) 仅为集外名兜底。
       if (akt === "rsa" || akt === "rsa-pss" || akt === "dsa" || akt === "dh" ||
           akt.startsWith("ml-kem-") || akt.startsWith("ml-dsa-")) {
         const err = new Error("The selected key encoding is incompatible with the key type");
@@ -5632,6 +5823,28 @@ function __parseKeyMaterial(key, format, type, want, options) {
         const parts = JSON.parse(__cryptCall(() => __wjs_mldsa_seed_from_pkcs8(der)));
         return new PrivateKeyObject("private", parts.kind, der);
       }],
+      ["slh", () => {
+        // 10f crypto五轮：SLH-DSA PKCS#8（OCTET 裸私钥直存，尺寸已验）。
+        const info = __slhParse(der, "private");
+        if (!info) throw new Error("no");
+        return new PrivateKeyObject("private", info.name, Buffer.from(info.raw));
+      }],
+      ["dh", () => {
+        // 10f crypto五轮：DH PKCS#8（OID 1.2.840.113549.1.3.1；material 存整 DER，
+        // p/g 不校验——raw 门只认 keyType，运算期另案）。
+        let seq;
+        try {
+          const top = __derRead(der, 0);
+          if (top.tag !== 48) throw new Error("no");
+          seq = __derChildren(top.body);
+        } catch { throw new Error("no"); }
+        if (seq.length !== 3 || seq[0].tag !== 2 || seq[1].tag !== 48 || seq[2].tag !== 4) throw new Error("no");
+        let alg;
+        try { alg = __derChildren(seq[1].body); } catch { throw new Error("no"); }
+        if (alg.length < 1 || alg[0].tag !== 6 ||
+            Buffer.from(alg[0].body).toString("hex") !== "2a864886f70d010301") throw new Error("no");
+        return new PrivateKeyObject("private", "dh", Buffer.from(der));
+      }],
     ];
     for (const [, fn] of tries) {
       try { return fn(); } catch (e) { if (e && e.code && e.code !== "ERR_NOT_SUPPORTED") throw e; }
@@ -5675,6 +5888,12 @@ function __parseKeyMaterial(key, format, type, want, options) {
         const kind = __cryptCall(() => __wjs_mldsa_kind_from_spki(der));
         if (kind === "") throw new Error("no");
         return new PublicKeyObject("public", kind, der);
+      },
+      () => {
+        // 10f crypto五轮：SLH-DSA SPKI（BITSTRING 裸公钥直存，尺寸已验）。
+        const info = __slhParse(der, "public");
+        if (!info) throw new Error("no");
+        return new PublicKeyObject("public", info.name, Buffer.from(info.raw));
       },
     ];
     for (const fn of tries) {
@@ -7505,6 +7724,34 @@ mod tests {
         bad[20] = 0x81; // 内层 [0] → 0x81（上下文构造形），结构不符
         assert!(mlkem_pkcs8_seed(&bad, 64).is_none());
         assert!(mlkem_pkcs8_seed(&pkcs8[..40], 64).is_none());
+        // 10f crypto五轮：展开形（套件 ml_dsa_44_private.pem 指纹
+        // OCTET{ SEQ{ OCTET(seed), OCTET(rest) } }）——首子 OCTET 即种子；
+        // 首子错长/非 OCTET 即 None。
+        let seed44 = [9u8; 32];
+        let (doid, _, _) = mldsa_params("ml-dsa-44").unwrap();
+        let alg = mlkem_tlv(0x30, &mlkem_tlv(0x06, doid));
+        let mut exp_body = mlkem_tlv(0x02, &[0]);
+        exp_body.extend_from_slice(&alg);
+        let mut inner_seq = mlkem_tlv(0x04, &seed44);
+        inner_seq.extend_from_slice(&mlkem_tlv(0x04, &[1u8; 16]));
+        exp_body.extend_from_slice(&mlkem_tlv(0x04, &mlkem_tlv(0x30, &inner_seq)));
+        let exp = mlkem_tlv(0x30, &exp_body);
+        let (oid4, got) = mlkem_pkcs8_seed(&exp, 32).unwrap();
+        assert_eq!(oid4, doid);
+        assert_eq!(got, &seed44[..]);
+        // 首子 OCTET 错长（31B）即 None；首子换 INTEGER 即 None。
+        let mut short_seq = mlkem_tlv(0x04, &[9u8; 31]);
+        short_seq.extend_from_slice(&mlkem_tlv(0x04, &[1u8; 16]));
+        let mut short_body = mlkem_tlv(0x02, &[0]);
+        short_body.extend_from_slice(&alg);
+        short_body.extend_from_slice(&mlkem_tlv(0x04, &mlkem_tlv(0x30, &short_seq)));
+        assert!(mlkem_pkcs8_seed(&mlkem_tlv(0x30, &short_body), 32).is_none());
+        let mut int_seq = mlkem_tlv(0x02, &[9u8; 32]);
+        int_seq.extend_from_slice(&mlkem_tlv(0x04, &[1u8; 16]));
+        let mut int_body = mlkem_tlv(0x02, &[0]);
+        int_body.extend_from_slice(&alg);
+        int_body.extend_from_slice(&mlkem_tlv(0x04, &mlkem_tlv(0x30, &int_seq)));
+        assert!(mlkem_pkcs8_seed(&mlkem_tlv(0x30, &int_body), 32).is_none());
         // SPKI：768 档总长 1206（真机同款），ek 原样还原；未用位非零即 None。
         let ek = vec![3u8; 1184];
         let spki = mlkem_spki(oid, &ek);

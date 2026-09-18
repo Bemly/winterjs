@@ -1797,11 +1797,19 @@ fn phase10f_crypto_raw_seed_parity() {
     // /tmp/wjs-raw-probe*.mjs 逐项）——导出 passphrase 门最前（仅 pem/der
     // 放行）、raw-seed 导入导出 INCOMPATIBLE、cipher 单给忽略。
     let dir = assert_fs::TempDir::new().unwrap();
+    // slh 套件 fixture（test/fixtures/keys，MIT）落盘（§4.44）。
+    dir.child("slh_pub.pem").write_str(
+        "-----BEGIN PUBLIC KEY-----\nMDAwCwYJYIZIAWUDBAMVAyEApMCPV24BQ+l/NSWx/R3ybiV8fL2NYUVVGb+XNahP\ndco=\n-----END PUBLIC KEY-----\n",
+    ).unwrap();
+    dir.child("slh_priv.pem").write_str(
+        "-----BEGIN PRIVATE KEY-----\nMFICAQAwCwYJYIZIAWUDBAMVBECSzBw9GGOCapA9uSDmWwzK5By75k4dJZt9GEv7\naWL4AaTAj1duAUPpfzUlsf0d8m4lfHy9jWFFVRm/lzWoT3XK\n-----END PRIVATE KEY-----\n",
+    ).unwrap();
     let out = run_fs_file(
         &dir,
         "p.mjs",
         r#"
 import { generateKeyPairSync, createPrivateKey, createPublicKey, createSecretKey } from "node:crypto";
+import { readFileSync } from "node:fs";
 const log = (...a) => console.log(...a);
 const throws = (fn) => { try { fn(); return "NO-THROW"; } catch (e) { return `${e.code}|${e.message}`; } };
 const { privateKey: edPriv, publicKey: edPub } = generateKeyPairSync("ed25519");
@@ -1853,6 +1861,46 @@ log("r5-str-seed", (() => {
   try { createPrivateKey({ key: hexAll, encoding: "hex", format: "raw-seed", asymmetricKeyType: "ed25519" }); return "NO-THROW"; }
   catch (e) { return e.code + " " + (e.message.includes(`('${hexAll.slice(0, 25)}...')`) ? "recv-ok" : "recv-bad"); }
 })());
+
+// ── 正常件：ml raw-public/seed 导出（尺寸即口径）──
+const { publicKey: kemPub, privateKey: kemPriv } = generateKeyPairSync("ml-kem-768");
+const { publicKey: dsaPub, privateKey: dsaPriv } = generateKeyPairSync("ml-dsa-44");
+log("r5-ml-pub", kemPub.export({ format: "raw-public" }).length, dsaPub.export({ format: "raw-public" }).length);
+log("r5-ml-seed", kemPriv.export({ format: "raw-seed" }).length, dsaPriv.export({ format: "raw-seed" }).length);
+log("r5-ml-priv-noraw", throws(() => kemPriv.export({ format: "raw-private" })));
+log("r5-ml-pub-kind", throws(() => kemPriv.export({ format: "raw-public" })));
+// ml raw 导入：对尺寸过、错尺寸 ARG_VALUE、raw-private 不兼容、seed 往返
+const kemRawPub = kemPub.export({ format: "raw-public" });
+const kemSeed = kemPriv.export({ format: "raw-seed" });
+log("r5-ml-imp-ok", createPublicKey({ key: kemRawPub, format: "raw-public", asymmetricKeyType: "ml-kem-768" }).type);
+log("r5-ml-imp-badlen", throws(() => createPublicKey({ key: Buffer.alloc(800), format: "raw-public", asymmetricKeyType: "ml-kem-768" })));
+log("r5-ml-imp-norawpriv", throws(() => createPrivateKey({ key: kemSeed, format: "raw-private", asymmetricKeyType: "ml-kem-768" })));
+const kemSeedBack = createPrivateKey({ key: kemSeed, format: "raw-seed", asymmetricKeyType: "ml-kem-768" });
+log("r5-ml-seed-rt", kemSeedBack.type, kemSeedBack.export({ format: "raw-seed" }).equals(kemSeed));
+log("r5-ml-derive", createPublicKey({ key: kemSeed, format: "raw-seed", asymmetricKeyType: "ml-kem-768" }).type);
+
+// ── 正常件：EC 压缩点（导出 33B + 导入解压往返，真机逐字节对拍）──
+const { publicKey: p256Pub } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+const comp = p256Pub.export({ format: "raw-public", type: "compressed" });
+log("r5-ec-comp-len", comp.length, comp[0] === 2 || comp[0] === 3);
+log("r5-ec-comp-rt", createPublicKey({ key: comp, format: "raw-public", asymmetricKeyType: "ec", namedCurve: "P-256" }).equals(p256Pub));
+log("r5-ec-uncomp", p256Pub.export({ format: "raw-public", type: "uncompressed" }).length);
+log("r5-ec-comp-hybrid", throws(() => p256Pub.export({ format: "raw-public", type: "hybrid" })));
+log("r5-ec-comp-badpre", throws(() => createPublicKey({
+  key: Buffer.concat([Buffer.from([5]), comp.subarray(1)]), format: "raw-public",
+  asymmetricKeyType: "ec", namedCurve: "P-256" })));
+log("r5-ec-comp-wrongcurve", throws(() => createPublicKey({
+  key: comp, format: "raw-public", asymmetricKeyType: "ec", namedCurve: "P-384" })));
+
+// ── 正常件：slh 装载 + raw 尺寸（套件 fixture 内嵌落盘，§4.44）──
+const slhPub = createPublicKey(readFileSync("slh_pub.pem", "ascii"));
+const slhPriv = createPrivateKey(readFileSync("slh_priv.pem", "ascii"));
+log("r5-slh-load", slhPub.type, slhPub.asymmetricKeyType, slhPub.export({ format: "raw-public" }).length);
+log("r5-slh-priv", slhPriv.type, slhPriv.asymmetricKeyType, slhPriv.export({ format: "raw-private" }).length);
+log("r5-slh-seed", throws(() => slhPriv.export({ format: "raw-seed" })));
+log("r5-slh-rt", createPublicKey({
+  key: slhPub.export({ format: "raw-public" }), format: "raw-public",
+  asymmetricKeyType: "slh-dsa-sha2-128f" }).equals(slhPub));
 log("r5-done");
 "#,
     );
@@ -1877,6 +1925,25 @@ log("r5-done");
         "r5-str-short ERR_INVALID_ARG_TYPE recv-ok",
         "r5-str-long ERR_INVALID_ARG_TYPE recv-ok",
         "r5-str-seed ERR_INVALID_ARG_TYPE recv-ok",
+        "r5-ml-pub 1184 1312",
+        "r5-ml-seed 64 32",
+        "r5-ml-priv-noraw ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "r5-ml-pub-kind ERR_INVALID_ARG_VALUE|The property 'options.format' is invalid. Received 'raw-public'",
+        "r5-ml-imp-ok public",
+        "r5-ml-imp-badlen ERR_INVALID_ARG_VALUE|Invalid key data",
+        "r5-ml-imp-norawpriv ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "r5-ml-seed-rt private true",
+        "r5-ml-derive public",
+        "r5-ec-comp-len 33 true",
+        "r5-ec-comp-rt true",
+        "r5-ec-uncomp 65",
+        "r5-ec-comp-hybrid ERR_INVALID_ARG_VALUE|The property 'options.type' must be one of: 'compressed', 'uncompressed'. Received 'hybrid'",
+        "r5-ec-comp-badpre ERR_INVALID_ARG_VALUE|Invalid key data",
+        "r5-ec-comp-wrongcurve ERR_INVALID_ARG_VALUE|Invalid key data",
+        "r5-slh-load public slh-dsa-sha2-128f 32",
+        "r5-slh-priv private slh-dsa-sha2-128f 64",
+        "r5-slh-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "r5-slh-rt true",
         "r5-done",
     ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");

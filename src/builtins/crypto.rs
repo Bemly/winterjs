@@ -1622,6 +1622,47 @@ pub unsafe extern "C" fn ec_import_pub(
     }
 }
 
+/// `__wjs_ec_import_compressed(curve, sec1)` → SPKI DER（10f crypto五轮：
+/// 压缩/混合 SEC1 点导入——轮子内解压 + 上曲线校验；非法即 `DataError`。
+/// UNSAFE-BOUNDARY: 前置 = 同文件既有 ec 系 natives（`wrap_cx` + `Frame::from_raw`
+/// 边界块；`view_bytes` 越界断言）；覆盖 = `tests/node/crypto.rs`
+/// `phase10f_crypto_raw_seed_parity` 的 `r5-ec-compressed-*` 行（正常/坏点/错长）。
+pub unsafe extern "C" fn ec_import_compressed(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: EC compressed import needs curve and bytes");
+        return false;
+    }
+    let curve = value_to_string(&mut cx, frame.arg(0));
+    let Some(sec1) = view_bytes(&mut cx, frame.arg(1), "EC point") else {
+        return false;
+    };
+    let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {
+        use K::elliptic_curve::pkcs8::EncodePublicKey as _;
+        // 注：`PublicKey::from_sec1_bytes` 为固有方法（含压缩解压），无需 trait 导入。
+        Public::from_sec1_bytes(&sec1)
+            .map_err(|_| "DataError: bad EC point (not on curve)".to_string())
+            .and_then(|pk| {
+                pk.to_public_key_der()
+                    .map_err(|e| format!("OperationError: EC import failed: {e}"))
+                    .map(|d| d.as_bytes().to_vec())
+            })
+    });
+    match out {
+        Ok(der) => set_rval_bytes(&mut cx, &frame, &der),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
 // ── 9h-1 DSA（dsa 0.7 + hazmat；密钥信封 JSON `{p,q,g,x?,y}`，b64，定长不限）─
 // PKCS#8/SPKI 编解码走 dsa 自带 Encode（DER 互通真 Node）；导入走 JS 侧 DER 解析
 // （轮子无公开 Decode）；签名 deterministic（RFC6979）；验签走 prehash（全哈希档）。

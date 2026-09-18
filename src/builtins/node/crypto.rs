@@ -4777,8 +4777,9 @@ class KeyObject {
       throw err;
     }
     // 10f crypto四轮：format 门（真机 26 逐项）——secret ∈ {undefined→buffer,
-    // 'buffer', 'jwk'}；非对称 ∈ {'pem','der','jwk','raw-private','raw-public'}，
-    // 其余（含 undefined/'buffer'）→ ARG_VALUE 'options.format' is invalid。
+    // 'buffer', 'jwk'}；非对称 ∈ {'pem','der','jwk','raw-private','raw-public',
+    // 'raw-seed'}，其余（含 undefined/'buffer'）→ ARG_VALUE 'options.format'
+    // is invalid。
     const format = options?.format;
     const __recvArg = (v) => v === undefined ? "undefined"
       : v === null ? "null"
@@ -4794,16 +4795,22 @@ class KeyObject {
       if (format === "jwk") return __exportJwk(this);
       return Buffer.from(s.material);
     }
-    if (format !== "pem" && format !== "der" && format !== "jwk" &&
-        format !== "raw-private" && format !== "raw-public") {
-      const err = new TypeError(`The property 'options.format' is invalid. Received ${__recvArg(format)}`);
-      err.code = "ERR_INVALID_ARG_VALUE";
+    // 10f crypto五轮：私钥加密门（真机 26 逐项）——passphrase 有即只有 pem/der
+    // 能加密；jwk/raw-*/未知/缺 format 一律 INCOMPATIBLE
+    // 'The selected key encoding <format> does not support encryption.'，
+    // 先于 format/type 门（'banana'+pp 同错，undefined→"undefined"）；
+    // 公钥/secret 侧忽略 passphrase；cipher 单给忽略（须 passphrase 才触发）。
+    if (s.kind === "private" && options?.passphrase !== undefined &&
+        format !== "pem" && format !== "der") {
+      const err = new Error(
+        `The selected key encoding ${String(format)} does not support encryption.`);
+      err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
       throw err;
     }
-    // 10f crypto二轮：JWK 不支持加密（真机口径）。
-    if (format === "jwk" && (options.passphrase !== undefined || options.cipher !== undefined)) {
-      const err = new Error("The selected key encoding jwk does not support encryption.");
-      err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+    if (format !== "pem" && format !== "der" && format !== "jwk" &&
+        format !== "raw-private" && format !== "raw-public" && format !== "raw-seed") {
+      const err = new TypeError(`The property 'options.format' is invalid. Received ${__recvArg(format)}`);
+      err.code = "ERR_INVALID_ARG_VALUE";
       throw err;
     }
     if (format === "jwk") return __exportJwk(this);
@@ -4838,6 +4845,14 @@ class KeyObject {
         throw err;
       }
       return Buffer.from(s.material);
+    }
+    // 10f crypto五轮：raw-seed 导出（真机 26 口径）——本仓无 seed 键型
+    //（SLH-DSA/ML-KEM 未实现），一律 INCOMPATIBLE；type 旁路
+    //（'banana'/pkcs8/sec1 照抛 INCOMPATIBLE，故置 type 矩阵之前）。
+    if (format === "raw-seed") {
+      const err = new Error("The selected key encoding is incompatible with the key type");
+      err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+      throw err;
     }
     // 10f 四轮：pem/der type 门矩阵（真机 26 逐项）——未知/缺 type →
     // ARG_VALUE 'options.type' is invalid；kind 错位（public+pkcs8/sec1、
@@ -5363,11 +5378,22 @@ function __parseKeyMaterial(key, format, type, want, options) {
   // 10f X448：OKP raw 导入（真机口径：asymmetricKeyType 必带 string、
   // 裸料定长（ed25519/x25519 32B、x448 56B、ed448 57B）、类型错/坏长即
   // Invalid key data；raw-public 建私钥 → format 无效；raw-private 建公钥
-  // 由 createPublicKey 派生收口。真机 26 逐项）。
-  if (format === "raw-private" || format === "raw-public") {
+  // 由 createPublicKey 派生收口。真机 26 逐项）。10f crypto五轮：raw-seed
+  // 同走 akt 校验链（缺 akt→ARG_TYPE、坏 akt→ARG_VALUE），落定后
+  // INCOMPATIBLE（本仓无 seed 键型）。
+  if (format === "raw-private" || format === "raw-public" || format === "raw-seed") {
     if (want === "private" && format === "raw-public") {
       const err = new TypeError("The property 'key.format' is invalid. Received 'raw-public'");
       err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    // 10f crypto五轮：raw 导入不收字符串（真机 26 口径，kind 门之后、
+    // akt 链之前；超 28 码点截前 25 + '...'，探针 /tmp/wjs-raw-probe9.mjs）。
+    if (typeof key === "string") {
+      const shown = key.length > 28 ? `${key.slice(0, 25)}...` : key;
+      const err = new TypeError(
+        `The "key.key" property must be an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received type string ('${shown}')`);
+      err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
     const akt = options?.asymmetricKeyType;
@@ -5392,6 +5418,13 @@ function __parseKeyMaterial(key, format, type, want, options) {
         throw err;
       }
       const curve = __ecCurve(nc);
+      // 10f crypto五轮：EC raw-seed 导入即 INCOMPATIBLE（曲线门之后，
+      // 坏曲线仍走 INVALID_CURVE，与 akt 链同序）。
+      if (format === "raw-seed") {
+        const err = new Error("The selected key encoding is incompatible with the key type");
+        err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+        throw err;
+      }
       const material = __cryptBytes(key, "key");
       const bad = () => {
         const err = new TypeError("Invalid key data");
@@ -5427,6 +5460,13 @@ function __parseKeyMaterial(key, format, type, want, options) {
       }
       const err = new TypeError(`Invalid asymmetricKeyType: ${akt}`);
       err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    // 10f crypto五轮：OKP raw-seed 导入即 INCOMPATIBLE（akt 链之后，
+    // 缺/坏 akt 仍走各自门）。
+    if (format === "raw-seed") {
+      const err = new Error("The selected key encoding is incompatible with the key type");
+      err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
       throw err;
     }
     const material = __cryptBytes(key, "key");
@@ -5712,7 +5752,10 @@ export function createPrivateKey(key) {
       throw err;
     }
     // 10f crypto二轮：字符串 key 按 options.encoding 预解码（真机口径，dsa 套件点名）。
-    if (typeof key.key === "string" && typeof key.encoding === "string") {
+    // 10f crypto五轮：raw 系除外——raw 导入不收字符串（ARG_TYPE，__parseKeyMaterial
+    // 内判；先解码即把字符串洗成 Buffer，门永不触发）。
+    if (typeof key.key === "string" && typeof key.encoding === "string" &&
+        key.format !== "raw-private" && key.format !== "raw-public" && key.format !== "raw-seed") {
       key = { ...key, key: Buffer.from(key.key, key.encoding) };
     }
     return __parseKeyMaterial(key.key ?? key, key.format, key.type, "private", key);
@@ -5726,7 +5769,9 @@ export function createPublicKey(key) {
       return __derivePublic(key.key);
     }
     // 10f crypto二轮：字符串 key 按 options.encoding 预解码（真机口径）。
-    if (typeof key.key === "string" && typeof key.encoding === "string") {
+    // 10f crypto五轮：raw 系除外（同 createPrivateKey）。
+    if (typeof key.key === "string" && typeof key.encoding === "string" &&
+        key.format !== "raw-private" && key.format !== "raw-public" && key.format !== "raw-seed") {
       key = { ...key, key: Buffer.from(key.key, key.encoding) };
     }
     // 10f crypto二轮：DER 私钥材料一律派生公钥（真机口径，加密 PEM 同）。

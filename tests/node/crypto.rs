@@ -1790,3 +1790,96 @@ log("r4-done");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_crypto_raw_seed_parity() {
+    // 10f crypto五轮：raw 加密门 + raw-seed（真机 26.8.2 对拍，
+    // /tmp/wjs-raw-probe*.mjs 逐项）——导出 passphrase 门最前（仅 pem/der
+    // 放行）、raw-seed 导入导出 INCOMPATIBLE、cipher 单给忽略。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { generateKeyPairSync, createPrivateKey, createPublicKey, createSecretKey } from "node:crypto";
+const log = (...a) => console.log(...a);
+const throws = (fn) => { try { fn(); return "NO-THROW"; } catch (e) { return `${e.code}|${e.message}`; } };
+const { privateKey: edPriv, publicKey: edPub } = generateKeyPairSync("ed25519");
+const { privateKey: ecPriv } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+const rawPriv = edPriv.export({ format: "raw-private" });
+
+// ── 正常件：raw 往返不受新门影响 ──
+log("r5-raw-rt", Buffer.isBuffer(rawPriv) && rawPriv.length === 32,
+  createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ed25519" }).equals(edPriv));
+
+// ── 报错件：导出 passphrase 门（先于 kind/format 门）──
+log("r5-raw-priv-pp", throws(() => edPriv.export({ format: "raw-private", passphrase: "test" })));
+log("r5-raw-pub-pp", throws(() => edPriv.export({ format: "raw-public", passphrase: "test" })));
+log("r5-raw-seed-pp", throws(() => edPriv.export({ format: "raw-seed", passphrase: "test" })));
+log("r5-raw-seed", throws(() => edPriv.export({ format: "raw-seed" })));
+log("r5-ec-raw-seed", throws(() => ecPriv.export({ format: "raw-seed" })));
+log("r5-ec-raw-seed-type", throws(() => ecPriv.export({ format: "raw-seed", type: "banana" })));
+log("r5-banana-pp", throws(() => edPriv.export({ format: "banana", passphrase: "x" })));
+log("r5-undef-pp", throws(() => edPriv.export({ passphrase: "x" })));
+
+// ── 报错件：导入 raw-seed（走 akt 链后 INCOMPATIBLE）──
+log("r5-imp-seed", throws(() => createPrivateKey({ key: rawPriv, format: "raw-seed", asymmetricKeyType: "ed25519" })));
+log("r5-imp-seed-ec", throws(() => createPrivateKey({
+  key: ecPriv.export({ format: "raw-private" }), format: "raw-seed",
+  asymmetricKeyType: "ec", namedCurve: "prime256v1" })));
+log("r5-imp-seed-noakt", throws(() => createPrivateKey({ key: rawPriv, format: "raw-seed" })));
+log("r5-imp-seed-badakt", throws(() => createPrivateKey({ key: rawPriv, format: "raw-seed", asymmetricKeyType: "banana" })));
+
+// ── 边界件：cipher 单给忽略、公钥/secret 侧忽略 passphrase ──
+log("r5-cipher-only", Buffer.isBuffer(edPriv.export({ format: "raw-private", cipher: "aes-256-cbc" })));
+log("r5-jwk-cipher-only", typeof edPriv.export({ format: "jwk", cipher: "aes-256-cbc" }) === "object");
+log("r5-sec-pp", Buffer.isBuffer(createSecretKey(Buffer.alloc(8)).export({ passphrase: "x" })));
+log("r5-pub-pp", edPub.export({ format: "pem", type: "spki", passphrase: "x" }).startsWith("-----BEGIN PUBLIC KEY-----"));
+
+// ── 报错件：raw 导入不收字符串（超 28 码点截前 25 + '...'；料随机，动态验回显）──
+const hexAll = rawPriv.toString("hex");
+const hex10 = hexAll.slice(0, 10);
+const strPub = (key) => {
+  try { createPublicKey({ key, encoding: "hex", format: "raw-public", asymmetricKeyType: "ed25519" }); return "NO-THROW"; }
+  catch (e) { return e.code; }
+};
+const recvOk = (key, want) => {
+  try { createPublicKey({ key, encoding: "hex", format: "raw-public", asymmetricKeyType: "ed25519" }); return "NO-THROW"; }
+  catch (e) { return e.message.includes(`('${want}')`) ? "recv-ok" : "recv-bad"; }
+};
+log("r5-str-short", strPub(hex10), recvOk(hex10, hex10));
+log("r5-str-long", strPub(hexAll), recvOk(hexAll, `${hexAll.slice(0, 25)}...`));
+log("r5-str-seed", (() => {
+  try { createPrivateKey({ key: hexAll, encoding: "hex", format: "raw-seed", asymmetricKeyType: "ed25519" }); return "NO-THROW"; }
+  catch (e) { return e.code + " " + (e.message.includes(`('${hexAll.slice(0, 25)}...')`) ? "recv-ok" : "recv-bad"); }
+})());
+log("r5-done");
+"#,
+    );
+    for line in [
+        "r5-raw-rt true true",
+        "r5-raw-priv-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding raw-private does not support encryption.",
+        "r5-raw-pub-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding raw-public does not support encryption.",
+        "r5-raw-seed-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding raw-seed does not support encryption.",
+        "r5-raw-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "r5-ec-raw-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "r5-ec-raw-seed-type ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "r5-banana-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding banana does not support encryption.",
+        "r5-undef-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding undefined does not support encryption.",
+        "r5-imp-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "r5-imp-seed-ec ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "r5-imp-seed-noakt ERR_INVALID_ARG_TYPE|The \"key.asymmetricKeyType\" property must be of type string. Received undefined",
+        "r5-imp-seed-badakt ERR_INVALID_ARG_VALUE|Invalid asymmetricKeyType: banana",
+        "r5-cipher-only true",
+        "r5-jwk-cipher-only true",
+        "r5-sec-pp true",
+        "r5-pub-pp true",
+        "r5-str-short ERR_INVALID_ARG_TYPE recv-ok",
+        "r5-str-long ERR_INVALID_ARG_TYPE recv-ok",
+        "r5-str-seed ERR_INVALID_ARG_TYPE recv-ok",
+        "r5-done",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

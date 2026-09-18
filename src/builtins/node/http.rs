@@ -30,7 +30,10 @@ function Server(...args) {
 Object.setPrototypeOf(Server, __HttpServerBase);
 Server.prototype = __HttpServerBase.prototype;
 const ClientRequest = withClientRequest(
-  (host, port) => net.connect(port, host),
+  // IPC 形（node 口径）：options.socketPath 在 → UDS 连接，否则 TCP。
+  (host, port, extra) => (extra && extra.socketPath !== undefined)
+    ? net.connect({ path: extra.socketPath })
+    : net.connect(port, host),
   FLAVOR,
 );
 // Agent 函数式构造器（node 口径：`http.Agent({...})` 无 new 亦合法）。
@@ -40,7 +43,9 @@ function Agent(options = {}) {
 }
 Object.setPrototypeOf(Agent.prototype, BaseAgent.prototype);
 Object.setPrototypeOf(Agent, BaseAgent);
-Agent.prototype.__openSocket = (host, port) => net.connect({ port, host, noDelay: true });
+Agent.prototype.__openSocket = (host, port, extra) => (extra && extra.socketPath !== undefined)
+  ? net.connect({ path: extra.socketPath, noDelay: true })
+  : net.connect({ port, host, noDelay: true });
 Agent.prototype.__defaultPort = 80;
 const globalAgent = new Agent();
 FLAVOR.defaultAgent = globalAgent;

@@ -842,6 +842,8 @@ export function withClientRequest(openSocket, flavor) {
       this.host = host;
       // node 口径：.port 不是自有属性（req.port === undefined；取值走 getPort()）。
       this.__port = port;
+      // IPC 形（node：req.socketPath 自有属性；openSocket 钩按它走 UDS）。
+      this.socketPath = options.socketPath;
       this.path = path;
       this.timeout = options.timeout !== undefined ? Number(options.timeout) : undefined;
       this.socket = null;
@@ -939,6 +941,9 @@ export function withClientRequest(openSocket, flavor) {
       sock.on("error", (e) => {
         if (this.listenerCount("error") === 0) throw e;
         this.emit("error", e);
+        // node 口径：连接错无响应即销毁请求（'close' 时 req.destroyed === true，
+        // agent-close/timeout-option 系套件断言）。
+        this.destroy();
       });
       sock.on("close", this.__onSockClose);
       // 复用连接已连通：直接刷。
@@ -1181,6 +1186,9 @@ export function withClientRequest(openSocket, flavor) {
       }
     }
     __onSockData(chunk) {
+      // 请求已完成（回池/半关）后 socket 的 data 监听仍在——后续响应归下一个
+      // 请求，已完成者不得再泵（keep-alive + chunked 响应复用件实测必需）。
+      if (this.__respDone || this.__sock === null) return;
       this.__resBuf = __concat(this.__resBuf, chunk);
       while (true) {
         if (this.__res === null) {
@@ -1329,6 +1337,9 @@ Agent.prototype.getName = function (options = {}) {
   if (options.port) name += options.port;
   name += ":";
   if (options.localAddress) name += options.localAddress;
+  // node lib/_http_agent.js：socketPath 占独立槽（'localhost:::/path'，
+  // agent-getname 套件点名；unix socket 与 TCP localhost 池键由此区分）。
+  if (options.socketPath) name += ":" + options.socketPath;
   if (options.family === 4 || options.family === 6) name += ":" + options.family;
   return name;
 };

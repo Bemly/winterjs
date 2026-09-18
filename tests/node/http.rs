@@ -792,3 +792,82 @@ console.log("limits-done");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10g_http_ipc_socket_path() {
+    // 欠账 G3：ClientRequest 的 IPC 形（options.socketPath → UDS；node
+    // lib/_http_client.js 口径：req.socketPath 自有属性、池键
+    // 'localhost:::<path>' 槽）。正常（回环 200）+ 报错（ENOENT）+ 边界
+    // （keepAlive 复用 + agent 键位）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http, { Agent, createServer } from "node:http";
+import net from "node:net";
+import assert from "node:assert";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+
+const sockPath = path.join(os.tmpdir(), `wjs-g3-uds-${process.pid}.sock`);
+
+// 1) 池键 socketPath 槽（node 26.8.2 实测 'localhost:::/path'）。
+const a0 = new Agent();
+assert.strictEqual(a0.getName({ socketPath: "/tmp/pipe1" }), "localhost:::/tmp/pipe1");
+assert.strictEqual(a0.getName({ host: "h", port: 8, family: 4 }), "h:8::4");
+assert.strictEqual(a0.getName({}), "localhost::");
+
+// 2) 回环：UDS server + socketPath 客户端（正常件）。
+const seen = [];
+const server = createServer((req, res) => {
+  seen.push(req.url);
+  // 不发 connection: close——保活复用件需要连接回池（真机默认 keep-alive）。
+  res.writeHead(200, { "content-type": "text/plain" });
+  res.end("ipc-ok");
+});
+server.listen(sockPath, () => {
+  const agent = new Agent({ keepAlive: true });
+  http.get({ agent, socketPath: sockPath, path: "/first" }, (res) => {
+    let b = "";
+    res.on("data", (c) => (b += c));
+    res.on("end", () => {
+      // 3) keepAlive 复用：第二发同 socketPath 命中池（reusedSocket 观测）。
+      const req2 = http.get({ agent, socketPath: sockPath, path: "/second" }, (res2) => {
+        res2.resume();
+        res2.on("end", () => {
+          console.log("loop", b, seen.join(","), req2.reusedSocket);
+          agent.destroy();
+          server.close();
+        });
+      });
+    });
+  });
+});
+
+// 4) 报错件：不存在的 UDS 路径 → 'error' ENOENT（无监听即抛，先挂监听）。
+const reqBad = http.get({ socketPath: "/tmp/wjs-g3-nope.sock", path: "/" });
+reqBad.on("error", (e) => { console.log("bad-path", e.code); });
+reqBad.on("close", () => console.log("bad-close", reqBad.destroyed));
+
+// 5) req 面自有属性（node 26.8.2 实测 keys 含 socketPath）。
+const probe = http.get({ socketPath: "/tmp/pipe2", createConnection: () => new net.Socket() });
+console.log("own", probe.socketPath === "/tmp/pipe2", probe.host, probe.port === undefined);
+probe.on("error", () => {});
+probe.destroy();
+
+setTimeout(() => console.log("ipc-done"), 400);
+"#,
+    );
+    for tag in [
+        "loop ipc-ok /first,/second true",
+        "bad-path ENOENT",
+        "bad-close true",
+        "own true localhost true",
+        "ipc-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}

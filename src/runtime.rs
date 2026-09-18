@@ -61,7 +61,11 @@ fn eval_wrap(code: &str, kind: WrapKind) -> String {
         WrapKind::Return => "\n);\n",
         WrapKind::Plain => "\n",
     });
-    s.push_str("})().then(v => { globalThis.__wjs_value = v; }, e => { globalThis.__wjs_error = e; });");
+    // rejection 处理器重抛（`return Promise.reject(e)`）：链式 promise 保持
+    // rejected，eval 路径据此挂 entry reactions（见 eval_syntax_fallback）——
+    // 否则失败只落 `__wjs_error`、循环尾才读，开着的句柄（子进程/socket）会让
+    // 循环永不 idle 即 hang（§4.70 姊妹案，spawn stdin 套件现形）。
+    s.push_str("})().then(v => { globalThis.__wjs_value = v; }, e => { globalThis.__wjs_error = e; return Promise.reject(e); });");
     s
 }
 
@@ -300,6 +304,9 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
     // JS engine handle 进程级单例（见 `engine_handle`；每次 run 复用同一引擎）。
     let engine = engine_handle()?;
     let mut rt = Runtime::new(engine.clone());
+    // 会话 cx 裸指针（指针值会话期稳定；worker 中断槽绑定用——Runtime 经 §4.8
+    // 刻意泄漏，指针进程生命期有效）。SAFETY: 仅取指针值，不据此执行 JSAPI。
+    let raw_cx = unsafe { rt.cx().raw_cx() };
     // TLS 状态必须先于引擎销毁（见 state::shutdown 文档）
     let state_guard = state::StateGuard;
     modules::install_hooks(&rt);
@@ -350,6 +357,13 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
                 ptr::null_mut(),
             );
         }
+        // terminate 中断钩子（10f，仅 worker 会话）：JS_AddInterruptCallback——
+        // 回调只读共享终止旗（忙循环斩断；idle 路径照旧走事件循环检查点）。
+        if WORKER_BOOT.with(|b| b.borrow().is_some()) {
+            // SAFETY: realm 内取 raw cx（jobqueue 装配同款），指针即时使用。
+            let raw = unsafe { (&mut realm).raw_cx() };
+            crate::builtins::node::worker::term_install(raw);
+        }
 
         let prelude_filename = CString::new("__wjs_prelude.js").expect("no NUL");
         let prelude_options = CompileOptionsWrapper::new(&realm, prelude_filename, 1);
@@ -371,6 +385,17 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
             ));
         }
 
+        // 线程身份落地（10f 前移到 node prelude 之前：process.env 代理构建期
+        // 就要读 env 快照——worker 会话带快照、主会话真 env）。纯 state 操作
+        // 无 JSAPI；worker 中断钩子 cx 绑定同批（Runtime §4.8 泄漏保活）。
+        match WORKER_BOOT.with(|b| b.borrow_mut().take()) {
+            Some(boot) => {
+                let wid = boot.worker_id;
+                crate::builtins::node::worker::worker_boot_from_slot(boot);
+                crate::builtins::node::worker::term_bind_cx(wid, raw_cx);
+            }
+            None => state::worker_session_init(true, 0),
+        }
         // Phase 4a：node 全局（process；同“语法必然正确”约定，失败即内部错）。
         let node_prelude = crate::builtins::node::node_prelude();
         let node_filename = CString::new("__wjs_node_prelude.js").expect("no NUL");
@@ -447,12 +472,6 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
     // napi 第 8 通道（async_work/TSFN；Sender 由 create 时克隆进 rec）
     let (napi_tx, napi_rx) = tokio::sync::mpsc::unbounded_channel();
     state::with_plain(|p| p.napi_tx = Some(napi_tx));
-    // 线程身份默认主（worker 线程起后由 spawn 侧改写，见 state::worker_session_init）。
-    // worker 线程带 boot 槽：取出落地（身份/workerData/parentPort/权限继承）。
-    match WORKER_BOOT.with(|b| b.borrow_mut().take()) {
-        Some(boot) => crate::builtins::node::worker::worker_boot_from_slot(boot),
-        None => state::worker_session_init(true, 0),
-    }
     // worker boot 收尾放 init 末（主会话无操作；worker 回传收件箱 + 发 Online）。
     crate::builtins::node::worker::worker_booted();
 
@@ -688,11 +707,15 @@ pub fn run_isolated(source: String, filename: String, extra_args: Vec<String>) -
 /// 错误文案经 `WError` 先行（随后必跟 `WExit{1}`）。detached 线程，主侧不等。
 pub fn run_worker_thread(spec: WorkerThreadSpec) {
     use crate::builtins::node::worker::WorkerEvent;
+    // 终止槽（主线程注册；worker 线程 TLS 绑定同旗——interrupt 回调读取）。
+    let term_slot = crate::builtins::node::worker::term_slot_register(spec.worker_id);
     let spawned = std::thread::Builder::new()
         .name(format!("winterjs-worker-{}", spec.worker_id))
         .stack_size(16 * 1024 * 1024)
         .spawn(move || {
             let wid = spec.worker_id;
+            // 终止旗进 TLS（interrupt 回调与 WError 抑制同源读取）。
+            crate::builtins::node::worker::term_tls_bind(term_slot.flag.clone());
             // 主收件箱先取一份（会话前失败路径用；会话起后走 state）。
             let early_inbox = spec.boot.main_inbox.clone();
             let early_rendezvous = spec.boot.rendezvous.clone();
@@ -774,9 +797,14 @@ pub fn run_worker_thread(spec: WorkerThreadSpec) {
                 Err(Error::Exit(c)) => *c,
                 Err(e) => {
                     let message = worker_error_text(e);
-                    let inbox = state::with_plain(|p| p.worker_main_inbox.clone());
-                    if let Some(tx) = inbox {
-                        let _ = tx.send(WorkerEvent::WError { worker_id: wid, message });
+                    // 终止引发的 uncatchable interrupt 错：不发 WError（真机口径——
+                    // terminate 的错误不进 worker 'error' 事件，vm-context-terminate
+                    // 套件 error mustNotCall 点名），只按终止退出码 1 收场。
+                    if !crate::builtins::node::worker::term_tls_flagged() {
+                        let inbox = state::with_plain(|p| p.worker_main_inbox.clone());
+                        if let Some(tx) = inbox {
+                            let _ = tx.send(WorkerEvent::WError { worker_id: wid, message });
+                        }
                     }
                     1
                 }
@@ -879,6 +907,32 @@ async fn eval_syntax_fallback(
         // 同 run()；包装版行号偏移经 line_adjust 校正
         let res = evaluate_script(rt.cx(), global.handle(), &wrapped, wrapped_rval.handle_mut(), options);
         if res.is_ok() {
+            // 包装 promise（含 rejection 重抛）挂 entry 捕获：失败经 pump 检查点
+            // 跳出循环（§4.15/§4.70 同型——事件循环前挂载，收尾不进 unhandled 表）。
+            {
+                let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+                if wrapped_rval.is_object() {
+                    let obj = wrapped_rval.to_object();
+                    rooted!(&in(&mut realm) let obj_root: *mut JSObject = obj);
+                    // SAFETY: obj_root 为有效 rooted 对象
+                    if unsafe { mozjs::jsapi::IsPromiseObject(raw_handle(obj_root.as_ptr())) } {
+                        let (fulfilled, rejected) = state::entry_native_values();
+                        rooted!(&in(&mut realm) let promise = obj_root.get());
+                        rooted!(&in(&mut realm) let ful_obj: *mut JSObject = fulfilled.to_object());
+                        rooted!(&in(&mut realm) let rej_obj: *mut JSObject = rejected.to_object());
+                        // SAFETY: promise/回调均为有效 rooted 函数对象；指针直拷标记位置
+                        unsafe {
+                            let _ = AddPromiseReactions(
+                                (&mut realm).raw_cx(),
+                                raw_handle(promise.as_ptr()),
+                                raw_handle(ful_obj.as_ptr()),
+                                raw_handle(rej_obj.as_ptr()),
+                            );
+                        }
+                        tracing::debug!(target: "winterjs::runtime", "eval wrapped entry capture attached");
+                    }
+                }
+            }
             event_loop(rt, global, ErrorSource::Script { source, filename }, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx).await?;
             let r = extract_eval_result(rt, global, source, filename);
             // engine/rt 由外层 run() 统一 forget（见 §4.8）
@@ -1062,6 +1116,13 @@ async fn pump_once(
         st.worker += 1;
         st.progressed = true;
     }
+    // BC 同会话 pending（10f：bc_pub 本会话路由直投表；派发语义与跨会话 BcMsg 同）。
+    for (to, wire) in state::take_bc_pending() {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        node_worker::dispatch(&mut realm, global.get(), crate::builtins::node::worker::WorkerEvent::BcMsg { to, json: wire }, err)?;
+        st.worker += 1;
+        st.progressed = true;
+    }
     while let Ok(ev) = quic_rx.try_recv() {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         node_quic::dispatch(&mut realm, global.get(), ev, err)?;
@@ -1187,6 +1248,15 @@ async fn event_loop(
         // 入口已失败即跳出（收割路径上报；未处理 rejection 收尾不受影响——
         // 入口带专用捕获，不进 `unhandled` 表，见 `run_module`）。
         if st.entry_failed {
+            break;
+        }
+        // 未处理 rejection 非空即跳出（node 口径：checkpoint 末仍无处理即 fatal，
+        // 不等自然排空——开着的句柄（子进程/socket）会让循环永不 idle，循环尾的
+        // report_unhandled_rejections 永不到（§4.70 姊妹案，eval/module 双路同修）；
+        // 上报路径不变，仍由本函数尾收割。tracker Handled 已在表内摘除，
+        // checkpoint 时非空 = 整轮排空后确无处理。REPL 不走此检查（逐轮收割
+        // 不退出，node REPL 同款）。
+        if state::unhandled_pending() > 0 {
             break;
         }
         iterations += 1;

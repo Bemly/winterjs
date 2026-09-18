@@ -4804,6 +4804,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_bc_sub", Some(node::worker::bc_sub), 1),
             ("__wjs_bc_unsub", Some(node::worker::bc_unsub), 1),
             ("__wjs_bc_pub", Some(node::worker::bc_pub), 3),
+            ("__wjs_bc_try_recv", Some(node::worker::bc_try_recv), 1),
             ("__wjs_bc_flags", Some(node::worker::bc_flags), 2),
             ("__wjs_bc_attach", Some(node::worker::bc_attach), 2),
             ("__wjs_worker_is_main", Some(node::worker::worker_is_main), 0),
@@ -4812,6 +4813,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_worker_is_fork", Some(node::worker::worker_is_fork), 0),
             ("__wjs_worker_parent", Some(node::worker::worker_parent), 0),
             ("__wjs_worker_data", Some(node::worker::worker_data), 0),
+            ("__wjs_worker_env_snapshot", Some(node::worker::env_snapshot), 0),
             ("__wjs_worker_env_set", Some(node::worker::env_set), 2),
             ("__wjs_worker_env_get", Some(node::worker::env_get), 1),
             // Phase 9f-3: Worker（spawn/投递/终止/监听计数）

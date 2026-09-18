@@ -151,10 +151,12 @@ function __checkThrow(e, expected, prefix) {
     // 10f：真机测 String(err)；V8 的 String(带码错) 含 `[CODE]`
     // （如 `RangeError [ERR_OUT_OF_RANGE]: …`），SM 无——此处补齐后测，
     // 全局 toString 不动（爆破半径最小，dns max-timeout 套件门）。
+    // 补钉（opendir 套件）：仅 ERR_* 码进 name 括号——errno 系（ENOENT/ENOTDIR）
+    // 真机 name 恒裸 'Error'，误补即 `/Error: ENOTDIR: …/` 正则全灭。
     let s;
     try {
       s = String(e);
-      if (e && typeof e.code === "string" && e.code !== "" && !s.includes(`[${e.code}]`)) {
+      if (e && typeof e.code === "string" && e.code.startsWith("ERR_") && !s.includes(`[${e.code}]`)) {
         s = `${e.constructor?.name ?? "Error"} [${e.code}]: ${e.message ?? ""}`;
       }
     } catch {
@@ -164,11 +166,20 @@ function __checkThrow(e, expected, prefix) {
   } else if (typeof expected === "object" && expected !== null) {
     // 10f：真机口径——实际值为 string 且期望为正则时做正则匹配
     //（`{ message: /re/ }` 形；旧实现 `==` 永假，os.getPriority 用例现形）。
+    // 逐键：原始值 ObjectIs 严格等；对象值 deepStrictEqual（node
+    // expectedException 口径——DOMException cause 等实例按深度比较，
+    // exec abortcontroller 套件 `{ name, cause: new DOMException(...) }` 点名）。
     ok = Object.entries(expected).every(([k, v]) => {
       const a = e ? e[k] : undefined;
       if (typeof a === "string" && v instanceof RegExp) return v.test(a);
-      // eslint-disable-next-line eqeqeq
-      return a == v;
+      if (v !== null && typeof v === "object") {
+        try { return __deep(a, v, true, []); } catch { return false; }
+      }
+      // ObjectIs（NaN 与 NaN 等值——node 逐字口径）。
+      if (typeof a === "number" && typeof v === "number") {
+        if (Number.isNaN(a) && Number.isNaN(v)) return true;
+      }
+      return a === v;
     });
   }
   if (!ok) {

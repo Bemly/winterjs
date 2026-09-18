@@ -6,8 +6,9 @@
 //! destroy`；data 缺省 Buffer，setEncoding 后为串——真机 `Readable`，
 //! spawnPromisified 系套件口径；内部经 Web ReadableStream 泵接 Rust 块序，
 //! 出块序 = 进程出序，exit 前必先送达残留数据再调 onexit/onclose）；
-//! stdin 为 `WritableStream`（write 满即发，close 关写端；子进程已走即写
-//! 失败；legacy Writable 记偏差）；无 max_buffer 上限（流式消费）。
+//! stdin 为 legacy Writable 面（Socket 写半部：write/end/writable/readable，
+//! stdin 套件直调 write；web WritableStream 记偏差退役）；
+//! 无 max_buffer 上限（流式消费）。
 //! `detached:true` 在 unix 起 setsid 组长，kill 走组杀（`nix` 轮子；win 回退直杀）。
 //! 结果走 JSON 桥（二进制 base64）；错误形状由 prelude 组装（见 SOURCE）。
 //!
@@ -341,7 +342,8 @@ pub struct ChildEvent {
 
 pub enum ChildKind {
     /// 正常退出/被信号杀（含超时杀；spawn 失败走同步报错，不进事件）。
-    Exited { status: Option<i32>, signal: Option<String> },
+    /// `timed_out`：超时杀已作用（prelude 落 `killed` 位，exec timeout 系断言）。
+    Exited { status: Option<i32>, signal: Option<String>, timed_out: bool },
     /// pipe stdout 一块（base64；exit 前必先送达，见等待 task 的合流）。
     Stdout { data_b64: String },
     /// pipe stderr 一块（同上）。
@@ -530,20 +532,25 @@ pub unsafe extern "C" fn spawn_start(
     }
     let timeout_ms = opts.timeout_ms;
     let detached = opts.detached;
+    let kill_signo = opts.kill_signo;
     state::child_add(id, child, detached, target, stdin_tx, pipes_expected);
     tracing::info!(target: "winterjs::child", id, file = file.as_str(), pipe_in, pipe_out, pipe_err, "spawned");
     handle.spawn(async move {
         if timeout_ms > 0 {
             tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
-            // 超时杀（组杀优先；进程已退则无操作，见 `child_kill` 幂等）。
-            state::child_kill(id, "SIGKILL");
+            // 超时杀：killSignal（缺省 SIGTERM，真机口径；detached 组杀同信号，
+            // 组杀失败回退直杀）。记号先置——Exited 事件据此带 timed_out。
+            let signo = kill_signo.unwrap_or(15).to_string();
+            state::child_mark_timeout(id);
+            state::child_kill(id, &signo);
         }
         loop {
             if let Some(exit) = state::child_try_wait(id) {
                 // 残留输出先落定再发 Exited（泵记数，见 child_pipes_flushed）。
                 if state::child_pipes_flushed(id) {
                     let (status, signal) = status_parts(exit);
-                    let _ = tx.send(ChildEvent { id, kind: ChildKind::Exited { status, signal } });
+                    let timed_out = state::child_take_timed_out(id);
+                    let _ = tx.send(ChildEvent { id, kind: ChildKind::Exited { status, signal, timed_out } });
                     return;
                 }
             }
@@ -649,7 +656,7 @@ pub fn dispatch(
     ev: ChildEvent,
     err: crate::runtime::ErrorSource<'_>,
 ) -> Result<(), crate::error::Error> {
-    use crate::jsapi_glue::{call_two, get_prop_value, parse_json};
+    use crate::jsapi_glue::{call_one, call_two, get_prop_value, parse_json};
     let failed = |cx: &mut mozjs::context::JSContext| match err {
         crate::runtime::ErrorSource::Script { source, filename } => {
             crate::jsapi_glue::pending_exception_error(cx, global, source, filename)
@@ -677,7 +684,23 @@ pub fn dispatch(
         ChildKind::Stderr { data_b64 } => {
             push_pipe_chunk(cx, global, target_root.get(), c"__pushErr", data_b64)
         }
-        ChildKind::Exited { status, signal } => {
+        ChildKind::Exited { status, signal, timed_out } => {
+            // 超时杀先落 killed 位（exec timeout 系 err.killed=true 断言；
+            // 顺序在 onexit/onclose 之前——collect 侧 close 处理器读 child.killed）。
+            if *timed_out {
+                if let Some(hook) = get_prop_value(cx, target_root.get(), c"__markKilled") {
+                    if hook.is_object() {
+                        let _ = call_one(cx, global, hook, UndefinedValue());
+                    }
+                }
+            }
+            // exit 后注销 abort 监听（spawn-timeout-kill-signal 套件
+            // listenerCount(signal, 'abort') 归零断言；自有箭头属性 §4.34）。
+            if let Some(hook) = get_prop_value(cx, target_root.get(), c"__onExited") {
+                if hook.is_object() {
+                    let _ = call_one(cx, global, hook, UndefinedValue());
+                }
+            }
             // 先关流（残留块已送达），再走原 exit/close 双调
             push_pipe_close(cx, global, target_root.get());
             // node 口径：exit/close 双参 (code, signal)——单对象形是旧偏差，
@@ -825,6 +848,7 @@ import * as fs from "node:fs";
 import __osDefault from "node:os";
 import { getSystemErrorName as __uvName } from "node:util";
 import errors from 'node:internal/errors';
+import { addAbortListener } from 'node:internal/events/abort_listener';
 const {
   codes: {
     ERR_INVALID_ARG_TYPE: { HideStackFramesError: ERR_INVALID_ARG_TYPE },
@@ -845,16 +869,40 @@ function __b64enc(u8) {
   return btoa(s);
 }
 function __normExecOpts(opts) {
-  // 缺省 utf8（真机实测；exec 异步族与同步族缺省不同：同步恒 buffer，禁串）。
-  const o = { encoding: "utf8", timeoutMs: 0, shell: true, maxBuffer: 1024 * 1024, inputB64: null };
-  if (opts === undefined || opts === null) return o;
+  // node execFile 口径（v26 源码对拍）：{encoding:'utf8', ...opts} 展开合并——
+  // opts 带 encoding 键（即便 undefined）即覆盖为 undefined → Buffer（实测
+  // probe：{encoding:undefined} 走 Buffer，{} 走 utf8 串）；键缺席 → utf8 串。
+  const o = { encoding: "utf8", timeoutMs: 0, shell: true, maxBuffer: 1024 * 1024, inputB64: null, killSignal: "SIGTERM", killSigno: 15 };
+  if (opts === undefined || opts === null) { o.env = __childEnv(o); return o; }
   if (typeof opts === "string") { o.encoding = opts; return o; }
-  if (opts.encoding !== undefined) o.encoding = opts.encoding;
+  if (opts !== null && typeof opts === "object" && "encoding" in opts) o.encoding = opts.encoding;
   if (opts.timeout !== undefined) o.timeoutMs = Number(opts.timeout);
   if (opts.shell !== undefined) o.shell = opts.shell;
   if (opts.maxBuffer !== undefined) o.maxBuffer = Number(opts.maxBuffer);
   if (opts.cwd !== undefined) o.cwd = String(opts.cwd);
   if (opts.env !== undefined) o.env = { ...opts.env };
+  // killSignal：undefined/null/合法信号过；类型先行 ARG_TYPE，落空 UNKNOWN_SIGNAL
+  //（sanitizeKillSignal 口径；exec timeout-kill 套件）。
+  if (opts.killSignal !== undefined && opts.killSignal !== null) {
+    const ks = opts.killSignal;
+    if (typeof ks !== "string" && typeof ks !== "number") {
+      throw new ERR_INVALID_ARG_TYPE("options.killSignal", ["string", "number"], ks);
+    }
+    const hit = __sigResolve(ks);
+    if (!hit) {
+      const e = new TypeError(`Unknown signal: ${String(ks)}`);
+      e.code = "ERR_UNKNOWN_SIGNAL"; throw e;
+    }
+    o.killSignal = hit.name; o.killSigno = hit.signo;
+  }
+  // signal：undefined 过；余下必须 AbortSignal 实例（真机 validateAbortSignal 口径，
+  // null 也抛——abortcontroller 系套件 {}/函数形 ARG_TYPE）。
+  if (opts.signal !== undefined) {
+    if (!(opts.signal instanceof AbortSignal)) {
+      throw new ERR_INVALID_ARG_TYPE("options.signal", "AbortSignal", opts.signal);
+    }
+    o.signal = opts.signal;
+  }
   if (opts.input !== undefined && opts.input !== null) {
     const b = opts.input;
     if (typeof b !== "string" && !(b instanceof Uint8Array) && !(b instanceof ArrayBuffer) && !ArrayBuffer.isView(b)) {
@@ -866,12 +914,13 @@ function __normExecOpts(opts) {
           : new Uint8Array(b.buffer, b.byteOffset, b.byteLength)));
     o.inputB64 = __b64enc(u8);
   }
+  o.env = __childEnv(o);
   return o;
 }
 function __normSpawnOpts(opts) {
   // 缺省 encoding "buffer"（真机口径；exec 系另为 utf8，不串）。
   const o = { encoding: "buffer", timeoutMs: 0, shell: false, shellPath: null, maxBuffer: 1024 * 1024, inputB64: null, killSigno: 15, killSigname: "SIGTERM", argv0: null, cwd: null, detached: false, stdioInherit: [false, false, false] };
-  if (opts === undefined || opts === null) return o;
+  if (opts === undefined || opts === null) { o.env = __childEnv(o); return o; }
   if (opts.encoding !== undefined) o.encoding = opts.encoding;
   // 字符串选项（cwd/argv0）：undefined/null 过，余下非串即 ARG_TYPE。
   for (const k of ["cwd", "argv0"]) {
@@ -973,6 +1022,7 @@ function __normSpawnOpts(opts) {
           : new Uint8Array(b.buffer, b.byteOffset, b.byteLength)));
     o.inputB64 = __b64enc(u8);
   }
+  o.env = __childEnv(o);
   return o;
 }
 // 信号归一（os.signals 表单源）：名大小写不敏感、数字须命中表值；
@@ -1025,25 +1075,51 @@ function __spawnError(cmd, r, encoding) {
   }
   throw err;
 }
-// shell 串首自举翻译（execsync-maxbuf 套件：`"<execPath>" -e/-p/-pe X`
-// 经 shell 跑自身；`$NODE` token（env 透传）同理）。仅串首二进制位 +
-// 纯 [pe] 组合旗才改写（`--eval` 回显 completion，与 -p 语义对等），
-// 余下一律原样（误伤用户脚本更糟）。
-function __selfCmd(cmd) {
-  const m = String(cmd).match(/^("[^"]*"|'[^']*'|\$NODE|\S+)\s+-([A-Za-z]+)\s?([\s\S]*)$/);
+// shell 串首自举翻译（execsync-maxbuf / exec-encoding / exec-timeout 系套件）：
+// `"<execPath>" -e/-p/-pe X` 经 shell 跑自身；`$NODE` token（env 透传）与
+// `${VAR}`（node 测试 helper escapePOSIXShell 的 env 间接形，opts.env 解引用）
+// 同理。仅串首二进制位 + 纯 [pe] 组合旗才改写为 `--eval`；**裸文件形**（首个
+// 参数解引用后不以 `-` 开头）改写为 `--run <file>`（与 spawnSync 的 __selfArgv
+// 同规则）；余下一律原样（误伤用户脚本更糟）。
+function __selfCmd(cmd, env) {
+  const s = String(cmd);
+  const m = s.match(/^("[^"]*"|'[^']*'|\$NODE|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\S+)\s*([\s\S]*)$/);
   if (!m) return cmd;
-  let bin = m[1];
-  const flag = m[2], rest = m[3];
-  const unq = (bin.startsWith('"') && bin.endsWith('"')) || (bin.startsWith("'") && bin.endsWith("'")) ? bin.slice(1, -1) : bin;
-  if (unq !== process.execPath && unq !== "$NODE") return cmd;
-  if (!/^[pe]+$/.test(flag)) return cmd;
-  return `${bin} --eval ${rest}`;
+  const bin = m[1], rest = m[2] ?? "";
+  const unq = (t) => ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) ? t.slice(1, -1) : t;
+  const envGet = (t) => {
+    const u = unq(t);
+    const vm = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(u);
+    if (vm && env && Object.prototype.hasOwnProperty.call(env, vm[1])) return String(env[vm[1]]);
+    return u;
+  };
+  const selfBin = envGet(bin) === process.execPath || unq(bin) === "$NODE";
+  if (!selfBin) return cmd;
+  // 旗形（-e/-p/-pe …）——二 token 正则的 \s* 已吃掉分隔空白，此处用 \s*。
+  const fm = rest.match(/^\s*-([A-Za-z]+)\s?([\s\S]*)$/);
+  if (fm && /^[pe]+$/.test(fm[1])) return `${bin} --eval ${fm[2]}`;
+  // 裸文件形（首个参数解引用后非旗）
+  const am = rest.match(/^\s*("[^"]*"|'[^']*'|\$NODE|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\S+)([\s\S]*)$/);
+  if (am) {
+    const a0 = envGet(am[1]);
+    if (!a0.startsWith("-")) return `${bin} --run ${am[1]}${am[2] ?? ""}`;
+  }
+  return cmd;
+}
+// node 口径（实测 probe）：abort 错 = Error 实例，name='AbortError'、
+// code='ABORT_ERR'、cause=signal.reason（原生 abort() 为 DOMException AbortError）。
+function __abortError(reason) {
+  const err = new Error("This operation was aborted");
+  err.name = "AbortError";
+  err.code = "ABORT_ERR";
+  err.cause = reason;
+  return err;
 }
 export function execSync(cmd, opts) {
   const o = __normExecOpts(opts);
   // execSync 缺省 Buffer（真机实测；exec 异步缺省 utf8）：未显式给编码即改 buffer。
   if (typeof opts !== "string" && (opts === undefined || opts === null || opts.encoding === undefined)) o.encoding = "buffer";
-  cmd = __selfCmd(String(cmd));
+  cmd = __selfCmd(String(cmd), o.env ?? process.env);
   const r = JSON.parse(__wjs_cp_exec(cmd, JSON.stringify({
     cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
     shell: !!o.shell, input_b64: o.inputB64, max_buffer: o.maxBuffer,
@@ -1163,6 +1239,85 @@ function __legacyReadable(web) {
     // 整收口径（§4.67 同款）：read() 恒 null，数据走 'data' 事件。
     read() { return null; },
     get destroyed() { return destroyed; },
+    // execFile collect 的串化判定读此位（node 流同形；setEncoding 后即真）。
+    get readableEncoding() { return enc; },
+  };
+  return api;
+}
+
+// legacy Writable 面（node stdin 真机口径：Socket 形——stdin 套件直调
+// `cat.stdin.write('hello')`/`.end()` 并断 writable/readable 位；web
+// WritableStream 无这些成员）。write 回调恒异步触发（§4.74）。
+function __legacyWritable(id) {
+  const listeners = {};
+  let destroyed = false;
+  let ended = false;
+  const emit = (ev, ...args) => {
+    for (const l of [...(listeners[ev] || [])]) {
+      try { l(...args); } catch {}
+    }
+  };
+  const api = {
+    on(ev, cb) { (listeners[ev] ||= []).push(cb); return api; },
+    once(ev, cb) {
+      const w = (...a) => { api.off(ev, w); cb(...a); };
+      w.__wjs_orig = cb;
+      return api.on(ev, w);
+    },
+    off(ev, cb) {
+      const l = listeners[ev];
+      if (l) {
+        let i = l.findIndex((f) => f === cb || f.__wjs_orig === cb);
+        while (i >= 0) { l.splice(i, 1); i = l.findIndex((f) => f === cb || f.__wjs_orig === cb); }
+      }
+      return api;
+    },
+    removeListener(ev, cb) { return api.off(ev, cb); },
+    removeAllListeners(ev) {
+      if (ev !== undefined) delete listeners[ev];
+      else for (const k of Object.keys(listeners)) delete listeners[k];
+      return api;
+    },
+    write(chunk, cb) {
+      if (destroyed || ended) {
+        const err = Object.assign(new Error("write after end"), { code: "ERR_STREAM_WRITE_AFTER_END" });
+        if (typeof cb === "function") queueMicrotask(() => cb(err));
+        else emit("error", err);
+        return false;
+      }
+      const u8 = typeof chunk === "string" ? new TextEncoder().encode(chunk)
+        : (chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk?.buffer ?? chunk));
+      const ok = __wjs_child_stdin_write(id, __b64enc(u8));
+      if (!ok) {
+        const err = Object.assign(new Error("This socket has been ended by the other party"), { code: "EPIPE" });
+        if (typeof cb === "function") queueMicrotask(() => cb(err));
+        else emit("error", err);
+        return false;
+      }
+      if (typeof cb === "function") queueMicrotask(() => cb(null));
+      return true;
+    },
+    end(chunk, cb) {
+      if (chunk !== undefined && chunk !== null) api.write(chunk);
+      if (ended) return api;
+      ended = true;
+      __wjs_child_stdin_close(id);
+      queueMicrotask(() => emit("finish"));
+      if (typeof cb === "function") queueMicrotask(() => cb());
+      return api;
+    },
+    destroy() {
+      if (destroyed) return api;
+      destroyed = true;
+      __wjs_child_stdin_close(id);
+      emit("close");
+      return api;
+    },
+    get writable() { return !destroyed && !ended; },
+    get writableEnded() { return ended; },
+    get destroyed() { return destroyed; },
+    // stdin 是 Socket（Duplex）的写半部：readable 恒 false（stdin 套件点名）。
+    get readable() { return false; },
   };
   return api;
 }
@@ -1186,9 +1341,21 @@ export class ChildProcess {
   __worker = null;
   __connected = false;
   __exitCode = null;
+  // fork 出口单发旗（abort 路径自 synth exit 后，线程 WExit 被拦）。
+  __exitDone = false;
   __killSignal = "SIGTERM";
   __init(id, stdio) {
     this.#id = id;
+    this.__initStreams(stdio, id);
+    return this;
+  }
+  // 流初始化（正常 spawn 与死句柄路径共用；id=0 即死句柄——native 查表恒失败，
+  // 写返回 false。cwd 套件错误路径仍要 child.stdout.setEncoding 可用）。
+  __initStreams(stdio, id) {
+    const id2 = id;
+    // 超时杀落位（Rust dispatch 在 Exited 前调）：自有箭头属性而非原型方法——
+    // dispatch 以 global 为 this 调钩子（§4.34），#killed 须走闭包捕获。
+    this.__markKilled = () => { this.#killed = true; };
     // pipe 口径：stdout/stderr 为 live ReadableStream（Rust 泵按块 enqueue，
     // exit 前残留必达，见 dispatch）；stdin 为 WritableStream（写失败即子进程已走）。
     const mkOut = (push, close) => {
@@ -1203,19 +1370,19 @@ export class ChildProcess {
     if (stdio[2] === "pipe") this.stderr = mkOut("__pushErr", "__closeErr");
     else this.stderr = null;
     if (stdio[0] === "pipe") {
-      const id2 = id;
-      this.stdin = new WritableStream({
-        write(chunk) {
-          const b = typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk;
-          const u8 = b instanceof Uint8Array ? b : new Uint8Array(b);
-          if (!__wjs_child_stdin_write(id2, __b64enc(u8))) {
-            throw Object.assign(new Error("ERR_STREAM_DESTROYED: stdin is closed"), { code: "ERR_STREAM_DESTROYED" });
-          }
-        },
-        close() { __wjs_child_stdin_close(id2); },
-      });
+      this.stdin = __legacyWritable(id2);
     } else this.stdin = null;
     return this;
+  }
+  // error 事件（spawn 预检失败/abort；无监听即抛——node 'error' 语义）。
+  __emitError(err) {
+    if (typeof this.onerror === "function") this.onerror(err);
+    else throw err;
+  }
+  __emitAbort(reason) { this.__emitError(__abortError(reason)); }
+  // 死句柄 close（spawn 预检失败：close(-errno, null)；exit 不发——真机 probe）。
+  __emitDeadClose(errno) {
+    if (typeof this.onclose === "function") this.onclose(errno ?? -2, null);
   }
   // node 口径：spawn 未成功（#id=0 占位）pid 恒 undefined（execFile ENOENT
   // 套件 typeof 点名；真机 ChildProcess 在 spawn 成功前根本无 pid 属性）
@@ -1228,7 +1395,14 @@ export class ChildProcess {
       try { this.__worker.terminate(); } catch { return false; }
       return true;
     }
-    const ok = __wjs_child_kill(this.#id, signal === undefined ? "SIGTERM" : String(signal));
+    // 信号名经 os.signals 表归一为数字（killSignal 任意信号——state 侧按
+    // signo 直杀，kill-signal 套件口径）；不可解析回落原名（state 默认 TERM）。
+    let sig = "15";
+    if (signal !== undefined) {
+      const hit = __sigResolve(signal);
+      sig = hit ? String(hit.signo) : String(signal);
+    }
+    const ok = __wjs_child_kill(this.#id, sig);
     if (ok) this.#killed = true;
     return ok;
   }
@@ -1345,6 +1519,8 @@ export class ChildProcess {
     if (typeof this.#onmessage === "function") this.#onmessage(m);
   }
   __onForkExit(code) {
+    if (this.__exitDone) return; // abort 路径已 synth（exit(null, killSignal)）
+    this.__exitDone = true;
     this.__exitCode = code;
     if (this.__connected) this.__connected = false;
     // node 口径：exit/close 双参 (code, signal)（fork 旧单对象形一并翻转，
@@ -1362,15 +1538,154 @@ export class ChildProcess {
     return this;
   }
 }
+// cwd 归一（真机 normalizeSpawnArguments/getPathFromURL 口径，实测 probe）：
+// 字符串直通；file: URL 取 pathname（host 必须 localhost/空——darwin 平台文案）；
+// 非 file: 抛 ERR_INVALID_URL_SCHEME "The URL must be of scheme file"；
+// 非串非 URL 抛 ARG_TYPE。
+// worker env 快照会话：子进程缺省继承 worker 的 env 视图（含 worker 内写入；
+// 真机 spawnSync 的 env 缺省即 worker 的 process.env——process-env 套件口径）。
+// 主会话回 null（Rust 侧继承真进程 env，原语义）。
+function __childEnv(o) {
+  if (o.env === undefined || o.env === null) {
+    if (__wjs_worker_env_snapshot() !== undefined) o.env = { ...process.env };
+  }
+  return o.env;
+}
+function __cwdPath(v) {
+  if (typeof v === "string") return v;
+  if (v !== null && typeof v === "object" && typeof v.href === "string") {
+    const u = (typeof URL === "function" && v instanceof URL) ? v : new URL(v.href);
+    if (u.protocol !== "file:") {
+      const e = new Error("The URL must be of scheme file");
+      e.code = "ERR_INVALID_URL_SCHEME";
+      throw e;
+    }
+    if (u.hostname !== "" && u.hostname !== "localhost") {
+      const e = new Error(`File URL host must be "localhost" or empty on ${process.platform}`);
+      e.code = "ERR_INVALID_FILE_URL_HOST";
+      throw e;
+    }
+    return decodeURIComponent(u.pathname);
+  }
+  throw new ERR_INVALID_ARG_TYPE("options.cwd", ["string", "URL"], v);
+}
+
+// spawn 预检（execvp 语义：失败走异步 error + close(-errno)，不抛、pid undefined）。
+// 返回 null = 可起；否则返回待发 error（code/errno/syscall/path）。
+// 相对路径按新 cwd 解析（node chdir 先于 exec）；裸名沿 PATH（子 env 优先）。
+function __spawnPreflight(file, o) {
+  const mk = (code, errno) => {
+    const e = new Error(`spawn ${file} ${code}`);
+    e.code = code;
+    e.errno = errno;
+    e.syscall = `spawn ${file}`;
+    e.path = file;
+    return e;
+  };
+  let dir = o.cwd;
+  if (dir !== null && dir !== undefined && dir !== "") {
+    try {
+      const st = fs.statSync(dir);
+      if (!st.isDirectory()) return mk("ENOTDIR", __syncErrno("ENOTDIR"));
+    } catch {
+      return mk("ENOENT", __syncErrno("ENOENT"));
+    }
+  } else {
+    dir = null;
+  }
+  const probe = (p) => {
+    try { fs.accessSync(p, fs.constants.X_OK); return true; } catch (e2) {
+      return e2 && (e2.code === "EACCES" || e2.code === "EPERM") ? "eacces" : false;
+    }
+  };
+  if (file.includes("/")) {
+    const p = (dir !== null && !file.startsWith("/")) ? dir + "/" + file : file;
+    const hit = probe(p);
+    if (hit === "eacces") return mk("EACCES", __syncErrno("EACCES"));
+    if (!hit) return mk("ENOENT", __syncErrno("ENOENT"));
+    return null;
+  }
+  const pathVar = String((o.env && o.env.PATH) || process.env.PATH || "").split(":");
+  for (const d of pathVar) {
+    if (!d) continue;
+    if (probe(d + "/" + file) === true) return null;
+  }
+  return mk("ENOENT", __syncErrno("ENOENT"));
+}
+
+// shell 模式预检（只查 cwd——命令本体经 shell 解析，PATH/可执行位由 shell 管）。
+function __spawnPreflightCwd(o) {
+  const dir = o.cwd;
+  if (dir !== null && dir !== undefined && dir !== "") {
+    try {
+      const st = fs.statSync(dir);
+      if (!st.isDirectory()) return __preflightErr("ENOTDIR", dir);
+    } catch {
+      return __preflightErr("ENOENT", dir);
+    }
+  }
+  return null;
+}
+function __preflightErr(code, file) {
+  const e = new Error(`spawn ${file} ${code}`);
+  e.code = code;
+  e.errno = __syncErrno(code);
+  e.syscall = `spawn ${file}`;
+  e.path = file;
+  return e;
+}
 function __normSpawnAsyncOpts(opts) {
   // node 口径：stdio 缺省（整体缺或数组缺项）一律 'pipe'——spawnPromisified
   // 系套件直接读 child.stdout/stderr（'child.stderr is null' 现形于
   // test-url-parse-deprecation）；旧默认 inherit 是偏差。
-  const o = { cwd: null, env: null, detached: false, stdio: ["pipe", "pipe", "pipe"], timeoutMs: 0 };
-  if (opts === undefined || opts === null) return o;
-  if (opts.cwd !== undefined) o.cwd = String(opts.cwd);
+  const o = { cwd: null, env: null, detached: false, stdio: ["pipe", "pipe", "pipe"], timeoutMs: 0, signal: null, killSigname: "SIGTERM", killSigno: 15, shell: undefined };
+  if (opts === undefined || opts === null) { o.env = __childEnv(o); return o; }
+  if (opts.cwd !== undefined && opts.cwd !== null) {
+    o.cwd = __cwdPath(opts.cwd);
+    // node：'' 不 chdir（cwd 套件 'number' pid 断言），Rust 侧空串即失败——置 null。
+    if (o.cwd === "") o.cwd = null;
+  }
   if (opts.env !== undefined) o.env = { ...opts.env };
   if (opts.detached !== undefined) o.detached = !!opts.detached;
+  // shell：boolean/string（node normalizeSpawnArguments 口径；spawn-shell 套件）。
+  if (opts.shell !== undefined && opts.shell !== null) {
+    if (typeof opts.shell !== "boolean" && typeof opts.shell !== "string") {
+      throw new ERR_INVALID_ARG_TYPE("options.shell", ["boolean", "string"], opts.shell);
+    }
+    o.shell = opts.shell;
+  }
+  // timeout：validateTimeout 逐字口径——非 number ARG_TYPE，负数/非整数 RANGE
+  //（spawn-timeout-kill-signal 套件 'badValue'/{} 点名）。
+  if (opts.timeout !== undefined && opts.timeout !== null) {
+    if (typeof opts.timeout !== "number") {
+      throw new ERR_INVALID_ARG_TYPE("options.timeout", "number", opts.timeout);
+    }
+    if (!Number.isInteger(opts.timeout) || opts.timeout < 0) {
+      const e = new RangeError(`The value of "options.timeout" is out of range. It must be an integer >= 0. Received ${opts.timeout}`);
+      e.code = "ERR_OUT_OF_RANGE"; throw e;
+    }
+    o.timeoutMs = opts.timeout;
+  }
+  // signal：undefined 过；余下必须 AbortSignal 实例（真机 validateAbortSignal）。
+  if (opts.signal !== undefined) {
+    if (!(opts.signal instanceof AbortSignal)) {
+      throw new ERR_INVALID_ARG_TYPE("options.signal", "AbortSignal", opts.signal);
+    }
+    o.signal = opts.signal;
+  }
+  // killSignal：undefined/null/合法信号过；类型先行 ARG_TYPE，落空 UNKNOWN_SIGNAL。
+  if (opts.killSignal !== undefined && opts.killSignal !== null) {
+    const ks = opts.killSignal;
+    if (typeof ks !== "string" && typeof ks !== "number") {
+      throw new ERR_INVALID_ARG_TYPE("options.killSignal", ["string", "number"], ks);
+    }
+    const hit = __sigResolve(ks);
+    if (!hit) {
+      const e = new TypeError(`Unknown signal: ${String(ks)}`);
+      e.code = "ERR_UNKNOWN_SIGNAL"; throw e;
+    }
+    o.killSigno = hit.signo; o.killSigname = hit.name;
+  }
   if (opts.stdio !== undefined) {
     const one = (s) => {
       if (!["inherit", "ignore", "pipe"].includes(s)) {
@@ -1388,6 +1703,7 @@ function __normSpawnAsyncOpts(opts) {
     }
   }
   if (opts.timeout !== undefined) o.timeoutMs = Number(opts.timeout);
+  o.env = __childEnv(o);
   return o;
 }
 export function spawn(file, args, opts) {
@@ -1396,9 +1712,50 @@ export function spawn(file, args, opts) {
   const proc = new ChildProcess();
   proc.spawnfile = String(file);
   proc.spawnargs = [...(args || [])].map(String);
-  const id = __wjs_spawn_start(String(file), JSON.stringify([...(args || [])].map(String)), JSON.stringify({
+  // shell（node normalizeSpawnArguments 口径）：file+args 空格拼接成 sh -c 串，
+  // spawnfile 换 shell 本体、spawnargs 换 shell 形（spawn-shell 套件断
+  // spawnargs 末元 = 拼串）；args 非空即 DEP0190（node 逐字文案）。
+  let f2 = String(file);
+  let a2 = [...(args || [])].map(String);
+  if (o.shell !== undefined) {
+    if (a2.length > 0) {
+      process.emitWarning("Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.", "DeprecationWarning", "DEP0190");
+    }
+    const command = [f2, ...a2].join(" ");
+    f2 = typeof o.shell === "string" ? o.shell : "/bin/sh";
+    a2 = ["-c", __selfCmd(command, o.env ?? process.env)];
+    proc.spawnfile = f2;
+    proc.spawnargs = a2;
+  }
+  // execvp 预检（shell 时跳过——命令经 shell 解析；cwd 照查）：失败走异步
+  // error + close(-errno)（cwd 套件：pid 'undefined'、error.code='ENOENT'、
+  // exit 不发、close code -2——真机 probe）。
+  const pf = o.shell === undefined ? __spawnPreflight(String(file), o) : __spawnPreflightCwd(o);
+  if (pf !== null) {
+    proc.__initStreams(o.stdio, 0);
+    queueMicrotask(() => {
+      proc.__emitError(pf);
+      proc.__emitDeadClose(pf.errno);
+    });
+    return proc;
+  }
+  const [f3, a3] = __selfArgv(f2, a2);
+  const id = __wjs_spawn_start(String(f3), JSON.stringify(a3), JSON.stringify({
     cwd: o.cwd, env: o.env, detached: o.detached, timeout_ms: o.timeoutMs,
+    kill_signo: o.killSigno, kill_signame: o.killSigname,
   }), proc, JSON.stringify(o.stdio));
+  // abort（node spawn 逐字口径：预中止经 nextTick 走同一 onAbortListener——
+  // 子进程已起，kill(killSignal) 作用到才发 error(AbortError, cause=reason)；
+  // exit(null, killSignal) 由真实进程死亡自带；exit 后注销监听——
+  // spawn-timeout-kill-signal 套件 listenerCount 断言）。
+  if (o.signal) {
+    const onAbort = () => {
+      if (proc.exitCode !== null || proc.signalCode !== null) return;
+      if (__wjs_child_kill(id, String(o.killSigno))) proc.__emitAbort(o.signal.reason);
+    };
+    const disposable = addAbortListener(o.signal, onAbort);
+    proc.__onExited = () => { try { disposable[Symbol.dispose](); } catch {} };
+  }
   return proc.__init(id, o.stdio);
 }
 function __asyncOneShot(kind, run) {
@@ -1428,50 +1785,109 @@ function __asyncOneShot(kind, run) {
 // maxBuffer 超限 kill（真机 ERR_CHILD_PROCESS_STDIO_MAXBUFFER）；timeout 走
 // spawn 既有 timeout_ms（killSignal 自定值偏差记档）；错误 cmd/code/killed/
 // signal 照真机挂载。execFile 无回调即抛 ERR_INVALID_ARG_TYPE（真机口径）。
-function __execCollect(child, o, cmdStr, cb) {
-  const chunks = { stdout: [], stderr: [] };
-  const sizes = { stdout: 0, stderr: 0 };
-  let over = null;
-  const watch = (name) => {
-    const st = child[name];
-    if (!st) return;
-    st.on("data", (c) => {
-      const u8 = c instanceof Uint8Array ? c : new TextEncoder().encode(String(c));
-      sizes[name] += u8.length;
-      if (sizes[name] <= o.maxBuffer) chunks[name].push(u8);
-      else if (over === null) {
-        over = name;
-        child.kill();
-      }
-    });
-  };
-  watch("stdout");
-  watch("stderr");
-  const dec = (u8s) => {
-    const all = Buffer.concat(u8s);
-    return o.encoding === "buffer" || o.encoding === null ? all : new TextDecoder(String(o.encoding || "utf8")).decode(all);
-  };
-  const finish = (err) => {
-    cb(err, dec(chunks.stdout), dec(chunks.stderr));
-  };
-  child.once("error", (e) => { finish(e); child.once("close", () => {}); });
-  child.once("close", (code, signal) => {
-    if (over !== null) {
-      const err = new Error(`${over} maxBuffer length exceeded`);
-      err.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
-      err.cmd = cmdStr;
-      finish(err);
+function __execCollect(child, o, cmdStr, args, cb) {
+  // node execFile v26 逐字口径（exithandler/errorhandler/kill/data 三面）：
+  // encoding 非 buffer 且 isEncoding 才串化（否则 Buffer concat，'invalid' 同）；
+  // maxBuffer 超限截断入块再 kill（RangeError ERR_CHILD_PROCESS_STDIO_MAXBUFFER
+  // 优先于通用失败错）；Infinity 即不限；killed = child.killed || 本地 killed。
+  const encoding = (o.encoding !== "buffer" && Buffer.isEncoding(o.encoding)) ? o.encoding : null;
+  const _stdout = [];
+  const _stderr = [];
+  let stdoutLen = 0;
+  let stderrLen = 0;
+  let killed = false;
+  let exited = false;
+  let ex = null;
+
+  function exithandler(code, signal) {
+    if (exited) return;
+    exited = true;
+    if (!cb) return;
+    let stdout;
+    let stderr;
+    if (encoding || child.stdout?.readableEncoding) stdout = _stdout.join("");
+    else stdout = Buffer.concat(_stdout);
+    if (encoding || child.stderr?.readableEncoding) stderr = _stderr.join("");
+    else stderr = Buffer.concat(_stderr);
+    if (!ex && code === 0 && signal === null) {
+      cb(null, stdout, stderr);
       return;
     }
-    if (code === 0 && signal === null) { finish(null); return; }
-    const err = new Error(`Command failed: ${cmdStr}\n${dec(chunks.stderr)}`);
-    // 真机口径（execfile 套件点名）：负退出码转 UV 名（如 -1 → EPERM）。
-    err.code = (typeof code === "number" && code < 0) ? __uvName(code) : (code ?? signal);
-    err.killed = child.killed;
-    err.signal = signal;
-    err.cmd = cmdStr;
-    finish(err);
-  });
+    let cmd = cmdStr;
+    if (args?.length) cmd += ` ${args.join(" ")}`;
+    ex ||= __genericNodeError(`Command failed: ${cmd}\n${stderr}`, {
+      code: (typeof code === "number" && code < 0) ? __uvName(code) : code,
+      killed: child.killed || killed,
+      signal: signal,
+    });
+    ex.cmd = cmdStr;
+    cb(ex, stdout, stderr);
+  }
+  function errorhandler(e) {
+    ex = e;
+    if (child.stdout) child.stdout.destroy();
+    if (child.stderr) child.stderr.destroy();
+    exithandler();
+  }
+  function kill() {
+    if (child.stdout) child.stdout.destroy();
+    if (child.stderr) child.stderr.destroy();
+    killed = true;
+    try {
+      child.kill(o.killSignal);
+    } catch (e) {
+      ex = e;
+      exithandler();
+    }
+  }
+  if (child.stdout) {
+    if (encoding) child.stdout.setEncoding(encoding);
+    child.stdout.on("data", (chunk) => {
+      if (o.maxBuffer === Infinity) { _stdout.push(chunk); return; }
+      const len = typeof chunk === "string" ? Buffer.byteLength(chunk, encoding) : chunk.length;
+      stdoutLen += len;
+      if (stdoutLen > o.maxBuffer) {
+        const truncatedLen = o.maxBuffer - (stdoutLen - len);
+        _stdout.push(typeof chunk === "string" ? chunk.slice(0, truncatedLen) : chunk.slice(0, truncatedLen));
+        ex = __maxBufferErr("stdout");
+        kill();
+      } else {
+        _stdout.push(chunk);
+      }
+    });
+  }
+  if (child.stderr) {
+    if (encoding) child.stderr.setEncoding(encoding);
+    child.stderr.on("data", (chunk) => {
+      if (o.maxBuffer === Infinity) { _stderr.push(chunk); return; }
+      const len = typeof chunk === "string" ? Buffer.byteLength(chunk, encoding) : chunk.length;
+      stderrLen += len;
+      if (stderrLen > o.maxBuffer) {
+        const truncatedLen = o.maxBuffer - (stderrLen - len);
+        _stderr.push(typeof chunk === "string" ? chunk.slice(0, truncatedLen) : chunk.slice(0, truncatedLen));
+        ex = __maxBufferErr("stderr");
+        kill();
+      } else {
+        _stderr.push(chunk);
+      }
+    });
+  }
+  child.once("error", errorhandler);
+  child.once("close", exithandler);
+}
+// node genericNodeError（execFile 失败错；killed/signal/code 挂载）。
+function __genericNodeError(message, opts) {
+  const err = new Error(message);
+  const { code, killed, signal } = opts;
+  err.code = code ?? null;
+  err.killed = !!killed;
+  err.signal = signal ?? null;
+  return err;
+}
+function __maxBufferErr(stream) {
+  const err = new RangeError(`${stream} maxBuffer length exceeded`);
+  err.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+  return err;
 }
 
 // spawn 预检（execFile 专用）：绝对/相对路径直查；裸名沿 PATH 找（node
@@ -1489,69 +1905,107 @@ function __canSpawnFile(file) {
 }
 
 export function execFile(file, args, opts, cb) {
-  if (args !== undefined && typeof args !== "object" && typeof args !== "function") {
-    throw new TypeError("execFile: args must be an array");
+  // node normalizeExecFileArgs 口径：args/opts 位移 + callback 可缺席（返回
+  // live child，不抛）；callback 给了但非函数才 ARG_TYPE。
+  if (args !== undefined && args !== null && !Array.isArray(args) &&
+      (typeof args === "object" || typeof args === "function")) {
+    cb = opts;
+    opts = args;
+    args = undefined;
   }
-  if (typeof args === "function") { cb = args; args = undefined; opts = undefined; }
-  else if (typeof opts === "function") { cb = opts; opts = undefined; }
-  if (typeof cb !== "function") {
+  if (typeof opts === "function") { cb = opts; opts = undefined; }
+  else if (opts === undefined || opts === null) opts = {};
+  else if (typeof opts !== "object") {
+    throw new TypeError("The \"options\" argument must be of type object");
+  }
+  if (cb !== undefined && cb !== null && typeof cb !== "function") {
     const err = new TypeError("The \"callback\" argument must be of type function");
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
   const o = __normExecOpts(opts);
+  // shell 透传（execFile 缺省 false——__normExecOpts 的 true 缺省是 execSync/exec
+  // 语义，此处按 opts 原样）。
+  const shellOpt = (opts !== null && typeof opts === "object" && opts.shell !== undefined) ? opts.shell : undefined;
   const argv = (args ?? []).map(String);
-  const cmdStr = [String(file), ...argv].join(" ");
-  // node 口径：spawn 失败走异步 'error' 事件 + 回调（不抛）；本仓 spawn 异步
-  // 失败（id 先发、error 事件后到——pid 已置数）而 node ENOENT 时 pid 恒
-  // undefined——在此同步预检（PATH 解析）转 node 形：死句柄 + 回调。
-  if (!__canSpawnFile(String(file))) {
+  const cmdStr = String(file);
+  // execvp 预检（shell 模式跳过——命令经 shell 解析）：失败走异步 error + 回调
+  //（不抛；node ENOENT 时 pid 恒 undefined——死句柄 + 微任务回调）。
+  if (shellOpt === undefined && !__canSpawnFile(String(file))) {
     const err = new Error(`spawn ${file} ENOENT`);
     err.code = "ENOENT";
     err.errno = -2;
     err.syscall = `spawn ${file}`;
     err.path = String(file);
     err.cmd = cmdStr;
-    queueMicrotask(() => cb(err, "", ""));
+    queueMicrotask(() => cb && cb(err, "", ""));
     return new ChildProcess();
   }
-  let child;
-  try {
-    child = spawn(String(file), argv, {
-      cwd: o.cwd,
-      env: o.env,
-      timeout: o.timeoutMs || undefined,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-  } catch (e) {
-    if (e && typeof e === "object" && e.code === undefined) {
-      e.code = (String(e.message).match(/^([A-Z_]+): /) || [])[1] || "ENOENT";
-      e.path = String(file);
-      e.syscall = `spawn ${file}`;
-    }
-    queueMicrotask(() => cb(e, "", ""));
-    return new ChildProcess();
-  }
+  const child = spawn(String(file), argv, {
+    cwd: o.cwd,
+    env: o.env,
+    signal: o.signal,
+    shell: shellOpt,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   child.__cmdStr = cmdStr;
-  __execCollect(child, o, cmdStr, cb);
+  __execCollect(child, o, cmdStr, argv, cb);
+  // timeout/killSignal 在 execFile 层（node 口径——spawn 调用不带 timeout）。
+  if (o.timeoutMs > 0 && Number.isFinite(o.timeoutMs)) {
+    const tid = setTimeout(() => {
+      try { child.kill(o.killSignal); } catch { /* 已退即走下 */ }
+    }, o.timeoutMs);
+    if (typeof tid.unref === "function") tid.unref();
+  }
   return child;
 }
 
 export function exec(command, opts, cb) {
   if (typeof opts === "function") { cb = opts; opts = undefined; }
-  if (typeof cb !== "function") {
+  // node 口径：callback 可缺席（返回 live child）；给了但非函数才 ARG_TYPE。
+  if (cb !== undefined && cb !== null && typeof cb !== "function") {
     const err = new TypeError("The \"callback\" argument must be of type function");
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
   const o = __normExecOpts(opts);
   const cmdStr = String(command);
-  const child = execFile("/bin/sh", ["-c", cmdStr], { ...o, encoding: o.encoding }, (err, stdout, stderr) => {
+  // 自举翻译（exec-encoding/timeout 系：escapePOSIXShell 的 ${ESCAPED_n} env
+  // 间接形 + 裸文件形；err.cmd 保持原文——改写只作用于 /bin/sh -c 的串）。
+  const child = execFile(cmdStr, undefined, { ...o, timeout: o.timeoutMs, encoding: o.encoding }, cb && ((err, stdout, stderr) => {
     if (err) err.cmd = cmdStr;
     cb(err, stdout, stderr);
-  });
+  }));
   return child;
 }
+// node customPromiseExecFunction 逐字口径：promise.child 挂原函数返回值；
+// 原函数在 executor **外**调用——同步校验抛错不被 Promise 吞（abortcontroller
+// 套件 assert.throws 直调 promisify(exec) 形）。
+function __customPromiseExec(orig) {
+  return function (...args) {
+    let res;
+    let rej;
+    const promise = new Promise((resolve, reject) => { res = resolve; rej = reject; });
+    promise.child = orig(...args, (err, stdout, stderr) => {
+      if (err !== null && err !== undefined) {
+        err.stdout = stdout;
+        err.stderr = stderr;
+        rej(err);
+      } else {
+        res({ stdout, stderr });
+      }
+    });
+    return promise;
+  };
+}
+Object.defineProperty(exec, Symbol.for("nodejs.util.promisify.custom"), {
+  value: __customPromiseExec(exec),
+  enumerable: false,
+});
+Object.defineProperty(execFile, Symbol.for("nodejs.util.promisify.custom"), {
+  value: __customPromiseExec(execFile),
+  enumerable: false,
+});
 export function execFileSync(file, args, opts) {
   if (args !== undefined && args !== null && !Array.isArray(args)) { opts = args; args = []; }
   const o = __normSpawnOpts(opts);
@@ -1629,7 +2083,7 @@ parentPort.on("close", () => {
 await import(__mod);
 `;
 function __normForkOpts(opts) {
-  const o = { execPath: process.execPath, killSignal: "SIGTERM" };
+  const o = { execPath: process.execPath, killSignal: "SIGTERM", silent: false, signal: null, killSigname: "SIGTERM", killSigno: 15 };
   if (opts === undefined || opts === null) return o;
   if (typeof opts !== "object") {
     const err = new TypeError("The \"options\" argument must be of type object");
@@ -1640,6 +2094,15 @@ function __normForkOpts(opts) {
   // 接受忽略（同进程线程，无独立进程环境；stdio 恒 null，见 `fork` 文档）。
   if (opts.killSignal !== undefined) o.killSignal = String(opts.killSignal);
   if (opts.execPath !== undefined) o.execPath = String(opts.execPath);
+  if (opts.silent !== undefined) o.silent = !!opts.silent;
+  if (opts.signal !== undefined) {
+    if (!(opts.signal instanceof AbortSignal)) {
+      throw new ERR_INVALID_ARG_TYPE("options.signal", "AbortSignal", opts.signal);
+    }
+    o.signal = opts.signal;
+  }
+  const hit = __sigResolve(o.killSignal);
+  if (hit) { o.killSigname = hit.name; o.killSigno = hit.signo; }
   return o;
 }
 export function fork(modulePath, args, opts) {
@@ -1659,27 +2122,88 @@ export function fork(modulePath, args, opts) {
   const modStr = modulePath instanceof URL ? modulePath.href : String(modulePath);
   const fileUrl = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(modStr) ? modStr : pathToFileURL(modStr).href;
   const argsArr = [...(args || [])].map(String);
+  const proc = new ChildProcess();
+  proc.__forkChild = true;
+  proc.__killSignal = o.killSignal;
+  proc.spawnfile = o.execPath;
+  proc.spawnargs = [o.execPath, fileUrl, ...argsArr];
+  // 预中止：线程不起（真机不起子进程同理），异步 error + exit/close(null, killSignal)
+  //（fork-abort-signal 套件 exit mustCall(null, 'SIGTERM'/'SIGKILL')）。
+  if (o.signal && o.signal.aborted) {
+    const signame = o.killSigname;
+    const reason = o.signal.reason;
+    queueMicrotask(() => {
+      proc.__emitAbort(reason);
+      if (typeof proc.onexit === "function") proc.onexit(null, signame);
+      if (typeof proc.onclose === "function") proc.onclose(null, signame);
+    });
+    return proc;
+  }
+  // silent（或 stdio: 'pipe'）：stdout/stderr 挂无数据管形流——pipe/unpipe 形状
+  // 在（silent 套件 `child.stderr.pipe(process.stderr, {end:false})` 必须可用）；
+  // 数据面偏差记档：线程底座子输出直走共享 stdio。
+  if (o.silent) {
+    proc.stdout = __forkNullStream();
+    proc.stderr = __forkNullStream();
+  }
   const src = __FORK_CHILD_SRC
     .replace("__FORK_MOD__", () => JSON.stringify(fileUrl))
     .replace("__FORK_ARGV__", () => JSON.stringify(argsArr));
   const worker = new Worker(src, { eval: true, __wjs_forkChild: true });
-  const proc = new ChildProcess();
-  proc.__forkChild = true;
   proc.__worker = worker;
   proc.__connected = true;
-  proc.__killSignal = o.killSignal;
-  proc.spawnfile = o.execPath;
-  proc.spawnargs = [o.execPath, fileUrl, ...argsArr];
+  // 非 silent（stdio 继承）：stdout/stderr 恒 null（真机 26 逐项：fork 未 silent
+  // 时 `c.stdout === null` 三面全真——继承无管道句柄；silent 才挂管形流）。
   proc.stdin = null;
-  proc.stdout = null;
-  proc.stderr = null;
+  if (!o.silent) {
+    proc.stdout = null;
+    proc.stderr = null;
+  }
   proc.channel = { ref() {}, unref() {} };
   worker.on("message", (m) => proc.__onForkMessage(m));
   worker.on("error", (e) => {
     if (typeof proc.onerror === "function") proc.onerror(e);
   });
   worker.on("exit", (code) => proc.__onForkExit(code));
+  // abort（node：error 先行 + terminate；exit(null, killSignal) 由 abort 路径
+  // 自发——线程 exit 事件被 __exitDone 旗拦下）。
+  if (o.signal) {
+    o.signal.addEventListener("abort", () => {
+      if (proc.__exitDone) return;
+      proc.__exitDone = true;
+      try { worker.terminate(); } catch { /* 已退即走下 */ }
+      proc.__emitAbort(o.signal.reason);
+      if (typeof proc.onexit === "function") proc.onexit(null, o.killSigname);
+      if (typeof proc.onclose === "function") proc.onclose(null, o.killSigname);
+    }, { once: true });
+  }
   return proc;
+}
+// fork silent 管形流（无数据——见 `fork` 文档偏差；pipe/unpipe/on 形状在）。
+function __forkNullStream() {
+  const listeners = {};
+  return {
+    on(ev, cb) { (listeners[ev] ||= []).push(cb); return this; },
+    once(ev, cb) { const w = (...a) => { this.off(ev, w); cb(...a); }; w.__wjs_orig = cb; return this.on(ev, w); },
+    off(ev, cb) {
+      const l = listeners[ev];
+      if (l) {
+        let i = l.findIndex((f) => f === cb || f.__wjs_orig === cb);
+        while (i >= 0) { l.splice(i, 1); i = l.findIndex((f) => f === cb || f.__wjs_orig === cb); }
+      }
+      return this;
+    },
+    removeListener(ev, cb) { return this.off(ev, cb); },
+    pipe(dest) { return dest; },
+    unpipe() { return this; },
+    setEncoding() { return this; },
+    pause() { return this; },
+    resume() { return this; },
+    read() { return null; },
+    destroy() { return this; },
+    get readable() { return false; },
+    get destroyed() { return false; },
+  };
 }
 export default { execSync, spawnSync, spawn, exec, execFile, execFileSync, fork, ChildProcess };
 "#;

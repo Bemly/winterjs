@@ -63,8 +63,8 @@ fn node_spawn_pipe_streams() {
     // pipe：echo 回环 + cat stdin 写/关 + exit/close（--eval 经动态 import，见既有 spawn 用例）。
     // 注意：close 监听必须在 read 之前注册（echo 退出快，否则分发时无监听即摘除，后续 await 永挂）。
     // 10f 起 stdout/stderr 为 legacy Readable 面（真机 `Readable`：setEncoding +
-    // on('data')；旧 Web getReader 用法编码的是实现偏差，§4.65 翻转）。stdin 仍
-    // Web WritableStream（legacy Writable 记偏差）。
+    // on('data')；旧 Web getReader 用法编码的是实现偏差，§4.65 翻转）。stdin 同批
+    // 换 legacy Writable（真机 Socket 写半部：write/end 直调；旧 Web getWriter 形退役）。
     let code = r#"const { spawn } = await import("node:child_process");
 const c = spawn("/bin/echo", ["hi-echo"], { stdio: ["ignore", "pipe", "ignore"] });
 const closed = new Promise((res) => c.on("close", res));
@@ -75,9 +75,8 @@ await closed;
 if (got.trim() !== "hi-echo") throw new Error("echo failed: " + JSON.stringify(got));
 const c2 = spawn("cat", [], { stdio: "pipe" });
 const closed2 = new Promise((res) => c2.on("close", res));
-const w = c2.stdin.getWriter();
-await w.write("hi-stdin");
-await w.close();
+c2.stdin.write("hi-stdin");
+c2.stdin.end();
 let out = "";
 c2.stdout.setEncoding("utf8");
 c2.stdout.on("data", (d) => { out += d; });
@@ -245,6 +244,8 @@ fn phase10f_spawn_default_pipe_close_args() {
     // 10f：spawn 缺省 stdio = pipe×3（node 口径——child.stderr 非 null 可
     // setEncoding/on('data')）；exit/close 事件 node 双参 (code, signal)，
     // 用户代码解构可收（§4.101）。正常+报错+边界。
+    // stdin 面 10f 二轮更新：WritableStream → legacy Writable（Socket 写半部
+    // write/writable/readable——stdin 套件口径；旧 getWriter 断言已翻转）。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("s.mjs");
     file.write_str(
@@ -262,7 +263,7 @@ c.stdout.on("data", (d) => { out += d; });
 c.stderr.on("data", (d) => { err += d; });
 await closed;
 console.log("pipes", out.trim() === "out-hi", err.trim() === "err-hi");
-console.log("stdin-writable", typeof c.stdin.getWriter === "function");
+console.log("stdin-writable", typeof c.stdin.write === "function", c.stdin.writable === true, c.stdin.readable === false);
 // exit 双参：signal 死亡时 (null, 'SIGTERM')，正常退出 (0, null)
 const c2 = spawn("sleep", ["30"]);
 c2.on("exit", (code, signal) => console.log("exit-sig", code === null, signal === "SIGTERM"));
@@ -282,7 +283,7 @@ await new Promise((r) => setTimeout(r, 200));
     for line in [
         "close true true",
         "pipes true true",
-        "stdin-writable true",
+        "stdin-writable true true true",
         "exit-sig true true",
         "killed true",
     ] {
@@ -419,5 +420,327 @@ console.log("spawnargs", JSON.stringify(cs.spawnSync("nope_xyz", ["a", "b"]).err
     assert!(out.contains("exec-buf true"), "out: {out}");
     assert!(out.contains("spawnargs [\"a\",\"b\"]"), "out: {out}");
     assert!(!out.contains("BAD "), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_child_exec_shell_self_and_timeout() {
+    // 10f：exec 族自举翻译 env 间接形（${VAR}/$NODE + 裸文件 → --run/--eval，
+    // escapePOSIXShell 形）、timeout/killSignal 错形（killed/code=null/signal）、
+    // encoding 'invalid' 落 Buffer、exec 无回调 live child。标签互不为子串
+    //（§4.42）：sigkilltag/sigtermtag/encbuf/encstr。正常+报错+边界。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("exec-self.mjs");
+    file.write_str(
+        r#"
+import { exec, execFile } from "node:child_process";
+import assert from "node:assert";
+const self = process.execPath;
+const selfFile = new URL("child-ran.mjs", import.meta.url).pathname;
+// env 间接形（escapePOSIXShell 口径）+ 裸文件自举：子进程即自身
+const env = { ...process.env, ESC: self, ESCF: selfFile };
+exec(`"${"$"}{ESC}" "${"$"}{ESCF}" child`, { env }, (e, stdout) => {
+  console.log("envself", e === null, stdout.trim() === "child-ran");
+});
+// 裸文件形（直接路径）：--run 翻译 + argv[2] 可见
+execFile(self, [selfFile, "arg-child"], (e, stdout) => {
+  console.log("fileself", e === null, stdout.trim() === "arg-child");
+});
+// timeout 到点：killed=true、code=null、signal 缺省 SIGTERM
+exec("sleep 5", { timeout: 60 }, (e) => {
+  console.log("sigtermtag", e.killed === true, e.code === null, e.signal === "SIGTERM");
+  // killSignal 自定：SIGKILL
+  exec("sleep 5", { timeout: 60, killSignal: "SIGKILL" }, (e2) => {
+    console.log("sigkilltag", e2.killed === true, e2.code === null, e2.signal === "SIGKILL");
+    // timeout 未到点：正常收
+    exec("echo notexp", { timeout: 60000 }, (e3, stdout3) => {
+      console.log("notexp", e3 === null, stdout3.trim() === "notexp");
+      // encoding 'invalid' 落 Buffer（真机 exec 异步口径）+ utf8 串
+      exec("echo enc", { encoding: "invalid" }, (e4, out4) => {
+        console.log("encbuf", e4 === null, out4 instanceof Buffer, out4.toString().trim() === "enc");
+        exec("echo enc", {}, (e5, out5) => {
+          console.log("encstr", e5 === null, typeof out5 === "string", out5.trim() === "enc");
+          // 无回调：live child（真机 exec/execFile 口径，不抛）
+          const c = exec("echo nocb");
+          console.log("nocb", typeof c.pid === "number", typeof c.stdout.on === "function");
+          setTimeout(() => process.exit(0), 300);
+        });
+      });
+    });
+  });
+});
+console.log("child-ran-marker");
+"#,
+    )
+    .unwrap();
+    // child 分支：argv[2] 回显（自举翻译后的 argv 形）
+    let child_file = dir.child("child-ran.mjs");
+    child_file.write_str(
+        r#"
+import { exec, execFile } from "node:child_process";
+const self = process.execPath;
+if (process.argv[2] === "child") {
+  console.log("child-ran");
+} else if (process.argv[2] === "arg-child") {
+  console.log("arg-child");
+} else {
+  void self;
+}
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in [
+        "child-ran-marker",
+        "envself true true",
+        "fileself true true",
+        "sigtermtag true true true",
+        "sigkilltag true true true",
+        "notexp true true",
+        "encbuf true true true",
+        "encstr true true true",
+        "nocb true true",
+    ] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_child_spawn_abort_and_surface() {
+    // 10f：spawn/execFile AbortSignal 面（预中止/中止中/自定义 reason/abort
+    // 后 error+exit 形）、spawn PATH 解析与 ENOENT error 事件、cwd file URL、
+    // execvp 失败 close(-errno)。标签互不为子串（§4.42）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("abort-surface.mjs");
+    file.write_str(
+        r#"
+import { spawn, execFile } from "node:child_process";
+import assert from "node:assert";
+const self = process.execPath;
+// spawn 预中止：error(AbortError) + exit(null, SIGTERM)
+{
+  const ac = new AbortController();
+  const c = spawn(self, ["--eval", "setTimeout(() => {}, 30000)"], { signal: ac.signal });
+  const got = {};
+  c.on("error", (e) => { got.err = e.name + ":" + e.code; });
+  c.on("exit", (code, sig) => { got.exit = code === null && sig === "SIGTERM"; console.log("pre-abort", JSON.stringify(got)); });
+  ac.abort();
+}
+// 中止中：自定义 reason cause 透传
+{
+  const boom = new Error("boom");
+  const ac = new AbortController();
+  const c = spawn(self, ["--eval", "setTimeout(() => {}, 30000)"], { signal: ac.signal });
+  c.on("error", (e) => console.log("mid-abort", e.name === "AbortError", e.cause === boom));
+  c.on("exit", (code, sig) => console.log("mid-exit", code === null, sig === "SIGTERM"));
+  setTimeout(() => ac.abort(boom), 50);
+}
+// 非法 signal：同步 ARG_TYPE
+assert.throws(() => spawn("echo", ["x"], { signal: {} }), (e) => e.code === "ERR_INVALID_ARG_TYPE" && e.name === "TypeError");
+// ENOENT：error 事件（不抛）+ close(-errno) + exit 不发 + pid undefined
+{
+  const c = spawn("definitely-missing-binary-xyz");
+  let sawExit = false;
+  c.on("error", (e) => {
+    console.log("spawn-err", e.code === "ENOENT", typeof c.pid === "undefined");
+    c.on("close", (code) => console.log("spawn-close", code === -2, sawExit === false));
+  });
+  c.on("exit", () => { sawExit = true; });
+}
+// execFile 预中止：回调收 AbortError（异步）
+{
+  const ac = new AbortController();
+  ac.abort();
+  execFile("sleep", ["5"], { signal: ac.signal }, (e) => {
+    console.log("execfile-preabort", e.name === "AbortError", e.code === "ABORT_ERR");
+  });
+}
+// PATH 解析：裸名 spawn 可用
+{
+  const c = spawn("pwd", [], { cwd: "/tmp" });
+  c.on("exit", (code) => console.log("path-resolve", code === 0));
+}
+// cwd file URL + 坏 URL 同步抛
+{
+  const c = spawn("pwd", [], { cwd: new URL("file:///tmp") });
+  c.on("exit", (code) => console.log("cwd-url", code === 0));
+  assert.throws(() => spawn("pwd", [], { cwd: new URL("http://example.com/") }), (e) => e.code === "ERR_INVALID_URL_SCHEME");
+}
+setTimeout(() => process.exit(0), 500);
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in [
+        "pre-abort {\"err\":\"AbortError:ABORT_ERR\",\"exit\":true}",
+        "mid-abort true true",
+        "mid-exit true true",
+        "spawn-err true true",
+        "spawn-close true true",
+        "execfile-preabort true true",
+        "path-resolve true",
+        "cwd-url true",
+    ] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_child_stdin_legacy_and_fork_silent() {
+    // 10f：stdin legacy Writable 面（write/end/writable/readable）、fork
+    // silent 管形流（pipe 可用）、fork abort 合成 exit(null, killSignal)、
+    // exec maxBuffer 截断 RangeError。标签互不为子串（§4.42）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("stdin-fork.mjs");
+    file.write_str(
+        r#"
+import { spawn, fork, exec } from "node:child_process";
+import assert from "node:assert";
+const self = process.execPath;
+// stdin：legacy Writable（cat 回显）
+{
+  const cat = spawn("cat");
+  assert.strictEqual(cat.stdin.writable, true);
+  assert.strictEqual(cat.stdin.readable, false);
+  let response = "";
+  cat.stdin.write("hello");
+  cat.stdin.write(" ");
+  cat.stdin.write("world");
+  cat.stdin.end();
+  cat.stdout.setEncoding("utf8");
+  cat.stdout.on("data", (chunk) => { response += chunk; });
+  cat.on("exit", (code) => console.log("cat-exit", code === 0));
+  cat.on("close", () => console.log("cat-close", response === "hello world"));
+}
+// fork silent：stdout/stderr 管形流 pipe 可用（无数据面偏差记档）
+{
+  const mod = new URL("fork-echo-child.mjs", import.meta.url).pathname;
+  const child = fork(mod, [], { silent: true });
+  console.log("fork-silent", typeof child.stdout.pipe === "function", typeof child.stderr.pipe === "function", child.stdout !== child.stderr);
+  child.on("exit", (code) => console.log("fork-exit", code === 0));
+  // node silent 套件同款：disconnect 关 IPC 通道，子端 parentPort.close → 退出
+  //（fork 子端 shim 常驻 message 监听，不 disconnect 即不退）。
+  child.disconnect();
+}
+// fork abort：error(AbortError) + exit(null, SIGKILL)
+{
+  const mod = new URL("fork-slow-child.mjs", import.meta.url).pathname;
+  const ac = new AbortController();
+  const child = fork(mod, [], { signal: ac.signal, killSignal: "SIGKILL" });
+  child.on("error", (e) => console.log("fork-abort-err", e.name === "AbortError"));
+  child.on("exit", (code, sig) => console.log("fork-abort-exit", code === null, sig === "SIGKILL"));
+  setTimeout(() => ac.abort(), 50);
+}
+// exec maxBuffer：截断 + RangeError 码
+{
+  exec("echo hello world", { maxBuffer: 5 }, (err, stdout) => {
+    console.log("maxbuf-cut", err instanceof RangeError, err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", stdout === "hello");
+    setTimeout(() => process.exit(0), 500);
+  });
+}
+"#,
+    )
+    .unwrap();
+    dir.child("fork-echo-child.mjs")
+        .write_str(r#"console.log("fork-child-out");"#)
+        .unwrap();
+    dir.child("fork-slow-child.mjs")
+        .write_str(r#"setTimeout(() => {}, 30000);"#)
+        .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in [
+        "cat-exit true",
+        "cat-close true",
+        "fork-silent true true true",
+        "fork-exit true",
+        "fork-abort-err true",
+        "fork-abort-exit true true",
+        "maxbuf-cut true true true",
+    ] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_entry_failure_open_handle_exit() {
+    // §4.70 姊妹（10f 根修）：入口失败（throw / 未处理 rejection）+ 开着的子进程
+    // 句柄 = 事件循环永不 idle、循环尾收割永不到的 hang。修后 fatal 检查点提前
+    // 跳出：eval 包装路径经 entry reactions 重抛挂载；模块路径经 unhandled 表
+    // 检查点。内容断言不走退出码对拍（§4.126③）。
+    let out = winterjs()
+        .args(["--eval",
+            r#"const { spawn } = await import("node:child_process"); spawn("sleep", ["30"]); throw new Error("boom-handle");"#])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "throw+句柄必须非零退出");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(err.contains("boom-handle"), "err: {err}");
+    assert!(!err.contains("unhandled"), "同步 throw 不走 unhandled 通道: {err}");
+
+    let out = winterjs()
+        .args(["--eval",
+            r#"const { spawn } = await import("node:child_process"); spawn("sleep", ["30"]); Promise.reject(new Error("rej-handle"));"#])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "rejection+句柄必须非零退出");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(err.contains("unhandled rejection") && err.contains("rej-handle"), "err: {err}");
+
+    // 模块路径（--run）：文件内 spawn + 未处理 rejection，同检查点收敛。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("p.mjs");
+    file.write_str(
+        r#"
+import { spawn } from "node:child_process";
+spawn("sleep", ["30"]);
+Promise.reject(new Error("mod-rej-handle"));
+"#,
+    )
+    .unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).output().unwrap();
+    assert!(!out.status.success(), "模块路径必须非零退出");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(err.contains("mod-rej-handle"), "err: {err}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_fork_nonsilent_stdio_null() {
+    // 真机 26 逐项：fork 非 silent（stdio 继承）`c.stdout/stderr/stdin === null`
+    // 三面（10f 起恢复——silent 才挂管形流；旧构造器 null 缺省被流式面覆盖丢失）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("idle-child.mjs").write_str("process.on('message', () => {});\n").unwrap();
+    let child_abs = dir.path().join("idle-child.mjs");
+    let child_str = child_abs.to_string_lossy().into_owned();
+    let out = stdout_of(&mut winterjs().args(["--eval", &format!(
+        r#"const {{ fork }} = await import("node:child_process");
+const c = fork({child_str:?});
+console.log("nonsilent", c.stdout === null, c.stderr === null, c.stdin === null);
+c.disconnect();"#)]));
+    assert_eq!(out, "nonsilent true true true\n", "out: {out}");
     dir.close().unwrap();
 }

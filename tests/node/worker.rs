@@ -644,3 +644,185 @@ port1.close(); port2.close();
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_worker_terminate_interrupt_busy_loop() {
+    // 10f：terminate 打断忙 JS 循环（interrupt 机制）——timer 回调内 while(true)、
+    // 微任务自递归、nextTick 环、postMessage 洪泛、worker 内 busy 循环退出码 1
+    // 且不发 error 事件。标签互不为子串（§4.42）：tmr-term/mt-term/tick-term/
+    // flood-term/vm-term。正常+报错+边界。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("vm-busy.mjs")
+        .write_str(r#"import vm from "node:vm"; while (true) vm.runInNewContext("");"#)
+        .unwrap();
+    let out = run_node_file(
+        &dir,
+        "p10f-term.mjs",
+        r#"
+import { Worker } from "node:worker_threads";
+import assert from "node:assert";
+// timer 回调内死循环：message → terminate → interrupt → exit(1)
+{
+  const w = new Worker(`
+    const { parentPort } = require('worker_threads');
+    setTimeout(() => { parentPort.postMessage({}); while (true); });
+  `, { eval: true });
+  w.on("message", () => w.terminate());
+  w.on("error", () => console.log("tmr-term-err", true));
+  w.on("exit", (code) => console.log("tmr-term", code === 1));
+}
+// 微任务环：terminate 打断（exit 1）
+{
+  const w = new Worker(`
+    function loop() { Promise.resolve().then(loop); } loop();
+    require('worker_threads').parentPort.postMessage('up');
+  `, { eval: true });
+  w.once("message", () => setImmediate(() => w.terminate()));
+  w.on("error", () => console.log("mt-term-err", true));
+  w.on("exit", (code) => console.log("mt-term", code === 1));
+}
+// nextTick 环：terminate 定时打点后打断
+{
+  const w = new Worker(`
+    require('worker_threads').parentPort.postMessage('0');
+    process.nextTick(() => { while (1); });
+  `, { eval: true });
+  w.on("message", () => setTimeout(() => w.terminate().then(() => {}), 1));
+  w.on("error", () => console.log("tick-term-err", true));
+  w.on("exit", (code) => console.log("tick-term", code === 1));
+}
+// postMessage 洪泛：首条消息即 terminate
+{
+  const w = new Worker(`
+    const p = require('worker_threads').parentPort;
+    while (true) p.postMessage({});
+  `, { eval: true });
+  w.once("message", () => w.terminate());
+  w.on("error", () => console.log("flood-term-err", true));
+  w.on("exit", (code) => console.log("flood-term", code === 1));
+}
+// vm 忙循环：worker 文件 while + runInNewContext，无 error 事件、exit 1
+{
+  const busyPath = new URL("vm-busy.mjs", import.meta.url).pathname;
+  const w = new Worker(busyPath);
+  w.on("error", () => console.log("vm-term-err", true));
+  w.on("exit", (code) => console.log("vm-term", code === 1));
+  setTimeout(() => w.terminate(), 50);
+}
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "tmr-term true",
+        "mt-term true",
+        "tick-term true",
+        "flood-term true",
+        "vm-term true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    assert!(!out.contains("-err true"), "worker error event fired (must not):\n{out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_worker_bc_surface_and_env_snapshot() {
+    // 10f：BroadcastChannel 校验面（name/postMessage 缺参边界、显式 undefined
+    // 合法、Symbol 转换错、同步收信、inspect 形、ref/unref 品牌门）+ worker
+    // env 快照隔离（子线程写不回主线程）+ threadId 退出后 -1。
+    // 标签互不为子串（§4.42）：bc-sync/bc-inspect/bc-brand/env-iso/env-key。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p10f-bc.mjs",
+        r#"
+import { BroadcastChannel, Worker, receiveMessageOnPort, threadId } from "node:worker_threads";
+import assert from "node:assert";
+import { inspect } from "node:util";
+// 显式 undefined 合法（name "undefined"）
+{
+  const bc = new BroadcastChannel(undefined);
+  console.log("bc-undef", bc.name === "undefined");
+  bc.close();
+}
+// postMessage(undefined) 合法；缺参抛 MISSING_ARGS
+{
+  const bc = new BroadcastChannel("pm-undef");
+  bc.postMessage(undefined);
+  bc.close();
+  assert.throws(() => bc.postMessage(), (e) => e.code === "ERR_MISSING_ARGS");
+  console.log("bc-pm-args", true);
+}
+// 同步收信（无监听到达 → receiveMessageOnPort 拉取；二次即 undefined）
+{
+  const b1 = new BroadcastChannel("sync-ch");
+  const b2 = new BroadcastChannel("sync-ch");
+  b1.postMessage("ping");
+  console.log("bc-sync", receiveMessageOnPort(b2).message === "ping", receiveMessageOnPort(b2) === undefined);
+  b1.close(); b2.close();
+}
+// inspect 形（active true→false）+ 非真实 active 属性
+{
+  const bc = new BroadcastChannel("insp-ch");
+  console.log("bc-inspect", inspect(bc.ref()) === "BroadcastChannel { name: 'insp-ch', active: true }");
+  bc.close();
+  console.log("bc-inspect-closed", inspect(bc.ref()) === "BroadcastChannel { name: 'insp-ch', active: false }");
+}
+// ref/unref/close/postMessage 品牌门（ERR_INVALID_THIS）
+{
+  let n = 0;
+  for (const m of ["close", "postMessage", "ref", "unref"]) {
+    try {
+      Reflect.apply(BroadcastChannel.prototype[m], [], {});
+      console.log("bc-brand-bad", m);
+    } catch (e) { if (e.code === "ERR_INVALID_THIS") n++; }
+  }
+  console.log("bc-brand", n === 4);
+}
+// env 快照隔离 + worker threadId 退出后 -1
+{
+  process.env.WJS10F = "main";
+  const w = new Worker(`
+    const { parentPort } = require('worker_threads');
+    const inherited = process.env.WJS10F;
+    process.env.WJS10F = "worker-only";
+    process.env.WJS10F_ONLY = "set";
+    const assert = require('assert');
+    assert.strictEqual(inherited, "main");
+    parentPort.postMessage(process.env.WJS10F_ONLY);
+  `, { eval: true });
+  w.on("message", (m) => {
+    console.log("env-iso", m === "set", process.env.WJS10F === "main", process.env.WJS10F_ONLY === undefined);
+  });
+  w.on("exit", (code) => {
+    console.log("env-key", code === 0, w.threadId === -1);
+  });
+}
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "bc-undef true",
+        "bc-pm-args true",
+        "bc-sync true true",
+        "bc-inspect true",
+        "bc-inspect-closed true",
+        "bc-brand true",
+        "env-iso true true true",
+        "env-key true true",
+    ] {
+        assert!(stdout.lines().any(|l| l == line), "missing line: {line}\nout: {stdout}");
+    }
+    assert!(!stdout.contains("bc-brand-bad"), "out: {stdout}");
+    dir.close().unwrap();
+}

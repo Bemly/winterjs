@@ -653,22 +653,55 @@ globalThis.process = {
   argv: JSON.parse(__wjs_argv_json()),
   // 真机口径：argv0 缺省即 argv[0]（spawn-argv0 套件点名自举回显）。
   argv0: JSON.parse(__wjs_argv_json())[0] ?? __wjs_exec_path(),
-  env: new Proxy({}, {
-    get(_, k) {
-      if (typeof k !== "string") return undefined;
-      const v = __wjs_env_get(k);
-      return v === undefined ? undefined : v;
-    },
-    set(_, k, v) { __wjs_env_set(String(k), String(v)); return true; },
-    deleteProperty(_, k) { __wjs_env_del(String(k)); return true; },
-    has(_, k) { return __wjs_env_get(String(k)) !== undefined; },
-    ownKeys() { return JSON.parse(__wjs_env_keys()); },
-    getOwnPropertyDescriptor(_, k) {
-      const v = __wjs_env_get(String(k));
-      if (v === undefined) return undefined;
-      return { value: v, writable: true, enumerable: true, configurable: true };
-    },
-  }),
+  env: (() => {
+    // 10f 对拍：worker 会话带 env 快照（创建时复制或自定义对象）——读写全落
+    // 本地 store，不碰进程级 env（process-env 套件隔离/快照断言）；主会话与
+    // SHARE_ENV 会话走真 env native（原语义不变）。
+    const snap = __wjs_worker_env_snapshot();
+    if (snap === undefined) {
+      return new Proxy({}, {
+        get(_, k) {
+          if (typeof k !== "string") return undefined;
+          const v = __wjs_env_get(k);
+          return v === undefined ? undefined : v;
+        },
+        set(_, k, v) { __wjs_env_set(String(k), String(v)); return true; },
+        deleteProperty(_, k) { __wjs_env_del(String(k)); return true; },
+        has(_, k) { return __wjs_env_get(String(k)) !== undefined; },
+        ownKeys() { return JSON.parse(__wjs_env_keys()); },
+        getOwnPropertyDescriptor(_, k) {
+          const v = __wjs_env_get(String(k));
+          if (v === undefined) return undefined;
+          return { value: v, writable: true, enumerable: true, configurable: true };
+        },
+      });
+    }
+    const store = JSON.parse(snap);
+    return new Proxy({}, {
+      get(_, k) { return typeof k === "string" ? store[k] : undefined; },
+      set(_, k, v) { store[k] = String(v); return true; },
+      deleteProperty(_, k) { delete store[k]; return true; },
+      has(_, k) { return typeof k === "string" && k in store; },
+      ownKeys() { return Object.keys(store); },
+      getOwnPropertyDescriptor(_, k) {
+        if (typeof k !== "string" || !(k in store)) return undefined;
+        return { value: store[k], writable: true, enumerable: true, configurable: true };
+      },
+      // node 口径：env 只收 configurable+writable+enumerable 齐备的数据描述符
+      //（process-env 套件 defineProperty {value:42} 即抛，message 逐字）。
+      defineProperty(_, k, desc) {
+        if (desc !== null && typeof desc === "object" &&
+            desc.writable === true && desc.enumerable === true && desc.configurable === true &&
+            !("get" in desc) && !("set" in desc)) {
+          store[k] = String(desc.value);
+          return true;
+        }
+        const e = new TypeError("'process.env' only accepts a configurable, writable, and enumerable data descriptor");
+        e.code = "ERR_INVALID_OBJECT_DEFINE_PROPERTY";
+        throw e;
+      },
+    });
+  })(),
   cwd() { return __wjs_cwd(); },
   chdir(d) { __wjs_chdir(String(d)); },
   exit(code) {

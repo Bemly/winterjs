@@ -508,6 +508,28 @@ pub unsafe extern "C" fn bc_pub(
     true
 }
 
+/// BC 同步收信口（`receiveMessageOnPort` 对 BC 的底座；10f）。
+/// `__wjs_bc_try_recv(subId)` → 本会话 pending 队首 wire 串（空串 = 无）。
+pub unsafe extern "C" fn bc_try_recv(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 port_pair
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    use mozjs::conversions::ToJSValConvertible as _;
+    match state::bc_try_recv(id) {
+        Some(wire) => wire.to_jsval(&mut cx, frame.rval_mut()),
+        None => String::new().to_jsval(&mut cx, frame.rval_mut()),
+    }
+    true
+}
+
 /// BC 旗变更。`__wjs_bc_flags(subId, "listen"|"unlisten"|"ref"|"unref")` → undefined。
 pub unsafe extern "C" fn bc_flags(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -652,6 +674,27 @@ pub unsafe extern "C" fn worker_data(
     true
 }
 
+/// worker env 快照读（`process_.rs` env 代理底座）。`__wjs_worker_env_snapshot()`
+/// → JSON 对象串（快照模式）或 undefined（主会话/SHARE_ENV——真 env 直读）。
+pub unsafe extern "C" fn env_snapshot(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 port_pair
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let _ = &mut cx;
+    match state::with_plain(|p| p.worker_env_json.clone()) {
+        Some(json) => {
+            use mozjs::conversions::ToJSValConvertible as _;
+            json.to_jsval(&mut cx, frame.rval_mut());
+        }
+        None => frame.set_rval(UndefinedValue()),
+    }
+    true
+}
+
 /// 环境数据写。`__wjs_worker_env_set(key, json)` → undefined。
 pub unsafe extern "C" fn env_set(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -704,11 +747,107 @@ pub unsafe extern "C" fn env_get(
 /// worker 线程 id 分配（进程级；主=0，worker 自 1 单调）。
 static NEXT_THREAD_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+// ── terminate 中断（10f：busy JS 循环可被打断）──────────────────────────
+// `terminate()` 原理：置共享旗 + `JS_RequestInterruptCallback`（Interrupt.h：
+// any thread 可请求，JS 线程在解释器 CheckForInterrupt 处回调）。回调返回
+// false 即引擎以 uncatchable interrupt 中止当前脚本——忙循环/微任务环/
+// nextTick 环全被斩断，随后事件循环检查点照常退出（WExit{1}）。
+
+/// 进程级终止槽（worker_id → 共享旗 + worker cx 裸指针；cx 经 §4.8 Runtime
+/// 泄漏保活，指针终身有效）。
+pub struct TerminateSlot {
+    pub flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub cx: std::sync::atomic::AtomicUsize,
+}
+
+static TERMINATE_SLOTS: OnceLock<Mutex<HashMap<u64, std::sync::Arc<TerminateSlot>>>> = OnceLock::new();
+
+fn term_slots() -> &'static Mutex<HashMap<u64, std::sync::Arc<TerminateSlot>>> {
+    TERMINATE_SLOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+thread_local! {
+    /// worker 线程自己的共享旗裸指针（interrupt 回调只读原子旗，禁碰 TLS
+    /// RefCell/Arc 克隆——回调可能在任意 Rust 借用期内的 JS 执行点触发）。
+    /// 存活由 TERM_FLAG_KEEP 的 Arc 保证（bind 一次 set，永不读）。
+    static TERM_FLAG_PTR: std::cell::Cell<*const std::sync::atomic::AtomicBool> =
+        const { std::cell::Cell::new(std::ptr::null()) };
+    static TERM_FLAG_KEEP: std::cell::Cell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// worker 线程入口绑定旗（`run_worker_thread` 线程闭包内首调）。
+pub fn term_tls_bind(flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    TERM_FLAG_PTR.with(|t| t.set(std::sync::Arc::as_ptr(&flag)));
+    TERM_FLAG_KEEP.with(|t| t.set(Some(flag)));
+}
+
+/// 本 worker 会话是否已被请求终止（WError 抑制判定）。
+pub fn term_tls_flagged() -> bool {
+    let p = TERM_FLAG_PTR.with(|t| t.get());
+    !p.is_null() && unsafe { (*p).load(std::sync::atomic::Ordering::SeqCst) }
+}
+
+/// SAFETY-BOUNDARY（interrupt 回调）：仅读原子旗，无 JSAPI、无 TLS RefCell
+/// 借用、无重入（Interrupt.h：回调内禁止再入引擎）。返回 false = 中止脚本。
+/// 覆盖：`tests/node/worker.rs` terminate 生命周期黑盒。
+unsafe extern "C" fn term_interrupt_cb(_cx: *mut mozjs::jsapi::JSContext) -> bool {
+    !term_tls_flagged()
+}
+
+/// worker 会话装中断钩子（`init_session` worker 分支，realm 内、首段脚本前）。
+pub fn term_install(raw_cx: *mut mozjs::jsapi::JSContext) {
+    // SAFETY: JS 线程、会话初始化期；回调仅读原子旗（见 term_interrupt_cb）。
+    unsafe {
+        mozjs::jsapi::JS_AddInterruptCallback(raw_cx, Some(term_interrupt_cb));
+    }
+}
+
+/// 登记 worker cx 指针（boot 后纯 Rust 调，无 JSAPI）。
+pub fn term_bind_cx(worker_id: u64, raw_cx: *mut mozjs::jsapi::JSContext) {
+    if let Ok(m) = term_slots().lock() {
+        if let Some(slot) = m.get(&worker_id) {
+            slot.cx.store(raw_cx as usize, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+/// 注册终止槽（主线程 `run_worker_thread` 起线程前）。
+pub fn term_slot_register(worker_id: u64) -> std::sync::Arc<TerminateSlot> {
+    let slot = std::sync::Arc::new(TerminateSlot {
+        flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        cx: std::sync::atomic::AtomicUsize::new(0),
+    });
+    if let Ok(mut m) = term_slots().lock() {
+        m.insert(worker_id, slot.clone());
+    }
+    slot
+}
+
+/// 主线程请求终止：置共享旗 + 向 worker cx 请求中断（忙循环斩断）。
+pub fn term_request(worker_id: u64) {
+    let slot = term_slots().lock().ok().and_then(|m| m.get(&worker_id).cloned());
+    if let Some(slot) = slot {
+        slot.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        let cx = slot.cx.load(std::sync::atomic::Ordering::SeqCst);
+        if cx != 0 {
+            // SAFETY: cx 指针由 worker 会话持有且 Runtime 刻意泄漏（§4.8），
+            // 指针进程生命期有效；RequestInterruptCallback 线程安全
+            //（Interrupt.h 注明 any thread；只置请求旗，不碰 GC/堆）。
+            unsafe {
+                mozjs::jsapi::JS_RequestInterruptCallback(cx as *mut mozjs::jsapi::JSContext);
+            }
+        }
+    }
+}
+
 /// worker 线程 boot 包（spawn 线程 move 进去；`runtime` 经槽 transito）。
 pub struct WorkerBoot {
     pub worker_id: u64,
     pub thread_id: u64,
     pub data_json: Option<String>,
+    /// env 快照（JSON 对象串；None=继承真 env——主会话/SHARE_ENV，10f）。
+    pub env_json: Option<String>,
     /// 构造 `options.name`（worker 线程 `threadName` 导出；10f）。
     pub name: Option<String>,
     /// fork 子进程（IPC 通道在，`process.send` 族不装 UNSUPPORTED 桩；10f）。
@@ -724,7 +863,7 @@ pub struct WorkerBoot {
 /// parentPort 对端地址是主会话的 worker_id（`port_post` 改道 `WMsg`）。
 pub fn worker_boot_from_slot(boot: WorkerBoot) {
     let parent = state::port_alloc_cross(boot.worker_id, boot.main_inbox.clone());
-    state::worker_boot(boot.thread_id, boot.data_json, boot.name, boot.is_fork, parent);
+    state::worker_boot(boot.thread_id, boot.data_json, boot.env_json, boot.name, boot.is_fork, parent);
     state::with_plain(|p| {
         p.worker_main_inbox = Some(boot.main_inbox);
         p.worker_rendezvous = Some(boot.rendezvous);
@@ -791,6 +930,13 @@ pub unsafe extern "C" fn worker_spawn(
     let name = if name_raw.is_empty() { None } else { Some(name_raw) };
     // 第 5 参：fork 子进程标记（IPC 面桩豁免，10f）。
     let is_fork = frame.argc() >= 5 && value_to_string(&mut cx, frame.arg(4)) == "1";
+    // 第 6 参：env 快照 wire（空串=继承真 env；10f process-env 套件）。
+    let env_raw = if frame.argc() >= 6 {
+        let v = value_to_string(&mut cx, frame.arg(5));
+        if v.is_empty() { None } else { Some(v) }
+    } else {
+        None
+    };
     let main_inbox = match state::with_plain(|p| p.worker_tx.clone()) {
         Some(tx) => tx,
         None => {
@@ -809,6 +955,7 @@ pub unsafe extern "C" fn worker_spawn(
         worker_id,
         thread_id,
         data_json,
+        env_json: env_raw,
         name,
         is_fork,
         main_inbox: main_inbox.clone(),
@@ -889,7 +1036,8 @@ pub unsafe extern "C" fn worker_post(
 }
 
 /// 终止 worker（`WTerminate`；退出码经 `WExit` 事件回传，恒 1）。
-/// `__wjs_worker_terminate(workerId)` → boolean（已退出即 false）。
+/// 10f：置共享旗 + 请求引擎中断（忙循环斩断，见 term_request）——idle 路径
+/// 仍走收件箱 WTerminate 检查点。`__wjs_worker_terminate(workerId)` → boolean。
 pub unsafe extern "C" fn worker_terminate(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -902,6 +1050,7 @@ pub unsafe extern "C" fn worker_terminate(
         Some(id) => id,
         None => return false,
     };
+    term_request(id);
     let ok = match state::worker_inbox(id) {
         Some(inbox) => inbox.send(WorkerEvent::WTerminate).is_ok(),
         None => false,
@@ -1027,6 +1176,12 @@ pub unsafe extern "C" fn port_try_recv(
 pub const SOURCE: &str = r#"
 import { EventEmitter } from "node:events";
 import { codes } from "node:internal/errors";
+import { inspect as __wjsInspect } from "node:util";
+
+// node util.inspect 的字符串形（单引号——BroadcastChannel inspect 定制用）。
+function __inspectQuote(s) {
+  return __wjsInspect(String(s), { quotes: "single" });
+}
 
 const __uncloneable = new WeakSet();
 export function markAsUncloneable(obj) {
@@ -1134,6 +1289,16 @@ function __normTransfer(transfer, srcPort) {
       if (globalThis.__wjs_bufPooled?.has(t)) __dataCloneErr("Pooled buffer could not be cloned.");
       out.push({ kind: "buf", obj: t });
     } else {
+      // transfer-guards 套件（10f）：net.Socket/net.Server 在 transfer list 即
+      // ERR_WORKER_HANDLE_NOT_TRANSFERABLE（node kTransferList 断言族；net 侧
+      // 构造时经 globalThis.__wjs_netXfer 登记，文案 errors.js 逐字）。
+      const __xt = (globalThis.__wjs_netXfer && typeof globalThis.__wjs_netXfer.get === "function")
+        ? globalThis.__wjs_netXfer.get(t) : undefined;
+      if (__xt !== undefined) {
+        const e = new Error(`${__xt} cannot be transferred in its current state; it must be a freshly created or accepted handle that has not started reading and has no pending writes`);
+        e.code = "ERR_WORKER_HANDLE_NOT_TRANSFERABLE";
+        throw e;
+      }
       __dataCloneErr(`${__cloneLabel(t)} could not be cloned.`);
     }
   }
@@ -1515,15 +1680,23 @@ export class MessagePort extends EventEmitter {
 }
 
 export function receiveMessageOnPort(port) {
-  if (!(port instanceof MessagePort)) {
+  // 10f 对拍：BroadcastChannel 亦收（node BC 底层即 MessagePort，
+  // broadcastchannel 套件 `receiveMessageOnPort(bc2)` 点名）。
+  if (!(port instanceof MessagePort) && !(port instanceof BroadcastChannel)) {
     const err = new TypeError("The \"port\" argument must be a MessagePort instance");
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
   // 10f：优先 Rust pending 表（postMessage 本地路由的同步收信口）；再退 JS
-  // 队列（迁移/历史路径）。
-  const wire = __wjs_port_try_recv(port.__id);
-  if (wire !== "") return { message: __fromWire(wire) };
+  // 队列（迁移/BC 排队/历史路径）。
+  if (port instanceof MessagePort) {
+    const wire = __wjs_port_try_recv(port.__id);
+    if (wire !== "") return { message: __fromWire(wire) };
+  }
+  if (port instanceof BroadcastChannel) {
+    const wire = __wjs_bc_try_recv(port.__sub);
+    if (wire !== "") return { message: __fromWire(wire) };
+  }
   if (port.__queue.length === 0) return undefined;
   return { message: __fromWire(port.__queue.shift()) };
 }
@@ -1563,12 +1736,18 @@ const __bcState = new WeakSet();
 export class BroadcastChannel extends EventEmitter {
   constructor(name) {
     super();
-    if (arguments.length === 0 || name === undefined) {
+    // node broadcastchannel 套件口径：仅无参即 ERR_MISSING_ARGS；显式
+    // undefined 合法（name "undefined"）；Symbol 走 `${name}` ToString 即抛
+    //（本引擎转换错文案与 V8 不同，此处按真机原文补齐——套件正则点名）。
+    if (arguments.length === 0) {
       const err = new TypeError(`The "name" argument must be specified`);
       err.code = "ERR_MISSING_ARGS";
       throw err;
     }
-    name = String(name);
+    if (typeof name === "symbol") {
+      throw new TypeError("Cannot convert a Symbol value to a string");
+    }
+    name = `${name}`;
     const sub = String(__wjs_bc_sub(name));
     if (sub === "") {
       throw new Error("OperationError: BroadcastChannel is not initialized");
@@ -1578,12 +1757,42 @@ export class BroadcastChannel extends EventEmitter {
     this.__sub = sub;
     this.__closed = false;
     this.__onmessage = null;
+    // 无监听到达的广播排队（receiveMessageOnPort 同步收信——broadcastchannel
+    // 套件 `receiveMessageOnPort(bc2).message` 点名；node 底层即 MessagePort）。
+    this.__queue = [];
+    this.__flushScheduled = false;
     this.__ev = this.__ev.bind(this);
     this.on("newListener", (ev) => { if (ev === "message") __wjs_bc_flags(sub, "listen"); });
+    // newListener 在入表前触发（§4.47）：延迟一轮再刷队。
+    this.on("newListener", (ev) => { if (ev === "message") queueMicrotask(() => this.__maybeFlush()); });
     this.on("removeListener", (ev) => {
       if (ev === "message" && this.listenerCount("message") === 0) __wjs_bc_flags(sub, "unlisten");
     });
     __wjs_bc_attach(sub, this);
+  }
+  __maybeFlush() {
+    if (this.__flushScheduled || this.__queue.length === 0) return;
+    if (this.listenerCount("message") === 0) return;
+    this.__flushScheduled = true;
+    queueMicrotask(() => {
+      this.__flushScheduled = false;
+      this.__flushQueue();
+    });
+  }
+  __flushQueue() {
+    while (this.__queue.length > 0) {
+      // 逐条查关（wpt：onmessage 内 close 阻断同端口已排队任务）。
+      if (this.__closed) return;
+      const raw = this.__queue.shift();
+      let value;
+      try {
+        value = __fromWire(String(raw));
+      } catch (err) {
+        this.emit("messageerror", err instanceof Error ? err : new Error("worker message is not valid JSON"));
+        continue;
+      }
+      this.emit("message", value);
+    }
   }
   get name() {
     if (!__bcState.has(this)) throw __bcInvalidThis();
@@ -1638,6 +1847,11 @@ export class BroadcastChannel extends EventEmitter {
   __ev(kind, payload) {
     if (kind !== "message") return;
     if (this.__closed) return;
+    // 无监听即排队（同步收信面）；监听到达由 newListener 延迟刷（§4.47）。
+    if (this.listenerCount("message") === 0) {
+      this.__queue.push(payload);
+      return;
+    }
     let value;
     try {
       value = __fromWire(String(payload));
@@ -1649,9 +1863,8 @@ export class BroadcastChannel extends EventEmitter {
   }
   postMessage(value) {
     if (!__bcState.has(this)) throw __bcInvalidThis();
-    // 真机口径：缺参即抛（`The "message" argument must be specified`），已关
-    // 再投即抛 `BroadcastChannel is closed`（broadcastchannel 套件逐字）。
-    if (arguments.length === 0 || value === undefined) {
+    // node broadcastchannel 套件口径：仅无参即抛；显式 undefined 合法（可投递）。
+    if (arguments.length === 0) {
       const err = new TypeError(`The "message" argument must be specified`);
       err.code = "ERR_MISSING_ARGS";
       throw err;
@@ -1666,12 +1879,19 @@ export class BroadcastChannel extends EventEmitter {
     __wjs_bc_unsub(this.__sub);
   }
   ref() {
+    if (!__bcState.has(this)) throw __bcInvalidThis();
     __wjs_bc_flags(this.__sub, "ref");
     return this;
   }
   unref() {
+    if (!__bcState.has(this)) throw __bcInvalidThis();
     __wjs_bc_flags(this.__sub, "unref");
     return this;
+  }
+  // node 口径：inspect 形 "BroadcastChannel { name: 'x', active: true|false }"
+  //（broadcastchannel 套件逐字；active 非真实属性——inspect 定制面）。
+  [Symbol.for("nodejs.util.inspect.custom")]() {
+    return `BroadcastChannel { name: ${__inspectQuote(this.__name)}, active: ${!this.__closed} }`;
   }
 }
 
@@ -1811,10 +2031,21 @@ export class Worker extends EventEmitter {
     const { src, isEval } = options.eval
       ? { src: String(filename), isEval: "1" }
       : __workerFilePath(filename);
-    // env：对象逐值 String() 化；null/undefined 继承；SHARE_ENV 直通；其余 ARG_TYPE。
+    // env（node internal/worker.js 逐字口径）：对象（含数组）逐值 `${v}` 化；
+    // null/undefined 继承——本仓落成创建时快照（worker 隔离，10f process-env）；
+    // SHARE_ENV 共享真 env（快照 wire 置空即原语义）；其余 ARG_TYPE（message
+    // 由 errors.js 逐字渲染，套件断全文）。
     const envOpt = options.env;
-    if (envOpt !== undefined && envOpt !== null && envOpt !== SHARE_ENV &&
-        (typeof envOpt !== "object" || Array.isArray(envOpt))) {
+    let envJson;
+    if (typeof envOpt === "object" && envOpt !== null) {
+      const envObj = {};
+      for (const [k, v] of Object.entries(envOpt)) envObj[k] = `${v}`;
+      envJson = JSON.stringify(envObj);
+    } else if (envOpt == null) {
+      envJson = JSON.stringify(process.env);
+    } else if (envOpt === SHARE_ENV) {
+      envJson = "";
+    } else {
       throw new codes.ERR_INVALID_ARG_TYPE("options.env", ["object", "undefined", "null", "worker_threads.SHARE_ENV"], envOpt);
     }
     if (options.name !== undefined && typeof options.name !== "string") {
@@ -1829,7 +2060,7 @@ export class Worker extends EventEmitter {
       dataJson = __toWire(options.workerData, options.transferList);
     }
     let ids;
-    ids = String(__wjs_worker_spawn(src, isEval, dataJson, options.name ?? "", options.__wjs_forkChild ? "1" : "0")).split(" ");
+    ids = String(__wjs_worker_spawn(src, isEval, dataJson, options.name ?? "", options.__wjs_forkChild ? "1" : "0", envJson)).split(" ");
     this.__id = ids[0];
     this.__tid = Number(ids[1]);
     this.__exited = null;
@@ -1894,7 +2125,10 @@ export class Worker extends EventEmitter {
     __wjs_worker_set_ref(this.__id, "0");
     return this;
   }
-  get threadId() { return this.__tid; }
+  get threadId() {
+    // 10f 对拍：退出后 threadId 恒 -1（safe-getters 套件点名；真机口径）。
+    return this.__exited === null ? this.__tid : -1;
+  }
   // 10f 对拍：threadName 运行期 = options.name（无名 null），exit 后恒 null；
   // resourceLimits = 传入对象（缺省 {}，退出后 {}——resource-limits 套件）。
   get threadName() { return this.__exited === null ? (this.__name ?? null) : null; }

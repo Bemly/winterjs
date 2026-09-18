@@ -366,6 +366,9 @@ pub struct RootedState {
     pub vm_contexts: Vec<VmCtx>, // node:vm 上下文 global（release 摘除，会话终由 OS 回收）
     pub vm_mods: Vec<VmMod>, // node:vm 模块记录（link/evaluate 后摘除，会话终由 OS 回收）
     pub bc_targets: Vec<BcTarget>, // BroadcastChannel 订阅目标（unsub/close 后摘除）
+    /// BC 同会话同步收信 pending（(sub_id, wire)；`receiveMessageOnPort` 同步
+    /// 口 + pump 逐轮派发双消费，端口 pending 同款模型，10f）。
+    pub bc_pending: Vec<(u64, String)>,
     pub fetch_callbacks: Vec<FetchCallback>, // 未决 fetch 的 resolve/reject（按 id 取出）
     pub fetch_streams: Vec<FetchStreamState>, // 流式 body（chunk 泵；cancel/终态时移除）
     pub make_response_fn: Heap<JSVal>, // prelude 的 __wjs_make_response
@@ -479,6 +482,8 @@ pub struct PlainState {
     pub worker_session_seq: u64,
     /// worker 线程专有（主会话为 None）：克隆入参 JSON + 父端口 id。
     pub worker_data_json: Option<String>,
+    /// worker env 快照（JSON 对象串；None=继承真 env——主会话/SHARE_ENV，10f）。
+    pub worker_env_json: Option<String>,
     /// worker 线程专有：构造 `options.name`（`threadName` 导出用；10f）。
     pub worker_name: Option<String>,
     /// worker 线程专有：fork 子进程（有 IPC 通道，`process.send` 族不装桩；10f）。
@@ -1049,6 +1054,12 @@ unsafe extern "C" fn entry_fulfilled_native(
     frame.set_rval(UndefinedValue());
     true
 }}
+
+/// 未处理 rejection 表计数（event_loop 检查点用：非空即 fatal 跳出，
+/// §4.70 姊妹案——开着的句柄让循环永不 idle 时，循环尾收割永不到）。
+pub fn unhandled_pending() -> usize {
+    with_rooted(|s| s.unhandled.len())
+}
 
 /// SAFETY: 同上；arg0 为 rejection reason。Error 对象提 file/line/col（TS 回映射），
 /// 非对象值退化 ToString（无位置）。
@@ -1962,13 +1973,18 @@ pub fn bc_unsub(id: u64) {
 }
 
 /// 扇出（`__wjs_bc_pub` 用）：同名订阅全发（除发送者自身 `(sess, sub)`），
-/// 关闭/死亡即摘。
+/// 关闭/死亡即摘。同会话订阅走 pending 表（`receiveMessageOnPort` 同步收信
+/// 口 + pump 逐轮派发双消费，端口 pending 同款；10f broadcastchannel 套件）。
 pub fn bc_pub(name: &str, except_sub: u64, json: String) {
     let me = session_seq();
     let subs: Vec<BcSub> = bc_registry().lock().ok().and_then(|reg| reg.get(name).cloned()).unwrap_or_default();
     let mut dead: Vec<(u64, u64)> = Vec::new();
     for e in &subs {
         if e.sess == me && e.sub == except_sub {
+            continue;
+        }
+        if e.sess == me {
+            bc_pending_push(e.sub, json.clone());
             continue;
         }
         if e.tx.send(crate::builtins::node::worker::WorkerEvent::BcMsg { to: e.sub, json: json.clone() }).is_err() {
@@ -1985,6 +2001,31 @@ pub fn bc_pub(name: &str, except_sub: u64, json: String) {
             }
         }
     }
+}
+
+/// BC 同会话 pending 入队（纯 Rust 串，无 GC 值）。
+pub fn bc_pending_push(sub: u64, wire: String) {
+    with_rooted(|s| s.bc_pending.push((sub, wire)));
+}
+
+/// 同步收信口（`receiveMessageOnPort` 对 BC 的底座）：取该 sub 队首 wire。
+pub fn bc_try_recv(sub: u64) -> Option<String> {
+    with_rooted(|s| {
+        let i = s.bc_pending.iter().position(|(id, _)| *id == sub)?;
+        Some(s.bc_pending.remove(i).1)
+    })
+}
+
+/// pump 逐轮派发用：取走全部 BC pending，**按 sub id（端口创建序）分组**——
+/// node 底层每端口独立队列、按端口序逐口排空（broadcastchannel-wpt 套件
+/// 三端口事件序 `from c3, done, from c1, from c3, from c1, done` 逐字断言）。
+pub fn take_bc_pending() -> Vec<(u64, String)> {
+    with_rooted(|s| {
+        let mut out = std::mem::take(&mut s.bc_pending);
+        out.sort_by_key(|(id, _)| *id);
+        // sort 稳定（Vec sort_by_key 稳定序）：同 sub 内保持投递序。
+        out
+    })
 }
 
 /// 旗变更（`__wjs_bc_flags` 用）：`listen/unlisten/ref/unref` 四档。
@@ -2029,11 +2070,12 @@ pub fn worker_open() -> usize {
 // ── Worker 线程（9f-3；spawn/parentPort/workerData/exit/terminate）─────────
 
 /// worker 线程起后初始化（`runtime::run_worker_thread` 经 boot 槽调；含权限继承）。
-pub fn worker_boot(thread_id: u64, data_json: Option<String>, name: Option<String>, is_fork: bool, parent_port: u64) {
+pub fn worker_boot(thread_id: u64, data_json: Option<String>, env_json: Option<String>, name: Option<String>, is_fork: bool, parent_port: u64) {
     with_plain(|p| {
         p.worker_is_main = false;
         p.worker_thread_id = thread_id;
         p.worker_data_json = data_json;
+        p.worker_env_json = env_json;
         p.worker_name = name;
         p.worker_is_fork = is_fork;
         p.worker_parent_port = Some(parent_port);
@@ -2581,6 +2623,9 @@ pub struct ChildEntry {
     pub stdin_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::child::StdinCmd>>,
     pub pipes_expected: u8,
     pub pipes_done: u8,
+    /// 超时杀已作用（Exited 事件带上，prelude 据此落 `killed` 位——exec timeout
+    /// 系 err.killed=true 断言；10f）。
+    pub timed_out: bool,
 }
 
 /// 分配子进程 id（调用方随后 spawn + 登记；失败路径无需配套调用）。
@@ -2607,7 +2652,7 @@ pub fn child_add(
 ) {
     with_rooted(|s| s.child_targets.push(ChildTarget { id, target: Heap::boxed(target) }));
     with_plain(|p| {
-        p.child_procs.insert(id, ChildEntry { child, detached, stdin_tx, pipes_expected, pipes_done: 0 });
+        p.child_procs.insert(id, ChildEntry { child, detached, stdin_tx, pipes_expected, pipes_done: 0, timed_out: false });
         p.child_open += 1;
     });
 }
@@ -2658,8 +2703,27 @@ pub fn child_remove(id: u64) {
     });
 }
 
-/// 发信号（`SIGKILL`/`SIGTERM`/数字；detached 走组杀，unix；win 直接杀）。
-/// 返回是否作用到存活进程（未知 id/已退出为 false）。
+/// 超时杀作用记号（timeout task 杀前置位；Exited 事件取走）。
+pub fn child_mark_timeout(id: u64) {
+    with_plain(|p| {
+        if let Some(e) = p.child_procs.get_mut(&id) {
+            e.timed_out = true;
+        }
+    });
+}
+
+/// 取走超时杀记号（发 Exited 前读，消费即复位语义由摘除路径承担）。
+pub fn child_take_timed_out(id: u64) -> bool {
+    with_plain(|p| {
+        p.child_procs
+            .get(&id)
+            .is_some_and(|e| e.timed_out)
+    })
+}
+
+/// 发信号（数字串/`SIGKILL`/`SIGTERM`/`KILL`/`TERM`；detached 走组杀，unix；
+/// win 直接杀）。数字串口径：JS 侧经 os.signals 表归一后传 signo（killSignal
+/// 可为任意信号，10f）。返回是否作用到存活进程（未知 id/已退出为 false）。
 pub fn child_kill(id: u64, sig: &str) -> bool {
     with_plain(|p| {
         let Some(entry) = p.child_procs.get_mut(&id) else {
@@ -2673,9 +2737,15 @@ pub fn child_kill(id: u64, sig: &str) -> bool {
             if pid <= 0 {
                 return false;
             }
-            let signal = match sig.trim().to_ascii_uppercase().as_str() {
-                "SIGKILL" | "KILL" | "9" => Signal::SIGKILL,
-                _ => Signal::SIGTERM,
+            let raw = sig.trim();
+            let signal = if let Ok(n) = raw.parse::<i32>() {
+                Signal::try_from(n).unwrap_or(Signal::SIGKILL)
+            } else {
+                match raw.to_ascii_uppercase().as_str() {
+                    "SIGKILL" | "KILL" | "9" => Signal::SIGKILL,
+                    "SIGTERM" | "TERM" | "15" => Signal::SIGTERM,
+                    _ => Signal::SIGTERM,
+                }
             };
             let target = if entry.detached { Pid::from_raw(-pid) } else { Pid::from_raw(pid) };
             if kill(target, signal).is_ok() {

@@ -4849,9 +4849,11 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_quic_sess_send_dgram", Some(node::quic::quic_sess_send_dgram), 2),
             ("__wjs_quic_sess_max_dgram", Some(node::quic::quic_sess_max_dgram), 1),
             ("__wjs_dgram_bind", Some(node::dgram::dgram_bind), 3),
-            ("__wjs_dgram_send", Some(node::dgram::dgram_send), 3),
+            ("__wjs_dgram_send", Some(node::dgram::dgram_send), 4),
             // 10a：组播/广播/TTL/connect（JSON 单 native；id+op 包）
             ("__wjs_dgram_sockopt", Some(node::dgram::dgram_sockopt), 2),
+            // buffer size 同步 get/setsockopt（fd 表登记于 bind 任务）
+            ("__wjs_dgram_bufsize", Some(node::dgram::dgram_bufsize), 3),
             // Phase 9d-5: node:zlib（convenience 压缩面；流式类顺延）
             ("__wjs_zlib_deflate_lv", Some(node::zlib::zlib_deflate_lv), 2),
             ("__wjs_zlib_inflate", Some(node::zlib::zlib_inflate), 1),

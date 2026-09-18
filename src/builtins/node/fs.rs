@@ -39,7 +39,16 @@ pub fn io_code(e: &std::io::Error) -> &'static str {
             // ENOTSOCK：macOS 38（connect 非 socket 文件；pipe-connect-errors 套件面）
             38 => "ENOTSOCK",
             39 => "ENOTEMPTY",
+            // 40 平台二义：macOS EMSGSIZE（UDP 超长报文，msgsize 套件）/
+            // Linux ELOOP；62 相对（macOS ELOOP / Linux ETIME）——cfg 分流。
+            #[cfg(target_os = "macos")]
+            40 => "EMSGSIZE",
+            #[cfg(target_os = "macos")]
+            62 => "ELOOP",
+            #[cfg(not(target_os = "macos"))]
             40 => "ELOOP",
+            #[cfg(not(target_os = "macos"))]
+            90 => "EMSGSIZE",
             _ => "UNKNOWN",
         };
     }

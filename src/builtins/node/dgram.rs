@@ -90,6 +90,11 @@ pub unsafe extern "C" fn dgram_bind(
             kind: NetKind::DgramListening { addr: local.ip().to_string(), port: local.port() },
         });
         let sock = std::sync::Arc::new(sock);
+        // fd 登记给同步 bufsize native（task 收尾摘除，防悬垂查表）
+        {
+            use std::os::fd::AsRawFd;
+            dgram_fd_add(id, sock.as_raw_fd());
+        }
         let is_v4 = local.is_ipv4();
         // task 级 connect 的默认远端（无内核过滤，记档；disconnect 清除）。
         let mut default_remote: Option<String> = None;
@@ -135,21 +140,37 @@ pub unsafe extern "C" fn dgram_bind(
                 }
                 cmd = cmd_rx.recv() => {
                     match cmd {
-                        Some(NetCmd::SendTo { data, addr }) => {
+                        Some(NetCmd::SendTo { data, addr, seq }) => {
                             let target = if addr.is_empty() { default_remote.clone() } else { Some(addr) };
                             let Some(target) = target else {
                                 let _ = ev_tx.send(NetEvent {
                                     id,
-                                    kind: NetKind::Error {
+                                    kind: NetKind::DgramSendError {
                                         code: "ERR_SOCKET_DGRAM_NOT_CONNECTED".into(),
                                         msg: "Not connected".into(),
+                                        seq,
                                     },
                                 });
                                 continue;
                             };
-                            if rsock.send_to(&data, target.as_str()).await.is_err() {
-                                break;
+                            if let Err(e) = rsock.send_to(&data, target.as_str()).await {
+                                // node 口径：send 失败不杀 socket（原 break 即杀任务，错），
+                                // 错误路由回 send 回调（msgsize 套件：EMSGSIZE + "send …" 文案）。
+                                let code = crate::builtins::node::fs::io_code(&e);
+                                let _ = ev_tx.send(NetEvent {
+                                    id,
+                                    kind: NetKind::DgramSendError {
+                                        code: code.into(),
+                                        msg: format!("send {code} {target}"),
+                                        seq,
+                                    },
+                                });
+                                continue;
                             }
+                            let _ = ev_tx.send(NetEvent {
+                                id,
+                                kind: NetKind::DgramSendOk { seq, bytes: data.len() },
+                            });
                         }
                         Some(NetCmd::DgramBroadcast(v)) => {
                             if let Err(e) = rsock.set_broadcast(v) {
@@ -232,6 +253,7 @@ pub unsafe extern "C" fn dgram_bind(
                 }
             }
         }
+        dgram_fd_remove(id);
         if state::net_close_once(id) {
             // purge 由 dispatch 派发 Close 之后统一做（§4.34 症状三：先清后派发即丢事件）
             let _ = ev_tx.send(NetEvent { id, kind: NetKind::Close });
@@ -261,7 +283,8 @@ pub unsafe extern "C" fn dgram_send(
         }
     };
     let addr = value_to_string(&mut cx, frame.arg(2));
-    if !state::net_cmd(id as u64, NetCmd::SendTo { data, addr }) {
+    let seq = opt_num(&frame, 3).unwrap_or(0.0) as u64;
+    if !state::net_cmd(id as u64, NetCmd::SendTo { data, addr, seq }) {
         report_error(&mut cx, "ERR_SOCKET_DGRAM_NOT_RUNNING: send: socket is gone");
         return false;
     }
@@ -313,6 +336,89 @@ pub unsafe extern "C" fn dgram_sockopt(
     true
 }
 
+/// dgram fd 表（id → 原生 fd）：bind 任务成功后登记、task 收尾摘除。
+/// `__wjs_dgram_bufsize` 同步 get/setsockopt 用——fd 归 task 所有，但 sockopt
+/// 系统调用只按号操作、跨线程安全；摘除后查表即 miss（JS 侧转
+/// ERR_SOCKET_BUFFER_SIZE），无悬垂窗口（§4.48：有收尾的进程内状态才可 static）。
+static DGRAM_FDS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u64, i32>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn dgram_fd_add(id: u64, fd: i32) {
+    DGRAM_FDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(id, fd);
+}
+
+fn dgram_fd_remove(id: u64) {
+    DGRAM_FDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&id);
+}
+
+fn dgram_fd_get(id: u64) -> Option<i32> {
+    DGRAM_FDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&id)
+        .copied()
+}
+
+/// `__wjs_dgram_bufsize(id, "recv"|"send"[, size])` → 当前值串（§4.33 字符串返回，
+/// JS 侧 Number() 包装）。带 size 即 setsockopt，否则 getsockopt（SO_RCVBUF/SO_SNDBUF）。
+/// fd 查表 miss 或 syscall 失败回空串（JS 侧转 ERR_SOCKET_BUFFER_SIZE，真机
+/// "Could not get or set buffer size: uv_recv_buffer_size returned EBADF …" 口径）。
+pub unsafe extern "C" fn dgram_bufsize(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let out = (|| -> Option<i32> {
+        let id = opt_num(&frame, 0)? as u64;
+        let kind = value_to_string(&mut cx, frame.arg(1));
+        let opt = match kind.as_str() {
+            "recv" => libc::SO_RCVBUF,
+            "send" => libc::SO_SNDBUF,
+            _ => return None,
+        };
+        let fd = dgram_fd_get(id)?;
+        if let Some(sz) = opt_num(&frame, 2) {
+            let v = sz as libc::c_int;
+            let rc = unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    opt,
+                    &v as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            };
+            if rc != 0 { None } else { Some(v) }
+        } else {
+            let mut val: libc::c_int = 0;
+            let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            let rc = unsafe {
+                libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    opt,
+                    &mut val as *mut _ as *mut libc::c_void,
+                    &mut len,
+                )
+            };
+            if rc != 0 { None } else { Some(val) }
+        }
+    })();
+    match out {
+        Some(v) => set_rval_str(&mut cx, &frame, &v.to_string()),
+        None => set_rval_str(&mut cx, &frame, ""),
+    }
+    true
+}
+
 /// 内嵌 ESM 源（`node:dgram`；net 底座）。
 pub const SOURCE: &str = r#"
 import { EventEmitter } from "node:events";
@@ -333,6 +439,22 @@ function __b64dec(s) {
   return u8;
 }
 function __toU8(data) {
+  // node 口径：send 首参收 string/Buffer/视图/**数组**（逐段拼接，空数组即 0 字节，
+  // send-callback-multi-buffer 系套件）。
+  if (Array.isArray(data)) {
+    const parts = data.map((m) => {
+      if (typeof m === "string") return new TextEncoder().encode(m);
+      if (m instanceof Uint8Array) return m;
+      if (m instanceof ArrayBuffer) return new Uint8Array(m);
+      if (ArrayBuffer.isView(m)) return new Uint8Array(m.buffer, m.byteOffset, m.byteLength);
+      throw new TypeError("send: list items must be string or BufferSource");
+    });
+    const total = parts.reduce((n, p) => n + p.length, 0);
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const p of parts) { out.set(p, at); at += p.length; }
+    return out;
+  }
   if (typeof data === "string") return new TextEncoder().encode(data);
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
@@ -395,15 +517,24 @@ class Socket extends EventEmitter {
     this.type = type;
     this.__id = 0;
     this.__bound = false;
+    this.__opts = (typeOrOptions && typeof typeOrOptions === "object") ? typeOrOptions : null;
     this.__addr = null;
     this.__connected = false;
     this.__remote = null;
     this.__pending = [];
+    this.__sendSeq = 0;
+    this.__sendCbs = new Map();
+    this.__sendTargets = new Map();
     if (typeof cb === "function") this.on("message", cb);
     // 派发钩子预绑定（dispatch 以 global 为 this 调用，§4.34 坑一）
     this.__ev = this.__ev.bind(this);
   }
   bind(...args) {
+    // node 口径（test-dgram-bind）：已绑（含绑定窗口）再 bind 同步抛
+    // ERR_SOCKET_ALREADY_BOUND "Socket is already bound"；成功返回 this。
+    if (this.__id || this.__bound) {
+      throw __netErr("ERR_SOCKET_ALREADY_BOUND", "Socket is already bound");
+    }
     let port = 0, address = null, cb = null;
     if (typeof args[0] === "object" && args[0] !== null) {
       port = args[0].port ?? 0;
@@ -417,7 +548,9 @@ class Socket extends EventEmitter {
       if (typeof args[i] === "function") cb = args[i];
     }
     if (cb) this.once("listening", cb);
-    this.__addr = address === null ? (this.type === "udp6" ? "::" : "0.0.0.0") : address;
+    // 族匹配解析（node 口径：udp4 socket bind('localhost') 落 127.0.0.1——tokio
+    // 直接 bind('localhost') 会挑 ::1，family 错乱即后续 send EINVAL）。
+    this.__addr = address === null ? (this.type === "udp6" ? "::" : "0.0.0.0") : this.__resolveAddr(String(address));
     this.__id = Number(__wjs_dgram_bind(Number(port), this.__addr, this));
     return this;
   }
@@ -434,7 +567,22 @@ class Socket extends EventEmitter {
       // (msg, port, address)
       msg = args[0]; port = args[1]; address = args[2];
     }
-    if (!this.__bound) throw __netErr("ERR_SOCKET_DGRAM_NOT_RUNNING", "send: socket not bound");
+    // node 口径：无目标且未 connect → validatePort(undefined) 先炸（真机 26
+    // 实测 ERR_SOCKET_BAD_PORT）；隐式绑定只发生在"有目标"的 send 上。
+    if (port === undefined && address === undefined && !this.__connected) {
+      validatePort(port, 'Port', false);
+    }
+    if (!this.__bound) {
+      // node/libuv 口径：未绑 socket send 即隐式 bind（port 0），send 参数挂起
+      // 到 listening 刷出（真机：cb 后 address().port > 0）。绑定窗口内（__id
+      // 已有）直接挂起不重复 bind。
+      this.__pending.push({ __send: true, msg, port, address, cb });
+      if (!this.__id) this.bind();
+      return this;
+    }
+    return this.__doSend(msg, port, address, cb);
+  }
+  __doSend(msg, port, address, cb) {
     let target;
     if (port === undefined && address === undefined) {
       // connect 后的无地址发送走默认远端；未 connect 即端口校验错（真机口径）。
@@ -442,10 +590,15 @@ class Socket extends EventEmitter {
       target = "";
     } else {
       validatePort(port, 'Port', false);
-      target = `${address ?? 'localhost'}:${port}`;
+      target = `${this.__resolveAddr(address ?? 'localhost')}:${port}`;
     }
-    __wjs_dgram_send(this.__id, __toU8(msg), target);
-    if (cb) queueMicrotask(cb);
+    const u8 = __toU8(msg);
+    // send 失败按 seq 路由回本回调（无回调才走 error 事件，node 口径）；
+    // 目标随 seq 记录（senderr 的 e.address/e.port 回填）。
+    const seq = ++this.__sendSeq;
+    this.__sendTargets.set(seq, { address: address ?? this.__remote?.address, port: port ?? this.__remote?.port });
+    __wjs_dgram_send(this.__id, u8, target, seq);
+    if (cb) this.__sendCbs.set(seq, cb);
     return this;
   }
   // fire-and-forget sockopt（失败走 Error 事件；未 bind 先挂起，listening 刷出）。
@@ -483,7 +636,7 @@ class Socket extends EventEmitter {
       }
     } catch { /* keep verbatim */ }
     this.__remote = { address: dispAddr, port, family };
-    __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'connect', addr: `${address}:${port}` }));
+    __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'connect', addr: `${this.__resolveAddr(String(address))}:${port}` }));
   }
   disconnect() {
     if (!this.__connected) {
@@ -509,6 +662,22 @@ class Socket extends EventEmitter {
     if (!this.__id) this.bind();
     __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'leave', multi, iface }));
   }
+  // buffer size 四方法（node 口径：未绑即 ERR_SOCKET_BUFFER_SIZE，文案
+  // "Could not get or set buffer size: uv_recv/send_buffer_size returned
+  // EBADF (bad file descriptor)" 逐字；绑后 get/setsockopt 同步直调）。
+  __bufSizeErr(kind) {
+    return __netErr("ERR_SOCKET_BUFFER_SIZE", `Could not get or set buffer size: uv_${kind}_buffer_size returned EBADF (bad file descriptor)`);
+  }
+  __bufSize(kind, size) {
+    if (!this.__bound) throw this.__bufSizeErr(kind);
+    const v = __wjs_dgram_bufsize(this.__id, kind, size);
+    if (v === "") throw this.__bufSizeErr(kind);
+    return Number(v);
+  }
+  getRecvBufferSize() { return this.__bufSize("recv"); }
+  setRecvBufferSize(size) { this.__bufSize("recv", size); }
+  getSendBufferSize() { return this.__bufSize("send"); }
+  setSendBufferSize(size) { this.__bufSize("send", size); }
   setBroadcast(flag) {
     this.__sockopt({ op: 'setBroadcast', v: Boolean(flag) });
   }
@@ -534,10 +703,17 @@ class Socket extends EventEmitter {
         const o = JSON.parse(payload);
         this.__bound = true;
         this.__rinfo = { address: o.addr, port: o.port };
-        for (const op of this.__pending) {
-          __wjs_dgram_sockopt(this.__id, JSON.stringify(op));
+        for (const p of this.__pending) {
+          if (p.__send) this.__doSend(p.msg, p.port, p.address, p.cb);
+          else __wjs_dgram_sockopt(this.__id, JSON.stringify(p));
         }
         this.__pending = [];
+        // 构造选项 buffer sizes（node：选项在 handle 创建期生效；此处绑后即设，
+        // macOS getsockopt 精确回读，Linux 回读翻倍记平台差）。
+        if (this.__opts) {
+          if (this.__opts.recvBufferSize !== undefined) __wjs_dgram_bufsize(this.__id, "recv", this.__opts.recvBufferSize);
+          if (this.__opts.sendBufferSize !== undefined) __wjs_dgram_bufsize(this.__id, "send", this.__opts.sendBufferSize);
+        }
         this.emit("listening");
         break;
       }
@@ -558,6 +734,37 @@ class Socket extends EventEmitter {
         this.emit("error", __netErr(o.code, o.msg));
         break;
       }
+      case "sendok": {
+        // send 完成：回调 (null, bytes) 异步触发（§4.74——同步完成也走微任务）。
+        const o = JSON.parse(payload);
+        const cb = this.__sendCbs.get(o.seq);
+        if (cb) {
+          this.__sendCbs.delete(o.seq);
+          queueMicrotask(() => cb(null, o.bytes));
+        }
+        this.__sendTargets.delete(o.seq);
+        break;
+      }
+      case "senderr": {
+        // send 失败：有回调走回调（msgsize 套件 EMSGSIZE 形），无回调走 error 事件
+        //（node 口径）；e.address/e.port 由 JS 侧按 seq 记录的发送目标回填。
+        const o = JSON.parse(payload);
+        const rec = this.__sendTargets.get(o.seq);
+        const e = __netErr(o.code, o.msg);
+        if (rec) {
+          e.address = rec.address;
+          e.port = rec.port;
+        }
+        const cb = this.__sendCbs.get(o.seq);
+        if (cb) {
+          this.__sendCbs.delete(o.seq);
+          queueMicrotask(() => cb(e));
+        } else {
+          this.emit("error", e);
+        }
+        this.__sendTargets.delete(o.seq);
+        break;
+      }
       case "close": {
         this.__bound = false;
         this.__connected = false;
@@ -567,8 +774,28 @@ class Socket extends EventEmitter {
       }
     }
   }
+  // 目标地址归一：主机名经 DNS 取本 socket 族匹配的地址（node 口径——udp4 socket
+  // 发 'localhost' 落 127.0.0.1，macOS localhost 首选 ::1，不归一即 EINVAL）；
+  // v6 字面量加方括号（tokio ToSocketAddrs 需 "[::1]:port" 形）。
+  __resolveAddr(addr) {
+    let s = String(addr);
+    try {
+      const entries = JSON.parse(__wjs_dns_lookup(s));
+      if (Array.isArray(entries) && entries.length) {
+        const fam = this.type === "udp4" ? 4 : 6;
+        const hit = entries.find((e) => e.family === fam) ?? entries[0];
+        s = hit.address;
+      }
+    } catch { /* 字面量/解析失败保留原文 */ }
+    return s.includes(":") && !s.startsWith("[") ? `[${s}]` : s;
+  }
   address() {
-    if (!this.__bound) throw __netErr("ERR_SOCKET_DGRAM_NOT_RUNNING", "address: socket not bound");
+    // node 口径（test-dgram-address 末块）：未绑 address() 即
+    // `Error EBADF "getsockname EBADF"`（uv getsockname 直透，非 NOT_RUNNING）。
+    if (!this.__bound) {
+      const e = __netErr("EBADF", "getsockname EBADF");
+      throw e;
+    }
     return { address: this.__rinfo.address, port: this.__rinfo.port, family: String(this.__rinfo.address).includes(":") ? "IPv6" : "IPv4" };
   }
   close(cb) {

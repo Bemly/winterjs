@@ -139,7 +139,7 @@ setTimeout(() => console.log("end-ok"), 1500);
         "mttl-256 EINVAL",
         "conn-none ERR_SOCKET_BAD_PORT",
         "remote-before ERR_SOCKET_DGRAM_NOT_CONNECTED",
-        "send-noaddr ERR_SOCKET_DGRAM_NOT_RUNNING",
+        "send-noaddr ERR_SOCKET_BAD_PORT",
         "ttl-str EINVAL",
         "ttl-ret 64 5 false undefined",
         "conn-remote {\"address\":\"127.0.0.1\",\"port\":",
@@ -187,5 +187,100 @@ s.bind(0, "127.0.0.1", () => {
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let out = String::from_utf8(out.stdout).unwrap();
     assert!(out.contains("unref-ret true true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_dgram_send_buffer_surface() {
+    // 10f dgram 欠账轮：recvbuf 四方法（未绑 ERR_SOCKET_BUFFER_SIZE 逐字、绑后
+    // set/get 回读、构造选项）+ send 未绑隐式绑定（cb (null, bytes)、address 可查）
+    // + 数组 send + EMSGSIZE 路由回回调 + ALREADY_BOUND + address() 未绑 EBADF +
+    // udp4 bind('localhost') 族匹配 127.0.0.1。标签互不为子串（§4.42）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import dgram from "node:dgram";
+import assert from "node:assert";
+// 1. 未绑 buffer size 抛（文案逐字）
+{
+  const s = dgram.createSocket("udp4");
+  try { s.getRecvBufferSize(); } catch (e) {
+    console.log("bufsz-unbound-get", e.code, e.message === "Could not get or set buffer size: uv_recv_buffer_size returned EBADF (bad file descriptor)");
+  }
+  try { s.setSendBufferSize(4096); } catch (e) {
+    console.log("bufsz-unbound-set", e.code, e.message.includes("uv_send_buffer_size"));
+  }
+}
+// 2. 未绑 send 隐式绑定 + cb (null, bytes) + address 可查
+{
+  const rx = dgram.createSocket("udp4");
+  rx.bind(0, "127.0.0.1", () => {
+    const s = dgram.createSocket("udp4");
+    const msg = Buffer.from("hello dgram");
+    s.send(msg, rx.address().port, "127.0.0.1", (err, bytes) => {
+      console.log("implicit-send", err === null, bytes === msg.length, s.address().port > 0);
+      // 3. EMSGSIZE 路由回回调（256KB > 上限）
+      const big = Buffer.alloc(256 * 1024);
+      s.send(big, 0, big.length, 41234, "127.0.0.1", (e2) => {
+        console.log("emsgsize-cb", e2 !== null && e2.code === "EMSGSIZE", e2 && e2.address === "127.0.0.1" && e2.port === 41234);
+        s.close(); rx.close();
+      });
+    });
+  });
+}
+// 4. 绑后 set/get 回读 + 构造选项
+{
+  const s = dgram.createSocket({ type: "udp4", recvBufferSize: 8192 });
+  s.bind(0, "127.0.0.1", () => {
+    console.log("bufsz-opt", s.getRecvBufferSize() === 8192);
+    s.setSendBufferSize(16384);
+    console.log("bufsz-set", s.getSendBufferSize() === 16384);
+    // 5. 双 bind
+    try { s.bind(0); } catch (e) { console.log("already-bound", e.code, e.message === "Socket is already bound"); }
+    s.close();
+  });
+}
+// 6. 数组 send
+{
+  const rx = dgram.createSocket("udp4");
+  rx.on("message", (m) => { console.log("array-recv", m.toString() === "ab"); rx.close(); });
+  rx.bind(0, "127.0.0.1", () => {
+    const s = dgram.createSocket("udp4");
+    s.send([Buffer.from("a"), Buffer.from("b")], rx.address().port, "127.0.0.1", (err, bytes) => {
+      console.log("array-sent", err === null, bytes === 2);
+      s.close();
+    });
+  });
+}
+// 7. address() 未绑 EBADF 逐字 + udp4 localhost 族匹配
+{
+  const s = dgram.createSocket("udp4");
+  try { s.address(); } catch (e) { console.log("addr-unbound", e.code === "EBADF", e.message === "getsockname EBADF"); }
+  const s2 = dgram.createSocket("udp4");
+  s2.bind(0, "localhost", () => {
+    console.log("fam-resolve", s2.address().address === "127.0.0.1");
+    s2.close();
+  });
+}
+setTimeout(() => process.exit(0), 3000);
+"#,
+    );
+    for line in [
+        "bufsz-unbound-get ERR_SOCKET_BUFFER_SIZE true",
+        "bufsz-unbound-set ERR_SOCKET_BUFFER_SIZE true",
+        "implicit-send true true true",
+        "emsgsize-cb true true",
+        "bufsz-opt true",
+        "bufsz-set true",
+        "already-bound ERR_SOCKET_ALREADY_BOUND true",
+        "array-sent true true",
+        "array-recv true",
+        "addr-unbound true true",
+        "fam-resolve true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
     dir.close().unwrap();
 }

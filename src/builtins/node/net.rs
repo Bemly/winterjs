@@ -51,6 +51,11 @@ pub enum NetKind {
     DgramMessage { data_b64: String, address: String, port: u16, family: u8 },
     /// dgram：connect 生效（task 已记默认远端；JS 侧置位并发 'connect'）。
     DgramConnect,
+    /// dgram：send 失败（路由回 seq 对应的 send 回调；无回调 JS 侧转 error 事件）。
+    /// node 口径：send 失败不杀 socket。
+    DgramSendError { code: String, msg: String, seq: u64 },
+    /// dgram：send 完成（回调 (null, bytes) 经此异步触发——uv_udp_send 完成回调同型）。
+    DgramSendOk { seq: u64, bytes: usize },
     // ── http2（Phase 9d-7；与 net 共通道，零新 channel）─────────────────────
     /// h2 服务端收到完整请求（ev.id = server id；整收口径，http 记档同款）。
     /// 10f：authority/trailers/peer 面（compat 伪头合成 + trailers 事件）。
@@ -77,7 +82,7 @@ pub enum NetCmd {
     Write(Vec<u8>),
     End,
     Close,
-    SendTo { data: Vec<u8>, addr: String },
+    SendTo { data: Vec<u8>, addr: String, seq: u64 },
     // ── dgram 10a（组播/广播/TTL/connect 全家；task 内同步 setsockopt，
     // 失败走 Error 事件——真机同步抛的偏差记档，见 dgram.rs）────────────────
     /// SO_BROADCAST 开关。
@@ -981,6 +986,14 @@ pub fn dispatch(
             ("error", serde_json::json!({ "code": code, "msg": msg }).to_string())
         }
         NetKind::Close => ("close", String::new()),
+        NetKind::DgramSendError { code, msg, seq } => (
+            "senderr",
+            serde_json::json!({ "code": code, "msg": msg, "seq": seq }).to_string(),
+        ),
+        NetKind::DgramSendOk { seq, bytes } => (
+            "sendok",
+            serde_json::json!({ "seq": seq, "bytes": bytes }).to_string(),
+        ),
         NetKind::Listening { addr, port } => {
             ("listening", serde_json::json!({ "addr": addr, "port": port }).to_string())
         }

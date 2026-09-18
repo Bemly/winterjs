@@ -192,7 +192,7 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | net | TIMEOUT 9 / Happy Eyeballs 3 / worker 投递 3 / large-string 1 | ~16 件 | 背压语义 + 竞速回落，另案 |
 | zlib | 增量语义（flush/premature-end/truncated/write-after-end/reject-garbage） | ~6 件 | 需真流式编解码状态机，与"整收"架构冲突 |
 | zlib | brotli 字典 / zstd pledged-src-size / Web `DecompressionStream` | ~4 件 | 零散，DecompressionStream 可另切片 |
-| dgram | recvbuf 系 | 小簇 | 快递轮顺手 |
+| dgram | ~~recvbuf 系~~ ✅ 2026-09-19 转绿（G1：recvbuf/sendbuf 四方法+隐式绑定+EMSGSIZE 回调路由+数组 send+族匹配解析+ALREADY_BOUND/EBADF 形状；DIFF 53→32，余 connect 族/membership/bindSync/ipv6only 等独立小簇 ~32 件顺延） | 小簇 | 已动工，余件逐 API 续补 |
 | child_process | async AbortSignal 尾件 / async 句柄面 / exec 多字节截断 | ~30 件 | Bun 实现了这些，欠；**fork/IPC handle 传递 ~25 件出局**（Bun 🟡 IPC 缺口，同缺不追） |
 | worker_threads | terminate 深水 / 环境面尾件 | 部分 | Bun 🟡 → parity 确认档；Atomics.wait（引擎面）与 stdio 流面（Bun 同缺倾向）另核 |
 

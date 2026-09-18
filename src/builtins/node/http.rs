@@ -30,10 +30,16 @@ function Server(...args) {
 Object.setPrototypeOf(Server, __HttpServerBase);
 Server.prototype = __HttpServerBase.prototype;
 const ClientRequest = withClientRequest(
-  // IPC 形（node 口径）：options.socketPath 在 → UDS 连接，否则 TCP。
-  (host, port, extra) => (extra && extra.socketPath !== undefined)
-    ? net.connect({ path: extra.socketPath })
-    : net.connect(port, host),
+  // IPC 形（node 口径）：options.socketPath 在 → UDS 连接，否则 TCP；
+  // lookup 函数透传 net（noop lookup → socket 永不连通，agent-timeout-option
+  // 套件形态）。
+  (host, port, extra) => {
+    const o = extra ?? {};
+    if (o.socketPath !== undefined) {
+      return o.lookup !== undefined ? net.connect({ path: o.socketPath, lookup: o.lookup }) : net.connect({ path: o.socketPath });
+    }
+    return o.lookup !== undefined ? net.connect({ port, host, lookup: o.lookup }) : net.connect(port, host);
+  },
   FLAVOR,
 );
 // Agent 函数式构造器（node 口径：`http.Agent({...})` 无 new 亦合法）。
@@ -43,9 +49,12 @@ function Agent(options = {}) {
 }
 Object.setPrototypeOf(Agent.prototype, BaseAgent.prototype);
 Object.setPrototypeOf(Agent, BaseAgent);
-Agent.prototype.__openSocket = (host, port, extra) => (extra && extra.socketPath !== undefined)
-  ? net.connect({ path: extra.socketPath, noDelay: true })
-  : net.connect({ port, host, noDelay: true });
+Agent.prototype.__openSocket = (host, port, extra) => {
+  const o = extra ?? {};
+  const base = o.socketPath !== undefined ? { path: o.socketPath, noDelay: true } : { port, host, noDelay: true };
+  if (o.lookup !== undefined) base.lookup = o.lookup;
+  return net.connect(base);
+};
 Agent.prototype.__defaultPort = 80;
 const globalAgent = new Agent();
 FLAVOR.defaultAgent = globalAgent;

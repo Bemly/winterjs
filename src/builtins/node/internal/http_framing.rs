@@ -828,11 +828,19 @@ export function withClientRequest(openSocket, flavor) {
       } else {
         method = (options.method ?? "GET").toUpperCase();
         host = options.host ?? options.hostname ?? "localhost";
-        port = Number(options.port ?? flavor.defaultPort);
+        // node 口径：defaultPort 逐级——显式 port > agent.defaultPort > flavor 缺省
+        //（default-port 套件：globalAgent.defaultPort 动态改写生效，host 头
+        // 按“port === 生效缺省”省略端口；agent 缺省取隐式 globalAgent）。
+        const __ag = options.agent !== undefined ? options.agent : flavor.defaultAgent;
+        const __agentDp = __ag && __ag.defaultPort !== undefined ? __ag.defaultPort : flavor.defaultPort;
+        port = Number(options.port ?? __agentDp);
         path = options.path ?? "/";
         if (!path.startsWith("/")) path = "/" + path;
         userHeaders = options.headers ?? {};
         extra = options;
+        // node addRequest 口径：socketPath 在场即以之改写 connect 用的 path
+        //（防 HTTP path 泄进 net.connect 误连错目标——ENOTSOCK 现场记录）。
+        if (options.socketPath !== undefined) options.path = options.socketPath;
       }
       // node lib/_http_client.js：path 控制字符/空格即 ERR_UNESCAPED_CHARACTERS。
       if (INVALID_PATH_REGEX.test(path)) {
@@ -845,12 +853,33 @@ export function withClientRequest(openSocket, flavor) {
       // IPC 形（node：req.socketPath 自有属性；openSocket 钩按它走 UDS）。
       this.socketPath = options.socketPath;
       this.path = path;
-      this.timeout = options.timeout !== undefined ? Number(options.timeout) : undefined;
       this.socket = null;
       this.agent = options.agent === undefined ? (flavor.defaultAgent ?? null) : (options.agent || null);
+      this.__defaultPort = this.agent !== null && this.agent.defaultPort !== undefined
+        ? this.agent.defaultPort : flavor.defaultPort;
+      // timeout 双检（node validateNumber 口径，真机 26.8.2 逐项：null/'x' →
+      // ARG_TYPE，NaN/负 → OUT_OF_RANGE）。
+      if (options.timeout !== undefined) {
+        if (typeof options.timeout !== "number") {
+          throw new codes.ERR_INVALID_ARG_TYPE("timeout", "number", options.timeout);
+        }
+        if (!Number.isFinite(options.timeout) || options.timeout < 0) {
+          throw new codes.ERR_OUT_OF_RANGE("timeout", "a non-negative finite number", options.timeout);
+        }
+      }
+      this.timeout = options.timeout !== undefined ? Number(options.timeout) : undefined;
+      // 请求级 timeout（__attach 时覆盖 agent 级的 socket 计时）。
+      this.__reqTimeoutMs = this.timeout !== undefined && this.timeout > 0 ? this.timeout : undefined;
+      // node onSocket 口径：请求级 timeout 优先于 agent 级；任一在场即挂
+      // timeoutCb（emitRequestTimeout——转发 socket 'timeout' → req 'timeout'）。
+      const __agentTimeout = this.agent !== null && this.agent.options ? this.agent.options.timeout : undefined;
+      this.__timeoutMs = this.timeout ?? __agentTimeout;
+      if (this.timeout !== undefined || (typeof __agentTimeout === "number" && __agentTimeout > 0)) {
+        this.timeoutCb = () => this.emit("timeout");
+      }
       this.__headers = __lowerHeaders(userHeaders);
       if (this.__headers.host === undefined) {
-        this.__headers.host = port === flavor.defaultPort ? host : `${host}:${port}`;
+        this.__headers.host = port === this.__defaultPort ? host : `${host}:${port}`;
       }
       if (this.__headers.connection === undefined) {
         this.__headers.connection = (this.agent !== null && this.agent.keepAlive) ? "keep-alive" : "close";
@@ -885,14 +914,19 @@ export function withClientRequest(openSocket, flavor) {
       if (typeof cb === "function") this.on("response", cb);
       if (typeof options.createConnection === "function") {
         // request 级 createConnection（node _http_client 口径）：绕 agent 直建。
+        // 实参是请求 options 的浅拷贝且 path 值被摘除（TCP；真机逐键实测
+        // ["createConnection","headers","host","path(undefined)","port"]）、
+        // IPC 时改写为 socketPath——防 HTTP path 泄进 net.connect 误走管道。
         this.__createConn = options.createConnection;
+        const connOpts = { ...(extra ?? {}) };
+        connOpts.path = options.socketPath !== undefined ? options.socketPath : undefined;
         let out;
         let settled = false;
         const oncreate = (err, s) => {
           settled = true;
           if (s) this.__attach(s, false);
         };
-        const maybe = this.__createConn({ host, port, ...(extra ?? {}) }, oncreate);
+        const maybe = this.__createConn(connOpts, oncreate);
         if (!settled && maybe) this.__attach(maybe, false);
       } else if (this.agent !== null) {
         this.agent.__acquire(this, host, port, extra, (sock, reused) => this.__attach(sock, reused));
@@ -908,17 +942,34 @@ export function withClientRequest(openSocket, flavor) {
       this.__sock = sock;
       this.socket = sock;
       this.reusedSocket = reused === true;
-      this.emit("socket", sock);
+      // node onSocket 口径：'socket' 事件异步（nextTick）发出——get()/request()
+      // 返回后同步注册的监听器必须能收到（agent-timeout-option 套件形态）。
+      queueMicrotask(() => {
+        if (!this.destroyed) this.emit("socket", sock);
+      });
       if (this.__pendingNoDelay !== undefined) {
         try { sock.setNoDelay(this.__pendingNoDelay); } catch { /* gone */ }
       }
       if (this.__pendingKeepAlive !== undefined) {
         try { sock.setKeepAlive(this.__pendingKeepAlive[0], this.__pendingKeepAlive[1]); } catch { /* gone */ }
       }
-      if (this.__reqTimeoutMs !== undefined) {
-        sock.on("timeout", () => this.emit("timeout"));
-        // 假 socket（createConnection 注入的 Duplex）无 setTimeout 面则跳过。
-        if (typeof sock.setTimeout === "function") sock.setTimeout(this.__reqTimeoutMs);
+      // node onSocket 口径：timeoutCb 在场即挂 once；请求级 timeout 覆盖 agent 级
+      //（socket.timeout 反映最后一次 setTimeout）；agent 级已在建连时置位则不重臂。
+      // 假 socket（createConnection 注入的 Duplex）无 setTimeout 面则跳过。
+      if (this.timeoutCb !== undefined) {
+        if (this.__reqTimeoutMs !== undefined) {
+          this.__applySockTimeout(sock, this.__reqTimeoutMs);
+        } else if (!sock.timeout) {
+          const __ms = this.__timeoutMs;
+          if (typeof __ms === "number" && __ms > 0) this.__applySockTimeout(sock, __ms);
+        }
+        // 复用连接换请求：摘上一请求的 emitRequestTimeout（listeners 计数契约：
+        // [onTimeout, emitRequestTimeout, responseOnTimeout] 不随复用累加）。
+        if (sock.__lastTimeoutCb !== undefined && sock.__lastTimeoutCb !== this.timeoutCb) {
+          try { sock.removeListener("timeout", sock.__lastTimeoutCb); } catch { /* gone */ }
+        }
+        sock.__lastTimeoutCb = this.timeoutCb;
+        sock.once("timeout", this.timeoutCb);
       }
       this.__onSockClose = () => this.__onSockCloseEv();
       sock.on("connect", () => {
@@ -982,15 +1033,32 @@ export function withClientRequest(openSocket, flavor) {
       }
       return this;
     }
+    // socket 空闲计时（http 层驱动时补记 .timeout + 'onTimeout' 占位监听——
+    // 对齐 node net 内部监听形状：listeners('timeout') = [onTimeout,
+    // emitRequestTimeout, ...]；onTimeout 是 socket 单例（node net 构造时挂一
+    // 次，setTimeout 重臂不重复挂）；net 域 setTimeout 不发布 .timeout，偏差记档）。
+    __applySockTimeout(sock, ms) {
+      if (typeof sock.setTimeout !== "function") return;
+      sock.setTimeout(ms);
+      sock.timeout = ms;
+      if (!sock.__onTimeoutSingleton) {
+        sock.__onTimeoutSingleton = true;
+        sock.on("timeout", function onTimeout() {});
+      }
+    }
     // node lib/_http_client.js：once('timeout') + socket 空闲计时（已连即臂，
     // 未连记位，__attach 落地）。
     setTimeout(msecs, callback) {
       if (typeof callback === "function") this.once("timeout", callback);
       const ms = Number(msecs) || 0;
       this.__reqTimeoutMs = ms > 0 ? ms : undefined;
-      // 假 socket（createConnection 注入的 Duplex）无 setTimeout 面则跳过。
-      if (this.__sock !== null && this.__sock !== undefined && typeof this.__sock.setTimeout === "function") {
-        this.__sock.setTimeout(ms);
+      if (this.__sock !== null && this.__sock !== undefined) {
+        if (ms > 0) {
+          this.__applySockTimeout(this.__sock, ms);
+        } else if (typeof this.__sock.setTimeout === "function") {
+          this.__sock.setTimeout(0);
+          this.__sock.timeout = 0;
+        }
       }
       return this;
     }
@@ -1212,6 +1280,18 @@ export function withClientRequest(openSocket, flavor) {
           this.__framing = __framingFor(headers, true, res.statusCode, this.method);
           this.__res = res;
           this.__resBuf = this.__resBuf.slice(headEnd + 4);
+          // node _http_client.js：响应到达即挂 responseOnTimeout（一次性/socket；
+          // 转发 socket 'timeout' → req 'timeout'，响应完结后不再转发）。
+          // 计数契约：listeners('timeout') = [onTimeout, emitRequestTimeout,
+          // responseOnTimeout]，跨 keep-alive 复用不累加（listeners 套件）。
+          if (this.__sock !== null && this.__sock.timeout > 0 && !this.__sock.__respOnTimeout) {
+            this.__sock.__respOnTimeout = true;
+            const __req = this;
+            this.__sock.on("timeout", function responseOnTimeout() {
+              if (__req.__res !== null && __req.__res.complete) return;
+              __req.emit("timeout");
+            });
+          }
           // §4.35：先 emit("response")（监听器登记 data/end），再喂体。
           this.emit("response", res);
           continue;
@@ -1323,13 +1403,24 @@ Agent.prototype.__init = function (options = {}) {
   // __openSocket/__defaultPort 由 flavor 子类经 prototype 提供（本类不设 own
   // 属性，否则遮蔽子类覆盖；裸 BaseAgent 直接用即 TypeError）。
 };
-// node 口径：createConnection 是 agent 的建连钩（测试以假 Duplex 覆盖做黑洞/
-// 依此注入 socket）；默认回落 flavor 的 __openSocket。同步回值与 cb 双形态，
-// settled 旗防双取。
+// node 口径：createConnection 是 agent 的建连钩（默认 = net.createConnection，
+// 同步回值、不调 cb——cb 由 createSocket 的 oncreate 统一收口）；测试以假
+// Duplex 覆盖做黑洞/依此注入 socket。同步回值与 cb 双形态由 createSocket 兜。
 Agent.prototype.createConnection = function (options, cb) {
-  const s = this.__openSocket(options.host, options.port, options);
-  if (typeof cb === "function") cb(null, s);
-  return s;
+  return this.__openSocket(options.host, options.port, options);
+};
+// node lib/_http_agent.js：createConnection 的记账壳（req, options, cb 三参；
+// 同步回值与 cb 双形态，settled 旗防双取）；用户可整体覆写（agent-close 套件
+// `createSocket = (req, options, cb) => cb(err)` → req 'error' + 销毁）。
+Agent.prototype.createSocket = function (req, options, cb) {
+  let settled = false;
+  const oncreate = (err, s) => {
+    settled = true;
+    if (typeof cb === "function") cb(err, s);
+  };
+  const maybe = this.createConnection(options, oncreate);
+  if (!settled && maybe) oncreate(null, maybe);
+  return maybe;
 };
 Agent.prototype.getName = function (options = {}) {
   let name = options.host ?? options.hostname ?? "localhost";
@@ -1351,21 +1442,21 @@ Agent.prototype.__liveCount = function (key) {
   const all = this.__list(this.sockets, key).filter((s) => !s.destroyed);
   return all.length;
 };
-// 建连：走 createConnection 钩（同步回值/cb 双形态），返回 socket 或 undefined。
-Agent.prototype.__createSock = function (options) {
-  let out;
-  let settled = false;
-  const oncreate = (err, s) => {
-    settled = true;
-    if (!err && s) out = s;
-  };
-  const maybe = this.createConnection(options, oncreate);
-  if (!settled && maybe) out = maybe;
-  return out;
-};
 Agent.prototype.__trackSocket = function (sock, key) {
   this.__list(this.sockets, key).push(sock);
   this.totalSocketCount++;
+  // node agent：options.timeout 在建连时即置 socket 空闲计时（agent-timeout-
+  // option 套件：'socket' 事件时 socket.timeout 已 === 50；onTimeout 单例）。
+  if (this.options && typeof this.options.timeout === "number" && this.options.timeout > 0) {
+    if (typeof sock.setTimeout === "function") {
+      sock.setTimeout(this.options.timeout);
+      sock.timeout = this.options.timeout;
+      if (!sock.__onTimeoutSingleton) {
+        sock.__onTimeoutSingleton = true;
+        sock.on("timeout", function onTimeout() {});
+      }
+    }
+  }
   const cleaner = () => this.__noteClosed(sock);
   sock.__poolCleaner = cleaner;
   sock.on("close", cleaner);
@@ -1378,6 +1469,7 @@ Agent.prototype.__unpool = function (sock) {
   }
 };
 // 取空闲或新建；满额则排队（release 时续行）。onSocket(sock, reused)。
+// 建连统一走 createSocket 钩（req, options, cb 三参——用户覆写点）。
 Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
   const key = this.getName({ host, port, ...(extra ?? {}) });
   const free = this.__list(this.freeSockets, key);
@@ -1398,15 +1490,21 @@ Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
   }
   req.__poolKey = key;
   req.__queued = false;
-  const sock = this.__createSock({ host, port, ...(extra ?? {}) });
-  if (!sock) {
-    const err = new Error("socket hang up");
-    err.code = "ECONNREFUSED";
-    req.destroy(err);
-    return;
-  }
-  this.__trackSocket(sock, key);
-  onSocket(sock, false);
+  const opts = { host, port, ...(extra ?? {}) };
+  let done = false;
+  const oncreate = (err, sock) => {
+    if (done) return;
+    done = true;
+    if (err || !sock) {
+      if (sock) { try { sock.destroy(); } catch { /* gone */ } }
+      const e = err ?? (() => { const x = new Error("socket hang up"); x.code = "ECONNREFUSED"; return x; })();
+      if (!req.destroyed) req.destroy(e);
+      return;
+    }
+    this.__trackSocket(sock, key);
+    onSocket(sock, false);
+  };
+  this.createSocket(req, opts, oncreate);
 };
 Agent.prototype.__noteClosed = function (sock) {
   const key = sock.__poolKey;
@@ -1481,6 +1579,17 @@ Agent.prototype.addRequest = function (req, options, port, localAddress) {
     this.__list(this.sockets, name).push(sock);
     req.__poolKey = name;
     req.__queued = false;
+    if (!sock.connecting && sock.pending) {
+      // node onSocket 口径：手动塞入的裸 socket（无句柄，new net.Socket()）
+      // 按请求选项补连，'connect' 事件后续行（agent-uninitialized 套件）。
+      const sp = req.socketPath ?? options.socketPath;
+      const copts = sp !== undefined && sp !== null
+        ? { path: sp }
+        : { host: req.host ?? "localhost", port: typeof req.getPort === "function" ? req.getPort() : undefined };
+      sock.connect(copts);
+      if (typeof req.__attach === "function") req.__attach(sock, false);
+      return;
+    }
     if (typeof req.__attach === "function") req.__attach(sock, true);
     return;
   }
@@ -1492,15 +1601,21 @@ Agent.prototype.addRequest = function (req, options, port, localAddress) {
   }
   req.__poolKey = name;
   req.__queued = false;
-  const s = this.__createSock({ host: options.host ?? options.hostname ?? "localhost", port: options.port ?? this.__defaultPort ?? 80, ...options });
-  if (!s) {
-    const err = new Error("socket hang up");
-    err.code = "ECONNREFUSED";
-    req.destroy(err);
-    return;
-  }
-  this.__trackSocket(s, name);
-  if (typeof req.__attach === "function") req.__attach(s, false);
+  const opts = { host: options.host ?? options.hostname ?? "localhost", port: options.port ?? this.__defaultPort ?? 80, ...options };
+  let done = false;
+  const oncreate = (err, s) => {
+    if (done) return;
+    done = true;
+    if (err || !s) {
+      if (s) { try { s.destroy(); } catch { /* gone */ } }
+      const e = err ?? (() => { const x = new Error("socket hang up"); x.code = "ECONNREFUSED"; return x; })();
+      if (!req.destroyed) req.destroy(e);
+      return;
+    }
+    this.__trackSocket(s, name);
+    if (typeof req.__attach === "function") req.__attach(s, false);
+  };
+  this.createSocket(req, opts, oncreate);
 };
 Agent.prototype.destroy = function () {
   for (const key of Object.keys(this.requests)) {

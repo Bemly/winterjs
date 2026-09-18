@@ -871,3 +871,114 @@ setTimeout(() => console.log("ipc-done"), 400);
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10g_http_timeout_agent_surface() {
+    // 欠账 G3：Agent({timeout})/req timeout 双级 + createSocket cb 错误 +
+    // defaultPort 逐级（真机 26.8.2 逐项实测定标）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http, { Agent, ClientRequest, createServer } from "node:http";
+import net from "node:net";
+import assert from "node:assert";
+
+// 1) Agent({timeout})：'socket' 事件时 socket.timeout 已置位；监听形状
+//    [onTimeout, emitRequestTimeout]（noop lookup → socket 永不连通）。
+const r1 = http.get({ agent: new Agent({ timeout: 50 }), lookup: () => {} });
+r1.on("socket", (s) => {
+  console.log("agent-tmo", s.timeout, s.listeners("timeout").length,
+    s.listeners("timeout")[1] === r1.timeoutCb);
+});
+r1.on("error", () => {});
+
+// 2) 请求级 timeout 覆盖 agent 级（socket.timeout === 100）。
+const r2 = http.get({ agent: new Agent({ timeout: 50 }), lookup: () => {}, timeout: 100 });
+r2.on("socket", (s) => {
+  console.log("req-tmo-wins", s.timeout, s.listeners("timeout")[1] === r2.timeoutCb);
+});
+r2.on("error", () => {});
+
+// 3) timeout 校验双检（node validateNumber 口径，真机逐项）。
+try { http.request({ timeout: null }); } catch (e) {
+  console.log("tmo-null", e.code, e.message.startsWith('The "timeout" argument must be of type number'));
+}
+try { http.request({ timeout: NaN }); } catch (e) {
+  console.log("tmo-nan", e.code);
+}
+
+// 4) req 'timeout' 事件：socket 空闲 1ms 单发（server 在场、请求挂起）。
+const server = createServer(() => {});
+server.listen(0, "127.0.0.1", () => {
+  const req = http.request({ host: "127.0.0.1", port: server.address().port, timeout: 1 });
+  req.on("error", () => {});
+  let n = 0;
+  req.on("timeout", () => { n++; });
+  setTimeout(() => {
+    console.log("tmo-event", n === 1);
+    req.destroy();
+    server.close();
+  }, 100);
+});
+
+// 5) createSocket 覆写 cb(err) → req 'error'(原对象) + 'close'(destroyed)。
+const agent = new Agent();
+const boom = new Error("kaboom");
+agent.createSocket = (req, options, cb) => { cb(boom); };
+const r5 = http.request({ agent });
+r5.on("error", (e) => console.log("cs-err", e === boom));
+r5.on("close", () => console.log("cs-close", r5.destroyed));
+
+// 6) defaultPort 逐级：globalAgent.defaultPort 改写生效 + host 头省端口。
+const server2 = createServer((req2, res2) => {
+  console.log("dp-host", req2.headers.host);
+  res2.end("ok");
+});
+server2.listen(0, "127.0.0.1", () => {
+  http.globalAgent.defaultPort = server2.address().port;
+  http.get({ host: "127.0.0.1" }, (res) => {
+    res.resume();
+    res.on("end", () => { http.globalAgent.defaultPort = 80; server2.close(); });
+  });
+});
+
+// 7) 裸 socket 塞 freeSockets + addRequest → 自动按请求选项补连。
+const agent3 = new Agent({ keepAlive: true });
+const bare = new net.Socket();
+const server3 = createServer((req3, res3) => res3.end("bare-ok"));
+server3.listen(0, "127.0.0.1", () => {
+  // node 口径：addRequest({}) 的池键缺省 host 是 localhost——URL 须同形才能命中
+  // 手塞的 freeSockets 槽（真机 addRequest({},) 对 127.0.0.1 请求同样 miss → 建连）。
+  const req7 = new ClientRequest(`http://localhost:${server3.address().port}/`);
+  agent3.freeSockets[agent3.getName(req7)] = [bare];
+  agent3.addRequest(req7, {});
+  req7.on("response", (res) => {
+    let b = "";
+    res.on("data", (c) => (b += c));
+    res.on("end", () => { console.log("bare-reuse", b); server3.close(); });
+  });
+  req7.on("error", () => {});
+  req7.end();
+});
+
+setTimeout(() => console.log("tmo-done"), 700);
+"#,
+    );
+    for tag in [
+        "agent-tmo 50 2 true",
+        "req-tmo-wins 100 true",
+        "tmo-null ERR_INVALID_ARG_TYPE true",
+        "tmo-nan ERR_OUT_OF_RANGE",
+        "tmo-event true",
+        "cs-err true",
+        "cs-close true",
+        "dp-host 127.0.0.1",
+        "bare-reuse bare-ok",
+        "tmo-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}

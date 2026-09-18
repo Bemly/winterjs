@@ -2200,3 +2200,31 @@ cargo build
   `grep ... | head` 后误跟裸 `===` 又炸一次；分隔符一律加引号。
 - 复现：`tests/node/crypto.rs::phase10f_crypto_raw_seed_parity`（`r5-*` 行；
   另 `test-crypto-key-objects-raw.js` 修前 DIFF 修后 SAME0）。
+
+### 4.135 crypto 六轮 PSS/PBES2 八坑（2026-09-18，10f crypto 六轮）
+
+- 坑一（a1 剥层连翻两次）：MaskGen `[1]` 内容是**完整** `SEQ{OID-mgf1, SEQ{hash}}`——
+  首版 `children(it.body)` 得 `[SEQ]` 判长 2 即 null；改"剥外层 SEQ"又写成判长 1，
+  还是 null（hexdump 明明对得上）。两翻同源：不动手算，拿 `__derRead` 逐层打印
+  （本次 `a1 body: 3018…` 钉死 `[OID, SEQ]` 两元才落定）。教训：DER 嵌套层数
+  只认逐层打印，不认"看起来"。
+- 坑二（SHA-1 OID 键多拼长度字节）：map 键 `052b0e03021a` 混入 `05` 长度——
+  map 键一律 OID **body** hex（`2b0e03021a`），tag/len 剥干净再当键。
+- 坑三（门序即真机序）：PSS 约束 salt 先 digest 后（sha1+小 salt 落 salt 错，
+  套件 1007 行钉住）；验签缺省 salt 同取键约束值（sign/verify 双缺省互通，
+  真机实测钉住：混合键缺省签出 salt 20 非摘要长 64）。
+- 坑四（自验绿≠互通）：混合 MGF 自签自验全绿，但真机拒收——缺省 salt 取了
+  摘要长。收敛标准：手组密码学一律双向真机交叉（本仓⇄真机互验），自交绿不算数
+  （§4.54 对称性盲区再进宫）。
+- 坑五（`?? key` 洗白 null）：`key.key ?? key` 把 null/undefined 洗成 options
+  对象，JWK 对象门永不触发（"Unsupported JWK kty" 现形）。修法：直透 `key.key`。
+- 坑六（`__cryptErr` 全大写门）：`DataError: ...` 小写码被 `^([A-Z]...)` 门漏掉
+  落裸文——装载宽容的 catch 须按消息窄匹配，不能按 `e.code`。
+- 坑七（getCurves 顺序即契约）：JWK-unsupported-curve 块靠 `find(!supported)`
+  首个非支持曲线——本仓仅 NIST 四曲线时 `assert(namedCurve)` 空值，
+  属能力偏离（非语义缺口），不造假曲线凑数。
+- 坑八（Node 自己都不逐字节）：PSS 导出 round-trip，真机对 sha256/sha512 对
+  非逐字节（重编码 params），本仓 stash 原文反而逐字节——"与真机逐字节一致"
+  在重编码面不成立，以"解析等价 + 细节稳定"为准。
+- 复现：`tests/node/crypto.rs::phase10f_crypto_pss_gates`（`r6-*` 行；
+  另 `test-crypto-key-objects.js` 余唯一红块见 bun-parity）。

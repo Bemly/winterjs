@@ -25,7 +25,7 @@ console.log("buf", Buffer.isBuffer(createHash("sha256").update("x").digest()), c
 console.log("oneshot", hash("sha256", "abc", "hex") === "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 console.log("alias", createHash("RSA-SHA256").update("x").digest("hex").slice(0, 8) === createHash("sha256").update("x").digest("hex").slice(0, 8));
 console.log("hashes", getHashes().includes("sha256") && getHashes().includes("blake2s256") && getHashes().includes("ripemd160") && getHashes().includes("shake256"));
-console.log("curves", getCurves().includes("prime256v1") && getCurves().includes("ed25519"));
+console.log("curves", getCurves().includes("prime256v1") && !getCurves().includes("ed25519"));
 console.log("ns", typeof c.createHash === "function", c.webcrypto === globalThis.crypto);
 "#,
     );
@@ -1945,6 +1945,76 @@ log("r5-done");
         "r5-slh-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
         "r5-slh-rt true",
         "r5-done",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_crypto_pss_gates() {
+    // 10f crypto六轮：RSA-PSS 装载/约束/入口门（真机 26.8.2 对拍）。
+    // 约束键（一次性 params）无 repo fixture，以生成键覆盖无约束面；
+    // 约束执行/MGF 切换由 key-objects.js 套件 trace 覆盖（见 bun-parity）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { generateKeyPairSync, createPublicKey, createPrivateKey, createSign, createVerify, getCurves } from "node:crypto";
+const log = (...a) => console.log(...a);
+const throws = (fn) => { try { fn(); return "NO-THROW"; } catch (e) { return `${e.code}|${e.message}`; } };
+
+// ── 装载面：生成 PSS 键无约束（details 精确形）+ 导出往返 ──
+const { publicKey: pssPub, privateKey: pssPriv } = generateKeyPairSync("rsa-pss", { modulusLength: 1024 });
+log("r6-pss-type", pssPub.asymmetricKeyType, pssPriv.asymmetricKeyType);
+log("r6-pss-det", JSON.stringify(pssPub.asymmetricKeyDetails, (k, v) => typeof v === "bigint" ? "BIG" : v));
+const spki = pssPub.export({ format: "der", type: "spki" });
+const back = createPublicKey({ key: spki, format: "der", type: "spki" });
+log("r6-pss-rt", back.asymmetricKeyType, back.equals(pssPub));
+log("r6-pss-jwk", throws(() => pssPub.export({ format: "jwk" })));
+log("r6-pss-pkcs1", throws(() => pssPub.export({ format: "pem", type: "pkcs1" })));
+// PSS SHA-1 自签自验（sha1_010 底座）
+const sig1 = createSign("sha1").update("foo").sign({ key: pssPriv, saltLength: 8 });
+log("r6-pss-sha1", createVerify("sha1").update("foo").verify({ key: pssPub, saltLength: 8 }, sig1));
+
+// ── 约束面：生成键 saltLength 选项即下限 ──
+const { privateKey: lim } = generateKeyPairSync("rsa-pss", { modulusLength: 1024, saltLength: 20 });
+log("r6-lim-small", throws(() => createSign("sha256").update("x").sign({ key: lim, saltLength: 8 })));
+const sigD = createSign("sha256").update("x").sign(lim);
+log("r6-lim-def", createVerify("sha256").update("x").verify(lim, sigD));
+
+// ── 入口门：key.format/key.type/JWK key 形态 ──
+log("r6-fmt", throws(() => createPrivateKey({ key: Buffer.alloc(0), format: "banana", type: "pkcs8" })));
+log("r6-typ", throws(() => createPublicKey({ key: Buffer.alloc(0), format: "der", type: "banana" })));
+log("r6-jwk-str", throws(() => createPublicKey({ key: "", format: "jwk" })));
+log("r6-jwk-null", throws(() => createPrivateKey({ key: null, format: "jwk" })));
+log("r6-curves", getCurves().join(","));
+log("r6-gen-ec-okp", throws(() => generateKeyPairSync("ec", { namedCurve: "ed25519" })));
+
+// ── 加密导出缺 cipher 门 ──
+const { privateKey: rsa } = generateKeyPairSync("rsa", { modulusLength: 1024 });
+log("r6-nocipher", throws(() => rsa.export({ format: "pem", type: "pkcs8", passphrase: "s" })));
+log("r6-done");
+"#,
+    );
+    for line in [
+        "r6-pss-type rsa-pss rsa-pss",
+        "r6-pss-det {\"modulusLength\":1024,\"publicExponent\":\"BIG\"}",
+        "r6-pss-rt rsa-pss true",
+        "r6-pss-jwk ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE|Unsupported JWK Key Type.",
+        "r6-pss-pkcs1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding pkcs1 can only be used for RSA keys.",
+        "r6-pss-sha1 true",
+        "r6-lim-small ERR_OSSL_PSS_SALTLEN_TOO_SMALL|error:1C8000AC:Provider routines::pss saltlen too small",
+        "r6-lim-def true",
+        "r6-fmt ERR_INVALID_ARG_VALUE|The property 'key.format' is invalid. Received 'banana'",
+        "r6-typ ERR_INVALID_ARG_VALUE|The property 'key.type' is invalid. Received 'banana'",
+        "r6-jwk-str ERR_INVALID_ARG_TYPE|The \"key.key\" property must be of type object. Received type string ('')",
+        "r6-jwk-null ERR_INVALID_ARG_TYPE|The \"key.key\" property must be of type object. Received null",
+        "r6-curves prime256v1,secp384r1,secp521r1,secp256k1",
+        "r6-gen-ec-okp ERR_CRYPTO_INVALID_CURVE|Invalid EC curve name",
+        "r6-nocipher ERR_INVALID_ARG_VALUE|The property 'options.cipher' is required when a passphrase is specified. Received undefined",
+        "r6-done",
     ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }

@@ -4043,7 +4043,9 @@ export function getHashes() {
   return ["sha1", "sha256", "sha384", "sha512", "md5", "sha3-256", "sha3-384", "sha3-512", "blake2b512", "blake2s256", "ripemd160", "shake128", "shake256"];
 }
 export function getCurves() {
-  return ["prime256v1", "secp384r1", "secp521r1", "secp256k1", "ed25519", "x25519"];
+  // 10f crypto六轮：仅 NIST 四曲线（真机 getCurves 无 OKP 名；自家 ECDH
+  // 同样拒 OKP，前后一致。JWK-unsupported-curve 块系能力偏离，见 bun-parity）。
+  return ["prime256v1", "secp384r1", "secp521r1", "secp256k1"];
 }
 export const webcrypto = globalThis.crypto;
 // Node 19+ 模块级 getRandomValues（webcrypto 同一实现；vite webSocketToken 用）。
@@ -4619,22 +4621,47 @@ function __pssParseParams(body) {
   return { hashAlgorithm: hash, mgf1HashAlgorithm: mgf, saltLength: salt };
 }
 function __pssAlg(algBody) {
-  // 算法 SEQ body → {restrictions|null}；非 PSS 即 null。
+  // 算法 SEQ body → {restrictions|null, paramsB64|null}；非 PSS 即 null。
+  // paramsB64 = params SEQ 的 body 原文字节（导出回贴用；缺席即 null）。
   let alg;
   try { alg = __derChildren(algBody); } catch { return null; }
   if (alg.length < 1 || alg[0].tag !== 0x06 ||
       Buffer.from(alg[0].body).toString("hex") !== __PSS_OID_HEX) return null;
-  if (alg.length === 1) return { restrictions: null };
+  if (alg.length === 1) return { restrictions: null, paramsB64: null };
   if (alg.length !== 2 || alg[1].tag !== 0x30) return null;
   const restrictions = __pssParseParams(alg[1].body);
   if (!restrictions) return null;
-  return { restrictions };
+  return { restrictions, paramsB64: Buffer.from(alg[1].body).toString("base64") };
 }
 function __rsaEncAlgSeq() {
   return __tlv(0x30, new Uint8Array([
     ...__tlv(0x06, Buffer.from(__RSA_ENC_OID_HEX, "hex")),
     ...__tlv(0x05, new Uint8Array(0)),
   ]));
+}
+// 10f crypto六轮：rsa-pss 导出回贴算法标识（归一化存料→线形；params 缺席/
+// 无 stash（生成键）即裸 OID——与 OpenSSL 省略 DEFAULT 参数同形，真机逐字节
+// 对拍，round-trip 保 rsa-pss 型）。
+// 前置：der 为归一化 plain-RSA 的 SPKI/PKCS#8。
+function __pssReattach(kind, normDer, detail) {
+  const paramsB64 = detail?.pssParams ?? null;
+  const pssOid = Buffer.from(__PSS_OID_HEX, "hex");
+  const alg = paramsB64 === null
+    ? __tlv(0x30, __tlv(0x06, pssOid))
+    : __tlv(0x30, new Uint8Array([
+        ...__tlv(0x06, pssOid),
+        ...__tlv(0x30, Buffer.from(paramsB64, "base64")),
+      ]));
+  const top = __derRead(normDer, 0);
+  const kids = __derChildren(top.body);
+  if (kind === "public") {
+    return Buffer.from(__tlv(0x30, new Uint8Array([
+      ...alg, ...__tlv(0x03, kids[1].body),
+    ])));
+  }
+  return Buffer.from(__tlv(0x30, new Uint8Array([
+    ...__tlv(0x02, kids[0].body), ...alg, ...__tlv(0x04, kids[2].body),
+  ])));
 }
 function __mlSpki(akt, ek) {
   const oid = Buffer.from(__ML_SETS[akt][0], "hex");
@@ -5070,6 +5097,15 @@ class KeyObject {
       err.code = "ERR_INVALID_ARG_VALUE";
       throw err;
     }
+    // 10f crypto六轮：私钥加密导出缺 cipher 门（真机 26 逐项；公钥/secret 侧
+    // 忽略 passphrase，见五轮探针）。
+    if (s.kind === "private" && options?.passphrase !== undefined && options?.cipher === undefined &&
+        (format === "pem" || format === "der")) {
+      const err = new TypeError(
+        "The property 'options.cipher' is required when a passphrase is specified. Received undefined");
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
     if (format === "jwk") return __exportJwk(this);
     // 10f X448：OKP raw 格式（真机口径：裸料 Buffer；kind 错位 → format 无效，
     // 非 OKP → INCOMPATIBLE；真机 26 逐项）。10f 四轮：EC raw 同门——
@@ -5208,7 +5244,12 @@ class KeyObject {
         return __pemEncode(label, der);
       }
     }
-    const der = __exportDer(this, options);
+    let der = __exportDer(this, options);
+    // 10f crypto六轮：rsa-pss 回贴（归一化存料→PSS 线形，见 __pssReattach；
+    // 生成键无 stash 即裸 OID，真机同形）。
+    if (s.keyType === "rsa-pss") {
+      der = __pssReattach(s.kind, der, s.detail);
+    }
     if (format === "der") return Buffer.from(der);
     if (format === "pem") {
       // 10f crypto二轮：pkcs8 私钥加密导出（dsa-legacy 沿 label）。
@@ -5545,9 +5586,48 @@ function __parseKeyMaterial(key, format, type, want, options) {
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
+  // 10f crypto六轮：`key.format`/`key.type` 入口门（真机 26 逐项）——
+  // 显式未知值即 ARG_VALUE（null/数字同判；Received 為 inspect 形：
+  // 字符串引号、其余裸值）。type 门仅限 DER 系（pem/der/缺省）路径，
+  // jwk/raw 系无视 type（现行行为，套件外记档）。
+  const __keyPropReceived = (v) => typeof v === "string" ? `'${v}'`
+    : (v !== null && typeof v === "object")
+      ? (() => { try { return JSON.stringify(v) ?? String(v); } catch { return String(v); } })()
+      : String(v);
+  if (format !== undefined &&
+      !["pem", "der", "jwk", "raw-private", "raw-public", "raw-seed"].includes(format)) {
+    const err = new TypeError(
+      `The property 'key.format' is invalid. Received ${__keyPropReceived(format)}`);
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  if (type !== undefined && (format === undefined || format === "pem" || format === "der") &&
+      !["pkcs1", "pkcs8", "spki", "sec1"].includes(type)) {
+    const err = new TypeError(
+      `The property 'key.type' is invalid. Received ${__keyPropReceived(type)}`);
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  // 10f crypto六轮：`key.key` 实例渲染（真机 26 逐项；字符串 28 码点截断
+  // 与 raw 导入门同规则，函数回 `function <name>`）。
+  const __keyReceived = (v) => {
+    if (v === null) return "null";
+    if (v === undefined) return "undefined";
+    if (typeof v === "string") {
+      const shown = v.length > 28 ? `${v.slice(0, 25)}...` : v;
+      return `type string ('${shown}')`;
+    }
+    if (typeof v === "function") return `function ${v.name}`;
+    if (typeof v === "object") {
+      const n = v.constructor && v.constructor.name ? v.constructor.name : "Object";
+      return `an instance of ${n}`;
+    }
+    return `type ${typeof v} (${String(v)})`;
+  };
   if (format === "jwk") {
     if (typeof key !== "object" || key === null) {
-      const err = new TypeError("JWK key must be an object");
+      const err = new TypeError(
+        `The "key.key" property must be of type object. Received ${__keyReceived(key)}`);
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
@@ -6003,7 +6083,11 @@ function __parseKeyMaterial(key, format, type, want, options) {
         const k = new PrivateKeyObject("private", "rsa-pss", Buffer.from(norm));
         if (pa.restrictions) {
           const d = __rsaDetailsFromMaterial("private", norm);
-          k.__detail = { ...(d ?? {}), ...pa.restrictions };
+          k.__detail = { ...(d ?? {}), ...pa.restrictions, pssParams: pa.paramsB64 };
+        } else {
+          // 无约束键同样落 detail（空约束 + 缺席标记；导出回贴裸 OID 用）。
+          const d = __rsaDetailsFromMaterial("private", norm);
+          k.__detail = { ...(d ?? {}), pssParams: null };
         }
         return k;
       }],
@@ -6102,7 +6186,10 @@ function __parseKeyMaterial(key, format, type, want, options) {
         const k = new PublicKeyObject("public", "rsa-pss", Buffer.from(norm));
         if (pa.restrictions) {
           const d = __rsaDetailsFromMaterial("public", norm);
-          k.__detail = { ...(d ?? {}), ...pa.restrictions };
+          k.__detail = { ...(d ?? {}), ...pa.restrictions, pssParams: pa.paramsB64 };
+        } else {
+          const d = __rsaDetailsFromMaterial("public", norm);
+          k.__detail = { ...(d ?? {}), pssParams: null };
         }
         return k;
       },
@@ -6234,7 +6321,9 @@ export function createPrivateKey(key) {
         key.format !== "raw-private" && key.format !== "raw-public" && key.format !== "raw-seed") {
       key = { ...key, key: Buffer.from(key.key, key.encoding) };
     }
-    return __parseKeyMaterial(key.key ?? key, key.format, key.type, "private", key);
+    // 10f crypto六轮：null/undefined 直透（`?? key` 会把二者洗成 options 对象，
+    // JWK 门即永不触发；缺 key 的旧回退语义退役，真机口径见 JWK/格式门）。
+    return __parseKeyMaterial(key.key, key.format, key.type, "private", key);
   }
   return __parseKeyMaterial(key, undefined, undefined, "private", undefined);
 }
@@ -6251,7 +6340,7 @@ export function createPublicKey(key) {
       key = { ...key, key: Buffer.from(key.key, key.encoding) };
     }
     // 10f crypto二轮：DER 私钥材料一律派生公钥（真机口径，加密 PEM 同）。
-    const k = __parseKeyMaterial(key.key ?? key, key.format, key.type, "public", key);
+    const k = __parseKeyMaterial(key.key, key.format, key.type, "public", key);
     if (k.type === "private") return __derivePublic(k);
     return k;
   }
@@ -6345,9 +6434,9 @@ function __genPairSync(type, options) {
   if (type === "ec") {
     const curve = __normCurve(options.namedCurve);
     if (curve === "Ed25519" || curve === "X25519") {
-      const err = new Error(`Use '${curve.toLowerCase()}' key type for OKP`);
-      err.code = "ERR_INVALID_ARG_VALUE";
-      throw err;
+      // 10f crypto六轮：真机口径（`generateKeyPair('ec',{namedCurve:'ed25519'})`
+      // 即 INVALID_CURVE；旧指引文案退役）。
+      __badEcCurve();
     }
     const privDer = __cryptCall(() => __wjs_ec_generate(curve));
     const pubDer = __cryptCall(() => __wjs_ec_public(curve, privDer));
@@ -6557,8 +6646,47 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength) {
     }
     const pss = kt === "rsa-pss";
     if (pss) {
+      // 10f crypto六轮：rsa-pss 键约束执行（真机 26 逐项）——params 缺席的键
+      // 无约束全放行；saltLength 为下限（小即 PSS_SALTLEN_TOO_SMALL），
+      // hashAlgorithm 限摘要（错即 DIGEST_NOT_ALLOWED）。
+      // 序：salt 先、digest 后（sha1+小 salt 落 salt 错，套件 1007 行钉住）。
+      const det = keyObj.__detail ?? {};
       const defSalt = { "SHA-1": 20, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[hash] ?? 32;
-      const salt = saltLength === undefined ? defSalt : Number(saltLength);
+      // 缺省 salt 取键约束值（真机实测：sha512_20 键缺省签出 salt 20，
+      // 非摘要长 64；无约束键走摘要长）。
+      const salt = saltLength === undefined
+        ? (typeof det.saltLength === "number" ? det.saltLength : defSalt)
+        : Number(saltLength);
+      if (typeof det.saltLength === "number" && salt < det.saltLength) {
+        const err = new Error("error:1C8000AC:Provider routines::pss saltlen too small");
+        err.code = "ERR_OSSL_PSS_SALTLEN_TOO_SMALL";
+        throw err;
+      }
+      if (typeof det.hashAlgorithm === "string" && __normHashName(det.hashAlgorithm) !== hash) {
+        const err = new Error("error:1C8000AE:Provider routines::digest not allowed");
+        err.code = "ERR_OSSL_DIGEST_NOT_ALLOWED";
+        throw err;
+      }
+      // 10f crypto六轮：MGF1 自动切换（RFC4055 §3.1/3.3；真机逐项）——键约束
+      // 的 mgf1 与消息摘要不同时手组 EMSA-PSS（零新 native）。
+      const mgfDet = typeof det.mgf1HashAlgorithm === "string" ? __normHashName(det.mgf1HashAlgorithm) : null;
+      if (mgfDet !== null && mgfDet !== hash) {
+        const d = __rsaDetailsFromMaterial("private", keyObj.__material);
+        if (d === null) {
+          const err = new Error("OperationError: bad RSA-PSS key");
+          err.code = "ERR_INVALID_ARG_VALUE";
+          throw err;
+        }
+        const mHash = __dgstBytes(hash, dataB);
+        const saltB = __randFill(new Uint8Array(salt));
+        const em = __emsaPssEncode(hash, mgfDet, d.modulusLength - 1, mHash, saltB);
+        if (!em) {
+          const err = new Error("OperationError: EMSA-PSS encoding error");
+          err.code = "ERR_INVALID_ARG_VALUE";
+          throw err;
+        }
+        return Buffer.from(__cryptCall(() => __wjs_rsa_raw(keyObj.__material, em, 1)));
+      }
       return __cryptCall(() => __wjs_pss_sign(hash, salt, keyObj.__material, dataB));
     }
     return __cryptCall(() => __wjs_rsa_sign(hash, keyObj.__material, dataB));
@@ -6681,7 +6809,26 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
     const pss = kt === "rsa-pss";
     if (pss) {
       const defSalt = { "SHA-1": 20, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[hash] ?? 32;
-      const salt = saltLength === undefined ? defSalt : Number(saltLength);
+      // 缺省 salt 取键约束值（同 sign 侧；真机实测 sign/verify 双缺省互通）。
+      const vdet0 = keyObj.__detail ?? {};
+      const salt = saltLength === undefined
+        ? (typeof vdet0.saltLength === "number" ? vdet0.saltLength : defSalt)
+        : Number(saltLength);
+      // 10f crypto六轮：验签侧 MGF1 自动切换（同 sign 侧；验不过回 false 不抛）。
+      const vdet = keyObj.__detail ?? {};
+      const vmgf = typeof vdet.mgf1HashAlgorithm === "string" ? __normHashName(vdet.mgf1HashAlgorithm) : null;
+      if (vmgf !== null && vmgf !== hash) {
+        if (det === null) return false;
+        let em;
+        try {
+          em = Buffer.from(__cryptCall(() => __wjs_rsa_raw(pubDer, Buffer.from(sigB), 0)));
+        } catch {
+          return false;
+        }
+        const mHash = __dgstBytes(hash, dataB);
+        return __emsaPssVerify(hash, vmgf, det.modulusLength - 1, mHash, em,
+          saltLength === undefined ? undefined : salt);
+      }
       return __cryptCall(() => __wjs_pss_verify(hash, salt, pubDer, sigB, dataB));
     }
     return __cryptCall(() => __wjs_rsa_verify(hash, pubDer, sigB, dataB));
@@ -6882,6 +7029,46 @@ function __mgf1Bytes(name, seed, outLen) {
     out = Buffer.concat([out, __dgstBytes(name, Buffer.concat([Buffer.from(seed), c]))]);
   }
   return out.slice(0, outLen);
+}
+// 10f crypto六轮：EMSA-PSS 手组（MGF1 哈希可与消息摘要不同；RFC4055 §3.1/3.3
+// 自动切换。MGF1/摘要走既有 __mgf1Bytes/__dgstBytes，模幂走 __wjs_rsa_raw；
+// 零新 native。侧信道记档：非恒定时间实现，与混合 OAEP 手写同口径）。
+// 编码成功回 Buffer EM；长度不足回 null（调用方按 OpenSSL 口径报错）。
+function __emsaPssEncode(msgName, mgfName, emBits, mHash, salt) {
+  const hLen = __OAEP_HLEN[msgName];
+  const emLen = Math.ceil(emBits / 8);
+  if (emLen < hLen + salt.length + 2) return null;
+  const h = __dgstBytes(msgName, Buffer.concat([Buffer.alloc(8), Buffer.from(mHash), Buffer.from(salt)]));
+  const db = Buffer.concat([Buffer.alloc(emLen - salt.length - hLen - 2), Buffer.from([1]), Buffer.from(salt)]);
+  const dbMask = __mgf1Bytes(mgfName, h, db.length);
+  for (let i = 0; i < db.length; i++) db[i] ^= dbMask[i];
+  db[0] &= 0xff >> (8 * emLen - emBits);
+  return Buffer.concat([db, Buffer.from(h), Buffer.from([0xbc])]);
+}
+function __emsaPssVerify(msgName, mgfName, emBits, mHash, em, wantSaltLen) {
+  const hLen = __OAEP_HLEN[msgName];
+  const emLen = Math.ceil(emBits / 8);
+  if (em.length !== emLen || em[emLen - 1] !== 0xbc) return false;
+  const topBits = 8 * emLen - emBits;
+  if (topBits > 0 && (em[0] & (0xff << (8 - topBits))) !== 0) return false;
+  const maskedDB = em.slice(0, emLen - hLen - 1), h = em.slice(emLen - hLen - 1, emLen - 1);
+  const dbMask = __mgf1Bytes(mgfName, h, maskedDB.length);
+  const db = Buffer.from(maskedDB.map((b, i) => b ^ dbMask[i]));
+  db[0] &= 0xff >> topBits;
+  let salt;
+  if (wantSaltLen === undefined) {
+    let i = 0;
+    while (i < db.length && db[i] === 0) i++;
+    if (i >= db.length || db[i] !== 1) return false;
+    salt = db.slice(i + 1);
+  } else {
+    const s = Number(wantSaltLen);
+    const psLen = emLen - hLen - s - 2;
+    if (psLen < 0 || !db.slice(0, psLen).equals(Buffer.alloc(psLen)) || db[psLen] !== 1) return false;
+    salt = db.slice(psLen + 1);
+  }
+  const h2 = __dgstBytes(msgName, Buffer.concat([Buffer.alloc(8), Buffer.from(mHash), Buffer.from(salt)]));
+  return Buffer.from(h).equals(Buffer.from(h2));
 }
 function __rsaCrypt(key, data, isPublic, isEncrypt) {
   let k = __keyArg(key, "key");

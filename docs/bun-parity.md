@@ -996,10 +996,41 @@
 >   套件侧 `test-crypto-key-objects-raw.js` 由 DIFF 转 SAME0；
 >   坑见 AGENTS §4.134。
 >
+> ### 六轮已修（2026-09-18，PSS 全链 + 加密 PEM + DSA 装载宽容 + 入口门）
+>
+> - **RSA-PSS 装载**：PKCS#8/SPKI 的 rsassaPss alg 直判 + 归一化 plain-RSA 存料
+>   （轮子只见 plain-RSA；params 缺席即无约束，空/显式 params 落 detail；
+>   未知哈希/mgf/非法 trailer 即拒解）+ details 约束面（有即透传）+
+>   导出回贴（stash params 原文/缺席裸 OID，round-trip 逐字节稳定；生成键同形）+
+>   JWK 拒收（UNSUPPORTED_KEY_TYPE）+ Details 生成键裸 OID 回贴。
+> - **PSS-SHA1**：`sha1_010` 改名直引（用户拍板，lock 内已有零新增，
+>   见 dependencies.md；MD5 无 0.10 可引维持不支持）+ JS 门放行 SHA-1
+>   （MD5 维持 NOT_SUPPORTED）+ sign/verify 缺省 salt 取键约束值。
+> - **PSS 约束执行**：salt 下限先、digest 后（套件 1007 行钉序）+
+>   真机码逐字（DIGEST_NOT_ALLOWED/PSS_SALTLEN_TOO_SMALL）。
+> - **MGF1 自动切换**：手组 EMSA-PSS（既有 `__dgstBytes/__mgf1Bytes/
+>   __wjs_rsa_raw`，零新 native；RFC4055 §3.1/3.3）+ 双向真机交叉
+>   （自签互验；侧信道非恒定时间记档）。
+> - **PBES2 解密**：`ENCRYPTED PRIVATE KEY`（PBKDF2 + AES-CBC/DES-EDE3，
+>   既有 kdf/cipher natives；缺口令/超 1024B→INTERRUPTED，解密失败→
+>   BAD_DECRYPT）+ 展开形 PKCS#8 进 `mlkem_pkcs8_seed`。
+> - **DSA 装载宽容**：轮子拒收非标准尺寸（1088/160）时装载期纯解析建对象
+>   （真机装载宽容；`__cryptErr` 全大写门窄匹配两条 DataError 文案）。
+> - **入口门**：`key.format`/`key.type` 未知值门（inspect 形 Received；
+>   type 门仅 DER 系）+ JWK key 非对象门（28 码点截断同 raw 门）+
+>   `?? key` 回退退役（null/undefined 直透）+ 私钥 passphrase 缺 cipher 门 +
+>   `getCurves` 去 OKP 名（真机/自家 ECDH 一致；`ec`+OKP 指引文案退役，
+>   改 INVALID_CURVE；自家 `curves` 断言翻转）。
+> - 回归：`tests/node/crypto.rs::phase10f_crypto_pss_gates`（16 断言）；
+>   套件侧 `key-objects.js` 余唯一红块（JWK-unsupported-curve，能力偏离下记）。
+>   坑见 AGENTS §4.135。
+>
 > ### 剩余红项（分簇，均下轮或另案）
 >
-> - **key-objects.js**：五轮后剩 RSA pkcs1 段尾 + 零散 type 门，下轮
->   （同文件恒定位 `313:53` 系 assert 内部抛点，非套件位置——二分截断定位）。
+> - **key-objects.js**：六轮后余唯一 JWK-unsupported-curve 块（`assert(namedCurve)`
+>   空值：本仓仅 NIST 四曲线，`getCurves` 无 JWK 不可表示曲线——能力偏离，
+>   非语义缺口；同文件其余块全绿）。
+>   （恒定位 `313:53` 系 assert 内部抛点，非套件位置——二分截断定位）。
 > - **校验长尾**（~15）：Missing expected / unexpected throw 逐 API 续补。
 > - **密钥导入零散**（pkcs1-pub 显式形、pub+pkcs8 wrong-tag 等 type 门全表），下轮。
 > - **真流式面**（hasher pipe/dest.on/tls.Server 无 new/stdio 桩），另案。

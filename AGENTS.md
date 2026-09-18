@@ -1104,6 +1104,74 @@ cargo build
 - 推广为铁律：新增错误码即 grep 移植稿解构形态（`HideStackFramesError` 有无）；
   新增"限输出"调用方前先查被调解压面是否真 honor 该选项——"传了" ≠ "用了"。
 
+### 4.137 入口失败 + 开着句柄 = 永不收割（eval 路径版）：then 吞 rejection + unhandled 只在循环尾（2026-09-19，10f child 牵引）
+
+- 症状：`--eval 'spawn("sleep",["30"]); throw new Error("x")'`（或 `Promise.reject`）进程
+  hang（模块路径 `--run` 同样 hang 在未处理 rejection 形）。§4.70 修了模块入口的
+  `entry_failed`，但 eval 路径无捕获、且 unhandled 表只在循环尾收割——句柄开着
+  循环永不 idle，两个收割点都永不到。
+- 根因（三连）：① eval 的 async IIFE 包装以 `.then(v=>…, e=>{__wjs_error=e})` 收尾
+  ——rejection 被 then 吞掉，链式 promise 正常 fulfill，失败信息只落全局变量；
+  ② `__wjs_error` 在 `extract_eval_result`（事件循环**之后**）才读；③ 未处理
+  rejection 表只在 `event_loop` 尾 `report_unhandled_rejections` 收割（REPL 才有
+  逐轮收割）。
+- 修法（三件配齐）：① wrapper 的 rejection 处理器重抛（`return Promise.reject(e)`，
+  链式 promise 保持 rejected）；② eval 包装求值成功后对 rval（promise）挂
+  `entry_native_values()` reactions（镜像 run_module；`entry_rejected_native` 消费
+  重抛，无二次 unhandled 噪声）；③ `event_loop` pump 后加检查点：
+  `unhandled_pending() > 0` 即 break（tracker Handled 已在表内摘除，checkpoint
+  时非空 = 整轮排空后确无处理 = node 的 checkpoint 末 fatal 语义）。检查点放
+  event_loop 不放 pump_once——pump 与 REPL 共用，REPL 逐轮收割不退出（node
+  REPL 同款），pump 内早退会跳过当轮结算。
+- 复现：`tests/node/child.rs::phase10f_entry_failure_open_handle_exit`
+  （eval throw/eval reject/module reject 三形；修前 alarm 打不到头，修后 exit 1
+  带原文）。
+- 推广为铁律：§4.70 完整形态二——凡"失败信息落在循环尾才读的地方"（全局变量/
+  表），必须同时有一条**提前跳出的检查点**；eval 包装的 then 处理器不是失败
+  通道（吞 rejection），失败必须以 promise 形态回到宿主侧。
+
+### 4.138 net listen 面三坑：字符串端口当 UDS + 无重听守卫 + 柄不随出口清（2026-09-19，10f net）
+
+- 坑一（`listen("0")` 建出套接字文件）：`__doListen` 把一切字符串当 IPC 路径
+  ——`listen("0")` 绑出名为 "0" 的 UDS；真机 normalizeArgs 判据是
+  `Number.isFinite(+s)`（可解析为有限数的非空字符串 = TCP 端口，"abc" 才是
+  path）。listen-options 套件两次 `listen("0")` 第二次 EADDRINUSE 现形。
+- 坑二（重听无守卫）：listening 期间再 `listen()` 须同步抛
+  `ERR_SERVER_ALREADY_LISTEN`（真机文案 `"Listen method has been called more
+  than once without closing."`，逐项实测）。守卫谓词用 `this._handle`（node
+  同款），不用 `__listening`——后者只在 listening 事件后才有值，盖不住
+  绑定窗口。
+- 坑三（柄不随出口清）：`close()` 只 destroy 不清 `_handle`/`__id`；listen 失败
+  的 error 派发也不清——"close 后可再听"（套件第三段）与"EADDRINUSE error 后
+  可立即重听"（第一段）全卡死。三出口（close/error/成功转移）柄同步即清。
+  注意：Server/Socket 各有 `__ev`（同名方法两个类），server 侧清柄别插进
+  Socket 的 error case（`__port`/`__udsPath` 仅 server 在 `__doListen` 置位，
+  可作判别但首选插对类）。
+- 复现：`tests/node/net.rs::phase10f_net_listen_surface` +
+  `test-net-server-call-listen-multiple-times.js`/`test-net-server-listen-options.js`
+  （修前 DIFF，修后 SAME0）。
+- 推广为铁律：凡"listen/打开"族 API，字符串首参先过数字归一化再分流
+  （真机 normalizeArgs 为准）；"重听/重开"语义 = 守卫谓词 + 全部失败出口的
+  柄清理，两件缺一即卡死或漏抛。
+
+### 4.139 fork 非 silent 的 stdio null 三面：流式初始化别覆盖真机 null 缺省（2026-09-19，10f child）
+
+- 症状：`phase9m_child_fork_ipc` 的 `c.stdout === null` 反绿为红——fork 非 silent
+  的 stdout/stderr 变 undefined。
+- 根因：10b/10f 给 ChildProcess 补流式面时，`__initStreams` 按 stdio 数组分派
+  （pipe→流，否则 null），但 fork 走独立构造路径，旧代码里 `proc.stdout = null`
+  显式缺省被删除——非 silent（stdio 继承）分支没人置 null，字段落 undefined。
+  真机 26 逐项：非 silent 三面（stdout/stderr/stdin）全 `=== null`（继承无管道
+  句柄），silent 才挂管形流。
+- 修法：fork 内 `if (!o.silent) { proc.stdout = proc.stderr = null }` 恢复
+  （stdin 本就有 `proc.stdin = null`）。
+- 教训：§4.86 姊妹篇——"流的面"与"无流时的缺省"是两条路径，改流式初始化时
+  grep 该构造器全部创建点（spawn/promisified/fork/死句柄）逐一对缺省值；
+  `=== null` 类断言对 undefined 也红（`undefined === null` 为 false），
+  反绿为红先查缺省丢失而非语义翻转。
+- 复现：`tests/node/child.rs::phase10f_fork_nonsilent_stdio_null`（修前
+  `nonsilent false false true`）。
+
 ## 5. 路线图（已收官，现状以 plan 为准）
 
 - §5 初版四项（`console`/timers → job queue → ESM loader → `fs`/`path`/`process`）

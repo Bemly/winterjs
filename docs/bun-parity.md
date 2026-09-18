@@ -694,6 +694,14 @@
   尾部件，沿簇续修。
 - **双红 28 件**：真机同红（fixture 依赖/内部面），对齐。
 
+四轮（2026-09-19，validators 族 + unhandled-rej 簇）：open/opendir/mkdtemp×2/
+non-number/readdir-buffer/promises-appendfile/dispose/mkdtempDisposable×2
+**10/10 转绿**（真机逐件）+ `require('fs').mkdtempDisposableSync` 具名导出
+（node 26 双名并存；`phase10f_mkdtemp_disposable_sync_cjs_export`）。连带：
+assert.throws 对象校验器逐键 deepStrictEqual（node expectedException 口径，
+ERR_* 码括号仅限 ERR_ 前缀——errno 系 name 恒裸 Error）。剩余红项维持上记
+分类（validators 尾件/watch hang/pipe/glob/flush 各簇另案）。
+
 ## net
 
 > 五轮对拍（2026-09-17，157 件，`/tmp/wjs-10f-net*.txt`）：
@@ -759,6 +767,15 @@
 > 58 DIFF 均为既有分类（校验族长尾/server 时序/TIMEOUT/Happy Eyeballs/
 > worker 投递/大串 2 字节差/环境双红），large-string 单跑同错（确定性残留，
 > 非回归）。
+>
+> 七轮（2026-09-19，校验族长尾 + listen 面）：boundsocket/connect-options-port/
+> write-arguments/transfer-guards/socket-constructor/server-options/
+> server-listen-options×2/localerror/options-lookup/call-listen-multiple
+> **11/11 转绿**（真机逐件）；write(undefined) 翻转
+> ERR_INVALID_ARG_TYPE（真机仅 null 走 NULL_VALUES，§4.65）；listen 面三修
+> （数字字符串端口 TCP 分流/ALREADY_LISTEN 同步守卫/柄随 close-error 双出口
+> 清——AGENTS §4.138），`phase10f_net_listen_surface` 落盒。剩余红项维持
+> 下记分类（TIMEOUT/Happy Eyeballs/worker 投递/large-string/环境双红）。
 
 ## zlib
 
@@ -820,6 +837,32 @@
 > spawnsync-validation-errors/timeout/input/maxbuf/spawnsync/args/env +
 > execfilesync-maxbuf/execsync-maxbuf/spawn-argv0（单文件逐个实测 exit=0），
 > 余约 80 件。
+>
+> ### 二轮（2026-09-19，exec/abort/stdio 面）
+>
+> - **exec 族**：callback 可缺席（返回 live child）、callback 非函数 ARG_TYPE、
+>   execFile 的 shell 透传、execvp 预检 ENOENT 异步回调（pid undefined）、
+>   timeout/killSignal 在 execFile 层、exec 编码透传、promisify.custom 的
+>   customPromiseExecFunction 逐字形（promise.child + 同步抛不吞）。
+> - **AbortSignal 中断面**：spawn/fork 预中止（线程不起、error(AbortError) +
+>   exit/close(null, killSignal) 合成）、signal 非法型校验、abortcontroller
+>   套件 `{ name, cause: DOMException }` 逐键 deepStrictEqual（assert.throws
+>   对象校验器从 `==` 升级）。
+> - **stdio 面**：stdout/stderr legacy Readable（setEncoding/on('data')）、
+>   stdin legacy Writable（真机 Socket 写半部：write/end 直调——旧 Web
+>   WritableStream 形退役，§4.65 翻转）、fork 非 silent stdio 三面恒 null
+>   （真机逐项；§4.139）、fork silent 管形流（pipe/unpipe 形状在，数据面
+>   偏差记档）。
+> - **连带根修**（§4.137，AGENTS）：eval/模块入口失败 + 开着句柄 = 事件循环
+>   永不收割的 hang——eval wrapper rejection 重抛 + entry reactions 挂载 +
+>   event_loop unhandled 表检查点（`phase10f_entry_failure_open_handle_exit`，
+>   修前 alarm 打不到头）。
+> - 对拍：exec-encoding/exec-timeout-kill/exec-timeout-expire 转绿；
+>   `phase10f_child_exec_shell_self_and_timeout`/`spawn_abort_and_surface`/
+>   `stdin_legacy_and_fork_silent` 三 phase 落盒。
+> - 剩余红项（下轮）：exec-maxbuf 的多字节截断面（str slice 按 UTF-16 单元，
+>   node 按 byte——中文用例内容差）、test-child-process-stdio 校验长尾、
+>   fork/IPC handle 传递（底座另案）、windows 专属。
 >
 > ### 已修（每项经真机 26.8.2 对拍）
 >
@@ -1158,6 +1201,22 @@
 > 同绿 35 → 43 → 51 → 49（回退轮，次轮修复）→ 53 → **55**；SAME1=8；DIFF
 > 98 → 90 → 81 → 85 → 79 → **77**。既有 9f/9i/M5 面（线程底座/端口迁移/循环
 > 信封）黑盒全绿无回归（`tests/node/worker.rs`）。
+>
+> ### 七轮（2026-09-19，环境面 + terminate 生命周期）
+>
+> - **process.env 逐 worker 快照**：worker 会话带 env JSON（主会话/SHARE_ENV
+>   继承真 env）；快照在 node prelude 之前落地（代理构建期就读）——
+>   environmentdata 套件转绿。
+> - **BC 同会话 pending 表**：`bc_pub` 同会话订阅改直投 pending（端口 pending
+>   同款模型），`receiveMessageOnPort` 对 BroadcastChannel 的同步收信口 +
+>   pump 逐轮派发双消费（broadcastchannel 套件同步收信件转绿）。
+> - **terminate 中断钩**：worker 会话挂 `JS_AddInterruptCallback`（只读共享
+>   终止旗）——忙循环斩断，idle 路径照旧走事件循环检查点；
+>   terminate-interrupt 套件转绿。
+> - 黑盒：`phase10f_worker_bc_surface_and_env_snapshot`/
+>   `phase10f_worker_terminate_interrupt_busy_loop`（environmentdata/
+>   broadcastchannel/message-event 对拍同日复核 SAME）。
+> - 剩余红项分簇维持下记（terminate 深水/stdio 流面/Atomics.wait 均另轮）。
 >
 > ### 已修（每项经真机 26.8.2 对拍）
 >

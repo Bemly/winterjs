@@ -763,7 +763,10 @@
 ## zlib
 
 > 首轮对拍（2026-09-17，83 件，`/tmp/wjs-10f-zlib2.txt`，2 worker）：
-> SAME0=34 + SAME1=13，DIFF=36。本轮两批共修 9 件：流收尾与内部小面 7 件
+> SAME0=34 + SAME1=13，DIFF=36。二轮（2026-09-18，Zip 归档面）：17 Zip 件中
+> 15 全绿 + hardening 转绿 + security-hardening 仅剩 FIFO 自 spawn 环境项
+> （`spawnSync -e`，全 flag CLI 设计 ⏭️），见下。
+> 首轮两批共修 9 件：流收尾与内部小面 7 件
 > （destroy/close-after-error/sync-no-event/invalid-input/zero-byte/
 > reset-during-write/brotli-flush-invalid-kind，`phase10f_zlib_stream_teardown`）
 > + flush-flags 构造期选项校验与 write-after-close（`phase10f_zlib_flush_opts`，
@@ -785,12 +788,21 @@
 >   undefined/NaN/函数直通；非 number → ARG_TYPE；越界 → OUT_OF_RANGE；
 >   另补 `ZSTD_e_continue/flush/end` 常量（0/1/2）。
 >
-> ### 剩余红项（约 29，均另案或记档）
+> ### 二轮已修（2026-09-18，Zip 归档面，零新依赖）
 >
-> - **Zip 归档 API 约 15 件**（`ZipEntry`/`ZipFile`/`ZipBuffer`/
->   `createZipArchive(+Sync)`/`zipFiles`/`crc`/zip64/注释放置/安全加固）：
->   整面未实现。轮子已在树内（`zip = "2"`，deflate 特性，§2 禁 bzip2），
->   零新依赖可做，另起特征轮（zstd-93 档经 ruzstd、ZipFile 落 fs）。
+> - **internal/zip 13 件逐字移植**（constants/binary/dos/extra-fields/
+>   content-size/compression/headers/header-builders/fs-util/entry/archive/
+>   buffer/file + zlib 接线 + 实验警告使用时一次）：`ZipEntry.create/read`/
+>   `createZipArchive(+Sync)`/`ZipBuffer`/`ZipFile`/`zipFiles`/`crc`/zip64/
+>   注释放置/安全加固全链；zstd-93 经既有 ruzstd（Fastest），deflate 经 flate2。
+> - **附带修**：`inflateRaw`/`zstdDecompress`（Sync + 回调）补 `maxOutputLength`
+>   背stop（既有 brotli 独有；Zip 伪造小头回退到"produced…expected"而非
+>   "inflates beyond…"现形，hardening 套件钉住）。
+> - 回归：`tests/node/zlib.rs::phase10f_zlib_zip_archive`（正常/报错/边界）。
+>   套件侧 17 Zip 件 15 全绿 + hardening 30/30；security-hardening 仅剩 FIFO
+>   自 spawn（`-e`，全 flag 设计 ⏭️）。
+>
+> ### 剩余红项（约 12，均另案或记档）
 > - **增量语义约 6 件**（flush/premature-end/reject-garbage-after-end/
 >   truncated/write-after-end/from-gzip-trailing-garbage）：
 >   需真流式编解码状态机，与本轮外既有"整收"架构冲突，另案。

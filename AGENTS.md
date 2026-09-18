@@ -1086,6 +1086,24 @@ cargo build
   的那一个。
 
 
+### 4.136 Zip移植双坑：HideStackFrames漏挂 + 解压背stop缺失（2026-09-18，10f zlib Zip）
+
+- 症状一：`contentSync` 篡改包报 `ERR_ZIP_ENTRY_CORRUPT is not a constructor`。
+  根因：新增 `E('ERR_ZIP_*')` 未挂 `HideStackFramesError`，而移植稿按 Node 原文
+  解构 `codes.X.HideStackFramesError`——undefined 当构造器即炸。修法：7 ZIP 码 +
+  `ERR_INVALID_STATE` 全挂 HideStackFramesError（真机 E 定义逐字对拍）。
+- 症状二：伪造小头（declared 50/实际 5000）报 `produced 5000 bytes, expected 50`
+  而非 `inflates beyond its declared size of 50`。
+  根因：`inflateRaw`/`zstdDecompress`（Sync + 回调）丢 `maxOutputLength`——Zip 的
+  declared+1 背stop（compression.js `outputCap`）永不触发，全量解出后才在
+  `checkDecoded` 落错；既有仅 brotli 有该面。修法：两路补 maxOut（校验 +
+  超限抛 `ERR_BUFFER_TOO_LARGE`，Sync/回调双侧），使失败发生在解压内、
+  经 `rethrowDecodeFailure` 转成 corrupt-inflates 口径。
+- 复现：`test-zlib-zip-hardening.js` 伪造小头件（修前 rejects: unexpected throw；
+  修后 30/30）+ `phase10f_zlib_zip_archive`（corrupt 行）。
+- 推广为铁律：新增错误码即 grep 移植稿解构形态（`HideStackFramesError` 有无）；
+  新增"限输出"调用方前先查被调解压面是否真 honor 该选项——"传了" ≠ "用了"。
+
 ## 5. 路线图（已收官，现状以 plan 为准）
 
 - §5 初版四项（`console`/timers → job queue → ESM loader → `fs`/`path`/`process`）

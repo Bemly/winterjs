@@ -530,9 +530,24 @@ pub unsafe extern "C" fn net_listen(
     };
     let mut cmd_rx = state::net_socket_add(id, target);
     set_rval_str(&mut cx, &frame, &id.to_string());
+    // 第 4 参 "1"：SO_REUSEPORT 重绑（BoundSocket adopt 路径；host 含 ':' 走
+    // [v6]:port 括号形）。非 reuse 路径维持 tokio tuple bind。
+    let reuse = frame.argc() > 3 && frame.arg(3).is_string()
+        && value_to_string(&mut cx, frame.arg(3)) == "1";
     let accept_handle = handle.clone();
     accept_handle.spawn(async move {
-        let bound = tokio::net::TcpListener::bind((host.as_str(), port as u16)).await;
+        let bound = if reuse {
+            let addr_str = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
+            bind_tcp_reuseport(addr_str.as_str()).and_then(|l| {
+                use std::os::fd::{FromRawFd, IntoRawFd};
+                l.set_nonblocking(true)?;
+                // SAFETY(tokio 契约)：std listener 非阻塞 + 本 runtime 线程内接管。
+                let std_listener = unsafe { std::net::TcpListener::from_raw_fd(l.into_raw_fd()) };
+                tokio::net::TcpListener::from_std(std_listener)
+            })
+        } else {
+            tokio::net::TcpListener::bind((host.as_str(), port as u16)).await
+        };
         let Ok(listener) = bound else {
             let e = bound.unwrap_err();
             let code = crate::builtins::node::fs::io_code(&e);
@@ -664,9 +679,10 @@ pub unsafe extern "C" fn net_destroy(
     true
 }
 
-/// `__wjs_net_bind(host, port, path)` → "port"（BoundSocket 同步 bind 底座）。
+/// `__wjs_net_bind(host, port, path[, reuse])` → "port"（BoundSocket 同步 bind 底座）。
 /// 成功回绑定端口串；失败抛带 code/syscall 的 Error（EADDRINUSE/EACCES/EADDRNOTAVAIL/EINVAL）。
-/// path 非空即 UDS bind（返回 path 回显标记 "UDS:<path>"）。
+/// path 非空即 UDS bind（返回 path 回显标记 "UDS:<path>"）；第 4 参 "1" 即
+/// SO_REUSEPORT bind（reusePort 选项；平台不支持时 setsockopt/bind 失败按既有错误面抛）。
 pub unsafe extern "C" fn net_bind(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -714,8 +730,21 @@ pub unsafe extern "C" fn net_bind(
     // 占位 listener 由 Rust 侧持有（net_hold_add），close/adopt/listen 消费时释放——
     // 真机 fd 复用语义的次优：端口在占位期内真被占用（冲突/EADDRINUSE 全真），
     // adopt 预置端口恒有效（p19 51446/51447 漂移案）。fd() 仍回 -1 桩（不跨 JS 暴露）。
-    let addr = format!("{host}:{port}");
-    match StdTcp::bind(addr.as_str()) {
+    let reuse = argc > 3
+        && frame.arg(3).is_string()
+        && value_to_string(&mut cx, frame.arg(3)) == "1";
+    // IPv6 主机名走 [v6]:port 括号形（'::1:0' 会被当 v6 字面量误解析）。
+    let addr = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let bound_listener = if reuse {
+        bind_tcp_reuseport(&addr)
+    } else {
+        StdTcp::bind(addr.as_str())
+    };
+    match bound_listener {
         Ok(l) => {
             let p = l.local_addr().map(|a| a.port()).unwrap_or(port);
             let token = state::net_hold_add();
@@ -730,6 +759,69 @@ pub unsafe extern "C" fn net_bind(
             false
         }
     }
+}
+
+/// SO_REUSEPORT TCP bind（BoundSocket `reusePort` 选项；boundsocket 套件双绑定点名，
+/// 真机 macOS/Linux 均支持）。UNSAFE-BOUNDARY：libc socket FFI——前置条件：
+/// `socket()` 返回的 fd 由本函数独占管理（成功路径经 `FromRawFd` 接管为
+/// `TcpListener`，任一步失败即 `close(fd)` 回收后再返回）；setsockopt/bind/listen
+/// 参数全为栈上值、无别名。覆盖：`tests/node/net.rs::phase10f_net_validators_family`
+/// reusePort 双绑 + 主流平台 setsockopt 恒成功（macOS/Linux ≥3.9）。
+#[cfg(unix)]
+fn bind_tcp_reuseport(addr_str: &str) -> std::io::Result<std::net::TcpListener> {
+    use std::net::{IpAddr, TcpListener};
+    use std::os::fd::FromRawFd;
+    let addr: std::net::SocketAddr = addr_str.parse().map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid address")
+    })?;
+    let mut sa4: libc::sockaddr_in;
+    let mut sa6: libc::sockaddr_in6;
+    let (domain, ptr, slen): (libc::c_int, *const libc::sockaddr, libc::socklen_t) = match addr.ip() {
+        IpAddr::V4(v4) => {
+            sa4 = unsafe { std::mem::zeroed() };
+            sa4.sin_family = libc::AF_INET as libc::sa_family_t;
+            sa4.sin_port = addr.port().to_be();
+            sa4.sin_addr.s_addr = u32::from(v4).to_be();
+            (libc::AF_INET, &sa4 as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t)
+        }
+        IpAddr::V6(v6) => {
+            sa6 = unsafe { std::mem::zeroed() };
+            sa6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            sa6.sin6_port = addr.port().to_be();
+            sa6.sin6_addr.s6_addr = v6.octets();
+            (libc::AF_INET6, &sa6 as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t)
+        }
+    };
+    unsafe {
+        let fd = libc::socket(domain, libc::SOCK_STREAM, 0);
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let one: libc::c_int = 1;
+        let mut ok = libc::setsockopt(
+            fd, libc::SOL_SOCKET, libc::SO_REUSEPORT,
+            &one as *const libc::c_int as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        ) == 0;
+        if ok {
+            ok = libc::bind(fd, ptr, slen) == 0;
+        }
+        if ok {
+            ok = libc::listen(fd, 511) == 0;
+        }
+        if !ok {
+            let err = std::io::Error::last_os_error();
+            libc::close(fd);
+            return Err(err);
+        }
+        Ok(TcpListener::from_raw_fd(fd))
+    }
+}
+
+#[cfg(not(unix))]
+fn bind_tcp_reuseport(addr_str: &str) -> std::io::Result<std::net::TcpListener> {
+    // 非 unix 无 SO_REUSEPORT（win 记档，同 node）：直接 std bind。
+    std::net::TcpListener::bind(addr_str)
 }
 
 /// `__wjs_net_unhold(token)`：释放 BoundSocket TCP 占位 listener（close/adopt；未知 token 静默）。
@@ -1009,6 +1101,19 @@ function __netErr(code, msg) {
 class Socket extends EventEmitter {
   constructor(options) {
     super();
+    // node Socket 构造（socket-constructor 套件）：number 形即 {fd: options}；
+    // fd 校验 validateInt32(fd, 'fd', 0) 逐字——'foo' → ARG_TYPE、-1 → ERR_OUT_OF_RANGE。
+    if (typeof options === "number") options = { fd: options };
+    if (options !== null && typeof options === "object" && options.fd !== undefined) {
+      if (typeof options.fd !== "number") {
+        const e = new TypeError(`The "fd" argument must be of type number. Received ${__netGot(options.fd)}`);
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
+      if (!Number.isInteger(options.fd) || options.fd < 0 || options.fd > 2147483647) {
+        const e = new RangeError(`The value of "fd" is out of range. It must be >= 0 && <= 2147483647. Received ${options.fd}`);
+        e.code = "ERR_OUT_OF_RANGE"; throw e;
+      }
+    }
     // node 口径：new Socket({ handle: bound }) 消费 BoundSocket（adopt）。
     if (options && typeof options === "object" && options.handle !== undefined) {
       const h = options.handle;
@@ -1052,6 +1157,10 @@ class Socket extends EventEmitter {
     this.__tos = 0;            // getTypeOfService 缓存（真机默认 0；连接前设置同样缓存）
     this.__kaState = null;     // setKeepAlive 去重缓存 [enable, delaySec, intervalSec, count]
     this.__hadError = false;   // close(hadError) 口径：error 发过即 true
+    // transfer-guards 套件：Socket 不可经 MessagePort transfer（node kTransferList
+    // 断言族的最保守近似：任何 Socket 在 transfer list 即 ERR_WORKER_HANDLE_NOT_
+    // TRANSFERABLE；worker 侧 __normTransfer 认领，成功转移面本就另案）。
+    try { (globalThis.__wjs_netXfer ??= new Map()).set(this, "net.Socket"); } catch {}
     this.__handleClosed = false;
     // node _handle 表面（10f：套件直接打补丁观测 setNoDelay/setKeepAlive 调用；
     // write-after-close 套件点名 _handle.close()；unref-timer 套件点名 _unrefTimer）。
@@ -1165,6 +1274,19 @@ class Socket extends EventEmitter {
       const e = new TypeError('The "options" or "port" or "path" argument must be specified');
       e.code = "ERR_MISSING_ARGS"; throw e;
     }
+    // node 口径（Socket.connect destroyed 分支 + initSocketHandle._undestroy）：
+    // destroyed 后 connect 即整流复位（destroyed/ending/errored 全清）——
+    // boundsocket reconnect-after-destroy 块：close → connect → end 必须可用。
+    if (this.destroyed) {
+      this.destroyed = false;
+      this.readable = true; this.writable = true;
+      this.__connected = false;
+      this.__ended = false; this.__finSent = false; this.__endAfterFlush = false;
+      this.__hadError = false; this.__handleClosed = false;
+      this._handle = null;
+      this.__pendW = []; this.__pendBytes = 0;
+      this.__id = 0;
+    }
     let port, host, cb, __noDelay, signal, sockPath = null, __blockList = null, __lookup = null, __halfOpen;
     if (typeof args[0] === "object" && args[0] !== null) {
       if (args[0].fd !== undefined) {
@@ -1222,7 +1344,43 @@ class Socket extends EventEmitter {
       else { host = "127.0.0.1"; cb = typeof args[1] === "function" ? args[1] : undefined; }
     }
     // adopt-UDS + connect({path}) 恒走 UDS（真机口径：path 在即 pipe，不看 adopt）。
-    if (sockPath === null && this.__adoptPort === undefined) __vPort(port);
+    if (sockPath === null) {
+      // node lookupAndConnect 校验序（localerror/boundsocket 套件真机逐字）：
+      // adopt 门 → localAddress(isIP) → localPort(number) → port(type/range)。
+      if (this.__adoptPort !== undefined &&
+          (args[0].localAddress !== undefined || args[0].localPort !== undefined)) {
+        const e = new TypeError(`The argument 'options' is invalid. localAddress and localPort cannot be used with an adopted bound socket. Received ${__netInspect(args[0])}`);
+        e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+      }
+      const __la = args[0].localAddress, __lp = args[0].localPort;
+      if (__la && !isIP(__la)) {
+        const e = new TypeError(`Invalid IP address: ${__la}`);
+        e.code = "ERR_INVALID_IP_ADDRESS"; throw e;
+      }
+      if (__lp && typeof __lp !== "number") {
+        const e = new TypeError(`The "options.localPort" property must be of type number. Received ${__netGot(__lp)}`);
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
+      if (port !== undefined) { __vPortType(port); __vPort(port); }
+      // node：host 非 IP 才走 lookup 系校验（IP 捷径跳过 dns 全链）——
+      // lookup 函数型（options-lookup 套件）+ hints 掩码（connect-options-port）。
+      // node 缺省 host = options.host || 'localhost'（connect({port}) 无 host 也走
+      // 校验）；本仓底层连接面维持 127.0.0.1 缺省（remote* 表面记档），仅校验门
+      // 按 node 有效 host 判定。掩码 1024|2048|256 与 dns 模块同值。
+      const __effHost = (args[0].host === undefined || args[0].host === null || args[0].host === "")
+        ? "localhost" : host;
+      if (!isIP(__effHost)) {
+        if (__lookup !== null && __lookup !== undefined && typeof __lookup !== "function") {
+          const e = new TypeError(`The "options.lookup" property must be of type function. Received ${__netGot(__lookup)}`);
+          e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+        }
+        const __hv = args[0].hints || 0;
+        if ((__hv & ~(1024 | 2048 | 256)) !== 0) {
+          const e = new TypeError(`The argument 'hints' is invalid. Received ${Number(__hv) || 0}`);
+          e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+        }
+      }
+    }
     if (cb) this.once("connect", cb);
     if (signal) {
       if (typeof signal.addEventListener !== "function") {
@@ -1258,6 +1416,14 @@ class Socket extends EventEmitter {
         __lookup(String(host), { family: 0, hints: 0, all: false }, (err, addr, family) => {
           if (called) return; called = true;
           if (err) { queueMicrotask(() => this.destroy(err)); return; }
+          // node onlookup：family ∉ {4,6} → ERR_INVALID_ADDRESS_FAMILY（异步 error 事件，
+          // 错误带 host/port 属性；options-lookup 套件 message 逐字）。
+          const fam = Array.isArray(addr) ? addr[0].family : family;
+          if (fam !== 4 && fam !== 6) {
+            const e = new RangeError(`Invalid address family: ${fam} ${host}:${port}`);
+            e.code = "ERR_INVALID_ADDRESS_FAMILY"; e.host = host; e.port = port;
+            queueMicrotask(() => this.destroy(e)); return;
+          }
           const first = Array.isArray(addr) ? addr[0].address : addr;
           __doConnect(String(first));
         });
@@ -1429,14 +1595,15 @@ class Socket extends EventEmitter {
   }
   write(data, enc, cb) {
     const cb2 = typeof enc === "function" ? enc : cb;
-    // 真机逐字：null/undefined 写即 TypeError（ERR_STREAM_NULL_VALUES；循环含 undefined）。
-    // 注意 __chunkU8 不可先行（undefined 进 helper 即 ARG_TYPE，与套件 NULL_VALUES 冲突）。
-    if (data === null || data === undefined) {
+    // 真机逐字（writable.js _write）：仅 null → ERR_STREAM_NULL_VALUES（undefined 落
+    // ARG_TYPE 'Received undefined'）；chunk 类型校验先于 after-end/destroyed 状态检查。
+    if (data === null) {
       const e = new TypeError("May not write null values to stream");
       e.code = "ERR_STREAM_NULL_VALUES";
       if (typeof cb2 === "function") { queueMicrotask(() => { try { cb2.call(this, e); } catch {} }); return false; }
       throw e;
     }
+    const u8 = __chunkU8(data);
     if (this.destroyed || !this.writable) return this.__writeErr(cb2);
     // node 口径（write-after-close 套件双形，真机 26 实测均为异步 error 事件非同步抛）：
     // 已连接但 _handle 被置空后写 → ERR_SOCKET_CLOSED('Socket is closed')；
@@ -1453,7 +1620,6 @@ class Socket extends EventEmitter {
       queueMicrotask(() => this.emit("error", e));
       return false;
     }
-    const u8 = __chunkU8(data);
     this.bytesWritten += u8.length;
     if (!this.__connected) {
       // node 口径：连接完成前 write 缓冲（connect 完成时按序冲刷）
@@ -1510,6 +1676,12 @@ class Socket extends EventEmitter {
 class __ServerClass extends EventEmitter {
   constructor(options, cb) {
     super();
+    // node Server（server-options 套件逐字）：function 即 connectionListener；
+    // null/undefined 走 {}；其余非对象（0/'path'/true）→ ARG_TYPE validateObject 形。
+    if (options !== undefined && options !== null && typeof options !== "object" && typeof options !== "function") {
+      const e = new TypeError(`The "options" argument must be of type object. Received ${__netGot(options)}`);
+      e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+    }
     this.__id = 0;
     this.__listening = null;
     this.allowHalfOpen = !!(options && typeof options === "object" && options.allowHalfOpen);
@@ -1519,6 +1691,8 @@ class __ServerClass extends EventEmitter {
     this.keepAliveInitialDelay = (options && typeof options === "object" && options.keepAliveInitialDelay !== undefined) ? options.keepAliveInitialDelay : 0;
     this._handle = null;
     this.__pendingConnPayload = null;
+    // transfer-guards：Server 同 Socket 不可 transfer（成功转移面另案，见 Socket 注）。
+    try { (globalThis.__wjs_netXfer ??= new Map()).set(this, "net.Server"); } catch {}
     if (typeof options === "function") { cb = options; options = undefined; }
     if (typeof cb === "function") this.on("connection", cb);
     // 派发钩子预绑定（同 Socket 注）
@@ -1575,25 +1749,35 @@ class __ServerClass extends EventEmitter {
         this.__id = Number(__wjs_net_listen(0, "UDS:" + port.__udsPath, this));
       } else {
         this.__port = port.__boundPort;
-        this.__id = Number(__wjs_net_listen(port.__boundPort, port.__boundHost, this));
+        // reusePort 占位柄释放后重绑仍须带 SO_REUSEPORT（boundsocket reusePort
+        // 双 listen 块；native 第 4 参 "1" 即开）。
+        this.__id = Number(__wjs_net_listen(port.__boundPort, port.__boundHost, this, port.__reusePort === true ? "1" : ""));
       }
       return this;
     }
     if (typeof port === "string" || (port !== null && typeof port === "object")) {
-      const p = typeof port === "string" ? port : port.path;
-      let modeBits = "";
-      if (port !== null && typeof port === "object") {
-        if (port.readableAll) modeBits += "r";
-        if (port.writableAll) modeBits += "w";
+      // node normalizeArgs：可解析为有限数的非空字符串 = TCP 端口（listen("0")
+      // → 通配，真机 26 实证 address 回 port；旧实现一律当 UDS 路径，listen("0")
+      // 建出名为 "0" 的套接字文件，listen-options 套件二次绑定即 EADDRINUSE）。
+      // 其余字符串才是 IPC 路径（"abc" → path，真机同）。
+      if (typeof port === "string" && port.trim() !== "" && Number.isFinite(Number(port))) {
+        port = Number(port);
+      } else {
+        const p = typeof port === "string" ? port : port.path;
+        let modeBits = "";
+        if (port !== null && typeof port === "object") {
+          if (port.readableAll) modeBits += "r";
+          if (port.writableAll) modeBits += "w";
+        }
+        if (cb) this.once("listening", cb);
+        this.__port = 0; this.__udsPath = String(p);
+        this.__setupHandle();
+        this.__id = Number(__wjs_net_listen(0, "UDS:" + String(p) + "\n" + modeBits, this));
+        return this;
       }
-      if (cb) this.once("listening", cb);
-      this.__port = 0; this.__udsPath = String(p);
-      this.__setupHandle();
-      this.__id = Number(__wjs_net_listen(0, "UDS:" + String(p) + "\n" + modeBits, this));
-      return this;
     }
     if (port === undefined || port === null) port = 0;
-    __vPort(port);
+    __vPort(port, "options.port");
     if (cb) this.once("listening", cb);
     this.__port = Number(port);
     this.__setupHandle();
@@ -1603,6 +1787,14 @@ class __ServerClass extends EventEmitter {
   // node 口径：listen(cb)/listen()/listen(null) 即 listen(0)；listen(port[, host][, cb])
   // 全形态（port 缺省 0；cb 可在任意位置）。
   listen(...args) {
+    // node：listening 期间再 listen 即同步抛（真机 26：`Error ERR_SERVER_ALREADY_LISTEN
+    // "Listen method has been called more than once without closing."`；close 同步
+    // 清柄故 close 后可再听——call-listen-multiple 套件三段全覆盖）。
+    if (this._handle) {
+      const e = new Error("Listen method has been called more than once without closing.");
+      e.code = "ERR_SERVER_ALREADY_LISTEN";
+      throw e;
+    }
     let port, host = null, cb = null;
     if (typeof args[0] === "function") return this.__doListen(0, null, args[0]);
     if (args[0] === undefined || args[0] === null) {
@@ -1615,10 +1807,22 @@ class __ServerClass extends EventEmitter {
     if (args[0] && typeof args[0] === "object" && typeof args[0].address === "function" && args[0].__boundPort !== undefined)
       return this.__doListen(args[0], null, typeof args[1] === "function" ? args[1] : null);
     if (typeof args[0] === "object" && args[0] !== null) {
-      if (args[0].fd !== undefined) {
-        // node 口径：listen({fd}) 非法 fd 即异步 EINVAL（error 事件；真机实证）。
-        const cbFd = typeof args[1] === "function" ? args[1] : null;
-        if (cbFd) this.once("listening", cbFd);
+      const o = args[0];
+      const cb0 = typeof args[1] === "function" ? args[1] : null;
+      // node addServerAbortSignalOption：port/path 分派前校验（ARG_TYPE 逐字）+
+      // abort 即 close（pre-aborted 走 nextTick 同位微任务）。
+      if (o.signal !== undefined) {
+        if (o.signal === null || typeof o.signal !== "object" || !("aborted" in o.signal)) {
+          const e = new TypeError(`The "options.signal" property must be an instance of AbortSignal. Received ${__netGot(o.signal)}`);
+          e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+        }
+        if (o.signal.aborted) queueMicrotask(() => { try { this.close(); } catch {} });
+        else o.signal.addEventListener("abort", () => { try { this.close(); } catch {} }, { once: true });
+      }
+      if (typeof o.fd === "number" && o.fd >= 0) {
+        // node 口径：listen({fd}) 非法 fd 即异步 EINVAL（error 事件；真机实证）；
+        // 负数/非数值 fd 落 node 尾 throw（{fd:-1} → 'must have the property'）。
+        if (cb0) this.once("listening", cb0);
         queueMicrotask(() => {
           const e = new Error(`listen EINVAL: invalid argument`);
           e.code = "EINVAL"; e.syscall = "listen"; e.errno = -4071;
@@ -1626,20 +1830,41 @@ class __ServerClass extends EventEmitter {
         });
         return this;
       }
-      if (args[0].path !== undefined) {
-        const cb0 = typeof args[1] === "function" ? args[1] : null;
-        const o0 = { path: String(args[0].path) };
-        if (args[0].readableAll !== undefined) o0.readableAll = !!args[0].readableAll;
-        if (args[0].writableAll !== undefined) o0.writableAll = !!args[0].writableAll;
+      if (("port" in o) && (o.port === undefined || o.port === null)) {
+        // node：port 显式 undefined/null 即 0（listen({port}) 通配）。
+        return this.__doListen(0, o.host ?? null, cb0);
+      }
+      if (typeof o.port === "number" || typeof o.port === "string") {
+        // node：port 分支先于 path（{port:-1, path} 点名 BAD_PORT 先抛）。
+        __vPort(o.port, "options.port");
+        return this.__doListen(o.port, o.host ?? null, cb0);
+      }
+      if (o.path && typeof o.path === "string") {
+        const o0 = { path: String(o.path) };
+        if (o.readableAll !== undefined) o0.readableAll = !!o.readableAll;
+        if (o.writableAll !== undefined) o0.writableAll = !!o.writableAll;
         return this.__doListen(o0, null, cb0);
       }
-      port = args[0].port;
-      host = args[0].host ?? null;
-      cb = typeof args[1] === "function" ? args[1] : null;
+      // node 尾两 throw：无 port/path 键（{}/fd 负数）→ 'must have the property'；
+      // 有键但不合格（{port:false}/{path:-1}）→ 'is invalid'（均 ARG_VALUE inspect 形）。
+      if (!("port" in o) && !("path" in o)) {
+        const e = new TypeError(`The argument 'options' must have the property "port" or "path". Received ${__netInspect(o)}`);
+        e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+      }
+      const e = new TypeError(`The argument 'options' is invalid. Received ${__netInspect(o)}`);
+      e.code = "ERR_INVALID_ARG_VALUE"; throw e;
     } else {
       port = args[0];
+      // node normalizeArgs：非对象/非 pipe 首参（含 boolean）进 options.port，
+      // listen(true/false) 落尾 throw ARG_VALUE('options')（inspect { port: true } 形）。
+      if (typeof port === "boolean") {
+        const e = new TypeError(`The argument 'options' is invalid. Received ${__netInspect({ port })}`);
+        e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+      }
       for (let i = 1; i < args.length; i++) {
-        if (typeof args[i] === "string" && host === null && typeof port === "number") host = args[i];
+        // host 位：首参为数字（含数字字符串，node normalizeArgs 同判）才轮到 host。
+        const portNum = typeof port === "number" || (typeof port === "string" && port.trim() !== "" && Number.isFinite(Number(port)));
+        if (typeof args[i] === "string" && host === null && portNum) host = args[i];
         else if (typeof args[i] === "function") cb = args[i];
       }
     }
@@ -1676,6 +1901,9 @@ class __ServerClass extends EventEmitter {
         // node bind 系标配：syscall + errno（EADDRINUSE=-4091/-48；EACCES=-4092/-13）。
         e.syscall = "listen";
         e.errno = o.code === "EADDRINUSE" ? -4091 : (o.code === "EACCES" ? -4092 : -4094);
+        // listen 失败柄即清：error 后可立即重听（node 口径，call-listen-multiple
+        // 第一段；ALREADY_LISTEN 守卫读 `_handle`，不清即卡死重听）。
+        this._handle = null; this.__id = 0;
         this.emit("error", e);
         break;
       }
@@ -1692,7 +1920,13 @@ class __ServerClass extends EventEmitter {
   }
   close(cb) {
     if (typeof cb === "function") this.once("close", cb);
-    if (this.__id) __wjs_net_destroy(this.__id);
+    if (this.__id) {
+      __wjs_net_destroy(this.__id);
+      // 柄同步即清（node 口径：close 后 listen 立即可用，call-listen-multiple 第三段）。
+      this.__id = 0;
+      this._handle = null;
+      this.__listening = undefined;
+    }
     return this;
   }
   // 10a：ref 真计数（同 Socket）。
@@ -1828,10 +2062,13 @@ class BoundSocket {
       this.__boundPort = 0;
       __boundPaths.add(String(path));
     } else {
-      const h = host !== undefined ? host : "0.0.0.0";
+      // node：ipv6Only 即绑定 IPv6 通配 '::'（boundsocket IPv6 块：address '::'/IPv6）。
+      const h = host !== undefined ? host : (ipv6Only === true ? "::" : "0.0.0.0");
       const p = port !== undefined ? Number(port) : 0;
       let bound;
-      try { bound = __wjs_net_bind(h, p, ""); }
+      // reusePort → native 走 SO_REUSEPORT bind（真机 macOS/Linux 同支持；
+      // 平台不支持由 native setsockopt 失败即 Err，套件 probe 落 first=null 跳过）。
+      try { bound = __wjs_net_bind(h, p, "", reusePort === true ? "1" : ""); }
       catch (e) { throw __bindErr(String((e && e.message) || e)); }
       // native 回 "port:token"（占位保活；close/adopt 时 __wjs_net_unhold(token) 释放）。
       const parts = String(bound).split(":");
@@ -1885,21 +2122,50 @@ export const Stream = new Proxy(Socket, {
 });
 // Node `net.isIP/isIPv4/isIPv6`（vite 请求路径 host 校验用；std 解析对齐语义）
 // ── 10f net 对拍：校验器 + IP 解析纯 JS（std 拒前导零，node 收）─────────
-function __vPort(p) {
-  const ok = (typeof p === "number" && Number.isInteger(p) && p >= 0 && p <= 65535) ||
-             (typeof p === "string" && /^[0-9]+$/.test(p) && Number(p) <= 65535);
-  if (!ok) {
-    // 真机 invalidArgTypeHelper 口径：`Received type string ('x')` / `Received null` 等。
-    let __got;
-    if (p === null) __got = "null";
-    else if (p === undefined) __got = "undefined";
-    else if (typeof p === "string") __got = `type string ('${p}')`;
-    else if (typeof p === "object") __got = `an instance of ${p.constructor?.name ?? "Object"}`;
-    else __got = `type ${typeof p} (${String(p)})`;
-    const e = new RangeError(`Port should be >= 0 and < 65536. Received ${__got}`);
+// node `invalidArgTypeHelper` 口径（ARG_TYPE 助记形：`Received type string ('x')`/
+// `Received null`/`Received an instance of Array`；ARG_VALUE 走 inspect 形，§4.114）。
+function __netGot(v) {
+  if (v === null) return "null";
+  if (v === undefined) return "undefined";
+  if (typeof v === "string") return `type string ('${v}')`;
+  if (typeof v === "object") return `an instance of ${v.constructor?.name ?? "Object"}`;
+  return `type ${typeof v} (${String(v)})`;
+}
+// node inspect 简形（ARG_VALUE 收尾 `Received { port: false }` 形；listen-options 套件
+// 断言到正则 `Received .+`，浅对象逐键 node 形即可，深结构记档）。
+function __netInspect(v) {
+  if (v === null || v === undefined) return String(v);
+  if (typeof v === "string") return `'${v}'`;
+  if (typeof v === "number" || typeof v === "boolean" || typeof v === "bigint") return String(v);
+  if (typeof v !== "object") return `[${typeof v}]`;
+  if (Array.isArray(v)) return "[Array]";
+  try {
+    const ks = Object.keys(v);
+    if (ks.length === 0) return "{}";
+    return `{ ${ks.map((k) => `${k}: ${__netInspect(v[k])}`).join(", ")} }`;
+  } catch { return "{}"; }
+}
+// node validatePort（lib/internal/validators.js 逐字语义）：number/string、串 trim 非空、
+// `+p === (+p >>> 0)`、`p <= 0xFFFF`（'0x10' 数值线名同收——connect-options-port
+// canConnect('0x..') 点名；123.456/-1/65536/NaN/±Infinity 拒）。
+// name：connect 系缺省 'Port'；listen 系传 'options.port'（真机两口径）。
+function __vPort(p, name = "Port") {
+  if ((typeof p !== "number" && typeof p !== "string") ||
+      (typeof p === "string" && p.trim().length === 0) ||
+      +p !== (+p >>> 0) ||
+      p > 0xFFFF) {
+    const e = new RangeError(`${name} should be >= 0 and < 65536. Received ${__netGot(p)}.`);
     e.code = "ERR_SOCKET_BAD_PORT"; throw e;
   }
-  return Number(p);
+  return p | 0;
+}
+// connect(options.port) ARG_TYPE 门（lookupAndConnect：类型不合先于 BAD_PORT；
+// 真机文案 `must be one of type number or string`，name 恒 'options.port'）。
+function __vPortType(p) {
+  if (typeof p !== "number" && typeof p !== "string") {
+    const e = new TypeError(`The "options.port" property must be one of type number or string. Received ${__netGot(p)}`);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
 }
 function __isIPv4(s) {
   if (typeof s !== "string") return false;

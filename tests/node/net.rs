@@ -409,8 +409,10 @@ server.on("error", (e) => console.log("srv-err", e.code));
 
 #[test]
 fn phase10f_net_write_validation() {
-    // 10f net 对拍：write(null/undefined)→ERR_STREAM_NULL_VALUES（cb 形走回调）；
-    // 非法 chunk→ERR_INVALID_ARG_TYPE（chunk 文案+helper 形）；resetAndDestroy 本端无 error 即关。
+    // 10f net 对拍：write(null)→ERR_STREAM_NULL_VALUES（cb 形走回调）；write(undefined)
+    // →ERR_INVALID_ARG_TYPE（真机 26 逐项：仅 null 走 NULL_VALUES，undefined 落
+    // chunk 校验，§4.65 翻转旧断言）；非法 chunk→ERR_INVALID_ARG_TYPE（chunk 文案+helper 形）；
+    // resetAndDestroy 本端无 error 即关。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -438,11 +440,67 @@ srv.listen(0, "127.0.0.1", () => {
 "#,
     );
     assert!(out.contains("null ERR_STREAM_NULL_VALUES May not write null values to stream"), "out: {out}");
-    assert!(out.contains("undef ERR_STREAM_NULL_VALUES"), "out: {out}");
+    assert!(out.contains("undef ERR_INVALID_ARG_TYPE"), "out: {out}");
     assert!(out.contains("null-cb ERR_STREAM_NULL_VALUES"), "out: {out}");
     assert!(out.contains("chunk ERR_INVALID_ARG_TYPE true"), "out: {out}");
     assert!(out.contains("reset function"), "out: {out}");
     assert!(out.contains("reset-close"), "out: {out}");
+    assert!(!out.contains("BAD"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_net_listen_surface() {
+    // 10f net：listen("0") 数字字符串 = TCP 端口（真机 address 回 port；旧实现
+    // 一律当 UDS 路径建出名为 "0" 的套接字文件，二次绑定 EADDRINUSE）+
+    // listening 期间再 listen 同步抛 ERR_SERVER_ALREADY_LISTEN（真机文案逐字）+
+    // close 后可同步再听 + EADDRINUSE error 后可立即重听（call-listen-multiple
+    // 三段真机口径）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+// 数字字符串端口（TCP，非 UDS）
+{
+  const s = net.createServer(() => {});
+  s.listen("0", () => {
+    console.log("strport", typeof s.address().port === "number" && s.address().port > 0);
+    s.close();
+  });
+}
+// ALREADY_LISTEN 同步抛 + close 后再听
+{
+  const s = net.createServer(() => {});
+  s.listen(0, () => {
+    try { s.listen(); console.log("BAD no-throw"); }
+    catch (e) { console.log("already", e.code, e.message === "Listen method has been called more than once without closing."); }
+    s.close();
+    s.listen(0, () => { console.log("relisten-after-close", true); s.close(); });
+  });
+}
+// EADDRINUSE 后重听
+{
+  const dummy = net.createServer(() => {});
+  dummy.listen(0, () => {
+    const s = net.createServer(() => {});
+    s.on("error", (e) => {
+      console.log("inuse-err", e.code);
+      try { s.listen(0, () => { console.log("relisten-after-err", true); s.close(); }); }
+      catch { console.log("BAD relisten threw"); }
+      dummy.close();
+    });
+    s.listen(dummy.address().port);
+  });
+}
+"#,
+    );
+    assert!(out.contains("strport true"), "out: {out}");
+    assert!(out.contains("already ERR_SERVER_ALREADY_LISTEN true"), "out: {out}");
+    assert!(out.contains("relisten-after-close true"), "out: {out}");
+    assert!(out.contains("inuse-err EADDRINUSE"), "out: {out}");
+    assert!(out.contains("relisten-after-err true"), "out: {out}");
     assert!(!out.contains("BAD"), "out: {out}");
     dir.close().unwrap();
 }

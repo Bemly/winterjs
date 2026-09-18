@@ -130,6 +130,17 @@
 
 ### 10f 对拍验收（Bun 高度的证明）
 
+> ✅ 2026-09-19 收官：24 域点名全覆盖（`docs/bun-parity.md` 模块 × 用例 ×
+> 结果 × 偏离理由），红项逐簇定性——本轮修复进三件套回归，长尾分簇
+> "下轮可修 / 另案（理由）/ 双红对齐"全部书面记档（红即修或记 §4，
+> 无第三种状态）。§1 矩阵据此维持 ✅/🟡+偏离注。多轮对各域的转化：
+> buffer 63✅+9⏭️、timers 45✅+14⏭️、vm 47✅+26🟡+27⏭️、stream 190✅+50⏭️、
+> fs 同绿 39→123、net 30→86（七轮校验族 11/11）、crypto 24→38+六轮
+> PSS/PBES2/raw 门、http 95→125+流式头体分离、worker 35→55+七轮环境面、
+> zlib Zip 面 15/17、child 同步族+exec/abort 面、url/timers/dc/dns/path/
+> assert/os 收官红 0。连带根修：§4.137 入口失败+开着句柄永不收割
+> （eval/模块双路）。`cargo test` 全绿 0 警告，冒烟 5/5。
+
 - 做：Node `test/parallel` 子集逐模块点名（events/fs/stream/crypto/http/net/
   timers/util/dns/zlib/vm/worker/buffer/path/url/querystring/punycode/
   string_decoder/diagnostics_channel/trace_events/os/assert/child_process），

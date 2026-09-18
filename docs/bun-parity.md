@@ -1274,3 +1274,26 @@ ERR_* 码括号仅限 ERR_ 前缀——errno 系 name 恒裸 Error）。剩余�
 > 复现：`tests/node/worker.rs::phase10f_worker_error_shape_and_event_faces` +
 > `phase10f_worker_typed_view_and_sab_envelope`（修前 Int32Array 跨端静默丢/
 > TDZ 级联/rc=101 级联）。
+
+## test
+
+> 首轮点名（2026-09-19，补 plan3 §1 划给 10f 的 parity 确认行，83 件
+> `test-runner-*`，`/tmp/wjs-10f-testrun.txt`，单 worker 串行）：
+> SAME0=5 + SAME1=12（双红对齐）+ **DIFF=66**。与 §1"node:test 🟡（起步）"
+> 现状一致——矩阵维持 🟡，深浅据此定案：API 面是本轮欠账的主体，
+> reporter 深度维持 plan2 既有记档（Bun 同 🟡）。
+>
+> ### DIFF 分簇（66 件）
+>
+> - **node:test API 面 ~35 件**：`test()`/`describe`/`it` 可调用与子测试面
+>   不全（`test is not a function`/`describe needs a function` 两形为主）
+>   ——run/subtest/mock 计划逐件补齐后可转绿，**下轮可修**（体量最大簇）。
+> - **自 spawn `--test` CLI ~18 件**：套件以子进程跑 `node --test`/`--test-isolation`
+>   （runner CLI 本身未实现 + 全 flag CLI 设计双重门）——runner CLI 落地后
+>   一并评估，另案。
+> - **reporter/TAP 输出面 ~13 件**：spec/tap 深度、diff 渲染（plan2 既有
+>   "reporter/diff 欠账"记档维持；Bun 同 🟡）——书面偏离。
+>
+> SAME0（双侧全绿）：filter-warning/inspect/mock-timers-with-timeout/
+> root-after-with-refed-handles/typechecking；SAME1=12 双红（coverage 系/
+> source-map 系等，真机同条件亦红）。

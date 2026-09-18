@@ -1260,8 +1260,25 @@ class Socket extends EventEmitter {
     };
     this.unpipe = (dest) => this;
     this._unrefTimer = () => {};
-    this.pause = () => this;
-    this.resume = () => this;
+    // pause/resume 真语义（server-pause-on-connect 套件）：paused 期 data 分节
+    // 缓存（bytesRead 不进），resume 即冲刷。
+    this.__paused = false;
+    this.__pauseBuf = [];
+    this.pause = () => { this.__paused = true; return this; };
+    this.resume = () => {
+      this.__paused = false;
+      // node 流语义：resume 异步续流（同步冲刷会抢在调用方 resume 之后的
+      // 语句前发 data——pause-on-connect 套件 stopped 旗现形）。
+      queueMicrotask(() => {
+        const buf = this.__pauseBuf;
+        this.__pauseBuf = [];
+        for (const u8 of buf) {
+          this.bytesRead += u8.length;
+          this.emit("data", this.__enc ? new TextDecoder(this.__enc).decode(u8) : Buffer.from(u8));
+        }
+      });
+      return this;
+    };
     // 10f timers 对拍：setTimeout(ms[, cb]) 真实现——单发内部 timer 到期
     // emit('timeout')（Node 口径：不关连接、不杀 socket；cb 注册为 once 监听；
     // 0/负值 = 解除）。内部 timer 恒 unref：连接生死不归它管，socket 在场时
@@ -1515,6 +1532,7 @@ class Socket extends EventEmitter {
       }
       case "data": {
         const u8 = __b64dec(payload);
+        if (this.__paused) { this.__pauseBuf.push(u8); break; }
         this.bytesRead += u8.length;
         this.emit("data", this.__enc ? new TextDecoder(this.__enc).decode(u8) : Buffer.from(u8));
         break;
@@ -1702,6 +1720,10 @@ class __ServerClass extends EventEmitter {
     // （默认 false/0，真机 26 实测）；_handle 在 listen 成功路径建桩（含 onconnection）。
     this.keepAlive = !!(options && typeof options === "object" && options.keepAlive);
     this.keepAliveInitialDelay = (options && typeof options === "object" && options.keepAliveInitialDelay !== undefined) ? options.keepAliveInitialDelay : 0;
+    // server 选项面（blocklist/drop-connections/pause-on-connect 套件）
+    this.pauseOnConnect = !!(options && typeof options === "object" && options.pauseOnConnect);
+    this.__blockList = (options && typeof options === "object" && options.blockList) || null;
+    this.__connsSet = new Set();
     this._handle = null;
     this.__pendingConnPayload = null;
     // transfer-guards：Server 同 Socket 不可 transfer（成功转移面另案，见 Socket 注）。
@@ -1741,9 +1763,33 @@ class __ServerClass extends EventEmitter {
       s.localPort = this.__listening.port;
       s.localFamily = this.__listening.family;
     }
+    // blockList 拒绝：静默销毁，不进 connection（node 口径，server-blocklist 套件）。
+    if (this.__blockList && s.remoteAddress && typeof this.__blockList.check === "function" && this.__blockList.check(s.remoteAddress)) {
+      s.destroy();
+      return;
+    }
+    // 超限：'drop' 事件（五元组）+ 销毁，不进 connection。node 语义：
+    // maxConnections=0 即全拒（dormantServer 用例）；undefined = 不限。
+    if (this.maxConnections !== undefined && this.maxConnections !== null &&
+        (this.__conns ?? 0) >= this.maxConnections) {
+      this.emit("drop", {
+        localAddress: s.localAddress, localPort: s.localPort,
+        remoteAddress: s.remoteAddress, remotePort: s.remotePort, remoteFamily: s.remoteFamily,
+      });
+      s.destroy();
+      return;
+    }
+    if (this.pauseOnConnect) s.__paused = true;
     this.__conns = (this.__conns ?? 0) + 1;
-    s.once("close", () => { this.__conns = Math.max(0, (this.__conns ?? 1) - 1); });
+    this.__connsSet.add(s);
+    s.once("close", () => { this.__conns = Math.max(0, (this.__conns ?? 1) - 1); this.__connsSet.delete(s); });
     this.emit("connection", s);
+  }
+  // node：销毁全部已接受连接（server-drop-connections 套件）。
+  dropConnections() {
+    for (const s of [...this.__connsSet]) {
+      try { s.destroy(); } catch {}
+    }
   }
   __doListen(port, host, cb) {
     if (port && typeof port === "object" && typeof port.address === "function" && port.__boundPort !== undefined) {
@@ -1886,6 +1932,9 @@ class __ServerClass extends EventEmitter {
   __ev(kind, payload) {
     switch (kind) {
       case "listening": {
+        // bind 窗口内 close()（listen-close-server 套件）：listening 派发吞掉，
+        // listening 回调永不触发；'close' 由 destroy 路径照常发。
+        if (this.__closing) break;
         const o = JSON.parse(payload);
         if (o.uds) {
           this.__listening = o.path;
@@ -1936,6 +1985,9 @@ class __ServerClass extends EventEmitter {
     if (this.__id) {
       __wjs_net_destroy(this.__id);
       // 柄同步即清（node 口径：close 后 listen 立即可用，call-listen-multiple 第三段）。
+      // __closing 旗拦 bind 窗口内已就绪的 Listening 派发（listen-close-server
+      // 套件：close() 后 listening 回调必须永不触发）。
+      this.__closing = true;
       this.__id = 0;
       this._handle = null;
       this.__listening = undefined;

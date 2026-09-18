@@ -649,3 +649,71 @@ srv.listen(0, "127.0.0.1", () => {
     assert!(out.contains("addr-obj-ready 127.0.0.1"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_net_server_options_face() {
+    // 10f G2：server 选项面——pauseOnConnect（data 缓存到 resume，bytesRead 0）
+    // + maxConnections=0 全拒 + 'drop' 五元组 + dropConnections + blockList 拒收
+    // + close-during-listen 窗口 listening 回调永不触发。标签互不为子串（§4.42）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+// 1. pauseOnConnect：data 缓存到 resume
+{
+  const srv = net.createServer({ pauseOnConnect: true }, (sock) => {
+    console.log("poc-conn", sock.bytesRead === 0);
+    sock.on("data", (d) => { console.log("poc-data", d.toString() === "hi"); srv.close(); });
+    setTimeout(() => sock.resume(), 200);
+  });
+  srv.listen(0, "127.0.0.1", () => {
+    const c = net.connect(srv.address().port, "127.0.0.1", () => c.write("hi"));
+    c.on("close", () => {});
+  });
+}
+// 2. maxConnections=0 全拒 + drop 五元组
+{
+  const srv = net.createServer(() => console.log("BAD-drop-conn"));
+  srv.maxConnections = 0;
+  srv.on("drop", (info) => {
+    console.log("zero-drop", !!info.localAddress, !!info.localPort, !!info.remoteAddress, !!info.remotePort, !!info.remoteFamily);
+    srv.close();
+  });
+  srv.listen(0, "127.0.0.1", () => net.createConnection(srv.address().port, "127.0.0.1").on("error", () => {}));
+}
+// 3. blockList 拒收
+{
+  const bl = new net.BlockList();
+  bl.addAddress("127.0.0.1");
+  const srv = net.createServer({ blockList: bl }, () => console.log("BAD-bl-conn"));
+  srv.on("drop", () => {});
+  srv.listen(0, "127.0.0.1", () => {
+    const c = net.connect(srv.address().port, "127.0.0.1");
+    c.on("error", () => {});
+    c.on("close", () => { console.log("bl-silent"); srv.close(); });
+  });
+}
+// 4. close-during-listen 窗口：listening 回调永不触发，close 照发
+{
+  const srv = net.createServer(() => console.log("BAD-lc-conn"));
+  srv.listen(0, () => console.log("BAD-lc-listening"));
+  srv.on("close", () => console.log("lc-closed"));
+  srv.close();
+}
+setTimeout(() => process.exit(0), 2000);
+"#,
+    );
+    for line in [
+        "poc-conn true",
+        "poc-data true",
+        "zero-drop true true true true true",
+        "bl-silent",
+        "lc-closed",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    assert!(!out.contains("BAD"), "out: {out}");
+    dir.close().unwrap();
+}

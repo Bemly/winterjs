@@ -474,6 +474,12 @@ fn rng_probe(cx: &mut JSContext) -> bool {
 macro_rules! rsa_hash_dispatch {
     ($hash:expr, $D:ident, $body:expr) => {{
         match $hash {
+            // 10f crypto六轮：SHA-1 经 sha1_010（digest 0.10 系，rsa 0.9 互通；
+            // MD5 仍不支持——md-5 树内只有 0.11 系，无 0.10 可直引）。
+            "SHA-1" => {
+                type $D = sha1_010::Sha1;
+                $body
+            }
             "SHA-256" => {
                 type $D = sha2_010::Sha256;
                 $body
@@ -486,7 +492,7 @@ macro_rules! rsa_hash_dispatch {
                 type $D = sha2_010::Sha512;
                 $body
             }
-            other => Err(format!("NotSupportedError: RSA with hash '{other}' needs SHA-256/384/512")),
+            other => Err(format!("NotSupportedError: RSA with hash '{other}' needs SHA-1/256/384/512")),
         }
     }};
 }

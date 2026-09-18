@@ -167,6 +167,10 @@ sha2 = "0.11"
 # oid 特性必开：rsa 的 SigningKey::new 要 D: AssociatedOid（DigestInfo 前缀），
 # sha2 0.10 的 OidSha* 实现门控在该特性后（缺之即 E0599）。
 sha2_010 = { package = "sha2", version = "0.10", features = ["oid"] }
+# 10f crypto六轮（2026-09-18 用户拍板）：RSA-PSS 的 SHA-1 通道（rsa 0.9 绑
+# digest 0.10，树内 sha1 是 0.11 系传不进去）；与 sha2_010 同款改名直引
+# （lock 内已有 sha1 0.10.7，零新增传递依赖）。
+sha1_010 = { package = "sha1", version = "0.10", features = ["oid"] }
 sha3 = "0.12"
 blake2 = "0.11"
 md-5 = "0.11"

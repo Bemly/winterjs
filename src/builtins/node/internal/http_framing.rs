@@ -13,15 +13,19 @@
 //!   `server.close()` 销毁跟踪中的全部连接（含空闲保活）。
 //! - 客户端 Agent 池：`keepAlive` 按 host:port 复用，`reusedSocket` 可观测；
 //!   缺省全局 Agent 不池化（与 9d 行为一致）。
-//! - 分块编码：写时头未知总量即 chunked（首字节 holdback 一拍：同步 end 到达
-//!   则走 Content-Length 快捷，旧字节流逐字节一致）；显式 CL 则裸写。
+//! - 分块编码：10f G3 起按真机口径——CL 快路径仅当 end() 是首个头触发点
+//!  （无 writeHead/write/flushHeaders 前置）且允许体（服务端随请求版本、
+//!   客户端随方法族）；否则 chunked（HTTP/1.0 服务端裸体 close-delimited）。
 //! - 204/304/HEAD 无体（CL 照算但不发字节，保活不断帧）。
 //! 偏差记档（10b）：
 //! - 请求头在首字节实际发出前不出网（write 先缓冲；包级时序差，语义同）。
 //! - 管线请求顺序处理（后请求的解析等前响应结束；并发语义同，时序差）。
 //! - 服务端无空闲保活超时（`server.close()` 即全毁；Node 有 keepAliveTimeout）。
 //! - 1xx 中间响应按终态处理（无 `continue` 事件；100-continue 流程另切片）。
-//! - trailer 不收不发（chunked 尾部直接终结；http2 triage 见 plan3 10b-4）。
+//! - trailer 不收不发（chunked 尾部直接终结；10f G3 起限深照算：trailer 名+值
+//!   累计 ≥ maxHeaderSize 即 431、无冒号行 400；http2 triage 见 plan3 10b-4）。
+//! - 10f G3：chunk 扩展限深（尺寸行扩展总量 > 16KiB 即 413、扩展字符集校验
+//!   400）——llhttp 计数语义，真机 26.8.2 逐项实测定标。
 
 pub const SOURCE: &str = r#"
 import { EventEmitter } from "node:events";
@@ -77,7 +81,10 @@ function __findHeadEnd(u8) {
 function __parseHead(headText) {
   const lines = headText.split("\r\n");
   const first = lines.shift().split(" ");
-  const headers = Object.create(null);
+  // 真机口径：req.headers/res.headers 是普通对象（Object.prototype，node 26.8.2
+  // 实测）——Object.create(null) 会挂 deepStrictEqual 直比；__proto__ 头名走
+  // defineProperty 防原型污染。
+  const headers = {};
   const rawHeaders = [];
   for (const line of lines) {
     if (line === "") continue;
@@ -87,7 +94,11 @@ function __parseHead(headText) {
     const v = line.slice(c + 1).trim();
     rawHeaders.push(k, v);
     const lk = k.toLowerCase();
-    headers[lk] = headers[lk] === undefined ? v : `${headers[lk]}, ${v}`;
+    if (headers[lk] === undefined) {
+      Object.defineProperty(headers, lk, { value: v, writable: true, enumerable: true, configurable: true });
+    } else {
+      headers[lk] = `${headers[lk]}, ${v}`;
+    }
   }
   return { first, headers, rawHeaders };
 }
@@ -118,6 +129,15 @@ function __mkParseError(msg) {
   return e;
 }
 const __TOKEN_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+// chunk 扩展字符集：RFC 7230 token + ';' + '='（真机 26.8.2 ASCII 全扫实测；
+// 其余——空格/引号/括号/冒号/控制字符/高位字节——一律 400）。
+const __EXT_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z;=]$/;
+// chunk 扩展字节上限（16KiB，node src/node_http_parser.cc 同值）：单条尺寸行
+// 扩展总量 > 16384 即 413（真机：16384 过 / 16385 拒）。
+const __MAX_CHUNK_EXT = 16384;
+// trailer 名+值累计上限：≥ 16384（maxHeaderSize）即 431（真机：16383 过 /
+// 16384 拒；': ' 分隔与 CRLF 不计，跨 trailer 行累计）。
+const __MAX_TRAILER_NV = 16384;
 // 请求行 + 头行校验（RFC token/版本形；Node llhttp 拒收面，失配即 400）。
 function __validateRequestHead(first, headers) {
   if (first.length !== 3 || !__TOKEN_RE.test(first[0]) || /\s/.test(first[1]) ||
@@ -152,42 +172,70 @@ function __pumpCL(fr, msg, bytes) {
   fr.remaining -= take;
   return { done: fr.remaining === 0, rest: bytes.slice(take) };
 }
-// chunked 泵：增量解 size 行/数据/CRLF；trailer 直接跳到终结空行（不收）。
+// chunked 泵：增量解 size 行/数据/CRLF；trailer 逐行计数（不收内容）。
+// 扩展/trailer 限深均按真机 26.8.2 逐项实测（见各常量注）。
 function __pumpChunked(fr, msg, bytes) {
   let buf = __concat(fr.buf, bytes);
   fr.buf = new Uint8Array(0);
   while (true) {
     if (fr.need === -1) {
+      // 尺寸行 `1*HEXDIG[';' 扩展]`：hex 段只收 hex digit（空格/空行即 400）；
+      // 扩展段按字符集校验（token + ';' + '='，真机 ASCII 全扫），扩展字节
+      // 总量（';' 不计）> 16KiB 即 413——是尺寸行内总量而非单 token 上限
+      // （真机：单 16384 过 / 单 16385 拒 / 双 token 合计 16385 同拒 / 带 '='
+      // 合计 16384 过）；换 chunk 清零（3×10KB 三分块全过）。行内裸 LF/CR
+      // 落在禁字符集即 400（smuggling 套件 `2;\n` 形）。跨包累计。
+      let eol = -1;
+      for (let i = 0; i + 1 < buf.length; i++) {
+        if (buf[i] === 13 && buf[i + 1] === 10) { eol = i; break; }
+      }
+      const scanTo = eol === -1 ? buf.length : eol;
+      if (fr.__ext === undefined) fr.__ext = 0;
+      let sawSemi = false;
+      for (let i = 0; i < scanTo; i++) {
+        const ch = String.fromCharCode(buf[i]);
+        if (ch === ";") { sawSemi = true; continue; }
+        if (sawSemi) {
+          if (!__EXT_RE.test(ch)) return { error: 400 };
+          fr.__ext++;
+          if (fr.__ext > __MAX_CHUNK_EXT) return { error: 413 };
+        } else if (!((ch >= "0" && ch <= "9") || (ch >= "A" && ch <= "F") || (ch >= "a" && ch <= "f"))) {
+          return { error: 400 };
+        }
+      }
+      if (eol === -1) { fr.buf = buf; return { done: false, rest: new Uint8Array(0) }; }
+      const lineText = __latin1(buf.slice(0, eol));
+      // 行尾 ';'：末段扩展为空（真机 400；行中空段如 `;;a` 合法）。
+      if (lineText.endsWith(";")) return { error: 400 };
+      const semi = lineText.indexOf(";");
+      const sizePart = semi === -1 ? lineText : lineText.slice(0, semi);
+      const size = sizePart === "" ? NaN : parseInt(sizePart, 16);
+      if (!Number.isInteger(size) || size < 0) return { error: 400 };
+      fr.__ext = 0;
+      buf = buf.slice(eol + 2);
+      if (size === 0) {
+        // 终结：`0\r\n` 后跟空行（或 trailer 块 + 空行）；内容丢弃。
+        fr.need = -2;
+        continue;
+      }
+      fr.need = size;
+    } else if (fr.need === -2) {
+      // 终结段：trailer 块逐行计数到空行（内容不收）。名+值累计（': ' 与
+      // CRLF 不计）≥ 16KiB 即 431（真机阈值：16383 过 / 16384 拒，跨行累计）；
+      // 无冒号行 400（真机 `justname` 行即拒）。
       let eol = -1;
       for (let i = 0; i + 1 < buf.length; i++) {
         if (buf[i] === 13 && buf[i + 1] === 10) { eol = i; break; }
       }
       if (eol === -1) { fr.buf = buf; return { done: false, rest: new Uint8Array(0) }; }
-      const size = parseInt(__latin1(buf.slice(0, eol)).split(";")[0].trim(), 16);
-      if (!Number.isInteger(size) || size < 0) return { error: true };
+      if (eol === 0) return { done: true, rest: buf.slice(2) };
+      const lineText = __latin1(buf.slice(0, eol));
+      const c = lineText.indexOf(":");
+      if (c <= 0) return { error: 400 };
+      fr.__tnv = (fr.__tnv === undefined ? 0 : fr.__tnv) + c + lineText.slice(c + 1).trim().length;
+      if (fr.__tnv >= __MAX_TRAILER_NV) return { error: 431 };
       buf = buf.slice(eol + 2);
-      if (size === 0) {
-        // 终结：`0\r\n` 后跟空行（或 trailer 块 + 空行）；内容丢弃。
-        if (buf.length < 2) { fr.buf = buf; fr.need = -2; return { done: false, rest: new Uint8Array(0) }; }
-        if (buf[0] === 13 && buf[1] === 10) return { done: true, rest: buf.slice(2) };
-        let end = -1;
-        for (let i = 0; i + 3 < buf.length; i++) {
-          if (buf[i] === 13 && buf[i + 1] === 10 && buf[i + 2] === 13 && buf[i + 3] === 10) { end = i; break; }
-        }
-        if (end === -1) { fr.buf = buf; fr.need = -2; return { done: false, rest: new Uint8Array(0) }; }
-        return { done: true, rest: buf.slice(end + 4) };
-      }
-      fr.need = size;
-    } else if (fr.need === -2) {
-      // 终结行收半截：继续等空行。
-      if (buf.length < 2) { fr.buf = buf; return { done: false, rest: new Uint8Array(0) }; }
-      if (buf[0] === 13 && buf[1] === 10) return { done: true, rest: buf.slice(2) };
-      let end = -1;
-      for (let i = 0; i + 3 < buf.length; i++) {
-        if (buf[i] === 13 && buf[i + 1] === 10 && buf[i + 2] === 13 && buf[i + 3] === 10) { end = i; break; }
-      }
-      if (end === -1) { fr.buf = buf; return { done: false, rest: new Uint8Array(0) }; }
-      return { done: true, rest: buf.slice(end + 4) };
+      continue; // 回 -2 分支续行（严禁落穿到数据泵：need 仍是 -2）
     }
     if (buf.length < fr.need + 2) { fr.buf = buf; return { done: false, rest: new Uint8Array(0) }; }
     if (fr.need > 0 && msg !== null) msg.push(globalThis.Buffer.from(buf.slice(0, fr.need)));
@@ -204,7 +252,7 @@ export class IncomingMessage extends Readable {
     this.url = null;
     this.statusCode = null;
     this.statusMessage = null;
-    this.headers = Object.create(null);
+    this.headers = {};
     this.rawHeaders = [];
     this.complete = false;
   }
@@ -242,6 +290,12 @@ export class ServerResponse extends Writable {
     this.__headers = Object.create(null);
     this.headersSent = false;
     this.__headSent = false;
+    // 真机口径（10f G3，node 26.8.2 实测）：CL 快路径仅当 end() 是首个头触发点
+    // （此前无 writeHead/write/flushHeaders）；writeHead 在前 → chunked；
+    // HTTP/1.0 请求 → 无 CL/TE，体裸写 + close（close-delimited）。
+    // __req1_1 = useChunkedEncodingByDefault（随请求版本），standalone 缺省 1.1。
+    this.__headStored = false;
+    this.__req1_1 = true;
     this.__chunked = false;
     this.__rawCL = false;
     this.__buf1 = null;
@@ -252,7 +306,12 @@ export class ServerResponse extends Writable {
     this.__userEnded = false;
     this.__onDone = null;
   }
-  setHeader(name, value) { this.__headers[String(name).toLowerCase()] = String(value); return this; }
+  setHeader(name, value) {
+    const lk = String(name).toLowerCase();
+    this.__headers[lk] = String(value);
+    if (lk === "connection") this.__autoConn = false;
+    return this;
+  }
   getHeader(name) { return this.__headers[String(name).toLowerCase()]; }
   removeHeader(name) { delete this.__headers[String(name).toLowerCase()]; return this; }
   getHeaderNames() { return Object.keys(this.__headers); }
@@ -263,6 +322,8 @@ export class ServerResponse extends Writable {
     this.statusCode = status;
     if (msg !== undefined) this.statusMessage = msg;
     Object.assign(this.__headers, __lowerHeaders(obj));
+    // 头已存：随后的 end(data) 不再走 CL 快路径（真机 chunked 口径）。
+    this.__headStored = true;
     return this;
   }
   write(chunk, encoding) {
@@ -275,6 +336,9 @@ export class ServerResponse extends Writable {
       if (typeof f === "function") f();
       return this;
     }
+    // CL 快路径判据（真机）：end 的数据块存在性——write 后裸 end() 不走快路径
+    //（真机 chunked + 终结块口径）。
+    this.__endHadData = chunk !== undefined && chunk !== null && typeof chunk !== "function";
     this.__userEnded = true;
     return super.end(chunk, encoding, cb);
   }
@@ -284,7 +348,7 @@ export class ServerResponse extends Writable {
   // 立即发头（Node flushHeaders：body 可经 chunked 帧，end 后补终结块）。
   flushHeaders() {
     if (this.__headSent || this.__noBody || this.__headOnly) return;
-    if (this.__headers["content-length"] === undefined) this.__chunked = true;
+    if (this.__headers["content-length"] === undefined && this.__req1_1) this.__chunked = true;
     this.__sendHead();
     if (this.__buf1 !== null) {
       const b = this.__buf1;
@@ -317,8 +381,15 @@ export class ServerResponse extends Writable {
     }
     if (this.__headers["connection"] === undefined) {
       this.__headers["connection"] = this.__keepAlive ? "keep-alive" : "close";
+      this.__autoConn = true;
     }
-    for (const [k, v] of Object.entries(this.__headers)) head.push(`${k}: ${v}`);
+    // 自设头按用户拼写输出（node verbatim；本仓内部统一小写存取）；自动头的
+    // 真机输出是规范大写（Transfer-Encoding/Content-Length/自动 Connection）。
+    const canon = { "transfer-encoding": "Transfer-Encoding", "content-length": "Content-Length" };
+    for (const [k, v] of Object.entries(this.__headers)) {
+      const name = k === "connection" && this.__autoConn ? "Connection" : (canon[k] ?? k);
+      head.push(`${name}: ${v}`);
+    }
     return new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n");
   }
   __sendHead() {
@@ -338,13 +409,15 @@ export class ServerResponse extends Writable {
   }
   _write(chunk, encoding, cb) {
     const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk));
+    this.__sawWrite = true;
     if (this.__buf1 === null && !this.__headSent) {
-      // 首字节 holdback：一拍内 end 到达则走 CL 快捷，否则转 chunked 流式。
+      // 首字节 holdback：一拍内 end 到达且此前无 writeHead 则走 CL 快捷，
+      // 否则转 chunked 流式（1.0 裸写）。
       this.__buf1 = u8;
       this.__holdTimer = setTimeout(() => {
         this.__holdTimer = null;
         if (this.__buf1 !== null && !this.__headSent && !this.destroyed) {
-          this.__chunked = true;
+          if (this.__req1_1) this.__chunked = true;
           this.__sendHead();
           const b = this.__buf1;
           this.__buf1 = null;
@@ -355,7 +428,7 @@ export class ServerResponse extends Writable {
       return;
     }
     if (!this.__headSent) {
-      this.__chunked = true;
+      if (this.__req1_1) this.__chunked = true;
       this.__sendHead();
       if (this.__buf1 !== null) {
         const b = this.__buf1;
@@ -372,20 +445,33 @@ export class ServerResponse extends Writable {
       this.__holdTimer = null;
     }
     if (!this.__headSent) {
-      // 快捷：总量已知，Content-Length 一次发出（9d 字节流逐字节一致）。
+      // 快捷：end() 为首个头触发点（无 writeHead/write 前置）且请求 1.1 时，
+      // Content-Length 一次发出（真机口径）；write/writeHead 在前 → chunked；
+      // 1.0 → 无 CL/TE 裸体（close-delimited，真机实测）。
       const total = this.__buf1 !== null ? this.__buf1.length : 0;
       if (!this.__noBody && !this.__headOnly && this.__headers["content-length"] === undefined) {
-        this.__headers["content-length"] = String(total);
+        if (this.__req1_1 && !this.__headStored && (!this.__sawWrite || this.__endHadData)) {
+          this.__headers["content-length"] = String(total);
+        } else if (this.__req1_1) {
+          this.__chunked = true;
+          this.__headers["transfer-encoding"] = "chunked";
+        }
       }
       const head = this.__headBytes();
       if (this.__sock !== null) {
         if (this.__buf1 !== null) {
           const b = this.__buf1;
           this.__buf1 = null;
-          if (head.length === 0) {
+          if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
+            // chunked：头/体/终结分开帧（真机 per-chunk 帧口径；头体合并不带
+            // 帧头会被对端判坏 chunked 体）。
+            if (head.length > 0) this.__sock.write(head);
+            this.__frame(b);
+            this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));
+          } else if (head.length === 0) {
             this.__frame(b);
           } else if (!this.__noBody && !this.__headOnly && b.length > 0) {
-            // node 口径：头 + 首块合并为一次 write（standalone 套件断言单 chunk）。
+            // node 口径：CL/raw 快捷时头 + 首块合并为一次 write（standalone 套件）。
             this.__sock.write(__concat(head, b));
           } else {
             this.__sock.write(head);
@@ -393,6 +479,10 @@ export class ServerResponse extends Writable {
           }
         } else if (head.length > 0) {
           this.__sock.write(head);
+          // end() 无数据 + chunked：终结块紧随（真机 writeHead+end() 口径）。
+          if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
+            this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));
+          }
         }
       }
     } else if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
@@ -494,8 +584,7 @@ export function withHttpServer(Base) {
           try {
             this.__feed(sock, st, chunk);
           } catch (e) {
-            if (e && e.__httpParse) this.__badRequest(sock);
-            else sock.destroy();
+            this.__feedError(sock, e);
           }
         });
         // 连接即开 headers 计时（headersTimeout 内须收到完整头，否则 408）。
@@ -511,6 +600,28 @@ export function withHttpServer(Base) {
     // test-http-server-request-timeout-delayed-headers 套件）+ 销毁。
     __reqTimeout(sock) {
       try { sock.write(new TextEncoder().encode("HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
+      try { sock.destroy(); } catch { /* gone */ }
+    }
+    // 413 Payload Too Large：chunk 扩展总量超限（chunk-extensions-limit 套件，
+    // 精确字节真机实测）+ 销毁。
+    __payloadTooLarge(sock) {
+      try { sock.write(new TextEncoder().encode("HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
+      try { sock.destroy(); } catch { /* gone */ }
+    }
+    // 431 Request Header Fields Too Large：trailer 名+值累计超 maxHeaderSize
+    // （真机实测精确字节）+ 销毁。
+    __headerFieldsTooLarge(sock) {
+      try { sock.write(new TextEncoder().encode("HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
+      try { sock.destroy(); } catch { /* gone */ }
+    }
+    // __feed 解析错的统一出口（400 通道 / 兜底销毁）。数据事件与 res 收尾的
+    // microtask re-feed（__onDone）共用；后者不在 data 处理器的 try/catch 内，
+    // 裸抛会变成 unhandled rejection（chunked-smuggling 套件）。
+    __feedError(sock, e) {
+      if (e && e.__httpParse) {
+        this.__badRequest(sock);
+        return;
+      }
       try { sock.destroy(); } catch { /* gone */ }
     }
     __clearReqTimers(st) {
@@ -610,6 +721,8 @@ export function withHttpServer(Base) {
           const conn = (headers.connection || "").toLowerCase();
           const keepAlive = req.httpVersion === "1.1" ? conn !== "close" : conn === "keep-alive";
           const res = new ServerResponse(sock);
+          // useChunkedEncodingByDefault 随请求版本（1.0 → 无 CL/TE 裸体口径）。
+          res.__req1_1 = req.httpVersion === "1.1";
           res.req = req;
           req.res = res;
           res.__keepAlive = keepAlive && !this.__closing;
@@ -626,7 +739,14 @@ export function withHttpServer(Base) {
             st.sawRequest = true;
             // 请求+响应完整落地：回空闲期（headersTimeout/keepAliveTimeout 双计时）。
             this.__armIdleTimers(st, sock, true);
-            this.__feed(sock, st, new Uint8Array(0));
+            // 连接已销毁（如 mid-body 400/413）则不再 re-feed 剩余缓冲；
+            // 活着时解析错也要走统一 400 通道（microtask 内裸抛 = unhandled rejection）。
+            if (sock.destroyed) return;
+            try {
+              this.__feed(sock, st, new Uint8Array(0));
+            } catch (e) {
+              this.__feedError(sock, e);
+            }
           };
           if (this.__closing) {
             st.buf = st.buf.slice(headEnd + 4);
@@ -653,6 +773,9 @@ export function withHttpServer(Base) {
           r = __pumpCL(fr, st.req, st.buf);
         } else {
           r = __pumpChunked(fr, st.req, st.buf);
+          // 413/431 是精确字节响应 + 销毁（不是 400 通道）；其余解析错走 400。
+          if (r.error === 413) { this.__payloadTooLarge(sock); return; }
+          if (r.error === 431) { this.__headerFieldsTooLarge(sock); return; }
           if (r.error) throw __mkParseError("bad chunked body");
         }
         st.buf = r.rest;
@@ -729,8 +852,15 @@ export function withClientRequest(openSocket, flavor) {
       }
       if (this.__headers.connection === undefined) {
         this.__headers.connection = (this.agent !== null && this.agent.keepAlive) ? "keep-alive" : "close";
+        this.__autoConn = true;
       }
       this.__headSent = false;
+      // 真机口径（10f G3，node 26.8.2 实测）：CL 快路径仅当 end(data) 是首个
+      // 头触发点；write/flushHeaders 在前 → chunked；GET/HEAD/DELETE/OPTIONS/
+      // TRACE/CONNECT（useChunkedEncodingByDefault=false 族）→ 无 CL/TE 裸体。
+      this.__chunkDefault = !["GET", "HEAD", "DELETE", "OPTIONS", "TRACE", "CONNECT"].includes(method);
+      this.__sawWrite = false;
+      this.__endFast = false;
       this.__chunked = false;
       this.__rawCL = false;
       this.__buf1 = null;
@@ -821,7 +951,12 @@ export function withClientRequest(openSocket, flavor) {
         }
       }
     }
-    setHeader(name, value) { this.__headers[String(name).toLowerCase()] = String(value); return this; }
+    setHeader(name, value) {
+      const lk = String(name).toLowerCase();
+      this.__headers[lk] = String(value);
+      if (lk === "connection") this.__autoConn = false;
+      return this;
+    }
     getHeader(name) { return this.__headers[String(name).toLowerCase()]; }
     removeHeader(name) { delete this.__headers[String(name).toLowerCase()]; return this; }
     getHeaderNames() { return Object.keys(this.__headers); }
@@ -859,7 +994,7 @@ export function withClientRequest(openSocket, flavor) {
     flushHeaders() {
       if (this.__headSent) return;
       if (this.__connected && this.__sock !== null && this.__sock !== undefined && !this.destroyed) {
-        if (this.__buf1 !== null) this.__chunked = true;
+        if (this.__buf1 !== null) this.__chunked = this.__chunkDefault;
         this.__sendHead();
         if (this.__buf1 !== null) {
           const q = this.__buf1;
@@ -880,6 +1015,8 @@ export function withClientRequest(openSocket, flavor) {
         if (typeof f === "function") f();
         return this;
       }
+      // CL 快路径判据：end 是首个头触发点（此前无 write）。
+      this.__endFast = !this.__sawWrite;
       this.__userEnded = true;
       return super.end(chunk, encoding, cb);
     }
@@ -894,7 +1031,12 @@ export function withClientRequest(openSocket, flavor) {
       } else if (this.__chunked) {
         this.__headers["transfer-encoding"] = "chunked";
       }
-      for (const [k, v] of Object.entries(this.__headers)) head.push(`${k}: ${v}`);
+      // 自动头规范大写（真机口径）；自设头按用户拼写（本仓小写存取）。
+      const canon = { "transfer-encoding": "Transfer-Encoding", "content-length": "Content-Length" };
+      for (const [k, v] of Object.entries(this.__headers)) {
+        const name = k === "connection" && this.__autoConn ? "Connection" : (canon[k] ?? k);
+        head.push(`${name}: ${v}`);
+      }
       this.__sock.write(new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n"));
     }
     __frame(u8) {
@@ -912,7 +1054,12 @@ export function withClientRequest(openSocket, flavor) {
       if (!this.__connected || this.__sock === null || this.__headSent) return;
       if (this.destroyed) return;
       if (this.__buf1 === null && !this.__forceHead) return;
-      if (this.__buf1 !== null) this.__chunked = true;
+      if (this.__buf1 !== null) {
+        this.__chunked = this.__chunkDefault;
+      } else if (this.__chunkDefault && this.__headers["content-length"] === undefined) {
+        // flushHeaders 先于 end：头已存（真机口径 chunked 起拍，end 后补终结块）。
+        this.__chunked = true;
+      }
       this.__forceHead = false;
       this.__sendHead();
       const q = this.__buf1;
@@ -921,6 +1068,7 @@ export function withClientRequest(openSocket, flavor) {
     }
     _write(chunk, encoding, cb) {
       const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk));
+      this.__sawWrite = true;
       if (this.__buf1 === null && !this.__headSent) {
         this.__buf1 = [u8];
         this.__holdTimer = setTimeout(() => {
@@ -933,7 +1081,7 @@ export function withClientRequest(openSocket, flavor) {
       if (!this.__headSent) {
         // 同拍内第二次写：必为流式，同步刷头。
         if (this.__connected && this.__sock !== null && !this.destroyed) {
-          this.__chunked = true;
+          if (this.__chunkDefault) this.__chunked = true;
           this.__sendHead();
           if (this.__buf1 !== null) {
             const q = this.__buf1;
@@ -948,7 +1096,7 @@ export function withClientRequest(openSocket, flavor) {
         }
       }
       if (this.__connected && this.__sock !== null && !this.destroyed) {
-        if (!this.__chunked && !this.__rawCL) this.__chunked = true;
+        if (!this.__chunked && !this.__rawCL && this.__chunkDefault) this.__chunked = true;
         this.__frame(u8);
       } else {
         (this.__buf1 ??= []).push(u8);
@@ -979,20 +1127,30 @@ export function withClientRequest(openSocket, flavor) {
       }
       cb();
     }
-    // 收尾刷新（调用方保证已连通）：头未发走 CL 快捷，已发（chunked）补终结块。
-    // CL 快捷合并发出（整收语义，9d 字节流一致）；chunked 终结块单发。
+    // 收尾刷新（调用方保证已连通）：end(data) 为首个头触发点且方法允许体时
+    // 走 CL 快捷（合并发出，真机单 write 口径）；write/flushHeaders 在前 →
+    // chunked 逐帧（真机 per-write 帧口径）；GET/HEAD 族 → 无 CL/TE 裸体。
     __flushFinal() {
       if (this.__sock === null || this.destroyed) return;
       if (!this.__headSent) {
         const total = this.__buf1 !== null ? this.__buf1.reduce((a, b) => a + b.length, 0) : 0;
         if (this.__headers["content-length"] === undefined) {
-          this.__headers["content-length"] = String(total);
+          if (this.__chunkDefault && this.__endFast && !this.__forceHead) {
+            this.__headers["content-length"] = String(total);
+          } else if (this.__chunkDefault) {
+            this.__chunked = true;
+            this.__headers["transfer-encoding"] = "chunked";
+          }
         }
         this.__sendHead();
         if (this.__buf1 !== null) {
           const q = this.__buf1;
           this.__buf1 = null;
-          this.__frame(__join(q));
+          if (this.__chunked && !this.__rawCL) {
+            for (const b of q) this.__frame(b);
+          } else {
+            this.__frame(__join(q));
+          }
         }
       } else if (this.__chunked && !this.__rawCL) {
         this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));

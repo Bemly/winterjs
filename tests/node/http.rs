@@ -346,7 +346,9 @@ s2.listen(0, "127.0.0.1", () => {
       });
       server.listen(0, "127.0.0.1", () => {
         const p2 = server.address().port;
-        const req2 = http.request({ port: p2 });
+        // 真机口径（10f G3）：上传用 POST——GET 属 useChunkedEncodingByDefault=false
+        // 族，真机 body 裸写（无 TE/CL），chunked 分包回归只在 POST 形成立。
+        const req2 = http.request({ port: p2, method: "POST" });
         let sent = 0;
         const rs = new Readable({ read() { if (sent++ > 10) return; rs.push("hello"); } });
         pipeline(rs, req2, () => { console.log("cli-pipe-done"); server.close(); });
@@ -699,6 +701,92 @@ setTimeout(() => console.log("END"), 900);
         "p12 path-validation ok",
         "p13 im-req-surface ok",
         "END",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10g_http_chunk_ext_and_trailer_limits() {
+    // 欠账 G3：chunk 扩展限深 + trailer 计数（llhttp 计数语义，真机 26.8.2
+    // 逐项实测定标）。正常（16384 恰好过/换 chunk 清零）+ 报错（413/431/400
+    // 精确字节）+ 边界（分包累计 16385 拒、16384 过）三件套。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createServer } from "node:http";
+import net from "node:net";
+
+const OK200 = "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\nconnection: close\r\ndate: now\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nbye\r\n0\r\n\r\n";
+const R413 = "HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n";
+const R431 = "HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n";
+const R400 = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n";
+
+function once(build, expect, label) {
+  return new Promise((resolve) => {
+    const server = createServer((req, res) => {
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "text/plain", connection: "close", date: "now" });
+        res.end("bye");
+      });
+      req.resume();
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const port = server.address().port;
+      const sock = net.connect(port);
+      let data = "";
+      sock.on("data", (c) => (data += c.toString()));
+      sock.on("end", () => {
+        console.log(label, data === expect ? "ok" : "mismatch");
+        server.close();
+        resolve();
+      });
+      build(sock, port);
+    });
+  });
+}
+const head = (p) => `GET / HTTP/1.1\r\nHost: localhost:${p}\r\nTransfer-Encoding: chunked\r\n\r\n`;
+
+// 1) 扩展总量 17000 > 16KiB → 413 精确字节 + 连接关闭。
+await once((s, p) => s.end(head(p) + `2;${"a".repeat(17000)}\r\nAA\r\n0\r\n\r\n`), R413, "b1-413");
+// 2) 扩展恰好 16384 → 过（200，writeHead 后 end 走 chunked 响应口径）。
+await once((s, p) => s.end(head(p) + `2;${"a".repeat(16384)}\r\nAA\r\n0\r\n\r\n`), OK200, "b2-16k-ok");
+// 3) 分包累计（8500+8500=17000）→ 413（计数跨包有效）。
+await once((s, p) => {
+  s.write(head(p) + "2;");
+  s.write("A".repeat(8500));
+  setTimeout(() => s.write("A".repeat(8500) + "\r\nAA\r\n0\r\n\r\n"), 10);
+}, R413, "b3-split-413");
+// 4) 换 chunk 清零：3×10KB 扩展三分块全过 → 200 精确字节。
+await once((s, p) => s.end(head(p) +
+  `2;${"A".repeat(10000)}=bar\r\nAA\r\n` +
+  `2;${"A".repeat(10000)}=bar\r\nAA\r\n` +
+  `2;${"A".repeat(10000)}=bar\r\nAA\r\n` +
+  "0\r\n\r\n"), OK200, "b4-reset-200");
+// 5) 扩展字符集：裸 LF（smuggling 形 `2;\n`）→ 400。
+await once((s, p) => s.end(head(p) + "2;\nxx\r\nAA\r\n0\r\n\r\n"), R400, "b5-ext-lf-400");
+// 6) trailer 名+值累计 16384 → 431 精确字节（': '/CRLF 不计入）。
+await once((s, p) => s.end(head(p) + `2;a\r\nAA\r\n0\r\nX: ${"a".repeat(16383)}\r\n\r\n`), R431, "b6-trailer-431");
+// 7) trailer 名+值 16383 → 过 → 200。
+await once((s, p) => s.end(head(p) + `2;a\r\nAA\r\n0\r\nX: ${"a".repeat(16382)}\r\n\r\n`), OK200, "b7-trailer-ok");
+// 8) trailer 无冒号行 → 400。
+await once((s, p) => s.end(head(p) + "2;a\r\nAA\r\n0\r\njustname\r\n\r\n"), R400, "b8-trailer-colon-400");
+console.log("limits-done");
+"#,
+    );
+    for tag in [
+        "b1-413 ok",
+        "b2-16k-ok ok",
+        "b3-split-413 ok",
+        "b4-reset-200 ok",
+        "b5-ext-lf-400 ok",
+        "b6-trailer-431 ok",
+        "b7-trailer-ok ok",
+        "b8-trailer-colon-400 ok",
+        "limits-done",
     ] {
         assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
     }

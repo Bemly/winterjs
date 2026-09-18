@@ -503,3 +503,30 @@ console.log("enc", typeof fs.readFileSync("f.txt", "utf8"));
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_mkdtemp_disposable_sync_cjs_export() {
+    // node 26 双名都在：`require('fs').mkdtempDisposableSync` 具名（套件点名）
+    // 与 `mkdtempDisposable` 别名并存；返回 {path, remove} 且二次 remove 不抛。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.cjs",
+        r#"
+const fs = require("fs");
+console.log("names", typeof fs.mkdtempDisposableSync, typeof fs.mkdtempDisposable, fs.mkdtempDisposableSync === fs.mkdtempDisposable);
+const r = fs.mkdtempDisposableSync("./wjs-x.");
+console.log("shape", typeof r.path === "string", typeof r.remove === "function");
+r.remove(); r.remove();
+console.log("twice-remove-ok");
+"#,
+    );
+    for line in [
+        "names function function true",
+        "shape true true",
+        "twice-remove-ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

@@ -2068,8 +2068,6 @@ export default __api;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn uds_marker_splits_path_and_mode() {
         // "UDS:<path>[\n<modeBits>]" 约定：无 \n 即无 modeBits。

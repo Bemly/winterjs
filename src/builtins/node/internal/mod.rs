@@ -35,6 +35,7 @@ pub mod types;
 pub mod util;
 pub mod validators;
 pub mod webstream_adapters;
+pub mod zip;
 
 /// internal 表（`node:internal/*` → 源；顺序即 `available()` 过滤无关）。
 pub const INTERNALS: &[(&str, &str)] = &[
@@ -62,6 +63,11 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/encoding", encoding::SOURCE),
     ("node:internal/buffer", buffer::SOURCE),
     ("node:internal/webstream_adapters", webstream_adapters::SOURCE),
+    ("node:internal/zip/constants", zip::constants::SOURCE),
+    ("node:internal/zip/binary", zip::binary::SOURCE),
+    ("node:internal/zip/content-size", zip::content_size::SOURCE),
+    ("node:internal/zip/dos", zip::dos::SOURCE),
+    ("node:internal/zip/extra-fields", zip::extra_fields::SOURCE),
     ("node:internal/streams/legacy", streams::legacy::SOURCE),
     ("node:internal/streams/state", streams::state::SOURCE),
     ("node:internal/streams/utils", streams::utils::SOURCE),
@@ -121,7 +127,7 @@ mod tests {
         assert_eq!(normalize_internal("internal/nope"), None);
         assert_eq!(normalize_internal("errors"), None);
         assert_eq!(normalize_internal("node:internal/errors"), Some("node:internal/errors"));
-        assert_eq!(INTERNALS.len(), 44);
+        assert_eq!(INTERNALS.len(), 49);
         for (name, src) in INTERNALS {
             assert!(source(name).is_some(), "{name} missing");
             assert!(!src.is_empty(), "{name} empty source");

@@ -191,7 +191,7 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | net | ~~server close/listen 时序~~ ✅ 2026-09-19 转绿（G2 server 选项面 blockList/maxConnections/drop/pauseOnConnect/close 窗口 + G2 relisten `__closing` 残留旗修复）；余 cargo-harness 下 net_remote/unix_socket 的 SEGV 已修（with_str_args GC 悬垂） | ~10 件 | 已收官 |
 | net | TIMEOUT 9 / Happy Eyeballs 3 / worker 投递 3 / large-string 1 | ~16 件 | 背压语义 + 竞速回落，另案 |
 | zlib | ~~增量语义~~ ✅ 2026-09-19 转绿（G9-1 Rust 状态机 + G9-2 JS 流类接线：write 即时压出/flush 档位即时出边界/finishFlush 容忍/rejectGarbageAfterEnd/一次性面切引擎错误口径对真机；6 目标套件+连带 5 件全绿，zlib 域 73/81） | ~6 件 | 已收官 |
-| zlib | brotli 字典 / zstd pledged-src-size / Web `DecompressionStream` | ~4 件 | G9-3 待做；字典 zlib 族已随 G9-2 落地（FDICT/set_dictionary），余 brotli/zstd 字典流式 + pledged + DecompressionStream；dictionary 套件 ArrayBuffer-dict reset 组合的 zlib_rs bad state 一件回归随修 |
+| zlib | ~~brotli 字典 / zstd pledged-src-size / Web DecompressionStream~~ ✅ 2026-09-19 转绿（G9-3：raw 字典构造期主动 set_dictionary；一次性压缩走引擎收口（dict/pledged/错误口径单点，字节对比零回归）；__zDictBytes 严格校验；pledgedSrcSize 全校验面 + 引擎终检 errno=72；constants.ZSTD_error_* 28 项；Web CS/DS 全局+stream/web——4 格式 roundtrip/尾垃圾 readable TypeError/proto 独立；6 目标套件全绿 + 82 件对拍零回归） | — | 已收官 |
 | dgram | ~~recvbuf 系~~ ✅ 2026-09-19 转绿（G1：recvbuf/sendbuf 四方法+隐式绑定+EMSGSIZE 回调路由+数组 send+族匹配解析+ALREADY_BOUND/EBADF 形状；DIFF 53→32，余 connect 族/membership/bindSync/ipv6only 等独立小簇 ~32 件顺延） | 小簇 | 已动工，余件逐 API 续补 |
 | child_process | async AbortSignal 尾件 / async 句柄面 / exec 多字节截断 | ~30 件 | Bun 实现了这些，欠；**fork/IPC handle 传递 ~25 件出局**（Bun 🟡 IPC 缺口，同缺不追） |
 | worker_threads | terminate 深水 / 环境面尾件 | 部分 | Bun 🟡 → parity 确认档；Atomics.wait（引擎面）与 stdio 流面（Bun 同缺倾向）另核 |
@@ -214,32 +214,31 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | G1 dgram recvbuf | ✅ 上 session（DIFF 53→32） |
 | G2 net server 选项面 | ✅ 上 session |
 | G9-1 zlib Rust 状态机 | ✅ 上 session |
-| G9-2 zlib JS 流类接线 | ✅ 本轮（6 目标套件全绿 + 连带 5 件，zlib 域 73/81） |
-| G3 http 校验长尾/chunk 限深 | ✅ 本轮（子 agent 六提交移植，点名 45 件 SAME0 + 连带 15 件） |
-| 集成修复 ×2 | ✅ net relisten `__closing` 挂死（46 分钟）+ net SEGV（with_str_args GC 悬垂）+ stream 9b 回归 |
-| 验收 | `cargo test` 全量 21 target 0 失败 + 冒烟 5/5 |
-| AGENTS.md | ✅ §4.140-144 四坑已记（含"禁连续建 worktree"铁律） |
-| 本节欠账表 | ✅ 三簇收官标注（G3/G2/G9-2 划线转绿） |
+| G9-2 zlib JS 流类接线 | ✅ 上轮（6 目标套件全绿 + 连带 5 件，zlib 域 73/81） |
+| G3 http 校验长尾/chunk 限深 | ✅ 上轮（子 agent 六提交移植，点名 45 件 SAME0 + 连带 15 件） |
+| **G9-3 zlib 尾件**（brotli/zstd 字典/pledged/Web CS·DS） | ✅ 本轮（6 目标套件全绿 + 82 件对拍零回归；一次性压缩走引擎收口 + raw 字典构造期设 + 严格字典校验 + pledged errno=72 + constants 28 项 + Web 全局；AGENTS §4.145-147） |
+| 集成修复 ×2 | ✅ net relisten `__closing` 挂死（46 分钟）+ net SEGV（with_str_args GC 悬垂）+ stream 9b 回归（上轮） |
+| 验收 | `cargo test` 全量 21 target 0 失败 0 警告 + 冒烟 5/5 |
+| AGENTS.md | ✅ §4.140-144 四坑 + §4.145-147 三坑（exec 假绿/一次性 native 丢 opts 二进宫/CS·DS 错误落 readable） |
+| 本节欠账表 | ✅ G3/G2/G9-2/G9-3 划线转绿 |
 
 **新会话入口（按优先级）：**
 
-1. **G9-3 zlib 尾件 ~4 件**：brotli/zstd 字典流式、zstd pledged-src-size、
-   Web `DecompressionStream`（type-error 套件）；dictionary 套件
-   ArrayBuffer-dict reset 组合的 zlib_rs bad state 一件回归随修。
-2. **G6 net 尾件 ~16 件**：TIMEOUT 9 / Happy Eyeballs 3 / worker 投递 3 /
-   large-string 1。
-3. **G4 fs validators 尾件 ~40 件 → G5 child ~30 件 → G8 fs watch/glob
+1. **G6 net 尾件 ~16 件**：TIMEOUT 9 / Happy Eyeballs 3 / worker 投递 3 /
+   large-string 1（开场先读 §4.140/§4.141：net 域黑盒单跑
+   `cargo test --test node net` 全绿后再并发）。
+2. **G4 fs validators 尾件 ~40 件 → G5 child ~30 件 → G8 fs watch/glob
    ~23 件**（下轮可修三连）。
-4. **大簇另案**：G10 http2 compat ~105 件、G11 http TIMEOUT ~110 件、
+3. **大簇另案**：G10 http2 compat ~105 件、G11 http TIMEOUT ~110 件、
    dgram 余 ~32 件、http OutgoingMessage 缓冲模型 5 件（G3 遗留专项）。
-5. **URLPattern 归属**：对 Bun 1.3 实测后拍板（见上"待核对"）。
+4. **URLPattern 归属**：对 Bun 1.3 实测后拍板（见上"待核对"）。
 
 （编号对表：G4=fs validators 尾件行、G5=child_process 行、G6=net 尾件行、
 G8=fs watch 簇行、G10=http2 compat 行、G11=http TIMEOUT 行；
 G1/G2/G3/G9 已收官。）
 
-**新会话开场提示**：先读 AGENTS.md §4.140-144（本轮四坑，尤其 §4.140
-"手工过/cargo 挂≠环境问题" 与 §4.142 "禁连续建 worktree"）+ 本节欠账表；
-跑分 `TEST_THREAD_ID` 用 35xx+（§4.122 互踩防线）；net 域黑盒先单跑验证
-（`cargo test --test node net`，全绿后再并发——§4.140/§4.141 两坑都在
-cargo harness 时序下才现形）。
+**新会话开场提示**：先读 AGENTS.md §4.140-147（两轮七坑，尤其 §4.140
+"手工过/cargo 挂≠环境问题"、§4.142 "禁连续建 worktree"、§4.145 跑分
+"exec or die"+glob 路径）+ 本节欠账表；跑分 `TEST_THREAD_ID` 用 35xx+
+（§4.122 互踩防线）；net 域黑盒先单跑验证（`cargo test --test node net`，
+全绿后再并发——§4.140/§4.141 两坑都在 cargo harness 时序下才现形）。

@@ -1247,6 +1247,56 @@ cargo build
   的 `r#"..."#` 抽 JS 源），或放 `/Users/bemly/probe`（家目录，不随 tmp 清理
   消失）；结论引用脚本时注明来源与生成方式。
 
+### 4.145 跑分包装 exec 失败静默假绿：`exec or die` + glob 路径（2026-09-19，G9-3 轮）
+
+- 症状：6 个 zlib 目标套件"双侧全绿"，实为 winterjs **从未执行**——
+  `perl -e 'alarm 20; exec @ARGV' <BIN> --run f.js` 的 exec 对不存在路径
+  失败后 perl 继续走完脚本，正常 exit 0（永假绿）；本仓路径含 U+F8FF
+  （`/Volumes/ Projects`），工具调用里手敲极易被转义打断成
+  `/Volumes//Projects`（no such file），两坑叠加差点把欠账判成已清。
+- 修法：跑分包装一律 `exec @ARGV or die "exec failed: $!"`；二进制路径
+  一律 `WJS=$(echo /Volumes/*/Projects/winterjs/target/debug/winterjs)`
+  glob 解析，禁手敲含特殊字符路径；"全绿得可疑"时先验证二进制真跑过
+  （输出非空/无 "no such file" 尾巴）。
+- 复现：`perl -e 'exec @ARGV' /nonexistent; echo $?` → 0（die 之前）。
+- 推广为铁律：harness 的每条 exec 都必须 or die；结论与常识打架时
+  （node 套件不该全绿）先查执行痕迹再信退出码（§4.93 姊妹篇）。
+
+### 4.146 一次性 native 丢 opts 二进宫 + raw 字典必须构造期设（2026-09-19，G9-3 轮）
+
+- 症状三连：① `zstdCompressSync`/`brotliCompressSync` 走专用一次性 native，
+  opts（dictionary/pledgedSrcSize）**整体丢弃**——pledged 不抛
+  ZSTD_error_srcSize_wrong、brotli dict 静默失效（§4.136"传了≠用了"二进宫）；
+  ② brotli 字典 'string' 漏过校验（`__zBytes` 收 string——数据输入合法但
+  字典非法），漏到 brotli crate 报 "Decompression failed"；③ raw 族字典流
+  inflate 报 "repeated call with bad state"——被动 NEED_DICT 恢复对 raw
+  留 Mode::Bad（raw 无 FDICT 头，zlib 语义字典必须在首次 inflate 前设）。
+- 修法：① 一次性压缩改走 `__zEngineOnce`/引擎（dict/pledged/错误口径
+  单点接线；切前先字节对比——同 quality 下与裸 native 逐字节一致，零回归）；
+  ② `__zDictBytes` 严格校验（Buffer/TypedArray/DataView/ArrayBuffer），
+  一次性面 + `__zStreamBase` 两收口点共用；③ `RawInflate` 建引擎即
+  `set_dictionary`（zlib 族被动 NEED_DICT 恢复保留，dictionary-fail 套件
+  依赖其 "Missing/Bad dictionary" 文案）；④ 四个死 native + 注册项 + 孤儿
+  `__zCall` 一并删除（`grep` 验空）。
+- 教训：选项"传到 JS 函数"≠"传进引擎"；一次性面与流面共用收口点后，
+  新选项只接一处，杜绝两套皮漂移。
+
+### 4.147 Web CS/DS 错误落 readable：pipeTo 的 cancel 语义（2026-09-19，G9-3 轮）
+
+- 症状（设计坑，type-error 套件牵引）：DecompressionStream 尾垃圾错误若从
+  `write()` 抛，WritableStream 的错误经 pipeTo 走 **cancel 链**——readable
+  正常结束，`Array.fromAsync(readable)` 读不到 reject，套件必红。
+- 修法：CS/DS 的解码错误（junk/截断）一律 `ctrl.error()` 落 readable 侧；
+  done 后再写的 junk 也落 readable（套件 `[valid, empty]` 形），不从 write 抛。
+- 真机 26.8.2 逐项对拍：不继承 TransformStream（`instanceof` false，proto
+  链独立）、format 枚举 TypeError（"1st argument 'x' is not a valid enum
+  value of type CompressionFormat."）、`[object DecompressionStream]` tag、
+  junk = TypeError `ERR_TRAILING_JUNK_AFTER_STREAM_END`（node:zlib 引擎
+  junk 码同文复用）、无静态 supportedFormats。
+- 复现：`test-zlib-type-error.js`（修前 DS 缺失 3 not ok；修后全绿）。
+- 推广为铁律：Web 流管道的错误出口看消费侧——readable 的迭代器要 reject，
+  错误就必须 `controller.error()`，走 write 拒绝等于把错误送进 cancel 黑洞。
+
 ## 5. 路线图（已收官，现状以 plan 为准）
 
 - §5 初版四项（`console`/timers → job queue → ESM loader → `fs`/`path`/`process`）

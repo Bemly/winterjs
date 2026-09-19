@@ -819,14 +819,40 @@ ERR_* 码括号仅限 ERR_ 前缀——errno 系 name 恒裸 Error）。剩余�
 >   套件侧 17 Zip 件 15 全绿 + hardening 30/30；security-hardening 仅剩 FIFO
 >   自 spawn（`-e`，全 flag 设计 ⏭️）。
 >
-> ### 剩余红项（约 12，均另案或记档）
-> - **增量语义约 6 件**（flush/premature-end/reject-garbage-after-end/
->   truncated/write-after-end/from-gzip-trailing-garbage）：
->   需真流式编解码状态机，与本轮外既有"整收"架构冲突，另案。
-> - **杂项**：brotli-dictionary（字典面）、zstd-pledged-src-size、
->   premature-end/truncated/write-after-end/reject-garbage/from-gzip-trailing
->   （增量解码面，同上另案）、type-error（Web `DecompressionStream` 缺失，另切片）、
->   brotli-16GB（16G 量级用例，本机资源门控不跑，逻辑上属流式分块面）。
+> ### 三轮已修（2026-09-19，G9-3 欠账轮收官）
+>
+> - **增量语义 6 件转绿**（G9-1 Rust 状态机 + G9-2 JS 流类接线，见 plan3 §5）。
+> - **G9-3 尾件 4 件转绿**（本轮）：
+>   - **dictionary**：raw 族字典流 "repeated call with bad state"——RawInflate
+>     改构造期主动 `set_dictionary`（zlib 语义：raw 无 FDICT 头，字典必须在
+>     首次 inflate 前设）；zlib 族被动 NEED_DICT 恢复保留（dictionary-fail
+>     套件文案依赖）；Buffer/ArrayBuffer/Uint8Array/DataView 四源 + reset
+>     组合全过。模块单测 zdbg 4 件 + 黑盒 `phase10g_zlib_dict_pledged_webstream`。
+>   - **brotli-dictionary**：一次性压缩改走引擎收口（dict/quality/错误口径
+>     单点化；切前字节对比——同 quality 下与裸 native 逐字节一致）；
+>     字典严格校验 `__zDictBytes`（'string' 是合法数据输入但非法字典，
+>     ERR_INVALID_ARG_TYPE）。
+>   - **zstd-pledged-src-size**：`pledgedSrcSize` 全校验面（'1'/null→ARG_TYPE、
+>     NaN/±Infinity/非整数/负/MAX_SAFE+1→OUT_OF_RANGE）+ 引擎终检
+>     （mismatch→`ZSTD_error_srcSize_wrong`，`err.errno=72`）+
+>     `constants.ZSTD_error_*` 28 项真机逐项入库。
+>   - **type-error**：Web `CompressionStream`/`DecompressionStream` 落地
+>     （prelude 全局 + node:stream/web 导出）：4 格式 roundtrip、尾垃圾
+>     readable TypeError（pipeTo cancel 语义——错误必须 ctrl.error，
+>     write 拒绝走 cancel 链读不到，AGENTS §4.147）、format 枚举 TypeError
+>     文案逐字、proto 链独立（不继承 TransformStream）、toStringTag。
+>   套件点名 6/6 全绿；全量 82 件对拍零回归（11 件 SAME1 双红 + zip 自 spawn
+>   2 件 + brotli-16GB 资源门控，均 node 同红或既有 ⏭️）。AGENTS §4.145-147。
+>
+> ### 剩余红项（SAME1 双红 + 既有 ⏭️，无欠账）
+>
+> - 11 件 SAME1 双红（node 26.8.2 同红：internals/fs 环境面——test-zlib.js/
+>   zstd.js/params.js/from-gzip.js 系等）；`test-zlib-zip-internals.js`
+>   node 红、本仓绿（反向）；zip-experimental-warning / zip-security-hardening
+>   （自 spawn `-e`，全 flag CLI 设计 ⏭️）；brotli-16GB（16GB 无背压解压
+>   OOM abort，本机资源门控 ⏭️，属流式分块/背压欠账，net/http 同族另案）。
+> - 增量语义 6 件与杂项 4 件（brotli-dictionary/zstd-pledged-src-size/
+>   type-error/增量解码面）已全部转绿，见上两轮记录。
 
 ## child_process
 

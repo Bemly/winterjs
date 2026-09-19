@@ -1083,6 +1083,8 @@ fn with_str_args(
 /// 内嵌 ESM 源（`node:net`；Socket/Server 建立在 node:events 之上）。
 pub const SOURCE: &str = r#"
 import { EventEmitter } from "node:events";
+import { StringDecoder } from "node:string_decoder";
+import { __etAdd, __etRemove } from "node:internal/events/abort_listener";
 const Buffer = globalThis.Buffer;
 
 function __b64dec(s) {
@@ -1158,6 +1160,29 @@ class Socket extends EventEmitter {
     }
     this.__id = 0;
     this.__enc = null;
+    this.__dec = null;
+    this.__peerFin = false;
+    // signal 选项（abort-controller 套件 testConstructor* 三形）：构造即 aborted
+    // → 异步 destroy(AbortError)（once('close') 以 error reject）；live → 注册
+    // abort→destroy（直调 addEventListener 须入侧表供 events.listenerCount 读）。
+    if (options !== null && typeof options === "object" && options.signal !== undefined) {
+      const __sig = options.signal;
+      if (__sig.aborted) {
+        queueMicrotask(() => {
+          const e = new Error("The operation was aborted"); e.name = "AbortError"; e.code = "ABORT_ERR";
+          try { this.destroy(e); } catch {}
+        });
+      } else {
+        const __sigHandler = () => {
+          __etRemove(__sig, "abort", __sigHandler);
+          const e = new Error("The operation was aborted"); e.name = "AbortError"; e.code = "ABORT_ERR";
+          // 同 connect 侧：套件在 abort 之后才挂 once('close')，destroy 推 microtask。
+          queueMicrotask(() => { try { this.destroy(e); } catch {} });
+        };
+        __sig.addEventListener("abort", __sigHandler, { once: true });
+        __etAdd(__sig, "abort", __sigHandler);
+      }
+    }
     // node 口径（remote-address 双套件点名）：连接完成前 remote* 全 undefined
     // （够不上 null；发布点在 __ev-connect，不在 __realConnect）。
     this.remoteAddress = undefined;
@@ -1285,7 +1310,7 @@ class Socket extends EventEmitter {
         this.__pauseBuf = [];
         for (const u8 of buf) {
           this.bytesRead += u8.length;
-          this.emit("data", this.__enc ? new TextDecoder(this.__enc).decode(u8) : Buffer.from(u8));
+          this.emit("data", this.__dec ? this.__dec.write(u8) : Buffer.from(u8));
         }
       });
       return this;
@@ -1323,12 +1348,12 @@ class Socket extends EventEmitter {
       this.readable = true; this.writable = true;
       this.__connected = false;
       this.__ended = false; this.__finSent = false; this.__endAfterFlush = false;
-      this.__hadError = false; this.__handleClosed = false;
+      this.__hadError = false; this.__handleClosed = false; this.__peerFin = false;
       this._handle = null;
       this.__pendW = []; this.__pendBytes = 0;
       this.__id = 0;
     }
-    let port, host, cb, __noDelay, signal, sockPath = null, __blockList = null, __lookup = null, __halfOpen;
+    let port, host, cb, __noDelay, signal, sockPath = null, __blockList = null, __lookup = null, __halfOpen, __famOpt = 0;
     if (typeof args[0] === "object" && args[0] !== null) {
       if (args[0].fd !== undefined) {
         // node 口径：listen({fd}) 非法 fd 即异步 EINVAL（error 事件；真机实证）。
@@ -1351,7 +1376,20 @@ class Socket extends EventEmitter {
         sockPath = String(args[0].path); ({ noDelay: __noDelay, signal } = args[0]);
         cb = typeof args[1] === "function" ? args[1] : undefined;
       } else {
-        ({ port, host = "127.0.0.1", noDelay: __noDelay, signal, blockList: __blockList, lookup: __lookup, allowHalfOpen: __halfOpen } = args[0]);
+        ({ port, host = "127.0.0.1", family: __famOpt, noDelay: __noDelay, signal, blockList: __blockList, lookup: __lookup, allowHalfOpen: __halfOpen } = args[0]);
+        // autoSelectFamily 校验（HE 校验族套件真机口径）：非 boolean → ARG_TYPE；
+        // attemptTimeout 仅在生效 autoSelectFamily 下验 int [1,60000] → OUT_OF_RANGE。
+        if (args[0].autoSelectFamily !== undefined && typeof args[0].autoSelectFamily !== "boolean") {
+          const e = new TypeError(`The "options.autoSelectFamily" property must be of type boolean. Received type ${typeof args[0].autoSelectFamily} (${String(args[0].autoSelectFamily)})`);
+          e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+        }
+        if ((args[0].autoSelectFamily ?? __autoSelectFamily) && args[0].autoSelectFamilyAttemptTimeout !== undefined) {
+          const __att = args[0].autoSelectFamilyAttemptTimeout;
+          if (typeof __att !== "number" || !Number.isInteger(__att) || __att < 1 || __att > 60000) {
+            const e = new RangeError(`The value of "options.autoSelectFamilyAttemptTimeout" is out of range. It must be an integer >= 1 && <= 60000. Received ${String(__att)}`);
+            e.code = "ERR_OUT_OF_RANGE"; throw e;
+          }
+        }
         // node 口径：connect(server.address()) 形——address 对象（{address/family/port}）
         // 直作 options，host 缺省时取 address 键（ready-without-cb 套件点名）。
         if ((args[0].host === undefined || args[0].host === null) && typeof args[0].address === "string") host = args[0].address;
@@ -1433,10 +1471,19 @@ class Socket extends EventEmitter {
         queueMicrotask(() => this.destroy(e));
         return this;
       }
-      signal.addEventListener("abort", () => {
-        const e = new Error("The operation was aborted"); e.name = "AbortError"; e.code = "ABORT_ERR";
-        this.destroy(e);
-      }, { once: true });
+      {
+        // 直调 addEventListener 须入侧表（abort-controller 套件 listenerCount 口径；
+        // 原生忽略 once，handler 自摘）。
+        const __connAbort = () => {
+          __etRemove(signal, "abort", __connAbort);
+          const e = new Error("The operation was aborted"); e.name = "AbortError"; e.code = "ABORT_ERR";
+          // postAbort 形：套件在 abort 之后才挂 once('close')——destroy 的
+          // error/close 必须推 microtask（node destroy 发射为 nextTick）。
+          queueMicrotask(() => this.destroy(e));
+        };
+        signal.addEventListener("abort", __connAbort, { once: true });
+        __etAdd(signal, "abort", __connAbort);
+      }
     }
     // node 口径：blockList 命中即 ERR_IP_BLOCKED（connect 前，不建连接）；
     // lookup 形：自定义解析（(host, opts, cb)；cb(null, addr[, family] | [{address, family}])）。
@@ -1444,6 +1491,9 @@ class Socket extends EventEmitter {
       if (__blockList && typeof __blockList.check === "function" && finalHost !== null && __blockList.check(finalHost)) {
         const e = new Error(`IP(${finalHost}) is blocked by net.BlockList`);
         e.code = "ERR_IP_BLOCKED"; e.syscall = "connect";
+        // HE 链中：blockList 命中即该地址尝试失败（不走 task，无 close 事件），
+        // 直接推进下一地址；末位命中由 __heAdvance 收口 error+close。
+        if (this.__heOnErr) { this.__heLast = e; this.__heAdvance(); return this; }
         queueMicrotask(() => this.destroy(e));
         return this;
       }
@@ -1453,8 +1503,11 @@ class Socket extends EventEmitter {
     if (sockPath !== null) return __doConnect(null);
     if (typeof __lookup === "function") {
       let called = false;
+      // autoSelectFamily 生效时以 all:true 拉全地址（autoselectfamily-default
+      // 套件的 mocked lookup 只在 all:true 下给数组）→ 多地址走 __heTry 串行回落。
+      const __heAll = (args[0].autoSelectFamily ?? __autoSelectFamily) === true;
       try {
-        __lookup(String(host), { family: 0, hints: 0, all: false }, (err, addr, family) => {
+        __lookup(String(host), { family: __famOpt || 0, hints: 0, all: __heAll }, (err, addr, family) => {
           if (called) return; called = true;
           if (err) { queueMicrotask(() => this.destroy(err)); return; }
           // node onlookup：family ∉ {4,6} → ERR_INVALID_ADDRESS_FAMILY（异步 error 事件，
@@ -1466,12 +1519,57 @@ class Socket extends EventEmitter {
             queueMicrotask(() => this.destroy(e)); return;
           }
           const first = Array.isArray(addr) ? addr[0].address : addr;
+          if (__heAll && Array.isArray(addr) && addr.length > 1) {
+            this.__heStart(addr, __doConnect, cb);
+            return;
+          }
           __doConnect(String(first));
         });
       } catch (e) { queueMicrotask(() => this.destroy(e)); return this; }
       return this;
     }
     return __doConnect(String(host));
+  }
+  // Happy Eyeballs 串行回落（autoSelectFamily-default 套件）：按 lookup 数组序
+  // 逐地址尝试，中间失败（error/close）被 __heOnErr 钩吞掉，close 后复位重试
+  // 下一地址；connect 成功即拆钩。记档：attemptTimeout 竞速未实现（回环
+  // ECONNREFUSED 即时失败，套件不经超时路径）。
+  __heStart(addrs, doConnect, cb) {
+    this.__heSeq = { addrs, doConnect, cb, i: 0 };
+    this.__heOnErr = () => {};
+    this.__heTry();
+  }
+  __heTry() {
+    const seq = this.__heSeq;
+    // 统一走 __doConnect 闭包：blockList 校验每地址都生效（blocklist 套件
+    // 多 IP 全屏蔽形——直接 __realConnect 会绕过拦截并停摆回落链）。
+    seq.doConnect(seq.addrs[seq.i].address);
+  }
+  __heReset() {
+    // 与 connect() 的 destroyed 复位分支同款（boundsocket reconnect-after-destroy 口径），
+    // 但保留 __pendW——HE 失败尝试期间的用户写要带到最终连接（default 套件
+    // write('request') 先于 connect 的缓冲形）。
+    this.destroyed = false;
+    this.readable = true; this.writable = true;
+    this.__connected = false;
+    this.__ended = false; this.__finSent = false; this.__endAfterFlush = false;
+    this.__hadError = false; this.__handleClosed = false; this.__peerFin = false;
+    this._handle = null;
+    this.__id = 0;
+  }
+  __heAdvance() {
+    const seq = this.__heSeq;
+    seq.i++;
+    if (seq.i < seq.addrs.length) {
+      this.__heReset();
+      this.__heOnErr = () => {};
+      this.__heTry();
+    } else {
+      const last = this.__heLast;
+      this.__heSeq = null; this.__heOnErr = null;
+      this.destroyed = true; this._handle = null;
+      queueMicrotask(() => { this.emit("error", last); this.emit("close", true); });
+    }
   }
   // 真连接段（blockList/lookup 前置之后；adopt 预置 local 面）。
   __realConnect(finalHost, port, cb, __noDelay, signal, sockPath) {
@@ -1533,6 +1631,8 @@ class Socket extends EventEmitter {
           this.__endAfterFlush = false;
           if (this.__id) __wjs_net_end(this.__id);
         }
+        // HE 成功：拆回落钩（此后 close 走正常路径）。
+        this.__heOnErr = null; this.__heSeq = null;
         this.emit("connect");
         // 注：真机另序发 'ready'（connect → ready，已接受端不发），但本仓暂不发射——
         // 同步/microtask 发射在并行负载下与静默进程死亡（exit -10，无崩溃报告）强相关，
@@ -1545,16 +1645,22 @@ class Socket extends EventEmitter {
         const u8 = __b64dec(payload);
         if (this.__paused) { this.__pauseBuf.push(u8); break; }
         this.bytesRead += u8.length;
-        this.emit("data", this.__enc ? new TextDecoder(this.__enc).decode(u8) : Buffer.from(u8));
+        this.emit("data", this.__dec ? this.__dec.write(u8) : Buffer.from(u8));
         break;
       }
       case "end": {
         this.readable = false;
+        this.__peerFin = true;
         // 池化空闲 socket 见 FIN 即销毁（半关不可复用；否则写端永活、条目永泄，
         // 10b https 保活案；Node 同样把 end 掉的 socket 踢出池）。
         if (this.__inPool) {
           this.destroy();
           break;
+        }
+        // setEncoding 残余字节 flush（分包切断的多字节尾在 end 前补齐）
+        if (this.__dec) {
+          const rest = this.__dec.end();
+          if (rest) this.emit("data", rest);
         }
         this.emit("end");
         // Node 口径：非 allowHalfOpen 时收 FIN 即自动回 FIN（'close' 随后）
@@ -1580,10 +1686,15 @@ class Socket extends EventEmitter {
           const tgt = this.__udsTarget ?? ((rh !== undefined && rh !== null && rp !== undefined && rp !== null) ? `${rh}:${rp}` : null);
           if (tgt) se.message = `connect ${o.code} ${tgt}`;
         }
+        // HE 串行回落：中间地址的连接失败被钩吞（不落用户监听），close 后重试。
+        if (this.__heOnErr) { this.__heLast = se; break; }
         this.emit("error", se);
         break;
       }
-      case "close": this.destroyed = true; this._handle = null; this.emit("close", this.__hadError === true); break;
+      case "close":
+        // HE：失败尝试的 close → 推进下一地址（或末位失败收口）。
+        if (this.__heOnErr) { this.__heAdvance(); break; }
+        this.destroyed = true; this._handle = null; this.emit("close", this.__hadError === true); break;
     }
   }
   // node 口径：pending = 尚无可用句柄——连接中 true、连接完成 false、
@@ -1637,6 +1748,17 @@ class Socket extends EventEmitter {
   }
   write(data, enc, cb) {
     const cb2 = typeof enc === "function" ? enc : cb;
+    // net 口径（write-after-end-nt 套件真机形）：本地已 end 且对端已 FIN 后再写
+    // → Error EPIPE 'This socket has been ended by the other party'——cb 与 error
+    // 事件都下一 tick。两条件缺一不可：仅对端 FIN（writable 套件 'end' 后写）
+    // 与仅本地 end（G7 write-after-end 形 STREAM_WRITE_AFTER_END）都不走此路。
+    if (this.__peerFin === true && this.__ended === true && this.allowHalfOpen !== true) {
+      const e = new Error("This socket has been ended by the other party");
+      e.code = "EPIPE"; e.errno = 32; e.syscall = "write";
+      if (typeof cb2 === "function") queueMicrotask(() => { try { cb2.call(this, e); } catch {} });
+      queueMicrotask(() => this.emit("error", e));
+      return false;
+    }
     // 真机逐字（writable.js _write）：仅 null → ERR_STREAM_NULL_VALUES（undefined 落
     // ARG_TYPE 'Received undefined'）；chunk 类型校验先于 after-end/destroyed 状态检查。
     if (data === null) {
@@ -1675,15 +1797,21 @@ class Socket extends EventEmitter {
     return u8.length <= this.__hwm;
   }
   end(data, enc, cb) {
+    // node 语义：end([chunk][, enc][, cb])——首参函数即 cb（async-iter 套件
+    // `end(resolve)` 形；不识别则回调被当 chunk 落校验 TypeError）。
+    if (typeof data === "function") { cb = data; data = undefined; enc = undefined; }
+    else if (typeof enc === "function") { cb = enc; enc = undefined; }
     if (data !== undefined && data !== null) this.write(data, typeof enc === "string" ? enc : undefined);
-    const cb2 = typeof enc === "function" ? enc : cb;
+    const cb2 = cb;
     this.writable = false; this.__ended = true;
     if (this.__id && this.__connected) __wjs_net_end(this.__id);
     else this.__endAfterFlush = true; // node 口径：FIN 排队到连接完成+缓冲写冲刷之后
     // node 口径：写侧刷完即 'finish'（早于 close；bytes-stats/bytes-read 套件点名）。
     // 本仓同步写队列：FIN 已发即 microtask 派发 finish。
     queueMicrotask(() => this.emit("finish"));
-    if (cb2) this.once("close", cb2);
+    // node 流语义：end 的回调挂 'finish'（非 close——半开对端不回 FIN 时
+    // close 永不来，async-iter 套件 `end(resolve)` 卡死）。
+    if (cb2) this.once("finish", cb2);
     return this;
   }
   // node 口径：resetAndDestroy() = RST 硬关（本端无 error 即 close；
@@ -1709,7 +1837,13 @@ class Socket extends EventEmitter {
     }
     return { address: this.localAddress, port: this.localPort, family: String(this.localAddress).includes(":") ? "IPv6" : "IPv4" };
   }
-  setEncoding(enc) { this.__enc = enc === null || enc === undefined ? null : String(enc); return this; }
+  setEncoding(enc) {
+    this.__enc = enc === null || enc === undefined ? null : String(enc);
+    // 持久解码器（large-string 套件：分包多字节必须跨 chunk 保态——
+    // 每 chunk 新建 TextDecoder 会把切断的序列各吐一个 U+FFFD）。
+    this.__dec = this.__enc ? new StringDecoder(this.__enc) : null;
+    return this;
+  }
   // 10a：ref 真计数（net/dgram 共用 natives；__id 为 0 时静默 no-op）。
   ref() { if (this.__id) __wjs_net_ref(this.__id); return this; }
   unref() { if (this.__id) __wjs_net_unref(this.__id); return this; }
@@ -1891,7 +2025,13 @@ class __ServerClass extends EventEmitter {
           e.code = "ERR_INVALID_ARG_TYPE"; throw e;
         }
         if (o.signal.aborted) queueMicrotask(() => { try { this.close(); } catch {} });
-        else o.signal.addEventListener("abort", () => { try { this.close(); } catch {} }, { once: true });
+        else {
+          // abort-controller 套件：直调 addEventListener 的监听须入侧表
+          // （events.listenerCount 对 EventTarget 读侧表；原生忽略 once，自摘）。
+          const __sigHandler = () => { __etRemove(o.signal, "abort", __sigHandler); try { this.close(); } catch {} };
+          o.signal.addEventListener("abort", __sigHandler, { once: true });
+          __etAdd(o.signal, "abort", __sigHandler);
+        }
       }
       if (typeof o.fd === "number" && o.fd >= 0) {
         // node 口径：listen({fd}) 非法 fd 即异步 EINVAL（error 事件；真机实证）；
@@ -2396,17 +2536,19 @@ export function getDefaultAutoSelectFamily() { return __autoSelectFamily; }
 export function setDefaultAutoSelectFamily(value) { __autoSelectFamily = !!value; }
 export function getDefaultAutoSelectFamilyAttemptTimeout() { return __autoSelectTimeout; }
 export function setDefaultAutoSelectFamilyAttemptTimeout(value) {
+  // 真机口径（HE 校验族套件）：int [1,60000] 之外 OUT_OF_RANGE；
+  // 存取钳 [10,60000]（1/9 → getDefault 10，套件逐项）。
   if (typeof value !== "number" || Number.isNaN(value)) {
     const err = new TypeError("timeout must be a number");
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
-  if (!Number.isFinite(value) || value < 0) {
-    const err = new RangeError("timeout must be >= 0");
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1 || value > 60000) {
+    const err = new RangeError(`The value of "autoSelectFamilyAttemptTimeout" is out of range. It must be an integer >= 1 && <= 60000. Received ${String(value)}`);
     err.code = "ERR_OUT_OF_RANGE";
     throw err;
   }
-  __autoSelectTimeout = value;
+  __autoSelectTimeout = Math.min(Math.max(value, 10), 60000);
 }
 const __api = { Socket, Server, BlockList, BoundSocket, createServer, createConnection, connect, Stream, isIP, isIPv4, isIPv6, getDefaultAutoSelectFamily, setDefaultAutoSelectFamily, getDefaultAutoSelectFamilyAttemptTimeout, setDefaultAutoSelectFamilyAttemptTimeout };
 export default __api;

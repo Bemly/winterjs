@@ -386,13 +386,13 @@ export class ServerResponse extends Writable {
   }
   write(chunk, encoding, cb) {
     if (this.__userEnded) return __writeAfterEnd(this, encoding, cb);
+    if (this.__sockGone || this.__sock === null || this.__sock.destroyed) return false;
     return super.write(chunk, encoding, cb);
   }
   end(chunk, encoding, cb) {
-    const __f = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : cb);
-    if (this.__userEnded || this.destroyed) {
-      // node 口径：end 后/销毁后 end 不抛，回调照跑（outgoing-destroyed 套件）。
-      if (typeof __f === "function") __f();
+    if (this.__userEnded) {
+      const f = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : cb);
+      if (typeof f === "function") f();
       return this;
     }
     // CL 快路径判据（真机）：end 的数据块存在性——write 后裸 end() 不走快路径
@@ -508,6 +508,10 @@ export class ServerResponse extends Writable {
     if (this.__holdTimer !== null) {
       clearTimeout(this.__holdTimer);
       this.__holdTimer = null;
+    }
+    if (this.__sockGone || this.__sock === null || this.__sock.destroyed) {
+      cb();
+      return;
     }
     if (!this.__headSent) {
       // 快捷：end() 为首个头触发点（无 writeHead/write 前置）且请求 1.1 时，
@@ -632,6 +636,9 @@ function __hpe(code, msg) {
 // node Writable 口径：end 后写不抛——错误走 cb（有则）或下一拍 'error'
 //（一次）；errored 后续写静默 false（server-write-after-end/outgoing-destroyed
 // 套件真机对拍）。
+// node Writable 口径：end 后写不抛——错误走 cb（有则）或下一拍 'error'
+//（一次）；errored 后续写静默 false（server-write-after-end/outgoing-destroyed
+// 套件真机对拍）。
 function __writeAfterEnd(msg, encoding, cb) {
   if (msg.__waeErrored || msg.__waeQueued) return false;
   msg.__waeQueued = true;
@@ -654,15 +661,6 @@ function __writeAfterEnd(msg, encoding, cb) {
 export function withHttpServer(Base) {
   class __HttpServer extends Base {
     constructor(...args) {
-      // node _http_server.js：http.Server 底座恒 allowHalfOpen=true——客户端
-      // FIN 的收口由 http 层（连接处理器的 'end' 钩 + httpAllowHalfOpen 旗）
-      // 自管（server.js 套件：半关后第 4 响应仍须可写）。
-      const __o = args[0];
-      if (__o !== null && typeof __o === "object" && !Array.isArray(__o)) {
-        args[0] = { allowHalfOpen: true, ...__o };
-      } else {
-        args = [{ allowHalfOpen: true }, ...args.slice(1)];
-      }
       super(...args);
       const o = (args[0] && typeof args[0] === "object" && !Array.isArray(args[0])) ? args[0] : {};
       this.timeout = 0;
@@ -718,22 +716,22 @@ export function withHttpServer(Base) {
             this.__feedError(sock, e);
           }
         });
-        // node socketOnEnd 口径：客户端 FIN——有在途响应时 socket 保持可写
-        //（半开；server.js/writable-true-after-close 套件的后续响应仍须可写），
-        // 收口延到响应完成（__onDone）；无在途响应即销毁。
+        // node socketOnEnd 口径：客户端 FIN——非 half-open 直接销毁（res 'close'
+        // 经 close 处理器）；half-open 留给响应自身收口（server.js 套件的半关
+        // 后续响应仍须可写），被截断的请求体提前夭折（'aborted' 语义）。
         sock.on("end", () => {
           sock.__finReceived = true;
-          if (!st.res || st.res.destroyed) {
+          if (!this.httpAllowHalfOpen) {
             try { sock.destroy(); } catch { /* gone */ }
           } else {
-            // 客户端 FIN 截断在途请求体：req 流提前夭折（node 'aborted' 语义，
-            // pipeline premature close 口径）；响应侧仍可写，收口在其 close。
             if (st.req !== null && !st.req.complete && !st.req.destroyed) {
               st.req.destroy();
             }
-            st.res.once("close", () => {
-              try { sock.destroy(); } catch { /* gone */ }
-            });
+            if (st.res !== null) {
+              st.res.once("close", () => {
+                try { sock.destroy(); } catch { /* gone */ }
+              });
+            }
           }
         });
         // 连接即开 headers 计时（headersTimeout 内须收到完整头，否则 408）。
@@ -887,8 +885,9 @@ export function withHttpServer(Base) {
             st.framing = null;
             st.res = null;
             st.sawRequest = true;
-            // 半关连接（客户端已 FIN）：响应完即收口，不再续 keep-alive。
-            if (sock.__finReceived) {
+            // 半关连接（客户端已 FIN）且这是最后一个在途响应：收口不续
+            // keep-alive；还有管线中响应（st.res 已是后继请求的 res）则继续。
+            if (sock.__finReceived && st.res === res) {
               try { sock.destroy(); } catch { /* gone */ }
               return;
             }
@@ -941,12 +940,14 @@ export function withHttpServer(Base) {
     close(cb) {
       this.__closing = true;
       if (typeof cb === "function") this.once("close", cb);
-      // 只销毁空闲连接（Node 关空闲同款）；有在途 req/res 的连接等响应收完
-      // 自然收口（server.js 套件：close 后第 4 响应仍须可写）。
+      // node close 口径：空闲连接销毁；仍有在途响应的连接 unref（进程不等待，
+      // 响应落地后自然退出——pipeline-assertionerror-finish 套件）。
       for (const sock of this.__sockets) {
         const __st = sock.__httpState;
-        if (!__st || (__st.req === null && __st.res === null)) {
+        if (!__st || __st.req === null) {
           try { sock.destroy(); } catch { /* closed meanwhile */ }
+        } else if (typeof sock.unref === "function") {
+          try { sock.unref(); } catch { /* gone */ }
         }
       }
       super.close();
@@ -1309,9 +1310,9 @@ export function withClientRequest(openSocket, flavor) {
       return super.write(chunk, encoding, cb);
     }
     end(chunk, encoding, cb) {
-      const __f = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : cb);
-      if (this.__userEnded || this.destroyed) {
-        if (typeof __f === "function") __f();
+      if (this.__userEnded) {
+        const f = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : cb);
+        if (typeof f === "function") f();
         return this;
       }
       // CL 快路径判据：end 是首个头触发点（此前无 write）。
@@ -1509,8 +1510,16 @@ export function withClientRequest(openSocket, flavor) {
           res.statusCode = Number(first[1]);
           // 状态行无短语合法（"HTTP/1.1 200\r\n"）：短语空串（status-message 套件）。
           res.statusMessage = first.length >= 3 ? first.slice(2).join(" ") : "";
+          res.httpVersion = first[0].slice(5);
           res.headers = headers;
           res.rawHeaders = rawHeaders;
+          // node parserOnIncomingClient 口径：req.shouldKeepAlive 由响应决定
+          //（1.1 缺省 keep、'close' 关；1.0 须显式 'keep-alive'；
+          // should-keep-alive 套件逐项对拍）。
+          {
+            const __rc = (headers.connection || "").toLowerCase();
+            this.shouldKeepAlive = res.httpVersion === "1.0" ? __rc === "keep-alive" : __rc !== "close";
+          }
           res.socket = this.__sock;
           res.connection = this.__sock;
           res.req = this;

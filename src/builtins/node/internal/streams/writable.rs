@@ -535,6 +535,7 @@ function _write(stream, chunk, encoding, cb) {
     // 同步 errorOrDestroy 会使 'error' 在无监听时当场炸（pipeline-assertionerror-
     // finish 套件现场记录）。10f G3 真机对拍。
     process.nextTick(cb, err);
+    errorOrDestroy(stream, err, true);
     return err;
   }
 

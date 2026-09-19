@@ -1071,11 +1071,13 @@ fn with_str_args(
     kind: &str,
     payload: &str,
 ) -> Option<JSVal> {
+    rooted!(&in(cx) let g = global); // global 裸指针入 GC 槽（§4.80）
+    rooted!(&in(cx) let f = fun); // fun 裸 JSVal 入槽
     rooted!(&in(cx) let mut a = UndefinedValue());
     rooted!(&in(cx) let mut b = UndefinedValue());
     kind.to_jsval(cx, a.handle_mut());
     payload.to_jsval(cx, b.handle_mut());
-    crate::jsapi_glue::call_two(cx, global, fun, a.get(), b.get())
+    crate::jsapi_glue::call_two(cx, g.get(), f.get(), a.get(), b.get())
 }
 
 /// 内嵌 ESM 源（`node:net`；Socket/Server 建立在 node:events 之上）。

@@ -115,7 +115,9 @@ s.on("error", (e) => {
   const req = http.request({ port: 1, host: "127.0.0.1" }, () => {});
   req.on("error", () => {}); // 无监听的 error 事件即抛错（Node 口径），此处静默
   req.end();
-  try { req.write("x"); } catch (e3) { console.log("wae", e3.message.startsWith("ERR_STREAM_WRITE_AFTER_END")); }
+  // 10f G3：write-after-end 不抛（node Writable 口径）——错误走 cb（无 cb 则
+  // 异步 'error'，此处已有静默监听）。
+  req.write("x", (e3) => console.log("wae", e3.code === "ERR_STREAM_WRITE_AFTER_END"));
   setTimeout(() => console.log("end-ok"), 30);
 });
 "#,

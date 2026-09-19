@@ -531,8 +531,10 @@ function _write(stream, chunk, encoding, cb) {
   }
 
   if (err) {
+    // node 原文：仅 nextTick(onError)——cb 有则回 err、无则异步 errorOrDestroy。
+    // 多出的同步 errorOrDestroy 会使 'error' 在无监听时当场炸（pipeline-*/
+    // writable-true-after-close 套件现场记录），删（10f G3，真机对拍）。
     process.nextTick(cb, err);
-    errorOrDestroy(stream, err, true);
     return err;
   }
 

@@ -384,14 +384,15 @@ export class ServerResponse extends Writable {
     this.__headStored = true;
     return this;
   }
-  write(chunk, encoding) {
-    if (this.__userEnded) throw new Error("ERR_STREAM_WRITE_AFTER_END: write after end");
-    return super.write(chunk, encoding);
+  write(chunk, encoding, cb) {
+    if (this.__userEnded) return __writeAfterEnd(this, encoding, cb);
+    return super.write(chunk, encoding, cb);
   }
   end(chunk, encoding, cb) {
-    if (this.__userEnded) {
-      const f = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : cb);
-      if (typeof f === "function") f();
+    const __f = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : cb);
+    if (this.__userEnded || this.destroyed) {
+      // node 口径：end 后/销毁后 end 不抛，回调照跑（outgoing-destroyed 套件）。
+      if (typeof __f === "function") __f();
       return this;
     }
     // CL 快路径判据（真机）：end 的数据块存在性——write 后裸 end() 不走快路径
@@ -589,6 +590,26 @@ export class OutgoingMessage extends Writable {
   _implicitHeader() {
     throw new Error("_implicitHeader() method is not implemented");
   }
+  // node 口径：destroy(err) 不外发 'error'（仅记 errored），异步发一次 'close'
+  //（outgoing-destroyed 套件：destroyed/closed/errored 三面 + close 事件）。
+  destroy(err) {
+    if (this.destroyed) return this;
+    this.__omErrored = err ?? null;
+    const __swallow = () => {};
+    this.on("error", __swallow);
+    const __ret = super.destroy(err);
+    queueMicrotask(() => {
+      this.removeListener("error", __swallow);
+      if (!this.__closeEmitted) {
+        this.__closeEmitted = true;
+        this.emit("close");
+      }
+    });
+    return __ret;
+  }
+  get errored() {
+    return this.__omErrored ?? (this._writableState ? this._writableState.errored : null);
+  }
 }
 
 // 头段内裸 CR（后随非 LF）检测——client/server 两侧严格门共用
@@ -606,6 +627,24 @@ function __hpe(code, msg) {
   const e = new Error(`Parse Error: ${msg}`);
   e.code = code;
   return e;
+}
+
+// node Writable 口径：end 后写不抛——错误走 cb（有则）或下一拍 'error'
+//（一次）；errored 后续写静默 false（server-write-after-end/outgoing-destroyed
+// 套件真机对拍）。
+function __writeAfterEnd(msg, encoding, cb) {
+  if (msg.__waeErrored || msg.__waeQueued) return false;
+  msg.__waeQueued = true;
+  const f = typeof encoding === "function" ? encoding : cb;
+  queueMicrotask(() => {
+    msg.__waeQueued = false;
+    msg.__waeErrored = true;
+    const err = new Error("ERR_STREAM_WRITE_AFTER_END: write after end");
+    err.code = "ERR_STREAM_WRITE_AFTER_END";
+    if (typeof f === "function") f(err);
+    else msg.emit("error", err);
+  });
+  return false;
 }
 
 // 服务端混入：Base = net.Server / tls.Server（构造实参原样透传基类）。
@@ -679,12 +718,22 @@ export function withHttpServer(Base) {
             this.__feedError(sock, e);
           }
         });
-        // node socketOnEnd 口径：未开 httpAllowHalfOpen → 客户端 FIN 即收口
-        // （end 冲刷在途字节后 FIN）；开了则交由响应自身的收口逻辑（半关连接
-        // 的后续响应仍可写——server.js 套件）。
+        // node socketOnEnd 口径：客户端 FIN——有在途响应时 socket 保持可写
+        //（半开；server.js/writable-true-after-close 套件的后续响应仍须可写），
+        // 收口延到响应完成（__onDone）；无在途响应即销毁。
         sock.on("end", () => {
-          if (!this.httpAllowHalfOpen) {
-            try { sock.end(); } catch { /* gone */ }
+          sock.__finReceived = true;
+          if (!st.res || st.res.destroyed) {
+            try { sock.destroy(); } catch { /* gone */ }
+          } else {
+            // 客户端 FIN 截断在途请求体：req 流提前夭折（node 'aborted' 语义，
+            // pipeline premature close 口径）；响应侧仍可写，收口在其 close。
+            if (st.req !== null && !st.req.complete && !st.req.destroyed) {
+              st.req.destroy();
+            }
+            st.res.once("close", () => {
+              try { sock.destroy(); } catch { /* gone */ }
+            });
           }
         });
         // 连接即开 headers 计时（headersTimeout 内须收到完整头，否则 408）。
@@ -826,7 +875,7 @@ export function withHttpServer(Base) {
           res.__req1_1 = req.httpVersion === "1.1";
           res.req = req;
           req.res = res;
-          res.__keepAlive = keepAlive && !this.__closing;
+          res.__keepAlive = keepAlive;
           res.__headOnly = req.method === "HEAD";
           st.req = req;
           st.framing = framing;
@@ -838,6 +887,11 @@ export function withHttpServer(Base) {
             st.framing = null;
             st.res = null;
             st.sawRequest = true;
+            // 半关连接（客户端已 FIN）：响应完即收口，不再续 keep-alive。
+            if (sock.__finReceived) {
+              try { sock.destroy(); } catch { /* gone */ }
+              return;
+            }
             // 请求+响应完整落地：回空闲期（headersTimeout/keepAliveTimeout 双计时）。
             this.__armIdleTimers(st, sock, true);
             // 连接已销毁（如 mid-body 400/413）则不再 re-feed 剩余缓冲；
@@ -849,12 +903,9 @@ export function withHttpServer(Base) {
               this.__feedError(sock, e);
             }
           };
-          if (this.__closing) {
-            st.buf = st.buf.slice(headEnd + 4);
-            res.writeHead(503);
-            res.end();
-            return;
-          }
+          // node 口径：server.close() 只停监听，既有连接上的后续管线请求照常
+          // 服务（pipeline-assertionerror-finish 套件 mustCall(10) 点名；
+          // 原自创 503 路径会使后续响应写进已 end 的 socket）。
           st.buf = st.buf.slice(headEnd + 4);
           // §4.35：先 emit("request")（监听器登记 data/end），再喂体。
           this.emit("request", req, res);
@@ -1253,14 +1304,14 @@ export function withClientRequest(openSocket, flavor) {
         this.__forceHead = true;
       }
     }
-    write(chunk, encoding) {
-      if (this.__userEnded) throw new Error("ERR_STREAM_WRITE_AFTER_END: write after end");
-      return super.write(chunk, encoding);
+    write(chunk, encoding, cb) {
+      if (this.__userEnded) return __writeAfterEnd(this, encoding, cb);
+      return super.write(chunk, encoding, cb);
     }
     end(chunk, encoding, cb) {
-      if (this.__userEnded) {
-        const f = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : cb);
-        if (typeof f === "function") f();
+      const __f = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : cb);
+      if (this.__userEnded || this.destroyed) {
+        if (typeof __f === "function") __f();
         return this;
       }
       // CL 快路径判据：end 是首个头触发点（此前无 write）。

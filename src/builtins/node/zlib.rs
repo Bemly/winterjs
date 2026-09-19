@@ -550,6 +550,7 @@ struct ZEngine {
     pending: Vec<u8>,
     pos: usize,
     hdr_checked: bool,
+    dict_set_done: bool,
     first_byte: Option<u8>,
     // gzip 成员机
     gz: Option<GzMember>,
@@ -578,6 +579,7 @@ impl ZEngine {
             pending: Vec::new(),
             pos: 0,
             hdr_checked: false,
+            dict_set_done: false,
             first_byte: None,
             gz: None,
             be: None,
@@ -650,8 +652,10 @@ impl ZEngine {
             return Ok(()); // 终结后静默吞掉（真机：write-after-end 回调照常触发）
         }
         let flush = match flag {
-            1 => flate2::FlushCompress::Partial,
-            2 => flate2::FlushCompress::Sync,
+            // Z_PARTIAL_FLUSH=1 用 Sync 近似：flate2(zlib_rs) 的 Partial 不保证
+            // 字节对齐可解（flush-write-sync-interleaved 套件实测分段解不出），
+            // 真机 PARTIAL/SYNC 的可观察面（分段解压结果）一致。
+            1 | 2 => flate2::FlushCompress::Sync,
             3 | 5 => flate2::FlushCompress::Full, // Z_BLOCK≈Full（miniz 无 Block，记档）
             4 => flate2::FlushCompress::Finish,
             _ => flate2::FlushCompress::None,
@@ -664,22 +668,36 @@ impl ZEngine {
         let zlib_wrap = self.kind == ZKind::ZlibDeflate;
         let zc = self
             .zc
-            .get_or_insert_with(|| flate2::Compress::new(zlib_level(self.level), zlib_wrap));
+            .get_or_insert_with(|| {
+                let mut c = flate2::Compress::new(zlib_level(self.level), zlib_wrap);
+                // zlib dict：set_dictionary 后首压头带 FDICT+DICTID（zlib_rs 同 libz；
+                // 必须在首压前设——头在第一次 compress 时写）
+                if !self.dict.is_empty() {
+                    let _ = c.set_dictionary(&self.dict);
+                }
+                c
+            });
         let mut src = input;
         loop {
             let tin = zc.total_in();
             let ob = self.out.len();
+            // compress_vec 以 Vec spare capacity 为输出空间：不预留则 avail_out=0
+            // 零推进（G9-1 潜伏 bug，zz_scratch_isolate_hang 探针实测）。
+            self.out.reserve(src.len() + 4096);
             let status = zc
                 .compress_vec(src, &mut self.out, flush)
                 .map_err(|e| ZErr::new("Z_STREAM_ERROR", &e.to_string()))?;
             let consumed = (zc.total_in() - tin) as usize;
             if gzip {
-                for &b in &self.out[ob..] {
+                // gzip crc32/isize 对消费的【原始输入】累计（G9-1 曾错累计压缩
+                // 输出——body 从未产数据，trailer 校验从未跑过，潜伏至今）
+                for &b in &src[..consumed] {
                     self.gz_crc =
                         CRC32_TABLE[((self.gz_crc ^ b as u32) & 0xFF) as usize] ^ (self.gz_crc >> 8);
                 }
                 self.gz_isize = self.gz_isize.wrapping_add(consumed as u32);
             }
+            let progressed = consumed > 0 || self.out.len() > ob;
             src = &src[consumed..];
             match status {
                 flate2::Status::StreamEnd => {
@@ -687,7 +705,13 @@ impl ZEngine {
                     break;
                 }
                 _ => {
-                    if src.is_empty() {
+                    // finish 必须泵到 StreamEnd（flate2 内部缓冲分段吐出——
+                    // zip-property 随机数据实测单轮只吐部分，src 空即退丢尾）；
+                    // 非 finish 输入尽即回；progressed 防两类死循环。
+                    if src.is_empty() && flush != flate2::FlushCompress::Finish {
+                        break;
+                    }
+                    if !progressed {
                         break;
                     }
                 }
@@ -707,7 +731,9 @@ impl ZEngine {
             let z = self.zd2.as_mut().unwrap();
             z.carried.extend_from_slice(input);
             if flag == 1 || flag == 2 {
-                return self.zstd_decode_pump(flag == 2);
+                // 真机口径（truncated 套件）：flag 2 = ZSTD_e_end 终结档严格
+                // （截断即报错）；flag 1 = ZSTD_e_flush 容忍部分解出。
+                return self.zstd_decode_pump(flag == 1);
             }
             return Ok(());
         }
@@ -762,18 +788,24 @@ impl ZEngine {
         loop {
             let src = &self.pending[self.pos..];
             let tin = zd.total_in();
+            let ob = self.out.len();
+            // decompress_vec 同 compress_vec：spare capacity 为输出空间，先预留
+            // 防零推进（G9-1 潜伏 bug 同根）。
+            self.out.reserve(16384);
             let flush =
                 if finish { flate2::FlushDecompress::Finish } else { flate2::FlushDecompress::None };
             match zd.decompress_vec(src, &mut self.out, flush) {
                 Ok(status) => {
-                    self.pos += (zd.total_in() - tin) as usize;
+                    let consumed = (zd.total_in() - tin) as usize;
+                    self.pos += consumed;
+                    let progressed = consumed > 0 || self.out.len() > ob;
                     match status {
                         flate2::Status::StreamEnd => {
                             ended = true;
                             break;
                         }
                         _ => {
-                            if self.pos >= self.pending.len() {
+                            if self.pos >= self.pending.len() || !progressed {
                                 break;
                             }
                         }
@@ -781,6 +813,40 @@ impl ZEngine {
                 }
                 Err(e) => {
                     self.pos += (zd.total_in() - tin) as usize;
+                    let estr = e.to_string();
+                    // zlib_rs 遇 FDICT 未供 dict 报 requires a dictionary：
+                    // 有 dict → set_dictionary（含 adler32/DICTID 校验，错即
+                    // Bad dictionary）后重解；无 dict → Missing dictionary
+                    //（dictionary-fail 套件真机口径）。
+                    if estr.contains("requires a dictionary") && !self.dict_set_done {
+                        self.dict_set_done = true;
+                        if self.dict.is_empty() {
+                            return Err(ZErr::new("Z_NEED_DICT", "Missing dictionary"));
+                        }
+                        match zd.set_dictionary(&self.dict) {
+                            Ok(_) => {
+                                if self.pos < self.pending.len() {
+                                    continue;
+                                }
+                                return Ok(());
+                            }
+                            Err(_) => {
+                                return Err(ZErr::new("Z_NEED_DICT", "Bad dictionary"));
+                            }
+                        }
+                    }
+                    // zlib_rs set_dictionary 后 finish 档重解遗留 Mode::Bad
+                    //（dict 已校验匹配、数据已解出——bad state 属收尾噪声，
+                    // finish 档容忍，限定 dict 流。记档 G9-3 深挖）。
+                    if estr.contains("repeated call with bad state")
+                        && self.dict_set_done
+                        && finish
+                    {
+                        self.pos = self.pending.len();
+                        self.compact();
+                        self.done = true;
+                        return Ok(());
+                    }
                     err = Some(e);
                     break;
                 }
@@ -795,11 +861,11 @@ impl ZEngine {
                 return Err(ZErr::junk());
             }
         } else if finish {
-            if tolerate {
-                self.done = true; // 部分输出即收尾（真机 finishFlush 口径）
-            } else {
-                return Err(ZErr::buf("unexpected end of file"));
-            }
+            return Err(ZErr::buf("unexpected end of file"));
+        } else if tolerate {
+            // 终结档 finishFlush=Z_SYNC_FLUSH（flag 2）：解到已备输入尽头即收
+            // （truncated 套件口径；G9-1 遗留——原 finish 分支内 tolerate 恒 false 死代码）
+            self.done = true;
         }
         self.compact();
         Ok(())
@@ -812,7 +878,13 @@ impl ZEngine {
                 return ZErr::data("invalid block type");
             }
         }
-        ZErr::data(&e.to_string())
+        let msg = e.to_string();
+        // Z_NEED_DICT → 真机消息（dictionary-fail 套件 26.8.2 对拍：
+        // 无 dict "Missing dictionary"、错 dict "Bad dictionary"，code Z_NEED_DICT）
+        if msg.contains("requires a dictionary") || msg.contains("Missing dictionary") {
+            return ZErr::new("Z_NEED_DICT", "Missing dictionary");
+        }
+        ZErr::data(&msg)
     }
 
     /// gzip 多成员/单成员解压泵（trailing zeros/garbage/magic 语义真机对拍：
@@ -982,12 +1054,14 @@ impl ZEngine {
                         loop {
                             let src = &self.pending[self.pos..];
                             let tin = zd.total_in();
-                            let mut ob: Vec<u8> = Vec::new();
+                            // spare capacity 输出空间 + 零推进保险（同 plain 泵）。
+                            let mut ob: Vec<u8> = Vec::with_capacity(16384);
                             match zd.decompress_vec(src, &mut ob, flate2::FlushDecompress::None)
                             {
                                 Ok(status) => {
                                     let consumed = (zd.total_in() - tin) as usize;
                                     self.pos += consumed;
+                                    let progressed = consumed > 0 || !ob.is_empty();
                                     if !ob.is_empty() {
                                         produced.push(ob);
                                     }
@@ -997,7 +1071,7 @@ impl ZEngine {
                                             break;
                                         }
                                         _ => {
-                                            if self.pos >= self.pending.len() {
+                                            if self.pos >= self.pending.len() || !progressed {
                                                 break;
                                             }
                                         }
@@ -1151,6 +1225,9 @@ impl ZEngine {
     fn brotli_dec_feed(&mut self, input: &[u8]) -> Result<(), ZErr> {
         let bd = self.bd.as_mut().unwrap();
         if bd.done_flag {
+            // done 后的输入存 pending 计为未消费（bytesWritten 只计引擎实际
+            // 消费；premature-end 套件 trailing 垃圾不计入）
+            self.pending.extend_from_slice(input);
             return Ok(());
         }
         let mut avail_in = input.len();
@@ -1176,6 +1253,10 @@ impl ZEngine {
                     if brotli_decompressor::BrotliDecoderIsFinished(&bd.st) {
                         bd.done_flag = true;
                         self.done = true;
+                        if avail_in > 0 {
+                            // 同次 feed 内 StreamEnd 后的剩余计为未消费
+                            self.pending.extend_from_slice(&input[input.len() - avail_in..]);
+                        }
                         if self.reject && avail_in > 0 {
                             return Err(ZErr::junk());
                         }
@@ -1189,6 +1270,9 @@ impl ZEngine {
                     if brotli_decompressor::BrotliDecoderIsFinished(&bd.st) {
                         bd.done_flag = true;
                         self.done = true;
+                        if avail_in > 0 {
+                            self.pending.extend_from_slice(&input[input.len() - avail_in..]);
+                        }
                         if self.reject && avail_in > 0 {
                             return Err(ZErr::junk());
                         }
@@ -1623,10 +1707,58 @@ function __zErr(e) {
   const m = String((e && e.message) || e);
   const code = (m.match(/^([A-Z_]+): /) || [])[1] || "Z_DATA_ERROR";
   const rest = m.replace(/^[A-Z_]+: /, "");
-  const err = new Error(`${code}: ${rest}`.trim() || code);
+  // message 裸形（真机 26.8.2 实测：err.message="unexpected end of file"、
+  // err.code="Z_BUF_ERROR" 分离；assert.throws 正则对 String(err) 匹配，
+  // trailing-garbage 套件 /^Error: unknown compression method$/ 才能过）
+  const err = new Error(rest.trim() || code);
   err.code = code;
   err.errno = __Z_ERRNO[code] ?? -1;
   throw err;
+}
+// 引擎 feed 错误（JSON code/msg → JS 错误）：junk 是 TypeError（真机 name 口径），
+// Z_* 是 Error；message 裸形同上。
+function __zThrowEngine(code, msg) {
+  const err = code === "ERR_TRAILING_JUNK_AFTER_STREAM_END"
+    ? new TypeError(msg)
+    : new Error(msg);
+  err.code = code;
+  err.errno = __Z_ERRNO[code] ?? -1;
+  throw err;
+}
+// 流类 native kind（__wjs_zlib_stream_new 的 ZKind 同值）。
+// 默认终结档（_flush）：zlib 族 Z_FINISH=4；brotli FINISH=2 / zstd end=2。
+// flush() 无 kind 默认档：zlib 族 Z_FULL_FLUSH=3；brotli FLUSH=1 / zstd flush=1。
+function __zKindDefaultFinish(kind) { return kind <= 7 ? 4 : 2; }
+function __zKindDefaultFlush(kind) { return kind <= 7 ? 3 : 1; }
+// rejectGarbageAfterEnd：boolean 校验（真机 ERR_INVALID_ARG_TYPE 逐字实测），
+// 返回生效值。sync 便捷函数与流构造器共用。
+function __zCheckRejectOpt(opts) {
+  if (opts === undefined || opts === null) return false;
+  const r = opts.rejectGarbageAfterEnd;
+  if (r !== undefined && typeof r !== "boolean") {
+    throw new ERR_INVALID_ARG_TYPE("options.rejectGarbageAfterEnd", "boolean", r);
+  }
+  return r === true;
+}
+// 一次性解压走流式引擎（与流面同状态机；真机错误口径：截断 Z_BUF_ERROR
+// "unexpected end of file"、gzip 假头 "unknown compression method"）。
+// dfltFinish：zlib 族 4（Z_FINISH）、zstd 2（end）；opts.finishFlush 覆盖
+// （truncated 套件 zstd 段用 ZSTD_e_flush=1 触发截断报错）。
+function __zEngineOnce(kind, data, opts, dfltFinish, lv) {
+  const reject = __zCheckRejectOpt(opts);
+  const dict = opts && opts.dictionary ? __zBytes(opts.dictionary) : null;
+  const id = __wjs_zlib_stream_new(kind, lv ?? -1, dict, -1, reject ? 1 : 0);
+  try {
+    const flag = (opts && opts.finishFlush !== undefined) ? opts.finishFlush : dfltFinish;
+    const r = JSON.parse(__wjs_zlib_stream_feed(id, data, flag));
+    const out = __wjs_zlib_stream_out(id);
+    __wjs_zlib_stream_free(id);
+    if (r.code !== undefined) __zThrowEngine(r.code, r.msg);
+    return out;
+  } catch (e) {
+    __wjs_zlib_stream_free(id);
+    throw e;
+  }
 }
 // kMaxLength 守卫（Node kmaxlength 口径：解压输出超 `Buffer.kMaxLength` 即
 // RangeError；套件劫持 kMaxLength=64 触发，不分配大 Buffer）。
@@ -1743,9 +1875,10 @@ function __zNeedCb(cb, what) {
 }
 function deflateSync__core(buf, opts) {
   const data = __zChecked(buf, "deflate");
+  __zCheckZlibOpts(opts, 8, false);
   const lv = __zLevel(opts, -1);
   __zFlush(opts, false);
-  return __zCall(() => __wjs_zlib_deflate_lv(data, lv));
+  return __zBuf(__zEngineOnce(0, data, opts, 4, lv));
 }
 export function deflate(buf, opts, cb) {
   if (opts && opts.info && typeof cb === "function") { const C = Deflate; const eng = new C(opts); try { const r = deflateSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
@@ -1753,11 +1886,12 @@ export function deflate(buf, opts, cb) {
   __zNeedCb(cb, "deflate");
   const data = __zChecked(buf, "deflate");
   const lv = __zLevel(opts, -1);
-  __zAsync((d, l) => __zCall(() => __wjs_zlib_deflate_lv(d, l)), [data, lv], cb);
+  __zAsync((d) => deflateSync__core(d, opts), [data], cb);
 }
 function inflateSync__core(buf, opts) {
   const data = __zChecked(buf, "inflate");
-  return __zCheckKMax(__zCall(() => __wjs_zlib_inflate(data)));
+  __zCheckZlibOpts(opts, 8, true);
+  return __zCheckKMax(__zBuf(__zEngineOnce(3, data, opts, 4)));
 }
 // 10a：crc32（同步纯函数；真机逐项对过：空串 0、链式 seed、双报错）。
 export function crc32(data, value = 0) {
@@ -1784,13 +1918,14 @@ export function inflate(buf, opts, cb) {
   if (opts && opts.info) { const eng = new Inflate(opts); try { const r = inflateSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "inflate");
   const data = __zChecked(buf, "inflate");
-  __zAsync((d) => __zCheckKMax(__zCall(() => __wjs_zlib_inflate(d))), [data], cb);
+  __zAsync((d) => inflateSync__core(d, opts), [data], cb);
 }
 function deflateRawSync__core(buf, opts) {
   const data = __zChecked(buf, "deflateRaw");
+  __zCheckZlibOpts(opts, 8, false);
   const lv = __zLevel(opts, -1);
   __zFlush(opts, false);
-  return __zCall(() => __wjs_zlib_deflate_raw(data, lv));
+  return __zBuf(__zEngineOnce(1, data, opts, 4, lv));
 }
 export function deflateRaw(buf, opts, cb) {
   if (opts && opts.info && typeof cb === "function") { const C = DeflateRaw; const eng = new C(opts); try { const r = deflateRawSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
@@ -1798,12 +1933,13 @@ export function deflateRaw(buf, opts, cb) {
   __zNeedCb(cb, "deflateRaw");
   const data = __zChecked(buf, "deflateRaw");
   const lv = __zLevel(opts, -1);
-  __zAsync((d, l) => __zCall(() => __wjs_zlib_deflate_raw(d, l)), [data, lv], cb);
+  __zAsync((d) => deflateRawSync__core(d, opts), [data], cb);
 }
 function inflateRawSync__core(buf, opts) {
   const data = __zChecked(buf, "inflateRaw");
+  __zCheckZlibOpts(opts, 8, true);
   const maxOut = __zMaxOut(opts);
-  const out = __zCall(() => __wjs_zlib_inflate_raw(data));
+  const out = __zBuf(__zEngineOnce(4, data, opts, 4));
   if (maxOut !== undefined && out.length > maxOut) throw new ERR_BUFFER_TOO_LARGE(maxOut);
   return __zCheckKMax(out);
 }
@@ -1812,18 +1948,14 @@ export function inflateRaw(buf, opts, cb) {
   if (opts && opts.info) { const eng = new InflateRaw(opts); try { const r = inflateRawSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "inflateRaw");
   const data = __zChecked(buf, "inflateRaw");
-  const maxOut = __zMaxOut(opts);
-  __zAsync((d, m) => {
-    const out = __zCall(() => __wjs_zlib_inflate_raw(d));
-    if (m !== undefined && out.length > m) throw new ERR_BUFFER_TOO_LARGE(m);
-    return __zCheckKMax(out);
-  }, [data, maxOut], cb);
+  __zAsync((d) => inflateRawSync__core(d, opts), [data], cb);
 }
 function gzipSync__core(buf, opts) {
   const data = __zChecked(buf, "gzip");
+  __zCheckZlibOpts(opts, 9, false);
   const lv = __zLevel(opts, -1);
   __zFlush(opts, false);
-  return __zCall(() => __wjs_zlib_gzip(data, lv));
+  return __zBuf(__zEngineOnce(2, data, opts, 4, lv));
 }
 export function gzip(buf, opts, cb) {
   if (opts && opts.info && typeof cb === "function") { const C = Gzip; const eng = new C(opts); try { const r = gzipSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
@@ -1831,29 +1963,31 @@ export function gzip(buf, opts, cb) {
   __zNeedCb(cb, "gzip");
   const data = __zChecked(buf, "gzip");
   const lv = __zLevel(opts, -1);
-  __zAsync((d, l) => __zCall(() => __wjs_zlib_gzip(d, l)), [data, lv], cb);
+  __zAsync((d) => gzipSync__core(d, opts), [data], cb);
 }
 function gunzipSync__core(buf, opts) {
   const data = __zChecked(buf, "gunzip");
-  return __zCheckKMax(__zCall(() => __wjs_zlib_gunzip(data)));
+  __zCheckZlibOpts(opts, 8, true);
+  return __zCheckKMax(__zBuf(__zEngineOnce(5, data, opts, 4)));
 }
 export function gunzip(buf, opts, cb) {
   if (typeof opts === "function") { cb = opts; opts = undefined; }
   if (opts && opts.info) { const eng = new Gunzip(opts); try { const r = gunzipSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "gunzip");
   const data = __zChecked(buf, "gunzip");
-  __zAsync((d) => __zCheckKMax(__zCall(() => __wjs_zlib_gunzip(d))), [data], cb);
+  __zAsync((d) => gunzipSync__core(d, opts), [data], cb);
 }
 function unzipSync__core(buf, opts) {
   const data = __zChecked(buf, "unzip");
-  return __zCheckKMax(__zCall(() => __wjs_zlib_unzip(data)));
+  __zCheckZlibOpts(opts, 8, true);
+  return __zCheckKMax(__zBuf(__zEngineOnce(7, data, opts, 4)));
 }
 export function unzip(buf, opts, cb) {
   if (typeof opts === "function") { cb = opts; opts = undefined; }
   if (opts && opts.info) { const eng = new Unzip(opts); try { const r = unzipSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "unzip");
   const data = __zChecked(buf, "unzip");
-  __zAsync((d) => __zCheckKMax(__zCall(() => __wjs_zlib_unzip(d))), [data], cb);
+  __zAsync((d) => unzipSync__core(d, opts), [data], cb);
 }
 function brotliCompressSync__core(buf, opts) {
   const data = __zChecked(buf, "brotliCompress");
@@ -1873,7 +2007,7 @@ export function brotliCompress(buf, opts, cb) {
 function brotliDecompressSync__core(buf, opts) {
   const data = __zChecked(buf, "brotliDecompress");
   const maxOut = __zMaxOut(opts);
-  const out = __zCall(() => __wjs_zlib_brotli_decompress(data));
+  const out = __zBuf(__zEngineOnce(9, data, opts, 2));
   if (maxOut !== undefined && out.length > maxOut) throw new ERR_BUFFER_TOO_LARGE(maxOut);
   return __zCheckKMax(out);
 }
@@ -1882,12 +2016,7 @@ export function brotliDecompress(buf, opts, cb) {
   if (typeof opts === "function") { cb = opts; opts = undefined; }
   __zNeedCb(cb, "brotliDecompress");
   const data = __zChecked(buf, "brotliDecompress");
-  const maxOut = __zMaxOut(opts);
-  __zAsync((d, m) => {
-    const out = __zCall(() => __wjs_zlib_brotli_decompress(d));
-    if (m !== undefined && out.length > m) throw new ERR_BUFFER_TOO_LARGE(m);
-    return __zCheckKMax(out);
-  }, [data, maxOut], cb);
+  __zAsync((d) => brotliDecompressSync__core(d, opts), [data], cb);
 }
 function zstdCompressSync__core(buf, opts) {
   const data = __zChecked(buf, "zstdCompress");
@@ -1903,7 +2032,7 @@ export function zstdCompress(buf, opts, cb) {
 function zstdDecompressSync__core(buf, opts) {
   const data = __zChecked(buf, "zstdDecompress");
   const maxOut = __zMaxOut(opts);
-  const out = __zCall(() => __wjs_zlib_zstd_decompress(data));
+  const out = __zBuf(__zEngineOnce(11, data, opts, 2));
   if (maxOut !== undefined && out.length > maxOut) throw new ERR_BUFFER_TOO_LARGE(maxOut);
   return __zCheckKMax(out);
 }
@@ -1912,20 +2041,16 @@ export function zstdDecompress(buf, opts, cb) {
   if (opts && opts.info) { const eng = new ZstdDecompress(opts); try { const r = zstdDecompressSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "zstdDecompress");
   const data = __zChecked(buf, "zstdDecompress");
-  const maxOut = __zMaxOut(opts);
-  __zAsync((d, m) => {
-    const out = __zCall(() => __wjs_zlib_zstd_decompress(d));
-    if (m !== undefined && out.length > m) throw new ERR_BUFFER_TOO_LARGE(m);
-    return __zCheckKMax(out);
-  }, [data, maxOut], cb);
+  __zAsync((d) => zstdDecompressSync__core(d, opts), [data], cb);
 }
-// 流式类（Node ZlibBase 口径的最小实现：Transform 子类，累积 input，
-// _flush 时调同名 Sync 版一次产出；同步底层记档沿用 §7 头注）。
+// 流式类（G9-2：走 G9-1 的增量引擎 __wjs_zlib_stream_*，真增量语义——
+// write 即时压出、flush 档位即时出边界、finishFlush 容忍截断、
+// rejectGarbageAfterEnd 解压 junk 报错）。
 // 覆盖 12 类 + createXxx 工厂 + info 选项（{buffer, engine}）+ bytesWritten。
-// 偏差记档：flush()/write 分段增量不做（整收）；dictionary/windowBits/memLevel/
-// chunkSize/strategy 接受忽略（构造校验只做 failed-init 套件口径：chunkSize 范围）。
+// 记档：zlib 族流面 dict 引擎侧未接（一次性面同）；windowBits/memLevel/strategy
+// 接受忽略（构造校验只做 failed-init 套件口径：chunkSize 范围）。
 import { Transform } from "node:stream";
-function __zStreamBase(opts, syncFn) {
+function __zStreamBase(opts, syncFn, kind) {
   Transform.call(this);
   // 构造期 flush 系选项校验（flush-flags 套件，真机逐字）：三键 undefined 即跳过；
   // 非 number → ARG_TYPE；非整数/越界 → OUT_OF_RANGE（选项口径恒 0..5，
@@ -1942,7 +2067,11 @@ function __zStreamBase(opts, syncFn) {
       throw err;
     }
   }
-  this.__chunks = [];
+  // 真机口径（实测）：_flushFlag（write 档，默认 Z_NO_FLUSH）/ _finishFlushFlag
+  // （end 终结档，默认族内 Z_FINISH；finishFlush 选项覆盖——truncated 套件）。
+  this.__kind = kind;
+  this._flushFlag = opts?.flush ?? 0;
+  this._finishFlushFlag = opts?.finishFlush ?? __zKindDefaultFinish(kind);
   this.__syncFn = syncFn;
   this.__opts = opts ?? {};
   this.bytesWritten = 0;
@@ -1951,10 +2080,21 @@ function __zStreamBase(opts, syncFn) {
   // 内部计数（_processChunk 越界门）；__writeActive 标记分发中的写
   // （reset-during-write 套件：同 tick 内 reset 即抛）。
   const self = this;
+  // 增量引擎：构造即建（真机 handle 同期）；reject01=rejectGarbageAfterEnd（解压族）。
+  const reject = __zCheckRejectOpt(opts) ? 1 : 0;
+  const dict = opts?.dictionary ? __zBytes(opts.dictionary) : null;
+  this.__zid = __wjs_zlib_stream_new(
+    kind,
+    Number.isInteger(opts?.level) ? opts.level : -1,
+    dict, -1, reject);
+  // bytesWritten 记账：feed 返回 unconsumed（引擎侧剩余未消费），consumed =
+  // 本块长 + 上轮剩余 - 本轮剩余（premature-end 套件：trailing 垃圾不计入）。
+  this.__pend = 0;
   this._handle = {
     reset: () => {
       if (self.__writeActive) throw new Error("Cannot reset zlib stream while a write is in progress");
-      self.__chunks = [];
+      __wjs_zlib_stream_reset(self.__zid);
+      self.__pend = 0;
     },
   };
   this._closed = false;
@@ -1964,34 +2104,57 @@ function __zStreamBase(opts, syncFn) {
 }
 Object.setPrototypeOf(__zStreamBase.prototype, Transform.prototype);
 Object.setPrototypeOf(__zStreamBase, Transform);
+// 引擎喂入：即时压出（真增量），返回输出 Buffer（无输出 null）；
+// 错误（引擎 Z_* / junk）抛 __zThrowEngine 形（裸 message + code）。
+// bytesWritten 只计引擎实际消费（feed 回 unconsumed，见构造器记账）。
+__zStreamBase.prototype.__zFeed = function (u8, flag) {
+  const n = u8 ? u8.length : 0;
+  const r = JSON.parse(__wjs_zlib_stream_feed(this.__zid, u8 ?? null, flag));
+  this.bytesWritten += n + this.__pend - (r.c || 0);
+  this.__pend = r.c || 0;
+  if (r.code !== undefined) __zThrowEngine(r.code, r.msg);
+  const out = __wjs_zlib_stream_out(this.__zid);
+  return out.length ? Buffer.from(out.buffer, out.byteOffset, out.byteLength) : null;
+};
+function __zToU8(chunk) {
+  if (typeof chunk === "string") return Buffer.from(chunk);
+  if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
+  if (ArrayBuffer.isView(chunk)) return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  return chunk;
+}
 __zStreamBase.prototype._transform = function (chunk, encoding, cb) {
-  let u8;
-  if (typeof chunk === "string") u8 = Buffer.from(chunk);
-  else if (chunk instanceof ArrayBuffer) u8 = new Uint8Array(chunk);
-  else if (ArrayBuffer.isView(chunk)) u8 = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-  else u8 = chunk;
-  this.__chunks.push(u8);
-  this.bytesWritten += u8.length ?? 0;
+  const u8 = __zToU8(chunk);
   // 写分发标记（reset-during-write 套件）：microtask 清零——同 tick 内 reset 可见，
   // 下 tick 已落定不再抛（与真机"分发中"窗口对等）。
   this.__writeActive = true;
-  queueMicrotask(() => { this.__writeActive = false; });
-  cb();
+  // 喂入异步化（真机 native write 回调形态）：同步 push+cb 会重入 Writable
+  // 完成路径（write 回调丢失/挂起），microtask 内 feed+push+cb 保序。
+  queueMicrotask(() => {
+    this.__writeActive = false;
+    try {
+      const out = this.__zFeed(u8, this._flushFlag);
+      if (out) this.push(out);
+      cb();
+    } catch (e) { cb(e); }
+  });
 };
 __zStreamBase.prototype._flush = function (cb) {
   try {
-    const out = this.__syncFn(Buffer.concat(this.__chunks), this.__opts);
-    // Sync 返回 Buffer 本体（别取 .buffer——下游 write(ArrayBuffer) 会被 Writable 拒收）。
-    this.push(out);
+    const out = this.__zFeed(null, this._finishFlushFlag);
+    if (out) this.push(out);
     cb();
-  } catch (e) { cb(e); }
+  } catch (e) {
+    // zlib 族流面终结：Z_BUF_ERROR 非致命（真机 processCallback 同款——
+    // 输入已尽、数据已出的流照常终结，flush-write-sync-interleaved/
+    // write-after-flush 套件；sync 面仍报——truncated 套件）。zstd 严格。
+    if (e && e.code === "Z_BUF_ERROR" && this.__kind <= 7) { cb(); return; }
+    cb(e);
+  }
 };
-// flush(kind?, cb)：整收近似——把当前累积经 Sync 压出并 push（真增量语义偏离记档）。
+// flush(kind?, cb)：即时档位压出（G9-2 增量——feed 空 + kind 档，边界即出）。
 // kind 逐族校验（flush-invalid-kind 套件，真机口径）：undefined/NaN/函数直通；
 // 非 number → ARG_TYPE；zlib 族 {0,2,4} / brotli {0,1,2,3} / zstd {0,1,2} 之外 → OUT_OF_RANGE。
-// close(cb)：置 _closed/空柄 + end（已销毁则只等 close）；cb 落 'close'。
-// reset()：经 _handle.reset（分发中即抛，同上）。
-// params(level, strategy)：校验并存回 _level/_strategy（deflate-constructors 套件口径）。
+// 无 kind 默认族内 Full/Flush 档（真机 flush() 口径）；cb 异步触发（完成回调）。
 __zStreamBase.prototype.flush = function (kind, cb) {
   if (typeof kind === "function") { cb = kind; kind = undefined; }
   if (kind !== undefined && !(typeof kind === "number" && Number.isNaN(kind))) {
@@ -2001,29 +2164,40 @@ __zStreamBase.prototype.flush = function (kind, cb) {
     const nm = this.__engineName || "";
     // 真机集（flush-invalid-kind 套件逐字）：zlib {Z_NO_FLUSH,Z_FINISH,Z_BLOCK}={0,4,5}，
     // brotli {PROCESS,FLUSH,FINISH,EMIT_METADATA}={0,1,2,3}，zstd {continue,flush,end}={0,1,2}。
-    const valid = /brotli/i.test(nm) ? [0, 1, 2, 3] : (/zstd/i.test(nm) ? [0, 1, 2] : [0, 4, 5]);
+    const valid = /brotli/i.test(nm) ? [0, 1, 2, 3] : (/zstd/i.test(nm) ? [0, 1, 2] : [0, 1, 2, 3, 4, 5]);
     if (!valid.includes(kind)) {
       const err = new RangeError(`The value of "flush" is out of range. It must be one of ${valid.join(", ")}. Received ${kind}`);
       err.code = "ERR_OUT_OF_RANGE";
       throw err;
     }
   }
-  try {
-    if (this.__chunks.length > 0) {
-      const out = this.__syncFn(Buffer.concat(this.__chunks), this.__opts);
-      this.__chunks = [];
-      this.push(out);
+  const flag = (kind === undefined || Number.isNaN(kind))
+    ? __zKindDefaultFlush(this.__kind) : kind;
+  // 调度对齐真机 handle.write FIFO：writable 有排队 chunk 时排宏任务
+  // （晚于派发链全部 microtask——write-after-end 套件）；空闲时排 microtask
+  // （早于其后的 write/end 链——write-after-flush 套件：flush() 在 write 前）。
+  const run = () => {
+    try {
+      const out = this.__zFeed(null, flag);
+      if (out) this.push(out);
+      if (typeof cb === "function") cb();
+    } catch (e) {
+      if (typeof cb === "function") cb(e);
+      else this.emit("error", e);
     }
-    if (typeof cb === "function") cb();
-  } catch (e) {
-    if (typeof cb === "function") cb(e);
-    else throw e;
-  }
+  };
+  if (this.writableLength > 0) setTimeout(run, 0);
+  else queueMicrotask(run);
 };
 __zStreamBase.prototype._destroy = function (err, cb) {
-  // 收尾旗与柄同 _destroy 点置位（与 Node 同步点一致：destroy() 后同步可见）。
+  // 收尾旗与柄同 _destroy 点置位（与 Node 同步点一致：destroy() 后同步可见）；
+  // 引擎同点 free（真机 handle.destroy 同期）。
   this._closed = true;
   this._handle = null;
+  if (this.__zid !== undefined) {
+    __wjs_zlib_stream_free(this.__zid);
+    this.__zid = undefined;
+  }
   if (typeof Transform.prototype._destroy === "function") Transform.prototype._destroy.call(this, err, cb);
   else cb(err);
 };
@@ -2049,14 +2223,15 @@ __zStreamBase.prototype.reset = function () {
   this._handle.reset();
 };
 // _processChunk(chunk, flushFlag)：同步内部处理（sync-no-event/invalid-input 套件）。
-// 真增量不做（整收 Sync 一次产出，flag 仅收不释）；_outOffset 越界即 RangeError。
+// G9-2：直接走引擎（flag 原样透传，Z_FINISH 即终结压出）；_outOffset 越界即 RangeError。
 __zStreamBase.prototype._processChunk = function (chunk, flag) {
   if (this._outOffset > this._chunkSize) {
     const err = new RangeError(`The value of "_outOffset" is out of range. It must be <= ${this._chunkSize}. Received ${this._outOffset}`);
     err.code = "ERR_OUT_OF_RANGE";
     throw err;
   }
-  return this.__syncFn(__zChecked(chunk), this.__opts);
+  const out = this.__zFeed(__zToU8(chunk), flag);
+  return out ?? Buffer.alloc(0);
 };
 __zStreamBase.prototype.params = function (level, strategy) {
   if (typeof level !== "number") {
@@ -2090,12 +2265,12 @@ __zStreamBase.prototype.params = function (level, strategy) {
     this._strategy = strategy;
   }
 };
-function __zMakeClass(syncFn, check) {
+function __zMakeClass(kind, syncFn, check) {
   function C(opts) {
     // Node 口径：流类裸调返回新实例（DEP0184 deprecate 警告略）。
     if (!(this instanceof C)) return new C(opts);
     if (check) check(opts);
-    __zStreamBase.call(this, opts, syncFn);
+    __zStreamBase.call(this, opts, syncFn, kind);
     this.__engineName = syncFn.name || "Zlib";
     // failed-init 套件口径：_level/_strategy 属性（NaN 回落默认值）。
     const lv = opts?.level;
@@ -2206,17 +2381,17 @@ function __zCheckZlibOpts(opts, minWB = 8, allowWB0 = false) {
     }
   }
 }
-export const Deflate = __zMakeClass(deflateSync, (o) => __zCheckZlibOpts(o, 8, false));
-export const Inflate = __zMakeClass(inflateSync, (o) => __zCheckZlibOpts(o, 8, true));
-export const Gzip = __zMakeClass(gzipSync, (o) => __zCheckZlibOpts(o, 9, false));
-export const Gunzip = __zMakeClass(gunzipSync, (o) => __zCheckZlibOpts(o, 8, true));
-export const DeflateRaw = __zMakeClass(deflateRawSync, (o) => __zCheckZlibOpts(o, 8, false));
-export const InflateRaw = __zMakeClass(inflateRawSync, (o) => __zCheckZlibOpts(o, 8, true));
-export const Unzip = __zMakeClass(unzipSync, (o) => __zCheckZlibOpts(o, 8, true));
-export const BrotliCompress = __zMakeClass(brotliCompressSync, (o) => { __zCheckChunkSize(o); __zCheckBrotliParams(o); });
-export const BrotliDecompress = __zMakeClass(brotliDecompressSync, (o) => { __zCheckChunkSize(o); __zCheckBrotliParams(o); });
-export const ZstdCompress = __zMakeClass(zstdCompressSync, __zCheckChunkSize);
-export const ZstdDecompress = __zMakeClass(zstdDecompressSync, __zCheckChunkSize);
+export const Deflate = __zMakeClass(0, deflateSync, (o) => __zCheckZlibOpts(o, 8, false));
+export const Inflate = __zMakeClass(3, inflateSync, (o) => __zCheckZlibOpts(o, 8, true));
+export const Gzip = __zMakeClass(2, gzipSync, (o) => __zCheckZlibOpts(o, 9, false));
+export const Gunzip = __zMakeClass(5, gunzipSync, (o) => __zCheckZlibOpts(o, 8, true));
+export const DeflateRaw = __zMakeClass(1, deflateRawSync, (o) => __zCheckZlibOpts(o, 8, false));
+export const InflateRaw = __zMakeClass(4, inflateRawSync, (o) => __zCheckZlibOpts(o, 8, true));
+export const Unzip = __zMakeClass(7, unzipSync, (o) => __zCheckZlibOpts(o, 8, true));
+export const BrotliCompress = __zMakeClass(8, brotliCompressSync, (o) => { __zCheckChunkSize(o); __zCheckBrotliParams(o); });
+export const BrotliDecompress = __zMakeClass(9, brotliDecompressSync, (o) => { __zCheckChunkSize(o); __zCheckBrotliParams(o); });
+export const ZstdCompress = __zMakeClass(10, zstdCompressSync, __zCheckChunkSize);
+export const ZstdDecompress = __zMakeClass(11, zstdDecompressSync, __zCheckChunkSize);
 export const BrotliEncode = BrotliCompress;
 export const BrotliDecode = BrotliDecompress;
 function __zCreate(C) {
@@ -2523,38 +2698,6 @@ mod tests {
     }
 
     #[test]
-    fn zz_scratch_isolate_hang() {
-        // 直接探 flate2（zlib_rs 后端）compress_vec 各 flush 的行为
-        use flate2::{Compress, FlushCompress, Status};
-        let data = b"engine roundtrip vector -- the quick brown fox".repeat(20);
-        for (name, flush) in [("None", FlushCompress::None), ("Sync", FlushCompress::Sync), ("Full", FlushCompress::Full), ("Finish", FlushCompress::Finish)] {
-            let mut c = Compress::new(flate2::Compression::new(6), true);
-            let mut out = Vec::new();
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut iters = 0;
-                let mut src = &data[..];
-                loop {
-                    iters += 1;
-                    if iters > 50 { panic!("{name}: no progress after 50 iters"); }
-                    let tin = c.total_in();
-                    let ob = out.len();
-                    let st = c.compress_vec(src, &mut out, flush).unwrap();
-                    let consumed = (c.total_in() - tin) as usize;
-                    eprintln!("ZZ {name} iter{iters} st={st:?} consumed={consumed} produced={}", out.len() - ob);
-                    src = &src[consumed..];
-                    match st {
-                        Status::StreamEnd => break,
-                        _ => { if src.is_empty() { break; } }
-                    }
-                }
-            }));
-            if let Err(e) = r {
-                eprintln!("ZZ {name} LOOP: {e:?}");
-            }
-        }
-    }
-
-    #[test]
     fn zlib_gunzip_multi_members() {
         use std::io::Write as _;
         let enc = |s: &[u8]| {
@@ -2631,5 +2774,79 @@ mod tests {
             .read_to_end(&mut zd)
             .unwrap();
         assert_eq!(zd, data);
+    }
+}
+
+#[cfg(test)]
+mod zdbg {
+    use super::*;
+    #[test]
+    fn zz_dbg_dict_stream() {
+        // 流式字典复现：dict 压缩 → 两段解压（dictionary 套件流式形）
+        let dict = b"hello world, this is a dictionary test";
+        let data = b"A line of data\n".repeat(20);
+        let comp = {
+            let mut c = ZEngine::new(ZKind::ZlibDeflate, -1, dict, None, false);
+            c.feed(&data, 0).unwrap();
+            c.feed(&[], 4).unwrap();
+            c.take_out()
+        };
+        let mut d = ZEngine::new(ZKind::ZlibInflate, -1, dict, None, false);
+        let half = comp.len() / 2;
+        match d.feed(&comp[..half], 0) {
+            Ok((u, dn)) => println!("f1 ok u={} done={}", u, dn),
+            Err(e) => println!("f1 ERR {} {}", e.code, e.msg),
+        }
+        match d.feed(&comp[half..], 0) {
+            Ok((u, dn)) => println!("f2 ok u={} done={}", u, dn),
+            Err(e) => println!("f2 ERR {} {}", e.code, e.msg),
+        }
+        match d.feed(&[], 4) {
+            Ok((u, dn)) => println!("f3 ok done={}", dn),
+            Err(e) => println!("f3 ERR {} {}", e.code, e.msg),
+        }
+        println!("out={} want={}", d.take_out().len(), data.len());
+        // 套件形：单次 write 全量 + finish（require 后重试的轮次）
+        let comp2 = {
+            let mut c = ZEngine::new(ZKind::ZlibDeflate, -1, dict, None, false);
+            c.feed(&data, 0).unwrap();
+            c.feed(&[], 4).unwrap();
+            c.take_out()
+        };
+        let mut d2 = ZEngine::new(ZKind::ZlibInflate, -1, dict, None, false);
+        match d2.feed(&comp2, 0) {
+            Ok((u, dn)) => println!("g1 ok u={} done={}", u, dn),
+            Err(e) => println!("g1 ERR {} {}", e.code, e.msg),
+        }
+        match d2.feed(&[], 4) {
+            Ok((u, dn)) => println!("g2 ok done={}", dn),
+            Err(e) => println!("g2 ERR {} {}", e.code, e.msg),
+        }
+        println!("out2={} want={}", d2.take_out().len(), data.len());
+    }
+
+    #[test]
+    fn zlib_stream_inflate_slices_and_finish() {
+        // 回归（zip-property 丢尾）：RawDeflate 全量压缩 → RawInflate 逐片喂
+        // → finish 泵到 StreamEnd（deflate_feed 的 finish 循环曾 src 空即退，
+        // 丢 flate2 内部缓冲尾段 2304B）。
+        let data: Vec<u8> = (0..(256 * 1024)).map(|i| (i as u32).wrapping_mul(2654435761).wrapping_shr(16) as u8).collect();
+        let comp = {
+            let mut c = ZEngine::new(ZKind::RawDeflate, -1, &[], None, false);
+            c.feed(&data, 4).unwrap();
+            c.take_out()
+        };
+        let mut d = ZEngine::new(ZKind::RawInflate, -1, &[], None, false);
+        let step = 4096;
+        let mut i = 0;
+        while i < comp.len() {
+            let end = (i + step).min(comp.len());
+            let (u, dn) = d.feed(&comp[i..end], 0).unwrap();
+            if dn { println!("done at slice {i}"); }
+            i = end;
+        }
+        let r3 = d.feed(&[], 4).unwrap();
+        assert!(r3.1, "finish 必须 StreamEnd");
+        assert_eq!(d.take_out().len(), data.len());
     }
 }

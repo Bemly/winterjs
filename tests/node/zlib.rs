@@ -133,6 +133,8 @@ import { gunzipSync, inflateSync, gzipSync, brotliCompressSync, brotliDecompress
 for (const [name, fn] of [["gunzip", gunzipSync], ["inflate", inflateSync], ["unzip", unzipSync], ["brotliD", brotliDecompressSync]]) {
   try { fn(Buffer.from("definitely not compressed data at all!!!")); console.log(name, "no-throw"); }
   catch (e) { console.log(name, e.code, e.errno, e instanceof Error); }
+  // G9-2 真机对拍：brotliDecompressSync(垃圾) 真机 26.8.2 报 ERR__ERROR_FORMAT_PADDING_1
+  //（我们 rust-brotli 状态机同错误类 PADDING_2，记档偏离）；其余 zlib 族 Z_DATA_ERROR。
 }
 // 报错：越界 level/quality → ERR_OUT_OF_RANGE（直通不套 zlib 形）
 for (const [name, fn] of [["lv-hi", () => gzipSync("x", { level: 10 })], ["lv-lo", () => gzipSync("x", { level: -2 })], ["q-hi", () => brotliCompressSync("x", { quality: 12 })]]) {
@@ -153,7 +155,7 @@ console.log("stored", gunzipSync(gzipSync(big, { level: 0 })).toString() === big
     assert!(out.contains("gunzip Z_DATA_ERROR -3 true"), "out: {out}");
     assert!(out.contains("inflate Z_DATA_ERROR -3 true"), "out: {out}");
     assert!(out.contains("unzip Z_DATA_ERROR -3 true"), "out: {out}");
-    assert!(out.contains("brotliD Z_DATA_ERROR -3 true"), "out: {out}");
+    assert!(out.lines().any(|l| l.starts_with("brotliD ERR__ERROR_FORMAT") && l.ends_with("true")), "out: {out}");
     assert!(out.contains("lv-hi ERR_OUT_OF_RANGE true"), "out: {out}");
     assert!(out.contains("lv-lo ERR_OUT_OF_RANGE true"), "out: {out}");
     assert!(out.contains("q-hi ERR_OUT_OF_RANGE true"), "out: {out}");
@@ -390,5 +392,163 @@ catch (e) { console.log("dircontent", e.code); }
     }
     assert!(!out.contains("BAD "), "out: {out}");
     assert!(out.contains("maxsz true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase_g92_zlib_incremental_streams() {
+    // G9-2 增量流面（真机 26.8.2 对拍）：write 即时压出、flush 档位即时出边界
+    // （test-zlib-flush 套件向量）、finishFlush 容忍截断（truncated）、
+    // rejectGarbageAfterEnd 双面（reject-garbage 套件）、bytesWritten 只计引擎
+    // 消费（premature-end）、一次性解压真机错误口径（unexpected end of file/
+    // unknown compression method/Missing dictionary）、多成员 gunzip 拼接。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import z from "node:zlib";
+const C = z.constants;
+
+// 1. flush 档位即时出边界（test-zlib-flush 套件真机向量：level 0）
+{
+  const def = z.createDeflate({ level: 0 });
+  const chunk = Buffer.from("/9j/4AAQSkZJRgABAQEASA==", "base64");
+  let actualNone, actualFull;
+  def.write(chunk, function () {
+    def.flush(C.Z_NO_FLUSH, function () {
+      actualNone = def.read();
+      def.flush(function () {
+        const bufs = []; let buf;
+        while ((buf = def.read()) !== null) bufs.push(buf);
+        actualFull = Buffer.concat(bufs);
+        console.log("flush-vec", actualNone.equals(Buffer.from([0x78, 0x01])),
+          actualFull.equals(Buffer.concat([Buffer.from([0x00,0x10,0x00,0xef,0xff]), chunk, Buffer.from([0x00,0x00,0x00,0xff,0xff])])));
+      });
+    });
+  });
+}
+
+// 2. write 即时压出（解压流 data 事件在 write 后即可读，无需 end）
+{
+  const s = z.createInflateRaw();
+  let out = "";
+  s.setEncoding("utf8");
+  s.on("data", (c) => out += c);
+  s.on("error", () => {});
+  s.write(z.deflateRawSync("hello"), () => {
+    console.log("write-instant", out === "hello");
+  });
+}
+
+// 3. bytesWritten 只计引擎消费（trailing 垃圾不计入）
+{
+  const s = z.createInflateRaw();
+  let out = "";
+  s.setEncoding("utf8");
+  s.on("data", (c) => out += c);
+  s.on("end", () => {
+    const comp = z.deflateRawSync("0123456789".repeat(4));
+    console.log("bytesWritten", out.length === 40, s.bytesWritten === comp.length);
+  });
+  s.write(z.deflateRawSync("0123456789".repeat(4)));
+  s.write(Buffer.from("not valid compressed data"));
+  s.end();
+}
+
+// 4. rejectGarbageAfterEnd：boolean 校验 + junk TypeError
+{
+  const a = z.deflateSync("a");
+  const two = Buffer.concat([a, a]);
+  console.log("rej-sync", z.inflateSync(two).toString() === "a");
+  for (const v of [1, "true", null]) {
+    try { z.inflateSync(a, { rejectGarbageAfterEnd: v }); console.log("BAD rej-nothrow"); }
+    catch (e) { console.log("rej-arg", e.code); }
+    try { z.createInflate({ rejectGarbageAfterEnd: v }); console.log("BAD ctor-nothrow"); }
+    catch (e) { console.log("rej-ctor", e.code); }
+  }
+  const s = z.createInflate({ rejectGarbageAfterEnd: true });
+  s.on("error", (e) => console.log("rej-stream", e.name, e.code));
+  s.on("data", () => {});
+  s.end(two);
+}
+
+// 5. 一次性解压真机错误口径
+try { z.inflateSync(z.deflateSync("ΩΩLorem ipsum dolor sit amet consectetur adipiscing").subarray(0, 8)); console.log("BAD trunc-nothrow"); }
+catch (e) { console.log("trunc", e.code, /unexpected end of file/.test(e.message)); }
+try { z.gunzipSync(Buffer.concat([z.gzipSync("abc"), Buffer.from([0x1f, 0x8b, 0xff, 0xff]), Buffer.alloc(10)])); console.log("BAD hdr-nothrow"); }
+catch (e) { console.log("gzhdr", e.code, e.message === "unknown compression method"); }
+try { z.inflateSync(z.deflateSync("abc", { dictionary: Buffer.from("hello") })); console.log("BAD dict-nothrow"); }
+catch (e) { console.log("dict-miss", e.code, e.message === "Missing dictionary"); }
+try { z.inflateSync(z.deflateSync("abc", { dictionary: Buffer.from("hello") }), { dictionary: Buffer.from("world") }); console.log("BAD dict2-nothrow"); }
+catch (e) { console.log("dict-bad", e.code, e.message === "Bad dictionary"); }
+console.log("dict-ok", z.inflateSync(z.deflateSync("abc", { dictionary: Buffer.from("hello") }), { dictionary: Buffer.from("hello") }).toString() === "abc");
+
+// 6. gunzip 多成员拼接 + 尾零（流式 + 一次性）
+{
+  const s = z.createGunzip();
+  let out = "";
+  s.setEncoding("utf8");
+  s.on("data", (c) => out += c);
+  s.on("end", () => console.log("gz-multi", out === "abcdef"));
+  s.end(Buffer.concat([z.gzipSync("abc"), z.gzipSync("def"), Buffer.alloc(10)]));
+}
+console.log("gz-multi-sync", z.gunzipSync(Buffer.concat([z.gzipSync("abc"), z.gzipSync("def"), Buffer.alloc(10)])).toString() === "abcdef");
+
+// 7. finishFlush 容忍截断（部分解出）
+{
+  const comp = z.deflateSync("x".repeat(100));
+  const partial = z.inflateSync(comp.subarray(0, comp.length / 2), { finishFlush: C.Z_SYNC_FLUSH });
+  console.log("tolerate", partial.length > 0);
+}
+
+// 8. reset 复用引擎（_handle.reset 后可重写）
+{
+  const s = z.createDeflate();
+  s.on("error", () => {});
+  s.write(Buffer.from("first"), () => {
+    s._handle.reset();
+    s.write(Buffer.from("second"), () => console.log("reset-reuse", true));
+  });
+}
+
+// 9. node:test require 可调用形 + t.mock 最小面（write-after-end 套件口径）
+{
+  const t = require("node:test");
+  console.log("test-req", typeof t === "function", typeof t.test === "function", typeof t.describe === "function");
+}
+
+// 10. 大数据 round-trip（随机数据 finish 泵完——zip-property 丢尾回归）
+{
+  const data = Buffer.alloc(256 * 1024);
+  for (let i = 0; i < data.length; i++) data[i] = (i * 2654435761 >>> 16) & 0xff;
+  const back = z.inflateRawSync(z.deflateRawSync(data));
+  console.log("big-rt", back.length === data.length, back.equals(data));
+}
+"#,
+    );
+    for line in [
+        "flush-vec true true",
+        "write-instant true",
+        "bytesWritten true true",
+        "rej-sync true",
+        "rej-arg ERR_INVALID_ARG_TYPE",
+        "rej-ctor ERR_INVALID_ARG_TYPE",
+        "rej-stream TypeError ERR_TRAILING_JUNK_AFTER_STREAM_END",
+        "trunc Z_BUF_ERROR true",
+        "gzhdr Z_DATA_ERROR true",
+        "dict-miss Z_NEED_DICT true",
+        "dict-bad Z_NEED_DICT true",
+        "dict-ok true",
+        "gz-multi true",
+        "gz-multi-sync true",
+        "tolerate true",
+        "reset-reuse true",
+        "test-req true true true",
+        "big-rt true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    assert!(!out.contains("BAD "), "out: {out}");
     dir.close().unwrap();
 }

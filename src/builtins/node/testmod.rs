@@ -78,7 +78,7 @@ async function __next() {
       if (t.mode === "todo") { __todo++; console.log(`todo - ${t.name}`); continue; }
       if (!__nameOk(t.name)) { __skip++; continue; }
       __ran++;
-      const ctx = { name: t.name, skip(msg) { throw { [__SKIP]: true, message: msg }; } };
+      const ctx = { name: t.name, skip(msg) { throw { [__SKIP]: true, message: msg }; }, mock: __mkMock() };
       try {
         for (const s of t.suites) await __fireBefore(s);
         const poisoned = t.suites.find((s) => s.poison);
@@ -125,6 +125,21 @@ function __allSuites() {
 function __hook(kind, fn) {
   if (typeof fn !== "function") throw new TypeError(`${kind} needs a function`);
   __curSuite().hooks[kind].push(fn);
+}
+// t.mock 最小面（真机 MockTracker 逐测试实例）：fn(impl?) 包装记录调用，
+// .mock.callCount() 计数（test-zlib-write-after-end 套件口径）；其余 mock 面
+// （method/constructor/times/reset）待 node:test 欠账轮。
+function __mkMock() {
+  return {
+    fn(impl) {
+      const f = function (...a) {
+        f.mock.calls.push(a);
+        return impl ? impl.apply(this, a) : undefined;
+      };
+      f.mock = { calls: [], callCount() { return this.calls.length; } };
+      return f;
+    },
+  };
 }
 // 10f url 对拍：三参形态 `test(name, { skip/todo/only }, fn)`——node 套件
 // 普遍用选项对象注册（skip: 条件表达式），此前把选项对象当 fn 收进队列。
@@ -176,5 +191,14 @@ it.before = (fn) => __hook("before", fn);
 it.after = (fn) => __hook("after", fn);
 it.beforeEach = (fn) => __hook("beforeEach", fn);
 it.afterEach = (fn) => __hook("afterEach", fn);
-export default { test, describe, it, before, after, beforeEach, afterEach };
+// require('node:test') 口径（真机 26.8.2 实测）：module.exports = test 本体
+// （可调用，属性挂 test/describe/it/skip/todo/only/Each 钩）——default 即 test。
+test.test = test;
+test.describe = describe;
+test.it = it;
+test.before = (fn) => __hook("before", fn);
+test.after = (fn) => __hook("after", fn);
+test.beforeEach = (fn) => __hook("beforeEach", fn);
+test.afterEach = (fn) => __hook("afterEach", fn);
+export default test;
 "#;

@@ -32,6 +32,9 @@ import { EventEmitter } from "node:events";
 import { Readable, Writable } from "node:stream";
 import { codes } from "node:internal/errors";
 
+// node 内部符号（_http_server re-export；close-destroy-timeout/async-dispose 套件）
+export const kConnectionsCheckingInterval = Symbol("kConnectionsCheckingInterval");
+export const kServerResponse = Symbol("kServerResponse");
 export const STATUS_CODES = {
   100: "Continue", 101: "Switching Protocols", 102: "Processing", 103: "Early Hints",
   200: "OK", 201: "Created", 202: "Accepted", 203: "Non-Authoritative Information",
@@ -1154,8 +1157,32 @@ export function withHttpServer(Base) {
           try { sock.unref(); } catch { /* gone */ }
         }
       }
+      // node _http_server.js close 口径：仍有活连接时起 connectionsChecking
+      // interval（句柄存符号键下；清零即 clearInterval——
+      // close-destroy-timeout/async-dispose 套件断言 _destroyed）。
+      const alive = [...this.__sockets].filter((s) => !s.destroyed);
+      if (alive.length > 0 && this[kConnectionsCheckingInterval] === undefined) {
+        const iv = setInterval(() => {
+          for (const s of [...this.__sockets]) {
+            const st = s.__httpState;
+            if (!st || st.req === null) { try { s.destroy(); } catch { /* gone */ } }
+          }
+          if (![...this.__sockets].some((s) => !s.destroyed)) {
+            clearInterval(this[kConnectionsCheckingInterval]);
+            this[kConnectionsCheckingInterval] = undefined;
+          }
+        }, 1000);
+        if (typeof iv.unref === "function") iv.unref();
+        this[kConnectionsCheckingInterval] = iv;
+      }
       super.close();
       return this;
+    }
+    // node Server asyncDispose（node 26：close 承诺化）。
+    [Symbol.asyncDispose]() {
+      return new Promise((resolve) => {
+        this.close(() => resolve());
+      });
     }
   }
   // Node 口径：Server 裸调用返回新实例（lib/_http_server.js 原文）；

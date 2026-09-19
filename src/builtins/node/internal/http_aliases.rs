@@ -1,0 +1,95 @@
+//! node 内部模块遗留别名（`_http_agent` / `_http_common` / `_http_server` /
+//! `_http_outgoing`；node 套件直引 `require('_http_agent')` 形）。符号面以
+//! node 26.8.2 实测逐键对拍（agent-keys/common-keys/server-keys/outgoing-keys）。
+//! HTTPParser 深件（llhttp 事件面兼容类 + lenient 位旗）另案，暂不导出。
+
+/// `node:_http_agent`（真机 keys：Agent,globalAgent）。
+pub const AGENT_SOURCE: &str = r#"
+import { Agent } from "node:internal/http_framing";
+export { Agent };
+// node 口径：_http_agent.globalAgent 即 http.globalAgent 同一实例（本仓
+// http.rs 另建，双实例偏差记档——套件仅用 Agent 类）。
+export const globalAgent = new Agent();
+"#;
+
+/// `node:_http_common`（真机 keys：_checkInvalidHeaderChar,_checkIsHttpToken,
+/// chunkExpression,continueExpression,CRLF,freeParser,methods,parsers,
+/// kIncomingMessage,HTTPParser,isLenient,calculateLenientFlags,prepareError,
+/// kSkipPendingData）。HTTPParser 另案。
+pub const COMMON_SOURCE: &str = r#"
+import { METHODS, maxHeaderSize } from "node:internal/http_framing";
+export { maxHeaderSize };
+export const methods = METHODS;
+// node lib/_http_common.js 头字符门（真机实测：\x01 invalid、空格/tab 合法、
+// 高位 \x80-\xff 合法）。
+const HEADER_CHAR_RE = /[^\t\x20-\x7e\x80-\xff]/;
+export function _checkInvalidHeaderChar(val) {
+  return HEADER_CHAR_RE.test(val);
+}
+const TOKEN_RE = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/;
+export function _checkIsHttpToken(val) {
+  return typeof val === "string" && TOKEN_RE.test(val);
+}
+export const chunkExpression = /^[^]*$/;
+export const continueExpression = /^[^]*100[ \t]*(?:$|\n)/;
+export const CRLF = "\r\n";
+export const kIncomingMessage = Symbol("IncomingMessage");
+export const kSkipPendingData = Symbol("kSkipPendingData");
+// node 口径：parser 池（maxHTTPParserPool 面；池化不适用本仓——对象只供
+// 套件断言默认值）。isLenient/calculateLenientFlags 随 HTTPParser 另案。
+export const parsers = { max: 1000, size: 0 };
+export function freeParser() { return undefined; }
+export function prepareError() { return undefined; }
+export const isLenient = 0;
+export function calculateLenientFlags() { return 0; }
+"#;
+
+/// `node:_http_server`（真机 keys：STATUS_CODES,Server,ServerResponse,
+/// setupConnectionsTracking,storeHTTPOptions,_connectionListener,
+/// kServerResponse,httpServerPreClose,kConnectionsCheckingInterval）。
+/// Server/_connectionListener 为组合体（withHttpServer(net.Server)），不导出。
+pub const SERVER_SOURCE: &str = r#"
+import { STATUS_CODES } from "node:internal/http_framing";
+import { kConnectionsCheckingInterval, kServerResponse } from "node:internal/http_framing";
+export { STATUS_CODES, kConnectionsCheckingInterval, kServerResponse };
+export function setupConnectionsTracking() { return undefined; }
+export function storeHTTPOptions() { return undefined; }
+export function httpServerPreClose() { return undefined; }
+"#;
+
+/// `node:_http_outgoing`（真机 keys：kHighWaterMark,kUniqueHeaders,
+/// parseUniqueHeadersOption,validateHeaderName,validateHeaderValue,
+/// OutgoingMessage）。
+pub const OUTGOING_SOURCE: &str = r#"
+import { OutgoingMessage } from "node:internal/http_framing";
+export { OutgoingMessage };
+export const kHighWaterMark = Symbol("kHighWaterMark");
+export const kUniqueHeaders = Symbol("uniqueHeaders");
+// node lib/_http_outgoing.js validateHeaderName/Value（message 逐字）。
+const TOKEN_RE = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/;
+export function validateHeaderName(name) {
+  if (typeof name !== "string" || !TOKEN_RE.test(name)) {
+    const e = new TypeError(`Invalid character in header name ["${String(name)}"]`);
+    e.code = "ERR_INVALID_HTTP_TOKEN"; throw e;
+  }
+}
+export function validateHeaderValue(name, value) {
+  if (value === undefined) {
+    const e = new TypeError(`Invalid value in header set for "${String(name)}"`);
+    e.code = "ERR_HTTP_INVALID_CHAR"; throw e;
+  }
+  if (/[\r\n\u0000]/.test(String(value))) {
+    const e = new TypeError(`Invalid character in header content ["${String(name)}"]`);
+    e.code = "ERR_INVALID_CHAR"; throw e;
+  }
+}
+export function parseUniqueHeadersOption(headers) {
+  if (headers === null) return null;
+  if (typeof headers !== "object") {
+    const e = new TypeError("Option \"uniqueHeaders\" must be one of type array, object, or null. Received " + typeof headers);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
+  if (!Array.isArray(headers)) return new Set([String(headers)]);
+  return new Set(headers.map(String));
+}
+"#;

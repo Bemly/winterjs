@@ -20,6 +20,7 @@ pub mod buffer;
 pub mod debuglog;
 pub mod encoding;
 pub mod http2_util;
+pub mod http_aliases;
 pub mod errors;
 pub mod event_target;
 pub mod fixed_queue;
@@ -101,6 +102,11 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/http_framing", http_framing::SOURCE),
     // 10g：http2 内部 util（套件直引 `internal/http2/util`；kSocket 符号跨模块同源）
     ("node:internal/http2/util", http2_util::SOURCE),
+    // 10g：node 内部模块遗留别名（套件 require('_http_agent') 直引）
+    ("node:_http_agent", http_aliases::AGENT_SOURCE),
+    ("node:_http_common", http_aliases::COMMON_SOURCE),
+    ("node:_http_server", http_aliases::SERVER_SOURCE),
+    ("node:_http_outgoing", http_aliases::OUTGOING_SOURCE),
 ];
 
 /// internal 规范名（`internal/errors` 与 `node:internal/errors` 皆收 → `node:internal/errors`；

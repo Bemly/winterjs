@@ -393,6 +393,7 @@ pub unsafe extern "C" fn fs_statfs(
                 let json = serde_json::json!({
                     "type": st.filesystem_id(),
                     "bsize": st.block_size(),
+                    "frsize": st.fragment_size(),
                     "blocks": st.blocks(),
                     "bfree": st.blocks_free(),
                     "bavail": st.blocks_available(),
@@ -713,13 +714,30 @@ pub unsafe extern "C" fn fs_mkdtemp(
 // 近似为 mode 搜索位判定；write with O_APPEND 走 cursor 写。
 
 /// fd 表（合成 fd → File；进程级静态，进程退出由 OS 回收，§4.8 同口径）。
+/// 首次访问惰性注册 0/1/2（dup 出自有句柄，try_clone_to_owned 全 safe）：
+/// node 的 fd 族 API 对标准流可见（test-fs-stat `fs.fstat(-0)` 即 fstat(0)）；
+/// 源流未打开（spawn stdin 关闭）时 dup 失败即跳过——保持 EBADF，与真机同。
+/// 记档偏差：closeSync(0) 关的是 dup 不是真 stdin（node 关真流）。
 fn fd_table() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<i32, std::fs::File>> {
     static TABLE: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<i32, std::fs::File>>> =
         std::sync::OnceLock::new();
-    TABLE
-        .get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
-        .lock()
-        .unwrap()
+    let table = TABLE
+        .get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    let mut t = table.lock().unwrap();
+    #[cfg(unix)]
+    if t.is_empty() {
+        use std::os::fd::AsFd;
+        for (fd, src) in [
+            (0, std::io::stdin().as_fd()),
+            (1, std::io::stdout().as_fd()),
+            (2, std::io::stderr().as_fd()),
+        ] {
+            if let Ok(owned) = src.try_clone_to_owned() {
+                t.insert(fd, std::fs::File::from(owned));
+            }
+        }
+    }
+    t
 }
 
 static FD_NEXT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(3);
@@ -1823,22 +1841,56 @@ function __fsDecode(bytes, encoding, what) {
   }
   return new TextDecoder(String(encoding)).decode(bytes);
 }
-class __Stats {
-  constructor(j) {
-    this.dev = j.dev ?? 0;
-    this.ino = j.ino ?? 0;
-    this.mode = j.mode;
-    this.nlink = j.nlink ?? 1;
-    this.uid = j.uid ?? 0;
-    this.gid = j.gid ?? 0;
-    this.rdev = j.rdev ?? 0;
-    this.size = j.size;
-    this.blksize = j.blksize ?? 4096;
-    this.blocks = j.blocks ?? 0;
-    this.atimeMs = j.atimeMs;
-    this.mtimeMs = j.mtimeMs;
-    this.ctimeMs = j.mtimeMs;
-    this.birthtimeMs = j.birthtimeMs;
+// node 口径：Stats 可无 new 调用（DEP0180 弃用警告 + 位置参数形；
+// stat 套件 `fs.Stats(dev, mode, ...)` 直调 + instanceof 断言）。
+function __Stats(jOrDev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atime, mtime, ctime, birthtime) {
+  if (!(this instanceof __Stats)) {
+    process.emitWarning("fs.Stats constructor is deprecated.", "DeprecationWarning", "DEP0180");
+    return new __Stats(jOrDev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks, atime, mtime, ctime, birthtime);
+  }
+  const isPos = typeof jOrDev === "number";
+  if (isPos) {
+    jOrDev = {
+      dev: jOrDev, mode, nlink, uid, gid, rdev, blksize, ino, size, blocks,
+      atimeMs: +atime, mtimeMs: +mtime, ctimeMs: +ctime, birthtimeMs: +birthtime,
+    };
+    // isX 由 mode 类型位推导（S_IFMT 族，constants 同值）。
+    const t = mode & 61440;
+    jOrDev.isFile = t === 32768;
+    jOrDev.isDirectory = t === 16384;
+    jOrDev.isSymlink = t === 40960;
+    jOrDev.isFifo = t === 4096;
+    jOrDev.isSocket = t === 49152;
+    jOrDev.isBlock = t === 24576;
+    jOrDev.isChar = t === 8192;
+  }
+  const bigint = !isPos && mode === true;
+  {
+    const j = jOrDev;
+    // bigint 选项（stat-bigint 套件）：数值字段 BigInt 包装（同源 JSON，与
+    // BigInt(numStats[key]) 逐键 strictEqual）；日期恒 Date（getTime 比对）。
+    const B = bigint ? (v) => BigInt(Math.round(v)) : (v) => v;
+    this.dev = B(j.dev ?? 0);
+    this.ino = B(j.ino ?? 0);
+    this.mode = B(j.mode);
+    this.nlink = B(j.nlink ?? 1);
+    this.uid = B(j.uid ?? 0);
+    this.gid = B(j.gid ?? 0);
+    this.rdev = B(j.rdev ?? 0);
+    this.size = B(j.size);
+    this.blksize = B(j.blksize ?? 4096);
+    this.blocks = B(j.blocks ?? 0);
+    this.atimeMs = B(j.atimeMs);
+    this.mtimeMs = B(j.mtimeMs);
+    this.ctimeMs = B(j.mtimeMs);
+    this.birthtimeMs = B(j.birthtimeMs);
+    if (bigint) {
+      // Ns 形（stat-bigint 套件：Ms/Ns 双键，Ns = ms×1e6 取整）。
+      this.atimeNs = BigInt(Math.round(j.atimeMs * 1e6));
+      this.mtimeNs = BigInt(Math.round(j.mtimeMs * 1e6));
+      this.ctimeNs = BigInt(Math.round(j.mtimeMs * 1e6));
+      this.birthtimeNs = BigInt(Math.round(j.birthtimeMs * 1e6));
+    }
     this.atime = new Date(j.atimeMs);
     this.mtime = new Date(j.mtimeMs);
     this.ctime = new Date(j.mtimeMs);
@@ -1851,14 +1903,14 @@ class __Stats {
     this.__blk = j.isBlock;
     this.__chr = j.isChar;
   }
-  isFile() { return this.__f; }
-  isDirectory() { return this.__d; }
-  isSymbolicLink() { return this.__l; }
-  isFIFO() { return !!this.__fifo; }
-  isSocket() { return !!this.__sock; }
-  isBlockDevice() { return !!this.__blk; }
-  isCharacterDevice() { return !!this.__chr; }
 }
+__Stats.prototype.isFile = function () { return this.__f; };
+__Stats.prototype.isDirectory = function () { return this.__d; };
+__Stats.prototype.isSymbolicLink = function () { return this.__l; };
+__Stats.prototype.isFIFO = function () { return !!this.__fifo; };
+__Stats.prototype.isSocket = function () { return !!this.__sock; };
+__Stats.prototype.isBlockDevice = function () { return !!this.__blk; };
+__Stats.prototype.isCharacterDevice = function () { return !!this.__chr; };
 class __Dirent {
   constructor(name, isDir, isFile, isLink, parentPath) {
     this.name = name;
@@ -1879,14 +1931,17 @@ class __Dirent {
 }
 // StatsFs 纯数据面（type/bsize/blocks/bfree/bavail/files/ffree，无方法，Node 口径）。
 class __StatsFs {
-  constructor(j) {
-    this.type = j.type ?? 0;
-    this.bsize = j.bsize ?? 4096;
-    this.blocks = j.blocks ?? 0;
-    this.bfree = j.bfree ?? 0;
-    this.bavail = j.bavail ?? 0;
-    this.files = j.files ?? 0;
-    this.ffree = j.ffree ?? 0;
+  constructor(j, bigint = false) {
+    // bigint 选项：数值字段 BigInt 包装（statfs 套件 verifyStatFsObject 逐键 typeof）。
+    const B = bigint ? (v) => BigInt(Math.round(v)) : (v) => v;
+    this.type = B(j.type ?? 0);
+    this.bsize = B(j.bsize ?? 4096);
+    this.frsize = B(j.frsize ?? j.bsize ?? 4096);
+    this.blocks = B(j.blocks ?? 0);
+    this.bfree = B(j.bfree ?? 0);
+    this.bavail = B(j.bavail ?? 0);
+    this.files = B(j.files ?? 0);
+    this.ffree = B(j.ffree ?? 0);
   }
 }
 // flags 字符串 → OpenFlags JSON（Node 口径子集；`s` 后缀忽略；数字只认本运行时
@@ -2089,7 +2144,17 @@ export function appendFileSync(p, data, opts) {
 }
 export function statSync(p) {
   p = __fsPath(p, "stat");
-  return new __Stats(JSON.parse(__fsCall("stat", p, () => __wjs_fs_stat(p, true))));
+  // options：bigint（BigInt Stats）+ throwIfNoEntry:false（缺失回 undefined，node 口径）。
+  const __o = arguments[1];
+  if (__o && __o.throwIfNoEntry === false) {
+    try {
+      return new __Stats(JSON.parse(__wjs_fs_stat(p, true)), __o.bigint === true);
+    } catch (e) {
+      // 裸 native 错误无 code——先过 __fsErr 归一化（ENOENT 豁免，其余照抛）
+      try { __fsErr(e, "stat", p); } catch (e2) { if (e2 && e2.code === "ENOENT") return undefined; throw e2; }
+    }
+  }
+  return new __Stats(JSON.parse(__fsCall("stat", p, () => __wjs_fs_stat(p, true))), __o?.bigint === true);
 }
 // 文件系统级状态（M5 vitest 牵引；unix 经 statvfs，type 取 filesystem_id 记档）。
 export function statfsSync(p) {
@@ -2098,11 +2163,20 @@ export function statfsSync(p) {
     e.code = "ERR_INVALID_ARG_TYPE"; throw e;
   }
   p = __fsPath(p, "statfs");
-  return new __StatsFs(JSON.parse(__fsCall("statfs", p, () => __wjs_fs_statfs(p))));
+  const __o = arguments[1];
+  return new __StatsFs(JSON.parse(__fsCall("statfs", p, () => __wjs_fs_statfs(p))), __o?.bigint === true);
 }
 export function lstatSync(p) {
   p = __fsPath(p, "lstat");
-  return new __Stats(JSON.parse(__fsCall("stat", p, () => __wjs_fs_stat(p, false))));
+  const __o = arguments[1];
+  if (__o && __o.throwIfNoEntry === false) {
+    try {
+      return new __Stats(JSON.parse(__wjs_fs_stat(p, false)), __o.bigint === true);
+    } catch (e) {
+      try { __fsErr(e, "lstat", p); } catch (e2) { if (e2 && e2.code === "ENOENT") return undefined; throw e2; }
+    }
+  }
+  return new __Stats(JSON.parse(__fsCall("stat", p, () => __wjs_fs_stat(p, false))), __o?.bigint === true);
 }
 export function existsSync(p) {
   try {
@@ -2203,8 +2277,16 @@ export const constants = {
   S_IRWXG: 56, S_IRGRP: 32, S_IWGRP: 16, S_IXGRP: 8,
   S_IRWXO: 7, S_IROTH: 4, S_IWOTH: 2, S_IXOTH: 1,
   COPYFILE_EXCL: 1, COPYFILE_FICLONE: 2, COPYFILE_FICLONE_FORCE: 4,
+  UV_FS_COPYFILE_EXCL: 1, UV_FS_COPYFILE_FICLONE: 2, UV_FS_COPYFILE_FICLONE_FORCE: 4,
+  UV_DIRENT_UNKNOWN: 0, UV_DIRENT_FILE: 1, UV_DIRENT_DIR: 2, UV_DIRENT_LINK: 3,
+  UV_DIRENT_FIFO: 4, UV_DIRENT_SOCKET: 5, UV_DIRENT_CHAR: 6, UV_DIRENT_BLOCK: 7,
+  // 平台相关 uv 开文件旗（真机 26.8.2 macOS 全 0，逐项导出对拍）
+  UV_FS_O_FILEMAP: 0, UV_FS_O_RANDOM: 0, UV_FS_O_SEQUENTIAL: 0,
+  UV_FS_O_SHORT_LIVED: 0, UV_FS_O_TEMPORARY: 0,
   UV_FS_SYMLINK_DIR: 1, UV_FS_SYMLINK_JUNCTION: 2,
 };
+// node 口径：constants 无原型（stat-constants 套件 getPrototypeOf === null）。
+Object.setPrototypeOf(constants, null);
 // FSWatcher（10f，node 口径）：EventEmitter 形（'change'/'close' 事件面 +
 // on/once/off），options.listener 可选、{ signal } abort 即 close。
 class __FSWatcher extends EventEmitter {
@@ -2848,7 +2930,9 @@ export function fdatasyncSync(fd) {
 }
 export function fstatSync(fd) {
   __vFd(fd);
-  return new __Stats(JSON.parse(__fsCall("fstat", "", () => __wjs_fs_fstat(fd))));
+  // throwIfNoEntry 只豁免路径 ENOENT——fd EBADF 恒抛（stat-bigint 套件逐项）。
+  const __o = arguments[1];
+  return new __Stats(JSON.parse(__fsCall("fstat", "", () => __wjs_fs_fstat(fd))), __o?.bigint === true);
 }
 export function fchmodSync(fd, mode) {
   __vFd(fd);
@@ -3112,7 +3196,7 @@ export class FileHandle extends EventEmitter {
   createWriteStream(options) {
     return new WriteStream(undefined, { ...options, fd: this });
   }
-  stat() {
+  stat(options) {
     // node 口径：close 后 fd=-1 → binding 层 EBADF（非范围校验错误）。
     return Promise.resolve().then(() => {
       if (this.fd === -1) {
@@ -3120,7 +3204,7 @@ export class FileHandle extends EventEmitter {
         e.code = "EBADF"; e.errno = -9; e.syscall = "fstat";
         throw e;
       }
-      return fstatSync(this.fd);
+      return fstatSync(this.fd, options);
     });
   }
   truncate(len) { return Promise.resolve().then(() => ftruncateSync(this.fd, len ?? 0)); }

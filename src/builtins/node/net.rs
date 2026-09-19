@@ -917,6 +917,8 @@ pub fn dispatch(
             state::net_purge(*conn_id);
             return Ok(());
         };
+        rooted!(&in(cx) let target_r = target); // §4.80：拷贝值立即入槽防 GC 搬移
+        let target = target_r.get();
         if !target.is_object() {
             state::net_purge(*conn_id);
             return Ok(());
@@ -925,8 +927,9 @@ pub fn dispatch(
         let Some(fun) = get_prop_value(cx, t.get(), c"__ev") else {
             return Err(failed(cx));
         };
+        rooted!(&in(cx) let fun_r = fun); // §4.80：裸 JSVal 跨 json!/to_jsval 分配即悬垂
         let json = serde_json::json!({ "connId": conn_id, "uds": true }).to_string();
-        if with_str_args(cx, global, fun, "connection", &json).is_none() {
+        if with_str_args(cx, global, fun_r.get(), "connection", &json).is_none() {
             return Err(failed(cx));
         }
         return Ok(());
@@ -938,6 +941,8 @@ pub fn dispatch(
             state::net_purge(*conn_id); // server 已 gone：丢弃连接防泄漏
             return Ok(());
         };
+        rooted!(&in(cx) let target_r = target); // §4.80：拷贝值立即入槽防 GC 搬移
+        let target = target_r.get();
         if !target.is_object() {
             state::net_purge(*conn_id);
             return Ok(());
@@ -946,13 +951,14 @@ pub fn dispatch(
         let Some(fun) = get_prop_value(cx, t.get(), c"__ev") else {
             return Err(failed(cx));
         };
+        rooted!(&in(cx) let fun_r = fun); // §4.80：裸 JSVal 跨 json!/to_jsval 分配即悬垂
         let json = serde_json::json!({
             "connId": conn_id,
             "remoteAddress": remote_addr, "remotePort": remote_port,
             "localAddress": local_addr, "localPort": local_port,
         })
         .to_string();
-        if with_str_args(cx, global, fun, "connection", &json).is_none() {
+        if with_str_args(cx, global, fun_r.get(), "connection", &json).is_none() {
             return Err(failed(cx));
         }
         return Ok(());
@@ -963,6 +969,8 @@ pub fn dispatch(
         }
         return Ok(());
     };
+    rooted!(&in(cx) let target_r = target); // §4.80：拷贝值立即入槽防 GC 搬移
+    let target = target_r.get();
     if !target.is_object() {
         if matches!(ev.kind, NetKind::Close | NetKind::ServerClose | NetKind::H2SessionClose) {
             state::net_purge(ev.id);
@@ -976,6 +984,7 @@ pub fn dispatch(
         }
         return Err(failed(cx));
     };
+    rooted!(&in(cx) let fun_r = fun); // §4.80：裸 JSVal 跨 json!/to_jsval 分配即悬垂
     let (kind, payload): (&str, String) = match &ev.kind {
         NetKind::Connect { local } => {
             ("connect", serde_json::json!({ "local": local }).to_string())
@@ -1040,7 +1049,7 @@ pub fn dispatch(
         NetKind::H2SessionClose => ("close", String::new()),
         NetKind::Connection { .. } | NetKind::ConnectionUds { .. } => unreachable!(),
     };
-    let ok = with_str_args(cx, global, fun, kind, &payload);
+    let ok = with_str_args(cx, global, fun_r.get(), kind, &payload);
     let closed = matches!(
         ev.kind,
         NetKind::Close | NetKind::ServerClose | NetKind::H2SessionClose
@@ -1792,6 +1801,10 @@ class __ServerClass extends EventEmitter {
     }
   }
   __doListen(port, host, cb) {
+    // relisten 必须清 close-during-listen 窗口旗（close() 置位后柄已清，
+    // 重听的 listening 派发不再属"bind 窗口内 close"——残留 true 会吞掉
+    // 新一轮 listening 派发，listening 回调永不触发）。
+    this.__closing = false;
     if (port && typeof port === "object" && typeof port.address === "function" && port.__boundPort !== undefined) {
       // listen(bound)：adopt（旧柄失效；server 地址 = bound 地址）。
       if (port.__adopted) {

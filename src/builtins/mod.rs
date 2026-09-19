@@ -4367,6 +4367,91 @@ globalThis.TransformStream = class TransformStream {
     this.writable = writable;
   }
 };
+// ---- CompressionStream / DecompressionStream（10f 欠账 G9-3：Web 全局 +
+// node:stream/web；真机 26.8.2 对拍——不继承 TransformStream（proto 链独立，
+// instanceof TransformStream false）、format 枚举校验 TypeError（文案逐字）、
+// 解压侧尾垃圾/截断错误落 readable（pipeThrough 场景 Array.fromAsync 可见
+// reject），junk = TypeError ERR_TRAILING_JUNK_AFTER_STREAM_END（node:zlib
+// 引擎 junk 码同文复用））----
+const __wjs_csState = new WeakMap();
+const __CS_KINDS = { gzip: 2, deflate: 0, "deflate-raw": 1, brotli: 8 };
+const __DS_KINDS = { gzip: 6, deflate: 3, "deflate-raw": 4, brotli: 9 };
+function __wjs_csFinishFlag(kind) { return kind <= 7 ? 4 : 2; }
+function __wjs_makeCSClass(name, kinds, reject) {
+  const cls = class {
+    constructor(format) {
+      if (new.target === undefined) {
+        throw new TypeError(`Failed to construct '${name}': Please use the 'new' operator, this DOM object constructor cannot be called as a function.`);
+      }
+      const fmt = String(format);
+      const kind = kinds[fmt];
+      if (kind === undefined) {
+        throw new TypeError(`Failed to construct '${name}': 1st argument '${fmt}' is not a valid enum value of type CompressionFormat.`);
+      }
+      // brotli 压缩档位对齐真机默认 11；zlib 族 -1（引擎 clamp 默认）。
+      const lv = kind === 8 ? 11 : -1;
+      const id = __wjs_zlib_stream_new(kind, lv, null, -1, reject ? 1 : 0);
+      let ctrl = null;
+      let closed = false; // readable 已 close/error
+      let freed = false;
+      let done = false;   // 引擎已 StreamEnd（后续写入即尾垃圾）
+      const free = () => { if (!freed) { freed = true; __wjs_zlib_stream_free(id); } };
+      const fail = (err) => { if (!closed) { closed = true; ctrl.error(err); } };
+      const feed = (u8, flag) => {
+        const r = JSON.parse(__wjs_zlib_stream_feed(id, u8 ?? null, flag));
+        if (r.code !== undefined) {
+          const err = r.code === "ERR_TRAILING_JUNK_AFTER_STREAM_END"
+            ? new TypeError(r.msg) : new Error(r.msg);
+          err.code = r.code;
+          fail(err);
+          return false;
+        }
+        done = r.d === true;
+        const out = __wjs_zlib_stream_out(id);
+        if (!closed && out.length) ctrl.enqueue(out);
+        return true;
+      };
+      const readable = new ReadableStream({
+        start(c) { ctrl = c; },
+        cancel() { closed = true; free(); },
+      });
+      const toU8 = (chunk) => {
+        if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
+        if (ArrayBuffer.isView(chunk)) return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+        throw new TypeError(`Failed to construct '${name}': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'`);
+      };
+      const writable = new WritableStream({
+        write(chunk) {
+          if (closed || freed) return;
+          const u8 = toU8(chunk);
+          if (done) {
+            // done 后写入 = 尾垃圾（type-error 套件 [valid, empty] case；
+            // 错误落 readable 而非 write 拒绝——pipeTo 语义下后者走 cancel）
+            const err = new TypeError("Trailing junk found after the end of the compressed stream");
+            err.code = "ERR_TRAILING_JUNK_AFTER_STREAM_END";
+            fail(err);
+            return;
+          }
+          feed(u8, 0);
+        },
+        close() {
+          if (closed || freed) return;
+          const ok = feed(null, __wjs_csFinishFlag(kind));
+          if (ok) { closed = true; ctrl.close(); }
+          free();
+        },
+        abort(reason) { if (!closed) { closed = true; ctrl.error(reason); } free(); },
+      });
+      __wjs_csState.set(this, { readable, writable });
+    }
+    get readable() { return __wjs_csState.get(this).readable; }
+    get writable() { return __wjs_csState.get(this).writable; }
+  };
+  Object.defineProperty(cls.prototype, Symbol.toStringTag, { value: name, configurable: true });
+  return cls;
+}
+globalThis.CompressionStream = __wjs_makeCSClass("CompressionStream", __CS_KINDS, false);
+globalThis.DecompressionStream = __wjs_makeCSClass("DecompressionStream", __DS_KINDS, true);
 // ---- Blob（Web 全局；fetch/consumers/node:internal/blob 共用；9b）----
 const __wjs_blobBytes = new WeakMap();
 globalThis.Blob = class Blob {
@@ -4862,10 +4947,6 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_zlib_gzip", Some(node::zlib::zlib_gzip), 2),
             ("__wjs_zlib_gunzip", Some(node::zlib::zlib_gunzip), 1),
             ("__wjs_zlib_unzip", Some(node::zlib::zlib_unzip), 1),
-            ("__wjs_zlib_brotli_compress", Some(node::zlib::zlib_brotli_compress), 2),
-            ("__wjs_zlib_brotli_decompress", Some(node::zlib::zlib_brotli_decompress), 1),
-            ("__wjs_zlib_zstd_compress", Some(node::zlib::zlib_zstd_compress), 1),
-            ("__wjs_zlib_zstd_decompress", Some(node::zlib::zlib_zstd_decompress), 1),
             // 10a：crc32（ISO-HDLC 自实现；flate2::Crc 不收 seed）
             ("__wjs_zlib_crc32", Some(node::zlib::zlib_crc32), 2),
             // 10f 欠账轮：增量流式编解码状态机（flush 档位/premature-end/truncated）

@@ -552,3 +552,185 @@ console.log("gz-multi-sync", z.gunzipSync(Buffer.concat([z.gzipSync("abc"), z.gz
     assert!(!out.contains("BAD "), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10g_zlib_dict_pledged_webstream() {
+    // G9-3 收官三面：raw 字典流式（G9-3a）/ 字典严格校验 + pledgedSrcSize（G9-3b/c）/
+    // Web CompressionStream·DecompressionStream（G9-3d，type-error 套件同款）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import z, {
+  createDeflateRaw, createInflateRaw, createBrotliCompress, createBrotliDecompress,
+  createZstdCompress, zstdCompressSync, brotliCompressSync, constants,
+} from "node:zlib";
+
+// 1. raw 字典流式 + 视图族 + reset 组合（dictionary 套件 raw/rawreset 形）
+{
+  const dict = Buffer.from("lorem ipsum dolor sit amet 0123456789 adipiscing elit");
+  const input = "HTTP/1.1 200 Ok\r\nServer: x\r\n\r\n".repeat(40);
+  const ab = dict.buffer.slice(dict.byteOffset, dict.byteOffset + dict.byteLength);
+  const sources = [["buf", dict], ["ab", ab], ["u8", new Uint8Array(ab)], ["dv", new DataView(ab)]];
+  for (const [label, d] of sources) {
+    const def = createDeflateRaw({ dictionary: d });
+    const inf = createInflateRaw({ dictionary: d });
+    let out = "";
+    inf.setEncoding("utf-8");
+    inf.on("data", (c) => { out += c; });
+    def.on("data", (c) => inf.write(c));
+    const ok = await new Promise((res) => {
+      inf.on("end", () => res(out === input));
+      inf.on("error", (e) => { console.log("raw-" + label, "ERR", e.code, e.message); res(false); });
+      def.on("error", (e) => { console.log("raw-" + label, "DERR", e.code, e.message); res(false); });
+      def.on("end", () => inf.end());
+      def.end(input);
+    });
+    console.log("raw-dict-" + label, ok);
+  }
+  // reset 组合：write → flush → reset → write → end（修前 raw 形必 "bad state"）
+  {
+    const def = createDeflateRaw({ dictionary: dict });
+    const inf = createInflateRaw({ dictionary: dict });
+    let out = ""; let resetDone = false;
+    inf.setEncoding("utf-8");
+    inf.on("data", (c) => { out += c; });
+    def.on("data", (c) => { if (resetDone) inf.write(c); });
+    inf.on("error", (e) => { console.log("raw-reset ERR", e.code); });
+    const ok = await new Promise((res) => {
+      inf.on("end", () => res(out === input));
+      def.on("end", () => inf.end());
+      def.write(input);
+      def.flush(() => { def.reset(); resetDone = true; def.write(input); def.end(); });
+    });
+    // 第一轮输出按设计被 resetDone 门丢弃，out 恰为 reset 后新流解出的一份 input。
+    console.log("raw-reset", ok, out.length === input.length);
+  }
+}
+
+// 2. 字典严格校验（G9-3b：string 是合法数据输入但非法字典）
+{
+  for (const [label, bad] of [["str", "s"], ["num", 123], ["bool", true], ["obj", { a: 1 }], ["arr", [1, 2, 3]]]) {
+    let got = "";
+    try { createBrotliCompress({ dictionary: bad }); got = "NO"; } catch (e) { got = e.code; }
+    console.log("bdict-ctor-" + label, got === "ERR_INVALID_ARG_TYPE");
+    got = "";
+    try { createBrotliDecompress({ dictionary: bad }); got = "NO"; } catch (e) { got = e.code; }
+    console.log("bdec-ctor-" + label, got === "ERR_INVALID_ARG_TYPE");
+  }
+  let got = "";
+  try { brotliCompressSync("x", { dictionary: "s" }); got = "NO"; } catch (e) { got = e.code; }
+  console.log("bdict-sync", got === "ERR_INVALID_ARG_TYPE");
+}
+
+// 3. pledgedSrcSize（G9-3c）
+console.log("pledged-const", constants.ZSTD_error_srcSize_wrong === 72);
+{
+  let code = "", errno = 0;
+  try { zstdCompressSync("x".repeat(10), { pledgedSrcSize: 9 }); code = "NO-THROW"; }
+  catch (e) { code = e.code; errno = e.errno; }
+  console.log("pledged-sync-mismatch", code === "ZSTD_error_srcSize_wrong", errno === 72);
+}
+{
+  let ok = false, round = false;
+  try {
+    const c = zstdCompressSync("x".repeat(10), { pledgedSrcSize: 10 });
+    ok = true;
+    round = z.zstdDecompressSync(c).toString() === "x".repeat(10);
+  } catch {}
+  console.log("pledged-sync-match", ok, round);
+}
+{
+  const r = await new Promise((res) => {
+    const c = createZstdCompress({ pledgedSrcSize: 5 });
+    c.on("error", (e) => res(e.code + " " + (e.errno === 72)));
+    c.on("end", () => res("NO-ERR"));
+    c.write("x".repeat(7), () => { c.end(); c.resume(); });
+  });
+  console.log("pledged-stream-mismatch", r === "ZSTD_error_srcSize_wrong true");
+}
+for (const [label, v, expect] of [["str", "1", "ERR_INVALID_ARG_TYPE"], ["nul", null, "ERR_INVALID_ARG_TYPE"],
+  ["nan", NaN, "ERR_OUT_OF_RANGE"], ["frac", 1.9, "ERR_OUT_OF_RANGE"], ["neg", -1, "ERR_OUT_OF_RANGE"],
+  ["big", 9007199254740992, "ERR_OUT_OF_RANGE"]]) {
+  let got = "";
+  try { zstdCompressSync("x", { pledgedSrcSize: v }); got = "NO"; } catch (e) { got = e.code; }
+  console.log("pledged-bad-" + label, got === expect);
+}
+
+// 4. Web CompressionStream / DecompressionStream（G9-3d）
+{
+  console.log("cs-global", typeof CompressionStream === "function", typeof DecompressionStream === "function");
+  const { CompressionStream: CS, DecompressionStream: DS } = await import("node:stream/web");
+  console.log("cs-web", typeof CS === "function", typeof DS === "function", CS === globalThis.CompressionStream);
+  const ds = new DS("gzip");
+  console.log("cs-shape", ds instanceof Object, ds instanceof TransformStream === false,
+    Object.prototype.toString.call(ds) === "[object DecompressionStream]");
+  let threw = "";
+  try { new DS("nope"); } catch (e) { threw = e.name; }
+  console.log("cs-badfmt", threw === "TypeError");
+  // 四族 roundtrip（CS → DS，pipeThrough + async 迭代）
+  const text = "hello web streams compression " + "x".repeat(200);
+  for (const fmt of ["deflate", "gzip", "deflate-raw", "brotli"]) {
+    const chunks = [];
+    for await (const c of new Blob([text]).stream().pipeThrough(new CS(fmt)).pipeThrough(new DS(fmt))) chunks.push(c);
+    console.log("rt-" + fmt, Buffer.concat(chunks).toString() === text);
+  }
+  // 尾垃圾四形（type-error 套件同款：截断 1B + 双流拼接）
+  const validGz = z.gzipSync("a");
+  const validDf = z.deflateSync("a");
+  const validBr = z.brotliCompressSync("a");
+  async function trail(fmt, chunks) {
+    try {
+      await Array.fromAsync(new Blob(chunks).stream().pipeThrough(new DS(fmt)));
+      return "NO-REJECT";
+    } catch (e) { return e.name + " " + e.code; }
+  }
+  console.log("trail-deflate", await trail("deflate", [new Uint8Array([...validDf, 1])]) === "TypeError ERR_TRAILING_JUNK_AFTER_STREAM_END",
+    await trail("deflate", [new Uint8Array([...validDf, ...validDf])]) === "TypeError ERR_TRAILING_JUNK_AFTER_STREAM_END");
+  console.log("trail-gzip", await trail("gzip", [new Uint8Array([...validGz, 1])]) === "TypeError ERR_TRAILING_JUNK_AFTER_STREAM_END",
+    await trail("gzip", [new Uint8Array([...validGz, ...validGz])]) === "TypeError ERR_TRAILING_JUNK_AFTER_STREAM_END");
+  console.log("trail-brotli", await trail("brotli", [new Uint8Array([...validBr, 1])]) === "TypeError ERR_TRAILING_JUNK_AFTER_STREAM_END",
+    await trail("brotli", [new Uint8Array([...validBr, ...validBr])]) === "TypeError ERR_TRAILING_JUNK_AFTER_STREAM_END");
+}
+"#,
+    );
+    for line in [
+        "raw-dict-buf true",
+        "raw-dict-ab true",
+        "raw-dict-u8 true",
+        "raw-dict-dv true",
+        "raw-reset true true",
+        "bdict-ctor-str true",        "bdec-ctor-str true",
+        "bdict-sync true",
+        "pledged-const true",
+        "pledged-sync-mismatch true true",
+        "pledged-sync-match true true",
+        "pledged-stream-mismatch true",
+        "pledged-bad-str true",
+        "pledged-bad-nul true",
+        "pledged-bad-nan true",
+        "pledged-bad-frac true",
+        "pledged-bad-neg true",
+        "pledged-bad-big true",
+        "cs-global true true",
+        "cs-web true true true",
+        "cs-shape true true true",
+        "cs-badfmt true",
+        "rt-deflate true",
+        "rt-gzip true",
+        "rt-deflate-raw true",
+        "rt-brotli true",
+        "trail-deflate true true",
+        "trail-gzip true true",
+        "trail-brotli true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    for label in ["num", "bool", "obj", "arr"] {
+        assert!(out.lines().any(|l| l == format!("bdict-ctor-{label} true")), "bdict-ctor-{label}\nout: {out}");
+        assert!(out.lines().any(|l| l == format!("bdec-ctor-{label} true")), "bdec-ctor-{label}\nout: {out}");
+    }
+    assert!(!out.contains("ERR "), "out: {out}");
+    dir.close().unwrap();
+}

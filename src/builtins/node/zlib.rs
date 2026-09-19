@@ -336,119 +336,6 @@ pub unsafe extern "C" fn zlib_unzip(
     }
 }
 
-/// `__wjs_zlib_brotli_compress(dataU8, quality)`（quality 缺省 11）。
-pub unsafe extern "C" fn zlib_brotli_compress(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 同上
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(data) = arg_bytes(&mut cx, &frame, 0, "brotliCompress") else {
-        return false;
-    };
-    let Some(q) = arg_level(&frame, 1, 11) else {
-        report_error(&mut cx, "TypeError: brotli quality must be a number");
-        return false;
-    };
-    let q = q.clamp(0, 11) as u32;
-    use std::io::Write as _;
-    let mut out = Vec::new();
-    let r = (|| -> std::io::Result<()> {
-        let mut w = brotli::CompressorWriter::new(&mut out, 4096, q, 22);
-        w.write_all(&data)?;
-        // 禁显式 flush：flush 会先吐一个非终结同步块（空输入多 2 字节 framing，
-        // 非空头尾亦与 one-shot 不一致）；drop 时的 FINISH 即完整终结，
-        // 与 Node one-shot 逐字节一致（zero-byte 套件：空输入 1 字节）。
-        Ok(())
-    })();
-    match r {
-        Ok(()) => set_rval_bytes(&mut cx, &frame, &out),
-        Err(e) => {
-            report_error(&mut cx, &format!("Z_STREAM_ERROR: {e}"));
-            false
-        }
-    }
-}
-
-/// `__wjs_zlib_brotli_decompress(dataU8)`。
-pub unsafe extern "C" fn zlib_brotli_decompress(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 同上
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(data) = arg_bytes(&mut cx, &frame, 0, "brotliDecompress") else {
-        return false;
-    };
-    use std::io::Write as _;
-    let mut out = Vec::new();
-    let r = (|| -> std::io::Result<()> {
-        let mut w = brotli::DecompressorWriter::new(&mut out, 4096);
-        w.write_all(&data)?;
-        w.flush()?;
-        Ok(())
-    })();
-    match r {
-        Ok(()) => set_rval_bytes(&mut cx, &frame, &out),
-        Err(e) => {
-            report_error(&mut cx, &format!("Z_DATA_ERROR: {e}"));
-            false
-        }
-    }
-}
-
-/// `__wjs_zlib_zstd_compress(dataU8)`（恒 Fastest；见头注）。
-pub unsafe extern "C" fn zlib_zstd_compress(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 同上
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(data) = arg_bytes(&mut cx, &frame, 0, "zstdCompress") else {
-        return false;
-    };
-    let out = ruzstd::encoding::compress_to_vec(
-        &data[..],
-        ruzstd::encoding::CompressionLevel::Fastest,
-    );
-    set_rval_bytes(&mut cx, &frame, &out)
-}
-
-/// `__wjs_zlib_zstd_decompress(dataU8)`。
-pub unsafe extern "C" fn zlib_zstd_decompress(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 同上
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(data) = arg_bytes(&mut cx, &frame, 0, "zstdDecompress") else {
-        return false;
-    };
-    // `StreamingDecoder::new` 即验帧头（坏魔数此处报 Z_DATA_ERROR）。
-    let dec = match ruzstd::decoding::StreamingDecoder::new(&data[..]) {
-        Ok(d) => d,
-        Err(e) => {
-            report_error(&mut cx, &format!("Z_DATA_ERROR: {e}"));
-            return false;
-        }
-    };
-    match read_all(dec) {
-        Ok(out) => set_rval_bytes(&mut cx, &frame, &out),
-        Err(e) => {
-            report_error(&mut cx, &e);
-            false
-        }
-    }
-}
-
 // ===== 增量流引擎（10f-g：真流式编解码状态机，零新依赖）=====
 // flate2 Compress/Decompress 分段 + 手工 gzip 成员机（trailing zeros/garbage/
 // magic 语义逐条真机对拍）+ brotli crate 状态机（enc compress_stream / dec
@@ -783,6 +670,13 @@ impl ZEngine {
             self.hdr_checked = true;
         }
         let zd = self.zd.get_or_insert_with(|| flate2::Decompress::new(zlib));
+        // raw 流无 FDICT 头：zlib 语义字典必须在首次 inflate 前设（Node 对
+        // raw 即构造期设）；被动 NEED_DICT 恢复在 raw 下后续喂入留 Mode::Bad，
+        // 报 "repeated call with bad state"（dictionary 套件 raw/rawreset 实测）。
+        if !zlib && !self.dict_set_done && !self.dict.is_empty() {
+            self.dict_set_done = true;
+            let _ = zd.set_dictionary(&self.dict);
+        }
         let mut err: Option<flate2::DecompressError> = None;
         let mut ended = false;
         loop {
@@ -1682,6 +1576,33 @@ function __zBytes(input, what) {
   throw new ERR_INVALID_ARG_TYPE(
     "buffer", ["string", "Buffer", "TypedArray", "DataView", "ArrayBuffer"], input);
 }
+// 字典严格校验（真机：只收 Buffer/TypedArray/DataView/ArrayBuffer——string 是
+// 合法数据输入但非法字典，dictionary 套件 createBrotli*({dictionary:'string'})
+// 口径）。一次性面与流类基座共用。
+function __zDictBytes(opts) {
+  const d = opts?.dictionary;
+  if (d === undefined || d === null) return null;
+  if (typeof d === "string" || !(d instanceof Uint8Array || d instanceof ArrayBuffer || ArrayBuffer.isView(d))) {
+    throw new ERR_INVALID_ARG_TYPE("options.dictionary", ["Buffer", "TypedArray", "DataView", "ArrayBuffer"], d);
+  }
+  return __zBytes(d);
+}
+// pledgedSrcSize 校验（pledged 套件真机口径：'1'/null → ARG_TYPE；
+// NaN/±Infinity/非整数/负/MAX_SAFE+1 → OUT_OF_RANGE）。返回 native 档
+// （无选项 -1）；校验仅在 zstd 压缩侧调用点生效。
+function __zCheckPledged(opts) {
+  const p = opts?.pledgedSrcSize;
+  if (p === undefined) return -1;
+  if (typeof p !== "number") {
+    throw new ERR_INVALID_ARG_TYPE("options.pledgedSrcSize", "number", p);
+  }
+  if (!Number.isSafeInteger(p) || p < 0) {
+    const err = new RangeError(`The value of "options.pledgedSrcSize" is out of range. It must be a non-negative integer. Received ${p}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  return p;
+}
 // spoofed length 校验（Node invalid-input 口径：length/byteLength getter 伪造的视图
 // 实际缓冲不足即 ERR_OUT_OF_RANGE；真机读 length 分配，短读即范围错）。
 function __zChecked(input) {
@@ -1722,7 +1643,9 @@ function __zThrowEngine(code, msg) {
     ? new TypeError(msg)
     : new Error(msg);
   err.code = code;
-  err.errno = __Z_ERRNO[code] ?? -1;
+  // errno：Z_* 走 errno 表；ZSTD_error_* 走 constants（pledged 套件
+  // err.errno === constants.ZSTD_error_srcSize_wrong 口径）。运行期取表。
+  err.errno = __Z_ERRNO[code] ?? constants[code] ?? -1;
   throw err;
 }
 // 流类 native kind（__wjs_zlib_stream_new 的 ZKind 同值）。
@@ -1746,8 +1669,11 @@ function __zCheckRejectOpt(opts) {
 // （truncated 套件 zstd 段用 ZSTD_e_flush=1 触发截断报错）。
 function __zEngineOnce(kind, data, opts, dfltFinish, lv) {
   const reject = __zCheckRejectOpt(opts);
-  const dict = opts && opts.dictionary ? __zBytes(opts.dictionary) : null;
-  const id = __wjs_zlib_stream_new(kind, lv ?? -1, dict, -1, reject ? 1 : 0);
+  // 字典严格校验（真机：string 不收，dictionary 套件 createBrotli* 口径）；
+  // pledgedSrcSize 仅 zstd 压缩侧（10）生效（Node 解压类校验器不含此键，忽略）。
+  const dict = __zDictBytes(opts);
+  const pledged = kind === 10 ? __zCheckPledged(opts) : -1;
+  const id = __wjs_zlib_stream_new(kind, lv ?? -1, dict, pledged, reject ? 1 : 0);
   try {
     const flag = (opts && opts.finishFlush !== undefined) ? opts.finishFlush : dfltFinish;
     const r = JSON.parse(__wjs_zlib_stream_feed(id, data, flag));
@@ -1774,13 +1700,7 @@ function __zCheckKMax(out) {
   }
   return out;
 }
-function __zCall(fn) {
-  try {
-    return __zBuf(fn());
-  } catch (e) {
-    __zErr(e);
-  }
-}
+// （__zCall 已随 brotli/zstd 一次性压缩改走引擎而移除——裸 native 路径删除）
 function __zLevel(opts, dflt) {
   if (opts === undefined || opts === null) return dflt;
   if (typeof opts === "number") opts = { level: opts };
@@ -1993,16 +1913,16 @@ function brotliCompressSync__core(buf, opts) {
   const data = __zChecked(buf, "brotliCompress");
   const q = __zQuality(opts);
   __zFlush(opts, true);
-  return __zCall(() => __wjs_zlib_brotli_compress(data, q));
+  // 走引擎（dict/quality/错误口径全经既有接线；同 q 下与裸 native
+  // CompressorWriter 输出逐字节一致，非 dict 场景零回归）。
+  return __zBuf(__zEngineOnce(8, data, opts, 2, q));
 }
 export function brotliCompress(buf, opts, cb) {
   if (opts && opts.info && typeof cb === "function") { const C = BrotliCompress; const eng = new C(opts); try { const r = brotliCompressSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   if (typeof opts === "function") { cb = opts; opts = undefined; }
   __zNeedCb(cb, "brotliCompress");
   const data = __zChecked(buf, "brotliCompress");
-  const q = __zQuality(opts);
-  __zFlush(opts, true);
-  __zAsync((d, x) => __zCall(() => __wjs_zlib_brotli_compress(d, x)), [data, q], cb);
+  __zAsync((d) => brotliCompressSync__core(d, opts), [data], cb);
 }
 function brotliDecompressSync__core(buf, opts) {
   const data = __zChecked(buf, "brotliDecompress");
@@ -2020,14 +1940,16 @@ export function brotliDecompress(buf, opts, cb) {
 }
 function zstdCompressSync__core(buf, opts) {
   const data = __zChecked(buf, "zstdCompress");
-  return __zCall(() => __wjs_zlib_zstd_compress(data));
+  // 走引擎：pledgedSrcSize 经 __zEngineOnce 接线终检（mismatch →
+  // ZSTD_error_srcSize_wrong）；flag 2 单帧与裸 native compress_to_vec 同函数同字节。
+  return __zBuf(__zEngineOnce(10, data, opts, 2));
 }
 export function zstdCompress(buf, opts, cb) {
   if (typeof opts === "function") { cb = opts; opts = undefined; }
   if (opts && opts.info) { const eng = new ZstdCompress(opts); try { const r = zstdCompressSync(buf, opts); cb(null, { buffer: r.buffer ?? r, engine: eng }); } catch (e) { cb(e); } return; }
   __zNeedCb(cb, "zstdCompress");
   const data = __zChecked(buf, "zstdCompress");
-  __zAsync((d) => __zCall(() => __wjs_zlib_zstd_compress(d)), [data], cb);
+  __zAsync((d) => zstdCompressSync__core(d, opts), [data], cb);
 }
 function zstdDecompressSync__core(buf, opts) {
   const data = __zChecked(buf, "zstdDecompress");
@@ -2047,8 +1969,10 @@ export function zstdDecompress(buf, opts, cb) {
 // write 即时压出、flush 档位即时出边界、finishFlush 容忍截断、
 // rejectGarbageAfterEnd 解压 junk 报错）。
 // 覆盖 12 类 + createXxx 工厂 + info 选项（{buffer, engine}）+ bytesWritten。
-// 记档：zlib 族流面 dict 引擎侧未接（一次性面同）；windowBits/memLevel/strategy
-// 接受忽略（构造校验只做 failed-init 套件口径：chunkSize 范围）。
+// dict 已接引擎（严格校验：Buffer/TypedArray/DataView/ArrayBuffer；raw 族构造期
+// 主动 set_dictionary，zlib 族 FDICT 被动恢复）；pledgedSrcSize 仅 zstd 压缩侧；
+// windowBits/memLevel/strategy 接受忽略（构造校验只做 failed-init 套件口径：
+// chunkSize 范围）。
 import { Transform } from "node:stream";
 function __zStreamBase(opts, syncFn, kind) {
   Transform.call(this);
@@ -2081,12 +2005,14 @@ function __zStreamBase(opts, syncFn, kind) {
   // （reset-during-write 套件：同 tick 内 reset 即抛）。
   const self = this;
   // 增量引擎：构造即建（真机 handle 同期）；reject01=rejectGarbageAfterEnd（解压族）。
+  // 字典严格校验 + pledgedSrcSize（仅 zstd 压缩侧，Node 口径解压类忽略）。
   const reject = __zCheckRejectOpt(opts) ? 1 : 0;
-  const dict = opts?.dictionary ? __zBytes(opts.dictionary) : null;
+  const dict = __zDictBytes(opts);
+  const pledged = kind === 10 ? __zCheckPledged(opts) : -1;
   this.__zid = __wjs_zlib_stream_new(
     kind,
     Number.isInteger(opts?.level) ? opts.level : -1,
-    dict, -1, reject);
+    dict, pledged, reject);
   // bytesWritten 记账：feed 返回 unconsumed（引擎侧剩余未消费），consumed =
   // 本块长 + 上轮剩余 - 本轮剩余（premature-end 套件：trailing 垃圾不计入）。
   this.__pend = 0;
@@ -2449,6 +2375,22 @@ export const constants = {
   BROTLI_DEFAULT_QUALITY: 11, BROTLI_MIN_QUALITY: 0, BROTLI_MAX_QUALITY: 11,
   BROTLI_DECODE: 0, BROTLI_ENCODE: 1,
   ZSTD_e_continue: 0, ZSTD_e_flush: 1, ZSTD_e_end: 2,
+  // ZSTD 错误码族（真机 26.8.2 zlib.constants 逐项导出为准；pledged 套件
+  // 取 ZSTD_error_srcSize_wrong=72）。
+  ZSTD_error_no_error: 0, ZSTD_error_GENERIC: 1,
+  ZSTD_error_prefix_unknown: 10, ZSTD_error_version_unsupported: 12,
+  ZSTD_error_frameParameter_unsupported: 14, ZSTD_error_frameParameter_windowTooLarge: 16,
+  ZSTD_error_corruption_detected: 20, ZSTD_error_checksum_wrong: 22,
+  ZSTD_error_literals_headerWrong: 24, ZSTD_error_dictionary_corrupted: 30,
+  ZSTD_error_dictionary_wrong: 32, ZSTD_error_dictionaryCreation_failed: 34,
+  ZSTD_error_parameter_unsupported: 40, ZSTD_error_parameter_combination_unsupported: 41,
+  ZSTD_error_parameter_outOfBound: 42, ZSTD_error_tableLog_tooLarge: 44,
+  ZSTD_error_maxSymbolValue_tooLarge: 46, ZSTD_error_maxSymbolValue_tooSmall: 48,
+  ZSTD_error_stabilityCondition_notRespected: 50, ZSTD_error_stage_wrong: 60,
+  ZSTD_error_init_missing: 62, ZSTD_error_memory_allocation: 64,
+  ZSTD_error_workSpace_tooSmall: 66, ZSTD_error_dstSize_tooSmall: 70,
+  ZSTD_error_srcSize_wrong: 72, ZSTD_error_dstBuffer_null: 74,
+  ZSTD_error_noForwardProgress_destFull: 80, ZSTD_error_noForwardProgress_inputEmpty: 82,
 };
 export const codes = {
   Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1, Z_STREAM_ERROR: -2,
@@ -2781,8 +2723,8 @@ mod tests {
 mod zdbg {
     use super::*;
     #[test]
-    fn zz_dbg_dict_stream() {
-        // 流式字典复现：dict 压缩 → 两段解压（dictionary 套件流式形）
+    fn zlib_dict_stream_roundtrip_chunks() {
+        // zlib 族流式字典（FDICT 被动 NEED_DICT 恢复路径；dictionary 套件流式形）。
         let dict = b"hello world, this is a dictionary test";
         let data = b"A line of data\n".repeat(20);
         let comp = {
@@ -2793,36 +2735,59 @@ mod zdbg {
         };
         let mut d = ZEngine::new(ZKind::ZlibInflate, -1, dict, None, false);
         let half = comp.len() / 2;
-        match d.feed(&comp[..half], 0) {
-            Ok((u, dn)) => println!("f1 ok u={} done={}", u, dn),
-            Err(e) => println!("f1 ERR {} {}", e.code, e.msg),
-        }
-        match d.feed(&comp[half..], 0) {
-            Ok((u, dn)) => println!("f2 ok u={} done={}", u, dn),
-            Err(e) => println!("f2 ERR {} {}", e.code, e.msg),
-        }
-        match d.feed(&[], 4) {
-            Ok((u, dn)) => println!("f3 ok done={}", dn),
-            Err(e) => println!("f3 ERR {} {}", e.code, e.msg),
-        }
-        println!("out={} want={}", d.take_out().len(), data.len());
-        // 套件形：单次 write 全量 + finish（require 后重试的轮次）
-        let comp2 = {
-            let mut c = ZEngine::new(ZKind::ZlibDeflate, -1, dict, None, false);
+        d.feed(&comp[..half], 0).unwrap();
+        d.feed(&comp[half..], 0).unwrap();
+        d.feed(&[], 4).unwrap();
+        assert_eq!(d.take_out(), data);
+        // reset 后重用（引擎重建，字典保活）。
+        let mut c2 = ZEngine::new(ZKind::ZlibDeflate, -1, dict, None, false);
+        c2.feed(&data, 0).unwrap();
+        c2.feed(&[], 4).unwrap();
+        c2.reset();
+        c2.feed(&data, 0).unwrap();
+        c2.feed(&[], 4).unwrap();
+        let comp2 = c2.take_out();
+        let mut d2 = ZEngine::new(ZKind::ZlibInflate, -1, dict, None, false);
+        d2.feed(&comp2, 0).unwrap();
+        d2.feed(&[], 4).unwrap();
+        assert_eq!(d2.take_out(), data);
+    }
+
+    #[test]
+    fn raw_dict_stream_proactive_set_dictionary() {
+        // G9-3a 回归：raw 流无 FDICT 头，字典必须在首次 inflate 前主动设
+        // （zlib 语义）；被动 NEED_DICT 恢复对 raw 留 Mode::Bad，后续喂入
+        // 报 "repeated call with bad state"（dictionary 套件 raw/rawreset 修前必挂）。
+        let dict = b"lorem ipsum dolor sit amet consectetur adipiscing elit 0123456789";
+        let data = b"HTTP/1.1 200 Ok\r\nServer: node.js\r\nContent-Length: 0\r\n\r\n".repeat(8);
+        let comp = {
+            let mut c = ZEngine::new(ZKind::RawDeflate, -1, dict, None, false);
             c.feed(&data, 0).unwrap();
             c.feed(&[], 4).unwrap();
             c.take_out()
         };
-        let mut d2 = ZEngine::new(ZKind::ZlibInflate, -1, dict, None, false);
-        match d2.feed(&comp2, 0) {
-            Ok((u, dn)) => println!("g1 ok u={} done={}", u, dn),
-            Err(e) => println!("g1 ERR {} {}", e.code, e.msg),
-        }
-        match d2.feed(&[], 4) {
-            Ok((u, dn)) => println!("g2 ok done={}", dn),
-            Err(e) => println!("g2 ERR {} {}", e.code, e.msg),
-        }
-        println!("out2={} want={}", d2.take_out().len(), data.len());
+        let mut d = ZEngine::new(ZKind::RawInflate, -1, dict, None, false);
+        let half = comp.len() / 2;
+        d.feed(&comp[..half], 0).unwrap();
+        d.feed(&comp[half..], 0).unwrap();
+        d.feed(&[], 4).unwrap();
+        assert_eq!(d.take_out(), data);
+    }
+
+    #[test]
+    fn zstd_pledged_mismatch_engine_error() {
+        // pledged 终检（zstd_enc_feed）：mismatch → ZSTD_error_srcSize_wrong；
+        // match → 正常出帧。pledged 套件 err.errno=72 断言由 JS constants 覆盖。
+        let mut e = ZEngine::new(ZKind::ZstdEnc, -1, &[], Some(9), false);
+        let err = e.feed(b"xxxxxxxxxx", 2).unwrap_err();
+        assert_eq!(err.code, "ZSTD_error_srcSize_wrong");
+        assert_eq!(err.msg, "Src size is incorrect");
+        let mut e2 = ZEngine::new(ZKind::ZstdEnc, -1, &[], Some(10), false);
+        e2.feed(b"xxxxxxxxxx", 2).unwrap();
+        assert!(!e2.take_out().is_empty());
+        // 空输入 pledged 0 → 正常（testCases {0,0} 形）。
+        let mut e3 = ZEngine::new(ZKind::ZstdEnc, -1, &[], Some(0), false);
+        e3.feed(&[], 2).unwrap();
     }
 
     #[test]
@@ -2841,7 +2806,7 @@ mod zdbg {
         let mut i = 0;
         while i < comp.len() {
             let end = (i + step).min(comp.len());
-            let (u, dn) = d.feed(&comp[i..end], 0).unwrap();
+            let (_, dn) = d.feed(&comp[i..end], 0).unwrap();
             if dn { println!("done at slice {i}"); }
             i = end;
         }

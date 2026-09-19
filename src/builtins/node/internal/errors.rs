@@ -420,7 +420,7 @@ E('ERR_ZIP_UNSUPPORTED_FEATURE', 'unsupported ZIP feature: %s', Error, HideStack
 E('ERR_INVALID_STATE', 'Invalid state: %s', Error, TypeError, RangeError, HideStackFramesError);
 // 10f http2 compat 面（node lib/internal/errors.js 文案逐字）
 E('ERR_HTTP2_HEADERS_SENT', 'Response has already been initiated.', Error);
-E('ERR_HTTP2_INVALID_STREAM', 'The stream has been destroyed.', Error);
+E('ERR_HTTP2_INVALID_STREAM', 'The stream has been destroyed', Error);
 E('ERR_HTTP2_NO_SOCKET_MANIPULATION',
   'HTTP/2 sockets should not be directly manipulated (e.g. read and written)', Error);
 E('ERR_HTTP2_INVALID_HEADER_VALUE', 'Invalid value "%s" for header "%s"', TypeError, HideStackFramesError);

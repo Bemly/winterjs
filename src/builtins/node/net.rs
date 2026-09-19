@@ -985,6 +985,7 @@ pub fn dispatch(
         return Err(failed(cx));
     };
     rooted!(&in(cx) let fun_r = fun); // §4.80：裸 JSVal 跨 json!/to_jsval 分配即悬垂
+    let is_conn_close = matches!(&ev.kind, NetKind::H2Stream { what, .. } if what == "connClose");
     let (kind, payload): (&str, String) = match &ev.kind {
         NetKind::Connect { local } => {
             ("connect", serde_json::json!({ "local": local }).to_string())
@@ -1054,7 +1055,9 @@ pub fn dispatch(
         ev.kind,
         NetKind::Close | NetKind::ServerClose | NetKind::H2SessionClose
     );
-    if closed {
+    if closed || is_conn_close {
+        // connClose：连 net_target 一起清（serve_conn 尾部不再自 purge，
+        // 保证本事件派发时 target 仍在）
         state::net_purge(ev.id);
     }
     if ok.is_none() {

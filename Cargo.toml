@@ -284,6 +284,9 @@ axum-extra = "0.12"
 # §h2（2026-09-12 用户拍板，node:http2 必选）：直引 hyper，只开 server+http2
 # （禁 client/ffi/capi；client 侧同特性服务，无需另加）；版本跟 lock（1.11.1）。
 hyper = { version = "1", default-features = false, features = ["server", "http2"] }
+# 10g：h2 直引（hyper 传递依赖 0.4.19，同版本零新增编译）：H2 reset reason
+# 下探（Error::source 链 downcast h2::Error），node 口径流错误消息需要。
+h2 = "0.4"
 tower = "0.5"
 # §2：只开 fs/cors/compression-gzip,br/trace，禁 compression-zstd
 tower-http = { version = "0.7", default-features = false, features = ["fs", "cors", "compression-gzip", "compression-br", "trace"] }

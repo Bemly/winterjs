@@ -247,10 +247,54 @@ fn ensure_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+/// h2 Reason → node nghttp2 常量名（错误消息用）。
+fn nghttp2_reason_name(r: h2::Reason) -> &'static str {
+    match r {
+        h2::Reason::NO_ERROR => "NGHTTP2_NO_ERROR",
+        h2::Reason::PROTOCOL_ERROR => "NGHTTP2_PROTOCOL_ERROR",
+        h2::Reason::INTERNAL_ERROR => "NGHTTP2_INTERNAL_ERROR",
+        h2::Reason::FLOW_CONTROL_ERROR => "NGHTTP2_FLOW_CONTROL_ERROR",
+        h2::Reason::SETTINGS_TIMEOUT => "NGHTTP2_SETTINGS_TIMEOUT",
+        h2::Reason::STREAM_CLOSED => "NGHTTP2_STREAM_CLOSED",
+        h2::Reason::FRAME_SIZE_ERROR => "NGHTTP2_FRAME_SIZE_ERROR",
+        h2::Reason::REFUSED_STREAM => "NGHTTP2_REFUSED_STREAM",
+        h2::Reason::CANCEL => "NGHTTP2_CANCEL",
+        h2::Reason::COMPRESSION_ERROR => "NGHTTP2_COMPRESSION_ERROR",
+        h2::Reason::CONNECT_ERROR => "NGHTTP2_CONNECT_ERROR",
+        h2::Reason::ENHANCE_YOUR_CALM => "NGHTTP2_ENHANCE_YOUR_CALM",
+        h2::Reason::INADEQUATE_SECURITY => "NGHTTP2_INADEQUATE_SECURITY",
+        h2::Reason::HTTP_1_1_REQUIRED => "NGHTTP2_HTTP_1_1_REQUIRED",
+        _ => "NGHTTP2_INTERNAL_ERROR",
+    }
+}
+
+/// hyper/h2 错误 → node 口径消息：reason 可得即
+/// `Stream closed with error code NGHTTP2_X`，否则原样 Display。
+fn h2_err_msg(e: &hyper::Error) -> String { h2_err_msg_rst(e).0 }
+
+/// 同上，并携带 RST 原因码（node 客户端流 `rstCode` 需要）。
+fn h2_err_msg_rst(e: &hyper::Error) -> (String, Option<u32>) {
+    let mut src: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = src {
+        if let Some(h2e) = err.downcast_ref::<h2::Error>() {
+            if let Some(reason) = h2e.reason() {
+                return (
+                    format!("Stream closed with error code {}", nghttp2_reason_name(reason)),
+                    Some(u32::from(reason)),
+                );
+            }
+        }
+        src = err.source();
+    }
+    (format!("{e}"), None)
+}
+
 // ── 服务端 ──────────────────────────────────────────────────────────────────
 
 /// 读全请求体（整收口径；trailer 一并收集。错即 Err）。
-async fn read_body(body: hyper::body::Incoming) -> Result<(Vec<u8>, Vec<(String, String)>), String> {
+async fn read_body(
+    body: hyper::body::Incoming,
+) -> Result<(Vec<u8>, Vec<(String, String)>), (String, Option<u32>)> {
     use http_body::Body as _;
     use std::future::poll_fn;
     let mut body = body;
@@ -272,7 +316,7 @@ async fn read_body(body: hyper::body::Incoming) -> Result<(Vec<u8>, Vec<(String,
                     }
                 }
             }
-            Some(Err(e)) => return Err(format!("H2 stream error: {e}")),
+            Some(Err(e)) => return Err(h2_err_msg_rst(&e)),
         }
     }
 }
@@ -313,6 +357,9 @@ async fn serve_conn<IO>(
     let dead_clean: DeadStreams = Arc::new(std::sync::Mutex::new(HashSet::new()));
     let ended: EndedStreams = Arc::new(std::sync::Mutex::new(HashSet::new()));
     let seq = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    // 连接死亡广播：service 的应答等待在 conn 亡后即退出（否则 hyper 等待
+    // 未完成响应 → conn 永不结束 → 客户端死连接泄漏，服务端流 'close' 不到）
+    let (conn_dead_tx, conn_dead_rx) = tokio::sync::watch::channel(false);
     let svc = {
         let responders = responders.clone();
         let bodies = bodies.clone();
@@ -321,6 +368,7 @@ async fn serve_conn<IO>(
         let dead_clean = dead_clean.clone();
         let seq = seq.clone();
         let ev_tx = ev_tx.clone();
+        let conn_dead_base = conn_dead_rx.clone();
         hyper::service::service_fn(move |req: http::Request<hyper::body::Incoming>| {
             let responders = responders.clone();
             let bodies = bodies.clone();
@@ -329,6 +377,7 @@ async fn serve_conn<IO>(
             let dead_clean = dead_clean.clone();
             let seq = seq.clone();
             let ev_tx = ev_tx.clone();
+            let mut conn_dead = conn_dead_base.clone();
             async move {
                 let stream_id = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let method = req.method().to_string();
@@ -348,7 +397,7 @@ async fn serve_conn<IO>(
                 let headers = headers_json(req.headers());
                 let (body, trailers) = match read_body(req.into_body()).await {
                     Ok(b) => b,
-                    Err(e) => {
+                    Err((e, _rst)) => {
                         let _ = ev_tx.send(NetEvent {
                             id: server_id,
                             kind: NetKind::Error {
@@ -378,7 +427,12 @@ async fn serve_conn<IO>(
                 });
                 // JS 不应答即挂起（记档）；reset 已发则 service 回 Err（hyper RST），
                 // 干净关（NO_ERROR）回 200 空体（偏差记档：body API 无法 RST NO_ERROR）。
-                let head = match rx.await {
+                let head = match tokio::select! {
+                    r = rx => r,
+                    _ = conn_dead.changed() => {
+                        return Err::<http::Response<ChanBody>, anyhow::Error>(anyhow::anyhow!("h2 connection closed"));
+                    }
+                } {
                     Ok(r) => r,
                     Err(_) => {
                         let was_dead = dead.lock().unwrap().remove(&stream_id);
@@ -446,6 +500,15 @@ async fn serve_conn<IO>(
                     }
                     Some(NetCmd::H2RespondReset { stream_id, code }) => {
                         ended.lock().unwrap().insert(stream_id);
+                        // 通知 server 侧流被 RST（rstCode 语义；JS 侧据此置 rstCode）
+                        let _ = ev_tx.send(NetEvent {
+                            id: server_id,
+                            kind: NetKind::H2Stream {
+                                stream_id,
+                                what: "aborted".into(),
+                                payload: code.to_string(),
+                            },
+                        });
                         if code == 0 {
                             dead_clean.lock().unwrap().insert(stream_id);
                         } else {
@@ -466,7 +529,10 @@ async fn serve_conn<IO>(
                             .await;
                         }
                     }
-                    Some(NetCmd::Close) | None => break,
+                    Some(NetCmd::Close) | None => {
+                        tracing::debug!(target: "winterjs::http2", conn_id, "serve_conn: Close cmd");
+                        break;
+                    }
                     _ => {}
                 }
             }
@@ -495,7 +561,7 @@ async fn serve_conn<IO>(
     };
     for stream_id in outstanding {
         let _ = ev_tx.send(NetEvent {
-            id: server_id,
+            id: conn_id,
             kind: NetKind::H2Stream {
                 stream_id,
                 what: "aborted".into(),
@@ -505,15 +571,17 @@ async fn serve_conn<IO>(
     }
     // 会话终结通知（借 H2Stream 通道：what="connClose"，payload 带 conn_id；
     // JS 侧 server 收到后收尾对应 Http2Session 并发 'close'）。
+    tracing::debug!(target: "winterjs::http2", conn_id, "tail target_present={}", state::net_target(conn_id).is_some());
     let _ = ev_tx.send(NetEvent {
-        id: server_id,
+        id: conn_id,
         kind: NetKind::H2Stream {
             stream_id: 0,
             what: "connClose".into(),
             payload: conn_id.to_string(),
         },
     });
-    state::net_purge(conn_id);
+    // conn 的 net_purge 由 net.rs 在 connClose 派发后执行（此 purge 会连
+    // net_target 一起删——先删则排队的 connClose/aborted 事件全部丢路由）
 }
 
 /// 监听选项 JSON：`{tls?: {cert, key}}`（h2c 缺省）。
@@ -607,6 +675,11 @@ pub unsafe extern "C" fn h2_listen(
                 acc = listener.accept() => {
                     let Ok((stream, peer)) = acc else { continue };
                     let (conn_id, conn_cmd_rx) = state::net_conn_add();
+                    // conn 复用 server 的 target（connClose/aborted 事件在
+                    // ServerClose purge 后仍可达；node：server.close 不杀活连接）
+                    if let Some(t) = state::net_target(id) {
+                        state::net_target_add(conn_id, t);
+                    }
                     live.insert(conn_id);
                     let ev2 = ev_tx.clone();
                     let done2 = done_tx.clone();
@@ -640,9 +713,7 @@ pub unsafe extern "C" fn h2_listen(
                 _ = cmd_rx.recv() => break,
             }
         }
-        for cid in live {
-            let _ = state::net_cmd(cid, NetCmd::Close);
-        }
+        // node 默认：server.close() 不杀活连接，各 conn 由对端关闭后自行退出
         let _ = ev_tx.send(NetEvent { id, kind: NetKind::ServerClose });
     });
     true
@@ -679,8 +750,39 @@ struct OpenReq {
     authority: String,
     #[serde(rename = "waitTrailers", default)]
     wait_trailers: bool,
+    // 值可为 string 或 array（set-cookie 等多值头；数组展开为多条线，
+    // node 客户端同口径）。此前 String 收不了 sequence 即
+    // "bad open params: invalid type: sequence"（cookies/multiheaders 套件）。
     #[serde(default)]
-    headers: Vec<Vec<String>>,
+    headers: Vec<Vec<serde_json::Value>>,
+}
+
+/// OpenReq 头展开：string 值单条，array 值逐元素展开。
+fn openreq_headers(req: &OpenReq) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for pair in &req.headers {
+        let Some(name) = pair.first().and_then(|v| v.as_str()) else { continue };
+        let values: Vec<String> = match pair.get(1) {
+            Some(serde_json::Value::String(s)) => vec![s.clone()],
+            Some(serde_json::Value::Number(n)) => vec![n.to_string()],
+            Some(serde_json::Value::Bool(b)) => vec![b.to_string()],
+            // 客户端 cookie 数组已在 JS 侧 "; " 并串，其余数组展开为多条线
+            Some(serde_json::Value::Array(arr)) => arr
+                .iter()
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => b.to_string(),
+                    other => other.to_string(),
+                })
+                .collect(),
+            _ => continue,
+        };
+        for v in values {
+            out.push((name.to_ascii_lowercase(), v));
+        }
+    }
+    out
 }
 
 fn default_scheme() -> String {
@@ -721,6 +823,9 @@ async fn drive_session<S>(
         Arc::new(std::sync::Mutex::new(HashMap::new()));
     // 上传体通道（waitTrailers 悬置流；trailer 命令回注）。
     let uploads: BodyFeeds = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    // 在途请求任务句柄（H2RespondReset → abort → hyper RST(CANCEL)）
+    let stream_tasks: Arc<std::sync::Mutex<HashMap<u64, tokio::task::AbortHandle>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
     tokio::pin!(conn);
     loop {
         tokio::select! {
@@ -765,8 +870,7 @@ async fn drive_session<S>(
                             }
                         };
                         let body = b64dec(&body_b64).unwrap_or_default();
-                        let parsed_headers =
-                            parse_headers(&serde_json::to_string(&req.headers).unwrap_or_default());
+                        let parsed_headers = openreq_headers(&req);
                         // :authority 经完整 URI 带（hyper h2 客户端不合成伪头）；
                         // authority 为空回落 host 头（host-only 请求，host 回落套件）。
                         let authority = if req.authority.is_empty() {
@@ -830,9 +934,10 @@ async fn drive_session<S>(
                         let open2 = open.clone();
                         open.lock().unwrap().insert(stream_id, false);
                         let mut sender = sender.clone();
-                        tokio::spawn(async move {
+                        let task = tokio::spawn(async move {
                             match sender.send_request(request).await {
                                 Err(e) => {
+                                    let (msg, rst) = h2_err_msg_rst(&e);
                                     let _ = ev2.send(NetEvent {
                                         id,
                                         kind: NetKind::H2Stream {
@@ -840,7 +945,8 @@ async fn drive_session<S>(
                                             what: "error".into(),
                                             payload: serde_json::json!({
                                                 "code": "ERR_HTTP2_STREAM_ERROR",
-                                                "msg": format!("{e}"),
+                                                "msg": msg,
+                                                "rst": rst,
                                             })
                                             .to_string(),
                                         },
@@ -849,9 +955,18 @@ async fn drive_session<S>(
                                 Ok(resp) => {
                                     let status = resp.status().as_u16();
                                     let head = headers_json(resp.headers());
-                                    // flags：hyper Incoming 无 END_STREAM 预判，一律 4；
-                                    // 空体仍走 data(无)→end，JS 侧 `?? 4` 兜底一致。
-                                    let flags = 4;
+                                    // 先收完体再发 response 事件（通道序保证
+                                    // response 先于 data/end，§4.35 不变）：
+                                    // 空体且无 trailer ⇒ END_STREAM 随头出线，
+                                    // flags = 4|1 = 5（head-request/204/304 套件
+                                    // 断言 flags 5）；否则 4。hyper Incoming 无
+                                    // END_STREAM 预判，只能事后推断（偏差记档）。
+                                    let read = read_body(resp.into_body()).await;
+                                    let (b, trailers, body_err) = match read {
+                                        Ok((b, t)) => (b, t, None),
+                                        Err((e, rst)) => (Vec::new(), Vec::new(), Some((e, rst))),
+                                    };
+                                    let flags = if body_err.is_none() && b.is_empty() && trailers.is_empty() { 5 } else { 4 };
                                     let _ = ev2.send(NetEvent {
                                         id,
                                         kind: NetKind::H2Stream {
@@ -860,8 +975,8 @@ async fn drive_session<S>(
                                             payload: serde_json::json!({ "status": status, "flags": flags, "headers": head }).to_string(),
                                         },
                                     });
-                                    match read_body(resp.into_body()).await {
-                                        Ok((b, trailers)) => {
+                                    match body_err {
+                                        None => {
                                             if !b.is_empty() {
                                                 let _ = ev2.send(NetEvent {
                                                     id,
@@ -893,9 +1008,8 @@ async fn drive_session<S>(
                                             });
                                             open2.lock().unwrap().insert(stream_id, true);
                                         }
-                                        Err(e) => {
-                                            // read_body 回 String（无 h2 Reason 携带）：
-                                            // NO_ERROR 干净收尾按子串判，其余按流错误上报。
+                                        Some((e, rst)) => {
+                                            // NO_ERROR 干净收尾按子串判，其余按流错误上报
                                             if e.contains("NO_ERROR") {
                                                 let _ = ev2.send(NetEvent {
                                                     id,
@@ -915,6 +1029,7 @@ async fn drive_session<S>(
                                                         payload: serde_json::json!({
                                                             "code": "ERR_HTTP2_STREAM_ERROR",
                                                             "msg": e,
+                                                            "rst": rst,
                                                         })
                                                         .to_string(),
                                                     },
@@ -926,6 +1041,14 @@ async fn drive_session<S>(
                                 }
                             }
                         });
+                        stream_tasks.lock().unwrap().insert(stream_id, task.abort_handle());
+                    }
+                    Some(NetCmd::H2RespondReset { stream_id, .. }) => {
+                        // 客户端流取消：abort 在途请求任务 → hyper RST(CANCEL)
+                        if let Some(h) = stream_tasks.lock().unwrap().remove(&stream_id) {
+                            h.abort();
+                        }
+                        open.lock().unwrap().insert(stream_id, true);
                     }
                     Some(NetCmd::H2OpenTrailers { stream_id, trailers_json }) => {
                         let trailers: Vec<(String, String)> =
@@ -1184,8 +1307,10 @@ pub const SOURCE: &str = r#"
 import { EventEmitter } from "node:events";
 import { Readable, Writable, Duplex } from "node:stream";
 import { codes } from "node:internal/errors";
+import { kSocket } from "node:internal/http2/util";
+import { addAbortListener } from "node:internal/events/abort_listener";
 import * as net from "node:net";
-import * as fs from "node:fs";
+import fs from "node:fs";
 const Buffer = globalThis.Buffer;
 
 function __b64dec(s) {
@@ -1223,20 +1348,28 @@ const __codes = {
   ERR_HTTP2_TRAILERS_ALREADY_SENT: () => __h2Err("ERR_HTTP2_TRAILERS_ALREADY_SENT", "Trailers has already been sent."),
   ERR_HTTP2_PUSH_DISABLED: () => __h2Err("ERR_HTTP2_PUSH_DISABLED", "Push streams are not enabled on this session."),
   ERR_HTTP2_NESTED_PUSH: () => __h2Err("ERR_HTTP2_NESTED_PUSH", "A push stream cannot be initiated from within a push stream."),
-  ERR_HTTP2_GOAWAY_SESSION: () => __h2Err("ERR_HTTP2_GOAWAY_SESSION", "New streams cannot be created after receiving a GOAWAY."),
+  ERR_HTTP2_GOAWAY_SESSION: () => __h2Err("ERR_HTTP2_GOAWAY_SESSION", "New streams cannot be created after receiving a GOAWAY"),
   ERR_HTTP2_SESSION_ERROR: (n) => __h2Err("ERR_HTTP2_SESSION_ERROR", `Session closed with error code ${n}`),
   ERR_HTTP2_MAX_PENDING_SETTINGS_ACK: () => __h2Err("ERR_HTTP2_MAX_PENDING_SETTINGS_ACK", "Maximum concurrent SETTINGS frames not acknowledged"),
   ERR_HTTP2_INVALID_SETTING_VALUE: (name, v) => __h2Err("ERR_HTTP2_INVALID_SETTING_VALUE", `Invalid value for setting "${name}": ${v}`, "RangeError"),
   ERR_HTTP2_PAYLOAD_FORBIDDEN: (s) => __h2Err("ERR_HTTP2_PAYLOAD_FORBIDDEN", `Responses with ${s} status must not have a payload`),
   ERR_HTTP2_NO_PAYLOAD: () => __h2Err("ERR_HTTP2_NO_PAYLOAD", "No payload supplied"),
-  ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH: () => __h2Err("ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH", "Packed settings length must be a multiple of six"),
+  ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH: () => __h2Err("ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH", "Packed settings length must be a multiple of six", "RangeError"),
   ERR_HTTP2_INVALID_PROTOCOL: (v, a) => __h2Err("ERR_HTTP2_INVALID_PROTOCOL", `Protocol "${v}" does not contain "${a}"`),
   ERR_HTTP2_SEND_FILE: () => __h2Err("ERR_HTTP2_SEND_FILE", "Filename passed to sendFile must be absolute"),
   ERR_HTTP2_SEND_FILE_NOSEEK: () => __h2Err("ERR_HTTP2_SEND_FILE_NOSEEK", "Offset or length can only be specified for regular files"),
-  ERR_HTTP2_PING_CANCEL: () => __h2Err("ERR_HTTP2_PING_CANCEL", "Ping canceled"),
+  ERR_HTTP2_PING_CANCEL: () => __h2Err("ERR_HTTP2_PING_CANCEL", "HTTP2 ping cancelled"),
+  ABORT_ERR: () => {
+    const e = __h2Err("ABORT_ERR", "This operation was aborted");
+    e.name = "AbortError";
+    return e;
+  },
+  ERR_HTTP2_PING_LENGTH: () => __h2Err("ERR_HTTP2_PING_LENGTH", "HTTP2 ping payload must be 8 bytes", "RangeError"),
   ERR_HTTP2_TOO_MANY_INVALID_FRAMES: (s) => __h2Err("ERR_HTTP2_TOO_MANY_INVALID_FRAMES", `Too many invalid HTTP/2 frames: ${s}`),
   ERR_HTTP2_FRAME_ERROR: (s) => __h2Err("ERR_HTTP2_FRAME_ERROR", `HTTP/2 frame error: ${s}`),
   ERR_HTTP2_STREAM_CLOSED: () => __h2Err("ERR_HTTP2_STREAM_CLOSED", "The stream has been destroyed"),
+  // node：reason 实参只进 cause，message 恒此串（真机 26.8.2 实测）
+  ERR_HTTP2_STREAM_CANCEL: () => __h2Err("ERR_HTTP2_STREAM_CANCEL", "The pending stream has been canceled"),
   ERR_HTTP2_INVALID_SESSION: () => __h2Err("ERR_HTTP2_INVALID_SESSION", "The session has been destroyed"),
   ERR_HTTP2_SOCKET_UNBOUND: () => __h2Err("ERR_HTTP2_SOCKET_UNBOUND", "The socket has been unbound from the session."),
   ERR_HTTP2_OUT_OF_BUFFERS: () => __h2Err("ERR_HTTP2_OUT_OF_BUFFERS", "Out of buffers"),
@@ -1247,7 +1380,6 @@ const __codes = {
   ERR_HTTP2_STREAM_SELF_DEPENDENCY: () => __h2Err("ERR_HTTP2_STREAM_SELF_DEPENDENCY", "A stream cannot depend on itself"),
   ERR_HTTP2_INVALID_STREAM: () => __h2Err("ERR_HTTP2_INVALID_STREAM", "The stream has been destroyed"),
   ERR_HTTP2_HEADERS_SENT: () => __h2Err("ERR_HTTP2_HEADERS_SENT", "Response has already been initiated."),
-  ERR_HTTP2_STREAM_CANCEL: (s) => __h2Err("ERR_HTTP2_STREAM_CANCEL", typeof s === "string" && s ? s : "The stream was aborted"),
 };
 function __code(name, ...args) {
   const f = codes[name];
@@ -1257,11 +1389,18 @@ function __code(name, ...args) {
   if (typeof g === "function") return g(...args);
   return __h2Err(name, args.length ? String(args[0]) : name);
 }
+// node toHeaderObject 口径：重复值 cookie 以 "; " 并串、set-cookie 保数组、
+// 其余以 ", " 并串（cookies 套件实测：abc → "1, 2, 3"、cookie → "a=b; c=d; e=f"）
 function __pairsToObj(pairs) {
   const out = Object.create(null);
   for (const [k, v] of pairs) {
     const lk = String(k).toLowerCase();
-    out[lk] = out[lk] === undefined ? String(v) : `${out[lk]}, ${v}`;
+    const val = String(v);
+    if (out[lk] === undefined) out[lk] = val;
+    else if (lk === "cookie") out[lk] = `${out[lk]}; ${val}`;
+    else if (lk === "set-cookie") {
+      out[lk] = Array.isArray(out[lk]) ? [...out[lk], val] : [out[lk], val];
+    } else out[lk] = `${out[lk]}, ${val}`;
   }
   return out;
 }
@@ -1332,13 +1471,18 @@ function __validateH2Headers(headers, allowedPseudo = []) {
 const __SETTING_RANGES = {
   headerTableSize: [0, 0xffffffff],
   enablePush: "boolean",
-  initialWindowSize: [0, 0xffffffff],
+  initialWindowSize: [0, 0x7fffffff],
   maxFrameSize: [16384, 16777215],
   maxConcurrentStreams: [0, 0xffffffff],
   maxHeaderListSize: [0, 0xffffffff],
   maxHeaderSize: [0, 0xffffffff],
   enableConnectProtocol: "boolean",
 };
+function __settingErr(name, v, isBool) {
+  // node：数值档 RangeError、布尔档 TypeError（getpackedsettings 套件逐字）
+  const e = __h2Err("ERR_HTTP2_INVALID_SETTING_VALUE", `Invalid value for setting "${name}": ${v}`, isBool ? "TypeError" : "RangeError");
+  return e;
+}
 function __validateSettings(settings) {
   if (settings === null || typeof settings !== "object") {
     throw __code("ERR_INVALID_ARG_TYPE", "settings", "object", settings);
@@ -1355,10 +1499,10 @@ function __validateSettings(settings) {
       continue; // 未知设置项忽略（node 静默忽略未知名——non-critical）
     }
     if (spec === "boolean") {
-      if (typeof v !== "boolean") throw __code("ERR_HTTP2_INVALID_SETTING_VALUE", key, v);
+      if (typeof v !== "boolean") throw __settingErr(key, v, true);
       out[key] = v;
     } else if (typeof v !== "number" || !Number.isInteger(v) || v < spec[0] || v > spec[1]) {
-      throw __code("ERR_HTTP2_INVALID_SETTING_VALUE", key, v);
+      throw __settingErr(key, v, false);
     } else {
       out[key] = v;
     }
@@ -1374,7 +1518,6 @@ const __DEFAULT_SETTINGS = {
   initialWindowSize: 65535,
   maxFrameSize: 16384,
   maxConcurrentStreams: 4294967295,
-  maxHeaderSize: 65535,
   maxHeaderListSize: 65535,
   enableConnectProtocol: false,
 };
@@ -1477,6 +1620,8 @@ class Http2Session extends EventEmitter {
     this.__pendingSettingsAck = false;
     this.__outstandingSettings = 0;
     this.__maxOutstandingSettings = server.__opts?.maxOutstandingSettings ?? Infinity;
+    // node 缺省 maxOutstandingPings = 2（ping.js 超额即 CANCEL）
+    this.__maxOutstandingPings = server.__opts?.maxOutstandingPings ?? 2;
     this.__streams = new Map();
     this.state = {
       effectiveLocalWindowSize: 65535,
@@ -1490,10 +1635,10 @@ class Http2Session extends EventEmitter {
     this.__ev = this.__ev.bind(this);
   }
   get socket() {
-    if (this.__socket === undefined) {
-      this.__socket = __mkSessionSocket(this, this.__peer, this.__server.__listening);
+    if (this[kSocket] === undefined) {
+      this[kSocket] = __mkSessionSocket(this, this.__peer, this.__server.__listening);
     }
-    return this.__socket;
+    return this[kSocket];
   }
   get localSettings() { return this.__settings; }
   get remoteSettings() { return this.__remoteSettings; }
@@ -1546,22 +1691,52 @@ class Http2Session extends EventEmitter {
     this.__settings = __applySettings(this.__settings, validated);
     return this;
   }
-  ping(cb, payload) {
+  // node：windowSize 校验（number、0..2^31-1）后仅本地状态面（flow control
+  // 由底座管理；setLocalWindowSize-errors/套件只断言校验与 state 反映）
+  setLocalWindowSize(windowSize) {
+    // node：destroyed 校验先于实参校验（client-destroy 套件）
+    if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
+    if (typeof windowSize !== "number") {
+      throw __code("ERR_INVALID_ARG_TYPE", "windowSize", "number", windowSize);
+    }
+    if (windowSize < 0 || windowSize > 2147483647) {
+      throw __code("ERR_OUT_OF_RANGE", "windowSize", ">= 0 && <= 2147483647", windowSize);
+    }
+    this.state.effectiveLocalWindowSize = windowSize;
+    this.state.localWindowSize = windowSize;
+    return this;
+  }
+  // node 口径：ping([payload, ]callback)；payload 非 ArrayBufferView →
+  // TypeError、长度≠8 → RangeError ERR_HTTP2_PING_LENGTH、超 maxOutstandingPings
+  // → 返 false 且回调 ERR_HTTP2_PING_CANCEL（真机 ping.js/onping 实测）
+  ping(payload, callback) {
+    if (typeof payload === "function") { callback = payload; payload = undefined; }
     if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
     let buf = null;
     if (payload !== undefined && payload !== null) {
-      const u8 = payload instanceof Uint8Array ? payload : __toU8(payload, "ping");
-      if (u8.length > 8) throw __code("ERR_OUT_OF_RANGE", "payload", u8.length);
+      if (typeof payload !== "object" || !ArrayBuffer.isView(payload)) {
+        throw __code("ERR_INVALID_ARG_TYPE", "payload", ["Buffer", "TypedArray", "DataView"], payload);
+      }
+      const u8 = payload instanceof Uint8Array ? payload : new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
+      if (u8.length !== 8) throw __code("ERR_HTTP2_PING_LENGTH");
       buf = u8;
     }
-    if (typeof cb !== "function") {
-      throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", cb);
+    if (typeof callback !== "function") {
+      throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", callback);
     }
+    const cap = Number.isInteger(this.__maxOutstandingPings) ? this.__maxOutstandingPings : 2;
+    if ((this.__outstandingPings ?? 0) >= cap) {
+      const cancel = __code("ERR_HTTP2_PING_CANCEL");
+      queueMicrotask(() => callback(cancel));
+      return false;
+    }
+    this.__outstandingPings = (this.__outstandingPings ?? 0) + 1;
     const ret = Buffer.alloc(8);
-    if (buf) Buffer.from(buf).copy(ret);
+    if (buf) Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength).copy(ret);
     setTimeout(() => {
-      if (this.destroyed) { cb(__code("ERR_HTTP2_PING_CANCEL")); return; }
-      cb(null, 0.5, ret);
+      this.__outstandingPings = Math.max(0, (this.__outstandingPings ?? 1) - 1);
+      if (this.destroyed) { callback(__code("ERR_HTTP2_PING_CANCEL")); return; }
+      callback(null, 1, ret);
     }, 1);
     return true;
   }
@@ -1667,6 +1842,7 @@ class Http2ServerStream extends Duplex {
     this.sendDate = true;
     this.endAfterHeaders = false;
     this.__reqEnded = false;
+    this.__rstSent = false;
     // 实例数据属性遮蔽 Duplex 原型只读 getter（socket.set 套件直写直读）
     Object.defineProperty(this, "readable", { value: true, writable: true, configurable: true });
     Object.defineProperty(this, "writable", { value: true, writable: true, configurable: true });
@@ -1752,6 +1928,11 @@ class Http2ServerStream extends Duplex {
     }
     __validateH2Headers({ ...headers, ":status": status }, [":status"]);
     this.__waitForTrailers = !!options.waitForTrailers;
+    // node：HEAD 请求与 204/205/304 应答自动 END_STREAM（head-request/endafter
+    // 套件口径；END_STREAM 随头出线，后续 write 报 ERR_STREAM_WRITE_AFTER_END）
+    const endStreamAuto = this.__headRequest === true ||
+      status === 204 || status === 205 || status === 304;
+    if (endStreamAuto) this.endAfterHeaders = true;
     const entries = [];
     const sent = { __proto__: null };
     const sentPseudo = { __proto__: null };
@@ -1777,11 +1958,20 @@ class Http2ServerStream extends Duplex {
     this.__sentHeaders = sent;
     this.__sentPseudoHeaders = sentPseudo;
     __wjs_h2_respond(this.__conn, this.id, status, JSON.stringify(entries));
-    if (options.endStream) {
+    if (options.endStream || endStreamAuto) {
       this.endAfterHeaders = true;
       this.__finishWritable();
     }
     return undefined;
+  }
+  // node：fd 可为 number 或 FileHandle（对象须带数值 fd）；错误消息
+  // "The \"fd\" argument must be of type number or an instance of FileHandle."
+  respondWithFD(fd, headers, options) {
+    if (typeof fd !== "number" &&
+        (fd === null || typeof fd !== "object" || typeof fd.fd !== "number")) {
+      throw __code("ERR_INVALID_ARG_TYPE", "fd", "number or an instance of FileHandle", fd);
+    }
+    return this.respondWithFile(typeof fd === "object" ? fd.fd : fd, headers, options);
   }
   respondWithFile(filename, headers = {}, options = {}) {
     if (this.destroyed) throw __code("ERR_HTTP2_INVALID_STREAM");
@@ -1815,19 +2005,23 @@ class Http2ServerStream extends Duplex {
       fd = isFd ? filename : fs.openSync(filename, "r");
       stat = fs.fstatSync(fd);
     } catch (err) {
-      if (!isFd && fd !== null) { try { fs.closeSync(fd); } catch {} }
+      if (!isFd && fd !== null) { try { fs.close(fd, () => {}); } catch {} }
       if (typeof options.onError === "function") {
         options.onError(err);
         return;
       }
-      throw err;
+      // node：stat 失败且无 onError → 流 RST(INTERNAL_ERROR) + 'error'
+      //（fd-invalid 套件：stream/req 双侧 ERR_HTTP2_STREAM_ERROR）
+      this.__rstInternalError();
+      return;
     }
     try {
       const h = { ...headers };
+      // node statCheck 第三参为 {offset, length} 原样（fd-range 套件断言）
+      const statCheckOpts = { offset: options.offset, length: options.length };
       if (typeof options.statCheck === "function") {
-        if (options.statCheck.call(this, stat, h, stat.isFile() === false) === false) {
-          if (!isFd) { try { fs.closeSync(fd); } catch {} }
-          this.close();
+        if (options.statCheck.call(this, stat, h, statCheckOpts) === false) {
+          if (!isFd) { try { fs.close(fd, () => {}); } catch {} }
           return;
         }
       }
@@ -1836,6 +2030,7 @@ class Http2ServerStream extends Duplex {
       }
       let offset = options.offset ?? 0;
       let length = options.length ?? (stat.size - offset);
+      if (length < 0) length = stat.size - offset;
       if (length < 0) length = 0;
       const shouldSendBody = h[":status"] === undefined || !![200, 201, 202, 203, 206].includes(+h[":status"]) ||
         (+h[":status"] >= 300 && ![204, 205, 304].includes(+h[":status"]));
@@ -1856,15 +2051,17 @@ class Http2ServerStream extends Duplex {
           pos += r;
         }
       }
-      if (!isFd) { try { fs.closeSync(fd); } catch {} }
-      this.__finishWritable();
+      if (!isFd) { try { fs.close(fd, () => {}); } catch {} }
+      if (!this.writableEnded) this.__finishWritable();
     } catch (err) {
-      if (!isFd) { try { fs.closeSync(fd); } catch {} }
+      if (!isFd) { try { fs.close(fd, () => {}); } catch {} }
       if (typeof options.onError === "function") {
         options.onError(err);
         return;
       }
-      throw err;
+      // node：校验/读失败无 onError → 错误落流 'error'（fd-leak 套件），
+      // 并 RST 对端（_destroy 统一发送，否则对端流永等响应）
+      this.destroy(err);
     }
   }
   pushStream(headers, options, cb) {
@@ -1956,8 +2153,9 @@ class Http2ServerStream extends Duplex {
     return this;
   }
   __finishWritable() {
-    // respond({endStream:true}) / respondWithFile 收尾路径
-    this.__trailersSent = true;
+    // respond({endStream:true}) / respondWithFile 收尾路径；
+    // __trailersSent 由 _final 在 __wjs_h2_end 发出后置位（预置会跳过
+    // END_STREAM → 客户端 'end' 永不到，与 res.end 预置同款挂死）
     super.end();
   }
   _write(chunk, encoding, cb) {
@@ -2002,6 +2200,12 @@ class Http2ServerStream extends Duplex {
     queueMicrotask(() => this.emit("close"));
   }
   _destroy(err, cb) {
+    // 应答未完成即销毁 → RST 对端（node：无错 RST 干净收尾，客户端仅 'close'；
+    // 有错 RST INTERNAL_ERROR，客户端 'error' ERR_HTTP2_STREAM_ERROR——真机实测）
+    if (!this.__trailersSent && !this.__rstSent) {
+      this.__rstSent = true;
+      __wjs_h2_reset(this.__conn, this.id, err ?? this.__destroyErr ? 2 : 0);
+    }
     this.__closed = true;
     this.__destroyed = true;
     this.__session?.__unregisterStream(this);
@@ -2021,6 +2225,11 @@ class Http2ServerStream extends Duplex {
     return this;
   }
   __attach(req, res) { this.__req = req; this.__res = res; }
+  // stat 失败等 native 层错误：RST(INTERNAL_ERROR) + 流 'error'（node 同码同文；
+  // RST 由 _destroy 统一发送）
+  __rstInternalError() {
+    this.destroy(__code("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code NGHTTP2_INTERNAL_ERROR"));
+  }
 }
 
 // ── Http2ServerRequest（Readable；从底层 stream 拉取）────────────────────────
@@ -2501,6 +2710,10 @@ class Http2Server extends EventEmitter {
         this.__streams.set(id, { stream, req, res });
         stream.once("close", () => this.__streams.delete(id));
         const method = req.headers[":method"];
+        if (method === "HEAD") {
+          // HEAD 应答自动 END_STREAM（respond 内处理）
+          stream.__headRequest = true;
+        }
         if (method === "CONNECT") {
           if (this.listenerCount("connect") > 0) this.emit("connect", req, res);
           else { res.statusCode = 501; res.end(); }
@@ -2529,7 +2742,11 @@ class Http2Server extends EventEmitter {
       }
       case "aborted": {
         const o = JSON.parse(payload);
-        this.__abortEntry(this.__streams.get(Number(o.streamId)));
+        const entry = this.__streams.get(Number(o.streamId));
+        if (entry && o.payload !== undefined && o.payload !== "") {
+          entry.stream.rstCode = Number(o.payload);
+        }
+        this.__abortEntry(entry);
         break;
       }
       case "connClose": {
@@ -2549,9 +2766,10 @@ class Http2Server extends EventEmitter {
         break;
       }
       case "close": {
-        // 监听器已关：余下连接由 Rust conn 退出逐个 connClose；无连接则立即收尾
+        // 监听器已关（node：不杀活连接）。'close' 等全部会话排空
+        // （connClose 走 conn 自身 target，不受本次 purge 影响）。
         queueMicrotask(() => {
-          if (this.__sessions.size === 0) this.__emitClose();
+          if (this.__closing && !this.__id && this.__sessions.size === 0) this.__emitClose();
         });
         break;
       }
@@ -2603,6 +2821,7 @@ class ClientHttp2Stream extends Duplex {
     this.__waitTrailers = !!(options && options.waitForTrailers);
     this.__pendingBody = [];
     this.endAfterHeaders = false;
+    this.__responseReceived = false;
   }
   get session() { return this.__session; }
   get bufferSize() { return this.writableLength; }
@@ -2637,14 +2856,25 @@ class ClientHttp2Stream extends Duplex {
     const flat = new Uint8Array(total);
     let off = 0;
     for (const b of parts) { flat.set(b, off); off += b.length; }
-    __wjs_h2_open(this.__session.__id, this.id,
-      JSON.stringify({
-        method: this.sentHeaders[":method"], path: this.sentHeaders[":path"],
-        scheme: this.sentHeaders[":scheme"], authority: this.sentHeaders[":authority"],
-        waitTrailers: this.__waitTrailers,
-        headers: Object.entries(this.sentHeaders).filter(([k]) => !k.startsWith(":")),
-      }),
-      __b64enc(flat));
+    try {
+      __wjs_h2_open(this.__session.__id, this.id,
+        JSON.stringify({
+          method: this.sentHeaders[":method"], path: this.sentHeaders[":path"],
+          scheme: this.sentHeaders[":scheme"], authority: this.sentHeaders[":authority"],
+          waitTrailers: this.__waitTrailers,
+          headers: Object.entries(this.sentHeaders)
+            .filter(([k]) => !k.startsWith(":"))
+            .map(([k, v]) => [
+              k,
+              // node prepareRequestHeaders 口径：cookie 数组 "; " 并串为单条线
+              (k === "cookie" && Array.isArray(v)) ? v.join("; ") : v,
+            ]),
+        }),
+        __b64enc(flat));
+    } catch {
+      // 会话已亡（销毁竞态）：流随会话终止，不再上抛
+      this.__detachFromSession();
+    }
     if (this.__waitTrailers) {
       queueMicrotask(() => { if (!this.destroyed) this.emit("wantTrailers"); });
     }
@@ -2674,18 +2904,27 @@ class ClientHttp2Stream extends Duplex {
     return this;
   }
   __onResponse(headers, flags) {
+    this.__responseReceived = true;
     if (flags & 1) this.endAfterHeaders = true;
     this.emit("response", headers, flags);
   }
   __onData(u8) { this.push(Buffer.from(u8)); }
   __onTrailers(t) { this.emit("trailers", t); }
-  __onEnd() { this.push(null); }
+  __onEnd() {
+    this.push(null);
+    // node：END_STREAM 收到 + 请求侧已尽 → 流 close（不必等 readable 消费；
+    // respond-file-errors 套件 req 无 data 监听仅等 'close'）
+    if (this.writableEnded && !this.destroyed) {
+      queueMicrotask(() => { if (!this.destroyed) this.destroy(); });
+    }
+  }
   __onAborted() {
     if (this.aborted) return;
-    this.aborted = true;
+    // node：session destroy 路径的流 'aborted' 事件发出但 aborted 属性
+    // 保持 false（aborted 属性 = 对端 RST 中断语义；client-destroy 套件）
     this.emit("aborted");
     this.push(null);
-    this.destroy();
+    this.destroy(__code("ERR_HTTP2_STREAM_CANCEL"));
   }
   priority(options) {
     if (options === null || typeof options !== "object") {
@@ -2720,6 +2959,37 @@ class ClientHttp2Stream extends Duplex {
     }
     return this;
   }
+  destroy(err, code, cb) {
+    if (typeof err === "number") { cb = code; code = err; err = undefined; }
+    if (typeof code === "function") { cb = code; code = 0; }
+    if (typeof cb === "function") this.once("close", cb);
+    if (this.__destroyed) return this;
+    // node：流销毁 → RST(CANCEL) 通知对端（未收到应答且已出线的流）
+    if (this.__opened && !this.__responseReceived && this.__session?.__id) {
+      __wjs_h2_reset(this.__session.__id, this.id, 8);
+    }
+    this.__detachFromSession();
+    super.destroy(err);
+    return this;
+  }
+  __detachFromSession() {
+    const s = this.__session;
+    if (s && s.__streams) {
+      s.__streams.delete(this.id);
+      const pi = s.__pendingOpens ? s.__pendingOpens.indexOf(this) : -1;
+      if (pi !== -1) s.__pendingOpens.splice(pi, 1);
+      if (typeof s.__gracefulWait === "function") s.__gracefulWait();
+    }
+  }
+  destroy(err, code, cb) {
+    if (typeof err === "number") { cb = code; code = err; err = undefined; }
+    if (typeof code === "function") { cb = code; code = 0; }
+    if (typeof cb === "function") this.once("close", cb);
+    if (this.__destroyed) return this;
+    this.__detachFromSession();
+    super.destroy(err);
+    return this;
+  }
   setTimeout(msecs, callback) {
     if (typeof callback === "function") this.once("timeout", callback);
     const ms = Number(msecs) || 0;
@@ -2752,6 +3022,9 @@ class ClientHttp2Session extends EventEmitter {
     this.__pendingSettingsAck = false;
     this.__outstandingSettings = 0;
     this.__maxOutstandingSettings = options?.maxOutstandingSettings ?? Infinity;
+    // node 缺省 maxOutstandingPings = 2（ping.js 超额即 CANCEL）
+    this.__maxOutstandingPings = options?.maxOutstandingPings ?? 2;
+    this.__pendingOpens = [];
     this.state = {
       effectiveLocalWindowSize: 65535,
       effectiveRemoteWindowSize: 65535,
@@ -2764,7 +3037,7 @@ class ClientHttp2Session extends EventEmitter {
     this.__ev = this.__ev.bind(this);
   }
   get socket() {
-    if (this.__socket === undefined) {
+    if (this[kSocket] === undefined) {
       const s = this;
       const sock = new EventEmitter();
       sock.connecting = true;
@@ -2790,9 +3063,9 @@ class ClientHttp2Session extends EventEmitter {
       sock.write = () => true;
       sock.setTimeout = (m, cb) => { s.setTimeout(m, cb); return sock; };
       sock.address = () => ({ address: s.__host, port: s.__port, family: s.__host?.includes(":") ? "IPv6" : "IPv4" });
-      this.__socket = sock;
+      this[kSocket] = sock;
     }
-    return this.__socket;
+    return this[kSocket];
   }
   get alpnProtocol() { return this.__secure ? "h2" : false; }
   get localSettings() { return this.__settings; }
@@ -2845,22 +3118,52 @@ class ClientHttp2Session extends EventEmitter {
     this.__settings = __applySettings(this.__settings, validated);
     return this;
   }
-  ping(cb, payload) {
+  // node：windowSize 校验（number、0..2^31-1）后仅本地状态面（flow control
+  // 由底座管理；setLocalWindowSize-errors/套件只断言校验与 state 反映）
+  setLocalWindowSize(windowSize) {
+    // node：destroyed 校验先于实参校验（client-destroy 套件）
+    if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
+    if (typeof windowSize !== "number") {
+      throw __code("ERR_INVALID_ARG_TYPE", "windowSize", "number", windowSize);
+    }
+    if (windowSize < 0 || windowSize > 2147483647) {
+      throw __code("ERR_OUT_OF_RANGE", "windowSize", ">= 0 && <= 2147483647", windowSize);
+    }
+    this.state.effectiveLocalWindowSize = windowSize;
+    this.state.localWindowSize = windowSize;
+    return this;
+  }
+  // node 口径：ping([payload, ]callback)；payload 非 ArrayBufferView →
+  // TypeError、长度≠8 → RangeError ERR_HTTP2_PING_LENGTH、超 maxOutstandingPings
+  // → 返 false 且回调 ERR_HTTP2_PING_CANCEL（真机 ping.js/onping 实测）
+  ping(payload, callback) {
+    if (typeof payload === "function") { callback = payload; payload = undefined; }
     if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
     let buf = null;
     if (payload !== undefined && payload !== null) {
-      const u8 = payload instanceof Uint8Array ? payload : __toU8(payload, "ping");
-      if (u8.length > 8) throw __code("ERR_OUT_OF_RANGE", "payload", u8.length);
+      if (typeof payload !== "object" || !ArrayBuffer.isView(payload)) {
+        throw __code("ERR_INVALID_ARG_TYPE", "payload", ["Buffer", "TypedArray", "DataView"], payload);
+      }
+      const u8 = payload instanceof Uint8Array ? payload : new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
+      if (u8.length !== 8) throw __code("ERR_HTTP2_PING_LENGTH");
       buf = u8;
     }
-    if (typeof cb !== "function") {
-      throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", cb);
+    if (typeof callback !== "function") {
+      throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", callback);
     }
+    const cap = Number.isInteger(this.__maxOutstandingPings) ? this.__maxOutstandingPings : 2;
+    if ((this.__outstandingPings ?? 0) >= cap) {
+      const cancel = __code("ERR_HTTP2_PING_CANCEL");
+      queueMicrotask(() => callback(cancel));
+      return false;
+    }
+    this.__outstandingPings = (this.__outstandingPings ?? 0) + 1;
     const ret = Buffer.alloc(8);
-    if (buf) Buffer.from(buf).copy(ret);
+    if (buf) Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength).copy(ret);
     setTimeout(() => {
-      if (this.destroyed) { cb(__code("ERR_HTTP2_PING_CANCEL")); return; }
-      cb(null, 0.5, ret);
+      this.__outstandingPings = Math.max(0, (this.__outstandingPings ?? 1) - 1);
+      if (this.destroyed) { callback(__code("ERR_HTTP2_PING_CANCEL")); return; }
+      callback(null, 1, ret);
     }, 1);
     return true;
   }
@@ -2892,6 +3195,9 @@ class ClientHttp2Session extends EventEmitter {
   __start(port, host) {
     this.__host = host;
     this.__port = port;
+    // kSocket 即刻物化（node：connect() 即有 socket；套件 connect() 返回后
+    // 直探 client[kSocket]，懒 getter 拿到 undefined）
+    void this.socket;
     const wire = {};
     if (this.__options.tls !== undefined || this.__secure) {
       const t = this.__options.tls ?? this.__options;
@@ -2907,10 +3213,11 @@ class ClientHttp2Session extends EventEmitter {
     switch (kind) {
       case "connect":
         this.connecting = false;
-        if (this.__socket) {
-          this.__socket.connecting = false;
-          queueMicrotask(() => this.__socket.emit("connect"));
+        if (this[kSocket]) {
+          this[kSocket].connecting = false;
+          queueMicrotask(() => this[kSocket].emit("connect"));
         }
+        for (const pst of this.__pendingOpens.splice(0)) pst.__openNow(null);
         this.emit("connect", this, null);
         break;
       case "response": {
@@ -2956,28 +3263,54 @@ class ClientHttp2Session extends EventEmitter {
         break;
       }
       case "error": {
+        // 已销毁会话的迟到错误（如握手失败竞态）吞掉（node：destroy 后不事件）
+        if (this.destroyed) break;
         const o = JSON.parse(payload);
         const inner = o.payload === undefined ? o : JSON.parse(o.payload);
         const sid = o.streamId === undefined ? undefined : Number(o.streamId);
         const err = __h2Err(inner.code ?? "ERR_HTTP2_STREAM_ERROR", inner.msg ?? "");
         const st = sid !== undefined ? this.__streams.get(sid) : undefined;
-        if (st && st.listenerCount("error") > 0) st.emit("error", err);
-        else this.emit("error", err);
+        if (st) {
+          // 流级错误：派发后即销毁（node：RST 后流走 destroy → 'close'；
+          // 否则 close 永不到，fd-invalid 类套件挂死）。无监听器回落会话
+          //（旧口径保留，error-order 系套件依赖）。
+          if (inner.rst !== undefined && inner.rst !== null) st.rstCode = Number(inner.rst);
+          if (st.listenerCount("error") > 0) st.emit("error", err);
+          else this.emit("error", err);
+          st.destroy();
+        } else {
+          this.emit("error", err);
+        }
         break;
       }
       case "close":
         this.closed = true;
         this.connecting = false;
-        if (this.__socket && !this.__socket.destroyed) {
-          this.__socket.destroyed = true;
-          queueMicrotask(() => this.__socket.emit("close"));
+        if (this[kSocket] && !this[kSocket].destroyed) {
+          this[kSocket].destroyed = true;
+          queueMicrotask(() => this[kSocket].emit("close"));
         }
         this.emit("close");
         break;
     }
   }
   request(headers, options) {
-    if (this.destroyed) throw __code("ERR_HTTP2_GOAWAY_SESSION");
+    // node：closed（GOAWAY 后）新建流同步抛 ERR_HTTP2_GOAWAY_SESSION；
+    // destroyed 会话上 request() 不同步抛——返回一个异步 error
+    // ERR_HTTP2_INVALID_SESSION + 'close' 的流（client-destroy 套件）
+    if (this.closed && !this.destroyed) throw __code("ERR_HTTP2_GOAWAY_SESSION");
+    if (this.destroyed) {
+      const sid = this.__seq;
+      this.__seq += 2;
+      const h = { ":method": "GET", ":path": "/", ":scheme": this.__secure ? "https" : "http", ":authority": this.__authority ?? "" };
+      const st = new ClientHttp2Stream(this, sid, h, options);
+      process.nextTick(() => {
+        if (st.destroyed) return;
+        st.emit("error", __code("ERR_HTTP2_INVALID_SESSION"));
+        st.destroy();
+      });
+      return st;
+    }
     const h = { ...headers };
     if (h[":method"] === undefined) h[":method"] = "GET";
     if (h[":path"] === undefined && h[":method"] !== "CONNECT") h[":path"] = "/";
@@ -2992,21 +3325,93 @@ class ClientHttp2Session extends EventEmitter {
     this.__seq += 2; // 客户端单数流（RFC 7540 口径）
     const st = new ClientHttp2Stream(this, sid, h, options);
     this.__streams.set(sid, st);
-    if (!st.__deferred) st.__openNow(null);
+    // options.signal：abort → ABORT_ERR 销毁（AbortSignal 套件）
+    const signal = options?.signal;
+    if (signal) {
+      const onAbort = () => {
+        if (!st.destroyed) {
+          st.emit("error", __code("ABORT_ERR"));
+          st.destroy();
+        }
+      };
+      if (signal.aborted) {
+        // node：预中止信号 → 同 tick destroyed（destroy 套件），error 下一跳
+        st.destroy();
+        process.nextTick(() => st.emit("error", __code("ABORT_ERR")));
+      } else {
+        // 经 addAbortListener（listenerCount 可见）
+        const disposable = addAbortListener(signal, onAbort);
+        st.once("close", () => disposable[Symbol.dispose]());
+      }
+    }
+    if (!st.__deferred) {
+      if (this.connecting && !this.closed) this.__pendingOpens.push(st);
+      else st.__openNow(null);
+    }
+    return st;
     return st;
   }
+  // node：client.close() 优雅关（GOAWAY）：新流被拒、已收到应答的流继续、
+  // 未收到应答的流报 ERR_HTTP2_GOAWAY_SESSION。本实现以 100ms 宽限扫描近似
+  // （响应在途的流大多在窗口内完成；真机无此延迟——偏差记档）
   close(cb) {
     if (typeof cb === "function") this.once("close", cb);
-    if (this.__id && !this.destroyed) {
-      this.destroyed = true;
-      __wjs_net_destroy(this.__id);
+    if (this.closed) return this;
+    this.closed = true;
+    this.connecting = false;
+    // 未出线的 open 直接取消（node：close before connect，对端不可见流）
+    for (const pst of this.__pendingOpens.splice(0)) {
+      pst.emit("error", __code("ERR_HTTP2_GOAWAY_SESSION"));
+      pst.destroy();
+    }
+    this.__gracefulWait();
+    if (!this.destroyed) {
+      setTimeout(() => {
+        if (this.destroyed) return;
+        for (const [, st] of this.__streams) {
+          if (!st.__responseReceived) {
+            st.emit("error", __code("ERR_HTTP2_GOAWAY_SESSION"));
+            st.destroy();
+          }
+        }
+        this.__gracefulWait();
+      }, 100);
     }
     return this;
+  }
+  __gracefulWait() {
+    // 仅在 close()/destroy() 发起后、流已排空时硬关；单纯流 detach
+    // （响应完成）不得关会话——否则后续请求报 INVALID_SESSION
+    if ((this.closed || this.destroyed) && !this.destroyed && this.__streams.size === 0 && this.__id) {
+      this.destroyed = true;
+      __wjs_net_destroy(this.__id);
+      this.__id = 0;
+    }
   }
   destroy(code, cb) {
     if (typeof code === "function") { cb = code; code = 0; }
     if (typeof cb === "function") this.once("close", cb);
-    return this.close();
+    if (!this.destroyed) {
+      this.destroyed = true;
+      this.closed = true;
+      if (code && typeof code === "object") this.emit("error", code);
+      // 在途流：RST 对端（防 server 侧 service 永挂）+ 本地 CANCEL 错
+      for (const [, st] of this.__streams) {
+        if (!st.__responseReceived && this.__id) {
+          __wjs_h2_reset(this.__id, st.id, 8);
+        }
+        st.__onAborted();
+      }
+      for (const pst of this.__pendingOpens.splice(0)) {
+        pst.emit("error", __code("ERR_HTTP2_STREAM_CANCEL"));
+        pst.destroy();
+      }
+      if (this.__id) {
+        __wjs_net_destroy(this.__id);
+        this.__id = 0;
+      }
+    }
+    return this;
   }
 }
 
@@ -3042,6 +3447,7 @@ export function connect(authority, options, listener) {
       if (typeof options === "function") { listener = options; options = {}; }
       const session = new ClientHttp2Session(host, { ...(options ?? {}), tls: secure ? (options ?? {}) : undefined });
       session.__secure = secure;
+      wireSessionSignal(session, options);
       if (typeof listener === "function") session.once("connect", listener);
       session.__start(port, host);
       return session;
@@ -3053,10 +3459,24 @@ export function connect(authority, options, listener) {
   secure = url.protocol === "https:";
   const session = new ClientHttp2Session(url.host, { ...(options ?? {}), tls: secure ? (options ?? {}) : undefined });
   session.__secure = secure;
+  wireSessionSignal(session, options);
   if (typeof listener === "function") session.once("connect", listener);
   port = url.port ? Number(url.port) : (secure ? 443 : 80);
   session.__start(port, url.hostname);
   return session;
+}
+
+// connect(options.signal)：abort → 会话 ABORT_ERR 销毁（AbortSignal 套件）
+function wireSessionSignal(session, options) {
+  const signal = options?.signal;
+  if (!signal) return;
+  const onAbort = () => session.destroy(__code("ABORT_ERR"));
+  if (signal.aborted) {
+    process.nextTick(onAbort);
+    return;
+  }
+  const disposable = addAbortListener(signal, onAbort);
+  session.once("close", () => disposable[Symbol.dispose]());
 }
 
 export function getDefaultSettings() {
@@ -3070,35 +3490,54 @@ export function getPackedSettings(settings) {
   };
   if (s.headerTableSize !== undefined) push(0x1, s.headerTableSize);
   if (s.enablePush !== undefined) push(0x2, s.enablePush ? 1 : 0);
+  if (s.maxConcurrentStreams !== undefined) push(0x3, s.maxConcurrentStreams);
   if (s.initialWindowSize !== undefined) push(0x4, s.initialWindowSize);
   if (s.maxFrameSize !== undefined) push(0x5, s.maxFrameSize);
-  if (s.maxConcurrentStreams !== undefined) push(0x3, s.maxConcurrentStreams);
+  // id 0x6：maxHeaderListSize 优先，缺省回落 maxHeaderSize（真机对拍）
   if (s.maxHeaderListSize !== undefined) push(0x6, s.maxHeaderListSize);
-  if (s.maxHeaderSize !== undefined) push(0x6, s.maxHeaderSize);
+  else if (s.maxHeaderSize !== undefined) push(0x6, s.maxHeaderSize);
   if (s.enableConnectProtocol !== undefined) push(0x8, s.enableConnectProtocol ? 1 : 0);
   if (s.customSettings) {
-    for (const [k, v] of Object.entries(s.customSettings)) push(Number(k), Number(v));
+    for (const kRaw of Object.keys(s.customSettings)) {
+      const id = Number(kRaw);
+      const v = Number(s.customSettings[kRaw]);
+      if (!Number.isInteger(id) || id < 0 || id > 0xffff) throw __settingErr("customSettings", kRaw, false);
+      if (!Number.isInteger(v) || v < 0 || v > 0xffffffff) throw __settingErr("customSettings", v, false);
+    }
+    if (Object.keys(s.customSettings).length > 10) throw __code("ERR_HTTP2_TOO_MANY_CUSTOM_SETTINGS");
+    for (const k of Object.keys(s.customSettings).map(Number).sort((a, b) => a - b)) {
+      push(k, Number(s.customSettings[String(k)]));
+    }
   }
   return Buffer.from(out);
 }
-export function getUnpackedSettings(buf) {
-  if (!Buffer.isBuffer(buf) && !(buf instanceof Uint8Array) && !(buf instanceof ArrayBuffer)) {
-    throw __code("ERR_INVALID_ARG_TYPE", "buffer", "Buffer|TypedArray", buf);
+export function getUnpackedSettings(buf, options) {
+  if (!Buffer.isBuffer(buf) && !(buf instanceof ArrayBuffer) && (!ArrayBuffer.isView(buf) || buf instanceof DataView)) {
+    throw __code("ERR_INVALID_ARG_TYPE", "buf", ["Buffer", "TypedArray"], buf);
   }
-  const u8 = buf instanceof ArrayBuffer ? new Uint8Array(buf) : buf;
+  const validate = options?.validate === true;
+  let u8;
+  if (Buffer.isBuffer(buf)) u8 = buf;
+  else if (buf instanceof ArrayBuffer) u8 = new Uint8Array(buf);
+  else if (buf instanceof Uint8Array) u8 = buf;
+  else u8 = Buffer.from(buf); // Uint16Array 等：Buffer.from 元素截断语义（node 同）
   if (u8.length % 6 !== 0) throw __code("ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH");
   const out = {};
   for (let i = 0; i < u8.length; i += 6) {
     const id = (u8[i] << 8) | u8[i + 1];
     const val = ((u8[i + 2] << 24) | (u8[i + 3] << 16) | (u8[i + 4] << 8) | u8[i + 5]) >>> 0;
     switch (id) {
-      case 0x1: __validateSetting("headerTableSize", val); out.headerTableSize = val; break;
-      case 0x2: if (val !== 0 && val !== 1) throw __code("ERR_HTTP2_INVALID_SETTING_VALUE", "enablePush", val); out.enablePush = val === 1; break;
-      case 0x3: __validateSetting("maxConcurrentStreams", val); out.maxConcurrentStreams = val; break;
-      case 0x4: __validateSetting("initialWindowSize", val); out.initialWindowSize = val; break;
+      case 0x1: if (validate) __validateSetting("headerTableSize", val); out.headerTableSize = val; break;
+      case 0x2: out.enablePush = val !== 0; break;
+      case 0x3: if (validate) __validateSetting("maxConcurrentStreams", val); out.maxConcurrentStreams = val; break;
+      case 0x4: if (validate) __validateSetting("initialWindowSize", val); out.initialWindowSize = val; break;
       case 0x5: __validateSetting("maxFrameSize", val); out.maxFrameSize = val; break;
-      case 0x6: __validateSetting("maxHeaderListSize", val); out.maxHeaderListSize = val; break;
-      case 0x8: if (val !== 0 && val !== 1) throw __code("ERR_HTTP2_INVALID_SETTING_VALUE", "enableConnectProtocol", val); out.enableConnectProtocol = val === 1; break;
+      case 0x6:
+        if (validate) __validateSetting("maxHeaderListSize", val);
+        out.maxHeaderListSize = val;
+        out.maxHeaderSize = val;
+        break;
+      case 0x8: out.enableConnectProtocol = val !== 0; break;
       default: if (val > 0) out.customSettings = { ...(out.customSettings ?? {}), [String(id)]: val };
     }
   }
@@ -3107,7 +3546,7 @@ export function getUnpackedSettings(buf) {
 function __validateSetting(name, val) {
   const spec = __SETTING_RANGES[name];
   if (spec !== undefined && spec !== "boolean" && (val < spec[0] || val > spec[1])) {
-    throw __code("ERR_HTTP2_INVALID_SETTING_VALUE", name, val);
+    throw __settingErr(name, val, false);
   }
 }
 export const sensitiveHeaders = Symbol("sensitiveHeaders");
@@ -3201,7 +3640,10 @@ export const constants = {
 const __api = {
   createServer, createSecureServer, connect, constants,
   getDefaultSettings, getPackedSettings, getUnpackedSettings, sensitiveHeaders,
+  Http2ServerRequest, Http2ServerResponse,
 };
+// 真机 http2 顶层导出（26.8.2 实测）：Http2ServerRequest/Response 为具名导出
+export { Http2ServerRequest, Http2ServerResponse };
 export default __api;
 "#;
 

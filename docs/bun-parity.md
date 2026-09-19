@@ -650,6 +650,17 @@
 > 三轮对拍（2026-09-17，263 件，`/tmp/wjs-10f-fs*.txt`）：
 > 同绿 39 → 54 → 96 → **123**；双红 76 → 73 → 28 → **28**；DIFF 148 → 136 → 139 → **112**。
 > 双红为真机同条件亦红（fixture/环境），对齐不算欠账。
+>
+> **G4 轮（2026-09-19，欠账 validators 尾件）**：全量 `test-fs-*` 355 件
+> 166 绿（净 +20：constants/stat-bigint/stat/statfs/readfile/rename-type-check/
+> null-bytes/options-immutable/mkdir-mode-mask/rmdir-throws/truncate/
+> timestamp-parsing/lchmod/lchown×2/fchown/utimes/y2K38/append-file-sync/
+> write-file-sync/write-file/roundtrip 主干）。核心修正：utimes 族秒口径
+> （真机量纲）、lchown/lchmod/lutimes/_toUnixTimestamp 新面、null-byte 全
+> API（含 URL %00）、__fdCb 值优先校验 + 孤儿 promise 根除、latin1 字节
+> 直映、WriteStream 真 open。残簇另案：cp ~33 / write-stream ~13 /
+> promises-file-handle ~12 / read-stream ~8 / roundtrip 末段 async_hooks
+> FSREQCALLBACK 资源面（AGENTS §4.149）。
 
 ### 已修（每项经真机 26.8.2 对拍）
 

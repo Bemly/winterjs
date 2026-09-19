@@ -1333,6 +1333,46 @@ cargo build
   write-after-end-nt/async-iter/blocklist 五件是固定回归组；②"事件 X 后
   才挂监听"的套件形状 = 发射必须异步（node destroy 语义）。
 
+### 4.149 G4 fs validators 轮七坑（2026-09-19，欠账 G4 轮）
+
+- **坑一（utimes 数字实参 = 秒，不是 ms）**：`utimesSync(path, 2**31, 2**31)`
+  真机把数字当**秒**（y2K38 套件 2^31 s 断言）；本仓旧实现按 ms + 黑盒测试
+  也编码了 ms——测试随实现偏差翻转（§4.65 姊妹篇），真机口径一锤定音。
+  Date → ms 直传（精度全保）；_toUnixTimestamp 负数回当前秒（真机实测怪形，
+  逐字照抄）。lutimes/futimes 同批对齐。
+- **坑二（__cb1 回调先于值校验）**：`fchown(1, '')` 无回调——__cb1 先取末参
+  当 cb → /callback/ 错误；node 值校验在前 → /uid/。__fdCb 重写：cb 非函数时
+  先跑 syncFn（值校验错误原样抛、操作错误让位）再校验 cb；**且不得造孤儿
+  rejected promise**（lchown ×7 unhandled rejection 根因：p 已 reject、cb 校验
+  又同步抛，无人接）。uid/gid 域 `[-1, 4294967295]`（-1 = 不变更哨兵）。
+- **坑三（writeFile opts 在 rest[2]）**：writeFile=(path,data,opts,cb)、
+  readFile=(path,opts,cb)——参数表序号照搬 readFile 的 rest[1] 拿到的是
+  data 字符串，signal 面静默失效（c1/c2 abort 后仍 success）。**复用包装
+  helper 时先画参数表**。
+- **坑四（fs_err::read 单阶段丢 syscall 语义）**：目录 readFile——node 是
+  open 成功、read 失败（syscall 'read'）；fs_err::read 一把梭报不出阶段。
+  open/read 两阶段手写，各报各的 syscall；fs_err 换 std 直用保 raw errno
+  （§4.121 三进宫：mkdir/rmdir/read_file 全切）。
+- **坑五（TextDecoder latin1 = windows-1252）**：node 'latin1' = 字节直映
+  码点；TextDecoder 的 latin1 标签是 win-1252（0x80-0x9F 段不同）——✓/😀
+  文本 roundtrip 必挂。latin1/binary 走 Buffer。
+- **坑六（TDZ：const 箭头 helper 与导出顺序）**：`export const lchown =
+  __fdCb(...)` 写在 `const __fdCb` 定义**之前** → 模块求值 ReferenceError →
+  **整模块绑定全未初始化**（表象是"can't access lexical declaration"）。
+  const 箭头 helper 必须先于全部使用点；function 声明无此问题。
+- **坑七（模块级报错行号不可信）**：套件报 `xxx.js:346:53` 而文件仅 58 行
+  ——错误位置映射失真时，靠 `console.log` 插桩（CK/TI/AV 标记）定位到
+  用例级，不猜。
+- 回归：全量 `test-fs-*` 355 件 166 绿（净 +20：constants/stat-bigint/stat/
+  statfs/readfile/rename-type-check/null-bytes/options-immutable/mkdir-mode-
+  mask/rmdir-throws/truncate/timestamp-parsing/lchmod/lchown×2/fchown/utimes/
+  y2K38/append-file-sync/write-file-sync/write-file/roundtrip）；残件：
+  roundtrip 末段 async_hooks FSREQCALLBACK 资源面（另案）、write-stream/cp/
+  watch 簇（G8/大簇）；black-box fs 13/13、冒烟 5/5。
+- 推广为铁律：①改时间戳 API 先对真机量纲（秒/ms/µs）+ 全 grep 旧测试的
+  量纲假设；②包装 helper（__cb1/__fdCb 族）新增变体时列出 node 的完整
+  校验顺序（值 → callback → 操作）+ 孤儿 promise 检查。
+
 ## 5. 路线图（已收官，现状以 plan 为准）
 
 - §5 初版四项（`console`/timers → job queue → ESM loader → `fs`/`path`/`process`）

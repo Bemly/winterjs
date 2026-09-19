@@ -186,7 +186,7 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | http | ~~校验长尾 / chunk 限深~~ ✅ 2026-09-19 转绿（G3 六提交：chunk 扩展 413/trailer 431/校验门 15 件/Agent createSocket/IPC socketPath/write-after-end 语义/FIN 半开收口，点名 45 件 SAME0；余 OutgoingMessage outputData 缓冲模型 5 件**出局另轮专项**、假 socket socket.push 2 件需 net 流式化、TIMEOUT 110 归下行） | ~35→5 件 | 已收官，残件另案 |
 | http2 | compat 层 `Http2ServerRequest/Response` 全流面 | ~105 件 | 最大单体簇，与 10b 同型工程 |
 | http2 | server 流面 / settings/priority/ALPN 校验 | ~15 件 | 随 compat 轮 |
-| fs | validators 尾件 / unhandled-rej 尾件 | ~40 件 | 逐 API 续补，下轮可修 |
+| fs | ~~validators 尾件 / unhandled-rej 尾件~~ ✅ 2026-09-19 转绿（G4 两提交：constants 16键+null原型/stat-bigint 全option链+Ns四键/throwIfNoEntry 只豁免 ENOENT/__Stats DEP0180 可调用形/fd_table 预注册标准流/statfs frsize+bigint/utimes·lutimes·futimes 秒口径+utimensat/lchown·lchmod·_toUnixTimestamp·lutimes 新面/rename oldPath·newPath/truncate len 校验/null-byte 全API含URL/__fdCb 值优先+孤儿promise根除/latin1字节直映/writeFile encoding+abort交付面/WriteStream真open；AGENTS §4.149）；残件：roundtrip 末段 async_hooks FSREQCALLBACK 资源面另案 | ~40→1 件（async_hooks 另案） | 已收官，async_hooks 资源面另轮 |
 | fs | watch hang（promises-watch/recursive/encoding）/ watch-ignore-glob / flush 选项 / pipe 读形 | ~23 件 | watch 事件流 + glob 语义，中等工程 |
 | net | ~~server close/listen 时序~~ ✅ 2026-09-19 转绿（G2 server 选项面 blockList/maxConnections/drop/pauseOnConnect/close 窗口 + G2 relisten `__closing` 残留旗修复）；余 cargo-harness 下 net_remote/unix_socket 的 SEGV 已修（with_str_args GC 悬垂） | ~10 件 | 已收官 |
 | net | ~~TIMEOUT 9 / Happy Eyeballs 3 / worker 投递 3 / large-string 1~~ ✅ 2026-09-19 G6：13/16 转绿（large-string 分包解码/async-iter end(cb)挂finish/write-after-end-nt EPIPE面/abort-controller 信号面+侧表/ipv6 lookup family透传/HE-default 串行回落/HE校验×2；max-connections×2+bytes-stats 随 G2 已绿），残件 6 件 infra 级记档——throttle（native 读门控+写EAGAIN流控）/cluster×2（internalMessage协议，非net面）/worker×3（跨线程fd移交，可骑holdToken机制，独立轮） | ~16→6 件 | 残件另轮（bun-parity net 八轮，AGENTS §4.148） |
@@ -218,26 +218,30 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | G3 http 校验长尾/chunk 限深 | ✅ 上轮（子 agent 六提交移植，点名 45 件 SAME0 + 连带 15 件） |
 | **G9-3 zlib 尾件**（brotli/zstd 字典/pledged/Web CS·DS） | ✅ 本轮（6 目标套件全绿 + 82 件对拍零回归；一次性压缩走引擎收口 + raw 字典构造期设 + 严格字典校验 + pledged errno=72 + constants 28 项 + Web 全局；AGENTS §4.145-147） |
 | **G6 net 尾件** | ✅ 本轮 13/16 转绿（large-string/async-iter/write-after-end-nt/abort/ipv6/HE×3 + G2 顺手 2 件；全量 159 件对拍零回归，black-box 223 全绿）；残件 6 件 infra 级记档（throttle 流控/cluster 协议×2/worker fd 移交×3）；AGENTS §4.148 |
+| **G4 fs validators 尾件** | ✅ 本轮 20 套件转绿（stat族/constants/bigint/throwIfNoEntry/DEP0180/fd标准流/statfs frsize+bigint/utimes秒口径/lchown·lchmod·lutimes·_toUnixTimestamp新面/null-byte全API/rename·truncate·fchown·mkdir校验面/latin1/writeFile encoding+abort/WriteStream真open）；黑盒 fs 13/13 + 冒烟 5/5；AGENTS §4.149（e94db50 + 3a4704e） |
 | 集成修复 ×2 | ✅ net relisten `__closing` 挂死（46 分钟）+ net SEGV（with_str_args GC 悬垂）+ stream 9b 回归（上轮） |
 | 验收 | `cargo test` 全量 21 target 0 失败 0 警告 + 冒烟 5/5 |
 | AGENTS.md | ✅ §4.140-144 四坑 + §4.145-147 三坑 + §4.148 net 五坑 |
 | 本节欠账表 | ✅ G3/G2/G9-2/G9-3/G6 划线转绿 |
 
-**新会话入口（按优先级）：**
+**新会话入口（按优先级，2026-09-19 G4 轮后更新）：**
 
-1. **G4 fs validators 尾件 ~40 件 → G5 child ~30 件 → G8 fs watch/glob
-   ~23 件**（下轮可修三连）。
-2. **G6 残件 6 件**（infra 级，需独立轮）：throttle（native 读门控+写 EAGAIN
+1. **G5 child ~30 件 → G8 fs watch/glob ~23 件**（下轮可修二连）；
+   G4 validators 尾件已收官（20 套件转绿，e94db50+3a4704e，AGENTS §4.149）。
+2. **fs 残簇**：cp ~33 件、write-stream ~13 件（G4-2 WriteStream 真 open 后
+   可再试）、promises-file-handle ~12 件、read-stream ~8 件——逐簇续补。
+3. **G6 残件 6 件**（infra 级，需独立轮）：throttle（native 读门控+写 EAGAIN
    流控）、cluster×2（internalMessage 协议）、worker×3（跨线程 fd 移交）。
-3. **大簇另案**：G10 http2 compat ~105 件、G11 http TIMEOUT ~110 件、
-   dgram 余 ~32 件、http OutgoingMessage 缓冲模型 5 件（G3 遗留专项）。
-4. **URLPattern 归属**：对 Bun 1.3 实测后拍板（见上"待核对"）。
+4. **大簇另案**：G10 http2 compat ~105 件、G11 http TIMEOUT ~110 件、
+   dgram 余 ~32 件、http OutgoingMessage 缓冲模型 5 件（G3 遗留专项）、
+   async_hooks 资源面（FSREQCALLBACK 生命周期，fs roundtrip 末段牵引）。
+5. **URLPattern 归属**：对 Bun 1.3 实测后拍板（见上"待核对"）。
 
 （编号对表：G4=fs validators 尾件行、G5=child_process 行、G6=net 尾件行、
 G8=fs watch 簇行、G10=http2 compat 行、G11=http TIMEOUT 行；
 G1/G2/G3/G9 已收官。）
 
-**新会话开场提示**：先读 AGENTS.md §4.140-147（两轮七坑，尤其 §4.140
+**新会话开场提示**：先读 AGENTS.md §4.140-149（三轮十一坑，尤其 §4.140
 "手工过/cargo 挂≠环境问题"、§4.142 "禁连续建 worktree"、§4.145 跑分
 "exec or die"+glob 路径）+ 本节欠账表；跑分 `TEST_THREAD_ID` 用 35xx+
 （§4.122 互踩防线）；net 域黑盒先单跑验证（`cargo test --test node net`，

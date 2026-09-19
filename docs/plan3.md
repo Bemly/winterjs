@@ -183,15 +183,15 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | 域 | 欠账簇 | 规模 | 性质 |
 |---|---|---|---|
 | http | TIMEOUT 簇（expect-continue/upgrade/trailer/管线背压/max-connections） | ~110 件 | 流式深化，与 10b 整收口径的接缝工程 |
-| http | 校验长尾 / chunk 限深 / 假 socket 深件 | ~35 件 | 逐 API 续补，下轮可修 |
+| http | ~~校验长尾 / chunk 限深~~ ✅ 2026-09-19 转绿（G3 六提交：chunk 扩展 413/trailer 431/校验门 15 件/Agent createSocket/IPC socketPath/write-after-end 语义/FIN 半开收口，点名 45 件 SAME0；余 OutgoingMessage outputData 缓冲模型 5 件**出局另轮专项**、假 socket socket.push 2 件需 net 流式化、TIMEOUT 110 归下行） | ~35→5 件 | 已收官，残件另案 |
 | http2 | compat 层 `Http2ServerRequest/Response` 全流面 | ~105 件 | 最大单体簇，与 10b 同型工程 |
 | http2 | server 流面 / settings/priority/ALPN 校验 | ~15 件 | 随 compat 轮 |
 | fs | validators 尾件 / unhandled-rej 尾件 | ~40 件 | 逐 API 续补，下轮可修 |
 | fs | watch hang（promises-watch/recursive/encoding）/ watch-ignore-glob / flush 选项 / pipe 读形 | ~23 件 | watch 事件流 + glob 语义，中等工程 |
-| net | server close/listen 时序（drop-connections/pause-on-connect 等） | ~10 件 | 下轮可修 |
+| net | ~~server close/listen 时序~~ ✅ 2026-09-19 转绿（G2 server 选项面 blockList/maxConnections/drop/pauseOnConnect/close 窗口 + G2 relisten `__closing` 残留旗修复）；余 cargo-harness 下 net_remote/unix_socket 的 SEGV 已修（with_str_args GC 悬垂） | ~10 件 | 已收官 |
 | net | TIMEOUT 9 / Happy Eyeballs 3 / worker 投递 3 / large-string 1 | ~16 件 | 背压语义 + 竞速回落，另案 |
-| zlib | 增量语义（flush/premature-end/truncated/write-after-end/reject-garbage） | ~6 件 | 需真流式编解码状态机，与"整收"架构冲突 |
-| zlib | brotli 字典 / zstd pledged-src-size / Web `DecompressionStream` | ~4 件 | 零散，DecompressionStream 可另切片 |
+| zlib | ~~增量语义~~ ✅ 2026-09-19 转绿（G9-1 Rust 状态机 + G9-2 JS 流类接线：write 即时压出/flush 档位即时出边界/finishFlush 容忍/rejectGarbageAfterEnd/一次性面切引擎错误口径对真机；6 目标套件+连带 5 件全绿，zlib 域 73/81） | ~6 件 | 已收官 |
+| zlib | brotli 字典 / zstd pledged-src-size / Web `DecompressionStream` | ~4 件 | G9-3 待做；字典 zlib 族已随 G9-2 落地（FDICT/set_dictionary），余 brotli/zstd 字典流式 + pledged + DecompressionStream；dictionary 套件 ArrayBuffer-dict reset 组合的 zlib_rs bad state 一件回归随修 |
 | dgram | ~~recvbuf 系~~ ✅ 2026-09-19 转绿（G1：recvbuf/sendbuf 四方法+隐式绑定+EMSGSIZE 回调路由+数组 send+族匹配解析+ALREADY_BOUND/EBADF 形状；DIFF 53→32，余 connect 族/membership/bindSync/ipv6only 等独立小簇 ~32 件顺延） | 小簇 | 已动工，余件逐 API 续补 |
 | child_process | async AbortSignal 尾件 / async 句柄面 / exec 多字节截断 | ~30 件 | Bun 实现了这些，欠；**fork/IPC handle 传递 ~25 件出局**（Bun 🟡 IPC 缺口，同缺不追） |
 | worker_threads | terminate 深水 / 环境面尾件 | 部分 | Bun 🟡 → parity 确认档；Atomics.wait（引擎面）与 stdio 流面（Bun 同缺倾向）另核 |

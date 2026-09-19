@@ -185,8 +185,9 @@ chmodSync("t.txt", 0o600);
 const st = statSync("t.txt");
 console.log("chmod", (st.mode & 0o777).toString(8), st.uid !== undefined, st.gid !== undefined,
   st.ino > 0, st.dev > 0, st.blocks > 0, typeof st.blksize, st instanceof Stats);
-// utimes（毫秒精度 ±2s）
-utimesSync("t.txt", 1000000, 2000000);
+// utimes（数字实参为秒，node 26 真机同款口径；毫秒精度 ±2s——G4 修正：
+// 旧实现把数字当 ms，测试侧随实现偏差一并改秒口径）
+utimesSync("t.txt", 1000, 2000);
 console.log("utimes", Math.abs(statSync("t.txt").atimeMs - 1000000) < 2000,
   Math.abs(statSync("t.txt").mtimeMs - 2000000) < 2000);
 // link/symlink/readlink（stat 跟随、lstat 不跟随）
@@ -270,7 +271,7 @@ console.log("fh-read", rr.bytesRead, new TextDecoder().decode(rr.buffer));
 console.log("fh-stat", (await fh.stat()).size);
 await fh.chmod(0o640);
 console.log("fh-chmod", (fs.statSync("f.txt").mode & 0o777).toString(8));
-await fh.utimes(500000, 600000);
+await fh.utimes(500, 600);
 console.log("fh-utimes", Math.abs((await fh.stat()).mtimeMs - 600000) < 2000);
 await fh.datasync(); await fh.sync();
 await fh.truncate(6);

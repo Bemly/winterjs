@@ -4739,6 +4739,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_fs_symlink", Some(node::fs::fs_symlink), 2),
             ("__wjs_fs_truncate", Some(node::fs::fs_truncate), 2),
             ("__wjs_fs_utimes", Some(node::fs::fs_utimes), 3),
+            #[cfg(unix)]
+            ("__wjs_fs_lutimes", Some(node::fs::fs_lutimes), 3),
             ("__wjs_fs_chmod", Some(node::fs::fs_chmod), 2),
             ("__wjs_fs_access", Some(node::fs::fs_access), 2),
             ("__wjs_fs_open", Some(node::fs::fs_open), 2),
@@ -4749,6 +4751,9 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_fs_fstat", Some(node::fs::fs_fstat), 1),
             ("__wjs_fs_fchmod", Some(node::fs::fs_fchmod), 2),
             ("__wjs_fs_chown", Some(node::fs::fs_chown), 3),
+            ("__wjs_fs_lchown", Some(node::fs::fs_lchown), 3),
+            #[cfg(target_os = "macos")]
+            ("__wjs_fs_lchmod", Some(node::fs::fs_lchmod), 2),
             ("__wjs_fs_fchown", Some(node::fs::fs_fchown), 3),
             ("__wjs_fs_futimes", Some(node::fs::fs_futimes), 3),
             ("__wjs_fs_fsync", Some(node::fs::fs_fsync), 2),

@@ -57,6 +57,9 @@ pub fn io_code(e: &std::io::Error) -> &'static str {
         std::io::ErrorKind::PermissionDenied => "EACCES",
         std::io::ErrorKind::AlreadyExists => "EEXIST",
         std::io::ErrorKind::IsADirectory => "EISDIR",
+        // fs_err 包装丢 raw errno 的兜底（kind 重建件）
+        std::io::ErrorKind::NotADirectory => "ENOTDIR",
+        std::io::ErrorKind::DirectoryNotEmpty => "ENOTEMPTY",
         std::io::ErrorKind::InvalidInput => "EINVAL",
         std::io::ErrorKind::OutOfMemory => "ENOMEM",
         _ => "UNKNOWN",
@@ -158,6 +161,8 @@ fn uv_msg(e: &std::io::Error) -> &'static str {
         std::io::ErrorKind::PermissionDenied => "permission denied",
         std::io::ErrorKind::AlreadyExists => "file already exists",
         std::io::ErrorKind::IsADirectory => "illegal operation on a directory",
+        std::io::ErrorKind::NotADirectory => "not a directory",
+        std::io::ErrorKind::DirectoryNotEmpty => "directory not empty",
         std::io::ErrorKind::InvalidInput => "invalid argument",
         _ => "unknown error",
     }
@@ -209,8 +214,24 @@ pub unsafe extern "C" fn fs_read_file(
     let Some(path) = arg_path_checked(&mut cx, &frame, 0, "readFile", PermClass::Read) else {
         return false;
     };
-    match fs_err::read(&path) {
-        Ok(bytes) => set_rval_bytes(&mut cx, &frame, &bytes),
+    // open/read 两阶段分开报（node 口径：目录 open 成功、read 失败——
+    // syscall 分别 'open'/'read'，roundtrip 套件 EISDIR 形逐字点名）；
+    // std 直用保 raw errno（fs_err 包装丢 errno 落 UNKNOWN）。
+    use std::io::Read as _;
+    match std::fs::File::open(&path) {
+        Ok(mut f) => {
+            let mut buf = Vec::new();
+            match f.read_to_end(&mut buf) {
+                Ok(_) => {
+                    set_rval_bytes(&mut cx, &frame, &buf);
+                    true
+                }
+                Err(e) => {
+                    report_io(&mut cx, "read", &path, e);
+                    false
+                }
+            }
+        }
         Err(e) => {
             report_io(&mut cx, "open", &path, e);
             false
@@ -271,6 +292,22 @@ pub unsafe extern "C" fn fs_append_file(
     ) else {
         return false;
     };
+    // mode 仅在 create 面生效（unix；0 保持 std 0o666 语义；append-file-sync
+    // 套件 {mode} 建文件点名——旧形丢 mode 建出 666）。
+    #[cfg(unix)]
+    let r = (|| {
+        let mut o = std::fs::OpenOptions::new();
+        o.create(true).append(true);
+        if frame.argc() > 2 && frame.arg(2).is_number() {
+            let m = frame.arg(2).to_number() as u32;
+            if m != 0 {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                o.mode(m & 0o7777);
+            }
+        }
+        o.open(&path)
+    })();
+    #[cfg(not(unix))]
     let r = std::fs::OpenOptions::new().create(true).append(true).open(&path);
     match r {
         Ok(mut f) => {
@@ -435,7 +472,34 @@ pub unsafe extern "C" fn fs_mkdir(
         return false;
     };
     let recursive = frame.argc() > 1 && frame.arg(1).to_boolean();
+    // mode（mkdir-mode-mask 套件：0o644|0o10000 的高位由内核掩掉，原样传）；
+    // recursive 建链 std 不带 mode——链上默认位、叶目录事后 set_permissions
+    //（node recursive 口径：mode 生效于新建目录，链上目录取默认）。
+    let mode = if frame.argc() > 2 && frame.arg(2).is_number() {
+        frame.arg(2).to_number() as u32
+    } else {
+        0
+    };
     // std 直用（fs_err 包装吞 raw errno → io_code 落 UNKNOWN，ENOTDIR 对拍现形）
+    #[cfg(unix)]
+    let r = (|| -> std::io::Result<()> {
+        if recursive {
+            std::fs::create_dir_all(&path)?;
+            if mode != 0 {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode & 0o7777))?;
+            }
+            Ok(())
+        } else {
+            let mut b = std::fs::DirBuilder::new();
+            if mode != 0 {
+                use std::os::unix::fs::DirBuilderExt as _;
+                b.mode(mode & 0o7777);
+            }
+            b.create(&path)
+        }
+    })();
+    #[cfg(not(unix))]
     let r = if recursive { std::fs::create_dir_all(&path) } else { std::fs::create_dir(&path) };
     match r {
         Ok(()) => {
@@ -884,24 +948,78 @@ pub unsafe extern "C" fn fs_utimes(
     };
     let atime = opt_f64(&frame, 1).unwrap_or(0.0);
     let mtime = opt_f64(&frame, 2).unwrap_or(atime);
-    let open = std::fs::OpenOptions::new().write(true).open(&path);
-    match open {
-        Ok(f) => {
-            let times = std::fs::FileTimes::new()
-                .set_accessed(ms_to_system_time(atime))
-                .set_modified(ms_to_system_time(mtime));
-            match f.set_times(times) {
-                Ok(()) => true,
-                Err(e) => {
-                    report_io(&mut cx, "utimes", &path, e);
-                    false
-                }
-            }
-        }
-        Err(e) => {
-            report_io(&mut cx, "open", &path, e);
+    // utimensat 直调（旧 open(write)+set_times 对目录 EISDIR——utimes 目录
+    // 是 node 合法面，utimes 套件 expect_ok 点名）。ms → sec+nsec。
+    #[cfg(unix)]
+    {
+        let ts = |ms: f64| libc::timespec {
+            tv_sec: (ms / 1000.0).floor() as i64,
+            tv_nsec: ((ms % 1000.0).floor() * 1_000_000.0) as i64,
+        };
+        let times = [ts(atime), ts(mtime)];
+        let Ok(c) = std::ffi::CString::new(path.as_str()) else {
+            report_error(&mut cx, "EINVAL: invalid argument, utimes");
+            return false;
+        };
+        // SAFETY: libc 调用（路径 CString 活跃；times 数组活跃）。
+        let r = unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), 0) };
+        if r == 0 {
+            frame.set_rval(mozjs::jsval::UndefinedValue());
+            true
+        } else {
+            let e = std::io::Error::last_os_error();
+            report_io(&mut cx, "utimes", &path, e);
             false
         }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (atime, mtime);
+        report_io(
+            &mut cx,
+            "utimes",
+            &path,
+            std::io::Error::new(std::io::ErrorKind::Unsupported, "utimes not implemented on this platform"),
+        );
+        false
+    }
+}
+
+/// `__wjs_fs_lutimes(path, atimeMs, mtimeMs)` → utimensat AT_SYMLINK_NOFOLLOW
+///（符号链接本身；lutimes 套件）。
+#[cfg(unix)]
+pub unsafe extern "C" fn fs_lutimes(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "lutimes", PermClass::Write) else {
+        return false;
+    };
+    let atime = opt_f64(&frame, 1).unwrap_or(0.0);
+    let mtime = opt_f64(&frame, 2).unwrap_or(atime);
+    let ts = |ms: f64| libc::timespec {
+        tv_sec: (ms / 1000.0).floor() as i64,
+        tv_nsec: ((ms % 1000.0).floor() * 1_000_000.0) as i64,
+    };
+    let times = [ts(atime), ts(mtime)];
+    let Ok(c) = std::ffi::CString::new(path.as_str()) else {
+        report_error(&mut cx, "EINVAL: invalid argument, lutimes");
+        return false;
+    };
+    // SAFETY: libc 调用（路径 CString 活跃；times 数组活跃）。
+    let r = unsafe {
+        libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), libc::AT_SYMLINK_NOFOLLOW)
+    };
+    if r == 0 {
+        frame.set_rval(mozjs::jsval::UndefinedValue());
+        true
+    } else {
+        let e = std::io::Error::last_os_error();
+        report_io(&mut cx, "lutimes", &path, e);
+        false
     }
 }
 
@@ -1260,6 +1378,72 @@ pub unsafe extern "C" fn fs_chown(
             report_io(&mut cx, "chown", &path, e);
             false
         }
+    }
+}
+
+/// `__wjs_fs_lchown(path, uid, gid)` → libc lchown（符号链接本身；
+/// -1 = 不变更，lchown-negative-one 套件点名）。
+#[cfg(unix)]
+pub unsafe extern "C" fn fs_lchown(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "lchown", PermClass::Write) else {
+        return false;
+    };
+    let uid = opt_f64(&frame, 1).unwrap_or(-1.0) as i64;
+    let gid = opt_f64(&frame, 2).unwrap_or(-1.0) as i64;
+    let Ok(c) = std::ffi::CString::new(path.as_str()) else {
+        report_error(&mut cx, "EINVAL: invalid argument, lchown");
+        return false;
+    };
+    // SAFETY: libc 调用（路径 CString 活跃）；errno 经 from_raw_os_error 走 io_code。
+    // uid_t/gid_t 为 u32；-1 哨兵（不变更）= 0xFFFFFFFF，与 chown(2) 语义同。
+    let r = unsafe { libc::lchown(c.as_ptr(), uid as u32, gid as u32) };
+    if r == 0 {
+        frame.set_rval(mozjs::jsval::UndefinedValue());
+        true
+    } else {
+        let e = std::io::Error::last_os_error();
+        report_io(&mut cx, "lchown", &path, e);
+        false
+    }
+}
+
+/// `__wjs_fs_lchmod(path, mode)` → fchmodat(AT_FDCWD, …, AT_SYMLINK_NOFOLLOW)。
+/// node 口径：fs.lchmod 仅 macOS 存在（Linux 下导出面 undefined）——
+/// 本 native 仅 macOS 注册。
+#[cfg(target_os = "macos")]
+pub unsafe extern "C" fn fs_lchmod(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(path) = arg_path_checked(&mut cx, &frame, 0, "lchmod", PermClass::Write) else {
+        return false;
+    };
+    let mode = opt_f64(&frame, 1).unwrap_or(0.0) as u32;
+    let Ok(c) = std::ffi::CString::new(path.as_str()) else {
+        report_error(&mut cx, "EINVAL: invalid argument, lchmod");
+        return false;
+    };
+    // SAFETY: libc 调用（路径 CString 活跃；AT_FDCWD = 相对 cwd，与 chmod 同语义）。
+    // macOS mode_t 为 u16。
+    let r = unsafe {
+        libc::fchmodat(libc::AT_FDCWD, c.as_ptr(), (mode & 0o7777) as libc::mode_t, libc::AT_SYMLINK_NOFOLLOW)
+    };
+    if r == 0 {
+        frame.set_rval(mozjs::jsval::UndefinedValue());
+        true
+    } else {
+        let e = std::io::Error::last_os_error();
+        report_io(&mut cx, "lchmod", &path, e);
+        false
     }
 }
 
@@ -1681,7 +1865,9 @@ pub unsafe extern "C" fn fs_rmdir(
         return false;
     };
     let recursive = frame.argc() > 1 && frame.arg(1) == mozjs::jsval::BooleanValue(true);
-    let r = if recursive { fs_err::remove_dir_all(&path) } else { fs_err::remove_dir(&path) };
+    // std 直用（fs_err 包装只留 kind 丢 raw errno → ENOTDIR 落 UNKNOWN；
+    // rmdir-throws-on-file 套件对拍现形，mkdir 已同批切 std）
+    let r = if recursive { std::fs::remove_dir_all(&path) } else { std::fs::remove_dir(&path) };
     match r {
         Ok(()) => {
             frame.set_rval(UndefinedValue());
@@ -1745,12 +1931,14 @@ function __fsErr(e, syscall, path) {
   }
   const code = (m.match(/^([A-Z_]+): /) || [])[1] || "UNKNOWN";
   // native report_io 已产出 node 形状（`CODE: msg, syscall 'path'`）→ 直通，
-  // 否则旧 JS 侧错误按 node 形状重包（去双前缀）。
-  if (new RegExp(`^${code}: .*, ${syscall} '`).test(m)) {
+  // 内层 syscall 为准（truncate 的 open 失败 node 口径 syscall='open'，
+  // truncate 套件 message 逐字点名）。
+  const ioShape = m.match(/^([A-Z_]+): (.*), ([a-z_]+) '(.*)'$/);
+  if (ioShape) {
     const err = new Error(m);
-    err.code = code;
-    err.syscall = syscall;
-    err.path = path;
+    err.code = ioShape[1];
+    err.syscall = ioShape[3];
+    err.path = ioShape[4];
     throw err;
   }
   const rest = m.replace(/^[A-Z_]+: /, "");
@@ -1767,15 +1955,37 @@ function __fsCall(syscall, path, fn) {
     __fsErr(e, syscall, path);
   }
 }
-function __fsPath(p, what) {
-  if (typeof p === "string") return p;
-  if (p instanceof URL) {
-    if (p.protocol !== "file:") throw new TypeError(`${what}: only file: URLs supported`);
+function __fsPath(p, what, argName) {
+  if (typeof p === "string") {
+    // node getValidatedPath：\0 即 ERR_INVALID_ARG_VALUE（null-bytes 套件全 API 面）。
+    if (p.includes("\0")) {
+      const e = new TypeError(`The argument 'path' must be a string, Uint8Array, or URL without null bytes. Received '${p}'`);
+      e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+    }
     return p;
   }
-  if (ArrayBuffer.isView(p)) return Buffer.from(p).toString("utf8");
+  if (p instanceof URL) {
+    if (p.protocol !== "file:") throw new TypeError(`${what}: only file: URLs supported`);
+    // URL 形同样禁 \0（null-bytes 套件 fileUrl/fileUrl2 两形 + 真机 26.8.2
+    // 逐字对拍：ARG_VALUE 'without null bytes'）。pathname 解码后判。
+    let dec = p.pathname;
+    try { dec = decodeURIComponent(p.pathname); } catch { }
+    if (dec.includes("\0")) {
+      const e = new TypeError(`The argument 'path' must be a string, Uint8Array, or URL without null bytes. Received '${p.href}'`);
+      e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+    }
+    return p;
+  }
+  if (ArrayBuffer.isView(p)) {
+    const s = Buffer.from(p).toString("utf8");
+    if (s.includes("\0")) {
+      const e = new TypeError(`The argument 'path' must be a string, Uint8Array, or URL without null bytes. Received '${s}'`);
+      e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+    }
+    return s;
+  }
   // node getValidatedPath 口径（test-fs-buffer 点名 message 逐字）。
-  __vErrType("path", "string or an instance of Buffer or URL", p);
+  __vErrType(argName ?? "path", "string or an instance of Buffer or URL", p);
 }
 function __fsAbortErr(reason) {
   const e = new Error("The operation was aborted");
@@ -1783,6 +1993,23 @@ function __fsAbortErr(reason) {
   e.code = "ABORT_ERR";
   if (reason !== undefined) e.cause = reason;
   return e;
+}
+// options.signal 面：键存在（≠undefined）即必须是 AbortSignal 形
+//（aborted:boolean + addEventListener 函数；跨域 instanceof 不可靠，§4.57
+// 结构判），非法即同步 TypeError ERR_INVALID_ARG_TYPE（readfile 套件
+// signal:'hello' 点名）；返回 signal 供 aborted 检查。
+function __fsSignalCheck(opts) {
+  if (opts && typeof opts === "object" && opts.signal !== undefined) {
+    const s = opts.signal;
+    if (!s || typeof s !== "object" ||
+        typeof s.aborted !== "boolean" || typeof s.addEventListener !== "function") {
+      const e = new TypeError('The "options.signal" property must be of type AbortSignal. Received ' + String(s));
+      e.code = "ERR_INVALID_ARG_TYPE";
+      throw e;
+    }
+    return s;
+  }
+  return null;
 }
 function __fsData(d, what) {
   if (typeof d === "string") return new TextEncoder().encode(d);
@@ -1793,6 +2020,14 @@ function __fsData(d, what) {
   // writeFile/appendFile 系 "data"（append-file/buffertype 套件 message 断言）。
   __vErrType(what === "write" ? "buffer" : "data",
              "string or an instance of Buffer, TypedArray, or DataView", d);
+}
+// 顶层 string data 的 encoding 面（'hex'/'base64'/'latin1' 等解码为字节；
+// write-file-sync 套件 hex roundtrip 点名——旧形按 utf8 直写原串）。
+function __fsDataEnc(d, what, enc) {
+  if (typeof d === "string" && enc && enc !== "utf8" && enc !== "utf-8") {
+    return Buffer.from(d, enc);
+  }
+  return __fsData(d, what);
 }
 const __fsEncodings = new Set([
   "utf8", "utf-8", "utf16le", "utf-16le", "ucs2", "ucs-2", "ascii", "latin1",
@@ -1838,6 +2073,12 @@ function __fsDecode(bytes, encoding, what) {
   const enc = String(encoding).toLowerCase();
   if (enc === "hex" || enc === "base64" || enc === "base64url") {
     return Buffer.from(bytes).toString(enc);
+  }
+  // latin1/binary：字节直映码点（node 'latin1' = binary）。TextDecoder 的
+  // latin1 标签是 windows-1252——0x80-0x9F 段与 latin1 不同，roundtrip
+  // 套件 ✓/😀 文本现形。
+  if (enc === "latin1" || enc === "binary") {
+    return Buffer.from(bytes).toString("latin1");
   }
   return new TextDecoder(String(encoding)).decode(bytes);
 }
@@ -1971,14 +2212,32 @@ function __fsFlags(flag, what) {
   if (!base[f]) throw new TypeError(`${what}: invalid flag '${flag}'`);
   return JSON.stringify(base[f]);
 }
+// node readFile 大文件帽：>2^31-1 即 ERR_FS_FILE_TOO_LARGE（真机 26.8.2 实测
+// RangeError，message 带 size：`File size (2147483648) is greater than 2 GiB`；
+// readfile 套件造 2GiB 稀疏文件点名——无帽时 native 真 2GiB 分配 abort）。
+const __kIoMaxLength = 2 ** 31 - 1;
+function __fsFileTooLarge(size) {
+  const e = new RangeError(`File size (${size}) is greater than 2 GiB`);
+  e.code = "ERR_FS_FILE_TOO_LARGE";
+  return e;
+}
 function __fsReadWhole(p, flag) {
-  if (flag === undefined || flag === "r") return __wjs_fs_read_file(p);
+  if (flag === undefined || flag === "r") {
+    // 帽先于 native 读：stat 跟随符号链接，与 readFile 语义同；ENOENT 落到
+    // native open 再报（不在此吞）。
+    const st = statSync(p, { throwIfNoEntry: false });
+    if (st && st.size > __kIoMaxLength) throw __fsFileTooLarge(st.size);
+    return __wjs_fs_read_file(p);
+  }
   const fd = Number(__wjs_fs_open(p, __fsFlags(flag, "readFile")));
   try {
     const parts = [];
+    let total = 0;
     while (true) {
       const chunk = __wjs_fs_read_fd(fd, 1 << 20, -1);
       if (chunk.length === 0) break;
+      total += chunk.length;
+      if (total > __kIoMaxLength) throw __fsFileTooLarge(total);
       parts.push(chunk);
     }
     const out = new Uint8Array(parts.reduce((a, c) => a + c.length, 0));
@@ -1997,13 +2256,19 @@ function __fsFdOf(p) {
 }
 export function readFileSync(p, opts) {
   const enc = __fsEncoding(opts);
+  // signal 面：已 abort 即 AbortError（node readFileSync 同步检查同口径）。
+  const sig = __fsSignalCheck(opts);
+  if (sig && sig.aborted) throw __fsAbortErr(sig.reason);
   const fd = __fsFdOf(p);
   if (fd !== null) {
     // fd 形：从当前位读到 EOF（node readFileHandle 同口径）。
     const parts = [];
+    let total = 0;
     for (;;) {
       const chunk = __fsCall("read", "", () => __wjs_fs_read_fd(fd, 1 << 20, -1));
       if (chunk.length === 0) break;
+      total += chunk.length;
+      if (total > __kIoMaxLength) throw __fsFileTooLarge(total);
       parts.push(chunk);
     }
     const out = new Uint8Array(parts.reduce((a, c) => a + c.length, 0));
@@ -2016,21 +2281,21 @@ export function readFileSync(p, opts) {
   return __fsCall("open", p, () => __fsDecode(__fsReadWhole(p, flag), enc, "readFile"));
 }
 export function writeFileSync(p, data, opts) {
-  __fsEncoding(opts);
-  // node 口径：signal.aborted 即 AbortError（走回调拒绝路径，writefile-with-fd 点名）。
-  if (opts && typeof opts === "object" && opts.signal && opts.signal.aborted) {
-    throw __fsAbortErr(opts.signal.reason);
-  }
+  const enc = __fsEncoding(opts);
+  // node 口径：signal 面校验（'hello' 即同步 ERR_INVALID_ARG_TYPE）+
+  // signal.aborted 即 AbortError（走回调拒绝路径，writefile-with-fd 点名）。
+  const wsig = __fsSignalCheck(opts);
+  if (wsig && wsig.aborted) throw __fsAbortErr(wsig.reason);
   const fd = __fsFdOf(p);
   if (fd !== null) {
     // fd 形：写现位（node writeFileHandle 同口径）。
-    const bytes = __fsData(data, "writeFile");
+    const bytes = __fsDataEnc(data, "writeFile", enc);
     writeSync(fd, bytes, 0, bytes.byteLength, null);
     return;
   }
   p = __fsPath(p, "writeFile");
   const flag = opts && typeof opts === "object" ? opts.flag : undefined;
-  const bytes = __fsData(data, "writeFile");
+  const bytes = __fsDataEnc(data, "writeFile", enc);
   __fsCall("open", p, () => {
     if (flag === undefined || flag === "w") {
       __wjs_fs_write_file(p, bytes, __fsMode(opts));
@@ -2057,6 +2322,9 @@ function __fsDataSync(data, what, opts) {
     const u8 = typeof c === "string" && enc && enc !== "utf8" ? Buffer.from(c, enc) : __fsData(c, what);
     return new Uint8Array(u8.buffer, u8.byteOffset, u8.byteLength);
   };
+  // node 口径：Array 实例整体拒收（真机 appendFileSync(file, []) →
+  // ERR_INVALID_ARG_TYPE /data/；可迭代仅限非数组形态，append-file-sync 套件）。
+  if (Array.isArray(data)) __vErrType(what, "string or an instance of Buffer, TypedArray, or DataView", data);
   if (data && typeof data === "object" && !ArrayBuffer.isView(data) && typeof data[Symbol.iterator] === "function") {
     const parts = [];
     for (const c of data) {
@@ -2100,7 +2368,7 @@ async function __fsAppendFileAsync(p, data, opts) {
     for (const c of parts) { const u8 = encChunk(c); out.set(u8, off); off += u8.length; }
     bytes = out;
   } else {
-    bytes = __fsDataSync(data, "appendFile", opts);
+    bytes = __fsDataSync(data, "data", opts);
   }
   if (signal && signal.aborted) throw __fsAbortErr(signal.reason);
   if (signal) {
@@ -2124,13 +2392,13 @@ async function __fsAppendFileAsync(p, data, opts) {
 }
 export function appendFileSync(p, data, opts) {
   __fsEncoding(opts);
-  // node 口径：signal.aborted 即 AbortError（promises-appendfile cancel 套件）。
-  if (opts && typeof opts === "object" && opts.signal && opts.signal.aborted) {
-    throw __fsAbortErr(opts.signal.reason);
-  }
+  // node 口径：signal 面校验（非法 signal 同步 ARG_TYPE）+ aborted 即
+  // AbortError（promises-appendfile cancel 套件）。
+  const asig = __fsSignalCheck(opts);
+  if (asig && asig.aborted) throw __fsAbortErr(asig.reason);
   // node 口径：data 校验先于 open（非法 data 不得留下已创建的文件）；
   // 同步可迭代逐块收（promises-appendfile doAppendStream 族）。
-  const bytes = __fsDataSync(data, "appendFile", opts);
+  const bytes = __fsDataSync(data, "data", opts);
   if (typeof p === "number" && Number.isInteger(p)) {
     // fd 形：写现位（fd 'a+' 打开即尾）。
     __vFd(p);
@@ -2198,9 +2466,18 @@ function __firstMissing(p) {
 }
 export function mkdirSync(p, opts) {
   p = __fsPath(p, "mkdir");
-  const recursive = opts && opts.recursive !== undefined
-    ? __vBooleanProp(opts.recursive, "options.recursive")
-    : false;
+  // node 口径：opts 可为 number/string（mode 简写，mkdir-mode-mask 套件
+  // 0o10644/"10644" 点名）或 object{recursive,mode}。
+  let recursive = false;
+  let mode;
+  if (typeof opts === "number" || typeof opts === "string") {
+    mode = __fsModeNum(opts);
+  } else if (opts && typeof opts === "object") {
+    recursive = opts.recursive !== undefined
+      ? __vBooleanProp(opts.recursive, "options.recursive")
+      : false;
+    if (opts.mode !== undefined) mode = __fsModeNum(opts.mode);
+  }
   // node 口径：recursive 只容忍已存在的**目录**；路径是文件即 EEXIST
   //（syscall 'mkdir'，test-fs-mkdir 点名）。
   if (recursive && existsSync(p) && !statSync(p).isDirectory()) {
@@ -2209,7 +2486,7 @@ export function mkdirSync(p, opts) {
     throw e;
   }
   const firstCreated = recursive ? __firstMissing(p) : null;
-  __fsCall("mkdir", p, () => __wjs_fs_mkdir(p, recursive));
+  __fsCall("mkdir", p, () => __wjs_fs_mkdir(p, recursive, mode ?? 0o777));
   return firstCreated ?? undefined;
 }
 export function rmSync(p, opts) {
@@ -2238,8 +2515,9 @@ export function readdirSync(p, opts) {
   return out.map(([name, isDir, isFile, isLink]) => new __Dirent(asBuf ? Buffer.from(name) : name, isDir, isFile, isLink, p));
 }
 export function renameSync(a, b) {
-  a = __fsPath(a, "rename");
-  b = __fsPath(b, "rename");
+  // node 口径：位置参数名 oldPath/newPath（rename-type-check 套件 message 逐字）。
+  a = __fsPath(a, "rename", "oldPath");
+  b = __fsPath(b, "rename", "newPath");
   __fsCall("rename", a, () => __wjs_fs_rename(a, b));
 }
 export function copyFileSync(src, dst, mode) {
@@ -2560,6 +2838,12 @@ class __WriteStream extends Writable {
   }
   __emitOpen() {
     if (this.__opened) return;
+    // node 口径：open 事件触发时文件已真实打开（options-immutable 套件：
+    // 'open' 回调里 ReadStream 必须读得到该文件——旧假 open 不建文件即 ENOENT）。
+    if (!this.__fdMode && this.fd === null) {
+      this.fd = Number(__fsCall("open", this.path, () =>
+        __wjs_fs_open(this.path, __fsFlags(this.flags, "createWriteStream"), this.mode)));
+    }
     this.__opened = true;
     this.emit("open", null);
     this.emit("ready");
@@ -2593,18 +2877,27 @@ class __WriteStream extends Writable {
       cb();
       return;
     }
+    // fd 已在 __emitOpen 真实打开（'w' 截断建/a 追加）——攒块经 fd 落盘，
+    // 位置 0（'w' 开头）或 -1（追加尾），node close-on-finish 同口径。
     const total = this.__chunks.reduce((n, c) => n + c.length, 0);
     const out = new Uint8Array(total);
     let off = 0;
     for (const c of this.__chunks) { out.set(c, off); off += c.length; }
-    const append = this.flags === "a" || this.flags === "a+" ||
-      __fsCall("stat", this.path, () => { try { __wjs_fs_stat(this.path, true); return true; } catch { return false; } });
-    if (append) {
-      __fsCall("open", this.path, () => __wjs_fs_append_file(this.path, out, 0));
-    } else {
-      __fsCall("open", this.path, () => __wjs_fs_write_file(this.path, out, 0));
+    const append = this.flags === "a" || this.flags === "a+";
+    try {
+      __fsCall("write", this.path, () => __wjs_fs_write_fd(this.fd, out, append ? -1 : 0));
+    } finally {
+      this.__chunks.length = 0;
+      if (this.autoClose) { try { __wjs_fs_close(this.fd); } catch { } this.fd = -1; }
     }
     cb();
+  }
+  _destroy(err, cb) {
+    if (!this.__fdMode && typeof this.fd === "number" && this.fd >= 0) {
+      try { __wjs_fs_close(this.fd); } catch { }
+    }
+    this.fd = -1;
+    cb(err);
   }
 }
 
@@ -2623,6 +2916,40 @@ function __fsTimeMs(t, what) {
   if (typeof t === "string") { const n = Number(t); if (Number.isFinite(n)) return n; }
   throw new TypeError(`${what}: time must be a number, string or Date`);
 }
+// truncate/ftruncate 的 len（truncate 套件逐字）：undefined → 0；非 number →
+// ARG_TYPE 'len'；非整数（±1.5）→ OUT_OF_RANGE 'It must be an integer'。
+function __fsLenArg(len) {
+  if (len === undefined) return 0;
+  if (typeof len !== "number") __vErrType("len", "number", len);
+  if (!Number.isInteger(len)) {
+    const e = new RangeError(`The value of "len" is out of range. It must be an integer. Received ${len}`);
+    e.code = "ERR_OUT_OF_RANGE"; throw e;
+  }
+  return len;
+}
+// node lib/internal/fs/utils.js toUnixTimestamp——真机 26.8.2 实测口径：
+// 数字串（含 '-1'）→ 数值原样；number 非有限 → ARG_TYPE；number 负 → 当前秒
+//（实测 -1 → Date.now()/1000，非 throw）；Date → 秒浮点；日期串可 parse → 秒；
+// 其余 ARG_TYPE（timestamp-parsing/utimes 套件）。
+function __toUnixTimestamp(time, name = "time") {
+  if (typeof time === "number") {
+    if (!Number.isFinite(time)) __vErrType(name, "number or Date", time);
+    return time < 0 ? Date.now() / 1000 : time;
+  }
+  if (typeof time === "string" && +time === time) return +time;
+  if (time instanceof Date) return time.getTime() / 1000;
+  if (typeof time === "string") {
+    const d = new Date(time);
+    if (!Number.isNaN(d.getTime())) return d.getTime() / 1000;
+  }
+  __vErrType(name, "number or Date", time);
+}
+// utimes 族的时间实参（秒口径，y2K38 套件）：Date → ms 直传（精度全保）；
+// 其余经 toUnixTimestamp（秒）× 1000。
+function __fsUtimeMs(t, what) {
+  if (t instanceof Date) return t.getTime();
+  return __toUnixTimestamp(t, what) * 1000;
+}
 function __fsModeNum(mode) {
   // node chmod 族：parseFileMode(mode, 'mode')（无 def；undefined → ARG_TYPE）。
   return __fsParseMode(mode);
@@ -2637,11 +2964,16 @@ export function accessSync(p, mode = 0) {
 }
 export function truncateSync(p, len) {
   p = __fsPath(p, "truncate");
-  __fsCall("truncate", p, () => __wjs_fs_truncate(p, len ?? 0));
+  const n = __fsLenArg(len);
+  __fsCall("truncate", p, () => __wjs_fs_truncate(p, n));
 }
 export function utimesSync(p, atime, mtime) {
   p = __fsPath(p, "utimes");
-  __fsCall("utimes", p, () => __wjs_fs_utimes(p, __fsTimeMs(atime, "utimes"), __fsTimeMs(mtime, "utimes")));
+  __fsCall("utimes", p, () => __wjs_fs_utimes(p, __fsUtimeMs(atime, "atime"), __fsUtimeMs(mtime, "mtime")));
+}
+export function lutimesSync(p, atime, mtime) {
+  p = __fsPath(p, "lutimes");
+  __fsCall("lutimes", p, () => __wjs_fs_lutimes(p, __fsUtimeMs(atime, "atime"), __fsUtimeMs(mtime, "mtime")));
 }
 export function chmodSync(p, mode) {
   p = __fsPath(p, "chmod");
@@ -2650,16 +2982,32 @@ export function chmodSync(p, mode) {
 }
 export function chownSync(p, uid, gid) {
   p = __fsPath(p, "chown");
-  __vIdNum(uid, "uid");
-  __vIdNum(gid, "gid");
+  // node validateInt32（fchown 套件）：非 number → ARG_TYPE /uid|gid/；
+  // 非整数（Infinity/NaN）→ OUT_OF_RANGE 'It must be an integer'；-1 = 不变更。
+  __vIntRange(uid, "uid", -1, 4294967295);
+  __vIntRange(gid, "gid", -1, 4294967295);
   __fsCall("chown", p, () => __wjs_fs_chown(p, uid, gid));
 }
 export function fchownSync(fd, uid, gid) {
   __vFd(fd);
-  __vIdNum(uid, "uid");
-  __vIdNum(gid, "gid");
+  __vIntRange(uid, "uid", -1, 4294967295);
+  __vIntRange(gid, "gid", -1, 4294967295);
   __fsCall("fchown", "", () => __wjs_fs_fchown(fd, uid, gid));
 }
+export function lchownSync(p, uid, gid) {
+  p = __fsPath(p, "lchown");
+  __vIntRange(uid, "uid", -1, 4294967295);
+  __vIntRange(gid, "gid", -1, 4294967295);
+  __fsCall("lchown", p, () => __wjs_fs_lchown(p, uid, gid));
+}
+// node：fs.lchmod 仅 macOS 存在（native 仅 macOS 注册，非 macOS 导出 undefined）；
+// mode 走 parseFileMode（lchmod 套件校验矩阵）。
+function lchmodSyncImpl(p, mode) {
+  p = __fsPath(p, "lchmod");
+  const n = __fsModeNum(mode);
+  __fsCall("lchmod", p, () => __wjs_fs_lchmod(p, n));
+}
+export const lchmodSync = typeof __wjs_fs_lchmod === "function" ? lchmodSyncImpl : undefined;
 
 export function linkSync(a, b) {
   a = __fsPath(a, "link");
@@ -2918,7 +3266,8 @@ function __fsValidateBufferArray(buffers) {
 }
 export function ftruncateSync(fd, len) {
   __vFd(fd);
-  __fsCall("ftruncate", "", () => __wjs_fs_ftruncate(fd, len ?? 0));
+  const n = __fsLenArg(len);
+  __fsCall("ftruncate", "", () => __wjs_fs_ftruncate(fd, n));
 }
 export function fsyncSync(fd) {
   __vFd(fd);
@@ -2941,7 +3290,7 @@ export function fchmodSync(fd, mode) {
 }
 export function futimesSync(fd, atime, mtime) {
   __vFd(fd);
-  __fsCall("futimes", "", () => __wjs_fs_futimes(fd, __fsTimeMs(atime, "futimes"), __fsTimeMs(mtime, "futimes")));
+  __fsCall("futimes", "", () => __wjs_fs_futimes(fd, __fsUtimeMs(atime, "atime"), __fsUtimeMs(mtime, "mtime")));
 }
 // ---- 9c：opendir / Dir（惰性游标，readdir 底座，记档非真流式）----
 // node lib/internal/fs/dir.js 同构（10f 对拍）：path 原型 getter 带 brand 门
@@ -3342,7 +3691,7 @@ export class FileHandle extends EventEmitter {
       for (const c of parts) { const u8 = encChunk(c); out.set(u8, off); off += u8.length; }
       bytes = out;
     } else {
-      bytes = __fsDataSync(data, "appendFile", opts);
+      bytes = __fsDataSync(data, "data", opts);
     }
     if (signal && signal.aborted) throw __fsAbortErr(signal.reason);
     const doAppend = () => {
@@ -3400,7 +3749,13 @@ export const promises = {
   truncate: __as(truncateSync),
   unlink: __as(unlinkSync),
   utimes: __as(utimesSync),
+  lutimes: __as(lutimesSync),
   writeFile: __as(writeFileSync),
+  chown: __as(chownSync),
+  lchown: __as(lchownSync),
+  fchown: __as(fchownSync),
+  futimes: __as(futimesSync),
+  ...(typeof lchmodSync === "function" ? { lchmod: __as(lchmodSync) } : {}),
 };
 // ---- 9c：回调全家（err-first；promise 底座经 queueMicrotask 派发）----
 function __nodeify(p, cb) {
@@ -3428,9 +3783,84 @@ const __cb1 = (syncFn, name, before) => function (...args) {
   }
   __nodeify(p, cb);
 };
+const __fdCb = (syncFn, name) => function (...args) {
+  let cb = args[args.length - 1];
+  if (typeof cb !== "function") {
+    // node 口径：值校验错误优先抛（/fd|uid|gid/），操作错误让位于
+    // callback 校验（lchown 套件：值错误 ARG_TYPE / 操作错误 + 无效 cb
+    // → ARG_TYPE /callback/；不得造孤儿 rejected promise → unhandled）。
+    try { syncFn(...args); } catch (e) {
+      if (e && typeof e.code === "string" &&
+          (e.code === "ERR_INVALID_ARG_TYPE" || e.code === "ERR_INVALID_ARG_VALUE" || e.code === "ERR_OUT_OF_RANGE")) throw e;
+    }
+    __vCbArg(cb);
+    return;
+  }
+  const rest = args.slice(0, -1);
+  let p;
+  try {
+    p = Promise.resolve(syncFn(...rest));
+  } catch (e) {
+    if (e && typeof e.code === "string" &&
+        (e.code === "ERR_INVALID_ARG_TYPE" || e.code === "ERR_INVALID_ARG_VALUE" || e.code === "ERR_OUT_OF_RANGE")) throw e;
+    p = Promise.reject(e);
+  }
+  __nodeify(p, cb);
+};
+
 const __id = (a) => a;
-export const readFile = __cb1(readFileSync, "readFile", __id);
-export const writeFile = __cb1(writeFileSync, "writeFile", __id);
+// readFile 回调面定制（非泛型 __cb1）：node 读在线程池异步执行，abort 可落
+// "读期间"；本仓读同步完成，等价窗口 = 同步读之后、交付之前——在 promise
+// then（microtask，先于 __nodeify 的交付）里复查 signal.aborted，成功转
+// AbortError（readfile 套件 "cancellation, during read" 点名；nextTick abort
+// 先于 microtask 交付，纯同步复查抓不到）。校验/已abort 同步抛路径不变。
+export const readFile = function (...args) {
+  let cb = args[args.length - 1];
+  __vCbArg(cb);
+  const rest = args.slice(0, -1);
+  const sig = (() => {
+    const opts = rest[1];
+    return opts && typeof opts === "object" && typeof opts.signal === "object" && opts.signal !== null && typeof opts.signal.addEventListener === "function" ? opts.signal : null;
+  })();
+  let p;
+  try {
+    p = Promise.resolve(readFileSync(...rest));
+  } catch (e) {
+    if (e && typeof e.code === "string" &&
+        (e.code === "ERR_INVALID_ARG_TYPE" || e.code === "ERR_INVALID_ARG_VALUE" || e.code === "ERR_OUT_OF_RANGE")) throw e;
+    p = Promise.reject(e);
+  }
+  if (sig && !sig.aborted) {
+    p = p.then((v) => (sig.aborted ? Promise.reject(__fsAbortErr(sig.reason)) : v));
+  }
+  __nodeify(p, cb);
+};
+// writeFile 回调面定制（镜像 readFile）：本仓写同步完成，abort 只能落在
+// "同步写之后、交付之前"——then（microtask，先于 __nodeify 交付）里复查
+// signal.aborted，成功转 AbortError（write-file 套件 cancellable 点名）。
+export const writeFile = function (...args) {
+  let cb = args[args.length - 1];
+  __vCbArg(cb);
+  const rest = args.slice(0, -1);
+  // node writeFile 形：(path, data, options, callback)——opts 在 rest[2]
+  //（readFile 是 (path, options, cb)，opts 在 rest[1]，两者勿混）。
+  const sig = (() => {
+    const opts = rest[2];
+    return opts && typeof opts === "object" && typeof opts.signal === "object" && opts.signal !== null && typeof opts.signal.addEventListener === "function" ? opts.signal : null;
+  })();
+  let p;
+  try {
+    p = Promise.resolve(writeFileSync(...rest));
+  } catch (e) {
+    if (e && typeof e.code === "string" &&
+        (e.code === "ERR_INVALID_ARG_TYPE" || e.code === "ERR_INVALID_ARG_VALUE" || e.code === "ERR_OUT_OF_RANGE")) throw e;
+    p = Promise.reject(e);
+  }
+  if (sig && !sig.aborted) {
+    p = p.then((v) => (sig.aborted ? Promise.reject(__fsAbortErr(sig.reason)) : v));
+  }
+  __nodeify(p, cb);
+};
 export const appendFile = __cb1(appendFileSync, "appendFile", __id);
 export const stat = __cb1(statSync, "stat", __id);
 export const statfs = __cb1(statfsSync, "statfs", __id);
@@ -3445,8 +3875,9 @@ export const copyFile = __cb1(copyFileSync, "copyFile", __id);
 export const realpath = __cb1(realpathSync, "realpath", __id);
 export const mkdtemp = __cb1(mkdtempSync, "mkdtemp", __id);
 export const access = __cb1(accessSync, "access", __id);
-export const truncate = __cb1(truncateSync, "truncate", __id);
-export const utimes = __cb1(utimesSync, "utimes", __id);
+export const truncate = __fdCb(truncateSync, "truncate");
+export const utimes = __fdCb(utimesSync, "utimes");
+export const lutimes = __fdCb(lutimesSync, "lutimes");
 export const chmod = __cb1(chmodSync, "chmod", __id);
 export const link = __cb1(linkSync, "link", __id);
 export const symlink = __cb1(symlinkSync, "symlink", __id);
@@ -3455,21 +3886,11 @@ export const opendir = __cb1(opendirSync, "opendir", __id);
 export const chown = __cb1(chownSync, "chown", __id);
 // f 系回调包装：node 口径 fd/mode 等实参校验先于 cb（fchmod(1,'123x') →
 // ARG_VALUE 而非 cb 错误），cb 缺省仍抛 callback 类型错。
-const __fdCb = (syncFn, name) => function (...args) {
-  let cb = args[args.length - 1];
-  const rest = typeof cb === "function" ? args.slice(0, -1) : args;
-  let p;
-  try {
-    p = Promise.resolve(syncFn(...rest));
-    if (typeof cb !== "function") __vCbArg(cb);
-  } catch (e) {
-    if (e && typeof e.code === "string" &&
-        (e.code === "ERR_INVALID_ARG_TYPE" || e.code === "ERR_INVALID_ARG_VALUE" || e.code === "ERR_OUT_OF_RANGE")) throw e;
-    p = Promise.reject(e);
-  }
-  __nodeify(p, cb);
-};
 export const fchown = __fdCb(fchownSync, "fchown");
+export const lchown = __fdCb(lchownSync, "lchown");
+export const lchmod = lchmodSync ? __fdCb(lchmodSync, "lchmod") : undefined;
+// node 内部门（lib/fs.js 导出；utimes/timestamp-parsing 套件直用）。
+export const _toUnixTimestamp = __toUnixTimestamp;
 export const fchmod = __fdCb(fchmodSync, "fchmod");
 export const fstat = __fdCb(fstatSync, "fstat");
 export const ftruncate = __fdCb(ftruncateSync, "ftruncate");
@@ -3692,6 +4113,8 @@ const __api = {
   readFile, writeFile, appendFile, stat, statfs, lstat, exists, mkdir, rmdir, rm, unlink,
   readdir, rename, copyFile, realpath, mkdtemp, access, truncate, utimes, chmod,
   link, symlink, readlink, open, close, read, write, readv, writev, chown, fchown, fchmod, fstat, ftruncate, fsync, fdatasync, futimes, opendir, cp,
+  lchown, lchownSync, _toUnixTimestamp, lutimes, lutimesSync,
+  ...(lchmod ? { lchmod, lchmodSync } : {}),
   mkdtempDisposable: mkdtempDisposableSync,
   // node 26 两条名都在（mkdtempDisposableSync 套件 `require('fs')` 点名）。
   mkdtempDisposableSync,

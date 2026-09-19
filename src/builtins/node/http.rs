@@ -33,6 +33,25 @@ function __serverOptions(args) {
 // withHttpServer 的包装只透传基类构造实参（connection 监听），request 监听在此接。
 // options 为对象时透传基类（timeout 三件套等 http 面选项在帧层解析）。
 function Server(...args) {
+  // `http.Server.call(this, cb)` 形（upgrade-server 套件 testServer 老式继承）：
+  // this 的原型链已指向 Server.prototype，但 net.Server 的派发状态
+  //（__ev 绑定钩子/句柄桩/连接表）只在其构造器里建。net 侧构造无法对既有
+  // this 重跑（类构造器），故在临时实例上完整构造后把自有状态搬运到 this，
+  // 派发钩子按 __ServerClass.prototype 重绑（Rust 侧按 listen 目标对象派发）。
+  if (new.target === undefined && this instanceof __HttpServerBase) {
+    const fresh = new __HttpServerBase(__serverOptions(args));
+    for (const k of Object.getOwnPropertyNames(fresh)) {
+      if (!Object.prototype.hasOwnProperty.call(this, k)) this[k] = fresh[k];
+    }
+    const __base = Object.getPrototypeOf(fresh);
+    if (typeof __base.__ev === "function") this.__ev = __base.__ev.bind(this);
+    try { (globalThis.__wjs_netXfer ??= new Map()).set(this, "net.Server"); } catch { /* guard */ }
+    __HttpServerBase.__initOn(this, args);
+    const first = args[0];
+    if (typeof first === "function") this.on("request", first);
+    else if (args.length > 1 && typeof args[1] === "function") this.on("request", args[1]);
+    return undefined;
+  }
   const opts = __serverOptions(args);
   const s = new __HttpServerBase(opts);
   const first = args[0];

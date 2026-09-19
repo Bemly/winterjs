@@ -122,6 +122,13 @@ function __toU8(data) {
   if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   throw new TypeError("data must be string or BufferSource");
 }
+// 头值字符门（node checkInvalidHeaderChar 口径）——违者 ERR_INVALID_CHAR
+//（header-validators 套件；真机 message 'Invalid character in header content'）。
+function __validateHeaderValue(v) {
+  if (!__validHeaderValue(String(v))) {
+    throw new codes.ERR_INVALID_CHAR("Invalid character in header content");
+  }
+}
 function __lowerHeaders(obj) {
   const out = Object.create(null);
   for (const [k, v] of Object.entries(obj ?? {})) {
@@ -144,6 +151,19 @@ function __mkParseError(msg) {
   const e = new Error(msg ?? "parse error");
   e.__httpParse = true;
   return e;
+}
+// Expect: 100-continue 判据（真机 26.8.2 对拍：'100-continue'/'100-Continue'/
+// 'foo, 100-continue'/'100-continue, foo' 命中；'100continue'（无连字符）与
+// '200-ok' 不命中 → 417 通道）。
+const __EXPECT_CONTINUE_RE = /(?:^|[^\w])100-continue(?![\w])/i;
+// 泵收尾把 trailer 落到消息上（rawTrailers 保存原拼写；trailers 小写键）。
+function __applyTrailers(msg, trailersRaw) {
+  msg.rawTrailers = [];
+  msg.trailers = {};
+  for (let i = 0; i < trailersRaw.length; i += 2) {
+    msg.rawTrailers.push(trailersRaw[i], trailersRaw[i + 1]);
+    msg.trailers[trailersRaw[i].toLowerCase()] = trailersRaw[i + 1];
+  }
 }
 const __TOKEN_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 // chunk 扩展字符集：RFC 7230 token + ';' + '='（真机 26.8.2 ASCII 全扫实测；
@@ -277,20 +297,26 @@ function __pumpChunked(fr, msg, bytes) {
       }
       fr.need = size;
     } else if (fr.need === -2) {
-      // 终结段：trailer 块逐行计数到空行（内容不收）。名+值累计（': ' 与
-      // CRLF 不计）≥ 16KiB 即 431（真机阈值：16383 过 / 16384 拒，跨行累计）；
-      // 无冒号行 400（真机 `justname` 行即拒）。
+      // 终结段：trailer 块逐行计数到空行。名+值累计（': ' 与 CRLF 不计）
+      // ≥ 16KiB 即 431（真机阈值：16383 过 / 16384 拒，跨行累计）；
+      // 无冒号行 400（真机 `justname` 行即拒）。10f G11 起内容收集
+      //（真机口径：req.trailers/res.trailers 在场；raw 保存原拼写）。
       let eol = -1;
       for (let i = 0; i + 1 < buf.length; i++) {
         if (buf[i] === 13 && buf[i + 1] === 10) { eol = i; break; }
       }
       if (eol === -1) { fr.buf = buf; return { done: false, rest: new Uint8Array(0) }; }
-      if (eol === 0) return { done: true, rest: buf.slice(2) };
+      if (eol === 0) {
+        const raw = fr.__trRaw ?? [];
+        return { done: true, rest: buf.slice(2), trailersRaw: raw.length > 0 ? raw : undefined };
+      }
       const lineText = __latin1(buf.slice(0, eol));
       const c = lineText.indexOf(":");
       if (c <= 0) return { error: 400 };
       fr.__tnv = (fr.__tnv === undefined ? 0 : fr.__tnv) + c + lineText.slice(c + 1).trim().length;
       if (fr.__tnv >= __MAX_TRAILER_NV) return { error: 431 };
+      if (fr.__trRaw === undefined) fr.__trRaw = [];
+      fr.__trRaw.push(lineText.slice(0, c).trim(), lineText.slice(c + 1).trim());
       buf = buf.slice(eol + 2);
       continue; // 回 -2 分支续行（严禁落穿到数据泵：need 仍是 -2）
     }
@@ -305,12 +331,16 @@ export class IncomingMessage extends Readable {
   constructor() {
     super();
     this.httpVersion = "1.1";
+    this.httpVersionMajor = 1;
+    this.httpVersionMinor = 1;
     this.method = null;
     this.url = null;
     this.statusCode = null;
     this.statusMessage = null;
     this.headers = {};
     this.rawHeaders = [];
+    this.trailers = {};
+    this.rawTrailers = [];
     this.complete = false;
   }
   _read() {}
@@ -347,27 +377,41 @@ export class ServerResponse extends Writable {
     this.__headers = Object.create(null);
     this.headersSent = false;
     this.__headSent = false;
-    // 真机口径（10f G3，node 26.8.2 实测）：CL 快路径仅当 end() 是首个头触发点
-    // （此前无 writeHead/write/flushHeaders）；writeHead 在前 → chunked；
-    // HTTP/1.0 请求 → 无 CL/TE，体裸写 + close（close-delimited）。
-    // __req1_1 = useChunkedEncodingByDefault（随请求版本），standalone 缺省 1.1。
+    // node _storeHeader 决策表旗标（真机 26.8.2 + lib/_http_outgoing.js 对拍）：
+    // __uced = useChunkedEncodingByDefault（1.1 恒 true；1.0 = /chunked/i.test
+    // 请求 TE 头）；__last = 响应后关连接（node _last）；__keepAlive = llhttp
+    // shouldKeepAlive；__contentLength 由 end() 快路径预置（node _contentLength）。
     this.__headStored = false;
-    this.__req1_1 = true;
+    this.__uced = true;
+    this.__last = false;
+    this.__keepAlive = false;
     this.__chunked = false;
     this.__rawCL = false;
+    this.__contentLength = undefined;
+    this.__kaTimeout = undefined;
+    this.__maxReq = 0;
+    this.__maxReqReached = false;
+    this.__defaultKA = true;
     this.__buf1 = null;
     this.__holdTimer = null;
-    this.__keepAlive = false;
     this.__headOnly = false;
     this.__noBody = false;
     this.__userEnded = false;
     this.__onDone = null;
+    // 独立构造：从 req 形对象提取版本/方法面（node ServerResponse ctor 口径）。
+    if (this.__sock === null && sock && typeof sock === "object") {
+      if (sock.method === "HEAD") this.__headOnly = true;
+      const hv = String(sock.httpVersion ?? "1.1");
+      if (hv === "1.0") {
+        this.__uced = /(?:^|\W)chunked/i.test(sock.headers?.te ?? "");
+        this.__keepAlive = false;
+      }
+    }
   }
   setHeader(name, value) {
     if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
     const lk = String(name).toLowerCase();
     this.__headers[lk] = String(value);
-    if (lk === "connection") this.__autoConn = false;
     return this;
   }
   getHeader(name) { return this.__headers[String(name).toLowerCase()]; }
@@ -375,6 +419,12 @@ export class ServerResponse extends Writable {
   getHeaderNames() { return Object.keys(this.__headers); }
   hasHeader(name) { return this.__headers[String(name).toLowerCase()] !== undefined; }
   writeHead(status, ...rest) {
+    // 状态码门（node validateStatusCode 口径，response-statuscode 套件 13 形态：
+    // undefined/Infinity/NaN/{}/99/1000/'1000'/null/true/[]/'this is not valid'/
+    // '404 ...' 全拒；message 'Invalid status code: <String(值)>'，RangeError）。
+    if (typeof status !== "number" || !(status >= 100 && status <= 999)) {
+      throw new codes.ERR_HTTP_INVALID_STATUS_CODE(`Invalid status code: ${String(status)}`);
+    }
     const obj = rest.find((r) => r && typeof r === "object");
     const msg = rest.find((r) => typeof r === "string");
     this.statusCode = status;
@@ -382,6 +432,31 @@ export class ServerResponse extends Writable {
     Object.assign(this.__headers, __lowerHeaders(obj));
     // 头已存：随后的 end(data) 不再走 CL 快路径（真机 chunked 口径）。
     this.__headStored = true;
+    return this;
+  }
+  // node writeContinue：headersSent 前一次性发 100 Continue 中间响应。
+  writeContinue() {
+    if (this.__continueSent || this.headersSent || this.__headSent) return;
+    this.__continueSent = true;
+    if (this.__sock !== null) {
+      try { this.__sock.write(new TextEncoder().encode("HTTP/1.1 100 Continue\r\n\r\n")); } catch { /* gone */ }
+    }
+  }
+  // node setHeaders：只收 Headers 实例（entries 方法），否则 ERR_INVALID_ARG_TYPE。
+  setHeaders(headers) {
+    if (headers === null || typeof headers !== "object" || typeof headers.entries !== "function") {
+      throw new codes.ERR_INVALID_ARG_TYPE("headers", ["Headers instance"], headers);
+    }
+    for (const [k, v] of headers.entries()) this.setHeader(k, v);
+    return this;
+  }
+  // node addTrailers：分块响应终结块尾随头（原拼写输出；真机 rawTrailers 口径）。
+  addTrailers(trailers) {
+    const lowered = __lowerHeaders(trailers ?? {});
+    for (const k of Object.keys(lowered)) {
+      __validateHeaderValue(lowered[k]);
+      this.__trailer = (this.__trailer ?? "") + `${k}: ${lowered[k]}\r\n`;
+    }
     return this;
   }
   write(chunk, encoding, cb) {
@@ -407,7 +482,9 @@ export class ServerResponse extends Writable {
   // 立即发头（Node flushHeaders：body 可经 chunked 帧，end 后补终结块）。
   flushHeaders() {
     if (this.__headSent || this.__noBody || this.__headOnly) return;
-    if (this.__headers["content-length"] === undefined && this.__req1_1) this.__chunked = true;
+    if (this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined && this.__uced) {
+      this.__chunked = true;
+    }
     this.__sendHead();
     if (this.__buf1 !== null) {
       const b = this.__buf1;
@@ -430,29 +507,91 @@ export class ServerResponse extends Writable {
     if (this.__headSent) return new Uint8Array(0);
     this.__headSent = true;
     this.headersSent = true;
-    if (this.statusCode === 204 || this.statusCode === 304) this.__noBody = true;
+    // 用户头预处理（node matchHeader 口径）：
+    // connection close → _last；connection 其他 → shouldKeepAlive=true；
+    // TE chunked → chunked 帧；CL → raw；keep-alive 头在场 → 抑制自动 Keep-Alive。
+    const __st = { conn: false, cl: false, te: false, trailer: false };
+    for (const k of Object.keys(this.__headers)) {
+      const lk = k.toLowerCase();
+      const v = String(this.__headers[k]);
+      if (lk === "connection") {
+        __st.conn = true;
+        if (/(?:^|\W)close(?:\W|$)/i.test(v)) this.__last = true;
+        else this.__keepAlive = true;
+      } else if (lk === "transfer-encoding") {
+        __st.te = true;
+        if (/(?:^|\W)chunked/i.test(v)) this.__chunked = true;
+      } else if (lk === "content-length") {
+        __st.cl = true;
+        this.__rawCL = true;
+      } else if (lk === "trailer") {
+        __st.trailer = true;
+      } else if (lk === "keep-alive") {
+        this.__defaultKA = false;
+      }
+    }
+    // 204/304 + chunked → 抑制零块 + 强制关连接（node _storeHeader 开头口径，
+    // chunked-304 套件：响应带 Connection: close 且无 0\r\n 零块）。
+    if (this.statusCode === 204 || this.statusCode === 304) {
+      if (this.__chunked) { this.__chunked = false; this.__keepAlive = false; }
+      this.__noBody = true;
+    }
     const reason = this.statusMessage ?? STATUS_CODES[this.statusCode] ?? "";
     const head = [`HTTP/1.1 ${this.statusCode} ${reason}`.trimEnd()];
-    if (this.__headers["content-length"] !== undefined) {
-      this.__rawCL = true;
-    } else if (!this.__noBody && !this.__headOnly) {
-      if (this.__chunked) this.__headers["transfer-encoding"] = "chunked";
+    // Connection 自动决策（node keep-alive logic 口径）：
+    // shouldSendKeepAlive = shouldKeepAlive && (用户CL || UCED)；
+    // maxRequestsPerSocket 达标 → close；否则 keep-alive（+Keep-Alive: timeout）；
+    // 否则 close + _last。
+    if (!__st.conn) {
+      const shouldSendKeepAlive = this.__keepAlive && (__st.cl || this.__uced);
+      if (shouldSendKeepAlive && this.__maxReqReached) {
+        this.__headers["connection"] = "close";
+        this.__autoConn = true;
+        this.__last = true;
+      } else if (shouldSendKeepAlive) {
+        this.__headers["connection"] = "keep-alive";
+        this.__autoConn = true;
+        if ((this.__kaTimeout ?? 0) > 0 && this.__defaultKA) {
+          const t = Math.floor(this.__kaTimeout / 1000);
+          const max = this.__maxReq > 0 ? `, max=${this.__maxReq}` : "";
+          this.__headers["keep-alive"] = `timeout=${t}${max}`;
+          this.__autoKA = true;
+        }
+      } else {
+        this.__headers["connection"] = "close";
+        this.__autoConn = true;
+        this.__last = true;
+      }
     }
-    if (this.__headers["connection"] === undefined) {
-      this.__headers["connection"] = this.__keepAlive ? "keep-alive" : "close";
-      this.__autoConn = true;
-    }
-    // 自动 Date 头（node 口径：响应缺 date 即补 UTC 串；automatic-headers 套件）。
+    // 自动 Date 头（node 口径：响应缺 date 即补 UTC 串）。
     if (this.__headers["date"] === undefined) {
       this.__headers["date"] = new Date().toUTCString();
       this.__autoDate = true;
     }
+    // 帧决策（node：!contLen && !te 分支）：无用户 CL/TE 时按
+    // noBody/UCED/__contentLength（end() 快路径预置）决定 auto CL 或 chunked；
+    // 1.0（UCED false）→ _last（close-delimited）。
+    if (!__st.cl && !__st.te) {
+      if (this.__noBody || this.__headOnly) {
+        this.__chunked = false;
+      } else if (!this.__uced) {
+        this.__last = true;
+      } else if (!__st.trailer && this.__contentLength !== undefined) {
+        this.__headers["content-length"] = String(this.__contentLength);
+        this.__rawCL = true;
+      } else {
+        this.__headers["transfer-encoding"] = "chunked";
+        this.__chunked = true;
+      }
+    }
     // 自设头按用户拼写输出（node verbatim；本仓内部统一小写存取）；自动头的
-    // 真机输出是规范大写（Transfer-Encoding/Content-Length/自动 Connection/Date）。
+    // 真机输出是规范大写（Transfer-Encoding/Content-Length/自动 Connection/
+    // Date/Keep-Alive）。
     const canon = { "transfer-encoding": "Transfer-Encoding", "content-length": "Content-Length" };
-    const __autoCase = (k) => (k === "connection" && this.__autoConn) || (k === "date" && this.__autoDate);
+    const __autoCase = (k) => (k === "connection" && this.__autoConn) || (k === "date" && this.__autoDate) ||
+      (k === "keep-alive" && this.__autoKA);
     for (const [k, v] of Object.entries(this.__headers)) {
-      const name = __autoCase(k) ? k.charAt(0).toUpperCase() + k.slice(1) : (canon[k] ?? k);
+      const name = __autoCase(k) ? (k === "keep-alive" ? "Keep-Alive" : k.charAt(0).toUpperCase() + k.slice(1)) : (canon[k] ?? k);
       head.push(`${name}: ${v}`);
     }
     return new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n");
@@ -461,6 +600,10 @@ export class ServerResponse extends Writable {
     // node 口径：header 独立成 write；首块合并只发生在 _final/flushFinal 快捷路。
     const head = this.__headBytes();
     if (head.length > 0) this.__sock.write(head);
+  }
+  // chunked 终结块：`0\r\n` + trailer 行 + 空行（addTrailers 的 trailer 跟尾）。
+  __chunkTerminator() {
+    return "0\r\n" + (this.__trailer ?? "") + "\r\n";
   }
   __frame(u8) {
     if (this.__noBody || this.__headOnly) return;
@@ -482,7 +625,7 @@ export class ServerResponse extends Writable {
       this.__holdTimer = setTimeout(() => {
         this.__holdTimer = null;
         if (this.__buf1 !== null && !this.__headSent && !this.destroyed) {
-          if (this.__req1_1) this.__chunked = true;
+          if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined) this.__chunked = true;
           this.__sendHead();
           const b = this.__buf1;
           this.__buf1 = null;
@@ -493,7 +636,7 @@ export class ServerResponse extends Writable {
       return;
     }
     if (!this.__headSent) {
-      if (this.__req1_1) this.__chunked = true;
+      if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined) this.__chunked = true;
       this.__sendHead();
       if (this.__buf1 !== null) {
         const b = this.__buf1;
@@ -514,16 +657,15 @@ export class ServerResponse extends Writable {
       return;
     }
     if (!this.__headSent) {
-      // 快捷：end() 为首个头触发点（无 writeHead/write 前置）且请求 1.1 时，
-      // Content-Length 一次发出（真机口径）；write/writeHead 在前 → chunked；
-      // 1.0 → 无 CL/TE 裸体（close-delimited，真机实测）。
+      // CL 快捷：end() 为首个头触发点（无 writeHead/write 前置）且 UCED 时，
+      // __contentLength 预置（node _contentLength 口径；end() 裸调 = 0）；
+      // write/writeHead 在前 → chunked；1.0 无 TE → 裸体（_last close-delimited）。
       const total = this.__buf1 !== null ? this.__buf1.length : 0;
-      if (!this.__noBody && !this.__headOnly && this.__headers["content-length"] === undefined) {
-        if (this.__req1_1 && !this.__headStored && (!this.__sawWrite || this.__endHadData)) {
-          this.__headers["content-length"] = String(total);
-        } else if (this.__req1_1) {
-          this.__chunked = true;
-          this.__headers["transfer-encoding"] = "chunked";
+      if (!this.__noBody && !this.__headOnly &&
+          this.__headers["content-length"] === undefined &&
+          this.__headers["transfer-encoding"] === undefined) {
+        if (this.__uced && !this.__headStored && (!this.__sawWrite || this.__endHadData)) {
+          this.__contentLength = this.__endHadData ? total : 0;
         }
       }
       const head = this.__headBytes();
@@ -536,7 +678,7 @@ export class ServerResponse extends Writable {
             // 帧头会被对端判坏 chunked 体）。
             if (head.length > 0) this.__sock.write(head);
             this.__frame(b);
-            this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));
+            this.__sock.write(new TextEncoder().encode(this.__chunkTerminator()));
           } else if (head.length === 0) {
             this.__frame(b);
           } else if (!this.__noBody && !this.__headOnly && b.length > 0) {
@@ -550,16 +692,17 @@ export class ServerResponse extends Writable {
           this.__sock.write(head);
           // end() 无数据 + chunked：终结块紧随（真机 writeHead+end() 口径）。
           if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
-            this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));
+            this.__sock.write(new TextEncoder().encode(this.__chunkTerminator()));
           }
         }
       }
     } else if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
-      this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));
+      this.__sock.write(new TextEncoder().encode(this.__chunkTerminator()));
     }
-    const cont = (this.__keepAlive && this.__onDone !== null) ? this.__onDone : null;
+    const cont = this.__onDone;
     this.__onDone = null;
-    if (!this.__keepAlive) {
+    if (this.__last) {
+      // node _last 口径：响应后关连接（close-delimited/显式 close/1.0 裸体）。
       try { this.__sock.end(); } catch { /* closed meanwhile */ }
     }
     cb();
@@ -659,39 +802,39 @@ function __writeAfterEnd(msg, encoding, cb) {
 // 300000、headersTimeout 默认 min(60000, requestTimeout)、keepAliveTimeout 5000、
 // keepAliveTimeoutBuffer 1000；headersTimeout > requestTimeout 即 ERR_OUT_OF_RANGE。
 export function withHttpServer(Base) {
-  class __HttpServer extends Base {
-    constructor(...args) {
-      super(...args);
+  // 初始化逻辑独立成函数：`new Server()` 走构造器，`http.Server.call(this)`
+  //（upgrade-server 套件 testServer 老式继承）直接在 this 上跑同一段。
+  function __initServer(self, args) {
       const o = (args[0] && typeof args[0] === "object" && !Array.isArray(args[0])) ? args[0] : {};
-      this.timeout = 0;
-      this.requestTimeout = 300_000;
-      this.headersTimeout = 60_000;
-      this.keepAliveTimeout = 5_000;
-      this.keepAliveTimeoutBuffer = 1_000;
-      this.maxRequestsPerSocket = 0;
+      self.timeout = 0;
+      self.requestTimeout = 300_000;
+      self.headersTimeout = 60_000;
+      self.keepAliveTimeout = 5_000;
+      self.keepAliveTimeoutBuffer = 1_000;
+      self.maxRequestsPerSocket = 0;
       // 每服务器宽松解析旗（insecure-parser-per-stream 套件）。
-      this.insecureHTTPParser = o.insecureHTTPParser ?? false;
+      self.insecureHTTPParser = o.insecureHTTPParser ?? false;
       const rt = o.requestTimeout !== undefined ? __validateInteger(o.requestTimeout, "requestTimeout") : undefined;
-      if (rt !== undefined) this.requestTimeout = rt;
+      if (rt !== undefined) self.requestTimeout = rt;
       const ht = o.headersTimeout !== undefined ? __validateInteger(o.headersTimeout, "headersTimeout") : undefined;
-      this.headersTimeout = ht !== undefined ? ht : Math.min(60_000, this.requestTimeout);
-      if (this.requestTimeout > 0 && this.headersTimeout > 0 && this.headersTimeout > this.requestTimeout) {
+      self.headersTimeout = ht !== undefined ? ht : Math.min(60_000, self.requestTimeout);
+      if (self.requestTimeout > 0 && self.headersTimeout > 0 && self.headersTimeout > self.requestTimeout) {
         throw new codes.ERR_OUT_OF_RANGE("headersTimeout", "<= requestTimeout", o.headersTimeout);
       }
       const kt = o.keepAliveTimeout !== undefined ? __validateInteger(o.keepAliveTimeout, "keepAliveTimeout") : undefined;
-      if (kt !== undefined) this.keepAliveTimeout = kt;
+      if (kt !== undefined) self.keepAliveTimeout = kt;
       const kb = o.keepAliveTimeoutBuffer !== undefined ? __validateInteger(o.keepAliveTimeoutBuffer, "keepAliveTimeoutBuffer") : undefined;
-      if (kb !== undefined) this.keepAliveTimeoutBuffer = kb;
-      if (o.maxRequestsPerSocket !== undefined) this.maxRequestsPerSocket = o.maxRequestsPerSocket;
-      this.__closing = false;
-      this.__sockets = new Set();
-      this.on("connection", (sock) => {
-        this.__sockets.add(sock);
+      if (kb !== undefined) self.keepAliveTimeoutBuffer = kb;
+      if (o.maxRequestsPerSocket !== undefined) self.maxRequestsPerSocket = o.maxRequestsPerSocket;
+      self.__closing = false;
+      self.__sockets = new Set();
+      self.on("connection", (sock) => {
+        self.__sockets.add(sock);
         const st = { buf: new Uint8Array(0), req: null, framing: null, res: null, __hdT: null, __rqT: null, __kaT: null };
         sock.__httpState = st;
         sock.on("close", () => {
-          this.__clearReqTimers(st);
-          this.__sockets.delete(sock);
+          self.__clearReqTimers(st);
+          self.__sockets.delete(sock);
           // 连接断时未完的req/res一起收尾：req destroy触发pipeline的
           // PREMATURE_CLOSE（客户端中断上传用例），res destroy防写半开。
           if (st.req !== null && !st.req.complete && !st.req.destroyed) {
@@ -703,17 +846,17 @@ export function withHttpServer(Base) {
         });
         // server.timeout：per-socket 空闲计时（10f；单发 timer，data 到达即重臂，
         // 见 data 处理器）。到期 server 发 'timeout'(socket)，不杀连接（net 口径）。
-        if (this.timeout > 0) sock.setTimeout(this.timeout);
+        if (self.timeout > 0) sock.setTimeout(self.timeout);
         sock.on("timeout", () => {
-          if (!sock.destroyed) this.emit("timeout", sock);
+          if (!sock.destroyed) self.emit("timeout", sock);
         });
         sock.on("data", (chunk) => {
-          if (this.__closing || sock.__upgraded) return;
-          if (this.timeout > 0) sock.setTimeout(this.timeout);
+          if (self.__closing || sock.__upgraded) return;
+          if (self.timeout > 0) sock.setTimeout(self.timeout);
           try {
-            this.__feed(sock, st, chunk);
+            self.__feed(sock, st, chunk);
           } catch (e) {
-            this.__feedError(sock, e);
+            self.__feedError(sock, e);
           }
         });
         // node socketOnEnd 口径：客户端 FIN——非 half-open 直接销毁（res 'close'
@@ -721,7 +864,7 @@ export function withHttpServer(Base) {
         // 后续响应仍须可写），被截断的请求体提前夭折（'aborted' 语义）。
         sock.on("end", () => {
           sock.__finReceived = true;
-          if (!this.httpAllowHalfOpen) {
+          if (!self.httpAllowHalfOpen) {
             try { sock.destroy(); } catch { /* gone */ }
           } else {
             if (st.req !== null && !st.req.complete && !st.req.destroyed) {
@@ -735,8 +878,13 @@ export function withHttpServer(Base) {
           }
         });
         // 连接即开 headers 计时（headersTimeout 内须收到完整头，否则 408）。
-        this.__armIdleTimers(st, sock);
+        self.__armIdleTimers(st, sock);
       });
+  }
+  class __HttpServer extends Base {
+    constructor(...args) {
+      super(...args);
+      __initServer(this, args);
     }
     // 400 Bad Request（Node clientError 默认响应）+ 销毁。
     __badRequest(sock) {
@@ -824,6 +972,9 @@ export function withHttpServer(Base) {
         if (st.req === null) {
           const headEnd = __findHeadEnd(st.buf);
           if (headEnd === -1) {
+            // 头段超出 maxHeaderSize：431 Request Header Fields Too Large
+            //（llhttp HPE_HEADER_OVERFLOW；header-overflow 套件精确字节）。
+            if (st.buf.length > maxHeaderSize) { this.__headerFieldsTooLarge(sock); return; }
             // 头未齐也可先校验请求行（llhttp 增量语义；管线残渣 "hello world"
             // 在 URL 段首字节即 400，等不到行终结——blank-header 套件）。
             // llhttp 口径：请求行前的 CRLF 空行容忍（管线残段；insecure-parser
@@ -844,10 +995,28 @@ export function withHttpServer(Base) {
           req.method = first[0];
           req.url = first[1];
           req.httpVersion = first[2].replace("HTTP/", "");
+          {
+            const __vv = req.httpVersion.split(".");
+            req.httpVersionMajor = Number(__vv[0] ?? 1) || 0;
+            req.httpVersionMinor = Number(__vv[1] ?? 1) || 0;
+          }
           req.headers = headers;
           req.rawHeaders = rawHeaders;
           req.socket = sock;
           req.connection = sock;
+          // Node 口径：CONNECT 方法请求不进 request 管线——派发 'connect'
+          //（req, socket, head；无监听则销毁连接），socket 停止 HTTP 解析。
+          if (req.method === "CONNECT") {
+            sock.__upgraded = true;
+            const __leftover = st.buf.slice(headEnd + 4);
+            st.buf = new Uint8Array(0);
+            if (this.listenerCount("connect") > 0) {
+              this.emit("connect", req, sock, globalThis.Buffer.from(__leftover));
+            } else {
+              sock.destroy();
+            }
+            return;
+          }
           // Node 口径：带 Upgrade 头的请求不进 request 管线——派发 'upgrade'
           //（req, 原始 socket；vite 的 ws 库经它完成 101 握手与帧收发），无监听
           // 则销毁连接。升级后本连接停止 HTTP 解析（__upgraded 旗）；头后残留
@@ -869,13 +1038,42 @@ export function withHttpServer(Base) {
           const conn = (headers.connection || "").toLowerCase();
           const keepAlive = req.httpVersion === "1.1" ? conn !== "close" : conn === "keep-alive";
           const res = new ServerResponse(sock);
-          // useChunkedEncodingByDefault 随请求版本（1.0 → 无 CL/TE 裸体口径）。
-          res.__req1_1 = req.httpVersion === "1.1";
+          // node ServerResponse ctor 口径：UCED 1.1 恒 true；1.0 = 请求 TE 头
+          // 含 chunked（真机 1.0-keep-alive 套件 TE: chunked 形）。
+          res.__uced = req.httpVersion === "1.1" ? true : /(?:^|\W)chunked/i.test(headers.te ?? "");
           res.req = req;
           req.res = res;
           res.__keepAlive = keepAlive;
           res.__headOnly = req.method === "HEAD";
-          st.req = req;
+          // 响应头决策所需服务端上下文（Keep-Alive: timeout / maxRequestsPerSocket）。
+          res.__kaTimeout = this.keepAliveTimeout;
+          res.__maxReq = this.maxRequestsPerSocket;
+          st.reqCount = (st.reqCount ?? 0) + 1;
+          if (this.maxRequestsPerSocket > 0 && st.reqCount >= this.maxRequestsPerSocket) {
+            // node 口径：达额请求的响应带 Connection: close（响应完关连接）。
+            res.__maxReqReached = true;
+            res.__keepAlive = false;
+          }
+          // Expect 头三路（node parserOnIncoming 口径，真机 26.8.2 对拍）：
+          // 100-continue → checkContinue 监听在场发它、否则默认 writeContinue+request；
+          // 其他期望值 → checkExpectation 监听在场发它、否则默认 417 应急停
+          //（响应后原请求体进丢弃泵，st.req 不接线）。
+          let __wired = true;
+          let __ev = "request";
+          const __expect = headers.expect;
+          if (__expect !== undefined) {
+            if (__EXPECT_CONTINUE_RE.test(__expect)) {
+              if (this.listenerCount("checkContinue") > 0) __ev = "checkContinue";
+              else res.writeContinue();
+            } else if (this.listenerCount("checkExpectation") > 0) {
+              __ev = "checkExpectation";
+            } else {
+              __wired = false;
+              __ev = null;
+              res.statusCode = 417;
+            }
+          }
+          st.req = __wired ? req : null;
           st.framing = framing;
           st.res = res;
           // 头已齐、体在途：消息期 requestTimeout 计时。
@@ -906,14 +1104,19 @@ export function withHttpServer(Base) {
           // 服务（pipeline-assertionerror-finish 套件 mustCall(10) 点名；
           // 原自创 503 路径会使后续响应写进已 end 的 socket）。
           st.buf = st.buf.slice(headEnd + 4);
-          // §4.35：先 emit("request")（监听器登记 data/end），再喂体。
-          this.emit("request", req, res);
+          if (__wired) {
+            // §4.35：先 emit("request")（监听器登记 data/end），再喂体。
+            this.emit(__ev, req, res);
+          } else {
+            // 417 默认路径：响应立即收尾；后续体字节走丢弃泵（st.req 为 null）。
+            res.end();
+          }
           continue;
         }
-        // 体泵：CL / chunked 增量；none 直接完结。
+        // 体泵：CL / chunked 增量；none 直接完结（st.req 为 null = 417 丢弃泵）。
         const fr = st.framing;
         if (fr.type === "none") {
-          st.req.__complete();
+          if (st.req !== null) st.req.__complete();
           st.req = null;
           st.framing = null;
           this.__armIdleTimers(st, sock);
@@ -931,7 +1134,8 @@ export function withHttpServer(Base) {
         }
         st.buf = r.rest;
         if (!r.done) return;
-        st.req.__complete();
+        if (r.trailersRaw !== undefined && st.req !== null) __applyTrailers(st.req, r.trailersRaw);
+        if (st.req !== null) st.req.__complete();
         st.req = null;
         st.framing = null;
         this.__armIdleTimers(st, sock);
@@ -954,13 +1158,18 @@ export function withHttpServer(Base) {
       return this;
     }
   }
-  // Node 口径：Server 裸调用返回新实例（lib/net.js 原文）。
+  // Node 口径：Server 裸调用返回新实例（lib/_http_server.js 原文）；
+  // `Server.call(this)` 形（upgrade-server 套件 testServer 老式继承）直接在
+  // this 上跑初始化——Reflect.construct 会造新对象弃 this，老式子类全挂。
   function HttpServer(...args) {
     if (!(this instanceof __HttpServer)) return new __HttpServer(...args);
-    return Reflect.construct(__HttpServer, args, new.target ?? __HttpServer);
+    if (new.target !== undefined) return Reflect.construct(__HttpServer, args, new.target);
+    __initServer(this, args);
   }
   Object.setPrototypeOf(HttpServer, __HttpServer);
   HttpServer.prototype = __HttpServer.prototype;
+  // http.rs Server 壳的 .call 形入口（this 已是派生实例时在其上初始化）。
+  HttpServer.__initOn = (obj, args) => __initServer(obj, args);
   return HttpServer;
 }
 
@@ -1160,6 +1369,9 @@ export function withClientRequest(openSocket, flavor) {
       }
       this.__sock = sock;
       this.socket = sock;
+      // node setRequestProps 口径：socket._httpMessage 指回当前请求（connect
+      // 套件在 'socket' 事件断言全等）。
+      sock._httpMessage = this;
       this.reusedSocket = reused === true;
       // node onSocket 口径：'socket' 事件异步（nextTick）发出——get()/request()
       // 返回后同步注册的监听器必须能收到（agent-timeout-option 套件形态）。
@@ -1315,12 +1527,26 @@ export function withClientRequest(openSocket, flavor) {
         if (typeof f === "function") f();
         return this;
       }
+      if (this.destroyed) {
+        // 已销毁（abort 后 end）：node 口径不抛（abort-before-end 套件
+        // req.on('error') mustNotCall）；回调按空转处理。
+        const f = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : cb);
+        if (typeof f === "function") f();
+        return this;
+      }
       // CL 快路径判据：end 是首个头触发点（此前无 write）。
       this.__endFast = !this.__sawWrite;
       this.__userEnded = true;
       return super.end(chunk, encoding, cb);
     }
-    abort() { this.destroy(); }
+    // node 口径（弃用面仍测）：abort = destroy + 'abort' 事件 + aborted 旗。
+    abort() {
+      if (this.destroyed) return;
+      this.__aborted = true;
+      this.destroy();
+      this.emit("abort");
+    }
+    get aborted() { return this.__aborted === true; }
     __sendHead() {
       if (this.__headSent) return;
       this.__headSent = true;
@@ -1506,11 +1732,93 @@ export function withClientRequest(openSocket, flavor) {
             this.destroy(__hpe("HPE_INVALID_TRANSFER_ENCODING", "Transfer-Encoding can't be present with Content-Length"));
             return;
           }
+          const __statusCode = Number(first[1]);
+          // CONNECT 响应：隧道建立——'connect' 事件（res, socket, head 原始态），
+          // 不发 'response'，socket 停止 HTTP 解析、不回池（node _http_client 口径）。
+          if (this.method === "CONNECT") {
+            const res = new IncomingMessage();
+            res.statusCode = __statusCode;
+            res.statusMessage = first.length >= 3 ? first.slice(2).join(" ") : "";
+            res.httpVersion = first[0].slice(5);
+            {
+              const __vv = res.httpVersion.split(".");
+              res.httpVersionMajor = Number(__vv[0] ?? 1) || 0;
+              res.httpVersionMinor = Number(__vv[1] ?? 1) || 0;
+            }
+            res.headers = headers;
+            res.rawHeaders = rawHeaders;
+            res.socket = this.__sock;
+            res.connection = this.__sock;
+            res.req = this;
+            const __leftover = this.__resBuf.slice(headEnd + 4);
+            this.__resBuf = new Uint8Array(0);
+            this.__respDone = true;
+            this.__upgraded = true;
+            this.__res = res;
+            this.emit("connect", res, this.__sock, globalThis.Buffer.from(__leftover));
+            return;
+          }
+          // 1xx 信息响应（node parserOnIncomingClient 口径，真机 26.8.2 对拍）：
+          // 100 → 'continue' 事件（无实参）；1xx（含 100）→ 'information'（res 形态）；
+          // 都不发 'response'，继续等真响应。101 → 'upgrade'（有监听）或销毁。
+          if (__statusCode >= 100 && __statusCode < 200) {
+            const __leftover = this.__resBuf.slice(headEnd + 4);
+            if (__statusCode === 101) {
+              if (this.listenerCount("upgrade") > 0) {
+                const res = new IncomingMessage();
+                res.statusCode = __statusCode;
+                res.statusMessage = first.length >= 3 ? first.slice(2).join(" ") : "";
+                res.httpVersion = first[0].slice(5);
+                {
+                  const __vv = res.httpVersion.split(".");
+                  res.httpVersionMajor = Number(__vv[0] ?? 1) || 0;
+                  res.httpVersionMinor = Number(__vv[1] ?? 1) || 0;
+                }
+                res.headers = headers;
+                res.rawHeaders = rawHeaders;
+                res.socket = this.__sock;
+                res.connection = this.__sock;
+                res.req = this;
+                res.__complete();
+                this.__resBuf = new Uint8Array(0);
+                this.__respDone = true;
+                this.__upgraded = true;
+                this.__res = res;
+                this.emit("upgrade", res, this.__sock, globalThis.Buffer.from(__leftover));
+              } else {
+                this.destroy();
+              }
+              return;
+            }
+            if (__statusCode === 100) this.emit("continue");
+            const info = new IncomingMessage();
+            info.statusCode = __statusCode;
+            info.statusMessage = first.length >= 3 ? first.slice(2).join(" ") : "";
+            info.httpVersion = first[0].slice(5);
+            {
+              const __vv = info.httpVersion.split(".");
+              info.httpVersionMajor = Number(__vv[0] ?? 1) || 0;
+              info.httpVersionMinor = Number(__vv[1] ?? 1) || 0;
+            }
+            info.headers = headers;
+            info.rawHeaders = rawHeaders;
+            info.socket = this.__sock;
+            info.connection = this.__sock;
+            info.req = this;
+            this.__resBuf = new Uint8Array(0);
+            this.emit("information", info);
+            continue;
+          }
           const res = new IncomingMessage();
-          res.statusCode = Number(first[1]);
+          res.statusCode = __statusCode;
           // 状态行无短语合法（"HTTP/1.1 200\r\n"）：短语空串（status-message 套件）。
           res.statusMessage = first.length >= 3 ? first.slice(2).join(" ") : "";
           res.httpVersion = first[0].slice(5);
+          {
+            const __vv = res.httpVersion.split(".");
+            res.httpVersionMajor = Number(__vv[0] ?? 1) || 0;
+            res.httpVersionMinor = Number(__vv[1] ?? 1) || 0;
+          }
           res.headers = headers;
           res.rawHeaders = rawHeaders;
           // node parserOnIncomingClient 口径：req.shouldKeepAlive 由响应决定
@@ -1525,6 +1833,9 @@ export function withClientRequest(openSocket, flavor) {
           res.req = this;
           this.__framing = __framingFor(headers, true, res.statusCode, this.method);
           this.__res = res;
+          // 释放闸门先于 'response' 挂载（node responseOnEnd 内部先挂口径）：
+          // res 'end'/'close' → 回池/关连 + req 'close'，用户 end 处理器晚于释放。
+          this.__armReleaseGates(this.__sock);
           this.__resBuf = this.__resBuf.slice(headEnd + 4);
           // node _http_client.js：响应到达即挂 responseOnTimeout（一次性/socket；
           // 转发 socket 'timeout' → req 'timeout'，响应完结后不再转发）。
@@ -1567,38 +1878,75 @@ export function withClientRequest(openSocket, flavor) {
         }
         this.__resBuf = r.rest;
         if (!r.done) return;
+        if (r.trailersRaw !== undefined) __applyTrailers(this.__res, r.trailersRaw);
         this.__res.__complete();
         this.__finishResponse(false);
         return;
       }
     }
-    // 响应收齐：归还池或半关；req 'close' 在 res 'end' 之后发出（Node 时序）。
+    // 响应收齐：释放闸门（__armReleaseGates）在 res 'end'/'close' 触发回池/关连
+    //（真机 p-free/p-ka：未消费前 freeSockets 恒空、排队请求不续行）。
+    // socket 先断（close-delimited/半途）时直接收尾。
+    __armReleaseGates(sock) {
+      if (this.__gatesArmed || sock === null || this.__res === null) return;
+      this.__gatesArmed = true;
+      let __fired = false;
+      const __once = () => {
+        if (__fired) return;
+        __fired = true;
+        this.__finishSock(sock);
+        if (!this.__closeEmitted) {
+          this.__closeEmitted = true;
+          this.emit("close");
+        }
+      };
+      this.__res.once("end", __once);
+      this.__res.once("close", __once);
+      this.__gateOnce = __once;
+    }
+    __finishSock(sock) {
+      if (sock === null || sock.destroyed) return;
+      const conn = this.__res !== null ? (this.__res.headers.connection || "").toLowerCase() : "close";
+      const poolable = this.agent !== null && this.agent.keepAlive && conn !== "close";
+      if (this.agent !== null) {
+        // node 口径：socket 'free' 事件恒发（agent onFree 在此续行排队请求）；
+        // __release 内按 keepAlive 决定回池或销毁，并 resume 队列。
+        try { sock.emit("free"); } catch { /* gone */ }
+        this.agent.__release(sock, this.__key, this);
+      } else {
+        try { sock.end(); } catch { /* closed meanwhile */ }
+      }
+    }
     __finishResponse(fromClose) {
       if (this.__respDone) return;
       this.__respDone = true;
       const sock = this.__sock;
       this.__sock = null;
-      const conn = this.__res !== null ? (this.__res.headers.connection || "").toLowerCase() : "close";
-      const poolable = !fromClose && sock !== null && this.agent !== null && this.agent.keepAlive && conn !== "close";
-      if (poolable) {
-        this.agent.__release(sock, this.__key, this);
-      } else if (!fromClose && sock !== null) {
-        try { sock.end(); } catch { /* closed meanwhile */ }
-      }
       const emitClose = () => {
         if (!this.__closeEmitted) {
           this.__closeEmitted = true;
           this.emit("close");
         }
       };
-      if (this.__res !== null && !this.__res.readableEnded) {
-        this.__res.once("end", emitClose);
-      } else {
+      if (fromClose || this.__res === null || this.__res.readableEnded || this.__res.destroyed) {
+        this.__finishSock(sock);
         emitClose();
       }
+      // 否则：闸门已挂（response 派发前），res 终结时统一收尾。
     }
     __onSockCloseEv() {
       if (this.__closeEmitted) return;
+      // CONNECT/upgrade 后的裸 socket 关闭：直接发 req 'close'（不回池不触 res）。
+      if (this.__upgraded) {
+        this.__closeEmitted = true;
+        this.emit("close");
+        return;
+      }
+      // 响应体已齐但 res 未被消费时连接先断：毁 res 引发 'close' → finish 链。
+      if (this.__respDone && this.__res !== null && !this.__res.readableEnded && !this.__res.destroyed) {
+        try { this.__res.destroy(); } catch { /* gone */ }
+        return;
+      }
       if (this.__res !== null && !this.__res.complete) {
         if (this.__framing !== null && this.__framing.type === "close") {
           this.__res.__complete();
@@ -1782,6 +2130,9 @@ Agent.prototype.__noteClosed = function (sock) {
     if (arr !== undefined) {
       const i = arr.indexOf(sock);
       if (i !== -1) arr.splice(i, 1);
+      // node 口径：清空即删键（keep-alive 套件 process.on('exit') 断言
+      // `!(name in agent.sockets/requests)`——残留空数组会判真）。
+      if (arr.length === 0) delete map[key];
     }
   };
   drop(this.sockets);

@@ -107,7 +107,7 @@ function __pfxAgentKey(pfx, passphrase) {
   }
   return key;
 }
-const globalAgent = new Agent();
+const globalAgent = new Agent({ keepAlive: true, scheduling: "lifo" });
 FLAVOR.defaultAgent = globalAgent;
 
 export function request(a, b, c) {

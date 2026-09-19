@@ -1306,11 +1306,11 @@ export function withClientRequest(openSocket, flavor) {
       if (this.__headers.host === undefined) {
         this.__headers.host = port === this.__defaultPort ? host : `${host}:${port}`;
       }
+      // node ctor 口径：shouldKeepAlive = agent 在场且 keepAlive（真机
+      // _http_client.js ctor：无 agent / 非 keepAlive agent → Connection: close）。
+      this.shouldKeepAlive = this.agent !== null && this.agent.keepAlive === true;
       if (this.__headers.connection === undefined) {
-        // node 口径（automatic-headers/真机抓包）：HTTP/1.1 请求头恒预设
-        // 'keep-alive'——agent.keepAlive 只决定响应后回池与否；agent:false
-        // 才发 'close'（_last 口径）。
-        this.__headers.connection = this.__agentFalse ? "close" : "keep-alive";
+        this.__headers.connection = this.shouldKeepAlive ? "keep-alive" : "close";
         this.__autoConn = true;
       }
       this.__headSent = false;
@@ -1322,6 +1322,8 @@ export function withClientRequest(openSocket, flavor) {
       this.__endFast = false;
       this.__chunked = false;
       this.__rawCL = false;
+      this.__contentLength = undefined;
+      this.__headerStored = false;
       this.__buf1 = null;
       this.__holdTimer = null;
       this.__userEnded = false;
@@ -1405,19 +1407,24 @@ export function withClientRequest(openSocket, flavor) {
       this.__onSockClose = () => this.__onSockCloseEv();
       sock.on("connect", () => {
         this.__connected = true;
-        this.__tryFlush();
         if (this.__pendingFinal) {
+          // end() 已调：整事务一次刷出（CL 决策在 end 时已定）。
           this.__pendingFinal = false;
           this.__flushFinal();
+          return;
         }
+        // node _flush 口径：连通即发头（无体请求——如 Expect: 100-continue
+        // 等 continue 的形态——头也必须立即出网）。
+        this.__tryFlush();
       });
       sock.on("secureConnect", () => {
         this.__connected = true;
-        this.__tryFlush();
         if (this.__pendingFinal) {
           this.__pendingFinal = false;
           this.__flushFinal();
+          return;
         }
+        this.__tryFlush();
       });
       sock.on("data", (chunk) => {
         try {
@@ -1505,8 +1512,12 @@ export function withClientRequest(openSocket, flavor) {
     // 立即发头（node flushHeaders：_implicitHeader + 强制刷）。
     flushHeaders() {
       if (this.__headSent) return;
+      this.__headerStored = true;
       if (this.__connected && this.__sock !== null && this.__sock !== undefined && !this.destroyed) {
-        if (this.__buf1 !== null) this.__chunked = this.__chunkDefault;
+        if (this.__buf1 !== null && this.__headers["content-length"] === undefined &&
+            this.__headers["transfer-encoding"] === undefined) {
+          this.__chunked = this.__chunkDefault;
+        }
         this.__sendHead();
         if (this.__buf1 !== null) {
           const q = this.__buf1;
@@ -1537,6 +1548,24 @@ export function withClientRequest(openSocket, flavor) {
       // CL 快路径判据：end 是首个头触发点（此前无 write）。
       this.__endFast = !this.__sawWrite;
       this.__userEnded = true;
+      // node maybePrepareFinalChunk 口径：end(data) 为首个头触发点时
+      // _contentLength 即刻落定（UCED 方法族；GET 族无 CL——framing 顺序）。
+      if (this.__endFast && !this.__headSent && !this.__headerStored &&
+          this.__chunkDefault &&
+          this.__headers["content-length"] === undefined &&
+          this.__headers["transfer-encoding"] === undefined) {
+        let __len = 0;
+        if (chunk !== undefined && chunk !== null && typeof chunk !== "function") {
+          if (typeof chunk === "string") {
+            __len = globalThis.Buffer !== undefined && typeof globalThis.Buffer.byteLength === "function"
+              ? globalThis.Buffer.byteLength(chunk, typeof encoding === "string" ? encoding : "utf8")
+              : new TextEncoder().encode(chunk).length;
+          } else if (chunk.byteLength !== undefined) {
+            __len = chunk.byteLength;
+          }
+        }
+        this.__contentLength = __len;
+      }
       return super.end(chunk, encoding, cb);
     }
     // node 口径（弃用面仍测）：abort = destroy + 'abort' 事件 + aborted 旗。
@@ -1574,19 +1603,22 @@ export function withClientRequest(openSocket, flavor) {
         this.__sock.write(u8);
       }
     }
-    // 连接就绪或刷盘时机到：holdback 未决或 flushHeaders 逼头则刷出。
-    // 队列逐帧发出（不合并）：保 TCP 分包，与连通后直发一致（blk09 计数型套件依赖）。
+    // 连接就绪或刷盘时机到：头恒发（node _flush 口径）；有体位时按 UCED 定
+    // chunked。队列逐帧发出（不合并）：保 TCP 分包（blk09 计数型套件依赖）。
     __tryFlush() {
       if (!this.__connected || this.__sock === null || this.__headSent) return;
       if (this.destroyed) return;
-      if (this.__buf1 === null && !this.__forceHead) return;
       if (this.__buf1 !== null) {
-        this.__chunked = this.__chunkDefault;
-      } else if (this.__chunkDefault && this.__headers["content-length"] === undefined) {
-        // flushHeaders 先于 end：头已存（真机口径 chunked 起拍，end 后补终结块）。
+        if (this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined) {
+          this.__chunked = this.__chunkDefault;
+        }
+      } else if (this.__chunkDefault && this.__headers["content-length"] === undefined &&
+                 this.__headers["transfer-encoding"] === undefined) {
+        // 无体 UCED 请求（含 Expect: 100-continue 等 continue 的形态）：chunked 起拍。
         this.__chunked = true;
       }
       this.__forceHead = false;
+      this.__headerStored = true;
       this.__sendHead();
       const q = this.__buf1;
       this.__buf1 = null;
@@ -1659,14 +1691,15 @@ export function withClientRequest(openSocket, flavor) {
     __flushFinal() {
       if (this.__sock === null || this.destroyed) return;
       if (!this.__headSent) {
-        const total = this.__buf1 !== null ? this.__buf1.reduce((a, b) => a + b.length, 0) : 0;
-        if (this.__headers["content-length"] === undefined) {
-          if (this.__chunkDefault && this.__endFast && !this.__forceHead) {
-            this.__headers["content-length"] = String(total);
-          } else if (this.__chunkDefault) {
-            this.__chunked = true;
-            this.__headers["transfer-encoding"] = "chunked";
-          }
+        // CL 决策已在 end() 落定（node _contentLength 口径）；无 CL 的 UCED
+        // 请求 chunked；GET 族（UCED false）无 CL/TE 裸体。
+        if (this.__contentLength !== undefined) {
+          this.__headers["content-length"] = String(this.__contentLength);
+          this.__rawCL = true;
+        } else if (this.__chunkDefault && this.__headers["content-length"] === undefined &&
+                   this.__headers["transfer-encoding"] === undefined) {
+          this.__chunked = true;
+          this.__headers["transfer-encoding"] = "chunked";
         }
         this.__sendHead();
         if (this.__buf1 !== null) {
@@ -1805,7 +1838,7 @@ export function withClientRequest(openSocket, flavor) {
             info.socket = this.__sock;
             info.connection = this.__sock;
             info.req = this;
-            this.__resBuf = new Uint8Array(0);
+            this.__resBuf = this.__resBuf.slice(headEnd + 4);
             this.emit("information", info);
             continue;
           }

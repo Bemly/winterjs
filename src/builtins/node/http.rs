@@ -88,7 +88,7 @@ Agent.prototype.__openSocket = (host, port, extra) => {
   return net.connect(base);
 };
 Agent.prototype.__defaultPort = 80;
-const globalAgent = new Agent();
+const globalAgent = new Agent({ keepAlive: true, scheduling: "lifo" });
 FLAVOR.defaultAgent = globalAgent;
 
 export function request(a, b, c) {

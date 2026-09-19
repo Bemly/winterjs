@@ -71,7 +71,7 @@ import {{ createSecureServer, connect }} from "node:http2";
 import fs from "node:fs";
 const key = fs.readFileSync({key_path:?}, "utf8");
 const cert = fs.readFileSync({cert_path:?}, "utf8");
-try {{ createSecureServer({{}}); }} catch (e) {{ console.log("no-cert", e.constructor.name); }}
+try {{ const s0 = createSecureServer({{}}); console.log("no-throw", typeof s0.listen); }} catch (e) {{ console.log("no-cert", e.constructor.name); }}
 const server = createSecureServer({{ key, cert }}, (req, res) => {{
   res.end("secure-h2:" + req.url);
 }});
@@ -95,7 +95,9 @@ setTimeout(() => console.log("end-ok"), 1500);
 "#
         ),
     );
-    assert!(out.contains("no-cert TypeError"), "out: {out}");
+    // 真机 node 26 实测：createSecureServer({}) 不抛（缺 key/cert 不在构造期校验）
+    assert!(out.contains("no-throw function"), "out: {out}");
+    assert!(!out.contains("no-cert"), "out: {out}");
     assert!(out.contains("h 200"), "out: {out}");
     assert!(out.contains("b secure-h2:/s"), "out: {out}");
     assert!(out.contains("srv-close"), "out: {out}");

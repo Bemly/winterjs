@@ -176,7 +176,7 @@
 buffer、events、stream、url、path、querystring、punycode、string_decoder、
 os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界）、vm
 （26 偏离记档）、trace_events、dns、readline、tty、sqlite、repl、crypto
-（超 Bun 🟡）、sys、dgram（除 recvbuf 小簇，见下）。
+（超 Bun 🟡）、sys、dgram（recvbuf 簇已收官，余 connect/membership 等小簇见下）。
 
 ### 欠账（Bun 🟢 且我们有记档红簇，逐簇以后再说）
 
@@ -204,3 +204,42 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 > 验收口径：上表全部转绿/或逐簇书面偏离前，Phase 10 对"Bun 🟢 域"不算
 > 逐字节到位；10f 的收官（§1 矩阵/报告/终局门）不受影响——欠账已全部
 > 定位、定性、定量。
+
+### 欠账轮落账与新会话入口（2026-09-19 session 收官，新会话据此开工）
+
+**本 session 完成（全部已提交 master）：**
+
+| 簇 | 状态 |
+|---|---|
+| G1 dgram recvbuf | ✅ 上 session（DIFF 53→32） |
+| G2 net server 选项面 | ✅ 上 session |
+| G9-1 zlib Rust 状态机 | ✅ 上 session |
+| G9-2 zlib JS 流类接线 | ✅ 本轮（6 目标套件全绿 + 连带 5 件，zlib 域 73/81） |
+| G3 http 校验长尾/chunk 限深 | ✅ 本轮（子 agent 六提交移植，点名 45 件 SAME0 + 连带 15 件） |
+| 集成修复 ×2 | ✅ net relisten `__closing` 挂死（46 分钟）+ net SEGV（with_str_args GC 悬垂）+ stream 9b 回归 |
+| 验收 | `cargo test` 全量 21 target 0 失败 + 冒烟 5/5 |
+| AGENTS.md | ✅ §4.140-144 四坑已记（含"禁连续建 worktree"铁律） |
+| 本节欠账表 | ✅ 三簇收官标注（G3/G2/G9-2 划线转绿） |
+
+**新会话入口（按优先级）：**
+
+1. **G9-3 zlib 尾件 ~4 件**：brotli/zstd 字典流式、zstd pledged-src-size、
+   Web `DecompressionStream`（type-error 套件）；dictionary 套件
+   ArrayBuffer-dict reset 组合的 zlib_rs bad state 一件回归随修。
+2. **G6 net 尾件 ~16 件**：TIMEOUT 9 / Happy Eyeballs 3 / worker 投递 3 /
+   large-string 1。
+3. **G4 fs validators 尾件 ~40 件 → G5 child ~30 件 → G8 fs watch/glob
+   ~23 件**（下轮可修三连）。
+4. **大簇另案**：G10 http2 compat ~105 件、G11 http TIMEOUT ~110 件、
+   dgram 余 ~32 件、http OutgoingMessage 缓冲模型 5 件（G3 遗留专项）。
+5. **URLPattern 归属**：对 Bun 1.3 实测后拍板（见上"待核对"）。
+
+（编号对表：G4=fs validators 尾件行、G5=child_process 行、G6=net 尾件行、
+G8=fs watch 簇行、G10=http2 compat 行、G11=http TIMEOUT 行；
+G1/G2/G3/G9 已收官。）
+
+**新会话开场提示**：先读 AGENTS.md §4.140-144（本轮四坑，尤其 §4.140
+"手工过/cargo 挂≠环境问题" 与 §4.142 "禁连续建 worktree"）+ 本节欠账表；
+跑分 `TEST_THREAD_ID` 用 35xx+（§4.122 互踩防线）；net 域黑盒先单跑验证
+（`cargo test --test node net`，全绿后再并发——§4.140/§4.141 两坑都在
+cargo harness 时序下才现形）。

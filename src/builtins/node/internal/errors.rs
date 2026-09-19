@@ -251,6 +251,17 @@ E('ERR_INVALID_ARG_TYPE',
     }
     msg += 'must be ';
 
+    // node 真机逐字形态（26.8.2 对拍）：http hostname/host 与 agent 校验的
+    // 两种三元素组合有专属渲染，其余维持通用格式。
+    if (expected.length === 3 && expected[0] === 'string' &&
+        expected[1] === 'undefined' && expected[2] === 'null') {
+      return `${msg}of type string or one of undefined or null. Received ${determineSpecificType(actual)}`;
+    }
+    if (expected.length === 3 && expected[0] === 'Agent-like Object' &&
+        expected[1] === 'undefined' && expected[2] === 'false') {
+      return `${msg}one of Agent-like Object, undefined, or false. Received ${determineSpecificType(actual)}`;
+    }
+
     const types = [];
     const instances = [];
     const other = [];
@@ -320,7 +331,7 @@ E('ERR_INVALID_MIME_SYNTAX',
     return msg;
   }, TypeError, HideStackFramesError);
 E('ERR_UNKNOWN_ENCODING', 'Unknown encoding: %s', TypeError, HideStackFramesError);
-E('ERR_UNESCAPED_CHARACTERS', '%s contains unescaped characters', Error, HideStackFramesError);
+E('ERR_UNESCAPED_CHARACTERS', '%s contains unescaped characters', TypeError, HideStackFramesError);
 E('ERR_OUT_OF_RANGE',
   (str, range, input, replaceDefaultBoolean = false) => {
     if (!range) throw new TypeError('Missing "range" argument');
@@ -414,7 +425,19 @@ E('ERR_HTTP2_NO_SOCKET_MANIPULATION',
   'HTTP/2 sockets should not be directly manipulated (e.g. read and written)', Error);
 E('ERR_HTTP2_INVALID_HEADER_VALUE', 'Invalid value "%s" for header "%s"', TypeError, HideStackFramesError);
 E('ERR_HTTP2_PUSH_DISABLED', 'Push streams are not enabled.', Error);
-E('ERR_INVALID_HTTP_TOKEN', 'Header name must be a valid HTTP token ["%s"]', TypeError, HideStackFramesError);
+E('ERR_INVALID_HTTP_TOKEN',
+  // node 口径 (kind, name) 双参 + %j JSON 渲染（真机 'Method must be a valid
+  // HTTP token ["\u0000"]'）；单参历史调用（http2 validateHeaderName）兼容为
+  // kind='Header name'。
+  (kind, name) => {
+    // node 口径：值原样插值（request-invalid-method-error 套件 '\0' 形断言
+    // 裸控制字符，非 JSON 转义）；单参历史调用（http2）兼容为 kind='Header name'。
+    if (name === undefined || name === null) {
+      return `Header name must be a valid HTTP token ["${kind}"]`;
+    }
+    return `${kind} must be a valid HTTP token ["${name}"]`;
+  }, TypeError, HideStackFramesError);
+E('ERR_INVALID_PROTOCOL', 'Protocol "%s" not supported. Expected "%s"', TypeError, HideStackFramesError);
 
 // errors.js:172 同款（AggregateError 聚合；errors.errors 已是聚合体则吸收）
 const aggregateTwoErrors = (innerError, outerError) => {

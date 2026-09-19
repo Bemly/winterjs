@@ -78,7 +78,16 @@ function __findHeadEnd(u8) {
   }
   return -1;
 }
-function __parseHead(headText) {
+// 头值严格门（node llhttp strict 口径，真机 26.8.2 实测）：值内允许 HTAB、
+// 0x20-0x7E、0x80-0xFF；其余控制字符（如 \x08）仅 insecureHTTPParser 放行。
+function __validHeaderValue(v) {
+  for (let i = 0; i < v.length; i++) {
+    const cc = v.charCodeAt(i);
+    if (cc !== 9 && (cc < 32 || cc === 127)) return false;
+  }
+  return true;
+}
+function __parseHead(headText, strict) {
   const lines = headText.split("\r\n");
   const first = lines.shift().split(" ");
   // 真机口径：req.headers/res.headers 是普通对象（Object.prototype，node 26.8.2
@@ -91,7 +100,11 @@ function __parseHead(headText) {
     const c = line.indexOf(":");
     if (c <= 0) throw __mkParseError("malformed header line");
     const k = line.slice(0, c).trim();
-    const v = line.slice(c + 1).trim();
+    const vRaw = line.slice(c + 1);
+    const v = vRaw.trim();
+    // 严格门查原始值（trim 前）——前导控制字符（如 'x:\nTE' 的裸 LF）不得
+    // 被 trim 吞掉而漏检（missing-header-separator 套件现场记录）。
+    if (strict && !__validHeaderValue(vRaw)) throw __mkParseError("invalid header value");
     rawHeaders.push(k, v);
     const lk = k.toLowerCase();
     if (headers[lk] === undefined) {
@@ -111,7 +124,11 @@ function __toU8(data) {
 }
 function __lowerHeaders(obj) {
   const out = Object.create(null);
-  for (const [k, v] of Object.entries(obj ?? {})) out[k.toLowerCase()] = String(v);
+  for (const [k, v] of Object.entries(obj ?? {})) {
+    // 头名字门（node checkIsHttpToken 口径；invalidheaderfield 套件）。
+    if (!__TOKEN_RE.test(k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", k);
+    out[k.toLowerCase()] = String(v);
+  }
   return out;
 }
 // node lib/_http_client.js 同款（INVALID_PATH_REGEX）：控制字符与空格等禁入 path。
@@ -146,6 +163,46 @@ function __validateRequestHead(first, headers) {
   }
   for (const k of Object.keys(headers)) {
     if (!__TOKEN_RE.test(k)) throw __mkParseError("bad header name");
+  }
+}
+
+// 请求行前缀增量校验（llhttp strict 口径，真机 26.8.2 实测）：
+// - 方法段：token 字符；空格转入 URL 段（空方法/行首空格即 400）；
+// - URL 段：首字节须 '/'（origin-form）、'*'（asterisk-form）或 CONNECT 的
+//   authority-form（token 字符）；控制字节即 400（'hello world' 现场记录）；
+// - 版本段：整行形状由 __validateRequestHead 终验；此处只拒空格/控制字节；
+// - CR 在版本段 = 行终结起点（等 CRLF 由 headEnd 扫描接手），其余位置即 400。
+function __checkRequestLinePrefix(buf) {
+  let seg = 0;
+  let method = "";
+  let urlStarted = false;
+  for (let i = 0; i < buf.length; i++) {
+    const ch = buf[i];
+    if (ch === 13) {
+      if (seg === 2) return;
+      throw __mkParseError("bad request line");
+    }
+    if (ch === 10 || ch === 0) throw __mkParseError("bad request line");
+    if (ch === 32) {
+      if (seg === 2 || (seg === 0 && method === "") || (seg === 1 && !urlStarted)) {
+        throw __mkParseError("bad request line");
+      }
+      seg++;
+      continue;
+    }
+    if (seg === 0) {
+      if (!__TOKEN_RE.test(String.fromCharCode(ch))) throw __mkParseError("bad request line");
+      method += String.fromCharCode(ch);
+    } else if (seg === 1) {
+      if (!urlStarted) {
+        urlStarted = true;
+        if (ch !== 47 && ch !== 42 && method !== "CONNECT") throw __mkParseError("bad request line");
+      } else if (ch < 33 || ch === 127) {
+        throw __mkParseError("bad request line");
+      }
+    } else {
+      if (ch < 32 || ch === 127) throw __mkParseError("bad request line");
+    }
   }
 }
 
@@ -307,6 +364,7 @@ export class ServerResponse extends Writable {
     this.__onDone = null;
   }
   setHeader(name, value) {
+    if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
     const lk = String(name).toLowerCase();
     this.__headers[lk] = String(value);
     if (lk === "connection") this.__autoConn = false;
@@ -383,11 +441,17 @@ export class ServerResponse extends Writable {
       this.__headers["connection"] = this.__keepAlive ? "keep-alive" : "close";
       this.__autoConn = true;
     }
+    // 自动 Date 头（node 口径：响应缺 date 即补 UTC 串；automatic-headers 套件）。
+    if (this.__headers["date"] === undefined) {
+      this.__headers["date"] = new Date().toUTCString();
+      this.__autoDate = true;
+    }
     // 自设头按用户拼写输出（node verbatim；本仓内部统一小写存取）；自动头的
-    // 真机输出是规范大写（Transfer-Encoding/Content-Length/自动 Connection）。
+    // 真机输出是规范大写（Transfer-Encoding/Content-Length/自动 Connection/Date）。
     const canon = { "transfer-encoding": "Transfer-Encoding", "content-length": "Content-Length" };
+    const __autoCase = (k) => (k === "connection" && this.__autoConn) || (k === "date" && this.__autoDate);
     for (const [k, v] of Object.entries(this.__headers)) {
-      const name = k === "connection" && this.__autoConn ? "Connection" : (canon[k] ?? k);
+      const name = __autoCase(k) ? k.charAt(0).toUpperCase() + k.slice(1) : (canon[k] ?? k);
       head.push(`${name}: ${v}`);
     }
     return new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n");
@@ -527,6 +591,23 @@ export class OutgoingMessage extends Writable {
   }
 }
 
+// 头段内裸 CR（后随非 LF）检测——client/server 两侧严格门共用
+//（client-reject-cr-no-lf 套件；服务端同形走 400 通道）。
+function __hasBareCR(headText) {
+  for (let i = 0; i < headText.length; i++) {
+    if (headText[i] === "\r" && headText[i + 1] !== "\n") return true;
+  }
+  return false;
+}
+
+// 客户端解析错（node llhttp 口径）：message 'Parse Error: ...' + HPE_* 码
+//（client-reject-* 套件断言 err.code 与 /^Parse Error/）。
+function __hpe(code, msg) {
+  const e = new Error(`Parse Error: ${msg}`);
+  e.code = code;
+  return e;
+}
+
 // 服务端混入：Base = net.Server / tls.Server（构造实参原样透传基类）。
 // http 面选项（10f 对拍，node lib/_http_server.js 口径）：requestTimeout 默认
 // 300000、headersTimeout 默认 min(60000, requestTimeout)、keepAliveTimeout 5000、
@@ -534,6 +615,15 @@ export class OutgoingMessage extends Writable {
 export function withHttpServer(Base) {
   class __HttpServer extends Base {
     constructor(...args) {
+      // node _http_server.js：http.Server 底座恒 allowHalfOpen=true——客户端
+      // FIN 的收口由 http 层（连接处理器的 'end' 钩 + httpAllowHalfOpen 旗）
+      // 自管（server.js 套件：半关后第 4 响应仍须可写）。
+      const __o = args[0];
+      if (__o !== null && typeof __o === "object" && !Array.isArray(__o)) {
+        args[0] = { allowHalfOpen: true, ...__o };
+      } else {
+        args = [{ allowHalfOpen: true }, ...args.slice(1)];
+      }
       super(...args);
       const o = (args[0] && typeof args[0] === "object" && !Array.isArray(args[0])) ? args[0] : {};
       this.timeout = 0;
@@ -542,6 +632,8 @@ export function withHttpServer(Base) {
       this.keepAliveTimeout = 5_000;
       this.keepAliveTimeoutBuffer = 1_000;
       this.maxRequestsPerSocket = 0;
+      // 每服务器宽松解析旗（insecure-parser-per-stream 套件）。
+      this.insecureHTTPParser = o.insecureHTTPParser ?? false;
       const rt = o.requestTimeout !== undefined ? __validateInteger(o.requestTimeout, "requestTimeout") : undefined;
       if (rt !== undefined) this.requestTimeout = rt;
       const ht = o.headersTimeout !== undefined ? __validateInteger(o.headersTimeout, "headersTimeout") : undefined;
@@ -587,6 +679,14 @@ export function withHttpServer(Base) {
             this.__feedError(sock, e);
           }
         });
+        // node socketOnEnd 口径：未开 httpAllowHalfOpen → 客户端 FIN 即收口
+        // （end 冲刷在途字节后 FIN）；开了则交由响应自身的收口逻辑（半关连接
+        // 的后续响应仍可写——server.js 套件）。
+        sock.on("end", () => {
+          if (!this.httpAllowHalfOpen) {
+            try { sock.end(); } catch { /* gone */ }
+          }
+        });
         // 连接即开 headers 计时（headersTimeout 内须收到完整头，否则 408）。
         this.__armIdleTimers(st, sock);
       });
@@ -619,7 +719,9 @@ export function withHttpServer(Base) {
     // 裸抛会变成 unhandled rejection（chunked-smuggling 套件）。
     __feedError(sock, e) {
       if (e && e.__httpParse) {
-        this.__badRequest(sock);
+        // node 口径：clientError 事件恒发；无监听才落默认 400 + 销毁。
+        this.emit("clientError", e, sock);
+        if (this.listenerCount("clientError") === 0) this.__badRequest(sock);
         return;
       }
       try { sock.destroy(); } catch { /* gone */ }
@@ -675,22 +777,21 @@ export function withHttpServer(Base) {
         if (st.req === null) {
           const headEnd = __findHeadEnd(st.buf);
           if (headEnd === -1) {
-            // 头未齐也可先校验请求行（llhttp 增量语义；管线残渣 "hello world\r\n"
-            // 之类在行终结时就该 400，等不到 \r\n\r\n——blank-header 套件）。
-            for (let i = 0; i + 1 < st.buf.length; i++) {
-              if (st.buf[i] === 13 && st.buf[i + 1] === 10) {
-                const lineText = __latin1(st.buf.slice(0, i)).split(" ");
-                if (lineText.length !== 3 || !__TOKEN_RE.test(lineText[0]) ||
-                    !/^HTTP\/\d(\.\d)?$/.test(lineText[2] ?? "")) {
-                  throw __mkParseError("bad request line");
-                }
-                break;
-              }
+            // 头未齐也可先校验请求行（llhttp 增量语义；管线残渣 "hello world"
+            // 在 URL 段首字节即 400，等不到行终结——blank-header 套件）。
+            // llhttp 口径：请求行前的 CRLF 空行容忍（管线残段；insecure-parser
+            // 套件尾部 '\r\n\r\n' 现场记录），先吞再校验。
+            while (st.buf.length >= 2 && st.buf[0] === 13 && st.buf[1] === 10) {
+              st.buf = st.buf.slice(2);
             }
+            __checkRequestLinePrefix(st.buf);
             return;
           }
           const headText = __latin1(st.buf.slice(0, headEnd));
-          const { first, headers, rawHeaders } = __parseHead(headText);
+          if (this.insecureHTTPParser !== true && __hasBareCR(headText)) {
+            throw __mkParseError("LF expected after CR");
+          }
+          const { first, headers, rawHeaders } = __parseHead(headText, this.insecureHTTPParser !== true);
           __validateRequestHead(first, headers);
           const req = new IncomingMessage();
           req.method = first[0];
@@ -789,9 +890,13 @@ export function withHttpServer(Base) {
     close(cb) {
       this.__closing = true;
       if (typeof cb === "function") this.once("close", cb);
-      // 空闲保活连接一并销毁，否则 'close' 永不到（10b；Node 关空闲同款）。
+      // 只销毁空闲连接（Node 关空闲同款）；有在途 req/res 的连接等响应收完
+      // 自然收口（server.js 套件：close 后第 4 响应仍须可写）。
       for (const sock of this.__sockets) {
-        try { sock.destroy(); } catch { /* closed meanwhile */ }
+        const __st = sock.__httpState;
+        if (!__st || (__st.req === null && __st.res === null)) {
+          try { sock.destroy(); } catch { /* closed meanwhile */ }
+        }
       }
       super.close();
       return this;
@@ -815,9 +920,9 @@ export function withClientRequest(openSocket, flavor) {
       super();
       let host, port, path, method, userHeaders, extra;
       if (typeof options === "string" || options instanceof URL) {
-        const u = new URL(String(options));
+        const u = __parseUrlArg(String(options));
         if (u.protocol !== flavor.protocol) {
-          throw new Error(`ERR_INVALID_PROTOCOL: protocol '${u.protocol}' not supported (use ${flavor.other})`);
+          throw new codes.ERR_INVALID_PROTOCOL(u.protocol, flavor.protocol);
         }
         method = "GET";
         host = u.hostname;
@@ -826,7 +931,43 @@ export function withClientRequest(openSocket, flavor) {
         userHeaders = {};
         extra = {};
       } else {
-        method = (options.method ?? "GET").toUpperCase();
+        // node _http_client.js：协议门（url.parse 形对象带 protocol 字段；
+        // url.parse-only 套件——file:/mailto:/ftp: 等一律 ERR_INVALID_PROTOCOL）。
+        if (options.protocol !== undefined && options.protocol !== flavor.protocol) {
+          throw new codes.ERR_INVALID_PROTOCOL(options.protocol, flavor.protocol);
+        }
+        // host/hostname 类型门（真机逐字：'of type string or one of undefined
+        // or null'；hostname-typechecking 套件）。
+        if (options.hostname !== undefined && options.hostname !== null && typeof options.hostname !== "string") {
+          throw new codes.ERR_INVALID_ARG_TYPE("options.hostname", ["string", "undefined", "null"], options.hostname);
+        }
+        if (options.host !== undefined && options.host !== null && typeof options.host !== "string") {
+          throw new codes.ERR_INVALID_ARG_TYPE("options.host", ["string", "undefined", "null"], options.host);
+        }
+        // agent 门（Agent-like Object/undefined/null/false；
+        // reject-unexpected-agent 套件真机逐字）。
+        if (options.agent !== undefined && options.agent !== null && options.agent !== false) {
+          if (typeof options.agent !== "object" || typeof options.agent.addRequest !== "function") {
+            throw new codes.ERR_INVALID_ARG_TYPE("options.agent", ["Agent-like Object", "undefined", "false"], options.agent);
+          }
+        }
+        // insecureHTTPParser 类型门（insecure-parser-per-stream 套件 test5）。
+        if (options.insecureHTTPParser !== undefined && typeof options.insecureHTTPParser !== "boolean") {
+          throw new codes.ERR_INVALID_ARG_TYPE("options.insecureHTTPParser", "boolean", options.insecureHTTPParser);
+        }
+        // method 门：非串 → ARG_TYPE（check-http-token 套件）；非法 token →
+        // ERR_INVALID_HTTP_TOKEN（request-invalid-method-error 套件 '\0'）。
+        if (options.method !== undefined && options.method !== null) {
+          if (typeof options.method !== "string") {
+            throw new codes.ERR_INVALID_ARG_TYPE("options.method", "string", options.method);
+          }
+          // 空串等 falsy method → 缺省 GET（client-defaults 套件）；非法
+          // token → ERR_INVALID_HTTP_TOKEN（request-invalid-method-error 套件）。
+          if (options.method !== "" && !__TOKEN_RE.test(options.method)) {
+            throw new codes.ERR_INVALID_HTTP_TOKEN("Method", options.method);
+          }
+        }
+        method = (options.method ?? "GET").toUpperCase() || "GET";
         host = options.host ?? options.hostname ?? "localhost";
         // node 口径：defaultPort 逐级——显式 port > agent.defaultPort > flavor 缺省
         //（default-port 套件：globalAgent.defaultPort 动态改写生效，host 头
@@ -852,9 +993,32 @@ export function withClientRequest(openSocket, flavor) {
       this.__port = port;
       // IPC 形（node：req.socketPath 自有属性；openSocket 钩按它走 UDS）。
       this.socketPath = options.socketPath;
+      // path 访问器（node setPath 口径）：赋值即校验，控制字符/空格一律
+      // ERR_UNESCAPED_CHARACTERS（path-toctou 套件：`req.path = '/evil\r\n...'`）。
+      Object.defineProperty(this, "path", {
+        get() { return this.__pathVal; },
+        set(v) {
+          const s = typeof v === "string" ? v : String(v);
+          if (INVALID_PATH_REGEX.test(s)) {
+            throw new codes.ERR_UNESCAPED_CHARACTERS("Request path");
+          }
+          this.__pathVal = v;
+        },
+        enumerable: true,
+        configurable: true,
+      });
       this.path = path;
+      // 自设请求头名字门（invalidheaderfield 套件：'testing 123' → TypeError）。
+      for (const __k of Object.keys(userHeaders ?? {})) {
+        if (!__TOKEN_RE.test(__k)) {
+          throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", __k);
+        }
+      }
+      // 每请求宽松解析旗（insecure-parser-per-stream 套件：头值控制字符严格门）。
+      this.insecureHTTPParser = options.insecureHTTPParser ?? false;
       this.socket = null;
       this.agent = options.agent === undefined ? (flavor.defaultAgent ?? null) : (options.agent || null);
+      this.__agentFalse = options.agent === false;
       this.__defaultPort = this.agent !== null && this.agent.defaultPort !== undefined
         ? this.agent.defaultPort : flavor.defaultPort;
       // timeout 双检（node validateNumber 口径，真机 26.8.2 逐项：null/'x' →
@@ -882,7 +1046,10 @@ export function withClientRequest(openSocket, flavor) {
         this.__headers.host = port === this.__defaultPort ? host : `${host}:${port}`;
       }
       if (this.__headers.connection === undefined) {
-        this.__headers.connection = (this.agent !== null && this.agent.keepAlive) ? "keep-alive" : "close";
+        // node 口径（automatic-headers/真机抓包）：HTTP/1.1 请求头恒预设
+        // 'keep-alive'——agent.keepAlive 只决定响应后回池与否；agent:false
+        // 才发 'close'（_last 口径）。
+        this.__headers.connection = this.__agentFalse ? "close" : "keep-alive";
         this.__autoConn = true;
       }
       this.__headSent = false;
@@ -988,7 +1155,14 @@ export function withClientRequest(openSocket, flavor) {
           this.__flushFinal();
         }
       });
-      sock.on("data", (chunk) => this.__onSockData(chunk));
+      sock.on("data", (chunk) => {
+        try {
+          this.__onSockData(chunk);
+        } catch (e) {
+          // node 口径：响应头解析错（严格门）→ req 'error'（经 destroy(err)）。
+          this.destroy(e);
+        }
+      });
       sock.on("error", (e) => {
         if (this.listenerCount("error") === 0) throw e;
         this.emit("error", e);
@@ -1008,6 +1182,7 @@ export function withClientRequest(openSocket, flavor) {
       }
     }
     setHeader(name, value) {
+      if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
       const lk = String(name).toLowerCase();
       this.__headers[lk] = String(value);
       if (lk === "connection") this.__autoConn = false;
@@ -1263,9 +1438,20 @@ export function withClientRequest(openSocket, flavor) {
           const headEnd = __findHeadEnd(this.__resBuf);
           if (headEnd === -1) return;
           const headText = __latin1(this.__resBuf.slice(0, headEnd));
-          const { first, headers, rawHeaders } = __parseHead(headText);
+          if (this.insecureHTTPParser !== true && __hasBareCR(headText)) {
+            this.destroy(__hpe("HPE_LF_EXPECTED", "Expected LF after CR"));
+            return;
+          }
+          const { first, headers, rawHeaders } = __parseHead(headText, this.insecureHTTPParser !== true);
           if (!first[0].startsWith("HTTP/") || !/^\d{3}$/.test(first[1] ?? "")) {
-            this.destroy(new Error("HPE_INVALID_CONSTANT: invalid HTTP response line"));
+            this.destroy(__hpe("HPE_INVALID_CONSTANT", "invalid HTTP response line"));
+            return;
+          }
+          // node llhttp strict：TE 与 CL 并存即拒（client-reject-chunked-with-
+          // content-length 套件）。
+          if (this.insecureHTTPParser !== true && headers["transfer-encoding"] !== undefined &&
+              headers["content-length"] !== undefined) {
+            this.destroy(__hpe("HPE_INVALID_TRANSFER_ENCODING", "Transfer-Encoding can't be present with Content-Length"));
             return;
           }
           const res = new IncomingMessage();
@@ -1315,7 +1501,7 @@ export function withClientRequest(openSocket, flavor) {
         } else {
           r = __pumpChunked(fr, this.__res, this.__resBuf);
           if (r.error) {
-            this.destroy(new Error("HPE_INVALID_CONSTANT: invalid chunked body"));
+            this.destroy(__hpe("HPE_INVALID_CONSTANT", "invalid chunked body"));
             return;
           }
         }
@@ -1395,6 +1581,17 @@ Agent.prototype.__init = function (options = {}) {
   this.maxSockets = options.maxSockets ?? Infinity;
   this.maxFreeSockets = options.maxFreeSockets ?? 256;
   this.maxTotalSockets = options.maxTotalSockets ?? Infinity;
+  // maxTotalSockets 门（agent-maxtotalsockets 套件真机逐项：非串 → ARG_TYPE；
+  // -1/0/NaN → OUT_OF_RANGE；Infinity 合法）。
+  if (options.maxTotalSockets !== undefined) {
+    if (typeof options.maxTotalSockets !== "number") {
+      throw new codes.ERR_INVALID_ARG_TYPE("maxTotalSockets", "number", options.maxTotalSockets);
+    }
+    // node 口径：NaN/-1/0 拒、Infinity 过（agent-maxtotalsockets 套件点名）。
+    if (!(options.maxTotalSockets > 0)) {
+      throw new codes.ERR_OUT_OF_RANGE("maxTotalSockets", "> 0", options.maxTotalSockets);
+    }
+  }
   this.totalSocketCount = 0;
   this.scheduling = options.scheduling ?? "lifo";
   this.sockets = {};
@@ -1442,6 +1639,13 @@ Agent.prototype.__liveCount = function (key) {
   const all = this.__list(this.sockets, key).filter((s) => !s.destroyed);
   return all.length;
 };
+// 全局活 socket 数（maxTotalSockets 帽的判定口径；agent-maxtotalsockets 套件
+// getTotalSocketsCount 同款）。
+Agent.prototype.__totalLive = function () {
+  let n = 0;
+  for (const key of Object.keys(this.sockets)) n += this.__liveCount(key);
+  return n;
+};
 Agent.prototype.__trackSocket = function (sock, key) {
   this.__list(this.sockets, key).push(sock);
   this.totalSocketCount++;
@@ -1477,12 +1681,14 @@ Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
     const sock = this.scheduling === "fifo" ? free.shift() : free.pop();
     if (!sock.destroyed) {
       this.__unpool(sock);
+      this.__list(this.sockets, key).push(sock);
       req.__poolKey = key;
       onSocket(sock, true);
       return;
     }
   }
-  if (this.__liveCount(key) >= this.maxSockets) {
+  if (this.__liveCount(key) >= this.maxSockets ||
+      (this.maxTotalSockets !== Infinity && this.__totalLive() >= this.maxTotalSockets)) {
     this.__list(this.requests, key).push({ req, host, port, extra, onSocket });
     req.__poolKey = key;
     req.__queued = true;
@@ -1490,7 +1696,9 @@ Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
   }
   req.__poolKey = key;
   req.__queued = false;
-  const opts = { host, port, ...(extra ?? {}) };
+  // host/port 后置归一（extra 的 null/undefined host 不得覆盖归一值——
+  // hostname-typechecking 的 {host: null} 值形会漏进 net.connect 炸类型门）。
+  const opts = { ...(extra ?? {}), host, port };
   let done = false;
   const oncreate = (err, sock) => {
     if (done) return;
@@ -1534,6 +1742,11 @@ Agent.prototype.__release = function (sock, key, req) {
     } else {
       sock.__inPool = true;
       free.push(sock);
+      // node 口径：入池即移出在用表（agent.sockets 只计在用——
+      // agent-maxtotalsockets 的 getTotalSocketsCount 口径）。
+      const __inUse = this.__list(this.sockets, key);
+      const __i = __inUse.indexOf(sock);
+      if (__i !== -1) __inUse.splice(__i, 1);
       if (sock.__poolCleaner === undefined) {
         const cleaner = () => this.__noteClosed(sock);
         sock.__poolCleaner = cleaner;
@@ -1541,14 +1754,24 @@ Agent.prototype.__release = function (sock, key, req) {
       }
     }
   }
-  // 续行排队请求。
-  const q = this.__list(this.requests, key);
-  while (q.length > 0) {
-    const next = q.shift();
-    if (next.req.destroyed) continue;
-    next.req.__queued = false;
-    this.__acquire(next.req, next.host, next.port, next.extra, next.onSocket);
-    break;
+  // 续行排队请求（同键优先；全局 maxTotalSockets 帽下跨键唤醒，同键队列空
+  // 时补扫其余键，防他键请求饿死）。
+  const tryResume = (k) => {
+    const q = this.__list(this.requests, k);
+    while (q.length > 0) {
+      const next = q.shift();
+      if (next.req.destroyed) continue;
+      next.req.__queued = false;
+      this.__acquire(next.req, next.host, next.port, next.extra, next.onSocket);
+      return true;
+    }
+    return false;
+  };
+  if (!tryResume(key)) {
+    for (const k of Object.keys(this.requests)) {
+      if (k === key) continue;
+      if (tryResume(k)) break;
+    }
   }
 };
 Agent.prototype.__cancel = function (req) {
@@ -1601,7 +1824,7 @@ Agent.prototype.addRequest = function (req, options, port, localAddress) {
   }
   req.__poolKey = name;
   req.__queued = false;
-  const opts = { host: options.host ?? options.hostname ?? "localhost", port: options.port ?? this.__defaultPort ?? 80, ...options };
+  const opts = { ...options, host: options.host ?? options.hostname ?? "localhost", port: options.port ?? this.__defaultPort ?? 80 };
   let done = false;
   const oncreate = (err, s) => {
     if (done) return;
@@ -1642,11 +1865,23 @@ export { Agent };
 
 // request/get 三形态归一：(url[, options][, cb]) / (options[, cb]) → [options, cb]。
 // url 与 options 并存时 options 优先；跨协议即 ERR_INVALID_PROTOCOL（Node 口径）。
+// node 口径：URL 形实参解析失败一律 ERR_INVALID_URL（invalid-urls 套件：
+// 'www.nodejs.org' 等无协议串 → TypeError/ERR_INVALID_URL，真机对拍）。
+function __parseUrlArg(str) {
+  try {
+    return new URL(str);
+  } catch (e) {
+    const err = new TypeError("Invalid URL");
+    err.code = "ERR_INVALID_URL";
+    err.input = str;
+    throw err;
+  }
+}
 export function normalizeRequestArgs(a, b, c, flavor) {
   if (typeof a === "string" || a instanceof URL) {
-    const u = new URL(String(a));
+    const u = __parseUrlArg(String(a));
     if (u.protocol !== flavor.protocol) {
-      throw new Error(`ERR_INVALID_PROTOCOL: protocol '${u.protocol}' not supported (use ${flavor.other})`);
+      throw new codes.ERR_INVALID_PROTOCOL(u.protocol, flavor.protocol);
     }
     const fromUrl = { hostname: u.hostname };
     if (u.port) fromUrl.port = Number(u.port);

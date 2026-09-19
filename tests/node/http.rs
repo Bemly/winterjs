@@ -108,7 +108,9 @@ const s = http.request({ port: 1, path: "/", host: "127.0.0.1" }, () => {});
 s.on("error", (e) => {
   console.log("conn-err", e.code);
   // https 协议拒绝（ERR_INVALID_PROTOCOL）
-  try { http.get("https://127.0.0.1/x"); } catch (e2) { console.log("proto-err", e2.message.startsWith("ERR_INVALID_PROTOCOL")); }
+  // 10f G3：错误码化后 message 为 node 原文（'Protocol "https:" not
+  // supported. Expected "http:"'），断言改走 e.code（§4.36）。
+  try { http.get("https://127.0.0.1/x"); } catch (e2) { console.log("proto-err", e2.code, e2.name); }
   // write after end
   const req = http.request({ port: 1, host: "127.0.0.1" }, () => {});
   req.on("error", () => {}); // 无监听的 error 事件即抛错（Node 口径），此处静默
@@ -120,7 +122,7 @@ s.on("error", (e) => {
     );
     let out = out;
     assert!(out.contains("conn-err ECONNREFUSED"), "out: {out}");
-    assert!(out.contains("proto-err true"), "out: {out}");
+    assert!(out.contains("proto-err ERR_INVALID_PROTOCOL TypeError"), "out: {out}");
     assert!(out.contains("wae true"), "out: {out}");
     assert!(out.contains("end-ok"), "out: {out}");
     dir.close().unwrap();
@@ -977,6 +979,201 @@ setTimeout(() => console.log("tmo-done"), 700);
         "dp-host 127.0.0.1",
         "bare-reuse bare-ok",
         "tmo-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10g_http_validation_gates() {
+    // 欠账 G3：校验长尾（真机 26.8.2 逐项对拍——错误码/名/消息原文）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http, { Server, ClientRequest, Agent, createServer, ServerResponse } from "node:http";
+import net from "node:net";
+import assert from "node:assert";
+
+// 1) method 门：非串 ARG_TYPE / '\0' token / 空串回落 GET。
+try { http.request({ method: 1 }); } catch (e) {
+  console.log("m-type", e.code, e.name,
+    e.message === 'The "options.method" property must be of type string. Received type number (1)');
+}
+try { http.request({ method: "\0" }); } catch (e) {
+  console.log("m-token", e.code, e.name,
+    e.message === 'Method must be a valid HTTP token ["\0"]');
+}
+{
+  const srv = createServer((req, res) => {
+    console.log("m-empty", req.method);
+    res.end();
+    srv.close();
+  });
+  srv.listen(0, "127.0.0.1", () => {
+    http.request({ port: srv.address().port, method: "" }).end();
+  });
+}
+
+// 2) host/hostname 类型门（消息含 'or one of undefined or null' 原文）。
+try { http.request({ hostname: {} }); } catch (e) {
+  console.log("host-type", e.code, e.message ===
+    'The "options.hostname" property must be of type string or one of undefined or null. Received an instance of Object');
+}
+try { http.request({ host: null }).on("error", () => {}).end(); console.log("host-null ok"); } catch { console.log("host-null ok"); }
+
+// 3) agent 门（Agent-like Object/undefined/false；null 合法）。
+for (const bad of [true, "agent", {}, 1, () => null]) {
+  try { http.request({ agent: bad }); } catch (e) {
+    console.log("agent-gate", e.code,
+      e.message === 'The "options.agent" property must be one of Agent-like Object, undefined, or false. Received ' +
+      (typeof bad === "function" ? "function ()" : `type ${typeof bad} (${String(bad)})`));
+    break;
+  }
+}
+
+// 4) path 赋值门（toctou）+ 协议门（对象形）。
+{
+  const req = new ClientRequest({ host: "127.0.0.1", port: 1, path: "/valid", createConnection: () => {} });
+  let threw = false;
+  try { req.path = "/evil\r\nX-Injected: true\r\n\r\n"; } catch (e) { threw = e.code === "ERR_UNESCAPED_CHARACTERS" && e.name === "TypeError"; }
+  console.log("path-set", threw, req.path === "/valid");
+  try { req.path = "/also-valid"; console.log("path-ok", req.path === "/also-valid"); } catch { console.log("path-ok false"); }
+  const url = require("node:url");
+  try { http.request(url.parse("ftp://x/")); } catch (e) { console.log("proto-obj", e.code, e.name); }
+}
+
+// 5) 头名字门（setHeader + 请求头）。
+{
+  const res = new ServerResponse({});
+  try { res.setHeader("testing 123", 123); } catch (e) {
+    console.log("hdr-name", e.code, e.name,
+      e.message === 'Header name must be a valid HTTP token ["testing 123"]');
+  }
+  try { http.get({ headers: { "testing 123": 1 } }); } catch (e) { console.log("hdr-req", e.name); }
+}
+
+// 6) Server 选项门（'foo'/42/true/[] → ARG_TYPE；undefined/函数/对象合法）。
+let srvGate = "";
+for (const bad of ["foo", 42, true, []]) {
+  try { new Server(bad); } catch (e) { srvGate += (e.code === "ERR_INVALID_ARG_TYPE" ? "y" : "n"); }
+}
+console.log("srv-gate", srvGate === "yyyy", typeof new Server(() => {}) === "object");
+
+// 7) Agent maxTotalSockets 门（非串/NaN/0/-1 拒，Infinity 过）。
+try { new Agent({ maxTotalSockets: "test" }); } catch (e) {
+  console.log("mts-type", e.code, e.name === "TypeError");
+}
+let mtsRange = "";
+for (const item of [-1, 0, NaN]) {
+  try { new Agent({ maxTotalSockets: item }); } catch (e) { mtsRange += e.code === "ERR_OUT_OF_RANGE" && e.name === "RangeError" ? "y" : "n"; }
+}
+console.log("mts-range", mtsRange === "yyy", (new Agent({ maxTotalSockets: Infinity })).maxTotalSockets === Infinity);
+
+// 8) 宽松解析旗类型门。
+try { http.request({ insecureHTTPParser: 0 }); } catch (e) {
+  console.log("ihp-gate", e.code,
+    e.message === 'The "options.insecureHTTPParser" property must be of type boolean. Received type number (0)');
+}
+
+// 9) 自动 Date 头 + connection 缺省 keep-alive（automatic-headers 套件口径）。
+{
+  const srv = createServer((req, res) => {
+    res.setHeader("X-Date", "foo");
+    res.setHeader("X-Connection", "bar");
+    res.setHeader("X-Content-Length", "baz");
+    res.end();
+  });
+  srv.listen(0, "127.0.0.1", () => {
+    http.get({ port: srv.address().port, path: "/hello" }, (res) => {
+      console.log("auto-hdr", res.headers["x-date"] === "foo", res.headers["x-connection"] === "bar",
+        res.headers["x-content-length"] === "baz", !!res.headers.date,
+        res.headers.connection === "keep-alive", res.headers["content-length"] === "0");
+      srv.close();
+    });
+  });
+}
+
+// 10) clientError 事件（严格头值门：\x08 控制 → 无监听落默认 400）。
+{
+  const srv = createServer((req, res) => { console.log("ihp-strict", "BAD"); res.end(); });
+  let cerr = "";
+  srv.on("clientError", (err, sock) => { cerr = err.message; sock.end("HTTP/1.1 400 x\r\n\r\n"); });
+  srv.listen(0, "127.0.0.1", () => {
+    const c = net.createConnection(srv.address().port, "127.0.0.1");
+    c.on("connect", () => c.write("GET / HTTP/1.1\r\nHost: x\r\nHello: foo\x08foo\r\n\r\n"));
+    c.on("data", () => {});
+    c.on("close", () => { console.log("cerr", cerr === "invalid header value"); srv.close(); });
+  });
+}
+setTimeout(() => console.log("gates-done"), 500);
+"#,
+    );
+    for tag in [
+        "m-type ERR_INVALID_ARG_TYPE TypeError true",
+        "m-token ERR_INVALID_HTTP_TOKEN TypeError true",
+        "m-empty GET",
+        "host-type ERR_INVALID_ARG_TYPE true",
+        "host-null ok",
+        "path-set true true",
+        "path-ok true",
+        "proto-obj ERR_INVALID_PROTOCOL TypeError",
+        "hdr-name ERR_INVALID_HTTP_TOKEN TypeError true",
+        "hdr-req TypeError",
+        "srv-gate true true",
+        "mts-type ERR_INVALID_ARG_TYPE true",
+        "mts-range true true",
+        "ihp-gate ERR_INVALID_ARG_TYPE true",
+        "auto-hdr true true true true true true",
+        "cerr true",
+        "gates-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10g_http_parser_strict_client() {
+    // 欠账 G3：客户端响应严格门（llhttp strict；真机 26.8.2 对拍）——TE+CL 并存
+    // HPE_INVALID_TRANSFER_ENCODING、裸 CR HPE_LF_EXPECTED，response 回调不得触发。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http from "node:http";
+import net from "node:net";
+function once(reqstr, label) {
+  return new Promise((resolve) => {
+    const server = net.createServer((socket) => {
+      socket.write(reqstr);
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const req = http.get({ port: server.address().port }, () => {
+        console.log(label, "response-BAD");
+        server.close();
+        resolve();
+      });
+      req.on("error", (err) => {
+        console.log(label, err.code, /^Parse Error/.test(err.message));
+        server.close();
+        resolve();
+      });
+    });
+  });
+}
+await once("HTTP/1.1 200 OK\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n", "te-cl");
+await once("HTTP/1.1 200 OK\r\nFoo: Bar\rContent-Length: 1\r\n\r\n", "bare-cr");
+console.log("strict-done");
+"#,
+    );
+    for tag in [
+        "te-cl HPE_INVALID_TRANSFER_ENCODING true",
+        "bare-cr HPE_LF_EXPECTED true",
+        "strict-done",
     ] {
         assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
     }

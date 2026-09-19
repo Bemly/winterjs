@@ -8,6 +8,7 @@
 /// 内嵌 ESM 源（`node:http`；net 底座 + 共享帧层）。
 pub const SOURCE: &str = r#"
 import * as net from "node:net";
+import { codes } from "node:internal/errors";
 import {
   STATUS_CODES, METHODS, maxHeaderSize, IncomingMessage, ServerResponse,
   OutgoingMessage, Agent as BaseAgent, withHttpServer, withClientRequest,
@@ -19,8 +20,20 @@ const __HttpServerBase = withHttpServer(net.Server);
 // Server 首参 listener 形态（Node: `new Server(cb)`/`Server(cb)` 即 request 监听）。
 // withHttpServer 的包装只透传基类构造实参（connection 监听），request 监听在此接。
 // options 为对象时透传基类（timeout 三件套等 http 面选项在帧层解析）。
+// options 类型门（node _http_server.js Server 构造口径，server.js 套件：
+// 'foo'/42/true/[] → ERR_INVALID_ARG_TYPE；undefined/null 缺省、函数=监听器）。
+function __serverOptions(args) {
+  const first = args[0];
+  if (first === undefined || first === null) return undefined;
+  if (typeof first === "function") return undefined;
+  if (first !== null && typeof first === "object" && !Array.isArray(first)) return first;
+  throw new codes.ERR_INVALID_ARG_TYPE("options", "object", first);
+}
+// Server 首参 listener 形态（Node: `new Server(cb)`/`Server(cb)` 即 request 监听）。
+// withHttpServer 的包装只透传基类构造实参（connection 监听），request 监听在此接。
+// options 为对象时透传基类（timeout 三件套等 http 面选项在帧层解析）。
 function Server(...args) {
-  const opts = args[0] !== null && typeof args[0] === "object" && !Array.isArray(args[0]) ? args[0] : undefined;
+  const opts = __serverOptions(args);
   const s = new __HttpServerBase(opts);
   const first = args[0];
   if (typeof first === "function") s.on("request", first);
@@ -68,7 +81,7 @@ export function get(a, b, c) {
   return getFrom(ClientRequest, options, cb);
 }
 export function createServer(options, cb) {
-  const opts = options !== null && typeof options === "object" && !Array.isArray(options) ? options : undefined;
+  const opts = __serverOptions([options]);
   const server = new __HttpServerBase(opts);
   if (typeof options === "function") server.on("request", options);
   else if (typeof cb === "function") server.on("request", cb);

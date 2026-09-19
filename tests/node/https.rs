@@ -43,14 +43,15 @@ server.listen(0, "127.0.0.1", () => {{
   );
   r.on("error", () => {{}});
   r.end("secret");
-  try {{ http.get("https://x/"); }} catch (e) {{ console.log("proto", /node:https/.test(e.message)); }}
+  // 10f G3：协议错已错误码化（message 为 node 原文），断言改走 e.code（§4.36）。
+  try {{ http.get("https://x/"); }} catch (e) {{ console.log("proto", e.code, e.name); }}
 }});
 server.on("close", () => console.log("srv-close"));
 setTimeout(() => console.log("end-ok"), 1500);
 "#
         ),
     );
-    assert!(out.contains("proto true"), "out: {out}");
+    assert!(out.contains("proto ERR_INVALID_PROTOCOL TypeError"), "out: {out}");
     assert!(out.contains("post 200 secure:POST:secret"), "out: {out}");
     assert!(out.contains("get 200 secure:GET:"), "out: {out}");
     assert!(out.contains("srv-close"), "out: {out}");

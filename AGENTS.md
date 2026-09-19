@@ -1172,6 +1172,81 @@ cargo build
 - 复现：`tests/node/child.rs::phase10f_fork_nonsilent_stdio_null`（修前
   `nonsilent false false true`）。
 
+### 4.140 G2 `__closing` relisten 残留：手工过/ cargo 挂 ≠ 环境问题（2026-09-19，欠账轮）
+
+- 症状：全量 `cargo test` 在 `net::phase10f_net_listen_surface` 挂死 **46 分钟**
+  （子进程 tokio `park_internal` 睡死，lsof 见 TCP LISTEN 已建立、listening
+  回调永不触发）；**同一份 p.mjs 手工 shell 跑 6 秒全过**——结论打架，一度
+  误判为"cargo 环境问题"，clean 全量重建后照样复现，排除构建脏状态。
+- 根因：G2 的 close-during-listen 窗口旗 `__closing` 在 `close()` 置位后
+  **从不重置**——close 后 relisten，新一轮 listening 派发被残留旗吞掉
+  （`__ev("listening")` 开头 `if (this.__closing) break;`）。手工 shell 与
+  cargo harness 的 bind 回调派发时序不同，恰好掩盖/暴露它——**不是环境问题，
+  是状态机残留旗 bug**。
+- 修法：`__doListen` 开头 `this.__closing = false`（net.rs）。修后 0.54s 绿。
+- 推广为铁律：① 凡"窗口旗"（临时置位拦截某类派发/回调）必须与柄一样随
+  close/error/listen 全部出口复位，新增窗口旗时逐出口清单化核对；②
+  **"手工过、cargo 挂"≠环境问题**——先查状态机残留/时序型状态污染，两种
+  启动方式只是时序不同；先 bisect 到引入提交再下结论（本轮 bisect 实锤
+  G2 引入，非 G3/G9-2）。
+
+### 4.141 with_str_args 参数跨分配悬垂：rooted 必须在第一个分配之前（2026-09-19，欠账轮）
+
+- 症状：`net_remote_surface`/`net_unix_socket_roundtrip` 在 cargo harness 下
+  SIGBUS（exit=None 信号死亡、stderr 空），手工 3/3 稳定过；崩溃报告
+  （`~/Library/Logs/DiagnosticReports/winterjs-*.ips`，**SEGV/SIGBUS 定位
+  第一手段**，比 sample/lldb 快且必落盘）栈实锤：
+  `net.rs dispatch → with_str_args → call_two → JS_CallFunctionValue →
+  js::Call memset_pattern16`。
+- 根因：`with_str_args(cx, global, fun, kind, payload)` 的 `global`（裸指针）
+  与 `fun`（裸 JSVal）参数**跨 `to_jsval` 分配**——分配可触发 GC 搬移，
+  悬垂后进 `JS_CallFunctionValue` 即 SIGBUS。第一次补丁只 root 了 dispatch
+  调用点、漏了函数体内跨分配的参数，照样崩——**rooted 必须在任何分配之前
+  覆盖全部跨 GC 存活值**（§4.80 第 N 例；dispatch 三处 `net_target()` 返回值
+  与 `get_prop_value` 读出的 `__ev` 同批全部入槽）。
+- 修法：with_str_args 内 `g`/`f`/`a`/`b` 全部先入 rooted 槽再 to_jsval；
+  dispatch 三处 net_target() 返回值立即 `target_r` 入槽。
+- 推广为铁律：**新增 Rust→JS 调用 helper 时，函数体第一行先把全部 JS 值
+  参数入 rooted 槽，之后才允许出现任何分配型调用**；reviewer 按
+  "参数表 → 第一行 rooted"逐项对。
+
+### 4.142 bisect 禁止连续建 worktree：每个 worktree 的 target 都是全量重编（2026-09-19，欠账轮·灾难记录）
+
+- 症状：为 bisect G3 六提交，**连续建 4 个 worktree 且各自 `cargo build`**，
+  每个 worktree 独立 target/ 全量重编依赖树（每个 10-20GB），磁盘 36G→0
+  急速耗尽，连 ZCode 工具自身的日志都写不下（ENOSPC）——**连"删文件"的
+  命令都失效**，只能用户外部手动 rm 恢复；G9-2 检查点构建中途断供作废重来。
+- 根因：git worktree 共享 .git 不共享 target/；`cargo build` 在新 worktree
+  = mozjs/全部依赖重编。连续建 N 个 = N 份全量。
+- 修法/铁律（**拒绝连续建 worktree 压榨空间**）：
+  ① **bisect 一律用主仓 `git checkout` + `git stash`**（单一 target，增量
+  切换 16 秒），不用 worktree；worktree 只留给"必须并行持有多份完整构建"的
+  场景（如双 agent 并行开发），且用完即删（`git worktree remove --force` +
+  `rm -rf` 残留 + `git worktree prune`）；
+  ② **每建一个 worktree 前先 `df -h` 看余量**（一个 debug worktree 按 20GB
+  计）；余量 < 40GB 不建；
+  ③ 磁盘 ENOSPC 的第一症状是"工具静默失效/日志写不下"，看到即停手清盘，
+  不要继续任何编译类操作。
+
+### 4.143 全量 cargo test 禁套 alarm/timeout（2026-09-19，欠账轮）
+
+- 症状：`perl -e 'alarm 570; exec @ARGV' cargo test` 跑全量——全量（编译全部
+  target + 数千测试）20-40 分钟，alarm 到点中途击杀，后台任务永远等不到结果，
+  反复轮询超时。
+- 根因：alarm 口径（20 秒级）只适用于**单个真机套件冒烟**；全量跑无界。
+- 修法：全量跑 `cargo test` 后台直跑（`> file 2>&1`），轮询 `grep -c
+  "test result: ok"` 看进度；**单测/冒烟才用 alarm**。同族：shell 里
+  `ps aux | grep winterjs` 的 etime 是判断黑盒子进程挂死的硬指标
+  （>60s 的单 phase 即挂，正常 0.5-2s）。
+
+### 4.144 手工复现脚本放 /tmp 会被清（2026-09-19，欠账轮）
+
+- 症状：二分/真机对照用的手工脚本放 `/tmp/wjs-*.mjs`，用户清 tmp 后消失，
+  "手工过"的结论无法立即复核，差点把已修好的当未修。
+- 修法：手工探针脚本每次从测试文件现提取（python re 从 `tests/node/*.rs`
+  的 `r#"..."#` 抽 JS 源），或放 `/Users/bemly/probe`（家目录，不随 tmp 清理
+  消失）；结论引用脚本时注明来源与生成方式。
+
 ## 5. 路线图（已收官，现状以 plan 为准）
 
 - §5 初版四项（`console`/timers → job queue → ESM loader → `fs`/`path`/`process`）

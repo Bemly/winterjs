@@ -776,6 +776,31 @@ ERR_* 码括号仅限 ERR_ 前缀——errno 系 name 恒裸 Error）。剩余�
 > （数字字符串端口 TCP 分流/ALREADY_LISTEN 同步守卫/柄随 close-error 双出口
 > 清——AGENTS §4.138），`phase10f_net_listen_surface` 落盒。剩余红项维持
 > 下记分类（TIMEOUT/Happy Eyeballs/worker 投递/large-string/环境双红）。
+>
+> 八轮（2026-09-19，G6 欠账轮）：**13 件转绿**——large-string（分包多字节：
+> setEncoding 换持久 StringDecoder，40962→40960）/ allow-half-open-async-iter
+> （end(cb) 挂 finish 非 close）/ write-after-end-nt（对端 FIN+本地 end 后写
+> → EPIPE 'ended by the other party'，cb/error 均下一 tick）/ connect-abort-
+> controller（Socket 构造器 signal 分支补齐 + abort 触发的 destroy 推
+> microtask + 直调 addEventListener 入 `__etAdd` 侧表供 listenerCount 读）/
+> connect-options-ipv6（lookup opts 透传请求 family）/ autoselectfamily-default
+> （HE 串行回落：all:true 拉全地址 + `__heOnErr` 钩吞中间失败 + close 后复位
+> 重试 + 保留 __pendW；attemptTimeout 竞速记档）/ HE 校验族 ×2
+> （autoSelectFamily boolean 门 + attemptTimeout int[1,60000]→OUT_OF_RANGE、
+> setDefault 钳 [10,60000]）/ max-connections×2 + bytes-stats（G2 server
+> 选项面已顺手修绿，欠账表滞后）。全量 `test-net-*` 159 件对拍：116 绿
+> （+13）/ SAME1 14 / 仅我们红 29（stash 旧二进制红集逐一相同，零回归）；
+> black-box 223 全绿。AGENTS §4.148。
+>
+> **G6 残件（6 件，infra 级，逐件定性）**：throttle（需 native 读门控 +
+> 写 EAGAIN 流控——JS 层 pause 不停内核读，npauses>1 无法满足）/
+> listen-handle-in-cluster-1 + listen-twice（cluster 协议：
+> internalMessage/NODE_CLUSTER 消息 + process.disconnect，非 net 面）/
+> socket·server-transfer-worker×3（跨线程 fd 移交底座：net_detach + 信封
+> 携带 token + worker 侧 adopt 重建——可骑 BoundSocket holdToken 机制，
+> 独立轮）。其余红项为既有校验族/环境 DIFF 池（better-error-messages×2/
+> dns-error/reuseport/onread-static-buffer/socket-timeout 系等，与旧
+> 二进制红集一致）。
 
 ## zlib
 

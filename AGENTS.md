@@ -1297,6 +1297,42 @@ cargo build
 - 推广为铁律：Web 流管道的错误出口看消费侧——readable 的迭代器要 reject，
   错误就必须 `controller.error()`，走 write 拒绝等于把错误送进 cancel 黑洞。
 
+### 4.148 net 尾件五坑：分包解码/end 回调挂点/abort 发射时序/EPIPE 三条件/HE 回落钩（2026-09-19，G6 轮）
+
+- **坑一（large-string）**：Socket `setEncoding` 用 `new TextDecoder(enc)` 逐
+  chunk 解码——TCP 分包把多字节序列切断，每碎片各吐一个 U+FFFD（40962 vs
+  40960 之谜）。修法：持久 `StringDecoder`（`__dec` 与 `__enc` 同生命周期），
+  `__ev end` 时 `end()` 补齐残余。教训：凡"逐 chunk + 字符编码"，解码器必须
+  跨 chunk 保态（stream 系同查）。
+- **坑二（async-iter）**：`end(cb)` 的回调挂 'close'——node 流语义挂
+  **'finish'**（FIN 刷完即发）；半开对端不回 FIN 时 close 永不来，
+  `end(resolve)` 卡死。改挂 finish 前先 grep 依赖 close 时点的旧套件。
+- **坑三（abort-controller）**：`ac.abort()` 后套件才挂 `once('close')`——
+  我们 destroy(err) **同步** emit error/close，抢在 once 挂载前 → 未处理
+  error + once 永挂。node 的 destroy 发射是 nextTick。修法：abort 触发的
+  destroy 一律 `queueMicrotask`（connect 侧/构造器侧两处）。另：Socket
+  构造器此前根本无 signal 分支（查到的是 Server 的——先确认函数归属再改）；
+  直调 `addEventListener` 须入 `__etAdd` 侧表，`events.listenerCount` 才可见。
+- **坑四（write-after-end-nt/writable）**：对端 FIN 后写 → EPIPE
+  'This socket has been ended by the other party'。条件三缺一不可：
+  `__peerFin && __ended && !allowHalfOpen`——仅对端 FIN（writable 套件
+  'end' 后写合法且无错）、仅本地 end（STREAM_WRITE_AFTER_END 旧形）、
+  半开（async-iter 套件 FIN 后写要成功）都不走此路；cb 与 error 事件
+  都下一 tick（同步返回 false 时 hasError 仍 false）。回归三板斧：
+  writable/write-after-close/blocklist 三件旧绿套件先受累后修复——
+  **改 write 路径必跑这三件**。
+- **坑五（autoselectfamily-default/blocklist）**：HE 串行回落 = lookup
+  `all: <autoSelectFamily 生效值>`（mocked lookup 只在 all:true 给数组）+
+  `__heOnErr` 钩吞中间失败（error case 不落用户监听）+ close 后 `__heReset`
+  重试（**保留 `__pendW`**——回落期间的用户写带到最终连接）+ 尝试统一走
+  `__doConnect` 闭包（blockList 校验每地址生效，直接 `__realConnect` 会
+  绕过拦截且无 close 事件→链停摆）。记档：attemptTimeout 竞速未实现。
+- 回归：全量 `test-net-*` 159 件对拍——116 绿（+13）/ SAME1 14 / 仅我们红
+  29（与 stash 旧二进制红集**逐一相同**，零回归）；black-box 223 全绿。
+- 推广为铁律：①改 net write/end 路径，writable/write-after-close/
+  write-after-end-nt/async-iter/blocklist 五件是固定回归组；②"事件 X 后
+  才挂监听"的套件形状 = 发射必须异步（node destroy 语义）。
+
 ## 5. 路线图（已收官，现状以 plan 为准）
 
 - §5 初版四项（`console`/timers → job queue → ESM loader → `fs`/`path`/`process`）

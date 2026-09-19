@@ -189,7 +189,7 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | fs | validators 尾件 / unhandled-rej 尾件 | ~40 件 | 逐 API 续补，下轮可修 |
 | fs | watch hang（promises-watch/recursive/encoding）/ watch-ignore-glob / flush 选项 / pipe 读形 | ~23 件 | watch 事件流 + glob 语义，中等工程 |
 | net | ~~server close/listen 时序~~ ✅ 2026-09-19 转绿（G2 server 选项面 blockList/maxConnections/drop/pauseOnConnect/close 窗口 + G2 relisten `__closing` 残留旗修复）；余 cargo-harness 下 net_remote/unix_socket 的 SEGV 已修（with_str_args GC 悬垂） | ~10 件 | 已收官 |
-| net | TIMEOUT 9 / Happy Eyeballs 3 / worker 投递 3 / large-string 1 | ~16 件 | 背压语义 + 竞速回落，另案 |
+| net | ~~TIMEOUT 9 / Happy Eyeballs 3 / worker 投递 3 / large-string 1~~ ✅ 2026-09-19 G6：13/16 转绿（large-string 分包解码/async-iter end(cb)挂finish/write-after-end-nt EPIPE面/abort-controller 信号面+侧表/ipv6 lookup family透传/HE-default 串行回落/HE校验×2；max-connections×2+bytes-stats 随 G2 已绿），残件 6 件 infra 级记档——throttle（native 读门控+写EAGAIN流控）/cluster×2（internalMessage协议，非net面）/worker×3（跨线程fd移交，可骑holdToken机制，独立轮） | ~16→6 件 | 残件另轮（bun-parity net 八轮，AGENTS §4.148） |
 | zlib | ~~增量语义~~ ✅ 2026-09-19 转绿（G9-1 Rust 状态机 + G9-2 JS 流类接线：write 即时压出/flush 档位即时出边界/finishFlush 容忍/rejectGarbageAfterEnd/一次性面切引擎错误口径对真机；6 目标套件+连带 5 件全绿，zlib 域 73/81） | ~6 件 | 已收官 |
 | zlib | ~~brotli 字典 / zstd pledged-src-size / Web DecompressionStream~~ ✅ 2026-09-19 转绿（G9-3：raw 字典构造期主动 set_dictionary；一次性压缩走引擎收口（dict/pledged/错误口径单点，字节对比零回归）；__zDictBytes 严格校验；pledgedSrcSize 全校验面 + 引擎终检 errno=72；constants.ZSTD_error_* 28 项；Web CS/DS 全局+stream/web——4 格式 roundtrip/尾垃圾 readable TypeError/proto 独立；6 目标套件全绿 + 82 件对拍零回归） | — | 已收官 |
 | dgram | ~~recvbuf 系~~ ✅ 2026-09-19 转绿（G1：recvbuf/sendbuf 四方法+隐式绑定+EMSGSIZE 回调路由+数组 send+族匹配解析+ALREADY_BOUND/EBADF 形状；DIFF 53→32，余 connect 族/membership/bindSync/ipv6only 等独立小簇 ~32 件顺延） | 小簇 | 已动工，余件逐 API 续补 |
@@ -217,18 +217,18 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | G9-2 zlib JS 流类接线 | ✅ 上轮（6 目标套件全绿 + 连带 5 件，zlib 域 73/81） |
 | G3 http 校验长尾/chunk 限深 | ✅ 上轮（子 agent 六提交移植，点名 45 件 SAME0 + 连带 15 件） |
 | **G9-3 zlib 尾件**（brotli/zstd 字典/pledged/Web CS·DS） | ✅ 本轮（6 目标套件全绿 + 82 件对拍零回归；一次性压缩走引擎收口 + raw 字典构造期设 + 严格字典校验 + pledged errno=72 + constants 28 项 + Web 全局；AGENTS §4.145-147） |
+| **G6 net 尾件** | ✅ 本轮 13/16 转绿（large-string/async-iter/write-after-end-nt/abort/ipv6/HE×3 + G2 顺手 2 件；全量 159 件对拍零回归，black-box 223 全绿）；残件 6 件 infra 级记档（throttle 流控/cluster 协议×2/worker fd 移交×3）；AGENTS §4.148 |
 | 集成修复 ×2 | ✅ net relisten `__closing` 挂死（46 分钟）+ net SEGV（with_str_args GC 悬垂）+ stream 9b 回归（上轮） |
 | 验收 | `cargo test` 全量 21 target 0 失败 0 警告 + 冒烟 5/5 |
-| AGENTS.md | ✅ §4.140-144 四坑 + §4.145-147 三坑（exec 假绿/一次性 native 丢 opts 二进宫/CS·DS 错误落 readable） |
-| 本节欠账表 | ✅ G3/G2/G9-2/G9-3 划线转绿 |
+| AGENTS.md | ✅ §4.140-144 四坑 + §4.145-147 三坑 + §4.148 net 五坑 |
+| 本节欠账表 | ✅ G3/G2/G9-2/G9-3/G6 划线转绿 |
 
 **新会话入口（按优先级）：**
 
-1. **G6 net 尾件 ~16 件**：TIMEOUT 9 / Happy Eyeballs 3 / worker 投递 3 /
-   large-string 1（开场先读 §4.140/§4.141：net 域黑盒单跑
-   `cargo test --test node net` 全绿后再并发）。
-2. **G4 fs validators 尾件 ~40 件 → G5 child ~30 件 → G8 fs watch/glob
+1. **G4 fs validators 尾件 ~40 件 → G5 child ~30 件 → G8 fs watch/glob
    ~23 件**（下轮可修三连）。
+2. **G6 残件 6 件**（infra 级，需独立轮）：throttle（native 读门控+写 EAGAIN
+   流控）、cluster×2（internalMessage 协议）、worker×3（跨线程 fd 移交）。
 3. **大簇另案**：G10 http2 compat ~105 件、G11 http TIMEOUT ~110 件、
    dgram 余 ~32 件、http OutgoingMessage 缓冲模型 5 件（G3 遗留专项）。
 4. **URLPattern 归属**：对 Bun 1.3 实测后拍板（见上"待核对"）。

@@ -429,7 +429,11 @@ pub unsafe extern "C" fn spawn_start(
     use std::process::Stdio;
     let mut cmd = tokio::process::Command::new(&file);
     cmd.args(&args);
-    cmd.stdin(if pipe_in { Stdio::piped() } else { Stdio::null() });
+    cmd.stdin(match stdio[0].as_str() {
+        "ignore" => Stdio::null(),
+        "pipe" => Stdio::piped(),
+        _ => Stdio::inherit(),
+    });
     cmd.stdout(match stdio[1].as_str() {
         "ignore" => Stdio::null(),
         "pipe" => Stdio::piped(),
@@ -854,6 +858,8 @@ const {
     ERR_INVALID_ARG_TYPE: { HideStackFramesError: ERR_INVALID_ARG_TYPE },
     ERR_INVALID_ARG_VALUE: { HideStackFramesError: ERR_INVALID_ARG_VALUE },
     ERR_IPC_ONE_PIPE,
+    ERR_INVALID_HANDLE_TYPE,
+    ERR_MISSING_ARGS,
   },
 } = errors;
 const __SIGS = __osDefault.constants.signals;
@@ -1122,6 +1128,23 @@ function __selfCmd(cmd, env) {
   }
   return cmd;
 }
+// send 参数校验（node target.send/_send 口径，父子双侧共用；send-type-error
+// 套件逐项：options 非对象即 ARG_TYPE；message 缺席 MISSING_ARGS、非
+// string/object/number/boolean 即 ARG_TYPE；非空句柄无 fd 移交即
+// INVALID_HANDLE_TYPE）。
+function __validateSendOptions(options) {
+  if (options !== undefined && (typeof options !== "object" || options === null)) {
+    throw new ERR_INVALID_ARG_TYPE("options", "object", options);
+  }
+}
+function __validateSendMessage(message, handle) {
+  if (message === undefined) throw new ERR_MISSING_ARGS("message");
+  if (typeof message !== "string" && typeof message !== "object" &&
+      typeof message !== "number" && typeof message !== "boolean") {
+    throw new ERR_INVALID_ARG_TYPE("message", ["string", "object", "number", "boolean"], message);
+  }
+  if (handle !== undefined && handle !== null) throw new ERR_INVALID_HANDLE_TYPE();
+}
 // node 口径（实测 probe）：abort 错 = Error 实例，name='AbortError'、
 // code='ABORT_ERR'、cause=signal.reason（原生 abort() 为 DOMException AbortError）。
 function __abortError(reason) {
@@ -1207,6 +1230,7 @@ function __legacyReadable(web) {
   // read() 恒 null，数据走 'data'）。
   let buf = [];
   let pumping = false;
+  let pipes = null;
   const emit = (ev, ...args) => {
     for (const l of [...(listeners[ev] || [])]) {
       try { l(...args); } catch {}
@@ -1266,6 +1290,27 @@ function __legacyReadable(web) {
     setEncoding(e) { enc = e === null ? null : String(e); return api; },
     pause() { paused = true; return api; },
     resume() { paused = false; flowing = true; pump(); return api; },
+    // 最小 pipe 面（stdio-inherit 套件 `child.stderr.pipe(process.stderr)`；
+    // 数据经 write 透传，end 默认透传）。
+    pipe(dest, opts) {
+      const onData = (d) => { try { dest.write(d); } catch {} };
+      const onEnd = () => { try { if (!opts || opts.end !== false) dest.end(); } catch {} };
+      api.on("data", onData);
+      api.on("end", onEnd);
+      ((pipes ||= [])).push({ dest, onData, onEnd });
+      return dest;
+    },
+    unpipe(dest) {
+      if (!pipes) return api;
+      const rest = [];
+      for (const p of pipes) {
+        if (dest !== undefined && p.dest !== dest) { rest.push(p); continue; }
+        api.off("data", p.onData);
+        api.off("end", p.onEnd);
+      }
+      pipes = rest;
+      return api;
+    },
     destroy() {
       if (destroyed) return api;
       destroyed = true;
@@ -1588,6 +1633,26 @@ export class ChildProcess {
     return this;
   }
   removeListener(event, cb) { return this.off(event, cb); }
+  // node 口径（kill-sigwinch 套件）：清指定事件（缺省全清）监听。
+  removeAllListeners(event) {
+    if (event === undefined) {
+      for (const e of ["exit", "close", "error", "spawn", "message", "disconnect"]) this.__clearAll(e);
+    } else {
+      if (!["exit", "close", "error", "spawn", "message", "disconnect"].includes(event)) {
+        throw new Error(`NotSupportedError: ChildProcess event '${event}' (exit/close/error/spawn/message/disconnect)`);
+      }
+      this.__clearAll(event);
+    }
+    return this;
+  }
+  __clearAll(event) {
+    if (event === "exit") { this.#exitL.length = 0; this.__install("exit"); }
+    else if (event === "close") { this.#closeL.length = 0; this.__install("close"); }
+    else if (event === "error") { this.#errorL.length = 0; this.__install("error"); }
+    else if (event === "spawn") { this.#spawnL.length = 0; this.__install("spawn"); }
+    else if (event === "message") { this.#msgL.length = 0; this.__install("message"); }
+    else if (event === "disconnect") { this.#discL.length = 0; this.__install("disconnect"); }
+  }
   // 手动派发（execfile 套件直调 child.emit('close', …)；真机 EventEmitter 口径，
   // 走访问器 wrap 以便 exitCode/signalCode 落定）。
   emit(event, ...args) {
@@ -1624,16 +1689,29 @@ export class ChildProcess {
     if (!this.__forkChild) {
       throw Object.assign(new Error("ERR_NOT_SUPPORTED: child send() needs an IPC channel (use fork)"), { code: "ERR_NOT_SUPPORTED" });
     }
-    let cb = null;
-    for (const a of rest) if (typeof a === "function") cb = a;
+    // node target.send 口径（send-type-error 套件）：函数位移 + options 对象
+    // 校验先行（连接态无关）；message/句柄校验随后。
+    let handle, options, cb = null;
+    const a = [...rest];
+    if (a.length > 0 && typeof a[0] === "function") { cb = a.shift(); }
+    else {
+      handle = a.shift();
+      if (a.length > 0 && typeof a[0] === "function") { cb = a.shift(); }
+      else {
+        options = a.shift();
+        if (a.length > 0 && typeof a[0] === "function") { cb = a.shift(); }
+      }
+    }
+    if (options !== undefined) __validateSendOptions(options);
     if (!this.__connected) {
       // Node 口径：关通道后 send 回 false，并异步报 ERR_IPC_CHANNEL_CLOSED。
       const err = new Error("Channel closed");
       err.code = "ERR_IPC_CHANNEL_CLOSED";
       if (cb) queueMicrotask(() => cb(err));
-      queueMicrotask(() => this.__emitForkError(err));
+      else queueMicrotask(() => this.__emitForkError(err));
       return false;
     }
+    __validateSendMessage(message, handle);
     try {
       this.__worker.postMessage(message);
     } catch (e) {
@@ -1650,7 +1728,14 @@ export class ChildProcess {
     if (!this.__forkChild) {
       throw Object.assign(new Error("ERR_NOT_SUPPORTED: child disconnect() needs an IPC channel (use fork)"), { code: "ERR_NOT_SUPPORTED" });
     }
-    if (!this.__connected) return;
+    // node 口径：已断开再调即 'error' 发射 ERR_IPC_DISCONNECTED（无监听即抛，
+    // disconnect 套件 assert.throws 形）。
+    if (!this.__connected) {
+      const err = new Error("IPC channel is already disconnected");
+      err.code = "ERR_IPC_DISCONNECTED";
+      this.__emitForkError(err);
+      return;
+    }
     this.__connected = false;
     // 控制信封（单键载荷，子端 shim 解释为 disconnect，不投递给用户）。
     try { this.__worker.postMessage({ __wjs_fork_ctl: "disconnect" }); } catch {}
@@ -1808,6 +1893,20 @@ function __normSpawnAsyncOpts(opts) {
   }
   if (opts.env !== undefined) o.env = { ...opts.env };
   if (opts.detached !== undefined) o.detached = !!opts.detached;
+  // uid/gid：真机 _handle.spawn 同步 EPERM 口径——非特权指定他 id 即抛
+  //（uid-gid 套件非 root 形；message 正则匹配）。值本身记档忽略。
+  if (opts.uid !== undefined && opts.uid !== null && typeof opts.uid === "number") {
+    if (typeof process.getuid === "function" && opts.uid !== process.getuid()) {
+      const e = new Error("spawn EPERM");
+      e.code = "EPERM"; e.errno = -1; e.syscall = "spawn"; throw e;
+    }
+  }
+  if (opts.gid !== undefined && opts.gid !== null && typeof opts.gid === "number") {
+    if (typeof process.getgroups === "function" && !process.getgroups().includes(opts.gid)) {
+      const e = new Error("spawn EPERM");
+      e.code = "EPERM"; e.errno = -1; e.syscall = "spawn"; throw e;
+    }
+  }
   // shell：boolean/string（node normalizeSpawnArguments 口径；spawn-shell 套件）。
   if (opts.shell !== undefined && opts.shell !== null) {
     if (typeof opts.shell !== "boolean" && typeof opts.shell !== "string") {
@@ -2230,14 +2329,43 @@ process.argv = [process.execPath, __mod, ...__forkArgs];
 process.connected = true;
 process.channel = { ref() {}, unref() {}, hasRef() { return true; } };
 process.send = (message, ...rest) => {
-  let cb = null;
-  for (const a of rest) if (typeof a === "function") cb = a;
+  // 校验内联（eval 会话无模块作用域；与 __validateSend* 同口径，code/name 逐字。
+  // 注意：本块在外层模板字符串内，禁用模板字面量与插值写法，一律字符串拼接）。
+  const __received = (v) => v === null ? "null" : (typeof v === "string" ? ("'" + v + "'") : String(v));
+  let handle, options, cb = null;
+  const a = [...rest];
+  if (a.length > 0 && typeof a[0] === "function") { cb = a.shift(); }
+  else {
+    handle = a.shift();
+    if (a.length > 0 && typeof a[0] === "function") { cb = a.shift(); }
+    else {
+      options = a.shift();
+      if (a.length > 0 && typeof a[0] === "function") { cb = a.shift(); }
+    }
+  }
+  if (options !== undefined && (typeof options !== "object" || options === null)) {
+    const e = new TypeError('The "options" argument must be of type object. Received ' + __received(options));
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
   if (!process.connected || parentPort === null) {
     const err = new Error("Channel closed");
     err.code = "ERR_IPC_CHANNEL_CLOSED";
     if (cb) queueMicrotask(() => cb(err));
     else queueMicrotask(() => process.__wjs_emit("error", err));
     return false;
+  }
+  if (message === undefined) {
+    const e = new TypeError('The "message" argument must be specified');
+    e.code = "ERR_MISSING_ARGS"; throw e;
+  }
+  if (typeof message !== "string" && typeof message !== "object" &&
+      typeof message !== "number" && typeof message !== "boolean") {
+    const e = new TypeError('The "message" argument must be one of type string, object, number, or boolean.');
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
+  if (handle !== undefined && handle !== null) {
+    const e = new TypeError("This handle type cannot be sent");
+    e.code = "ERR_INVALID_HANDLE_TYPE"; throw e;
   }
   try {
     parentPort.postMessage(message);

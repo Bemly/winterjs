@@ -794,6 +794,92 @@ console.log("readable", Buffer.concat(bufs).toString().trim() === "123");"#]));
 }
 
 #[test]
+fn phase10f_child_g5_surface_batch2() {
+    // G5-4：removeAllListeners/二次 disconnect 抛错/uid-gid EPERM/pipe 透传/
+    // fork send 参数校验（message 缺席/非法型/options 非对象/句柄拒收）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("g5b2.mjs");
+    file.write_str(
+        r#"
+import { spawn, fork } from "node:child_process";
+import assert from "node:assert";
+// removeAllListeners（sigwinch 套件形：清 exit 后 kill 不再触发旧监听）
+{
+  const c = spawn("sleep", ["30"], { stdio: "ignore" });
+  let fired = false;
+  c.on("exit", () => { fired = true; });
+  c.removeAllListeners("exit");
+  c.on("exit", () => console.log("batch2-exit-clean", fired === false));
+  c.kill("SIGKILL");
+}
+// uid/gid 非特权抛 EPERM（真机同步抛；message 正则匹配）
+{
+  let uidOk = false, gidOk = false;
+  try { spawn("echo", ["x"], { uid: 0 }); } catch (e) { uidOk = /EPERM/.test(e.message); }
+  try { spawn("echo", ["x"], { gid: 0 }); } catch (e) { gidOk = /EPERM/.test(e.message); }
+  const root = typeof process.getuid === "function" ? process.getuid() === 0 : true;
+  console.log("batch2-idcheck", root || (uidOk && gidOk));
+}
+// pipe 最小面（stderr.pipe 透传；stdio-inherit 套件形）
+{
+  const c = spawn("echo", ["piped"]);
+  assert.strictEqual(typeof c.stderr.pipe, "function");
+  const dest = { write() {}, end() {} };
+  assert.strictEqual(c.stderr.pipe(dest), dest);
+  console.log("batch2-pipeface", true);
+  c.on("close", () => {});
+}
+// fork send 参数校验（send-type-error 套件；子端 message 常驻监听保活）
+{
+  const mod = new URL("g5b2-child.mjs", import.meta.url).pathname;
+  const t = fork(mod, []);
+  t.on("message", () => {});
+  // 注：此处不挂 error 监听——二次 disconnect 的 ERR_IPC_DISCONNECTED 经
+  // error 发射，无监听即同步抛（套件 assert.throws 形）；挂了反而被吞。
+  const codes = [];
+  const try_ = (label, fn) => { try { fn(); codes.push("no-throw"); } catch (e) { codes.push(e.code); } };
+  try_("msg-undef", () => t.send(undefined));
+  console.log("batch2-sendmsg", codes[0] === "ERR_MISSING_ARGS");
+  try_("opt-null", () => t.send("msg", null, null));
+  console.log("batch2-sendopt", codes[1] === "ERR_INVALID_ARG_TYPE");
+  try_("handle-meow", () => t.send("msg", "meow", undefined));
+  console.log("batch2-sendhandle", codes[2] === "ERR_INVALID_HANDLE_TYPE");
+  // 二次 disconnect 抛 ERR_IPC_DISCONNECTED（disconnect 套件形；error 发射转同步抛）
+  t.disconnect();
+  let d2 = "";
+  try { t.disconnect(); } catch (e) { d2 = e.code; }
+  console.log("batch2-disconnect2", d2 === "ERR_IPC_DISCONNECTED");
+  setTimeout(() => process.exit(0), 500);
+}
+"#,
+    )
+    .unwrap();
+    dir.child("g5b2-child.mjs")
+        .write_str(r#"process.on("message", () => {}); setTimeout(() => {}, 30000);"#)
+        .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in [
+        "batch2-exit-clean true",
+        "batch2-idcheck true",
+        "batch2-pipeface true",
+        "batch2-sendmsg true",
+        "batch2-sendopt true",
+        "batch2-sendhandle true",
+        "batch2-disconnect2 true",
+    ] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase10f_entry_failure_open_handle_exit() {
     // §4.70 姊妹（10f 根修）：入口失败（throw / 未处理 rejection）+ 开着的子进程
     // 句柄 = 事件循环永不 idle、循环尾收割永不到的 hang。修后 fatal 检查点提前

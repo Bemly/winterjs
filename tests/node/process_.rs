@@ -61,6 +61,14 @@ fn phase4_process_exit_codes() {
     let out = run("caught.mjs", "try { process.exit(4); } catch (e) {}\n");
     assert_eq!(out.status.code(), Some(4));
     assert!(out.stderr.is_empty());
+    // 首个码赢（realpath-pipe 套件：try{exit(2)}catch{exit(1)} 必须 rc=2；
+    // ESM/CJS 双入口，无 stderr）。
+    let out = run("first.mjs", "try { process.exit(2); } catch (e) { process.exit(1); }\n");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stderr.is_empty());
+    let out = run("first.cjs", "try { process.exit(2); } catch (e) { process.exit(1); }\n");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stderr.is_empty());
     dir.close().unwrap();
 }
 

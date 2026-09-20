@@ -363,7 +363,14 @@ pub unsafe extern "C" fn process_exit(
     } else {
         state::exit_code().unwrap_or(0)
     };
-    state::with_plain(|p| p.process_exited = Some(code));
+    // node 口径：exit 即终结（try 内调用不触发 catch）；哨兵是可抛 JS 值，
+    // 用户 catch 吞掉后仍以后续 exit 覆盖——首个码赢（realpath-pipe 套件：
+    // try{exit(2)}catch{exit(1)} 必须 rc=2）。
+    state::with_plain(|p| {
+        if p.process_exited.is_none() {
+            p.process_exited = Some(code);
+        }
+    });
     tracing::info!(target: "winterjs::process", code, "process.exit called");
     report_error(&mut cx, &format!("__wjs_exit:{code}"));
     false

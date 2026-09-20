@@ -4210,6 +4210,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "h3-axum"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60560d71e2ecf73a9b7eb9e82197b65cfe9f2a30e3ce226237c83ded454b6d75"
+dependencies = [
+ "axum",
+ "bytes",
+ "h3",
+ "h3-quinn",
+ "http",
+ "http-body-util",
+ "tower",
+]
+
+[[package]]
 name = "h3-quinn"
 version = "0.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11902,6 +11917,7 @@ dependencies = [
  "governor",
  "h2",
  "h3",
+ "h3-axum",
  "h3-quinn",
  "headers",
  "hickory-resolver",

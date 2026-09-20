@@ -31,7 +31,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("ohos"))
 default = ["quinn"]
 tokio-console = ["dep:console-subscriber", "tokio/tracing"]
 cap-std = ["dep:cap-std"]
-quinn = ["dep:quinn", "dep:h3", "dep:h3-quinn"]
+quinn = ["dep:quinn", "dep:h3", "dep:h3-quinn", "dep:h3-axum"]
 
 [dependencies]
 # 铁律：mozjs 永远钉死精确版本，只跟随 servo 的 release 手动升级，
@@ -303,6 +303,8 @@ quinn = { version = "0.11", optional = true }
 # quinn ^0.11.7 正配本仓 0.11.11；headers 面走 H3 分支，裸流分支不动）。
 h3 = { version = "0.0.8", optional = true }
 h3-quinn = { version = "0.0.10", optional = true }
+# 独立 serve（2026-09-21 用户拍板）：H3→axum 桥接；依赖全已在树内，零新增传递依赖
+h3-axum = { version = "0.2", optional = true }
 governor = "0.10"
 metrics = "0.24"
 # push-gateway 特性硬绑 hyper-rustls/aws-lc-rs（§2 禁），只开 http-listener（/metrics 自托管）

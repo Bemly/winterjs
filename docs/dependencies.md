@@ -471,6 +471,7 @@ npmrc 附记（2026-09-10 实测）：`rust-ini` 把 `:` 也当键值分隔符
 | 自动证书（后期） | `instant-acme` | 0.8.5 | 2022-05-12 | 2026-02-24 | ✅（TLS 豁免） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
 | 局域网二维码 | `qrcode` | 0.14.1 | 2014-11-28 | 2024-07-05 | ✅（冻结） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 手写 SIMD | `wide` | 1.7.0 | 2019-09-21 | 2026-08-27 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| H3 桥接 | `h3-axum` | 0.2.0 | 2025-10-29 | 2025-11-28 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 备注：静态文件/CORS/压缩/追踪全用 `tower-http`（压缩后端复用 §6 的 flate2/brotli/ruzstd 解码）；
 multipart 表单走 `axum::extract::Multipart`；路由/SSE/JSON/Query 全走 axum 内建。
@@ -484,6 +485,10 @@ TS 家族（`ts/mts/cts/tsx/jsx`）MIME 由自有 `from_fn` 中间件覆盖为 `
 启用必须 `RUSTFLAGS="--cfg tokio_unstable" cargo build --features tokio-console`，缺之编译期
 直接报错；`src/logging.rs::init` 二选一，启用时替代默认 fmt 层）。
 `local-ip-address` 的 OHOS 格待验证；`qrcode` 只负责矩阵生成，终端渲染手写约 20 行。
+`h3-axum`（2026-09-21 用户拍板）：H3→axum 一行桥接（`serve_h3_with_axum`）；
+依赖 `axum^0.8/h3^0.0.8/h3-quinn^0.0.10/http^1/http-body-util/tower/bytes` 全已在树内，
+零新增传递依赖；落选 `axum-h3`（tonic-h3 系，需 `h3-util` 后端，依赖重）。独立 serve 的
+H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计（`Request→Response` 通道）。
 
 ## 11. dev 依赖（只跑在 host，不占 target 矩阵）
 

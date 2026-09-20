@@ -122,7 +122,11 @@ async function __wjs_serve_send_resp(id, resp) {
   if (body !== null && body !== undefined) {
     for await (const c of body) {
       const u8 = c instanceof Uint8Array ? c : new Uint8Array(c);
-      __wjs_serve_push(id, u8);
+      // 分片推送：单次 native 拷贝封顶 64KB，大体走多 Chunk 通道（plan4 §0-2 流式；
+      // 快照在构造期已存在，此处只解决传输分片，不碰共享 Response 语义）。
+      for (let off = 0; off < u8.length; off += 65536) {
+        __wjs_serve_push(id, u8.subarray(off, Math.min(off + 65536, u8.length)));
+      }
     }
   }
   __wjs_serve_push(id, null);

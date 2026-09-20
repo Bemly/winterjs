@@ -2306,6 +2306,14 @@ function __fsEncoding(opts) {
   if (opts.encoding !== undefined && opts.encoding !== null) check(opts.encoding);
   return opts.encoding ?? null;
 }
+// node getOptions（streams 构造器口径）：null/undefined/function → 缺省{}；
+// string → { encoding }；非对象（数字/布尔）→ ARG_TYPE 'options'。
+function __fsStreamOpts(opts) {
+  if (opts == null || typeof opts === "function") return {};
+  if (typeof opts === "string") return { encoding: opts };
+  if (typeof opts !== "object") __vErrType("options", "string or Object", opts);
+  return opts;
+}
 function __fsMode(opts) {
   if (opts && typeof opts === "object" && opts.mode !== undefined) {
     const n = Number(opts.mode);
@@ -3052,7 +3060,7 @@ export function unwatchFile(p, listener) {
 // createWriteStream 维持 Web 流外形（口径见下注）。----
 class __ReadStream extends Readable {
   constructor(p, opts) {
-    opts = opts ?? {};
+    opts = __fsStreamOpts(opts);
     __fsEncoding(opts);
     // node validateOffset（non-number-arguments-throw 套件）：start/end 非 number
     // （含 '4' 字符串形）即 ARG_TYPE；node 校验点在构造器（fd 形同样适用）。
@@ -3061,7 +3069,8 @@ class __ReadStream extends Readable {
     const hwm = opts.highWaterMark !== undefined ? Number(opts.highWaterMark) : 65536;
     const size = Number.isFinite(hwm) && hwm > 0 ? Math.floor(hwm) : 65536;
     super({ highWaterMark: size, autoDestroy: true, emitClose: true });
-    this.path = p;
+    // node 口径：fd 形下 path 不赋值（undefined），只无 fd 时由路径确立。
+    this.path = undefined;
     this.flags = opts.flags ?? "r";
     this.mode = opts.mode ?? 0o666;
     this.autoClose = opts.autoClose !== false;
@@ -3100,6 +3109,7 @@ class __ReadStream extends Readable {
       }
       return;
     }
+    this.path = p;
     const bytes = __fsCall("open", p, () => __wjs_fs_read_file(p));
     let start = opts.start !== undefined ? Math.max(0, Math.floor(Number(opts.start) || 0)) : 0;
     let end = opts.end !== undefined ? Math.floor(Number(opts.end)) : bytes.length - 1;
@@ -3181,12 +3191,14 @@ export function createReadStream(p, opts) {
 // 攒至 _final 一次性落盘（无增量 flush）、open/ready 于首个 _write/_final 前派发。
 class __WriteStream extends Writable {
   constructor(p, opts) {
-    opts = opts ?? {};
+    opts = __fsStreamOpts(opts);
     __fsEncoding(opts);
     __fsValidateOffset(opts.start, "start");
     __fsValidateOffset(opts.end, "end");
     super({ autoDestroy: true, emitClose: true });
-    this.path = p;
+    // node 口径：fd 形下 path 为 undefined（ReadStream 同口径）。
+    this.path = undefined;
+    if (opts.fd === undefined || opts.fd === null) this.path = p;
     this.flags = opts.flags ?? "w";
     this.mode = opts.mode ?? 0o666;
     this.autoClose = opts.autoClose !== false;
@@ -3411,24 +3423,97 @@ export function readlinkSync(p, opts) {
   if (enc === "buffer") return Buffer.from(link);
   return link;
 }
-export function cpSync(src, dst, opts = {}) {
+// node lib/internal/fs/utils.js validateCpOptions 逐字（cp 校验族套件点名）：
+// undefined → 缺省；非对象（含函数/数组/null）→ ARG_TYPE 'options'；
+// 六布尔逐项校验（property 文案）；mode 走 copyFile 档 [0,7]；
+// dereference+verbatimSymlinks 互斥 → INCOMPATIBLE_PAIR；filter 须函数。
+function __cpValidateOptions(opts) {
+  const def = { dereference: false, errorOnExist: false, filter: undefined, force: true, preserveTimestamps: false, recursive: false, verbatimSymlinks: false };
+  if (opts === undefined) return { ...def };
+  if (opts === null || typeof opts !== "object" || Array.isArray(opts)) {
+    const e = new TypeError(`The "options" argument must be of type object. Received ${__vReceived(opts)}`);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
+  const o = { ...def, ...opts };
+  for (const k of ["dereference", "errorOnExist", "force", "preserveTimestamps", "recursive", "verbatimSymlinks"]) {
+    if (typeof o[k] !== "boolean") {
+      const e = new TypeError(`The "options.${k}" property must be of type boolean. Received ${__vReceived(o[k])}`);
+      e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+    }
+  }
+  let mode = o.mode;
+  if (mode === undefined || mode === null) mode = 0;
+  else {
+    if (typeof mode !== "number") __vErrType("mode", "number", mode);
+    if (!Number.isInteger(mode)) {
+      const e = new RangeError(`The value of "mode" is out of range. It must be an integer. Received ${mode}`);
+      e.code = "ERR_OUT_OF_RANGE"; throw e;
+    }
+    if (mode < 0 || mode > 7) {
+      const e = new RangeError(`The value of "mode" is out of range. It must be >= 0 && <= 7. Received ${mode}`);
+      e.code = "ERR_OUT_OF_RANGE"; throw e;
+    }
+  }
+  o.mode = mode;
+  if (o.dereference === true && o.verbatimSymlinks === true) {
+    const e = new TypeError('Option "dereference" cannot be used in combination with option "verbatimSymlinks"');
+    e.code = "ERR_INCOMPATIBLE_OPTION_PAIR"; throw e;
+  }
+  if (o.filter !== undefined && typeof o.filter !== "function") {
+    const e = new TypeError(`The "options.filter" property must be of type function. Received ${__vReceived(o.filter)}`);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
+  return o;
+}
+function __cpSameOrSubdir(src, dst) {
+  // node cpSyncCheckPaths 近似：同路径或 dst 落在 src 内 → EINVAL。
+  // 比对走绝对路径归一（尾斜杠剥离；大小写敏感 posix 口径）。
+  const norm = (p) => String(p).replace(/\/+$/, "") || "/";
+  const a = norm(src), b = norm(dst);
+  if (a === b) return "same";
+  if (b.startsWith(a + "/")) return "subdir";
+  return null;
+}
+export function cpSync(src, dst, opts) {
+  const o = __cpValidateOptions(opts);
   src = __fsPath(src, "cp");
   dst = __fsPath(dst, "cp");
-  const force = opts.force ?? true;
-  const errorOnExist = opts.errorOnExist ?? false;
-  const recursive = opts.recursive ?? false;
+  if (o.filter) {
+    const r = o.filter(src, dst);
+    if (r && typeof r.then === "function") {
+      const e = new TypeError(`The "filter" return value must be of type boolean. Received an instance of Promise`);
+      e.code = "ERR_INVALID_RETURN_VALUE"; throw e;
+    }
+    if (!r) return;
+  }
+  const rel = __cpSameOrSubdir(src, dst);
+  if (rel === "same") {
+    const e = new Error(`src and dest cannot be the same ${src}`);
+    e.code = "ERR_FS_CP_EINVAL"; throw e;
+  }
+  if (rel === "subdir") {
+    const e = new Error(`cannot copy ${src} to a subdirectory of self ${dst}`);
+    e.code = "ERR_FS_CP_EINVAL"; throw e;
+  }
   const st = statSync(src);
   if (st.isDirectory()) {
-    if (!recursive) throw new Error(`ERR_FS_EISDIR: cp '${src}': is a directory (recursive required)`);
+    if (!o.recursive) {
+      const e = new Error(`Recursive option not enabled, cannot copy a directory: ${src}/`);
+      e.code = "ERR_FS_EISDIR"; throw e;
+    }
     __fsCall("cp", dst, () => __wjs_fs_mkdir(dst, true));
     for (const e of readdirSync(src, { withFileTypes: true })) {
-      cpSync(src.replace(/\/$/, "") + "/" + e.name, dst.replace(/\/$/, "") + "/" + e.name, opts);
+      cpSync(src.replace(/\/$/, "") + "/" + e.name, dst.replace(/\/$/, "") + "/" + e.name, o);
     }
     return;
   }
   if (existsSync(dst)) {
-    if (errorOnExist) __fsErr(new Error("EEXIST: file already exists"), "cp", dst);
-    if (!force) return;
+    if (o.force) { /* fallthrough overwrite */ }
+    else if (o.errorOnExist) {
+      const e = new Error(`Target already exists: cp returned EEXIST (${dst} already exists) ${dst}`);
+      e.code = "ERR_FS_CP_EEXIST"; e.syscall = "cp"; e.path = dst; e.errno = 17; throw e;
+    }
+    else return;
   }
   __fsCall("copyfile", src, () => __wjs_fs_copy_file(src, dst));
 }

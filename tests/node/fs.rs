@@ -559,7 +559,7 @@ fs.mkdirSync("d");
 fs.writeFileSync("d/a.txt", "A");
 cpSync("d", "d2", { recursive: true });
 console.log("cp", fs.readFileSync("d2/a.txt", "utf8"), fs.existsSync("d2"));
-try { cpSync("d", "d3"); } catch (e) { console.log("cp-eisdir", e.message.includes("recursive")); }
+try { cpSync("d", "d3"); } catch (e) { console.log("cp-eisdir", e.code === "ERR_FS_EISDIR"); }
 // opendir + Dir 同步迭代/读取
 const names = [...opendirSync(".")].map((d) => d.name).sort().join(",");
 console.log("dir-iter", names);
@@ -862,6 +862,62 @@ console.log("enc", typeof fs.readFileSync("f.txt", "utf8"));
 "#,
     );
     for line in ["buf true true Buffer", "str {\"k\":\"v\"} {\"k\":\"v\"}", "json v", "enc string"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_fs_cp_validation_and_stream_opts() {
+    // cp 校验族（validateCpOptions 逐字）+ 流构造器 getOptions/病 fd path。
+    // 对拍：test-fs-cp-sync-mode-invalid/options-invalid-type/incompatible/
+    // src-dest-identical/copy-directory-without-recursive + write-stream-throw-type-error/read-stream-fd。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "cpv.mjs",
+        r#"
+import fs from "node:fs";
+const t = (name, fn, code) => {
+  try { fn(); console.log(name, "no-throw"); }
+  catch (e) { console.log(name, e.code === code); }
+};
+// 正常：文件拷贝 + 递归目录拷贝
+fs.writeFileSync("a.txt", "hi");
+fs.cpSync("a.txt", "b.txt");
+console.log("cp-ok", fs.readFileSync("b.txt", "utf8"));
+fs.mkdirSync("d/sub", { recursive: true });
+fs.writeFileSync("d/sub/f.txt", "x");
+fs.cpSync("d", "d2", { recursive: true });
+console.log("cp-dir", fs.readFileSync("d2/sub/f.txt", "utf8"));
+// 报错：mode 越界 / options 非对象 / 互斥对 / 同路径 / 目录非递归
+t("mode", () => fs.cpSync("a.txt", "b.txt", { mode: -1 }), "ERR_OUT_OF_RANGE");
+t("opts", () => fs.cpSync("a.txt", "b.txt", () => {}), "ERR_INVALID_ARG_TYPE");
+t("pair", () => fs.cpSync("a.txt", "b.txt", { dereference: true, verbatimSymlinks: true }), "ERR_INCOMPATIBLE_OPTION_PAIR");
+t("same", () => fs.cpSync("a.txt", "a.txt"), "ERR_FS_CP_EINVAL");
+t("eisdir", () => fs.cpSync("d", "d3"), "ERR_FS_EISDIR");
+// 边界：filter 返回 false 跳过；createWriteStream 非法 options 抛；fd 形 path 为 undefined
+fs.cpSync("a.txt", "c.txt", { filter: () => false });
+console.log("filter-skip", fs.existsSync("c.txt"));
+t("wsopt", () => fs.createWriteStream("a.txt", 123), "ERR_INVALID_ARG_TYPE");
+const fd = fs.openSync("a.txt", "r");
+const rs = fs.createReadStream(null, { fd });
+console.log("fd-path", rs.path === undefined);
+fs.closeSync(fd);
+"#,
+    );
+    for line in [
+        "cp-ok hi",
+        "cp-dir x",
+        "mode true",
+        "opts true",
+        "pair true",
+        "same true",
+        "eisdir true",
+        "filter-skip false",
+        "wsopt true",
+        "fd-path true",
+    ] {
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }
     dir.close().unwrap();

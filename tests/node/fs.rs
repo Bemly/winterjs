@@ -944,6 +944,46 @@ fs.closeSync(fd);
 }
 
 #[test]
+fn phase10f_fs_stream_lifetime() {
+    // fs 流续命（__wjs_fs_stream_ref/unref + idle 门）：裸 end() 后挂监听仍收
+    // finish/close；只构造不用的流不续命（进程正常退出）；close 双调只释一次。
+    // UNSAFE-BOUNDARY(fs_stream_ref/unref) 覆盖：饱和减无 panic 路径。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "life.mjs",
+        r#"
+import fs from "node:fs";
+// end 后挂监听仍收齐（同步派发即丢，须递延）。
+{
+  const s = fs.createWriteStream("a.txt");
+  s.end("hi");
+  s.on("finish", () => console.log("w-fin"));
+  s.on("close", () => console.log("w-close", fs.readFileSync("a.txt", "utf8")));
+}
+// 只构造不用：不续命（本用例能退出即证明）。
+{
+  const s = fs.createWriteStream("b.txt");
+  const r = fs.createReadStream("a.txt");
+  r.on("data", () => {});
+  r.on("end", () => console.log("r-end"));
+}
+// 双关：计数归零不欠不超（退出码 0 即证明）。
+{
+  const s = fs.createWriteStream("c.txt");
+  s.end("x");
+  s.close(() => console.log("w-cb"));
+  s.close(() => console.log("w-cb2"));
+}
+"#,
+    );
+    for line in ["w-fin", "w-close hi", "r-end", "w-cb", "w-cb2"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase10f_mkdtemp_disposable_sync_cjs_export() {
     // node 26 双名都在：`require('fs').mkdtempDisposableSync` 具名（套件点名）
     // 与 `mkdtempDisposable` 别名并存；返回 {path, remove} 且二次 remove 不抛。

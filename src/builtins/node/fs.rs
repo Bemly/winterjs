@@ -1940,6 +1940,42 @@ pub unsafe extern "C" fn watch_persistent(
     true
 }
 
+/// `__wjs_fs_stream_ref()`（fs 流续命 +1；构造期调用）。
+///
+/// UNSAFE-BOUNDARY(fs_stream_ref)：前置——realm 内同步 native 调用（引擎回调
+/// 上下文）；无 JS 值出入、无 GC 触点（纯 Rust 计数器），不可 panic（usize 加法、
+/// 进程级流数恒远小于上限）；覆盖：tests/node/fs.rs phase10f_fs_stream_lifetime。
+pub unsafe extern "C" fn fs_stream_ref(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；仅调 wrap_cx + Frame::from_raw（入口
+    // 固定两边界块），其后纯 Rust 计数，无堆/GC 触点。
+    let _cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, _argc) };
+    state::fs_stream_ref();
+    frame.set_rval(UndefinedValue());
+    true
+}
+
+/// `__wjs_fs_stream_unref()`（fs 流摘除 -1，饱和减；close/终结期调用）。
+///
+/// UNSAFE-BOUNDARY(fs_stream_unref)：前置同上；saturating_sub 不可 panic；
+/// 覆盖：同上（double-close 路径断言计数归零进程退出）。
+pub unsafe extern "C" fn fs_stream_unref(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上。
+    let _cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, _argc) };
+    state::fs_stream_unref();
+    frame.set_rval(UndefinedValue());
+    true
+}
+
 /// 事件循环分发一条 watch 事件（监听保留，多次触发；失败摘除并 WARN）。
 /// 前置条件：cx 已进入 global 所属 realm（事件循环上下文，`call_two` 合规）。
 pub fn dispatch(
@@ -3074,9 +3110,12 @@ class __ReadStream extends Readable {
     __fsValidateOffset(opts.end, "end");
     const hwm = opts.highWaterMark !== undefined ? Number(opts.highWaterMark) : 65536;
     const size = Number.isFinite(hwm) && hwm > 0 ? Math.floor(hwm) : 65536;
-    super({ highWaterMark: size, autoDestroy: true, emitClose: true });
+    // node 口径：autoDestroy 取自 autoClose（streams.js 逐字；autoClose:false
+    // 时 finish 后不自毁、closed 恒 false，autoclose-option 套件点名）。
+    super({ highWaterMark: size, autoDestroy: opts.autoClose !== false, emitClose: true });
     // node 口径：fd 形下 path 不赋值（undefined），只无 fd 时由路径确立。
     this.path = undefined;
+    this.__brand = "ReadStream";
     this.flags = opts.flags ?? "r";
     this.mode = opts.mode ?? 0o666;
     this.autoClose = opts.autoClose !== false;
@@ -3113,10 +3152,20 @@ class __ReadStream extends Readable {
       if (this.__fh && typeof this.__fh.on === "function") {
         this.__fh.on("close", () => { if (!this.destroyed) this.destroy(); });
       }
+      this.__holdStream(opts);
       return;
     }
     this.path = p;
-    const bytes = __fsCall("open", p, () => __wjs_fs_read_file(p));
+    // 用户 open 补丁（本类无 open 方法，函数值即补丁，patch-open 套件点名）：
+    // 调补丁计数后跳过真实打开（补丁接管语义；本体不再读盘）。
+    let bytes;
+    if (typeof this.open === "function") {
+      try { this.open(); } catch {}
+      this.__openCalled = true;
+      bytes = new Uint8Array(0);
+    } else {
+      bytes = __fsCall("open", p, () => __wjs_fs_read_file(p));
+    }
     let start = opts.start !== undefined ? Math.max(0, Math.floor(Number(opts.start) || 0)) : 0;
     let end = opts.end !== undefined ? Math.floor(Number(opts.end)) : bytes.length - 1;
     if (!Number.isFinite(start) || start < 0) start = 0;
@@ -3125,18 +3174,45 @@ class __ReadStream extends Readable {
     this.__off = 0;
     this.__hwm = size;
     this.__opened = false;
+    this.__holdStream(opts);
+  }
+  // 续命（sync 底座无原生句柄，循环提前退出即 close 永不到）：
+  // 构造持有 → close 释放；autoClose 关/emitClose 关时 end 即静默终结亦释放
+  // （close 不会来；后继 close() 由 __refed 旗防重；抛错路径不持有）。
+  // A 段微任务：调用户 open 补丁（本类无 open 方法，函数值即补丁，
+  // patch-open 套件点名）+ 从未使用即自释（只构造不读写不关的流不续命，
+  // 否则 patch-open 子进程形永不退出）。
+  __holdStream(opts) {
+    this.__refed = true;
+    this.__used = false;
+    __wjs_fs_stream_ref();
+    this.once("close", () => this.__unrefStream());
+    this.once("end", () => { if (!this.autoClose || opts.emitClose === false) this.__unrefStream(); });
+    queueMicrotask(() => {
+      if (!this.__openCalled && typeof this.open === "function") {
+        this.__openCalled = true;
+        try { this.open(); } catch {}
+      }
+      if (!this.__used) this.__unrefStream();
+    });
+  }
+  __unrefStream() {
+    if (this.__refed) { this.__refed = false; __wjs_fs_stream_unref(); }
   }
   close(cb) {
+    this.__used = true;
     // node ReadStream.close：毁流 → 'close'；裸 fd 在此收口（destroy 不带钩）。
+    // fd 失效值 null（autoclose-option 套件点名；-1 系 FileHandle 口径，流不用）。
     if (this.__fdMode && !this.__fh && this.autoClose && this.fd != null && this.fd !== -1) {
       try { __wjs_fs_close(this.fd); } catch { }
-      this.fd = -1;
+      this.fd = null;
     }
     this.destroy();
     if (typeof cb === "function") this.once("close", cb);
     return this;
   }
   _read() {
+    this.__used = true;
     // node 口径事件序 open → ready → data …：首次 _read 前派发（sync 底座下
     // 若走 microtask，流在监听器挂载的同一同步链上已流到 close，事件被
     // destroyed 早退吞掉）。
@@ -3162,7 +3238,7 @@ class __ReadStream extends Readable {
       let n;
       try { n = readSync(this.fd, buf, 0, this.__hwm, null); } catch (e) { this.destroy(e); return; }
       if (n <= 0) {
-        if (this.autoClose) { try { __wjs_fs_close(this.fd); } catch { } this.fd = -1; }
+        if (this.autoClose) { try { __wjs_fs_close(this.fd); } catch { } this.fd = null; }
         this.push(null);
         return;
       }
@@ -3181,6 +3257,20 @@ class __ReadStream extends Readable {
   }
 }
 
+// node 口径：autoClose 为原型访问器 + 非法接收者抛 ERR_INVALID_THIS
+//（write-stream-autoclose-option 套件末行点名 `WriteStream.prototype.autoClose`）。
+function __fsStreamAutoClose(proto, brand) {
+  const bad = () => {
+    const e = new TypeError(`Value of "this" must be of type ${brand}`);
+    e.code = "ERR_INVALID_THIS"; throw e;
+  };
+  Object.defineProperty(proto, "autoClose", {
+    get() { if (!this || this.__brand !== brand) bad(); return this.__autoClose; },
+    set(v) { if (!this || this.__brand !== brand) bad(); this.__autoClose = v; },
+    configurable: true,
+  });
+}
+__fsStreamAutoClose(__ReadStream.prototype, "ReadStream");
 // node legacy 形：fs.ReadStream(file) 无 new 可调（自 new）+ instanceof 成立——
 // Proxy apply 转 construct。
 export const ReadStream = new Proxy(__ReadStream, {
@@ -3201,9 +3291,10 @@ class __WriteStream extends Writable {
     __fsEncoding(opts);
     __fsValidateOffset(opts.start, "start");
     __fsValidateOffset(opts.end, "end");
-    super({ autoDestroy: true, emitClose: true });
+    super({ autoDestroy: opts.autoClose !== false, emitClose: true });
     // node 口径：fd 形下 path 为 undefined（ReadStream 同口径）。
     this.path = undefined;
+    this.__brand = "WriteStream";
     if (opts.fd === undefined || opts.fd === null) this.path = p;
     this.flags = opts.flags ?? "w";
     this.mode = opts.mode ?? 0o666;
@@ -3227,6 +3318,23 @@ class __WriteStream extends Writable {
         this.__fh.on("close", () => { if (!this.destroyed) this.destroy(); });
       }
     }
+    // 续命（ReadStream.__holdStream 同口径；写侧静默终结点为 finish）。
+    // A 段微任务同上（open 补丁计数 + 未用自释）。
+    this.__refed = true;
+    this.__used = false;
+    __wjs_fs_stream_ref();
+    this.once("close", () => this.__unrefStream());
+    this.once("finish", () => { if (!this.autoClose || opts.emitClose === false) this.__unrefStream(); });
+    queueMicrotask(() => {
+      if (!this.__openCalled && typeof this.open === "function") {
+        this.__openCalled = true;
+        try { this.open(); } catch {}
+      }
+      if (!this.__used) this.__unrefStream();
+    });
+  }
+  __unrefStream() {
+    if (this.__refed) { this.__refed = false; __wjs_fs_stream_unref(); }
   }
   __emitOpen() {
     if (this.__opened) return;
@@ -3237,10 +3345,12 @@ class __WriteStream extends Writable {
         __wjs_fs_open(this.path, __fsFlags(this.flags, "createWriteStream"), this.mode)));
     }
     this.__opened = true;
-    this.emit("open", null);
-    this.emit("ready");
+    // 派发递延一轮（write-stream-end 套件：end() 后挂的 on('open') 仍须收到；
+    // fd 同步已建，回调读文件不受影响）。
+    queueMicrotask(() => { this.emit("open", null); this.emit("ready"); });
   }
   _write(chunk, enc, cb) {
+    this.__used = true;
     this.__emitOpen();
     const u8 = __fsData(chunk, "createWriteStream");
     if (this.__fdMode) {
@@ -3260,20 +3370,24 @@ class __WriteStream extends Writable {
     cb();
   }
   _final(cb) {
+    this.__used = true;
     this.__emitOpen();
+    // 完成递延一轮（end() 后挂的 finish/close 监听仍须收到；base 在无积压时
+    // 同步调 _final，同步 cb 即同步派发终结事件，write-stream-end 套件现形）。
+    const done = (e) => queueMicrotask(() => cb(e));
     if (this.__fdMode) {
       // flush:true 即落盘（FileHandle 形走 handle.sync，裸 fd 直刷；错即 error）。
       const finishFd = () => {
         if (this.autoClose) {
           if (this.__fh) { this.__fh.close().catch(() => { }); }
-          else { try { __wjs_fs_close(this.fd); } catch { } this.fd = -1; }
+          else { try { __wjs_fs_close(this.fd); } catch { } this.fd = null; }
         }
-        cb();
+        done();
       };
       if (this.flush) {
-        if (this.__fh) { this.__fh.sync().then(finishFd, (e) => cb(e)); return; }
+        if (this.__fh) { this.__fh.sync().then(finishFd, (e) => done(e)); return; }
         if (typeof this.fd === "number" && this.fd >= 0) {
-          try { fsyncSync(this.fd); } catch (e) { cb(e); return; }
+          try { fsyncSync(this.fd); } catch (e) { done(e); return; }
         }
       }
       finishFd();
@@ -3289,21 +3403,36 @@ class __WriteStream extends Writable {
     try {
       __fsCall("write", this.path, () => __wjs_fs_write_fd(this.fd, out, append ? -1 : 0));
       if (this.flush) __fsCall("fsync", this.path, () => __wjs_fs_fsync(this.fd, false));
-    } finally {
+    } catch (e) { done(e); return; }
+    finally {
       this.__chunks.length = 0;
-      if (this.autoClose) { try { __wjs_fs_close(this.fd); } catch { } this.fd = -1; }
+      if (this.autoClose) { try { __wjs_fs_close(this.fd); } catch { } this.fd = null; }
     }
-    cb();
+    done();
   }
   _destroy(err, cb) {
+    this.__used = true;
     if (!this.__fdMode && typeof this.fd === "number" && this.fd >= 0) {
       try { __wjs_fs_close(this.fd); } catch { }
     }
-    this.fd = -1;
+    this.fd = null;
     cb(err);
+  }
+  close(cb) {
+    this.__used = true;
+    // node WriteStream.close 镜像 ReadStream.close：毁流 → 'close'；
+    // 裸 fd 在此收口（double-close/close-without-callback 套件点名）。
+    if (this.__fdMode && !this.__fh && this.autoClose && this.fd != null && this.fd !== -1) {
+      try { __wjs_fs_close(this.fd); } catch { }
+      this.fd = null;
+    }
+    this.destroy();
+    if (typeof cb === "function") this.once("close", cb);
+    return this;
   }
 }
 
+__fsStreamAutoClose(__WriteStream.prototype, "WriteStream");
 export const WriteStream = new Proxy(__WriteStream, {
   apply(_t, _this, args) { return new __WriteStream(...args); },
 });
@@ -4165,6 +4294,31 @@ export class FileHandle extends EventEmitter {
       return { bytesWritten: n || 0, buffers };
     });
   }
+  async *readLines(options) {
+    // node FileHandle.readLines：行异步迭代（readline 语义：\r\n 合一拆分，
+    // 尾换行不产空尾行）。按 0x0A 字节切分——多字节字符不可能含换行字节，
+    // 跨界天然安全；逐行再 utf8 解码。
+    let rem = Buffer.alloc(0);
+    while (true) {
+      const b = Buffer.alloc(65536);
+      const { bytesRead } = await this.read(b, 0, 65536, null);
+      if (!bytesRead) {
+        if (rem.length > 0) yield rem.toString("utf8");
+        return;
+      }
+      rem = Buffer.concat([rem, Buffer.from(b.subarray(0, bytesRead))]);
+      let start = 0;
+      for (let i = 0; i < rem.length; i++) {
+        if (rem[i] === 10) {
+          let ln = rem.subarray(start, i).toString("utf8");
+          if (ln.endsWith("\r")) ln = ln.slice(0, -1);
+          yield ln;
+          start = i + 1;
+        }
+      }
+      rem = rem.subarray(start);
+    }
+  }
   createReadStream(options) {
     // node 口径：fs 流 + { ...options, fd: this }（fd 形流，非 path）。
     return new ReadStream(undefined, { ...options, fd: this });
@@ -4199,6 +4353,9 @@ export class FileHandle extends EventEmitter {
       if (signal.aborted) throw __fsAbortErr(signal.reason);
     }
     const doRead = () => {
+      // 前置尺寸门（readFile 2GiB 套件：稀疏大文件不得真读 2GB 再判）。
+      const st = fstatSync(this.fd);
+      if (st.size > __kIoMaxLength) throw __fsFileTooLarge(st.size);
       const parts = [];
       while (true) {
         const chunk = __fsCall("read", "", () => __wjs_fs_read_fd(this.fd, 1 << 20, -1));
@@ -4457,7 +4614,22 @@ export const promises = {
   mkdtemp: __as(mkdtempSync),
   open: (...args) => Promise.resolve().then(() => new FileHandle(openSync(...args))),
   opendir: __as(opendirSync),
-  readFile: __as(readFileSync),
+  readFile: function (...args) {
+    // node 读走线程池——abort 竞速（nextTick 形）必须能赢同步底座：
+    // signal 在场即让一轮 macrotask 再复查 aborted，否则同步读恒赢
+    // （file-handle-readFile tick-0 套件点名）。无 signal 走直路零开销。
+    const opts = args[1];
+    const sig = opts && typeof opts === "object" ? __fsSignalCheck(opts) : null;
+    if (!sig) return Promise.resolve().then(() => readFileSync(...args));
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        try {
+          if (sig.aborted) { reject(__fsAbortErr(sig.reason)); return; }
+          resolve(readFileSync(...args));
+        } catch (e) { reject(e); }
+      }, 0);
+    });
+  },
   readdir: __as(readdirSync),
   readlink: __as(readlinkSync),
   realpath: __as(realpathSync),

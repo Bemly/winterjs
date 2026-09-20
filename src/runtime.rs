@@ -1285,6 +1285,7 @@ async fn event_loop(
             && state::ws_open() == 0
             && state::stream_pending() == 0
             && state::watch_open() == 0
+            && state::fs_stream_open() == 0
             && state::child_open() == 0
             && state::net_open() == 0
             && state::worker_open() == 0

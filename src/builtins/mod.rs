@@ -3437,7 +3437,10 @@ globalThis.EventTarget = class EventTarget {
     }
     const o = typeof options === "boolean" ? { capture: options } : (options ?? {});
     if (o.signal?.aborted) return;
-    const st = __wjs_etState.get(this);
+    // Proxy 目标无表决不抛（mustNotMutate 包裹的 signal 形 addEventListener；
+    // 监听记代理身份下，触发侧 miss 即 benign——abort 竞速由 aborted 轮询门覆盖）。
+    let st = __wjs_etState.get(this);
+    if (!st) { st = new Map(); __wjs_etState.set(this, st); }
     const key = String(type);
     const list = st.get(key) ?? [];
     if (list.some((e) => e.listener === listener && e.capture === !!o.capture)) return;
@@ -3491,8 +3494,16 @@ globalThis.EventTarget = class EventTarget {
 // AbortSignal 重构到全局 EventTarget 基类（Node 同构：signal 即 EventTarget，
 // abort 走 dispatchEvent；监听登记/移除/once/signal 选项全由基类承载）。
 const __wjs_abortState = new WeakMap();
+// Proxy 穿透键（mustNotMutateObjectDeep 包信号形）：Node 套件把 { signal }
+//  deep-proxy 后再传入，WeakMap 的精确身份键即断裂（get→undefined→
+//  TypeError）。状态同时挂 symbol 自有属性——读经 Proxy 转发仍命中目标本体；
+//  写入只发生在构造/触发期（真实对象），永不穿过 Proxy 的 set 陷阱。
+const __wjs_abortSym = Symbol("winterjs.abortState");
+function __wjs_abortStateOf(signal) {
+  return __wjs_abortState.get(signal) ?? signal[__wjs_abortSym];
+}
 function __wjs_abortFire(signal, reason) {
-  const st = __wjs_abortState.get(signal);
+  const st = __wjs_abortStateOf(signal);
   if (!st || st.aborted) return;
   st.aborted = true;
   st.reason = reason === undefined
@@ -3509,14 +3520,16 @@ function __wjs_abortFire(signal, reason) {
 globalThis.AbortSignal = class AbortSignal extends EventTarget {
   constructor() {
     super();
-    __wjs_abortState.set(this, { aborted: false, reason: undefined, onabort: null });
+    const st = { aborted: false, reason: undefined, onabort: null };
+    __wjs_abortState.set(this, st);
+    this[__wjs_abortSym] = st;
   }
-  get aborted() { return __wjs_abortState.get(this).aborted; }
-  get reason() { return __wjs_abortState.get(this).reason; }
-  get onabort() { return __wjs_abortState.get(this).onabort; }
-  set onabort(cb) { __wjs_abortState.get(this).onabort = typeof cb === "function" ? cb : null; }
+  get aborted() { return __wjs_abortStateOf(this).aborted; }
+  get reason() { return __wjs_abortStateOf(this).reason; }
+  get onabort() { return __wjs_abortStateOf(this).onabort; }
+  set onabort(cb) { __wjs_abortStateOf(this).onabort = typeof cb === "function" ? cb : null; }
   throwIfAborted() {
-    const st = __wjs_abortState.get(this);
+    const st = __wjs_abortStateOf(this);
     if (st.aborted) throw st.reason;
   }
   static abort(reason) {
@@ -4757,6 +4770,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_fs_fchown", Some(node::fs::fs_fchown), 3),
             ("__wjs_fs_futimes", Some(node::fs::fs_futimes), 3),
             ("__wjs_fs_fsync", Some(node::fs::fs_fsync), 2),
+            ("__wjs_fs_stream_ref", Some(node::fs::fs_stream_ref), 0),
+            ("__wjs_fs_stream_unref", Some(node::fs::fs_stream_unref), 0),
             ("__wjs_watch_start", Some(node::fs::watch_start), 4),
             ("__wjs_watch_close", Some(node::fs::watch_close), 1),
             ("__wjs_watch_persistent", Some(node::fs::watch_persistent), 2),

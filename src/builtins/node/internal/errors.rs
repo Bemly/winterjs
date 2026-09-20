@@ -418,6 +418,8 @@ E('ERR_ZIP_INVALID_ARCHIVE', 'invalid ZIP archive: %s', Error, HideStackFramesEr
 E('ERR_ZIP_NOT_WRITABLE', 'this archive was not opened for writing', TypeError, HideStackFramesError);
 E('ERR_ZIP_UNSUPPORTED_FEATURE', 'unsupported ZIP feature: %s', Error, HideStackFramesError);
 E('ERR_INVALID_STATE', 'Invalid state: %s', Error, TypeError, RangeError, HideStackFramesError);
+// child_process 单 IPC 通道门（node 原文；stdio 套件双 ipc 形）。
+E('ERR_IPC_ONE_PIPE', 'Child process can have only one IPC pipe', Error);
 // 10f http2 compat 面（node lib/internal/errors.js 文案逐字）
 E('ERR_HTTP2_HEADERS_SENT', 'Response has already been initiated.', Error);
 E('ERR_HTTP2_INVALID_STREAM', 'The stream has been destroyed', Error);

@@ -758,6 +758,42 @@ console.log("kill", c.kill() === true);
 }
 
 #[test]
+fn phase10f_child_g5_validators_and_readable() {
+    // G5-3：\0 横向校验（file/args/env/cwd/shell/command 全面 code 名）+
+    // `-p` 自举（promisified 套件）+ stdio ipc 门（单裸/双 ipc）+
+    // paused read（flush-stdio 套件 readable+read 循环）。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        r#"const cp = await import("node:child_process");
+const codes = [];
+const t = (fn) => { try { const c = fn(); if (c && c.on) c.on("error", () => {}); codes.push("no-throw"); } catch (e) { codes.push(e.code); } };
+t(() => cp.spawn("B\0XXX"));
+t(() => cp.spawn("echo", ["a", "B\0"]));
+t(() => cp.spawn("echo", [], { env: { A: "B\0" } }));
+t(() => cp.spawn("echo", [], { cwd: "a\0b" }));
+t(() => cp.spawnSync("B\0"));
+t(() => cp.execSync("echo \0"));
+t(() => cp.exec("echo \0", () => {}));
+t(() => cp.execFile("echo\0", () => {}));
+console.log("nullbytes", codes.every((c) => c === "ERR_INVALID_ARG_VALUE"));
+t(() => cp.spawn("echo", [], { stdio: "ipc" }));
+console.log("bare-ipc", codes[codes.length - 1] === "ERR_INVALID_ARG_VALUE");
+t(() => cp.spawn("echo", [], { stdio: ["pipe", "pipe", "pipe", "ipc", "ipc"] }));
+console.log("dbl-ipc", codes[codes.length - 1] === "ERR_IPC_ONE_PIPE");
+const r = await new Promise((res, rej) => cp.execFile(process.execPath, ["-p", "42"], (e, so, se) => e ? rej(e) : res({ stdout: so, stderr: se })));
+console.log("dash-p", r.stdout === "42\n", r.stderr === "");
+const q = cp.spawn("echo", ["123"]);
+const bufs = [];
+q.stdout.on("readable", () => { let b; while ((b = q.stdout.read()) !== null) bufs.push(b); });
+await new Promise((res) => q.on("close", res));
+console.log("readable", Buffer.concat(bufs).toString().trim() === "123");"#]));
+    assert_eq!(
+        out,
+        "nullbytes true\nbare-ipc true\ndbl-ipc true\ndash-p true true\nreadable true\n",
+        "g5-validators: {out}"
+    );
+}
+
+#[test]
 fn phase10f_entry_failure_open_handle_exit() {
     // §4.70 姊妹（10f 根修）：入口失败（throw / 未处理 rejection）+ 开着的子进程
     // 句柄 = 事件循环永不 idle、循环尾收割永不到的 hang。修后 fatal 检查点提前

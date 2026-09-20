@@ -853,6 +853,7 @@ const {
   codes: {
     ERR_INVALID_ARG_TYPE: { HideStackFramesError: ERR_INVALID_ARG_TYPE },
     ERR_INVALID_ARG_VALUE: { HideStackFramesError: ERR_INVALID_ARG_VALUE },
+    ERR_IPC_ONE_PIPE,
   },
 } = errors;
 const __SIGS = __osDefault.constants.signals;
@@ -878,9 +879,14 @@ function __normExecOpts(opts) {
   if (typeof opts === "string") { o.encoding = opts; return o; }
   if (opts !== null && typeof opts === "object" && "encoding" in opts) o.encoding = opts.encoding;
   if (opts.timeout !== undefined) o.timeoutMs = Number(opts.timeout);
-  if (opts.shell !== undefined) o.shell = opts.shell;
+  if (opts.shell !== undefined) { __nullCheck(opts.shell, "options.shell"); o.shell = opts.shell; }
   if (opts.maxBuffer !== undefined) o.maxBuffer = Number(opts.maxBuffer);
-  if (opts.cwd !== undefined) o.cwd = String(opts.cwd);
+  if (opts.cwd !== undefined) { __nullCheck(String(opts.cwd), "options.cwd", "must be a string, Uint8Array, or URL without null bytes"); o.cwd = String(opts.cwd); }
+  // argv0：校验后忽略（异步 exec 族 argv0 落地另案；reject-null-bytes 套件只断抛错）。
+  if (opts.argv0 !== undefined && opts.argv0 !== null) {
+    if (typeof opts.argv0 !== "string") throw new ERR_INVALID_ARG_TYPE("options.argv0", "string", opts.argv0);
+    __nullCheck(opts.argv0, "options.argv0");
+  }
   if (opts.env !== undefined) o.env = { ...opts.env };
   // killSignal：undefined/null/合法信号过；类型先行 ARG_TYPE，落空 UNKNOWN_SIGNAL
   //（sanitizeKillSignal 口径；exec timeout-kill 套件）。
@@ -923,13 +929,14 @@ function __normSpawnOpts(opts) {
   const o = { encoding: "buffer", timeoutMs: 0, shell: false, shellPath: null, maxBuffer: 1024 * 1024, inputB64: null, killSigno: 15, killSigname: "SIGTERM", argv0: null, cwd: null, detached: false, stdioInherit: [false, false, false] };
   if (opts === undefined || opts === null) { o.env = __childEnv(o); return o; }
   if (opts.encoding !== undefined) o.encoding = opts.encoding;
-  // 字符串选项（cwd/argv0）：undefined/null 过，余下非串即 ARG_TYPE。
+  // 字符串选项（cwd/argv0）：undefined/null 过，余下非串即 ARG_TYPE + \0 校验。
   for (const k of ["cwd", "argv0"]) {
     const v = opts[k];
     if (v === undefined || v === null) continue;
     if (typeof v !== "string") {
       throw new ERR_INVALID_ARG_TYPE(`options.${k}`, "string", v);
     }
+    __nullCheck(v, `options.${k}`, k === "cwd" ? "must be a string, Uint8Array, or URL without null bytes" : undefined);
     o[k === "cwd" ? "cwd" : "argv0"] = v;
   }
   // 布尔选项（detached/windowsHide/windowsVerbatimArguments）：undefined/null/布尔过。
@@ -942,10 +949,11 @@ function __normSpawnOpts(opts) {
     }
     if (k === "detached") o.detached = v;
   }
-  // shell：undefined/null/布尔/字符串过（字符串即 shell 路径）；余下 ARG_TYPE。
+  // shell：undefined/null/布尔/字符串过（字符串即 shell 路径）+ \0 校验；
+  // 余下 ARG_TYPE。
   if (opts.shell !== undefined && opts.shell !== null) {
     if (typeof opts.shell === "boolean") { o.shell = opts.shell; o.shellPath = null; }
-    else if (typeof opts.shell === "string") { o.shell = true; o.shellPath = opts.shell; }
+    else if (typeof opts.shell === "string") { __nullCheck(opts.shell, "options.shell"); o.shell = true; o.shellPath = opts.shell; }
     else throw new ERR_INVALID_ARG_TYPE("options.shell", ["boolean", "string"], opts.shell);
   }
   // uid/gid：undefined/null/非负整数过（值忽略，记档）；非 number 即 ARG_TYPE，
@@ -1039,13 +1047,20 @@ function __sigResolve(v) {
   }
   return null;
 }
+// \0 校验（node validateArgumentNullCheck 口径：仅字符串含 \0 才抛；
+// reason 缺省 'must be a string without null bytes'，cwd/modulePath 系另传）。
+function __nullCheck(s, name, reason) {
+  if (typeof s === "string" && s.includes("\0")) {
+    throw new ERR_INVALID_ARG_VALUE(name, s, reason ?? "must be a string without null bytes");
+  }
+}
 // 自举翻译（input/timeout/maxbuf 套件：子进程即自身时，Node 形 argv
-// （`-e` 脚本/裸文件）映射到本仓全 flag CLI；他家二进制原样透传。
-// `-e`  extras 透传（本仓 --eval 尾参作脚本 argv，最佳 effort）。
+// （`-e`/`-p` 脚本/裸文件）映射到本仓全 flag CLI；他家二进制原样透传。
+// `-e` extras 透传（本仓 --eval 尾参作脚本 argv，最佳 effort）。
 function __selfArgv(file, args) {
   if (file !== process.execPath) return [file, args];
   const a = [...args];
-  if (a[0] === "-e") return [file, ["--eval", ...a.slice(1)]];
+  if (a[0] === "-e" || a[0] === "-p") return [file, ["--eval", ...a.slice(1)]];
   if (a[0] !== undefined && !String(a[0]).startsWith("-")) return [file, ["--run", ...a]];
   return [file, a];
 }
@@ -1118,6 +1133,7 @@ function __abortError(reason) {
 }
 export function execSync(cmd, opts) {
   const o = __normExecOpts(opts);
+  __nullCheck(String(cmd), "command");
   // execSync 缺省 Buffer（真机实测；exec 异步缺省 utf8）：未显式给编码即改 buffer。
   if (typeof opts !== "string" && (opts === undefined || opts === null || opts.encoding === undefined)) o.encoding = "buffer";
   cmd = __selfCmd(String(cmd), o.env ?? process.env);
@@ -1131,6 +1147,8 @@ export function execSync(cmd, opts) {
 export function spawnSync(file, args, opts) {
   if (args !== undefined && args !== null && !Array.isArray(args)) { opts = args; args = []; }
   const o = __normSpawnOpts(opts);
+  __nullCheck(String(file), "file");
+  for (let i = 0; i < (args || []).length; i++) __nullCheck(String(args[i]), `args[${i}]`);
   const f = String(file);
   const origArgs = [...(args || [])].map(String);
   const [f2, a2] = __selfArgv(f, origArgs);
@@ -1185,6 +1203,10 @@ function __legacyReadable(web) {
   let destroyed = false;
   let enc = null;
   let reader = null;
+  // paused 读缓冲（flush-stdio 套件：on('readable') + read() 循环；flowing 期
+  // read() 恒 null，数据走 'data'）。
+  let buf = [];
+  let pumping = false;
   const emit = (ev, ...args) => {
     for (const l of [...(listeners[ev] || [])]) {
       try { l(...args); } catch {}
@@ -1192,24 +1214,38 @@ function __legacyReadable(web) {
   };
   async function pump() {
     if (reader === null) reader = web.getReader();
-    while (flowing && !paused && !ended && !destroyed) {
-      let r;
-      try { r = await reader.read(); } catch (e) { emit("error", e); return; }
-      if (r.done) {
-        ended = true;
-        emit("end");
-        emit("close");
-        return;
+    if (pumping) return;
+    pumping = true;
+    try {
+      for (;;) {
+        while (buf.length > 0 && flowing && !paused && !destroyed) emit("data", buf.shift());
+        if (destroyed) return;
+        let r;
+        try { r = await reader.read(); } catch (e) { emit("error", e); return; }
+        if (r.done) {
+          while (buf.length > 0 && flowing && !paused && !destroyed) emit("data", buf.shift());
+          ended = true;
+          emit("end");
+          emit("close");
+          if (!destroyed && !flowing && buf.length > 0) emit("readable");
+          return;
+        }
+        let chunk = Buffer.from(r.value);
+        if (enc !== null) chunk = chunk.toString(enc);
+        buf.push(chunk);
+        if (flowing && !paused && !destroyed) {
+          while (buf.length > 0 && flowing && !paused && !destroyed) emit("data", buf.shift());
+        } else if (!destroyed) {
+          emit("readable");
+        }
       }
-      let chunk = Buffer.from(r.value);
-      if (enc !== null) chunk = chunk.toString(enc);
-      emit("data", chunk);
-    }
+    } finally { pumping = false; }
   }
   const api = {
     on(ev, cb) {
       (listeners[ev] ||= []).push(cb);
       if (ev === "data") { flowing = true; pump(); }
+      else if (ev === "readable") { pump(); }
       return api;
     },
     once(ev, cb) {
@@ -1237,8 +1273,13 @@ function __legacyReadable(web) {
       emit("close");
       return api;
     },
-    // 整收口径（§4.67 同款）：read() 恒 null，数据走 'data' 事件。
-    read() { return null; },
+    // paused 读（flowing 期恒 null；暂停期取缓冲，空即 null）。
+    read() {
+      pump();
+      if (flowing && !paused) return null;
+      if (buf.length > 0) return buf.shift();
+      return null;
+    },
     get destroyed() { return destroyed; },
     // execFile collect 的串化判定读此位（node 流同形；setEncoding 后即真）。
     get readableEncoding() { return enc; },
@@ -1652,12 +1693,26 @@ export class ChildProcess {
 // 真机 spawnSync 的 env 缺省即 worker 的 process.env——process-env 套件口径）。
 // 主会话回 null（Rust 侧继承真进程 env，原语义）。
 function __childEnv(o) {
+  // node 口径：env 缺省继承（worker 快照/真进程）；for-in 含原型键（env 套件
+  // FOO 经原型）；undefined 值跳过；余下 String() 化（null → "null"，否则
+  // Rust 侧 JSON 解析报 "must be JSON"）；键值 \0 校验（reject-null-bytes 套件）。
   if (o.env === undefined || o.env === null) {
     if (__wjs_worker_env_snapshot() !== undefined) o.env = { ...process.env };
+    else return o.env;
   }
+  const out = {};
+  for (const k in o.env) {
+    const v = o.env[k];
+    if (v === undefined) continue;
+    __nullCheck(k, `options.env['${k}']`);
+    __nullCheck(typeof v === "string" ? v : String(v), `options.env['${k}']`);
+    out[k] = typeof v === "string" ? v : String(v);
+  }
+  o.env = out;
   return o.env;
 }
 function __cwdPath(v) {
+  __nullCheck(v, "options.cwd", "must be a string, Uint8Array, or URL without null bytes");
   if (typeof v === "string") return v;
   if (v !== null && typeof v === "object" && typeof v.href === "string") {
     const u = (typeof URL === "function" && v instanceof URL) ? v : new URL(v.href);
@@ -1758,7 +1813,16 @@ function __normSpawnAsyncOpts(opts) {
     if (typeof opts.shell !== "boolean" && typeof opts.shell !== "string") {
       throw new ERR_INVALID_ARG_TYPE("options.shell", ["boolean", "string"], opts.shell);
     }
+    __nullCheck(opts.shell, "options.shell");
     o.shell = opts.shell;
+  }
+  // argv0：undefined/null 过；余下须字符串（真机 validateString）+ \0 校验；
+  // 值由 Rust 侧经 unix arg0 落地（spawn-argv0 套件），此处只验不存。
+  if (opts.argv0 !== undefined && opts.argv0 !== null) {
+    if (typeof opts.argv0 !== "string") {
+      throw new ERR_INVALID_ARG_TYPE("options.argv0", "string", opts.argv0);
+    }
+    __nullCheck(opts.argv0, "options.argv0");
   }
   // timeout：validateTimeout 逐字口径——非 number ARG_TYPE，负数/非整数 RANGE
   //（spawn-timeout-kill-signal 套件 'badValue'/{} 点名）。
@@ -1799,10 +1863,17 @@ function __normSpawnAsyncOpts(opts) {
       }
       return s;
     };
-    if (typeof opts.stdio === "string") o.stdio = [one(opts.stdio), one(opts.stdio), one(opts.stdio)];
+    // node 口径：裸 'ipc' 非法（ARG_VALUE）；数组双 ipc 即 ERR_IPC_ONE_PIPE。
+    if (typeof opts.stdio === "string") {
+      if (opts.stdio === "ipc") throw new ERR_INVALID_ARG_VALUE("stdio", opts.stdio);
+      o.stdio = [one(opts.stdio), one(opts.stdio), one(opts.stdio)];
+    }
     else if (Array.isArray(opts.stdio)) {
       // 三元数组（缺省补 pipe；Node 的复杂组合如 fd 重定向不在此列，文档记录）
-      if (opts.stdio.length > 3) throw new Error("NotSupportedError: spawn stdio array takes at most 3 entries");
+      if (opts.stdio.length > 3) {
+        if (opts.stdio.filter((s) => s === "ipc").length > 1) throw new ERR_IPC_ONE_PIPE();
+        throw new Error("NotSupportedError: spawn stdio array takes at most 3 entries");
+      }
       o.stdio = [0, 1, 2].map((i) => opts.stdio[i] === undefined ? "pipe" : one(opts.stdio[i]));
     } else {
       throw new Error("NotSupportedError: spawn stdio must be a string or array");
@@ -1820,6 +1891,9 @@ export function spawn(file, args, opts) {
 // spawn 落地（函数与 ChildProcess.prototype.spawn 方法共用；proc 既是
 // native 事件 target 也是返回对象——事件接线必须挂最终对象，禁中转搬运）。
 function __spawnInto(proc, file, args, o) {
+  // \0 校验（reject-null-bytes 套件；函数与方法共道）。
+  __nullCheck(String(file), "file");
+  for (let i = 0; i < (args || []).length; i++) __nullCheck(String(args[i]), `args[${i}]`);
   proc.spawnfile = String(file);
   proc.spawnargs = [...(args || [])].map(String);
   // shell（node normalizeSpawnArguments 口径）：file+args 空格拼接成 sh -c 串，
@@ -2040,6 +2114,8 @@ export function execFile(file, args, opts, cb) {
     throw err;
   }
   const o = __normExecOpts(opts);
+  __nullCheck(String(file), "file");
+  for (let i = 0; i < (args ?? []).length; i++) __nullCheck(String(args[i]), `args[${i}]`);
   // shell 透传（execFile 缺省 false——__normExecOpts 的 true 缺省是 execSync/exec
   // 语义，此处按 opts 原样）。
   const shellOpt = (opts !== null && typeof opts === "object" && opts.shell !== undefined) ? opts.shell : undefined;
@@ -2085,6 +2161,7 @@ export function exec(command, opts, cb) {
     throw err;
   }
   const o = __normExecOpts(opts);
+  __nullCheck(String(command), "command");
   const cmdStr = String(command);
   // 自举翻译（exec-encoding/timeout 系：escapePOSIXShell 的 ${ESCAPED_n} env
   // 间接形 + 裸文件形；err.cmd 保持原文——改写只作用于 /bin/sh -c 的串）。
@@ -2125,6 +2202,8 @@ Object.defineProperty(execFile, Symbol.for("nodejs.util.promisify.custom"), {
 export function execFileSync(file, args, opts) {
   if (args !== undefined && args !== null && !Array.isArray(args)) { opts = args; args = []; }
   const o = __normSpawnOpts(opts);
+  __nullCheck(String(file), "file");
+  for (let i = 0; i < (args || []).length; i++) __nullCheck(String(args[i]), `args[${i}]`);
   const f = String(file);
   const [f2, a2] = __selfArgv(f, [...(args || [])].map(String));
   const r = JSON.parse(__wjs_cp_spawn(f2, JSON.stringify(a2), JSON.stringify({
@@ -2207,9 +2286,31 @@ function __normForkOpts(opts) {
     throw err;
   }
   // 线程底座：cwd/env/execArgv/silent/stdio/serialization/timeout/detached 等
-  // 接受忽略（同进程线程，无独立进程环境；stdio 恒 null，见 `fork` 文档）。
+  // 接受忽略（同进程线程，无独立进程环境；stdio 恒 null，见 `fork` 文档）；
+  // \0 照验（reject-null-bytes 套件）。
   if (opts.killSignal !== undefined) o.killSignal = String(opts.killSignal);
-  if (opts.execPath !== undefined) o.execPath = String(opts.execPath);
+  if (opts.cwd !== undefined && opts.cwd !== null) {
+    if (typeof opts.cwd !== "string") throw new ERR_INVALID_ARG_TYPE("options.cwd", "string", opts.cwd);
+    __nullCheck(opts.cwd, "options.cwd", "must be a string, Uint8Array, or URL without null bytes");
+  }
+  if (opts.argv0 !== undefined && opts.argv0 !== null) {
+    if (typeof opts.argv0 !== "string") throw new ERR_INVALID_ARG_TYPE("options.argv0", "string", opts.argv0);
+    __nullCheck(opts.argv0, "options.argv0");
+  }
+  if (opts.execPath !== undefined) { __nullCheck(String(opts.execPath), "options.execPath"); o.execPath = String(opts.execPath); }
+  if (opts.execArgv !== undefined) {
+    if (!Array.isArray(opts.execArgv)) throw new ERR_INVALID_ARG_TYPE("options.execArgv", "Array", opts.execArgv);
+    opts.execArgv.forEach((a, i) => __nullCheck(String(a), `options.execArgv[${i}]`));
+  }
+  // env：值忽略（线程底座）但 \0 照验。
+  if (opts.env !== undefined && opts.env !== null) {
+    for (const k in opts.env) {
+      const v = opts.env[k];
+      if (v === undefined) continue;
+      __nullCheck(k, `options.env['${k}']`);
+      __nullCheck(typeof v === "string" ? v : String(v), `options.env['${k}']`);
+    }
+  }
   if (opts.silent !== undefined) o.silent = !!opts.silent;
   if (opts.signal !== undefined) {
     if (!(opts.signal instanceof AbortSignal)) {
@@ -2234,6 +2335,8 @@ export function fork(modulePath, args, opts) {
     err.code = "ERR_INVALID_ARG_VALUE";
     throw err;
   }
+  __nullCheck(String(modulePath instanceof URL ? modulePath.href : modulePath), "modulePath", "must be a string, Uint8Array, or URL without null bytes");
+  for (let i = 0; i < (args || []).length; i++) __nullCheck(String(args[i]), `args[${i}]`);
   const o = __normForkOpts(opts);
   const modStr = modulePath instanceof URL ? modulePath.href : String(modulePath);
   const fileUrl = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(modStr) ? modStr : pathToFileURL(modStr).href;

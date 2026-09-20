@@ -726,6 +726,22 @@ flush 选项三面（write/append/stream，校验逐字；套件待 node:test）
 分类移分发侧（§4.153）、首轮 return 吞真变迁（§4.155）；附 exit 首码赢（§4.154）、
 stat 真 unref。黑盒 fs 18/18 + 冒烟 5/5。
 
+六轮（2026-09-21，fs 残簇 cp/streams 轮）：cp/write/read/handle 129 件
+**70 SAME/59 DIFF → 114 SAME/15 DIFF**（三提交：e2f0d28 校验族/6412095 链接分发/
+b2a473e 流续命）。转绿 44 件：cp validateCpOptions 逐字 + 错误码（EISDIR/EINVAL/
+EEXIST/DIR_TO_NON_DIR/NON_DIR_TO_DIR/INCOMPATIBLE_PAIR）+ lstat 分发/onLink
+（verbatim/srcIsDir 门/换链）+ 缺失父目录创建 + stat 去 fs_err（ENAMETOOLONG）；
+流 getOptions/path-undefined/close 补齐/autoClose 访问器/autoDestroy 随 autoClose/
+fd-null/open 递延/_final 递延/patch-open honored；promises.readFile 信号让步；
+FileHandle.readLines/readFile-2GiB 门；AbortSignal symbol 双轨穿透 Proxy。
+残 15 全部分类：cp async-filter ×1（需异步 cp 管线）/socket ×2（net 监听同步性，
+文件就绪后码正确）；expose-internals ×3（跳过类）；pull/writer ×3（需
+stream/iter+zlib/iter 新模块，另轮）；read-worker ×1（worker fd 移交，G6 残件同族）；
+read-pos ×1（live 增长轮询，需增量 ReadStream）；eagain/flush ×2（node:test mock，
+runner 深度）；err ×1（增量 WriteStream 重写）；write-patch-open ×1（fork 父端
+exit 不到，child 域，HEAD 同 hang 已实证）。
+黑盒 fs 20/20（含新增 phase10f_fs_stream_lifetime）+ 冒烟 5/5。
+
 ## net
 
 > 五轮对拍（2026-09-17，157 件，`/tmp/wjs-10f-net*.txt`）：

@@ -233,8 +233,12 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；
    AGENTS §4.150-155；残件：fork/IPC handle 传递出局 + fs.glob×2/flush 三套件
    待 node:test + enoent-after-deletion 间歇超时另查）。
-2. **fs 残簇**：cp ~33 件、write-stream ~13 件（G4-2 WriteStream 真 open 后
-   可再试）、promises-file-handle ~12 件、read-stream ~8 件——逐簇续补。
+2. **fs 残簇**（2026-09-21 进展：cp/write/read/handle 129 件 70/59 →
+   **114 SAME/15 DIFF**，e2f0d28/6412095/b2a473e；残 15 全部分类见
+   bun-parity fs 六轮注记）：cp 余 async-filter/socket×2、handle 余 pull/writer
+   ×3（需 stream/iter+zlib/iter）+ read-worker（worker fd 移交，归 G6 残件同族）、
+   stream 余 err/read-pos（增量流重写轮）+ eagain/flush（node:test mock 待 runner
+   深度）+ write-patch-open（fork 父端 exit，child 域）；expose-internals ×3 跳过类。
 3. **G6 残件 6 件**（infra 级，需独立轮）：throttle（native 读门控+写 EAGAIN
    流控）、cluster×2（internalMessage 协议）、worker×3（跨线程 fd 移交）。
 4. **大簇另案**：G10 http2 compat ~105 件、G11 http TIMEOUT ~110 件、

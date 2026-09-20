@@ -2617,3 +2617,46 @@ cargo build
 - 推广为铁律：错误包装函数默认会被嵌套调用（`__fsCall` 层层包）——构造的错误
   必须能无损地再过一次本函数（幂等）；凡 `slice/replace` 去特征头的写法，
   先问"第二次进来还认得吗"。
+
+### 4.158 稀疏检出缺 fixtures 即污染对拍基线（2026-09-21，fs 残簇轮）
+
+- 症状：`test-fs-cp-sync-copy-file-to-directory-error` 等在真机 `node` 下 rc=1
+  （`ENOENT`，`fixtures.path('copy/kitchen-sink/README.md')` 不存在），与本仓
+  SAME 对齐成"双红"，另有数件从 DIFF 变 SAME，全是假信号。
+- 根因：`git sparse-checkout` 只取了 `test/parallel/test-fs-*` + `test/common/*`，
+  漏了 `test/fixtures/copy/`——`kitchen-sink/` 以空目录存在，不报错只缺内容。
+- 修法：`sparse-checkout add 'test/fixtures/copy'` 后重取真基线（本轮 129 件
+  70/59 → 96/33，一夜变天全是 fixtures 的功劳）。
+- 推广为铁律：对拍前先断言 fixtures 完备（`ls kitchen-sink/README.md`）；
+  "真机自家套件挂"第一反应是环境缺件，不是 Node 有 bug。
+
+### 4.159 mustNotMutateObjectDeep 的 Proxy 断 WeakMap 身份键（2026-09-21，fs 残簇轮）
+
+- 症状：`mustNotMutateObjectDeep({ signal })` 包过的信号一读 `.aborted` 即
+  `can't access property "aborted", __wjs_abortState.get(...) is undefined`；
+  `addEventListener` 则在 `st.get` 直接炸（st 为 undefined）。
+- 根因：该 helper 递归 Proxy 包裹（get 转发、set/define 直接 fail）——WeakMap
+  的精确身份键遇 Proxy 即断裂；且经 Proxy 加监听记的是代理身份，真触发 miss。
+- 修法：AbortSignal 状态双轨——WeakMap + symbol 自有属性（构造/触发期写真实
+  对象，读经 `??` 回落；读穿透 Proxy 只因 get 转发，永不触发 set 陷阱）；
+  `addEventListener` 无表决建表不抛（代理监听 miss 即 benign，abort 竞速由
+  aborted 轮询门覆盖）（`src/builtins/mod.rs`）。
+- 推广为铁律：凡 WeakMap 键存宿主内部态，先问"用户传个 Proxy 进来还认得吗"——
+  读路径一律 symbol 回落；只读不写是穿透 Proxy 的唯一安全形。
+
+### 4.160 sync 底座流的双重早退：同步终结派发 + 无句柄续命（2026-09-21，fs 残簇轮）
+
+- 症状：`createWriteStream(f); s.end(); s.on('close', …)` 的 close 永不到，
+  且无 timer 时进程 rc=0 直接退出（连 `process.on('exit')` 都不跑——后者系本仓
+  另案不支持，干扰项）；先挂监听再 end 则全收到。
+- 根因（二连）：① base 在无积压时同步调 `_final`，同步 cb 即同步派发
+  finish/close，用户后挂监听全 miss（真机全异步）；② sync 底座无原生句柄，
+  循环见全零即退，close 的异步尾巴永不到（§4.34 同族：IO 面的生命周期缺口必现
+  为 hang/丢事件）。
+- 修法：`_final` 完成 + `open` 派发改 `queueMicrotask` 递延（fd 同步建不受影响）；
+  `fs_stream_open` 计数（state + 双 native + idle 门，`UNSAFE-BOUNDARY` 双标签）：
+  构造持有 → close 释放，autoClose 关时 finish/end 静默释，未用流 A 段微任务自释
+  （否则 patch-open 子进程形永不退出）；`autoDestroy` 随 `autoClose`（closed 语义）。
+- 复现：`tests/node/fs.rs::phase10f_fs_stream_lifetime`（`w-fin/w-close/r-end` 行）。
+- 推广为铁律：sync 底座的流/句柄，上线即回答"谁让循环等我"——无原生句柄即配
+  计数器；"构造即完成"的同步链一律递延派发终结事件。

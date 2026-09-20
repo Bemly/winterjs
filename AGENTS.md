@@ -2589,3 +2589,15 @@ cargo build
   （`src/builtins/node/fs.rs` `__statPoll`）。
 - 推广为铁律：凡"首轮/首包特例"分支，默认写成"特例命中才返回"，特例不命中
   必须落回正常路径；特例分支的返回条件与触发条件逐字同写，禁大包围 return。
+
+### 4.156 内部别名 normalize 只认裸形：`node:` 前缀形落空（2026-09-20，G11 联调缺口）
+
+- 症状：http 全域 15 个黑盒齐挂 `Error: 'node:_http_common' is not a builtin`
+  （fs/cluster 等全绿，具有误导性——以为 http 栈坏了）。
+- 根因：G11 只给裸形（`_http_agent`）写了 normalize 臂；自家 http.rs 用
+  `node:_http_common` 前缀形导入（套件直引与内部互引两形并存），前缀形走
+  `strip_prefix("node:")` 后无臂命中即 None。INTERNALS 表项一直在，只是够不着。
+- 修法：四别名臂并入 `strip_prefix` 后的 match（`src/builtins/node/mod.rs`
+  `normalize_spec`），裸/前缀两形同归一。
+- 推广为铁律：新增内部别名必须双形验证（裸 `require('_x')` + `node:_x`
+  导入各跑一次）；"表里有" ≠ "够得着"，注册链（映射→表→source）逐段断言。

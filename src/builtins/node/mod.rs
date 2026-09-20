@@ -151,20 +151,13 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
     if let Some(canonical) = internal::normalize_internal(spec) {
         return Some(canonical);
     }
-    // node 内部模块遗留别名（套件 require('_http_agent') 直引）
-    if spec == "_http_agent" {
-        return Some("node:_http_agent");
-    }
-    if spec == "_http_common" {
-        return Some("node:_http_common");
-    }
-    if spec == "_http_server" {
-        return Some("node:_http_server");
-    }
-    if spec == "_http_outgoing" {
-        return Some("node:_http_outgoing");
-    }
     match spec.strip_prefix("node:").unwrap_or(spec) {
+        // node 内部模块遗留别名（套件 require('_http_agent') 直引；
+        // 内部互引用 node: 前缀形——两形同归一，见 G11 缺口）。
+        "_http_agent" => Some("node:_http_agent"),
+        "_http_common" => Some("node:_http_common"),
+        "_http_server" => Some("node:_http_server"),
+        "_http_outgoing" => Some("node:_http_outgoing"),
         "path" => Some("node:path"),
         // M5 vitest 牵引：子路径
         "path/posix" => Some("node:path/posix"),

@@ -1061,3 +1061,38 @@ console.log("bye", e.signalCode === "SIGTERM");"#]));
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }
 }
+
+#[test]
+fn phase10f_child_stdin_backpressure() {
+    // big-write-end 套件回归：stdin.write 持续写必回 false（16KB 高水位）+
+    // drain 到达 + 全量按序回显 + end 关。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        r#"const { spawn } = await import("node:child_process");
+const c = spawn("cat");
+let sent = 0;
+let sawFalse = false;
+let bufsize = 0;
+let buf;
+do {
+  bufsize += 1024;
+  buf = Buffer.alloc(bufsize, 46);
+  sent += bufsize;
+} while (c.stdin.write(buf) !== false);
+sawFalse = true;
+for (let i = 0; i < 20; i++) {
+  const b = Buffer.alloc(bufsize, 46);
+  sent += bufsize;
+  c.stdin.write(b);
+}
+c.stdin.end();
+let n = 0;
+c.stdout.on("data", (d) => { n += d.length; });
+const closedP = new Promise((res) => c.on("close", res));
+await new Promise((res) => c.stdout.on("end", res));
+console.log("backpressure", sawFalse, n === sent);
+await closedP;
+console.log("closed", c.exitCode === 0);"#]));
+    for line in ["backpressure true true", "closed true"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+}

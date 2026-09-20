@@ -1343,6 +1343,7 @@ function __legacyWritable(id) {
   const listeners = {};
   let destroyed = false;
   let ended = false;
+  let buffered = 0;
   const emit = (ev, ...args) => {
     for (const l of [...(listeners[ev] || [])]) {
       try { l(...args); } catch {}
@@ -1386,6 +1387,15 @@ function __legacyWritable(id) {
         return false;
       }
       if (typeof cb === "function") queueMicrotask(() => cb(null));
+      // 背压（big-write-end 套件：恒 true 即 `while(write)` 死循环）：
+      // 16KB 高水位（Socket 缺省），超即 false + 下轮记账清零发 drain。
+      // task 侧无写完成回执，“入队即走”近似——投递保序不受记账影响
+      // （unbounded 通道 FIFO，end 关排在写后）。
+      buffered += u8.length;
+      if (buffered > 16384) {
+        queueMicrotask(() => { buffered = 0; emit("drain"); });
+        return false;
+      }
       return true;
     },
     end(chunk, cb) {

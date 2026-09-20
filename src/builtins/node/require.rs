@@ -259,9 +259,13 @@ fn require_cjs_file(
     let Some(make_fn) = get_prop_value(cx, global_root.get(), c"__wjs_make_module") else {
         return Err("prelude helper __wjs_make_module missing".into());
     };
+    // §4.80 同族（async-dispose 138 实锤）：make_fn 裸值禁跨 to_jsval 分配——
+    // 字符串具现可触发 GC 搬移，栈拷贝即悬垂（call_one 的入口 rooting 盖不住
+    // 调用间窗口）；先入槽再分配。
+    rooted!(&in(cx) let make_fn_root = make_fn);
     rooted!(&in(cx) let mut url_v = UndefinedValue());
     url.as_str().to_jsval(cx, url_v.handle_mut());
-    let Some(module_v) = call_one(cx, global_root.get(), make_fn, url_v.get()) else {
+    let Some(module_v) = call_one(cx, global_root.get(), make_fn_root.get(), url_v.get()) else {
         return Err(pending_message(cx));
     };
     if !module_v.is_object() {

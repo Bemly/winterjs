@@ -899,6 +899,22 @@ t("eisdir", () => fs.cpSync("d", "d3"), "ERR_FS_EISDIR");
 // 边界：filter 返回 false 跳过；createWriteStream 非法 options 抛；fd 形 path 为 undefined
 fs.cpSync("a.txt", "c.txt", { filter: () => false });
 console.log("filter-skip", fs.existsSync("c.txt"));
+// 链接语义：默认相对链接消解为绝对；verbatim 保留原文；复拷同目标换链无错
+fs.writeFileSync("foo.js", "foo");
+fs.symlinkSync("foo.js", "bar.js");
+fs.mkdirSync("vd");
+fs.cpSync("bar.js", "vd/bar.js");
+console.log("link-abs", fs.readlinkSync("vd/bar.js").endsWith("foo.js") && fs.readlinkSync("vd/bar.js").startsWith("/"));
+fs.mkdirSync("vd2");
+fs.cpSync("bar.js", "vd2/bar.js", { verbatimSymlinks: true });
+console.log("link-verb", fs.readlinkSync("vd2/bar.js"));
+fs.cpSync("bar.js", "vd2/bar.js", { verbatimSymlinks: true });
+console.log("link-replace", fs.readlinkSync("vd2/bar.js"));
+// 文件盖链接目录（dereference 形）：dest 由链接变文件
+fs.mkdirSync("rl");
+fs.symlinkSync(fs.realpathSync("rl"), "rl-link", "dir");
+fs.cpSync("a.txt", "rl-link", { dereference: false });
+console.log("file-over-link", fs.statSync("rl-link").isFile());
 t("wsopt", () => fs.createWriteStream("a.txt", 123), "ERR_INVALID_ARG_TYPE");
 const fd = fs.openSync("a.txt", "r");
 const rs = fs.createReadStream(null, { fd });
@@ -915,6 +931,10 @@ fs.closeSync(fd);
         "same true",
         "eisdir true",
         "filter-skip false",
+        "link-abs true",
+        "link-verb foo.js",
+        "link-replace foo.js",
+        "file-over-link true",
         "wsopt true",
         "fd-path true",
     ] {

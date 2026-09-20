@@ -36,6 +36,10 @@ pub fn io_code(e: &std::io::Error) -> &'static str {
             28 => "ENOSPC",
             32 => "EPIPE",
             36 => "ENAMETOOLONG",
+            // ENAMETOOLONG：macOS 63 / Linux 36（超长文件名；cp filename-too-long 套件）。
+            // Linux 63 系 ENOSR，不可合并且——cfg 分流。
+            #[cfg(target_os = "macos")]
+            63 => "ENAMETOOLONG",
             // ENOTSOCK：macOS 38（connect 非 socket 文件；pipe-connect-errors 套件面）
             38 => "ENOTSOCK",
             39 => "ENOTEMPTY",
@@ -396,7 +400,9 @@ pub unsafe extern "C" fn fs_stat(
         return false;
     };
     let follow = frame.argc() < 2 || frame.arg(1) == mozjs::jsval::BooleanValue(true);
-    let md = if follow { fs_err::metadata(&path) } else { fs_err::symlink_metadata(&path) };
+    // std 直用保 raw errno（fs_err 包装丢 errno：超长文件名 ENAMETOOLONG 落
+    // EINVAL/UNKNOWN，cp filename-too-long 套件点名；§4.121 同族）。
+    let md = if follow { std::fs::metadata(&path) } else { std::fs::symlink_metadata(&path) };
     match md {
         Ok(md) => {
             set_rval_str(&mut cx, &frame, &stat_json(&md, &path));
@@ -3474,6 +3480,29 @@ function __cpSameOrSubdir(src, dst) {
   if (b.startsWith(a + "/")) return "subdir";
   return null;
 }
+function __cpEff(p) {
+  // C++ checkPaths 穿透链接消解（dest-symlink-points-to-src 套件）：
+  // 只消解父链（终段本身是链接时不得跟随——否则两条同目标链接被误判 identical，
+  // copy-symlinks-to-existing-symlinks 套件点名）；余段回拼。
+  const s = String(p).replace(/\/+$/, "");
+  const j = s.lastIndexOf("/");
+  const base = j < 0 ? s : s.slice(j + 1);
+  let cur = j <= 0 ? (j === 0 ? "/" : ".") : s.slice(0, j);
+  const tail = [];
+  for (let i = 0; i < 64; i++) {
+    let ok = true;
+    try { lstatSync(cur); } catch { ok = false; }
+    if (ok) break;
+    const t = cur.replace(/\/+$/, "");
+    const k = t.lastIndexOf("/");
+    if (k <= 0) { tail.unshift(cur); cur = k === 0 ? "/" : "."; break; }
+    tail.unshift(t.slice(k + 1));
+    cur = t.slice(0, k) || "/";
+  }
+  let rbase;
+  try { rbase = realpathSync(cur); } catch { rbase = cur; }
+  return String(rbase).replace(/\/+$/, "") + "/" + [...tail, base].join("/");
+}
 export function cpSync(src, dst, opts) {
   const o = __cpValidateOptions(opts);
   src = __fsPath(src, "cp");
@@ -3486,7 +3515,7 @@ export function cpSync(src, dst, opts) {
     }
     if (!r) return;
   }
-  const rel = __cpSameOrSubdir(src, dst);
+  const rel = __cpSameOrSubdir(src, dst) || __cpSameOrSubdir(__cpEff(src), __cpEff(dst));
   if (rel === "same") {
     const e = new Error(`src and dest cannot be the same ${src}`);
     e.code = "ERR_FS_CP_EINVAL"; throw e;
@@ -3495,27 +3524,155 @@ export function cpSync(src, dst, opts) {
     const e = new Error(`cannot copy ${src} to a subdirectory of self ${dst}`);
     e.code = "ERR_FS_CP_EINVAL"; throw e;
   }
-  const st = statSync(src);
-  if (st.isDirectory()) {
+  // node getStats 口径：dereference 决定 stat/lstat；dest 恒 lstat（不跟随）。
+  const srcStat = (o.dereference ? statSync : lstatSync)(src);
+  const destStat = lstatSync(dst, { throwIfNoEntry: false });
+  return __cpStats(src, dst, o, srcStat, destStat);
+}
+// node lib/internal/fs/cp/cp-sync.js getStats 分发（C++ checkPaths 由上层
+// __cpSameOrSubdir 近似；EISDIR 非递归目录由本分发抛）。
+function __cpStats(src, dst, o, srcStat, destStat) {
+  if (srcStat.isDirectory()) {
+    // C++ checkPaths 序：dest 存在且非目录 → DIR_TO_NON_DIR（先于递归门，
+    // dir-to-file 套件无 opts 即点名此码而非 EISDIR）。
+    if (destStat && !destStat.isDirectory()) {
+      const e = new Error(`Cannot overwrite non-directory ${dst} with directory ${src}`);
+      e.code = "ERR_FS_CP_DIR_TO_NON_DIR"; throw e;
+    }
     if (!o.recursive) {
       const e = new Error(`Recursive option not enabled, cannot copy a directory: ${src}/`);
       e.code = "ERR_FS_EISDIR"; throw e;
     }
-    __fsCall("cp", dst, () => __wjs_fs_mkdir(dst, true));
-    for (const e of readdirSync(src, { withFileTypes: true })) {
-      cpSync(src.replace(/\/$/, "") + "/" + e.name, dst.replace(/\/$/, "") + "/" + e.name, o);
-    }
+    return __cpOnDir(src, dst, o, destStat);
+  }
+  if (srcStat.isFile() || srcStat.isCharacterDevice() || srcStat.isBlockDevice()) {
+    return __cpOnFile(src, dst, o, destStat);
+  }
+  if (srcStat.isSymbolicLink()) {
+    return __cpOnLink(src, dst, o, destStat);
+  }
+  if (srcStat.isSocket()) {
+    const e = new Error(`Cannot copy a socket file: ${dst}`);
+    e.code = "ERR_FS_CP_SOCKET"; throw e;
+  }
+  if (srcStat.isFIFO()) {
+    const e = new Error(`Cannot copy a FIFO pipe: ${dst}`);
+    e.code = "ERR_FS_CP_FIFO_PIPE"; throw e;
+  }
+  const e = new Error(`Cannot copy an unknown file type: ${dst}`);
+  e.code = "ERR_FS_CP_UNKNOWN"; throw e;
+}
+function __cpEexist(dst) {
+  const e = new Error(`Target already exists: cp returned EEXIST (${dst} already exists) ${dst}`);
+  e.code = "ERR_FS_CP_EEXIST"; e.syscall = "cp"; e.path = dst; e.errno = 17; throw e;
+}
+function __cpOnDir(src, dst, o, destStat) {
+  if (destStat && !o.force) {
+    // 存在即错（内容无冲突也抛，dir-exists-error-on-exist 套件点名）；
+    // 无 errorOnExist 则合并（逐项 force 门复用）。
+    if (o.errorOnExist) __cpEexist(dst);
+  }
+  __fsCall("cp", dst, () => __wjs_fs_mkdir(dst, true));
+  for (const e of readdirSync(src, { withFileTypes: true })) {
+    cpSync(__cpJoin(src, e.name), __cpJoin(dst, e.name), o);
+  }
+}
+function __cpOnFile(src, dst, o, destStat) {
+  if (!destStat) {
+    // Node cp 建缺失父目录（file-to-file 套件：dest 父级不存在仍成功）。
+    __fsCall("cp", dst, () => __wjs_fs_mkdir(__cpDirname(dst), true));
+    __fsCall("copyfile", src, () => __wjs_fs_copy_file(src, dst));
     return;
   }
-  if (existsSync(dst)) {
-    if (o.force) { /* fallthrough overwrite */ }
-    else if (o.errorOnExist) {
-      const e = new Error(`Target already exists: cp returned EEXIST (${dst} already exists) ${dst}`);
-      e.code = "ERR_FS_CP_EEXIST"; e.syscall = "cp"; e.path = dst; e.errno = 17; throw e;
-    }
-    else return;
+  // 文件拷向目录 → NON_DIR_TO_DIR（file-to-dir 套件；直拷报 EISDIR 即错码）。
+  if (destStat.isDirectory()) {
+    const e = new Error(`Cannot overwrite directory ${dst} with non-directory ${src}`);
+    e.code = "ERR_FS_CP_NON_DIR_TO_DIR"; throw e;
   }
-  __fsCall("copyfile", src, () => __wjs_fs_copy_file(src, dst));
+  if (o.force) {
+    // Node C++ override 语义：dest 为 symlink 时先摘除再拷（dereference 套件：
+    // file-over-symlinked-dir 后 dest 为文件非链接；直拷会穿透写进目标目录）。
+    let dl = null;
+    try { dl = lstatSync(dst); } catch { dl = null; }
+    if (dl && dl.isSymbolicLink()) {
+      __fsCall("unlink", dst, () => __wjs_fs_unlink(dst));
+    }
+    __fsCall("copyfile", src, () => __wjs_fs_copy_file(src, dst));
+    return;
+  }
+  if (o.errorOnExist) __cpEexist(dst);
+  // !force && !errorOnExist → 静默跳过。
+}
+// node onLink（cp-sync.js 逐字）：verbatim 关时相对链接消解为绝对；
+// 不存在直建；存在分三路（非链接穿透建→EEXIST 门；双向 subdir 检查；否则换链）。
+function __cpOnLink(src, dst, o, destStat) {
+  let resolvedSrc = readlinkSync(src);
+  if (!o.verbatimSymlinks && !__cpIsAbs(resolvedSrc)) {
+    resolvedSrc = __cpResolve(__cpDirname(src), resolvedSrc);
+  }
+  if (!destStat) {
+    __fsCall("cp", dst, () => __wjs_fs_mkdir(__cpDirname(dst), true));
+    __fsCall("symlink", dst, () => __wjs_fs_symlink(resolvedSrc, dst));
+    return;
+  }
+  let resolvedDest;
+  try {
+    resolvedDest = readlinkSync(dst);
+  } catch (err) {
+    if (err && (err.code === "EINVAL" || err.code === "UNKNOWN")) {
+      // dest 存在但非链接：Node 原文直调 symlinkSync（不摘除）——
+      // 恒 EEXIST（copy-symlink-over-file 套件 force 缺省仍 EEXIST）。
+      __fsCall("symlink", dst, () => __wjs_fs_symlink(resolvedSrc, dst));
+      return;
+    }
+    throw err;
+  }
+  if (!__cpIsAbs(resolvedDest)) {
+    resolvedDest = __cpResolve(__cpDirname(dst), resolvedDest);
+  }
+  // Node 原文门：仅 src 链接指向目录时同址即 EINVAL（文件链接复拷是
+  // unlink+重建无操作；copy-symlinks-to-existing-symlinks 套件点名）。
+  let __srcIsDir = false;
+  try { __srcIsDir = statSync(src).isDirectory(); } catch { __srcIsDir = false; }
+  if (__srcIsDir && __cpIsSubdir(resolvedSrc, resolvedDest)) {
+    const e = new Error(`cannot copy ${resolvedSrc} to a subdirectory of self ${resolvedDest}`);
+    e.code = "ERR_FS_CP_EINVAL"; throw e;
+  }
+  // dest 链接指向 src 内部且 src 为目录 → 覆盖即删源（先拦）。
+  let dstStat = null;
+  try { dstStat = statSync(dst); } catch { dstStat = null; }
+  if (dstStat && dstStat.isDirectory() && __cpIsSubdir(resolvedDest, resolvedSrc)) {
+    const e = new Error(`cannot overwrite ${resolvedDest} with ${resolvedSrc}`);
+    e.code = "ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY"; throw e;
+  }
+  __fsCall("unlink", dst, () => __wjs_fs_unlink(dst));
+  __fsCall("symlink", dst, () => __wjs_fs_symlink(resolvedSrc, dst));
+}
+// posix 路径小件（cp 链接消解专用；.. 不出根）。
+function __cpIsAbs(p) { return String(p).startsWith("/"); }
+function __cpDirname(p) {
+  const s = String(p).replace(/\/+$/, "");
+  const i = s.lastIndexOf("/");
+  if (i < 0) return ".";
+  if (i === 0) return "/";
+  return s.slice(0, i);
+}
+function __cpJoin(a, b) {
+  return String(a).replace(/\/+$/, "") + "/" + String(b).replace(/^\/+/, "");
+}
+function __cpResolve(base, rel) {
+  const out = [];
+  for (const q of String(base + "/" + rel).split("/")) {
+    if (q === "" || q === ".") continue;
+    if (q === "..") { out.pop(); continue; }
+    out.push(q);
+  }
+  return "/" + out.join("/");
+}
+function __cpIsSubdir(parent, child) {
+  const norm = (p) => String(p).replace(/\/+$/, "") || "/";
+  const a = norm(parent), b = norm(child);
+  return b === a || b.startsWith(a + "/");
 }
 // fd 系（openSync 合成 fd，自 3 起单调，不复用最小号，记档）
 export function openSync(p, flags, mode) {

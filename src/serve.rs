@@ -364,12 +364,18 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
         );
     // 动态 fallback（`--handler`）：静态命中即直接返回，未命中进 JS；
     // 无 handler 即现状纯静态（ServeDir 404）。`/metrics` 路由优先，不受影响。
+    // 注意：不用 `not_found_service`（它经 `SetStatus` 恒改写 fallback 状态为 404，
+    // tower-http 0.7.1；见 §4.165），`fallback` 保留 JS 状态原样；
+    // 另开 `call_fallback_on_method_not_allowed(true)` 使 POST 等非 GET/HEAD
+    // 也进 JS（缺省 405 直返，动态 handler 永够不着）。
     let serve_dir = ServeDir::new(root);
     let app = Router::new().route("/metrics", axum::routing::get(metrics_handler));
     let app = match &js_session {
-        Some(_) => {
-            app.fallback_service(serve_dir.not_found_service(tower::service_fn(js_fallback)))
-        }
+        Some(_) => app.fallback_service(
+            serve_dir
+                .call_fallback_on_method_not_allowed(true)
+                .fallback(tower::service_fn(js_fallback)),
+        ),
         None => app.fallback_service(serve_dir),
     }
         .layer(axum::middleware::from_fn(rewrite_ts_mime))

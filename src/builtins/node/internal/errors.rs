@@ -425,6 +425,9 @@ E('ERR_HTTP2_NO_SOCKET_MANIPULATION',
   'HTTP/2 sockets should not be directly manipulated (e.g. read and written)', Error);
 E('ERR_HTTP2_INVALID_HEADER_VALUE', 'Invalid value "%s" for header "%s"', TypeError, HideStackFramesError);
 E('ERR_HTTP2_PUSH_DISABLED', 'Push streams are not enabled.', Error);
+// node lib/_http_common.js checkInvalidHeaderChar（真机逐字 'Invalid character
+// in header content'；header-validators/header-value-relaxed 套件）。
+E('ERR_INVALID_CHAR', 'Invalid character in header content', TypeError, HideStackFramesError);
 E('ERR_INVALID_HTTP_TOKEN',
   // node 口径 (kind, name) 双参 + %j JSON 渲染（真机 'Method must be a valid
   // HTTP token ["\u0000"]'）；单参历史调用（http2 validateHeaderName）兼容为

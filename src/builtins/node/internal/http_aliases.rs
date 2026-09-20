@@ -41,12 +41,50 @@ export const CRLF = "\r\n";
 export const kIncomingMessage = Symbol("IncomingMessage");
 export const kSkipPendingData = Symbol("kSkipPendingData");
 // node 口径：parser 池（maxHTTPParserPool 面；池化不适用本仓——对象只供
-// 套件断言默认值）。isLenient/calculateLenientFlags 随 HTTPParser 另案。
+// 套件断言默认值）。
 export const parsers = { max: 1000, size: 0 };
 export function freeParser() { return undefined; }
 export function prepareError() { return undefined; }
-export const isLenient = 0;
-export function calculateLenientFlags() { return 0; }
+
+// HTTPParser 兼容骨架：llhttp 事件面（execute/kOnHeadersComplete 族）本仓为
+// JS 解析器实现（http_framing __feed），不在此接线——另案记档。此处导出真机
+// 26.8.2 逐键对拍的静态常量面（header-value-relaxed 套件以
+// kLenientHeaderValueRelaxed 常量值门控 inbound 测试段）。
+export class HTTPParser {
+  constructor(kind) { this.kind = kind; }
+}
+HTTPParser.REQUEST = 1;
+HTTPParser.RESPONSE = 2;
+HTTPParser.kOnMessageBegin = 0;
+HTTPParser.kOnHeaders = 1;
+HTTPParser.kOnHeadersComplete = 2;
+HTTPParser.kOnBody = 3;
+HTTPParser.kOnMessageComplete = 4;
+HTTPParser.kOnExecute = 5;
+HTTPParser.kOnTimeout = 6;
+HTTPParser.kLenientNone = 0;
+HTTPParser.kLenientHeaders = 1;
+HTTPParser.kLenientChunkedLength = 2;
+HTTPParser.kLenientKeepAlive = 4;
+HTTPParser.kLenientTransferEncoding = 8;
+HTTPParser.kLenientVersion = 16;
+HTTPParser.kLenientDataAfterClose = 32;
+HTTPParser.kLenientOptionalLFAfterCR = 64;
+HTTPParser.kLenientOptionalCRLFAfterChunk = 128;
+HTTPParser.kLenientOptionalCRBeforeLF = 256;
+HTTPParser.kLenientSpacesAfterChunkSize = 512;
+HTTPParser.kLenientHeaderValueRelaxed = 1024;
+HTTPParser.kLenientAll = 1023;
+// node isLenient(parser)（返回该 parser 的 lenient 位；本仓无 llhttp parser
+// 实例面，恒 strict 0）。
+export function isLenient() { return 0; }
+// node calculateLenientFlags(httpValidation, insecureHTTPParser)（真机实测：
+// ('relaxed')→1024、(true,true)→1023、(false,false)→0）。
+export function calculateLenientFlags(httpValidation, insecureHTTPParser) {
+  if (httpValidation === "insecure" || insecureHTTPParser === true) return HTTPParser.kLenientAll;
+  if (httpValidation === "relaxed") return HTTPParser.kLenientHeaderValueRelaxed;
+  return HTTPParser.kLenientNone;
+}
 "#;
 
 /// `node:_http_server`（真机 keys：STATUS_CODES,Server,ServerResponse,

@@ -90,7 +90,44 @@ function __validHeaderValue(v) {
   }
   return true;
 }
-function __parseHead(headText, strict) {
+// httpValidation 口径（node storeHTTPOptions + calculateLenientFlags 逐项对拍）：
+// 'strict'（缺省）= RFC 7230；'relaxed' = Fetch 规约（值只拒 NUL/CR/LF）；'
+// insecure' = 全宽松（同 insecureHTTPParser）。与 insecureHTTPParser 互斥
+//（真机逐字：'cannot be used together with options.insecureHTTPParser'）。
+const __HTTP_VALIDATIONS = ["strict", "relaxed", "insecure"];
+function __resolveHttpValidation(httpValidation, insecureHTTPParser) {
+  if (httpValidation !== undefined) {
+    if (typeof httpValidation !== "string" || !__HTTP_VALIDATIONS.includes(httpValidation)) {
+      throw new codes.ERR_INVALID_ARG_VALUE("options.httpValidation", httpValidation,
+        "must be one of: 'strict', 'relaxed', or 'insecure'");
+    }
+    if (insecureHTTPParser !== undefined) {
+      throw new codes.ERR_INVALID_ARG_VALUE("options.httpValidation", httpValidation,
+        "cannot be used together with options.insecureHTTPParser");
+    }
+    return httpValidation;
+  }
+  return insecureHTTPParser === true ? "insecure" : "strict";
+}
+// 入站解析档位：strict / relaxed / lenient（lenient = insecureHTTPParser 全宽）。
+function __parseModeOf(validation) {
+  return validation === "insecure" ? "lenient" : validation;
+}
+// 出站头值门：strict 拒控制字符（除 HTAB）与 DEL；relaxed/insecure 只拒
+// NUL/CR/LF（>0xff 不可能出现——latin1 文本）。违者 ERR_INVALID_CHAR。
+function __checkOutboundHeaderValue(validation, value) {
+  const v = String(value);
+  if (validation === "relaxed" || validation === "insecure") {
+    if (/[\x00\r\n]/.test(v)) {
+      throw new codes.ERR_INVALID_CHAR("Invalid character in header content");
+    }
+    return;
+  }
+  if (!__validHeaderValue(v)) {
+    throw new codes.ERR_INVALID_CHAR("Invalid character in header content");
+  }
+}
+function __parseHead(headText, mode) {
   const lines = headText.split("\r\n");
   const first = lines.shift().split(" ");
   // 真机口径：req.headers/res.headers 是普通对象（Object.prototype，node 26.8.2
@@ -107,7 +144,13 @@ function __parseHead(headText, strict) {
     const v = vRaw.trim();
     // 严格门查原始值（trim 前）——前导控制字符（如 'x:\nTE' 的裸 LF）不得
     // 被 trim 吞掉而漏检（missing-header-separator 套件现场记录）。
-    if (strict && !__validHeaderValue(vRaw)) throw __mkParseError("invalid header value");
+    if (mode === "strict") {
+      if (!__validHeaderValue(vRaw)) throw __mkParseError("invalid header value");
+    } else if (mode === "relaxed") {
+      // relaxed（Fetch 规约）：值只拒 NUL/CR/LF——CR/LF 行内不可能（按 CRLF
+      // 分行），NUL 仍查；DEL/其余控制字符放行（header-value-relaxed 套件）。
+      if (/[\x00\r\n]/.test(vRaw)) throw __mkParseError("invalid header value");
+    }
     rawHeaders.push(k, v);
     const lk = k.toLowerCase();
     if (headers[lk] === undefined) {
@@ -132,12 +175,14 @@ function __validateHeaderValue(v) {
     throw new codes.ERR_INVALID_CHAR("Invalid character in header content");
   }
 }
-function __lowerHeaders(obj) {
+function __lowerHeaders(obj, validation, namesSink) {
   const out = Object.create(null);
   for (const [k, v] of Object.entries(obj ?? {})) {
     // 头名字门（node checkIsHttpToken 口径；invalidheaderfield 套件）。
     if (!__TOKEN_RE.test(k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", k);
+    if (validation !== undefined) __checkOutboundHeaderValue(validation, v);
     out[k.toLowerCase()] = String(v);
+    if (namesSink !== undefined) namesSink[k.toLowerCase()] = String(k);
   }
   return out;
 }
@@ -382,6 +427,8 @@ export class ServerResponse extends Writable {
     this.statusCode = 200;
     this.statusMessage = undefined;
     this.__headers = Object.create(null);
+    // 用户拼写记录（node kOutHeaders [name, value] 口径：wire 保留原大小写）。
+    this.__headerNames = Object.create(null);
     this.headersSent = false;
     this.__headSent = false;
     // node _storeHeader 决策表旗标（真机 26.8.2 + lib/_http_outgoing.js 对拍）：
@@ -417,12 +464,31 @@ export class ServerResponse extends Writable {
   }
   setHeader(name, value) {
     if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+    __checkOutboundHeaderValue(this.__validation, value);
     const lk = String(name).toLowerCase();
     this.__headers[lk] = String(value);
+    // node 口径：wire 保留用户原拼写（kOutHeaders 存 [name, value] 原文名）。
+    this.__headerNames[lk] = String(name);
+    return this;
+  }
+  // node OutgoingMessage.appendHeader（header-value-relaxed 套件点名）：同门
+  // 校验后逗号拼接（node 口径：existing + ", " + value）。
+  appendHeader(name, value) {
+    if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+    __checkOutboundHeaderValue(this.__validation, value);
+    const lk = String(name).toLowerCase();
+    const cur = this.__headers[lk];
+    this.__headers[lk] = cur !== undefined ? `${cur}, ${value}` : String(value);
+    this.__headerNames[lk] = String(name);
     return this;
   }
   getHeader(name) { return this.__headers[String(name).toLowerCase()]; }
-  removeHeader(name) { delete this.__headers[String(name).toLowerCase()]; return this; }
+  removeHeader(name) {
+    const lk = String(name).toLowerCase();
+    delete this.__headers[lk];
+    delete this.__headerNames[lk];
+    return this;
+  }
   getHeaderNames() { return Object.keys(this.__headers); }
   hasHeader(name) { return this.__headers[String(name).toLowerCase()] !== undefined; }
   writeHead(status, ...rest) {
@@ -436,7 +502,7 @@ export class ServerResponse extends Writable {
     const msg = rest.find((r) => typeof r === "string");
     this.statusCode = status;
     if (msg !== undefined) this.statusMessage = msg;
-    Object.assign(this.__headers, __lowerHeaders(obj));
+    Object.assign(this.__headers, __lowerHeaders(obj, this.__validation, this.__headerNames));
     // 头已存：随后的 end(data) 不再走 CL 快路径（真机 chunked 口径）。
     this.__headStored = true;
     return this;
@@ -599,7 +665,9 @@ export class ServerResponse extends Writable {
     const __autoCase = (k) => (k === "connection" && this.__autoConn) || (k === "date" && this.__autoDate) ||
       (k === "keep-alive" && this.__autoKA);
     for (const [k, v] of Object.entries(this.__headers)) {
-      const name = __autoCase(k) ? (k === "keep-alive" ? "Keep-Alive" : k.charAt(0).toUpperCase() + k.slice(1)) : (canon[k] ?? k);
+      const user = this.__headerNames[k];
+      const name = user !== undefined ? user
+        : (__autoCase(k) ? (k === "keep-alive" ? "Keep-Alive" : k.charAt(0).toUpperCase() + k.slice(1)) : (canon[k] ?? k));
       head.push(`${name}: ${v}`);
     }
     return new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n");
@@ -821,6 +889,9 @@ export function withHttpServer(Base) {
       self.keepAliveTimeoutBuffer = 1_000;
       self.maxRequestsPerSocket = 0;
       // 每服务器宽松解析旗（insecure-parser-per-stream 套件）。
+      // httpValidation 门（node storeHTTPOptions 口径：validateOneOf + 与
+      // insecureHTTPParser 互斥，ERR_INVALID_ARG_VALUE）。
+      self.__inboundMode = __parseModeOf(__resolveHttpValidation(o.httpValidation, o.insecureHTTPParser));
       self.insecureHTTPParser = o.insecureHTTPParser ?? false;
       const rt = o.requestTimeout !== undefined ? __validateInteger(o.requestTimeout, "requestTimeout") : undefined;
       if (rt !== undefined) self.requestTimeout = rt;
@@ -1016,7 +1087,7 @@ export function withHttpServer(Base) {
           if (this.insecureHTTPParser !== true && __hasBareCR(headText)) {
             throw __mkParseError("LF expected after CR");
           }
-          const { first, headers, rawHeaders } = __parseHead(headText, this.insecureHTTPParser !== true);
+          const { first, headers, rawHeaders } = __parseHead(headText, this.__inboundMode ?? "strict");
           __validateRequestHead(first, headers);
           const req = new IncomingMessage();
           req.method = first[0];
@@ -1065,6 +1136,8 @@ export function withHttpServer(Base) {
           const conn = (headers.connection || "").toLowerCase();
           const keepAlive = req.httpVersion === "1.1" ? conn !== "close" : conn === "keep-alive";
           const res = new ServerResponse(sock);
+          // 出站校验档随服务端 httpValidation（node 同一选项双向往返）。
+          res.__validation = this.__inboundMode;
           // node ServerResponse ctor 口径：UCED 1.1 恒 true；1.0 = 请求 TE 头
           // 含 chunked（真机 1.0-keep-alive 套件 TE: chunked 形）。
           res.__uced = req.httpVersion === "1.1" ? true : /(?:^|\W)chunked/i.test(headers.te ?? "");
@@ -1314,6 +1387,10 @@ export function withClientRequest(openSocket, flavor) {
         }
       }
       // 每请求宽松解析旗（insecure-parser-per-stream 套件：头值控制字符严格门）。
+      // httpValidation 门（client 与 server 同口径：validateOneOf + 互斥，
+      // 真机 ERR_INVALID_ARG_VALUE 逐项对拍）。
+      this.__inboundMode = __parseModeOf(__resolveHttpValidation(options.httpValidation, options.insecureHTTPParser));
+      this.__validation = options.httpValidation ?? (options.insecureHTTPParser === true ? "insecure" : undefined);
       this.insecureHTTPParser = options.insecureHTTPParser ?? false;
       this.socket = null;
       this.agent = options.agent === undefined ? (flavor.defaultAgent ?? null) : (options.agent || null);
@@ -1540,8 +1617,19 @@ export function withClientRequest(openSocket, flavor) {
     }
     setHeader(name, value) {
       if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+      __checkOutboundHeaderValue(this.__validation, value);
       const lk = String(name).toLowerCase();
       this.__headers[lk] = String(value);
+      if (lk === "connection") this.__autoConn = false;
+      return this;
+    }
+    // node OutgoingMessage.appendHeader（header-value-relaxed 套件点名）。
+    appendHeader(name, value) {
+      if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+      __checkOutboundHeaderValue(this.__validation, value);
+      const lk = String(name).toLowerCase();
+      const cur = this.__headers[lk];
+      this.__headers[lk] = cur !== undefined ? `${cur}, ${value}` : String(value);
       if (lk === "connection") this.__autoConn = false;
       return this;
     }
@@ -1845,7 +1933,7 @@ export function withClientRequest(openSocket, flavor) {
             this.destroy(__hpe("HPE_LF_EXPECTED", "Expected LF after CR"));
             return;
           }
-          const { first, headers, rawHeaders } = __parseHead(headText, this.insecureHTTPParser !== true);
+          const { first, headers, rawHeaders } = __parseHead(headText, this.__inboundMode ?? (this.insecureHTTPParser === true ? "lenient" : "strict"));
           if (!first[0].startsWith("HTTP/") || !/^\d{3}$/.test(first[1] ?? "")) {
             this.destroy(__hpe("HPE_INVALID_CONSTANT", "invalid HTTP response line"));
             return;

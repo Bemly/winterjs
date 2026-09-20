@@ -568,3 +568,61 @@ fn phase11_serve_dynamic_fallback_status_preserved() {
     assert_eq!(body, b"nf");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_serve_large_body_streaming() {
+    // 正常：POST 1MB 回声逐字节一致（请求体多 Chunk 上行）；
+    // GET 2MB 分带下行（响应 64KB 分片多 Chunk，§4.166），内容逐带校验。
+    let dir = serve_fixture();
+    dir.child("handler.mjs")
+        .write_str(
+            "export default { async fetch(req) { const u = new URL(req.url); \
+             if (u.pathname === '/bigecho' && req.method === 'POST') { \
+             const b = await req.text(); return new Response(b, { status: 200 }); } \
+             if (u.pathname === '/bigdown') { const out = new Uint8Array(2097152); \
+             for (let i = 0; i < 32; i++) out.fill(i & 0xff, i * 65536, (i + 1) * 65536); \
+             return new Response(out, { status: 200 }); } \
+             return new Response('hello-t1', { status: 200 }); } };",
+        )
+        .unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+    let up = vec![0x41u8; 1 << 20];
+    let (st, _, back) = http_post(srv.port, "/bigecho", &up);
+    assert_eq!(st, 200);
+    assert_eq!(back, up);
+    let (st, _, down) = http_get(srv.port, "/bigdown", &[]);
+    assert_eq!(st, 200);
+    assert_eq!(down.len(), 2 << 20, "down len");
+    for (i, b) in down.iter().enumerate() {
+        assert_eq!(*b, ((i / 65536) & 0xff) as u8, "band at {i}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_serve_concurrent_20x10() {
+    // 正常：20 线程 × 10 串行 GET = 200 请求全 200 且内容对（T1 并发验收）。
+    let dir = serve_fixture();
+    dir.child("handler.mjs")
+        .write_str("export default { async fetch() { return new Response('hello-t1', { status: 200 }); } };")
+        .unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+    let port = srv.port;
+    let handles: Vec<_> = (0..20)
+        .map(|_| {
+            std::thread::spawn(move || {
+                for _ in 0..10 {
+                    let (st, _, body) = http_get(port, "/dyn", &[]);
+                    assert_eq!(st, 200);
+                    assert_eq!(body, b"hello-t1");
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("worker green");
+    }
+    dir.close().unwrap();
+}

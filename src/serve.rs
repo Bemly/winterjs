@@ -34,6 +34,21 @@ pub struct ServeOpts {
     pub handler: Option<PathBuf>,
 }
 
+/// TLS 建连（单证书 → `ServerConfig`；ALPN 挂 `h2` + `http/1.1` 供 axum auto 协商 T2）。
+fn tls_config_with_single_cert(
+    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> Result<rustls::ServerConfig, Error> {
+    // provider 与 fetch 侧同源（顶层 ring；重复 install 无害，见 §2 门控）。
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut cfg = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| Error::Other(format!("cannot build TLS config: {e}")))?;
+    cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(cfg)
+}
+
 /// TLS 配置加载（PEM 解析；`rustls-pemfile` 轮子；`ring` provider）。
 /// 纯 IO，单测覆盖坏输入。
 pub fn load_tls(cert_path: &Path, key_path: &Path) -> Result<rustls::ServerConfig, Error> {
@@ -52,12 +67,7 @@ pub fn load_tls(cert_path: &Path, key_path: &Path) -> Result<rustls::ServerConfi
     let key = rustls_pemfile::private_key(&mut BufReader::new(key_file))
         .map_err(|e| Error::Other(format!("bad --key PEM '{}': {e}", key_path.display())))?
         .ok_or_else(|| Error::Other(format!("bad --key PEM '{}': no private key found", key_path.display())))?;
-    // provider 与 fetch 侧同源（顶层 ring；重复 install 无害，见 §2 门控）。
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| Error::Other(format!("cannot build TLS config: {e}")))
+    tls_config_with_single_cert(certs, key)
 }
 
 /// ACME 证书转内存 TLS（`ensure_cert` 的 PEM 对 → `ServerConfig`；与 `load_tls` 同 provider）。
@@ -70,11 +80,7 @@ async fn load_tls_acme(acme: &crate::acme::AcmeOpts) -> Result<rustls::ServerCon
     let key = rustls_pemfile::private_key(&mut BufReader::new(key_pem.as_slice()))
         .map_err(|e| Error::Other(format!("bad ACME key PEM: {e}")))?
         .ok_or_else(|| Error::Other("bad ACME key PEM: no private key found".into()))?;
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| Error::Other(format!("cannot build TLS config: {e}")))
+    tls_config_with_single_cert(certs, key)
 }
 
 /// axum `Listener` 的 TLS 实现（TCP accept 后做服务端握手；握手失败记 warn
@@ -260,7 +266,7 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
             ));
         }
     };
-    let scheme = if tls.is_some() { "https" } else { "http" };
+    let scheme: &'static str = if tls.is_some() { "https" } else { "http" };
     let tcp = tokio::net::TcpListener::bind((opts.host.as_str(), opts.port))
         .await
         .map_err(|e| {
@@ -374,7 +380,7 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
         Some(_) => app.fallback_service(
             serve_dir
                 .call_fallback_on_method_not_allowed(true)
-                .fallback(tower::service_fn(js_fallback)),
+                .fallback(tower::service_fn(move |req| js_fallback(scheme, req))),
         ),
         None => app.fallback_service(serve_dir),
     }
@@ -421,10 +427,11 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     Ok(())
 }
 
-/// 动态 fallback（`--handler`，plan4 T1）：axum 请求 → JS 会话 → WinterCG 响应。
+/// 动态 fallback（`--handler`，plan4 T1/T2）：axum 请求 → JS 会话 → WinterCG 响应。
 /// 传输全委托（hyper 成帧；请求体流由 `http_body_util` 泵入通道；响应体流式写回）。
 /// 无会话（早失败已拦，此处仅防御）/投递失败即 503；响应头 30s 未到即 504。
 async fn js_fallback(
+    scheme: &str,
     req: axum::http::Request<axum::body::Body>,
 ) -> Result<axum::response::Response<axum::body::Body>, std::convert::Infallible> {
     use axum::response::Response;
@@ -442,7 +449,7 @@ async fn js_fallback(
         tracing::warn!(target: "winterjs::serve", "serve session not ready");
         return Ok(empty(axum::http::StatusCode::SERVICE_UNAVAILABLE));
     };
-    // T1：scheme 恒 http（https 面 T2 随 TLS 分支线程 scheme，见 plan4 §3）。
+    // scheme 随 TLS 分支（T2）：明文 http、TLS https，handler 侧 `req.url` 口径。
     let (parts, body) = req.into_parts();
     let host = parts
         .headers
@@ -451,7 +458,7 @@ async fn js_fallback(
         .unwrap_or("localhost")
         .to_owned();
     let target = parts.uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-    let url = format!("http://{host}{target}");
+    let url = format!("{scheme}://{host}{target}");
     let headers: Vec<(String, String)> = parts
         .headers
         .iter()
@@ -711,6 +718,19 @@ mod tests {
         std::fs::write(&cert, b"").unwrap();
         assert!(load_tls(&cert, &key).unwrap_err().to_string().contains("no certificate"));
         assert!(load_tls(&dir.path().join("missing.pem"), &key).is_err());
+    }
+
+    #[test]
+    fn tls_config_carries_h2_alpn() {
+        // T2：服务端 ALPN 挂 h2 + http/1.1，axum auto 按 ALPN 协商 H2（curl https 默认谈出 v=2）。
+        let key = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("c.pem");
+        let key_path = dir.path().join("k.pem");
+        std::fs::write(&cert_path, key.cert.pem()).unwrap();
+        std::fs::write(&key_path, key.signing_key.serialize_pem()).unwrap();
+        let cfg = load_tls(&cert_path, &key_path).unwrap();
+        assert_eq!(cfg.alpn_protocols, vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
     }
 
     #[test]

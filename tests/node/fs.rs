@@ -249,6 +249,81 @@ setTimeout(() => { console.log("enc-timeout"); process.exit(1); }, 6000);
 }
 
 #[test]
+fn phase10f_fs_promises_watch_surface() {
+    // G8-4：fs/promises.watch 异步迭代（{eventType, filename} + 校验 reject +
+    // abort + break 后重迭代 noop）。
+    // 正常：目录写即迭代到 rename/change + filename；报错：7 组校验逐项；
+    // 边界：abort 即 AbortError，break 后重跑 done。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("pw.mjs");
+    file.write_str(
+        r#"
+import { watch } from "node:fs/promises";
+import fs from "node:fs";
+import assert from "node:assert";
+// 报错：校验逐项（reject 码）
+const bad = [
+  [() => watch(1), "ERR_INVALID_ARG_TYPE"],
+  [() => watch("x", 1), "ERR_INVALID_ARG_TYPE"],
+  [() => watch("x", { persistent: 1 }), "ERR_INVALID_ARG_TYPE"],
+  [() => watch("x", { recursive: 1 }), "ERR_INVALID_ARG_TYPE"],
+  [() => watch("x", { encoding: 1 }), "ERR_INVALID_ARG_VALUE"],
+  [() => watch("x", { signal: 1 }), "ERR_INVALID_ARG_TYPE"],
+  [() => watch("x", { maxQueue: "silly" }), "ERR_INVALID_ARG_TYPE"],
+  [() => watch("x", { overflow: "barf" }), "ERR_INVALID_ARG_VALUE"],
+];
+for (const [fn, code] of bad) {
+  try { for await (const _ of fn()) { console.log("watch-no-throw"); } }
+  catch (e) { console.log("watch-bad", e.code === code); }
+}
+// 正常：迭代 + break 后重跑 noop
+{
+  const w = watch("sub");
+  let n = 0;
+  setTimeout(() => { fs.writeFileSync("sub/a.txt", "x"); }, 150);
+  for await (const { eventType, filename } of w) {
+    if (filename === "a.txt" && (eventType === "rename" || eventType === "change")) {
+      console.log("watch-hit", true);
+      n++;
+      break;
+    }
+  }
+  let again = 0;
+  for await (const _ of w) { again++; }
+  console.log("watch-once", n === 1, again === 0);
+}
+// 边界：abort 即 AbortError
+{
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 100);
+  try { for await (const _ of watch("sub", { signal: ac.signal })) {} }
+  catch (e) { console.log("watch-abort", e.name === "AbortError"); }
+}
+setTimeout(() => { console.log("watch-done"); process.exit(0); }, 3000);
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        text.lines().filter(|l| *l == "watch-bad true").count(),
+        8,
+        "校验 8 组:\n{text}"
+    );
+    for line in ["watch-hit true", "watch-once true true", "watch-abort true", "watch-done"] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn node_fs_streams() {
     // createReadStream 分块 + createWriteStream 落盘/追加（10f 起真 WriteStream：
     // write/end/finish 事件面，Web 流 getWriter 口径退役——node 真机无此面）。

@@ -2197,7 +2197,8 @@ function __fsValidateOffset(v, name) {
 }
 function __fsEncoding(opts) {
   const check = (enc) => {
-    if (typeof enc === "string" && !__fsEncodings.has(enc.toLowerCase())) {
+    // node assertEncoding 口径：非串（含数字）或未知名即 ARG_VALUE。
+    if (typeof enc !== "string" || !__fsEncodings.has(enc.toLowerCase())) {
       // node validateEncoding：`ERR_INVALID_ARG_VALUE` + TypeError。
       const e = new TypeError(`The argument 'encoding' is invalid encoding. Received '${enc}'`);
       e.code = "ERR_INVALID_ARG_VALUE"; throw e;
@@ -3952,6 +3953,103 @@ export class FileHandle extends EventEmitter {
   }
 }
 const __as = (fn) => function (...args) { return Promise.resolve().then(() => fn(...args)); };
+// node 口径（lib/internal/fs/watchers.js async watch 选项校验）：
+// persistent/recursive 布尔（ARG_TYPE）、encoding（ARG_VALUE）、
+// signal AbortSignal 形（ARG_TYPE）、maxQueue 整数（ARG_TYPE/OUT_OF_RANGE）、
+// overflow 'ignore'/'error'（ARG_VALUE）、ignore 全形态复用。
+function __watchOptsValidate(opts) {
+  if (opts === undefined || opts === null) return {};
+  if (typeof opts !== "object") {
+    const e = new TypeError(`The "options" argument must be of type object. Received ${Object.prototype.toString.call(opts)}`);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
+  const o = {};
+  for (const k of ["persistent", "recursive"]) {
+    if (opts[k] !== undefined && typeof opts[k] !== "boolean") {
+      const e = new TypeError(`The "options.${k}" argument must be of type boolean. Received ${typeof opts[k]}`);
+      e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+    }
+    if (opts[k] !== undefined) o[k] = opts[k];
+  }
+  if (opts.encoding !== undefined) {
+    __fsEncoding({ encoding: opts.encoding });
+    o.encoding = opts.encoding;
+  }
+  if (opts.signal !== undefined) o.signal = __fsSignalCheck(opts);
+  if (opts.maxQueue !== undefined) {
+    if (typeof opts.maxQueue !== "number") {
+      const e = new TypeError(`The "options.maxQueue" argument must be of type number. Received ${typeof opts.maxQueue}`);
+      e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+    }
+    if (!Number.isInteger(opts.maxQueue)) {
+      const e = new RangeError(`The value of "options.maxQueue" is out of range. It must be an integer. Received ${opts.maxQueue}`);
+      e.code = "ERR_OUT_OF_RANGE"; throw e;
+    }
+    o.maxQueue = opts.maxQueue;
+  }
+  if (opts.overflow !== undefined) {
+    if (opts.overflow !== "ignore" && opts.overflow !== "error") {
+      const e = new TypeError(`The argument 'options.overflow' must be one of: 'ignore', 'error'. Received '${opts.overflow}'`);
+      e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+    }
+    o.overflow = opts.overflow;
+  }
+  if (opts.ignore !== undefined) {
+    __validateIgnoreOption(opts.ignore, "options.ignore");
+    o.ignore = opts.ignore;
+  }
+  return o;
+}
+// node 口径（lib/internal/fs/watchers.js async watch）：for-await 迭代
+// {eventType, filename}；校验错走 reject；abort 即 AbortError；break 后
+// 重迭代即 done（finally 关 watcher）；背压 error 形入队。
+async function* __promisesWatch(p, opts) {
+  p = __fsPath(p, "watch");
+  const o = __watchOptsValidate(opts);
+  const maxQueue = o.maxQueue ?? 2048;
+  const overflow = o.overflow ?? "ignore";
+  const queue = [];
+  let wake = null;
+  let aborted = false;
+  const onAbort = () => { aborted = true; if (wake) { const k = wake; wake = null; k(); } };
+  if (o.signal) {
+    if (o.signal.aborted) throw __fsAbortErr(o.signal.reason);
+    o.signal.addEventListener("abort", onAbort, { once: true });
+  }
+  const w = watch(p, {
+    persistent: o.persistent, recursive: o.recursive, encoding: o.encoding,
+    ignore: o.ignore,
+  }, (ev, fn) => {
+    if (queue.length >= maxQueue) {
+      if (overflow === "error") {
+        queue.length = 0;
+        const e = new Error(`fs.watch queue overflow (maxQueue ${maxQueue})`);
+        e.code = "ERR_FS_WATCH_QUEUE_OVERFLOW";
+        queue.push(e);
+      } else {
+        process.emitWarning("fs.watch maxQueue exceeded");
+      }
+    } else {
+      queue.push({ eventType: ev, filename: fn });
+    }
+    if (wake) { const k = wake; wake = null; k(); }
+  });
+  try {
+    for (;;) {
+      while (queue.length > 0) {
+        const item = queue.shift();
+        if (item instanceof Error) throw item;
+        yield item;
+      }
+      if (aborted) throw __fsAbortErr(o.signal.reason);
+      await new Promise((res) => { wake = res; });
+      if (aborted) throw __fsAbortErr(o.signal.reason);
+    }
+  } finally {
+    if (o.signal) { try { o.signal.removeEventListener("abort", onAbort); } catch {} }
+    try { w.close(); } catch {}
+  }
+}
 export const promises = {
   access: __as(accessSync),
   appendFile: (p, data, opts) => Promise.resolve().then(() => __fsAppendFileAsync(p, data, opts)),
@@ -3990,6 +4088,7 @@ export const promises = {
   fchown: __as(fchownSync),
   futimes: __as(futimesSync),
   ...(typeof lchmodSync === "function" ? { lchmod: __as(lchmodSync) } : {}),
+  watch: __promisesWatch,
 };
 // ---- 9c：回调全家（err-first；promise 底座经 queueMicrotask 派发）----
 function __nodeify(p, cb) {
@@ -4392,5 +4491,6 @@ export const utimes = fs.promises.utimes;
 export const writeFile = fs.promises.writeFile;
 export const constants = fs.constants;
 export const FileHandle = fs.FileHandle;
+export const watch = fs.promises.watch;
 export default fs.promises;
 "#;

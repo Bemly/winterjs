@@ -105,8 +105,8 @@ export function httpServerPreClose() { return undefined; }
 /// OutgoingMessage）。
 pub const OUTGOING_SOURCE: &str = r#"
 import { OutgoingMessage } from "node:internal/http_framing";
-export { OutgoingMessage };
-export const kHighWaterMark = Symbol("kHighWaterMark");
+import { kHighWaterMark } from "node:internal/http_framing";
+export { OutgoingMessage, kHighWaterMark };
 export const kUniqueHeaders = Symbol("uniqueHeaders");
 // node lib/_http_outgoing.js validateHeaderName/Value（message 逐字）。
 const TOKEN_RE = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/;

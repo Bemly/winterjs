@@ -34,6 +34,13 @@ import { codes } from "node:internal/errors";
 
 // node 内部符号（_http_server re-export；close-destroy-timeout/async-dispose 套件）
 export const kConnectionsCheckingInterval = Symbol("kConnectionsCheckingInterval");
+// node kHighWaterMark（_http_outgoing 同符号；server-options-highwatermark
+// 套件断言 res[kHighWaterMark]）。
+export const kHighWaterMark = Symbol("kHighWaterMark");
+// node internal/streams/state getDefaultHighWaterMark（真机 65536/objectMode 16，
+// 本仓 state 模块同值——server highWaterMark 缺省取它）。
+import __streamsState from "node:internal/streams/state";
+const { getDefaultHighWaterMark } = __streamsState;
 export const kServerResponse = Symbol("kServerResponse");
 export const STATUS_CODES = {
   100: "Continue", 101: "Switching Protocols", 102: "Processing", 103: "Early Hints",
@@ -376,8 +383,8 @@ function __pumpChunked(fr, msg, bytes) {
 }
 
 export class IncomingMessage extends Readable {
-  constructor() {
-    super();
+  constructor(options) {
+    super(options);
     this.httpVersion = "1.1";
     this.httpVersionMajor = 1;
     this.httpVersionMinor = 1;
@@ -893,6 +900,9 @@ export function withHttpServer(Base) {
       // insecureHTTPParser 互斥，ERR_INVALID_ARG_VALUE）。
       self.__inboundMode = __parseModeOf(__resolveHttpValidation(o.httpValidation, o.insecureHTTPParser));
       self.insecureHTTPParser = o.insecureHTTPParser ?? false;
+      // node highWaterMark 选项（server-options-highwatermark 套件：req 流
+      // HWM 与 res[kHighWaterMark] 同源；缺省 getDefaultHighWaterMark()）。
+      self.__highWaterMark = o.highWaterMark;
       const rt = o.requestTimeout !== undefined ? __validateInteger(o.requestTimeout, "requestTimeout") : undefined;
       if (rt !== undefined) self.requestTimeout = rt;
       const ht = o.headersTimeout !== undefined ? __validateInteger(o.headersTimeout, "headersTimeout") : undefined;
@@ -1089,7 +1099,8 @@ export function withHttpServer(Base) {
           }
           const { first, headers, rawHeaders } = __parseHead(headText, this.__inboundMode ?? "strict");
           __validateRequestHead(first, headers);
-          const req = new IncomingMessage();
+          const req = new IncomingMessage(this.__highWaterMark !== undefined
+            ? { highWaterMark: this.__highWaterMark } : undefined);
           req.method = first[0];
           req.url = first[1];
           req.httpVersion = first[2].replace("HTTP/", "");
@@ -1138,6 +1149,9 @@ export function withHttpServer(Base) {
           const res = new ServerResponse(sock);
           // 出站校验档随服务端 httpValidation（node 同一选项双向往返）。
           res.__validation = this.__inboundMode;
+          // node _http_server.js 口径：res[kHighWaterMark] 记服务端 HWM
+          //（缺省 getDefaultHighWaterMark()）。
+          res[kHighWaterMark] = this.__highWaterMark ?? getDefaultHighWaterMark(false);
           // node ServerResponse ctor 口径：UCED 1.1 恒 true；1.0 = 请求 TE 头
           // 含 chunked（真机 1.0-keep-alive 套件 TE: chunked 形）。
           res.__uced = req.httpVersion === "1.1" ? true : /(?:^|\W)chunked/i.test(headers.te ?? "");

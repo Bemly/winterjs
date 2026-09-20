@@ -9,6 +9,7 @@
 pub const SOURCE: &str = r#"
 import * as net from "node:net";
 import { codes } from "node:internal/errors";
+import { parsers } from "node:_http_common";
 import {
   STATUS_CODES, METHODS, maxHeaderSize, IncomingMessage, ServerResponse,
   OutgoingMessage, Agent as BaseAgent, withHttpServer, withClientRequest,
@@ -99,6 +100,20 @@ export function get(a, b, c) {
   const [options, cb] = normalizeRequestArgs(a, b, c, FLAVOR);
   return getFrom(ClientRequest, options, cb);
 }
+// node lib/http.js setMaxIdleHTTPParsers（set-max-idle-http-parser 套件逐项
+// 对拍：非 number → ARG_TYPE；<1/非整数/NaN → OUT_OF_RANGE '>= 1'；合法值写
+// _http_common.parsers.max——parser 池帽，同一对象被套件 require 侧读取）。
+export function setMaxIdleHTTPParsers(max) {
+  if (typeof max !== "number") {
+    throw new codes.ERR_INVALID_ARG_TYPE("max", "number", max);
+  }
+  if (!Number.isInteger(max) || max < 1) {
+    throw new codes.ERR_OUT_OF_RANGE("max", ">= 1", max);
+  }
+  parsers.max = max;
+  return true;
+}
+
 export function createServer(options, cb) {
   const opts = __serverOptions([options]);
   const server = new __HttpServerBase(opts);
@@ -114,6 +129,7 @@ export {
 const __api = {
   STATUS_CODES, METHODS, maxHeaderSize, request, get, Agent, globalAgent,
   Server, ServerResponse, IncomingMessage, ClientRequest, OutgoingMessage, createServer,
+  setMaxIdleHTTPParsers,
 };
 export default __api;
 "#;

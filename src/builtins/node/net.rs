@@ -459,71 +459,93 @@ pub unsafe extern "C" fn net_listen(
         set_rval_str(&mut cx, &frame, &id2.to_string());
         let mut cmd_rx2 = state::net_socket_add(id2, target);
         #[cfg(unix)]
-        handle.spawn(async move {
-            // node 口径：同 path 已在监听即 EADDRINUSE（不静默覆盖；listen-path 套件点名）。
-            // 残留文件（上次未清）则清后重绑：bind 成功即覆盖语义，失败即真占用。
-            let pre_exists = tokio::fs::metadata(sock_path.as_str()).await.is_ok();
-            if pre_exists {
-                // 探活：能连上即真占用 → EADDRINUSE；连不上即残留 → 清后重绑。
-                let probe = tokio::net::UnixStream::connect(sock_path.as_str()).await;
-                if probe.is_ok() {
+        {
+            // node 口径：pipe bind 在 listen() 返回前同步落定——紧随其后的
+            // 同步 cp 必须已见 socket 文件（cp-socket 套件；旧 task 内异步绑
+            // 必现 ENOENT 竞态）。探活/清残留/bind/chmod 全同步（本地 syscall，
+            // 无 I/O 等待），task 只接管已绑定的 listener 跑 accept。
+            use std::os::unix::net::{UnixListener, UnixStream};
+            enum SyncOut {
+                Bound(UnixListener),
+                Failed(String, String),
+            }
+            let sync_out: SyncOut = (|| {
+                if std::fs::metadata(sock_path.as_str()).is_ok() {
+                    // 探活：能连上即真占用 → EADDRINUSE；连不上即残留 → 清后重绑。
+                    if UnixStream::connect(sock_path.as_str()).is_ok() {
+                        return SyncOut::Failed("EADDRINUSE".into(), format!("listen EADDRINUSE: address already in use {sock_path}"));
+                    }
+                    if let Err(e) = std::fs::remove_file(sock_path.as_str()) {
+                        let code = crate::builtins::node::fs::io_code(&e);
+                        return SyncOut::Failed(code.to_string(), format!("{code}: {e}"));
+                    }
+                }
+                match UnixListener::bind(sock_path.as_str()) {
+                    Ok(l) => SyncOut::Bound(l),
+                    Err(e) => {
+                        let code = crate::builtins::node::fs::io_code(&e);
+                        SyncOut::Failed(code.to_string(), format!("{code}: {e}"))
+                    }
+                }
+            })();
+            let listener = match sync_out {
+                SyncOut::Failed(code, msg) => {
                     let _ = ev_tx2.send(NetEvent {
                         id: id2,
-                        kind: NetKind::ServerError { code: "EADDRINUSE".into(), msg: format!("listen EADDRINUSE: address already in use {sock_path}") },
+                        kind: NetKind::ServerError { code: code.into(), msg },
+                    });
+                    let _ = ev_tx2.send(NetEvent { id: id2, kind: NetKind::ServerClose });
+                    return true;
+                }
+                SyncOut::Bound(l) => l,
+            };
+            // chmod：基 0600 + readableAll 0044 + writableAll 0022（真机 pipe chmod 语义）。
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let mut mode: u32 = 0o600;
+                if mode_bits.contains('r') { mode |= 0o044; }
+                if mode_bits.contains('w') { mode |= 0o022; }
+                let _ = std::fs::set_permissions(sock_path.as_str(), std::fs::Permissions::from_mode(mode));
+            }
+            let bound_path = sock_path.clone();
+            handle.spawn(async move {
+                // from_std 前必 nonblocking（否则 tokio panic）。
+                let _ = listener.set_nonblocking(true);
+                let Ok(listener) = tokio::net::UnixListener::from_std(listener) else {
+                    let _ = ev_tx2.send(NetEvent {
+                        id: id2,
+                        kind: NetKind::ServerError { code: "UNKNOWN".into(), msg: "UNKNOWN: from_std failed".into() },
                     });
                     let _ = ev_tx2.send(NetEvent { id: id2, kind: NetKind::ServerClose });
                     return;
-                }
-                let _ = tokio::fs::remove_file(sock_path.as_str()).await;
-            }
-            let bound = tokio::net::UnixListener::bind(sock_path.as_str());
-            // chmod：基 0600 + readableAll 0044 + writableAll 0022（真机 pipe chmod 语义）。
-            if bound.is_ok() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt as _;
-                    let mut mode: u32 = 0o600;
-                    if mode_bits.contains('r') { mode |= 0o044; }
-                    if mode_bits.contains('w') { mode |= 0o022; }
-                    let _ = tokio::fs::set_permissions(sock_path.as_str(), std::fs::Permissions::from_mode(mode)).await;
-                }
-            }
-            let Ok(listener) = bound else {
-                let e = bound.unwrap_err();
-                let code = crate::builtins::node::fs::io_code(&e);
+                };
                 let _ = ev_tx2.send(NetEvent {
                     id: id2,
-                    kind: NetKind::ServerError { code: code.into(), msg: format!("{code}: {e}") },
+                    kind: NetKind::ListeningUds { path: bound_path },
                 });
-                let _ = ev_tx2.send(NetEvent { id: id2, kind: NetKind::ServerClose });
-                return;
-            };
-            let bound_path = sock_path.clone();
-            let _ = ev_tx2.send(NetEvent {
-                id: id2,
-                kind: NetKind::ListeningUds { path: bound_path },
-            });
-            loop {
-                tokio::select! {
-                    acc = listener.accept() => {
-                        match acc {
-                            Err(_) => continue,
-                            Ok((stream, _peer)) => {
-                                let (conn_id, conn_cmd_rx) = state::net_conn_add();
-                                let (r, w) = stream.into_split();
-                                spawn_pumps(conn_id, r, w, ev_tx2.clone(), conn_cmd_rx);
-                                let _ = ev_tx2.send(NetEvent {
-                                    id: id2,
-                                    kind: NetKind::ConnectionUds { conn_id },
-                                });
+                loop {
+                    tokio::select! {
+                        acc = listener.accept() => {
+                            match acc {
+                                Err(_) => continue,
+                                Ok((stream, _peer)) => {
+                                    let (conn_id, conn_cmd_rx) = state::net_conn_add();
+                                    let (r, w) = stream.into_split();
+                                    spawn_pumps(conn_id, r, w, ev_tx2.clone(), conn_cmd_rx);
+                                    let _ = ev_tx2.send(NetEvent {
+                                        id: id2,
+                                        kind: NetKind::ConnectionUds { conn_id },
+                                    });
+                                }
                             }
                         }
+                        _ = cmd_rx2.recv() => break,
                     }
-                    _ = cmd_rx2.recv() => break,
                 }
-            }
-            let _ = ev_tx2.send(NetEvent { id: id2, kind: NetKind::ServerClose });
-        });
+                let _ = ev_tx2.send(NetEvent { id: id2, kind: NetKind::ServerClose });
+            });
+            return true;
+        }
         #[cfg(not(unix))]
         handle.spawn(async move {
             let _ = ev_tx2.send(NetEvent {

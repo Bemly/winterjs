@@ -1009,3 +1009,47 @@ console.log("twice-remove-ok");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_read_stream_live_follow() {
+    // read-pos 套件回归：live 增长文件短读不断流（无显式 end 时耗尽走
+    // macrotask 重查，有增长即续读），停写即落定。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import fs from "node:fs";
+fs.writeFileSync("g.txt", "0123456789");
+// 快照耗尽 + 无增长即落定（单 macrotask，不 hang）。
+{
+  const s = fs.createReadStream("g.txt", { highWaterMark: 4, start: 2 });
+  let n = "";
+  s.on("data", (d) => { n += d.toString(); });
+  await new Promise((res) => s.on("end", res));
+  console.log("snap", n === "23456789");
+}
+// live 增长：边写边读不断流（短读出现），停写即 end。
+{
+  let cur = 0;
+  let shorts = 0;
+  let ended = false;
+  let i = 0;
+  await new Promise((res) => {
+    const w = setInterval(() => { i++; fs.writeFileSync("g.txt", `x${i}\n`, { flag: "a" }); }, 2);
+    const s = fs.createReadStream("g.txt", { highWaterMark: 10, start: cur });
+    s.on("data", (d) => {
+      cur += d.length;
+      if (d.length < 10 && ++shorts >= 3) { clearInterval(w); }
+    });
+    s.on("end", () => { ended = true; res(); });
+  });
+  console.log("live", shorts >= 3, ended, cur > 10);
+}
+"#,
+    );
+    for line in ["snap true", "live true true true"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

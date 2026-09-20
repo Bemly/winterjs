@@ -318,6 +318,33 @@ srv.on("error", (e) => console.log("srv-err", e.code));
 }
 
 #[test]
+fn phase10f_net_uds_sync_bind() {
+    // UDS bind 同步落定：listen(path) 返回后 socket 文件即存在（cp-socket
+    // 套件：紧随的同步 lstat 必须见 isSocket，不得 ENOENT 竞态）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.cjs",
+        r#"
+const net = require("node:net");
+const fs = require("node:fs");
+const path = require("node:path");
+const P = path.join(__dirname || ".", "syncbind.sock");
+const srv = net.createServer(() => {});
+srv.listen(P);
+let seen = "no-stat";
+try { seen = String(fs.lstatSync(P).isSocket()); } catch (e) { seen = e.code; }
+console.log("sync-sock", seen);
+srv.on("listening", () => { console.log("listening"); srv.close(); });
+srv.on("error", (e) => console.log("srv-err", e.code));
+"#,
+    );
+    assert!(out.contains("sync-sock true"), "out: {out}");
+    assert!(out.contains("listening"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase10f_net_boundsocket_surface() {
     // 10f net 对拍：BoundSocket 校验族 + fd 真值 + adopt 失效 + EADDRINUSE 逐字形。
     let dir = assert_fs::TempDir::new().unwrap();

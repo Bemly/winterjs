@@ -893,8 +893,7 @@ globalThis.process = {
       if (__wjs_stdio_istty(0)) return;
       this.__wjs_polling = true;
       const self = this;
-      const timer = setInterval(() => {
-        let r;
+      const timer = setInterval(() => {        let r;
         try { r = __wjs_stdin_poll(); } catch { r = "E"; }
         if (r === "E") {
           clearInterval(timer);
@@ -911,6 +910,7 @@ globalThis.process = {
           self.__wjs_emitStdin("data", chunk);
         }
       }, 10);
+      this.__wjs_timer = timer;
     },
     read() { return null; },
     pause() { return this; },
@@ -918,6 +918,15 @@ globalThis.process = {
     setRawMode() { return this; },
     unref() { return this; },
     ref() { return this; },
+    // destroy 即关（listen-after-destroying-stdin 套件）：停轮询、标终结、
+    // 发 close（真机语义；读端已决议的不重发 end）。
+    destroy() {
+      this.__wjs_ended = true;
+      try { if (this.__wjs_timer) clearInterval(this.__wjs_timer); } catch {}
+      this.__wjs_polling = false;
+      this.__wjs_emitStdin("close");
+      return this;
+    },
   },
   getuid() { return __wjs_process_getuid(); },
   getgid() { return __wjs_process_getgid(); },

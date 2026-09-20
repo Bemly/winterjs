@@ -3174,6 +3174,10 @@ class __ReadStream extends Readable {
     this.__off = 0;
     this.__hwm = size;
     this.__opened = false;
+    // live 跟随记账（read-pos 套件）：快照尾的绝对偏移 + 是否显式 end。
+    // 无显式 end 时耗尽不立即落定，见 _read（patch-open 补丁接管形不跟随）。
+    this.__snapEnd = end + 1;
+    this.__endOpt = opts.end;
     this.__holdStream(opts);
   }
   // 续命（sync 底座无原生句柄，循环提前退出即 close 永不到）：
@@ -3247,6 +3251,31 @@ class __ReadStream extends Readable {
       return;
     }
     if (this.__off >= this.__bytes.length) {
+      // live 增长跟随（read-pos 套件）：无显式 end 时耗尽不立即落定——下个
+      // macrotask 重查长度（让写者 timer 交错，真机异步读同款节奏），有增长
+      // 即续读尾部（短读自然出现），无增长/ stat 失败才落定。显式 end、
+      // patch-open 补丁接管形、已销毁即直接落定/丢弃。
+      if (this.__endOpt === undefined && !this.__openCalled && !this.destroyed) {
+        const self = this;
+        setImmediate(() => {
+          if (self.destroyed) return;
+          let size;
+          try { size = statSync(self.path).size; } catch { size = -1; }
+          if (size > self.__snapEnd) {
+            let tail = null;
+            try { tail = __wjs_fs_read_file(self.path).subarray(self.__snapEnd); } catch {}
+            if (tail && tail.length > 0) {
+              self.__bytes = tail;
+              self.__off = 0;
+              self.__snapEnd += tail.length;
+              self._read();
+              return;
+            }
+          }
+          self.push(null);
+        });
+        return;
+      }
       this.push(null);
       return;
     }

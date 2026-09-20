@@ -2508,6 +2508,13 @@ parentPort.on("message", (message) => {
     }
     return;
   }
+  // NODE_ 前缀分流（子进程侧与父端 __onForkMessage 同口径：cluster
+  // NODE_CLUSTER 信封走 internalMessage；listen-twice 套件点名）。
+  if (message !== null && typeof message === "object" && !Array.isArray(message) &&
+      typeof message.cmd === "string" && message.cmd.indexOf("NODE_") === 0) {
+    process.__wjs_emit("internalMessage", message);
+    return;
+  }
   process.__wjs_emit("message", message);
 });
 parentPort.on("close", () => {

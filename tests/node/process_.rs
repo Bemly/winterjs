@@ -187,3 +187,23 @@ console.log("umask-back", process.umask() === before);
     assert!(out.contains("umask-back true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_process_stdin_destroy() {
+    // stdin.destroy 即关（listen-after-destroying-stdin 套件）：不抛、
+    // 挂 data 后 destroy 即退（无 8s 悬挂），管道输入仍可读。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+console.log("destroy-ret", process.stdin.destroy() === process.stdin);
+process.stdin.on("data", () => console.log("data-after-destroy"));
+setTimeout(() => console.log("exited-clean"), 300);
+"#,
+    );
+    assert!(out.contains("destroy-ret true"), "out: {out}");
+    assert!(out.contains("exited-clean"), "out: {out}");
+    assert!(!out.contains("data-after-destroy"), "out: {out}");
+    dir.close().unwrap();
+}

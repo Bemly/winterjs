@@ -713,6 +713,19 @@ assert.throws 对象校验器逐键 deepStrictEqual（node expectedException 口
 ERR_* 码括号仅限 ERR_ 前缀——errno 系 name 恒裸 Error）。剩余红项维持上记
 分类（validators 尾件/watch hang/pipe/glob/flush 各簇另案）。
 
+五轮（2026-09-20，G8 watch 轮）：watch 域 46 件 **SAME0 40 + SAME1 3，
+DIFF 3**（fs.glob ×2 记档另案 + enoent-after-deletion 间歇性超时另查）。
+转绿 30 件：ignore 全形态 ×9（含递归 `**` + 相对路径）、StatWatcher 单例 EE +
+异步 stop + 零 Stats 首轮（stop-sync/async、watchfile-ref-unref、watchfile）、
+FSWatcher ref/unref + 异步 close（watch-ref-unref）、encoding（hex/buffer）、
+promises.watch ×7（迭代 + 8 组校验 + abort + ignore 五面）、assert-leaks
+（_getActiveHandles）、realpath-pipe（exit 首码赢）、recursive-watch-file
+（Create 二判据）/watch.js/enoent-after-deletion（前沿防抖 + 首轮 return 收口），
+flush 选项三面（write/append/stream，校验逐字；套件待 node:test）。
+根修三件：静默窗持续写饿死→前沿触发（AGENTS §4.152）、notify 线程 TLS 错表→
+分类移分发侧（§4.153）、首轮 return 吞真变迁（§4.155）；附 exit 首码赢（§4.154）、
+stat 真 unref。黑盒 fs 18/18 + 冒烟 5/5。
+
 ## net
 
 > 五轮对拍（2026-09-17，157 件，`/tmp/wjs-10f-net*.txt`）：

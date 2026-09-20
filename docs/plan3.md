@@ -187,7 +187,7 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | http2 | compat 层 `Http2ServerRequest/Response` 全流面 | ~105 件 | 最大单体簇，与 10b 同型工程 |
 | http2 | server 流面 / settings/priority/ALPN 校验 | ~15 件 | 随 compat 轮 |
 | fs | ~~validators 尾件 / unhandled-rej 尾件~~ ✅ 2026-09-19 转绿（G4 两提交：constants 16键+null原型/stat-bigint 全option链+Ns四键/throwIfNoEntry 只豁免 ENOENT/__Stats DEP0180 可调用形/fd_table 预注册标准流/statfs frsize+bigint/utimes·lutimes·futimes 秒口径+utimensat/lchown·lchmod·_toUnixTimestamp·lutimes 新面/rename oldPath·newPath/truncate len 校验/null-byte 全API含URL/__fdCb 值优先+孤儿promise根除/latin1字节直映/writeFile encoding+abort交付面/WriteStream真open；AGENTS §4.149）；残件：roundtrip 末段 async_hooks FSREQCALLBACK 资源面另案 | ~40→1 件（async_hooks 另案） | 已收官，async_hooks 资源面另轮 |
-| fs | watch hang（promises-watch/recursive/encoding）/ watch-ignore-glob / flush 选项 / pipe 读形 | ~23 件 | watch 事件流 + glob 语义，中等工程 |
+| fs | ~~watch hang（promises-watch/recursive/encoding）/ watch-ignore-glob / flush 选项 / pipe 读形~~ ✅ 2026-09-20 转绿（G8 八提交：ignore 全形态+递归相对路径/StatWatcher 单例+异步 stop+零 Stats/FSWatcher ref-unref+异步 close/encoding 转码/promises.watch 迭代+校验/_getActiveHandles/flush 选项/exit 首码赢/前沿防抖+Create 二判据+stat unref+首轮收口，watch 域 40/46；AGENTS §4.152-155）；残件：fs.glob ×2（Bun 快照无此行，记档另案）+ flush 三套件（待 node:test runner 深度）+ enoent-after-deletion 间歇超时另查 | ~23→3 件 | 已收官，残件另案 |
 | net | ~~server close/listen 时序~~ ✅ 2026-09-19 转绿（G2 server 选项面 blockList/maxConnections/drop/pauseOnConnect/close 窗口 + G2 relisten `__closing` 残留旗修复）；余 cargo-harness 下 net_remote/unix_socket 的 SEGV 已修（with_str_args GC 悬垂） | ~10 件 | 已收官 |
 | net | ~~TIMEOUT 9 / Happy Eyeballs 3 / worker 投递 3 / large-string 1~~ ✅ 2026-09-19 G6：13/16 转绿（large-string 分包解码/async-iter end(cb)挂finish/write-after-end-nt EPIPE面/abort-controller 信号面+侧表/ipv6 lookup family透传/HE-default 串行回落/HE校验×2；max-connections×2+bytes-stats 随 G2 已绿），残件 6 件 infra 级记档——throttle（native 读门控+写EAGAIN流控）/cluster×2（internalMessage协议，非net面）/worker×3（跨线程fd移交，可骑holdToken机制，独立轮） | ~16→6 件 | 残件另轮（bun-parity net 八轮，AGENTS §4.148） |
 | zlib | ~~增量语义~~ ✅ 2026-09-19 转绿（G9-1 Rust 状态机 + G9-2 JS 流类接线：write 即时压出/flush 档位即时出边界/finishFlush 容忍/rejectGarbageAfterEnd/一次性面切引擎错误口径对真机；6 目标套件+连带 5 件全绿，zlib 域 73/81） | ~6 件 | 已收官 |
@@ -219,15 +219,18 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | **G9-3 zlib 尾件**（brotli/zstd 字典/pledged/Web CS·DS） | ✅ 本轮（6 目标套件全绿 + 82 件对拍零回归；一次性压缩走引擎收口 + raw 字典构造期设 + 严格字典校验 + pledged errno=72 + constants 28 项 + Web 全局；AGENTS §4.145-147） |
 | **G6 net 尾件** | ✅ 本轮 13/16 转绿（large-string/async-iter/write-after-end-nt/abort/ipv6/HE×3 + G2 顺手 2 件；全量 159 件对拍零回归，black-box 223 全绿）；残件 6 件 infra 级记档（throttle 流控/cluster 协议×2/worker fd 移交×3）；AGENTS §4.148 |
 | **G4 fs validators 尾件** | ✅ 本轮 20 套件转绿（stat族/constants/bigint/throwIfNoEntry/DEP0180/fd标准流/statfs frsize+bigint/utimes秒口径/lchown·lchmod·lutimes·_toUnixTimestamp新面/null-byte全API/rename·truncate·fchown·mkdir校验面/latin1/writeFile encoding+abort/WriteStream真open）；黑盒 fs 13/13 + 冒烟 5/5；AGENTS §4.149（e94db50 + 3a4704e） |
+| **G5 child 尾件** | ✅ 本轮 25 套件转绿（ChildProcess.spawn 方法面/spawn 事件+多监听fan-out+dispose/stdio 数组+spawnargs/空字节横向校验/`-p` 自举/env 归一/ipc 门/paused 读/removeAllListeners/二次 disconnect 门/uid-gid EPERM/send 校验/stdin 继承/ERR_IPC_ONE_PIPE+INVALID_HANDLE_TYPE；黑盒 child 18/18 + 冒烟 5/5；AGENTS §4.150-151） |
+| **G8 fs watch 尾件** | ✅ 本轮 30 套件转绿（ignore 全形态+递归相对路径/StatWatcher 单例EE+异步 stop+零 Stats 首轮/FSWatcher ref-unref+异步 close/encoding 转码/promises.watch 迭代+全校验+_getActiveHandles/flush 选项/exit 首码赢/前沿防抖+Create 二判据分发侧+stat 真 unref+首轮 return 收口）；残件：fs.glob ×2（Bun 快照无此行，记档另案）+ flush 三套件（待 node:test runner 深度）；黑盒 fs 18/18 + 冒烟 5/5；AGENTS §4.152-155 |
 | 集成修复 ×2 | ✅ net relisten `__closing` 挂死（46 分钟）+ net SEGV（with_str_args GC 悬垂）+ stream 9b 回归（上轮） |
 | 验收 | `cargo test` 全量 21 target 0 失败 0 警告 + 冒烟 5/5 |
 | AGENTS.md | ✅ §4.140-144 四坑 + §4.145-147 三坑 + §4.148 net 五坑 |
 | 本节欠账表 | ✅ G3/G2/G9-2/G9-3/G6 划线转绿 |
 
-**新会话入口（按优先级，2026-09-19 G4 轮后更新）：**
+**新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
-1. **G5 child ~30 件 → G8 fs watch/glob ~23 件**（下轮可修二连）；
-   G4 validators 尾件已收官（20 套件转绿，e94db50+3a4704e，AGENTS §4.149）。
+1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；
+   AGENTS §4.150-155；残件：fork/IPC handle 传递出局 + fs.glob×2/flush 三套件
+   待 node:test + enoent-after-deletion 间歇超时另查）。
 2. **fs 残簇**：cp ~33 件、write-stream ~13 件（G4-2 WriteStream 真 open 后
    可再试）、promises-file-handle ~12 件、read-stream ~8 件——逐簇续补。
 3. **G6 残件 6 件**（infra 级，需独立轮）：throttle（native 读门控+写 EAGAIN

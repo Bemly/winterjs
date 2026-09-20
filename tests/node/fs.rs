@@ -369,6 +369,66 @@ setTimeout(() => { console.log("handles-done"); process.exit(0); }, 500);
 }
 
 #[test]
+fn phase10f_fs_write_flush_option() {
+    // G8-7：write/append/stream 的 `flush` 选项（布尔校验 + true 即 fsync 落盘）。
+    // 正常：flush:true 写后内容可读（sync/callback/stream 三面）；
+    // 报错：7 种非法值逐项 ARG_TYPE；边界：flush:false 与缺省等价。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("flush.mjs");
+    file.write_str(
+        r#"
+import fs from "node:fs";
+const bad = ["true", "", 0, 1, [], {}, Symbol()];
+let n = 0;
+for (const v of bad) {
+  for (const fn of [
+    () => fs.writeFileSync("f.txt", "x", { flush: v }),
+    () => fs.appendFileSync("f.txt", "x", { flush: v }),
+    () => fs.createWriteStream("f.txt", { flush: v }),
+  ]) {
+    try { const r = fn(); if (r && r.on) r.on("error", () => {}); console.log("flush-no-throw"); }
+    catch (e) { if (e.code === "ERR_INVALID_ARG_TYPE") n++; }
+  }
+}
+console.log("flush-bad", n === 21);
+fs.writeFileSync("w.txt", "flushed", { flush: true });
+fs.appendFileSync("a.txt", "more", { flush: true });
+console.log("flush-sync", fs.readFileSync("w.txt", "utf8") === "flushed", fs.readFileSync("a.txt", "utf8") === "more");
+fs.writeFile("w2.txt", "cb", { flush: true }, (e) => {
+  if (e) throw e;
+  console.log("flush-cb", fs.readFileSync("w2.txt", "utf8") === "cb");
+  const s = fs.createWriteStream("s.txt", { flush: true });
+  s.on("error", (e) => { throw e; });
+  s.write("streamed");
+  s.end(() => {
+    console.log("flush-stream", fs.readFileSync("s.txt", "utf8") === "streamed");
+    console.log("flush-done");
+  });
+});
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in [
+        "flush-bad true",
+        "flush-sync true true",
+        "flush-cb true",
+        "flush-stream true",
+        "flush-done",
+    ] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn node_fs_streams() {
     // createReadStream 分块 + createWriteStream 落盘/追加（10f 起真 WriteStream：
     // write/end/finish 事件面，Web 流 getWriter 口径退役——node 真机无此面）。

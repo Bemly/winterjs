@@ -2068,6 +2068,12 @@ pub const SOURCE: &str = r#"
 import { Readable, Writable } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { inspect } from 'node:util';
+import errors from 'node:internal/errors';
+const {
+  codes: {
+    ERR_INVALID_ARG_TYPE: { HideStackFramesError: ERR_INVALID_ARG_TYPE },
+  },
+} = errors;
 
 function __fsErr(e, syscall, path) {
   const m = String((e && e.message) || e);
@@ -2436,17 +2442,33 @@ export function readFileSync(p, opts) {
   const flag = opts && typeof opts === "object" ? opts.flag : undefined;
   return __fsCall("open", p, () => __fsDecode(__fsReadWhole(p, flag), enc, "readFile"));
 }
+// node 口径：options.flush 布尔（真机逐字 `The "options.flush" property
+// must be of type boolean.`；write/append/stream 三面共用）。
+function __fsFlushOpt(opts) {
+  const v = opts ? opts.flush : undefined;
+  if (v === undefined) return false;
+  if (typeof v !== "boolean") throw new ERR_INVALID_ARG_TYPE("options.flush", "boolean", v);
+  return v;
+}
+// flush:true 的 one-shot 写后 fsync（另开 'r' fd 落盘；fd 形直刷原 fd）。
+function __fsFlushFile(p) {
+  const fd = Number(__wjs_fs_open(p, __fsFlags("r", "writeFile")));
+  try { fsyncSync(fd); }
+  finally { try { __wjs_fs_close(fd); } catch {} }
+}
 export function writeFileSync(p, data, opts) {
   const enc = __fsEncoding(opts);
   // node 口径：signal 面校验（'hello' 即同步 ERR_INVALID_ARG_TYPE）+
   // signal.aborted 即 AbortError（走回调拒绝路径，writefile-with-fd 点名）。
   const wsig = __fsSignalCheck(opts);
   if (wsig && wsig.aborted) throw __fsAbortErr(wsig.reason);
+  const needFlush = __fsFlushOpt(opts);
   const fd = __fsFdOf(p);
   if (fd !== null) {
     // fd 形：写现位（node writeFileHandle 同口径）。
     const bytes = __fsDataEnc(data, "writeFile", enc);
     writeSync(fd, bytes, 0, bytes.byteLength, null);
+    if (needFlush) fsyncSync(fd);
     return;
   }
   p = __fsPath(p, "writeFile");
@@ -2455,10 +2477,14 @@ export function writeFileSync(p, data, opts) {
   __fsCall("open", p, () => {
     if (flag === undefined || flag === "w") {
       __wjs_fs_write_file(p, bytes, __fsMode(opts));
+      if (needFlush) __fsFlushFile(p);
       return;
     }
     const fd = Number(__wjs_fs_open(p, __fsFlags(flag, "writeFile")));
-    try { __wjs_fs_write_fd(fd, bytes, flag.startsWith("a") ? -1 : 0); }
+    try {
+      __wjs_fs_write_fd(fd, bytes, flag.startsWith("a") ? -1 : 0);
+      if (needFlush) fsyncSync(fd);
+    }
     finally { __wjs_fs_close(fd); }
   });
   // mode 语义：仅新建文件时应用（存在性预判，记档近似）
@@ -2552,19 +2578,25 @@ export function appendFileSync(p, data, opts) {
   // AbortError（promises-appendfile cancel 套件）。
   const asig = __fsSignalCheck(opts);
   if (asig && asig.aborted) throw __fsAbortErr(asig.reason);
+  const needFlush = __fsFlushOpt(opts);
   // node 口径：data 校验先于 open（非法 data 不得留下已创建的文件）；
   // 同步可迭代逐块收（promises-appendfile doAppendStream 族）。
   const bytes = __fsDataSync(data, "data", opts);
   if (typeof p === "number" && Number.isInteger(p)) {
     // fd 形：写现位（fd 'a+' 打开即尾）。
     __vFd(p);
-    return writeSync(p, bytes, 0, bytes.byteLength, null) && undefined;
+    writeSync(p, bytes, 0, bytes.byteLength, null);
+    if (needFlush) fsyncSync(p);
+    return;
   }
   if (p && typeof p === "object" && typeof p.fd === "number") {
-    return writeSync(p.fd, bytes, 0, bytes.byteLength, null) && undefined;
+    writeSync(p.fd, bytes, 0, bytes.byteLength, null);
+    if (needFlush) fsyncSync(p.fd);
+    return;
   }
   p = __fsPath(p, "appendFile");
   __fsCall("open", p, () => __wjs_fs_append_file(p, bytes, __fsMode(opts)));
+  if (needFlush) __fsFlushFile(p);
 }
 export function statSync(p) {
   p = __fsPath(p, "stat");
@@ -3058,6 +3090,7 @@ class __WriteStream extends Writable {
     this.flags = opts.flags ?? "w";
     this.mode = opts.mode ?? 0o666;
     this.autoClose = opts.autoClose !== false;
+    this.flush = __fsFlushOpt(opts);
     this.bytesWritten = 0;
     this.fd = null;
     this.__chunks = [];
@@ -3111,11 +3144,21 @@ class __WriteStream extends Writable {
   _final(cb) {
     this.__emitOpen();
     if (this.__fdMode) {
-      if (this.autoClose) {
-        if (this.__fh) { this.__fh.close().catch(() => { }); }
-        else { try { __wjs_fs_close(this.fd); } catch { } this.fd = -1; }
+      // flush:true 即落盘（FileHandle 形走 handle.sync，裸 fd 直刷；错即 error）。
+      const finishFd = () => {
+        if (this.autoClose) {
+          if (this.__fh) { this.__fh.close().catch(() => { }); }
+          else { try { __wjs_fs_close(this.fd); } catch { } this.fd = -1; }
+        }
+        cb();
+      };
+      if (this.flush) {
+        if (this.__fh) { this.__fh.sync().then(finishFd, (e) => cb(e)); return; }
+        if (typeof this.fd === "number" && this.fd >= 0) {
+          try { fsyncSync(this.fd); } catch (e) { cb(e); return; }
+        }
       }
-      cb();
+      finishFd();
       return;
     }
     // fd 已在 __emitOpen 真实打开（'w' 截断建/a 追加）——攒块经 fd 落盘，
@@ -3127,6 +3170,7 @@ class __WriteStream extends Writable {
     const append = this.flags === "a" || this.flags === "a+";
     try {
       __fsCall("write", this.path, () => __wjs_fs_write_fd(this.fd, out, append ? -1 : 0));
+      if (this.flush) __fsCall("fsync", this.path, () => __wjs_fs_fsync(this.fd, false));
     } finally {
       this.__chunks.length = 0;
       if (this.autoClose) { try { __wjs_fs_close(this.fd); } catch { } this.fd = -1; }

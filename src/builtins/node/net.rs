@@ -1948,7 +1948,7 @@ class __ServerClass extends EventEmitter {
       try { s.destroy(); } catch {}
     }
   }
-  __doListen(port, host, cb) {
+  __doListen(port, host, cb, reusePort) {
     // relisten 必须清 close-during-listen 窗口旗（close() 置位后柄已清，
     // 重听的 listening 派发不再属"bind 窗口内 close"——残留 true 会吞掉
     // 新一轮 listening 派发，listening 回调永不触发）。
@@ -2001,7 +2001,9 @@ class __ServerClass extends EventEmitter {
     if (cb) this.once("listening", cb);
     this.__port = Number(port);
     this.__setupHandle();
-    this.__id = Number(__wjs_net_listen(Number(port), host === null ? "0.0.0.0" : host, this));
+    // reusePort 直通 native 第 4 参（child reuseport 套件：fork 共享端口；
+    // BoundSocket-adopt 路径早有同款，此处 direct 路径补齐）。
+    this.__id = Number(__wjs_net_listen(Number(port), host === null ? "0.0.0.0" : host, this, reusePort === true ? "1" : ""));
     return this;
   }
   // node 口径：listen(cb)/listen()/listen(null) 即 listen(0)；listen(port[, host][, cb])
@@ -2058,12 +2060,12 @@ class __ServerClass extends EventEmitter {
       }
       if (("port" in o) && (o.port === undefined || o.port === null)) {
         // node：port 显式 undefined/null 即 0（listen({port}) 通配）。
-        return this.__doListen(0, o.host ?? null, cb0);
+        return this.__doListen(0, o.host ?? null, cb0, o.reusePort);
       }
       if (typeof o.port === "number" || typeof o.port === "string") {
         // node：port 分支先于 path（{port:-1, path} 点名 BAD_PORT 先抛）。
         __vPort(o.port, "options.port");
-        return this.__doListen(o.port, o.host ?? null, cb0);
+        return this.__doListen(o.port, o.host ?? null, cb0, o.reusePort);
       }
       if (o.path && typeof o.path === "string") {
         const o0 = { path: String(o.path) };

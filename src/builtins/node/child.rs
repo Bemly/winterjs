@@ -17,8 +17,9 @@
 //! `process.send/disconnect/on('message')/connected/channel` 经 parentPort 桥接；
 //! 父端为 `ChildProcess`（`send/on('message')/disconnect/connected/kill` 全语义，
 //! 关通道后 send 回 false + 异步 `ERR_IPC_CHANNEL_CLOSED`，真机口径）。
-//! 偏差（记档）：同进程线程（无独立进程；env/cwd/execArgv/silent/stdio/
-//! serialization/timeout/detached 接受忽略，stdio 恒 null）；子发消息无监听即丢
+//! 偏差（记档）：同进程线程（无独立进程；cwd/execArgv/silent/stdio/
+//! serialization/timeout/detached 接受忽略，stdio 恒 null；env 透传 worker
+//! 快照，缺省继承）；子发消息无监听即丢
 //! （EventEmitter 口径）；kill 信号值忽略（terminate 语义）；message/disconnect
 //! 为单监听器位（spawn 路径 exit/close 同款风格）；控制信封单键对象
 //! `{__wjs_fork_ctl:"disconnect"}` 不投递给用户。
@@ -1443,9 +1444,11 @@ export class ChildProcess {
   #errorL = [];
   #spawnL = [];
   #msgL = [];
+  #internalL = [];
   #discL = [];
   #onmessage = null;
   #ondisconnect = null;
+  #oninternal = null;
   exitCode = null;
   signalCode = null;
   spawnfile = null;
@@ -1614,15 +1617,16 @@ export class ChildProcess {
     }
     else if (event === "error") { this.#errorL.push(cb); this.__install("error"); }
     else if (event === "spawn") { this.#spawnL.push(cb); this.__install("spawn"); }
-    else if (event === "message" || event === "disconnect") {
+    else if (event === "message" || event === "disconnect" || event === "internalMessage") {
       if (!this.__forkChild) {
         // spawn 子进程无 fd-passing 通道（记档缺口）：监听即明错，不静默吞
         throw Object.assign(new Error("ERR_NOT_SUPPORTED: child IPC channel not supported (use fork)"), { code: "ERR_NOT_SUPPORTED" });
       }
       if (event === "message") { this.#msgL.push(cb); this.__install("message"); }
+      else if (event === "internalMessage") { this.#internalL.push(cb); this.__install("internalMessage"); }
       else { this.#discL.push(cb); this.__install("disconnect"); }
     }
-    else throw new Error(`NotSupportedError: ChildProcess event '${event}' (exit/close/error/spawn/message/disconnect)`);
+    else throw new Error(`NotSupportedError: ChildProcess event '${event}' (exit/close/error/spawn/message/disconnect/internalMessage)`);
     return this;
   }
   // 监听列表扇出到单分发位（exit/close 走访问器 wrap 落码；空表即摘除）。
@@ -1647,6 +1651,9 @@ export class ChildProcess {
     } else if (event === "message") {
       const ls = [...this.#msgL];
       this.#onmessage = ls.length ? ((m) => { for (const fn of ls) fn(m); }) : null;
+    } else if (event === "internalMessage") {
+      const ls = [...this.#internalL];
+      this.#oninternal = ls.length ? ((m) => { for (const fn of ls) fn(m); }) : null;
     } else if (event === "disconnect") {
       const ls = [...this.#discL];
       this.#ondisconnect = ls.length ? (() => { for (const fn of ls) fn(); }) : null;
@@ -1667,6 +1674,7 @@ export class ChildProcess {
     else if (event === "error") { drop(this.#errorL); this.__install("error"); }
     else if (event === "spawn") { drop(this.#spawnL); this.__install("spawn"); }
     else if (event === "message") { drop(this.#msgL); this.__install("message"); }
+    else if (event === "internalMessage") { drop(this.#internalL); this.__install("internalMessage"); }
     else if (event === "disconnect") { drop(this.#discL); this.__install("disconnect"); }
     return this;
   }
@@ -1674,10 +1682,10 @@ export class ChildProcess {
   // node 口径（kill-sigwinch 套件）：清指定事件（缺省全清）监听。
   removeAllListeners(event) {
     if (event === undefined) {
-      for (const e of ["exit", "close", "error", "spawn", "message", "disconnect"]) this.__clearAll(e);
+      for (const e of ["exit", "close", "error", "spawn", "message", "disconnect", "internalMessage"]) this.__clearAll(e);
     } else {
-      if (!["exit", "close", "error", "spawn", "message", "disconnect"].includes(event)) {
-        throw new Error(`NotSupportedError: ChildProcess event '${event}' (exit/close/error/spawn/message/disconnect)`);
+      if (!["exit", "close", "error", "spawn", "message", "disconnect", "internalMessage"].includes(event)) {
+        throw new Error(`NotSupportedError: ChildProcess event '${event}' (exit/close/error/spawn/message/disconnect/internalMessage)`);
       }
       this.__clearAll(event);
     }
@@ -1689,6 +1697,7 @@ export class ChildProcess {
     else if (event === "error") { this.#errorL.length = 0; this.__install("error"); }
     else if (event === "spawn") { this.#spawnL.length = 0; this.__install("spawn"); }
     else if (event === "message") { this.#msgL.length = 0; this.__install("message"); }
+    else if (event === "internalMessage") { this.#internalL.length = 0; this.__install("internalMessage"); }
     else if (event === "disconnect") { this.#discL.length = 0; this.__install("disconnect"); }
   }
   // 手动派发（execfile 套件直调 child.emit('close', …)；真机 EventEmitter 口径，
@@ -1786,6 +1795,13 @@ export class ChildProcess {
     else throw err;
   }
   __onForkMessage(m) {
+    // NODE_ 前缀分流（internal 套件）：cmd 首段 NODE_ 即内部消息，
+    // 余下一律普通 message（真机 cluster 协议口径）。
+    if (m !== null && typeof m === "object" && !Array.isArray(m) &&
+        typeof m.cmd === "string" && m.cmd.startsWith("NODE_")) {
+      if (typeof this.#oninternal === "function") this.#oninternal(m);
+      return;
+    }
     if (typeof this.#onmessage === "function") this.#onmessage(m);
   }
   __onForkExit(code) {
@@ -2558,7 +2574,9 @@ function __normForkOpts(opts) {
     if (!Array.isArray(opts.execArgv)) throw new ERR_INVALID_ARG_TYPE("options.execArgv", "Array", opts.execArgv);
     opts.execArgv.forEach((a, i) => __nullCheck(String(a), `options.execArgv[${i}]`));
   }
-  // env：值忽略（线程底座）但 \0 照验。
+  // env：透传 worker 快照（fork 炸弹案：旧"值忽略"致自定义 env 丢失，
+  // 子复走父分支指数 fork；真机 env 缺省即 process.env 拷贝）。
+  // \0 照验（reject-null-bytes 套件）。
   if (opts.env !== undefined && opts.env !== null) {
     for (const k in opts.env) {
       const v = opts.env[k];
@@ -2566,6 +2584,7 @@ function __normForkOpts(opts) {
       __nullCheck(k, `options.env['${k}']`);
       __nullCheck(typeof v === "string" ? v : String(v), `options.env['${k}']`);
     }
+    o.env = { ...opts.env };
   }
   if (opts.silent !== undefined) o.silent = !!opts.silent;
   if (opts.signal !== undefined) {
@@ -2630,7 +2649,7 @@ export function fork(modulePath, args, opts) {
   const src = __FORK_CHILD_SRC
     .replace("__FORK_MOD__", () => JSON.stringify(fileUrl))
     .replace("__FORK_ARGV__", () => JSON.stringify(argsArr));
-  const worker = new Worker(src, { eval: true, __wjs_forkChild: true });
+  const worker = new Worker(src, { eval: true, __wjs_forkChild: true, env: o.env });
   proc.__worker = worker;
   proc.__connected = true;
   // 非 silent（stdio 继承）：stdout/stderr 恒 null（真机 26 逐项：fork 未 silent

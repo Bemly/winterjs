@@ -1140,3 +1140,32 @@ fn phase10f_child_stdio_stream_handoff() {
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }
 }
+
+#[test]
+fn phase10f_child_fork_env_and_internal() {
+    // fork env 透传（旧忽略致子复走父分支指数 fork）+ NODE_ 前缀 internalMessage 分流。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("env-child.mjs")
+        .write_str("process.send({ marker: process.env.WJS_MARKER ?? null });\n")
+        .unwrap();
+    dir.child("int-child.mjs")
+        .write_str("process.send({ cmd: 'NODE_bar' });\nprocess.send({ cmd: 'fooNODE_' });\n")
+        .unwrap();
+    let env_child = dir.path().join("env-child.mjs").to_string_lossy().into_owned();
+    let int_child = dir.path().join("int-child.mjs").to_string_lossy().into_owned();
+    let out = stdout_of(&mut winterjs().args(["--eval", &format!(
+        r#"const {{ fork }} = await import("node:child_process");
+const a = fork({env_child:?}, [], {{ env: {{ WJS_MARKER: "m42" }} }});
+a.on("message", (m) => {{ console.log("env", m.marker === "m42"); }});
+a.on("error", (e) => console.log("env-err", e.code));
+const b = fork({int_child:?});
+b.on("message", (m) => console.log("msg", m.cmd === "fooNODE_"));
+b.once("internalMessage", (m) => console.log("internal", m.cmd === "NODE_bar"));
+b.on("error", (e) => console.log("int-err", e.code));
+setTimeout(() => console.log("done"), 2500);"#)]));
+    for line in ["env true", "msg true", "internal true", "done"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    assert!(!out.contains("-err"), "out: {out}");
+    dir.close().unwrap();
+}

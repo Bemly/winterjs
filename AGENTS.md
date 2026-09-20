@@ -2577,3 +2577,15 @@ cargo build
 - 修法：`process_exit` native 只在旗为空时落账（first-wins；`src/builtins/node/process_.rs`），
   `run()` 的旗检查本就优先，一处改全链对（ESM/CJS 双入口黑盒钉住）。
 - 复现：`tests/node/process_.rs::phase4_process_exit_codes` 的 first.mjs/first.cjs 行。
+
+### 4.155 首轮特例的无条件 return 会吞真变迁（2026-09-20，G8 轮）
+
+- 症状：`test-fs-watch-file-enoent-after-deletion.js`（watch 后秒删）必挂；
+  心跳探针证明事件循环活着、50ms 轮询 timer 正常、手动复刻同逻辑却能触发。
+- 根因：`__statPoll` 的"缺席首轮发 (zero,zero)"分支 `return` 无条件——首轮恰为
+  (null,real) 真变迁（unlink-then-poll 形）也被吞，随后 (null,null) 恒跳过，
+  永静默。手动复刻"碰巧"走了另一条时序故能过，极具误导性。
+- 修法：仅"首轮且双 null"走零值分支并返回，其余一律落正常路径
+  （`src/builtins/node/fs.rs` `__statPoll`）。
+- 推广为铁律：凡"首轮/首包特例"分支，默认写成"特例命中才返回"，特例不命中
+  必须落回正常路径；特例分支的返回条件与触发条件逐字同写，禁大包围 return。

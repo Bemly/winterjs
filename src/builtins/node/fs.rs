@@ -2966,13 +2966,13 @@ function __statPoll(p) {
   try { curr = statSync(p); } catch { curr = null; }
   const prev = rec.prev;
   rec.prev = curr;
-  // 缺席文件首轮即发 (zero,zero)（真机实测；seen 旗区分"未轮询"与"轮询过缺席"）。
-  if (!rec.seen) {
-    rec.seen = true;
-    if (curr === null && prev === null) {
-      const z = __zeroStats();
-      rec.watcher.emit("change", z, __zeroStats());
-    }
+  const first = !rec.seen;
+  rec.seen = true;
+  // 缺席文件首轮即发 (zero,zero)（真机实测）；首轮即有真变迁走正常路径
+  //（不得吞——unlink-then-poll 形首轮 (null,real) 即发）。
+  if (first && curr === null && prev === null) {
+    const z = __zeroStats();
+    rec.watcher.emit("change", z, __zeroStats());
     return;
   }
   if (curr === null && prev === null) return;

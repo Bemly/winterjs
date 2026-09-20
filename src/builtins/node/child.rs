@@ -1269,7 +1269,11 @@ function __legacyReadable(web) {
     on(ev, cb) {
       (listeners[ev] ||= []).push(cb);
       if (ev === "data") { flowing = true; pump(); }
-      else if (ev === "readable") { pump(); }
+      else if (ev === "readable" || ev === "end" || ev === "close") {
+        // 'end'/'close' 单监听也要泵（kill 套件：只挂 end 即要 EOF；
+        // 非 flowing，不改数据流向，只观测终止）。
+        pump();
+      }
       return api;
     },
     once(ev, cb) {

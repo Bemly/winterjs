@@ -2797,6 +2797,12 @@ pub fn child_kill(id: u64, sig: &str) -> bool {
                 return false;
             }
             let raw = sig.trim();
+            let target = if entry.detached { Pid::from_raw(-pid) } else { Pid::from_raw(pid) };
+            // 信号 0 为存在性检查（kill 套件：只验活，不发信号；数字 0 无对应
+            // Signal 枚举值，try_from 落空即往 SIGKILL 误杀——此处短路）。
+            if raw == "0" {
+                return kill(target, None).is_ok();
+            }
             let signal = if let Ok(n) = raw.parse::<i32>() {
                 Signal::try_from(n).unwrap_or(Signal::SIGKILL)
             } else {
@@ -2806,7 +2812,6 @@ pub fn child_kill(id: u64, sig: &str) -> bool {
                     _ => Signal::SIGTERM,
                 }
             };
-            let target = if entry.detached { Pid::from_raw(-pid) } else { Pid::from_raw(pid) };
             if kill(target, signal).is_ok() {
                 return true;
             }

@@ -4726,6 +4726,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_stdout_write", Some(node::process_::stdout_write), 1),
             ("__wjs_stderr_write", Some(node::process_::stderr_write), 1),
             ("__wjs_stdio_istty", Some(node::process_::stdio_istty), 1),
+            ("__wjs_stdin_poll", Some(node::process_::stdin_poll), 0),
             // 10c-1: node:tty（winsize/setRawMode；unix-only 实现，其余平台回落）
             ("__wjs_tty_winsize", Some(node::tty::tty_winsize), 1),
             ("__wjs_tty_set_raw_mode", Some(node::tty::tty_set_raw_mode), 2),

@@ -1018,3 +1018,46 @@ setTimeout(() => console.log("done"), 2500);"#)]));
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_child_kill_stdin_surface() {
+    // kill 套件回归：kill 即 SIGTERM + stdout/stderr end + kill(0) 只验活不杀 +
+    // 父写 stdin/子回显（cat）+ 自家 stdout 逐次 flush（常驻不滞留）。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        r#"const { spawn } = await import("node:child_process");
+const c = spawn("cat");
+let ends = 0;
+c.stdout.on("end", () => { ends++; });
+c.stderr.on("end", () => { ends++; });
+c.on("exit", (code, signal) => console.log("exit", code, signal, c.signalCode));
+c.kill();
+await new Promise((res) => c.on("close", res));
+console.log("ends", ends === 2);
+const s = spawn("sleep", ["10"]);
+console.log("k0", s.kill(0) === true);
+await new Promise((res) => setTimeout(res, 300));
+console.log("alive", s.exitCode === null && s.signalCode === null);
+s.kill();
+await new Promise((res) => s.on("close", res));
+console.log("dead", s.signalCode === "SIGTERM");
+const e = spawn("cat");
+let got = "";
+e.stdout.on("data", (d) => { got += d.toString(); });
+e.stdin.write("hello-cat");
+await new Promise((res) => setTimeout(res, 500));
+console.log("echo", got === "hello-cat");
+e.kill();
+await new Promise((res) => e.on("close", res));
+console.log("bye", e.signalCode === "SIGTERM");"#]));
+    for line in [
+        "exit null SIGTERM SIGTERM",
+        "ends true",
+        "k0 true",
+        "alive true",
+        "dead true",
+        "echo true",
+        "bye true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+}

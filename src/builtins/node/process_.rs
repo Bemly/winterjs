@@ -535,7 +535,11 @@ pub unsafe extern "C" fn stdout_write(
     let s = value_to_string(&mut cx, frame.arg(0));
     let ok = {
         use std::io::Write as _;
-        std::io::stdout().write_all(s.as_bytes()).is_ok()
+        // Rust Stdout 块缓冲（管道时无换行即滞留，常驻进程输出永不到）——
+        // Node 写无缓冲，逐次 flush（kill 套件：子进程 write('x') 后等 stdin，
+        // 父收不到即双边 hang；exit 即刷才掩盖了它）。
+        let mut out = std::io::stdout();
+        out.write_all(s.as_bytes()).is_ok() && out.flush().is_ok()
     };
     frame.set_rval(mozjs::jsval::BooleanValue(ok));
     true
@@ -557,7 +561,9 @@ pub unsafe extern "C" fn stderr_write(
     let s = value_to_string(&mut cx, frame.arg(0));
     let ok = {
         use std::io::Write as _;
-        std::io::stderr().write_all(s.as_bytes()).is_ok()
+        // stderr 恒无缓冲，flush 为对称 no-op（与 stdout 同形，免后人误抄回旧形）。
+        let mut out = std::io::stderr();
+        out.write_all(s.as_bytes()).is_ok() && out.flush().is_ok()
     };
     frame.set_rval(mozjs::jsval::BooleanValue(ok));
     true
@@ -584,6 +590,60 @@ pub unsafe extern "C" fn stdio_istty(
         _ => false,
     };
     frame.set_rval(mozjs::jsval::BooleanValue(tty));
+    true
+}
+
+/// `__wjs_stdin_poll()` → `"D"+b64（有数据）/ `"E"`（EOF 或 fd 坏）/ `""`（暂无）。
+/// 非阻塞读 fd 0（首调置 O_NONBLOCK，幂等；读写经 nix safe 封装）。
+/// 唯一 unsafe 表达式是 `BorrowedFd::borrow_raw(0)`：fd 0 为进程生命期
+/// 标准输入，本仓永不关闭它；若宿主关了它，fcntl/read 只回 EBADF（→"E"），
+/// 不解引用，只是整数传递，无实际 UB 风险。
+/// JS 侧 setInterval 轮询（refed，EOF 自停）——无运行时改动，供 stdin data/end。
+pub unsafe extern "C" fn stdin_poll(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效（仅帧/rval 操作）
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    static ARMED: std::sync::Once = std::sync::Once::new();
+    // SAFETY: fd 0 为进程生命期标准输入（见函数头注）；仅整数传递给
+    // 要求 AsFd 的 nix 封装，失败只回 errno，不解引用。
+    let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(0) };
+    ARMED.call_once(|| {
+        use nix::fcntl::{fcntl, FcntlArg, OFlag};
+        // 取出现有 flags 后或入 O_NONBLOCK（只改本进程 fd 0；子进程继承见文档）。
+        if let Ok(flags) = fcntl(fd, FcntlArg::F_GETFL) {
+            let flags = OFlag::from_bits_retain(flags) | OFlag::O_NONBLOCK;
+            let _ = fcntl(fd, FcntlArg::F_SETFL(flags));
+        }
+    });
+    let mut buf = [0u8; 65536];
+    match nix::unistd::read(fd, &mut buf) {
+        Ok(0) => set_rval_str(&mut cx, &frame, "E"),
+        Ok(n) => {
+            // base64 小 helper（避开额外依赖；b64 字母表内建）。
+            const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut s = String::with_capacity((n + 2) / 3 * 4 + 1);
+            s.push('D');
+            for c in buf[..n].chunks(3) {
+                let b0 = c[0] as u32;
+                let b1 = *c.get(1).unwrap_or(&0) as u32;
+                let b2 = *c.get(2).unwrap_or(&0) as u32;
+                let v = (b0 << 16) | (b1 << 8) | b2;
+                s.push(B64[((v >> 18) & 63) as usize] as char);
+                s.push(B64[((v >> 12) & 63) as usize] as char);
+                s.push(if c.len() > 1 { B64[((v >> 6) & 63) as usize] as char } else { '=' });
+                s.push(if c.len() > 2 { B64[(v & 63) as usize] as char } else { '=' });
+            }
+            set_rval_str(&mut cx, &frame, &s);
+        }
+        Err(e) if e == nix::errno::Errno::EAGAIN || e == nix::errno::Errno::EWOULDBLOCK => {
+            set_rval_str(&mut cx, &frame, "")
+        }
+        Err(_) => set_rval_str(&mut cx, &frame, "E"),
+    }
     true
 }
 
@@ -800,9 +860,13 @@ globalThis.process = {
   stdin: {
     get isTTY() { return __wjs_stdio_istty(0); },
     __wjs_listeners: {},
+    __wjs_enc: null,
+    __wjs_polling: false,
+    __wjs_ended: false,
     on(type, cb) {
       if (typeof cb !== "function") throw new TypeError("stdin.on: listener must be a function");
       (this.__wjs_listeners[String(type)] ??= []).push(cb);
+      if (type === "data" || type === "readable" || type === "end") this.__wjs_startPoll();
       return this;
     },
     once(type, cb) { return this.on(type, cb); },
@@ -815,6 +879,39 @@ globalThis.process = {
       return this;
     },
     removeListener(type, cb) { return this.off(type, cb); },
+    setEncoding(e) { this.__wjs_enc = (e === null || e === undefined) ? null : String(e); return this; },
+    __wjs_emitStdin(type, arg) {
+      const list = (this.__wjs_listeners[String(type)] || []).slice();
+      for (const l of list) { try { l(arg); } catch {} }
+      return list.length;
+    },
+    // stdin 轮询投递（kill 套件：子进程读父写 stdin；echo x | winterjs 真机口径）：
+    // 首个 data/readable/end 监听即起 10ms refed 轮询（续命到 EOF），EOF 清环
+    // 发 end；TTY 归 REPL，不管；Buffer 块（setEncoding 即转串）。
+    __wjs_startPoll() {
+      if (this.__wjs_polling || this.__wjs_ended) return;
+      if (__wjs_stdio_istty(0)) return;
+      this.__wjs_polling = true;
+      const self = this;
+      const timer = setInterval(() => {
+        let r;
+        try { r = __wjs_stdin_poll(); } catch { r = "E"; }
+        if (r === "E") {
+          clearInterval(timer);
+          self.__wjs_polling = false;
+          self.__wjs_ended = true;
+          self.__wjs_emitStdin("end");
+          return;
+        }
+        if (r !== "") {
+          const bin = atob(r.slice(1));
+          const u8 = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+          const chunk = self.__wjs_enc !== null ? Buffer.from(u8).toString(self.__wjs_enc) : Buffer.from(u8);
+          self.__wjs_emitStdin("data", chunk);
+        }
+      }, 10);
+    },
     read() { return null; },
     pause() { return this; },
     resume() { return this; },

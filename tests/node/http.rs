@@ -838,12 +838,18 @@ server.listen(sockPath, () => {
     res.on("data", (c) => (b += c));
     res.on("end", () => {
       // 3) keepAlive 复用：第二发同 socketPath 命中池（reusedSocket 观测）。
-      const req2 = http.get({ agent, socketPath: sockPath, path: "/second" }, (res2) => {
-        res2.resume();
-        res2.on("end", () => {
-          console.log("loop", b, seen.join(","), req2.reusedSocket);
-          agent.destroy();
-          server.close();
+      // node 口径（真机 26.8.2 实测）：res 'end' 处理器内 socket 尚未回池
+      //（nextTick 才入池，user-end 时 freeSockets 空）——end 内直发
+      // reused=false，nextTick 后发才 true；故第二发挂 nextTick
+      //（官方 agent-keepalive 套件同款时序）。
+      process.nextTick(() => {
+        const req2 = http.get({ agent, socketPath: sockPath, path: "/second" }, (res2) => {
+          res2.resume();
+          res2.on("end", () => {
+            console.log("loop", b, seen.join(","), req2.reusedSocket);
+            agent.destroy();
+            server.close();
+          });
         });
       });
     });

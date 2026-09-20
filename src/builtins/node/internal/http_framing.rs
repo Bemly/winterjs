@@ -375,6 +375,10 @@ export class ServerResponse extends Writable {
     // `new ServerResponse(req)`，standalone 套件）——非 socket 一律不入 __sock。
     this.__sock = sock && typeof sock.write === "function" ? sock : null;
     this.__sockAssigned = false;
+    // node 口径：res.socket / res.connection 指向响应 socket（agent-keepalive
+    // 套件服务端经 res.connection 取 socket 再 end）。
+    this.socket = this.__sock;
+    this.connection = this.__sock;
     this.statusCode = 200;
     this.statusMessage = undefined;
     this.__headers = Object.create(null);
@@ -505,6 +509,7 @@ export class ServerResponse extends Writable {
     this.__sockAssigned = true;
     this.__sock = sock;
     this.socket = sock;
+    this.connection = sock;
   }
   __headBytes() {
     if (this.__headSent) return new Uint8Array(0);
@@ -831,6 +836,25 @@ export function withHttpServer(Base) {
       if (o.maxRequestsPerSocket !== undefined) self.maxRequestsPerSocket = o.maxRequestsPerSocket;
       self.__closing = false;
       self.__sockets = new Set();
+      // node setupConnectionsTracking 口径（真机 toString 逐字对拍）：listening
+      // 即起连接检查 timer（unref），每次 listening 先清旧再建新——clear-timer
+      // 套件连手工 emit('listening') 形态都点名（旧 timer 须 _destroyed）。
+      // running 态 tick 不杀 keep-alive 空闲连接（真机 600ms×4 tick 实测不杀）。
+      self.on("listening", () => {
+        const __cur = self[kConnectionsCheckingInterval];
+        if (__cur !== undefined) clearInterval(__cur);
+        const __iv = setInterval(() => {
+          // closing 后清空闲连接（node checkConnections 看门狗口径；常规路径
+          // close() 已同步 clearInterval，此 tick 仅守非同步收尾形态）。
+          if (!self.__closing) return;
+          for (const s of [...self.__sockets]) {
+            const st = s.__httpState;
+            if (!st || st.req === null) { try { s.destroy(); } catch { /* gone */ } }
+          }
+        }, 1000);
+        if (typeof __iv.unref === "function") __iv.unref();
+        self[kConnectionsCheckingInterval] = __iv;
+      });
       self.on("connection", (sock) => {
         self.__sockets.add(sock);
         const st = { buf: new Uint8Array(0), req: null, framing: null, res: null, __hdT: null, __rqT: null, __kaT: null };
@@ -1157,24 +1181,11 @@ export function withHttpServer(Base) {
           try { sock.unref(); } catch { /* gone */ }
         }
       }
-      // node _http_server.js close 口径：仍有活连接时起 connectionsChecking
-      // interval（句柄存符号键下；清零即 clearInterval——
-      // close-destroy-timeout/async-dispose 套件断言 _destroyed）。
-      const alive = [...this.__sockets].filter((s) => !s.destroyed);
-      if (alive.length > 0 && this[kConnectionsCheckingInterval] === undefined) {
-        const iv = setInterval(() => {
-          for (const s of [...this.__sockets]) {
-            const st = s.__httpState;
-            if (!st || st.req === null) { try { s.destroy(); } catch { /* gone */ } }
-          }
-          if (![...this.__sockets].some((s) => !s.destroyed)) {
-            clearInterval(this[kConnectionsCheckingInterval]);
-            this[kConnectionsCheckingInterval] = undefined;
-          }
-        }, 1000);
-        if (typeof iv.unref === "function") iv.unref();
-        this[kConnectionsCheckingInterval] = iv;
-      }
+      // node httpServerPreClose 口径（真机 toString 逐字）：closeIdleConnections +
+      // clearInterval——timer 对象保留在符号键下（_destroyed 置位，close 回调里
+      // 可断言；close-destroy-timeout/async-dispose 套件），不置 undefined。
+      const __cur = this[kConnectionsCheckingInterval];
+      if (__cur !== undefined) clearInterval(__cur);
       super.close();
       return this;
     }
@@ -1402,6 +1413,25 @@ export function withClientRequest(openSocket, flavor) {
       // 套件在 'socket' 事件断言全等）。
       sock._httpMessage = this;
       this.reusedSocket = reused === true;
+      // 防御：上轮请求侧监听残留即先摘（正常路径 __finishSock 已摘）——
+      // 必须先于本函数的一切注册，否则会把刚挂的监听当残留摘掉。
+      // node 口径 attach 换装四件——socketOnEnd/socketErrorListener/
+      // socketCloseListener/socketOnData + 池态 freeSocketErrorListener。
+      if (sock.__reqSockOnEnd !== undefined) {
+        try { sock.removeListener("end", sock.__reqSockOnEnd); } catch { /* gone */ }
+      }
+      if (sock.__reqSockOnError !== undefined) {
+        try { sock.removeListener("error", sock.__reqSockOnError); } catch { /* gone */ }
+      }
+      if (sock.__reqSockOnClose !== undefined) {
+        try { sock.removeListener("close", sock.__reqSockOnClose); } catch { /* gone */ }
+      }
+      if (sock.__reqSockOnData !== undefined) {
+        try { sock.removeListener("data", sock.__reqSockOnData); } catch { /* gone */ }
+      }
+      if (sock.__freeSockErr !== undefined) {
+        try { sock.removeListener("error", sock.__freeSockErr); } catch { /* gone */ }
+      }
       // node onSocket 口径：'socket' 事件异步（nextTick）发出——get()/request()
       // 返回后同步注册的监听器必须能收到（agent-timeout-option 套件形态）。
       queueMicrotask(() => {
@@ -1453,22 +1483,51 @@ export function withClientRequest(openSocket, flavor) {
         }
         this.__tryFlush();
       });
-      sock.on("data", (chunk) => {
+      const __sockOnData = (chunk) => {
         try {
           this.__onSockData(chunk);
         } catch (e) {
           // node 口径：响应头解析错（严格门）→ req 'error'（经 destroy(err)）。
           this.destroy(e);
         }
-      });
-      sock.on("error", (e) => {
+      };
+      sock.on("data", __sockOnData);
+      sock.__reqSockOnData = __sockOnData;
+      // 复用入池连接：node keepSocketAlive 的逆操作——ref 回事件循环
+      //（池态 socket unref 不阻退出，复活后必须计数）。
+      if (reused === true && typeof sock.ref === "function") {
+        try { sock.ref(); } catch { /* gone */ }
+      }
+      const __sockOnError = (e) => {
         if (this.listenerCount("error") === 0) throw e;
         this.emit("error", e);
         // node 口径：连接错无响应即销毁请求（'close' 时 req.destroyed === true，
         // agent-close/timeout-option 系套件断言）。
         this.destroy();
-      });
+      };
+      sock.on("error", __sockOnError);
+      sock.__reqSockOnError = __sockOnError;
+      // node socketOnEnd 口径（真机 toString 逐字）：无响应收到 FIN（'end'）
+      // → req 'socket hang up'（ECONNRESET）+ 销毁；本仓宽容口径——无监听不
+      // 加崩（emitErrorEvent 差异记档）。有 res 时只销毁，截断宽容路径不变
+      //（__onSockCloseEv 收口）。监听存 sock 供 __finishSock 入池前摘除。
+      const __sockOnEnd = function socketOnEnd() {
+        const req = this._httpMessage;
+        if (req !== undefined && req !== null && !req.destroyed &&
+            (req.__res === null || req.__res === undefined) && !req.__hadError) {
+          req.__hadError = true;
+          if (req.listenerCount("error") > 0) {
+            const e = new Error("socket hang up");
+            e.code = "ECONNRESET";
+            req.emit("error", e);
+          }
+        }
+        try { this.destroy(); } catch { /* gone */ }
+      };
+      sock.on("end", __sockOnEnd);
+      sock.__reqSockOnEnd = __sockOnEnd;
       sock.on("close", this.__onSockClose);
+      sock.__reqSockOnClose = this.__onSockClose;
       // 复用连接已连通：直接刷。
       if (reused === true) {
         this.__connected = true;
@@ -1738,6 +1797,12 @@ export function withClientRequest(openSocket, flavor) {
             this.__frame(__join(q));
           }
         }
+        // chunked 收尾终结块（服务端 _final 同款口径）。此前缺失——connect 前
+        // write+end 的 POST 走 chunked，服务端 req 'end' 永不触发（loopback
+        // 黑盒挂死实录；head 已发路径本就有此写入，两路对齐）。
+        if (this.__chunked && !this.__rawCL) {
+          this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));
+        }
       } else if (this.__chunked && !this.__rawCL) {
         this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));
       }
@@ -1893,9 +1958,6 @@ export function withClientRequest(openSocket, flavor) {
           res.req = this;
           this.__framing = __framingFor(headers, true, res.statusCode, this.method);
           this.__res = res;
-          // 释放闸门先于 'response' 挂载（node responseOnEnd 内部先挂口径）：
-          // res 'end'/'close' → 回池/关连 + req 'close'，用户 end 处理器晚于释放。
-          this.__armReleaseGates(this.__sock);
           this.__resBuf = this.__resBuf.slice(headEnd + 4);
           // node _http_client.js：响应到达即挂 responseOnTimeout（一次性/socket；
           // 转发 socket 'timeout' → req 'timeout'，响应完结后不再转发）。
@@ -1911,6 +1973,11 @@ export function withClientRequest(openSocket, flavor) {
           }
           // §4.35：先 emit("response")（监听器登记 data/end），再喂体。
           this.emit("response", res);
+          // 释放闸门在 'response' 之后挂载（node responseOnEnd 于 emit('response')
+          // 内注册、晚于用户监听——真机实测：用户 res 'end' 回调时 socket 仍在
+          // agent.sockets（length 1）、freeSockets 键不存在，nextTick 才入池；
+          // agent-keepalive 套件逐相断言即此序）。
+          this.__armReleaseGates(this.__sock);
           continue;
         }
         const fr = this.__framing;
@@ -1969,6 +2036,41 @@ export function withClientRequest(openSocket, flavor) {
       const conn = this.__res !== null ? (this.__res.headers.connection || "").toLowerCase() : "close";
       const poolable = this.agent !== null && this.agent.keepAlive && conn !== "close";
       if (this.agent !== null) {
+        // node responseOnEnd 口径：res 收齐（回池/关连前）即摘请求侧三监听
+        //（socketOnEnd/socketErrorListener 对应本仓 end/error + close）——
+        // 监听数契约：池态 end=1/error=1（agent-keepalive 套件 checkListeners）。
+        if (sock.__reqSockOnEnd !== undefined) {
+          try { sock.removeListener("end", sock.__reqSockOnEnd); } catch { /* gone */ }
+          sock.__reqSockOnEnd = undefined;
+        }
+        if (sock.__reqSockOnError !== undefined) {
+          try { sock.removeListener("error", sock.__reqSockOnError); } catch { /* gone */ }
+          sock.__reqSockOnError = undefined;
+        }
+        if (sock.__reqSockOnClose !== undefined) {
+          try { sock.removeListener("close", sock.__reqSockOnClose); } catch { /* gone */ }
+          sock.__reqSockOnClose = undefined;
+        }
+        // 'data' 同步摘（node 池态断言 data===0）：残留会把复用后响应字节
+        // 双喂进已完结的旧请求，第二请求永不完成（黑盒 ipc/loopback 实录）。
+        if (sock.__reqSockOnData !== undefined) {
+          try { sock.removeListener("data", sock.__reqSockOnData); } catch { /* gone */ }
+          sock.__reqSockOnData = undefined;
+        }
+        // node 口径：freeSocketErrorListener 在 'free' 派发前置上（agent 的
+        // free 处理器先于用户 once('free') 注册——'free' 回调断言 error=1，
+        // agent-keepalive 套件 checkListeners）；回池失败路径由 __release 销毁，
+        // 多挂的监听随 socket 死亡无效。
+        if (poolable) {
+          if (sock.__freeSockErr !== undefined) {
+            try { sock.removeListener("error", sock.__freeSockErr); } catch { /* gone */ }
+          }
+          sock.__freeSockErr = function freeSocketErrorListener(err) {
+            this.destroy();
+            this.emit("agentRemove");
+          };
+          sock.on("error", sock.__freeSockErr);
+        }
         // node 口径：socket 'free' 事件恒发（agent onFree 在此续行排队请求）；
         // __release 内按 keepAlive 决定回池或销毁，并 resume 队列。
         try { sock.emit("free"); } catch { /* gone */ }
@@ -2030,6 +2132,18 @@ export function withClientRequest(openSocket, flavor) {
       return super.destroy(err);
     }
   };
+}
+
+// node lib/_http_agent.js writeAfterFIN 逐字口径：对端 FIN 后写 → EPIPE
+//（'This socket has been ended by the other party'）+ 销毁。由 agent 的
+// onReadableStreamEnd 在非 halfOpen 时置换 socket.write。
+function __writeAfterFIN(chunk, encoding, cb) {
+  if (typeof encoding === "function") { cb = encoding; encoding = null; }
+  const er = new Error("This socket has been ended by the other party");
+  er.code = "EPIPE";
+  try { this.destroy(er); } catch { /* gone */ }
+  if (typeof cb === "function") cb(er);
+  return false;
 }
 
 // Agent：node lib/_http_agent.js 口径的函数式构造器——`http.Agent({...})` 无 new
@@ -2117,6 +2231,17 @@ Agent.prototype.__totalLive = function () {
 Agent.prototype.__trackSocket = function (sock, key) {
   this.__list(this.sockets, key).push(sock);
   this.totalSocketCount++;
+  // 池键随 socket 走（__noteClosed 按 sock.__poolKey 摘表；此前只记 req 侧，
+  // 关闭后 sockets/freeSockets 残留——agent-keepalive 套件断言键消失）。
+  sock.__poolKey = key;
+  // node 口径：agent 托管 socket 创建即挂 onReadableStreamEnd（入池后保留——
+  // 监听数契约：'end' active=2/池态=1，agent-keepalive 套件 checkListeners）。
+  // FIN 后写 → EPIPE（writeAfterFIN 置换，真机 toString 逐字）。
+  sock.on("end", function onReadableStreamEnd() {
+    if (!this.allowHalfOpen) {
+      this.write = __writeAfterFIN;
+    }
+  });
   // node agent：options.timeout 在建连时即置 socket 空闲计时（agent-timeout-
   // option 套件：'socket' 事件时 socket.timeout 已 === 50；onTimeout 单例）。
   if (this.options && typeof this.options.timeout === "number" && this.options.timeout > 0) {
@@ -2144,16 +2269,23 @@ Agent.prototype.__unpool = function (sock) {
 // 建连统一走 createSocket 钩（req, options, cb 三参——用户覆写点）。
 Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
   const key = this.getName({ host, port, ...(extra ?? {}) });
-  const free = this.__list(this.freeSockets, key);
-  while (free.length > 0) {
-    const sock = this.scheduling === "fifo" ? free.shift() : free.pop();
-    if (!sock.destroyed) {
-      this.__unpool(sock);
-      this.__list(this.sockets, key).push(sock);
-      req.__poolKey = key;
-      onSocket(sock, true);
-      return;
+  // node 口径：freeSockets 键只在真入池后存在——取用不得侧效应建空数组
+  //（agent.freeSockets[name] === undefined 断言，agent-keepalive 套件）。
+  const free = this.freeSockets[key];
+  if (free !== undefined) {
+    while (free.length > 0) {
+      const sock = this.scheduling === "fifo" ? free.shift() : free.pop();
+      if (!sock.destroyed) {
+        this.__unpool(sock);
+        this.__list(this.sockets, key).push(sock);
+        req.__poolKey = key;
+        onSocket(sock, true);
+        break;
+      }
     }
+    // 取空即删键（node addRequest 同款），避免残留 [] 破坏 undefined 断言。
+    if (free.length === 0) delete this.freeSockets[key];
+    if (req.__poolKey === key) return;
   }
   if (this.__liveCount(key) >= this.maxSockets ||
       (this.maxTotalSockets !== Infinity && this.__totalLive() >= this.maxTotalSockets)) {
@@ -2183,6 +2315,9 @@ Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
   this.createSocket(req, opts, oncreate);
 };
 Agent.prototype.__noteClosed = function (sock) {
+  // node onClose 口径：totalSocketCount 只在 socket 关闭时减（keepalive 套件
+  // 远端关闭后断言归零）。
+  if (this.totalSocketCount > 0) this.totalSocketCount--;
   const key = sock.__poolKey;
   if (key === undefined) return;
   const drop = (map) => {
@@ -2205,19 +2340,30 @@ Agent.prototype.__release = function (sock, key, req) {
       try { sock.destroy(); } catch { /* gone */ }
     }
     this.__noteClosed(sock);
-  } else {
-    const free = this.__list(this.freeSockets, key);
-    if (free.length >= this.maxFreeSockets) {
-      try { sock.destroy(); } catch { /* gone */ }
-      this.__noteClosed(sock);
     } else {
-      sock.__inPool = true;
-      free.push(sock);
+      const free = this.__list(this.freeSockets, key);
+      if (free.length >= this.maxFreeSockets) {
+        try { sock.destroy(); } catch { /* gone */ }
+        this.__noteClosed(sock);
+      } else {
+        sock.__inPool = true;
+        free.push(sock);
+        // node keepSocketAlive 口径：入池即 TCP keepalive + unref（池不阻退出；
+        // 复用时 __attach ref 回）。freeSocketErrorListener 已在 __finishSock
+        // 的 'free' 派发前挂上（此处不再重复）。
+        if (typeof sock.setKeepAlive === "function") {
+          try { sock.setKeepAlive(true, this.keepAliveMsecs); } catch { /* gone */ }
+        }
+        if (typeof sock.unref === "function") {
+          try { sock.unref(); } catch { /* gone */ }
+        }
       // node 口径：入池即移出在用表（agent.sockets 只计在用——
-      // agent-maxtotalsockets 的 getTotalSocketsCount 口径）。
+      // agent-maxtotalsockets 的 getTotalSocketsCount 口径）；空键即删
+      //（agent.sockets[name] === undefined 断言，agent-keepalive 套件）。
       const __inUse = this.__list(this.sockets, key);
       const __i = __inUse.indexOf(sock);
       if (__i !== -1) __inUse.splice(__i, 1);
+      if (__inUse.length === 0) delete this.sockets[key];
       if (sock.__poolCleaner === undefined) {
         const cleaner = () => this.__noteClosed(sock);
         sock.__poolCleaner = cleaner;

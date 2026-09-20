@@ -5,11 +5,12 @@
 
 /// `node:_http_agent`（真机 keys：Agent,globalAgent）。
 pub const AGENT_SOURCE: &str = r#"
-import { Agent } from "node:internal/http_framing";
-export { Agent };
-// node 口径：_http_agent.globalAgent 即 http.globalAgent 同一实例（本仓
-// http.rs 另建，双实例偏差记档——套件仅用 Agent 类）。
-export const globalAgent = new Agent();
+// node 口径（真机实测）：_http_agent.Agent 即 http.Agent 同一类、
+// _http_agent.globalAgent 即 http.globalAgent 同一实例——帧层基类无
+// __openSocket（flavor 子类提供），裸 Agent 建连即炸（agent-keepalive
+// 套件），故整体重导出 http 侧具体类。
+import { Agent, globalAgent } from "node:http";
+export { Agent, globalAgent };
 "#;
 
 /// `node:_http_common`（真机 keys：_checkInvalidHeaderChar,_checkIsHttpToken,
@@ -23,7 +24,11 @@ export const methods = METHODS;
 // node lib/_http_common.js 头字符门（真机实测：\x01 invalid、空格/tab 合法、
 // 高位 \x80-\xff 合法）。
 const HEADER_CHAR_RE = /[^\t\x20-\x7e\x80-\xff]/;
-export function _checkInvalidHeaderChar(val) {
+// lenient 位（insecureHTTPParser；Fetch 规约口径，套件逐字符对拍）：只拒
+// NUL/CR/LF 与 >0xff，其余控制字符放行。
+const LENIENT_HEADER_CHAR_RE = /[\x00\r\n]|[^\x00-\xff]/;
+export function _checkInvalidHeaderChar(val, lenient = false) {
+  if (lenient === true) return LENIENT_HEADER_CHAR_RE.test(val);
   return HEADER_CHAR_RE.test(val);
 }
 const TOKEN_RE = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/;

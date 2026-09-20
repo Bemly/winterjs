@@ -97,6 +97,12 @@ pub enum NetCmd {
     DgramJoin { multi: String, iface: String },
     /// 退组播组。
     DgramLeave { multi: String, iface: String },
+    /// SSM 加组（源+组；v6 走 MCAST_JOIN_SOURCE_GROUP）。
+    DgramJoinSource { multi: String, iface: String, source: String },
+    /// SSM 退组。
+    DgramLeaveSource { multi: String, iface: String, source: String },
+    /// 出站组播接口（v4 地址串 / v6 索引或 %scope 形）。
+    DgramMulticastInterface { addr: String },
     /// 记默认远端（task 级 connect，无内核过滤，记档）。
     DgramConnect { addr: String },
     /// 清默认远端。
@@ -194,6 +200,9 @@ pub(crate) fn spawn_pumps<R, W>(
                 | NetCmd::DgramTtl(_)
                 | NetCmd::DgramJoin { .. }
                 | NetCmd::DgramLeave { .. }
+                | NetCmd::DgramJoinSource { .. }
+                | NetCmd::DgramLeaveSource { .. }
+                | NetCmd::DgramMulticastInterface { .. }
                 | NetCmd::DgramConnect { .. }
                 | NetCmd::DgramDisconnect => {}
                 // http2 命令走 h2 conn/session task（本泵不产生，见 http2.rs）

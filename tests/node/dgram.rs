@@ -79,8 +79,11 @@ for (const [tag, fn] of [
   catch (e) { console.log(tag, e.code); }
 }
 try { t0.setTTL("x"); } catch (e) { console.log("ttl-str", e.code); }
-console.log("ttl-ret", t0.setTTL(64), t0.setMulticastTTL(5), t0.setMulticastLoopback(false), t0.setBroadcast(true));
-t0.close();
+// 未绑 sockopt 即同步 EBADF（真机口径；旧静默挂起系偏差）——回值断言改走已绑 socket。
+t0.bind(0, "127.0.0.1", () => {
+  console.log("ttl-ret", t0.setTTL(64), t0.setMulticastTTL(5), t0.setMulticastLoopback(false), t0.setBroadcast(true));
+  t0.close();
+});
 // ── connect 回环（默认远端发送）──
 const server = createSocket("udp4");
 server.on("error", (e) => console.log("srv-error", e.code));
@@ -140,7 +143,7 @@ setTimeout(() => console.log("end-ok"), 1500);
         "conn-none ERR_SOCKET_BAD_PORT",
         "remote-before ERR_SOCKET_DGRAM_NOT_CONNECTED",
         "send-noaddr ERR_SOCKET_BAD_PORT",
-        "ttl-str EINVAL",
+        "ttl-str ERR_INVALID_ARG_TYPE",
         "ttl-ret 64 5 false undefined",
         "conn-remote {\"address\":\"127.0.0.1\",\"port\":",
         "srv-got hi-connected true",
@@ -264,6 +267,56 @@ import assert from "node:assert";
     s2.close();
   });
 }
+// 8. connect 状态机 + 关闭门 + send 切片形 + TTL 校验 + 未绑 sockopt EBADF
+{
+  const c = dgram.createSocket("udp4");
+  c.connect(12345, "127.0.0.1", () => {
+    c.disconnect();
+    try { c.disconnect(); } catch (e) { console.log("disconn-twice", e.code === "ERR_SOCKET_DGRAM_NOT_CONNECTED"); }
+    try { c.remoteAddress(); } catch (e) { console.log("raddr-disc", e.code === "ERR_SOCKET_DGRAM_NOT_CONNECTED"); }
+    c.close();
+  });
+  try { c.connect(12345); } catch (e) { console.log("conn-twice", e.code === "ERR_SOCKET_DGRAM_IS_CONNECTED"); }
+  const m = dgram.createSocket("udp4");
+  m.close(() => {
+    try { m.addMembership("224.0.0.114"); } catch (e) { console.log("memb-closed", e.code === "ERR_SOCKET_DGRAM_NOT_RUNNING"); }
+    try { m.setMulticastInterface("0.0.0.0"); } catch (e) { console.log("mif-closed", e.code === "ERR_SOCKET_DGRAM_NOT_RUNNING"); }
+  });
+  const t = dgram.createSocket("udp4");
+  try { t.setMulticastLoopback(16); } catch (e) { console.log("loop-unbound", e.code === "EBADF"); }
+  try { t.setTTL("foo"); } catch (e) { console.log("ttl-type", e.code === "ERR_INVALID_ARG_TYPE"); }
+  try { t.setTTL(1000); } catch (e) { console.log("ttl-range", e.code === "EINVAL"); }
+  t.close();
+  const rx = dgram.createSocket("udp4");
+  rx.bind(0, "127.0.0.1", () => {
+    const s = dgram.createSocket("udp4");
+    const msg = Buffer.from("xyzh");
+    s.send(msg, 1, 2, rx.address().port, "127.0.0.1", (err, bytes) => {
+      console.log("send-slice", err === null && bytes === 2);
+      s.close();
+    });
+  });
+  rx.on("message", (buf) => { console.log("slice-recv", buf.toString() === "yz"); rx.close(); });
+}
+// 9. bindSync/connectSync 同步面（地址即时有效、事件递延、关即抑制）。
+{
+  const s = dgram.createSocket("udp4");
+  const addr = s.bindSync({ address: "127.0.0.1", port: 0 });
+  console.log("bsync", addr.address === "127.0.0.1" && addr.family === "IPv4" && addr.port > 0);
+  console.log("bsync-self", s.address().port === addr.port);
+  try { s.bindSync({ port: 0 }); } catch (e) { console.log("bsync-twice", e.code === "ERR_SOCKET_ALREADY_BOUND"); }
+  try { s.bindSync(0); } catch (e) { console.log("bsync-arg", e.code === "ERR_INVALID_ARG_TYPE"); }
+  const c = dgram.createSocket("udp4");
+  c.connectSync(addr.port, "127.0.0.1");
+  console.log("csync", c.remoteAddress().address === "127.0.0.1" && c.remoteAddress().port === addr.port);
+  try { c.connectSync(1); } catch (e) { console.log("csync-twice", e.code === "ERR_SOCKET_DGRAM_IS_CONNECTED"); }
+  c.disconnect();
+  const c2 = dgram.createSocket("udp4");
+  try { c2.connectSync(1, "localhost"); } catch (e) { console.log("csync-dns", e.code === "ERR_INVALID_ARG_VALUE"); }
+  c2.close();
+  c.close();
+  s.close();
+}
 setTimeout(() => process.exit(0), 3000);
 "#,
     );
@@ -279,6 +332,23 @@ setTimeout(() => process.exit(0), 3000);
         "array-recv true",
         "addr-unbound true true",
         "fam-resolve true",
+        "conn-twice true",
+        "disconn-twice true",
+        "raddr-disc true",
+        "memb-closed true",
+        "mif-closed true",
+        "loop-unbound true",
+        "ttl-type true",
+        "ttl-range true",
+        "send-slice true",
+        "slice-recv true",
+        "bsync true",
+        "bsync-self true",
+        "bsync-twice true",
+        "bsync-arg true",
+        "csync true",
+        "csync-twice true",
+        "csync-dns true",
     ] {
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }

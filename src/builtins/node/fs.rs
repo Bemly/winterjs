@@ -2171,9 +2171,11 @@ function __fsErr(e, syscall, path) {
     if (e.path === undefined) e.path = path;
     throw e;
   }
-  // 权限拒绝直通（不套 io 形状；Deno NotCapable 同款可读错）
+  // 权限拒绝直通（不套 io 形状；Deno NotCapable 同款可读错）。
+  // 前缀必须保留原文：__fsCall 嵌套时同一错误会过 __fsErr 两次，剥掉即失认、
+  // 二次被重包成 UNKNOWN（allow-list 读路径现形）。
   if (m.startsWith("PermissionError:")) {
-    const perr = new Error(m.slice("PermissionError: ".length));
+    const perr = new Error(m);
     perr.name = "PermissionError";
     perr.path = path;
     throw perr;

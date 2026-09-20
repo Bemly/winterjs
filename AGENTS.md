@@ -2601,3 +2601,19 @@ cargo build
   `normalize_spec`），裸/前缀两形同归一。
 - 推广为铁律：新增内部别名必须双形验证（裸 `require('_x')` + `node:_x`
   导入各跑一次）；"表里有" ≠ "够得着"，注册链（映射→表→source）逐段断言。
+
+### 4.157 错误包装函数必须幂等：`__fsErr` 剥前缀致嵌套重包（2026-09-20，G8 轮）
+
+- 症状：`tests/permissions.rs::phase8_permissions_fs` 挂——allow-list 读
+  `/etc/hosts` 得 `Error/UNKNOWN`（应 `PermissionError`），而裸 `--allow-read`
+  写拒绝分支正常。
+- 根因：`__fsErr` 的 PermissionError 分支用 `m.slice(prefix)` 剥掉前缀后重建
+  Error；读路径经 `__fsCall("open")` 包 `__fsReadWhole` 包 `statSync` 内层
+  `__fsErr`——同一错误过包装函数**两次**，第二次前缀已失认，落通用分支重包成
+  `UNKNOWN …, open '…'`。写路径只过一次，故正常（§4.37/§4.119 同源第三例：
+  包装函数须区分"已整形"与"待整形"）。
+- 修法：前缀保留原文重建（`new Error(m)` + 改名），二次进入同分支直通，
+  天然幂等（`src/builtins/node/fs.rs` `__fsErr`）。
+- 推广为铁律：错误包装函数默认会被嵌套调用（`__fsCall` 层层包）——构造的错误
+  必须能无损地再过一次本函数（幂等）；凡 `slice/replace` 去特征头的写法，
+  先问"第二次进来还认得吗"。

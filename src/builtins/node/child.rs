@@ -1250,7 +1250,9 @@ function __legacyReadable(web) {
           while (buf.length > 0 && flowing && !paused && !destroyed) emit("data", buf.shift());
           ended = true;
           emit("end");
-          emit("close");
+          // close 递延一轮（真机先 end 后 close 异步序；迟挂 close 仍到。
+          // destroy() 的同步 close 保持——用户主动销毁即时语义）。
+          queueMicrotask(() => emit("close"));
           if (!destroyed && !flowing && buf.length > 0) emit("readable");
           return;
         }
@@ -1332,6 +1334,9 @@ function __legacyReadable(web) {
     get destroyed() { return destroyed; },
     // execFile collect 的串化判定读此位（node 流同形；setEncoding 后即真）。
     get readableEncoding() { return enc; },
+    // 兼容桩（pipe-dataflow 套件直改 `stdout._handle.readStart` 断言永不调用；
+    // 本泵模型不经过 readStart，桩恒静默）。
+    _handle: { readStart() {}, readStop() {} },
   };
   return api;
 }
@@ -1432,6 +1437,9 @@ export class ChildProcess {
   // 多监听列表（on 累积/off 摘除；单分发位经 __install 落 fan-out）。
   #exitL = [];
   #closeL = [];
+  // close 到达记录（流 end 后迟挂 close 即时重放，见 on；真机 exit→stdio 关→
+  // close 异步序在本仓同派发内完成，记录补迟挂一拍）。
+  #closeArgs = null;
   #errorL = [];
   #spawnL = [];
   #msgL = [];
@@ -1455,6 +1463,8 @@ export class ChildProcess {
   __init(id, stdio) {
     this.#id = id;
     this.__initStreams(stdio, id);
+    // close 记录常驻（迟挂重放：到达即记，不等首监听）。
+    this.__install("close");
     // node 口径：spawn 成功后 pid 为自有数据属性（hasOwn true）；
     // 未成功（id=0）保持原型 getter 的 undefined。
     if (id !== 0) {
@@ -1592,7 +1602,16 @@ export class ChildProcess {
     // node 口径：同事件多监听并存（spawn-event 套件挂两个 'spawn'；旧单槽
     //实现后挂顶掉先挂，didSpawn 永 false）。列表累积 + fan-out 落分发位。
     if (event === "exit") { this.#exitL.push(cb); this.__install("exit"); }
-    else if (event === "close") { this.#closeL.push(cb); this.__install("close"); }
+    else if (event === "close") {
+      this.#closeL.push(cb); this.__install("close");
+      // close 已到后迟挂即时重放（流 end 后挂 close 形；once 包裹亦经此路）。
+      if (this.#closeArgs !== null) {
+        const self = this;
+        queueMicrotask(() => {
+          if (self.#closeL.includes(cb)) { try { cb(...self.#closeArgs); } catch {} }
+        });
+      }
+    }
     else if (event === "error") { this.#errorL.push(cb); this.__install("error"); }
     else if (event === "spawn") { this.#spawnL.push(cb); this.__install("spawn"); }
     else if (event === "message" || event === "disconnect") {
@@ -1612,8 +1631,13 @@ export class ChildProcess {
       const ls = [...this.#exitL];
       this.onexit = ls.length ? ((code, signal) => { for (const fn of ls) fn(code, signal); }) : null;
     } else if (event === "close") {
+      const self = this;
       const ls = [...this.#closeL];
-      this.onclose = ls.length ? ((code, signal) => { for (const fn of ls) fn(code, signal); }) : null;
+      // 常驻记录（空表亦装：无监听到达仍记，供迟挂重放；同步扇出时序不动）。
+      this.onclose = ((code, signal) => {
+        self.#closeArgs = [code, signal];
+        for (const fn of ls) fn(code, signal);
+      });
     } else if (event === "error") {
       const ls = [...this.#errorL];
       this.onerror = ls.length ? ((...a) => { for (const fn of ls) fn(...a); }) : null;
@@ -2002,7 +2026,19 @@ function __normSpawnAsyncOpts(opts) {
         if (opts.stdio.filter((s) => s === "ipc").length > 1) throw new ERR_IPC_ONE_PIPE();
         throw new Error("NotSupportedError: spawn stdio array takes at most 3 entries");
       }
-      o.stdio = [0, 1, 2].map((i) => opts.stdio[i] === undefined ? "pipe" : one(opts.stdio[i]));
+      // 流对象元（pipe-dataflow/merge/reuse 套件）：可读/可写流即转交位
+      // （Rust 侧仍按 pipe 建真管，转交纯 JS 搭桥，见 __stdioWire）。
+      o.stdio = [0, 1, 2].map((i) => {
+        const s = opts.stdio[i];
+        if (s === undefined) return "pipe";
+        if (typeof s === "string") return one(s);
+        if (s !== null && typeof s === "object" &&
+            (typeof s.on === "function" || typeof s.write === "function")) {
+          (o.stdioStreams ??= [])[i] = s;
+          return "pipe";
+        }
+        throw new Error(`NotSupportedError: spawn stdio '${s}' (inherit/ignore/pipe)`);
+      });
     } else {
       throw new Error("NotSupportedError: spawn stdio must be a string or array");
     }
@@ -2025,6 +2061,27 @@ export function spawn(file, args, opts) {
   else if (typeof opts !== "object" || opts === null || Array.isArray(opts)) { throw new ERR_INVALID_ARG_TYPE("options", "object", opts); }
   const o = __normSpawnAsyncOpts(opts);
   return __spawnInto(new ChildProcess(), file, args, o);
+}
+// stdio 流转交（pipe-dataflow/merge/reuse 套件）：spawn 数组元为流对象时
+// 按位搭桥——stdin 位可读流 data/end 转入子 stdin；stdout/stderr 位可写流
+// 接子对应流 data（end 不转：共享写端由持有者关，merge 套件多写者语义）。
+function __stdioWire(proc, streams) {
+  if (!streams) return;
+  try {
+    const src = streams[0];
+    if (src && typeof src.on === "function" && proc.stdin) {
+      src.on("data", (d) => { try { proc.stdin.write(d); } catch {} });
+      src.on("end", () => { try { proc.stdin.end(); } catch {} });
+    }
+    const out = streams[1];
+    if (out && typeof out.write === "function" && proc.stdout) {
+      proc.stdout.on("data", (d) => { try { out.write(d); } catch {} });
+    }
+    const err = streams[2];
+    if (err && typeof err.write === "function" && proc.stderr) {
+      proc.stderr.on("data", (d) => { try { err.write(d); } catch {} });
+    }
+  } catch {}
 }
 // spawn 落地（函数与 ChildProcess.prototype.spawn 方法共用；proc 既是
 // native 事件 target 也是返回对象——事件接线必须挂最终对象，禁中转搬运）。
@@ -2081,6 +2138,8 @@ function __spawnInto(proc, file, args, o) {
     proc.__onExited = () => { try { disposable[Symbol.dispose](); } catch {} };
   }
   proc.__init(id, o.stdio);
+  // stdio 流转交（数组流对象元，转交位搭桥）。
+  __stdioWire(proc, o.stdioStreams);
   // 'spawn' 事件 nextTick/microtask 发射（监听挂载在 spawn() 返回后同步发生，
   // 恒早于数据/退出分发）。
   queueMicrotask(() => { try { proc.__emitSpawn(); } catch {} });

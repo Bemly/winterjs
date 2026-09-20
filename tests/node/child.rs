@@ -1096,3 +1096,47 @@ console.log("closed", c.exitCode === 0);"#]));
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }
 }
+
+#[test]
+fn phase10f_child_stdio_stream_handoff() {
+    // pipe-dataflow/merge/reuse 套件回归：stdio 数组流对象转交（stdin 位读流
+    // data/end 转入、stdout 位写流只转 data 不转 end）+ stdout._handle 桩。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        r#"const { spawn } = await import("node:child_process");
+// stdin 位：读流转入
+{
+  const src = spawn("echo", ["hello-in"]);
+  const dst = spawn("cat", { stdio: [src.stdout, "pipe", "pipe"] });
+  let n = "";
+  dst.stdout.on("data", (d) => { n += d.toString(); });
+  await new Promise((res) => dst.stdout.on("end", res));
+  console.log("handoff-in", n === "hello-in\n");
+  await new Promise((res) => dst.on("close", res));
+  src.kill();
+  await new Promise((res) => src.on("close", res));
+}
+// stdout 位：写流只转 data（end 不转，共享写端持有者关）
+{
+  const p3 = spawn("cat", { stdio: ["pipe", "pipe", "pipe"] });
+  const p1 = spawn("echo", ["hello-out"], { stdio: ["pipe", p3.stdin, "pipe"] });
+  let n = "";
+  p3.stdout.on("data", (d) => { n += d.toString(); });
+  await new Promise((res) => p1.on("close", res));
+  await new Promise((res) => {
+    const t = setInterval(() => { if (n === "hello-out\n") { clearInterval(t); res(); } }, 20);
+  });
+  console.log("handoff-out", n === "hello-out\n");
+  p3.stdin.end();
+  await new Promise((res) => p3.on("close", res));
+}
+// _handle 桩存在且泵不经 readStart
+{
+  const c = spawn("echo", ["z"]);
+  console.log("handle", c.stdout._handle !== undefined && typeof c.stdout._handle.readStart === "function");
+  c.kill();
+  await new Promise((res) => c.on("close", res));
+}"#]));
+    for line in ["handoff-in true", "handoff-out true", "handle true"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+}

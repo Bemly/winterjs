@@ -127,6 +127,86 @@ fn phase4_fs_watch_fires_and_closes() {
 }
 
 #[test]
+fn phase10f_fs_watch_ignore_and_relpath() {
+    // G8-1：ignore 全形态（string glob/RegExp/Function/混排 + 非法码）与
+    // 递归 filename 相对路径（`subdir/file.txt`）+ `**` 目录忽略。
+    // 正常：混排只放行 keep.txt；报错：123/''/[123]/[''] 四码；
+    // 边界：递归写 node_modules 内文件被 `**/node_modules/**` 吞掉。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("ignore.mjs");
+    file.write_str(
+        r#"
+import fs from "node:fs";
+import assert from "node:assert";
+// 报错：校验码（validateIgnoreOption 口径）
+for (const [v, code] of [[123, "ERR_INVALID_ARG_TYPE"], ["", "ERR_INVALID_ARG_VALUE"], [[123], "ERR_INVALID_ARG_TYPE"], [[""], "ERR_INVALID_ARG_VALUE"]]) {
+  try { fs.watch(".", { ignore: v }); console.log("ignore-no-throw", JSON.stringify(v)); }
+  catch (e) { console.log("ignore-code", e.code === code); }
+}
+// 正常：混排（string matchBase + RegExp + Function）
+{
+  const w = fs.watch("mix", {
+    ignore: ["*.log", /\.tmp$/, (fn) => fn.startsWith(".")],
+  });
+  w.on("change", (ev, fn) => {
+    if (fn === "keep.txt") { console.log("mix-pass", true); w.close(); }
+    else console.log("mix-leak", fn);
+  });
+  setTimeout(() => {
+    fs.writeFileSync("mix/debug.log", "x");
+    fs.writeFileSync("mix/temp.tmp", "x");
+    fs.writeFileSync("mix/.secret", "x");
+    fs.writeFileSync("mix/keep.txt", "x");
+  }, 150);
+}
+// 边界：递归相对路径 + `**` 忽略
+{
+  const w = fs.watch("tree", {
+    recursive: true,
+    ignore: ["**/node_modules/**", "**/node_modules"],
+  });
+  w.on("change", (ev, fn) => {
+    if (fn && fn.includes("node_modules")) { console.log("tree-leak", fn); return; }
+    if (fn && fn.endsWith("src/app.js")) { console.log("tree-rel", fn === "src/app.js"); w.close(); }
+  });
+  setTimeout(() => {
+    fs.writeFileSync("tree/node_modules/package.json", "{}");
+    fs.writeFileSync("tree/src/app.js", "x");
+  }, 150);
+}
+setTimeout(() => { console.log("ignore-done"); process.exit(0); }, 4000);
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join("mix")).unwrap();
+    std::fs::create_dir_all(dir.path().join("tree/node_modules")).unwrap();
+    std::fs::create_dir_all(dir.path().join("tree/src")).unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in [
+        "ignore-code true",
+        "mix-pass true",
+        "tree-rel true",
+        "ignore-done",
+    ] {
+        assert!(
+            text.lines().any(|l| l == line),
+            "missing: {line}\nout: {text}"
+        );
+    }
+    assert!(!text.contains("mix-leak"), "ignore 漏网:\n{text}");
+    assert!(!text.contains("tree-leak"), "node_modules 漏网:\n{text}");
+    assert!(!text.contains("ignore-no-throw"), "非法 ignore 未抛:\n{text}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn node_fs_streams() {
     // createReadStream 分块 + createWriteStream 落盘/追加（10f 起真 WriteStream：
     // write/end/finish 事件面，Web 流 getWriter 口径退役——node 真机无此面）。

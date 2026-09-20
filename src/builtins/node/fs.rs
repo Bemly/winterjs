@@ -1676,7 +1676,43 @@ pub enum WatchKind {
     Failed(String),
 }
 
-/// notify 事件 → Node `rename`/`change`（Access/Other 忽略，返回 None）。
+/// node 口径：递归 watch 的 filename 含相对路径（ignore-recursive 套件
+// `endsWith/includes` 断言）；单文件/目录回落 basename。
+// 根形态不定（相对/绝对/经 symlink）而 notify 事件恒绝对——规范根 + 绝对原根
+// 双试 strip（§4.12 同源：/var↔/private/var），皆失才回落 basename。
+fn watch_display_name(canon_root: &std::path::Path, raw_root: &std::path::Path, p: &std::path::Path) -> Option<String> {
+    for root in [canon_root, raw_root] {
+        if let Ok(rel) = p.strip_prefix(root) {
+            let s = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+    }
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+}
+
+/// minimatch 近似（fs.watch `ignore` 字符串面）：`**` 递归 + 无斜杠模式配
+/// basename（matchBase）+ win/mac 不分大小写；模式非法回字面相等。
+fn glob_match_impl(pat: &str, name: &str, base: &str, nocase: bool) -> bool {
+    let opts = glob::MatchOptions {
+        case_sensitive: !nocase,
+        require_literal_separator: true,
+        require_literal_leading_dot: true,
+    };
+    match glob::Pattern::new(pat) {
+        Ok(p) => {
+            p.matches_with(name, opts) || (!pat.contains('/') && p.matches_with(base, opts))
+        }
+        Err(_) => name == pat || base == pat,
+    }
+}
+// notify 事件 → Node `rename`/`change`（Access/Other 忽略，返回 None）。
 fn watch_classify(kind: &notify::EventKind) -> Option<&'static str> {
     match kind {
         notify::EventKind::Create(_) | notify::EventKind::Remove(_) => Some("rename"),
@@ -1727,6 +1763,20 @@ pub unsafe extern "C" fn watch_start(
         notify::RecursiveMode::NonRecursive
     };
     let watched = path.clone();
+    // 相对根 vs 绝对事件路径：规范根（存在性已校验，canonicalize 必成）+
+    // 绝对原根，双试 strip。
+    let canon_root = std::fs::canonicalize(&watched)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| watched.clone());
+    let abs_root = if std::path::Path::new(&watched).is_absolute() {
+        watched.clone()
+    } else {
+        std::env::current_dir()
+            .map(|c| c.join(&watched).to_string_lossy().into_owned())
+            .unwrap_or_else(|_| watched.clone())
+    };
+    let rel_canon = canon_root.clone();
+    let rel_abs = abs_root.clone();
     let build: Result<notify::RecommendedWatcher, String> = (|| {
         use notify::Watcher as _;
         // notify 回调只做分类（纯数据），防抖由共享线程做（300ms 静默窗，kind 保留）。
@@ -1738,7 +1788,11 @@ pub unsafe extern "C" fn watch_start(
                             return;
                         };
                         let file = ev.paths.first().and_then(|p| {
-                            p.file_name().map(|n| n.to_string_lossy().into_owned())
+                            watch_display_name(
+                                std::path::Path::new(&rel_canon),
+                                std::path::Path::new(&rel_abs),
+                                std::path::Path::new(p),
+                            )
                         });
                         let _ = dtx.send(RawWatch {
                             id,
@@ -1766,6 +1820,28 @@ pub unsafe extern "C" fn watch_start(
             false
         }
     }
+}
+
+/// `__wjs_glob_match(pattern, filename, basename, nocaseBool)` → bool。
+/// fs.watch `ignore` 字符串面（minimatch 近似，见 `glob_match_impl`）。
+pub unsafe extern "C" fn glob_match(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 watch_start
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: glob match needs pattern, filename and basename");
+        return false;
+    }
+    let pat = value_to_string(&mut cx, frame.arg(0));
+    let name = value_to_string(&mut cx, frame.arg(1));
+    let base = value_to_string(&mut cx, frame.arg(2));
+    let nocase = frame.argc() > 3 && frame.arg(3) == mozjs::jsval::BooleanValue(true);
+    frame.set_rval(mozjs::jsval::BooleanValue(glob_match_impl(&pat, &name, &base, nocase)));
+    true
 }
 
 /// `__wjs_watch_close(id)`（幂等；残留事件落空）。
@@ -1883,6 +1959,66 @@ pub unsafe extern "C" fn fs_rmdir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watch_display_name_shapes() {
+        use std::path::Path;
+        let canon = Path::new("/tmp/x");
+        let raw = Path::new("/tmp/x");
+        // 递归：相对路径（含斜杠）；目录：basename；单文件：自身回落 basename。
+        assert_eq!(
+            watch_display_name(canon, raw, Path::new("/tmp/x/subdir/file.txt")).as_deref(),
+            Some("subdir/file.txt")
+        );
+        assert_eq!(
+            watch_display_name(canon, raw, Path::new("/tmp/x/n.txt")).as_deref(),
+            Some("n.txt")
+        );
+        assert_eq!(
+            watch_display_name(canon, raw, Path::new("/tmp/x/foo")).as_deref(),
+            Some("foo")
+        );
+        // 相对根 + 绝对事件（黑盒常形）：规范根命中；symlink 变体经绝对原根。
+        assert_eq!(
+            watch_display_name(
+                Path::new("/private/tmp/x/tree"),
+                Path::new("/var/tmp/x/tree"),
+                Path::new("/private/tmp/x/tree/src/app.js"),
+            )
+            .as_deref(),
+            Some("src/app.js")
+        );
+        assert_eq!(
+            watch_display_name(
+                Path::new("/private/tmp/x/tree"),
+                Path::new("/var/tmp/x/tree"),
+                Path::new("/var/tmp/x/tree/src/app.js"),
+            )
+            .as_deref(),
+            Some("src/app.js")
+        );
+        // 根外路径：回落 basename，不抛。
+        assert_eq!(
+            watch_display_name(canon, raw, Path::new("/other/y.txt")).as_deref(),
+            Some("y.txt")
+        );
+    }
+
+    #[test]
+    fn ignore_glob_match_shapes() {
+        // matchBase：无斜杠模式配 basename。
+        assert!(glob_match_impl("*.log", "subdir/file.log", "file.log", true));
+        assert!(!glob_match_impl("*.log", "subdir/file.txt", "file.txt", true));
+        // `**` 递归跨段。
+        assert!(glob_match_impl("**/node_modules/**", "node_modules/package.json", "package.json", true));
+        assert!(!glob_match_impl("**/node_modules/**", "src/app.js", "app.js", true));
+        // `*` 不跨分隔符（全路径失配）但 matchBase 兜 basename；首点不吞（dot:false）。
+        assert!(glob_match_impl("*.log", "a/b.log", "b.log", true));
+        assert!(!glob_match_impl("*", ".secret", ".secret", true));
+        // 非法模式回字面相等，不抛。
+        assert!(glob_match_impl("[unclosed", "[unclosed", "[unclosed", true));
+        assert!(!glob_match_impl("[unclosed", "other", "other", true));
+    }
 
     #[test]
     fn io_code_mapping() {
@@ -2565,6 +2701,54 @@ export const constants = {
 };
 // node 口径：constants 无原型（stat-constants 套件 getPrototypeOf === null）。
 Object.setPrototypeOf(constants, null);
+// node 口径（lib/internal/validators.js validateIgnoreOption 逐字）：
+// null/undefined 过；数组逐元校验（名 `options.ignore[i]`）；单元素 string
+// 非空（空串 ARG_VALUE 'must be a non-empty string'）/RegExp/Function 过，
+// 余下 ARG_TYPE ['string','RegExp','Function']。
+function __validateIgnoreOption(v, name) {
+  if (v === undefined || v === null) return;
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) __validateIgnoreElement(v[i], `${name}[${i}]`);
+    return;
+  }
+  __validateIgnoreElement(v, name);
+}
+function __validateIgnoreElement(m, name) {
+  if (typeof m === "string") {
+    if (m.length === 0) {
+      const e = new TypeError(`The argument '${name}' must be a non-empty string. Received ''`);
+      e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+    }
+    return;
+  }
+  if (Object.prototype.toString.call(m) === "[object RegExp]") return;
+  if (typeof m === "function") return;
+  const e = new TypeError(`The "${name}" argument must be one of type string, RegExp, or Function. Received ${Object.prototype.toString.call(m)}`);
+  e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+}
+// node 口径（lib/internal/fs/watchers.js createIgnoreMatcher）：string 经
+// minimatch（matchBase + win/mac nocase，本仓 `__wjs_glob_match` 近似）/
+// RegExp 经 exec 判空/Function 直透；filename 为 null 时不滤（调用方守卫）。
+const __globNocase = process.platform === "win32" || process.platform === "darwin";
+function __ignoreMatcher(ignore) {
+  if (ignore === undefined || ignore === null) return null;
+  const list = Array.isArray(ignore) ? ignore : [ignore];
+  const compiled = list.map((m) => {
+    if (typeof m === "string") {
+      return (fn) => __wjs_glob_match(m, fn, fn.split("/").pop(), __globNocase);
+    }
+    if (Object.prototype.toString.call(m) === "[object RegExp]") {
+      return (fn) => m.exec(fn) !== null;
+    }
+    return m;
+  });
+  return (fn) => {
+    for (const c of compiled) {
+      if (c(fn)) return true;
+    }
+    return false;
+  };
+}
 // FSWatcher（10f，node 口径）：EventEmitter 形（'change'/'close' 事件面 +
 // on/once/off），options.listener 可选、{ signal } abort 即 close。
 class __FSWatcher extends EventEmitter {
@@ -2586,10 +2770,14 @@ export function watch(p, opts, listener) {
   const persistent = !(opts && opts.persistent === false);
   const watcher = new __FSWatcher();
   if (typeof listener === "function") watcher.on("change", listener);
-  // node 26 口径：options.ignore(filename) 命中即不派发（watch-ignore-function 点名）
-  const ignore = opts && typeof opts.ignore === "function" ? opts.ignore : null;
+  // node 26 口径（lib/internal/validators.js validateIgnoreOption +
+  // lib/internal/fs/watchers.js createIgnoreMatcher）：string（含 glob，
+  // matchBase）/RegExp/Function/数组混排；非法即 ARG_TYPE（空串 ARG_VALUE）。
+  const ignoreOpt = opts ? opts.ignore : undefined;
+  __validateIgnoreOption(ignoreOpt, "options.ignore");
+  const ignoreFn = __ignoreMatcher(ignoreOpt);
   const id = __fsCall("watch", p, () => __wjs_watch_start(p, recursive, persistent, (ev, fn) => {
-    if (ignore && ignore(fn)) return;
+    if (fn != null && ignoreFn && ignoreFn(fn)) return;
     watcher.emit("change", ev, fn);
   }));
   watcher.__attach(id);

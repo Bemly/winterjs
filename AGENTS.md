@@ -2667,3 +2667,18 @@ cargo build
 - 复现：`tests/node/fs.rs::phase10f_fs_stream_lifetime`（`w-fin/w-close/r-end` 行）。
 - 推广为铁律：sync 底座的流/句柄，上线即回答"谁让循环等我"——无原生句柄即配
   计数器；"构造即完成"的同步链一律递延派发终结事件。
+
+### 4.165 tower-http 的 `not_found_service` 恒改写 404 + 非 GET/HEAD 缺省 405（2026-09-21，plan4 T1）
+
+- 症状：`--serve --handler` 下 handler 明明跑了（body 对），但 GET 状态恒 404、
+  POST 恒 405 空体（handler 永够不着）。
+- 根因（轮子源码实锤，`tower-http 0.7.1 serve_dir/mod.rs`）：① `not_found_service`
+  把 fallback 包进 `SetStatus<_, 404>`——文档原话"always respond with 404"，
+  fallback 的状态被恒改写（body 保留）；② 非 GET/HEAD 缺省不调 fallback
+  直接 405（`call_fallback_on_method_not_allowed` 缺省 false）。
+- 修法：`serve_dir.call_fallback_on_method_not_allowed(true).fallback(js_fallback)`
+  （`fallback` 文档原话"status will not be altered"；`src/serve.rs`）。
+- 复现：`curl GET /<缺失>`（修前 body 对 + 404）+ `curl -X POST /echo`
+  （修前 405 空体；修后 201 回声）。
+- 推广为铁律：凡"名字像兜底"的轮子 API（not_found/fallback），先读源码确认
+  状态改写语义再选；"静态优先、动态兜底"路由上线即验 GET/POST 双方法。

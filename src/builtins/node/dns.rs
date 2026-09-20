@@ -941,7 +941,8 @@ const V4MAPPED = 2048;
 const ADDRCONFIG = 1024;
 const ALL = 256;
 function __dnsValidateLookupOptions(options) {
-  // 真机口径：falsy options 整体跳过（`lookup(h, -0, cb)` 绿；`lookup(h, 4, cb)` 抛）
+  // 真机口径：falsy options 整体跳过（`lookup(h, -0, cb)` 绿）；数字 family
+  // 由 lookup 入口先转 { family }（custom-lookup 套件 `lookup(h, 4, cb)` 真机绿）。
   if (!options) return undefined;
   if (typeof options !== "object" || options === null) {
     throw __dnsErrInvalidArgType("options", "of type object", options);
@@ -1066,6 +1067,9 @@ function __lookupCore(hostname, options) {
 }
 export function lookup(hostname, options, cb) {
   if (typeof options === "function") { cb = options; options = undefined; }
+  // 数字 family 重载（custom-lookup 套件：lookup(host, 4, cb) 直通真机；
+  // 旧"数字即抛"系伪语义，真机 26.8.2 实测接受）。
+  if (typeof options === "number") options = { family: options };
   const norm = __dnsValidateLookupOptions(options);
   // 真机口径：falsy 先行（ARG_VALUE），再类型（ARG_TYPE）——`lookup('')`
   // 系同步抛，非回调错（test-dns.js；旧黑盒按回调错编码，已翻转见 §4.x）

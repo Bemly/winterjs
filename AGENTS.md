@@ -2660,3 +2660,20 @@ cargo build
 - 复现：`tests/node/fs.rs::phase10f_fs_stream_lifetime`（`w-fin/w-close/r-end` 行）。
 - 推广为铁律：sync 底座的流/句柄，上线即回答"谁让循环等我"——无原生句柄即配
   计数器；"构造即完成"的同步链一律递延派发终结事件。
+
+### 4.161 require 的 make_fn 裸值窗口 + 文件名假相关二分法（2026-09-21，dgram 轮）
+
+- 症状：`test-dgram-async-dispose.mjs` 稳定 138（8/8），而字节相同的改名拷贝
+  次次过；`rm + cp` 重建后好一次又坏；stash 旧码 3/3 干净——一度误判"文件名相关"。
+- 根因：`require_cjs_file` 内 `make_fn`（`get_prop_value` 裸 JSVal）横跨
+  `to_jsval` 字符串具现（可触发 GC 搬移），栈拷贝悬垂后 `call_one` 读垃圾即
+  SIGBUS（§4.80 修链时漏了此窗，链下半的 rooted 全但上半没盖）。文件名/内容
+  长度只改变 nursery 分配序列从而改变 GC 触发点——确定性假相关，非因果。
+- 修法：入 `rooted!` 槽后再做一切分配型调用（`src/builtins/node/require.rs`，
+  5 行；修后 3/3 直通）。
+- 二分手法（可复用）：尺寸探针（等量死代码）→ hunk 累积二分（每次验 `Compiling`
+  行，3 秒"构建"多为 no-op，行为才是真相）→ Rust/JS 分离杂交 → 最小翻转子。
+  另：`from_std` 前必 `set_nonblocking(true)`（UDP 无握手安全），否则 tokio
+  直接 panic（bindSync 首版现形）。
+- 推广为铁律：新增 Rust→JS 调用点，函数体第一行先把全部 JS 值参数入槽
+  （§4.141 的 require 版）；"改名即好"的结论默认不可信，先问分配序列。

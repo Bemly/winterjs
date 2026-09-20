@@ -354,3 +354,70 @@ setTimeout(() => process.exit(0), 3000);
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_dgram_bind_repeat_and_custom_lookup() {
+    // bind-error-repeat（失败后错误处理器内重绑不报 ALREADY_BOUND）+
+    // custom-lookup（自定义 lookup 必经 + 默认经 dns.lookup 全局 mock）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "q.mjs",
+        r#"
+import dgram from "node:dgram";
+import dns from "node:dns";
+// 1. 失败后重绑：占位端口上反复 bind，错误处理器内重绑必须成功挂起（不抛 ALREADY_BOUND）。
+{
+  const reserve = dgram.createSocket("udp4");
+  reserve.bind(() => {
+    const { port } = reserve.address();
+    const s = dgram.createSocket("udp4");
+    let errors = 0;
+    s.on("error", () => {
+      errors++;
+      if (errors < 3) {
+        try { s.bind(port); console.log("rebind-ok", errors); }
+        catch (e) { console.log("rebind-throw", e.code); }
+      } else {
+        console.log("repeat-done", errors);
+        s.close(); reserve.close();
+      }
+    });
+    s.bind(port);
+  });
+}
+// 2. 自定义 lookup 必经 + 默认走全局 dns.lookup mock。
+setTimeout(() => {
+  const orig = dns.lookup;
+  const s1 = dgram.createSocket({ type: "udp4", lookup: (h, f, cb) => { console.log("custom-hit", typeof h === "string", f === 4); orig(h, f, cb); } });
+  s1.bind(() => { s1.close(); });
+  const orig2 = dns.lookup;
+  dns.lookup = (h, f, cb) => {
+    console.log("mock-hit", h, f);
+    dns.lookup = orig2;
+    cb(null, "127.0.0.1", 4);
+  };
+  const s2 = dgram.createSocket({ type: "udp4" });
+  s2.on("error", (e) => console.log("mock-err", e.code));
+  s2.bind(0, "example.invalid", () => {
+    console.log("mock-done", s2.address().address === "127.0.0.1");
+    s2.close();
+  });
+}, 800);
+setTimeout(() => process.exit(0), 4000);
+"#,
+    );
+    for line in [
+        "rebind-ok 1",
+        "rebind-ok 2",
+        "repeat-done 3",
+        "custom-hit true true",
+        "mock-hit example.invalid 4",
+        "mock-done true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    assert!(!out.contains("rebind-throw"), "out: {out}");
+    assert!(!out.contains("mock-err"), "out: {out}");
+    dir.close().unwrap();
+}

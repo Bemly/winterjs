@@ -40,6 +40,88 @@ fn opt_num(frame: &Frame, i: u32) -> Option<f64> {
     if v.is_number() { Some(v.to_number()) } else { None }
 }
 
+/// 带预选项的同步建套（bind 前落 SO_REUSEPORT/IPV6_V6ONLY；tokio from_std
+/// 由调用方接管。复用：async bind 与 bindSync 共用）。
+/// flags 位：1 = reusePort，2 = ipv6Only（仅 v6 有意义）。
+fn std_bind_flags(addr: &str, port: u16, flags: u32) -> std::io::Result<std::net::UdpSocket> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let raw = addr.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(addr);
+    let is_v6 = raw.contains(':');
+    let reuse_port = flags & 1 != 0;
+    let v6only = flags & 2 != 0;
+    if !reuse_port && !v6only {
+        return std::net::UdpSocket::bind((raw, port));
+    }
+    unsafe {
+        let fd = libc::socket(
+            if is_v6 { libc::AF_INET6 } else { libc::AF_INET },
+            libc::SOCK_DGRAM,
+            0,
+        );
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let sock = OwnedFd::from_raw_fd(fd);
+        let one: libc::c_int = 1;
+        if reuse_port
+            && libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEPORT,
+                &one as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            ) != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        if v6only && is_v6
+            && libc::setsockopt(
+                fd,
+                libc::IPPROTO_IPV6,
+                libc::IPV6_V6ONLY,
+                &one as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            ) != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        if is_v6 {
+            let ip: std::net::Ipv6Addr = raw.parse().map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid address")
+            })?;
+            let mut sa: libc::sockaddr_in6 = std::mem::zeroed();
+            sa.sin6_family = libc::AF_INET6 as _;
+            sa.sin6_port = port.to_be();
+            sa.sin6_addr = libc::in6_addr { s6_addr: ip.octets() };
+            if libc::bind(
+                fd,
+                &sa as *const _ as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+            ) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        } else {
+            let ip: std::net::Ipv4Addr = raw.parse().map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid address")
+            })?;
+            let mut sa: libc::sockaddr_in = std::mem::zeroed();
+            sa.sin_family = libc::AF_INET as _;
+            sa.sin_port = port.to_be();
+            sa.sin_addr = libc::in_addr { s_addr: u32::from_ne_bytes(ip.octets()) };
+            if libc::bind(
+                fd,
+                &sa as *const _ as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            ) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(std::net::UdpSocket::from(sock))
+    }
+}
+
 fn v4_in_addr(a: &std::net::Ipv4Addr) -> libc::in_addr {
     // s_addr 存网序字节：from_ne_bytes 保版式（标准写法）。
     libc::in_addr { s_addr: u32::from_ne_bytes(a.octets()) }
@@ -184,6 +266,9 @@ pub unsafe extern "C" fn dgram_bind(
     };
     let address = value_to_string(&mut cx, frame.arg(1));
     let target = frame.arg(2);
+    // 预选项（bit0 reusePort/bit1 ipv6Only）：有则走 std 预置后 from_std，
+    // 无则沿旧 tokio 直绑快路（缺参容忍：旧 JS 只传 3 参时按 0 处理，禁越界取参）。
+    let flags = if frame.argc() > 3 { opt_num(&frame, 3).unwrap_or(0.0) } else { 0.0 } as u32;
     let Some((id, ev_tx)) = state::net_alloc() else {
         report_error(&mut cx, "OperationError: net driver not installed");
         return false;
@@ -195,7 +280,15 @@ pub unsafe extern "C" fn dgram_bind(
     let cmd_rx = state::net_socket_add(id, target);
     set_rval_str(&mut cx, &frame, &id.to_string());
     handle.spawn(async move {
-        let bound = tokio::net::UdpSocket::bind((address.as_str(), port as u16)).await;
+        let bound: std::io::Result<tokio::net::UdpSocket> = if flags == 0 {
+            tokio::net::UdpSocket::bind((address.as_str(), port as u16)).await
+        } else {
+            (|| {
+                let std_sock = std_bind_flags(&address, port as u16, flags)?;
+                std_sock.set_nonblocking(true)?;
+                tokio::net::UdpSocket::from_std(std_sock)
+            })()
+        };
         let Ok(sock) = bound else {
             let e = bound.unwrap_err();
             let code = crate::builtins::node::fs::io_code(&e);
@@ -238,8 +331,10 @@ pub unsafe extern "C" fn dgram_bind_sync(
     let address = value_to_string(&mut cx, frame.arg(1));
     let remote = value_to_string(&mut cx, frame.arg(2));
     let target = frame.arg(3);
+    // 缺参容忍：旧 JS 只传 4 参时 flags 按 0 处理，禁越界取参（Frame::arg 越界即 panic）。
+    let flags = if frame.argc() > 4 { opt_num(&frame, 4).unwrap_or(0.0) } else { 0.0 } as u32;
     // 先同步 bind（失败直接回错误码，不占 id/表项，无需回滚）。
-    let bound = std::net::UdpSocket::bind((address.as_str(), port as u16));
+    let bound = std_bind_flags(&address, port as u16, flags);
     let Ok(std_sock) = bound else {
         let e = bound.unwrap_err();
         let code = crate::builtins::node::fs::io_code(&e);
@@ -661,6 +756,7 @@ pub const SOURCE: &str = r#"
 import { EventEmitter } from "node:events";
 import errors from 'node:internal/errors';
 import { validatePort } from 'node:internal/validators';
+import __dnsDefault from "node:dns";
 const Buffer = globalThis.Buffer;
 
 const {
@@ -806,17 +902,41 @@ class Socket extends EventEmitter {
     this.type = type;
     this.__id = 0;
     this.__bound = false;
+    // 构造缓冲选项校验（createSocket-type 套件：非 number 即 ARG_TYPE）。
+    if (typeOrOptions && typeof typeOrOptions === "object") {
+      for (const k of ["recvBufferSize", "sendBufferSize"]) {
+        const v = typeOrOptions[k];
+        if (v !== undefined && typeof v !== "number") {
+          const e = new TypeError(`The "${k}" argument must be of type number. Received ${__dgramReceived(v)}`);
+          e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+        }
+      }
+    }
     // 连接/关闭状态（connect 连接机 + close 后 NOT_RUNNING 门，见下）。
     this.__connecting = false;
     this.__closed = false;
     // 绑定窗口旗（bind 错误走 ExceptionWithHostPort 形，见 __evErrorBind）。
     this.__binding = false;
+    // 绑定失败旗（bind-error-repeat：错误处理器内可立即重绑；陈旧 Close
+    // 按"重绑与否"分流，见 __ev close）。
+    this.__bindFailed = false;
     this.__opts = (typeOrOptions && typeof typeOrOptions === "object") ? typeOrOptions : null;
     this.__addr = null;
     this.__connected = false;
     this.__remote = null;
     this.__pending = [];
     this.__blockList = (typeOrOptions && typeof typeOrOptions === "object") ? (typeOrOptions.sendBlockList ?? null) : null;
+    this.__recvBlockList = (typeOrOptions && typeof typeOrOptions === "object") ? (typeOrOptions.receiveBlockList ?? null) : null;
+    // 自定义 DNS（custom-lookup 套件）：非函数即同步 ARG_TYPE。
+    if (typeOrOptions && typeof typeOrOptions === "object" && typeOrOptions.lookup !== undefined) {
+      if (typeof typeOrOptions.lookup !== "function") {
+        const e = new TypeError(`The "lookup" argument must be of type function. Received ${__dgramReceived(typeOrOptions.lookup)}`);
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
+      this.__lookup = typeOrOptions.lookup;
+    } else {
+      this.__lookup = null;
+    }
     this.__sendSeq = 0;
     this.__sendCbs = new Map();
     this.__sendTargets = new Map();
@@ -842,7 +962,15 @@ class Socket extends EventEmitter {
   bind(...args) {
     // node 口径（test-dgram-bind）：已绑（含绑定窗口）再 bind 同步抛
     // ERR_SOCKET_ALREADY_BOUND "Socket is already bound"；成功返回 this。
-    if (this.__id || this.__bound) {
+    // 失败后重绑（bind-error-repeat）：上一代 task 已死，清旧旗旧柄再起
+    //（含 __binding 窗口旗，否则失败后重绑被窗口门误拦报 ALREADY_BOUND）。
+    if (this.__bindFailed) {
+      this.__bindFailed = false;
+      this.__binding = false;
+      this.__closed = false;
+      this.__id = 0;
+    }
+    if (this.__id || this.__bound || this.__binding) {
       throw __netErr("ERR_SOCKET_ALREADY_BOUND", "Socket is already bound");
     }
     let port = 0, address = null, cb = null;
@@ -858,14 +986,56 @@ class Socket extends EventEmitter {
       if (typeof args[i] === "function") cb = args[i];
     }
     if (cb) this.once("listening", cb);
-    // 族匹配解析（node 口径：udp4 socket bind('localhost') 落 127.0.0.1——tokio
-    // 直接 bind('localhost') 会挑 ::1，family 错乱即后续 send EINVAL）。
-    this.__addr = address === null ? (this.type === "udp6" ? "::" : "0.0.0.0") : this.__resolveAddr(String(address), false);
-    // 用户原文地址（bind 错误形 e.address 用；归一化串在字面量下同值）。
-    this.__bindAddr = address === null ? null : String(address);
     this.__binding = true;
-    this.__id = Number(__wjs_dgram_bind(Number(port), this.__addr, this));
+    // 地址解析（真机 handle.lookup 口径：自定义 lookup 必经，默认走同步族匹配；
+    // 通配符在自定义 lookup 下同样过一遍，custom-lookup 套件点名）。
+    const rawAddr = address === null ? (this.type === "udp6" ? "::" : "0.0.0.0") : String(address);
+    const finishBind = (err, ip) => {
+      // 关后即弃（真机 handle 置空同口径），并复位窗口旗以免卡死重绑。
+      if (this.__closed) { this.__binding = false; return; }
+      if (err) {
+        this.__binding = false;
+        this.__evError(err);
+        return;
+      }
+      // 族匹配解析（node 口径：udp4 socket bind('localhost') 落 127.0.0.1——tokio
+      // 直接 bind('localhost') 会挑 ::1，family 错乱即后续 send EINVAL）。
+      this.__addr = this.__resolveAddr(ip, false);
+      // 用户原文地址（bind 错误形 e.address 用；归一化串在字面量下同值）。
+      this.__bindAddr = address === null ? null : String(address);
+      this.__id = Number(__wjs_dgram_bind(Number(port), this.__addr, this, this.__bindFlags()));
+    };
+    if (this.__lookup) {
+      try {
+        this.__lookup.call(this, rawAddr, this.type === "udp4" ? 4 : 6, (e, ip) => {
+          if (e) finishBind(e);
+          else finishBind(null, ip);
+        });
+      } catch (e) { finishBind(e); }
+    } else if (this.__isNumericIP(rawAddr)) {
+      finishBind(null, rawAddr);
+    } else {
+      // 默认经 JS dns.lookup（custom-lookup 第二块：全局 mock 必经；
+      // Node handle.lookup 异步口径；数字 IP 上已直通免一跳）。
+      let dnsLookup = null;
+      try { dnsLookup = __dnsDefault.lookup; } catch {}
+      if (typeof dnsLookup !== "function") {
+        finishBind(null, rawAddr);
+      } else {
+        try {
+          dnsLookup.call(this, rawAddr, this.type === "udp4" ? 4 : 6, (e, ip) => {
+            if (e) finishBind(e);
+            else finishBind(null, ip);
+          });
+        } catch (e) { finishBind(e); }
+      }
+    }
     return this;
+  }
+  // 绑定预选项位（bit0 reusePort/bit1 ipv6Only；随 bind 进内核）。
+  __bindFlags() {
+    const o = this.__opts;
+    return ((o && o.reusePort ? 1 : 0) | (o && o.ipv6Only ? 2 : 0));
   }
   // 数字 IP 判定（bindSync/connectSync 不做 DNS；v6 允许 %scope 后缀）。
   __isNumericIP(s) {
@@ -901,7 +1071,7 @@ class Socket extends EventEmitter {
       throw __netErr("ERR_SOCKET_ALREADY_BOUND", "Socket is already bound");
     }
     const bindAddr = address ?? (this.type === "udp6" ? "::" : "0.0.0.0");
-    const res = JSON.parse(__wjs_dgram_bind_sync(Number(port), bindAddr, "", this));
+    const res = JSON.parse(__wjs_dgram_bind_sync(Number(port), bindAddr, "", this, this.__bindFlags()));
     if (res.error) {
       const e = new Error(`${res.error}: ${bindAddr}`);
       e.code = res.error;
@@ -972,7 +1142,7 @@ class Socket extends EventEmitter {
       const body = (off || len !== undefined) ? u8.subarray(off, len === undefined ? u8.length : off + len) : u8;
       if (!this.__bound) {
         this.__pending.push({ __send: true, msg: body, port: undefined, address: undefined, cb });
-        if (!this.__id) this.bind();
+        if (!this.__id && !this.__binding) this.bind();
         return this;
       }
       return this.__doSend(body, undefined, undefined, cb);
@@ -1006,10 +1176,27 @@ class Socket extends EventEmitter {
       // 到 listening 刷出（真机：cb 后 address().port > 0）。绑定窗口内（__id
       // 已有）直接挂起不重复 bind。
       this.__pending.push({ __send: true, msg: body, port, address, cb });
-      if (!this.__id) this.bind();
+      if (!this.__id && !this.__binding) this.bind();
       return this;
     }
     return this.__doSend(body, port, address, cb);
+  }
+  // legacy sendto（严格六元形；校验逐字，sendto 套件点名）。
+  sendto(buffer, offset, length, port, address, callback) {
+    const needNum = (name, v) => {
+      if (typeof v !== "number") {
+        const e = new TypeError(`The "${name}" argument must be of type number. Received ${__dgramReceived(v)}`);
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
+    };
+    needNum("offset", offset);
+    needNum("length", length);
+    needNum("port", port);
+    if (typeof address !== "string") {
+      const e = new TypeError(`The "address" argument must be of type string. Received ${__dgramReceived(address)}`);
+      e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+    }
+    return this.send(buffer, offset, length, port, address, callback);
   }
   __doSend(msg, port, address, cb) {
     let target;
@@ -1020,6 +1207,26 @@ class Socket extends EventEmitter {
     } else {
       validatePort(port, 'Port', false);
       target = `${this.__resolveAddr(address ?? 'localhost')}:${port}`;
+    }
+    // 发送黑名单（blocklist 套件：错经回调/事件异步到，不抛同步）。
+    {
+      const tip = target === "" ? this.__remote?.address : String(address ?? 'localhost');
+      let dip = String(tip ?? "");
+      try {
+        const entries = JSON.parse(__wjs_dns_lookup(dip));
+        if (Array.isArray(entries) && entries.length) dip = entries[0].address;
+      } catch {}
+      const clean = dip.startsWith("[") && dip.endsWith("]") ? dip.slice(1, -1) : dip;
+      if (this.__blockList && typeof this.__blockList.check === "function") {
+        let blocked = false;
+        try { blocked = this.__blockList.check(clean, clean.includes(":") ? "ipv6" : "ipv4"); } catch {}
+        if (blocked) {
+          const err = __netErr('ERR_IP_BLOCKED', `send ${clean} blocked`);
+          if (cb) queueMicrotask(() => cb(err));
+          else this.__evError(err);
+          return this;
+        }
+      }
     }
     const u8 = __toU8(msg);
     // send 失败按 seq 路由回本回调（无回调才走 error 事件，node 口径）；
@@ -1059,10 +1266,7 @@ class Socket extends EventEmitter {
     if (this.__connected || this.__connecting) {
       throw __netErr('ERR_SOCKET_DGRAM_IS_CONNECTED', 'Already connected');
     }
-    this.__connecting = true;
-    if (cb) this.once('connect', cb);
-    if (!this.__id) this.bind();
-    // 展示用远端（发送时 task 再解，见模块头注）。
+    // 地址解析后即查发送黑名单（blocklist 套件：错经回调/事件异步到，不抛同步）。
     let dispAddr = String(address);
     let family = dispAddr.includes(':') ? 'IPv6' : 'IPv4';
     try {
@@ -1072,8 +1276,24 @@ class Socket extends EventEmitter {
         family = entries[0].family === 6 ? 'IPv6' : 'IPv4';
       }
     } catch { /* keep verbatim */ }
+    if (this.__blockList && typeof this.__blockList.check === "function") {
+      let blocked = false;
+      try { blocked = this.__blockList.check(dispAddr, family === 'IPv6' ? 'ipv6' : 'ipv4'); } catch {}
+      if (blocked) {
+        const err = __netErr('ERR_IP_BLOCKED', `connect ${dispAddr} blocked`);
+        if (cb) queueMicrotask(() => cb(err));
+        else this.__evError(err);
+        return;
+      }
+    }
+    this.__connecting = true;
+    if (cb) this.once('connect', cb);
+    if (!this.__id && !this.__binding) this.bind();
+    // 展示用远端（发送时 task 再解，见模块头注；解析已在黑名单检查前完成）。
     this.__remote = { address: dispAddr, port, family };
-    __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'connect', addr: `${this.__resolveAddr(String(address))}:${port}` }));
+    // 窗口期内（lookup 未归）排队，listening 刷出；不直调（__id 未落）。
+    if (this.__id) __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'connect', addr: `${this.__resolveAddr(String(address))}:${port}` }));
+    else this.__pending.push({ op: 'connect', addr: `${this.__resolveAddr(String(address))}:${port}` });
   }
   disconnect() {
     if (!this.__connected) {
@@ -1097,14 +1317,16 @@ class Socket extends EventEmitter {
   addMembership(multicastAddress, multicastInterface) {
     this.__healthCheck();
     const { multi, iface } = __membershipAddrs(multicastAddress, multicastInterface, this.type, 'addMembership');
-    if (!this.__id) this.bind();
-    __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'join', multi, iface }));
+    if (!this.__id && !this.__binding) this.bind();
+    if (this.__id) __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'join', multi, iface }));
+    else this.__pending.push({ op: 'join', multi, iface });
   }
   dropMembership(multicastAddress, multicastInterface) {
     this.__healthCheck();
     const { multi, iface } = __membershipAddrs(multicastAddress, multicastInterface, this.type, 'dropMembership');
-    if (!this.__id) this.bind();
-    __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'leave', multi, iface }));
+    if (!this.__id && !this.__binding) this.bind();
+    if (this.__id) __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'leave', multi, iface }));
+    else this.__pending.push({ op: 'leave', multi, iface });
   }
   // SSM 入组/退组（membership 套件点名校验；成功路径走 tasksetsockopt）。
   __ssmAddrs(sourceAddress, groupAddress, syscall) {
@@ -1134,14 +1356,16 @@ class Socket extends EventEmitter {
   addSourceSpecificMembership(sourceAddress, groupAddress, interfaceAddress) {
     this.__healthCheck();
     const { source, group, v6 } = this.__ssmAddrs(sourceAddress, groupAddress, 'addSourceSpecificMembership');
-    if (!this.__id) this.bind();
-    __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'joinSource', source, group, iface: interfaceAddress ?? (v6 ? '0' : '0.0.0.0') }));
+    if (!this.__id && !this.__binding) this.bind();
+    if (this.__id) __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'joinSource', source, group, iface: interfaceAddress ?? (v6 ? '0' : '0.0.0.0') }));
+    else this.__pending.push({ op: 'joinSource', source, group, iface: interfaceAddress ?? (v6 ? '0' : '0.0.0.0') });
   }
   dropSourceSpecificMembership(sourceAddress, groupAddress, interfaceAddress) {
     this.__healthCheck();
     const { source, group, v6 } = this.__ssmAddrs(sourceAddress, groupAddress, 'dropSourceSpecificMembership');
-    if (!this.__id) this.bind();
-    __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'leaveSource', source, group, iface: interfaceAddress ?? (v6 ? '0' : '0.0.0.0') }));
+    if (!this.__id && !this.__binding) this.bind();
+    if (this.__id) __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'leaveSource', source, group, iface: interfaceAddress ?? (v6 ? '0' : '0.0.0.0') }));
+    else this.__pending.push({ op: 'leaveSource', source, group, iface: interfaceAddress ?? (v6 ? '0' : '0.0.0.0') });
   }
   setMulticastInterface(interfaceAddress) {
     this.__healthCheck();
@@ -1231,6 +1455,12 @@ class Socket extends EventEmitter {
       }
       case "message": {
         const o = JSON.parse(payload);
+        // 接收黑名单：命中即静默丢弃（blocklist 套件；check 副作用由调用方承载）。
+        if (this.__recvBlockList && typeof this.__recvBlockList.check === "function") {
+          let blocked = false;
+          try { blocked = this.__recvBlockList.check(o.address, o.family === 6 ? "ipv6" : "ipv4"); } catch {}
+          if (blocked) break;
+        }
         const msg = Buffer.from(__b64dec(o.data));
         const rinfo = { address: o.address, port: o.port, family: o.family, size: msg.length };
         this.emit("message", msg, rinfo);
@@ -1273,8 +1503,12 @@ class Socket extends EventEmitter {
         break;
       }
       case "close": {
+        // 陈旧代 Close（失败后已重绑）：跳过状态改写与派发，不吞新代；
+        // purge 照旧由分发侧按 id 做（见 net dispatch）。
+        if (this.__binding && !this.__bindFailed) break;
         this.__bound = false;
         this.__binding = false;
+        this.__bindFailed = false;
         this.__connected = false;
         this.__connecting = false;
         this.__closed = true;
@@ -1322,8 +1556,10 @@ class Socket extends EventEmitter {
   }
   // 绑定期错误整形（ExceptionWithHostPort 口径 `bind CODE addr` + address/port
   // 属性，error-message-address 套件逐字点名；非绑定期错误原样）。
+  // 失败旗为重绑留门（bind-error-repeat）。
   __evErrorBind(code, msg) {
     if (this.__binding) {
+      this.__bindFailed = true;
       const e = new Error(`bind ${code} ${this.__bindAddr ?? this.__addr}`);
       e.code = code;
       e.syscall = 'bind';

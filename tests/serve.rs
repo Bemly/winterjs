@@ -626,3 +626,31 @@ fn phase11_serve_concurrent_20x10() {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_serve_handler_dual_shape() {
+    // 正常：具名 `export function fetch` 回落（无 default 导出同样服务，§0-1）。
+    // 报错：双缺 fetch 即启动期可读错 exit=1（不静默 503）。
+    let dir = serve_fixture();
+    dir.child("named.mjs")
+        .write_str("export function fetch() { return new Response('named-ok', { status: 200 }); }")
+        .unwrap();
+    let named = dir.path().join("named.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", named.as_str()]);
+    let (st, _, body) = http_get(srv.port, "/anything", &[]);
+    assert_eq!(st, 200);
+    assert_eq!(body, b"named-ok");
+    drop(srv);
+    dir.child("nofetch.mjs")
+        .write_str("export const x = 1;")
+        .unwrap();
+    let out = winterjs()
+        .args(["--serve", ".", "--port", "18097", "--handler", "nofetch.mjs"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("must export fetch"), "stderr: {stderr}");
+    dir.close().unwrap();
+}

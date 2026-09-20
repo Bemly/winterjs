@@ -686,6 +686,50 @@ const self = process.execPath;
 }
 
 #[test]
+fn phase10f_child_constructor_spawn_method() {
+    // G5：`new ChildProcess().spawn(options)` 方法面（constructor 套件）+
+    // kill 未知信号 ERR_UNKNOWN_SIGNAL + 成功 spawn 后 pid 自有属性。
+    // 正常：sleep 起后 hasOwn(pid)/整数/kill() true；报错：四组校验逐项
+    // ARG_TYPE；边界：kill('foo') 抛 ERR_UNKNOWN_SIGNAL。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        r#"const { ChildProcess } = await import("node:child_process");
+const codes = [];
+for (const bad of [undefined, null, "foo", 0, 1, NaN, true, false]) {
+  try { new ChildProcess().spawn(bad); codes.push("no-throw"); }
+  catch (e) { codes.push(e.code); }
+}
+console.log("opt", codes.every((c) => c === "ERR_INVALID_ARG_TYPE"));
+for (const bad of [undefined, null, 0, 1, NaN, true, false, {}]) {
+  try { new ChildProcess().spawn({ file: bad }); codes.push("no-throw"); }
+  catch (e) { codes.push(e.code); }
+}
+console.log("file", codes.slice(8).every((c) => c === "ERR_INVALID_ARG_TYPE"));
+const envBad = [];
+for (const bad of [null, 0, 1, NaN, true, false, {}, "foo"]) {
+  try { new ChildProcess().spawn({ file: "foo", envPairs: bad, stdio: ["ignore", "ignore", "ignore", "ipc"] }); envBad.push("no-throw"); }
+  catch (e) { envBad.push(e.code); }
+}
+console.log("envpairs", envBad.every((c) => c === "ERR_INVALID_ARG_TYPE"));
+const argBad = [];
+for (const bad of [null, 0, 1, NaN, true, false, {}, "foo"]) {
+  try { new ChildProcess().spawn({ file: "foo", args: bad }); argBad.push("no-throw"); }
+  catch (e) { argBad.push(e.code); }
+}
+console.log("args", argBad.every((c) => c === "ERR_INVALID_ARG_TYPE"));
+const c = new ChildProcess();
+c.spawn({ file: "sleep", args: ["30"], stdio: "pipe" });
+console.log("pid", Object.hasOwn(c, "pid"), Number.isInteger(c.pid));
+try { c.kill("foo"); console.log("killsig no-throw"); }
+catch (e) { console.log("killsig", e.code === "ERR_UNKNOWN_SIGNAL"); }
+console.log("kill", c.kill() === true);"#]));
+    assert_eq!(
+        out,
+        "opt true\nfile true\nenvpairs true\nargs true\npid true true\nkillsig true\nkill true\n",
+        "constructor-spawn: {out}"
+    );
+}
+
+#[test]
 fn phase10f_entry_failure_open_handle_exit() {
     // §4.70 姊妹（10f 根修）：入口失败（throw / 未处理 rejection）+ 开着的子进程
     // 句柄 = 事件循环永不 idle、循环尾收割永不到的 hang。修后 fatal 检查点提前

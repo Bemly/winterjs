@@ -852,6 +852,7 @@ import { addAbortListener } from 'node:internal/events/abort_listener';
 const {
   codes: {
     ERR_INVALID_ARG_TYPE: { HideStackFramesError: ERR_INVALID_ARG_TYPE },
+    ERR_INVALID_ARG_VALUE: { HideStackFramesError: ERR_INVALID_ARG_VALUE },
   },
 } = errors;
 const __SIGS = __osDefault.constants.signals;
@@ -1347,6 +1348,11 @@ export class ChildProcess {
   __init(id, stdio) {
     this.#id = id;
     this.__initStreams(stdio, id);
+    // node 口径：spawn 成功后 pid 为自有数据属性（hasOwn true）；
+    // 未成功（id=0）保持原型 getter 的 undefined。
+    if (id !== 0) {
+      try { Object.defineProperty(this, "pid", { value: __wjs_child_pid(id), writable: true, configurable: true, enumerable: true }); } catch {}
+    }
     return this;
   }
   // 流初始化（正常 spawn 与死句柄路径共用；id=0 即死句柄——native 查表恒失败，
@@ -1395,17 +1401,71 @@ export class ChildProcess {
       try { this.__worker.terminate(); } catch { return false; }
       return true;
     }
-    // 信号名经 os.signals 表归一为数字（killSignal 任意信号——state 侧按
-    // signo 直杀，kill-signal 套件口径）；不可解析回落原名（state 默认 TERM）。
+    // 信号名经 os.signals 表归一为数字；未知信号抛 ERR_UNKNOWN_SIGNAL
+    //（真机 convertToValidSignal 口径；0 为存在性检查直接透传）。
     let sig = "15";
     if (signal !== undefined) {
-      const hit = __sigResolve(signal);
-      sig = hit ? String(hit.signo) : String(signal);
+      if (signal === 0) sig = "0";
+      else {
+        const hit = __sigResolve(signal);
+        if (!hit) {
+          const e = new TypeError(`Unknown signal: ${String(signal)}`);
+          e.code = "ERR_UNKNOWN_SIGNAL"; throw e;
+        }
+        sig = String(hit.signo);
+      }
     }
     const ok = __wjs_child_kill(this.#id, sig);
     if (ok) this.#killed = true;
     return ok;
   }
+  // node internal/child_process.js ChildProcess.prototype.spawn 逐字口径：
+  // validateObject(options) → stdio 归一（含 ipc 检出）→ 有 ipc 才验 envPairs →
+  //验 file（string）→ 验 args（array）→ 起进程。校验序即语义（constructor 套件
+  //逐块点名）。起进程段复用模块级 spawn(file, args, opts) 的归一/预检/自举/
+  //native 落地（stdio 传复合形态时走 __spawnInto）。
+  spawn(options) {
+    if (typeof options !== "object" || options === null) {
+      throw new ERR_INVALID_ARG_TYPE("options", "object", options);
+    }
+    // stdio 归一：string/array 均可；4 元 ipc 形保留（envPairs 校验用）。
+    let stdioOpt = options.stdio !== undefined ? options.stdio : "pipe";
+    let hasIpc = false;
+    if (typeof stdioOpt === "string") {
+      if (stdioOpt === "ipc") hasIpc = true;
+    } else if (Array.isArray(stdioOpt)) {
+      hasIpc = stdioOpt.includes("ipc");
+    } else {
+      throw new ERR_INVALID_ARG_VALUE("stdio", stdioOpt);
+    }
+    if (hasIpc) {
+      if (options.envPairs !== undefined) {
+        if (!Array.isArray(options.envPairs)) {
+          throw new ERR_INVALID_ARG_TYPE("options.envPairs", "Array", options.envPairs);
+        }
+      }
+    }
+    if (typeof options.file !== "string") {
+      throw new ERR_INVALID_ARG_TYPE("options.file", "string", options.file);
+    }
+    let args;
+    if (options.args === undefined) args = [];
+    else {
+      if (!Array.isArray(options.args)) {
+        throw new ERR_INVALID_ARG_TYPE("options.args", "Array", options.args);
+      }
+      args = options.args;
+    }
+    // 落地：与模块级 spawn 同一道 __spawnInto（proc=this，事件接线直挂 this）。
+    __spawnInto(this, options.file, args, __normSpawnAsyncOpts({
+      cwd: options.cwd, detached: options.detached, stdio: stdioOpt,
+      shell: options.shell, uid: options.uid, gid: options.gid,
+      windowsHide: options.windowsHide,
+      windowsVerbatimArguments: options.windowsVerbatimArguments,
+    }));
+    return 0;
+  }
+  __idOf() { return this.#id; }
   on(event, cb) {
     if (typeof cb !== "function") throw new TypeError("listener must be a function");
     if (event === "exit") this.onexit = cb;
@@ -1709,7 +1769,11 @@ function __normSpawnAsyncOpts(opts) {
 export function spawn(file, args, opts) {
   if (args !== undefined && args !== null && !Array.isArray(args)) { opts = args; args = []; }
   const o = __normSpawnAsyncOpts(opts);
-  const proc = new ChildProcess();
+  return __spawnInto(new ChildProcess(), file, args, o);
+}
+// spawn 落地（函数与 ChildProcess.prototype.spawn 方法共用；proc 既是
+// native 事件 target 也是返回对象——事件接线必须挂最终对象，禁中转搬运）。
+function __spawnInto(proc, file, args, o) {
   proc.spawnfile = String(file);
   proc.spawnargs = [...(args || [])].map(String);
   // shell（node normalizeSpawnArguments 口径）：file+args 空格拼接成 sh -c 串，

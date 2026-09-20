@@ -2769,6 +2769,8 @@ function __ignoreMatcher(ignore) {
     return false;
   };
 }
+// 存活 watch 句柄集（`process._getActiveHandles` 桥；close/stop 即摘）。
+globalThis.__wjsFsHandles ??= new Set();
 // node 口径：filename 按 options.encoding 转码（hex/buffer/base64…；
 // null 直通——部分后端 filename 为 null，encoding 套件接受 null）。
 function __encodeWatchFilename(fn, encoding) {
@@ -2789,6 +2791,7 @@ class __FSWatcher extends EventEmitter {
     // 'close' 经 nextTick 异步发（handler 内自调 close 安全）。
     if (this.#id !== 0) {
       __wjs_watch_close(this.#id); this.#id = 0;
+      globalThis.__wjsFsHandles.delete(this);
       process.nextTick(() => this.emit("close"));
     }
   }
@@ -2820,6 +2823,7 @@ export function watch(p, opts, listener) {
     watcher.emit("change", ev, __encodeWatchFilename(fn, watchEncoding));
   }));
   watcher.__attach(id);
+  globalThis.__wjsFsHandles.add(watcher);
   if (opts && opts.signal) {
     if (opts.signal.aborted) watcher.close();
     else opts.signal.addEventListener("abort", () => watcher.close(), { once: true });
@@ -2866,6 +2870,7 @@ class __StatWatcher extends EventEmitter {
     //（真机 w2.stop 关共享句柄口径），摘表停 timer + nextTick 发 stop。
     if (this.#stopped) return this;
     this.#stopped = true;
+    globalThis.__wjsFsHandles.delete(this);
     const rec = __statWatchers.get(this.#path);
     if (rec && rec.watcher === this) {
       clearInterval(rec.timer);
@@ -2896,6 +2901,7 @@ export function watchFile(p, opts, listener) {
     __statWatchers.set(p, rec);
   }
   rec.watcher.on("change", listener);
+  globalThis.__wjsFsHandles.add(rec.watcher);
   return rec.watcher;
 }
 export function unwatchFile(p, listener) {

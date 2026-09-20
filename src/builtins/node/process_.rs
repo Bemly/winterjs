@@ -714,6 +714,9 @@ globalThis.process = {
   // node 口径：退出中标志（common.mustCall 在 exit 处理器内禁调；真机 process._exiting）。
   // 本仓 exit 经哨兵错 unwind：设旗后抛，'exit' 监听在 unwind 前同步派发（见下）。
   _exiting: false,
+  // 存活句柄表（assert-leaks 套件：`process._getActiveHandles()` 数组；
+  // 本仓收录 watch 句柄（fs 侧登记/摘除），其余底座另案记档）。
+  _getActiveHandles() { return [...(globalThis.__wjsFsHandles ?? [])]; },
   get exitCode() { return __wjs_exit_code_get(); },
   set exitCode(v) {
     const n = Number(v);

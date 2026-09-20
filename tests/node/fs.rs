@@ -324,6 +324,51 @@ setTimeout(() => { console.log("watch-done"); process.exit(0); }, 3000);
 }
 
 #[test]
+fn phase10f_fs_watch_active_handles() {
+    // G8-5：`process._getActiveHandles()` 存活 watch 句柄集（close 即摘）。
+    // 正常：watch 后集内可见、close 后消失；边界：关两次幂等，集为空数组。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("handles.mjs");
+    file.write_str(
+        r#"
+import fs from "node:fs";
+const before = process._getActiveHandles().length;
+const w = fs.watch("sub");
+console.log("handles-add", process._getActiveHandles().length === before + 1);
+w.close();
+w.close();
+console.log("handles-del", process._getActiveHandles().length === before);
+const sw = fs.watchFile("sub/f.txt", { interval: 100 }, () => {});
+console.log("handles-stat", process._getActiveHandles().length === before + 1);
+sw.stop();
+console.log("handles-stat-del", process._getActiveHandles().length === before);
+setTimeout(() => { console.log("handles-done"); process.exit(0); }, 500);
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/f.txt"), b"x").unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in [
+        "handles-add true",
+        "handles-del true",
+        "handles-stat true",
+        "handles-stat-del true",
+        "handles-done",
+    ] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn node_fs_streams() {
     // createReadStream 分块 + createWriteStream 落盘/追加（10f 起真 WriteStream：
     // write/end/finish 事件面，Web 流 getWriter 口径退役——node 真机无此面）。

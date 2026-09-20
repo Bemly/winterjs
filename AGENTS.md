@@ -35,6 +35,13 @@
    一次恰好一个动作，多给即错；动作的必需值必须紧贴其 flag（`--run` 后直接跟
    别的 flag 会被判缺值）；修饰 flag（`--dry-run/--registry/--port` 等）只在对应
    动作下生效。help/补全/man 全由同一套 flag 生成（`localized_command`）。
+9. **单文件 ≤1000 行**：`src/` 下 Rust 文件一律不超过 ~1000 行
+   （`src/builtins/node/` 除外——Node 逐字移植体量使然，另议）；
+   超限即拆，拆分纪律：① 纯搬移先行（零行为变更，`git diff -w` 只见路径），
+   调用方路径一律 `pub use` 原位重导出、不改调用点；② 一文件一提交，
+   每步构建 0 警告 + 对应域测试绿；③ 引擎协议代码（`runtime`/`state`/
+   `jsapi_glue`/`jobqueue`/`modules`）只拆纯逻辑（字符串/算法族/域 helper），
+   会话管线与 trace 实现不动（§4.40/§4.68 blast radius）。
 
 ## 1. 基线（2026-09-09）
 

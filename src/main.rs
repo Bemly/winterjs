@@ -22,6 +22,7 @@ mod runtime;
 mod scripts;
 mod sentry_report;
 mod serve;
+mod serve_bridge;
 mod testrun;
 mod settings;
 mod state;

@@ -526,6 +526,11 @@ pub struct PlainState {
     /// node:sqlite worker 表（10d；turso 底座，见 node/sqlite.rs）。
     pub nsqlite_next_id: u64,
     pub nsqlite_workers: HashMap<u64, crate::builtins::node::sqlite::NodeSqliteWorker>,
+    /// 在飞请求数（Head 分发 +1；End/Fail 终结 -1；常驻服务另 +1）。
+    /// 收件箱不进 TLS：axum 线程经进程级全局直投（serve_bridge 全局端点，§4.153）。
+    pub serve_open: usize,
+    /// 在飞响应通道（id → head/body 发送端；终结即摘，见 `serve_take`）。
+    pub serve_resps: HashMap<u64, crate::serve_bridge::ServeRespTx>,
     /// eval 包装（async IIFE）引入的行偏移，报错行号统一校正。
     pub line_adjust: u32,
     /// 全局对象裸指针。前置条件：run() 里的 rooted! global 活过整个事件循环，
@@ -1444,6 +1449,59 @@ pub fn net_purge(id: u64) -> bool {
 /// 存活 socket/server 数（事件循环退出条件用）。
 pub fn net_open() -> usize {
     with_plain(|p| p.net_open)
+}
+
+// ── 独立 serve（plan4 T1）：在飞请求计数 + 响应通道表 ──
+// 配对铁律：Head 分发时 `serve_head`（+1 并落表）；End/Fail 终结时 `serve_take`
+// （-1 并摘表）。重复终结（未知 id）静默丢弃，不重复减。
+
+/// 在飞请求数（含常驻服务 +1；优雅停机排空用）。
+pub fn serve_open() -> usize {
+    with_plain(|p| p.serve_open)
+}
+
+/// 常驻服务计数（serve 会话持有：循环不等 idle 退出，只认停机旗）。
+pub fn serve_hold_server() {
+    with_plain(|p| p.serve_open += 1);
+}
+
+/// 常驻释放（会话收尾；配套 `serve_hold_server`）。
+pub fn serve_release_server() {
+    with_plain(|p| p.serve_open = p.serve_open.saturating_sub(1));
+}
+
+/// Head 落账（+1 并存通道；同 id 重复 Head 即覆盖，计数不重复加）。
+pub fn serve_head(id: u64, resp: crate::serve_bridge::ServeRespTx) {
+    with_plain(|p| {
+        if p.serve_resps.insert(id, resp).is_none() {
+            p.serve_open += 1;
+        }
+    });
+}
+
+/// 取响应头发送端（投递后 head 通道即消费；表项与计数保留给体）。
+pub fn serve_take_head(
+    id: u64,
+) -> Option<tokio::sync::oneshot::Sender<crate::serve_bridge::ServeRespHead>> {
+    with_plain(|p| p.serve_resps.get_mut(&id).and_then(|r| r.head_tx.take()))
+}
+
+/// 体发送端克隆（未知 id 即过期响应，调用方静默成功）。
+pub fn serve_body_tx(
+    id: u64,
+) -> Option<tokio::sync::mpsc::UnboundedSender<crate::serve_bridge::ServeBodyMsg>> {
+    with_plain(|p| p.serve_resps.get(&id).map(|r| r.body_tx.clone()))
+}
+
+/// 终结摘表（-1 并取走通道；未知 id 回 None，调用方静默丢弃）。
+pub fn serve_take(id: u64) -> Option<crate::serve_bridge::ServeRespTx> {
+    with_plain(|p| {
+        let r = p.serve_resps.remove(&id);
+        if r.is_some() {
+            p.serve_open = p.serve_open.saturating_sub(1);
+        }
+        r
+    })
 }
 
 /// BoundSocket 占位保活：存入 listener 回 token；取出消费；丢弃释放。
@@ -2863,5 +2921,41 @@ mod tests {
         assert_eq!(worker_open(), base);
         assert!(worker_inbox(9001).is_none()); // 已退出即无端点
         with_plain(|p| p.worker_handles.remove(&9001));
+    }
+
+    /// serve 配对：在飞 +1/终结 -1，重复终结不重复减，head 通道单次消费。
+    #[test]
+    #[serial]
+    fn serve_head_take_pairing() {
+        use crate::serve_bridge::{ServeBodyMsg, ServeRespHead, ServeRespTx};
+        fn resp_tx() -> ServeRespTx {
+            let (head_tx, _head_rx) = tokio::sync::oneshot::channel();
+            let (body_tx, _body_rx) = tokio::sync::mpsc::unbounded_channel();
+            ServeRespTx { head_tx: Some(head_tx), body_tx }
+        }
+        let base = serve_open();
+        serve_hold_server();
+        assert_eq!(serve_open(), base + 1);
+        // Head 落账 +1；重复 Head 覆盖不重复加。
+        serve_head(501, resp_tx());
+        assert_eq!(serve_open(), base + 2);
+        serve_head(501, resp_tx());
+        assert_eq!(serve_open(), base + 2);
+        // head 通道单次消费：首次 Some，二次 None（表项与计数保留）。
+        assert!(serve_take_head(501).is_some());
+        assert!(serve_take_head(501).is_none());
+        assert_eq!(serve_open(), base + 2);
+        assert!(serve_body_tx(501).is_some());
+        // 终结摘表 -1；重复终结回 None 且计数不动。
+        assert!(serve_take(501).is_some());
+        assert_eq!(serve_open(), base + 1);
+        assert!(serve_take(501).is_none());
+        assert_eq!(serve_open(), base + 1);
+        assert!(serve_body_tx(501).is_none());
+        serve_release_server();
+        assert_eq!(serve_open(), base);
+        // 消息形断言（改枚举即红）。
+        assert_eq!(ServeRespHead::internal_error().status, 500);
+        assert!(matches!(ServeBodyMsg::End, ServeBodyMsg::End));
     }
 }

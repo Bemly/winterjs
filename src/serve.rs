@@ -286,6 +286,49 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     let limiter = quota_for(opts.limit_rps).map(|q| {
         std::sync::Arc::new(governor::RateLimiter::direct(q))
     });
+    // JS 会话线程（`--handler` 有值才起；16MB 栈 §4.24；与 axum 多线程经通道互通 §6）。
+    // 起服 rendezvous：handler 就绪才起 axum，早失败即启动期错（不静默 503）。
+    let js_session: Option<std::thread::JoinHandle<()>> = match &opts.handler {
+        Some(path) => {
+            let (serve_tx, serve_rx) =
+                tokio::sync::mpsc::unbounded_channel::<crate::serve_bridge::ServeEvent>();
+            let (start_tx, start_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+            let handler = path.clone();
+            let thread = std::thread::Builder::new()
+                .name("winterjs-serve-js".into())
+                .stack_size(16 * 1024 * 1024)
+                .spawn(move || {
+                    let tokio_rt = match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(rt) => rt,
+                        Err(e) => {
+                            let _ = start_tx.send(Err(format!("cannot start async runtime: {e}")));
+                            return;
+                        }
+                    };
+                    let mut serve_rx = serve_rx;
+                    let outcome = tokio::task::LocalSet::new().block_on(&tokio_rt, async {
+                        crate::runtime::run_serve_session(handler, &mut serve_rx, start_tx).await
+                    });
+                    // Runtime 照 §4.8 在 end_session 泄漏；线程退出即清 CONTEXT/state TLS。
+                    if let Err(e) = outcome {
+                        tracing::warn!(target: "winterjs::serve", error = %e, "serve JS session ended with error");
+                    }
+                })
+                .map_err(|e| Error::Other(format!("cannot spawn serve JS thread: {e}")))?;
+            match start_rx.recv_timeout(std::time::Duration::from_secs(30)) {
+                Ok(Ok(())) => {}
+                Ok(Err(msg)) => return Err(Error::Other(msg)),
+                Err(_) => return Err(Error::Other("serve JS session failed to start".into())),
+            }
+            tracing::info!(target: "winterjs::serve", handler = %path.display(), "handler ready");
+            crate::serve_bridge::publish_serve_tx(serve_tx);
+            Some(thread)
+        }
+        None => None,
+    };
     // 层（后调用者居外，即外→内：CORS → 压缩 → 观测 → 追踪 → 路由）。
     // CORS 取 permissive（本地静态 dev 服务；上线反代后由网关收紧，文档记录）。
     // 追踪回调手写 target（默认回调打 `tower_http::trace`，会被默认 filter
@@ -319,9 +362,16 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
                 );
             },
         );
-    let app = Router::new()
-        .route("/metrics", axum::routing::get(metrics_handler))
-        .fallback_service(ServeDir::new(root))
+    // 动态 fallback（`--handler`）：静态命中即直接返回，未命中进 JS；
+    // 无 handler 即现状纯静态（ServeDir 404）。`/metrics` 路由优先，不受影响。
+    let serve_dir = ServeDir::new(root);
+    let app = Router::new().route("/metrics", axum::routing::get(metrics_handler));
+    let app = match &js_session {
+        Some(_) => {
+            app.fallback_service(serve_dir.not_found_service(tower::service_fn(js_fallback)))
+        }
+        None => app.fallback_service(serve_dir),
+    }
         .layer(axum::middleware::from_fn(rewrite_ts_mime))
         .layer(axum::middleware::from_fn_with_state(limiter, observe))
         .with_state(metrics)
@@ -341,8 +391,151 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
             .await
             .map_err(|e| Error::Other(format!("serve failed: {e}")))?;
     }
+    if let Some(thread) = js_session {
+        // 优雅：停机旗后在飞请求排空线程自退；10s 未退即 warn（随进程退出回收）。
+        crate::serve_bridge::set_serve_shutdown();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !thread.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if thread.is_finished() {
+            if thread.join().is_err() {
+                tracing::warn!(target: "winterjs::serve", "serve JS thread panicked");
+            }
+        } else {
+            tracing::warn!(target: "winterjs::serve", open = crate::state::serve_open(), "serve JS session did not drain in time");
+        }
+        crate::serve_bridge::unpublish_serve_tx();
+    }
     tracing::info!(target: "winterjs::serve", "stopped");
     Ok(())
+}
+
+/// 动态 fallback（`--handler`，plan4 T1）：axum 请求 → JS 会话 → WinterCG 响应。
+/// 传输全委托（hyper 成帧；请求体流由 `http_body_util` 泵入通道；响应体流式写回）。
+/// 无会话（早失败已拦，此处仅防御）/投递失败即 503；响应头 30s 未到即 504。
+async fn js_fallback(
+    req: axum::http::Request<axum::body::Body>,
+) -> Result<axum::response::Response<axum::body::Body>, std::convert::Infallible> {
+    use axum::response::Response;
+    fn empty(status: axum::http::StatusCode) -> Response<axum::body::Body> {
+        Response::builder().status(status).body(axum::body::Body::empty()).unwrap_or_else(
+            |_| {
+                Response::builder()
+                    .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(axum::body::Body::empty())
+                    .expect("static 500 builds")
+            },
+        )
+    }
+    let Some(tx) = crate::serve_bridge::serve_tx_global() else {
+        tracing::warn!(target: "winterjs::serve", "serve session not ready");
+        return Ok(empty(axum::http::StatusCode::SERVICE_UNAVAILABLE));
+    };
+    // T1：scheme 恒 http（https 面 T2 随 TLS 分支线程 scheme，见 plan4 §3）。
+    let (parts, body) = req.into_parts();
+    let host = parts
+        .headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost")
+        .to_owned();
+    let target = parts.uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let url = format!("http://{host}{target}");
+    let headers: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.as_str().to_owned(), v.to_str().unwrap_or("").to_owned()))
+        .collect();
+    let id = crate::serve_bridge::next_serve_id();
+    let (head_tx, head_rx) = tokio::sync::oneshot::channel();
+    let (body_tx, body_rx) = tokio::sync::mpsc::unbounded_channel();
+    let resp = crate::serve_bridge::ServeRespTx { head_tx: Some(head_tx), body_tx };
+    if tx
+        .send(crate::serve_bridge::ServeEvent::Head {
+            head: crate::serve_bridge::ServeReqHead {
+                id,
+                method: parts.method.to_string(),
+                url,
+                headers,
+            },
+            resp,
+        })
+        .is_err()
+    {
+        return Ok(empty(axum::http::StatusCode::SERVICE_UNAVAILABLE));
+    }
+    // 请求体流式前传（chunk 到即投，完即 End，错即 Fail；投递失败=会话已走即停）。
+    let tx_fwd = tx.clone();
+    tokio::spawn(async move {
+        use futures::StreamExt as _;
+        let mut stream = http_body_util::BodyExt::into_data_stream(body);
+        loop {
+            match stream.next().await {
+                Some(Ok(bytes)) => {
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    if tx_fwd
+                        .send(crate::serve_bridge::ServeEvent::Chunk(id, bytes.to_vec()))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Some(Err(e)) => {
+                    let _ = tx_fwd.send(crate::serve_bridge::ServeEvent::Fail(
+                        id,
+                        format!("request body error: {e}"),
+                    ));
+                    break;
+                }
+                None => {
+                    let _ = tx_fwd.send(crate::serve_bridge::ServeEvent::End(id));
+                    break;
+                }
+            }
+        }
+    });
+    // 响应头 30s 未到即 504（handler 挂起不连累连接空转，网络最佳实践）。
+    let head = match tokio::time::timeout(std::time::Duration::from_secs(30), head_rx).await {
+        Ok(Ok(h)) => h,
+        _ => {
+            tracing::warn!(target: "winterjs::serve", id, "serve response head timeout");
+            return Ok(empty(axum::http::StatusCode::GATEWAY_TIMEOUT));
+        }
+    };
+    let mut builder = Response::builder().status(head.status);
+    for (k, v) in &head.headers {
+        match (
+            k.parse::<axum::http::HeaderName>(),
+            v.parse::<axum::http::HeaderValue>(),
+        ) {
+            (Ok(name), Ok(val)) => {
+                builder = builder.header(name, val);
+            }
+            _ => tracing::warn!(target: "winterjs::serve", id, header = %k, "dropping invalid response header"),
+        }
+    }
+    // 响应体流式写回（Fail 即提前截断记 warn；发送端随 handler 终结，流自收尾）。
+    let stream = async_stream::stream! {
+        let mut rx = body_rx;
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                crate::serve_bridge::ServeBodyMsg::Chunk(b) => {
+                    yield Ok::<_, std::convert::Infallible>(bytes::Bytes::from(b))
+                }
+                crate::serve_bridge::ServeBodyMsg::End => break,
+                crate::serve_bridge::ServeBodyMsg::Fail(e) => {
+                    tracing::warn!(target: "winterjs::serve", id, error = %e, "serve response body failed");
+                    break;
+                }
+            }
+        }
+    };
+    Ok(builder
+        .body(axum::body::Body::from_stream(stream))
+        .unwrap_or_else(|_| empty(axum::http::StatusCode::INTERNAL_SERVER_ERROR)))
 }
 
 /// 明文 listener（与 `TlsListener` 同构，使 serve 尾部类型统一）。

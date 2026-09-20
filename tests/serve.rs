@@ -510,3 +510,61 @@ fn phase11_serve_handler_missing_file_errors() {
     );
     dir.close().unwrap();
 }
+
+/// 裸 socket POST（handler 回声/大体用；hermetic，与 `http_get` 同族）。
+fn http_post(
+    port: u16,
+    path: &str,
+    body: &[u8],
+) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    s.write_all(head.as_bytes()).unwrap();
+    s.write_all(body).unwrap();
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw).unwrap();
+    parse_response(&raw)
+}
+
+#[test]
+fn phase11_serve_dynamic_fallback_status_preserved() {
+    // 正常：静态命中走 ServeDir（不进 JS）；缺失进 handler，JS 状态原样保留
+    // （§4.165：`not_found_service` 恒改写 404 的反面）；POST 等非 GET/HEAD
+    // 同样进 JS（`call_fallback_on_method_not_allowed`）。
+    // 报错：handler 抛错 → 500 短路；边界：handler 自返 404 即 404 透传。
+    let dir = serve_fixture();
+    dir.child("handler.mjs")
+        .write_str(
+            "export default { async fetch(req) { const u = new URL(req.url); \
+             if (u.pathname === '/echo' && req.method === 'POST') { \
+             const b = await req.text(); \
+             return new Response('echo:' + b, { status: 201 }); } \
+             if (u.pathname === '/boom') throw new Error('boom-handler'); \
+             if (u.pathname === '/nf') return new Response('nf', { status: 404 }); \
+             return new Response('hello-t1', { status: 200 }); } };",
+        )
+        .unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+    let (st, _, body) = http_get(srv.port, "/", &[]);
+    assert_eq!(st, 200);
+    assert_eq!(body, b"<h1>hi</h1>");
+    let (st, _, body) = http_get(srv.port, "/dyn-missing", &[]);
+    assert_eq!(st, 200);
+    assert_eq!(body, b"hello-t1");
+    let (st, _, body) = http_post(srv.port, "/echo", b"abc");
+    assert_eq!(st, 201);
+    assert_eq!(body, b"echo:abc");
+    let (st, _, _) = http_get(srv.port, "/boom", &[]);
+    assert_eq!(st, 500);
+    let (st, _, body) = http_get(srv.port, "/nf", &[]);
+    assert_eq!(st, 404);
+    assert_eq!(body, b"nf");
+    dir.close().unwrap();
+}

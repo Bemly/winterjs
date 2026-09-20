@@ -207,6 +207,48 @@ setTimeout(() => { console.log("ignore-done"); process.exit(0); }, 4000);
 }
 
 #[test]
+fn phase10f_fs_watch_encoding_faces() {
+    // G8-3：filename 按 options.encoding 转码（hex/buffer/缺省 utf8；null 直通）。
+    // 正常：hex 串/Buffer/原文各就各位；边界：非法 encoding 即 ARG_VALUE。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("enc.mjs");
+    file.write_str(
+        r#"
+import fs from "node:fs";
+try { fs.watch(".", { encoding: "nope" }); console.log("enc-no-throw"); }
+catch (e) { console.log("enc-code", e.code === "ERR_INVALID_ARG_VALUE"); }
+const fn = "hexname.txt";
+let left = 3;
+const done = () => { if (--left === 0) { console.log("enc-done"); process.exit(0); } };
+const w1 = fs.watch(".", { encoding: "hex" }, (ev, f) => {
+  if (f === Buffer.from(fn, "utf8").toString("hex")) { console.log("enc-hex", true); w1.close(); done(); }
+});
+const w2 = fs.watch(".", { encoding: "buffer" }, (ev, f) => {
+  if (f instanceof Buffer && f.toString("utf8") === fn) { console.log("enc-buf", true); w2.close(); done(); }
+});
+const w3 = fs.watch(".", (ev, f) => {
+  if (f === fn) { console.log("enc-plain", true); w3.close(); done(); }
+});
+setTimeout(() => { fs.writeFileSync(fn, "x"); }, 150);
+setTimeout(() => { console.log("enc-timeout"); process.exit(1); }, 6000);
+"#,
+    )
+    .unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in ["enc-code true", "enc-hex true", "enc-buf true", "enc-plain true", "enc-done"] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn node_fs_streams() {
     // createReadStream 分块 + createWriteStream 落盘/追加（10f 起真 WriteStream：
     // write/end/finish 事件面，Web 流 getWriter 口径退役——node 真机无此面）。

@@ -2768,6 +2768,15 @@ function __ignoreMatcher(ignore) {
     return false;
   };
 }
+// node 口径：filename 按 options.encoding 转码（hex/buffer/base64…；
+// null 直通——部分后端 filename 为 null，encoding 套件接受 null）。
+function __encodeWatchFilename(fn, encoding) {
+  if (fn === null || fn === undefined) return fn;
+  if (encoding === "buffer") return Buffer.from(fn, "utf8");
+  const enc = String(encoding ?? "utf8").toLowerCase();
+  if (enc === "utf8" || enc === "utf-8") return fn;
+  return Buffer.from(fn, "utf8").toString(enc);
+}
 // FSWatcher（10f，node 口径）：EventEmitter 形（'change'/'close' 事件面 +
 // on/once/off），options.listener 可选、{ signal } abort 即 close。
 class __FSWatcher extends EventEmitter {
@@ -2795,6 +2804,8 @@ export function watch(p, opts, listener) {
   p = __fsPath(p, "watch");
   const recursive = !!(opts && opts.recursive);
   const persistent = !(opts && opts.persistent === false);
+  // encoding 校验（非法即 ARG_VALUE）+ filename 转码位（encoding 套件）。
+  const watchEncoding = __fsEncoding(opts) ?? "utf8";
   const watcher = new __FSWatcher();
   if (typeof listener === "function") watcher.on("change", listener);
   // node 26 口径（lib/internal/validators.js validateIgnoreOption +
@@ -2805,7 +2816,7 @@ export function watch(p, opts, listener) {
   const ignoreFn = __ignoreMatcher(ignoreOpt);
   const id = __fsCall("watch", p, () => __wjs_watch_start(p, recursive, persistent, (ev, fn) => {
     if (fn != null && ignoreFn && ignoreFn(fn)) return;
-    watcher.emit("change", ev, fn);
+    watcher.emit("change", ev, __encodeWatchFilename(fn, watchEncoding));
   }));
   watcher.__attach(id);
   if (opts && opts.signal) {

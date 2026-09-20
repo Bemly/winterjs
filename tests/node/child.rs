@@ -938,3 +938,83 @@ c.disconnect();"#)]));
     assert_eq!(out, "nonsilent true true true\n", "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_child_spawn_arg_validation() {
+    // spawn-typeerror 套件回归：spawn file/args/options/uid-gid 逐项 code +
+    // execFile 位移 + fork 位移 + fork 子会话续命（无监听即退/有监听迟发可达）。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        r#"const { spawn, execFile, fork } = await import("node:child_process");
+const tags = [];
+const want = (tag, fn, code) => {
+  try { const c = fn(); tags.push(`${tag} no-throw`); try { c.kill(); } catch {} }
+  catch (e) { tags.push(`${tag} ${e.code}`); }
+};
+want("nofile", () => spawn(), "ERR_INVALID_ARG_TYPE");
+want("empty", () => spawn(""), "ERR_INVALID_ARG_VALUE");
+want("boolargs", () => spawn("ls", true), "ERR_INVALID_ARG_TYPE");
+want("nullopts", () => spawn("ls", [], null), "ERR_INVALID_ARG_TYPE");
+want("arropts", () => spawn("ls", [], []), "ERR_INVALID_ARG_TYPE");
+want("uidbig", () => spawn("ls", [], { uid: 2 ** 63 }), "ERR_OUT_OF_RANGE");
+want("gidbig", () => spawn("ls", [], { gid: 2 ** 63 }), "ERR_OUT_OF_RANGE");
+want("uidstr", () => spawn("ls", [], { uid: "x" }), "ERR_INVALID_ARG_TYPE");
+want("ex-s", () => execFile("ls", "s", {}, () => {}), "ERR_INVALID_ARG_TYPE");
+want("ex-opts", () => execFile("ls", [], "s"), "ERR_INVALID_ARG_TYPE");
+want("ex-cb", () => execFile("ls", [], {}, "s"), "ERR_INVALID_ARG_TYPE");
+want("ex-arropts", () => execFile("ls", [], []), "ERR_INVALID_ARG_TYPE");
+want("fk-s", () => fork("m.js", "s"), "ERR_INVALID_ARG_TYPE");
+want("fk-opts", () => fork("m.js", [], "s"), "ERR_INVALID_ARG_TYPE");
+want("fk-arropts", () => fork("m.js", [], []), "ERR_INVALID_ARG_TYPE");
+// 有效组合不抛（spawn 起 echo 即关；execFile 回调形；fork 缺失文件走异步 error）。
+for (const [tag, fn] of [
+  ["v-spawn", () => spawn("echo", ["x"])],
+  ["v-exec", () => execFile("ls", [], () => {})],
+  ["v-fork", () => { const c = fork("definitely-missing-xyz.mjs"); c.on("error", () => {}); }],
+]) {
+  try { const c = fn(); tags.push(`${tag} ok`); try { c.kill(); } catch {} }
+  catch (e) { tags.push(`${tag} THROW ${e.code}`); }
+}
+console.log(tags.join("\n"));"#]));
+    for line in [
+        "nofile ERR_INVALID_ARG_TYPE",
+        "empty ERR_INVALID_ARG_VALUE",
+        "boolargs ERR_INVALID_ARG_TYPE",
+        "nullopts ERR_INVALID_ARG_TYPE",
+        "arropts ERR_INVALID_ARG_TYPE",
+        "uidbig ERR_OUT_OF_RANGE",
+        "gidbig ERR_OUT_OF_RANGE",
+        "uidstr ERR_INVALID_ARG_TYPE",
+        "ex-s ERR_INVALID_ARG_TYPE",
+        "ex-opts ERR_INVALID_ARG_TYPE",
+        "ex-cb ERR_INVALID_ARG_TYPE",
+        "ex-arropts ERR_INVALID_ARG_TYPE",
+        "fk-s ERR_INVALID_ARG_TYPE",
+        "fk-opts ERR_INVALID_ARG_TYPE",
+        "fk-arropts ERR_INVALID_ARG_TYPE",
+        "v-spawn ok",
+        "v-exec ok",
+        "v-fork ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    // fork 子会话续命：无监听子进程即退（exit 0），有监听迟发可达。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("bye.mjs").write_str("").unwrap();
+    dir.child("echo-late.mjs")
+        .write_str("process.on('message', (m) => { process.send({ back: m }); });\n")
+        .unwrap();
+    let bye = dir.path().join("bye.mjs").to_string_lossy().into_owned();
+    let late = dir.path().join("echo-late.mjs").to_string_lossy().into_owned();
+    let out = stdout_of(&mut winterjs().args(["--eval", &format!(
+        r#"const {{ fork }} = await import("node:child_process");
+const a = fork({bye:?});
+a.on("exit", (code) => console.log("bye-exit", code));
+const b = fork({late:?});
+b.on("message", (m) => {{ console.log("late-back", m.back.n === 7); b.disconnect(); }});
+setTimeout(() => b.send({{ n: 7 }}), 300);
+setTimeout(() => console.log("done"), 2500);"#)]));
+    for line in ["bye-exit 0", "late-back true", "done"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

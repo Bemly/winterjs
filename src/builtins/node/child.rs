@@ -1893,6 +1893,21 @@ function __normSpawnAsyncOpts(opts) {
   }
   if (opts.env !== undefined) o.env = { ...opts.env };
   if (opts.detached !== undefined) o.detached = !!opts.detached;
+  // uid/gid：validateInt32 逐字口径（真机 26.8.2 实测：非 number 即 ARG_TYPE，
+  // 非整数/超 int32 即 RANGE；范围内负数过校验，spawn 期 EPERM 见下）。
+  for (const k of ["uid", "gid"]) {
+    const v = opts[k];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== "number") throw new ERR_INVALID_ARG_TYPE(`options.${k}`, "number", v);
+    if (!Number.isInteger(v)) {
+      const e = new RangeError(`The value of "options.${k}" is out of range. It must be an integer. Received ${v}`);
+      e.code = "ERR_OUT_OF_RANGE"; throw e;
+    }
+    if (v < -2147483648 || v > 2147483647) {
+      const e = new RangeError(`The value of "options.${k}" is out of range. It must be >= -2147483648 && <= 2147483647. Received ${v}`);
+      e.code = "ERR_OUT_OF_RANGE"; throw e;
+    }
+  }
   // uid/gid：真机 _handle.spawn 同步 EPERM 口径——非特权指定他 id 即抛
   //（uid-gid 套件非 root 形；message 正则匹配）。值本身记档忽略。
   if (opts.uid !== undefined && opts.uid !== null && typeof opts.uid === "number") {
@@ -1983,7 +1998,17 @@ function __normSpawnAsyncOpts(opts) {
   return o;
 }
 export function spawn(file, args, opts) {
-  if (args !== undefined && args !== null && !Array.isArray(args)) { opts = args; args = []; }
+  // normalizeSpawnArguments 逐字口径（真机 26.8.2 实测）：
+  // file 必填字符串（空即 ARG_VALUE）；args 数组/缺席，余下非对象即 ARG_TYPE，
+  // 纯对象回落为 options；options 缺席即 {}，显式 null/非对象即 ARG_TYPE。
+  if (typeof file !== "string") throw new ERR_INVALID_ARG_TYPE("file", "string", file);
+  if (file.length === 0) throw new ERR_INVALID_ARG_VALUE("file", file, "cannot be empty");
+  if (Array.isArray(args)) { args = [...args]; }
+  else if (args === undefined || args === null) { args = []; }
+  else if (typeof args !== "object") { throw new ERR_INVALID_ARG_TYPE("args", "object", args); }
+  else { opts = args; args = []; }
+  if (opts === undefined) opts = {};
+  else if (typeof opts !== "object" || opts === null || Array.isArray(opts)) { throw new ERR_INVALID_ARG_TYPE("options", "object", opts); }
   const o = __normSpawnAsyncOpts(opts);
   return __spawnInto(new ChildProcess(), file, args, o);
 }
@@ -2194,23 +2219,22 @@ function __canSpawnFile(file) {
 }
 
 export function execFile(file, args, opts, cb) {
-  // node normalizeExecFileArgs 口径：args/opts 位移 + callback 可缺席（返回
-  // live child，不抛）；callback 给了但非函数才 ARG_TYPE。
-  if (args !== undefined && args !== null && !Array.isArray(args) &&
-      (typeof args === "object" || typeof args === "function")) {
-    cb = opts;
-    opts = args;
-    args = undefined;
-  }
+  // normalizeExecFileArgs 逐字口径（真机 26.8.2 实测）：args 数组拷贝/函数即
+  // 回调/纯对象回落 options/余下（字符串等）原位留待 spawn 位校验；
+  // options 函数即回调/显式 null 即 {}/数组与非对象即 ARG_TYPE；
+  // callback 给了但非函数即 ARG_TYPE（含 Received 段）。
+  if (Array.isArray(args)) { args = [...args]; }
+  else if (args !== undefined && args !== null && typeof args === "object") { cb = opts; opts = args; args = null; }
+  else if (typeof args === "function") { cb = args; opts = null; args = null; }
+  if (args === undefined || args === null) args = [];
+  else if (!Array.isArray(args)) { throw new ERR_INVALID_ARG_TYPE("args", "object", args); }
   if (typeof opts === "function") { cb = opts; opts = undefined; }
-  else if (opts === undefined || opts === null) opts = {};
-  else if (typeof opts !== "object") {
-    throw new TypeError("The \"options\" argument must be of type object");
+  else if (opts !== undefined && opts !== null) {
+    if (typeof opts !== "object" || Array.isArray(opts)) { throw new ERR_INVALID_ARG_TYPE("options", "object", opts); }
   }
+  if (opts === undefined || opts === null) opts = {};
   if (cb !== undefined && cb !== null && typeof cb !== "function") {
-    const err = new TypeError("The \"callback\" argument must be of type function");
-    err.code = "ERR_INVALID_ARG_TYPE";
-    throw err;
+    throw new ERR_INVALID_ARG_TYPE("callback", "function", cb);
   }
   const o = __normExecOpts(opts);
   __nullCheck(String(file), "file");
@@ -2403,6 +2427,37 @@ parentPort.on("close", () => {
     process.__wjs_emit("disconnect");
   }
 });
+// 内部监听不续命子会话（worker 空转即退，真机口径：无用户监听的子进程
+// 脚本结束即退，迟发消息即 ERR_IPC_CHANNEL_CLOSED；有用户监听才续命）：
+// newListener 已置 listening 位，此处复位；process 系手写表（无 newListener
+// 事件），故直包 message 订阅入口（once/addListener 走 on，removeListener
+// 走 off）；投递走 listenerCount 门控，不受 counting 位影响。
+// 注意：本块在外层模板字符串内，禁用模板字面量与插值写法。
+try { __wjs_port_unlisten(parentPort.__id); } catch {}
+const __ppId = parentPort.__id;
+const __procListen = () => { try { __wjs_port_listen(__ppId); } catch {} };
+const __procUnlisten = () => {
+  if (process.listenerCount("message") === 0) { try { __wjs_port_unlisten(__ppId); } catch {} }
+};
+const __procOn = process.on;
+process.on = function (type, cb) {
+  if (type === "message" && typeof cb === "function") __procListen();
+  return __procOn.call(this, type, cb);
+};
+process.addListener = process.on;
+const __procOff = process.off;
+process.off = function (type, cb) {
+  const r = __procOff.call(this, type, cb);
+  if (type === "message") __procUnlisten();
+  return r;
+};
+process.removeListener = process.off;
+const __procRemoveAll = process.removeAllListeners;
+process.removeAllListeners = function (type) {
+  const r = __procRemoveAll.call(this, type);
+  if (type === undefined || type === "message") __procUnlisten();
+  return r;
+};
 await import(__mod);
 `;
 function __normForkOpts(opts) {
@@ -2451,13 +2506,19 @@ function __normForkOpts(opts) {
   return o;
 }
 export function fork(modulePath, args, opts) {
-  if (args !== undefined && args !== null && !Array.isArray(args)) { opts = args; args = []; }
   if (modulePath === undefined || modulePath === null ||
       (typeof modulePath !== "string" && !(modulePath instanceof URL))) {
     const err = new TypeError("The \"modulePath\" argument must be of type string or URL");
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
+  // args/options 归一（真机 fork 口径：缺席即 []/{}；纯对象回落 options；
+  // 余下非数组即 ARG_TYPE/Array；options 数组与非对象即 ARG_TYPE）。
+  if (args === undefined || args === null) { args = []; }
+  else if (typeof args === "object" && !Array.isArray(args)) { opts = args; args = []; }
+  else if (!Array.isArray(args)) { throw new ERR_INVALID_ARG_TYPE("args", "Array", args); }
+  if (opts === undefined || opts === null) opts = {};
+  else if (typeof opts !== "object" || Array.isArray(opts)) { throw new ERR_INVALID_ARG_TYPE("options", "object", opts); }
   if (modulePath instanceof URL && modulePath.protocol !== "file:") {
     const err = new TypeError("The \"modulePath\" argument must be a file URL");
     err.code = "ERR_INVALID_ARG_VALUE";

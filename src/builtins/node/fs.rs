@@ -1576,13 +1576,14 @@ pub unsafe extern "C" fn fs_fsync(
 /// 防抖窗（与 `testrun.rs` 的 300ms 同值，用户感知一致）。
 pub(crate) const WATCH_DEBOUNCE_MS: u64 = 300;
 
-/// 防抖线程输入（分类已做完的纯数据）。
+/// 防抖线程输入（生 kind 纯数据；终分类在分发侧做——notify 回调非 JS 线程，
+/// TLS state 不可用，见 §4.154）。
 struct RawWatch {
     id: u64,
     kind: WatchKind,
 }
 
-type DebounceKey = (u64, String, Option<String>);
+type DebounceKey = (u64, String, String);
 
 /// 共享防抖线程入口（`OnceLock` 懒起，存 `Result` 以兼容 stable；
 /// 发送端掉光即退出）。
@@ -1613,54 +1614,42 @@ fn debounce_loop(
 ) {
     use std::time::{Duration, Instant};
     let window = Duration::from_millis(WATCH_DEBOUNCE_MS);
-    // 插入序 Vec（不用 HashMap）：同键只保留首事件并刷新 deadline，刷出按到达序——
-    // 新文件 Create+Modify 双事件时 rename（先到）稳定赢（flaky 修，见黑盒 watch 用例）。
+    // 前沿触发 + 同键抑制窗（node 无静默窗）：首事件立即刷（新文件 Create+
+    // Modify 双事件时 rename 先到先赢，§4.27 诉求保留）；抑制窗内同键丢弃，
+    // 窗后首事件再即刷。旧静默窗（到期才刷）在持续写下永不到，1ms 写循环
+    // 套件饿死（test-fs-watch.js/encoding/promises-watch 现形）。
     // 事件量极小（人手/测试级），O(n) 扫描可接受。
-    let mut pending: Vec<(DebounceKey, (Instant, WatchEvent))> = Vec::new();
+    let mut suppressed: Vec<(DebounceKey, Instant)> = Vec::new();
     loop {
-        let now = Instant::now();
-        // 到期即刷（保持到达序）
-        let mut i = 0;
-        while i < pending.len() {
-            if pending[i].1.0 <= now {
-                let (_, (_, ev)) = pending.remove(i);
-                if js_tx.send(ev).is_err() {
-                    return;
-                }
-            } else {
-                i += 1;
-            }
-        }
-        let wait = pending
-            .iter()
-            .map(|(_, (d, _))| d.checked_duration_since(Instant::now()).unwrap_or(Duration::ZERO))
-            .min()
-            .unwrap_or(window);
-        match rx.recv_timeout(wait) {
+        match rx.recv() {
             Ok(raw) => {
                 let id = raw.id;
                 match raw.kind {
-                    // 失败直通（不防抖，尽早报错）
+                    // 失败直通（不抑制，尽早报错）
                     WatchKind::Failed(msg) => {
                         if js_tx.send(WatchEvent { id, kind: WatchKind::Failed(msg) }).is_err() {
                             return;
                         }
                     }
-                    WatchKind::Fired { event, file } => {
-                        let key = (id, event.clone(), file.clone());
-                        if let Some(slot) = pending.iter_mut().find(|(k, _)| *k == key) {
-                            slot.1.0 = Instant::now() + window;
-                        } else {
-                            pending.push((
-                                key,
-                                (Instant::now() + window, WatchEvent { id, kind: WatchKind::Fired { event, file } }),
-                            ));
+                    WatchKind::Fired { raw, file, full } => {
+                        let now = Instant::now();
+                        suppressed.retain(|(_, until)| *until > now);
+                        // 抑制键走生 kind + 全路径（终分类在分发侧，同键抑制不丢语义）。
+                        let key = (id, raw.clone(), full.clone());
+                        if suppressed.iter().any(|(k, _)| *k == key) {
+                            continue;
+                        }
+                        suppressed.push((key, now + window));
+                        if js_tx
+                            .send(WatchEvent { id, kind: WatchKind::Fired { raw, file, full } })
+                            .is_err()
+                        {
+                            return;
                         }
                     }
                 }
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            Err(std::sync::mpsc::RecvError) => return,
         }
     }
 }
@@ -1672,7 +1661,9 @@ pub struct WatchEvent {
 }
 
 pub enum WatchKind {
-    Fired { event: String, file: Option<String> },
+    /// 生 kind（"create"/"remove"/"modify"）+ 展示名 + 全路径键；终分类
+    /// （rename/change）在分发侧（JS 线程，TLS 可用）做。
+    Fired { raw: String, file: Option<String>, full: String },
     Failed(String),
 }
 
@@ -1697,6 +1688,47 @@ fn watch_display_name(canon_root: &std::path::Path, raw_root: &std::path::Path, 
         .map(|n| n.to_string_lossy().into_owned())
 }
 
+/// Create 二判据之起点种子：watch 起始已存在文件（相对根列出），重写首事件
+/// 即 change。符号链接不跟（防环）；漏网（竞态新建）由 birthtime 规则兜。
+fn seed_rels(dir: &std::path::Path, out: &mut Vec<String>, recursive: bool) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.filter_map(|e| e.ok()) {
+        let Ok(ft) = e.file_type() else {
+            continue;
+        };
+        if ft.is_symlink() {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().into_owned();
+        if ft.is_file() {
+            out.push(name);
+        } else if recursive && ft.is_dir() {
+            let mut sub = Vec::new();
+            seed_rels(&e.path(), &mut sub, true);
+            for s in sub {
+                out.push(format!("{name}/{s}"));
+            }
+        }
+    }
+}
+/// 新生文件判定（Create 首见二判据之下半）：birthtime 距此刻 ≤10s 即新生→
+/// rename，否则旧文件重写 artifact→change。取不到 birthtime（fs 不支持/
+ /// 路径已失）回 rename（旧行为）。重写的新生文件由 seen 表兜（创建 Create
+/// 已标记），阈值只裁"慢投递的新生"极端。
+fn is_fresh_birth(p: &std::path::Path) -> bool {
+    const FRESH_SECS: u64 = 10;
+    let Ok(md) = std::fs::metadata(p) else {
+        return true;
+    };
+    let Ok(born) = md.created() else {
+        return true;
+    };
+    std::time::SystemTime::now()
+        .duration_since(born)
+        .is_ok_and(|d| d.as_secs() <= FRESH_SECS)
+}
 /// minimatch 近似（fs.watch `ignore` 字符串面）：`**` 递归 + 无斜杠模式配
 /// basename（matchBase）+ win/mac 不分大小写；模式非法回字面相等。
 fn glob_match_impl(pat: &str, name: &str, base: &str, nocase: bool) -> bool {
@@ -1710,14 +1742,6 @@ fn glob_match_impl(pat: &str, name: &str, base: &str, nocase: bool) -> bool {
             p.matches_with(name, opts) || (!pat.contains('/') && p.matches_with(base, opts))
         }
         Err(_) => name == pat || base == pat,
-    }
-}
-// notify 事件 → Node `rename`/`change`（Access/Other 忽略，返回 None）。
-fn watch_classify(kind: &notify::EventKind) -> Option<&'static str> {
-    match kind {
-        notify::EventKind::Create(_) | notify::EventKind::Remove(_) => Some("rename"),
-        notify::EventKind::Modify(_) => Some("change"),
-        _ => None,
     }
 }
 
@@ -1777,16 +1801,45 @@ pub unsafe extern "C" fn watch_start(
     };
     let rel_canon = canon_root.clone();
     let rel_abs = abs_root.clone();
+    // Create 二判据之起点种子：起始已存在文件全标记（双根全路径形，与事件
+    // full 键同形）；之后新建/删除走 mark/forget。
+    {
+        let root = std::path::Path::new(&watched);
+        if root.is_file() {
+            state::watch_seen_mark(id, &canon_root);
+            state::watch_seen_mark(id, &abs_root);
+        } else if root.is_dir() {
+            let mut rels = Vec::new();
+            seed_rels(root, &mut rels, recursive);
+            for r in rels {
+                let rel = std::path::Path::new(&r);
+                let a = std::path::Path::new(&canon_root).join(rel).to_string_lossy().into_owned();
+                let b = std::path::Path::new(&abs_root).join(rel).to_string_lossy().into_owned();
+                state::watch_seen_mark(id, &a);
+                state::watch_seen_mark(id, &b);
+            }
+        }
+    }
     let build: Result<notify::RecommendedWatcher, String> = (|| {
         use notify::Watcher as _;
-        // notify 回调只做分类（纯数据），防抖由共享线程做（300ms 静默窗，kind 保留）。
+        // notify 回调只做分类（纯数据），派发由防抖线程做（前沿即刷 + 同键
+        // 抑制窗，kind 保留）。
         let mut watcher =
             notify::RecommendedWatcher::new(move |res: Result<notify::Event, notify::Error>| {
+                // 纯数据搬运（禁 TLS state：本回调不在 JS 线程，见 §4.154）。
                 match res {
                     Ok(ev) => {
-                        let Some(kind) = watch_classify(&ev.kind) else {
+                        let raw: Option<&str> = match &ev.kind {
+                            notify::EventKind::Create(_) => Some("create"),
+                            notify::EventKind::Remove(_) => Some("remove"),
+                            notify::EventKind::Modify(_) => Some("modify"),
+                            _ => None,
+                        };
+                        let Some(raw) = raw else {
                             return;
                         };
+                        // 全路径键（seen 表跨相对/绝对稳定）与展示名（相对路径优先）。
+                        let full = ev.paths.first().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
                         let file = ev.paths.first().and_then(|p| {
                             watch_display_name(
                                 std::path::Path::new(&rel_canon),
@@ -1796,7 +1849,7 @@ pub unsafe extern "C" fn watch_start(
                         });
                         let _ = dtx.send(RawWatch {
                             id,
-                            kind: WatchKind::Fired { event: kind.to_string(), file },
+                            kind: WatchKind::Fired { raw: raw.to_string(), file, full },
                         });
                     }
                     Err(e) => {
@@ -1897,9 +1950,32 @@ pub fn dispatch(
         crate::runtime::ErrorSource::Module { url } => crate::modules::module_error(cx, url),
     };
     match ev.kind {
-        WatchKind::Fired { event, file } => {
+        WatchKind::Fired { raw, file, full } => {
             let Some(listener) = state::watch_listener(ev.id) else {
                 return Ok(());
+            };
+            // 终分类（Create→rename/change 二判据，recursive-watch-file 套件：
+            // 截断重写在 macOS 报 Create artifact——见过即重写→change；首见看
+            // birthtime（新生→rename，旧文件重写→change）；Remove 即 rename +
+            // 遗忘（重建即新）；Modify 即 change）。此处 JS 线程，TLS 可用。
+            let event: &str = match raw.as_str() {
+                "remove" => {
+                    state::watch_seen_forget(ev.id, &full);
+                    "rename"
+                }
+                "modify" => {
+                    state::watch_seen_mark(ev.id, &full);
+                    "change"
+                }
+                _ => {
+                    if state::watch_seen_has(ev.id, &full) {
+                        "change"
+                    } else {
+                        state::watch_seen_mark(ev.id, &full);
+                        let fresh = full.is_empty() || is_fresh_birth(std::path::Path::new(&full));
+                        if fresh { "rename" } else { "change" }
+                    }
+                }
             };
             rooted!(&in(cx) let mut event_v = UndefinedValue());
             event.to_jsval(cx, event_v.handle_mut());
@@ -2037,6 +2113,18 @@ mod tests {
         // 非法模式回字面相等，不抛。
         assert!(glob_match_impl("[unclosed", "[unclosed", "[unclosed", true));
         assert!(!glob_match_impl("[unclosed", "other", "other", true));
+    }
+
+    #[test]
+    fn fresh_birth_shapes() {
+        // 新生文件（刚建）即 fresh；缺席路径回 true（旧行为 rename，不抛）。
+        let dir = std::env::temp_dir().join("wjs-fresh-probe");
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("new.txt");
+        std::fs::write(&f, b"x").unwrap();
+        assert!(is_fresh_birth(&f));
+        assert!(is_fresh_birth(&dir.join("definitely-missing-xyz")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2912,8 +3000,18 @@ class __StatWatcher extends EventEmitter {
     return this;
   }
   close() { return this.stop(); }
-  ref() { return this; }
-  unref() { return this; }
+  // node 口径：ref/unref 取/释轮询 timer 引用（watchfile-ref-unref 套件：
+  // 全 unref 后进程可退；单例共享 timer，直通即可）。
+  ref() {
+    const rec = __statWatchers.get(this.#path);
+    if (rec && rec.watcher === this && rec.timer && typeof rec.timer.ref === "function") rec.timer.ref();
+    return this;
+  }
+  unref() {
+    const rec = __statWatchers.get(this.#path);
+    if (rec && rec.watcher === this && rec.timer && typeof rec.timer.unref === "function") rec.timer.unref();
+    return this;
+  }
 }
 export function watchFile(p, opts, listener) {
   if (typeof opts === "function") { listener = opts; opts = {}; }

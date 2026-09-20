@@ -429,6 +429,63 @@ fs.writeFile("w2.txt", "cb", { flush: true }, (e) => {
 }
 
 #[test]
+fn phase10f_fs_watch_rapid_and_rewrite() {
+    // G8-8：持续写不饿死（前沿即刷）+ Create 二判据（重写首事件 change，
+    // 新文件首事件 rename）。
+    // 正常：10ms 写循环下首个 foo.txt 事件 3s 内必达；预存文件重写首事件
+    // change；边界：watch 后新建首事件 rename。
+    let dir = assert_fs::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("old.txt"), b"old").unwrap();
+    let file = dir.child("rapid.mjs");
+    file.write_str(
+        r#"
+import fs from "node:fs";
+// 持续写：首事件必达（静默窗饿死回归）
+{
+  const w = fs.watch("loop");
+  const iv = setInterval(() => { fs.writeFileSync("loop/foo.txt", "x"); }, 10);
+  w.on("change", (ev, fn) => {
+    if (fn === "foo.txt") { console.log("rapid-hit", ev); clearInterval(iv); w.close(); }
+  });
+}
+// 预存重写：首事件 change（Create artifact 纠正）
+{
+  const w = fs.watch("old.txt");
+  setTimeout(() => { fs.writeFileSync("old.txt", "new"); }, 300);
+  w.on("change", (ev, fn) => {
+    console.log("rewrite-first", ev === "change", fn);
+    w.close();
+  });
+}
+// watch 后新建：首事件 rename
+{
+  const w = fs.watch("fresh");
+  setTimeout(() => { fs.writeFileSync("fresh/n.txt", "x"); }, 300);
+  w.on("change", (ev, fn) => {
+    if (fn === "n.txt") { console.log("fresh-first", ev === "rename"); w.close(); }
+  });
+}
+setTimeout(() => { console.log("rapid-done"); process.exit(0); }, 6000);
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join("loop")).unwrap();
+    std::fs::create_dir(dir.path().join("fresh")).unwrap();
+    let out = winterjs()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in ["rapid-hit rename", "rewrite-first true old.txt", "fresh-first true", "rapid-done"] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn node_fs_streams() {
     // createReadStream 分块 + createWriteStream 落盘/追加（10f 起真 WriteStream：
     // write/end/finish 事件面，Web 流 getWriter 口径退役——node 真机无此面）。

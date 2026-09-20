@@ -454,6 +454,8 @@ pub struct PlainState {
     /// 存活 watch 数（仅 persistent 计数；事件循环退出条件用）。
     pub watch_open: usize,
     pub watch_drivers: HashMap<u64, (notify::RecommendedWatcher, bool)>,
+    /// 各路 watch 见过的文件（Create→rename/change 二判据；close 即清）。
+    pub watch_seen: HashMap<u64, HashSet<String>>,
     /// 异步子进程驱动端点（接收端由事件循环持有；Child 本体同表保活供 kill）。
     pub child_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::child::ChildEvent>>,
     pub child_next_id: u64,
@@ -1234,12 +1236,34 @@ pub fn watch_remove(id: u64) {
                 p.watch_open = p.watch_open.saturating_sub(1);
             }
         }
+        p.watch_seen.remove(&id);
     });
 }
 
 /// 存活 watch 数（persistent；事件循环退出条件用）。
 pub fn watch_open() -> usize {
     with_plain(|p| p.watch_open)
+}
+
+/// 标记一路 watch 见过的文件（Create 去重用：见过的再 Create 即重写 artifact）。
+pub fn watch_seen_mark(id: u64, file: &str) {
+    with_plain(|p| {
+        p.watch_seen.entry(id).or_default().insert(file.to_owned());
+    });
+}
+
+/// 一路 watch 是否见过该文件。
+pub fn watch_seen_has(id: u64, file: &str) -> bool {
+    with_plain(|p| p.watch_seen.get(&id).is_some_and(|s| s.contains(file)))
+}
+
+/// 遗忘一路 watch 的文件（Remove 后重建即新文件）。
+pub fn watch_seen_forget(id: u64, file: &str) {
+    with_plain(|p| {
+        if let Some(s) = p.watch_seen.get_mut(&id) {
+            s.remove(file);
+        }
+    });
 }
 
 // ── 网络驱动（node:net；task → channel → 事件循环，同 child 模型）───────────

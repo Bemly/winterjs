@@ -2539,3 +2539,41 @@ cargo build
   写法；提交前 grep 块内反引号/`\${` 计数归零（本轮 `inner backticks: 0`）。
 - 推广为铁律：凡"JS 生成 JS"的模板块（fork 子源/worker eval 串），内层禁一切
   模板字面量；注释是代码，同样禁。
+
+### 4.152 静默窗防抖在持续写下饿死：fs.watch 改前沿触发（2026-09-20，G8 轮）
+
+- 症状：1ms/10ms 写循环套件（test-fs-watch.js/encoding/promises-watch）全 hang；
+  单写/偶写套件全过。同一机制下只有目录自身元事件能出来，文件事件全丢。
+- 根因：`debounce_loop` 是 300ms **静默窗**（到期才刷、同键刷新 deadline）——
+  持续写使窗口永不到，事件饿死。旧设计为 `test --watch` 的"首事件赢"抄来的，
+  但语义错了：node/libuv 无静默窗，事件即时流。
+- 修法：前沿触发 + 同键 300ms 抑制窗——首事件立即刷（Create+Modify 的 rename
+  先到先赢，§4.27 诉求保留），窗内同键丢弃，窗后首事件再刷（`src/builtins/node/fs.rs`
+  `debounce_loop`；testrun 自有 debouncer-mini，不受影响）。
+- 复现：10ms 写循环 watch（修前 foo.txt 永不到，修后即达；
+  `tests/node/fs.rs::phase10f_fs_watch_rapid_and_rewrite`）。
+- 推广为铁律：凡"等安静再动"的设计，必须回答"一直不安静时怎么办"—— perpetual
+  busy 下静默窗 = 饿死；要么前沿触发，要么加最大等待上限。
+
+### 4.153 notify 回调线程的 TLS state 是错表：分类移分发侧（2026-09-20，G8 轮）
+
+- 症状：Create 二判据（seen 表 + birthtime）上线后，预存文件重写仍首报 rename——
+  调试打印 `seen=false`，而种子明明已标记同一路径。
+- 根因：notify 回调跑在 **notify 线程**，`state::with_plain/with_rooted` 读的是该线程
+  的 TLS state——与 JS 线程的表完全是两张皮，mark/has 跨线程hello对不上（静默错，
+  不 panic）。此前回调内无 state 访问，故从未暴露。
+- 修法：回调只做纯数据搬运（生 kind + 展示名 + 全路径键）；seen/birthtime 终分类
+  移到 `dispatch`（事件循环 = JS 线程，TLS 正确）（`src/builtins/node/fs.rs`）。
+- 推广为铁律：§6 线程模型的反面——Rust 侧多线程经 channel 回 JS 线程**之后**才能碰
+  TLS state；回调线程内如需查表，一律把生数据送过界、在分发侧判定。review 时按
+  "回调跑在哪个线程"逐项对。
+
+### 4.154 `process.exit` 哨兵被用户 catch 即覆盖：首个码赢（2026-09-20，G8 轮）
+
+- 症状：`test-fs-realpath-pipe.js` 挂——自举子进程 `try{exit(2)}catch{exit(1)}`
+  的 rc=1（应为 2）。
+- 根因：exit 经 JS throw 实现，用户 `catch` 能吞掉哨兵；`process_exited` 旗无条件
+  覆盖，第二次 exit(1) 把第一次的 2 洗掉。真机 exit 即终结，catch 永不触发。
+- 修法：`process_exit` native 只在旗为空时落账（first-wins；`src/builtins/node/process_.rs`），
+  `run()` 的旗检查本就优先，一处改全链对（ESM/CJS 双入口黑盒钉住）。
+- 复现：`tests/node/process_.rs::phase4_process_exit_codes` 的 first.mjs/first.cjs 行。

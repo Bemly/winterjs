@@ -721,10 +721,38 @@ c.spawn({ file: "sleep", args: ["30"], stdio: "pipe" });
 console.log("pid", Object.hasOwn(c, "pid"), Number.isInteger(c.pid));
 try { c.kill("foo"); console.log("killsig no-throw"); }
 catch (e) { console.log("killsig", e.code === "ERR_UNKNOWN_SIGNAL"); }
-console.log("kill", c.kill() === true);"#]));
+console.log("kill", c.kill() === true);
+// 多监听并存（spawn-event 套件：两 'spawn' 监听都到；off 只摘命中）。
+{
+  const { spawn } = await import("node:child_process");
+  const p = spawn("echo", ["multi"]);
+  let n = 0;
+  const a = () => { n++; };
+  const b = () => { n++; };
+  p.on("spawn", a);
+  p.on("spawn", b);
+  p.off("spawn", a);
+  await new Promise((res) => p.on("close", res));
+  console.log("multi", n === 1);
+}
+// ENOENT 路径 stdio 数组同一性 + spawnargs（spawn-error 套件）。
+{
+  const { spawn } = await import("node:child_process");
+  const e = spawn("definitely-missing-xyz", ["bar"]);
+  console.log("stdio-arr", Array.isArray(e.stdio), e.stdio[0] === e.stdin, e.stdio[1] === e.stdout, e.stdio[2] === e.stderr, e.pid === undefined);
+  const err = await new Promise((res) => e.on("error", res));
+  console.log("err-shape", err.code === "ENOENT", err.syscall === "spawn definitely-missing-xyz", err.path === "definitely-missing-xyz", JSON.stringify(err.spawnargs) === JSON.stringify(["bar"]));
+}
+// dispose 即 kill（destroy 套件）。
+{
+  const { spawn } = await import("node:child_process");
+  const k = spawn("sleep", ["30"]);
+  k[Symbol.dispose]();
+  console.log("dispose", k.killed === true);
+}"#]));
     assert_eq!(
         out,
-        "opt true\nfile true\nenvpairs true\nargs true\npid true true\nkillsig true\nkill true\n",
+        "opt true\nfile true\nenvpairs true\nargs true\npid true true\nkillsig true\nkill true\nmulti true\nstdio-arr true true true true true\nerr-shape true true true true\ndispose true\n",
         "constructor-spawn: {out}"
     );
 }

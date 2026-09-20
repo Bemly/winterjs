@@ -1329,6 +1329,13 @@ export class ChildProcess {
   #onclose = null;
   #onerror = null;
   #onspawn = null;
+  // 多监听列表（on 累积/off 摘除；单分发位经 __install 落 fan-out）。
+  #exitL = [];
+  #closeL = [];
+  #errorL = [];
+  #spawnL = [];
+  #msgL = [];
+  #discL = [];
   #onmessage = null;
   #ondisconnect = null;
   exitCode = null;
@@ -1378,6 +1385,9 @@ export class ChildProcess {
     if (stdio[0] === "pipe") {
       this.stdin = __legacyWritable(id2);
     } else this.stdin = null;
+    // node 口径：stdio 数组恒在（与 stdin/stdout/stderr 同一对象；spawn-error
+    //套件在 ENOENT 路径亦断言）。
+    this.stdio = [this.stdin, this.stdout, this.stderr];
     return this;
   }
   // error 事件（spawn 预检失败/abort；无监听即抛——node 'error' 语义）。
@@ -1466,22 +1476,57 @@ export class ChildProcess {
     return 0;
   }
   __idOf() { return this.#id; }
+  // node 口径：显式资源管理（`using cat = spawn(...)`）——dispose 即 kill()
+  //（destroy 套件；asyncDispose 同步落定）。
+  [Symbol.dispose]() { try { this.kill(); } catch {} }
+  [Symbol.asyncDispose]() { try { this.kill(); } catch {} return Promise.resolve(); }
+  // node 口径：起进程成功后 nextTick 发 'spawn'（onSpawnNT）——早于任何
+  // data/exit/close 分发（spawn-event 套件 didSpawn 门）。
+  __emitSpawn() {
+    if (typeof this.onspawn === "function") {
+      try { this.onspawn(); } catch (e) { this.__emitError(e); }
+    }
+  }
   on(event, cb) {
     if (typeof cb !== "function") throw new TypeError("listener must be a function");
-    if (event === "exit") this.onexit = cb;
-    else if (event === "close") this.onclose = cb;
-    else if (event === "error") this.onerror = cb;
-    else if (event === "spawn") this.onspawn = cb;
+    // node 口径：同事件多监听并存（spawn-event 套件挂两个 'spawn'；旧单槽
+    //实现后挂顶掉先挂，didSpawn 永 false）。列表累积 + fan-out 落分发位。
+    if (event === "exit") { this.#exitL.push(cb); this.__install("exit"); }
+    else if (event === "close") { this.#closeL.push(cb); this.__install("close"); }
+    else if (event === "error") { this.#errorL.push(cb); this.__install("error"); }
+    else if (event === "spawn") { this.#spawnL.push(cb); this.__install("spawn"); }
     else if (event === "message" || event === "disconnect") {
       if (!this.__forkChild) {
         // spawn 子进程无 fd-passing 通道（记档缺口）：监听即明错，不静默吞
         throw Object.assign(new Error("ERR_NOT_SUPPORTED: child IPC channel not supported (use fork)"), { code: "ERR_NOT_SUPPORTED" });
       }
-      if (event === "message") this.#onmessage = cb;
-      else this.#ondisconnect = cb;
+      if (event === "message") { this.#msgL.push(cb); this.__install("message"); }
+      else { this.#discL.push(cb); this.__install("disconnect"); }
     }
     else throw new Error(`NotSupportedError: ChildProcess event '${event}' (exit/close/error/spawn/message/disconnect)`);
     return this;
+  }
+  // 监听列表扇出到单分发位（exit/close 走访问器 wrap 落码；空表即摘除）。
+  __install(event) {
+    if (event === "exit") {
+      const ls = [...this.#exitL];
+      this.onexit = ls.length ? ((code, signal) => { for (const fn of ls) fn(code, signal); }) : null;
+    } else if (event === "close") {
+      const ls = [...this.#closeL];
+      this.onclose = ls.length ? ((code, signal) => { for (const fn of ls) fn(code, signal); }) : null;
+    } else if (event === "error") {
+      const ls = [...this.#errorL];
+      this.onerror = ls.length ? ((...a) => { for (const fn of ls) fn(...a); }) : null;
+    } else if (event === "spawn") {
+      const ls = [...this.#spawnL];
+      this.onspawn = ls.length ? (() => { for (const fn of ls) fn(); }) : null;
+    } else if (event === "message") {
+      const ls = [...this.#msgL];
+      this.#onmessage = ls.length ? ((m) => { for (const fn of ls) fn(m); }) : null;
+    } else if (event === "disconnect") {
+      const ls = [...this.#discL];
+      this.#ondisconnect = ls.length ? (() => { for (const fn of ls) fn(); }) : null;
+    }
   }
   once(event, cb) {
     if (typeof cb !== "function") throw new TypeError("listener must be a function");
@@ -1492,12 +1537,13 @@ export class ChildProcess {
   }
   off(event, cb) {
     const match = (fn) => fn === cb || (typeof fn === "function" && fn.__wjs_orig === cb);
-    if (event === "exit" && match(this.#onexit)) this.onexit = null;
-    else if (event === "close" && match(this.#onclose)) this.onclose = null;
-    else if (event === "error" && match(this.#onerror)) this.onerror = null;
-    else if (event === "spawn" && match(this.#onspawn)) this.onspawn = null;
-    else if (event === "message" && match(this.#onmessage)) this.#onmessage = null;
-    else if (event === "disconnect" && match(this.#ondisconnect)) this.#ondisconnect = null;
+    const drop = (ls) => { const i = ls.findIndex(match); if (i >= 0) ls.splice(i, 1); };
+    if (event === "exit") { drop(this.#exitL); this.__install("exit"); }
+    else if (event === "close") { drop(this.#closeL); this.__install("close"); }
+    else if (event === "error") { drop(this.#errorL); this.__install("error"); }
+    else if (event === "spawn") { drop(this.#spawnL); this.__install("spawn"); }
+    else if (event === "message") { drop(this.#msgL); this.__install("message"); }
+    else if (event === "disconnect") { drop(this.#discL); this.__install("disconnect"); }
     return this;
   }
   removeListener(event, cb) { return this.off(event, cb); }
@@ -1796,6 +1842,8 @@ function __spawnInto(proc, file, args, o) {
   // exit 不发、close code -2——真机 probe）。
   const pf = o.shell === undefined ? __spawnPreflight(String(file), o) : __spawnPreflightCwd(o);
   if (pf !== null) {
+    // spawn-error 套件：err.spawnargs 为参数数组（与 spawnargs 同值）。
+    pf.spawnargs = [...proc.spawnargs];
     proc.__initStreams(o.stdio, 0);
     queueMicrotask(() => {
       proc.__emitError(pf);
@@ -1820,7 +1868,11 @@ function __spawnInto(proc, file, args, o) {
     const disposable = addAbortListener(o.signal, onAbort);
     proc.__onExited = () => { try { disposable[Symbol.dispose](); } catch {} };
   }
-  return proc.__init(id, o.stdio);
+  proc.__init(id, o.stdio);
+  // 'spawn' 事件 nextTick/microtask 发射（监听挂载在 spawn() 返回后同步发生，
+  // 恒早于数据/退出分发）。
+  queueMicrotask(() => { try { proc.__emitSpawn(); } catch {} });
+  return proc;
 }
 function __asyncOneShot(kind, run) {
   // run(): 同步 core 调用（抛转回调 err）；无 live 句柄（记档偏差）

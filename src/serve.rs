@@ -399,7 +399,11 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     }
     if let Some(thread) = js_session {
         // 优雅：停机旗后在飞请求排空线程自退；10s 未退即 warn（随进程退出回收）。
+        // Wake 打断空闲 park（否则无事件到来时停机旗 10s 才收敛，见 §4.166）。
         crate::serve_bridge::set_serve_shutdown();
+        if let Some(tx) = crate::serve_bridge::serve_tx_global() {
+            let _ = tx.send(crate::serve_bridge::ServeEvent::Wake);
+        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !thread.is_finished() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(50));

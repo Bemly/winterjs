@@ -65,6 +65,8 @@ pub enum ServeEvent {
     Chunk(u64, Vec<u8>),
     End(u64),
     Fail(u64, String),
+    /// 停机唤醒（无副作用，只打断 park 使停机旗收敛；见 serve.rs 收尾）。
+    Wake,
 }
 
 static SERVE_TX: OnceLock<Mutex<Option<tokio::sync::mpsc::UnboundedSender<ServeEvent>>>> =
@@ -211,6 +213,7 @@ pub fn dispatch(
             }
             Ok(())
         }
+        ServeEvent::Wake => Ok(()),
     }
 }
 

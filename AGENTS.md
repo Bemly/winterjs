@@ -2682,3 +2682,22 @@ cargo build
   （修前 405 空体；修后 201 回声）。
 - 推广为铁律：凡"名字像兜底"的轮子 API（not_found/fallback），先读源码确认
   状态改写语义再选；"静态优先、动态兜底"路由上线即验 GET/POST 双方法。
+
+### 4.166 serve 停机 Wake + 响应构造快照边界（2026-09-21，plan4 T1）
+
+- 症状一：空闲 `--serve --handler` 收 SIGTERM 后恒等 10s 才退，
+  日志 `serve JS session did not drain in time open=0`（在飞为零仍 warn）。
+- 根因：停机旗只在 quiescent 路径检查，`serve_loop` 空闲时 park 在通道上，
+  无事件到来即 10s 收尾超时（`src/runtime/serve_session.rs`）。
+- 修法：`ServeEvent::Wake` 无副作用事件（`serve_bridge.rs` dispatch 直返 Ok），
+  收尾先置旗再投 Wake 打断 park，SIGTERM 亚秒级退出（`src/serve.rs`）。
+- 症状二：handler `new Response(readableStream)` 报
+  `Response: unsupported body type`（500）。
+- 根因：prelude `Response` 构造是快照语义（`__wjs_normBody` 只收
+  string/U8/AB/null，与 fetch 客户端共享；`part03.rs:855`），与 undici
+  可收流不同——属共享语义边界，非 serve 桥 bug。
+- 修法（T1 范围）：构造期快照不动，`__wjs_serve_send_resp` 推送时 64KB 分片
+  （多 Chunk 通道 + 单 native 拷贝封顶；`part04.rs` serve 驱动内，零外溢）。
+  真流式构造（收 ReadableStream）留待另案（需动共享 `bodyUsed`/text 全家）。
+- 复现：`POST 2MB 回声逐字节一致` + `GET 5MB 分带校验` + `SIGTERM 亚秒退出`
+  （探针 `/tmp/wjs-serve-t1b-probe` 形；黑盒 `phase11_serve_large_body_streaming`）。

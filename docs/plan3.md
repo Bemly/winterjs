@@ -196,10 +196,12 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | child_process | async AbortSignal 尾件 / async 句柄面 / exec 多字节截断 | ~30 件 | Bun 实现了这些，欠；**fork/IPC handle 传递 ~25 件出局**（Bun 🟡 IPC 缺口，同缺不追） |
 | worker_threads | terminate 深水 / 环境面尾件 | 部分 | Bun 🟡 → parity 确认档；Atomics.wait（引擎面）与 stdio 流面（Bun 同缺倾向）另核 |
 
-### 待核对（1 项）
+### 待核对（1 项，已核对）
 
-- **URLPattern**（url 域 3 件 ⏭️）：bun-compat 快照无此行，需对 Bun 1.3 实测
-  确认其是否实现；实现了即入上表，没实现维持出局。
+- **URLPattern** ✅ 2026-09-20 实测归属：Bun 1.4.2 实现（`new URLPattern` +
+  `exec().pathname.groups` 可用），本仓 `typeof URLPattern === "undefined"`——
+  按 §5 口径（Bun 实现了的才是欠账）列为真实欠账，另轮专项（WHATWG
+  URLPattern 匹配语义 + groups 回填）。
 
 > 验收口径：上表全部转绿/或逐簇书面偏离前，Phase 10 对"Bun 🟢 域"不算
 > 逐字节到位；10f 的收官（§1 矩阵/报告/终局门）不受影响——欠账已全部

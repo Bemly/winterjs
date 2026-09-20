@@ -161,6 +161,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 3000)]
     pub port: u16,
 
+    /// JS handler file for --serve (export default { fetch } or export function fetch)
+    #[arg(long, value_name = "FILE")]
+    pub handler: Option<PathBuf>,
+
     /// Requests per second limit, 0 = unlimited
     #[arg(long, default_value_t = 0)]
     pub limit_rps: u32,

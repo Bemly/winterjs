@@ -492,3 +492,21 @@ fn https_get(
         parse_response(&raw)
     })
 }
+
+#[test]
+fn phase11_serve_handler_missing_file_errors() {
+    // 报错：`--handler` 缺文件即启动期可读错（plan4 §3 T1），exit=1。
+    let dir = serve_fixture();
+    let out = winterjs()
+        .args(["--serve", ".", "--port", "18098", "--handler", "nope.js"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot read --handler"),
+        "stderr: {stderr}"
+    );
+    dir.close().unwrap();
+}

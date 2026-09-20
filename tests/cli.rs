@@ -487,3 +487,25 @@ fn run_script_vue_dev_shape_through_node_module() {
     assert!(stdout.contains("vue-dev true function --watch-mode"), "stdout: {stdout}");
     dir.close().unwrap();
 }
+
+#[test]
+fn serve_handler_without_serve_errors() {
+    // 报错：`--handler` 是 `--serve` 的修饰 flag（§0.8），无 serve 即错。
+    let out = winterjs()
+        .args(["--handler", "h.js"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--handler only works with --serve"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn serve_help_lists_handler() {
+    // 正常：help/补全/man 同源生成（localized_command），`--handler` 可见。
+    let stdout = stdout_of(&mut winterjs().arg("--help"));
+    assert!(stdout.contains("--handler"), "help: {stdout}");
+}

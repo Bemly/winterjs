@@ -30,6 +30,8 @@ pub struct ServeOpts {
     pub key: Option<PathBuf>,
     /// ACME 自动证书（启用时签发/复用后转为内存 TLS；见 `acme`）。
     pub acme: Option<crate::acme::AcmeOpts>,
+    /// JS handler 文件（`--handler`；None=纯静态。动态桥接见 plan4 T1）。
+    pub handler: Option<PathBuf>,
 }
 
 /// TLS 配置加载（PEM 解析；`rustls-pemfile` 轮子；`ring` provider）。
@@ -237,6 +239,15 @@ async fn rewrite_ts_mime(
 /// 启动并跑到信号到来。调用方（main）已在 tokio runtime 内。
 pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     let root = validate_dir(&opts.dir)?;
+    // `--handler` 缺文件即启动期可读错（plan4 §3 T1；动态桥接落子后此处转交接）。
+    if let Some(h) = &opts.handler {
+        if !h.is_file() {
+            return Err(Error::Other(format!(
+                "cannot read --handler '{}': no such file",
+                h.display()
+            )));
+        }
+    }
     // `--cert/--key` 必须同给同缺（单给即报，不静默降级为明文）；ACME 与之互斥
     //（dispatch 已拦，此处双保险）；ACME 命中即内存 TLS（无文件落地，只有缓存）。
     let tls = match (&opts.cert, &opts.key, &opts.acme) {

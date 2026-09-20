@@ -241,6 +241,10 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
         };
         return testrun::run_tests(&cwd, &opts).await;
     }
+    // 修饰 flag 只在对应动作下生效（§0.8）：`--handler` 无 `--serve` 即错。
+    if cli.handler.is_some() && cli.serve.is_none() {
+        return Err(Error::Other("--handler only works with --serve (see --help)".into()));
+    }
     if let Some(dir) = cli.serve {
         // `--serve` 裸 flag 走 default_missing_value(".")；`--dir` 显式给则覆盖
         let dir = if dir != "." { std::path::PathBuf::from(dir) } else { cli.dir };
@@ -273,6 +277,7 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             cert: cli.cert,
             key: cli.key,
             acme: Some(acme).filter(|a| a.enabled()),
+            handler: cli.handler,
         })
         .await;
     }

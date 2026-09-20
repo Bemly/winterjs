@@ -193,7 +193,8 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | zlib | ~~增量语义~~ ✅ 2026-09-19 转绿（G9-1 Rust 状态机 + G9-2 JS 流类接线：write 即时压出/flush 档位即时出边界/finishFlush 容忍/rejectGarbageAfterEnd/一次性面切引擎错误口径对真机；6 目标套件+连带 5 件全绿，zlib 域 73/81） | ~6 件 | 已收官 |
 | zlib | ~~brotli 字典 / zstd pledged-src-size / Web DecompressionStream~~ ✅ 2026-09-19 转绿（G9-3：raw 字典构造期主动 set_dictionary；一次性压缩走引擎收口（dict/pledged/错误口径单点，字节对比零回归）；__zDictBytes 严格校验；pledgedSrcSize 全校验面 + 引擎终检 errno=72；constants.ZSTD_error_* 28 项；Web CS/DS 全局+stream/web——4 格式 roundtrip/尾垃圾 readable TypeError/proto 独立；6 目标套件全绿 + 82 件对拍零回归） | — | 已收官 |
 | dgram | ~~recvbuf 系~~ ✅ 2026-09-19 转绿（G1：recvbuf/sendbuf 四方法+隐式绑定+EMSGSIZE 回调路由+数组 send+族匹配解析+ALREADY_BOUND/EBADF 形状；DIFF 53→32，余 connect 族/membership/bindSync/ipv6only 等独立小簇 ~32 件顺延） | 小簇 | 已动工，余件逐 API 续补 |
-| child_process | async AbortSignal 尾件 / async 句柄面 / exec 多字节截断 | ~30 件 | Bun 实现了这些，欠；**fork/IPC handle 传递 ~25 件出局**（Bun 🟡 IPC 缺口，同缺不追） |
+| child_process | ~~async AbortSignal 尾件 / async 句柄面 / exec 多字节截断~~ ✅ 2026-09-21 转绿（G5b 三提交：参数归一逐字/kill+stdin+flush/stdio 转交+close 重放/fork env+internalMessage+net reusePort；作用域 76 件 DIFF 16→4，黑盒 19→23） | ~30→4 件 | 残 4 出局（handle 传递，见下行） |
+| child_process | 残件：send-keep-open/server-close/recv-handle/send-returns-boolean（live 句柄跨会话 + 4 元 stdio + backlog 记账） | 4 件 | 出局（Bun 🟡 IPC 缺口同缺，拍板维持；线程底座 token 共享另轮） |
 | worker_threads | terminate 深水 / 环境面尾件 | 部分 | Bun 🟡 → parity 确认档；Atomics.wait（引擎面）与 stdio 流面（Bun 同缺倾向）另核 |
 
 ### 待核对（1 项，已核对）

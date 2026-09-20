@@ -951,9 +951,10 @@ exit 不到，child 域，HEAD 同 hang 已实证）。
 > - 对拍：exec-encoding/exec-timeout-kill/exec-timeout-expire 转绿；
 >   `phase10f_child_exec_shell_self_and_timeout`/`spawn_abort_and_surface`/
 >   `stdin_legacy_and_fork_silent` 三 phase 落盒。
-> - 剩余红项（下轮）：exec-maxbuf 的多字节截断面（str slice 按 UTF-16 单元，
->   node 按 byte——中文用例内容差）、test-child-process-stdio 校验长尾、
->   fork/IPC handle 传递（底座另案）、windows 专属。
+> - 剩余红项（下轮）：exec-maxbuf 的多字节截断面（2026-09-21 实测与真机一致，
+>   早先 1/7 flake 后稳定，销账）、test-child-process-stdio 校验长尾
+>   （spawn-typeerror/stdio 流转交已修，销账）、fork/IPC handle 传递
+>   （底座另案，收敛为 4 件出局，见三轮）、windows 专属。
 >
 > ### 已修（每项经真机 26.8.2 对拍）
 >
@@ -985,7 +986,41 @@ exit 不到，child 域，HEAD 同 hang 已实证）。
 > - **ChildProcess.emit**（exit/close/error/spawn 四位，经访问器 wrap）
 >   + `args=null` 不吞 opts（四处同修，含 async）。
 >
-> ### 剩余红项（约 80，分簇）
+> ### 三轮（2026-09-21，child 尾件收官：作用域 76 件 SAME0=54/SAME1=6/DIFF=16 → DIFF=4）
+>
+> - **参数归一逐字**（spawn-typeerror 转绿）：spawn file/args/options
+>   （validateString/空 ARG_VALUE/纯对象回落/显式 null 与数组 ARG_TYPE）+
+>   uid/gid validateInt32（非数 ARG_TYPE、非整数/超 int32 RANGE，逐字节对真机）+
+>   execFile normalizeExecFileArgs 重写（args 留位/options 数组拒收/callback
+>   带 Received）+ fork（缺席即[]/纯对象回落/余下非数组 ARG_TYPE-Array、
+>   options 数组拒收）；黑盒 `phase10f_child_spawn_arg_validation`。
+> - **kill 转绿**：legacy 流 end/close 单监听亦起泵 + kill(0) 存在性短路
+>   （`Signal::try_from(0)` 落空 SIGKILL 误杀，改 `kill(target, None)`；
+>   killed=true 语义保留）+ stdin 轮询投递（`__wjs_stdin_poll` nix safe
+>   非阻塞读三态 + 首监听起 refed 轮询，EOF 自停；TTY 归 REPL）+
+>   stdout/stderr 逐次 flush（Rust 块缓冲致常驻进程输出滞留）。
+>   黑盒 `phase10f_child_kill_stdin_surface`。
+> - **stdio 流转交三件**（merge/reuse/pipe-dataflow 转绿）：数组流对象元按位
+>   搭桥（stdin 位 data/end 转入、stdout/stderr 位只转 data 不转 end）+
+>   `_handle.readStart` 兼容桩 + 流 end 递延 close + 进程 close 记录迟挂重放。
+>   黑盒 `phase10f_child_stdio_stream_handoff`。
+> - **fork env 透传**（net-reuseport 转绿兼 fork 炸弹根除）：`__normForkOpts`
+>   存 env 拷贝 → `new Worker(..., { env: o.env })`；net `__doListen`
+>   reusePort 直通 direct 路径（BoundSocket-adopt 早有，补齐）。
+>   黑盒 `phase10f_child_fork_env_and_internal`。
+> - **internalMessage 分流**（internal 转绿）：`cmd` 首段 `NODE_` 即内部消息
+>   面（+ 事件位注册/off/removeAllListeners 全表）。
+> - 另：exec-maxbuf 早先 flake（负载下 1/7）后 7/7 稳定，多字节截断口径
+>   与真机一致（str slice 字符数），不另修。
+>
+> ### 剩余红项（4 件，均为 handle 传递，出局：Bun 🟡 IPC 缺口同缺 + 拍板维持）
+>
+> - send-keep-open（live socket 跨会话写）、server-close（socket 作 stdio、
+>   另 hang）、recv-handle/send-returns-boolean（4 元 stdio + 句柄 +  backlog
+>   记账）。底座为同进程线程，token 共享理论可行，但跨会话状态机/GC
+>   风险高且系拍板出局项，不做。
+>
+> ### 剩余红项（约 80，分簇；2026-09-21 三轮后收敛为上之 4 件，以下为历史存档）
 >
 > - **fork/IPC 约 25 件**（多 TIMEOUT）：handle 传递（send/dgram/net-server
 >   共享）、高级序列化、ipc-next-tick——线程底座 IPC 语义另案。

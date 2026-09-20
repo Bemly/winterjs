@@ -2677,3 +2677,42 @@ cargo build
   直接 panic（bindSync 首版现形）。
 - 推广为铁律：新增 Rust→JS 调用点，函数体第一行先把全部 JS 值参数入槽
   （§4.141 的 require 版）；"改名即好"的结论默认不可信，先问分配序列。
+
+### 4.162 fork env 丢失即指数 fork 炸弹（2026-09-21，child 轮）
+
+- 症状：`net-reuseport` 探针打出数百个 `parent listening`（端口递增）+
+  `parent closing` 交织，进程数爆炸；套件 hang。
+- 根因：fork 只验 env（\0）不透传（"值忽略"记档），`new Worker(src, …)`
+  未带 env——子复走父分支（`isWorker` 缺失）再 fork，指数爆炸。
+  同源：net `Server.listen({reusePort})` 的 direct 路径丢选项（只
+  BoundSocket-adopt 路径透传），双绑即 EADDRINUSE。
+- 修法：`__normForkOpts` 存 env 拷贝 → `new Worker(src, { env: o.env })`
+  （缺省 Worker 侧快照继承，等价真机缺省）；net `__doListen` 加
+  reusePort 形参直通 native 第 4 参（`o.reusePort` 两分支同传）。
+- 复现：reuse2.mjs（修前炸弹，修后 worker 单次 listening + exit 0）。
+- 推广为铁律：凡"子复用父文件"（fork/self-spawn）的开关量（env/argv），
+  丢失即自指递归——接线完备性按"子能否区分自己"逐项验。
+
+### 4.163 Rust Stdout 块缓冲吞常驻输出（2026-09-21，child 轮）
+
+- 症状：子进程 `write('x')` 后等 stdin，父永收不到，双边 hang；
+  直接跑同代码（无 interval）却正常（"xtrue" 现形）。
+- 根因：`std::io::stdout().write_all` 经块缓冲（管道无换行即滞留）；
+  进程即退时 exit 刷出掩盖，常驻即永滞。console.log 带换行故无事，
+  精确制导到 `process.stdout.write` 无换行 + 循环存续才现形。
+- 修法：`stdout_write/stderr_write` 逐次 `flush()`（Node 写无缓冲；
+  stderr 本无缓冲，对称 no-op 防后人误抄）。
+- 复现：`--eval 'process.stdout.write("x"); setInterval(...)'` 管道接
+  （修前零输出，修后即时见 x）。
+- 推广为铁律：宿主侧一切"写 fd"面，默认逐次刷——缓冲是传输优化，
+  不是语义；"退出即对、常驻即错"的分裂是块缓冲的指纹。
+
+### 4.164 数字信号 0 无枚举值，落空即 SIGKILL（2026-09-21，child 轮）
+
+- 症状：`kill(0)`（存在性检查）直接杀掉目标（exit null SIGKILL）。
+- 根因：`Signal::try_from(0)` 无对应变体 → `unwrap_or(SIGKILL)`。
+- 修法：`raw == "0"` 短路 `kill(target, None)` 纯验活（nix 口径）；
+  JS 侧 `killed=true` 保留（真机同款）。
+- 复现：kill0.mjs（修前误杀，修后存活到显式 kill）。
+- 推广为铁律：`try_from(x).unwrap_or(默认)` 写法先问"落空值是不是合法
+  输入"——0/空串类哨兵值落空即灾难，哨兵短路永远先于转换。

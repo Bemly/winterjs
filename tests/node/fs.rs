@@ -488,30 +488,33 @@ setTimeout(() => console.log("end-ok"), 50);
 
 #[test]
 fn phase9c_fs_watchfile_poll() {
-    // 正常：watchFile 轮询侦测到 append（size 变化即派发 curr/prev）；
-    // unwatchFile 指定监听摘除后不再派发；StatWatcher stop/ref/unref 链式。
-    // 报错：listener 非函数即 TypeError。边界：stat 失败的 tick 跳过不派发。
+    // 正常：同路径单例（w===w2，监听累积，listenerCount 2）；stop 关共享句柄
+    //（后续 append 不再派发，真机 w2.stop 口径）；unwatchFile 指定摘除后归零即停。
+    // 报错：listener 非函数即 ERR_INVALID_ARG_TYPE TypeError。
+    // 边界：缺席文件首轮即发 (zero,zero)（真机实测）。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("w.txt").write_str("aaa").unwrap();
+    dir.child("v.txt").write_str("aaa").unwrap();
     let file = dir.child("m.mjs");
     file.write_str(
         r#"
 import { watchFile, unwatchFile, appendFileSync } from "node:fs";
 try { watchFile("w.txt"); console.log("NO-ERR"); }
-catch (e) { console.log("bad-listener", e.constructor.name); }
+catch (e) { console.log("bad-listener", e.constructor.name, e.code === "ERR_INVALID_ARG_TYPE"); }
 let calls = 0;
-const w = watchFile("w.txt", { interval: 100 }, (curr, prev) => {
-  calls++;
-  console.log("changed", curr.size, prev.size, curr.size > prev.size);
-  unwatchFile("w.txt");
-});
+let vCalls = 0;
+const w = watchFile("w.txt", { interval: 100 }, () => { calls += 1; });
 const w2 = watchFile("w.txt", { interval: 100 }, () => { calls += 10; });
+console.log("same", w === w2, w.listenerCount("change") === 2);
 console.log("chain", w2.stop() === w2, w2.ref() === w2, w2.unref() === w2);
-setTimeout(() => { appendFileSync("w.txt", "bbbb"); }, 350);
+const vfn = () => { vCalls += 1; };
+watchFile("v.txt", { interval: 100 }, vfn);
+unwatchFile("v.txt", vfn);
+setTimeout(() => { appendFileSync("w.txt", "bbbb"); appendFileSync("v.txt", "bbbb"); }, 350);
 setTimeout(() => {
-  console.log("calls", calls);
+  console.log("calls", calls, vCalls);
   unwatchFile("w.txt");
-}, 1400);
+}, 900);
 "#,
     )
     .unwrap();
@@ -523,7 +526,7 @@ setTimeout(() => {
         .unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let out = String::from_utf8(out.stdout).unwrap();
-    for line in ["bad-listener TypeError", "chain true true true", "changed 7 3 true", "calls 1"] {
+    for line in ["bad-listener TypeError true", "same true true", "chain true true true", "calls 0 0"] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }
     dir.close().unwrap();

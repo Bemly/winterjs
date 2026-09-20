@@ -4759,6 +4759,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_fs_fsync", Some(node::fs::fs_fsync), 2),
             ("__wjs_watch_start", Some(node::fs::watch_start), 4),
             ("__wjs_watch_close", Some(node::fs::watch_close), 1),
+            ("__wjs_watch_persistent", Some(node::fs::watch_persistent), 2),
             ("__wjs_glob_match", Some(node::fs::glob_match), 4),
             // Phase 4c: child_process
             // Phase 9d: node:net + node:dns

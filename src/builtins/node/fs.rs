@@ -1862,6 +1862,25 @@ pub unsafe extern "C" fn watch_close(
     true
 }
 
+/// `__wjs_watch_persistent(id, bool)`（ref/unref 续命位；幂等，不存在即 noop）。
+pub unsafe extern "C" fn watch_persistent(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 || !frame.arg(0).is_number() {
+        report_error(&mut cx, "TypeError: watch persistent needs a numeric id and flag");
+        return false;
+    }
+    let on = frame.arg(1) == mozjs::jsval::BooleanValue(true);
+    state::watch_set_persistent(frame.arg(0).to_number() as u64, on);
+    frame.set_rval(UndefinedValue());
+    true
+}
+
 /// 事件循环分发一条 watch 事件（监听保留，多次触发；失败摘除并 WARN）。
 /// 前置条件：cx 已进入 global 所属 realm（事件循环上下文，`call_two` 合规）。
 pub fn dispatch(
@@ -2756,9 +2775,17 @@ class __FSWatcher extends EventEmitter {
   constructor() { super(); this.#id = 0; }
   __attach(id) { this.#id = id; return this; }
   close() {
-    if (this.#id !== 0) { __wjs_watch_close(this.#id); this.#id = 0; }
-    this.emit("close");
+    // node 口径（lib/internal/fs/watchers.js FSWatcher.close）：已关即 noop；
+    // 'close' 经 nextTick 异步发（handler 内自调 close 安全）。
+    if (this.#id !== 0) {
+      __wjs_watch_close(this.#id); this.#id = 0;
+      process.nextTick(() => this.emit("close"));
+    }
   }
+  // node 口径：ref/unref 取/释底层句柄引用（watch-ref-unref 套件：unref 后
+  // 进程可退；Rust 侧 watch_open 计数联动，幂等）。
+  ref() { if (this.#id !== 0) __wjs_watch_persistent(this.#id, true); return this; }
+  unref() { if (this.#id !== 0) __wjs_watch_persistent(this.#id, false); return this; }
   get closed() { return this.#id === 0; }
 }
 export function watch(p, opts, listener) {
@@ -2787,11 +2814,15 @@ export function watch(p, opts, listener) {
   }
   return watcher;
 }
-// stat 轮询表（watchFile 底座；interval 経 setInterval，statSync 取样）。
-// 偏差记档：persistent:false 不实际 unref（定时器 keep-alive 由 Rust 表决定，
-// 全局 Timeout 语义见 mod.rs）；stat 失败的 tick 跳过（不派发，缺失→出现视为
-// 一次变化）；bigint 选项接受忽略（恒返回数字 Stats，chokidar 等调用方无影响）。
+// stat 轮询（watchFile 底座；interval 経 setInterval，statSync 取样）。
+// node 口径（lib/internal/fs/watchers.js StatWatcher）：EventEmitter 形
+// （'change'/'stop' + listenerCount）；stop() 经 nextTick 发 'stop'（已停即
+// noop，不重发）；ref/unref 链式（定时器 keep-alive 由 Rust 表决定，记档）；
+// 缺席侧零 Stats 派发（watchfile 套件：缺席首轮 (zero,zero)，出现轮 prev.ino<=0）。
 const __statWatchers = new Map();
+function __zeroStats() {
+  return new __Stats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+}
 function __statPoll(p) {
   const rec = __statWatchers.get(p);
   if (!rec) return;
@@ -2799,66 +2830,70 @@ function __statPoll(p) {
   try { curr = statSync(p); } catch { curr = null; }
   const prev = rec.prev;
   rec.prev = curr;
-  if (curr === null || prev === null) {
-    if ((curr === null) !== (prev === null)) {
-      for (const l of [...rec.listeners]) l(curr ?? prev, prev ?? curr);
-      for (const l of [...rec.changeListeners]) l(curr ?? prev, prev ?? curr);
+  // 缺席文件首轮即发 (zero,zero)（真机实测；seen 旗区分"未轮询"与"轮询过缺席"）。
+  if (!rec.seen) {
+    rec.seen = true;
+    if (curr === null && prev === null) {
+      const z = __zeroStats();
+      rec.watcher.emit("change", z, __zeroStats());
     }
     return;
   }
-  if (curr.size !== prev.size || curr.mtimeMs !== prev.mtimeMs) {
-    for (const l of [...rec.listeners]) l(curr, prev);
-    for (const l of [...rec.changeListeners]) l(curr, prev);
-  }
+  if (curr === null && prev === null) return;
+  if (curr !== null && prev !== null && curr.size === prev.size && curr.mtimeMs === prev.mtimeMs) return;
+  const c = curr ?? __zeroStats();
+  const v = prev ?? __zeroStats();
+  rec.watcher.emit("change", c, v);
 }
-class __StatWatcher {
+class __StatWatcher extends EventEmitter {
   #path;
-  #listener;
-  constructor(p, listener) { this.#path = p; this.#listener = listener; }
-  stop() { unwatchFile(this.#path, this.#listener); return this; }
+  #stopped;
+  constructor(p) { super(); this.#path = p; this.#stopped = false; }
+  stop() {
+    // 已停即 noop（不重发 stop，watchfile 套件点名）；同路径单例：停即全停
+    //（真机 w2.stop 关共享句柄口径），摘表停 timer + nextTick 发 stop。
+    if (this.#stopped) return this;
+    this.#stopped = true;
+    const rec = __statWatchers.get(this.#path);
+    if (rec && rec.watcher === this) {
+      clearInterval(rec.timer);
+      __statWatchers.delete(this.#path);
+    }
+    process.nextTick(() => this.emit("stop"));
+    return this;
+  }
   close() { return this.stop(); }
   ref() { return this; }
   unref() { return this; }
-  on(type, cb) {
-    if (type === "change" && typeof cb === "function") {
-      const rec = __statWatchers.get(this.#path);
-      if (rec) rec.changeListeners.add(cb);
-    }
-    return this;
-  }
-  off(type, cb) {
-    if (type === "change") {
-      const rec = __statWatchers.get(this.#path);
-      if (rec && cb) rec.changeListeners.delete(cb);
-    }
-    return this;
-  }
 }
 export function watchFile(p, opts, listener) {
   if (typeof opts === "function") { listener = opts; opts = {}; }
-  if (typeof listener !== "function") throw new TypeError("watchFile: listener must be a function");
+  if (typeof listener !== "function") {
+    const e = new TypeError(`The "listener" argument must be of type function. Received ${listener}`);
+    e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+  }
   p = __fsPath(p, "watchFile");
   const interval = (opts && Number(opts.interval) > 0) ? Number(opts.interval) : 5007;
+  // node 口径：同路径单例 watcher（多次 watchFile 同一对象，监听累积；
+  // watchfile-ref-unref 套件 listenerCount 点名）。
   let rec = __statWatchers.get(p);
   if (!rec) {
-    rec = { listeners: new Set(), changeListeners: new Set(), prev: null, timer: null };
+    rec = { watcher: new __StatWatcher(p), prev: null, seen: false, timer: null };
     try { rec.prev = statSync(p); } catch { rec.prev = null; }
     rec.timer = setInterval(() => __statPoll(p), interval);
     __statWatchers.set(p, rec);
   }
-  rec.listeners.add(listener);
-  return new __StatWatcher(p, listener);
+  rec.watcher.on("change", listener);
+  return rec.watcher;
 }
 export function unwatchFile(p, listener) {
   p = __fsPath(p, "unwatchFile");
   const rec = __statWatchers.get(p);
   if (!rec) return;
-  if (typeof listener === "function") rec.listeners.delete(listener);
-  else rec.listeners.clear();
-  if (rec.listeners.size === 0 && rec.changeListeners.size === 0) {
-    clearInterval(rec.timer);
-    __statWatchers.delete(p);
-  }
+  // node 口径：摘指定监听（缺省全摘）；归零即 stop（恰发一次 stop）。
+  if (typeof listener === "function") rec.watcher.removeListener("change", listener);
+  else rec.watcher.removeAllListeners("change");
+  if (rec.watcher.listenerCount("change") === 0) rec.watcher.stop();
 }
 // ---- fs 流（10f：createReadStream 换 node ReadStream——真机 26 口径
 // open(fd)/ready/data(Buffer)/end/close 事件序 + path/flags/autoClose/

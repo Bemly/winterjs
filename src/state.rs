@@ -1206,6 +1206,23 @@ pub fn watch_listener(id: u64) -> Option<JSVal> {
     with_rooted(|s| s.watch_listeners.iter().find(|w| w.id == id).map(|w| w.listener.get()))
 }
 
+/// ref/unref 切换一路 watch 的续命位（node FSWatcher 句柄语义；幂等，
+/// 不存在即 noop；watch_open 计数同步，事件循环退出条件用）。
+pub fn watch_set_persistent(id: u64, persistent: bool) {
+    with_plain(|p| {
+        if let Some((_, flag)) = p.watch_drivers.get_mut(&id) {
+            if *flag != persistent {
+                *flag = persistent;
+                if persistent {
+                    p.watch_open += 1;
+                } else {
+                    p.watch_open = p.watch_open.saturating_sub(1);
+                }
+            }
+        }
+    });
+}
+
 /// 关闭一路 watch（幂等；残留事件落空）。
 pub fn watch_remove(id: u64) {
     with_rooted(|s| {

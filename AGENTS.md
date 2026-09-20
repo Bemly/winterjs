@@ -2515,3 +2515,14 @@ cargo build
   在重编码面不成立，以"解析等价 + 细节稳定"为准。
 - 复现：`tests/node/crypto.rs::phase10f_crypto_pss_gates`（`r6-*` 行；
   另 `test-crypto-key-objects.js` 余唯一红块见 bun-parity）。
+
+### 4.150 edit 工具可能静默吞行：oldString 跨行即 diff 复核（2026-09-20，G5 轮·工具约束）
+
+- 症状：两次 edit 后相邻整行消失——`__normExecOpts` 的 maxBuffer 行、
+  `__normForkOpts` 的 killSignal 行；oldString 里根本没含那两行，编辑却"成功"，
+  maxBuffer 套件全灭（err null + 全量输出）才现形。
+- 根因：未深究（疑似多行 oldString 的模糊匹配吞了中间行；§4.28 姊妹篇）。
+- 修法：补回整行（与原文逐字节同）；此后凡多行 edit，提交前必
+  `git diff | grep "^-"` 逐条核对删除行是否全部有意（本轮即靠此抓到第二处）。
+- 推广为铁律：edit 的删除行默认全部可疑——无 `-` 行是意外之喜，有即逐条认领；
+  大 edit 拆小步 + 步步 `git diff`（§4.28 验落盘的 diff 版）。

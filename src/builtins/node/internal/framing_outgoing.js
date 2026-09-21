@@ -401,8 +401,10 @@ export function withHttpServer(Base) {
           res.__maxReq = this.maxRequestsPerSocket;
           st.reqCount = (st.reqCount ?? 0) + 1;
           // node 口径：超 maxRequestsPerSocket 的管线请求回 503 +
-          // 关连接（keep-alive-pipeline-max-requests 套件第 4 路）。
+          // 关连接（keep-alive-pipeline-max-requests 套件第 4 路），并派发
+          // 'dropRequest'（request, socket；drop-requests 套件点名类型）。
           if (this.maxRequestsPerSocket > 0 && st.reqCount > this.maxRequestsPerSocket) {
+            try { this.emit("dropRequest", req, sock); } catch { /* 监听抛错不阻 503 */ }
             try { sock.write(new TextEncoder().encode("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
             try { sock.destroy(); } catch { /* gone */ }
             return;
@@ -680,9 +682,10 @@ export function withClientRequest(openSocket, flavor) {
       if (this.__headers.host === undefined) {
         this.__headers.host = port === this.__defaultPort ? host : `${host}:${port}`;
       }
-      // node ctor 口径：shouldKeepAlive = agent 在场且 keepAlive（真机
-      // _http_client.js ctor：无 agent / 非 keepAlive agent → Connection: close）。
-      this.shouldKeepAlive = this.agent !== null && this.agent.keepAlive === true;
+      // node ctor 口径（_http_client.js）：有 agent 即默认 keep-alive，
+      // 仅非 keepAlive agent + maxSockets 无限时回落 close；无 agent 即 close。
+      this.shouldKeepAlive = this.agent !== null &&
+        (this.agent.keepAlive === true || Number.isFinite(this.agent.maxSockets));
       if (this.__headers.connection === undefined) {
         this.__headers.connection = this.shouldKeepAlive ? "keep-alive" : "close";
         this.__autoConn = true;

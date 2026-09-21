@@ -526,6 +526,73 @@ export class ServerResponse extends Writable {
       try { this.__sock.write(new TextEncoder().encode("HTTP/1.1 100 Continue\r\n\r\n")); } catch { /* gone */ }
     }
   }
+  // node writeProcessing()：writeInformation(102) 速记。
+  writeProcessing() {
+    return this.writeInformation(102);
+  }
+  // node writeEarlyHints(hints)：103 Early Hints（early-hints 套件）。
+  // link 缺席/空结果即静默跳过（mustNotCall information 形）；数组以 ", "
+  // 连接；link 格式逐字真机正则；其余键原样透传（非法字符/名走既有头校验门）。
+  writeEarlyHints(hints) {
+    if (hints === null || typeof hints !== "object" || Array.isArray(hints)) {
+      throw new codes.ERR_INVALID_ARG_TYPE("hints", "object", hints);
+    }
+    const link = hints.link;
+    if (link === null || link === undefined) return;
+    const __linkRe = /^(?:<[^>\r\n]*>)(?:\s*;\s*[^;"\s]+(?:=(")?[^;"\s]*\1)?)*$/;
+    const __checkLink = (v) => {
+      if (typeof v !== "string" || !__linkRe.test(v)) {
+        throw new codes.ERR_INVALID_ARG_VALUE("hints", v);
+      }
+    };
+    let joined;
+    if (typeof link === "string") {
+      __checkLink(link);
+      joined = link;
+    } else if (Array.isArray(link)) {
+      if (link.length === 0) return;
+      for (const e of link) __checkLink(e);
+      joined = link.join(", ");
+    } else {
+      throw new codes.ERR_INVALID_ARG_VALUE("hints", link);
+    }
+    if (joined.length === 0) return;
+    const headers = Object.create(null);
+    headers.Link = joined;
+    for (const k of Object.keys(hints)) {
+      if (k !== "link") headers[k] = hints[k];
+    }
+    return this.writeInformation(103, headers);
+  }
+  // node writeInformation(statusCode[, headers])：1xx 中间响应直发（不占终态
+  // 头、不置 headersSent；information/early-hints 套件；客户端侧 'information'
+  // 事件既有）。非法码抛 ERR_HTTP_INVALID_STATUS_CODE（与 writeHead 同门）。
+  writeInformation(info, headers) {
+    let status;
+    let hdrs;
+    if (info !== null && typeof info === "object") {
+      status = info.statusCode;
+      hdrs = info.headers;
+    } else {
+      status = info;
+      hdrs = headers;
+    }
+    if (typeof status !== "number" || !(status >= 100 && status <= 199)) {
+      throw new codes.ERR_HTTP_INVALID_STATUS_CODE(`Invalid status code: ${String(status)}`);
+    }
+    if (this.__sock === null || this.__sock.destroyed) return false;
+    const reason = STATUS_CODES[status] ?? "";
+    const lines = [`HTTP/1.1 ${status} ${reason}`.trimEnd()];
+    // 原拼写上网（rawHeaders 回显；information 套件断言 'Foo' 非 'foo'）。
+    const __names = Object.create(null);
+    for (const [k, v] of Object.entries(__lowerHeaders(hdrs ?? {}, this.__validation, __names))) {
+      lines.push(`${__names[k] ?? k}: ${v}`);
+    }
+    try {
+      this.__sock.write(new TextEncoder().encode(lines.join("\r\n") + "\r\n\r\n"));
+    } catch { return false; /* gone */ }
+    return true;
+  }
   // node setHeaders：只收 Headers 实例（entries 方法），否则 ERR_INVALID_ARG_TYPE。
   setHeaders(headers) {
     if (headers === null || typeof headers !== "object" || typeof headers.entries !== "function") {

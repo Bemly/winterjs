@@ -1,8 +1,20 @@
     setHeader(name, value) {
       if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
-      __checkOutboundHeaderValue(this.__validation, value);
       const lk = String(name).toLowerCase();
-      this.__headers[lk] = String(value);
+      // node 口径：数组值按多行发出（dont-set-default 套件 foo 双行）；
+      // 用户拼写记 __headerNames 供上网（'HOST' 非 'host'）。
+      if (Array.isArray(value)) {
+        const __arr = [];
+        for (const __e of value) {
+          __checkOutboundHeaderValue(this.__validation, __e);
+          __arr.push(String(__e));
+        }
+        this.__headers[lk] = __arr;
+      } else {
+        __checkOutboundHeaderValue(this.__validation, value);
+        this.__headers[lk] = String(value);
+      }
+      (this.__headerNames ??= {})[lk] = String(name);
       if (lk === "connection") this.__autoConn = false;
       return this;
     }
@@ -12,12 +24,22 @@
       __checkOutboundHeaderValue(this.__validation, value);
       const lk = String(name).toLowerCase();
       const cur = this.__headers[lk];
-      this.__headers[lk] = cur !== undefined ? `${cur}, ${value}` : String(value);
+      if (Array.isArray(cur)) cur.push(String(value));
+      else this.__headers[lk] = cur !== undefined ? `${cur}, ${value}` : String(value);
+      (this.__headerNames ??= {})[lk] = String(name);
       if (lk === "connection") this.__autoConn = false;
       return this;
     }
-    getHeader(name) { return this.__headers[String(name).toLowerCase()]; }
-    removeHeader(name) { delete this.__headers[String(name).toLowerCase()]; return this; }
+    getHeader(name) {
+      const v = this.__headers[String(name).toLowerCase()];
+      return Array.isArray(v) ? v.join(", ") : v;
+    }
+    removeHeader(name) {
+      const lk = String(name).toLowerCase();
+      delete this.__headers[lk];
+      if (this.__headerNames !== undefined) delete this.__headerNames[lk];
+      return this;
+    }
     getHeaderNames() { return Object.keys(this.__headers); }
     getPort() { return this.__port; }
     getHost() { return this.host; }
@@ -204,11 +226,32 @@
       } else if (this.__chunked) {
         this.__headers["transfer-encoding"] = "chunked";
       }
-      // 自动头规范大写（真机口径）；自设头按用户拼写（本仓小写存取）。
+      // 自动头规范大写（真机口径）；自设头按用户拼写（__headerNames；
+      // dont-set-default 套件 'HOST' 原样），数组值逐行发出。
       const canon = { "transfer-encoding": "Transfer-Encoding", "content-length": "Content-Length" };
-      for (const [k, v] of Object.entries(this.__headers)) {
-        const name = k === "connection" && this.__autoConn ? "Connection" : (canon[k] ?? k);
+      const __names = this.__headerNames ?? {};
+      const __emitOne = (k, v) => {
+        if (Array.isArray(v)) {
+          const __n = __names[k] ?? (canon[k] ?? k);
+          for (const __e of v) head.push(`${__n}: ${__e}`);
+          return;
+        }
+        let name;
+        if (__names[k] !== undefined) name = __names[k];
+        else if (k === "connection" && this.__autoConn) name = "Connection";
+        else name = canon[k] ?? k;
         head.push(`${name}: ${v}`);
+      };
+      // 数组形 headers：有序对原样发出（含 dupes；dont-set-default 套件），
+      // 对象侧自动头（host/connection）缺位即补。
+      if (this.__headerList !== null && this.__headerList !== undefined) {
+        const __seen = new Set(this.__headerList.map(([k]) => String(k).toLowerCase()));
+        for (const [k, v] of this.__headerList) head.push(`${k}: ${v}`);
+        for (const [k, v] of Object.entries(this.__headers)) {
+          if (!__seen.has(k)) __emitOne(k, v);
+        }
+      } else {
+        for (const [k, v] of Object.entries(this.__headers)) __emitOne(k, v);
       }
       this.__sock.write(new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n"));
     }

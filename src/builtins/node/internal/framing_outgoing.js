@@ -264,11 +264,19 @@ export function withHttpServer(Base) {
       this.__clearReqTimers(st);
       if (this.headersTimeout > 0) {
         st.__hdT = setTimeout(() => { st.__hdT = null; this.__reqTimeout(sock); }, this.headersTimeout);
-        st.__hdT.unref();
+        // 看门狗计时不续命（kaT 同款；dont-set-default 套件 60s 空转根因，
+        // 连接本身 ref 续命，计时只负责到期销毁）。
+        if (typeof st.__hdT.unref === "function") st.__hdT.unref();
       }
       if (withKa && st.sawRequest && this.keepAliveTimeout > 0) {
-        st.__kaT = setTimeout(() => { st.__kaT = null; try { sock.destroy(); } catch { /* gone */ } }, this.keepAliveTimeout + this.keepAliveTimeoutBuffer);
+        st.__kaT = setTimeout(() => {
+          if (globalThis.__WJS_DBGKA) console.log("[dbg-ka] fire");
+          st.__kaT = null; try { sock.destroy(); } catch { /* gone */ }
+        }, this.keepAliveTimeout + this.keepAliveTimeoutBuffer);
         st.__kaT.unref();
+        if (globalThis.__WJS_DBGKA) console.log("[dbg-ka] armed");
+      } else if (globalThis.__WJS_DBGKA) {
+        console.log("[dbg-ka] skip withKa=" + withKa + " saw=" + st.sawRequest + " ka=" + this.keepAliveTimeout);
       }
     }
     __armMsgTimer(st, sock) {
@@ -678,15 +686,47 @@ export function withClientRequest(openSocket, flavor) {
       if (this.timeout !== undefined || (typeof __agentTimeout === "number" && __agentTimeout > 0)) {
         this.timeoutCb = () => this.emit("timeout");
       }
-      this.__headers = __lowerHeaders(userHeaders);
-      if (this.__headers.host === undefined) {
+      // node 口径：headers 数组形（[k,v,...]，dupes 有序保留）与
+      // setDefaultHeaders=false（禁自动 Host/Connection；dont-set-default
+      // 套件）。数组形另存有序对供发头（对象形 last-wins 仅供查取）。
+      this.__headerList = null;
+      this.__headerNames = Object.create(null);
+      if (Array.isArray(userHeaders)) {
+        if (userHeaders.length % 2 !== 0) {
+          throw new codes.ERR_INVALID_ARG_TYPE("headers", "object", userHeaders);
+        }
+        const __list = [];
+        for (let __i = 0; __i < userHeaders.length; __i += 2) {
+          const __k = String(userHeaders[__i]);
+          if (!__TOKEN_RE.test(__k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", __k);
+          __list.push([__k, String(userHeaders[__i + 1])]);
+          this.__headerNames[__k.toLowerCase()] = __k;
+        }
+        this.__headerList = __list;
+        this.__headers = __lowerHeaders(Object.fromEntries(__list.map(([k, v]) => [k, v])));
+      } else {
+        this.__headers = __lowerHeaders(userHeaders);
+        for (const __k of Object.keys(userHeaders ?? {})) {
+          this.__headerNames[String(__k).toLowerCase()] = String(__k);
+        }
+      }
+      const __noDefaults = options.setDefaultHeaders === false;
+      // 自动 CL/TE 同禁（dont-set-default 套件：POST 空体不补 CL:0；显式
+      // CL/TE 照发）。_final/刷盘路径经 __noDefaults 查之。
+      this.__noDefaults = __noDefaults;
+      // setHost:true 即补 Host（dont-set 下亦补；拼写取规范 'Host'）。
+      if (options.setHost === true && this.__headers.host === undefined) {
+        this.__headers.host = port === this.__defaultPort ? host : `${host}:${port}`;
+        this.__headerNames.host = "Host";
+      }
+      if (!__noDefaults && this.__headers.host === undefined) {
         this.__headers.host = port === this.__defaultPort ? host : `${host}:${port}`;
       }
       // node ctor 口径（_http_client.js）：有 agent 即默认 keep-alive，
       // 仅非 keepAlive agent + maxSockets 无限时回落 close；无 agent 即 close。
       this.shouldKeepAlive = this.agent !== null &&
         (this.agent.keepAlive === true || Number.isFinite(this.agent.maxSockets));
-      if (this.__headers.connection === undefined) {
+      if (!__noDefaults && this.__headers.connection === undefined) {
         this.__headers.connection = this.shouldKeepAlive ? "keep-alive" : "close";
         this.__autoConn = true;
       }
@@ -694,7 +734,9 @@ export function withClientRequest(openSocket, flavor) {
       // 真机口径（10f G3，node 26.8.2 实测）：CL 快路径仅当 end(data) 是首个
       // 头触发点；write/flushHeaders 在前 → chunked；GET/HEAD/DELETE/OPTIONS/
       // TRACE/CONNECT（useChunkedEncodingByDefault=false 族）→ 无 CL/TE 裸体。
-      this.__chunkDefault = !["GET", "HEAD", "DELETE", "OPTIONS", "TRACE", "CONNECT"].includes(method);
+      // setDefaultHeaders=false 一律裸体（dont-set-default 套件：无自动 CL/TE）。
+      this.__chunkDefault = !this.__noDefaults &&
+        !["GET", "HEAD", "DELETE", "OPTIONS", "TRACE", "CONNECT"].includes(method);
       this.__sawWrite = false;
       this.__endFast = false;
       this.__chunked = false;

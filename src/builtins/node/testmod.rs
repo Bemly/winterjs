@@ -536,9 +536,9 @@ async function __runOne(rec) {
         if (rec.signalCtrl) rec.signalCtrl.abort();
       }
     } catch {}
-    // 本测试 mock 全家自动复原（node Test 收尾语义；子测试各有 tracker）。
+    // 本测试 mock 全家自动复原（node Test 收尾 `mock.reset()` 口径：含 timers）。
     try {
-      if (rec.mockObj) rec.mockObj.restoreAll();
+      if (rec.mockObj) rec.mockObj.reset();
     } catch {}
     rec.resolve();
   }

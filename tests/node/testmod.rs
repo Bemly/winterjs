@@ -107,6 +107,38 @@ fn phase10f_test_mock_fn_and_method() {
 }
 
 #[test]
+fn phase10f_test_mock_timers_date() {
+    // mock.timers Date 面：替换/推进/复原 + 未启用门。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("t.mjs");
+    file.write_str(
+        "import { test } from \"node:test\";\nimport assert from \"node:assert\";\ntest(\"date\", (t) => {\n  t.mock.timers.enable({ apis: [\"Date\"] });\n  assert.ok(Date.isMock);\n  assert.strictEqual(Date.now(), 0);\n  assert.strictEqual(new Date().getTime(), 0);\n  t.mock.timers.tick(100);\n  assert.strictEqual(Date.now(), 100);\n  t.mock.timers.setTime(500);\n  assert.strictEqual(Date.now(), 500);\n  assert.strictEqual(Date(), new Date(500).toString());\n});\ntest(\"after-reset\", () => {\n  assert.strictEqual(Date.isMock, undefined);\n  assert.ok(Date.now() > 1000);\n});\ntest(\"gates\", (t) => {\n  assert.throws(() => t.mock.timers.setTime(1), { code: \"ERR_INVALID_STATE\" });\n  assert.throws(() => t.mock.timers.enable({ now: -1 }), { code: \"ERR_INVALID_ARG_VALUE\" });\n  assert.throws(() => t.mock.timers.enable({ now: \"x\" }), { code: \"ERR_INVALID_ARG_TYPE\" });\n});\n",
+    )
+    .unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "mock timers date: {stdout}");
+    assert!(stdout.contains("# pass 3, fail 0, skip 0, todo 0"), "summary: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_test_mock_timers_scheduler() {
+    // mock.timers scheduler.wait 面：tick 推进落定 + 中止拒绝。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("t.mjs");
+    file.write_str(
+        "import { test } from \"node:test\";\nimport assert from \"node:assert\";\nimport { scheduler } from \"node:timers/promises\";\ntest(\"wait\", async (t) => {\n  t.mock.timers.enable({ apis: [\"scheduler.wait\"] });\n  const p = scheduler.wait(4000);\n  t.mock.timers.tick(4000);\n  assert.strictEqual(await p, undefined);\n});\ntest(\"abort\", async (t) => {\n  t.mock.timers.enable({ apis: [\"scheduler.wait\"] });\n  const c = new AbortController();\n  const p = scheduler.wait(2000, { signal: c.signal });\n  t.mock.timers.tick(1000);\n  c.abort();\n  await assert.rejects(() => p, { name: \"AbortError\" });\n});\n",
+    )
+    .unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "mock timers scheduler: {stdout}");
+    assert!(stdout.contains("# pass 2, fail 0, skip 0, todo 0"), "summary: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase10f_test_mock_property_and_top() {
     // mock.property 访问记录/复原 + 顶层 mock + 校验报错两件。
     let dir = assert_fs::TempDir::new().unwrap();

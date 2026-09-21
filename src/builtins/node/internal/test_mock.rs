@@ -23,11 +23,15 @@ pub const SOURCE: &str = r#"
 // Copyright Node.js contributors. MIT.
 // Port of node:internal/test_runner/mock/mock.js (MockTracker core only:
 // no module() loader hooks, no timers — separate slices).
-import { codes } from "node:internal/errors";
+import { AbortError, codes } from "node:internal/errors";
 import validators from "node:internal/validators";
+import { addAbortListener } from "node:internal/events/abort_listener";
+import * as nodeTimersPromises from "node:timers/promises";
 
-const { validateBoolean, validateFunction, validateInteger, validateObject } = validators;
-const { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE } = codes;
+const { validateAbortSignal, validateBoolean, validateFunction, validateInteger, validateNumber, validateObject, validateStringArray, validateUint32 } = validators;
+const { ERR_INVALID_ARG_TYPE, ERR_INVALID_ARG_VALUE, ERR_INVALID_STATE } = codes;
+// node internal/timers TIMEOUT_MAX（2**31 - 1）同值。
+const TIMEOUT_MAX = 2147483647;
 
 function kDefaultFunction() {}
 
@@ -162,6 +166,11 @@ class MockPropertyContext {
 class MockTracker {
   constructor() {
     this._mocks = [];
+    this._timers = null;
+  }
+  get timers() {
+    if (!this._timers) this._timers = new MockTimers();
+    return this._timers;
   }
   fn(original = function () {}, implementation = original, options = {}) {
     if (original !== null && typeof original === "object") {
@@ -277,6 +286,9 @@ class MockTracker {
   }
   reset() {
     this.restoreAll();
+    try {
+      if (this._timers) this._timers.reset();
+    } catch {}
     this._mocks = [];
   }
   restoreAll() {
@@ -336,6 +348,350 @@ function findMethodOnPrototypeChain(instance, methodName) {
   return descriptor;
 }
 
-export { MockTracker };
-export default { MockTracker };
+// ---- MockTimers（B2，node mock_timers.js 移植） ----
+//
+// 逐字点：enable 校验（now NaN/类型/负值三门 + apis 白名单）/tick 按
+// (runAt, id) 发射 + interval 重排 + 回调内自清跳过/setTime 只拨钟不发射/
+// reset 复原全部补丁 + 测试结束经 tracker.reset() 全量复原。
+//
+// 偏差（引擎边界，套件不覆盖）：
+// - `node:timers` / `node:timers/promises` 的具名函数补丁跳过——ESM 命名空间
+//   冻结不可写（`setTimeout is read-only`），只补全局 + scheduler 对象 +
+//   Date + AbortSignal.timeout。两 timers 套件仅用全局与 scheduler，无碍。
+// - 优先队列用插入排序小数组（量级极小，与堆同序）。
+const SUPPORTED_APIS = ["setTimeout", "setInterval", "setImmediate", "Date", "scheduler.wait", "AbortSignal.timeout"];
+const kInitialEpoch = 0;
+const kImmediateDelay = -1;
+// abort_listener 同款回退键（引擎无 Symbol.dispose 时一致）。
+const __disposeKey = Symbol.dispose ?? Symbol.for("Symbol.dispose");
+
+class TimerQueue {
+  constructor() {
+    this.items = [];
+  }
+  peek() {
+    return this.items.length > 0 ? this.items[0] : undefined;
+  }
+  peekBottom() {
+    return this.items.length > 0 ? this.items[this.items.length - 1] : undefined;
+  }
+  insert(t) {
+    let lo = 0, hi = this.items.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const m = this.items[mid];
+      if (m.runAt < t.runAt || (m.runAt === t.runAt && m.id < t.id)) lo = mid + 1;
+      else hi = mid;
+    }
+    this.items.splice(lo, 0, t);
+  }
+  shift() {
+    return this.items.shift();
+  }
+  remove(t) {
+    const i = this.items.indexOf(t);
+    if (i >= 0) this.items.splice(i, 1);
+  }
+  clear() {
+    this.items = [];
+  }
+}
+
+class MockTimeout {
+  constructor(mock, id, callback, runAt, interval, args) {
+    this._mock = mock;
+    this.id = id;
+    this.callback = callback;
+    this.runAt = runAt;
+    this.interval = interval;
+    this.args = args;
+    this.queued = true;
+  }
+  hasRef() {
+    return true;
+  }
+  ref() {
+    return this;
+  }
+  unref() {
+    return this;
+  }
+  refresh() {
+    return this;
+  }
+  close() {
+    this._mock._clearTimer(this);
+    return this;
+  }
+}
+
+class MockTimers {
+  constructor() {
+    this._timersInContext = [];
+    this._isEnabled = false;
+    this._currentTimer = 1;
+    this._now = kInitialEpoch;
+    this._queue = new TimerQueue();
+    this._saved = {};
+  }
+  _createTimer(isInterval, callback, delay, ...args) {
+    if (delay > TIMEOUT_MAX) delay = 1;
+    const timer = new MockTimeout(this, this._currentTimer++, callback, this._now + delay, isInterval ? delay : undefined, args);
+    this._queue.insert(timer);
+    return timer;
+  }
+  _clearTimer(timer) {
+    if (!timer) return;
+    this._queue.remove(timer);
+    timer.queued = false;
+    timer.interval = undefined;
+  }
+  _fakeSetTimeout(callback, delay, ...args) {
+    return this._createTimer(false, callback, delay, ...args);
+  }
+  _fakeClearTimeout(timer) {
+    this._clearTimer(timer);
+  }
+  _fakeSetInterval(callback, delay, ...args) {
+    return this._createTimer(true, callback, delay, ...args);
+  }
+  _fakeSetImmediate(callback, ...args) {
+    return this._createTimer(false, callback, kImmediateDelay, ...args);
+  }
+  _fakeSchedulerWait(delay, options) {
+    return this._setTimeoutPromisified(delay, undefined, options);
+  }
+  async _setTimeoutPromisified(ms, result, options) {
+    if (options?.signal) {
+      validateAbortSignal(options.signal, "options.signal");
+      if (options.signal.aborted) {
+        throw new AbortError(undefined, { cause: options.signal.reason });
+      }
+    }
+    let resolvePromise, rejectPromise;
+    const promise = new Promise((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
+    let abortListener;
+    if (options?.signal) {
+      abortListener = addAbortListener(options.signal, () => {
+        rejectPromise(new AbortError(undefined, { cause: options.signal.reason }));
+      });
+    }
+    const timer = this._createTimer(false, () => resolvePromise(result), ms);
+    try {
+      await promise;
+      return result;
+    } finally {
+      try { abortListener?.[__disposeKey]?.(); } catch {}
+      this._clearTimer(timer);
+    }
+  }
+  _createDate(NativeDateConstructor) {
+    if (NativeDateConstructor.isMock) {
+      throw new ERR_INVALID_STATE("Date is already being mocked!");
+    }
+    const mock = this;
+    function MockDate(year, month, date, hours, minutes, seconds, ms) {
+      if (!new.target) {
+        return String(new NativeDateConstructor(mock._now));
+      }
+      switch (arguments.length) {
+        case 0: return new NativeDateConstructor(mock._now);
+        case 1: return new NativeDateConstructor(year);
+        case 2: return new NativeDateConstructor(year, month);
+        case 3: return new NativeDateConstructor(year, month, date);
+        case 4: return new NativeDateConstructor(year, month, date, hours);
+        case 5: return new NativeDateConstructor(year, month, date, hours, minutes);
+        case 6: return new NativeDateConstructor(year, month, date, hours, minutes, seconds);
+        default: return new NativeDateConstructor(year, month, date, hours, minutes, seconds, ms);
+      }
+    }
+    MockDate.now = function now() {
+      return mock._now;
+    };
+    MockDate.toString = function toString() {
+      // 真机可观测串（V8 单行；SM 原生多行，套件逐字钉住）。
+      return "function Date() { [native code] }";
+    };
+    Object.defineProperties(MockDate, {
+      isMock: { enumerable: true, configurable: false, writable: false, value: true },
+    });
+    MockDate.prototype = NativeDateConstructor.prototype;
+    MockDate.parse = NativeDateConstructor.parse;
+    MockDate.UTC = NativeDateConstructor.UTC;
+    return MockDate;
+  }
+  _patchGlobal(name, fake) {
+    if (!this._saved[name]) {
+      this._saved[name] = Object.getOwnPropertyDescriptor(globalThis, name);
+    }
+    globalThis[name] = fake;
+  }
+  _restoreGlobal(name) {
+    const desc = this._saved[name];
+    if (desc) {
+      Object.defineProperty(globalThis, name, desc);
+      delete this._saved[name];
+    }
+  }
+  _toggle(activate) {
+    const self = this;
+    const toFake = {
+      "setTimeout"() {
+        self._patchGlobal("setTimeout", (...a) => self._fakeSetTimeout(...a));
+        self._patchGlobal("clearTimeout", (t) => self._fakeClearTimeout(t));
+      },
+      "setInterval"() {
+        self._patchGlobal("setInterval", (...a) => self._fakeSetInterval(...a));
+        self._patchGlobal("clearInterval", (t) => self._fakeClearTimeout(t));
+      },
+      "setImmediate"() {
+        self._patchGlobal("setImmediate", (...a) => self._fakeSetImmediate(...a));
+        self._patchGlobal("clearImmediate", (t) => self._fakeClearTimeout(t));
+      },
+      "scheduler.wait"() {
+        const sched = nodeTimersPromises.scheduler;
+        if (!self._saved["scheduler.wait"]) {
+          self._saved["scheduler.wait"] = Object.hasOwn(sched, "wait")
+            ? Object.getOwnPropertyDescriptor(sched, "wait")
+            : "absent";
+        }
+        sched.wait = (...a) => self._fakeSchedulerWait(...a);
+      },
+      "Date"() {
+        if (!self._saved["Date"]) {
+          self._saved["Date"] = Object.getOwnPropertyDescriptor(globalThis, "Date");
+        }
+        globalThis.Date = self._createDate(self._saved["Date"].value);
+      },
+      "AbortSignal.timeout"() {
+        if (!self._saved["AbortSignal.timeout"]) {
+          self._saved["AbortSignal.timeout"] = Object.getOwnPropertyDescriptor(AbortSignal, "timeout");
+        }
+        Object.defineProperty(AbortSignal, "timeout", {
+          configurable: true,
+          writable: true,
+          value(delay) {
+            validateUint32(delay, "delay", false);
+            const controller = new AbortController();
+            self._createTimer(false, () => controller.abort(), delay);
+            return controller.signal;
+          },
+        });
+      },
+    };
+    const toReal = {
+      "setTimeout"() { self._restoreGlobal("setTimeout"); self._restoreGlobal("clearTimeout"); },
+      "setInterval"() { self._restoreGlobal("setInterval"); self._restoreGlobal("clearInterval"); },
+      "setImmediate"() { self._restoreGlobal("setImmediate"); self._restoreGlobal("clearImmediate"); },
+      "scheduler.wait"() {
+        const saved = self._saved["scheduler.wait"];
+        if (saved === "absent") {
+          delete nodeTimersPromises.scheduler.wait;
+        } else if (saved) {
+          Object.defineProperty(nodeTimersPromises.scheduler, "wait", saved);
+        }
+        delete self._saved["scheduler.wait"];
+      },
+      "Date"() { self._restoreGlobal("Date"); },
+      "AbortSignal.timeout"() {
+        const saved = self._saved["AbortSignal.timeout"];
+        if (saved) {
+          Object.defineProperty(AbortSignal, "timeout", saved);
+          delete self._saved["AbortSignal.timeout"];
+        }
+      },
+    };
+    const target = activate ? toFake : toReal;
+    for (const api of this._timersInContext) target[api]();
+    this._isEnabled = activate;
+  }
+  _assertEnabled() {
+    if (!this._isEnabled) {
+      throw new ERR_INVALID_STATE("You should enable MockTimers first by calling the .enable function");
+    }
+  }
+  _assertTimeArg(time) {
+    if (time < 0) {
+      throw new ERR_INVALID_ARG_VALUE("time", "positive integer", time);
+    }
+  }
+  _isValidDateWithGetTime(maybeDate) {
+    try {
+      maybeDate.getTime();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  tick(time = 1) {
+    this._assertEnabled();
+    this._assertTimeArg(time);
+    this._now += time;
+    let timer = this._queue.peek();
+    while (timer) {
+      if (timer.runAt > this._now) break;
+      Reflect.apply(timer.callback, undefined, timer.args);
+      const after = this._queue.peek();
+      if (after && after.id === timer.id) {
+        this._queue.shift();
+        timer.queued = false;
+      }
+      if (timer.interval !== undefined) {
+        timer.runAt += timer.interval;
+        this._queue.insert(timer);
+      }
+      timer = this._queue.peek();
+    }
+  }
+  enable(options = {}) {
+    const internalOptions = { ...options };
+    if (this._isEnabled) {
+      throw new ERR_INVALID_STATE("MockTimers is already enabled!");
+    }
+    if (Number.isNaN(internalOptions.now)) {
+      throw new ERR_INVALID_ARG_VALUE("now", internalOptions.now, `epoch must be a positive integer received ${internalOptions.now}`);
+    }
+    internalOptions.now ||= 0;
+    internalOptions.apis ||= SUPPORTED_APIS;
+    validateStringArray(internalOptions.apis, "options.apis");
+    for (const api of internalOptions.apis) {
+      if (!SUPPORTED_APIS.includes(api)) {
+        throw new ERR_INVALID_ARG_VALUE("options.apis", api, `option ${api} is not supported`);
+      }
+    }
+    this._timersInContext = internalOptions.apis;
+    if (this._isValidDateWithGetTime(internalOptions.now)) {
+      this._now = internalOptions.now.getTime();
+    } else if (validateNumber(internalOptions.now, "initialTime") === undefined) {
+      this._assertTimeArg(internalOptions.now);
+      this._now = internalOptions.now;
+    }
+    this._toggle(true);
+  }
+  setTime(time = kInitialEpoch) {
+    validateNumber(time, "time");
+    this._assertTimeArg(time);
+    this._assertEnabled();
+    this._now = time;
+  }
+  reset() {
+    if (!this._isEnabled) return;
+    this._toggle(false);
+    this._timersInContext = [];
+    this._now = kInitialEpoch;
+    this._queue.clear();
+  }
+  runAll() {
+    this._assertEnabled();
+    const longest = this._queue.peekBottom();
+    if (!longest) return;
+    this.tick(longest.runAt - this._now);
+  }
+}
+
+export { MockTracker, MockTimers };
+export default { MockTracker, MockTimers };
 "#;

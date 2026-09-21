@@ -2925,3 +2925,22 @@ cargo build
   `parse(init{pathname:"["})` 过（真机后者不抛）。单测走错入口即红，
   入口按调用形状选（串形/字典形各归各）。
 - 复现：`tests/node/url.rs::phase11_urlpattern_*` + 真套件三件双侧 rc=0。
+
+### 4.177 dgram 余簇五件：校验序/端口序/fork 宽容/伪语义翻转/挂死归属（2026-09-21）
+
+- 校验序：已连接态 `send(23)` 应报 ARG_TYPE buffer 而非 IS_CONNECTED——
+  msg 形态校验先行，再判连接态，最后 offset/length 越界（真机序；
+  `send(buf,1234,addr)` 的地址串在位置 2 即判连接，同序）。
+- 端口序：未连接 `(buf,0,6)` 报 BAD_PORT 而非地址错——`validatePort` 先于
+  地址形态校验（`(buf,6,0)` 之类三参形按 msg/port/address 解，地址数错另案）。
+- fork 宽容：`cluster.fork("str")` 真机不抛（env 展开语义，fork 从不校验
+  env 类型，见 lib/internal/cluster/primary.js；42 同理照走）。
+  自家黑盒旧断言 `fork(42)` 抛错系伪语义——§4.65 翻转（黑盒改不断言抛、
+  改跑真 fork + worker 自退）。
+- 挂死归属：unref-in-cluster 实现正确（res-check `[]`）但套件抖动时，
+  先抓"停在哪端"（本轮：P-worker-exit 永缺席 = cluster 退出 race，
+  G6 worker 投递/cluster 协议同族），再定回归/flake；stash 旧树对照若
+  缺 API（恒红）即无效对照，不如直接读退出事件。
+- 复现：`tests/node/dgram.rs::phase11_dgram_*` + `test-dgram-send-bad-arguments`
+  修前 `Missing expected exception`（端口进队列未同步校验）/修中
+  `unexpected throw`（连调定位法：CAUGHT 打实际值，见本轮）。

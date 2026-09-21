@@ -42,14 +42,16 @@ fn opt_num(frame: &Frame, i: u32) -> Option<f64> {
 
 /// 带预选项的同步建套（bind 前落 SO_REUSEPORT/IPV6_V6ONLY；tokio from_std
 /// 由调用方接管。复用：async bind 与 bindSync 共用）。
-/// flags 位：1 = reusePort，2 = ipv6Only（仅 v6 有意义）。
+/// flags 位：1 = reusePort，2 = ipv6Only（仅 v6 有意义），4 = reuseAddr
+/// （SO_REUSEADDR；macOS 双绑另需 SO_REUSEPORT，libuv 同款双落）。
 fn std_bind_flags(addr: &str, port: u16, flags: u32) -> std::io::Result<std::net::UdpSocket> {
     use std::os::fd::{FromRawFd, OwnedFd};
     let raw = addr.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(addr);
     let is_v6 = raw.contains(':');
     let reuse_port = flags & 1 != 0;
     let v6only = flags & 2 != 0;
-    if !reuse_port && !v6only {
+    let reuse_addr = flags & 4 != 0;
+    if !reuse_port && !v6only && !reuse_addr {
         return std::net::UdpSocket::bind((raw, port));
     }
     unsafe {
@@ -63,7 +65,18 @@ fn std_bind_flags(addr: &str, port: u16, flags: u32) -> std::io::Result<std::net
         }
         let sock = OwnedFd::from_raw_fd(fd);
         let one: libc::c_int = 1;
-        if reuse_port
+        if reuse_addr
+            && libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_REUSEADDR,
+                &one as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            ) != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        if (reuse_port || reuse_addr)
             && libc::setsockopt(
                 fd,
                 libc::SOL_SOCKET,
@@ -266,7 +279,7 @@ pub unsafe extern "C" fn dgram_bind(
     };
     let address = value_to_string(&mut cx, frame.arg(1));
     let target = frame.arg(2);
-    // 预选项（bit0 reusePort/bit1 ipv6Only）：有则走 std 预置后 from_std，
+    // 预选项（bit0 reusePort/bit1 ipv6Only/bit2 reuseAddr）：有则走 std 预置后 from_std，
     // 无则沿旧 tokio 直绑快路（缺参容忍：旧 JS 只传 3 参时按 0 处理，禁越界取参）。
     let flags = if frame.argc() > 3 { opt_num(&frame, 3).unwrap_or(0.0) } else { 0.0 } as u32;
     let Some((id, ev_tx)) = state::net_alloc() else {

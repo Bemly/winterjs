@@ -137,6 +137,9 @@ globalThis.process = {
   // 存活句柄表（assert-leaks 套件：`process._getActiveHandles()` 数组；
   // 本仓收录 watch 句柄（fs 侧登记/摘除），其余底座另案记档）。
   _getActiveHandles() { return [...(globalThis.__wjsFsHandles ?? [])]; },
+  // 存活资源类型表（unref-in-cluster 套件：unref 的 UDP 不在表内；
+  // 本仓现收录 UDPWrap（dgram 侧登记/摘除），其余底座另案记档）。
+  getActiveResourcesInfo() { return [...(globalThis.__wjsActiveResources?.values() ?? [])]; },
   get exitCode() { return __wjs_exit_code_get(); },
   set exitCode(v) {
     const n = Number(v);

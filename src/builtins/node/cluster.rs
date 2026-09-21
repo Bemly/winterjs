@@ -221,11 +221,9 @@ class Cluster extends EventEmitter {
       err.code = "ERR_NOT_SUPPORTED";
       throw err;
     }
-    if (env !== undefined && (typeof env !== "object" || env === null)) {
-      const err = new TypeError("env must be an object");
-      err.code = "ERR_INVALID_ARG_TYPE";
-      throw err;
-    }
+    // env 宽容口径（真机：非对象 env 经展开并入环境，不抛；
+    // child-index-dgram 套件 `cluster.fork(__filename)` 点名）。
+    if (env !== undefined && (typeof env !== "object" || env === null)) env = {};
     const id = __nextId++;
     const exec = __settings.exec ?? process.argv[1];
     if (typeof exec !== "string") {

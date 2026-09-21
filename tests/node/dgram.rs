@@ -421,3 +421,144 @@ setTimeout(() => process.exit(0), 4000);
     assert!(!out.contains("mock-err"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_dgram_send_validator_surface() {
+    // send 校验矩阵（send-bad-arguments 套件口径）：buffer 形态错/越界/
+    // 已连接顺序（buffer 先行）/未连接端口同步 RangeError。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "sv.mjs",
+        r##"
+import dgram from "node:dgram";
+const buf = Buffer.from("test");
+const host = "127.0.0.1";
+const t = (l, f) => { try { f(); console.log(l, "NO-THROW"); } catch (e) { console.log(l, e.name, e.code); } };
+const sock = dgram.createSocket("udp4");
+t("empty", () => sock.send());
+t("num", () => sock.send(23, 12345, host));
+t("list", () => sock.send([buf, 23], 12345, host));
+t("badport", () => sock.send(buf, 1, 1, -1, host));
+t("oob-off", () => sock.send(buf, 6, 0));
+t("oob-len", () => sock.send(buf, 0, 6));
+t("oob-addr", () => sock.send(buf, 3, 4));
+sock.connect(12345, () => {
+  t("conn-first", () => sock.send(23, 12345, host));
+  t("conn-oob", () => sock.send(buf, 6, 0));
+  t("conn-port", () => sock.send(buf, 1, 1, -1, host));
+  sock.close();
+  console.log("done");
+});
+"##,
+    );
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    for line in [
+        "empty TypeError ERR_INVALID_ARG_TYPE",
+        "num TypeError ERR_INVALID_ARG_TYPE",
+        "list TypeError ERR_INVALID_ARG_TYPE",
+        "badport RangeError ERR_SOCKET_BAD_PORT",
+        "oob-off TypeError ERR_INVALID_ARG_TYPE",
+        "oob-len RangeError ERR_SOCKET_BAD_PORT",
+        "oob-addr TypeError ERR_INVALID_ARG_TYPE",
+        "conn-first TypeError ERR_INVALID_ARG_TYPE",
+        "conn-oob RangeError ERR_BUFFER_OUT_OF_BOUNDS",
+        "conn-port Error ERR_SOCKET_DGRAM_IS_CONNECTED",
+        "done",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_dgram_queue_resources_reuse() {
+    // 发送队列 + 存活资源 + reuseAddr 双绑（send-queue/unref/reuse 套件口径）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "qr.mjs",
+        r##"
+import dgram from "node:dgram";
+// 队列记账
+const c = dgram.createSocket("udp4");
+console.log("q0", c.getSendQueueSize(), c.getSendQueueCount());
+c.bind(0, () => {
+  c.connect(12345, () => {
+    c.send("hello");
+    c.send("hello");
+    console.log("q2", c.getSendQueueSize(), c.getSendQueueCount());
+    c.close(() => {
+      console.log("q-closed", c.getSendQueueSize(), c.getSendQueueCount());
+      resourcePart();
+    });
+  });
+});
+// 存活资源（ref 登记、unref 摘除、close 摘除；串在队列部分之后跑，计数无交叉）。
+function resourcePart() {
+const s = dgram.createSocket("udp4");
+s.bind(0, () => {
+  const has = () => process.getActiveResourcesInfo().filter((x) => x === "UDPWrap").length;
+  console.log("res-bound", has() > 0);
+  s.unref();
+  console.log("res-unref", has());
+  s.ref();
+  console.log("res-ref", has() > 0);
+  s.close(() => console.log("res-closed", has()));
+});
+}
+// reuseAddr 双绑同端口
+const o = { type: "udp4", reuseAddr: true };
+const s1 = dgram.createSocket(o);
+const s2 = dgram.createSocket(o);
+s1.bind(0, () => {
+  s2.bind(s1.address().port, () => {
+    console.log("reuse", s1.address().port === s2.address().port);
+    s1.close(() => s2.close(() => console.log("reuse-done")));
+  });
+});
+"##,
+    );
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    for line in [
+        "q0 0 0",
+        "q2 10 2",
+        "q-closed 0 0",
+        "res-bound true",
+        "res-unref 0",
+        "res-ref true",
+        "res-closed 0",
+        "reuse true",
+        "reuse-done",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_dgram_cluster_fork_env_surface() {
+    // cluster.fork 非对象 env 宽容（child-index-dgram 套件点名）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "cf.mjs",
+        r##"
+import cluster from "node:cluster";
+if (cluster.isWorker) { process.exit(0); }
+try {
+  const w = cluster.fork("justastring");
+  console.log("fork-ok", typeof w.id);
+  w.on("exit", () => { console.log("worker-exit"); cluster.disconnect(); });
+} catch (e) {
+  console.log("fork-throw", e.name, e.code);
+}
+"##,
+    );
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    for line in ["fork-ok number", "worker-exit"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    assert!(!out.contains("fork-throw"), "out: {out}");
+    dir.close().unwrap();
+}

@@ -16,17 +16,27 @@ function __b64dec(s) {
   for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
   return u8;
 }
+function __dgramBufErr(what, data) {
+  // send 首参校验（真机逐字）：
+  // scalar → `"buffer"` + 自身 Received；数组元非法 → `"buffer list arguments"` +
+  // 外层数组 Received（`Received an instance of Array`）。
+  const e = new TypeError(`The ${what} argument must be of type string or an instance ` +
+    `of Buffer, TypedArray, or DataView. Received ${__dgramReceived(data)}`);
+  e.code = "ERR_INVALID_ARG_TYPE";
+  return e;
+}
 function __toU8(data) {
   // node 口径：send 首参收 string/Buffer/视图/**数组**（逐段拼接，空数组即 0 字节，
   // send-callback-multi-buffer 系套件）。
   if (Array.isArray(data)) {
-    const parts = data.map((m) => {
-      if (typeof m === "string") return new TextEncoder().encode(m);
-      if (m instanceof Uint8Array) return m;
-      if (m instanceof ArrayBuffer) return new Uint8Array(m);
-      if (ArrayBuffer.isView(m)) return new Uint8Array(m.buffer, m.byteOffset, m.byteLength);
-      throw new TypeError("send: list items must be string or BufferSource");
-    });
+    const parts = [];
+    for (const m of data) {
+      if (typeof m === "string") parts.push(new TextEncoder().encode(m));
+      else if (m instanceof Uint8Array) parts.push(m);
+      else if (m instanceof ArrayBuffer) parts.push(new Uint8Array(m));
+      else if (ArrayBuffer.isView(m)) parts.push(new Uint8Array(m.buffer, m.byteOffset, m.byteLength));
+      else throw __dgramBufErr('"buffer list arguments"', data);
+    }
     const total = parts.reduce((n, p) => n + p.length, 0);
     const out = new Uint8Array(total);
     let at = 0;
@@ -37,7 +47,20 @@ function __toU8(data) {
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  throw new TypeError("send: data must be string or BufferSource");
+  throw __dgramBufErr('"buffer"', data);
+}
+// offset/length 越界（真机逐字，send/sendto 双收口）。
+function __dgramBounds(u8, off, len) {
+  const o = off ?? 0;
+  if (o < 0 || o > u8.length) {
+    const e = new RangeError('"offset" is outside of buffer bounds');
+    e.code = "ERR_BUFFER_OUT_OF_BOUNDS"; throw e;
+  }
+  if (len !== undefined && (len < 0 || o + len > u8.length)) {
+    const e = new RangeError('"length" is outside of buffer bounds');
+    e.code = "ERR_BUFFER_OUT_OF_BOUNDS"; throw e;
+  }
+  return u8.subarray(o, len === undefined ? u8.length : o + len);
 }
 function __netErr(code, msg) {
   const e = new Error(msg);
@@ -185,6 +208,12 @@ class Socket extends EventEmitter {
     this.__sendSeq = 0;
     this.__sendCbs = new Map();
     this.__sendTargets = new Map();
+    // 发送队列记账（getSendQueueSize/Count 套件）：seq→字节数，在途 +
+    // __pending 待刷（bind 前挂起）合并统计；完成（sendok/senderr）即摘。
+    this.__sendQueue = new Map();
+    // 引用计数（`process.getActiveResourcesInfo` 口径：缺省 ref，unref 即摘；
+    // unref 先于 bind 时 bind 完成不登记，见 unref-in-cluster 套件）。
+    this.__ref = true;
     // signal 面（close-signal 套件）：非法即同步 ARG_TYPE；abort 即关；
     // 预 abort 即微任务关（close 事件仍异步到）。
     if (typeOrOptions && typeof typeOrOptions === "object" && typeOrOptions.signal !== undefined) {
@@ -277,10 +306,10 @@ class Socket extends EventEmitter {
     }
     return this;
   }
-  // 绑定预选项位（bit0 reusePort/bit1 ipv6Only；随 bind 进内核）。
+  // 绑定预选项位（bit0 reusePort/bit1 ipv6Only/bit2 reuseAddr；随 bind 进内核）。
   __bindFlags() {
     const o = this.__opts;
-    return ((o && o.reusePort ? 1 : 0) | (o && o.ipv6Only ? 2 : 0));
+    return ((o && o.reusePort ? 1 : 0) | (o && o.ipv6Only ? 2 : 0) | (o && o.reuseAddr ? 4 : 0));
   }
   // 数字 IP 判定（bindSync/connectSync 不做 DNS；v6 允许 %scope 后缀）。
   __isNumericIP(s) {
@@ -327,6 +356,7 @@ class Socket extends EventEmitter {
     this.__bound = true;
     this.__binding = false;
     this.__closed = false;
+    this.__resAdd();
     this.__rinfo = { address: res.addr, port: res.port };
     // 挂起队列留待 task listening 事件刷出（单刷，不与本函数双发）；
     // 'listening' 同样由该事件派发（仍异步；close 抢先即被 __closed 门吞）。
@@ -374,6 +404,9 @@ class Socket extends EventEmitter {
     const msg = args[0];
     if (this.__connected) {
       // 已连接：(msg[, offset, length])——port/address 禁止（IS_CONNECTED）。
+      // 校验序（真机）：msg buffer 形态先行（`send(23)` 报 ARG_TYPE buffer，
+      // 非 IS_CONNECTED），再判连接态，最后 offset/length 越界。
+      const u8 = __toU8(msg);
       let off = 0, len;
       if (args.length >= 2) {
         if (typeof args[1] === "function") { /* (msg, cb)——cb 已摘 */ }
@@ -383,8 +416,11 @@ class Socket extends EventEmitter {
       if ((args[3] !== undefined && args[3] !== null) || (args[4] !== undefined && args[4] !== null)) {
         throw __netErr('ERR_SOCKET_DGRAM_IS_CONNECTED', 'Already connected');
       }
-      const u8 = __toU8(msg);
-      const body = (off || len !== undefined) ? u8.subarray(off, len === undefined ? u8.length : off + len) : u8;
+      // (msg, offset, address-string) 形：位置 2 是串即地址（非 length），同抛。
+      if (args.length >= 3 && typeof args[2] === "string") {
+        throw __netErr('ERR_SOCKET_DGRAM_IS_CONNECTED', 'Already connected');
+      }
+      const body = __dgramBounds(u8, off, len);
       if (!this.__bound) {
         this.__pending.push({ __send: true, msg: body, port: undefined, address: undefined, cb });
         if (!this.__id && !this.__binding) this.bind();
@@ -402,19 +438,19 @@ class Socket extends EventEmitter {
       port = args[1]; address = args[2];
     }
     if (typeof address === "function") address = undefined;
-    let body = __toU8(msg);
-    if (off !== undefined || len !== undefined) {
-      const o = off ?? 0, l = len === undefined ? body.length - o : len;
-      body = body.subarray(o, o + l);
+    const body = __dgramBounds(__toU8(msg), off, len);
+    // node 口径：端口同步校验先于地址形态（`(buf,0,6)` 报 BAD_PORT 而非
+    // address 错；RangeError 即时抛，不进挂起队列）。
+    // 无目标且未 connect → validatePort(undefined) 先炸 ERR_SOCKET_BAD_PORT。
+    // 隐式绑定只发生在"有目标"的 send 上。
+    if (port !== undefined) {
+      validatePort(port, 'Port', false);
+    } else if (address === undefined && !this.__connected) {
+      validatePort(port, 'Port', false);
     }
     if (address !== undefined && address !== null && typeof address !== "string") {
-      const e = new TypeError(`The "address" argument must be of type string. Received ${typeof address} (${String(address)})`);
+      const e = new TypeError(`The "address" argument must be of type string. Received ${__dgramReceived(address)}`);
       e.code = "ERR_INVALID_ARG_TYPE"; throw e;
-    }
-    // node 口径：无目标且未 connect → validatePort(undefined) 先炸（真机 26
-    // 实测 ERR_SOCKET_BAD_PORT）；隐式绑定只发生在"有目标"的 send 上。
-    if (port === undefined && address === undefined && !this.__connected) {
-      validatePort(port, 'Port', false);
     }
     if (!this.__bound) {
       // node/libuv 口径：未绑 socket send 即隐式 bind（port 0），send 参数挂起
@@ -478,9 +514,22 @@ class Socket extends EventEmitter {
     // 目标随 seq 记录（senderr 的 e.address/e.port 回填）。
     const seq = ++this.__sendSeq;
     this.__sendTargets.set(seq, { address: address ?? this.__remote?.address, port: port ?? this.__remote?.port });
+    this.__sendQueue.set(seq, u8.length);
     __wjs_dgram_send(this.__id, u8, target, seq);
     if (cb) this.__sendCbs.set(seq, cb);
     return this;
+  }
+  // 发送队列（真机语义：在途 + bind 前挂起合并；关闭即清零见 close）。
+  getSendQueueSize() {
+    let n = 0;
+    for (const l of this.__sendQueue.values()) n += l;
+    for (const p of this.__pending) if (p.__send) n += p.msg.length;
+    return n;
+  }
+  getSendQueueCount() {
+    let n = this.__sendQueue.size;
+    for (const p of this.__pending) if (p.__send) n++;
+    return n;
   }
   // fire-and-forget sockopt（失败走 Error 事件）。未 bind（__id 未分配）即
   // 同步 EBADF（真机口径 `setMulticastLoopback EBADF`；静默挂起是偏差——
@@ -676,6 +725,7 @@ class Socket extends EventEmitter {
         this.__binding = false;
         const o = JSON.parse(payload);
         this.__bound = true;
+        this.__resAdd();
         this.__rinfo = { address: o.addr, port: o.port };
         for (const p of this.__pending) {
           if (p.__send) this.__doSend(p.msg, p.port, p.address, p.cb);
@@ -725,6 +775,7 @@ class Socket extends EventEmitter {
           queueMicrotask(() => cb(null, o.bytes));
         }
         this.__sendTargets.delete(o.seq);
+        this.__sendQueue.delete(o.seq);
         break;
       }
       case "senderr": {
@@ -745,6 +796,7 @@ class Socket extends EventEmitter {
           this.__evError(e);
         }
         this.__sendTargets.delete(o.seq);
+        this.__sendQueue.delete(o.seq);
         break;
       }
       case "close": {
@@ -827,6 +879,10 @@ class Socket extends EventEmitter {
     // 同步落关闭旗（后继 addMembership/connect 等健康检查即时生效，不等 task）。
     this.__closed = true;
     this.__binding = false;
+    this.__resDel();
+    // 在途发送计数随 socket 消亡（完成事件永不到）；__pending 挂起保留
+    // （bind-error-repeat 重绑后刷出，既有行为不动）。
+    this.__sendQueue.clear();
     // 从未绑定（无 task）即微任务派 close（真机未绑 close 仍异步派发；
     // 有 task 走 task Close 事件独派，不双发）。
     if (!this.__id) queueMicrotask(() => this.emit("close"));
@@ -834,12 +890,26 @@ class Socket extends EventEmitter {
     return this;
   }
   ref() {
+    this.__ref = true;
+    if (this.__bound && !this.__closed) this.__resAdd();
     if (this.__id) __wjs_net_ref(this.__id);
     return this;
   }
   unref() {
+    this.__ref = false;
+    this.__resDel();
     if (this.__id) __wjs_net_unref(this.__id);
     return this;
+  }
+  // 存活资源登记（`process.getActiveResourcesInfo()` 读全局表；UDPWrap）。
+  __resAdd() {
+    if (this.__ref !== false && !this.__closed) {
+      globalThis.__wjsActiveResources ??= new Map();
+      globalThis.__wjsActiveResources.set(this, "UDPWrap");
+    }
+  }
+  __resDel() {
+    globalThis.__wjsActiveResources?.delete(this);
   }
 }
 

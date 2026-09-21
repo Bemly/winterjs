@@ -71,7 +71,12 @@ cluster.setupMaster({});
 console.log("settings2", JSON.stringify(cluster.settings));
 try { cluster.setupPrimary(42); } catch (e) { console.log("setup-bad", e.code); }
 console.log("worker-undef", cluster.worker === undefined, typeof Worker);
-try { cluster.fork(42); } catch (e) { console.log("fork-badenv", e.code); }
+if (isWorker) process.exit(0);
+cluster.setupPrimary({ exec: process.argv[1] });
+const wenv = cluster.fork(42);
+console.log("fork-env-ok", typeof wenv.id);
+await new Promise((r) => wenv.on("exit", r));
+console.log("fork-env-exit");
 console.log("end-ok");
 "#,
     );
@@ -85,7 +90,8 @@ console.log("end-ok");
     assert!(out.contains("settings2 {}"), "out: {out}");
     assert!(out.contains("setup-bad ERR_INVALID_ARG_TYPE"), "out: {out}");
     assert!(out.contains("worker-undef true function"), "out: {out}");
-    assert!(out.contains("fork-badenv ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("fork-env-ok number"), "out: {out}");
+    assert!(out.contains("fork-env-exit"), "out: {out}");
     assert!(out.contains("end-ok"), "out: {out}");
     dir.close().unwrap();
 }

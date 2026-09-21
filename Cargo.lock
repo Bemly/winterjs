@@ -11930,6 +11930,7 @@ dependencies = [
  "human-panic",
  "humantime",
  "hyper",
+ "hyper-util",
  "iai-callgrind",
  "if-addrs",
  "ignore",

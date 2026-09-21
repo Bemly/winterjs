@@ -512,7 +512,7 @@ pub unsafe extern "C" fn serve_ws_create(
     true
 }
 
-/// `__wjs_serve_ws_accept(serveId)`：101 配对成功 → 决策 Accept（捆绑桥接端过界）。
+/// `__wjs_serve_ws_accept(serveId)`：handler 返回 socket 即接受升级 → 决策 Accept。
 /// 无挂靠（未调工厂）即抛错走 500；会话已走即静默回收。
 /// UNSAFE-BOUNDARY：同上；覆盖测试同 `serve_ws_create`。
 pub unsafe extern "C" fn serve_ws_accept(
@@ -550,7 +550,7 @@ pub unsafe extern "C" fn serve_ws_accept(
     true
 }
 
-/// `__wjs_serve_ws_decline(serveId)`：非 101 → 决策 Decline（走普通管线）+ 挂靠回收。
+/// `__wjs_serve_ws_decline(serveId)`：返回 Response → 决策 Decline（走普通管线）+ 挂靠回收。
 /// 未知 id/已决议一律静默成功（幂等）。
 /// UNSAFE-BOUNDARY：同上；覆盖测试同 `serve_ws_create`。
 pub unsafe extern "C" fn serve_ws_decline(

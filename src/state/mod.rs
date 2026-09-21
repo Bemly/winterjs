@@ -959,7 +959,7 @@ mod tests {
         fn resp_tx() -> ServeRespTx {
             let (head_tx, _head_rx) = tokio::sync::oneshot::channel();
             let (body_tx, _body_rx) = tokio::sync::mpsc::unbounded_channel();
-            ServeRespTx { head_tx: Some(head_tx), body_tx }
+            ServeRespTx { head_tx: Some(head_tx), body_tx, upgrade_tx: None }
         }
         let base = serve_open();
         serve_hold_server();

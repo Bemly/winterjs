@@ -3128,3 +3128,32 @@ cargo build
 - 附带方法学二则（旧坑再现）：① 脏二进制打架两次（6 秒构建误判；§4.62/§4.145
   姊妹）——后一律 `ls -la` 对时间戳 + 行为验证；② `| head` 后 `$?` 是 head 的码
   （§4.45 三进宫）——判活一律文件落盘取码。
+
+### 4.186 服务端 destroy 失声 + 半开续命：两处 hang 一次清（2026-09-22，plan3 G11）
+
+- 坑一（写端等读端 EOF 即死锁）：`NetCmd::Close` 只 shutdown 写端，`Close`
+  事件要等读端 EOF——对端半开（allowHalfOpen 客户端）永不 FIN，读端在
+  `read()` 永驻，`server.__sockets` 残留 1，循环永不 idle（`__sockets.size`
+  探针实锤；客户端兜底 destroy 即退是同一根因的反证）。
+  修法：写端收 `Close` 即发 `Close`（`close_once` 防与读端 EOF/错路径双发），
+  不等读端（读端后到 EOF 只发 End）（`net_pumps.rs` 写端 `Close` 臂）。
+- 坑二（收 FIN 半开仍续命）：坑一修后服务端干净（`sockets=0`）仍 hang——
+  半开客户端（`net_open=1`）续命，而真机照常退出（k7/k9/k12 逐项实测：
+  半开且 `ref()` 也留不住；读停转后空闲句柄不 ref 循环是 libuv 层事实，
+  写侧仍可用、`write-cb ok` 照常）。
+  修法：`NetEntry.holding` 位（初值 true）+ `net_halfhold` native——`__ev end`
+  内 allowHalfOpen 未销毁即递延一轮 microtask，稳定半开（监听内无同步
+  destroy/auto-end 动作）才摘续命；`net_open` 只数 `refed && holding`；
+  `set_ref` 摘除后只翻位、`purge` 按位结算，防双减（`net_halfhold_balance`
+  单测钉住全部转移）。
+- 证伪记录（勿复踩）：半开判定不能下在 End 派发时——正常全关舞蹈的
+  End→（microtask auto-end）→Close 链中间会出现"无进展 + 计数零"的轮次，
+  直接摘会抢在 Close 到达前退出（Close 在途由 park 的通道唤醒兜住，但
+  写端 shutdown 中的无消息窗口盖不住）。只摘"JS 已结算无动作"的稳定态。
+- 复现：`test-http-server-keep-alive-timeout`（修前 TIMEOUT 修后 SAME0）+
+  `tests/node/net.rs::phase11_net_halfopen_releases_loop`（8s unref 守卫，
+  回归只红不挂）；`drain-writable-length` 仍 TIMEOUT（outputData 缓冲模型，
+  G3 既定另轮专项，不属本坑）。
+- 附带：`server.close-idle-wait-response` 同批转 SAME0；`server-request-
+  timeout-keepalive` 真机自挂（node 142，超跑分 alarm），非我方回归；
+  dd3/kadbg  park 偶发未复现（4/4 确定性触发 kaT，疑为同族残留计数所致）。

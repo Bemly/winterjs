@@ -272,14 +272,8 @@ export function withHttpServer(Base) {
         if (typeof st.__hdT.unref === "function") st.__hdT.unref();
       }
       if (withKa && st.sawRequest && this.keepAliveTimeout > 0) {
-        st.__kaT = setTimeout(() => {
-          if (globalThis.__WJS_DBGKA) console.log("[dbg-ka] fire");
-          st.__kaT = null; try { sock.destroy(); } catch { /* gone */ }
-        }, this.keepAliveTimeout + this.keepAliveTimeoutBuffer);
+        st.__kaT = setTimeout(() => { st.__kaT = null; try { sock.destroy(); } catch { /* gone */ } }, this.keepAliveTimeout + this.keepAliveTimeoutBuffer);
         st.__kaT.unref();
-        if (globalThis.__WJS_DBGKA) console.log("[dbg-ka] armed");
-      } else if (globalThis.__WJS_DBGKA) {
-        console.log("[dbg-ka] skip withKa=" + withKa + " saw=" + st.sawRequest + " ka=" + this.keepAliveTimeout);
       }
     }
     __armMsgTimer(st, sock) {

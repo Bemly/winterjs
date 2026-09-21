@@ -691,7 +691,7 @@
           try { sock.setTimeout(0); } catch { /* gone */ }
           this.timeoutCb = null;
         }
-        this.agent.__release(sock, this.__key, this);
+        this.agent.__release(sock, this.__key, this, poolable);
         try { sock.emit("free"); } catch { /* gone */ }
       } else {
         try { sock.end(); } catch { /* closed meanwhile */ }
@@ -990,10 +990,37 @@ Agent.prototype.__noteClosed = function (sock) {
   };
   drop(this.sockets);
   drop(this.freeSockets);
+  // 非池化关闭亦须续行排队请求（get-pipeline-problem 套件：maxSockets=1 下
+  // 首连接关后排队请求永不到；此前仅回池路径续行）。
+  this.__resumeQueued(key);
 };
-Agent.prototype.__release = function (sock, key, req) {
+// 续行排队请求（同键优先；全局 maxTotalSockets 帽下跨键唤醒，同键队列空
+// 时补扫其余键，防他键请求饿死）。
+Agent.prototype.__resumeQueued = function (key) {
+  const tryResume = (k) => {
+    const q = this.__list(this.requests, k);
+    while (q.length > 0) {
+      const next = q.shift();
+      if (next.req.destroyed) continue;
+      next.req.__queued = false;
+      this.__acquire(next.req, next.host, next.port, next.extra, next.onSocket);
+      return true;
+    }
+    return false;
+  };
+  if (!tryResume(key)) {
+    for (const k of Object.keys(this.requests)) {
+      if (k === key) continue;
+      if (tryResume(k)) break;
+    }
+  }
+};
+Agent.prototype.__release = function (sock, key, req, poolable = true) {
   if (req !== null && req !== undefined) req.__queued = false;
-  if (sock.destroyed || !this.keepAlive) {
+  // node responseKeepAlive 口径：响应 Connection: close 即销毁不回池
+  //（get-pipeline-problem 套件：close 响应入池后复用撞对端 FIN，次请求
+  // ECONNRESET；此前 poolable 只门 freeSockErr，入池本身无门）。
+  if (sock.destroyed || !this.keepAlive || poolable === false) {
     if (!sock.destroyed) {
       try { sock.destroy(); } catch { /* gone */ }
     }
@@ -1033,25 +1060,8 @@ Agent.prototype.__release = function (sock, key, req) {
         }
     }
   }
-  // 续行排队请求（同键优先；全局 maxTotalSockets 帽下跨键唤醒，同键队列空
-  // 时补扫其余键，防他键请求饿死）。
-  const tryResume = (k) => {
-    const q = this.__list(this.requests, k);
-    while (q.length > 0) {
-      const next = q.shift();
-      if (next.req.destroyed) continue;
-      next.req.__queued = false;
-      this.__acquire(next.req, next.host, next.port, next.extra, next.onSocket);
-      return true;
-    }
-    return false;
-  };
-  if (!tryResume(key)) {
-    for (const k of Object.keys(this.requests)) {
-      if (k === key) continue;
-      if (tryResume(k)) break;
-    }
-  }
+  // 续行排队请求（__resumeQueued 统一入口；回池与关闭双路径覆盖）。
+  this.__resumeQueued(key);
 };
 Agent.prototype.__cancel = function (req) {
   const key = req.__poolKey;

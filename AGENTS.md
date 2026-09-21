@@ -2701,3 +2701,18 @@ cargo build
   真流式构造（收 ReadableStream）留待另案（需动共享 `bodyUsed`/text 全家）。
 - 复现：`POST 2MB 回声逐字节一致` + `GET 5MB 分带校验` + `SIGTERM 亚秒退出`
   （探针 `/tmp/wjs-serve-t1b-probe` 形；黑盒 `phase11_serve_large_body_streaming`）。
+
+### 4.167 H3 半关闭 FIN + h3-axum 请求体整收（2026-09-21，plan4 T3）
+
+- 症状：H3 建连/ALPN/h3-build 全过，`send_request` 后服务端静默、客户端
+  30s `ConnectionError(Timeout)`（服务端日志停在 `H3 request accepted`）。
+- 根因：h3 client `send_request` 只发 HEADERS 不带 FIN；
+  `h3-axum::serve_h3_with_axum` 先收齐 body（`recv_data → None`）再调 router——
+  client 不 `finish()` 即半关闭死锁（curl 等真客户端自动 FIN，只坑手写 harness）。
+- 修法：harness `send_request` 后即 `stream.finish().await` 再读响应
+  （`tests/serve.rs::phase11_serve_h3_same_router`）。
+- 附带轮限：h3-axum 请求体整收后才调 router（H3 大上传内存 = 体大小），
+  与 H1/H2 边收边泵不对等；T3 只验回声，上传流式对等留另案。
+  另：本机 curl（SecureTransport 版）无 `--http3-only`，H3 以 harness 验收。
+- 复现：去 `finish()` 即 30s Timeout；诊断法：服务端 debug 埋点看停在
+  accepted 还是进 axum（本次停 accepted 即 FIN 面）。

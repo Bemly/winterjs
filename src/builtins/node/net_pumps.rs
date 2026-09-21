@@ -64,6 +64,13 @@ pub(crate) fn spawn_pumps<R, W>(
                     // drop 不发 close_notify，对端读端永 block，双边死锁；
                     // TCP 写半部 drop 自带 FIN，故 9d 从未暴露）。
                     let _ = w.shutdown().await;
+                    // G11 keep-alive-timeout 案：destroy 后对端半开永不 FIN，
+                    // 本端读端在 read() 永等不到 EOF，此处不等读端即发 Close
+                    //（close_once 防与读端 EOF/错路径双发；读端后到的 EOF 只
+                    // 发 End，不再补 Close）。
+                    if state::net_close_once(id) {
+                        let _ = ev_w.send(NetEvent { id, kind: NetKind::Close });
+                    }
                     break;
                 },
                 NetCmd::SendTo { .. } => {} // dgram 专用（net socket 不产生）

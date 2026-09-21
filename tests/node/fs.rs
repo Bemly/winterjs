@@ -1089,3 +1089,183 @@ catch (e) { console.log("async-mode-sync-throw", e.code); }
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_read_stream_offsets_and_props() {
+    // start/end 校验 + start/end 暴露 + 缺失文件异步 error + fd 复用定位读。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import fs from "node:fs";
+fs.writeFileSync("x", "xyz\n");
+const t = (fn) => { try { fn(); console.log("no-throw"); } catch (e) { console.log(e.code, e.name); } };
+t(() => fs.createReadStream("x", { end: Infinity }));
+t(() => fs.createReadStream("x", { start: "4" }));
+t(() => fs.createReadStream("x", { end: NaN }));
+t(() => fs.createReadStream("x", { start: -1 }));
+t(() => fs.createReadStream("x", { start: 0.1 }));
+t(() => fs.createReadStream("x", { start: 2 ** 53, end: Infinity }));
+t(() => fs.createReadStream("x", { start: 5, end: 1 }));
+try { fs.createReadStream("x", { start: 10, end: 2 }); }
+catch (e) { console.log("msg", e.message); }
+t(() => fs.createWriteStream("w.tmp", { end: "bogus" }));
+const s = fs.createReadStream("x", { start: 1, end: 2 });
+console.log("props", s.start, s.end);
+const s2 = fs.createReadStream("x");
+console.log("props2", s2.start, s2.end);
+s.destroy(); s2.destroy();
+// 缺失文件：构造期不抛，异步 error（无监听即抛的真机语义不测，只测有监听形）。
+await new Promise((res) => {
+  const m = fs.createReadStream("definitely-missing-xyz");
+  m.on("data", () => {});
+  m.on("error", (e) => { console.log("async-error", e.code); res(); });
+});
+// autoClose:false fd 复用 + start:0 定位读（fileNext 形）。
+await new Promise((res) => {
+  let file = fs.createReadStream("x", { autoClose: false });
+  let data = "";
+  file.on("data", (c) => { data += c; });
+  file.on("end", () => {
+    console.log("chain1", JSON.stringify(data), !file.closed);
+    file = fs.createReadStream(null, { fd: file.fd, start: 0 });
+    file.data = "";
+    file.on("data", (d) => { file.data += d; });
+    file.on("end", () => { console.log("chain2", JSON.stringify(file.data)); res(); });
+  });
+});
+// 坏 fd + autoClose:false：只派 error，不 destroy（closed 恒 false）。
+await new Promise((res) => {
+  const b = fs.createReadStream(null, { fd: 13337, autoClose: false });
+  b.on("data", () => console.log("DATA-unexpected"));
+  b.on("error", (e) => { console.log("badfd", e.code, b.closed, b.destroyed); res(); });
+});
+"#,
+    );
+    for line in [
+        "no-throw",
+        "ERR_INVALID_ARG_TYPE TypeError",
+        "ERR_OUT_OF_RANGE RangeError",
+        "msg The value of \"start\" is out of range. It must be <= \"end\" (here: 2). Received 10",
+        "props 1 2",
+        "props2 undefined Infinity",
+        "async-error ENOENT",
+        "chain1 \"xyz\\n\" true",
+        "chain2 \"xyz\\n\"",
+        "badfd EBADF false false",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    assert_eq!(
+        out.lines().filter(|l| *l == "ERR_OUT_OF_RANGE RangeError").count(),
+        5,
+        "OOR x5:\n{out}"
+    );
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_read_write_stream_encoding() {
+    // 编码流：base64 读→pipe→base64 写→finish→latin1 读验整块。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import fs from "node:fs";
+import stream from "node:stream";
+fs.writeFileSync("x.txt", "xyz\n");
+await new Promise((res, rej) => {
+  const r = fs.createReadStream("x.txt", { encoding: "base64" });
+  const w = fs.createWriteStream("d.txt", { encoding: "base64" });
+  r.on("error", rej); w.on("error", rej);
+  r.pipe(w).on("finish", res);
+});
+console.log("phase1", JSON.stringify(fs.readFileSync("d.txt", "utf8")));
+await new Promise((res, rej) => {
+  const got = [];
+  const sink = new stream.Writable({
+    write(c, e, n) { got.push(c); n(); },
+  });
+  sink.setDefaultEncoding("latin1");
+  const r = fs.createReadStream("d.txt", { encoding: "latin1" });
+  r.on("error", rej);
+  r.pipe(sink).on("finish", () => {
+    console.log("phase2", got.length, got.every((c) => c.equals(Buffer.from("xyz\n"))));
+    res();
+  });
+});
+// WriteStream encoding 即默认编码：base64 串解码落盘。
+await new Promise((res) => {
+  const w = fs.createWriteStream("e.txt", { encoding: "base64" });
+  w.write("eHl6");
+  w.end("Q2c9PQ==");
+  w.on("finish", () => { console.log("phase3", JSON.stringify(fs.readFileSync("e.txt", "utf8"))); res(); });
+});
+"#,
+    );
+    for line in ["phase1 \"xyz\\n\"", "phase2 1 true", "phase3 \"xyzCg==\""] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_file_handle_read_empty() {
+    // 空 buffer + 零长读合法（length===0 先于空检查，node 序）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import fs from "node:fs";
+fs.writeFileSync("x.txt", "xyz\n");
+const fh = await fs.promises.open("x.txt", "r");
+const r0 = await fh.read(Buffer.alloc(0));
+console.log("empty", r0.bytesRead);
+const r1 = await fh.read({ buffer: Buffer.alloc(4), length: 0 });
+console.log("len0", r1.bytesRead);
+const r2 = await fh.read();
+console.log("noparams", r2.bytesRead);
+await fh.close();
+"#,
+    );
+    for line in ["empty 0", "len0 0", "noparams 4"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_read_stream_fifo_end() {
+    // fifo + end:1：写者先行时 open 即会合（双 open 死锁回归——__doOpen 经已开 fd 读）。
+    // 无 mkfifo 即跳过（windows 记档）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import fs from "node:fs";
+import child_process from "node:child_process";
+const mk = child_process.spawnSync("mkfifo", ["f.pipe"]);
+if (mk.error) { console.log("skip-nomkfifo"); }
+else {
+  child_process.exec(`echo "xyz foobar" > "f.pipe"`);
+  await new Promise((res, rej) => {
+    const s = fs.createReadStream("f.pipe", { end: 1 });
+    s.data = "";
+    s.on("data", (c) => { s.data += c; });
+    s.on("end", () => { console.log("fifo", JSON.stringify(s.data)); res(); });
+    s.on("error", rej);
+  });
+  fs.unlinkSync("f.pipe");
+}
+"#,
+    );
+    assert!(
+        out.lines().any(|l| l == "fifo \"xy\"" || l == "skip-nomkfifo"),
+        "missing fifo:\n{out}"
+    );
+    dir.close().unwrap();
+}

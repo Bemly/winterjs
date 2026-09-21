@@ -2745,3 +2745,47 @@ cargo build
 - 推广为铁律：凡"用户可 mock 的面"（fs/dns 等），内部调用一律经默认
   导出对象、不直调本地绑定——自测时顺手打一个"补丁补丁是否生效"的
   探针（直调绕过是静默的，功能全对时最难发现）。
+
+### 4.167 fifo 双 open 死锁：数据必经已开 fd 读（2026-09-21，fs 轮）
+
+- 症状：`test-fs-read-stream.js` 修校验后由红转 hang（TIMEOUT）；二分定位到
+  fifo 子段（mkfifo + 自家 exec 写者 + `{end: 1}` reader）。
+- 根因：`__doOpen` 先 `openSync` 建 fd（与写者会合成功，写者写完退出），
+  再调 `read_file` 按径**二次 open**——写者已走，二次 open 等新写者永挂。
+  sample 实锤：主线程 858/858 采全卡 `fs_read_file → File::open → open(2)`
+  （初判"park 空转"系误读——grep 截断了下半栈，见 §4.168 手法）。
+- 修法：`__doOpen` 经已开 fd 全量读（`readSync` 循环，position null 游标推进），
+  不再按径重开（`src/builtins/node/fs.rs` `__doOpen`）。
+- 复现：`test-fs-read-stream.js` fifo 段（修前 TIMEOUT，修后 `END "xy"`）。
+- 推广为铁律：凡"创建即同步用"的会合型资源（fifo/pipe/socket），open 与读写
+  必须同一句柄——按径二次打开是自杀（§4.165 的读侧版）。
+
+### 4.168 旧 SAME1 掩盖 + 跑分两手法（2026-09-21，fs 轮·过程教训）
+
+- 症状：本轮 5 个"新红"（read 系 ×4 + handle-read）——旧跑分全是 SAME1
+  （node=1 wjs=1 双红），新跑分 node=0 wjs=1。
+- 根因：旧跑分时 `test/fixtures` 尚未取全（`elipses.txt/x.txt` 缺失，node 自家
+  套件也挂），双红对齐成假 SAME；fixtures 补齐（§4.158 后续）后真机转绿，
+  宿主缺口现形。非本轮回归（校验/读盘路径与在修代码无交集也佐证）。
+- 手法二则：① sample 读栈禁 grep 截断——`sample PID 1 | grep 关键词` 会把
+  下半栈（真正的 JS→native 调用链）截掉，先看全栈再过滤，本轮因此误判
+  park 一次；② `perl -e 'alarm N; exec @ARGV'` 不加 `or die` 即 §4.145 翻版——
+  本轮亲手复现（相对路径二进制 exec 失败，perl 正常 exit 0，空输出当通过），
+  此后跑分一律 `exec @ARGV or die` + 绝对路径。
+- 推广为铁律：SAME1（双红）≠正确——fixtures/环境补齐后必重跑基线；
+  "单独跑过、并行挂"查共享 tmp（§4.122），"以前双红、现在单红"查 fixtures。
+
+### 4.169 仅 error 监听的流够不着懒 open + 补丁分支置空（2026-09-21，fs 轮）
+
+- 症状：`createReadStream(missing)` 只挂 error 监听时无 error、无退出码异常——
+  进程静默 0 退出（真机是异步 error，无监听则抛）。
+- 根因：`__doOpen` 懒在 `_read`，无 data 监听即无流动、`_read` 永不跑，
+  错误永不发现（node 构造后即异步 open，不依赖消费）。
+- 修法：A 段微任务内先开（`__doOpen` 前置），开败即就地 `_read()` 递送
+  （走既有 `__openErr` 分发；成功仍等流动消费）；补丁分支微任务内同步置空
+  bytes（否则 `_read` 回落见 `__bytes===null` 误真开，patch-open 破功）
+  （`src/builtins/node/fs.rs` `__holdStream`）。
+- 复现：error-only 探针（修前静默退出，修后 `async-error ENOENT`；无监听形
+  与真机同为 unhandled error exit=1）。
+- 推广为铁律：凡"构造后即生效"的宿主语义（open/error），触发点不得绑在消费
+  侧（`_read`/data）——无消费者的形状（纯 error 监听）是天然反例。

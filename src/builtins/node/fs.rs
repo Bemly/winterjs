@@ -2326,11 +2326,20 @@ const __fsEncodings = new Set([
   "utf8", "utf-8", "utf16le", "utf-16le", "ucs2", "ucs-2", "ascii", "latin1",
   "binary", "base64", "base64url", "hex", "buffer",
 ]);
-// node validateOffset（lib/internal/fs/streams.js）：非 number/非整数/负数
-// 一律 ARG_TYPE（'4' 字符串形套件点名）。
+// node validateOffset（lib/internal/fs/streams.js）：start 经 validateInteger(v,
+// name, 0)；end 同但 Infinity 显式放行（undefined 落 Infinity 由调用方处理）。
+// 非 number（含 '4' 字符串形）ARG_TYPE；NaN/小数/负数/超 MAX_SAFE 即 OUT_OF_RANGE。
 function __fsValidateOffset(v, name) {
-  if (v !== undefined && (typeof v !== "number" || !Number.isInteger(v) || v < 0)) {
-    __vErrType(name, "number", v);
+  if (v === undefined) return;
+  if (name === "end" && v === Infinity) return;
+  __vIntRange(v, name, 0, 9007199254740991);
+}
+// node streams.js：start/end 双定且 end 非 Infinity 时 start > end 即 RangeError
+//（文案逐字，read-stream.js:155 / inherit 同段点名 message 全文）。
+function __fsValidateStartEnd(start, end) {
+  if (start !== undefined && end !== undefined && end !== Infinity && start > end) {
+    const e = new RangeError(`The value of "start" is out of range. It must be <= "end" (here: ${end}). Received ${start}`);
+    e.code = "ERR_OUT_OF_RANGE"; throw e;
   }
 }
 function __fsEncoding(opts) {
@@ -3132,16 +3141,23 @@ export function unwatchFile(p, listener) {
 class __ReadStream extends Readable {
   constructor(p, opts) {
     opts = __fsStreamOpts(opts);
-    __fsEncoding(opts);
+    const enc = __fsEncoding(opts);
     // node validateOffset（non-number-arguments-throw 套件）：start/end 非 number
-    // （含 '4' 字符串形）即 ARG_TYPE；node 校验点在构造器（fd 形同样适用）。
+    // （含 '4' 字符串形）即 ARG_TYPE；NaN/小数/负数/超 MAX_SAFE 即 OUT_OF_RANGE；
+    // end: Infinity 显式放行；start > end（end 非 Infinity）即 RangeError。
+    // node 校验点在构造器（fd 形同样适用）。
     __fsValidateOffset(opts.start, "start");
     __fsValidateOffset(opts.end, "end");
+    __fsValidateStartEnd(opts.start, opts.end);
     const hwm = opts.highWaterMark !== undefined ? Number(opts.highWaterMark) : 65536;
     const size = Number.isFinite(hwm) && hwm > 0 ? Math.floor(hwm) : 65536;
     // node 口径：autoDestroy 取自 autoClose（streams.js 逐字；autoClose:false
     // 时 finish 后不自毁、closed 恒 false，autoclose-option 套件点名）。
-    super({ highWaterMark: size, autoDestroy: opts.autoClose !== false, emitClose: true });
+    // encoding 透传基类（read-stream-encoding/fd 套件：base64 等经 StringDecoder
+    // 吐字符串，3 字节量子暂存由基类接管，push 侧恒给 Buffer）。
+    const superOpts = { highWaterMark: size, autoDestroy: opts.autoClose !== false, emitClose: true };
+    if (enc !== null) superOpts.encoding = enc;
+    super(superOpts);
     // node 口径：fd 形下 path 不赋值（undefined），只无 fd 时由路径确立。
     this.path = undefined;
     this.__brand = "ReadStream";
@@ -3150,9 +3166,13 @@ class __ReadStream extends Readable {
     this.autoClose = opts.autoClose !== false;
     this.bytesRead = 0;
     this.fd = null;
+    // node 口径：start/end 原值暴露（end 缺省 Infinity，inherit/read-stream.js
+    // 点名 file.start/file.end；经 Proxy 的 __proto__ 形同样直读）。
+    this.start = opts.start;
+    this.end = opts.end === undefined ? Infinity : opts.end;
     if (opts.fd !== undefined && opts.fd !== null) {
       // 10f：fd 形（FileHandle.createReadStream / { fd }）——不 open，增量读；
-      // start/end 不适用（偏差记档）。fd 为 FileHandle 时读/关走 handle 方法
+      // start 定位读（__pos，fileNext 套件）；fd 为 FileHandle 时读/关走 handle 方法
       //（node streams.js FileHandleOperations 同构；write-stream-2 以 spy 断言）。
       if (opts.fs) {
         const e = new Error("The FileHandle with fs method is not implemented");
@@ -3163,6 +3183,9 @@ class __ReadStream extends Readable {
       this.__fdMode = true;
       this.__opened = false;
       this.__hwm = size;
+      // fd 形定位读（inherit fileNext 套件：复用已读到尾的 fd + start:0 必须从头读；
+      // node pos 语义：start 缺省走当前位置，显式 start 定位且随读推进）。
+      this.__pos = opts.start !== undefined ? opts.start : null;
       if (opts.signal !== undefined) {
         // node validateAbortSignal：undefined 跳过，null/非 signal 即抛。
         if (opts.signal === null || typeof opts.signal.addEventListener !== "function") {
@@ -3185,29 +3208,24 @@ class __ReadStream extends Readable {
       return;
     }
     this.path = p;
+    // 真 open + 读盘不在构造期（__doOpen，A 段微任务先开、_read 回落兜底）：
+    // 未使用即不碰 fs（防 fd 泄漏）；缺失文件走异步 'error'
+    // （node 口径：构造期只做类型校验，存在性错异步派发）。
     // 用户 open 补丁（本类无 open 方法，函数值即补丁，patch-open 套件点名）：
     // 调补丁计数后跳过真实打开（补丁接管语义；本体不再读盘）。
-    let bytes;
-    if (typeof this.open === "function") {
-      try { this.open(); } catch {}
-      this.__openCalled = true;
-      bytes = new Uint8Array(0);
-    } else {
-      bytes = __fsCall("open", p, () => __wjs_fs_read_file(p));
-    }
-    let start = opts.start !== undefined ? Math.max(0, Math.floor(Number(opts.start) || 0)) : 0;
-    let end = opts.end !== undefined ? Math.floor(Number(opts.end)) : bytes.length - 1;
-    if (!Number.isFinite(start) || start < 0) start = 0;
-    if (!Number.isFinite(end) || end >= bytes.length) end = bytes.length - 1;
-    this.__bytes = bytes.subarray(start, end + 1);
+    this.__bytes = null;
     this.__off = 0;
     this.__hwm = size;
     this.__opened = false;
+    this.__openErr = null;
     // live 跟随记账（read-pos 套件）：快照尾的绝对偏移 + 是否显式 end。
     // 无显式 end 时耗尽不立即落定，见 _read（patch-open 补丁接管形不跟随）。
-    this.__snapEnd = end + 1;
+    // __snapEnd 在 __doOpen 落定（按钳制后 end+1）。
+    this.__snapEnd = 0;
     this.__endOpt = opts.end;
     this.__holdStream(opts);
+    // path 形真 fd 随 close 收（autoClose 语义，见 __closePathFd）。
+    this.once("close", () => this.__closePathFd());
   }
   // 续命（sync 底座无原生句柄，循环提前退出即 close 永不到）：
   // 构造持有 → close 释放；autoClose 关/emitClose 关时 end 即静默终结亦释放
@@ -3225,6 +3243,16 @@ class __ReadStream extends Readable {
       if (!this.__openCalled && typeof this.open === "function") {
         this.__openCalled = true;
         try { this.open(); } catch {}
+        // 补丁接管：本体不读盘（置空，与 _read 首读分支同形，防回落误真开）。
+        this.__bytes = new Uint8Array(0);
+        this.__snapEnd = 0;
+      }
+      // 真开前置（node 口径：构造后即异步 open，不等消费侧流动——仅 error 监听
+      // 的缺失文件同样异步 error；_read 懒触发够不着该形，故在此先开）。
+      // 开败即就地递送一次 _read（走 __openErr 分发；成功则等流动消费）。
+      if (!this.__fdMode && this.__bytes === null && !this.__openCalled) {
+        this.__doOpen();
+        if (this.__openErr) this._read();
       }
       if (!this.__used) this.__unrefStream();
     });
@@ -3246,35 +3274,53 @@ class __ReadStream extends Readable {
   }
   _read() {
     this.__used = true;
+    // 用户 open 补丁（原型/实例函数值即补丁，patch-open 套件）：通常 A 段微任务
+    // 已消费（置空 + __openCalled）；此分支为 _read 先到的回落（同形幂等）。
+    if (!this.__openCalled && typeof this.open === "function") {
+      this.__openCalled = true;
+      try { this.open(); } catch {}
+      this.__bytes = new Uint8Array(0);
+      this.__snapEnd = 0;
+    } else if (!this.__fdMode && this.__bytes === null && !this.__openCalled) {
+      this.__doOpen();
+    }
     // node 口径事件序 open → ready → data …：首次 _read 前派发（sync 底座下
     // 若走 microtask，流在监听器挂载的同一同步链上已流到 close，事件被
-    // destroyed 早退吞掉）。
+    // destroyed 早退吞掉）。open 带真 fd（test1 套件点名 typeof number）。
     if (!this.__opened) {
       this.__opened = true;
-      this.emit("open", null);
+      if (this.__openErr) {
+        // 路径 open/读盘失败：异步 error（构造期不抛），无 open 事件；
+        // 收口走 errorOrDestroy。
+        this.__streamError(this.__openErr);
+        return;
+      }
+      this.emit("open", this.fd);
       this.emit("ready");
     }
     if (this.__fdMode) {
       const buf = Buffer.alloc(this.__hwm);
       if (this.__fh) {
-        this.__fh.read(buf, 0, this.__hwm, null).then(
+        this.__fh.read(buf, 0, this.__hwm, this.__pos).then(
           (r) => {
             if (this.destroyed) return;
             if (!r || r.bytesRead <= 0) { this.push(null); return; }
+            if (this.__pos !== null) this.__pos += r.bytesRead;
             this.bytesRead += r.bytesRead;
             this.push(r.bytesRead === r.buffer.byteLength ? r.buffer : Buffer.from(r.buffer.subarray(0, r.bytesRead)));
           },
-          (e) => this.destroy(e),
+          (e) => this.__streamError(e),
         );
         return;
       }
       let n;
-      try { n = readSync(this.fd, buf, 0, this.__hwm, null); } catch (e) { this.destroy(e); return; }
+      try { n = readSync(this.fd, buf, 0, this.__hwm, this.__pos); } catch (e) { this.__streamError(e); return; }
       if (n <= 0) {
         if (this.autoClose) { try { __wjs_fs_close(this.fd); } catch { } this.fd = null; }
         this.push(null);
         return;
       }
+      if (this.__pos !== null) this.__pos += n;
       this.bytesRead += n;
       this.push(n === this.__hwm ? buf : Buffer.from(buf.subarray(0, n)));
       return;
@@ -3309,9 +3355,70 @@ class __ReadStream extends Readable {
       return;
     }
     const end = Math.min(this.__bytes.length, this.__off + this.__hwm);
-    this.push(Buffer.from(this.__bytes.subarray(this.__off, end)));
-    this.bytesRead = end;
+    // bytesRead 累加（test1 套件逐 data 断言；旧形置绝对值，多块即错）。
+    // encoding 由基类 StringDecoder 接管（super encoding 透传）——push 侧恒给
+    // Buffer，base64 量子暂存/刷尾全在基类。
+    const chunk = this.__bytes.subarray(this.__off, end);
+    this.bytesRead += chunk.length;
+    this.push(Buffer.from(chunk));
     this.__off = end;
+  }
+  // 首个 _read 内真开：openSync 建真 fd（供 open 事件/file.fd 复用，autoClose:false
+  // 留开）+ 经该 fd 全量读盘（sync 底座；live 跟随仍按快照+重查）。失败只记 __openErr
+  // （缺失文件异步 error，构造期不抛——node 口径）。
+  // 数据必经已开 fd 读（fifo 等不可重开：按径二次 open 会等新写者永挂——首版
+  // openSync 建 fd 后又调 read_file 重开，fifo 套件现形，sample 实锤卡 open(2)）。
+  __doOpen() {
+    try {
+      this.fd = Number(__fsCall("open", this.path, () =>
+        __wjs_fs_open(this.path, __fsFlags(this.flags, "createReadStream"), this.mode)));
+    } catch (e) {
+      this.__openErr = e;
+      this.__bytes = new Uint8Array(0);
+      return;
+    }
+    const parts = [];
+    let total = 0;
+    try {
+      while (true) {
+        const buf = Buffer.alloc(65536);
+        const n = readSync(this.fd, buf, 0, 65536, null);
+        if (n <= 0) break;
+        parts.push(Buffer.from(buf.subarray(0, n)));
+        total += n;
+      }
+    } catch (e) {
+      this.__openErr = e;
+      this.__bytes = new Uint8Array(0);
+      return;
+    }
+    const bytes = Buffer.concat(parts, total);
+    const start = this.start !== undefined ? this.start : 0;
+    let end = this.end !== Infinity ? this.end : bytes.length - 1;
+    if (end >= bytes.length) end = bytes.length - 1;
+    this.__bytes = bytes.subarray(start, end + 1);
+    this.__off = 0;
+    this.__snapEnd = end + 1;
+  }
+  // node errorOrDestroy 口径：autoClose 关时只派 error（不 destroy/close，fd
+  // 保留——fd:13337 套件点名 closed/destroyed 恒 false）；否则 destroy
+  // （error+close 走既有收口，fd 按 autoClose 关）。
+  __streamError(e) {
+    if (!this.autoClose) {
+      this.__unrefStream();
+      queueMicrotask(() => { if (!this.destroyed) this.emit("error", e); });
+      return;
+    }
+    this.destroy(e);
+  }
+  // path 形真 fd 收口：autoClose 才关（false 留给用户复用，fileNext 套件），
+  // 收后 fd 落 null（read-stream-err 套件点名）。
+  __closePathFd() {
+    if (this.__fdMode || !this.autoClose) return;
+    if (typeof this.fd === "number" && this.fd >= 0) {
+      try { __wjs_fs_close(this.fd); } catch {}
+    }
+    this.fd = null;
   }
 }
 
@@ -3347,9 +3454,13 @@ class __WriteStream extends Writable {
   constructor(p, opts) {
     opts = __fsStreamOpts(opts);
     __fsEncoding(opts);
+    // node WriteStream 只验 start（end 非 WriteStream 面，忽略不验）。
     __fsValidateOffset(opts.start, "start");
-    __fsValidateOffset(opts.end, "end");
     super({ autoDestroy: opts.autoClose !== false, emitClose: true });
+    // node 口径（streams.js 逐字）：encoding 选项即 writable 默认编码
+    // （write-stream-encoding 套件：base64 串经 pipe 进来按此解码落盘；
+    // 基类 writable 层在 _write 前已按 defaultEncoding 解为 Buffer）。
+    if (typeof opts.encoding === "string") this.setDefaultEncoding(opts.encoding);
     // node 口径：fd 形下 path 为 undefined（ReadStream 同口径）。
     this.path = undefined;
     this.__brand = "WriteStream";
@@ -4389,8 +4500,10 @@ export class FileHandle extends EventEmitter {
       if (offset == null) offset = 0;
       length ??= b.byteLength - offset;
       if (position == null) position = -1;
-      if (b.byteLength === 0) __fsEmptyBufferErr(b);
+      // node 序：length===0 先行返回（空 buffer + 零长读合法，回 {bytesRead: 0}；
+      // 空 buffer 错只在 length>0 时抛——read 空形套件点名）。
       if (length === 0) return { bytesRead: 0, buffer: b };
+      if (b.byteLength === 0) __fsEmptyBufferErr(b);
       const n = readSync(this.fd, b, offset, length, position);
       return { bytesRead: n || 0, buffer: b };
     });

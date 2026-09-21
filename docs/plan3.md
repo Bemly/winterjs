@@ -234,12 +234,14 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；
    AGENTS §4.150-155；残件：fork/IPC handle 传递出局 + fs.glob×2/flush 三套件
    待 node:test + enoent-after-deletion 间歇超时另查）。
-2. **fs 残簇**（2026-09-21 进展：cp/write/read/handle 129 件 70/59 →
-   **114 SAME/15 DIFF**，e2f0d28/6412095/b2a473e；残 15 全部分类见
-   bun-parity fs 六轮注记）：cp 余 async-filter/socket×2、handle 余 pull/writer
-   ×3（需 stream/iter+zlib/iter）+ read-worker（worker fd 移交，归 G6 残件同族）、
-   stream 余 err/read-pos（增量流重写轮）+ eagain/flush（node:test mock 待 runner
-   深度）+ write-patch-open（fork 父端 exit，child 域）；expose-internals ×3 跳过类。
+2. **fs 残簇**（2026-09-21 七轮收官：cp/write/read/handle 129 件 70/59 →
+    **126 SAME/3 DIFF**，e2f0d28/6412095/b2a473e/4703a16/4f9cc70/七轮读流，
+    残件与黑盒见 bun-parity fs 七轮注记）：残 3 全另案——read-worker ×1
+    （worker fd 移交，归 G6 残件同族）、eagain/flush ×2（node:test mock，
+    runner 深度）；expose-internals ×3 跳过类；pull/writer ×3（需
+    stream/iter+zlib/iter 新模块，另轮）；stream 余 err（增量流重写轮）+
+    write-patch-open（fork 父端 exit，child 域）；黑盒 fs 26/26 + 全量
+    cargo test 21 target 0 失败。
 3. **G6 残件 6 件**（infra 级，需独立轮）：throttle（native 读门控+写 EAGAIN
    流控）、cluster×2（internalMessage 协议）、worker×3（跨线程 fd 移交）。
 4. **大簇另案**：G10 http2 compat ~105 件、G11 http TIMEOUT ~110 件、

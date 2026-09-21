@@ -743,7 +743,22 @@ close 不等回调；附带修 autoclose-option/change-open；AGENTS §4.166）/
 write-patch-open ×1（早绿，child 域修复顺带）；expose-internals ×3（跳过类）；
 pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker ×1
 （worker fd 移交，G6 残件同族）；eagain/flush ×2（node:test mock，runner 深度）。
-黑盒 fs 20/20（含新增 phase10f_fs_stream_lifetime）+ 冒烟 5/5。
+ 黑盒 fs 20/20（含新增 phase10f_fs_stream_lifetime）+ 冒烟 5/5。
+
+ 七轮（2026-09-21，fs 读流轮）：cp/write/read/handle 129 件 **114 SAME/15 DIFF →
+ 126 SAME/3 DIFF**（118 SAME0 + 8 SAME1）。转绿 12 件：read-stream-throw-type-error
+ （end:Infinity 放行 + NaN/小数/负数/超 MAX_SAFE 分流 OUT_OF_RANGE + start>end 精确
+ 文案）/read-stream.js（同校验 + start/end 暴露 + 真 fd/open 数值 + 缺失文件异步
+ error + bytesRead 累加 + fd 定位读 + fifo 单开）/read-stream-inherit（同上全套）/
+ read-stream-encoding（encoding 透传基类 StringDecoder + WriteStream encoding 即
+ 默认编码）/read-stream-pos（live 跟随，已绿复核）/cp socket×2 + async-filter +
+ write-err（上轮已绿，本轮复核仍绿）/promises-file-handle-read（length===0 先于
+ 空 buffer 检查）。残 3 全另案：read-worker ×1（worker fd 移交，G6 残件同族）/
+ eagain + flush ×2（node:test mock，runner 深度）。根修三件：fifo 双 open 死锁→
+ 经已开 fd 全量读（AGENTS §4.167，sample 实锤卡 open(2)）/仅 error 监听够不着懒
+ open→A 段微任务先开（§4.169）/旧 SAME1 系 fixtures 缺失掩盖（§4.168）。
+ 黑盒 fs 26/26（新增 offsets_and_props/read_write_encoding/fh_read_empty/
+ fifo_end 四件）+ 全量 `cargo test` 21 target 0 失败 + 冒烟 5/5。
 
 ## net
 

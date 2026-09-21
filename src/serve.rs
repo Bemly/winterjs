@@ -391,6 +391,39 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive());
     // `axum::serve` 返回类型随 Listener 而异，两分支各自收尾（逻辑同构）。
+    // H3（T3）：TLS 分支同端口 UDP 起 QUIC（`serve_h3`）；无证书则跳过 + warn，
+    // H1 照服；UDP 绑定失败同样 warn 跳过（H1/H2 不受影响）。
+    let h3: Option<(quinn::Endpoint, tokio::task::JoinHandle<()>)> = match &tls {
+        Some(cfg) => {
+            let mut qcfg = cfg.clone();
+            qcfg.alpn_protocols = vec![b"h3".to_vec()];
+            match quinn::crypto::rustls::QuicServerConfig::try_from(qcfg) {
+                Ok(q) => {
+                    let udp_addr = SocketAddr::new(addr.ip(), addr.port());
+                    let qserver = quinn::ServerConfig::with_crypto(std::sync::Arc::new(q));
+                    match quinn::Endpoint::server(qserver, udp_addr) {
+                        Ok(ep) => {
+                            let task = tokio::spawn(serve_h3(app.clone(), ep.clone()));
+                            tracing::info!(target: "winterjs::serve", %udp_addr, "h3 listening");
+                            Some((ep, task))
+                        }
+                        Err(e) => {
+                            tracing::warn!(target: "winterjs::serve", "H3 UDP bind failed: {e}");
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(target: "winterjs::serve", "H3 TLS config failed: {e}");
+                    None
+                }
+            }
+        }
+        None => {
+            tracing::warn!(target: "winterjs::serve", "H3 skipped (no --cert/--key)");
+            None
+        }
+    };
     if let Some(cfg) = tls {
         let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(cfg));
         axum::serve(TlsListener { tcp, acceptor }, app)
@@ -402,6 +435,13 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
             .with_graceful_shutdown(shutdown_signal())
             .await
             .map_err(|e| Error::Other(format!("serve failed: {e}")))?;
+    }
+    // H3 收尾：关 endpoint（accept 循环即退）再合任务；在飞 QUIC 连接随关收尾。
+    if let Some((ep, task)) = h3 {
+        ep.close(0u32.into(), b"shutdown");
+        if task.await.is_err() {
+            tracing::warn!(target: "winterjs::serve", "H3 task panicked");
+        }
     }
     if let Some(thread) = js_session {
         // 优雅：停机旗后在飞请求排空线程自退；10s 未退即 warn（随进程退出回收）。
@@ -451,12 +491,14 @@ async fn js_fallback(
     };
     // scheme 随 TLS 分支（T2）：明文 http、TLS https，handler 侧 `req.url` 口径。
     let (parts, body) = req.into_parts();
+    // H3 的 :authority 未必落 Host 头，uri.host 兜底（H1/H2 行为不变，T3）。
     let host = parts
         .headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost")
-        .to_owned();
+        .map(str::to_owned)
+        .or_else(|| parts.uri.host().map(str::to_owned))
+        .unwrap_or_else(|| "localhost".to_owned());
     let target = parts.uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     let url = format!("{scheme}://{host}{target}");
     let headers: Vec<(String, String)> = parts
@@ -553,6 +595,58 @@ async fn js_fallback(
     Ok(builder
         .body(axum::body::Body::from_stream(stream))
         .unwrap_or_else(|_| empty(axum::http::StatusCode::INTERNAL_SERVER_ERROR)))
+}
+
+/// H3（plan4 T3）：同一 Router 经 QUIC/UDP 同端口服务（`h3-axum` example 形态）。
+/// 调用方保证 endpoint 存活；返回即 accept 循环结束（endpoint.close 后）。
+/// 优雅关闭由调用方 `endpoint.close()` 驱动，在飞连接随 QUIC 关闭而收尾。
+async fn serve_h3(app: axum::Router, endpoint: quinn::Endpoint) {
+    while let Some(incoming) = endpoint.accept().await {
+        let app = app.clone();
+        tokio::spawn(async move {
+            let conn = match incoming.await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(target: "winterjs::serve", "QUIC handshake failed: {e}");
+                    return;
+                }
+            };
+            let peer = conn.remote_address();
+            tracing::debug!(target: "winterjs::serve", %peer, "H3 QUIC connection");
+            let h3_conn = match h3::server::builder().build(h3_quinn::Connection::new(conn)).await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(target: "winterjs::serve", %peer, "H3 handshake failed: {e}");
+                    return;
+                }
+            };
+            tracing::debug!(target: "winterjs::serve", %peer, "H3 connection established");
+            tokio::pin!(h3_conn);
+            loop {
+                match h3_conn.accept().await {
+                    Ok(Some(resolver)) => {
+                        tracing::debug!(target: "winterjs::serve", %peer, "H3 request accepted");
+                        let app = app.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = h3_axum::serve_h3_with_axum(app, resolver).await {
+                                tracing::warn!(target: "winterjs::serve", %peer, "H3 request failed: {e}");
+                            }
+                        });
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        if h3_axum::is_graceful_h3_close(&e) {
+                            tracing::debug!(target: "winterjs::serve", %peer, "H3 closed gracefully");
+                        } else {
+                            tracing::warn!(target: "winterjs::serve", %peer, "H3 connection error: {e:?}");
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+    }
 }
 
 /// 明文 listener（与 `TlsListener` 同构，使 serve 尾部类型统一）。

@@ -835,8 +835,18 @@ Agent.prototype.__list = function (map, key) {
   if (map[key] === undefined) map[key] = [];
   return map[key];
 };
+// 只读取用（abort-queued 套件：读不得侧效应建空数组，否则
+// Object.keys(agent.sockets/requests) 计数污染）。
+Agent.prototype.__peek = function (map, key) {
+  const arr = map[key];
+  return arr === undefined ? [] : arr;
+};
+// 排空即删键（node 空键即删口径，上条同源）。
+Agent.prototype.__dropIfEmpty = function (map, key) {
+  if (map[key] !== undefined && map[key].length === 0) delete map[key];
+};
 Agent.prototype.__liveCount = function (key) {
-  const all = this.__list(this.sockets, key).filter((s) => !s.destroyed);
+  const all = this.__peek(this.sockets, key).filter((s) => !s.destroyed);
   return all.length;
 };
 // 全局活 socket 数（maxTotalSockets 帽的判定口径；agent-maxtotalsockets 套件
@@ -995,17 +1005,19 @@ Agent.prototype.__noteClosed = function (sock) {
   this.__resumeQueued(key);
 };
 // 续行排队请求（同键优先；全局 maxTotalSockets 帽下跨键唤醒，同键队列空
-// 时补扫其余键，防他键请求饿死）。
+// 时补扫其余键，防他键请求饿死；取空即删键）。
 Agent.prototype.__resumeQueued = function (key) {
   const tryResume = (k) => {
-    const q = this.__list(this.requests, k);
+    const q = this.__peek(this.requests, k);
     while (q.length > 0) {
       const next = q.shift();
       if (next.req.destroyed) continue;
       next.req.__queued = false;
       this.__acquire(next.req, next.host, next.port, next.extra, next.onSocket);
+      this.__dropIfEmpty(this.requests, k);
       return true;
     }
+    this.__dropIfEmpty(this.requests, k);
     return false;
   };
   if (!tryResume(key)) {
@@ -1067,9 +1079,14 @@ Agent.prototype.__cancel = function (req) {
   const key = req.__poolKey;
   if (key === undefined || !req.__queued) return;
   req.__queued = false;
-  const q = this.__list(this.requests, key);
-  const i = q.findIndex((e) => e.req === req);
-  if (i !== -1) q.splice(i, 1);
+  // node 口径：abort 后同步仍可见排队项（abort-queued 套件 L80 断言 requests
+  // 为 1；真机不同步摘），摘除递延；+100ms 后 L86/87 归零不受影响。
+  queueMicrotask(() => {
+    const q = this.__peek(this.requests, key);
+    const i = q.findIndex((e) => e.req === req);
+    if (i !== -1) q.splice(i, 1);
+    this.__dropIfEmpty(this.requests, key);
+  });
 };
 // node lib/_http_agent.js addRequest 口径（freeSockets 直投/建连/排队三路）：
 // 外部直塞 freeSockets 再 addRequest 即复用（agent-uninitialized 套件）。
@@ -1078,7 +1095,7 @@ Agent.prototype.addRequest = function (req, options, port, localAddress) {
   options = { ...(options ?? {}), ...(this.options ?? {}) };
   if (options.socketPath) options.path = options.socketPath;
   const name = this.getName(options);
-  this.__list(this.sockets, name);
+  // 只读探针不用 __list（建空数组污染 keys 计数；真入池/建连由后继 push 落定）。
   const free = this.freeSockets[name];
   let sock;
   if (free) {

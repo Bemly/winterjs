@@ -45,19 +45,10 @@
    会话管线与 trace 实现不动（§4.40/§4.68 blast radius）；
    ④ Node 逐字移植（`node/*.rs` 内嵌 JS SOURCE 文本）的拆分沿"域/算法族"切，
    SOURCE 文本随实现走（plan4 拆顶层 crypto/state/runtime/napi 共 28 文件同法）。
-   存量超限 24 件（2026-09-21 实数，`git ls-files '*.rs' | xargs wc -l`；
-   逼近线 `state/mod.rs` 989 + `prelude/buffer_class.rs` 811 顺手盯）：
-   先拆 `src/serve.rs`（plan4-handover §5 指定第一件），余件按组由小到大——
-   `src/serve.rs` 1135；
-   tests/ 6 件：`tests/serve.rs` 1151、`tests/node/child.rs` 1171、
-   `tests/node/http.rs` 1189、`tests/node/fs.rs` 1271、`tests/pm.rs` 1784、
-   `tests/node/crypto.rs` 2022；
-   node/ 17 件：`internal/zip/entry.rs` 1043、`process_.rs` 1062、`url.rs` 1157、
-   `internal/streams/writable.rs` 1208、`dgram.rs` 1607、`vm.rs` 1824、
-   `dns.rs` 1943、`internal/streams/readable.rs` 2144、`worker.rs` 2197、
-   `quic.rs` 2231、`internal/http_framing.rs` 2622、`net.rs` 2648、
-   `child.rs` 2737、`zlib.rs` 2817、`http2.rs` 3673、`fs.rs` 5318、
-   `crypto.rs` 8341（`src/builtins/node/` 下，`internal/` 同前缀）。
+    存量超限 24 件已于 2026-09-21 当日清零（19 件既有拆分 + fs/zlib 修 +
+    tests child/http/fs/crypto 4 件 + node crypto，共 26 提交；同口径复核
+    `git ls-files '*.rs' | xargs wc -l` 最大 995，无超限；原清单存档见 git 历史）：
+    逼近线顺手盯 `zlib_engine.rs` 995 + `fs.rs` 992 + `state/mod.rs` 989。
 
 ## 1. 基线（2026-09-09）
 

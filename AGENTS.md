@@ -46,7 +46,7 @@
    ④ Node 逐字移植（`node/*.rs` 内嵌 JS SOURCE 文本）的拆分沿"域/算法族"切，
    SOURCE 文本随实现走（plan4 拆顶层 crypto/state/runtime/napi 共 28 文件同法）。
    存量超限 24 件（2026-09-21 实数，`git ls-files '*.rs' | xargs wc -l`；
-   逼近线 `state/mod.rs` 989 + `prelude/part04.rs` 985 顺手盯）：
+   逼近线 `state/mod.rs` 989 + `prelude/buffer_class.rs` 811 顺手盯）：
    先拆 `src/serve.rs`（plan4-handover §5 指定第一件），余件按组由小到大——
    `src/serve.rs` 1135；
    tests/ 6 件：`tests/serve.rs` 1151、`tests/node/child.rs` 1171、
@@ -2839,10 +2839,10 @@ cargo build
 - 症状二：handler `new Response(readableStream)` 报
   `Response: unsupported body type`（500）。
 - 根因：prelude `Response` 构造是快照语义（`__wjs_normBody` 只收
-  string/U8/AB/null，与 fetch 客户端共享；`part03.rs:855`），与 undici
+  string/U8/AB/null，与 fetch 客户端共享；`http.rs:187`），与 undici
   可收流不同——属共享语义边界，非 serve 桥 bug。
 - 修法（T1 范围）：构造期快照不动，`__wjs_serve_send_resp` 推送时 64KB 分片
-  （多 Chunk 通道 + 单 native 拷贝封顶；`part04.rs` serve 驱动内，零外溢）。
+  （多 Chunk 通道 + 单 native 拷贝封顶；`serve.rs:54` serve 驱动内，零外溢）。
   真流式构造（收 ReadableStream）留待另案（需动共享 `bodyUsed`/text 全家）。
 - 复现：`POST 2MB 回声逐字节一致` + `GET 5MB 分带校验` + `SIGTERM 亚秒退出`
   （探针 `/tmp/wjs-serve-t1b-probe` 形；黑盒 `phase11_serve_large_body_streaming`）。

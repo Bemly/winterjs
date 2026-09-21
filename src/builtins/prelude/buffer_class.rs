@@ -1,5 +1,52 @@
-//! prelude part 02 (byte-exact slice; order matters, see prelude/mod.rs).
-pub const PART_02: &str = r#"
+//! Buffer 类本体与构造族（from/copy/compare/fill/swap）（prelude 分域；拼接顺序见 mod.rs）。
+pub const BUFFER_CLASS_JS: &str = r#"
+// ---- Buffer 类本体（lib/buffer.js 原文）----
+class __wjs_bufFastBuffer extends Uint8Array {}
+let __wjs_bufWarned = false;
+function __wjs_bufShowFlaggedDeprecation() {
+  if (__wjs_bufWarned) return;
+  // isInsideNodeModules(3) 的栈走查近似（SM 栈格式；DEP0169 同法）
+  const saved = Error.stackTraceLimit;
+  Error.stackTraceLimit = 5;
+  const stack = new Error().stack || '';
+  Error.stackTraceLimit = saved;
+  const frames = stack.split('\n').slice(1, 5);
+  if (frames.some((f) => f.includes('node_modules'))) return;
+  __wjs_bufWarned = true;
+  try {
+    process.emitWarning(
+      'Buffer() is deprecated due to security and usability issues. ' +
+      'Please use the Buffer.alloc(), Buffer.allocUnsafe(), or Buffer.from() ' +
+      'methods instead.', 'DeprecationWarning', 'DEP0005');
+  } catch { }
+}
+function Buffer(arg, encodingOrOffset, length) {
+  __wjs_bufShowFlaggedDeprecation();
+  if (typeof arg === 'number') {
+    if (typeof encodingOrOffset === 'string') {
+      throw __wjs_bufArgTypeErr('string', 'string', arg);
+    }
+    return Buffer.alloc(arg);
+  }
+  return Buffer.from(arg, encodingOrOffset, length);
+}
+Object.defineProperty(Buffer, Symbol.species, {
+  enumerable: false,
+  configurable: true,
+  get() { return __wjs_bufFastBuffer; },
+});
+Object.setPrototypeOf(Buffer, Uint8Array);
+Buffer.prototype = __wjs_bufFastBuffer.prototype;
+Buffer.prototype.constructor = Buffer;
+Buffer.poolSize = 64 * 1024;
+// 10f：小串池化（Node lib/buffer.js fromStringFast 口径：< poolSize/2 走池，
+// 8 字节对齐，满即新池；`a.buffer === b.buffer` 套件门）。池 AB 进
+// `__wjs_bufPooled`（WeakSet，全局暴露供 worker  transfer 拒收），
+// `ArrayBuffer.prototype.transfer` 对池内 AB 抛 TypeError（真机同款不可转移）。
+let __wjs_bufPoolAB = new ArrayBuffer(Buffer.poolSize);
+const __wjs_bufPooled = new WeakSet([__wjs_bufPoolAB]);
+globalThis.__wjs_bufPooled = __wjs_bufPooled;
+let __wjs_bufPoolOffset = 0;
 function __wjs_bufPoolAlign() {
   if (__wjs_bufPoolOffset & 0x7) __wjs_bufPoolOffset = (__wjs_bufPoolOffset + 7) & ~7;
 }
@@ -761,175 +808,4 @@ Buffer.prototype.latin1Slice = function (start, end) { return __wjs_bufLatin1Sli
 Buffer.prototype.hexSlice = function (start, end) { return __wjs_bufHexSlice(this, start, end); };
 Buffer.prototype.ucs2Slice = function (start, end) { return __wjs_bufUcs2Slice(this, start, end); };
 Buffer.prototype.utf8Slice = function (start, end) { return __wjs_bufUtf8Slice(this, start, end); };
-globalThis.__wjs_bufApi = {
-  get INSPECT_MAX_BYTES() { return INSPECT_MAX_BYTES; },
-  set INSPECT_MAX_BYTES(v) {
-    __wjs_bufValidateNumber(v, 'INSPECT_MAX_BYTES', 0);
-    INSPECT_MAX_BYTES = v;
-  },
-  kMaxLength,
-  kStringMaxLength,
-  isUtf8(input) {
-    if ((ArrayBuffer.isView(input) && !(input instanceof DataView)) || __wjs_bufIsAnyAB(input)) {
-      const u8 = __wjs_bufAsU8(input) ?? new Uint8Array(0);
-      try {
-        new TextDecoder('utf-8', { fatal: true }).decode(u8);
-        return true;
-      } catch {
-        return false;
-      }
-    }
-    throw __wjs_bufArgTypeErr('input', ['ArrayBuffer', 'Buffer', 'TypedArray'], input);
-  },
-  isAscii(input) {
-    if ((ArrayBuffer.isView(input) && !(input instanceof DataView)) || __wjs_bufIsAnyAB(input)) {
-      const u8 = __wjs_bufAsU8(input) ?? new Uint8Array(0);
-      for (let i = 0; i < u8.length; i++) {
-        if (u8[i] > 0x7f) return false;
-      }
-      return true;
-    }
-    throw __wjs_bufArgTypeErr('input', ['ArrayBuffer', 'Buffer', 'TypedArray'], input);
-  },
-  btoa(input) {
-    if (arguments.length === 0) throw __wjs_bufMissingArgsErr('input');
-    return globalThis.btoa(`${input}`);
-  },
-  atob(input) {
-    if (arguments.length === 0) throw __wjs_bufMissingArgsErr('input');
-    return globalThis.atob(`${input}`);
-  },
-  transcode(source, fromEncoding, toEncoding) {
-    if (!__wjs_bufIsU8(source)) {
-      throw __wjs_bufArgTypeErr('source', ['Buffer', 'Uint8Array'], source);
-    }
-    if (source.length === 0) return new __wjs_bufFastBuffer();
-    fromEncoding = __wjs_bufNormalizeEncoding(fromEncoding) || fromEncoding;
-    toEncoding = __wjs_bufNormalizeEncoding(toEncoding) || toEncoding;
-    const fromOps = __wjs_bufGetEncodingOps(fromEncoding);
-    const toOps = __wjs_bufGetEncodingOps(toEncoding);
-    if (fromOps === undefined || toOps === undefined) {
-      const e = new RangeError(`Unable to transcode Buffer [U_UNKNOWN_ENCODING]`);
-      e.code = 'ERR_UNKNOWN_ENCODING';
-      e.errno = -1;
-      throw e;
-    }
-    const decoded = fromOps.slice(source, 0, source.length);
-    return __wjs_bufFromStringFast(decoded, toOps);
-  },
-};
-
-// Uint8Array 构造失败文案桥（V8 "Invalid typed array length: N" 口径；
-// SM 抛自有文案，套件按 V8 插值断言；newTarget 必须透传，否则 TypedArray
-// 子类化（`class X extends Uint8Array`）全灭为基类原型——10f buffer 实测）。
-(() => {
-  const U8 = globalThis.Uint8Array;
-  globalThis.Uint8Array = new Proxy(U8, {
-    construct(target, args, newTarget) {
-      try {
-        return Reflect.construct(target, args, newTarget);
-      } catch (e) {
-        throw new RangeError(`Invalid typed array length: ${args[0]}`);
-      }
-    },
-  });
-})();
-
-// String.prototype.repeat 的 RangeError 文案桥（V8 口径："Invalid string length"/
-// "Invalid count value: N"；SM 文案不同，套件正则按 V8 断言）
-(() => {
-  const rep = String.prototype.repeat;
-  Object.defineProperty(String.prototype, 'repeat', {
-    value: function (count) {
-      if (typeof count === 'number' && count < 0) {
-        throw new RangeError(`Invalid count value: ${count}`);
-      }
-      try {
-        return rep.call(this, count);
-      } catch (e) {
-        throw e instanceof RangeError ? new RangeError('Invalid string length') : e;
-      }
-    },
-    writable: true,
-    configurable: true,
-    enumerable: false,
-  });
-})();
-globalThis.__wjs_bufDecode = __wjs_bufDecode;
-globalThis.__wjs_bufEncode = __wjs_bufEncode;
-globalThis.Buffer = Buffer;
-})();
-const __wjs_keyState = new WeakMap();
-function NotSupportedError_(what) { return new Error(`NotSupportedError: unsupported ${what}`); }
-function __wjs_normHash(h) {
-  const s = typeof h === "string" ? h : String(h?.name ?? "");
-  const up = s.trim().toUpperCase();
-  const map = { "SHA-1": "SHA-1", "SHA1": "SHA-1", "SHA-256": "SHA-256", "SHA256": "SHA-256", "SHA-384": "SHA-384", "SHA384": "SHA-384", "SHA-512": "SHA-512", "SHA512": "SHA-512" };
-  if (!map[up]) throw new Error(`NotSupportedError: unsupported hash '${s}'`);
-  return map[up];
-}
-function __wjs_makeKey(alg, material, usages, extractable, kind) {
-  const k = Object.create(CryptoKey.prototype);
-  __wjs_keyState.set(k, { alg, material, usages, extractable, kind: kind ?? "secret" });
-  return k;
-}
-function __wjs_keyBytes(v) {
-  if (v instanceof ArrayBuffer) return new Uint8Array(v);
-  if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
-  throw new TypeError("key data must be a BufferSource");
-}
-function __wjs_dataBytes(v) {
-  if (typeof v === "string") return new TextEncoder().encode(v);
-  return __wjs_keyBytes(v);
-}
-function __wjs_needUsage(st, op) {
-  if (!st.usages.includes(op)) throw new Error(`InvalidAccessError: key cannot be used to ${op}`);
-}
-function __wjs_aesParams(algorithm) {
-  const iv = __wjs_dataBytes(algorithm?.iv ?? new Uint8Array(0));
-  if (iv.length !== 12) throw new Error("OperationError: AES-GCM iv must be 12 bytes");
-  const aad = algorithm?.additionalData === undefined ? undefined : __wjs_dataBytes(algorithm.additionalData);
-  const tagLength = algorithm?.tagLength === undefined ? 128 : Number(algorithm.tagLength);
-  if (tagLength !== 128) throw new Error("NotSupportedError: only 128-bit AES-GCM tags for now");
-  return { iv, aad };
-}
-function __wjs_b64urlEncode(u8) {
-  let s = "";
-  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-function __wjs_b64urlDecode(str) {
-  str = String(str).replace(/-/g, "+").replace(/_/g, "/");
-  while (str.length % 4) str += "=";
-  const bin = atob(str);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-globalThis.CryptoKey = class CryptoKey {
-  constructor() { throw new TypeError("Illegal constructor"); }
-  get algorithm() { return { ...__wjs_keyState.get(this)?.alg }; }
-  get extractable() { return !!__wjs_keyState.get(this)?.extractable; }
-  get type() { return __wjs_keyState.get(this)?.kind ?? "secret"; }
-  get usages() { return [...(__wjs_keyState.get(this)?.usages ?? [])]; }
-};
-function __wjs_normCurve(c) {
-  const s = String(c ?? "").trim().toUpperCase().replace("_", "-");
-  const map = { "P-256": "P-256", "P256": "P-256", "P-384": "P-384", "P384": "P-384", "P-521": "P-521", "P521": "P-521" };
-  if (!map[s]) throw new Error(`NotSupportedError: unsupported curve '${c}' (P-256/384/521)`);
-  return map[s];
-}
-function __wjs_rsaPubExp(v) {
-  if (v === undefined) return 65537;
-  if (v instanceof Uint8Array) {
-    let n = 0;
-    for (const b of v) n = n * 256 + b;
-    return n;
-  }
-  return Number(v);
-}
-function __wjs_x_bits(algorithm, st, length) {
-  const pubKey = algorithm?.public;
-  const pst = __wjs_keyState.get(pubKey);
-  if (!pst || pst.alg.name !== "X25519" || pst.kind === "private") {
 "#;

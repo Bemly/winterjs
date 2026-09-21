@@ -3095,3 +3095,36 @@ cargo build
 - 复现：`tests/node/testmod.rs::phase10f_test_run_semantics_*` +
   `phase10f_test_run_tag_filter_and_randomize` + 真套件 plan/tags/entry/
   randomize（修前 DIFF 修后 SAME0）。
+
+### 4.185 http TIMEOUT 轮八坑（2026-09-22，plan3 G11）
+
+- 坑一（defer-to-connect）：`req.setTimeout(1000)` 同步覆写把已建连 socket 的
+  超时也改成构造期值。根因：覆写直写 socket，connect 前后未分。修法：connect
+  前只记请求级值（socket 事件仍见构造期值），connect 时落地（`framing_agent.js`
+  `setRequestSocket`）。复现：`client-set-timeout`（修前 socket 事件即 1000）。
+- 坑二（`_last` FIN 递延）：GET 管线超 max 的 503 恒丢（POST 靠 pacing 碰巧能到）。
+  根因：FIN 排在 cont（re-feed）之前，已读管线字节的错误响应先被 FIN 截断
+  （write-after-end 丢失）。修法：FIN 递延一轮排在 cont 之后
+  （`framing_outgoing.js`）。复现：`tests/node/http/timeout.rs::p3`（修前 GET 无 503）。
+- 坑三（capture 接线）：`captureRejections` 形 error 经 socket 透传丢失。
+  根因：capture destroy 的 err 未进 socket 错误通道。修法：capture destroy 带 err
+  透传（有监听才发，无监听仅 aborted）。复现：`outgoing-message-capture-rejection`
+  （修前 DIFF 修后 SAME）。
+- 坑四（ready 解禁）：raw-socket 套件（keep-alive-pipeline-max-requests 等）写饿死。
+  根因：§4.126 暂缓 `ready` 不发射，真机 `onconnection` 后同步触发写。修法：connect
+  后同步发射（`net` 侧；暂缓作废，欠账清零要求语义到位）。复现：上套件（修前 hang）。
+- 坑五（池复用 FIN 竞态）：`Connection: close` 响应入池，次请求复用撞 FIN 报
+  ECONNRESET。根因：回池只门 freeSockErr。修法：`__release(poolable)`——close 响应
+  即销毁（`framing_agent.js`）。复现：`get-pipeline-problem`（修前 DIFF）。
+- 坑六（空闲判定漏 res）：`closeIdleConnections`/看门狗误杀在途响应。
+  根因：空闲只看 req 侧。修法：判定补 `st.res` 三处（close/closeIdle/看门狗）。
+  复现：在途响应形（修前被关）。
+- 坑七（abort 门控）：服务端无 error 监听时 abort 抛错。根因：error 同步发抢在
+  aborted 之前。修法：aborted 同步恒发，error 有监听才发且递延
+  （不抢 res 侧 PREMATURE_CLOSE）。复现：`aborted` 块 + `timeout.rs::a2`。
+- 坑八（`_ended` 订正）：响应中 `setTimeout` 全被 noop。根因：门控误用请求 finish
+  置位（`__reqFinished`）。真机 `_ended` 置于 responseOnEnd。修法：门控改
+  `res.readableEnded`，删请求置位。复现：`client-timeout-with-data`（修前 hang）。
+- 附带方法学二则（旧坑再现）：① 脏二进制打架两次（6 秒构建误判；§4.62/§4.145
+  姊妹）——后一律 `ls -la` 对时间戳 + 行为验证；② `| head` 后 `$?` 是 head 的码
+  （§4.45 三进宫）——判活一律文件落盘取码。

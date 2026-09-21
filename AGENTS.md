@@ -2716,3 +2716,31 @@ cargo build
   另：本机 curl（SecureTransport 版）无 `--http3-only`，H3 以 harness 验收。
 - 复现：去 `finish()` 即 30s Timeout；诊断法：服务端 debug 埋点看停在
   accepted 还是进 axum（本次停 accepted 即 FIN 面）。
+
+### 4.168 T4 WS 五坑：握手归属/GUID 记忆/构建盲区/自动应答/101 表达（2026-09-21，plan4 T4）
+
+- 坑一（hyper 已握手后再 `accept_async` 永挂）：hyper 接管 101 后流上只有 WS 帧，
+  `accept_async` 等一个永不到的 HTTP 握手。修法：
+  `WebSocketStream::from_raw_socket(up, Role::Server, None)` 直接接管
+  （async 仅构造，infallible；`src/serve.rs::run_server_socket`）。
+- 坑二（GUID 凭记忆必错）：自拼 `258EAFA5-E648-…` 系虚构，真值
+  `258EAFA5-E914-47DA-95CA-C5AB0DC85B11`（tungstenite `handshake/mod.rs::WS_GUID`）；
+  python/实现双绿掩盖（自交一致，§4.54 对称性盲区再进宫）。修法：密码学常量
+  逐字节对轮子源码 + RFC 向量单测钉死（`ws_accept_key_rfc_vector`）。
+  附带教训：单测写完即跑——本次若早跑，错向量当场红，不必绕 python 一圈。
+- 坑三（`cargo build` 不编 `cfg(test)`）：bridge 加字段后 build 绿、集成测试绿，
+  但 `cargo test --bin` E0063（`state/mod.rs` 测试 helper 旧构造体）。
+  修法：改结构体必跑 `cargo test --bin <name>`（集成测试只链接二进制成品，
+  不编 bin 的 `cfg(test)`）。
+- 坑四（tungstenite 自动回 Close）：对端 Close 到达时库内已排队回帧，应用层
+  手动再发被拒（ClosedByPeer），直接 break 即回帧滞留缓冲 → RST。
+  修法：收 Close 后 `sink.flush()` 推出再结算（tests/ws.rs stub 回帧同族不同术）。
+  附带：client 侧（`ws.rs`）同形缺 flush（对端先关即 RST），既有测试全绿未暴露，另案。
+- 坑五（101 表达弃用）：初版 `new Response(null, {status: 101})` 被 prelude
+  `RangeError`（status 限 200-599，undici 同口径，不动共享语义）。
+  修法：handler 直接 `return socket`（`__wjs_wskState.server` 品牌位）即接受；
+  Response 即 Decline。无新模块形状，fetch 契约不变。
+- T4 语义记档（三件，另案）：① Decline 双 fetch（offer + HTTP 各跑一次，
+  升级请求专属）；② H3 上传整收（§4.167）；③ 通道 unbounded（背压另案）。
+- 复现：`phase11_serve_ws_echo`（去 flush 即 RST；错 GUID 即 tungstenite 客户端
+  握手失败）；`phase11_serve_ws_bad_handshake/static_first`（400×3/101+RFC 键）。

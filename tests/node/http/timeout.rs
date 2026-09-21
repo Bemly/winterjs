@@ -259,6 +259,81 @@ console.log("END");
 }
 
 #[test]
+fn phase11_http_abort_faces() {
+    // abort 级联：客户端 abort → 双侧 aborted + ECONNRESET；服务端无 error
+    // 监听时仅 aborted（不抛）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http from "node:http";
+import assert from "node:assert";
+
+// 正常 + 报错：两端 aborted 置位，ECONNRESET('aborted') 双侧可观测。
+{
+  const srv = http.createServer((req, res) => {
+    assert.strictEqual(req.aborted, false);
+    req.on("aborted", () => assert.strictEqual(req.aborted, true));
+    req.on("error", (err) => {
+      assert.strictEqual(err.code, "ECONNRESET");
+      assert.strictEqual(err.message, "aborted");
+      srv.close();
+    });
+    res.write("hello");
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  await new Promise((resolve) => {
+    const req = http.get(
+      { port: srv.address().port, headers: { connection: "keep-alive" } },
+      (res) => {
+        res.on("aborted", () => assert.strictEqual(res.aborted, true));
+        res.on("error", (err) => {
+          assert.strictEqual(err.code, "ECONNRESET");
+          resolve();
+        });
+        req.abort();
+      }
+    );
+  });
+  console.log("a1 abort-both-sides ok");
+}
+
+// 边界：服务端无 error 监听——仅 aborted，不抛错。
+{
+  const srv = http.createServer((req, res) => {
+    req.on("aborted", () => {
+      assert.strictEqual(req.aborted, true);
+      srv.close();
+    });
+    res.write("hello");
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  await new Promise((resolve) => {
+    const req = http.get({ port: srv.address().port }, (res) => {
+      res.on("aborted", () => resolve());
+      req.abort();
+    });
+    req.on("error", () => {});
+    setTimeout(resolve, 1500);
+  });
+  console.log("a2 abort-no-error-listener ok");
+}
+
+console.log("END");
+"#,
+    );
+    for tag in [
+        "a1 abort-both-sides ok",
+        "a2 abort-no-error-listener ok",
+        "END",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase11_http_outgoing_faces() {
     // G11 流出面：背压有限循环 + 重复 end 语义 + 抛错不毒化 + capture 透传。
     let dir = assert_fs::TempDir::new().unwrap();

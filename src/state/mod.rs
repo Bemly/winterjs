@@ -302,6 +302,10 @@ pub struct NetEntry {
     pub reader_done: bool,
     /// ref 计数位（10a 真计数：unref 摘循环续命，ref 装回；默认 true）。
     pub refed: bool,
+    /// 循环续命位（G11 半开案：对端 FIN 后 JS 侧半开持有（allowHalfOpen）即
+    /// 不再续命——真机同款（读端停转后空闲句柄不 ref 循环）；默认 true。
+    /// 与 refed 正交：net_open 只数 refed && holding。
+    pub holding: bool,
 }
 
 // SAFETY: 只追踪 target（id 无 GC 指针）。

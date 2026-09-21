@@ -26,7 +26,7 @@ pub fn net_socket_add(
     with_rooted(|s| s.net_targets.push(NetTarget { id, target: Heap::boxed(target) }));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     with_plain(|p| {
-        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true, reader_done: false, refed: true });
+        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true, reader_done: false, refed: true, holding: true });
         p.net_open += 1;
     });
     rx
@@ -38,7 +38,7 @@ pub fn net_conn_add() -> (u64, tokio::sync::mpsc::UnboundedReceiver<crate::built
     let id = with_plain(|p| {
         p.net_next_id += 1;
         let id = p.net_next_id;
-        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true, reader_done: false, refed: true });
+        p.net_sockets.insert(id, NetEntry { cmd_tx: tx, half_read: false, half_write: false, close_sent: false, writer_alive: true, reader_done: false, refed: true, holding: true });
         p.net_open += 1;
         id
     });
@@ -131,15 +131,18 @@ pub fn net_close_once(id: u64) -> bool {
 
 /// ref/unref 真计数（10a）：切换 refed 位并增减 net_open；entry 不在即 false。
 /// unref 后 Close 派发不再减（purge 按位），ref 装回后恢复。
+/// holding 摘除后只翻位不碰数（数已在 halfhold 落账）。
 pub fn net_set_ref(id: u64, refed: bool) -> bool {
     with_plain(|p| {
         if let Some(e) = p.net_sockets.get_mut(&id) {
             if e.refed != refed {
                 e.refed = refed;
-                if refed {
-                    p.net_open += 1;
-                } else {
-                    p.net_open = p.net_open.saturating_sub(1);
+                if e.holding {
+                    if refed {
+                        p.net_open += 1;
+                    } else {
+                        p.net_open = p.net_open.saturating_sub(1);
+                    }
                 }
             }
             true
@@ -149,16 +152,43 @@ pub fn net_set_ref(id: u64, refed: bool) -> bool {
     })
 }
 
+/// 半开摘续命（G11）：对端 FIN 后 JS 侧半开持有即不再续命（真机同款）。
+/// 只落账一次；purge 按 refed && holding 结算，不双减。
+pub fn net_halfhold(id: u64) -> bool {
+    with_plain(|p| {
+        if let Some(e) = p.net_sockets.get_mut(&id) {
+            if e.holding {
+                e.holding = false;
+                if e.refed {
+                    p.net_open = p.net_open.saturating_sub(1);
+                }
+                return true;
+            }
+        }
+        false
+    })
+}
+
 /// 收尾清除（entry + target；Close 派发后调用；返回首次 true）。
 pub fn net_purge(id: u64) -> bool {
-    let entry = with_plain(|p| p.net_sockets.remove(&id));
+    let counted = net_purge_entry(id);
     with_rooted(|s| s.net_targets.retain(|t| t.id != id));
-    if entry.is_some_and(|e| e.refed) {
+    counted
+}
+
+/// entry 侧清除（含计数结算；`net_purge` 的可单测半——target 表需 rooted 会话，
+/// 单测起不来引擎；双减防护的凭据在此）。
+/// 返回该 entry 是否曾计入 `net_open`（refed && holding）。
+pub(crate) fn net_purge_entry(id: u64) -> bool {
+    let counted = with_plain(|p| {
+        p.net_sockets
+            .remove(&id)
+            .is_some_and(|e| e.refed && e.holding)
+    });
+    if counted {
         with_plain(|p| p.net_open = p.net_open.saturating_sub(1));
-        true
-    } else {
-        false
     }
+    counted
 }
 
 /// 存活 socket/server 数（事件循环退出条件用）。
@@ -206,4 +236,48 @@ pub fn net_hold_fd(token: u64) -> i32 {
             -1
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    /// 半开续命状态机：conn_add +1；unref/ref 成对；halfhold 落账一次且幂等；
+    /// halfhold 后 unref/ref 只翻位不碰数；purge_entry 按 refed && holding 结算。
+    #[test]
+    #[serial]
+    fn net_halfhold_balance() {
+        let base = net_open();
+        let (id, _rx) = net_conn_add();
+        assert_eq!(net_open(), base + 1);
+        // 正常路径：unref/ref 成对，数来回。
+        assert!(net_set_ref(id, false));
+        assert_eq!(net_open(), base);
+        assert!(net_set_ref(id, true));
+        assert_eq!(net_open(), base + 1);
+        // 半开摘续命：落账一次，二次幂等 false。
+        assert!(net_halfhold(id));
+        assert_eq!(net_open(), base);
+        assert!(!net_halfhold(id));
+        assert_eq!(net_open(), base);
+        // 摘除后 unref/ref 只翻位。
+        assert!(net_set_ref(id, false));
+        assert_eq!(net_open(), base);
+        assert!(net_set_ref(id, true));
+        assert_eq!(net_open(), base);
+        // purge_entry：holding 已摘，不结算不双减。
+        assert!(!net_purge_entry(id));
+        assert_eq!(net_open(), base);
+        // 正常 entry：purge 结算一次。
+        let (id2, _rx2) = net_conn_add();
+        assert_eq!(net_open(), base + 1);
+        assert!(net_purge_entry(id2));
+        assert_eq!(net_open(), base);
+        // 未知 id 全静默 false。
+        assert!(!net_halfhold(u64::MAX));
+        assert!(!net_set_ref(u64::MAX, false));
+        assert!(!net_purge_entry(u64::MAX));
+        assert_eq!(net_open(), base);
+    }
 }

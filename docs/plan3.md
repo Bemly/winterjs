@@ -182,7 +182,7 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 
 | 域 | 欠账簇 | 规模 | 性质 |
 |---|---|---|---|
-| http | TIMEOUT 簇（expect-continue/upgrade/trailer/管线背压/max-connections） | ~110→约63 TIMEOUT+100 DIFF（http-only；2026-09-22 G11：18 提交约40件转SAME，见 bun-parity http 节 G11 增量；残 drain-writable-length 另轮深水 + server-keep-alive-timeout hang + 偶发 park 唤醒丢失待 Rust 侧） | 流式深化，与 10b 整收口径的接缝工程 |
+| http | TIMEOUT 簇（expect-continue/upgrade/trailer/管线背压/max-connections） | ~110→约63 TIMEOUT+100 DIFF（http-only；2026-09-22 G11：18 提交约40件转 SAME + 半开双杀 5 提交转 SAME 2 件（keep-alive-timeout/close-idle-wait-response），见 bun-parity http 节 G11 增量；残 drain-writable-length（outputData 另轮专项） + request-timeout-keepalive 真机自挂非回归） | 流式深化，与 10b 整收口径的接缝工程 |
 | http | ~~校验长尾 / chunk 限深~~ ✅ 2026-09-19 转绿（G3 六提交：chunk 扩展 413/trailer 431/校验门 15 件/Agent createSocket/IPC socketPath/write-after-end 语义/FIN 半开收口，点名 45 件 SAME0；余 OutgoingMessage outputData 缓冲模型 5 件**出局另轮专项**、假 socket socket.push 2 件需 net 流式化、TIMEOUT 110 归下行） | ~35→5 件 | 已收官，残件另案 |
 | http2 | compat 层 `Http2ServerRequest/Response` 全流面 | ~105 件 | 最大单体簇，与 10b 同型工程 |
 | http2 | server 流面 / settings/priority/ALPN 校验 | ~15 件 | 随 compat 轮 |
@@ -273,6 +273,12 @@ keep-alive 修正/回池门/池键/ready 解禁/setTimeout 门控订正 + 黑盒
 约 40 件转 SAME，http-only TIMEOUT 82→63、DIFF 105→100；
 sweep2 混二进制（05:47–06:32 跨两次构建）仅当趋势，终局需干净重扫；
 未闭环 3 件见上表 http 行；AGENTS §4.185）。
+
+**2026-09-22 G11 半开双杀收官**：5 提交（写端 Close 即发 + holding/halfhold/
+native 注册/JS 递延/黑盒；单测 `net_halfhold_balance` + 黑盒
+`phase11_net_halfopen_releases_loop` + 冒烟 5/5 + http/net/stream/dgram
+域 + bin 185 全绿；`server-keep-alive-timeout`/`server-close-idle-wait-
+response` 转 SAME0；AGENTS §4.186）。
 
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 

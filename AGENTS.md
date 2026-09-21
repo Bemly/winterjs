@@ -2716,3 +2716,32 @@ cargo build
 - 复现：kill0.mjs（修前误杀，修后存活到显式 kill）。
 - 推广为铁律：`try_from(x).unwrap_or(默认)` 写法先问"落空值是不是合法
   输入"——0/空串类哨兵值落空即灾难，哨兵短路永远先于转换。
+
+### 4.165 UDS listen 异步绑与同步 cp 的竞态（2026-09-21，fs 轮）
+
+- 症状：`cp-async-socket` 报 ENOENT（应 `ERR_FS_CP_SOCKET`），自带 listen
+  回调的探针却正常——同一 socket 文件时有时无。
+- 根因：UDS bind 在 Rust task 内异步落定；套件 `listen(path)` 后同步
+  `cp()`，文件尚未出现。真机 pipe bind 在 listen() 返回前同步完成。
+- 修法：探活（connect 通即 EADDRINUSE）/清残留/bind/chmod 全改同步
+  （本地 syscall，无等待），task 只接管已绑 listener 跑 accept；
+  `from_std` 前照旧 nonblocking（§4.161）。
+- 复现：`test-fs-cp-async-socket.mjs`（修前 ENOENT；修后 0）。
+- 推广为铁律：凡"创建即同步用"（listen 后 stat/cp、bind 后 connect），
+  创建语义必须是同步落定——异步落定的创建面配合同步消费必竞态；
+  改时保留原错误面（探活/chmod/错误事件逐项搬，不删逻辑只换线程）。
+
+### 4.166 宿主 mock 可见性：内部调用须经默认导出（2026-09-21，fs 轮）
+
+- 症状：`write-stream-err` 补丁 `fs.write/fs.close` 永不触发（第二块 BAM
+  丢、`close` mustCall 悬空）；`change-open` 的补丁 close 不调回即 hang。
+- 根因：WriteStream 内部直调本地 `write/close` 绑定与 native，而套件
+  `require('fs')` 补丁落在默认导出对象（`__api`）上——直调即绕过。
+- 修法：`_write/_final` 经 `__api.write/__api.close` 调用（同一对象，
+  补丁可见；无补丁即原函数，零行为差）；`close` 不等回调即走
+  （补丁不调回是真机同款 fire-and-forget）；`_write` 补写 position 跟踪
+  （fd 形 `start: 0` 覆盖写，autoclose-option 现形）。
+- 复现：`test-fs-write-stream-err.js`（修前第二块丢；修后全绿）。
+- 推广为铁律：凡"用户可 mock 的面"（fs/dns 等），内部调用一律经默认
+  导出对象、不直调本地绑定——自测时顺手打一个"补丁补丁是否生效"的
+  探针（直调绕过是静默的，功能全对时最难发现）。

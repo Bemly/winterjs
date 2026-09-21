@@ -734,12 +734,15 @@ EEXIST/DIR_TO_NON_DIR/NON_DIR_TO_DIR/INCOMPATIBLE_PAIR）+ lstat 分发/onLink
 流 getOptions/path-undefined/close 补齐/autoClose 访问器/autoDestroy 随 autoClose/
 fd-null/open 递延/_final 递延/patch-open honored；promises.readFile 信号让步；
 FileHandle.readLines/readFile-2GiB 门；AbortSignal symbol 双轨穿透 Proxy。
-残 15 全部分类：cp async-filter ×1（需异步 cp 管线）/socket ×2（net 监听同步性，
-文件就绪后码正确）；expose-internals ×3（跳过类）；pull/writer ×3（需
-stream/iter+zlib/iter 新模块，另轮）；read-worker ×1（worker fd 移交，G6 残件同族）；
-read-pos ×1（live 增长轮询，需增量 ReadStream）；eagain/flush ×2（node:test mock，
-runner 深度）；err ×1（增量 WriteStream 重写）；write-patch-open ×1（fork 父端
-exit 不到，child 域，HEAD 同 hang 已实证）。
+残 15 全部分类：cp async-filter ×1 ✅ 2026-09-21 转绿（__cpAsync 逐项 await +
+同步校验前置，cp 79/79 全同；附 readdirSync recursive 下钻补齐）/socket ×2
+✅ 2026-09-21 转绿（UDS listen 改同步 bind， task 异步绑 ENOENT 竞态根除；
+AGENTS §4.165）/read-pos ×1 ✅ 2026-09-21 转绿（live 跟随 setImmediate 重查）/
+write-err ×1 ✅ 2026-09-21 转绿（WriteStream 增量经默认导出 + 写 position 跟踪 +
+close 不等回调；附带修 autoclose-option/change-open；AGENTS §4.166）/
+write-patch-open ×1（早绿，child 域修复顺带）；expose-internals ×3（跳过类）；
+pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker ×1
+（worker fd 移交，G6 残件同族）；eagain/flush ×2（node:test mock，runner 深度）。
 黑盒 fs 20/20（含新增 phase10f_fs_stream_lifetime）+ 冒烟 5/5。
 
 ## net

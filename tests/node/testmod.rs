@@ -139,6 +139,27 @@ fn phase10f_test_mock_timers_scheduler() {
 }
 
 #[test]
+fn phase10f_test_run_none_and_plan_gates() {
+    // run({isolation:"none"}) 文件加载 + 事件配对 + plan 校验门。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let probe = dir.child("probe.test.mjs");
+    probe
+        .write_str(
+            "import { test } from \"node:test\";\ntest(\"p-one\", () => {});\ntest(\"p-two\", () => {});\n",
+        )
+        .unwrap();
+    let file = dir.child("t.mjs");
+    let script = "import { test, run } from \"node:test\";\nimport assert from \"node:assert\";\ntest(\"driver\", async () => {\n  const stream = run({ files: [\"PROBE\"], isolation: \"none\" });\n  const passes = [];\n  stream.on(\"test:pass\", (d) => passes.push(d.name));\n  let sawStart = 0, sawComplete = 0;\n  stream.on(\"test:start\", () => sawStart++);\n  stream.on(\"test:complete\", () => sawComplete++);\n  for await (const _ of stream);\n  assert.deepStrictEqual(passes.sort(), [\"p-one\", \"p-two\"]);\n  assert.strictEqual(sawStart, 2);\n  assert.strictEqual(sawComplete, 2);\n});\ntest(\"plan-gates\", (t) => {\n  assert.throws(() => { t.plan(1, null); }, { code: \"ERR_INVALID_ARG_TYPE\" });\n  assert.throws(() => { t.plan(1, { wait: \"x\" }); }, { code: \"ERR_INVALID_ARG_TYPE\" });\n  assert.throws(() => { t.plan(\"x\"); }, { code: \"ERR_INVALID_ARG_TYPE\" });\n  assert.throws(() => { run({ testTagFilters: [42] }); }, { code: \"ERR_INVALID_ARG_TYPE\" });\n});\n"
+        .replace("PROBE", probe.path().to_str().unwrap());
+    file.write_str(&script).unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "run none: {stdout}");
+    assert!(stdout.contains("# pass 2, fail 0, skip 0, todo 0"), "summary: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase10f_test_mock_property_and_top() {
     // mock.property 访问记录/复原 + 顶层 mock + 校验报错两件。
     let dir = assert_fs::TempDir::new().unwrap();

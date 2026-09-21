@@ -1,0 +1,310 @@
+//! tests/node/http/keepalive.rs — keepalive/流式/中断（对齐 src/builtins/node/http.rs）。
+
+use crate::helpers::*;
+
+#[test]
+fn phase10b_http_keepalive_reuse() {
+    // 10b：keep-alive 复用——3 请求 1 连接，reusedSocket 可观测。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "k.mjs",
+        r#"
+import http, { createServer, Agent } from "node:http";
+let conns = 0, reqs = 0;
+const server = createServer((req, res) => {
+  reqs++;
+  req.on("data", () => {});
+  req.on("end", () => res.end(`r${reqs}`));
+});
+server.on("connection", () => { conns++; });
+server.listen(0, "127.0.0.1", async () => {
+  const port = server.address().port;
+  const agent = new Agent({ keepAlive: true });
+  const getOne = () => new Promise((resolve, reject) => {
+    const r = http.get({ port, path: "/", agent }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => resolve({ body: b, reused: r.reusedSocket, conn: res.headers.connection }));
+    });
+    r.on("error", reject);
+  });
+  const a = await getOne();
+  const b = await getOne();
+  const c = await getOne();
+  console.log("bodies", a.body, b.body, c.body);
+  console.log("reused", a.reused, b.reused, c.reused);
+  console.log("counts", conns, reqs);
+  console.log("conn-hdr", a.conn);
+  agent.destroy();
+  server.close();
+});
+server.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 1000);
+"#,
+    );
+    for line in [
+        "bodies r1 r2 r3",
+        "reused false true true",
+        "counts 1 3",
+        "conn-hdr keep-alive",
+        "srv-close",
+        "end-ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10b_http_chunked_stream() {
+    // 10b：分块编码对拍 + for-await/pipe 流消费 + 上传流式。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "c.mjs",
+        r#"
+import http, { createServer } from "node:http";
+import { Writable } from "node:stream";
+const server = createServer((req, res) => {
+  if (req.url === "/up") {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.write("got:");
+      res.end(Buffer.concat(chunks).toString());
+    });
+    return;
+  }
+  if (req.url === "/stream") {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.write("a");
+    setTimeout(() => { res.write("b"); }, 20);
+    setTimeout(() => { res.end("c"); }, 40);
+    return;
+  }
+  res.end("?");
+});
+server.listen(0, "127.0.0.1", async () => {
+  const port = server.address().port;
+  const t1 = await new Promise((resolve, reject) => {
+    http.get({ port, path: "/stream" }, async (res) => {
+      try {
+        console.log("te", res.headers["transfer-encoding"], res.headers["content-length"]);
+        let s = "";
+        for await (const c of res) s += c;
+        resolve("stream-body " + s);
+      } catch (e) { reject(e); }
+    }).on("error", reject);
+  });
+  console.log(t1);
+  const t2 = await new Promise((resolve, reject) => {
+    const r = http.request({ port, path: "/up", method: "POST" }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => resolve("up-body " + b));
+    });
+    r.on("error", reject);
+    r.write("x");
+    setTimeout(() => { r.write("y"); setTimeout(() => r.end("z"), 10); }, 10);
+  });
+  console.log(t2);
+  const t3 = await new Promise((resolve, reject) => {
+    const r = http.request({ port, path: "/up", method: "POST" }, (res) => {
+      const acc = [];
+      const sink = new Writable({ write(c, e, cb) { acc.push(c); cb(); } });
+      res.pipe(sink);
+      sink.on("finish", () => resolve("pipe-body " + Buffer.concat(acc).toString()));
+    });
+    r.on("error", reject);
+    r.end("piped!");
+  });
+  console.log(t3);
+  server.close();
+});
+server.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 1500);
+"#,
+    );
+    for line in [
+        "te chunked undefined",
+        "stream-body abc",
+        "up-body got:xyz",
+        "pipe-body got:piped!",
+        "srv-close",
+        "end-ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10b_http_destroy_midflight() {
+    // 10b：中途 destroy——客户端杀连接，服务端见 close，客户端无 end 有 close。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "d.mjs",
+        r#"
+import http, { createServer } from "node:http";
+const server = createServer((req, res) => {
+  req.on("data", () => {});
+  req.on("end", () => {
+    res.write("part1");
+  });
+});
+server.on("connection", (sock) => {
+  sock.on("close", () => console.log("srv-conn-close"));
+});
+server.listen(0, "127.0.0.1", () => {
+  const port = server.address().port;
+  const r = http.get({ port, path: "/" }, (res) => {
+    res.on("data", () => {
+      console.log("cli-first-data");
+      r.destroy();
+    });
+    res.on("end", () => console.log("cli-end-NEVER"));
+    res.on("close", () => {
+      console.log("cli-res-close");
+      server.close();
+    });
+  });
+  r.on("error", (e) => console.log("cli-req-error", e.code));
+  r.on("close", () => console.log("cli-req-close"));
+});
+server.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 1500);
+"#,
+    );
+    for line in [
+        "cli-first-data",
+        "cli-res-close",
+        "cli-req-close",
+        "srv-conn-close",
+        "srv-close",
+        "end-ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    assert!(!out.contains("cli-end-NEVER"), "out: {out}");
+    assert!(!out.contains("cli-req-error"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_http_pipeline_upload_interrupt_and_dechunk() {
+    // 10f：上传中断（pipeline(req,res) + 客户端 11 块 chunked 上传 + 读 10 块后 destroy）。
+    // 真机 11 次 data（Agent noDelay 默认 + 未连通缓冲逐帧刷出保分包）；合包即 hang（blk09）。
+    // 另断言连通后逐写 11 块 → 服务端 11 次 data（分包回归）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http, { createServer } from "node:http";
+import { Readable, pipeline } from "node:stream";
+// 分包回归：连通后逐写 11 块 → 11 次 data。
+const s2 = createServer((req, res) => {
+  let n = 0;
+  req.on("data", () => { n++; });
+  req.on("end", () => { console.log("dechunk", n); res.end("x"); s2.close(); });
+});
+s2.listen(0, "127.0.0.1", () => {
+  const port = s2.address().port;
+  const req = http.request({ port, path: "/", method: "POST" }, (res) => {
+    res.resume();
+    res.on("end", () => {
+      // 中断回归：blk09 原文（11 块上传 + 读 10 块后 destroy 源）。
+      const server = createServer((q, r) => {
+        pipeline(q, r, (err) => console.log("srv-pipe", err?.code));
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const p2 = server.address().port;
+        // 真机口径（10f G3）：上传用 POST——GET 属 useChunkedEncodingByDefault=false
+        // 族，真机 body 裸写（无 TE/CL），chunked 分包回归只在 POST 形成立。
+        const req2 = http.request({ port: p2, method: "POST" });
+        let sent = 0;
+        const rs = new Readable({ read() { if (sent++ > 10) return; rs.push("hello"); } });
+        pipeline(rs, req2, () => { console.log("cli-pipe-done"); server.close(); });
+        req2.on("response", (resp) => {
+          let cnt = 10;
+          resp.on("data", () => { if (--cnt === 0) rs.destroy(); });
+          resp.resume();
+        });
+      });
+    });
+  });
+  setTimeout(() => {
+    for (let i = 0; i < 11; i++) req.write("hello");
+    req.end();
+  }, 300);
+});
+setTimeout(() => console.log("end-ok"), 3000);
+"#,
+    );
+    for line in ["dechunk 11", "srv-pipe ERR_STREAM_PREMATURE_CLOSE", "cli-pipe-done", "end-ok"] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10b_http_big_body() {
+    // 10b：大体压测（≥1MB 上下行；GC 压力回归 §4.40）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "b.mjs",
+        r#"
+import http, { createServer } from "node:http";
+const big = "0123456789abcdef".repeat(65536);
+const sum = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h + s.charCodeAt(i)) | 0; return h; };
+const server = createServer((req, res) => {
+  if (req.url === "/up") {
+    const chunks = [];
+    let n = 0;
+    req.on("data", (c) => { chunks.push(c); n += c.length; });
+    req.on("end", () => {
+      const s = Buffer.concat(chunks).toString();
+      res.end(`up:${n}:${sum(s)}`);
+    });
+    return;
+  }
+  res.end(big);
+});
+server.listen(0, "127.0.0.1", async () => {
+  const port = server.address().port;
+  const down = await new Promise((resolve, reject) => {
+    http.get({ port, path: "/down" }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve(Buffer.concat(chunks).toString()));
+    }).on("error", reject);
+  });
+  console.log("down", down.length, sum(down) === sum(big));
+  const up = await new Promise((resolve, reject) => {
+    const r = http.request({ port, path: "/up", method: "POST" }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => resolve(b));
+    });
+    r.on("error", reject);
+    for (let i = 0; i < 16; i++) r.write(big.slice(i * 65536, (i + 1) * 65536));
+    r.end();
+  });
+  console.log("up", up);
+  server.close();
+});
+server.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 3000);
+"#,
+    );
+    assert!(out.contains("down 1048576 true"), "out: {out}");
+    assert!(out.lines().any(|l| l.starts_with("up up:1048576:")), "out: {out}");
+    assert!(out.contains("srv-close"), "out: {out}");
+    assert!(out.contains("end-ok"), "out: {out}");
+    dir.close().unwrap();
+}
+

@@ -1309,6 +1309,38 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > - **chunk 限深 2 件**：chunk-extensions-limit/extensions 总量限（llhttp
 >   计数语义）。
 > - ** flakes**：full-response 并行跑偶发（单跑 rc=0，重负载族 §4.126）。
+>
+> ### G11 TIMEOUT 轮增量（2026-09-22，18 提交；http 域黑盒 17/17 + 冒烟 5/5）
+>
+> > - **请求超时全家**：`setTimeout` 补 `timeoutCb` 武装、`defer-to-connect`
+> >   （socket 事件见构造期值、connect 后见覆写值）、请求级覆盖 agent 级、
+> >   finish 后 noop、keepSocketAlive 可覆写 + 池超时自毁、onTimeout 单例、
+> >   `net Socket.setTimeout` 发布 `.timeout`、先入池后发 free、回池清请求级超时。
+> > - **101 摘池 + Trailer 校验**：upgrade 先摘 agent 池再发事件（req close 异步随后）；
+> >   非 chunked 带 Trailer 同步抛 `ERR_HTTP_TRAILER_INVALID`（自动 chunked 合法）。
+> > - **管线面**：前导空行连发、残缺头 requestTimeout 期 408、超 max 回 503 +
+> >   `dropRequest`、升级双侧 parser 释放、毁后写丢弃、`_last` FIN 递延一轮
+> >   （GET 确定性 503 根因）。
+> > - **流出面**：`_write` 异步回（背压）、end 重复语义（ALREADY_FINISHED/
+> >   WRITE_AFTER_END，不毒化 errored，抛错回滚 `__userEnded`）、capture 接线 +
+> >   destroy 透传、空闲判定补 `st.res`。
+> > - **abort 级联**：双侧 `aborted` + `ECONNRESET('aborted')`（有监听才发 error 且递延）。
+> > - **1xx/头形态/agent**：writeInformation/Processing/EarlyHints；数组形 headers/
+> >   setHost/原拼写/noDefaults；maxHeadersCount 接收截断（双侧 null）；
+> >   默认 keep-alive 修正；回池门（close 响应不入池）+ 排队续行；池键无残留 +
+> >   取消递延；`socket ready` 事件解禁（connect 后同步）；setTimeout 门控改
+> >   `res.readableEnded`（前版误用请求 finish，响应中恒 noop）。
+> > - **转 SAME**：client/agent 超时全家 14 件 + upgrade-agent/de-chunked-trailer +
+> >   pipelining/upgrade-parser/max-requests/incoming-destroy + outgoing-finish/
+> >   end-multiple/end-types/capture + aborted 全块 + information×2/early-hints×2 +
+> >   automatic-headers/drop-requests + dont-set-default×3 + max-headers-count +
+> >   get-pipeline-problem + abort-queued/get-pipeline（约 40 件）。
+> > - **计数**：http-only TIMEOUT 82→**63**、DIFF 105→**100**
+> >  （sweep 05:47–06:32，跨 06:09/06:28 两次构建，混二进制仅当趋势；终局需干净重扫）。
+> > - **未闭环**：drain-writable-length（需 eager-parse + 无 socket 排队架构，另轮深水）；
+> >   server-keep-alive-timeout 6/6 hang（done 内 destroy + server.close 同 tick 撞
+> >   native 收尾，ServerClose 丢失）；偶发 park 错过唤醒（0% CPU parked，看门狗不触发，
+> >   疑与上同源，需 Rust 侧深入）。
 
 ## https
 

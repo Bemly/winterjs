@@ -259,6 +259,98 @@ console.log("END");
 }
 
 #[test]
+fn phase11_http_outgoing_faces() {
+    // G11 流出面：背压有限循环 + 重复 end 语义 + 抛错不毒化 + capture 透传。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http from "node:http";
+import assert from "node:assert";
+
+// 背压：16KB 块有限次即 false（旧同步回恒 true 即无限循环）。
+{
+  const srv = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      const buf = Buffer.alloc(16384, "x");
+      let n = 0;
+      let r = res.write(buf);
+      n++;
+      while (r && n < 30) { r = res.write(buf); n++; }
+      assert.ok(!r, "write must exert backpressure");
+      res.end(() => srv.close());
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  await new Promise((resolve, reject) => {
+    const req = http.request({ port, method: "PUT" }, (res) => {
+      res.resume();
+      res.on("end", resolve);
+    });
+    req.on("error", reject);
+    req.end(Buffer.alloc(100, "y"));
+  });
+  console.log("o1 backpressure ok");
+}
+
+// 重复 end：ending 中裸 end 排队（null 回调）；finish 后裸 end 报
+// ALREADY_FINISHED（同步）；ending 中带块报 WRITE_AFTER_END。
+{
+  const srv = http.createServer((req, res) => {
+    res.end("a", (err) => assert.strictEqual(err, null));
+    res.end((err) => assert.strictEqual(err, null));
+    res.on("finish", () => {
+      res.end((err) => assert.strictEqual(err && err.code, "ERR_STREAM_ALREADY_FINISHED"));
+      srv.close();
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  await new Promise((resolve, reject) => {
+    http.get({ port: srv.address().port }, (res) => {
+      res.resume();
+      res.on("end", resolve);
+    }).on("error", reject);
+  });
+  console.log("o2 double-end ok");
+}
+
+// 抛错不毒化：非法块 end 同步抛后，合法 end 照常完成响应。
+{
+  const srv = http.createServer((req, res) => {
+    assert.throws(() => res.end(["bad"]), { code: "ERR_INVALID_ARG_TYPE" });
+    res.end("ok");
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const body = await new Promise((resolve, reject) => {
+    http.get({ port: srv.address().port }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => resolve(b));
+    }).on("error", reject);
+  });
+  assert.strictEqual(body, "ok");
+  srv.close();
+  console.log("o3 throw-no-poison ok");
+}
+
+console.log("END");
+"#,
+    );
+    for tag in [
+        "o1 backpressure ok",
+        "o2 double-end ok",
+        "o3 throw-no-poison ok",
+        "END",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase11_http_pipeline_and_limits_faces() {
     // G11 管线面：前导空行多连发 + 残缺头 408 + maxRequests 503 + 毁后写丢弃。
     let dir = assert_fs::TempDir::new().unwrap();

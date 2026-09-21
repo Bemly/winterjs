@@ -33,6 +33,7 @@ pub mod registry;
 pub mod snapshot;
 pub mod streams;
 pub mod symbols;
+pub mod test_mock;
 pub mod types;
 pub mod util;
 pub mod validators;
@@ -107,6 +108,8 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:_http_common", http_aliases::COMMON_SOURCE),
     ("node:_http_server", http_aliases::SERVER_SOURCE),
     ("node:_http_outgoing", http_aliases::OUTGOING_SOURCE),
+    // plan3 test Slice B1：MockTracker 核心（node:test 经此接线）。
+    ("node:internal/test/mock", test_mock::SOURCE),
 ];
 
 /// internal 规范名（`internal/errors` 与 `node:internal/errors` 皆收 → `node:internal/errors`；

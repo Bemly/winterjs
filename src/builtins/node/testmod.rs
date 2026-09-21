@@ -18,6 +18,7 @@ import assertMod from "node:assert";
 import validators from "node:internal/validators";
 import { codes } from "node:internal/errors";
 import { readFileSync } from "node:fs";
+import { MockTracker } from "node:internal/test/mock";
 
 const { validateArray, validateFunction, validateNumber, validateObject, validateString, validateUint32 } = validators;
 // node internal/timers TIMEOUT_MAX（2**31 - 1）同值。
@@ -328,20 +329,12 @@ async function __waitForRun(condition, interval, timeout) {
   throw e;
 }
 
-// t.mock 最小面（真机 MockTracker 逐测试实例）：fn(impl?) 包装记录调用，
-// .mock.callCount() 计数；method/timers 等全家待 node:test 欠账轮。
+// t.mock（真机 MockTracker 逐测试实例；顶层 mock 为进程级实例）。
+// Slice B1：fn/method/getter/setter/property/reset/restore 全家；timers 另片。
 function __mkMock() {
-  return {
-    fn(impl) {
-      const f = function (...a) {
-        f.mock.calls.push(a);
-        return impl ? impl.apply(this, a) : undefined;
-      };
-      f.mock = { calls: [], callCount() { return this.calls.length; } };
-      return f;
-    },
-  };
+  return new MockTracker();
 }
+const topMock = new MockTracker();
 
 function __testCtx(rec) {
   if (rec.ctx) return rec.ctx;
@@ -418,7 +411,7 @@ function __mkTest(name, options, fn, suites, parent) {
     children: [], pending: [], childFailed: false,
     planExpected: null, planActual: 0,
     assertObj: null, mockObj: null, ctx: null,
-    passed: false, failed: false,
+    passed: false, failed: false, beforeFired: false,
     done, resolve,
   };
 }
@@ -459,10 +452,12 @@ async function __runSuiteHook(suite, fn, testCtx) {
     __ctxStack.pop();
   }
 }
-async function __runTestHook(fn, testCtx) {
-  __ctxStack.push(testCtx);
+// 测试级钩子跑在 owner 上下文（getTestContext 见 owner 名），参数传子测试
+// ctx（get-test-context 测试级钩子套件钉住；套件级同理见 __runSuiteHook）。
+async function __runTestHook(fn, ownerCtx, argCtx) {
+  __ctxStack.push(ownerCtx);
   try {
-    await fn(testCtx);
+    await fn(argCtx);
   } finally {
     __ctxStack.pop();
   }
@@ -477,18 +472,39 @@ async function __runOne(rec) {
     const ctx = __testCtx(rec);
     __ctxStack.push(ctx);
     try {
+      // before（runOnce）：套件由外向内；测试级 owner 在首个子测试时跑一次。
+      // beforeEach/afterEach 跑在子测试身上（带子 ctx），owner 自身的不为自己跑
+      // （真机 Test.run 口径：`this.parent.hooks.*` + 自身 after；探针 hook.cjs）。
       for (const s of rec.suites) await __fireBefore(s);
       const poisoned = rec.suites.find((s) => s.poison);
       if (poisoned) throw poisoned.poison;
+      if (rec.parent && !rec.parent.beforeFired) {
+        rec.parent.beforeFired = true;
+        const pctx = __testCtx(rec.parent);
+        __ctxStack.push(pctx);
+        try {
+          for (const h of rec.parent.testHooks.before) await h(pctx);
+        } finally {
+          __ctxStack.pop();
+        }
+      }
+      // beforeEach：套件由外向内，再是测试级 owner 的（注册序）。
       for (const s of rec.suites) for (const h of s.hooks.beforeEach) await __runSuiteHook(s, h, ctx);
-      for (const h of rec.testHooks.beforeEach) await __runTestHook(h, ctx);
+      if (rec.parent) {
+        const pctx = __testCtx(rec.parent);
+        for (const h of rec.parent.testHooks.beforeEach) await __runTestHook(h, pctx, ctx);
+      }
       try {
         if (rec.fn) await rec.fn(ctx);
       } finally {
-        for (let i = rec.testHooks.afterEach.length - 1; i >= 0; i--) await __runTestHook(rec.testHooks.afterEach[i], ctx);
+        // afterEach：测试级 owner 先，再套件由内向外（注册序，runHook 口径）。
+        if (rec.parent) {
+          const pctx = __testCtx(rec.parent);
+          for (const h of rec.parent.testHooks.afterEach) await __runTestHook(h, pctx, ctx);
+        }
         for (let i = rec.suites.length - 1; i >= 0; i--) {
           const s = rec.suites[i];
-          for (let j = s.hooks.afterEach.length - 1; j >= 0; j--) await __runSuiteHook(s, s.hooks.afterEach[j], ctx);
+          for (const h of s.hooks.afterEach) await __runSuiteHook(s, h, ctx);
         }
       }
       if (rec.pending.length > 0) await Promise.all(rec.pending);
@@ -519,6 +535,10 @@ async function __runOne(rec) {
         // 释放信号：测试结束即中止其 signal（node 同款收尾）。
         if (rec.signalCtrl) rec.signalCtrl.abort();
       }
+    } catch {}
+    // 本测试 mock 全家自动复原（node Test 收尾语义；子测试各有 tracker）。
+    try {
+      if (rec.mockObj) rec.mockObj.restoreAll();
     } catch {}
     rec.resolve();
   }
@@ -662,6 +682,8 @@ test.afterEach = (fn) => __hook("afterEach", fn);
 // CJS require('node:test') 取默认导出本体，具名导出经此挂载才可见。
 test.getTestContext = getTestContext;
 test.assert = testAssert;
+test.mock = topMock;
 export { testAssert as assert };
+export { topMock as mock };
 export default test;
 "#;

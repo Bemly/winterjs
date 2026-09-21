@@ -89,3 +89,35 @@ fn phase10f_test_skip_todo_after_hook() {
     );
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_test_mock_fn_and_method() {
+    // mock.fn 调用记录/覆盖实现/复原 + mock.method 间谍/复原 + 自动复原。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("t.mjs");
+    file.write_str(
+        "import { test } from \"node:test\";\nimport assert from \"node:assert\";\ntest(\"spy\", (t) => {\n  const sum = t.mock.fn((a, b) => a + b);\n  assert.strictEqual(sum(3, 4), 7);\n  assert.strictEqual(sum.mock.calls.length, 1);\n  const call = sum.mock.calls[0];\n  assert.deepStrictEqual(call.arguments, [3, 4]);\n  assert.strictEqual(call.result, 7);\n  assert.strictEqual(call.error, undefined);\n  assert.strictEqual(call.target, undefined);\n  assert.strictEqual(call.this, undefined);\n  assert.strictEqual(sum.mock.callCount(), 1);\n});\ntest(\"impl\", (t) => {\n  const fn = t.mock.fn((a) => a + 1, (a) => a * 2);\n  assert.strictEqual(fn(3), 6);\n  fn.mock.mockImplementation((a) => a * 3);\n  assert.strictEqual(fn(3), 9);\n  fn.mock.resetCalls();\n  assert.strictEqual(fn.mock.callCount(), 0);\n  fn.mock.mockImplementationOnce((a) => a * 10, 0);\n  assert.strictEqual(fn(1), 10);\n  assert.strictEqual(fn(1), 3);\n});\ntest(\"method\", (t) => {\n  const obj = { p: 5, m(a) { return a + this.p; } };\n  t.mock.method(obj, \"m\");\n  assert.strictEqual(obj.m(1), 6);\n  assert.strictEqual(obj.m.mock.calls[0].this, obj);\n  obj.m.mock.restore();\n  assert.strictEqual(obj.m(1), 6);\n  assert.strictEqual(obj.m.mock, undefined);\n});\ntest(\"auto-restore-check\", () => {\n  assert.ok(true);\n});\n",
+    )
+    .unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "mock fn/method: {stdout}");
+    assert!(stdout.contains("# pass 4, fail 0, skip 0, todo 0"), "summary: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_test_mock_property_and_top() {
+    // mock.property 访问记录/复原 + 顶层 mock + 校验报错两件。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("t.cjs");
+    file.write_str(
+        "const { test, mock } = require(\"node:test\");\nconst assert = require(\"node:assert\");\ntest(\"prop\", (t) => {\n  const obj = { foo: 42 };\n  const prop = t.mock.property(obj, \"foo\", 100);\n  assert.strictEqual(obj.foo, 100);\n  assert.strictEqual(prop.mock.accessCount(), 1);\n  assert.strictEqual(prop.mock.accesses[0].type, \"get\");\n  obj.foo = 200;\n  assert.strictEqual(prop.mock.accesses[1].type, \"set\");\n  prop.mock.restore();\n  assert.strictEqual(obj.foo, 42);\n});\ntest(\"top\", () => {\n  const fn = mock.fn((a) => a + 1, (a) => a - 1);\n  assert.strictEqual(fn(3), 2);\n  mock.reset();\n  assert.strictEqual(fn(3), 4);\n});\ntest(\"errors\", (t) => {\n  assert.throws(() => t.mock.method({ a: 0 }, \"nope\"), { code: \"ERR_INVALID_ARG_VALUE\" });\n  assert.throws(() => t.mock.fn(() => {}, { times: 0 }), /out of range/);\n  assert.throws(() => t.mock.property({}, \"nope\", 1), { code: \"ERR_INVALID_ARG_VALUE\" });\n});\n",
+    )
+    .unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "mock prop/top: {stdout}");
+    assert!(stdout.contains("# pass 3, fail 0, skip 0, todo 0"), "summary: {stdout}");
+    dir.close().unwrap();
+}

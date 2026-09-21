@@ -181,10 +181,15 @@
         throw e;
       }
     }
-    // node 口径（弃用面仍测）：abort = destroy + 'abort' 事件 + aborted 旗。
+    // node 口径（弃用面仍测）：abort = destroy + 'abort' 事件 + aborted 旗；
+    // 在途响应同步走 aborted 级联（aborted 套件：res aborted → error → close）。
     abort() {
       if (this.destroyed) return;
       this.__aborted = true;
+      if (this.__res !== null && this.__res !== undefined && !this.__res.complete &&
+          typeof this.__res.__abortWithError === "function") {
+        try { this.__res.__abortWithError(); } catch { /* 监听抛错不阻销毁 */ }
+      }
       this.destroy();
       this.emit("abort");
     }

@@ -151,11 +151,22 @@ export function withHttpServer(Base) {
         sock.on("close", () => {
           self.__clearReqTimers(st);
           self.__sockets.delete(sock);
-          // 连接断时未完的req/res一起收尾：req destroy触发pipeline的
-          // PREMATURE_CLOSE（客户端中断上传用例），res destroy防写半开。
-          if (st.req !== null && !st.req.complete && !st.req.destroyed) {
-            st.req.destroy();
-          }
+          // 连接断时未完的req/res一起收尾：req 先走 aborted 级联（aborted
+          // 恒发、error 门控），再 destroy 推 close（客户端中断上传的
+          // PREMATURE_CLOSE 与 aborted 套件双口径）。未完含两态：
+          // 体在途（st.req）与响应在途（st.res.req——st.req 体完即清，
+          // 只看它会漏掉已收完头、响应未完的请求）。判定走真机 _destroy
+          // 口径（!readableEnded || !complete）。
+          const __abortReq = (r) => {
+            if (r === null || r === undefined || r.destroyed) return;
+            if (!(!r.readableEnded || !r.complete)) return;
+            if (typeof r.__abortWithError === "function") {
+              try { r.__abortWithError(); } catch { /* 监听抛错不阻收尾 */ }
+            }
+            r.destroy();
+          };
+          __abortReq(st.req);
+          if (st.res !== null && st.res !== undefined) __abortReq(st.res.req);
           if (st.res !== null && !st.res.writableEnded && !st.res.destroyed) {
             st.res.destroy();
           }

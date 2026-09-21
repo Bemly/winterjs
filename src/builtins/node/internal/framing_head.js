@@ -367,8 +367,27 @@ export class IncomingMessage extends Readable {
     this.trailers = {};
     this.rawTrailers = [];
     this.complete = false;
+    // node 口径：aborted 缺省 false，中止置 true（aborted 套件双侧断言）。
+    this.__aborted = false;
   }
   _read() {}
+  get aborted() { return this.__aborted === true; }
+  // 中止级联（aborted 同步恒发；error 有监听才发且递延——无监听发即抛错
+  // （块二）；同步发则抢在 res 侧 PREMATURE_CLOSE 之前（pipeline 中断
+  // 上传套件上报 ECONNRESET 而非 PREMATURE_CLOSE），真机 destroy 时序为异步。
+  __abortWithError() {
+    if (!this.__aborted) {
+      this.__aborted = true;
+      this.emit("aborted");
+    }
+    if (typeof this.listenerCount === "function" && this.listenerCount("error") > 0) {
+      const e = new Error("aborted");
+      e.code = "ECONNRESET";
+      queueMicrotask(() => {
+        try { this.emit("error", e); } catch { /* 关闭竞态 */ }
+      });
+    }
+  }
   // node lib/_http_incoming.js 口径：转发 socket 空闲计时（'timeout' 由 socket
   // 发出；cb 注册为 once 监听）。
   setTimeout(msecs, callback) {

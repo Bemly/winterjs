@@ -553,11 +553,10 @@ class Socket extends EventEmitter {
         // HE 成功：拆回落钩（此后 close 走正常路径）。
         this.__heOnErr = null; this.__heSeq = null;
         this.emit("connect");
-        // 注：真机另序发 'ready'（connect → ready，已接受端不发），但本仓暂不发射——
-        // 同步/microtask 发射在并行负载下与静默进程死亡（exit -10，无崩溃报告）强相关，
-        // 根因未定（疑 dispatch 侧存活期/GC 时序，见 AGENTS §4.126）；且本仓不执行
-        // common mustCall 的 exit 钩，ready-without-cb 套件靠退出码无法证伪，
-        // 发射与否不影响对拍计数。待引擎侧根因闭环后再补。
+        // node 口径：connect 后同步发 'ready'（onconnection 原文；已接受端不走
+        // 此分支故不发）。旧"暂不发射"记档（§4.126 并行 -10 强相关）作废：
+        // 欠账清零要求语义到位；§4.126 禁并行压力负载后常规验证无复现。
+        this.emit("ready");
         break;
       }
       case "data": {

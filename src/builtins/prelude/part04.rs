@@ -94,29 +94,76 @@ globalThis.__wjs_make_fetch_error = (msg) => new Error(String(msg));
 //（id, metaJson, streamId；streamId 与请求 id 同号）。全异步：fetch 决议后排空
 // 响应（头同步读 + 体流式推），失败一律 `__wjs_serve_fail` 落 500（未知 id
 // 静默成功，见 serve_bridge）。
-function __wjs_serve_make_request(url, method, headers, streamId) {
+// T4：upgrade 请求（meta.upgrade）由 handler 内 `__wjs_serve_socket(req)` 工厂
+// 配对、直接返回 socket 即接受；返回 Response 即 Decline 走普通管线
+//（offer 期 fetch 与 HTTP 期 fetch 各跑一次，见 serve.rs 中间件注释）。
+function __wjs_serve_make_request(url, method, headers, streamId, serveId) {
   const req = new Request(url, { method, headers });
   __wjs_reqState.get(req).streamId = streamId;
+  __wjs_reqState.get(req).serveId = serveId;
   return req;
 }
+// 服务端 socket 工厂（T4）：WS 表项与发送端由 native 分配挂靠（`__wjs_serve_ws_create`），
+// 对象进 `__wjs_wsObjs` 复用 client 事件派发（`__wjs_ws_emit` 按 id 路由，不分端）。
+// 未配对 101 即由 decline/fail 回收；非 serve 请求传参即 TypeError。
+globalThis.__wjs_serve_socket = (req) => {
+  const rst = __wjs_reqState.get(req);
+  const sid = rst ? rst.serveId : undefined;
+  if (typeof sid !== "number") throw new TypeError("__wjs_serve_socket needs a serve request");
+  const wsId = __wjs_serve_ws_create(sid);
+  const o = {};
+  __wjs_wskState.set(o, {
+    url: String(req.url).replace(/^http/, "ws"), protocol: "", readyState: 0,
+    binaryType: "arraybuffer", id: wsId, server: true,
+    onopen: undefined, onmessage: undefined, onclose: undefined, onerror: undefined,
+  });
+  __wjs_wsObjs.set(wsId, o);
+  o.send = (data) => {
+    const st = __wjs_wskState.get(o);
+    if (st.readyState === 0) throw new Error("InvalidStateError: WebSocket is not open");
+    if (st.readyState !== 1) return;
+    if (typeof data === "string") __wjs_ws_send(st.id, 0, data);
+    else if (data instanceof Uint8Array) __wjs_ws_send(st.id, 1, data);
+    else if (data instanceof ArrayBuffer) __wjs_ws_send(st.id, 1, new Uint8Array(data));
+    else if (ArrayBuffer.isView(data)) __wjs_ws_send(st.id, 1, new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+    else throw new TypeError("WebSocket send needs string/BufferSource, got " + typeof data);
+  };
+  o.close = (code, reason) => {
+    const st = __wjs_wskState.get(o);
+    if (code === undefined) code = 1005;
+    if (reason === undefined) reason = "";
+    if (st.readyState === 3) return;
+    st.readyState = 2;
+    __wjs_ws_close(st.id, code, String(reason));
+  };
+  return o;
+};
 globalThis.__wjs_serve_on_head = (id, metaJson, streamId) => {
   let meta;
   try { meta = JSON.parse(metaJson); } catch (e) { __wjs_serve_fail(id, "bad serve head"); return; }
   const headers = new Headers();
   for (const [k, v] of meta.headers) headers.append(k, v);
-  const req = __wjs_serve_make_request(meta.url, meta.method, headers, streamId);
+  const req = __wjs_serve_make_request(meta.url, meta.method, headers, streamId, id);
   const fn = globalThis.__wjs_serve_fetch;
   if (typeof fn !== "function") { __wjs_serve_fail(id, "serve handler missing fetch"); return; }
   const fail = (e) => __wjs_serve_fail(id, String((e && e.message) || e));
   let out;
   try { out = fn(req); } catch (e) { fail(e); return; }
   Promise.resolve(out).then(
-    (resp) => { __wjs_serve_send_resp(id, resp).catch(fail); },
+    (resp) => { __wjs_serve_send_resp(id, resp, !!meta.upgrade).catch(fail); },
     fail,
   );
 };
-async function __wjs_serve_send_resp(id, resp) {
+async function __wjs_serve_send_resp(id, resp, isUpgrade) {
+  // T4：upgrade 请求返回服务端 socket（`__wjs_serve_socket` 产物，`server` 品牌位）
+  // 即接受升级（Rust 发 101 + 接管）；其余一律 Decline 走普通管线。
+  // 不用 `new Response(101)` 表达——prelude/undici 口径 status 限 200-599，共享语义不动。
+  const st = (resp !== null && (typeof resp === "object" || typeof resp === "function"))
+    ? __wjs_wskState.get(resp)
+    : undefined;
+  if (isUpgrade && st && st.server) { __wjs_serve_ws_accept(id); return; }
   if (!(resp instanceof Response)) throw new TypeError("serve handler must return a Response");
+  if (isUpgrade) __wjs_serve_ws_decline(id);
   __wjs_serve_head(id, JSON.stringify({ status: resp.status, headers: [...resp.headers] }));
   const body = resp.body;
   if (body !== null && body !== undefined) {

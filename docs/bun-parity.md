@@ -1464,3 +1464,20 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > > 残 53 件分簇：run 编程 API ~21（`run()` 事件流，另轮）/自 spawn CLI ~18
 > > （`--test` runner CLI 未实现 + 全 flag 设计门，另案）/reporter ~13
 > > （书面偏离维持）/mock 全家 3 + 校验零散（mock 轮并入）。
+>
+> ### Slice B1（2026-09-21，MockTracker 核心）：`node:internal/test/mock`
+> > 新建（MockFunctionContext/PropertyContext/MockTracker 全家：fn/method/
+> > getter/setter/property/reset/restoreAll；Proxy 壳 name/length 透传；
+> > construct 原型归原函数；`times`/once 下标门逐字），`t.mock` 逐测试实例 +
+> > 顶层 `mock` 导出 + 测试结束自动 `restoreAll` + **钩子归属重构**（before/
+> > beforeEach/afterEach 跑在子测试身上，owner 自身只跑 `after`；钩内
+> > getTestContext 见 owner 名、参数传子 ctx——真机 Test.run 口径，
+> > hook.cjs 探针钉住）。
+> > 对拍：mocking.js 55/56（唯一红为私有字段 V8 文案偏离，见下），其余
+> > 82 件零回归；mock-timers-*/module-mocking 维持（B2/另案）。
+> > 偏离记档（引擎边界）：`mocks a constructor` 末断言——V8 文案
+> > `Cannot read private member #privateValue` vs SM
+> > `can't access private field or method`，JS 层无拦截点（与栈格式 🟡 同类）。
+> > 非 configurable 方法重定义走 V8 文案桥（预检抛，套件正则钉住）。
+> > 回归：`tests/node/testmod.rs::phase10f_test_mock_*` 两件；
+> > 坑见 AGENTS §4.180。

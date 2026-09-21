@@ -237,6 +237,12 @@ plan/waitFor/subtest/getTestContext/register；对拍 83 件 SAME0 6→17、
 DIFF 64→53，零回归；黑盒 `phase10f_test_*` 四件；AGENTS §4.178）。
 残 53：run API ~21/mock 全家并入下轮、spawn CLI ~18 与 reporter ~13 维持另案。
 
+**2026-09-21 test Slice B1 收官**：MockTracker 核心落地
+（`node:internal/test/mock` 新建 + 钩子归属重构为真机 Test.run 口径；
+mocking.js 55/56，唯一红为私有字段 V8 文案引擎偏离；82 件零回归；
+黑盒 `phase10f_test_mock_*` 两件；AGENTS §4.180）。
+残：mock-timers 2 件（B2：fake 计时器基建）+ run API ~21 另轮。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

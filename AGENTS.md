@@ -2984,3 +2984,28 @@ cargo build
 - 推广：全量红先单跑 + 降并行整域两档复核（§4.174 纪律）；`| head` 后
   `echo $?` 取的是 head 的码，黑盒/探针判活一律文件落盘 + `${PIPESTATUS[0]}`
   或重定向后取码（§4.45 三进宫：本轮二分 wait-for 时亲手复现一次）。
+
+### 4.180 node:test 钩子归属 + MockTracker（2026-09-21，plan3 test B1 轮）
+
+- 症状：`local mocks are auto restored` 在 mock 恢复后报
+  `Expected [Function bar] notStrictEqual [Function bar]`（afterEach 把已复原
+  的 bar 又判成"仍 mock"）。
+- 根因：想当然"钩子跑在 owner 身上"——真机 Test.run 跑的是
+  `this.parent.hooks.*`（钩子归属是父，参数传子 ctx）：父 afterEach 只在子
+  身上跑一次（继承执行），owner 自身结束时跑的是**祖父**的钩子（多为空）。
+  探针 `hook.cjs` 钉住：无子测试的 `t.beforeEach/afterEach` 永不跑；
+  `t.before` 在首个子测试时跑一次；子身上 getTestContext 见 owner 名。
+- 修法：`__runOne` 钩子段重排——before（套件 runOnce + 测试 owner 首子一次）、
+  beforeEach（套件由外向内 + owner 的，子 ctx）、afterEach（owner 先 + 套件
+  由内向外，注册序）、owner 自身 `after` 照旧；测试级钩内 getTestContext
+  改推 owner ctx（`__runTestHook(fn, ownerCtx, argCtx)`）。
+  旧模型（自身跑自身 Each）在 Slice A 全绿下掩盖，新钩子一用即现形。
+- MockTracker 移植要点：Proxy target 即原函数（name/length/descriptor 全透；
+  `bind` 的 this 透传；construct 经 `ReflectConstruct(impl, args, proxy)`
+  故 `instanceof` 归原函数）；method 经原型链找描述符、自有属性安装；
+  `restore` 判 `methodName !== undefined`（真机仅判 string，symbol 复原是其
+  漏口）；`times`/once 下标门逐字（validators 现成）。
+- 引擎偏离（记档不修）：`mocks a constructor` 末断言要 V8 私有字段文案，
+  SM 文案不同且 JS 层无拦截点（mocking.js 55/56，文件级仍 DIFF）。
+- 复现：`tests/node/testmod.rs::phase10f_test_mock_*` 两件 +
+  `test-runner-mocking.js`（修前 `target undefined` 全灭）。

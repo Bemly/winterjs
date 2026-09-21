@@ -68,9 +68,11 @@ cargo test                           # 后台跑；红了先看 §4.174（单跑
 
 ## 5. 未竟事项（另案，不挡合并）
 
-1. **`src/serve.rs` 1135 行，超本分支自立的 §0.9（≤1000）**：合并后第一件事建议拆
-   （如 `serve.rs` 核心 + `serve_ws.rs` + `serve_h3.rs`，沿 T 切分；`tests/serve.rs`
-   1151 行不在 §0.9 管辖但同理可拆）。
+1. **`src/serve.rs` 1135 行，超 §0.9（≤1000）**：合并后第一件事建议拆
+   （如 `serve.rs` 核心 + `serve_ws.rs` + `serve_h3.rs`，沿 T 切分）。
+   口径更新（2026-09-21）：§0.9 已扩到项目内全部 `.rs` 无豁免，存量超限
+   24 件清单见 AGENTS §0.9（`tests/serve.rs` 1151 等 6 件测试 + `node/` 17 件
+   同样在拆分范围，不止 serve 一件）。
 2. 记档偏离三件（AGENTS §4.171–173 尾部）：通道 unbounded（背压）、H3 上传整收、
    client 侧缺 close-flush。
 3. 本机 curl 无 http3（SecureTransport），H3 以 harness 验收（测试注释已记）。

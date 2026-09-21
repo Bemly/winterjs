@@ -35,13 +35,29 @@
    一次恰好一个动作，多给即错；动作的必需值必须紧贴其 flag（`--run` 后直接跟
    别的 flag 会被判缺值）；修饰 flag（`--dry-run/--registry/--port` 等）只在对应
    动作下生效。help/补全/man 全由同一套 flag 生成（`localized_command`）。
-9. **单文件 ≤1000 行**：`src/` 下 Rust 文件一律不超过 ~1000 行
-   （`src/builtins/node/` 除外——Node 逐字移植体量使然，另议）；
+9. **单文件 ≤1000 行**：项目内全部 `.rs`（`src/` + `tests/` + `benches/`）
+   一律不超过 ~1000 行，**无豁免**（2026-09-21 起含 `src/builtins/node/` 逐字移植
+   与 `tests/` 黑盒——此前"node 除外"口径作废；`sample/` 演示目录不进矩阵，不管）；
    超限即拆，拆分纪律：① 纯搬移先行（零行为变更，`git diff -w` 只见路径），
    调用方路径一律 `pub use` 原位重导出、不改调用点；② 一文件一提交，
    每步构建 0 警告 + 对应域测试绿；③ 引擎协议代码（`runtime`/`state`/
    `jsapi_glue`/`jobqueue`/`modules`）只拆纯逻辑（字符串/算法族/域 helper），
-   会话管线与 trace 实现不动（§4.40/§4.68 blast radius）。
+   会话管线与 trace 实现不动（§4.40/§4.68 blast radius）；
+   ④ Node 逐字移植（`node/*.rs` 内嵌 JS SOURCE 文本）的拆分沿"域/算法族"切，
+   SOURCE 文本随实现走（plan4 拆顶层 crypto/state/runtime/napi 共 28 文件同法）。
+   存量超限 24 件（2026-09-21 实数，`git ls-files '*.rs' | xargs wc -l`；
+   逼近线 `state/mod.rs` 989 + `prelude/part04.rs` 985 顺手盯）：
+   先拆 `src/serve.rs`（plan4-handover §5 指定第一件），余件按组由小到大——
+   `src/serve.rs` 1135；
+   tests/ 6 件：`tests/serve.rs` 1151、`tests/node/child.rs` 1171、
+   `tests/node/http.rs` 1189、`tests/node/fs.rs` 1271、`tests/pm.rs` 1784、
+   `tests/node/crypto.rs` 2022；
+   node/ 17 件：`internal/zip/entry.rs` 1043、`process_.rs` 1062、`url.rs` 1157、
+   `internal/streams/writable.rs` 1208、`dgram.rs` 1607、`vm.rs` 1824、
+   `dns.rs` 1943、`internal/streams/readable.rs` 2144、`worker.rs` 2197、
+   `quic.rs` 2231、`internal/http_framing.rs` 2622、`net.rs` 2648、
+   `child.rs` 2737、`zlib.rs` 2817、`http2.rs` 3673、`fs.rs` 5318、
+   `crypto.rs` 8341（`src/builtins/node/` 下，`internal/` 同前缀）。
 
 ## 1. 基线（2026-09-09）
 

@@ -355,7 +355,7 @@ pub(crate) async fn serve_conn<IO>(
     let seq = Arc::new(std::sync::atomic::AtomicU64::new(1));
     // 连接死亡广播：service 的应答等待在 conn 亡后即退出（否则 hyper 等待
     // 未完成响应 → conn 永不结束 → 客户端死连接泄漏，服务端流 'close' 不到）
-    let (conn_dead_tx, conn_dead_rx) = tokio::sync::watch::channel(false);
+    let (_conn_dead_tx, conn_dead_rx) = tokio::sync::watch::channel(false);
     let svc = {
         let responders = responders.clone();
         let bodies = bodies.clone();

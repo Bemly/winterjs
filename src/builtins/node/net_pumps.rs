@@ -418,7 +418,8 @@ pub unsafe extern "C" fn net_listen(
                 }
                 let _ = ev_tx2.send(NetEvent { id: id2, kind: NetKind::ServerClose });
             });
-            return true;
+            // 落到外层统一 return（Failed 分支已早返，此处不直接 return，
+            // 否则外层 return 在 unix 下恒不可达）。
         }
         #[cfg(not(unix))]
         handle.spawn(async move {

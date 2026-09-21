@@ -257,3 +257,127 @@ console.log("END");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_http_pipeline_and_limits_faces() {
+    // G11 管线面：前导空行多连发 + 残缺头 408 + maxRequests 503 + 毁后写丢弃。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http from "node:http";
+import net from "node:net";
+import assert from "node:assert";
+
+// 前导空行：三请求连发（含额外空行）全部分发。
+{
+  let got = 0;
+  const srv = http.createServer((req, res) => { got++; res.end("ok"); });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  await new Promise((resolve) => {
+    const c = net.connect({ port, host: "127.0.0.1" });
+    c.on("connect", () => {
+      c.write(
+        `GET /1 HTTP/1.1\r\nHost: x\r\n\r\n\r\n` +
+        `GET /2 HTTP/1.1\r\nHost: x\r\n\r\n\r\n` +
+        `GET /3 HTTP/1.1\r\nHost: x\r\n\r\n\r\n`
+      );
+    });
+    let n = 0;
+    c.on("data", () => {});
+    setTimeout(() => {
+      assert.strictEqual(got, 3);
+      c.destroy();
+      resolve();
+    }, 400);
+  });
+  srv.close();
+  console.log("p1 leading-crlf ok");
+}
+
+// 残缺头：管线第二请求不完整 → requestTimeout 内 408。
+{
+  const srv = http.createServer({ headersTimeout: 0, requestTimeout: 250 }, (req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end();
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  const got = await new Promise((resolve) => {
+    const c = net.connect({ port, host: "127.0.0.1" });
+    let buf = "";
+    c.on("data", (d) => (buf += d.toString()));
+    c.on("connect", () => {
+      c.write("GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n");
+      c.write("GET / HTTP/1.1\r\nHost: x\r\nConnection: ");
+    });
+    c.on("close", () => resolve(buf));
+    c.on("error", () => {});
+  });
+  assert.ok(got.includes("200 OK"), "first response 200");
+  assert.ok(got.includes("408 Request Timeout"), "second stalls to 408");
+  srv.close();
+  console.log("p2 partial-head-408 ok");
+}
+
+// maxRequestsPerSocket：3 额内 keep-alive，第 4 路 503 + 关连接。
+{
+  const srv = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.write("Hello World!");
+    res.end();
+  });
+  srv.maxRequestsPerSocket = 2;
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  const buf = await new Promise((resolve) => {
+    const c = net.connect({ port, host: "127.0.0.1" });
+    let b = "";
+    c.on("data", (d) => (b += d.toString()));
+    c.on("connect", () => {
+      const one = "POST / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\nContent-Length: 3\r\n\r\nabc";
+      c.write(one + one + one);
+    });
+    c.on("close", () => resolve(b));
+    c.on("error", () => {});
+  });
+  assert.ok(buf.includes("503 Service Unavailable"), "over-limit 503");
+  srv.close();
+  console.log("p3 max-requests-503 ok");
+}
+
+// 毁后写丢弃：管线中毁连接，续行响应不抛。
+{
+  const srv = http.createServer((req, res) => {
+    if (req.url === "/1") { req.socket.destroy(); return; }
+    res.end("ok");
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const port = srv.address().port;
+  await new Promise((resolve) => {
+    const c = net.connect({ port, host: "127.0.0.1" });
+    c.on("connect", () => c.write("GET /1 HTTP/1.1\r\nHost: x\r\n\r\nGET /2 HTTP/1.1\r\nHost: x\r\n\r\n"));
+    c.on("close", resolve);
+    c.on("error", () => {});
+    setTimeout(resolve, 800);
+  });
+  srv.close();
+  console.log("p4 write-after-destroy-drop ok");
+}
+
+console.log("END");
+"#,
+    );
+    for tag in [
+        "p1 leading-crlf ok",
+        "p2 partial-head-408 ok",
+        "p3 max-requests-503 ok",
+        "p4 write-after-destroy-drop ok",
+        "END",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}

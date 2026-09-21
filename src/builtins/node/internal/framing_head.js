@@ -773,12 +773,16 @@ export class ServerResponse extends Writable {
     }
     const cont = this.__onDone;
     this.__onDone = null;
-    if (this.__last) {
-      // node _last 口径：响应后关连接（close-delimited/显式 close/1.0 裸体）。
-      try { this.__sock.end(); } catch { /* closed meanwhile */ }
-    }
+    // cont（re-feed 解析已读管线字节→503/408 等错误响应）先排，__last 的 FIN
+    // 随后排：错误响应写落定时 socket 仍活，否则撞上已 end 即 "write after end"
+    // 丢失（GET 管线超 maxRequests 形；POST 形靠体 pacing 碰巧，递延后确定性）。
+    // node _last 口径：响应后关连接（close-delimited/显式 close/1.0 裸体）。
     cb();
     if (cont !== null) queueMicrotask(cont);
+    if (this.__last) {
+      const __s = this.__sock;
+      queueMicrotask(() => { try { __s.end(); } catch { /* closed meanwhile */ } });
+    }
   }
   _destroy(err, cb) {
     if (this.__holdTimer !== null) {

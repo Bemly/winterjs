@@ -480,6 +480,21 @@ export class ServerResponse extends Writable {
     this.statusCode = status;
     if (msg !== undefined) this.statusMessage = msg;
     Object.assign(this.__headers, __lowerHeaders(obj, this.__validation, this.__headerNames));
+    // node _storeHeader 口径（de-chunked-trailer 套件）：非 chunked 传输带
+    // Trailer 头即同步抛 ERR_HTTP_TRAILER_INVALID（Trailer 只能随 chunked 走；
+    // 无 CL/TE 时自动 chunked 故合法，不抛）。
+    if (this.__headers["trailer"] !== undefined) {
+      const __te = this.__headers["transfer-encoding"];
+      const __teChunked = __te !== undefined && /(?:^|\W)chunked/i.test(String(__te));
+      const __hasCL = this.__headers["content-length"] !== undefined;
+      const __autoChunked = !__hasCL && __te === undefined &&
+        this.__uced !== false && !this.__noBody && !this.__headOnly;
+      if (!__teChunked && !__autoChunked) {
+        const e = new Error("Trailers are invalid with this transfer encoding");
+        e.code = "ERR_HTTP_TRAILER_INVALID";
+        throw e;
+      }
+    }
     // 头已存：随后的 end(data) 不再走 CL 快路径（真机 chunked 口径）。
     this.__headStored = true;
     return this;

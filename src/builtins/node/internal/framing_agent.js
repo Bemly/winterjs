@@ -410,7 +410,35 @@
                 this.__respDone = true;
                 this.__upgraded = true;
                 this.__res = res;
+                // node 口径（upgrade-agent 套件）：升级即摘池（totalSocketCount
+                // 归零、不再复用；先摘后发，用户 upgrade 处理器里可见）+ req
+                // 'close' 异步随后（用户在 upgrade 里挂的 close 监听可达）。
+                try {
+                  if (this.agent !== null && this.agent !== undefined && this.__sock !== null) {
+                    const __ag = this.agent;
+                    if (this.__sock.__poolCleaner !== undefined) {
+                      try { this.__sock.removeListener("close", this.__sock.__poolCleaner); } catch { /* gone */ }
+                      this.__sock.__poolCleaner = undefined;
+                    }
+                    const __k = this.__poolKey;
+                    if (__k !== undefined) {
+                      const __arr = __ag.sockets[__k];
+                      if (__arr !== undefined) {
+                        const __i = __arr.indexOf(this.__sock);
+                        if (__i !== -1) __arr.splice(__i, 1);
+                        if (__arr.length === 0) delete __ag.sockets[__k];
+                      }
+                    }
+                    if (__ag.totalSocketCount > 0) __ag.totalSocketCount--;
+                  }
+                } catch { /* 摘池失败不阻升级 */ }
                 this.emit("upgrade", res, this.__sock, globalThis.Buffer.from(__leftover));
+                queueMicrotask(() => {
+                  if (!this.__closeEmitted) {
+                    this.__closeEmitted = true;
+                    try { this.emit("close"); } catch { /* gone */ }
+                  }
+                });
               } else {
                 this.destroy();
               }

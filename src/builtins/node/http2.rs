@@ -268,11 +268,7 @@ fn nghttp2_reason_name(r: h2::Reason) -> &'static str {
     }
 }
 
-/// hyper/h2 错误 → node 口径消息：reason 可得即
-/// `Stream closed with error code NGHTTP2_X`，否则原样 Display。
-fn h2_err_msg(e: &hyper::Error) -> String { h2_err_msg_rst(e).0 }
-
-/// 同上，并携带 RST 原因码（node 客户端流 `rstCode` 需要）。
+/// hyper/h2 错误 → node 口径消息 + RST 原因码（node 客户端流 `rstCode` 需要）。
 pub(crate) fn h2_err_msg_rst(e: &hyper::Error) -> (String, Option<u32>) {
     let mut src: Option<&(dyn std::error::Error + 'static)> = Some(e);
     while let Some(err) = src {

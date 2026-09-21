@@ -67,6 +67,7 @@ mod vm_error;
 pub mod worker;
 mod worker_term;
 pub mod zlib;
+mod zlib_engine;
 
 /// 全局 `process` 等启动期求值的 JS（`runtime` 在主 PRELUDE 后求值）。
 /// 版本占位 `26.9.13` 在求值前替换为 `CARGO_PKG_VERSION`（发版时两处同步改，不漂移）。

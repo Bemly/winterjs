@@ -21,6 +21,8 @@ pub mod dns;
 pub mod dns_promises;
 pub mod events;
 pub mod fs;
+mod fs_fd;
+mod fs_watch;
 pub mod http;
 pub mod http2;
 mod http2_client;

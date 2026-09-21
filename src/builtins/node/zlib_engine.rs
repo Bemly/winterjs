@@ -84,8 +84,8 @@ struct ZstdEnc {
     total_in: u64,
 }
 /// zstd 解码（只累积，flush/end 时对已收前缀一次性解帧）。
-struct ZstdDec {
-    carried: Vec<u8>,
+pub(crate) struct ZstdDec {
+    pub(crate) carried: Vec<u8>,
     pos: usize,
 }
 
@@ -112,9 +112,9 @@ pub(crate) struct ZEngine {
     bd: Option<BrotliDec>,
     // zstd
     ze: Option<ZstdEnc>,
-    zd2: Option<ZstdDec>,
+    pub(crate) zd2: Option<ZstdDec>,
     reject: bool,
-    done: bool,
+    pub(crate) done: bool,
     out: Vec<u8>,
 }
 

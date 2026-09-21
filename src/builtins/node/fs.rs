@@ -2837,6 +2837,35 @@ export function readdirSync(p, opts) {
   const withTypes = !!(opts && (opts.withFileTypes ?? false));
   const enc = __fsEncoding(opts);
   const asBuf = enc === "buffer";
+  if (opts && opts.recursive) {
+    // 递归读（async-filter 验证面）：串形相对路径（`/` 分隔）；Dirent 形
+    // parentPath 逐级（真机逐项）；仅 lstat 目录下钻（链接目录不跟随）。
+    const out = [];
+    const walk = (rel) => {
+      const dir = rel === "" ? p : p + "/" + rel;
+      const ents = readdirSync(dir, { ...opts, recursive: false });
+      for (const e of ents) {
+        const nm = String(withTypes ? e.name : e);
+        const r = rel === "" ? nm : rel + "/" + nm;
+        const isDir = withTypes ? e.isDirectory()
+          : statSync(dir + "/" + nm).isDirectory();
+        if (withTypes && rel !== "") {
+          // 嵌套项 parentPath 逐级（顶层沿用底层值）。
+          const base = p + "/" + rel;
+          out.push(new __Dirent(asBuf ? Buffer.from(nm) : nm,
+            isDir, e.isFile(), e.isSymbolicLink(),
+            asBuf ? Buffer.from(base) : base));
+        } else if (withTypes) {
+          out.push(e);
+        } else {
+          out.push(asBuf ? Buffer.from(r) : r);
+        }
+        if (isDir) walk(r);
+      }
+    };
+    walk("");
+    return out;
+  }
   const out = JSON.parse(__fsCall("scandir", p, () => __wjs_fs_readdir(p, withTypes)));
   if (!withTypes) return asBuf ? out.map((n) => Buffer.from(n)) : out;
   // node getDirent：dirent.parentPath = 目录路径（Dirent 亦挂 path 别名）。
@@ -3312,8 +3341,8 @@ export function createReadStream(p, opts) {
   return new ReadStream(p, opts);
 }
 // WriteStream（10f，node 口径镜像 ReadStream）：open(fd)/ready/finish/close 事件序
-// + path/flags/autoClose/bytesWritten；sync 底座偏差记档：fd 恒 null、块在内存
-// 攒至 _final 一次性落盘（无增量 flush）、open/ready 于首个 _write/_final 前派发。
+// + path/flags/autoClose/bytesWritten；增量直写经默认导出（mock 可见），
+// open/ready 于首个 _write/_final 前派发。
 class __WriteStream extends Writable {
   constructor(p, opts) {
     opts = __fsStreamOpts(opts);
@@ -3333,6 +3362,9 @@ class __WriteStream extends Writable {
     this.fd = null;
     this.__chunks = [];
     this.__opened = false;
+    // 写位置跟踪（autoclose-option 套件：fd 形 start:0 即覆盖写；追加系恒
+    // null 走 O_APPEND 游标；余下显式位置逐次推进）。
+    this.__pos = (String(this.flags).startsWith("a") || opts.start === undefined) ? null : opts.start;
     if (opts.fd !== undefined && opts.fd !== null) {
       // 10f：fd 形（FileHandle.createWriteStream）——增量直写，非 path 攒块；
       // fd 为 FileHandle 时写/关走 handle 方法（FileHandleOperations 同构）。
@@ -3390,13 +3422,26 @@ class __WriteStream extends Writable {
         );
         return;
       }
-      try { this.bytesWritten += writeSync(this.fd, u8); cb(); }
+      try {
+        const n = this.__pos === null ? writeSync(this.fd, u8)
+          : writeSync(this.fd, u8, 0, u8.length, this.__pos);
+        this.bytesWritten += n;
+        if (this.__pos !== null) this.__pos += n;
+        cb();
+      }
       catch (e) { cb(e); }
       return;
     }
-    this.__chunks.push(u8);
-    this.bytesWritten += u8.length;
-    cb();
+    // 增量直写经默认导出（write-stream-err 套件：mock fs.write 可见——
+    // require 补丁落在 __api 同一对象，直调本地 write 即绕过补丁）。
+    // 成功才计 bytesWritten；错即 error 事件（第二块 BAM 口径）。
+    __api.write(this.fd, u8, 0, u8.length, this.__pos, (e) => {
+      if (!e) {
+        this.bytesWritten += u8.length;
+        if (this.__pos !== null) this.__pos += u8.length;
+      }
+      cb(e);
+    });
   }
   _final(cb) {
     this.__used = true;
@@ -3422,22 +3467,26 @@ class __WriteStream extends Writable {
       finishFd();
       return;
     }
-    // fd 已在 __emitOpen 真实打开（'w' 截断建/a 追加）——攒块经 fd 落盘，
-    // 位置 0（'w' 开头）或 -1（追加尾），node close-on-finish 同口径。
-    const total = this.__chunks.reduce((n, c) => n + c.length, 0);
-    const out = new Uint8Array(total);
-    let off = 0;
-    for (const c of this.__chunks) { out.set(c, off); off += c.length; }
-    const append = this.flags === "a" || this.flags === "a+";
+    // 增量面已逐块落盘（_write 直写）；收尾经默认导出 close（补丁可见，
+    // write-stream-err/change-open 套件断 fd 同一性/mustCall）+ flush +
+    // autoClose，错序与旧攒块面同（fsync 错仍关后 done(e)）。
+    // close 不等回调即走（change-open 补丁不调回；真机同为 fire-and-forget）。
+    const closeFinal = (after) => {
+      if (this.autoClose && typeof this.fd === "number" && this.fd >= 0) {
+        const fd = this.fd;
+        this.fd = null;
+        try { __api.close(fd); } catch {}
+        after();
+      } else {
+        if (this.autoClose) this.fd = null;
+        after();
+      }
+    };
     try {
-      __fsCall("write", this.path, () => __wjs_fs_write_fd(this.fd, out, append ? -1 : 0));
       if (this.flush) __fsCall("fsync", this.path, () => __wjs_fs_fsync(this.fd, false));
-    } catch (e) { done(e); return; }
-    finally {
-      this.__chunks.length = 0;
-      if (this.autoClose) { try { __wjs_fs_close(this.fd); } catch { } this.fd = null; }
-    }
-    done();
+    } catch (e) { closeFinal(() => done(e)); return; }
+    this.__chunks.length = 0;
+    closeFinal(done);
   }
   _destroy(err, cb) {
     this.__used = true;
@@ -3733,6 +3782,68 @@ function __cpOnDir(src, dst, o, destStat) {
   __fsCall("cp", dst, () => __wjs_fs_mkdir(dst, true));
   for (const e of readdirSync(src, { withFileTypes: true })) {
     cpSync(__cpJoin(src, e.name), __cpJoin(dst, e.name), o);
+  }
+}
+// 异步孪生（async-filter 套件：filter 可为 async 函数，逐项 await；
+// 文件操作仍同步直调——本地 syscall，无等待点，语义等价）。
+async function __cpAsync(src, dst, opts) {
+  const o = __cpValidateOptions(opts);
+  src = __fsPath(src, "cp");
+  dst = __fsPath(dst, "cp");
+  if (o.filter) {
+    const r = await o.filter(src, dst);
+    if (!r) return;
+  }
+  const rel = __cpSameOrSubdir(src, dst) || __cpSameOrSubdir(__cpEff(src), __cpEff(dst));
+  if (rel === "same") {
+    const e = new Error(`src and dest cannot be the same ${src}`);
+    e.code = "ERR_FS_CP_EINVAL"; throw e;
+  }
+  if (rel === "subdir") {
+    const e = new Error(`cannot copy ${src} to a subdirectory of self ${dst}`);
+    e.code = "ERR_FS_CP_EINVAL"; throw e;
+  }
+  const srcStat = (o.dereference ? statSync : lstatSync)(src);
+  const destStat = lstatSync(dst, { throwIfNoEntry: false });
+  return __cpStatsA(src, dst, o, srcStat, destStat);
+}
+async function __cpStatsA(src, dst, o, srcStat, destStat) {
+  if (srcStat.isDirectory()) {
+    if (destStat && !destStat.isDirectory()) {
+      const e = new Error(`Cannot overwrite non-directory ${dst} with directory ${src}`);
+      e.code = "ERR_FS_CP_DIR_TO_NON_DIR"; throw e;
+    }
+    if (!o.recursive) {
+      const e = new Error(`Recursive option not enabled, cannot copy a directory: ${src}/`);
+      e.code = "ERR_FS_EISDIR"; throw e;
+    }
+    return __cpOnDirA(src, dst, o, destStat);
+  }
+  // 非目录分发与 __cpStats 同形（改一处改两处：文件/链接/socket/fifo/未知）。
+  if (srcStat.isFile() || srcStat.isCharacterDevice() || srcStat.isBlockDevice()) {
+    return __cpOnFile(src, dst, o, destStat);
+  }
+  if (srcStat.isSymbolicLink()) {
+    return __cpOnLink(src, dst, o, destStat);
+  }
+  if (srcStat.isSocket()) {
+    const e = new Error(`Cannot copy a socket file: ${dst}`);
+    e.code = "ERR_FS_CP_SOCKET"; throw e;
+  }
+  if (srcStat.isFIFO()) {
+    const e = new Error(`Cannot copy a FIFO pipe: ${dst}`);
+    e.code = "ERR_FS_CP_FIFO_PIPE"; throw e;
+  }
+  const e = new Error(`Cannot copy an unknown file type: ${dst}`);
+  e.code = "ERR_FS_CP_UNKNOWN"; throw e;
+}
+async function __cpOnDirA(src, dst, o, destStat) {
+  if (destStat && !o.force) {
+    if (o.errorOnExist) __cpEexist(dst);
+  }
+  __fsCall("cp", dst, () => __wjs_fs_mkdir(dst, true));
+  for (const e of readdirSync(src, { withFileTypes: true })) {
+    await __cpAsync(__cpJoin(src, e.name), __cpJoin(dst, e.name), o);
   }
 }
 function __cpOnFile(src, dst, o, destStat) {
@@ -4635,7 +4746,7 @@ export const promises = {
   close: __as(closeSync),
   constants,
   copyFile: __as(copyFileSync),
-  cp: __as(cpSync),
+  cp: __as(__cpAsync),
   FileHandle,
   lstat: __as(lstatSync),
   link: __as(linkSync),
@@ -4855,7 +4966,12 @@ async function mkdtempDisposableProm(prefix, opts) {
     async [Symbol.asyncDispose]() { await this.remove(); },
   };
 }
-export const cp = __cb1(cpSync, "cp", __id);
+export const cp = __cb1((src, dst, opts) => {
+  // 同步校验前置（真机异步 cp 选项错同步抛，操作错才走回调；__cb1 只对
+  // 同步抛的 ARG_* 系直抛，async 内的校验会落成 rejection）。
+  __cpValidateOptions(opts);
+  return __cpAsync(src, dst, opts);
+}, "cp", __id);
 export const open = __cb1(openSync, "open", __id);
 export function close(fd, cb) {
   __vFd(fd);

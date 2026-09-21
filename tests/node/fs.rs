@@ -1053,3 +1053,39 @@ fs.writeFileSync("g.txt", "0123456789");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase10f_cp_async_filter() {
+    // async-filter 套件回归：异步 cp 逐项 await filter（含子目录递归），
+    // 同步校验（mode/options）仍同步抛；cpSync 拒 async filter 不变。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import fs from "node:fs";
+fs.mkdirSync("src/sub", { recursive: true });
+fs.writeFileSync("src/a.js", "1");
+fs.writeFileSync("src/b.txt", "2");
+fs.writeFileSync("src/sub/c.js", "3");
+await fs.promises.cp("src", "dst", {
+  recursive: true,
+  filter: async (p) => p.endsWith(".js") || (await fs.promises.stat(p)).isDirectory(),
+});
+const walk = (d) => fs.readdirSync(d, { recursive: true }).sort();
+console.log("async-filter", JSON.stringify(walk("dst")));
+try { fs.cpSync("src", "dst2", { recursive: true, filter: async () => true }); }
+catch (e) { console.log("sync-rejects-async", e.code); }
+try { fs.cp("src", "dst3", { mode: -1 }, () => {}); }
+catch (e) { console.log("async-mode-sync-throw", e.code); }
+"#,
+    );
+    assert!(
+        out.lines().any(|l| l == r#"async-filter ["a.js","sub","sub/c.js"]"# || l == r#"async-filter ["a.js", "sub", "sub/c.js"]"#),
+        "missing async-filter:\n{out}"
+    );
+    for line in ["sync-rejects-async ERR_INVALID_RETURN_VALUE", "async-mode-sync-throw ERR_OUT_OF_RANGE"] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

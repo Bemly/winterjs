@@ -270,6 +270,25 @@ pub unsafe extern "C" fn net_unref(
     true
 }
 
+/// `__wjs_net_halfhold(id)`：半开摘续命（G11；对端 FIN 后 JS 侧半开持有即不续命，
+/// 真机同款——读停转后空闲句柄不 ref 循环；写侧仍可用，收尾 Close 照常；
+/// 未知 id 静默，不抛）。
+/// SAFETY: 同 net_ref。
+pub unsafe extern "C" fn net_halfhold(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(id) = opt_num(&frame, 0) else {
+        report_error(&mut cx, "TypeError: halfhold: id must be a number");
+        return false;
+    };
+    state::net_halfhold(id as u64);
+    true
+}
+
 // ── 事件循环派发 ────────────────────────────────────────────────────────────
 
 /// 网络事件派发：调 target 的 `__ev(kind, payload)`（payload 空串或 JSON）。

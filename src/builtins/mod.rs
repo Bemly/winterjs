@@ -242,6 +242,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             // 10a：ref 真计数（net/dgram 共用）
             ("__wjs_net_ref", Some(node::net::net_ref), 1),
             ("__wjs_net_unref", Some(node::net::net_unref), 1),
+            // G11：半开摘续命（对端 FIN 后半开持有不续命，真机同款）
+            ("__wjs_net_halfhold", Some(node::net::net_halfhold), 1),
             ("__wjs_dns_lookup", Some(node::dns::dns_lookup), 1),
             // 10d：dns 深件（hickory 全套；lookup 维持 std）
             ("__wjs_dns_query", Some(node::dns::dns_query), 2),

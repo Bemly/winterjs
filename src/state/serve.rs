@@ -44,6 +44,13 @@ pub fn serve_body_tx(
     with_plain(|p| p.serve_resps.get(&id).map(|r| r.body_tx.clone()))
 }
 
+/// 取升级决策发送端（投递后通道即消费；表项与计数保留给后续头/体）。
+pub fn serve_take_upgrade(
+    id: u64,
+) -> Option<tokio::sync::oneshot::Sender<crate::serve_bridge::ServeUpgrade>> {
+    with_plain(|p| p.serve_resps.get_mut(&id).and_then(|r| r.upgrade_tx.take()))
+}
+
 /// 终结摘表（-1 并取走通道；未知 id 回 None，调用方静默丢弃）。
 pub fn serve_take(id: u64) -> Option<crate::serve_bridge::ServeRespTx> {
     with_plain(|p| {

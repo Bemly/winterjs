@@ -509,7 +509,7 @@ async fn js_fallback(
     let id = crate::serve_bridge::next_serve_id();
     let (head_tx, head_rx) = tokio::sync::oneshot::channel();
     let (body_tx, body_rx) = tokio::sync::mpsc::unbounded_channel();
-    let resp = crate::serve_bridge::ServeRespTx { head_tx: Some(head_tx), body_tx };
+    let resp = crate::serve_bridge::ServeRespTx { head_tx: Some(head_tx), body_tx, upgrade_tx: None };
     if tx
         .send(crate::serve_bridge::ServeEvent::Head {
             head: crate::serve_bridge::ServeReqHead {
@@ -517,6 +517,7 @@ async fn js_fallback(
                 method: parts.method.to_string(),
                 url,
                 headers,
+                upgrade: false,
             },
             resp,
         })

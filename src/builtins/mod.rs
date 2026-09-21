@@ -127,6 +127,10 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_serve_head", Some(crate::serve_bridge::serve_head), 2),
             ("__wjs_serve_push", Some(crate::serve_bridge::serve_push), 2),
             ("__wjs_serve_fail", Some(crate::serve_bridge::serve_fail), 2),
+            // plan4 T4：服务端 WS 决策面（create/accept/decline；同上）。
+            ("__wjs_serve_ws_create", Some(crate::serve_bridge::serve_ws_create), 1),
+            ("__wjs_serve_ws_accept", Some(crate::serve_bridge::serve_ws_accept), 1),
+            ("__wjs_serve_ws_decline", Some(crate::serve_bridge::serve_ws_decline), 1),
             // Phase 4a: node:os / process（path 纯 JS，见 node/）
             ("__wjs_os_platform", Some(node::os::os_platform), 0),
             ("__wjs_os_arch", Some(node::os::os_arch), 0),

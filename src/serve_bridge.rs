@@ -9,6 +9,7 @@
 //! JS 侧 `ReadableStream` 拉取。响应侧三 native（head/push/fail） Dram：
 //! 未知 id 一律静默成功（过期响应：客户端已走或已终结，不报错）。
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -29,6 +30,8 @@ pub struct ServeReqHead {
     pub method: String,
     pub url: String,
     pub headers: Vec<(String, String)>,
+    /// WS upgrade 尝试（中间件置位；普通请求 false，见 T4）。
+    pub upgrade: bool,
 }
 
 /// 响应头（纯数据；`oneshot` 一次交付）。
@@ -57,6 +60,18 @@ pub enum ServeBodyMsg {
 pub struct ServeRespTx {
     pub head_tx: Option<tokio::sync::oneshot::Sender<ServeRespHead>>,
     pub body_tx: tokio::sync::mpsc::UnboundedSender<ServeBodyMsg>,
+    /// Upgrade 决策通道（中间件 await；普通请求 None，见 T4）。
+    pub upgrade_tx: Option<tokio::sync::oneshot::Sender<ServeUpgrade>>,
+}
+
+/// Upgrade 决策（Accept 捆绑桥接两端，Decline 走普通管线）。
+pub enum ServeUpgrade {
+    Accept {
+        ws_id: u64,
+        ev_tx: tokio::sync::mpsc::UnboundedSender<crate::builtins::ws::WsEvent>,
+        out_rx: tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsOut>,
+    },
+    Decline,
 }
 
 /// axum 线程 → JS 会话事件（纯数据）。
@@ -234,6 +249,7 @@ fn dispatch_head(
         "method": head.method,
         "url": head.url,
         "headers": head.headers,
+        "upgrade": head.upgrade,
     })
     .to_string();
     rooted!(&in(cx) let mut meta_v = UndefinedValue());
@@ -365,6 +381,14 @@ pub unsafe extern "C" fn serve_fail(
             let _ = resp.body_tx.send(ServeBodyMsg::Chunk(message.into_bytes()));
         }
         let _ = resp.body_tx.send(ServeBodyMsg::End);
+        // upgrade 挂起即决议 Decline（中间件不再空等 30s，直接走 500 短路）。
+        if let Some(tx) = resp.upgrade_tx {
+            let _ = tx.send(ServeUpgrade::Decline);
+        }
+    }
+    // 工厂已挂靠而未配对的 socket 一并回收（计数归还）。
+    if let Some((ws_id, _, _)) = serve_ws_take(id) {
+        state::ws_remove(ws_id);
     }
     frame.set_rval(UndefinedValue());
     true
@@ -413,6 +437,143 @@ pub fn load_serve_handler(
         return Err(Error::Other("serve handler: cannot stash fetch fn".into()));
     }
     Ok(())
+}
+
+// ── T4 服务端 WS（upgrade 决策 + socket 挂靠；事件/发送/计数全复用 ws.rs）──
+
+/// 待接管 socket（serve_id → 桥接端；factory 与 accept 之间过界）。
+struct WsPending {
+    ws_id: u64,
+    ev_tx: tokio::sync::mpsc::UnboundedSender<crate::builtins::ws::WsEvent>,
+    out_rx: tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsOut>,
+}
+
+static SERVE_WS_PENDING: OnceLock<Mutex<HashMap<u64, WsPending>>> = OnceLock::new();
+
+fn ws_pending_slot() -> &'static Mutex<HashMap<u64, WsPending>> {
+    SERVE_WS_PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 挂靠待接管 socket（后到覆盖，先到者摘计数）。
+pub fn serve_ws_stage(
+    serve_id: u64,
+    ws_id: u64,
+    ev_tx: tokio::sync::mpsc::UnboundedSender<crate::builtins::ws::WsEvent>,
+    out_rx: tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsOut>,
+) {
+    let old = ws_pending_slot().lock().expect("serve ws pending").insert(
+        serve_id,
+        WsPending { ws_id, ev_tx, out_rx },
+    );
+    if let Some(old) = old {
+        state::ws_remove(old.ws_id);
+    }
+}
+
+/// 取走待接管（accept/decline/fail 收口；未知 id 回 None）。
+pub fn serve_ws_take(
+    serve_id: u64,
+) -> Option<(
+    u64,
+    tokio::sync::mpsc::UnboundedSender<crate::builtins::ws::WsEvent>,
+    tokio::sync::mpsc::UnboundedReceiver<crate::builtins::ws::WsOut>,
+)> {
+    ws_pending_slot()
+        .lock()
+        .expect("serve ws pending")
+        .remove(&serve_id)
+        .map(|p| (p.ws_id, p.ev_tx, p.out_rx))
+}
+
+/// `__wjs_serve_ws_create(serveId)` → wsId：分配 ws 表项 + 发送端并挂靠。
+/// 工厂（`__wjs_serve_socket`）调用；101 前未配对由 decline/fail 回收。
+/// UNSAFE-BOUNDARY：引擎回调帧 + 会话 env；覆盖测试：`tests/serve.rs::phase11_serve_ws_echo`。
+pub unsafe extern "C" fn serve_ws_create(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper。
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 || !frame.arg(0).is_number() {
+        report_error(&mut cx, "TypeError: serve socket needs a serve id");
+        return false;
+    }
+    let serve_id = frame.arg(0).to_number() as u64;
+    let Some((ws_id, ev_tx)) = state::ws_alloc() else {
+        report_error(&mut cx, "OperationError: WebSocket driver not installed");
+        return false;
+    };
+    let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel::<crate::builtins::ws::WsOut>();
+    state::ws_add_sink(ws_id, out_tx);
+    serve_ws_stage(serve_id, ws_id, ev_tx, out_rx);
+    frame.set_rval(mozjs::jsval::Int32Value(ws_id as i32));
+    true
+}
+
+/// `__wjs_serve_ws_accept(serveId)`：101 配对成功 → 决策 Accept（捆绑桥接端过界）。
+/// 无挂靠（未调工厂）即抛错走 500；会话已走即静默回收。
+/// UNSAFE-BOUNDARY：同上；覆盖测试同 `serve_ws_create`。
+pub unsafe extern "C" fn serve_ws_accept(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上。
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 || !frame.arg(0).is_number() {
+        report_error(&mut cx, "TypeError: serve accept needs a serve id");
+        return false;
+    }
+    let serve_id = frame.arg(0).to_number() as u64;
+    let Some((ws_id, ev_tx, out_rx)) = serve_ws_take(serve_id) else {
+        report_error(&mut cx, "TypeError: serve upgrade without socket (need __wjs_serve_socket + 101)");
+        return false;
+    };
+    let Some(resp) = state::serve_take(serve_id) else {
+        // 会话已走（超时/客户端消失）：静默回收，不报错。
+        state::ws_remove(ws_id);
+        frame.set_rval(UndefinedValue());
+        return true;
+    };
+    let Some(tx) = resp.upgrade_tx else {
+        state::ws_remove(ws_id);
+        report_error(&mut cx, "TypeError: serve accept on a non-upgrade request");
+        return false;
+    };
+    if tx.send(ServeUpgrade::Accept { ws_id, ev_tx, out_rx }).is_err() {
+        state::ws_remove(ws_id);
+    }
+    frame.set_rval(UndefinedValue());
+    true
+}
+
+/// `__wjs_serve_ws_decline(serveId)`：非 101 → 决策 Decline（走普通管线）+ 挂靠回收。
+/// 未知 id/已决议一律静默成功（幂等）。
+/// UNSAFE-BOUNDARY：同上；覆盖测试同 `serve_ws_create`。
+pub unsafe extern "C" fn serve_ws_decline(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上。
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 || !frame.arg(0).is_number() {
+        report_error(&mut cx, "TypeError: serve decline needs a serve id");
+        return false;
+    }
+    let serve_id = frame.arg(0).to_number() as u64;
+    if let Some((ws_id, _, _)) = serve_ws_take(serve_id) {
+        state::ws_remove(ws_id);
+    }
+    if let Some(tx) = state::serve_take_upgrade(serve_id) {
+        let _ = tx.send(ServeUpgrade::Decline);
+    }
+    frame.set_rval(UndefinedValue());
+    true
 }
 
 #[cfg(test)]

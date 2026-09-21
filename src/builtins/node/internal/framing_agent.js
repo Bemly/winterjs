@@ -84,11 +84,12 @@
     // node lib/_http_client.js：once('timeout') + socket 空闲计时（已连即臂，
     // 未连记位，__attach 落地）。setTimeout 必须补建 timeoutCb，否则 __attach
     // 见 timeoutCb 缺席即跳过武装（client-timeout 套件 hang 根因）。
-    // finish 后调即 noop（set-timeout-after-end 套件：res 'end' 后 setTimeout(0)
-    // 不增监听，node `if (this._ended) return this` 口径；_ended 置于 finish，
-    // 故 get() 后同步 setTimeout 仍生效）。
+    // 响应结束后调即 noop（set-timeout-after-end 套件：res 'end' 后
+    // setTimeout(0) 不增监听，node `if (this._ended) return this` 口径；
+    // _ended 置于响应结束（responseOnEnd），请求 finish 不算——响应中
+    // setTimeout 必须生效（client-timeout-with-data 套件）。
     setTimeout(msecs, callback) {
-      if (this.__reqFinished) return this;
+      if (this.__res !== null && this.__res !== undefined && this.__res.readableEnded) return this;
       if (typeof callback === "function") this.once("timeout", callback);
       const ms = Number(msecs) || 0;
       this.__reqTimeoutMs = ms > 0 ? ms : undefined;

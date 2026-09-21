@@ -746,11 +746,6 @@ export function withClientRequest(openSocket, flavor) {
       this.__buf1 = null;
       this.__holdTimer = null;
       this.__userEnded = false;
-      // node `req._ended`（requestOnFinish 置位，非 end() 同步）：'finish' 后
-      // setTimeout 即 noop（set-timeout-after-end 套件）；get() 后同步调
-      // setTimeout 时 finish 尚未到，故仍生效（client-set-timeout 套件）。
-      this.__reqFinished = false;
-      try { this.once("finish", () => { this.__reqFinished = true; }); } catch { /* gone */ }
       this.__connected = false;
       this.__sock = null;
       this.__onSockClose = null;

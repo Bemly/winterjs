@@ -181,6 +181,50 @@ fn phase10f_test_run_process_and_expect_failure() {
 }
 
 #[test]
+fn phase10f_test_run_semantics_timeout_plan_wait() {
+    // 超时失败 + plan wait 语义（快时钟）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let probe = dir.child("probe.test.mjs");
+    probe
+        .write_str(
+            "import { test } from \"node:test\";\ntest(\"slow\", { timeout: 50 }, async () => {\n  await new Promise((r) => setTimeout(r, 5000));\n});\ntest(\"waiter\", async (t) => {\n  t.plan(1, { wait: true });\n  setTimeout(() => { t.assert.ok(true); }, 10);\n});\ntest(\"wait-false\", async (t) => {\n  t.plan(1, { wait: false });\n});\n",
+        )
+        .unwrap();
+    let file = dir.child("t.mjs");
+    let script =
+        "import { test, run } from \"node:test\";\nimport assert from \"node:assert\";\ntest(\"driver\", async () => {\n  const stream = run({ files: [\"PROBE\"], isolation: \"none\" });\n  const fails = [];\n  stream.on(\"test:fail\", (d) => fails.push(d.name + \":\" + String(d.details.error.failureType)));\n  stream.on(\"test:pass\", (d) => assert.strictEqual(d.name, \"waiter\"));\n  for await (const _ of stream);\n  assert.deepStrictEqual(fails.sort(), [\"slow:testTimeoutFailure\", \"wait-false:testCodeFailure\"]);\n});\n"
+            .replace("PROBE", probe.path().to_str().unwrap());
+    file.write_str(&script).unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "timeout/wait: {stdout}");
+    assert!(stdout.contains("# pass 1, fail 0, skip 0, todo 0"), "summary: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase10f_test_run_tag_filter_and_randomize() {
+    // 标签过滤 + 随机种子顺序。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let probe_src = "import { test, describe } from \"node:test\";\ndescribe(\"g\", { tags: [\"db\"] }, () => {\n  test(\"t1\", () => {});\n  test(\"t2\", { tags: [\"x\"] }, () => {});\n});\ntest(\"plain\", () => {});\ntest(\"parent\", (t) => {\n  t.test(\"a\", () => {});\n  t.test(\"b\", () => {});\n  t.test(\"c\", () => {});\n});\n";
+    // 两次 run() 用不同文件（同文件二次 import 命中缓存，真机同款语义）。
+    let probe = dir.child("probe.test.mjs");
+    probe.write_str(probe_src).unwrap();
+    let probe2 = dir.child("probe2.test.mjs");
+    probe2.write_str(probe_src).unwrap();
+    let file = dir.child("t.mjs");
+    let script =
+        "import { test, run } from \"node:test\";\nimport assert from \"node:assert\";\ntest(\"filter\", async () => {\n  const stream = run({ files: [\"PROBE\"], isolation: \"none\", testTagFilters: [\"db\"] });\n  const passes = [];\n  stream.on(\"test:pass\", (d) => passes.push(d.name));\n  stream.on(\"test:fail\", () => assert.fail(\"no fail\"));\n  for await (const _ of stream);\n  assert.deepStrictEqual(passes.sort(), [\"g\", \"t1\", \"t2\"]);\n});\ntest(\"shuffle\", async () => {\n  const stream = run({ files: [\"PROBE2\"], isolation: \"none\", randomSeed: 1 });\n  const order = [];\n  stream.on(\"test:pass\", (d) => { if (d.name === \"a\" || d.name === \"b\" || d.name === \"c\") order.push(d.name); });\n  for await (const _ of stream);\n  assert.deepStrictEqual(order, [\"b\", \"a\", \"c\"]);\n});\n"
+            .replace("PROBE2", probe2.path().to_str().unwrap()).replace("PROBE", probe.path().to_str().unwrap());
+    file.write_str(&script).unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "filter/shuffle: {stdout}");
+    assert!(stdout.contains("# pass 2, fail 0, skip 0, todo 0"), "summary: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase10f_test_mock_property_and_top() {
     // mock.property 访问记录/复原 + 顶层 mock + 校验报错两件。
     let dir = assert_fs::TempDir::new().unwrap();

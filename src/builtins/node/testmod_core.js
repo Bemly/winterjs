@@ -231,16 +231,16 @@ function __buildAssert(ctx, rec) {
     if (typeof base !== "function") continue;
     if (__customAsserts.has(k)) {
       const impl = __customAsserts.get(k);
-      a[k] = function (...args) { rec.planActual++; return Reflect.apply(impl, ctx, args); };
+      a[k] = function (...args) { if (rec.plan !== null) rec.plan.count(); return Reflect.apply(impl, ctx, args); };
     } else if (k === "ok") {
-      a[k] = function (...args) { rec.planActual++; return __okWithSource(base, args); };
+      a[k] = function (...args) { if (rec.plan !== null) rec.plan.count(); return __okWithSource(base, args); };
     } else {
-      a[k] = function (...args) { rec.planActual++; return Reflect.apply(base, ctx, args); };
+      a[k] = function (...args) { if (rec.plan !== null) rec.plan.count(); return Reflect.apply(base, ctx, args); };
     }
   }
   for (const [k, fn] of __customAsserts) {
     if (!(k in a)) {
-      a[k] = function (...args) { rec.planActual++; return Reflect.apply(fn, ctx, args); };
+      a[k] = function (...args) { if (rec.plan !== null) rec.plan.count(); return Reflect.apply(fn, ctx, args); };
     }
   }
   if (!("snapshot" in a)) {
@@ -299,6 +299,108 @@ function __okWithSource(base, args) {
   }
 }
 
+// TestPlan（node 口径）：check() 即时判定或回等待承诺（wait:true 无限等、
+// 数字等 N ms 超时）；count() 达标即决议等待者并清计时器。
+function __makePlan(count, options) {
+  const wait = options?.wait;
+  return {
+    expected: count,
+    actual: 0,
+    wait,
+    _waiters: [],
+    _timer: null,
+    count() {
+      this.actual++;
+      if (this.actual === this.expected) {
+        for (const w of this._waiters.splice(0)) {
+          try { w.resolve(); } catch {}
+        }
+        if (this._timer !== null) {
+          try { clearTimeout(this._timer); } catch {}
+          this._timer = null;
+        }
+      }
+    },
+    check() {
+      if (this.actual === this.expected) return Promise.resolve();
+      if (this.wait === undefined || this.wait === false) {
+        const e = new Error(`Expected ${this.expected} assertions, but ${this.actual} were run`);
+        e.code = "ERR_TEST_FAILURE";
+        e.failureType = "testCodeFailure";
+        throw e;
+      }
+      return new Promise((resolve, reject) => {
+        this._waiters.push({ resolve, reject });
+        if (typeof this.wait === "number" && this._timer === null) {
+          this._timer = setTimeout(() => {
+            this._timer = null;
+            const e = new Error(`plan timed out after ${this.wait}ms with ${this.actual} assertions when expecting ${this.expected}`);
+            e.code = "ERR_TEST_FAILURE";
+            e.failureType = "testTimeoutFailure";
+            reject(e);
+          }, this.wait);
+        }
+      });
+    },
+  };
+}
+// run() 透传的默认测试超时（直接模式 null；进出 run 快照/复原）。
+let __defaultTimeout = null;
+// run() 标签过滤（归一小写数组；null 即不过滤；进出 run 快照/复原）。
+// 子集口径：单标签精确匹配（大小写不敏感）+ `not X` 否定，多过滤器 OR。
+// and/or/括号/通配全表达式另案。
+let __tagFilters = null;
+function __matchTagFilters(tags) {
+  if (!__tagFilters || __tagFilters.length === 0) return true;
+  const set = new Set(tags.map((t) => String(t).toLowerCase()));
+  for (const f of __tagFilters) {
+    const m = /^\s*not\s+(.+?)\s*$/i.exec(String(f));
+    if (m) {
+      if (!set.has(m[1].toLowerCase())) return true;
+    } else if (set.has(String(f).toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+// run({randomSeed}) 子测试洗牌（真机 seeded PRNG 逐字；逐父 fresh 实例）。
+// null 即顺序执行（直接模式与无种子 run 同款）。
+let __randomSeed = null;
+function __seededRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6D2B79F5) | 0;
+    let value = Math.imul(state ^ (state >>> 15), 1 | state);
+    value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function __shuffledIndices(n) {
+  const rand = __seededRandom(__randomSeed);
+  const pool = [];
+  for (let i = 0; i < n; i++) pool.push(i);
+  const out = [];
+  while (pool.length > 0) {
+    out.push(pool.splice(Math.floor(rand() * pool.length), 1)[0]);
+  }
+  return out;
+}
+// 调用点文件（file:// 帧首个非 node:test 项；CJS 行号偏移不影响文件）。
+function __callerFile() {
+  let stack = "";
+  try { stack = String(new Error().stack || ""); } catch { return null; }
+  for (const line of stack.split("\n")) {
+    const m = /@([^@\s]+):(\d+):(\d+)\s*$/.exec(line);
+    if (!m) continue;
+    let file = m[1];
+    if (file === "node:test" || file.endsWith("/node:test")) continue;
+    if (file.startsWith("file://")) {
+      try { file = decodeURIComponent(file.slice(7)); } catch {}
+      return file;
+    }
+  }
+  return null;
+}
 // t.waitFor（node TestContext 口径：校验同步抛 + 串行轮询 + 超时 cause）。
 // 注意：校验必须在同步段执行——async 函数内抛即变 rejection，同步
 // `t.assert.throws` 够不着（wait-for 套件 input validation 现形）。
@@ -374,7 +476,7 @@ function __testCtx(rec) {
       if (msg !== undefined) rec.todoMessage = String(msg);
     },
     plan(count, options) {
-      if (rec.planExpected !== null) {
+      if (rec.plan !== null) {
         const e = new Error("cannot set plan more than once");
         e.code = "ERR_TEST_FAILURE";
         throw e;
@@ -390,7 +492,7 @@ function __testCtx(rec) {
           validateNumber(options.wait, "options.wait", 0, TIMEOUT_MAX);
         }
       }
-      rec.planExpected = count;
+      rec.plan = __makePlan(count, options ?? {});
     },
     get assert() {
       if (!rec.assertObj) rec.assertObj = __buildAssert(ctx, rec);
@@ -441,8 +543,10 @@ function __mkTest(name, options, fn, suites, parent) {
     file: __currentFile,
     nesting: suites.length,
     testHooks: { before: [], after: [], beforeEach: [], afterEach: [] },
-    children: [], pending: [], childFailed: false,
-    planExpected: null, planActual: 0,
+    children: [], pending: [], deferred: [], childFailed: false,
+    plan: null,
+    // 测试超时（显式选项优先，否则 run 透传缺省；stopTest 口径）。
+    timeout: (options.timeout != null && options.timeout !== Infinity) ? options.timeout : __defaultTimeout,
     assertObj: null, mockObj: null, ctx: null,
     passed: false, failed: false, beforeFired: false,
     onlyFlag: options.only === true,
@@ -454,7 +558,7 @@ function __mkTest(name, options, fn, suites, parent) {
   if (rec.onlyFlag) __markOnly(rec);
   if (__eventSink) {
     // name 取短名（test-id 套件按短名找 e2e；全名另有 fullName 键）。
-    const data = { name: rec.name, fullName: rec.fullName, testId: rec.testId, nesting: rec.nesting };
+    const data = { name: rec.name, fullName: rec.fullName, testId: rec.testId, nesting: rec.nesting, tags: rec.tags };
     if (rec.file != null) data.file = rec.file;
     __emit("test:enqueue", data);
   }
@@ -646,6 +750,8 @@ async function __runOne(rec) {
     if (!__nameOk(rec.fullName)) { __skip++; return; }
     // only-过滤（applyFilters 口径）：门外即静默跳过，无事件。
     if (__onlyFiltered(rec)) { __skip++; return; }
+    // 标签过滤：不命中即静默跳过，无事件。
+    if (!__matchTagFilters(rec.tags)) { __skip++; return; }
     for (const s of rec.suites) s._ran = true;
     __ran++;
     if (__eventSink) {
@@ -653,6 +759,8 @@ async function __runOne(rec) {
       __emit("test:start", __baseEvent(rec));
     }
     const ctx = __testCtx(rec);
+    // test 超时竞速（stopTest 口径）：主体闭包与 deadline 竞速，落定清计时器。
+    const __runBody = async () => {
     __ctxStack.push(ctx);
     try {
       // before（runOnce）：套件由外向内；测试级 owner 在首个子测试时跑一次。
@@ -669,7 +777,30 @@ async function __runOne(rec) {
         for (const h of rec.parent.testHooks.beforeEach) await __runTestHook(h, pctx, ctx);
       }
       try {
-        if (rec.fn) await rec.fn.call(ctx, ctx);
+        if (rec.fn) {
+          if (rec.fn.length >= 2) {
+            // legacy error-first done 回调（真机口径；回调+Promise 双给即失败）。
+            await new Promise((resolve, reject) => {
+              let r;
+              try {
+                r = rec.fn.call(ctx, ctx, (err) => {
+                  if (err) reject(err);
+                  else resolve();
+                });
+              } catch (e) {
+                reject(e);
+                return;
+              }
+              if (r && typeof r.then === "function") {
+                const e = new Error("passed a callback but also returned a Promise");
+                e.code = "ERR_TEST_FAILURE";
+                reject(e);
+              }
+            });
+          } else {
+            await rec.fn.call(ctx, ctx);
+          }
+        }
       } finally {
         // afterEach：测试级 owner 先，再套件由内向外（注册序，runHook 口径）。
         if (rec.parent) {
@@ -680,6 +811,16 @@ async function __runOne(rec) {
           const s = rec.suites[i];
           for (const h of s.hooks.afterEach) await __runSuiteHook(s, h, ctx);
         }
+      }
+      // 延迟子测试按种子序跑（随机轮；即时轮走 pending）。
+      if (rec.deferred.length > 0) {
+        for (const i of __shuffledIndices(rec.deferred.length)) {
+          const d = rec.deferred[i];
+          await __runOne(d.rec);
+          try { d.resolve(); } catch {}
+          if (d.rec.failed) rec.childFailed = true;
+        }
+        rec.deferred.length = 0;
       }
       if (rec.pending.length > 0) await Promise.all(rec.pending);
       for (const h of rec.testHooks.after) await __runTestHook(h, ctx, ctx);
@@ -700,11 +841,7 @@ async function __runOne(rec) {
         e.code = "ERR_TEST_FAILURE";
         throw e;
       }
-      if (rec.planExpected !== null && rec.planActual !== rec.planExpected) {
-        const e = new Error(`Expected ${rec.planExpected} assertions, but ${rec.planActual} were run`);
-        e.code = "ERR_TEST_FAILURE";
-        throw e;
-      }
+      if (rec.plan !== null) await rec.plan.check();
       if (rec.expectFailure === true) {
         // 期望失败却通过 → 真失败（expect-error-but-pass 口径）。
         const e = new Error("test was expected to fail but passed");
@@ -721,6 +858,28 @@ async function __runOne(rec) {
       }
     } finally {
       __ctxStack.pop();
+    }
+    };
+    let __timeoutId = null;
+    try {
+      if (rec.timeout != null) {
+        await new Promise((resolve, reject) => {
+          __timeoutId = setTimeout(() => {
+            const e = new Error(`test timed out after ${rec.timeout}ms`);
+            e.code = "ERR_TEST_FAILURE";
+            e.failureType = "testTimeoutFailure";
+            reject(e);
+          }, rec.timeout);
+          __runBody().then(resolve, reject);
+        });
+      } else {
+        await __runBody();
+      }
+    } finally {
+      if (__timeoutId !== null) {
+        try { clearTimeout(__timeoutId); } catch {}
+        __timeoutId = null;
+      }
     }
   } catch (e) {
     if (rec.expectFailure === true && (!e || e.failureType !== "expectedFailure")) {
@@ -812,8 +971,28 @@ async function __runAfters() {
 function __subtest(parentRec, args) {
   const { name, options, fn } = __normCall(args);
   __validateTestOptions(options);
+  // 子测试计入父 plan（真机 TestContext.test 口径）。
+  if (parentRec.plan !== null) parentRec.plan.count();
+  // 子测试文件归属取调用点（helper 内 t.test 口径）：先进 __mkTest 再改
+  // 已经迟了（enqueue 先发），故暂换 __currentFile 再建。
+  let savedFile = null;
+  try {
+    const caller = __callerFile();
+    if (caller) {
+      savedFile = __currentFile;
+      __currentFile = caller;
+    }
+  } catch {}
   const rec = __mkTest(name, options, fn, parentRec.suites, parentRec);
+  if (savedFile !== null) __currentFile = savedFile;
   parentRec.children.push(rec);
+  if (__randomSeed !== null && __randomSeed !== undefined) {
+    // 随机序：收齐同轮兄弟，父 fn 收尾后按种子序跑（真机 pending 队列口径）。
+    // 注意：父内 await t.test 会死锁（子等父收尾），套件无此形状。
+    return new Promise((resolve) => {
+      parentRec.deferred.push({ rec, resolve });
+    });
+  }
   const p = __runOne(rec).then(() => {
     if (rec.failed) parentRec.childFailed = true;
   });

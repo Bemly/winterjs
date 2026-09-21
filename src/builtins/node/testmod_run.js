@@ -102,10 +102,13 @@ export function run(options = {}) {
     __runFilesWorker(options, files, stream);
     return stream;
   }
-  __runFilesAsync(options, stream).catch((e) => {
-    try { stream._end(); } catch {}
-    // 监听抛错（如 mustNotCall）不可吞：异步重抛走 uncaught，文件可见失败。
-    queueMicrotask(() => { throw e; });
+  // 执行体递延一轮（监听先挂后发；否则文件级 enqueue 在 .on 之前丢失）。
+  queueMicrotask(() => {
+    __runFilesAsync(options, stream).catch((e) => {
+      try { stream._end(); } catch {}
+      // 监听抛错（如 mustNotCall）不可吞：异步重抛走 uncaught，文件可见失败。
+      queueMicrotask(() => { throw e; });
+    });
   });
   return stream;
 }
@@ -120,7 +123,21 @@ async function __runFilesAsync(options, stream) {
     curFile: __currentFile,
     exitCode: globalThis.process.exitCode,
     innerActive: __innerActive,
+    defaultTimeout: __defaultTimeout,
+    tagFilters: __tagFilters,
+    randomSeed: __randomSeed,
   };
+  // run 级 timeout/标签过滤/随机种子透传为内层缺省（进出快照复原）。
+  if (options.timeout != null) __defaultTimeout = options.timeout;
+  // null 视同缺席（worker 转发层以 null 占位未设字段，真机行为另案）。
+  if (options.testTagFilters !== undefined && options.testTagFilters !== null) {
+    let tf = options.testTagFilters;
+    if (typeof tf === "string") tf = [tf];
+    __tagFilters = tf;
+  }
+  if (options.randomSeed !== undefined && options.randomSeed !== null) {
+    __randomSeed = options.randomSeed;
+  }
   const innerRoot = __mkSuite("<root>", __EMPTY_TAGS, null);
   __suites.length = 0;
   __suites.push(innerRoot);
@@ -140,7 +157,7 @@ async function __runFilesAsync(options, stream) {
       // 路径规范化（process.cwd 可能含 ..，filetest 断言绝对路径全等）。
       const abs = resolvePath(cwd, given);
       __currentFile = abs;
-      __emit("test:enqueue", { name: given, file: abs, testId: ++__testIdCounter });
+      __emit("test:enqueue", { name: given, file: abs, tags: [], testId: ++__testIdCounter });
       const qLen = __queue.length;
       const rLen = __suiteReg.length;
       try {
@@ -151,7 +168,7 @@ async function __runFilesAsync(options, stream) {
         if (e && (typeof e === "object" || typeof e === "function") && e.failureType === undefined) {
           e.failureType = "testCodeFailure";
         }
-        __emit("test:fail", { name: given, file: abs, line: 1, column: 1, testId: ++__testIdCounter, details: { error: e } });
+        __emit("test:fail", { name: given, file: abs, line: 1, column: 1, tags: [], testId: ++__testIdCounter, details: { error: e } });
       }
     }
     __currentFile = null;
@@ -164,16 +181,16 @@ async function __runFilesAsync(options, stream) {
         const e = new Error(`${s._fail} subtests failed`);
         e.code = "ERR_TEST_FAILURE";
         __emit("test:fail", { name: s.name, fullName: __suiteFullName(s), testId: s.testId, nesting: s.depth, tags: s.ownTags, details: { error: e } });
-        __emit("test:complete", { name: s.name, testId: s.testId, nesting: s.depth });
+        __emit("test:complete", { name: s.name, testId: s.testId, nesting: s.depth, tags: s.ownTags });
       } else if (s._pass > 0) {
         __emit("test:pass", { name: s.name, fullName: __suiteFullName(s), testId: s.testId, nesting: s.depth, tags: s.ownTags });
-        __emit("test:complete", { name: s.name, testId: s.testId, nesting: s.depth });
+        __emit("test:complete", { name: s.name, testId: s.testId, nesting: s.depth, tags: s.ownTags });
       } else if (s.skip) {
         __emit("test:pass", { name: s.name, fullName: __suiteFullName(s), testId: s.testId, nesting: s.depth, tags: s.ownTags, skip: true });
-        __emit("test:complete", { name: s.name, testId: s.testId, nesting: s.depth });
+        __emit("test:complete", { name: s.name, testId: s.testId, nesting: s.depth, tags: s.ownTags });
       } else if (s.todo) {
         __emit("test:pass", { name: s.name, fullName: __suiteFullName(s), testId: s.testId, nesting: s.depth, tags: s.ownTags, todo: true });
-        __emit("test:complete", { name: s.name, testId: s.testId, nesting: s.depth });
+        __emit("test:complete", { name: s.name, testId: s.testId, nesting: s.depth, tags: s.ownTags });
       }
     }
   } finally {
@@ -188,6 +205,9 @@ async function __runFilesAsync(options, stream) {
     __currentFile = saved.curFile;
     globalThis.process.exitCode = saved.exitCode;
     __innerActive = saved.innerActive;
+    __defaultTimeout = saved.defaultTimeout;
+    __tagFilters = saved.tagFilters;
+    __randomSeed = saved.randomSeed;
   }
   stream._end();
 }
@@ -201,7 +221,7 @@ const __RUN_CHILD = [
   'import { parentPort, workerData } from "node:worker_threads";',
   'process.env.NODE_TEST_CONTEXT = "1";',
   'const mod = await import("node:test");',
-  'const stream = mod.run({ files: workerData.files, isolation: "none", cwd: workerData.cwd });',
+  'const stream = mod.run({ files: workerData.files, isolation: "none", cwd: workerData.cwd, timeout: workerData.timeout ?? undefined, testTagFilters: workerData.tagFilters ?? undefined, randomSeed: workerData.randomSeed ?? undefined });',
   'function serError(e) {',
   '  if (e !== null && (typeof e === "object" || typeof e === "function")) {',
   '    let stack = undefined;',
@@ -213,7 +233,8 @@ const __RUN_CHILD = [
   'function ser(data) {',
   '  const d = {};',
   '  for (const k of Object.keys(data)) d[k] = data[k];',
-  '  if (d.details && d.details.error !== undefined) {',
+  '  if (workerData.entryFile !== undefined && workerData.entryFile !== null) d.entryFile = workerData.entryFile;',
+'  if (d.details && d.details.error !== undefined) {',
   '    const details = {};',
   '    for (const k of Object.keys(d.details)) details[k] = d.details[k];',
   '    details.error = serError(d.details.error);',
@@ -245,13 +266,13 @@ function __rehydrateError(s) {
   }
   return e;
 }
-function __runOneWorker(given, abs, stream) {
+function __runOneWorker(options, given, abs, stream) {
   return new Promise((resolve) => {
     let w;
     try {
       w = new Worker(__RUN_CHILD, {
         eval: true,
-        workerData: { files: [given], cwd: process.cwd() },
+        workerData: { files: [given], cwd: process.cwd(), timeout: options.timeout ?? null, tagFilters: options.testTagFilters ?? null, randomSeed: options.randomSeed ?? null, entryFile: abs },
       });
     } catch (e) {
       stream._emit("test:fail", { name: given, file: abs, line: 1, column: 1, testId: ++__testIdCounter, details: { error: e } });
@@ -294,7 +315,7 @@ async function __runFilesWorker(options, files, stream) {
   for (const f of files) {
     const given = String(f);
     const abs = given.startsWith("/") ? given : `${cwd}/${given}`;
-    await __runOneWorker(given, abs, stream);
+    await __runOneWorker(options, given, abs, stream);
   }
   stream._end();
 }

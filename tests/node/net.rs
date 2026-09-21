@@ -744,3 +744,67 @@ setTimeout(() => process.exit(0), 2000);
     assert!(!out.contains("BAD"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_net_halfopen_releases_loop() {
+    // G11 半开案：服务端 destroy + close 后，allowHalfOpen 半开客户端不再续命
+    //（真机同款：收 FIN 停转后空闲句柄不 ref 循环；修前进程 hang 致 TIMEOUT）。
+    // 正常全关舞蹈不受影响（双侧 close 照常）；FIN 后写仍可用（write-cb ok）。
+    // 防挂守卫：回归只红不挂（8s HANG exit 1）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+import assert from "node:assert";
+setTimeout(() => { console.log("HANG"); process.exit(1); }, 8000).unref();
+
+// 正常：半开客户端收 FIN 后写仍可用，随后进程自行退出（不靠 destroy）。
+{
+  const srv = net.createServer((s) => {
+    s.on("data", (d) => assert.ok(String(d).length > 0));
+    setTimeout(() => { s.destroy(); srv.close(() => console.log("a-closed")); }, 300);
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  await new Promise((resolve) => {
+    const c = net.connect({ port: srv.address().port, host: "127.0.0.1", allowHalfOpen: true });
+    c.write("hi");
+    c.on("data", () => {});
+    c.on("end", () => {
+      console.log("a-end");
+      c.write("after-fin", (e) => console.log("a-write", e ? e.code : "ok"));
+    });
+    c.on("close", () => resolve());
+    // 服务端 destroy 发 FIN 后客户端半开：5s 内无 close 即 resolve
+    //（半开本就不发 close；进程退出即验收续命释放）。
+    setTimeout(resolve, 5000);
+  });
+  console.log("a-exit-shape ok");
+}
+
+// 边界：正常全关舞蹈（allowHalfOpen=false 回环）双侧 close 照常。
+{
+  const srv = net.createServer((s) => {
+    s.on("data", (d) => s.write(d));
+    s.on("end", () => s.end());
+    s.on("close", () => console.log("b-srv-close"));
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  await new Promise((resolve) => {
+    const c = net.connect({ port: srv.address().port, host: "127.0.0.1" });
+    c.write("ping");
+    c.on("data", () => c.end());
+    c.on("close", () => { console.log("b-cli-close"); resolve(); });
+  });
+  srv.close();
+  console.log("b-dance ok");
+}
+"#,
+    );
+    for tag in ["a-closed", "a-end", "a-write ok", "a-exit-shape ok", "b-srv-close", "b-cli-close", "b-dance ok"] {
+        assert!(out.lines().any(|l| l == tag), "missing `{tag}`; out:\n{out}");
+    }
+    assert!(!out.contains("HANG"), "out:\n{out}");
+    dir.close().unwrap();
+}

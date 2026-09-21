@@ -530,16 +530,44 @@ export class ServerResponse extends Writable {
     return super.write(chunk, encoding, cb);
   }
   end(chunk, encoding, cb) {
+    // Node OutgoingMessage.end 口径（end-multiple 套件）：finished 后 end(chunk)
+    // 走 onError（cb + 'error'，不碰基类错误通道——基类会置 errored 毒化在途
+    // 首个 end 的 finish）；finished 后裸 end 回 ALREADY_FINISHED（同步）；
+    // ending 中带块同 onError。皆不经 super.end。
+    if (typeof chunk === "function") { cb = chunk; chunk = null; encoding = null; }
+    else if (typeof encoding === "function") { cb = encoding; encoding = null; }
+    const __hasChunk = chunk !== undefined && chunk !== null;
+    const __cb = typeof cb === "function" ? cb : null;
+    if (this.writableFinished) {
+      if (__hasChunk) {
+        if (this.destroyed) return this;
+        const er = new codes.ERR_STREAM_WRITE_AFTER_END();
+        queueMicrotask(() => { if (__cb) __cb(er); if (!this.destroyed) this.emit("error", er); });
+      } else if (__cb) {
+        __cb(new codes.ERR_STREAM_ALREADY_FINISHED("end"));
+      }
+      return this;
+    }
     if (this.__userEnded) {
-      const f = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : cb);
-      if (typeof f === "function") f();
+      if (!__hasChunk) return super.end(null, null, cb);
+      if (this.destroyed) return this;
+      const er = new codes.ERR_STREAM_WRITE_AFTER_END();
+      queueMicrotask(() => { if (__cb) __cb(er); if (!this.destroyed) this.emit("error", er); });
       return this;
     }
     // CL 快路径判据（真机）：end 的数据块存在性——write 后裸 end() 不走快路径
     //（真机 chunked + 终结块口径）。
     this.__endHadData = chunk !== undefined && chunk !== null && typeof chunk !== "function";
     this.__userEnded = true;
-    return super.end(chunk, encoding, cb);
+    try {
+      return super.end(chunk, encoding, cb);
+    } catch (e) {
+      // 基类校验抛（如数组 chunk）不得毒化旗位，否则后续合法 end 永不到
+      // （end-types 套件 hang 根因）。
+      this.__endHadData = false;
+      this.__userEnded = false;
+      throw e;
+    }
   }
   // 可写流最小面（ws Sender 的 cork/uncork；本仓写直通无聚合，no-op）。
   cork() { return this; }
@@ -704,7 +732,10 @@ export class ServerResponse extends Writable {
           this.__frame(b);
         }
       }, 0);
-      cb();
+      // node 口径：_write 完成异步回（socket 层 flush 节奏），同步回即
+      // writableLength 即时清零、write 恒 true、背压永不触发
+      // （outgoing-finish 系无限 while hang 根因）。
+      queueMicrotask(cb);
       return;
     }
     if (!this.__headSent) {
@@ -717,7 +748,7 @@ export class ServerResponse extends Writable {
       }
     }
     this.__frame(u8);
-    cb();
+    queueMicrotask(cb);
   }
   _final(cb) {
     if (this.__holdTimer !== null) {
@@ -784,12 +815,27 @@ export class ServerResponse extends Writable {
       queueMicrotask(() => { try { __s.end(); } catch { /* closed meanwhile */ } });
     }
   }
+  // node 口径：destroy(err) 不外发 msg 'error'（outgoing-destroyed 要求吞错、
+  // capture-rejection 经 socket 递错误；基类 trampoline 发 error 时序不可靠，
+  // 吞错常驻——用户自有 error 监听仍可达，仅永不无监听抛错）。
+  destroy(err) {
+    if (this.destroyed) return this;
+    this.on("error", () => {});
+    return super.destroy(err);
+  }
   _destroy(err, cb) {
     if (this.__holdTimer !== null) {
       clearTimeout(this.__holdTimer);
       this.__holdTimer = null;
     }
-    try { this.__sock.destroy(); } catch { /* closed meanwhile */ }
+    // capture-rejection 套件：destroy(err) 透传 socket（有 error 监听才带
+    // err——裸杀配 err 会无监听抛错；node 侧由常驻 socketOnError 承接，
+    // 本仓无此常驻监听故按可观测等价门控）。
+    try {
+      const __s = this.__sock;
+      if (err !== undefined && err !== null && typeof __s.listenerCount === "function" && __s.listenerCount("error") > 0) __s.destroy(err);
+      else __s.destroy();
+    } catch { /* closed meanwhile */ }
     cb(err);
   }
 }

@@ -120,9 +120,27 @@
       return super.write(chunk, encoding, cb);
     }
     end(chunk, encoding, cb) {
+      // Node OutgoingMessage.end 口径（见服务端同改）：finished/ending 状态的
+      // 重复 end 不经基类错误通道（不毒化 errored）。
+      if (typeof chunk === "function") { cb = chunk; chunk = null; encoding = null; }
+      else if (typeof encoding === "function") { cb = encoding; encoding = null; }
+      const __hasChunk = chunk !== undefined && chunk !== null;
+      const __cb = typeof cb === "function" ? cb : null;
+      if (this.writableFinished) {
+        if (__hasChunk) {
+          if (this.destroyed) return this;
+          const er = new codes.ERR_STREAM_WRITE_AFTER_END();
+          queueMicrotask(() => { if (__cb) __cb(er); if (!this.destroyed) this.emit("error", er); });
+        } else if (__cb) {
+          __cb(new codes.ERR_STREAM_ALREADY_FINISHED("end"));
+        }
+        return this;
+      }
       if (this.__userEnded) {
-        const f = typeof chunk === "function" ? chunk : (typeof encoding === "function" ? encoding : cb);
-        if (typeof f === "function") f();
+        if (!__hasChunk) return super.end(null, null, cb);
+        if (this.destroyed) return this;
+        const er = new codes.ERR_STREAM_WRITE_AFTER_END();
+        queueMicrotask(() => { if (__cb) __cb(er); if (!this.destroyed) this.emit("error", er); });
         return this;
       }
       if (this.destroyed) {
@@ -153,7 +171,15 @@
         }
         this.__contentLength = __len;
       }
-      return super.end(chunk, encoding, cb);
+      try {
+        return super.end(chunk, encoding, cb);
+      } catch (e) {
+        // 基类校验抛不得毒化旗位（见服务端同改）。
+        this.__userEnded = false;
+        this.__endFast = false;
+        this.__contentLength = undefined;
+        throw e;
+      }
     }
     // node 口径（弃用面仍测）：abort = destroy + 'abort' 事件 + aborted 旗。
     abort() {
@@ -220,7 +246,8 @@
           this.__holdTimer = null;
           if (this.__buf1 !== null && !this.__headSent && !this.destroyed) this.__tryFlush();
         }, 0);
-        cb();
+        // node 口径：_write 完成异步回（背压 falsy 信号；见服务端同改）。
+        queueMicrotask(cb);
         return;
       }
       if (!this.__headSent) {
@@ -236,7 +263,7 @@
         } else {
           // 未连通：逐块排队（连通后逐帧刷出保分包，见 __tryFlush）。
           this.__buf1.push(u8);
-          cb();
+          queueMicrotask(cb);
           return;
         }
       }
@@ -246,7 +273,7 @@
       } else {
         (this.__buf1 ??= []).push(u8);
       }
-      cb();
+      queueMicrotask(cb);
     }
     _final(cb) {
       if (this.__holdTimer !== null) {
@@ -323,7 +350,13 @@
         if (this.__onSockClose !== null) {
           try { this.__sock.removeListener("close", this.__onSockClose); } catch { /* closed meanwhile */ }
         }
-        try { this.__sock.destroy(); } catch { /* closed meanwhile */ }
+        // capture-rejection 套件：同服务端，destroy(err) 有 error 监听才带
+        // err 透传（经 __reqSockOnError 回 req 'error'）。
+        try {
+          const __s = this.__sock;
+          if (err !== undefined && err !== null && typeof __s.listenerCount === "function" && __s.listenerCount("error") > 0) __s.destroy(err);
+          else __s.destroy();
+        } catch { /* closed meanwhile */ }
         this.__sock = null;
       }
       cb(err);

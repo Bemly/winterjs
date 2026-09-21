@@ -23,11 +23,12 @@ export class OutgoingMessage extends Writable {
   destroy(err) {
     if (this.destroyed) return this;
     this.__omErrored = err ?? null;
-    const __swallow = () => {};
-    this.on("error", __swallow);
+    // Node 自实现 destroy 从不外发 msg 'error'（错误只进 errored/socket）；
+    // 基类 destroy 经 trampoline 发 error，摘除时序无法排在它之后，
+    // 故吞错监听常驻（用户自发 error 仍可达其自有监听，仅永不无监听抛错）。
+    this.on("error", () => {});
     const __ret = super.destroy(err);
     queueMicrotask(() => {
-      this.removeListener("error", __swallow);
       if (!this.__closeEmitted) {
         this.__closeEmitted = true;
         this.emit("close");
@@ -39,6 +40,15 @@ export class OutgoingMessage extends Writable {
     return this.__omErrored ?? (this._writableState ? this._writableState.errored : null);
   }
 }
+// node _http_outgoing.js:1322 口径：capture rejections → destroy
+//（capture-rejection 套件；无此接线时 drain/监听抛错变 fatal）。
+// destroy 本体不外发 'error'（outgoing-destroyed 套件吞错口径），错误经
+// socket 透传（双侧 _destroy 有 error 监听才带 err）。
+try {
+  OutgoingMessage.prototype[EventEmitter.captureRejectionSymbol] = function (err) {
+    this.destroy(err);
+  };
+} catch { /* 符号缺席即跳过（事件域未备） */ }
 
 // 头段内裸 CR（后随非 LF）检测——client/server 两侧严格门共用
 //（client-reject-cr-no-lf 套件；服务端同形走 400 通道）。
@@ -128,7 +138,7 @@ export function withHttpServer(Base) {
           if (!self.__closing) return;
           for (const s of [...self.__sockets]) {
             const st = s.__httpState;
-            if (!st || st.req === null) { try { s.destroy(); } catch { /* gone */ } }
+            if (!st || (st.req === null && st.res === null)) { try { s.destroy(); } catch { /* gone */ } }
           }
         }, 1000);
         if (typeof __iv.unref === "function") __iv.unref();
@@ -157,7 +167,10 @@ export function withHttpServer(Base) {
           if (!sock.destroyed) self.emit("timeout", sock);
         });
         sock.on("data", (chunk) => {
-          if (self.__closing || sock.__upgraded) return;
+          // node 口径：close() 只停监听，既有连接（含在途上传与后续管线请求）
+          // 照常服务——__closing 不得门控 data（outgoing-finish 套件 handler 内
+          // close 后 80KB 上传被吞根因）；仅升级后停解析。
+          if (sock.__upgraded) return;
           if (self.timeout > 0) sock.setTimeout(self.timeout);
           try {
             self.__feed(sock, st, chunk);
@@ -262,8 +275,10 @@ export function withHttpServer(Base) {
     closeIdleConnections() {
       for (const sock of this.__sockets) {
         const st = sock.__httpState;
-        if (!st || st.req === null) {
-          try { sock.destroy(); } catch { /* gone */ }
+        // 空闲 = 无在途请求且无在途响应（体完但响应未落时 st.req 已空、
+        // st.res 仍在——outgoing-finish 套件 server.close 后响应被杀根因）。
+        if (!st || (st.req === null && st.res === null)) {
+          try { sock.destroy(); } catch { /* closed meanwhile */ }
         }
       }
     }
@@ -476,11 +491,12 @@ export function withHttpServer(Base) {
     close(cb) {
       this.__closing = true;
       if (typeof cb === "function") this.once("close", cb);
-      // node close 口径：空闲连接销毁；仍有在途响应的连接 unref（进程不等待，
-      // 响应落地后自然退出——pipeline-assertionerror-finish 套件）。
+      // node close 口径：空闲连接销毁；仍有在途请求/响应的连接 unref（进程不
+      // 等待，响应落地后自然退出——pipeline-assertionerror-finish 套件；
+      // 空闲判定同 closeIdleConnections，体完响应在途不算空闲）。
       for (const sock of this.__sockets) {
         const __st = sock.__httpState;
-        if (!__st || __st.req === null) {
+        if (!__st || (__st.req === null && __st.res === null)) {
           try { sock.destroy(); } catch { /* closed meanwhile */ }
         } else if (typeof sock.unref === "function") {
           try { sock.unref(); } catch { /* gone */ }

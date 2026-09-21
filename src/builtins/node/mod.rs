@@ -38,6 +38,9 @@ mod process_prelude;
 pub mod punycode;
 pub mod querystring;
 pub mod quic;
+mod quic_api;
+mod quic_driver;
+mod quic_tls;
 pub mod readline;
 /// 10c-3: node:repl（REPLServer/start/Recoverable，骑 readline Interface）。
 pub mod repl;

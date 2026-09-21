@@ -583,6 +583,18 @@ class Socket extends EventEmitter {
         this.emit("end");
         // Node 口径：非 allowHalfOpen 时收 FIN 即自动回 FIN（'close' 随后）
         if (!this.allowHalfOpen && this.__id) __wjs_net_end(this.__id);
+        // G11 半开案：allowHalfOpen 持有半开即不再续命（真机同款——读停转后
+        // 空闲句柄不 ref 循环；k9/k12 实证：ref() 也留不住，真机照常退出）。
+        // 递延一轮：end 监听内同步 destroy/auto-end 的走正常收尾通道，此处只收
+        // 无动作的稳定半开；写侧仍可用，Close 派发照常 purge 结算。
+        if (this.allowHalfOpen && !this.destroyed && this.__id) {
+          const __s = this;
+          queueMicrotask(() => {
+            if (__s.allowHalfOpen && !__s.destroyed && __s.__id && __s.__peerFin) {
+              try { __wjs_net_halfhold(__s.__id); } catch { /* entry gone 即无事 */ }
+            }
+          });
+        }
         break;
       }
       case "error": {

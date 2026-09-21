@@ -489,6 +489,9 @@ TS 家族（`ts/mts/cts/tsx/jsx`）MIME 由自有 `from_fn` 中间件覆盖为 `
 依赖 `axum^0.8/h3^0.0.8/h3-quinn^0.0.10/http^1/http-body-util/tower/bytes` 全已在树内，
 零新增传递依赖；落选 `axum-h3`（tonic-h3 系，需 `h3-util` 后端，依赖重）。独立 serve 的
 H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计（`Request→Response` 通道）。
+`hyper-util`（T4 WS 接管）：`hyper::upgrade::Upgraded`（hyper::rt）→ tokio IO 须
+`TokioIo` 桥；系 axum 传递已在树内（0.1.20），直引同版只开 `tokio`，零新增传递依赖
+（`Cargo.toml` §10 注释；手写桥即 §0.5 禁区，不做）。
 
 ## 11. dev 依赖（只跑在 host，不占 target 矩阵）
 

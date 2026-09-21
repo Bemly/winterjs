@@ -492,3 +492,660 @@ fn https_get(
         parse_response(&raw)
     })
 }
+
+#[test]
+fn phase11_serve_handler_missing_file_errors() {
+    // 报错：`--handler` 缺文件即启动期可读错（plan4 §3 T1），exit=1。
+    let dir = serve_fixture();
+    let out = winterjs()
+        .args(["--serve", ".", "--port", "18098", "--handler", "nope.js"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot read --handler"),
+        "stderr: {stderr}"
+    );
+    dir.close().unwrap();
+}
+
+/// 裸 socket POST（handler 回声/大体用；hermetic，与 `http_get` 同族）。
+fn http_post(
+    port: u16,
+    path: &str,
+    body: &[u8],
+) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    s.write_all(head.as_bytes()).unwrap();
+    s.write_all(body).unwrap();
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw).unwrap();
+    parse_response(&raw)
+}
+
+#[test]
+fn phase11_serve_dynamic_fallback_status_preserved() {
+    // 正常：静态命中走 ServeDir（不进 JS）；缺失进 handler，JS 状态原样保留
+    // （§4.165：`not_found_service` 恒改写 404 的反面）；POST 等非 GET/HEAD
+    // 同样进 JS（`call_fallback_on_method_not_allowed`）。
+    // 报错：handler 抛错 → 500 短路；边界：handler 自返 404 即 404 透传。
+    let dir = serve_fixture();
+    dir.child("handler.mjs")
+        .write_str(
+            "export default { async fetch(req) { const u = new URL(req.url); \
+             if (u.pathname === '/echo' && req.method === 'POST') { \
+             const b = await req.text(); \
+             return new Response('echo:' + b, { status: 201 }); } \
+             if (u.pathname === '/boom') throw new Error('boom-handler'); \
+             if (u.pathname === '/nf') return new Response('nf', { status: 404 }); \
+             return new Response('hello-t1', { status: 200 }); } };",
+        )
+        .unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+    let (st, _, body) = http_get(srv.port, "/", &[]);
+    assert_eq!(st, 200);
+    assert_eq!(body, b"<h1>hi</h1>");
+    let (st, _, body) = http_get(srv.port, "/dyn-missing", &[]);
+    assert_eq!(st, 200);
+    assert_eq!(body, b"hello-t1");
+    let (st, _, body) = http_post(srv.port, "/echo", b"abc");
+    assert_eq!(st, 201);
+    assert_eq!(body, b"echo:abc");
+    let (st, _, _) = http_get(srv.port, "/boom", &[]);
+    assert_eq!(st, 500);
+    let (st, _, body) = http_get(srv.port, "/nf", &[]);
+    assert_eq!(st, 404);
+    assert_eq!(body, b"nf");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_serve_large_body_streaming() {
+    // 正常：POST 1MB 回声逐字节一致（请求体多 Chunk 上行）；
+    // GET 2MB 分带下行（响应 64KB 分片多 Chunk，§4.166），内容逐带校验。
+    let dir = serve_fixture();
+    dir.child("handler.mjs")
+        .write_str(
+            "export default { async fetch(req) { const u = new URL(req.url); \
+             if (u.pathname === '/bigecho' && req.method === 'POST') { \
+             const b = await req.text(); return new Response(b, { status: 200 }); } \
+             if (u.pathname === '/bigdown') { const out = new Uint8Array(2097152); \
+             for (let i = 0; i < 32; i++) out.fill(i & 0xff, i * 65536, (i + 1) * 65536); \
+             return new Response(out, { status: 200 }); } \
+             return new Response('hello-t1', { status: 200 }); } };",
+        )
+        .unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+    let up = vec![0x41u8; 1 << 20];
+    let (st, _, back) = http_post(srv.port, "/bigecho", &up);
+    assert_eq!(st, 200);
+    assert_eq!(back, up);
+    let (st, _, down) = http_get(srv.port, "/bigdown", &[]);
+    assert_eq!(st, 200);
+    assert_eq!(down.len(), 2 << 20, "down len");
+    for (i, b) in down.iter().enumerate() {
+        assert_eq!(*b, ((i / 65536) & 0xff) as u8, "band at {i}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_serve_concurrent_20x10() {
+    // 正常：20 线程 × 10 串行 GET = 200 请求全 200 且内容对（T1 并发验收）。
+    let dir = serve_fixture();
+    dir.child("handler.mjs")
+        .write_str("export default { async fetch() { return new Response('hello-t1', { status: 200 }); } };")
+        .unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+    let port = srv.port;
+    let handles: Vec<_> = (0..20)
+        .map(|_| {
+            std::thread::spawn(move || {
+                for _ in 0..10 {
+                    let (st, _, body) = http_get(port, "/dyn", &[]);
+                    assert_eq!(st, 200);
+                    assert_eq!(body, b"hello-t1");
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("worker green");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_serve_handler_dual_shape() {
+    // 正常：具名 `export function fetch` 回落（无 default 导出同样服务，§0-1）。
+    // 报错：双缺 fetch 即启动期可读错 exit=1（不静默 503）。
+    let dir = serve_fixture();
+    dir.child("named.mjs")
+        .write_str("export function fetch() { return new Response('named-ok', { status: 200 }); }")
+        .unwrap();
+    let named = dir.path().join("named.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", named.as_str()]);
+    let (st, _, body) = http_get(srv.port, "/anything", &[]);
+    assert_eq!(st, 200);
+    assert_eq!(body, b"named-ok");
+    drop(srv);
+    dir.child("nofetch.mjs")
+        .write_str("export const x = 1;")
+        .unwrap();
+    let out = winterjs()
+        .args(["--serve", ".", "--port", "18097", "--handler", "nofetch.mjs"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("must export fetch"), "stderr: {stderr}");
+    dir.close().unwrap();
+}
+
+/// TLS 任意方法请求（信任自签根；无 ALPN 即 HTTP/1.1，与既有 `https_get` 同族）。
+fn https_req(
+    port: u16,
+    trust: &rustls::pki_types::CertificateDer<'static>,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(trust.clone()).unwrap();
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+        let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+        let mut tls = connector.connect(name, tcp).await.unwrap();
+        let mut head =
+            format!("{method} {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n");
+        if let Some(b) = body {
+            head.push_str(&format!("Content-Length: {}\r\n", b.len()));
+        }
+        head.push_str("\r\n");
+        tls.write_all(head.as_bytes()).await.unwrap();
+        if let Some(b) = body {
+            tls.write_all(b).await.unwrap();
+        }
+        let mut raw = Vec::new();
+        tls.read_to_end(&mut raw).await.unwrap();
+        parse_response(&raw)
+    })
+}
+
+/// keep-alive 首包分帧读（动态响应恒 chunked，以终结块 `0\r\n\r\n` 判尾）。
+fn read_framed(s: &std::net::TcpStream) -> Vec<u8> {
+    use std::io::Read;
+    let mut s = s;
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = s.read(&mut buf).expect("framed read");
+        assert!(n > 0, "eof before frame end");
+        raw.extend_from_slice(&buf[..n]);
+        let done = raw.windows(4).any(|w| w == b"\r\n\r\n")
+            && raw.ends_with(b"0\r\n\r\n");
+        if done {
+            return raw;
+        }
+    }
+}
+
+/// h2 响应体收齐（0.4 的 `RecvStream` 未实现 `http_body::Body`，手工 `data()` 循环）。
+async fn h2_bytes(mut b: h2::RecvStream) -> Vec<u8> {
+    let mut out = Vec::new();
+    while let Some(chunk) = b.data().await {
+        out.extend_from_slice(&chunk.expect("h2 data"));
+    }
+    out
+}
+
+/// T2 handler 形状：`/dyn` 回显 scheme，`/echo` POST 回声 201。
+fn t2_handler_src() -> &'static str {
+    "export default { async fetch(req) { const u = new URL(req.url); \
+     if (u.pathname === '/echo' && req.method === 'POST') { \
+     const b = await req.text(); return new Response('echo:' + b, { status: 201 }); } \
+     return new Response('proto=' + u.protocol, { status: 200 }); } };"
+}
+
+#[test]
+fn phase11_serve_tls_dynamic() {
+    // 正常：TLS 回环动态 GET（scheme=https: 透传）+ POST 回声 201 + 静态 200。
+    let dir = serve_fixture();
+    let (cert, key, trust) = make_self_signed(dir.path());
+    dir.child("handler.mjs").write_str(t2_handler_src()).unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let cert_s = cert.to_string_lossy().into_owned();
+    let key_s = key.to_string_lossy().into_owned();
+    let srv = spawn_serve_args(
+        dir.path(),
+        &["--cert", cert_s.as_str(), "--key", key_s.as_str(), "--handler", handler.as_str()],
+    );
+    let (st, _, body) = https_req(srv.port, &trust, "GET", "/dyn", None);
+    assert_eq!(st, 200);
+    assert_eq!(body, b"proto=https:");
+    let (st, _, body) = https_req(srv.port, &trust, "POST", "/echo", Some(b"zz"));
+    assert_eq!(st, 201);
+    assert_eq!(body, b"echo:zz");
+    let (st, _, body) = https_req(srv.port, &trust, "GET", "/", None);
+    assert_eq!(st, 200);
+    assert_eq!(body, b"<h1>hi</h1>");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_serve_h2() {
+    // 正常：明文 h2c（prior knowledge）回声 + 双流并发；TLS 经 ALPN 谈出 h2 回声。
+    let dir = serve_fixture();
+    dir.child("handler.mjs").write_str(t2_handler_src()).unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+        let tcp = tokio::net::TcpStream::connect(("127.0.0.1", srv.port))
+            .await
+            .unwrap();
+        let (send, conn) = h2::client::handshake(tcp).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut s1 = send.clone();
+        let mut s2 = send.clone();
+        let r1 = tokio::spawn(async move {
+            let req = http::Request::builder().uri("http://127.0.0.1/a").body(()).unwrap();
+            let (rsp, _) = s1.send_request(req, true).unwrap();
+            let rsp = rsp.await.unwrap();
+            assert_eq!(rsp.status(), 200);
+            h2_bytes(rsp.into_body()).await
+        });
+        let r2 = tokio::spawn(async move {
+            let req = http::Request::builder().uri("http://127.0.0.1/b").body(()).unwrap();
+            let (rsp, _) = s2.send_request(req, true).unwrap();
+            let rsp = rsp.await.unwrap();
+            assert_eq!(rsp.status(), 200);
+            h2_bytes(rsp.into_body()).await
+        });
+        let (b1, b2) = tokio::join!(r1, r2);
+        assert_eq!(&b1.unwrap()[..], b"proto=http:");
+        assert_eq!(&b2.unwrap()[..], b"proto=http:");
+    });
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_serve_h2_tls_alpn() {
+    // 正常：TLS + ALPN h2 回声（scheme=https:）。
+    let dir = serve_fixture();
+    let (cert, key, trust) = make_self_signed(dir.path());
+    dir.child("handler.mjs").write_str(t2_handler_src()).unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let cert_s = cert.to_string_lossy().into_owned();
+    let key_s = key.to_string_lossy().into_owned();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let srv = spawn_serve_args(
+            dir.path(),
+            &["--cert", cert_s.as_str(), "--key", key_s.as_str(), "--handler", handler.as_str()],
+        );
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(trust.clone()).unwrap();
+        let mut config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        config.alpn_protocols = vec![b"h2".to_vec()];
+        let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+        let tcp = tokio::net::TcpStream::connect(("127.0.0.1", srv.port))
+            .await
+            .unwrap();
+        let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+        let tls = connector.connect(name, tcp).await.unwrap();
+        let (mut send, conn) = h2::client::handshake(tls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let req = http::Request::builder().uri("https://127.0.0.1/dyn").body(()).unwrap();
+        let (rsp_fut, _) = send.send_request(req, true).unwrap();
+        let rsp = rsp_fut.await.unwrap();
+        assert_eq!(rsp.status(), 200);
+        let body = h2_bytes(rsp.into_body()).await;
+        assert_eq!(&body[..], b"proto=https:");
+    });
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_serve_keepalive_reuse() {
+    // 正常：同一 H1 连接 keep-alive 复用（首包分帧读 + 次包 close 尾），两包皆 200。
+    use std::io::Write;
+    let dir = serve_fixture();
+    dir.child("handler.mjs")
+        .write_str("export default { async fetch(req) { const u = new URL(req.url); return new Response('k' + u.pathname, { status: 200 }); } };")
+        .unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", srv.port)).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    s.write_all(b"GET /a HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n").unwrap();
+    let raw1 = read_framed(&s);
+    let (st1, _, b1) = parse_response(&raw1);
+    assert_eq!(st1, 200);
+    assert_eq!(b1, b"k/a");
+    s.write_all(b"GET /b HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
+    let mut raw2 = Vec::new();
+    use std::io::Read;
+    s.read_to_end(&mut raw2).unwrap();
+    let (st2, _, b2) = parse_response(&raw2);
+    assert_eq!(st2, 200);
+    assert_eq!(b2, b"k/b");
+    dir.close().unwrap();
+}
+
+/// T4 upgrade handler 形状：upgrade 请求配对 socket 回声，其余走 HTTP。
+fn t4_handler_src() -> &'static str {
+    "export default { async fetch(req) { \
+     if ((req.headers.get('upgrade') || '').toLowerCase() === 'websocket') { \
+     const ws = __wjs_serve_socket(req); ws.onmessage = (e) => { ws.send(e.data); }; return ws; } \
+     return new Response('http', { status: 200 }); } };"
+}
+
+#[test]
+fn phase11_serve_ws_echo() {
+    // 正常：WS 回声经 JS onmessage（文本 + 二进制）+ 干净关闭握手；随后 HTTP 照常。
+    use futures::{SinkExt as _, StreamExt as _};
+    let dir = serve_fixture();
+    dir.child("handler.mjs").write_str(t4_handler_src()).unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+        let url = format!("ws://127.0.0.1:{}/ws", srv.port);
+        let (mut ws, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio_tungstenite::connect_async(&url),
+        )
+        .await
+        .expect("ws handshake timeout")
+        .expect("ws handshake");
+        ws.send(tokio_tungstenite::tungstenite::Message::Text("hello".into()))
+            .await
+            .unwrap();
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+            .await
+            .expect("echo timeout")
+            .expect("stream end")
+            .expect("ws error");
+        assert_eq!(msg, tokio_tungstenite::tungstenite::Message::Text("hello".into()));
+        ws.send(tokio_tungstenite::tungstenite::Message::Binary(bytes::Bytes::from(vec![1u8, 2, 3])))
+            .await
+            .unwrap();
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+            .await
+            .expect("echo timeout")
+            .expect("stream end")
+            .expect("ws error");
+        assert_eq!(msg, tokio_tungstenite::tungstenite::Message::Binary(bytes::Bytes::from(vec![1u8, 2, 3])));
+        ws.close(None).await.unwrap();
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+            .await
+            .expect("close timeout")
+            .expect("stream end")
+            .expect("ws error");
+        assert!(matches!(msg, tokio_tungstenite::tungstenite::Message::Close(_)));
+        let (st, _, body) = http_get(srv.port, "/dyn", &[]);
+        assert_eq!(st, 200);
+        assert_eq!(body, b"http");
+    });
+    dir.close().unwrap();
+}
+
+/// 裸 socket 读完整 HTTP 消息（分帧：chunked 终结块 / Content-Length / 关写即尾）。
+/// keep-alive + 小体（无长度头即 chunked）不靠运气等分包（§4.122 TCP 分包姊妹篇）。
+fn read_http_message(s: &std::net::TcpStream) -> Vec<u8> {
+    use std::io::Read;
+    let mut s = s;
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 4096];
+    let head_end = loop {
+        let n = s.read(&mut buf).expect("hs read");
+        assert!(n > 0, "eof before head end");
+        raw.extend_from_slice(&buf[..n]);
+        if let Some(p) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            break p;
+        }
+    };
+    let head = String::from_utf8_lossy(&raw[..head_end]).into_owned();
+    let status: u16 = head
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    // 101 后连接保持开放（WS 会话）→ 只返回头，不等体。
+    if status == 101 {
+        return raw;
+    }
+    let chunked = head.lines().skip(1).any(|l| {
+        l.to_lowercase().starts_with("transfer-encoding") && l.to_lowercase().contains("chunked")
+    });
+    let content_len = head.lines().skip(1).find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        if k.trim().eq_ignore_ascii_case("content-length") {
+            v.trim().parse::<usize>().ok()
+        } else {
+            None
+        }
+    });
+    if chunked {
+        loop {
+            if raw.ends_with(b"0\r\n\r\n") {
+                return raw;
+            }
+            let n = s.read(&mut buf).expect("chunked read");
+            assert!(n > 0, "eof before chunk end");
+            raw.extend_from_slice(&buf[..n]);
+        }
+    }
+    if let Some(n) = content_len {
+        while raw.len() < head_end + 4 + n {
+            let m = s.read(&mut buf).expect("fixed read");
+            assert!(m > 0, "eof before body end");
+            raw.extend_from_slice(&buf[..m]);
+        }
+        return raw;
+    }
+    loop {
+        let n = s.read(&mut buf).expect("close read");
+        if n == 0 {
+            return raw;
+        }
+        raw.extend_from_slice(&buf[..n]);
+    }
+}
+
+/// 裸 socket WS 握手（400 三件 + 非 WS Upgrade 零干扰 + 静态优先 101）。
+fn ws_handshake_raw(port: u16, req: &[u8]) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    s.write_all(req).unwrap();
+    let raw = read_http_message(&s);
+    parse_response(&raw)
+}
+
+#[test]
+fn phase11_serve_ws_bad_handshake() {
+    // 报错：缺 key / 错版本 / 非 GET 升级即 400（不进 JS）。
+    // 正常：非 WS 的 Upgrade 头（h2c）零干扰，走普通 HTTP。
+    let dir = serve_fixture();
+    dir.child("handler.mjs").write_str(t4_handler_src()).unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+    let base = "GET /ws HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\n";
+    let (st, _, _) = ws_handshake_raw(
+        srv.port,
+        format!("{base}Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n").as_bytes(),
+    );
+    assert_eq!(st, 400);
+    let (st, _, _) = ws_handshake_raw(
+        srv.port,
+        format!("{base}Upgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 12\r\n\r\n").as_bytes(),
+    );
+    assert_eq!(st, 400);
+    let (st, _, _) = ws_handshake_raw(
+        srv.port,
+        b"POST /ws HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nContent-Length: 0\r\n\r\n",
+    );
+    assert_eq!(st, 400);
+    let (st, _, body) = ws_handshake_raw(
+        srv.port,
+        b"GET /dyn HTTP/1.1\r\nHost: x\r\nUpgrade: h2c\r\nConnection: Upgrade\r\n\r\n",
+    );
+    assert_eq!(st, 200);
+    assert_eq!(body, b"http");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_serve_ws_static_first() {
+    // 路由序：已存在静态文件路径的升级仍优先进 WS（`/` 有 index.html，照返 101）。
+    let dir = serve_fixture();
+    dir.child("handler.mjs").write_str(t4_handler_src()).unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+    let (st, h, _) = ws_handshake_raw(
+        srv.port,
+        b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    );
+    assert_eq!(st, 101);
+    assert_eq!(
+        h.get("sec-websocket-accept").map(String::as_str),
+        Some("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+        "headers: {h:?}"
+    );
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_serve_h3_same_router() {
+    // 正常：QUIC + H3 同端口同 Router 回声（scheme=https:）。
+    // 环境注：本机 curl 无 http3（SecureTransport 版），以 harness 探针验收（plan4 §3 T3）。
+    let dir = serve_fixture();
+    let (cert, key, trust) = make_self_signed(dir.path());
+    dir.child("handler.mjs").write_str(t2_handler_src()).unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let cert_s = cert.to_string_lossy().into_owned();
+    let key_s = key.to_string_lossy().into_owned();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let srv = spawn_serve_args(
+            dir.path(),
+            &["--cert", cert_s.as_str(), "--key", key_s.as_str(), "--handler", handler.as_str()],
+        );
+        let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(trust.clone()).unwrap();
+        let mut crypto = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        crypto.alpn_protocols = vec![b"h3".to_vec()];
+        let qc = quinn::crypto::rustls::QuicClientConfig::try_from(crypto).unwrap();
+        endpoint.set_default_client_config(quinn::ClientConfig::new(std::sync::Arc::new(qc)));
+        let addr: std::net::SocketAddr =
+            format!("127.0.0.1:{}", srv.port).parse().unwrap();
+        let conn = endpoint.connect(addr, "127.0.0.1").unwrap().await.unwrap();
+        let (mut driver, mut send) = h3::client::builder()
+            .build::<h3_quinn::Connection, _, bytes::Bytes>(h3_quinn::Connection::new(conn))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = driver.wait_idle().await;
+        });
+        let req = http::Request::builder().uri("https://127.0.0.1/dyn").body(()).unwrap();
+        let mut stream = send.send_request(req).await.unwrap();
+        // H3 半关闭纪律：HEADERS 后必须 finish（FIN），否则服务端等 body 结束永挂。
+        stream.finish().await.unwrap();
+        let rsp = stream.recv_response().await.unwrap();
+        assert_eq!(rsp.status(), 200);
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.recv_data().await.unwrap() {
+            use bytes::Buf;
+            body.extend_from_slice(chunk.chunk());
+        }
+        assert_eq!(&body[..], b"proto=https:");
+        endpoint.close(0u32.into(), b"done");
+    });
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_serve_h3_skipped_without_cert() {
+    // 边界：无证书即 H3 跳过 + warn，H1 照服（plan4 §3 T3）。
+    use std::io::Read;
+    let dir = serve_fixture();
+    let port = free_port();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+        .args(["--serve", ".", "--port"])
+        .arg(port.to_string())
+        .current_dir(dir.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("serve spawns");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("serve on :{port} never came up");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let (st, _, _) = http_get(port, "/nope.txt", &[]);
+    assert_eq!(st, 404);
+    let _ = child.kill();
+    let mut stderr = String::new();
+    child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    let _ = child.wait();
+    assert!(stderr.contains("H3 skipped"), "stderr: {stderr}");
+    dir.close().unwrap();
+}

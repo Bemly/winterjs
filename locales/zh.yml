@@ -88,6 +88,9 @@ arg:
   port:
     help: "绑定的端口（0 表示临时端口，实际端口打印到标准输出）"
     value: "端口"
+  handler:
+    help: "--serve 用的 JS 处理文件（export default { fetch } 或 export function fetch）"
+    value: "文件"
   limit_rps:
     help: "每秒请求数限制，0 表示不限"
     value: "限流值"

@@ -35,6 +35,13 @@
    一次恰好一个动作，多给即错；动作的必需值必须紧贴其 flag（`--run` 后直接跟
    别的 flag 会被判缺值）；修饰 flag（`--dry-run/--registry/--port` 等）只在对应
    动作下生效。help/补全/man 全由同一套 flag 生成（`localized_command`）。
+9. **单文件 ≤1000 行**：`src/` 下 Rust 文件一律不超过 ~1000 行
+   （`src/builtins/node/` 除外——Node 逐字移植体量使然，另议）；
+   超限即拆，拆分纪律：① 纯搬移先行（零行为变更，`git diff -w` 只见路径），
+   调用方路径一律 `pub use` 原位重导出、不改调用点；② 一文件一提交，
+   每步构建 0 警告 + 对应域测试绿；③ 引擎协议代码（`runtime`/`state`/
+   `jsapi_glue`/`jobqueue`/`modules`）只拆纯逻辑（字符串/算法族/域 helper），
+   会话管线与 trace 实现不动（§4.40/§4.68 blast radius）。
 
 ## 1. 基线（2026-09-09）
 
@@ -2659,7 +2666,7 @@ cargo build
   （否则 patch-open 子进程形永不退出）；`autoDestroy` 随 `autoClose`（closed 语义）。
 - 复现：`tests/node/fs.rs::phase10f_fs_stream_lifetime`（`w-fin/w-close/r-end` 行）。
 - 推广为铁律：sync 底座的流/句柄，上线即回答"谁让循环等我"——无原生句柄即配
-  计数器；"构造即完成"的同步链一律递延派发终结事件。
+   计数器；"构造即完成"的同步链一律递延派发终结事件。
 
 ### 4.161 require 的 make_fn 裸值窗口 + 文件名假相关二分法（2026-09-21，dgram 轮）
 
@@ -2789,3 +2796,90 @@ cargo build
   与真机同为 unhandled error exit=1）。
 - 推广为铁律：凡"构造后即生效"的宿主语义（open/error），触发点不得绑在消费
   侧（`_read`/data）——无消费者的形状（纯 error 监听）是天然反例。
+
+### 4.170 tower-http 的 `not_found_service` 恒改写 404 + 非 GET/HEAD 缺省 405（2026-09-21，plan4 T1）
+
+- 症状：`--serve --handler` 下 handler 明明跑了（body 对），但 GET 状态恒 404、
+  POST 恒 405 空体（handler 永够不着）。
+- 根因（轮子源码实锤，`tower-http 0.7.1 serve_dir/mod.rs`）：① `not_found_service`
+  把 fallback 包进 `SetStatus<_, 404>`——文档原话"always respond with 404"，
+  fallback 的状态被恒改写（body 保留）；② 非 GET/HEAD 缺省不调 fallback
+  直接 405（`call_fallback_on_method_not_allowed` 缺省 false）。
+- 修法：`serve_dir.call_fallback_on_method_not_allowed(true).fallback(js_fallback)`
+  （`fallback` 文档原话"status will not be altered"；`src/serve.rs`）。
+- 复现：`curl GET /<缺失>`（修前 body 对 + 404）+ `curl -X POST /echo`
+  （修前 405 空体；修后 201 回声）。
+- 推广为铁律：凡"名字像兜底"的轮子 API（not_found/fallback），先读源码确认
+  状态改写语义再选；"静态优先、动态兜底"路由上线即验 GET/POST 双方法。
+
+### 4.171 serve 停机 Wake + 响应构造快照边界（2026-09-21，plan4 T1）
+
+- 症状一：空闲 `--serve --handler` 收 SIGTERM 后恒等 10s 才退，
+  日志 `serve JS session did not drain in time open=0`（在飞为零仍 warn）。
+- 根因：停机旗只在 quiescent 路径检查，`serve_loop` 空闲时 park 在通道上，
+  无事件到来即 10s 收尾超时（`src/runtime/serve_session.rs`）。
+- 修法：`ServeEvent::Wake` 无副作用事件（`serve_bridge.rs` dispatch 直返 Ok），
+  收尾先置旗再投 Wake 打断 park，SIGTERM 亚秒级退出（`src/serve.rs`）。
+- 症状二：handler `new Response(readableStream)` 报
+  `Response: unsupported body type`（500）。
+- 根因：prelude `Response` 构造是快照语义（`__wjs_normBody` 只收
+  string/U8/AB/null，与 fetch 客户端共享；`part03.rs:855`），与 undici
+  可收流不同——属共享语义边界，非 serve 桥 bug。
+- 修法（T1 范围）：构造期快照不动，`__wjs_serve_send_resp` 推送时 64KB 分片
+  （多 Chunk 通道 + 单 native 拷贝封顶；`part04.rs` serve 驱动内，零外溢）。
+  真流式构造（收 ReadableStream）留待另案（需动共享 `bodyUsed`/text 全家）。
+- 复现：`POST 2MB 回声逐字节一致` + `GET 5MB 分带校验` + `SIGTERM 亚秒退出`
+  （探针 `/tmp/wjs-serve-t1b-probe` 形；黑盒 `phase11_serve_large_body_streaming`）。
+
+### 4.172 H3 半关闭 FIN + h3-axum 请求体整收（2026-09-21，plan4 T3）
+
+- 症状：H3 建连/ALPN/h3-build 全过，`send_request` 后服务端静默、客户端
+  30s `ConnectionError(Timeout)`（服务端日志停在 `H3 request accepted`）。
+- 根因：h3 client `send_request` 只发 HEADERS 不带 FIN；
+  `h3-axum::serve_h3_with_axum` 先收齐 body（`recv_data → None`）再调 router——
+  client 不 `finish()` 即半关闭死锁（curl 等真客户端自动 FIN，只坑手写 harness）。
+- 修法：harness `send_request` 后即 `stream.finish().await` 再读响应
+  （`tests/serve.rs::phase11_serve_h3_same_router`）。
+- 附带轮限：h3-axum 请求体整收后才调 router（H3 大上传内存 = 体大小），
+  与 H1/H2 边收边泵不对等；T3 只验回声，上传流式对等留另案。
+  另：本机 curl（SecureTransport 版）无 `--http3-only`，H3 以 harness 验收。
+- 复现：去 `finish()` 即 30s Timeout；诊断法：服务端 debug 埋点看停在
+  accepted 还是进 axum（本次停 accepted 即 FIN 面）。
+
+### 4.173 T4 WS 五坑：握手归属/GUID 记忆/构建盲区/自动应答/101 表达（2026-09-21，plan4 T4）
+
+- 坑一（hyper 已握手后再 `accept_async` 永挂）：hyper 接管 101 后流上只有 WS 帧，
+  `accept_async` 等一个永不到的 HTTP 握手。修法：
+  `WebSocketStream::from_raw_socket(up, Role::Server, None)` 直接接管
+  （async 仅构造，infallible；`src/serve.rs::run_server_socket`）。
+- 坑二（GUID 凭记忆必错）：自拼 `258EAFA5-E648-…` 系虚构，真值
+  `258EAFA5-E914-47DA-95CA-C5AB0DC85B11`（tungstenite `handshake/mod.rs::WS_GUID`）；
+  python/实现双绿掩盖（自交一致，§4.54 对称性盲区再进宫）。修法：密码学常量
+  逐字节对轮子源码 + RFC 向量单测钉死（`ws_accept_key_rfc_vector`）。
+  附带教训：单测写完即跑——本次若早跑，错向量当场红，不必绕 python 一圈。
+- 坑三（`cargo build` 不编 `cfg(test)`）：bridge 加字段后 build 绿、集成测试绿，
+  但 `cargo test --bin` E0063（`state/mod.rs` 测试 helper 旧构造体）。
+  修法：改结构体必跑 `cargo test --bin <name>`（集成测试只链接二进制成品，
+  不编 bin 的 `cfg(test)`）。
+- 坑四（tungstenite 自动回 Close）：对端 Close 到达时库内已排队回帧，应用层
+  手动再发被拒（ClosedByPeer），直接 break 即回帧滞留缓冲 → RST。
+  修法：收 Close 后 `sink.flush()` 推出再结算（tests/ws.rs stub 回帧同族不同术）。
+  附带：client 侧（`ws.rs`）同形缺 flush（对端先关即 RST），既有测试全绿未暴露，另案。
+- 坑五（101 表达弃用）：初版 `new Response(null, {status: 101})` 被 prelude
+  `RangeError`（status 限 200-599，undici 同口径，不动共享语义）。
+  修法：handler 直接 `return socket`（`__wjs_wskState.server` 品牌位）即接受；
+  Response 即 Decline。无新模块形状，fetch 契约不变。
+- T4 语义记档（三件，另案）：① Decline 双 fetch（offer + HTTP 各跑一次，
+  升级请求专属）；② H3 上传整收（§4.172）；③ 通道 unbounded（背压另案）。
+- 复现：`phase11_serve_ws_echo`（去 flush 即 RST；错 GUID 即 tungstenite 客户端
+  握手失败）；`phase11_serve_ws_bad_handshake/static_first`（400×3/101+RFC 键）。
+
+### 4.174 全并行全量偶发 mozilla mutex 解锁失败（2026-09-21，观察中·未闭环）
+
+- 症状：`cargo test` 全并行跑到 `--test node` 时
+  `util::phase9a_util_promisify_callbackify_deep_equal` 报
+  `mozilla::detail::MutexImpl::unlock: pthread_mutex_unlock failed: Invalid argument`
+  后 abort；同用例单跑 0.59s 过，整 `--test node` 套件 51s 234/234 全绿。
+- 现状：与当轮改动（serve 系）零交集，判定并行负载型 flake，非回归；
+  根因未深究（引擎内部锁，另案）。再现两次即升级为必查。
+- 推广：全量红先单跑 + 整套件跑两档复核，再定回归/flake（§4.62 姊妹篇）。

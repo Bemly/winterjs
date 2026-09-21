@@ -305,6 +305,9 @@ h3 = { version = "0.0.8", optional = true }
 h3-quinn = { version = "0.0.10", optional = true }
 # 独立 serve（2026-09-21 用户拍板）：H3→axum 桥接；依赖全已在树内，零新增传递依赖
 h3-axum = { version = "0.2", optional = true }
+# T4 WS 接管：hyper Upgraded（hyper::rt）→ tokio IO 须 TokioIo 桥；
+# hyper-util 系 axum 传递已在树内（0.1.20），直引同版、只开 tokio，零新增传递依赖。
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 governor = "0.10"
 metrics = "0.24"
 # push-gateway 特性硬绑 hyper-rustls/aws-lc-rs（§2 禁），只开 http-listener（/metrics 自托管）

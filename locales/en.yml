@@ -88,6 +88,9 @@ arg:
   port:
     help: "Port to bind (0 = ephemeral, actual port printed on stdout)"
     value: "PORT"
+  handler:
+    help: "JS handler file for --serve (export default { fetch } or export function fetch)"
+    value: "FILE"
   limit_rps:
     help: "Requests per second limit, 0 = unlimited"
     value: "LIMIT_RPS"

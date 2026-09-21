@@ -1,6 +1,6 @@
 //! vm 错误包络 helpers（对齐 vm.rs；纯搬移，调用点零改）。
 
-use crate::jsapi_glue::{report_error, Frame};
+use crate::jsapi_glue::report_error;
 
 /// natives 抛错包络：`__wjs_vm_error:{name}\n{message}`（`%` 由 report 转义，
 /// 换行分隔——message 内换行只影响尾部显示，JS 侧按首行取 name）。

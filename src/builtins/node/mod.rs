@@ -61,6 +61,7 @@ pub mod v8;
 pub mod vm;
 mod vm_error;
 pub mod worker;
+mod worker_term;
 pub mod zlib;
 
 /// 全局 `process` 等启动期求值的 JS（`runtime` 在主 PRELUDE 后求值）。

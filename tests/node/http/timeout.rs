@@ -172,6 +172,72 @@ import assert from "node:assert";
   console.log("t7 invalid-timeout ok");
 }
 
+// 正常 8：客户端 101 升级——摘池（totalSocketCount 归零）+ req close 随后。
+{
+  const raw = net.createServer((c) => {
+    c.on("data", () => {
+      c.write("HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\nbody-bytes");
+    });
+  });
+  await new Promise((r) => raw.listen(0, "127.0.0.1", r));
+  const port = raw.address().port;
+  await new Promise((resolve, reject) => {
+    const req = http.request({ port, host: "127.0.0.1", headers: { connection: "upgrade", upgrade: "websocket" } });
+    req.end();
+    req.on("upgrade", (res, sock, head) => {
+      assert.strictEqual(res.statusCode, 101);
+      assert.strictEqual(head.toString(), "body-bytes");
+      assert.strictEqual(req.agent.totalSocketCount, 0);
+      req.on("close", () => {
+        sock.destroy();
+        resolve();
+      });
+    });
+    req.on("error", reject);
+  });
+  raw.close();
+  console.log("t8 client-upgrade-detach ok");
+}
+
+// 报错 2：非 chunked 带 Trailer 即同步抛 ERR_HTTP_TRAILER_INVALID；
+// 边界：Trailer + 自动 chunked（无 CL）合法不抛。
+{
+  const srv = http.createServer((req, res) => {
+    res.setHeader("Trailer", "x-sum");
+    let ok = false;
+    try { res.writeHead(200, { "Content-Length": "2" }); } catch (e) { ok = e.code === "ERR_HTTP_TRAILER_INVALID"; }
+    assert.ok(ok, "expected TRAILER_INVALID");
+    res.removeHeader("Trailer");
+    res.end("ok");
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const body = await new Promise((resolve, reject) => {
+    http.get({ port: srv.address().port }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => resolve(b));
+    }).on("error", reject);
+  });
+  assert.strictEqual(body, "ok");
+  srv.close();
+  const srv2 = http.createServer((req, res) => {
+    res.setHeader("Trailer", "x-sum");
+    res.write("hi");
+    res.addTrailers({ "x-sum": "42" });
+    res.end();
+  });
+  await new Promise((r) => srv2.listen(0, "127.0.0.1", r));
+  const t = await new Promise((resolve, reject) => {
+    http.get({ port: srv2.address().port }, (res) => {
+      res.resume();
+      res.on("end", () => resolve(res.trailers["x-sum"]));
+    }).on("error", reject);
+  });
+  assert.strictEqual(t, "42");
+  srv2.close();
+  console.log("t9 trailer-gate ok");
+}
+
 console.log("END");
 "#,
     );
@@ -183,6 +249,8 @@ console.log("END");
         "t5 custom-keepSocketAlive ok",
         "t6 pooled-timeout-destroyed ok",
         "t7 invalid-timeout ok",
+        "t8 client-upgrade-detach ok",
+        "t9 trailer-gate ok",
         "END",
     ] {
         assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");

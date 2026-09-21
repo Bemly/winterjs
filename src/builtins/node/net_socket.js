@@ -1,0 +1,766 @@
+import { EventEmitter } from "node:events";
+import { StringDecoder } from "node:string_decoder";
+import { __etAdd, __etRemove } from "node:internal/events/abort_listener";
+const Buffer = globalThis.Buffer;
+
+function __b64dec(s) {
+  const bin = atob(s);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
+function __chunkU8(chunk) {
+  // 真机逐字（write-arguments 套件）：'The "chunk" argument must be of type string
+  // or an instance of Buffer, TypedArray, or DataView.' + invalidArgTypeHelper。
+  if (typeof chunk === "string") return new TextEncoder().encode(chunk);
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(chunk)) return chunk;
+  if (ArrayBuffer.isView(chunk) && !(chunk instanceof DataView) || chunk instanceof DataView) {
+    if (chunk instanceof DataView) return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    return chunk;
+  }
+  if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
+  let __got;
+  if (chunk === null) __got = "null";
+  else if (chunk === undefined) __got = "undefined";
+  else if (typeof chunk === "object") __got = `an instance of ${chunk.constructor?.name ?? "Object"}`;
+  else __got = `type ${typeof chunk} (${String(chunk)})`;
+  const e = new TypeError(`The "chunk" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ${__got}`);
+  e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+}
+function __toU8(data, what) {
+  if (typeof data === "string") return new TextEncoder().encode(data);
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  throw new TypeError(`${what}: data must be string or BufferSource`);
+}
+function __netErr(code, msg) {
+  const e = new Error(msg);
+  e.code = code;
+  return e;
+}
+
+class Socket extends EventEmitter {
+  constructor(options) {
+    super();
+    // node Socket 构造（socket-constructor 套件）：number 形即 {fd: options}；
+    // fd 校验 validateInt32(fd, 'fd', 0) 逐字——'foo' → ARG_TYPE、-1 → ERR_OUT_OF_RANGE。
+    if (typeof options === "number") options = { fd: options };
+    if (options !== null && typeof options === "object" && options.fd !== undefined) {
+      if (typeof options.fd !== "number") {
+        const e = new TypeError(`The "fd" argument must be of type number. Received ${__netGot(options.fd)}`);
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
+      if (!Number.isInteger(options.fd) || options.fd < 0 || options.fd > 2147483647) {
+        const e = new RangeError(`The value of "fd" is out of range. It must be >= 0 && <= 2147483647. Received ${options.fd}`);
+        e.code = "ERR_OUT_OF_RANGE"; throw e;
+      }
+    }
+    // node 口径：new Socket({ handle: bound }) 消费 BoundSocket（adopt）。
+    if (options && typeof options === "object" && options.handle !== undefined) {
+      const h = options.handle;
+      if (h && typeof h === "object" && typeof h.address === "function" && h.__boundPort !== undefined) {
+        if (h.__adopted) {
+          const e = new Error("The bound socket has already been adopted by a server or socket");
+          e.code = "ERR_SOCKET_HANDLE_ADOPTED"; throw e;
+        }
+        h.__adopted = true;
+        if (h.__udsPath !== undefined) __boundPaths.delete(h.__udsPath);
+        if (h.__holdToken) { try { __wjs_net_unhold(h.__holdToken); } catch {} }
+        this.__adoptHost = h.__boundHost ?? null;
+        this.__adoptPort = h.__boundPort ?? 0;
+        this.__adoptUds = h.__isPipe ? h.__udsPath : null;
+        options = { ...options };
+        delete options.handle;
+      }
+    }
+    this.__id = 0;
+    this.__enc = null;
+    this.__dec = null;
+    this.__peerFin = false;
+    // signal 选项（abort-controller 套件 testConstructor* 三形）：构造即 aborted
+    // → 异步 destroy(AbortError)（once('close') 以 error reject）；live → 注册
+    // abort→destroy（直调 addEventListener 须入侧表供 events.listenerCount 读）。
+    if (options !== null && typeof options === "object" && options.signal !== undefined) {
+      const __sig = options.signal;
+      if (__sig.aborted) {
+        queueMicrotask(() => {
+          const e = new Error("The operation was aborted"); e.name = "AbortError"; e.code = "ABORT_ERR";
+          try { this.destroy(e); } catch {}
+        });
+      } else {
+        const __sigHandler = () => {
+          __etRemove(__sig, "abort", __sigHandler);
+          const e = new Error("The operation was aborted"); e.name = "AbortError"; e.code = "ABORT_ERR";
+          // 同 connect 侧：套件在 abort 之后才挂 once('close')，destroy 推 microtask。
+          queueMicrotask(() => { try { this.destroy(e); } catch {} });
+        };
+        __sig.addEventListener("abort", __sigHandler, { once: true });
+        __etAdd(__sig, "abort", __sigHandler);
+      }
+    }
+    // node 口径（remote-address 双套件点名）：连接完成前 remote* 全 undefined
+    // （够不上 null；发布点在 __ev-connect，不在 __realConnect）。
+    this.remoteAddress = undefined;
+    this.remotePort = undefined;
+    this.remoteFamily = undefined;
+    this.localAddress = null;
+    this.localPort = null;
+    this.readable = true;
+    this.writable = true;
+    this.destroyed = false;
+    this.bytesWritten = 0;
+    this.bytesRead = 0;
+    this.__connected = false;   // 完成连接（connect/attach 后 true）
+    this.__pendW = [];          // 连接完成前的缓冲写（node write 语义）
+    // Node 默认 allowHalfOpen=false：收到远端 FIN（'end'）后自动 end 本端
+    this.allowHalfOpen = !!(options && options.allowHalfOpen);
+    // node 口径：_handle 只在连接存活期非空（构造时/close 后恒 null，真机 26 实测；
+    // after-close 套件点名 `c._handle === null`）。连接建立（__realConnect/__attach*）
+    // 时建桩，destroy/__ev-close 置空。setNoDelay/setKeepAlive 恒可调（无柄只缓存）。
+    this._handle = null;
+    this.__tos = 0;            // getTypeOfService 缓存（真机默认 0；连接前设置同样缓存）
+    this.__kaState = null;     // setKeepAlive 去重缓存 [enable, delaySec, intervalSec, count]
+    this.__hadError = false;   // close(hadError) 口径：error 发过即 true
+    // transfer-guards 套件：Socket 不可经 MessagePort transfer（node kTransferList
+    // 断言族的最保守近似：任何 Socket 在 transfer list 即 ERR_WORKER_HANDLE_NOT_
+    // TRANSFERABLE；worker 侧 __normTransfer 认领，成功转移面本就另案）。
+    try { (globalThis.__wjs_netXfer ??= new Map()).set(this, "net.Socket"); } catch {}
+    this.__handleClosed = false;
+    // node _handle 表面（10f：套件直接打补丁观测 setNoDelay/setKeepAlive 调用；
+    // write-after-close 套件点名 _handle.close()；unref-timer 套件点名 _unrefTimer）。
+    this.__makeHandle = () => {
+      const self = this;
+      return {
+        setNoDelay: (enable) => { self.__noDelayApplied = enable; },
+        setKeepAlive: (enable, delay, interval, count) => { self.__keepAliveApplied = [enable, delay, interval, count]; },
+        close: () => { self.__handleClosed = true; queueMicrotask(() => self.destroy()); },
+      };
+    };
+    if (options && typeof options === "object") {
+      if (options.readable !== undefined) this.readable = !!options.readable;
+      if (options.writable !== undefined) this.writable = !!options.writable;
+    }
+    // node 写背压：write 返回值 = 未超 highWaterMark（默认 16KB；hwm 0 恒 false）
+    this.__hwm = options && options.highWaterMark !== undefined ? Number(options.highWaterMark) || 0 : 16384;
+    this.__pendBytes = 0;
+    // node 口径：bufferSize = 待刷写字节（本仓同步写队列，连接中缓冲计入，完成即 0）。
+    Object.defineProperty(this, "bufferSize", { get: () => this.__pendBytes, enumerable: true });
+    // 事件循环派发钩子：dispatch 以 global 为 this 调用，须预绑定（self 语义）
+    this.__ev = this.__ev.bind(this);
+    // Node Writable/Readable 内部面（ws 等 npm 库直接翻字段/调用）：
+    // cork/uncork no-op（JS 层写本就不聚合，行为等价）；setNoDelay/
+    // setKeepAlive no-op（tokio 写半直通，无 Nagle 可关）；_readableState
+    // 最小桩（socketOnClose/socketOnEnd 读 endEmitted/length 判收尾路径）；
+    // pause/resume no-op（读流无 JS 侧缓冲，整包即达）；
+    // read 恒 null（数据已全经 data 事件投递，无缓冲可取——M5 dev 实测
+    // `stream.resume is not a function`，缺桩即 TypeError）。
+    // setTimeout 真实现见下（10f timers 对拍）。
+    this.cork = () => this;
+    this.uncork = () => this;
+    // _handle 为空（未连接/已关闭）时 no-op 只缓存（after-close 套件：close 后调不抛）。
+    this.setNoDelay = (enable) => { if (this._handle && typeof this._handle.setNoDelay === "function") { try { this._handle.setNoDelay(enable !== false); } catch {} } else { this.__noDelayApplied = enable !== false; } return this; };
+    // node 口径（真机 26 实测）：setKeepAlive(enable, initialDelay, interval, count) /
+    // setKeepAlive({enable, initialDelay, interval, count})；ms→s 下取整转发
+    // （5000→5），缺省 interval/count 转发 undefined（JSON 呈 null，typeof 仍 undefined）；
+    // 与上次四元组全同即跳过转发（server-keepalive 套件：同值首调被吞）。
+    this.setKeepAlive = (enable, initialDelay, interval, count) => {
+      if (enable !== null && typeof enable === "object") {
+        const o = enable;
+        enable = o.enable; initialDelay = o.initialDelay; interval = o.interval; count = o.count;
+      }
+      enable = enable === undefined ? false : !!enable;
+      const toSec = (ms) => ms === undefined ? undefined : Math.floor(Number(ms) / 1000);
+      const dSec = initialDelay === undefined ? 0 : toSec(initialDelay);
+      const iSec = toSec(interval);
+      const st = [enable, dSec, iSec, count];
+      const pv = this.__kaState;
+      const same = !!pv && pv[0] === st[0] && pv[1] === st[1] && pv[2] === st[2] && pv[3] === st[3];
+      this.__kaState = st;
+      if (!same && this._handle && typeof this._handle.setKeepAlive === "function") {
+        try { this._handle.setKeepAlive(enable, dSec, iSec, count); } catch {}
+      }
+      return this;
+    };
+    // node 口径（真机 26 实测）：setTypeOfService 校验逐字（invalidArgTypeHelper 形/
+    // OUT_OF_RANGE 双文案：非整数 "must be an integer"、越界 "must be >= 0 && <= 255"），
+    // 链式返回自身；getTypeOfService 读缓存（连接前设置同样生效，tos 套件 2a 项）。
+    this.setTypeOfService = (tos) => {
+      if (typeof tos !== "number" || Number.isNaN(tos)) {
+        const got = typeof tos === "string" ? `type string ('${tos}')` : `type ${typeof tos} (${String(tos)})`;
+        const e = new TypeError(`The "tos" argument must be of type number. Received ${got}`);
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
+      if (!Number.isInteger(tos)) {
+        const e = new RangeError(`The value of "tos" is out of range. It must be an integer. Received ${tos}`);
+        e.code = "ERR_OUT_OF_RANGE"; throw e;
+      }
+      if (tos < 0 || tos > 255) {
+        const e = new RangeError(`The value of "tos" is out of range. It must be >= 0 && <= 255. Received ${tos}`);
+        e.code = "ERR_OUT_OF_RANGE"; throw e;
+      }
+      this.__tos = tos;
+      return this;
+    };
+    this.getTypeOfService = () => this.__tos ?? 0;
+    // 最小 pipe 面（write-connect-write 套件：server 侧 socket.pipe(socket) 回显）；
+    // unpipe/_unrefTimer 桩（_parent 链安全，unref-timer 套件点名不抛）。
+    this.pipe = (dest, options) => {
+      this.on("data", (chunk) => { try { dest.write(chunk); } catch {} });
+      if (!options || options.end !== false) this.on("end", () => { try { dest.end(); } catch {} });
+      return dest;
+    };
+    this.unpipe = (dest) => this;
+    this._unrefTimer = () => {};
+    // pause/resume 真语义（server-pause-on-connect 套件）：paused 期 data 分节
+    // 缓存（bytesRead 不进），resume 即冲刷。
+    this.__paused = false;
+    this.__pauseBuf = [];
+    this.pause = () => { this.__paused = true; return this; };
+    this.resume = () => {
+      this.__paused = false;
+      // node 流语义：resume 异步续流（同步冲刷会抢在调用方 resume 之后的
+      // 语句前发 data——pause-on-connect 套件 stopped 旗现形）。
+      queueMicrotask(() => {
+        const buf = this.__pauseBuf;
+        this.__pauseBuf = [];
+        for (const u8 of buf) {
+          this.bytesRead += u8.length;
+          this.emit("data", this.__dec ? this.__dec.write(u8) : Buffer.from(u8));
+        }
+      });
+      return this;
+    };
+    // 10f timers 对拍：setTimeout(ms[, cb]) 真实现——单发内部 timer 到期
+    // emit('timeout')（Node 口径：不关连接、不杀 socket；cb 注册为 once 监听；
+    // 0/负值 = 解除）。内部 timer 恒 unref：连接生死不归它管，socket 在场时
+    // 事件循环照常泵到点（fire 不因 unrefed 豁免）。活动重置（node 收包即重置
+    // idle 计时）未做——整收口径记档。
+    this.setTimeout = (ms, cb) => {
+      const delay = Number(ms) || 0;
+      if (this.__wjs_stimer) { clearTimeout(this.__wjs_stimer); this.__wjs_stimer = null; }
+      if (delay > 0) {
+        const t = setTimeout(() => { this.__wjs_stimer = null; this.emit("timeout"); }, delay);
+        t.unref();
+        this.__wjs_stimer = t;
+      }
+      if (typeof cb === "function") this.once("timeout", cb);
+      return this;
+    };
+    this.read = () => null;
+    this._readableState = { endEmitted: false, length: 0 };
+  }
+  connect(...args) {
+    if (args.length === 0 || (args.length === 1 && typeof args[0] === "object" && args[0] !== null && args[0].port === undefined && args[0].path === undefined)) {
+      // node ERR_MISSING_ARGS（connect-no-arg 套件逐字）
+      const e = new TypeError('The "options" or "port" or "path" argument must be specified');
+      e.code = "ERR_MISSING_ARGS"; throw e;
+    }
+    // node 口径（Socket.connect destroyed 分支 + initSocketHandle._undestroy）：
+    // destroyed 后 connect 即整流复位（destroyed/ending/errored 全清）——
+    // boundsocket reconnect-after-destroy 块：close → connect → end 必须可用。
+    if (this.destroyed) {
+      this.destroyed = false;
+      this.readable = true; this.writable = true;
+      this.__connected = false;
+      this.__ended = false; this.__finSent = false; this.__endAfterFlush = false;
+      this.__hadError = false; this.__handleClosed = false; this.__peerFin = false;
+      this._handle = null;
+      this.__pendW = []; this.__pendBytes = 0;
+      this.__id = 0;
+    }
+    let port, host, cb, __noDelay, signal, sockPath = null, __blockList = null, __lookup = null, __halfOpen, __famOpt = 0;
+    if (typeof args[0] === "object" && args[0] !== null) {
+      if (args[0].fd !== undefined) {
+        // node 口径：listen({fd}) 非法 fd 即异步 EINVAL（error 事件；真机实证）。
+        const cbFd = typeof args[1] === "function" ? args[1] : null;
+        if (cbFd) this.once("listening", cbFd);
+        queueMicrotask(() => {
+          const e = new Error(`listen EINVAL: invalid argument`);
+          e.code = "EINVAL"; e.syscall = "listen"; e.errno = -4071;
+          this.emit("error", e);
+        });
+        return this;
+      }
+      if (args[0].path !== undefined) {
+        // node 口径：{path} 非串 → ERR_INVALID_ARG_TYPE（逐字形）；{path} 形走 unix socket。
+        if (typeof args[0].path !== "string") {
+          const __got = args[0].path === null ? "null" : (Array.isArray(args[0].path) ? "an instance of Array" : (typeof args[0].path === "object" ? `an instance of ${args[0].path.constructor?.name ?? "Object"}` : `type ${typeof args[0].path} (${String(args[0].path)})`));
+          const e = new TypeError(`The "options.path" property must be of type string. Received ${__got}`);
+          e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+        }
+        sockPath = String(args[0].path); ({ noDelay: __noDelay, signal } = args[0]);
+        cb = typeof args[1] === "function" ? args[1] : undefined;
+      } else {
+        ({ port, host = "127.0.0.1", family: __famOpt, noDelay: __noDelay, signal, blockList: __blockList, lookup: __lookup, allowHalfOpen: __halfOpen } = args[0]);
+        // autoSelectFamily 校验（HE 校验族套件真机口径）：非 boolean → ARG_TYPE；
+        // attemptTimeout 仅在生效 autoSelectFamily 下验 int [1,60000] → OUT_OF_RANGE。
+        if (args[0].autoSelectFamily !== undefined && typeof args[0].autoSelectFamily !== "boolean") {
+          const e = new TypeError(`The "options.autoSelectFamily" property must be of type boolean. Received type ${typeof args[0].autoSelectFamily} (${String(args[0].autoSelectFamily)})`);
+          e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+        }
+        if ((args[0].autoSelectFamily ?? __autoSelectFamily) && args[0].autoSelectFamilyAttemptTimeout !== undefined) {
+          const __att = args[0].autoSelectFamilyAttemptTimeout;
+          if (typeof __att !== "number" || !Number.isInteger(__att) || __att < 1 || __att > 60000) {
+            const e = new RangeError(`The value of "options.autoSelectFamilyAttemptTimeout" is out of range. It must be an integer >= 1 && <= 60000. Received ${String(__att)}`);
+            e.code = "ERR_OUT_OF_RANGE"; throw e;
+          }
+        }
+        // node 口径：connect(server.address()) 形——address 对象（{address/family/port}）
+        // 直作 options，host 缺省时取 address 键（ready-without-cb 套件点名）。
+        if ((args[0].host === undefined || args[0].host === null) && typeof args[0].address === "string") host = args[0].address;
+        if (__halfOpen !== undefined) this.allowHalfOpen = !!__halfOpen;
+        // host 校验（真机逐字）：非串→ARG_TYPE（Array 显实例形）；含 \0→ARG_VALUE。
+        if (host !== undefined && typeof host !== "string") {
+          const __got = Array.isArray(host) ? "an instance of Array" : (host !== null && typeof host === "object" ? `an instance of ${host.constructor?.name ?? "Object"}` : `type ${typeof host} (${String(host)})`);
+          const e = new TypeError(`The "options.host" property must be of type string. Received ${__got}`);
+          e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+        }
+        if (typeof host === "string" && host.includes("\0")) {
+          const e = new TypeError(`The property 'options.host' must be a string without null bytes. Received '${host.replaceAll("\0", "\\x00")}'`);
+          e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+        }
+        // 不支持键（真机逐字；lib/net.js 黑名单）。
+        for (const __k of ["objectMode", "readableObjectMode", "writableObjectMode"]) {
+          if (args[0][__k] !== undefined) {
+            const e = new TypeError(`The property 'options.${__k}' is not supported. Received ${String(args[0][__k])}`);
+            e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+          }
+        }
+        cb = typeof args[1] === "function" ? args[1] : undefined;
+      }
+    } else if (typeof args[0] === "string" && (typeof args[1] !== "string" || args[1] === "")) {
+      // connect(path[, cb])：首参串 + 次参非 host 串即 path 形。
+      sockPath = args[0];
+      cb = typeof args[1] === "function" ? args[1] : (typeof args[2] === "function" ? args[2] : undefined);
+    } else {
+      port = args[0];
+      if (typeof args[1] === "string") { host = args[1]; cb = typeof args[2] === "function" ? args[2] : undefined; }
+      else { host = "127.0.0.1"; cb = typeof args[1] === "function" ? args[1] : undefined; }
+    }
+    // adopt-UDS + connect({path}) 恒走 UDS（真机口径：path 在即 pipe，不看 adopt）。
+    if (sockPath === null) {
+      // node lookupAndConnect 校验序（localerror/boundsocket 套件真机逐字）：
+      // adopt 门 → localAddress(isIP) → localPort(number) → port(type/range)。
+      if (this.__adoptPort !== undefined &&
+          (args[0].localAddress !== undefined || args[0].localPort !== undefined)) {
+        const e = new TypeError(`The argument 'options' is invalid. localAddress and localPort cannot be used with an adopted bound socket. Received ${__netInspect(args[0])}`);
+        e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+      }
+      const __la = args[0].localAddress, __lp = args[0].localPort;
+      if (__la && !isIP(__la)) {
+        const e = new TypeError(`Invalid IP address: ${__la}`);
+        e.code = "ERR_INVALID_IP_ADDRESS"; throw e;
+      }
+      if (__lp && typeof __lp !== "number") {
+        const e = new TypeError(`The "options.localPort" property must be of type number. Received ${__netGot(__lp)}`);
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
+      if (port !== undefined) { __vPortType(port); __vPort(port); }
+      // node：host 非 IP 才走 lookup 系校验（IP 捷径跳过 dns 全链）——
+      // lookup 函数型（options-lookup 套件）+ hints 掩码（connect-options-port）。
+      // node 缺省 host = options.host || 'localhost'（connect({port}) 无 host 也走
+      // 校验）；本仓底层连接面维持 127.0.0.1 缺省（remote* 表面记档），仅校验门
+      // 按 node 有效 host 判定。掩码 1024|2048|256 与 dns 模块同值。
+      const __effHost = (args[0].host === undefined || args[0].host === null || args[0].host === "")
+        ? "localhost" : host;
+      if (!isIP(__effHost)) {
+        if (__lookup !== null && __lookup !== undefined && typeof __lookup !== "function") {
+          const e = new TypeError(`The "options.lookup" property must be of type function. Received ${__netGot(__lookup)}`);
+          e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+        }
+        const __hv = args[0].hints || 0;
+        if ((__hv & ~(1024 | 2048 | 256)) !== 0) {
+          const e = new TypeError(`The argument 'hints' is invalid. Received ${Number(__hv) || 0}`);
+          e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+        }
+      }
+    }
+    if (cb) this.once("connect", cb);
+    if (signal) {
+      if (typeof signal.addEventListener !== "function") {
+        const e = new TypeError("The 'signal' option must be an AbortSignal-like object");
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
+      if (signal.aborted) {
+        const e = new Error("The operation was aborted"); e.name = "AbortError"; e.code = "ABORT_ERR";
+        queueMicrotask(() => this.destroy(e));
+        return this;
+      }
+      {
+        // 直调 addEventListener 须入侧表（abort-controller 套件 listenerCount 口径；
+        // 原生忽略 once，handler 自摘）。
+        const __connAbort = () => {
+          __etRemove(signal, "abort", __connAbort);
+          const e = new Error("The operation was aborted"); e.name = "AbortError"; e.code = "ABORT_ERR";
+          // postAbort 形：套件在 abort 之后才挂 once('close')——destroy 的
+          // error/close 必须推 microtask（node destroy 发射为 nextTick）。
+          queueMicrotask(() => this.destroy(e));
+        };
+        signal.addEventListener("abort", __connAbort, { once: true });
+        __etAdd(signal, "abort", __connAbort);
+      }
+    }
+    // node 口径：blockList 命中即 ERR_IP_BLOCKED（connect 前，不建连接）；
+    // lookup 形：自定义解析（(host, opts, cb)；cb(null, addr[, family] | [{address, family}])）。
+    const __doConnect = (finalHost) => {
+      if (__blockList && typeof __blockList.check === "function" && finalHost !== null && __blockList.check(finalHost)) {
+        const e = new Error(`IP(${finalHost}) is blocked by net.BlockList`);
+        e.code = "ERR_IP_BLOCKED"; e.syscall = "connect";
+        // HE 链中：blockList 命中即该地址尝试失败（不走 task，无 close 事件），
+        // 直接推进下一地址；末位命中由 __heAdvance 收口 error+close。
+        if (this.__heOnErr) { this.__heLast = e; this.__heAdvance(); return this; }
+        queueMicrotask(() => this.destroy(e));
+        return this;
+      }
+      this.__realConnect(finalHost, port, cb, __noDelay, signal, sockPath);
+      return this;
+    };
+    if (sockPath !== null) return __doConnect(null);
+    if (typeof __lookup === "function") {
+      let called = false;
+      // autoSelectFamily 生效时以 all:true 拉全地址（autoselectfamily-default
+      // 套件的 mocked lookup 只在 all:true 下给数组）→ 多地址走 __heTry 串行回落。
+      const __heAll = (args[0].autoSelectFamily ?? __autoSelectFamily) === true;
+      try {
+        __lookup(String(host), { family: __famOpt || 0, hints: 0, all: __heAll }, (err, addr, family) => {
+          if (called) return; called = true;
+          if (err) { queueMicrotask(() => this.destroy(err)); return; }
+          // node onlookup：family ∉ {4,6} → ERR_INVALID_ADDRESS_FAMILY（异步 error 事件，
+          // 错误带 host/port 属性；options-lookup 套件 message 逐字）。
+          const fam = Array.isArray(addr) ? addr[0].family : family;
+          if (fam !== 4 && fam !== 6) {
+            const e = new RangeError(`Invalid address family: ${fam} ${host}:${port}`);
+            e.code = "ERR_INVALID_ADDRESS_FAMILY"; e.host = host; e.port = port;
+            queueMicrotask(() => this.destroy(e)); return;
+          }
+          const first = Array.isArray(addr) ? addr[0].address : addr;
+          if (__heAll && Array.isArray(addr) && addr.length > 1) {
+            this.__heStart(addr, __doConnect, cb);
+            return;
+          }
+          __doConnect(String(first));
+        });
+      } catch (e) { queueMicrotask(() => this.destroy(e)); return this; }
+      return this;
+    }
+    return __doConnect(String(host));
+  }
+  // Happy Eyeballs 串行回落（autoSelectFamily-default 套件）：按 lookup 数组序
+  // 逐地址尝试，中间失败（error/close）被 __heOnErr 钩吞掉，close 后复位重试
+  // 下一地址；connect 成功即拆钩。记档：attemptTimeout 竞速未实现（回环
+  // ECONNREFUSED 即时失败，套件不经超时路径）。
+  __heStart(addrs, doConnect, cb) {
+    this.__heSeq = { addrs, doConnect, cb, i: 0 };
+    this.__heOnErr = () => {};
+    this.__heTry();
+  }
+  __heTry() {
+    const seq = this.__heSeq;
+    // 统一走 __doConnect 闭包：blockList 校验每地址都生效（blocklist 套件
+    // 多 IP 全屏蔽形——直接 __realConnect 会绕过拦截并停摆回落链）。
+    seq.doConnect(seq.addrs[seq.i].address);
+  }
+  __heReset() {
+    // 与 connect() 的 destroyed 复位分支同款（boundsocket reconnect-after-destroy 口径），
+    // 但保留 __pendW——HE 失败尝试期间的用户写要带到最终连接（default 套件
+    // write('request') 先于 connect 的缓冲形）。
+    this.destroyed = false;
+    this.readable = true; this.writable = true;
+    this.__connected = false;
+    this.__ended = false; this.__finSent = false; this.__endAfterFlush = false;
+    this.__hadError = false; this.__handleClosed = false; this.__peerFin = false;
+    this._handle = null;
+    this.__id = 0;
+  }
+  __heAdvance() {
+    const seq = this.__heSeq;
+    seq.i++;
+    if (seq.i < seq.addrs.length) {
+      this.__heReset();
+      this.__heOnErr = () => {};
+      this.__heTry();
+    } else {
+      const last = this.__heLast;
+      this.__heSeq = null; this.__heOnErr = null;
+      this.destroyed = true; this._handle = null;
+      queueMicrotask(() => { this.emit("error", last); this.emit("close", true); });
+    }
+  }
+  // 真连接段（blockList/lookup 前置之后；adopt 预置 local 面）。
+  __realConnect(finalHost, port, cb, __noDelay, signal, sockPath) {
+    // UDS 面：remoteAddress/localAddress 恒 undefined（真机实证），address() 回 {}。
+    // adopt 面：localAddress/localPort 预置 bound 值（connect 前后一致，真机实证）。
+    // remote* 不在此发布（连接完成前恒 undefined，见构造注）；目标另存供报错整形。
+    this.__targetHost = sockPath !== null ? null : String(finalHost);
+    this.__targetPort = sockPath !== null ? null : Number(port);
+    this.remoteAddress = undefined; this.remotePort = undefined; this.remoteFamily = undefined;
+    if (this.__adoptPort !== undefined && sockPath === null) {
+      this.localAddress = this.__adoptUds || this.__adoptHost;
+      this.localPort = this.__adoptPort;
+    }
+    // node 口径：connect 即读写可达（write 缓冲至连接完成）
+    this.readable = true; this.writable = true;
+    // noDelay 经 native 直达 setsockopt（http agent 默认 true；Node net 默认 false）。
+    // adopt-UDS：本端源 path 透 native 预 bind（localAddress 预置源 path）。
+    if (sockPath !== null) this.__udsTarget = sockPath;
+    // 建柄（_handle 存活期起点；连接前缓存的 keepAlive 随建即直通新柄）。
+    this.__handleClosed = false;
+    this._handle = this.__makeHandle();
+    if (this.__kaState) { const [ke, kd, ki, kc] = this.__kaState; try { this._handle.setKeepAlive(ke, kd, ki, kc); } catch {} }
+    if (sockPath !== null && this.__adoptUds) {
+      this.localAddress = this.__adoptUds;
+      this.__id = Number(__wjs_net_connect(sockPath, "", this, this.__adoptUds));
+    } else this.__id = sockPath !== null
+      ? Number(__wjs_net_connect(sockPath, "", this, false))
+      : Number(__wjs_net_connect(this.__targetHost, this.__targetPort, this, __noDelay === true));
+  }
+  // 事件循环派发钩子（Rust dispatch 调用；kind/data 均为字符串）
+  __ev(kind, payload) {
+    switch (kind) {
+      case "connect": {
+        try {
+          const o = JSON.parse(payload || "{}");
+          // serde SocketAddr → "ip:port"（IPv6 为 "[ip]:port"）
+          // adopt-TCP 不回填（真机 fd 复用：local 恒为 bound 值；OS 重分漂移时以预置为准）。
+          if (typeof o.local === "string" && this.__adoptPort === undefined) {
+            const m = o.local.match(/^\[?([^\]]+?)\]?:(\d+)$/);
+            if (m) { this.localAddress = m[1]; this.localPort = Number(m[2]); }
+          }
+          if (this.localAddress !== undefined && this.localAddress !== null)
+            this.localFamily = String(this.localAddress).includes(":") ? "IPv6" : "IPv4";
+        } catch {}
+        // 远端面在此发布（UDS 恒 undefined；TCP 取 __realConnect 存的目标）。
+        this.remoteAddress = this.__targetHost ?? undefined;
+        this.remotePort = this.__targetPort ?? undefined;
+        this.remoteFamily = this.remoteAddress === undefined ? undefined
+          : (String(this.remoteAddress).includes(":") ? "IPv6" : "IPv4");
+        this.__connected = true;
+        this.readable = true; this.writable = true;
+        const pend = this.__pendW; this.__pendW = [];
+        this.__pendBytes = 0;
+        for (const [u8, cb2] of pend) {
+          __wjs_net_write(this.__id, u8);
+          if (cb2) queueMicrotask(cb2);
+        }
+        if (this.__endAfterFlush) {
+          this.__endAfterFlush = false;
+          if (this.__id) __wjs_net_end(this.__id);
+        }
+        // HE 成功：拆回落钩（此后 close 走正常路径）。
+        this.__heOnErr = null; this.__heSeq = null;
+        this.emit("connect");
+        // 注：真机另序发 'ready'（connect → ready，已接受端不发），但本仓暂不发射——
+        // 同步/microtask 发射在并行负载下与静默进程死亡（exit -10，无崩溃报告）强相关，
+        // 根因未定（疑 dispatch 侧存活期/GC 时序，见 AGENTS §4.126）；且本仓不执行
+        // common mustCall 的 exit 钩，ready-without-cb 套件靠退出码无法证伪，
+        // 发射与否不影响对拍计数。待引擎侧根因闭环后再补。
+        break;
+      }
+      case "data": {
+        const u8 = __b64dec(payload);
+        if (this.__paused) { this.__pauseBuf.push(u8); break; }
+        this.bytesRead += u8.length;
+        this.emit("data", this.__dec ? this.__dec.write(u8) : Buffer.from(u8));
+        break;
+      }
+      case "end": {
+        this.readable = false;
+        this.__peerFin = true;
+        // 池化空闲 socket 见 FIN 即销毁（半关不可复用；否则写端永活、条目永泄，
+        // 10b https 保活案；Node 同样把 end 掉的 socket 踢出池）。
+        if (this.__inPool) {
+          this.destroy();
+          break;
+        }
+        // setEncoding 残余字节 flush（分包切断的多字节尾在 end 前补齐）
+        if (this.__dec) {
+          const rest = this.__dec.end();
+          if (rest) this.emit("data", rest);
+        }
+        this.emit("end");
+        // Node 口径：非 allowHalfOpen 时收 FIN 即自动回 FIN（'close' 随后）
+        if (!this.allowHalfOpen && this.__id) __wjs_net_end(this.__id);
+        break;
+      }
+      case "error": {
+        const o = JSON.parse(payload);
+        const se = __netErr(o.code, o.msg);
+        this.__hadError = true;
+        // 已销毁 socket 的迟到 teardown 噪声不 chạm 用户监听（真机口径：destroy 后
+        // 底层 RST/EOF 竞速错不再派发；write-after-close 套件双块并发下必现 flaky）。
+        if (this.destroyed) break;
+        // node connect 系标配：syscall + errno（uv 负值；ENOENT=-2/EACCES=-13/ECONNREFUSED=-61
+        // /ENOTSOCK=-38/EADDRNOTAVAIL=-49；未知 -4094）。
+        se.syscall = "connect";
+        se.errno = { ENOENT: -2, EACCES: -13, ECONNREFUSED: -61, ENOTSOCK: -38, EADDRNOTAVAIL: -49, EINVAL: -22, EADDRINUSE: -48 }[o.code] ?? -4094;
+        // node connect 错误消息形："connect CODE <target>"（target=host:port 或 path）。
+        // native msg 已是 "CODE: <os>"，此处按目标重塑（expectsError 逐字断言面）。
+        if (typeof o.msg === "string" && !o.msg.startsWith("connect ") && !o.msg.startsWith("IP(")) {
+          const rh = this.__targetHost ?? this.remoteAddress;
+          const rp = this.__targetPort ?? this.remotePort;
+          const tgt = this.__udsTarget ?? ((rh !== undefined && rh !== null && rp !== undefined && rp !== null) ? `${rh}:${rp}` : null);
+          if (tgt) se.message = `connect ${o.code} ${tgt}`;
+        }
+        // HE 串行回落：中间地址的连接失败被钩吞（不落用户监听），close 后重试。
+        if (this.__heOnErr) { this.__heLast = se; break; }
+        this.emit("error", se);
+        break;
+      }
+      case "close":
+        // HE：失败尝试的 close → 推进下一地址（或末位失败收口）。
+        if (this.__heOnErr) { this.__heAdvance(); break; }
+        this.destroyed = true; this._handle = null; this.emit("close", this.__hadError === true); break;
+    }
+  }
+  // node 口径：pending = 尚无可用句柄——连接中 true、连接完成 false、
+  // close 后**仍为 true**（test-net-connect-buffer 'close' 处理器点名）。
+  get pending() { return !this.__connected || this.destroyed; }
+  get connecting() { return !this.__connected && !this.destroyed && this.__id > 0; }
+  get readyState() {
+    if (this.destroyed) return "closed";
+    // 真机：new Socket() 未连接即 "open"（构造 readable/writable 初始真；connect 前即 open）。
+    // 连接中（__id 已发）才 "opening"。
+    if (!this.__connected && this.__id) return "opening";
+    if (this.readable && this.writable) return "open";
+    return this.readable ? "readOnly" : "writeOnly";
+  }
+  // node Socket async iterable（for await over data；end/close 终结、error 拒绝）
+  [Symbol.asyncIterator]() {
+    const st = { q: [], wake: null, done: false, err: null };
+    const push = (fn, v) => { st[fn] && 0; };
+    const onData = (c) => { st.q.push({ v: c }); if (st.wake) { st.wake(); st.wake = null; } };
+    const onDone = () => { st.done = true; if (st.wake) { st.wake(); st.wake = null; } };
+    const onErr = (e) => { st.err = e; st.done = true; if (st.wake) { st.wake(); st.wake = null; } };
+    this.on("data", onData);
+    this.on("end", onDone);
+    this.on("close", onDone);
+    this.once("error", onErr);
+    const cleanup = () => { this.off("data", onData); this.off("end", onDone); this.off("close", onDone); this.off("error", onErr); };
+    return {
+      next: () => new Promise((resolve, reject) => {
+        const step = () => {
+          if (st.q.length) resolve({ value: st.q.shift().v, done: false });
+          else if (st.err) { const e = st.err; st.err = null; cleanup(); reject(e); }
+          else if (st.done) { cleanup(); resolve({ done: true }); }
+          else st.wake = step;
+        };
+        step();
+      }),
+      return: () => { cleanup(); this.destroy(); return Promise.resolve({ done: true }); },
+      throw: (e) => { cleanup(); this.destroy(); return Promise.reject(e); },
+    };
+  }
+  // node 口径（lib/net.js writeGeneric + stream Writable.write）：
+  // destroyed/!writable → 有 cb 走 cb(err)+error 事件（返回 false），无 cb 才同步抛；
+  // err 形状：write after end / connect 未完成 → ERR_STREAM_WRITE_AFTER_END（writableLength 0），
+  // 其余 destroyed → ERR_STREAM_DESTROYED。§4.119 同源：包装/状态检查不吞场景口径。
+  __writeErr(cb2) {
+    const ended = this.__ended === true || this.__finSent === true;
+    const code = ended ? "ERR_STREAM_WRITE_AFTER_END" : "ERR_STREAM_DESTROYED";
+    const e = __netErr(code, ended ? "write after end" : "Cannot call write after a stream was destroyed");
+    if (typeof cb2 === "function") { queueMicrotask(() => { try { cb2.call(this, e); } catch {} }); return false; }
+    throw e;
+  }
+  write(data, enc, cb) {
+    const cb2 = typeof enc === "function" ? enc : cb;
+    // net 口径（write-after-end-nt 套件真机形）：本地已 end 且对端已 FIN 后再写
+    // → Error EPIPE 'This socket has been ended by the other party'——cb 与 error
+    // 事件都下一 tick。两条件缺一不可：仅对端 FIN（writable 套件 'end' 后写）
+    // 与仅本地 end（G7 write-after-end 形 STREAM_WRITE_AFTER_END）都不走此路。
+    if (this.__peerFin === true && this.__ended === true && this.allowHalfOpen !== true) {
+      const e = new Error("This socket has been ended by the other party");
+      e.code = "EPIPE"; e.errno = 32; e.syscall = "write";
+      if (typeof cb2 === "function") queueMicrotask(() => { try { cb2.call(this, e); } catch {} });
+      queueMicrotask(() => this.emit("error", e));
+      return false;
+    }
+    // 真机逐字（writable.js _write）：仅 null → ERR_STREAM_NULL_VALUES（undefined 落
+    // ARG_TYPE 'Received undefined'）；chunk 类型校验先于 after-end/destroyed 状态检查。
+    if (data === null) {
+      const e = new TypeError("May not write null values to stream");
+      e.code = "ERR_STREAM_NULL_VALUES";
+      if (typeof cb2 === "function") { queueMicrotask(() => { try { cb2.call(this, e); } catch {} }); return false; }
+      throw e;
+    }
+    const u8 = __chunkU8(data);
+    if (this.destroyed || !this.writable) return this.__writeErr(cb2);
+    // node 口径（write-after-close 套件双形，真机 26 实测均为异步 error 事件非同步抛）：
+    // 已连接但 _handle 被置空后写 → ERR_SOCKET_CLOSED('Socket is closed')；
+    // _handle.close() 后（柄关而对象在）写 → Error('write EBADF'，win 系 EPIPE)。
+    if (this.__connected && this._handle === null) {
+      const e2 = new Error("Socket is closed"); e2.code = "ERR_SOCKET_CLOSED";
+      if (typeof cb2 === "function") queueMicrotask(() => { try { cb2.call(this, e2); } catch {} });
+      queueMicrotask(() => this.emit("error", e2));
+      return false;
+    }
+    if (this.__handleClosed === true) {
+      const e = new Error(`write ${typeof process !== "undefined" && process.platform === "win32" ? "EPIPE" : "EBADF"}`);
+      if (typeof cb2 === "function") queueMicrotask(() => { try { cb2.call(this, e); } catch {} });
+      queueMicrotask(() => this.emit("error", e));
+      return false;
+    }
+    this.bytesWritten += u8.length;
+    if (!this.__connected) {
+      // node 口径：连接完成前 write 缓冲（connect 完成时按序冲刷）
+      this.__pendW.push([u8, cb2]);
+      this.__pendBytes += u8.length;
+      return u8.length + this.__pendBytes - u8.length <= this.__hwm;
+    }
+    __wjs_net_write(this.__id, u8);
+    // 记档：底层同步写队列，无 flush 语义，回调即刻
+    if (cb2) queueMicrotask(cb2);
+    return u8.length <= this.__hwm;
+  }
+  end(data, enc, cb) {
+    // node 语义：end([chunk][, enc][, cb])——首参函数即 cb（async-iter 套件
+    // `end(resolve)` 形；不识别则回调被当 chunk 落校验 TypeError）。
+    if (typeof data === "function") { cb = data; data = undefined; enc = undefined; }
+    else if (typeof enc === "function") { cb = enc; enc = undefined; }
+    if (data !== undefined && data !== null) this.write(data, typeof enc === "string" ? enc : undefined);
+    const cb2 = cb;
+    this.writable = false; this.__ended = true;
+    if (this.__id && this.__connected) __wjs_net_end(this.__id);
+    else this.__endAfterFlush = true; // node 口径：FIN 排队到连接完成+缓冲写冲刷之后
+    // node 口径：写侧刷完即 'finish'（早于 close；bytes-stats/bytes-read 套件点名）。
+    // 本仓同步写队列：FIN 已发即 microtask 派发 finish。
+    queueMicrotask(() => this.emit("finish"));
+    // node 流语义：end 的回调挂 'finish'（非 close——半开对端不回 FIN 时
+    // close 永不来，async-iter 套件 `end(resolve)` 卡死）。
+    if (cb2) this.once("finish", cb2);
+    return this;
+  }
+  // node 口径：resetAndDestroy() = RST 硬关（本端无 error 即 close；
+  // 对端读侧 ECONNRESET）。本仓 TCP 无 RST 面：本端走 destroy 无 error，
+  // 对端侧由传输 FIN 收尾（ECONNRESET 偏离，见 bun-parity net 节）。
+  resetAndDestroy() { return this.destroy(); }
+  // node 口径：error 事件只在 destroy(err) 带参时发（显式 destroy() 无参不发）。
+  // 校验/状态 write 失败走 cb（__writeErr），不进 error 事件——lib/net.js 原文口径。
+  destroy(err) {
+    if (!this.destroyed) {
+      this.destroyed = true;
+      this.writable = false; this.readable = false;
+      this._handle = null;
+      if (this.__id) __wjs_net_destroy(this.__id);
+      if (err !== undefined && err !== null) { this.__hadError = true; this.emit("error", err); }
+    }
+    return this;
+  }
+  address() {
+    // UDS：真机 address() 回 {}（local/remote 全 undefined）。
+    if (this.localAddress === null || this.localAddress === undefined) {
+      return this.remoteAddress === undefined && this.__connected ? {} : null;
+    }
+    return { address: this.localAddress, port: this.localPort, family: String(this.localAddress).includes(":") ? "IPv6" : "IPv4" };
+  }
+  setEncoding(enc) {
+    this.__enc = enc === null || enc === undefined ? null : String(enc);
+    // 持久解码器（large-string 套件：分包多字节必须跨 chunk 保态——
+    // 每 chunk 新建 TextDecoder 会把切断的序列各吐一个 U+FFFD）。
+    this.__dec = this.__enc ? new StringDecoder(this.__enc) : null;
+    return this;
+  }
+  // 10a：ref 真计数（net/dgram 共用 natives；__id 为 0 时静默 no-op）。
+  ref() { if (this.__id) __wjs_net_ref(this.__id); return this; }
+  unref() { if (this.__id) __wjs_net_unref(this.__id); return this; }
+}

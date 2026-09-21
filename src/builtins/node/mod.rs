@@ -27,6 +27,7 @@ pub mod https;
 pub mod internal;
 pub mod inspector;
 pub mod net;
+mod net_pumps;
 pub mod nodemodule;
 pub mod os;
 pub mod path;

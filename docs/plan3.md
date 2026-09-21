@@ -253,6 +253,13 @@ DIFF 51→46，零回归；testmod 按域拆 core/run；黑盒
 `phase10f_test_run_none_and_plan_gates`；AGENTS §4.182）。
 残：run process 隔离 ~15（子进程/线程传输）+ spawn CLI ~18 + reporter ~13。
 
+**2026-09-21 test Slice E 收官**：run 语义深化（plan 子计数/stopTest 超时/
+TestPlan wait/legacy done/tag 过滤子集/entryFile/调用点文件/种子洗牌/run
+coverage 校验；对拍 plan/tags-events/entry-file/randomize 四转绿，
+SAME0 30→34、DIFF 39→35，零回归；黑盒 `phase10f_test_run_semantics_*` +
+`phase10f_test_run_tag_filter_and_randomize`；AGENTS §4.184）。
+残：run 并发/上报深度 ~6 + spawn CLI ~18 + reporter ~13 + mocking 单行。
+
 **2026-09-21 test Slice D 收官**：run(process) 经 worker 传输落地
 （expect-error ×2/todo-skip/filetest-location 四转绿 + coverage ×2 附带；
 对拍 SAME0 24→30、DIFF 46→39，零回归；黑盒

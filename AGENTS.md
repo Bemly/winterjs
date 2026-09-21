@@ -3066,3 +3066,32 @@ cargo build
   改异步重抛走 uncaught（文件可见失败）。
 - 复现：`tests/node/testmod.rs::phase10f_test_run_process_and_expect_failure` +
   真套件 expect-error ×2/todo-skip/filetest（修前 DIFF）。
+
+### 4.184 run 语义深化六坑（2026-09-21，plan3 test E 轮）
+
+- 坑一（文件级 enqueue 在监听前丢失）：`run()` 同步调 `__runFilesAsync`，
+  首事件先于调用方 `.on` 发出（test-id 套件现形：dequeue/start 有、enqueue
+  无）。修法：执行体递延一轮 microtask（监听先挂）；worker 内同理
+  （同函数复用，harness 的 `.on` 同样后挂）。
+- 坑二（同文件二次 import 命中缓存）：黑盒两次 run() 同一探针文件，第二次
+  空转零事件。真机同款语义（模块缓存；worker 跨线程则天然隔离），黑盒改
+  双探针文件（§4.168 SAME1 掩盖姊妹篇：缓存使"跑过"恒真）。
+- 坑三（helper 改签名丢参数）：`__runOneWorker(given, abs, stream)` 重构丢了
+  `options` 形参，体内 `options.timeout` 全变 ReferenceError（全部 process
+  用例一夜回红；栈 `__runOneWorker/<` 指认）。修法：改签名必须 grep 全部
+  调用点 + 被调体内全部标识符（§4.182 坑五同源；本轮现形）。
+- 坑四（包装与显式发射二选一）：`__emitPass`（内发 pass+complete）上线后，
+  外层残留的显式 `complete` 致每测试双 complete（test-id 计数现形）。
+  修法：包装函数与显式发射二选一，grep 全调用点去重。
+- 坑五（skip/todo 置旗三语义）：`t.skip()` 后 body 继续、skip 优先、message
+  回显到事件互斥键（真机探针三条钉住）；静态 todo 跑 body（失败仍失败，
+  通过记 todo）。修法：throw 改置旗 + 终局判定（§4.183 坑三的 E 轮落实）。
+- 坑六（loader 回退双求值）：抛错文件的动态 import 被 ESM→CJS 各求值一次，
+  注册翻倍（todo-skip 双跑现形；成功文件单次无事）。修法见 §4.183 坑一
+  （skip 套件不跑回调 + 失败导入回滚注册；本轮探针钉死）。
+- 附带：legacy done 回调（streaming 套件现形）；plan 子计数；stopTest 超时
+  竞速 + TestPlan wait；tag 过滤子集；entryFile 转发戳；调用点文件归属；
+  种子洗牌（PRNG 逐字 + 延迟兄弟队列）；run coverage 选项校验（码逐字）。
+- 复现：`tests/node/testmod.rs::phase10f_test_run_semantics_*` +
+  `phase10f_test_run_tag_filter_and_randomize` + 真套件 plan/tags/entry/
+  randomize（修前 DIFF 修后 SAME0）。

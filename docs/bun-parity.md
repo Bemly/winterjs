@@ -1519,3 +1519,14 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > > 待 inspector/覆盖率另案。
 > > 回归：`tests/node/testmod.rs::phase10f_test_run_process_and_expect_failure`；
 > > 坑见 AGENTS §4.183。
+>
+> ### Slice E（2026-09-21，run 语义深化）：子测试计 plan + test 超时竞速
+> > （stopTest 口径）+ TestPlan wait（true 无限/数字超时/缺省即判）+ legacy
+> > done 回调 + tag 过滤（精确小写 + not 前缀，OR）+ entryFile 转发戳 +
+> > 子测试调用点文件归属 + 随机种子洗牌（逐字 PRNG + 延迟兄弟pending 队列）+
+> > run coverage 选项校验 + 事件键互斥（skip/todo/expectFailure 仅真值在场；
+> > skip 套件亦发 pass）。
+> > 对拍：plan/tags-events/entry-file/randomize 四转绿（SAME0 30→**34**、
+> > DIFF 39→**35**，零回归）。
+> > 回归：`tests/node/testmod.rs::phase10f_test_run_semantics_*` +
+> > `phase10f_test_run_tag_filter_and_randomize`；坑见 AGENTS §4.184。

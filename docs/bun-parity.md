@@ -1341,6 +1341,22 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > >   server-keep-alive-timeout 6/6 hang（done 内 destroy + server.close 同 tick 撞
 > >   native 收尾，ServerClose 丢失）；偶发 park 错过唤醒（0% CPU parked，看门狗不触发，
 > >   疑与上同源，需 Rust 侧深入）。
+>
+> ### G11 半开双杀（2026-09-22，5 提交；AGENTS §4.186）
+>
+> > - **写端等读端死锁**：`Close` 命令只 shutdown 写端、`Close` 事件等读端 EOF——
+> >   对端半开永不 FIN 即死锁（`__sockets` 残留 1）。修法：写端收 `Close` 即发
+> >   `Close`（`close_once` 防双发），不等读端。
+> > - **半开续命**：服务端干净后半开客户端仍续命（真机 k7/k9/k12 实证照常退出，
+> >   `ref()` 也留不住）。修法：`NetEntry.holding` 位 + `net_halfhold` native，
+> >   `__ev end` 内 allowHalfOpen 递延一轮 microtask，稳定半开才摘续命；
+> >   `net_open` 只数 `refed && holding`（`net_halfhold_balance` 单测 + 黑盒
+> >   `phase11_net_halfopen_releases_loop`，8s unref 守卫回归只红不挂）。
+> > - **转 SAME**：`server-keep-alive-timeout`（修前 TIMEOUT）+
+> >   `server-close-idle-wait-response`（附带）；`server-request-timeout-keepalive`
+> >   真机自挂（node 142，超跑分 alarm），非我方回归；dd3/kadbg 偶发 park 未复现
+> >   （4/4 确定性触发 kaT）；`drain-writable-length` 仍 TIMEOUT——outputData
+> >   缓冲模型（writableLength/writableNeedDrain/drain 门控），G3 既定另轮专项。
 
 ## https
 

@@ -2890,3 +2890,14 @@ cargo build
 - 现状：与当轮改动（serve 系）零交集，判定并行负载型 flake，非回归；
   根因未深究（引擎内部锁，另案）。再现两次即升级为必查。
 - 推广：全量红先单跑 + 整套件跑两档复核，再定回归/flake（§4.62 姊妹篇）。
+
+### 4.175 fifo 黑盒全并行负载下挂死：写者缺席读端零 CPU 睡眠（2026-09-21，观察中）
+
+- 症状：全量 `cargo test`（默认并行）在 `fs::streams::phase10f_read_stream_fifo_end`
+  卡死（`running for over 60 seconds`；读端 winterjs 进程 `S` 睡眠、7 分钟仅
+  0.21s CPU；写者 `sh` 不存在）。同域测试（26 并行）两次 7s 过，单跑 0.59s 过。
+- 根因（未完全钉死）：重负载下 `child_process.exec` 的写者 shell 缺席，
+  读端 `open(O_RDONLY)` 永阻塞。域拆分纯搬移（JS/Rust 双字节恒等已验），非回归。
+- 修法：`cargo test --test node -- --test-threads=4` 全 node 域 248 绿（90s）；
+  其余 19 target 全绿。全并行卡死先查该用例（`ps` 见读端 `S` + 无写者即此坑）。
+- 复现：全并行跑到该用例即卡；降并行即过。

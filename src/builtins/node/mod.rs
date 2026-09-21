@@ -23,6 +23,8 @@ pub mod events;
 pub mod fs;
 pub mod http;
 pub mod http2;
+mod http2_client;
+mod http2_server;
 pub mod https;
 pub mod internal;
 pub mod inspector;

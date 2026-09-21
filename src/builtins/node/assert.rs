@@ -89,7 +89,13 @@ export function notEqual(actual, expected, message) {
   if (actual == expected) __fail(actual, expected, message, "!=");
 }
 export function strictEqual(actual, expected, message) {
-  if (!Object.is(actual, expected)) __fail(actual, expected, message, "strictEqual");
+  // 10f test-runner-custom-assertions：真机文案逐字（`Expected values to be
+  // strictly equal` 前缀 + 实际值行；套件用正则钉住）。
+  if (!Object.is(actual, expected)) {
+    __fail(actual, expected,
+      message || `Expected values to be strictly equal:\n\n${__fmt(actual)} !== ${__fmt(expected)}\n`,
+      "strictEqual");
+  }
 }
 export function notStrictEqual(actual, expected, message) {
   if (Object.is(actual, expected)) __fail(actual, expected, message, "notStrictEqual");

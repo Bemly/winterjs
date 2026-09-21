@@ -1,15 +1,5 @@
 //! crypto 回归向量（c4x 系；按属主分散前集中一处，见 §0.9 拆分）。
 
-use mozjs::conversions::ToJSValConvertible as _;
-use mozjs::context::JSContext;
-use mozjs::jsapi::JSObject;
-use mozjs::jsval::{JSVal, UndefinedValue};
-use mozjs::rooted;
-use mozjs::typedarray::{CreateWith, TypedArray, Uint8};
-
-use crate::jsapi_glue::{report_error, value_to_string, view_bytes, wrap_cx, Frame};
-
-
 #[cfg(test)]
 mod c4x_tests {
     use super::super::{

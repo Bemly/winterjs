@@ -103,6 +103,9 @@ export function withHttpServer(Base) {
       self.keepAliveTimeout = 5_000;
       self.keepAliveTimeoutBuffer = 1_000;
       self.maxRequestsPerSocket = 0;
+      // node 口径：maxHeadersCount 缺省 null（不限），可动态改写
+      // （max-headers-count 套件逐轮改写；接收侧截断，0/null 不限）。
+      self.maxHeadersCount = null;
       // 每服务器宽松解析旗（insecure-parser-per-stream 套件）。
       // httpValidation 门（node storeHTTPOptions 口径：validateOneOf + 与
       // insecureHTTPParser 互斥，ERR_INVALID_ARG_VALUE）。
@@ -339,7 +342,7 @@ export function withHttpServer(Base) {
           if (this.insecureHTTPParser !== true && __hasBareCR(headText)) {
             throw __mkParseError("LF expected after CR");
           }
-          const { first, headers, rawHeaders } = __parseHead(headText, this.__inboundMode ?? "strict");
+          const { first, headers, rawHeaders } = __parseHead(headText, this.__inboundMode ?? "strict", this.maxHeadersCount);
           __validateRequestHead(first, headers);
           const req = new IncomingMessage(this.__highWaterMark !== undefined
             ? { highWaterMark: this.__highWaterMark } : undefined);
@@ -649,6 +652,9 @@ export function withClientRequest(openSocket, flavor) {
         configurable: true,
       });
       this.path = path;
+      // node 口径：maxHeadersCount 缺省 null（不限），响应解析前可改写
+      // （max-headers-count 套件：构造后赋值截断接收头数）。
+      this.maxHeadersCount = null;
       // 自设请求头名字门（invalidheaderfield 套件：'testing 123' → TypeError）。
       for (const __k of Object.keys(userHeaders ?? {})) {
         if (!__TOKEN_RE.test(__k)) {

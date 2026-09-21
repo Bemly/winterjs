@@ -104,14 +104,18 @@ function __checkOutboundHeaderValue(validation, value) {
     throw new codes.ERR_INVALID_CHAR("Invalid character in header content");
   }
 }
-function __parseHead(headText, mode) {
+function __parseHead(headText, mode, maxPairs) {
   const lines = headText.split("\r\n");
   const first = lines.shift().split(" ");
   // 真机口径：req.headers/res.headers 是普通对象（Object.prototype，node 26.8.2
   // 实测）——Object.create(null) 会挂 deepStrictEqual 直比；__proto__ 头名走
   // defineProperty 防原型污染。
+  // maxHeadersCount（max-headers-count 套件）：超限对不再收录（静默截断，
+  // 响应照常完成；null/0/undefined 即不限）。
   const headers = {};
   const rawHeaders = [];
+  let __pairs = 0;
+  const __capped = typeof maxPairs === "number" && maxPairs > 0;
   for (const line of lines) {
     if (line === "") continue;
     const c = line.indexOf(":");
@@ -128,6 +132,9 @@ function __parseHead(headText, mode) {
       // 分行），NUL 仍查；DEL/其余控制字符放行（header-value-relaxed 套件）。
       if (/[\x00\r\n]/.test(vRaw)) throw __mkParseError("invalid header value");
     }
+    // maxHeadersCount 截断：超限对 headers/raw 双双不收（计数按对）。
+    if (__capped && __pairs >= maxPairs) continue;
+    __pairs++;
     rawHeaders.push(k, v);
     const lk = k.toLowerCase();
     if (headers[lk] === undefined) {

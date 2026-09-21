@@ -3045,3 +3045,24 @@ cargo build
   即 noop）。另：无 before 套件的 after 被 beforeFired 门吞——补 `_ran` 位。
 - 复现：`tests/node/testmod.rs::phase10f_test_run_none_and_plan_gates` +
   真套件 no-isolation ×2/enqueue/test-id/tags-validation（修前 DIFF）。
+
+### 4.183 run(process) 五坑（2026-09-21，plan3 test D 轮）
+
+- 坑一（loader 目标回退重复求值）：抛错文件的动态 import 被 ESM→CJS 回退各
+  求值一次，注册翻倍（todo-skip 双跑现形；成功文件单次无事）。
+  修法：双管齐下——① skip 套件不跑回调（真机：跳过即不构建，遂无抛错），
+  ② 失败导入回滚本批注册（队列/注册表截断）。
+- 坑二（合成错被 expectFailure 回吞）：意外通过合成的 expectedFailure 错在
+  catch 又被"期望失败→pass"分支吞掉。修法：catch 按
+  `failureType !== "expectedFailure"` 分流（`§4.51 __callNative` 闭包错码重包
+  的同源教训：包装层必须识别已整形错误）。
+- 坑三（skip/todo 是置旗不是抛）：`t.skip()` 后 body 继续、skip 优先、message
+  回显到事件互斥键（真机探针钉住三条）。修法：throw 改置旗 + 终局判定
+  （抛错仍粘滞失败）；静态 todo 改跑 body（失败仍失败）。
+- 坑四（cwd 径带 `..` 全等失败）：`process.cwd()` 非规范化，filetest 的 file
+  全等断言挂。修法：`resolve(cwd, given)` 规范化（`node:path` 现成）。
+- 坑五（监听抛错被吞即假绿）：`_emit` 内 try/catch 把 mustNotCall 断言吞掉，
+  文件空绿。修法：去吞（真机 EventEmitter 口径）+ `__runFilesAsync` 的 catch
+  改异步重抛走 uncaught（文件可见失败）。
+- 复现：`tests/node/testmod.rs::phase10f_test_run_process_and_expect_failure` +
+  真套件 expect-error ×2/todo-skip/filetest（修前 DIFF）。

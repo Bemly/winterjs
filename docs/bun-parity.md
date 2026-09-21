@@ -1504,3 +1504,18 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > > 拒绝（另片）。
 > > 回归：`tests/node/testmod.rs::phase10f_test_run_none_and_plan_gates`；
 > > 坑见 AGENTS §4.182。
+>
+> ### Slice D（2026-09-21，run process 隔离）：worker 线程传输（每文件独立
+> > 会话；子内跑 none 并经 parentPort 逐事件回传，错误序列化 plain、父端重组；
+> > NODE_TEST_CONTEXT 子端置位与父隔离；串行跑文件）+ expectFailure 布尔反转
+> > （失败记 pass 带旗/通过记 expectedFailure 失败；空对象门逐字）+ 失败标注
+> > （failureType 缺省 testCodeFailure）+ skip/todo 置旗语义（body 继续、skip
+> > 优先、message 回显、互斥键）+ todo 静态跑 body（失败仍失败）+ run coverage
+> > 选项校验。
+> > 对拍：expect-error ×2/todo-skip/filetest-location 四转绿 + coverage ×2
+> > 附带转绿（inspector 缺席空转部分，见下；SAME0 24→**30**、DIFF 46→**39**，
+> > 零回归；run-coverage 回 SAME1）。
+> > 偏离记档：coverage ×2 我侧 inspector 缺席致门控跳过（空转绿），真机实跑；
+> > 待 inspector/覆盖率另案。
+> > 回归：`tests/node/testmod.rs::phase10f_test_run_process_and_expect_failure`；
+> > 坑见 AGENTS §4.183。

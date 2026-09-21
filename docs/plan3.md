@@ -253,6 +253,12 @@ DIFF 51→46，零回归；testmod 按域拆 core/run；黑盒
 `phase10f_test_run_none_and_plan_gates`；AGENTS §4.182）。
 残：run process 隔离 ~15（子进程/线程传输）+ spawn CLI ~18 + reporter ~13。
 
+**2026-09-21 test Slice D 收官**：run(process) 经 worker 传输落地
+（expect-error ×2/todo-skip/filetest-location 四转绿 + coverage ×2 附带；
+对拍 SAME0 24→30、DIFF 46→39，零回归；黑盒
+`phase10f_test_run_process_and_expect_failure`；AGENTS §4.183）。
+残：run 并发/超时/randomize/tag 过滤 ~8 + spawn CLI ~18 + reporter ~13。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

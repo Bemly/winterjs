@@ -2744,3 +2744,13 @@ cargo build
   升级请求专属）；② H3 上传整收（§4.167）；③ 通道 unbounded（背压另案）。
 - 复现：`phase11_serve_ws_echo`（去 flush 即 RST；错 GUID 即 tungstenite 客户端
   握手失败）；`phase11_serve_ws_bad_handshake/static_first`（400×3/101+RFC 键）。
+
+### 4.169 全并行全量偶发 mozilla mutex 解锁失败（2026-09-21，观察中·未闭环）
+
+- 症状：`cargo test` 全并行跑到 `--test node` 时
+  `util::phase9a_util_promisify_callbackify_deep_equal` 报
+  `mozilla::detail::MutexImpl::unlock: pthread_mutex_unlock failed: Invalid argument`
+  后 abort；同用例单跑 0.59s 过，整 `--test node` 套件 51s 234/234 全绿。
+- 现状：与当轮改动（serve 系）零交集，判定并行负载型 flake，非回归；
+  根因未深究（引擎内部锁，另案）。再现两次即升级为必查。
+- 推广：全量红先单跑 + 整套件跑两档复核，再定回归/flake（§4.62 姊妹篇）。

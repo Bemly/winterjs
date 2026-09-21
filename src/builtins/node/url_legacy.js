@@ -925,13 +925,15 @@ function urlToHttpOptions(url) {
 }
 
 export {
-  URL_ as URL, URLSearchParams_ as URLSearchParams, fileURLToPath, pathToFileURL,
+  URL_ as URL, URLSearchParams_ as URLSearchParams, URLPattern_ as URLPattern,
+  fileURLToPath, pathToFileURL,
   urlParse as parse, urlFormat as format, urlResolve as resolve,
   urlResolveObject as resolveObject, Url,
   domainToASCII, domainToUnicode, urlToHttpOptions,
 };
 export default {
-  URL: URL_, URLSearchParams: URLSearchParams_, fileURLToPath, pathToFileURL,
+  URL: URL_, URLSearchParams: URLSearchParams_, URLPattern: URLPattern_,
+  fileURLToPath, pathToFileURL,
   parse: urlParse, format: urlFormat, resolve: urlResolve,
   resolveObject: urlResolveObject, Url,
   domainToASCII, domainToUnicode, urlToHttpOptions,

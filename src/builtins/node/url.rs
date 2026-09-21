@@ -13,9 +13,11 @@
 //! ERR_INVALID_URL 主机校验），WHATWG `format(url, options)` 走 JS 剥离口径。
 //! 偏差（记档）：win32 盘符只做 `/X:/` 前导剥离；resolveObject 非 WHATWG 近似。
 
-/// 内嵌 ESM 源（§0.9 按域分块：`url_file.js` file-URL 双向 + `url_legacy.js`
+/// 内嵌 ESM 源（§0.9 按域分块：`url_pattern.js` URLPattern 别名（首位，
+/// default 对象求值前就绪）+ `url_file.js` file-URL 双向 + `url_legacy.js`
 /// legacy parse/format/Url，concat 字节恒等）。
 pub const SOURCE: &str = concat!(
+    include_str!("url_pattern.js"),
     include_str!("url_file.js"),
     include_str!("url_legacy.js"),
 );

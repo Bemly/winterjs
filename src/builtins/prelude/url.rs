@@ -132,6 +132,151 @@ globalThis.URLSearchParams = class URLSearchParams {
   [Symbol.iterator]() { return this.entries(); }
   forEach(cb, thisArg) { for (const [k, v] of __wjs_uspState.get(this).pairs) cb.call(thisArg, v, k, this); }
 };
+globalThis.URLPattern = (function () {
+  // URLPattern（plan3 §5 专项）：WHATWG 匹配语义由 `urlpattern` 轮子承载，
+  // 此处只做 WebIDL 重载分流 + 取值 + 结果组装。错误自含（prelude 禁 import
+  // errors 面，文案逐字对真机 node 26.8.2）。
+  const state = new WeakMap();
+  function brand(self) {
+    const st = state.get(self);
+    if (st === undefined) throw new TypeError("Illegal invocation");
+    return st;
+  }
+  function coded(code, message) {
+    const err = new TypeError(message);
+    err.code = code;
+    return err;
+  }
+  const COMPONENTS = ["protocol", "username", "password", "hostname", "port", "pathname", "search", "hash"];
+  // init 字典读取：仅收字符串（数字/null 等一律视为缺席，真机口径）；
+  // 属性读取走正常取值（用户 getter 抛错天然透传）。
+  function readInit(obj) {
+    const out = {};
+    for (const k of COMPONENTS) {
+      if (k in obj) {
+        const v = obj[k];
+        if (typeof v === "string") out[k] = v;
+      }
+    }
+    return out;
+  }
+  // 构造输入归一：undefined/null → {}；string/对象直通；其余 ARG_TYPE。
+  function normInput(input) {
+    if (input === undefined || input === null) return {};
+    if (typeof input === "string" || typeof input === "object") return input;
+    throw coded("ERR_INVALID_ARG_TYPE", "Input must be an object or a string");
+  }
+  // exec/test 输入归一（文案不同，见 test-urlpattern-types）。
+  function normMatchInput(input) {
+    if (input === undefined || input === null) return {};
+    if (typeof input === "string" || typeof input === "object") return input;
+    throw coded("ERR_INVALID_ARG_TYPE", "URLPattern input needs to be a string or an object");
+  }
+  // base 归一：undefined → 缺席（null）；null → "null"（WebIDL 字符串化）；
+  // string 直通；其余 ARG_TYPE。
+  function normBase(base) {
+    if (base === undefined) return null;
+    if (base === null) return "null";
+    if (typeof base === "string") return base;
+    throw coded("ERR_INVALID_ARG_TYPE", "baseURL must be a string");
+  }
+  function matchPayload(input) {
+    return (typeof input === "string") ? JSON.stringify(input) : JSON.stringify(readInit(input));
+  }
+  function buildResult(comps, inputEcho) {
+    function comp(c) {
+      const groups = {};
+      for (const k of Object.keys(c.groups)) {
+        const v = c.groups[k];
+        groups[k] = (v === null) ? undefined : v;
+      }
+      return { groups, input: c.input };
+    }
+    // 键序钉死（test-urlpattern.js deepStrictEqual）：hash,hostname,inputs,
+    // password,pathname,port,protocol,search,username。
+    return {
+      hash: comp(comps.hash),
+      hostname: comp(comps.hostname),
+      inputs: [inputEcho],
+      password: comp(comps.password),
+      pathname: comp(comps.pathname),
+      port: comp(comps.port),
+      protocol: comp(comps.protocol),
+      search: comp(comps.search),
+      username: comp(comps.username),
+    };
+  }
+  function URLPattern(input, baseOrOptions, maybeOptions) {
+    if (!(this instanceof URLPattern)) {
+      throw coded("ERR_CONSTRUCT_CALL_REQUIRED", "Cannot call constructor without `new`");
+    }
+    let pattern, base = null, options;
+    if (arguments.length >= 3 || typeof baseOrOptions === "string") {
+      // 三参形或 (input, baseURL) 形（`undefined` base 亦 present，字符串化后解析）。
+      pattern = normInput(input);
+      base = (typeof baseOrOptions === "string") ? baseOrOptions : String(baseOrOptions);
+      options = maybeOptions;
+      if (options !== undefined && options !== null
+        && (typeof options !== "object" && typeof options !== "function")) {
+        throw coded("ERR_INVALID_ARG_TYPE", "options must be an object");
+      }
+      if (typeof pattern !== "string") {
+        // 字典 + base → 构造失败（真机口径，非 OPERATION_FAILED）。
+        throw coded("ERR_INVALID_URL_PATTERN", "Failed to construct URLPattern");
+      }
+    } else if (baseOrOptions !== undefined && baseOrOptions !== null
+      && typeof baseOrOptions !== "object" && typeof baseOrOptions !== "function") {
+      throw coded("ERR_INVALID_ARG_TYPE", "second argument must be a string or object");
+    } else {
+      pattern = normInput(input);
+      options = baseOrOptions;
+      if (options !== undefined && options !== null
+        && (typeof options !== "object" && typeof options !== "function")) {
+        throw coded("ERR_INVALID_ARG_TYPE", "options must be an object");
+      }
+    }
+    const ignoreCase = !!(options && options.ignoreCase);
+    const payload = (typeof pattern === "string") ? JSON.stringify(pattern) : JSON.stringify(readInit(pattern));
+    let parsed;
+    try {
+      parsed = JSON.parse(__wjs_urlpattern_parse(payload, base, ignoreCase));
+    } catch {
+      throw coded("ERR_INVALID_URL_PATTERN", "Failed to construct URLPattern");
+    }
+    state.set(this, { id: parsed.id, comps: parsed });
+  }
+  for (const k of COMPONENTS) {
+    Object.defineProperty(URLPattern.prototype, k, {
+      get() { return brand(this).comps[k]; },
+      enumerable: true, configurable: true,
+    });
+  }
+  Object.defineProperty(URLPattern.prototype, "hasRegExpGroups", {
+    get() { return brand(this).comps.hasRegExpGroups; },
+    enumerable: true, configurable: true,
+  });
+  URLPattern.prototype.test = function (input, base) {
+    const st = brand(this);
+    const norm = normMatchInput(input);
+    const b = normBase(base);
+    if (b !== null && typeof norm !== "string") {
+      throw coded("ERR_OPERATION_FAILED", "Failed to test URLPattern");
+    }
+    return __wjs_urlpattern_test(st.id, matchPayload(norm), b);
+  };
+  URLPattern.prototype.exec = function (input, base) {
+    const st = brand(this);
+    const norm = normMatchInput(input);
+    const b = normBase(base);
+    if (b !== null && typeof norm !== "string") {
+      throw coded("ERR_OPERATION_FAILED", "Failed to exec URLPattern");
+    }
+    const raw = __wjs_urlpattern_exec(st.id, matchPayload(norm), b);
+    if (raw === null || raw === "null") return null;
+    return buildResult(JSON.parse(raw), norm);
+  };
+  return URLPattern;
+})();
 globalThis.TextEncoder = class TextEncoder {
   get encoding() { return "utf-8"; }
   encode(s) { return __wjs_te_encode(String(s === undefined ? "" : s)); }

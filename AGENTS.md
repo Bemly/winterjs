@@ -2901,3 +2901,27 @@ cargo build
 - 修法：`cargo test --test node -- --test-threads=4` 全 node 域 248 绿（90s）；
   其余 19 target 全绿。全并行卡死先查该用例（`ps` 见读端 `S` + 无写者即此坑）。
 - 复现：全并行跑到该用例即卡；降并行即过。
+
+### 4.176 URLPattern 专项四坑（2026-09-21，plan3 §5）
+
+- 坑一（组序是哈希桶 artifact）：多组 `groups` 键序真机同名集异序可得异序
+  （`(a,b,c)→[b,c,a]`、`c,b,a→[b,a,c]`，跨进程稳定但无声明规则；映射本身全对）。
+  根因：Node 内部名表迭代序非声明序（疑固定种子哈希表桶序，无源码实锤）。
+  修法：`serde_json::Map`（BTree）天然字典序 + 代码注释记档为确定性偏离；
+  套件只钉单组（无多组序断言），黑盒显式断言排序后形状。教训：先验跨进程
+  稳定性（稳定≠可复刻），不稳定才谈对齐、稳定但无规则即记偏离。
+- 坑二（base 失效吞掉）：`new P("https://example.com", null, null)` 应抛
+  INVALID_URL_PATTERN，初版回成功——Rust 把非法 base（`"null"` 解不出）
+  当缺席（`and_then(parse)`）。修法：parse 路 `Some(b)+解不出` 即抛；
+  test/exec 路维持吞错（真机回 false/null，套件钉住）。
+- 坑三（`r#"` 撞 `"#frag"`）：测试 JS 含 `"#frag"`，`r#"` 裸串被提前闭合，
+  全文件编译炸（§4.44 家族：`format!`/`r#` 与 JS 同现一律换定界/落盘）。
+  修法：载荷块改 `r##"..."##`（断言串内无 `"##` 即安全）。
+- 坑四（concat 同域双导出）：`url_pattern.js` 与 `url_legacy.js` 各写一次
+  `export URLPattern` 即 `Duplicated export`（concat 是同一模块作用域）。
+  修法：定义与导出分家——pattern 块只留 `const`（置首位供 default 对象求值），
+  具名/default 双导出全收进 legacy 块。
+- 附带：轮子两入口宽严不一——`parse_constructor_string("[")` 抛，
+  `parse(init{pathname:"["})` 过（真机后者不抛）。单测走错入口即红，
+  入口按调用形状选（串形/字典形各归各）。
+- 复现：`tests/node/url.rs::phase11_urlpattern_*` + 真套件三件双侧 rc=0。

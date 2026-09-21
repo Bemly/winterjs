@@ -1,6 +1,7 @@
 //! tests/node/url.rs — 对齐 src/builtins/node/url.rs（node:url）。
 
 use crate::common::*;
+use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
@@ -237,6 +238,122 @@ console.log(L.join("\n"));
         "w-dep true",
         "n-puny true",
         "a-esc true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_urlpattern_surface() {
+    // URLPattern 构造/属性/test/exec（plan3 §5 专项；真机 node 26.8.2 逐项对拍）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "up.mjs",
+        r##"
+import { URLPattern } from "node:url";
+const show = (l, v) => console.log(l, JSON.stringify(v));
+// 构造三形 + 缺省
+const a = new URLPattern({ pathname: "/foo/:id" });
+show("a-proto", a.protocol); show("a-path", a.pathname); show("a-host", a.hostname);
+show("empty", [new URLPattern().protocol, new URLPattern().hostname, new URLPattern().pathname]);
+show("str", [new URLPattern("https://ex.com/foo/*").hostname, new URLPattern("https://ex.com/foo/*").pathname]);
+show("base", [new URLPattern("/foo/:id", "https://ex.com").hostname, new URLPattern("/foo/:id", "https://ex.com").pathname]);
+// 全局与模块同构
+show("same", URLPattern === globalThis.URLPattern);
+// exec 命中/未命中 + groups + inputs 键序
+const r = new URLPattern({ pathname: "/:value" }).exec("https://example.com/test");
+show("keys", Object.keys(r)); show("compkeys", Object.keys(r.pathname));
+show("vals", [r.hostname.input, r.pathname.input, r.pathname.groups.value]);
+show("miss", a.exec("https://other.com/bar"));
+show("hit", [a.test("https://ex.com/foo/1"), a.test("https://ex.com/nope")]);
+// 可选组缺席：键在、值为 undefined（真机口径）
+const g = new URLPattern({ pathname: "/foo/:id/:opt?" }).exec("https://ex.com/foo/1").pathname.groups;
+show("opt", [Object.keys(g).sort(), "opt" in g, String(g.opt), g.id]);
+// 匿名组 + 规范化 + hasRegExpGroups + search/hash
+show("anon", new URLPattern({ hostname: "{*.}ex.com" }).exec("https://mail.ex.com/").hostname.groups);
+show("norm", [new URLPattern({ protocol: "https:" }).protocol, new URLPattern({ username: ":u" }).username]);
+show("reg", [new URLPattern({ pathname: "/foo/(bar|baz)" }).hasRegExpGroups, new URLPattern({ pathname: "/foo/:id" }).hasRegExpGroups]);
+const f = new URLPattern({ search: "?q=:q", hash: "#frag" });
+show("sh", [f.search, f.hash, f.exec("https://ex.com/?q=1#frag").search.groups]);
+show("inputs", new URLPattern({ pathname: "/foo/:id" }).exec("https://ex.com/foo/1?x=2#h").inputs);
+show("dict-in", new URLPattern({ pathname: "/foo/:id" }).exec({ pathname: "/foo/9" }).pathname.groups);
+"##,
+    );
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    for line in [
+        r#"a-proto "*""#,
+        r#"a-path "/foo/:id""#,
+        r#"a-host "*""#,
+        r#"empty ["*","*","*"]"#,
+        r#"str ["ex.com","/foo/*"]"#,
+        r#"base ["ex.com","/foo/:id"]"#,
+        r#"same true"#,
+        r#"keys ["hash","hostname","inputs","password","pathname","port","protocol","search","username"]"#,
+        r#"compkeys ["groups","input"]"#,
+        r#"vals ["example.com","/test","test"]"#,
+        r#"miss null"#,
+        r#"hit [true,false]"#,
+        r#"opt [["id","opt"],true,"undefined","1"]"#,
+        r#"anon {"0":"mail"}"#,
+        r#"norm ["https",":u"]"#,
+        r#"reg [true,false]"#,
+        r#"sh ["q=:q","frag",{"q":"1"}]"#,
+        r#"inputs ["https://ex.com/foo/1?x=2#h"]"#,
+        r#"dict-in {"id":"9"}"#,
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_urlpattern_errors_boundary() {
+    // 错误矩阵（test-urlpattern-types/invalidthis 全断言 + getter 透传 + 组序偏离钉档）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "upe.mjs",
+        r##"
+import { URLPattern } from "node:url";
+const show = (l, f) => { try { const r = f(); console.log(l, "OK", JSON.stringify(r)); } catch (e) { console.log(l, "THROW", e.name, e.code, JSON.stringify(e.message)); } };
+show("no-new", () => URLPattern());
+show("num", () => new URLPattern(1));
+show("opts-num", () => new URLPattern({}, 1));
+show("base3-num", () => new URLPattern({}, "", 1));
+show("exec-num", () => new URLPattern().exec(1));
+show("exec-base-num", () => new URLPattern().exec("", 1));
+show("test-num", () => new URLPattern().test(1));
+show("3null", () => new URLPattern("https://example.com", null, null));
+show("dict-base", () => new URLPattern({}, "https://ex.com"));
+show("dict-nullbase", () => new URLPattern().test(null, null));
+show("getter", () => new URLPattern({ get protocol() { throw new Error("boom"); } }));
+show("ignorecase", () => { const p = new URLPattern({}, { ignoreCase: "" }); return p.protocol; });
+const proto = Object.getPrototypeOf(new URLPattern());
+show("brand-get", () => Object.getOwnPropertyDescriptor(proto, "protocol").get.call({}));
+const { test, exec } = new URLPattern();
+show("brand-test", () => test({}));
+show("brand-exec", () => exec({}));
+"##,
+    );
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    for line in [
+        "no-new THROW TypeError ERR_CONSTRUCT_CALL_REQUIRED \"Cannot call constructor without `new`\"",
+        "num THROW TypeError ERR_INVALID_ARG_TYPE \"Input must be an object or a string\"",
+        "opts-num THROW TypeError ERR_INVALID_ARG_TYPE \"second argument must be a string or object\"",
+        "base3-num THROW TypeError ERR_INVALID_ARG_TYPE \"options must be an object\"",
+        "exec-num THROW TypeError ERR_INVALID_ARG_TYPE \"URLPattern input needs to be a string or an object\"",
+        "exec-base-num THROW TypeError ERR_INVALID_ARG_TYPE \"baseURL must be a string\"",
+        "test-num THROW TypeError ERR_INVALID_ARG_TYPE \"URLPattern input needs to be a string or an object\"",
+        "3null THROW TypeError ERR_INVALID_URL_PATTERN \"Failed to construct URLPattern\"",
+        "dict-base THROW TypeError ERR_INVALID_URL_PATTERN \"Failed to construct URLPattern\"",
+        "dict-nullbase THROW TypeError ERR_OPERATION_FAILED \"Failed to test URLPattern\"",
+        "getter THROW Error undefined \"boom\"",
+        "ignorecase OK \"*\"",
+        "brand-get THROW TypeError undefined \"Illegal invocation\"",
+        "brand-test THROW TypeError undefined \"Illegal invocation\"",
+        "brand-exec THROW TypeError undefined \"Illegal invocation\"",
     ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }

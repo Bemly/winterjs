@@ -236,6 +236,7 @@ const genericNodeError = hideStackFrames(function genericNodeError(message, erro
 // ── codes（9a 按需全集；后续模块按需在此追加，保持字母序）─────────────────
 E('ERR_ASYNC_CALLBACK', '%s must be a function', TypeError);
 E('ERR_ASYNC_TYPE', 'Invalid name for async "type": %s', TypeError);
+E('ERR_CONSTRUCT_CALL_REQUIRED', 'Cannot call constructor without `new`', TypeError, HideStackFramesError);
 E('ERR_FALSY_VALUE_REJECTION', 'Promise was rejected with falsy value', Error, HideStackFramesError);
 E('ERR_INVALID_ARG_TYPE',
   (name, expected, actual) => {
@@ -323,6 +324,7 @@ E('ERR_INVALID_URL_SCHEME', 'The URL must be of scheme %s', TypeError);
 E('ERR_INVALID_FILE_URL_HOST', 'File URL host must be "localhost" or empty on %s', TypeError);
 E('ERR_INVALID_FILE_URL_PATH', 'File URL path must not include encoded \\ or / characters', TypeError);
 E('ERR_INVALID_URL', 'Invalid URL', TypeError);
+E('ERR_INVALID_URL_PATTERN', 'Failed to construct URLPattern', TypeError, HideStackFramesError);
 E('ERR_TTY_INIT_FAILED', 'TTY initialization failed: %s', Error);
 E('ERR_INVALID_MIME_SYNTAX',
   (kind, input, pos) => {
@@ -332,6 +334,7 @@ E('ERR_INVALID_MIME_SYNTAX',
   }, TypeError, HideStackFramesError);
 E('ERR_UNKNOWN_ENCODING', 'Unknown encoding: %s', TypeError, HideStackFramesError);
 E('ERR_UNESCAPED_CHARACTERS', '%s contains unescaped characters', TypeError, HideStackFramesError);
+E('ERR_OPERATION_FAILED', 'Failed to %s URLPattern', TypeError, HideStackFramesError);
 E('ERR_OUT_OF_RANGE',
   (str, range, input, replaceDefaultBoolean = false) => {
     if (!range) throw new TypeError('Missing "range" argument');

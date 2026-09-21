@@ -266,8 +266,12 @@
 
 ## url
 
-> 10f 收官：18 点名 = 13 ✅ + 5 ⏭️（3 件 URLPattern 整面未实现（node 26 内建 ada 系，
-> 体量另案）+ 1 件自 spawn 裸文件参数 + 1 件 isURL 内部面双 1 对齐），红 0。本轮改动主体：legacy parse/format/
+> 10f 收官：18 点名 = 13 ✅ + 5 ⏭️（3 件 URLPattern 整面 + 1 件自 spawn
+> 裸文件参数 + 1 件 isURL 内部面双 1 对齐），红 0。URLPattern 专项收官
+> （plan3 §5，2026-09-21）：`urlpattern` 0.6 直引（Deno 官方，2026-09-11
+> 已采购未接线）+ Rust 桥（parse/test/exec 三 natives + 会话注册表）+
+> prelude 真类（WebIDL 重载分流）+ `node:url` 具名/default 双导出——
+> 18 点名 = **16 ✅ + 2 ⏭️**，红 0。本轮改动主体：legacy parse/format/
 > resolve/resolveObject 按 node lib/url.js 逐字对齐（首尾修剪扫描器/nonHost 扫描/
 > getHostname/parseHost/autoEscapeStr/noEscapeAuth 表/escapedCodes 表）、IDNA
 > 校验（NFKC + ignored 软连字符 + 违禁扫描 + punycode，badIDNA 29 码点全拦）、
@@ -294,9 +298,9 @@
 | test-url-revokeobjecturl.js | 0 | 0 | ✅（revokeObjectURL/createObjectURL 缺参 ERR_MISSING_ARGS） |
 | test-url-format-invalid-input.js | 0 | 0 | ✅ |
 | test-url-is-url-internal.js | 1 | 1 | ⏭️ isURL 内部面（`internal/url` 同义双 1 对齐，不展开） |
-| test-urlpattern.js | 1 | 1 | ⏭️ URLPattern 未实现（node 26 内建，整面另案） |
-| test-urlpattern-types.js | 1 | 1 | ⏭️ URLPattern 未实现（同上） |
-| test-urlpattern-invalidthis.js | 1 | 1 | ⏭️ URLPattern 未实现（同上） |
+| test-urlpattern.js | 0 | 0 | ✅（专项：结果键序/分量键序/inputs 回填） |
+| test-urlpattern-types.js | 0 | 0 | ✅（专项：重载矩阵全码全信：CONSTRUCT_CALL/ARG_TYPE/URL_PATTERN/OPERATION_FAILED） |
+| test-urlpattern-invalidthis.js | 0 | 0 | ✅（专项：九 getter + test/exec 双品牌门 `Illegal invocation`） |
 | test-url-parse-deprecation.js | 1 | 1 | ⏭️ 自 spawn 裸文件参数（fixtures/node_modules 直跑，全 flag CLI 设计；DEP0169 警告部分已绿——expectWarning 序列通过，仅 spawn 断言红） |
 
 ## diagnostics_channel

@@ -203,6 +203,9 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
   `exec().pathname.groups` 可用），本仓 `typeof URLPattern === "undefined"`——
   按 §5 口径（Bun 实现了的才是欠账）列为真实欠账，另轮专项（WHATWG
   URLPattern 匹配语义 + groups 回填）。
+  ✅ 2026-09-21 收官：`urlpattern` 0.6 接线（Rust 桥 + prelude 真类 +
+  `node:url` 双导出），真套件三件双侧 rc=0，黑盒 `phase11_urlpattern_*`，
+  组序记档偏离（AGENTS §4.176）。
 
 > 验收口径：上表全部转绿/或逐簇书面偏离前，Phase 10 对"Bun 🟢 域"不算
 > 逐字节到位；10f 的收官（§1 矩阵/报告/终局门）不受影响——欠账已全部

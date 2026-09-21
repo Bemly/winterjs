@@ -276,18 +276,28 @@ export function withHttpServer(Base) {
       st.buf = __concat(st.buf, chunk);
       while (true) {
         if (st.req === null) {
+          // llhttp 口径：消息边界先吞前导空行（管线残段；insecure-parser
+          // 套件尾部现形）再找头终结——此前只在头残缺分支吞，前导空行+
+          // 完整头即误解析/400（incoming-pipelined 套件多请求连发只到首个）。
+          while (st.buf.length >= 2 && st.buf[0] === 13 && st.buf[1] === 10) {
+            st.buf = st.buf.slice(2);
+          }
           const headEnd = __findHeadEnd(st.buf);
           if (headEnd === -1) {
             // 头段超出 maxHeaderSize：431 Request Header Fields Too Large
             //（llhttp HPE_HEADER_OVERFLOW；header-overflow 套件精确字节）。
             if (st.buf.length > maxHeaderSize) { this.__headerFieldsTooLarge(sock); return; }
-            // 头未齐也可先校验请求行（llhttp 增量语义；管线残渣 "hello world"
-            // 在 URL 段首字节即 400，等不到行终结——blank-header 套件）。
-            // llhttp 口径：请求行前的 CRLF 空行容忍（管线残段；insecure-parser
-            // 套件尾部 '\r\n\r\n' 现场记录），先吞再校验。
-            while (st.buf.length >= 2 && st.buf[0] === 13 && st.buf[1] === 10) {
-              st.buf = st.buf.slice(2);
+            // 消息期 requestTimeout 从消息首字节起算（request-timeout-
+            // pipelining 套件：管线第二请求的残缺头也必须在 requestTimeout
+            // 内 408；已有计时（headersTimeout 空闲计时）在跑则不叠加，
+            // 部分数据不重置——interrupted/delayed 系既有口径）。
+            if (st.buf.length > 0 && st.__rqT == null && st.__hdT == null && this.requestTimeout > 0) {
+              st.__rqT = setTimeout(() => { st.__rqT = null; this.__reqTimeout(sock); }, this.requestTimeout);
+              st.__rqT.unref();
             }
+            // 头未齐也可先校验请求行（llhttp 增量语义；管线残渣 "hello world"
+            // 在 URL 段首字节即 400，等不到行终结——blank-header 套件；
+            // 前导空行已在上方统一吞，此处不再重复）。
             __checkRequestLinePrefix(st.buf);
             return;
           }
@@ -330,6 +340,9 @@ export function withHttpServer(Base) {
           // 字节（罕见）经 microtask 以裸 data 事件回灌（监听方已同步登记）。
           if (headers.upgrade !== undefined) {
             sock.__upgraded = true;
+            // node 口径：升级前释放解析器（parser-freed-before-upgrade 套件
+            // 断言 socket.parser === null，双侧）。
+            try { sock.parser = null; } catch { /* gone */ }
             if (this.listenerCount("upgrade") > 0) {
               // Node 口径三参 (req, socket, head)：head 恒 Buffer（零长=无残留，
               // ws 库 setSocket 读 head.length——undefined 即 TypeError）。
@@ -361,6 +374,13 @@ export function withHttpServer(Base) {
           res.__kaTimeout = this.keepAliveTimeout;
           res.__maxReq = this.maxRequestsPerSocket;
           st.reqCount = (st.reqCount ?? 0) + 1;
+          // node 口径：超 maxRequestsPerSocket 的管线请求回 503 +
+          // 关连接（keep-alive-pipeline-max-requests 套件第 4 路）。
+          if (this.maxRequestsPerSocket > 0 && st.reqCount > this.maxRequestsPerSocket) {
+            try { sock.write(new TextEncoder().encode("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
+            try { sock.destroy(); } catch { /* gone */ }
+            return;
+          }
           if (this.maxRequestsPerSocket > 0 && st.reqCount >= this.maxRequestsPerSocket) {
             // node 口径：达额请求的响应带 Connection: close（响应完关连接）。
             res.__maxReqReached = true;

@@ -666,6 +666,9 @@ export class ServerResponse extends Writable {
   }
   __sendHead() {
     // node 口径：header 独立成 write；首块合并只发生在 _final/flushFinal 快捷路。
+    // socket 已销毁即静默丢弃（incoming-pipelined 套件：管线中连接被毁后
+    // 续行响应的写不抛，node 写毁 socket 回 false 口径）。
+    if (this.__sock === null || this.__sock.destroyed) return;
     const head = this.__headBytes();
     if (head.length > 0) this.__sock.write(head);
   }
@@ -676,6 +679,7 @@ export class ServerResponse extends Writable {
   __frame(u8) {
     if (this.__noBody || this.__headOnly) return;
     if (u8.length === 0) return;
+    if (this.__sock === null || this.__sock.destroyed) return;
     if (this.__chunked && !this.__rawCL) {
       const hex = new TextEncoder().encode(u8.length.toString(16) + "\r\n");
       this.__sock.write(__concat(hex, __concat(u8, new TextEncoder().encode("\r\n"))));

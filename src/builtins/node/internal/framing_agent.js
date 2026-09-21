@@ -410,6 +410,8 @@
                 this.__respDone = true;
                 this.__upgraded = true;
                 this.__res = res;
+                // node 口径：升级前释放解析器（parser-freed-before-upgrade 套件）。
+                try { this.__sock.parser = null; } catch { /* gone */ }
                 // node 口径（upgrade-agent 套件）：升级即摘池（totalSocketCount
                 // 归零、不再复用；先摘后发，用户 upgrade 处理器里可见）+ req
                 // 'close' 异步随后（用户在 upgrade 里挂的 close 监听可达）。

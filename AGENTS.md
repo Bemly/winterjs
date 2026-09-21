@@ -2944,3 +2944,43 @@ cargo build
 - 复现：`tests/node/dgram.rs::phase11_dgram_*` + `test-dgram-send-bad-arguments`
   修前 `Missing expected exception`（端口进队列未同步校验）/修中
   `unexpected throw`（连调定位法：CAUGHT 打实际值，见本轮）。
+
+### 4.178 node:test Slice A 四坑（2026-09-21，plan3 test API 轮）
+
+- 坑一（CJS 包装头垫行，栈行号 +1）：`t.assert.ok` 失败补调用点源码行时，
+  ESM 按栈行号读文件精确命中，CJS 恒差一行（require 五连柯里化包装头垫一
+  行，`require.rs:244` 实锤）。修法：`__callerLine` 窗口向上回扫（行号起向下
+  5 行），首个含 `ok(` 的行即调用点，落空才回精确行
+  （`src/builtins/node/testmod.rs`）。
+- 坑二（async 吞同步校验）：`t.waitFor` 校验写在 `async` 函数体内，
+  `t.assert.throws` 同步调用够不着——抛错变 rejection（另附 4 条 unhandled）。
+  修法：校验提同步段先执行，通过后再进异步轮询（`__waitFor`/`__waitForRun`
+  分家）。推广：凡"同步抛 + 异步跑"双形态 API，校验一律同步段，
+  §4.37 症状一的 async 版。
+- 坑三（竞速输家 timer 续命）：`waitFor` 的 `Promise.race([attempt, sleep])`
+  输掉的 `sleep(60000)` 不清——测试全过、小结已打，进程续命 60s
+  （`polls`/`limits` 套件，`timeout: 60000` 现形；真机同为 cancel 语义）。
+  修法：race 落定即 `clearTimeout` 睡眠端。推广：凡带超时的 race，
+  落定即清输家，否则"全过但不退"（§4.93 的 hang 反面：输出齐、退出码无）。
+- 坑四（CJS 看不见 ESM 具名导出）：`require("node:test")` 取默认导出本体，
+  `assert`/`getTestContext` 等纯具名导出即 undefined（`test/suite` 因挂在
+  test 函数上才可见，`run is not a function` 同源）。修法：具名同步挂载
+  `test.getTestContext/test.assert`（`run/mock/snapshot` 随各片）。
+- 附带：`describe` 无 fn 即抛是偏差——真机 `createSubtest` 非函数 fn 即
+  noop（空 suite 合法），改静默 noop；`strictEqual` 缺省文案改真机逐字
+  （`Expected values to be strictly equal` 前缀，custom-assertions 套件钉住，
+  既有黑盒无文案依赖）。
+- 复现：11 目标套件（修前 DIFF 修后 SAME0）+ `tests/node/testmod.rs`
+  `phase10f_test_*` 四件。
+
+### 4.179 全并行 2 挂再现（2026-09-21，§4.174 家族）
+
+- 症状：全并行 `cargo test` 在 `--test node` 挂 2 件——
+  `child::exec::phase10f_child_exec_shell_self_and_timeout`（`envself` 行缺失）
+  + `fs::sync::phase10f_file_handle_read_empty`（`MutexImpl::~MutexImpl:
+  pthread_mutex_destroy failed: Resource busy`，§4.174 同款）。
+- 定性：单跑双绿 + `--test node -- --test-threads=4` 257 全绿——并行负载型
+  flake，非回归（本轮改动：testmod/assert，与 child-env/fs 零交集）。
+- 推广：全量红先单跑 + 降并行整域两档复核（§4.174 纪律）；`| head` 后
+  `echo $?` 取的是 head 的码，黑盒/探针判活一律文件落盘 + `${PIPESTATUS[0]}`
+  或重定向后取码（§4.45 三进宫：本轮二分 wait-for 时亲手复现一次）。

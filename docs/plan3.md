@@ -232,6 +232,11 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 | AGENTS.md | ✅ §4.140-144 四坑 + §4.145-147 三坑 + §4.148 net 五坑 |
 | 本节欠账表 | ✅ G3/G2/G9-2/G9-3/G6 划线转绿 |
 
+**2026-09-21 test Slice A 收官**：API 核心面 11 套件转绿（suite/ctx/tags/
+plan/waitFor/subtest/getTestContext/register；对拍 83 件 SAME0 6→17、
+DIFF 64→53，零回归；黑盒 `phase10f_test_*` 四件；AGENTS §4.178）。
+残 53：run API ~21/mock 全家并入下轮、spawn CLI ~18 与 reporter ~13 维持另案。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

@@ -1445,3 +1445,22 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > SAME0（双侧全绿）：filter-warning/inspect/mock-timers-with-timeout/
 > root-after-with-refed-handles/typechecking；SAME1=12 双红（coverage 系/
 > source-map 系等，真机同条件亦红）。
+>
+> ### Slice A（2026-09-21，API 核心面）：SAME0=5→**17**（+11）、DIFF=66→**53**，
+> > 零回归（旧 SAME 项无一转红）。
+> > 转绿 11 件：aliases（`suite` 导出 + `test.suite/describe` 同体）/assert
+> > （`t.assert` 全键 + ok 调用点源码行）/custom-assertions（`assert.register`
+> > 逐字校验 + plan 计数 + `this===ctx` + 覆盖）/get-test-context（具名导出 +
+> > 串行栈跨 setImmediate + 套件/测试钩子上下文）/option-precedence
+> > （name/fn/plan 覆盖 + 单 options 形）/option-validation（timeout/
+> > concurrency 码逐字）/subtest-after-hook（测试级 after 零子测试亦跑）/
+> > tags-inheritance（校验/小写规范/父优先并集/冻结 + 一次性实验警告）/
+> > test-fullname（SuiteContext 回调 + `t.test` 嵌套 + `<anonymous>`）/
+> > wait-for（同步校验 + 串行轮询 + 超时 cause + 输家 timer 即清）/
+> > aftereach-runtime-skip（运行时 skip + afterEach 照跑）。附带：`describe`
+> > 无 fn 改 noop（真机口径）、`strictEqual` 缺省文案真机逐字、具名导出挂载
+> > `test.getTestContext/test.assert`（CJS 可见性）。
+> > 回归：`tests/node/testmod.rs::phase10f_test_*` 四件；坑见 AGENTS §4.178。
+> > 残 53 件分簇：run 编程 API ~21（`run()` 事件流，另轮）/自 spawn CLI ~18
+> > （`--test` runner CLI 未实现 + 全 flag 设计门，另案）/reporter ~13
+> > （书面偏离维持）/mock 全家 3 + 校验零散（mock 轮并入）。

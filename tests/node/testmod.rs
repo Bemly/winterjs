@@ -160,6 +160,27 @@ fn phase10f_test_run_none_and_plan_gates() {
 }
 
 #[test]
+fn phase10f_test_run_process_and_expect_failure() {
+    // run({isolation:"process"}) worker 传输 + expectFailure 布尔反转。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let probe = dir.child("probe.test.mjs");
+    probe
+        .write_str(
+            "import { test } from \"node:test\";\ntest(\"w-pass\", () => {});\ntest(\"w-fail\", { expectFailure: true }, () => { throw new Error(\"boom\"); });\n",
+        )
+        .unwrap();
+    let file = dir.child("t.mjs");
+    let script = "import { test, run } from \"node:test\";\nimport assert from \"node:assert\";\ntest(\"driver\", async () => {\n  const stream = run({ files: [\"PROBE\"] });\n  const passes = [];\n  let fails = 0;\n  stream.on(\"test:pass\", (d) => passes.push(d.name + \":\" + String(d.expectFailure === true)));\n  stream.on(\"test:fail\", () => fails++);\n  for await (const _ of stream);\n  assert.deepStrictEqual(passes.sort(), [\"w-fail:true\", \"w-pass:false\"]);\n  assert.strictEqual(fails, 0);\n});\n"
+        .replace("PROBE", probe.path().to_str().unwrap());
+    file.write_str(&script).unwrap();
+    let out = winterjs().arg("--run").arg(file.path()).output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "run process: {stdout}");
+    assert!(stdout.contains("# pass 1, fail 0, skip 0, todo 0"), "summary: {stdout}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase10f_test_mock_property_and_top() {
     // mock.property 访问记录/复原 + 顶层 mock + 校验报错两件。
     let dir = assert_fs::TempDir::new().unwrap();

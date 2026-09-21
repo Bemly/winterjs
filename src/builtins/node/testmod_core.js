@@ -3,14 +3,14 @@ import validators from "node:internal/validators";
 import { codes } from "node:internal/errors";
 import { readFileSync, readdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { resolve as resolvePath } from "node:path";
 import { MockTracker } from "node:internal/test/mock";
+import { Worker } from "node:worker_threads";
 
-const { validateArray, validateFunction, validateNumber, validateObject, validateString, validateUint32 } = validators;
+const { validateArray, validateBoolean, validateFunction, validateInteger, validateNumber, validateObject, validateString, validateUint32 } = validators;
 // node internal/timers TIMEOUT_MAX（2**31 - 1）同值。
 const TIMEOUT_MAX = 2147483647;
 const __UNCOPIED = new Set(["AssertionError", "strict", "Assert", "options"]);
-const __SKIP = Symbol("skip");
-const __TODO = Symbol("todo");
 const __EMPTY_TAGS = Object.freeze([]);
 
 // 模块级自定义断言（node `assert` 具名导出 + `register`，真机 26 口径）。
@@ -82,6 +82,19 @@ function __checkConcurrency(concurrency) {
 function __validateTestOptions(options) {
   __checkTimeout(options.timeout);
   __checkConcurrency(options.concurrency);
+  if (options.expectFailure !== undefined) __validateExpectFailure(options.expectFailure);
+}
+// expectFailure 校验（本轮仅空对象门逐字 + true 生效；matcher 全家另轮）。
+function __validateExpectFailure(v) {
+  if (v === undefined || v === true || v === false) return;
+  if (typeof v === "string" || typeof v === "function") return;
+  if (v instanceof RegExp) return;
+  if (v !== null && typeof v === "object") {
+    if (Object.keys(v).length === 0) {
+      throw new codes.ERR_INVALID_ARG_VALUE("options.expectFailure", v, "must not be empty");
+    }
+    return;
+  }
 }
 
 // 参数归一（node createSubtest 口径）：(fn)/(options[, fn])/(name[, options][, fn])；
@@ -114,6 +127,8 @@ function __normCall(args) {
 function __mkSuite(name, ownTags, parent) {
   return {
     name, ownTags, parent,
+    // 根判定走位不走名（run 内层另建 innerRoot 与外层同名，见 todo-skip 双跑案）。
+    isRoot: parent === null,
     hooks: { before: [], after: [], beforeEach: [], afterEach: [] },
     beforeFired: false, poison: null, depth: parent ? parent.depth + 1 : 0,
     // node only-过滤三件（applyFilters 口径）+ run() 套件计数。
@@ -162,7 +177,7 @@ function __nameOk(full) {
 }
 function __suiteFullName(suite) {
   const parts = [];
-  for (let s = suite; s !== null && s !== __rootSuite; s = s.parent) {
+  for (let s = suite; s !== null && !s.isRoot; s = s.parent) {
     if (s.name) parts.unshift(s.name);
   }
   if (parts.length === 0) return "<root>";
@@ -349,15 +364,14 @@ function __testCtx(rec) {
     attempt: 0,
     diagnostic(msg) { console.log(`# ${String(msg)}`); },
     log(msg) { console.log(String(msg)); },
+    // 置旗语义（真机：body 继续执行；终局 skip 优先；message 回显到事件）。
     skip(msg) {
-      const e = { [__SKIP]: true };
-      if (msg !== undefined) e.message = msg;
-      throw e;
+      rec.skipped = true;
+      if (msg !== undefined) rec.skipMessage = String(msg);
     },
     todo(msg) {
-      const e = { [__TODO]: true };
-      if (msg !== undefined) e.message = msg;
-      throw e;
+      rec.isTodo = true;
+      if (msg !== undefined) rec.todoMessage = String(msg);
     },
     plan(count, options) {
       if (rec.planExpected !== null) {
@@ -412,10 +426,14 @@ function __mkTest(name, options, fn, suites, parent) {
   const done = new Promise((r) => { resolve = r; });
   const rec = {
     name,
-    fullName: parent ? `${parent.fullName} > ${name}` : [...suites.filter((s) => s !== __rootSuite).map((s) => s.name).filter(Boolean), name].join(" > "),
+    fullName: parent ? `${parent.fullName} > ${name}` : [...suites.filter((s) => !s.isRoot).map((s) => s.name).filter(Boolean), name].join(" > "),
     // 显式 only:false 即 noop 空转（真机 createSubtest 口径）。
     fn: (typeof fn === "function" && options.only !== false) ? fn : undefined,
     mode: options.only === true ? "only" : (options.skip ? "skip" : (options.todo ? "todo" : "run")),
+    skipMessage: typeof options.skip === "string" ? options.skip : undefined,
+    todoMessage: typeof options.todo === "string" ? options.todo : undefined,
+    skipped: false,
+    isTodo: !!options.todo,
     suites, parent: parent || null,
     tags: Object.freeze(tags),
     signal: __freshSignal(),
@@ -428,6 +446,7 @@ function __mkTest(name, options, fn, suites, parent) {
     assertObj: null, mockObj: null, ctx: null,
     passed: false, failed: false, beforeFired: false,
     onlyFlag: options.only === true,
+    expectFailure: options.expectFailure,
     hasOnlyTests: false,
     runOnlySubtests: false,
     done, resolve,
@@ -601,6 +620,16 @@ function __onlyFiltered(rec) {
   if (!owner) return false;
   return !!(owner.runOnlySubtests || owner.hasOnlyTests);
 }
+// pass 事件发射（skip/todo/expectFailure 互斥出现，真机口径：仅真值键在场）。
+function __emitPass(rec, flags) {
+  if (!__eventSink) return;
+  const data = __baseEvent(rec);
+  if (flags) {
+    for (const k of Object.keys(flags)) data[k] = flags[k];
+  }
+  __emit("test:pass", data);
+  __emit("test:complete", __baseEvent(rec));
+}
 // run() 事件数据（name 短名 + testId  pairing，test-id 套件口径）。
 function __baseEvent(rec) {
   const data = { name: rec.name, fullName: rec.fullName, testId: rec.testId, nesting: rec.nesting, tags: rec.tags };
@@ -611,19 +640,7 @@ async function __runOne(rec) {
   try {
     if (rec.mode === "skip") {
       __skip++;
-      if (__eventSink) {
-        __emit("test:pass", { ...__baseEvent(rec), skip: true, todo: false });
-        __emit("test:complete", __baseEvent(rec));
-      }
-      return;
-    }
-    if (rec.mode === "todo") {
-      __todo++;
-      console.log(`todo - ${rec.fullName}`);
-      if (__eventSink) {
-        __emit("test:pass", { ...__baseEvent(rec), skip: false, todo: true });
-        __emit("test:complete", __baseEvent(rec));
-      }
+      __emitPass(rec, { skip: rec.skipMessage ?? true });
       return;
     }
     if (!__nameOk(rec.fullName)) { __skip++; return; }
@@ -666,6 +683,18 @@ async function __runOne(rec) {
       }
       if (rec.pending.length > 0) await Promise.all(rec.pending);
       for (const h of rec.testHooks.after) await __runTestHook(h, ctx, ctx);
+      // 运行时 skip/todo 终局判定（skip 优先；抛错仍失败，错误粘滞）。
+      if (rec.skipped) {
+        __skip++;
+        __emitPass(rec, { skip: rec.skipMessage ?? true });
+        return;
+      }
+      if (rec.isTodo) {
+        __todo++;
+        console.log(`todo - ${rec.fullName}`);
+        __emitPass(rec, { todo: rec.todoMessage ?? true });
+        return;
+      }
       if (rec.childFailed) {
         const e = new Error("subtests failed");
         e.code = "ERR_TEST_FAILURE";
@@ -676,34 +705,41 @@ async function __runOne(rec) {
         e.code = "ERR_TEST_FAILURE";
         throw e;
       }
+      if (rec.expectFailure === true) {
+        // 期望失败却通过 → 真失败（expect-error-but-pass 口径）。
+        const e = new Error("test was expected to fail but passed");
+        e.code = "ERR_TEST_FAILURE";
+        e.failureType = "expectedFailure";
+        throw e;
+      }
       rec.passed = true;
       ctx.passed = true;
       __pass++;
       for (const s of rec.suites) s._pass++;
       if (__eventSink) {
-        __emit("test:pass", { ...__baseEvent(rec), skip: false, todo: false });
-        __emit("test:complete", __baseEvent(rec));
+        __emitPass(rec, null);
       }
     } finally {
       __ctxStack.pop();
     }
   } catch (e) {
-    if (e && e[__SKIP]) {
-      __skip++;
+    if (rec.expectFailure === true && (!e || e.failureType !== "expectedFailure")) {
+      // 期望失败且真失败 → 记 pass（事件带 expectFailure 旗）。
+      // 合成 expectedFailure 错（期望失败却通过）落下走真失败。
+      rec.passed = true;
+      try { ctx.passed = true; } catch {}
+      __pass++;
+      for (const s of rec.suites) s._pass++;
       if (__eventSink) {
-        __emit("test:pass", { ...__baseEvent(rec), skip: true, todo: false });
-        __emit("test:complete", __baseEvent(rec));
-      }
-    }
-    else if (e && e[__TODO]) {
-      __todo++;
-      console.log(`todo - ${rec.fullName}`);
-      if (__eventSink) {
-        __emit("test:pass", { ...__baseEvent(rec), skip: false, todo: true });
-        __emit("test:complete", __baseEvent(rec));
+        __emitPass(rec, { expectFailure: true });
       }
     }
     else {
+      // 失败标注（真机口径：failureType 缺省 testCodeFailure；既有 code 不动）。
+      if (e && (typeof e === "object" || typeof e === "function")) {
+        if (e.failureType === undefined) e.failureType = "testCodeFailure";
+        if (e.code === undefined) e.code = "ERR_TEST_FAILURE";
+      }
       __failOne(rec, e);
       for (const s of rec.suites) s._fail++;
       if (__eventSink) {
@@ -826,6 +862,8 @@ export function describe(...args) {
   const ownTags = options.tags !== undefined ? __canonTags(options.tags, "options.tags") : __EMPTY_TAGS;
   const parent = __suites[__suites.length - 1];
   const suite = __mkSuite(name, ownTags, parent);
+  suite.skip = !!options.skip;
+  suite.todo = !options.skip && !!options.todo;
   // 建套件即 kick 父级 before（先于本回调；runOnce 去重）。
   if (parent) __kickBefore(parent);
   if (options.only === true) {
@@ -838,12 +876,17 @@ export function describe(...args) {
   }
   __suites.push(suite);
   __suiteReg.push(suite);
-  const sc = __suiteCtx(suite);
-  __ctxStack.push(sc);
-  try {
-    if (typeof fn === "function") fn.call(sc, sc);
-  } finally {
-    __ctxStack.pop();
+  // skip 套件不跑回调（真机：跳过即不构建；todo-skip 套件靠此不触发 mustNotCall）。
+  if (!options.skip) {
+    const sc = __suiteCtx(suite);
+    __ctxStack.push(sc);
+    try {
+      if (typeof fn === "function") fn.call(sc, sc);
+    } finally {
+      __ctxStack.pop();
+      __suites.pop();
+    }
+  } else {
     __suites.pop();
   }
   __pump();

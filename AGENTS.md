@@ -3009,3 +3009,16 @@ cargo build
   SM 文案不同且 JS 层无拦截点（mocking.js 55/56，文件级仍 DIFF）。
 - 复现：`tests/node/testmod.rs::phase10f_test_mock_*` 两件 +
   `test-runner-mocking.js`（修前 `target undefined` 全灭）。
+
+### 4.181 mock.timers 四件（2026-09-21，plan3 test B2 轮）
+
+- 补丁面先探再写：`node:timers` 命名空间冻结（`setTimeout is read-only`）——
+  其具名补丁整体跳过（文档化偏差）；`scheduler.wait` 经影子赋值可补
+  （原型有实现，赋后自有、删即复原）；`globalThis.Date/setTimeout` 直接
+  赋值可补。探针 `patch{,2,3}.mjs` 三件先行。
+- 测试结束必须 `mock.reset()`（含 timers），只 `restoreAll()` 即跨测污染——
+  node Test 收尾即此口径（`test.js:1526`），本轮 testmod finally 同改。
+- `Date.toString()` 套件钉 V8 单行串——SM 原生多行，直接回真机可观测串
+  （与 §4.110 同类文案桥，就地注释）。
+- 复现：`tests/node/testmod.rs::phase10f_test_mock_timers_*` 两件 +
+  真套件 date/scheduler 双转绿（SAME0 17→19）。

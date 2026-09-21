@@ -243,6 +243,10 @@ mocking.js 55/56，唯一红为私有字段 V8 文案引擎偏离；82 件零回
 黑盒 `phase10f_test_mock_*` 两件；AGENTS §4.180）。
 残：mock-timers 2 件（B2：fake 计时器基建）+ run API ~21 另轮。
 
+**2026-09-21 test Slice B2 收官**：mock.timers 落地（对拍 SAME0 17→19、
+DIFF 53→51，零回归；黑盒 `phase10f_test_mock_timers_*` 两件；
+AGENTS §4.181）。残：run API ~21 另轮（`run()` 事件流）。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

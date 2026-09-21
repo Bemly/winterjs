@@ -1481,3 +1481,13 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > > 非 configurable 方法重定义走 V8 文案桥（预检抛，套件正则钉住）。
 > > 回归：`tests/node/testmod.rs::phase10f_test_mock_*` 两件；
 > > 坑见 AGENTS §4.180。
+>
+> ### Slice B2（2026-09-21，mock.timers）：MockTimers 落地（enable/tick/
+> > setTime/reset/runAll + 小数组优先队列 + Date 替换/isMock/now/toString +
+> > scheduler.wait 伪装 + AbortSignal.timeout；`node:timers` 命名空间冻结故
+> > 只补全局+scheduler+Date，套件不覆盖处记档）。
+> > 对拍：mock-timers-date/scheduler 双转绿（SAME0 17→**19**、DIFF 53→**51**，
+> > 零回归）；mock-timers.js 維持 SAME1（`--expose-internals` 跳过类）；
+> > mocking.js 維持单引擎文案红。
+> > 回归：`tests/node/testmod.rs::phase10f_test_mock_timers_*` 两件；
+> > 坑见 AGENTS §4.181。

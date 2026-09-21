@@ -654,6 +654,11 @@ export function withClientRequest(openSocket, flavor) {
       this.__buf1 = null;
       this.__holdTimer = null;
       this.__userEnded = false;
+      // node `req._ended`（requestOnFinish 置位，非 end() 同步）：'finish' 后
+      // setTimeout 即 noop（set-timeout-after-end 套件）；get() 后同步调
+      // setTimeout 时 finish 尚未到，故仍生效（client-set-timeout 套件）。
+      this.__reqFinished = false;
+      try { this.once("finish", () => { this.__reqFinished = true; }); } catch { /* gone */ }
       this.__connected = false;
       this.__sock = null;
       this.__onSockClose = null;
@@ -732,13 +737,23 @@ export function withClientRequest(openSocket, flavor) {
       if (this.__pendingKeepAlive !== undefined) {
         try { sock.setKeepAlive(this.__pendingKeepAlive[0], this.__pendingKeepAlive[1]); } catch { /* gone */ }
       }
-      // node onSocket 口径：timeoutCb 在场即挂 once；请求级 timeout 覆盖 agent 级
-      //（socket.timeout 反映最后一次 setTimeout）；agent 级已在建连时置位则不重臂。
+      // node 口径（agent setRequestSocket + client setSocketTimeout）：
+      // 构造期 timeout（__timeoutMs：请求级优先于 agent 级）在 attach 时立即
+      // 武装（'socket' 事件时可见）；构造后 setTimeout 的覆写值（__reqTimeoutMs
+      // 与构造期不同）defer 到 'connect'（client-set-timeout 套件时序）。
       // 假 socket（createConnection 注入的 Duplex）无 setTimeout 面则跳过。
       if (this.timeoutCb !== undefined) {
-        if (this.__reqTimeoutMs !== undefined) {
-          this.__applySockTimeout(sock, this.__reqTimeoutMs);
-        } else if (!sock.timeout) {
+        const __ctorMs = (typeof this.__timeoutMs === "number" && this.__timeoutMs > 0) ? this.__timeoutMs : undefined;
+        const __overMs = (this.__reqTimeoutMs !== undefined && this.__reqTimeoutMs !== __ctorMs) ? this.__reqTimeoutMs : undefined;
+        // node setRequestSocket 口径：请求级 timeout 覆盖 agent 级（timeout-
+        // option-with-agent 套件：agent 50 + 请求 100 → socket.timeout 为 100）；
+        // 相等时不重臂（agent 级建连已置位）。
+        if (__ctorMs !== undefined && sock.timeout !== __ctorMs) {
+          this.__applySockTimeout(sock, __ctorMs);
+        }
+        if (__overMs !== undefined) {
+          this.__deferSockTimeout(sock, __overMs);
+        } else if (__ctorMs === undefined && !sock.timeout) {
           const __ms = this.__timeoutMs;
           if (typeof __ms === "number" && __ms > 0) this.__applySockTimeout(sock, __ms);
         }

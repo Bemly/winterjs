@@ -239,6 +239,9 @@ class Socket extends EventEmitter {
     this.setTimeout = (ms, cb) => {
       const delay = Number(ms) || 0;
       if (this.__wjs_stimer) { clearTimeout(this.__wjs_stimer); this.__wjs_stimer = null; }
+      // node 口径：socket.timeout 反映最后一次 setTimeout（client-set-timeout
+      // 套件断言；旧"不发布"偏差作废，真机 26 实测 socket.timeout 即 ms 值）。
+      this.timeout = delay > 0 ? delay : 0;
       if (delay > 0) {
         const t = setTimeout(() => { this.__wjs_stimer = null; this.emit("timeout"); }, delay);
         t.unref();

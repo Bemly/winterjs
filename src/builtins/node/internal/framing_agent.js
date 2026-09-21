@@ -49,15 +49,45 @@
         sock.on("timeout", function onTimeout() {});
       }
     }
+    // node lib/_http_client.js setSocketTimeout 口径：connecting 期 defer 到
+    // 'connect'（client-set-timeout 套件：'socket' 事件时仍见构造期 2000，
+    // 'connect' 后才见 setTimeout 的 1000）。
+    __deferSockTimeout(sock, ms) {
+      if (sock.connecting) {
+        try { sock.once("connect", () => this.__applySockTimeout(sock, ms)); } catch { /* gone */ }
+      } else {
+        this.__applySockTimeout(sock, ms);
+      }
+    }
     // node lib/_http_client.js：once('timeout') + socket 空闲计时（已连即臂，
-    // 未连记位，__attach 落地）。
+    // 未连记位，__attach 落地）。setTimeout 必须补建 timeoutCb，否则 __attach
+    // 见 timeoutCb 缺席即跳过武装（client-timeout 套件 hang 根因）。
+    // finish 后调即 noop（set-timeout-after-end 套件：res 'end' 后 setTimeout(0)
+    // 不增监听，node `if (this._ended) return this` 口径；_ended 置于 finish，
+    // 故 get() 后同步 setTimeout 仍生效）。
     setTimeout(msecs, callback) {
+      if (this.__reqFinished) return this;
       if (typeof callback === "function") this.once("timeout", callback);
       const ms = Number(msecs) || 0;
       this.__reqTimeoutMs = ms > 0 ? ms : undefined;
+      if (ms > 0 && this.timeoutCb === undefined) {
+        this.timeoutCb = () => this.emit("timeout");
+      }
       if (this.__sock !== null && this.__sock !== undefined) {
         if (ms > 0) {
-          this.__applySockTimeout(this.__sock, ms);
+          this.__deferSockTimeout(this.__sock, ms);
+          // 已 attach 后调 setTimeout：补挂转发（__attach 只在 attach 时挂一次，
+          // 去重经 __lastTimeoutCb，与 __attach 同口径）。
+          if (this.timeoutCb !== undefined) {
+            const sock = this.__sock;
+            if (sock.__lastTimeoutCb !== undefined && sock.__lastTimeoutCb !== this.timeoutCb) {
+              try { sock.removeListener("timeout", sock.__lastTimeoutCb); } catch { /* gone */ }
+            }
+            if (sock.__lastTimeoutCb !== this.timeoutCb) {
+              try { sock.once("timeout", this.timeoutCb); } catch { /* gone */ }
+              sock.__lastTimeoutCb = this.timeoutCb;
+            }
+          }
         } else if (typeof this.__sock.setTimeout === "function") {
           this.__sock.setTimeout(0);
           this.__sock.timeout = 0;
@@ -542,10 +572,16 @@
           };
           sock.on("error", sock.__freeSockErr);
         }
-        // node 口径：socket 'free' 事件恒发（agent onFree 在此续行排队请求）；
-        // __release 内按 keepAlive 决定回池或销毁，并 resume 队列。
-        try { sock.emit("free"); } catch { /* gone */ }
+        // node 口径：先回池（__release：keepSocketAlive + 续行排队请求），再发
+        // socket 'free'（agent onFree 早于用户监听注册，故用户 free 处理器里
+        // 取到的已是池态——agent-timeout 复用块；emit 前清请求级超时并落 timeoutCb，
+        // responseKeepAlive 口径）。
+        if (this.timeoutCb !== undefined) {
+          try { sock.setTimeout(0); } catch { /* gone */ }
+          this.timeoutCb = null;
+        }
         this.agent.__release(sock, this.__key, this);
+        try { sock.emit("free"); } catch { /* gone */ }
       } else {
         try { sock.end(); } catch { /* closed meanwhile */ }
       }
@@ -713,21 +749,61 @@ Agent.prototype.__trackSocket = function (sock, key) {
       this.write = __writeAfterFIN;
     }
   });
-  // node agent：options.timeout 在建连时即置 socket 空闲计时（agent-timeout-
-  // option 套件：'socket' 事件时 socket.timeout 已 === 50；onTimeout 单例）。
+  // node agent（installListeners 口径）：onTimeout 单例无条件挂（set-timeout-
+  // after-end 套件：无 timeout 的 agent，其 socket 'timeout' 监听数亦为 1）；
+  // 超时且 socket 在池即销毁（agent-timeout 块 2：池 socket 不得复用）。
+  // options.timeout > 0 才在建连时置 socket 空闲计时（agent-timeout-option
+  // 套件：'socket' 事件时 socket.timeout 已 === 50）。
+  if (!sock.__onTimeoutSingleton) {
+    sock.__onTimeoutSingleton = true;
+    const __ag = this;
+    sock.on("timeout", function onTimeout() {
+      try {
+        const __free = __ag.freeSockets;
+        for (const __k of Object.keys(__free)) {
+          if (__free[__k].includes(sock)) { try { sock.destroy(); } catch { /* gone */ } break; }
+        }
+      } catch { /* 池表不可读即跳过 */ }
+    });
+  }
   if (this.options && typeof this.options.timeout === "number" && this.options.timeout > 0) {
     if (typeof sock.setTimeout === "function") {
       sock.setTimeout(this.options.timeout);
       sock.timeout = this.options.timeout;
-      if (!sock.__onTimeoutSingleton) {
-        sock.__onTimeoutSingleton = true;
-        sock.on("timeout", function onTimeout() {});
-      }
     }
   }
   const cleaner = () => this.__noteClosed(sock);
   sock.__poolCleaner = cleaner;
   sock.on("close", cleaner);
+};
+Agent.prototype.keepSocketAlive = function (sock) {
+  if (typeof sock.setKeepAlive === "function") {
+    try { sock.setKeepAlive(true, this.keepAliveMsecs); } catch { /* gone */ }
+  }
+  if (typeof sock.unref === "function") {
+    try { sock.unref(); } catch { /* gone */ }
+  }
+  // node lib/_http_agent.js keepSocketAlive 口径：入池即按 agentTimeout 重置
+  // 空闲计时（agent-timeout 套件：CustomAgent 覆写调 super 后再 setTimeout(60)；
+  // 经 this. 调度使子类覆写生效）。服务端 keep-alive hint 缩减（无 hint 跳过）。
+  let agentTimeout = (this.options && typeof this.options.timeout === "number") ? this.options.timeout : 0;
+  try {
+    const msg = sock._httpMessage;
+    const res = msg && msg.res;
+    const hint = res && res.headers ? res.headers["keep-alive"] : undefined;
+    const m = typeof hint === "string" ? /^timeout=(\d+)/.exec(hint) : null;
+    if (m !== null) {
+      const buf = (this.options && typeof this.options.agentKeepAliveTimeoutBuffer === "number")
+        ? this.options.agentKeepAliveTimeoutBuffer : 1000;
+      const t = parseInt(m[1], 10) * 1000 - buf;
+      if (t <= 0) return false;
+      if (t < agentTimeout) agentTimeout = t;
+    }
+  } catch { /* hint 解析失败即无 hint */ }
+  if (sock.timeout !== agentTimeout) {
+    try { sock.setTimeout(agentTimeout); } catch { /* gone */ }
+  }
+  return true;
 };
 Agent.prototype.__unpool = function (sock) {
   sock.__inPool = false;
@@ -817,17 +893,20 @@ Agent.prototype.__release = function (sock, key, req) {
         try { sock.destroy(); } catch { /* gone */ }
         this.__noteClosed(sock);
       } else {
+        // node 口径：入池前调可覆写的 keepSocketAlive（false 即销毁不池化；
+        // 默认实现做 TCP keepalive + unref + 空闲计时重置；CustomAgent 覆写
+        // 经 this. 调度生效，agent-timeout 套件）。freeSocketErrorListener
+        // 已在 __finishSock 的 'free' 派发前挂上（此处不再重复）。
+        let __keep = true;
+        try {
+          __keep = this.keepSocketAlive(sock);
+        } catch { __keep = false; }
+        if (__keep === false) {
+          try { sock.destroy(); } catch { /* gone */ }
+          this.__noteClosed(sock);
+        } else {
         sock.__inPool = true;
         free.push(sock);
-        // node keepSocketAlive 口径：入池即 TCP keepalive + unref（池不阻退出；
-        // 复用时 __attach ref 回）。freeSocketErrorListener 已在 __finishSock
-        // 的 'free' 派发前挂上（此处不再重复）。
-        if (typeof sock.setKeepAlive === "function") {
-          try { sock.setKeepAlive(true, this.keepAliveMsecs); } catch { /* gone */ }
-        }
-        if (typeof sock.unref === "function") {
-          try { sock.unref(); } catch { /* gone */ }
-        }
       // node 口径：入池即移出在用表（agent.sockets 只计在用——
       // agent-maxtotalsockets 的 getTotalSocketsCount 口径）；空键即删
       //（agent.sockets[name] === undefined 断言，agent-keepalive 套件）。
@@ -840,6 +919,7 @@ Agent.prototype.__release = function (sock, key, req) {
         sock.__poolCleaner = cleaner;
         sock.on("close", cleaner);
       }
+        }
     }
   }
   // 续行排队请求（同键优先；全局 maxTotalSockets 帽下跨键唤醒，同键队列空

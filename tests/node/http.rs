@@ -8,3 +8,5 @@ mod keepalive;
 mod parity;
 #[path = "http/surface.rs"]
 mod surface;
+#[path = "http/timeout.rs"]
+mod timeout;

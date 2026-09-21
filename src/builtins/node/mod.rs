@@ -59,6 +59,7 @@ pub mod util_types;
 pub mod url;
 pub mod v8;
 pub mod vm;
+mod vm_error;
 pub mod worker;
 pub mod zlib;
 

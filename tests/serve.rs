@@ -869,6 +869,197 @@ fn phase11_serve_keepalive_reuse() {
     dir.close().unwrap();
 }
 
+/// T4 upgrade handler 形状：upgrade 请求配对 socket 回声，其余走 HTTP。
+fn t4_handler_src() -> &'static str {
+    "export default { async fetch(req) { \
+     if ((req.headers.get('upgrade') || '').toLowerCase() === 'websocket') { \
+     const ws = __wjs_serve_socket(req); ws.onmessage = (e) => { ws.send(e.data); }; return ws; } \
+     return new Response('http', { status: 200 }); } };"
+}
+
+#[test]
+fn phase11_serve_ws_echo() {
+    // 正常：WS 回声经 JS onmessage（文本 + 二进制）+ 干净关闭握手；随后 HTTP 照常。
+    use futures::{SinkExt as _, StreamExt as _};
+    let dir = serve_fixture();
+    dir.child("handler.mjs").write_str(t4_handler_src()).unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+        let url = format!("ws://127.0.0.1:{}/ws", srv.port);
+        let (mut ws, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio_tungstenite::connect_async(&url),
+        )
+        .await
+        .expect("ws handshake timeout")
+        .expect("ws handshake");
+        ws.send(tokio_tungstenite::tungstenite::Message::Text("hello".into()))
+            .await
+            .unwrap();
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+            .await
+            .expect("echo timeout")
+            .expect("stream end")
+            .expect("ws error");
+        assert_eq!(msg, tokio_tungstenite::tungstenite::Message::Text("hello".into()));
+        ws.send(tokio_tungstenite::tungstenite::Message::Binary(bytes::Bytes::from(vec![1u8, 2, 3])))
+            .await
+            .unwrap();
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+            .await
+            .expect("echo timeout")
+            .expect("stream end")
+            .expect("ws error");
+        assert_eq!(msg, tokio_tungstenite::tungstenite::Message::Binary(bytes::Bytes::from(vec![1u8, 2, 3])));
+        ws.close(None).await.unwrap();
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+            .await
+            .expect("close timeout")
+            .expect("stream end")
+            .expect("ws error");
+        assert!(matches!(msg, tokio_tungstenite::tungstenite::Message::Close(_)));
+        let (st, _, body) = http_get(srv.port, "/dyn", &[]);
+        assert_eq!(st, 200);
+        assert_eq!(body, b"http");
+    });
+    dir.close().unwrap();
+}
+
+/// 裸 socket 读完整 HTTP 消息（分帧：chunked 终结块 / Content-Length / 关写即尾）。
+/// keep-alive + 小体（无长度头即 chunked）不靠运气等分包（§4.122 TCP 分包姊妹篇）。
+fn read_http_message(s: &std::net::TcpStream) -> Vec<u8> {
+    use std::io::Read;
+    let mut s = s;
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 4096];
+    let head_end = loop {
+        let n = s.read(&mut buf).expect("hs read");
+        assert!(n > 0, "eof before head end");
+        raw.extend_from_slice(&buf[..n]);
+        if let Some(p) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            break p;
+        }
+    };
+    let head = String::from_utf8_lossy(&raw[..head_end]).into_owned();
+    let status: u16 = head
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    // 101 后连接保持开放（WS 会话）→ 只返回头，不等体。
+    if status == 101 {
+        return raw;
+    }
+    let chunked = head.lines().skip(1).any(|l| {
+        l.to_lowercase().starts_with("transfer-encoding") && l.to_lowercase().contains("chunked")
+    });
+    let content_len = head.lines().skip(1).find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        if k.trim().eq_ignore_ascii_case("content-length") {
+            v.trim().parse::<usize>().ok()
+        } else {
+            None
+        }
+    });
+    if chunked {
+        loop {
+            if raw.ends_with(b"0\r\n\r\n") {
+                return raw;
+            }
+            let n = s.read(&mut buf).expect("chunked read");
+            assert!(n > 0, "eof before chunk end");
+            raw.extend_from_slice(&buf[..n]);
+        }
+    }
+    if let Some(n) = content_len {
+        while raw.len() < head_end + 4 + n {
+            let m = s.read(&mut buf).expect("fixed read");
+            assert!(m > 0, "eof before body end");
+            raw.extend_from_slice(&buf[..m]);
+        }
+        return raw;
+    }
+    loop {
+        let n = s.read(&mut buf).expect("close read");
+        if n == 0 {
+            return raw;
+        }
+        raw.extend_from_slice(&buf[..n]);
+    }
+}
+
+/// 裸 socket WS 握手（400 三件 + 非 WS Upgrade 零干扰 + 静态优先 101）。
+fn ws_handshake_raw(port: u16, req: &[u8]) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    s.write_all(req).unwrap();
+    let raw = read_http_message(&s);
+    parse_response(&raw)
+}
+
+#[test]
+fn phase11_serve_ws_bad_handshake() {
+    // 报错：缺 key / 错版本 / 非 GET 升级即 400（不进 JS）。
+    // 正常：非 WS 的 Upgrade 头（h2c）零干扰，走普通 HTTP。
+    let dir = serve_fixture();
+    dir.child("handler.mjs").write_str(t4_handler_src()).unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+    let base = "GET /ws HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\n";
+    let (st, _, _) = ws_handshake_raw(
+        srv.port,
+        format!("{base}Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\r\n").as_bytes(),
+    );
+    assert_eq!(st, 400);
+    let (st, _, _) = ws_handshake_raw(
+        srv.port,
+        format!("{base}Upgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 12\r\n\r\n").as_bytes(),
+    );
+    assert_eq!(st, 400);
+    let (st, _, _) = ws_handshake_raw(
+        srv.port,
+        b"POST /ws HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nContent-Length: 0\r\n\r\n",
+    );
+    assert_eq!(st, 400);
+    let (st, _, body) = ws_handshake_raw(
+        srv.port,
+        b"GET /dyn HTTP/1.1\r\nHost: x\r\nUpgrade: h2c\r\nConnection: Upgrade\r\n\r\n",
+    );
+    assert_eq!(st, 200);
+    assert_eq!(body, b"http");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_serve_ws_static_first() {
+    // 路由序：已存在静态文件路径的升级仍优先进 WS（`/` 有 index.html，照返 101）。
+    let dir = serve_fixture();
+    dir.child("handler.mjs").write_str(t4_handler_src()).unwrap();
+    let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
+    let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
+    let (st, h, _) = ws_handshake_raw(
+        srv.port,
+        b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    );
+    assert_eq!(st, 101);
+    assert_eq!(
+        h.get("sec-websocket-accept").map(String::as_str),
+        Some("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+        "headers: {h:?}"
+    );
+    dir.close().unwrap();
+}
+
 #[test]
 fn phase11_serve_h3_same_router() {
     // 正常：QUIC + H3 同端口同 Router 回声（scheme=https:）。

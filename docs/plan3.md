@@ -247,6 +247,12 @@ mocking.js 55/56，唯一红为私有字段 V8 文案引擎偏离；82 件零回
 DIFF 53→51，零回归；黑盒 `phase10f_test_mock_timers_*` 两件；
 AGENTS §4.181）。残：run API ~21 另轮（`run()` 事件流）。
 
+**2026-09-21 test Slice C 收官**：run(none) 事件流落地（同进程加载 +
+事件六件 + 发现 + only/tag/plan 门 + 钩子时序全对；对拍 SAME0 19→24、
+DIFF 51→46，零回归；testmod 按域拆 core/run；黑盒
+`phase10f_test_run_none_and_plan_gates`；AGENTS §4.182）。
+残：run process 隔离 ~15（子进程/线程传输）+ spawn CLI ~18 + reporter ~13。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

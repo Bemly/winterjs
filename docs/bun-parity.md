@@ -1491,3 +1491,16 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > > mocking.js 維持单引擎文案红。
 > > 回归：`tests/node/testmod.rs::phase10f_test_mock_timers_*` 两件；
 > > 坑见 AGENTS §4.181。
+>
+> ### Slice C（2026-09-21，run none + 事件流）：`run({isolation:"none"})`
+> > 同进程文件加载（状态快照/复原，可重入）+ 事件六件
+> > （enqueue/dequeue/start/pass/fail/complete，testId 配对）+ 套件落定
+> > pass/fail + 测试发现（cwd 下 `*.test.js`）+ `testTagFilters` 校验归一 +
+> > plan wait 门 + only-过滤改 applyFilters 口径（祖先标记 + 父门，去批量）+
+> > before 逐钩 runOnce（describe 建套件即 kick，同步前缀内联）+ 钩子/test/
+> > suite 回调 `this` 绑定 + 根名 `<root>`。
+> > 对拍：no-isolation ×2/enqueue-syntax-error/test-id/tags-validation
+> > 五转绿（SAME0 19→**24**、DIFF 51→**46**，零回归）；process 隔离门明确
+> > 拒绝（另片）。
+> > 回归：`tests/node/testmod.rs::phase10f_test_run_none_and_plan_gates`；
+> > 坑见 AGENTS §4.182。

@@ -3022,3 +3022,26 @@ cargo build
   （与 §4.110 同类文案桥，就地注释）。
 - 复现：`tests/node/testmod.rs::phase10f_test_mock_timers_*` 两件 +
   真套件 date/scheduler 双转绿（SAME0 17→19）。
+
+### 4.182 run(none) 五坑（2026-09-21，plan3 test C 轮）
+
+- 坑一（import 期 pump 打架）：内层文件 `test()` 直接调 `__pump`，与 run 的
+  drain 形成双排空循环共吃队列，顺序全乱。修法：`__innerActive` 旗，泵卫拒
+  内层 drain（`__pump` 直接 return），run 走 `__drainLoop` 直调（§4.24 多 run
+  教训的同进程版：隔离边界 = 状态快照/复原 + 可重入 drain）。
+- 坑二（suite 回调早于 before）：真机 Suite 构建先跑父 before 钩、再调 suite
+  回调（order-probe 钉住：直跑/run 同序；异步 before 不阻塞回调）。
+  修法：describe 建套件即 kick 父 before；kick 内联跑同步前缀、遇异步挂链；
+  测试起跑 await 落定（毒化照旧）。
+- 坑三（后注册 before 永不到）：套件级 fired 旗太粗——后载入文件的根 before
+  在首 kick 之后注册即漏。修法：逐钩 runOnce（已跑集合 + 每次 kick 补跑新增，
+  全串行；落定清槽以便下轮内联）。
+- 坑四（钩子归属再确认）：钩子 `this`/参数 = 运行中测试 ctx，`getTestContext`
+  = owner；before/after/suite 回调的 `this`/参数 = owner；根名 `<root>`
+  （no-isolation 夾具 `this.name` 逐项钉住）。修法：全部调用点改
+  `fn.call(argCtx, argCtx)` / `fn.call(ownerCtx, ownerCtx)` 两族。
+- 坑五（only 批量误伤）：旧批量过滤把整批压成 only，套件内非 only 本该跑。
+  修法：删批量，改 applyFilters 逐项门（祖先标记 + 父门；`only:false` 显式
+  即 noop）。另：无 before 套件的 after 被 beforeFired 门吞——补 `_ran` 位。
+- 复现：`tests/node/testmod.rs::phase10f_test_run_none_and_plan_gates` +
+  真套件 no-isolation ×2/enqueue/test-id/tags-validation（修前 DIFF）。

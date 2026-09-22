@@ -1357,6 +1357,21 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > >   真机自挂（node 142，超跑分 alarm），非我方回归；dd3/kadbg 偶发 park 未复现
 > >   （4/4 确定性触发 kaT）；`drain-writable-length` 仍 TIMEOUT——outputData
 > >   缓冲模型（writableLength/writableNeedDrain/drain 门控），G3 既定另轮专项。
+>
+> ### G11 upgrade 轮（2026-09-22，3 提交 + 黑盒；AGENTS §4.187）
+>
+> > - **判定门 + 三形态**：connection token + Upgrade 头双全（advertise case2/3）；
+> >   无回调无监听回落 request、回调放行无监听销毁、回调否决 request；
+> >   `shouldUpgradeCallback` 真/假/抛（抛经 nextTick 交付 uncaught）。
+> > - **体路由**：升级后 CL/chunked 增量泵续喂 req（`__feedUpgraded`），体完转
+> >   socket；`upgradeHead` 恒 Buffer；native 改 `__srvFeed` 直调（去双发）；
+> >   接管即摘服务端监听（去占数吞 spill）；spill 守卫防重入递归。
+> > - **迟挂不丢**：socket `data` 先暂存后冲刷 + `newListener` 递延（保序）；
+> >   `destroy(err)` 改 `emitErrorNT` 异步（同步抛压成异常）。
+> > - **对形 headers**：客户端 `[[k,v]]` 与扁平双形同发头。
+> > - **转 SAME**：upgrade 6 件（advertise/client/server-callback/large-body×2/
+> >   body-error；修前 5 TIMEOUT + 1 DIFF）；黑盒
+> >   `tests/node/http/upgrade.rs::phase11_http_upgrade_faces`（15s unref 守卫）。
 
 ## https
 

@@ -651,3 +651,117 @@ console.log("batch5-done");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_http_timeout_deep_host_auth_connect() {
+    // TIMEOUT 深水第一铲（真机 26.8.2 逐项对拍）：url.parse 对象 hostname 优先
+    // （host 含端口不再当主机名）+ options.auth 补 Basic（显式 Authorization
+    // 恒赢）+ CONNECT authority-form（请求行不补斜杠、Host 取 path 本体）+
+    // CONNECT 隧道 detach（两端 listenerCount 矩阵 + _httpMessage null +
+    // req destroyed/close）+ req.protocol + 基类 setTimeout + socket HWM。
+    // 正常 + 边界（IPv6/显式头/隧道回声）件。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r##"
+import http, { createServer, get, request, OutgoingMessage } from "node:http";
+import net from "node:net";
+import url from "node:url";
+import assert from "node:assert";
+
+// 1) url.parse 对象：hostname 优先 + Host 带端口 + auth 补 Basic。
+{
+  const s = createServer((req, res) => {
+    console.log("uparse", req.method, req.url, req.headers.host, req.headers.authorization);
+    res.end("ok");
+    s.close();
+  });
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  const u = url.parse(`http://user:pass@localhost:${s.address().port}/p`);
+  const q = request(u);
+  q.on("response", (r) => r.resume());
+  q.end();
+}
+// 2) 无 auth 不补（ClientRequest 查取表无 authorization）。
+{
+  const q = request({ port: 1, path: "/" });
+  console.log("noauth", q.getHeader("authorization") ?? "none");
+  q.destroy();
+}
+// 3) CONNECT：请求行 authority-form + Host 取 path + 隧道 detach 矩阵。
+{
+  const target = "tunnel.example:443";
+  const srv = net.createServer((sock) => {
+    sock.once("data", (d) => {
+      const lines = d.toString().split("\r\n");
+      console.log("conn-line", lines[0], "|", lines.includes(`Host: ${target}`));
+      sock.end("HTTP/1.1 200 Connection established\r\n\r\n");
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    const q = request({ host: "127.0.0.1", port: srv.address().port, method: "CONNECT", path: target });
+    q.on("connect", (res, sock) => {
+      console.log("cli-sock",
+        sock.listenerCount("close"), sock.listenerCount("data"), sock.listenerCount("end"));
+      sock.destroy();
+      srv.close(r);
+    });
+    q.end();
+  });
+}
+{
+  const s = createServer(() => {});
+  s.on("connect", (req, sock) => {
+    console.log("srv-sock",
+      [sock.listenerCount("close"), sock.listenerCount("data"),
+       sock.listenerCount("end"), sock.listenerCount("error"),
+       sock.listenerCount("timeout")].join(","),
+      !sock.ondata, !sock.onend);
+    sock.write("HTTP/1.1 200 Connection established\r\n\r\n");
+  });
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    const q = request({ port: s.address().port, method: "CONNECT", path: "g:443" });
+    console.log("proto", q.protocol, "destroyed0", q.destroyed);
+    q.on("connect", (res, sock) => {
+      console.log("req-detach", q.destroyed);
+      sock.destroy();
+      s.close(r);
+    });
+    q.on("close", () => console.log("req-close", q.destroyed));
+    q.end();
+  });
+}
+// 4) 基类 setTimeout + socket HWM。
+{
+  const om = new OutgoingMessage();
+  let got = 0;
+  om.setTimeout(42);
+  om.emit("socket", { setTimeout: (ms) => { got = ms; } });
+  console.log("om-timeout", got);
+  const sock = new net.Socket();
+  console.log("sock-hwm", sock.writableHighWaterMark);
+}
+console.log("deep1-done");
+"##,
+    );
+    for tag in [
+        "uparse GET /p",
+        "Basic dXNlcjpwYXNz",
+        "noauth none",
+        "conn-line CONNECT tunnel.example:443 HTTP/1.1 | true",
+        "cli-sock 0 0 1",
+        "srv-sock 0,0,1,0,0 true true",
+        "proto http: destroyed0 false",
+        "req-detach true",
+        "req-close true",
+        "om-timeout 42",
+        "sock-hwm 65536",
+        "deep1-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}

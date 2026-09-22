@@ -437,9 +437,13 @@ E('ERR_HTTP_INVALID_HEADER_VALUE', 'Invalid value "%s" for header "%s"', TypeErr
 // node lib/_http_outgoing.js（multiple-headers 套件逐字，收发同文案
 // 'Cannot set/append headers after they are sent to the client'）。
 E('ERR_HTTP_HEADERS_SENT', 'Cannot %s headers after they are sent to the client', Error, HideStackFramesError);
-// node lib/_http_common.js checkInvalidHeaderChar（真机逐字 'Invalid character
-// in header content'；header-validators/header-value-relaxed 套件）。
-E('ERR_INVALID_CHAR', 'Invalid character in header content', TypeError, HideStackFramesError);
+// node lib/internal/errors.js（splitting 套件逐字 'Invalid character in header
+// content ["foo"]'；无字段即旧裸文案，header-validators/value-relaxed 套件）。
+E('ERR_INVALID_CHAR',
+  (field = undefined) => field === undefined
+    ? 'Invalid character in header content'
+    : `Invalid character in header content ["${field}"]`,
+  TypeError, HideStackFramesError);
 // node lib/_http_server.js（head-throw 套件逐字 'Adding content for this request
 // method or response status is not allowed.'；rejectNonStandardBodyWrites 真机实测）。
 E('ERR_HTTP_BODY_NOT_ALLOWED', 'Adding content for this request method or response status is not allowed.', Error);

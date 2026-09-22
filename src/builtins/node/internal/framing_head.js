@@ -95,17 +95,18 @@ function __parseModeOf(validation) {
   return validation === "insecure" ? "lenient" : validation;
 }
 // 出站头值门：strict 拒控制字符（除 HTAB）与 DEL；relaxed/insecure 只拒
-// NUL/CR/LF（>0xff 不可能出现——latin1 文本）。违者 ERR_INVALID_CHAR。
-function __checkOutboundHeaderValue(validation, value) {
+// NUL/CR/LF（>0xff 不可能出现——latin1 文本）。违者 ERR_INVALID_CHAR（具名
+// 调用带 ["key"] 后缀，无名走裸文案）。
+function __checkOutboundHeaderValue(validation, value, name = undefined) {
   const v = String(value);
   if (validation === "relaxed" || validation === "insecure") {
     if (/[\x00\r\n]/.test(v)) {
-      throw new codes.ERR_INVALID_CHAR("Invalid character in header content");
+      throw new codes.ERR_INVALID_CHAR(name);
     }
     return;
   }
   if (!__validHeaderValue(v)) {
-    throw new codes.ERR_INVALID_CHAR("Invalid character in header content");
+    throw new codes.ERR_INVALID_CHAR(name);
   }
 }
 // node 单例头（重名首个赢；multiheaders2 套件 11 件 + 真机三轮实测
@@ -190,7 +191,7 @@ function __toU8(data) {
 //（header-validators 套件；真机 message 'Invalid character in header content'）。
 function __validateHeaderValue(v) {
   if (!__validHeaderValue(String(v))) {
-    throw new codes.ERR_INVALID_CHAR("Invalid character in header content");
+    throw new codes.ERR_INVALID_CHAR();
   }
 }
 function __lowerHeaders(obj, validation, namesSink) {
@@ -198,7 +199,7 @@ function __lowerHeaders(obj, validation, namesSink) {
   for (const [k, v] of Object.entries(obj ?? {})) {
     // 头名字门（node checkIsHttpToken 口径；invalidheaderfield 套件）。
     if (!__TOKEN_RE.test(k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", k);
-    if (validation !== undefined) __checkOutboundHeaderValue(validation, v);
+    if (validation !== undefined) __checkOutboundHeaderValue(validation, v, k);
     out[k.toLowerCase()] = String(v);
     if (namesSink !== undefined) namesSink[k.toLowerCase()] = String(k);
   }
@@ -249,7 +250,7 @@ export function validateHeaderValue(name, value) {
   if (value === undefined) {
     throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", String(name));
   }
-  __checkOutboundHeaderValue("strict", value);
+  __checkOutboundHeaderValue("strict", value, String(name));
 }
 const __TOKEN_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 // chunk 扩展字符集：RFC 7230 token + ';' + '='（真机 26.8.2 ASCII 全扫实测；
@@ -542,12 +543,12 @@ export class ServerResponse extends Writable {
     if (Array.isArray(value)) {
       const __arr = [];
       for (const __e of value) {
-        __checkOutboundHeaderValue(this.__validation, __e);
+        __checkOutboundHeaderValue(this.__validation, __e, String(name));
         __arr.push(__e);
       }
       this.__headers[lk] = __arr;
     } else {
-      __checkOutboundHeaderValue(this.__validation, value);
+      __checkOutboundHeaderValue(this.__validation, value, String(name));
       this.__headers[lk] = value;
     }
     // node 口径：wire 保留用户原拼写（kOutHeaders 存 [name, value] 原文名，
@@ -564,7 +565,7 @@ export class ServerResponse extends Writable {
     if (!__TOKEN_RE.test(name)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", name);
     const lk = String(name).toLowerCase();
     const __vals = Array.isArray(value) ? value : [value];
-    for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e);
+    for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e, String(name));
     const cur = this.__headers[lk];
     if (cur === undefined) {
       this.__headers[lk] = Array.isArray(value) ? [...value] : value;
@@ -694,7 +695,7 @@ export class ServerResponse extends Writable {
         const __lk = __k.toLowerCase();
         if (this._removedHeader !== undefined) delete this._removedHeader[__lk];
         const __vals = Array.isArray(__v) ? __v : [__v];
-        for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e);
+        for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e, __k);
         if (!__touched.has(__lk)) {
           __touched.add(__lk);
           this.__headers[__lk] = Array.isArray(__v) ? [...__v] : __v;
@@ -719,12 +720,12 @@ export class ServerResponse extends Writable {
         if (Array.isArray(__v)) {
           const __arr = [];
           for (const __e of __v) {
-            __checkOutboundHeaderValue(this.__validation, __e);
+            __checkOutboundHeaderValue(this.__validation, __e, String(k));
             __arr.push(__e);
           }
           this.__headers[__lk] = __arr;
         } else {
-          __checkOutboundHeaderValue(this.__validation, __v);
+          __checkOutboundHeaderValue(this.__validation, __v, String(k));
           this.__headers[__lk] = __v;
         }
         this.__headerNames[__lk] = String(k);

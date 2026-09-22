@@ -16,7 +16,7 @@
       // 构造期数组形（__headerList 在场）下 setHeader 原位替换同键对——
       // 真机 wire 探针：构造期对占位，后调 set 即原位顶替。
       const __vals = Array.isArray(value) ? [...value] : [value];
-      for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e);
+      for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e, String(name));
       if (this.__headerList !== null && this.__headerList !== undefined) {
         const __nl = [];
         let __placed = false;
@@ -51,7 +51,7 @@
       if (!__TOKEN_RE.test(name)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", name);
       const lk = String(name).toLowerCase();
       const __vals = Array.isArray(value) ? [...value] : [value];
-      for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e);
+      for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e, String(name));
       // 构造期数组形下 append 即尾部并入有序对（真机探针：既有行保留原位）。
       if (this.__headerList !== null && this.__headerList !== undefined) {
         for (const __e of __vals) this.__headerList.push([String(name), __e]);

@@ -148,6 +148,20 @@ class Socket extends EventEmitter {
     Object.defineProperty(this, "bufferSize", { get: () => this.__pendBytes, enumerable: true });
     // 事件循环派发钩子：dispatch 以 global 为 this 调用，须预绑定（self 语义）
     this.__ev = this.__ev.bind(this);
+    // 无监听到达的数据暂存（upgrade-body 系：101 先到、data 监听后挂即丢——
+    // 真机缓冲至读；冲刷见 __flushData + newListener 钩）。
+    this.__dataBuf = [];
+    this.__flushData = () => {
+      while (this.__dataBuf.length > 0) {
+        if (typeof this.listenerCount !== "function" || this.listenerCount("data") === 0) return;
+        const __u = this.__dataBuf.shift();
+        try { this.emit("data", this.__dec ? this.__dec.write(__u) : Buffer.from(__u)); } catch { /* 监听抛错不阻收尾 */ }
+      }
+    };
+    this.on("newListener", (__evName) => {
+      // 入表前触发（§4.47），只递延冲刷不读表。
+      if (__evName === "data") queueMicrotask(() => this.__flushData());
+    });
     // Node Writable/Readable 内部面（ws 等 npm 库直接翻字段/调用）：
     // cork/uncork no-op（JS 层写本就不聚合，行为等价）；setNoDelay/
     // setKeepAlive no-op（tokio 写半直通，无 Nagle 可关）；_readableState
@@ -561,14 +575,25 @@ class Socket extends EventEmitter {
       }
       case "data": {
         const u8 = __b64dec(payload);
+        // 服务端升级接管（upgrade-body 系）：体字节走服务端直调喂体，不经
+        // emitter（同表双发会使用户收到原始体 + spill 双份）；用户只收 spill。
+        if (this.__srvUpgraded === true && typeof this.__srvFeed === "function") {
+          this.bytesRead += u8.length;
+          try { this.__srvFeed(u8); } catch { /* 喂体错由服务端收口 */ }
+          break;
+        }
         if (this.__paused) { this.__pauseBuf.push(u8); break; }
         this.bytesRead += u8.length;
-        this.emit("data", this.__dec ? this.__dec.write(u8) : Buffer.from(u8));
+        // 先暂存后冲刷（迟挂监听不丢字节；挂载竞态下仍保序——直发会反超暂存）。
+        this.__dataBuf.push(u8);
+        this.__flushData();
         break;
       }
       case "end": {
         this.readable = false;
         this.__peerFin = true;
+        // 暂存先行（FIN 前到的字节先于 end 交付；无监听即留待迟挂冲刷）。
+        try { this.__flushData(); } catch { /* 监听抛错不阻收尾 */ }
         // 池化空闲 socket 见 FIN 即销毁（半关不可复用；否则写端永活、条目永泄，
         // 10b https 保活案；Node 同样把 end 掉的 socket 踢出池）。
         if (this.__inPool) {
@@ -624,7 +649,8 @@ class Socket extends EventEmitter {
       case "close":
         // HE：失败尝试的 close → 推进下一地址（或末位失败收口）。
         if (this.__heOnErr) { this.__heAdvance(); break; }
-        this.destroyed = true; this._handle = null; this.emit("close", this.__hadError === true); break;
+        this.destroyed = true; this._handle = null; this.__dataBuf = [];
+        this.emit("close", this.__hadError === true); break;
     }
   }
   // node 口径：pending = 尚无可用句柄——连接中 true、连接完成 false、
@@ -755,8 +781,16 @@ class Socket extends EventEmitter {
       this.destroyed = true;
       this.writable = false; this.readable = false;
       this._handle = null;
+      this.__dataBuf = [];
       if (this.__id) __wjs_net_destroy(this.__id);
-      if (err !== undefined && err !== null) { this.__hadError = true; this.emit("error", err); }
+      // node 口径 emitErrorNT：error 经 nextTick 异步发（同步抛错会把
+      // uncaughtException 语义压成同步异常——upgrade body-error 套件；
+      // tick 回调带 uncaught 路由，无监听即交付 uncaughtException）。
+      if (err !== undefined && err !== null) {
+        this.__hadError = true;
+        const __e = err;
+        process.nextTick(() => { this.emit("error", __e); });
+      }
     }
     return this;
   }

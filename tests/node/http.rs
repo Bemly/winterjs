@@ -10,3 +10,5 @@ mod parity;
 mod surface;
 #[path = "http/timeout.rs"]
 mod timeout;
+#[path = "http/upgrade.rs"]
+mod upgrade;

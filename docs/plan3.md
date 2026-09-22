@@ -299,6 +299,11 @@ server timeout 进门 + socket HWM 65536 + 基类 setTimeout + req.protocol +
 11 件转 SAME0；http 27/27 + net 18/18 + 冒烟；AGENTS §4.189。
 未闭环：`outgoing-properties`（wl 记账专项）+ handler 抛吞 hang（另单元）。
 
+**2026-09-22 G11 TIMEOUT 深水第二铲**：server 选项类（IM/SR 请求期构造）+
+建连选项透传（HWM 进 Socket 构造器）+ socket 双 65536/res 跟随 +
+黑盒 `tests/node/http/surface.rs::phase11_http_server_options_surface`；
+3 件转 SAME0；http 28/28 + net 18/18 + 冒烟；AGENTS §4.190。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

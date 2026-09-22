@@ -1409,6 +1409,17 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > > - **未闭环**：`outgoing-properties`（HWM 已对齐，余 `writableLength`
 > >   `len+8` 记账 = G3 outputData 专项）+ handler 抛吞进 400 通道即静默 hang
 > >  （真机 crash，另立单元）。
+>
+> ### G11 TIMEOUT 深水第二铲（2026-09-22；AGENTS §4.190）
+>
+> > - **server 选项类**：`IncomingMessage/ServerResponse` 存 server + 请求期当
+> >   构造器（真机无校验；子类透传；裸 `Server()` 本就可调）。
+> > - **建连选项透传**：`net.createConnection` 首参对象进 `new Socket`
+> >   （readableHWM 等生效）；socket 读写 HWM 缺省双 65536（背压默认同改，
+> >   零回归）+ 双 getter；客户端 res 跟 socket HWM 走。
+> > - **转 SAME0**：server-options-incoming-message/
+> >   server-options-server-response/incoming-message-options（3 件）；黑盒
+> >   `tests/node/http/surface.rs::phase11_http_server_options_surface`。
 
 ## https
 

@@ -848,3 +848,49 @@ console.log("srvopt-done");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_http_invalid_char_key() {
+    // splitting 套件：头值非法字符报错带 ["key"] 后缀（set/append/writeHead
+    // 三路；无键走裸文案）。正常（合法值过）+ 报错三件。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r##"
+import { createServer } from "node:http";
+const s = createServer((req, res) => {
+  for (const [fn, args] of [
+    ["setHeader", ["foo", "a\rb"]],
+    ["appendHeader", ["foo", "a\nb"]],
+  ]) {
+    try { res[fn](...args); console.log(fn, "BAD"); }
+    catch (e) { console.log(fn, e.code, e.message); }
+  }
+  try { res.writeHead(200, { foo: "bar\r\nbaz" }); console.log("wh BAD"); }
+  catch (e) { console.log("wh", e.code, e.message); }
+  res.writeHead(200, { foo: "bar" });
+  console.log("ok-path", res.getHeader("foo"));
+  res.end("ok");
+  s.close();
+});
+await new Promise((r) => s.listen(0, "127.0.0.1", r));
+await new Promise((r) => {
+  import("node:http").then(({ get }) => {
+    get({ port: s.address().port }, (res) => res.resume().on("end", r));
+  });
+});
+console.log("charkey-done");
+"##,
+    );
+    for tag in [
+        "setHeader ERR_INVALID_CHAR Invalid character in header content [\"foo\"]",
+        "appendHeader ERR_INVALID_CHAR Invalid character in header content [\"foo\"]",
+        "wh ERR_INVALID_CHAR Invalid character in header content [\"foo\"]",
+        "ok-path bar",
+        "charkey-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}

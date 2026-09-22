@@ -765,3 +765,86 @@ console.log("deep1-done");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_http_server_options_surface() {
+    // TIMEOUT 深水第二铲：server IncomingMessage/ServerResponse 自定义类 +
+    // 请求级 createConnection 透传 + socket/res HWM 对齐（真机逐项实测）。
+    // 正常 + 边界（子类方法/无参 res 形/HWM 定制）件。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r##"
+import http, { createServer, get, request, Server } from "node:http";
+import net from "node:net";
+
+// 1) 自定义 IncomingMessage：子类方法在 handler 可见。
+{
+  class MyIM extends http.IncomingMessage {
+    getUserAgent() { return this.headers["user-agent"] || "unknown"; }
+  }
+  const s = createServer({ IncomingMessage: MyIM }, (req, res) => {
+    console.log("im", req.constructor.name, req.getUserAgent());
+    res.end("ok");
+    s.close();
+  });
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    get({ port: s.address().port, headers: { "User-Agent": "node-test" } }, (res) => {
+      res.resume().on("end", r);
+    });
+  });
+}
+// 2) 自定义 ServerResponse（裸 Server 调用形）：子类方法发头。
+{
+  class MySR extends http.ServerResponse {
+    status(code) { return this.writeHead(code, { "Content-Type": "text/plain" }); }
+  }
+  const s = Server({ ServerResponse: MySR }, (req, res) => {
+    console.log("sr", res.constructor.name);
+    res.status(200);
+    res.end("ok");
+    s.close();
+  });
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    get({ port: s.address().port }, (res) => {
+      console.log("sr-cli", res.statusCode, res.headers["content-type"]);
+      res.resume().on("end", r);
+    });
+  });
+}
+// 3) 请求级 createConnection + HWM 对齐（res/socket 同值）。
+{
+  const s = createServer((req, res) => { res.end("x"); });
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    const q = request({
+      port: s.address().port,
+      createConnection(options) {
+        options.readableHighWaterMark = 1024;
+        return net.createConnection(options);
+      },
+    }, (res) => {
+      console.log("hwm", res.socket === q.socket,
+        res.socket.readableHighWaterMark, res.readableHighWaterMark);
+      res.resume().on("end", () => s.close(r));
+    });
+    q.end();
+  });
+}
+console.log("srvopt-done");
+"##,
+    );
+    for tag in [
+        "im MyIM node-test",
+        "sr MySR",
+        "sr-cli 200 text/plain",
+        "hwm true 1024 1024",
+        "srvopt-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}

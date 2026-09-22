@@ -431,6 +431,9 @@ E('ERR_HTTP2_NO_SOCKET_MANIPULATION',
   'HTTP/2 sockets should not be directly manipulated (e.g. read and written)', Error);
 E('ERR_HTTP2_INVALID_HEADER_VALUE', 'Invalid value "%s" for header "%s"', TypeError, HideStackFramesError);
 E('ERR_HTTP2_PUSH_DISABLED', 'Push streams are not enabled.', Error);
+// node lib/_http_common.js validateHeaderValue（header-validators 套件逐字
+// 'Invalid value "undefined" for header "x"'；与 HTTP2 同形不同码）。
+E('ERR_HTTP_INVALID_HEADER_VALUE', 'Invalid value "%s" for header "%s"', TypeError, HideStackFramesError);
 // node lib/_http_common.js checkInvalidHeaderChar（真机逐字 'Invalid character
 // in header content'；header-validators/header-value-relaxed 套件）。
 E('ERR_INVALID_CHAR', 'Invalid character in header content', TypeError, HideStackFramesError);

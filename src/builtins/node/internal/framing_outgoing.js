@@ -39,8 +39,18 @@ export class OutgoingMessage extends Writable {
   get errored() {
     return this.__omErrored ?? (this._writableState ? this._writableState.errored : null);
   }
+  // node 口径：OutgoingMessage.addTrailers（multiple-headers 套件：
+  // ClientRequest 亦有；分块终结块尾随头，原拼写输出）。
+  addTrailers(trailers) {
+    const lowered = __lowerHeaders(trailers ?? {});
+    for (const k of Object.keys(lowered)) {
+      __validateHeaderValue(lowered[k]);
+      this.__trailer = (this.__trailer ?? "") + `${k}: ${lowered[k]}\r\n`;
+    }
+    return this;
+  }
 }
-// node _http_outgoing.js:1322 口径：capture rejections → destroy
+  // node _http_outgoing.js:1322 口径：capture rejections → destroy
 //（capture-rejection 套件；无此接线时 drain/监听抛错变 fatal）。
 // destroy 本体不外发 'error'（outgoing-destroyed 套件吞错口径），错误经
 // socket 透传（双侧 _destroy 有 error 监听才带 err）。
@@ -863,13 +873,25 @@ export function withClientRequest(openSocket, flavor) {
       }
       if (!__noDefaults && this.__headers.host === undefined) {
         this.__headers.host = port === this.__defaultPort ? host : `${host}:${port}`;
+        this.__headerNames.host = "Host";
       }
       // node ctor 口径（_http_client.js）：有 agent 即默认 keep-alive，
       // 仅非 keepAlive agent + maxSockets 无限时回落 close；无 agent 即 close。
       this.shouldKeepAlive = this.agent !== null &&
         (this.agent.keepAlive === true || Number.isFinite(this.agent.maxSockets));
+      // node 口径：headers.host 数组即 ERR_INVALID_ARG_TYPE（host-array 套件
+      // 逐字 'The "options.headers.host" property must be of type string'）。
+      if (Array.isArray(userHeaders) === false && userHeaders !== undefined && userHeaders !== null &&
+          Array.isArray(userHeaders.host)) {
+        throw new codes.ERR_INVALID_ARG_TYPE("options.headers.host", "string", userHeaders.host);
+      }
+      // node 口径：自动 connection 对 header 面不可见（mutable-headers 套件：
+      // getHeaderNames/getHeader/hasHeader 均不见它；真机实测 get-conn 为
+      // undefined）。存旁路供发头，__headers 内不留痕。
+      this.__autoConn = false;
+      this.__autoConnVal = undefined;
       if (!__noDefaults && this.__headers.connection === undefined) {
-        this.__headers.connection = this.shouldKeepAlive ? "keep-alive" : "close";
+        this.__autoConnVal = this.shouldKeepAlive ? "keep-alive" : "close";
         this.__autoConn = true;
       }
       this.__headSent = false;

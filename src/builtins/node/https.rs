@@ -13,6 +13,7 @@ import {
   STATUS_CODES, METHODS, maxHeaderSize, IncomingMessage, ServerResponse,
   OutgoingMessage, Agent as BaseAgent, withHttpServer, withClientRequest,
   normalizeRequestArgs, requestFrom, getFrom,
+  validateHeaderName, validateHeaderValue,
 } from "node:internal/http_framing";
 
 const FLAVOR = { protocol: "https:", defaultPort: 443, other: "node:http" };
@@ -129,10 +130,12 @@ export function createServer(options, cb) {
 export {
   STATUS_CODES, METHODS, maxHeaderSize, Server, ServerResponse,
   IncomingMessage, ClientRequest, OutgoingMessage, Agent, globalAgent,
+  validateHeaderName, validateHeaderValue,
 };
 const __api = {
   STATUS_CODES, METHODS, maxHeaderSize, request, get, Agent, globalAgent,
   Server, ServerResponse, IncomingMessage, ClientRequest, OutgoingMessage, createServer,
+  validateHeaderName, validateHeaderValue,
 };
 export default __api;
 "#;

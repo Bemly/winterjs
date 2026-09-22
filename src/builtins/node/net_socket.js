@@ -655,6 +655,9 @@ class Socket extends EventEmitter {
   }
   // node 口径：pending = 尚无可用句柄——连接中 true、连接完成 false、
   // close 后**仍为 true**（test-net-connect-buffer 'close' 处理器点名）。
+  // node 口径：net.Socket 亦有 writableEnded（remove-header 套件点名
+  // response.socket.writableEnded；end() 后 true）。
+  get writableEnded() { return this.__ended === true; }
   get pending() { return !this.__connected || this.destroyed; }
   get connecting() { return !this.__connected && !this.destroyed && this.__id > 0; }
   get readyState() {

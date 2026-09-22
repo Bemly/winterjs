@@ -1,5 +1,11 @@
+    // node 口径（mutable-headers 套件逐字）：无名 → ERR_INVALID_HTTP_TOKEN
+    // 'Header name must be a valid HTTP token ["undefined"]'；无值 →
+    // ERR_HTTP_INVALID_HEADER_VALUE 'Invalid value "undefined" for header …'；
+    // 值原样存（number/array 不转串，content-length/set-cookie 套件）。
     setHeader(name, value) {
+      if (name === undefined) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", "undefined");
       if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+      if (value === undefined) throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", String(name));
       const lk = String(name).toLowerCase();
       // node 口径：数组值按多行发出（dont-set-default 套件 foo 双行）；
       // 用户拼写记 __headerNames 供上网（'HOST' 非 'host'）。
@@ -7,12 +13,12 @@
         const __arr = [];
         for (const __e of value) {
           __checkOutboundHeaderValue(this.__validation, __e);
-          __arr.push(String(__e));
+          __arr.push(__e);
         }
         this.__headers[lk] = __arr;
       } else {
         __checkOutboundHeaderValue(this.__validation, value);
-        this.__headers[lk] = String(value);
+        this.__headers[lk] = value;
       }
       (this.__headerNames ??= {})[lk] = String(name);
       if (lk === "connection") this.__autoConn = false;
@@ -31,16 +37,33 @@
       return this;
     }
     getHeader(name) {
-      const v = this.__headers[String(name).toLowerCase()];
+      if (typeof name !== "string") throw new codes.ERR_INVALID_ARG_TYPE("name", "string", name);
+      const v = this.__headers[name.toLowerCase()];
       return Array.isArray(v) ? v.join(", ") : v;
     }
     removeHeader(name) {
-      const lk = String(name).toLowerCase();
+      if (typeof name !== "string") throw new codes.ERR_INVALID_ARG_TYPE("name", "string", name);
+      const lk = name.toLowerCase();
       delete this.__headers[lk];
       if (this.__headerNames !== undefined) delete this.__headerNames[lk];
       return this;
     }
+    hasHeader(name) {
+      if (typeof name !== "string") throw new codes.ERR_INVALID_ARG_TYPE("name", "string", name);
+      return this.__headers[name.toLowerCase()] !== undefined;
+    }
     getHeaderNames() { return Object.keys(this.__headers); }
+    // node 口径（mutable-headers 套件）：getHeaders 回 null 原型拷贝；
+    // getRawHeaderNames 回用户原拼写数组。
+    getHeaders() {
+      const __out = Object.create(null);
+      for (const k of Object.keys(this.__headers)) __out[k] = this.__headers[k];
+      return __out;
+    }
+    getRawHeaderNames() {
+      const __names = this.__headerNames ?? {};
+      return Object.keys(this.__headers).map((k) => __names[k] ?? k);
+    }
     getPort() { return this.__port; }
     getHost() { return this.host; }
     // node 口径：连接后落到 socket；未连接先存 pending（deferToConnect 语义）。
@@ -244,15 +267,22 @@
         head.push(`${name}: ${v}`);
       };
       // 数组形 headers：有序对原样发出（含 dupes；dont-set-default 套件），
-      // 对象侧自动头（host/connection）缺位即补。
+      // 对象侧自动头（host/connection）缺位即补。自动 connection 存旁路
+      //（__autoConnVal，header 面不可见），用户未覆写即补发。
       if (this.__headerList !== null && this.__headerList !== undefined) {
         const __seen = new Set(this.__headerList.map(([k]) => String(k).toLowerCase()));
         for (const [k, v] of this.__headerList) head.push(`${k}: ${v}`);
         for (const [k, v] of Object.entries(this.__headers)) {
           if (!__seen.has(k)) __emitOne(k, v);
         }
+        if (this.__autoConn && this.__headers.connection === undefined && !__seen.has("connection")) {
+          head.push(`Connection: ${this.__autoConnVal}`);
+        }
       } else {
         for (const [k, v] of Object.entries(this.__headers)) __emitOne(k, v);
+        if (this.__autoConn && this.__headers.connection === undefined) {
+          head.push(`Connection: ${this.__autoConnVal}`);
+        }
       }
       this.__sock.write(new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n"));
     }

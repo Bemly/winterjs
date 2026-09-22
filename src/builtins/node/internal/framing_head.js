@@ -61,9 +61,13 @@ function __findHeadEnd(u8) {
 // 头值严格门（node llhttp strict 口径，真机 26.8.2 实测）：值内允许 HTAB、
 // 0x20-0x7E、0x80-0xFF；其余控制字符（如 \x08）仅 insecureHTTPParser 放行。
 function __validHeaderValue(v) {
+  // node 口径（lib/_http_common.js checkInvalidHeaderChar）：合法 = HTAB /
+  // 可打印 ASCII / latin1（0x80–0xFF）；C0（除 HTAB）、DEL、>0xFF 全拒
+  //（header-validators 套件希伯来文形）。
   for (let i = 0; i < v.length; i++) {
     const cc = v.charCodeAt(i);
-    if (cc !== 9 && (cc < 32 || cc === 127)) return false;
+    if (cc === 9 || (cc >= 32 && cc <= 126) || (cc >= 128 && cc <= 255)) continue;
+    return false;
   }
   return true;
 }
@@ -192,10 +196,28 @@ const __EXPECT_CONTINUE_RE = /(?:^|[^\w])100-continue(?![\w])/i;
 function __applyTrailers(msg, trailersRaw) {
   msg.rawTrailers = [];
   msg.trailers = {};
+  // node 口径：trailersDistinct 为 null 原型对象、值全数组（multiple-headers 套件）。
+  msg.trailersDistinct = Object.create(null);
   for (let i = 0; i < trailersRaw.length; i += 2) {
     msg.rawTrailers.push(trailersRaw[i], trailersRaw[i + 1]);
     msg.trailers[trailersRaw[i].toLowerCase()] = trailersRaw[i + 1];
+    const __lk = trailersRaw[i].toLowerCase();
+    if (msg.trailersDistinct[__lk] === undefined) msg.trailersDistinct[__lk] = [];
+    msg.trailersDistinct[__lk].push(trailersRaw[i + 1]);
   }
+}
+// node lib/_http_common.js validateHeaderName/validateHeaderValue
+//（header-validators 套件；node:http 具名导出）。
+export function validateHeaderName(name) {
+  if (typeof name !== "string" || name === "" || !__TOKEN_RE.test(name)) {
+    throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+  }
+}
+export function validateHeaderValue(name, value) {
+  if (value === undefined) {
+    throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", String(name));
+  }
+  __checkOutboundHeaderValue("strict", value);
 }
 const __TOKEN_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 // chunk 扩展字符集：RFC 7230 token + ';' + '='（真机 26.8.2 ASCII 全扫实测；
@@ -373,6 +395,7 @@ export class IncomingMessage extends Readable {
     this.rawHeaders = [];
     this.trailers = {};
     this.rawTrailers = [];
+    this.trailersDistinct = Object.create(null);
     this.complete = false;
     // node 口径：aborted 缺省 false，中止置 true（aborted 套件双侧断言）。
     this.__aborted = false;
@@ -466,10 +489,22 @@ export class ServerResponse extends Writable {
     }
   }
   setHeader(name, value) {
+    if (name === undefined) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", "undefined");
     if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
-    __checkOutboundHeaderValue(this.__validation, value);
+    if (value === undefined) throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", String(name));
     const lk = String(name).toLowerCase();
-    this.__headers[lk] = String(value);
+    // node 口径：数组值原样存（set-cookie/array 套件；wire 逐行发出）。
+    if (Array.isArray(value)) {
+      const __arr = [];
+      for (const __e of value) {
+        __checkOutboundHeaderValue(this.__validation, __e);
+        __arr.push(__e);
+      }
+      this.__headers[lk] = __arr;
+    } else {
+      __checkOutboundHeaderValue(this.__validation, value);
+      this.__headers[lk] = value;
+    }
     // node 口径：wire 保留用户原拼写（kOutHeaders 存 [name, value] 原文名）。
     this.__headerNames[lk] = String(name);
     return this;
@@ -485,15 +520,31 @@ export class ServerResponse extends Writable {
     this.__headerNames[lk] = String(name);
     return this;
   }
-  getHeader(name) { return this.__headers[String(name).toLowerCase()]; }
+  getHeader(name) {
+    if (typeof name !== "string") throw new codes.ERR_INVALID_ARG_TYPE("name", "string", name);
+    return this.__headers[name.toLowerCase()];
+  }
   removeHeader(name) {
-    const lk = String(name).toLowerCase();
+    if (typeof name !== "string") throw new codes.ERR_INVALID_ARG_TYPE("name", "string", name);
+    const lk = name.toLowerCase();
     delete this.__headers[lk];
     delete this.__headerNames[lk];
     return this;
   }
   getHeaderNames() { return Object.keys(this.__headers); }
-  hasHeader(name) { return this.__headers[String(name).toLowerCase()] !== undefined; }
+  hasHeader(name) {
+    if (typeof name !== "string") throw new codes.ERR_INVALID_ARG_TYPE("name", "string", name);
+    return this.__headers[name.toLowerCase()] !== undefined;
+  }
+  getHeaders() {
+    const __out = Object.create(null);
+    for (const k of Object.keys(this.__headers)) __out[k] = this.__headers[k];
+    return __out;
+  }
+  getRawHeaderNames() {
+    const __names = this.__headerNames ?? {};
+    return Object.keys(this.__headers).map((k) => __names[k] ?? k);
+  }
   writeHead(status, ...rest) {
     // 状态码门（node validateStatusCode 口径，response-statuscode 套件 13 形态：
     // undefined/Infinity/NaN/{}/99/1000/'1000'/null/true/[]/'this is not valid'/

@@ -894,3 +894,79 @@ console.log("charkey-done");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_http_response_gates() {
+    // response 面：write-after-end（error 发射 + 回 false，不毒化在途终结块）
+    // + writeHead 状态码门（13 形态：`|0` 后判、错抛原值 `%s` 遇对象走 inspect）。
+    // 正常 + 报错 + 边界三件。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r##"
+import { Server, get } from "node:http";
+
+// 1) end 后再写：回 false + 异步 error，终结块照发。
+{
+  const server = Server((req, res) => {
+    res.on("error", (e) => console.log("wae-err", e.code));
+    res.write("data.");
+    res.end();
+    console.log("wae-ret", res.write("after"));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    get({ port: server.address().port }, (res) => {
+      let body = "";
+      res.on("data", (c) => (body += c));
+      res.on("end", () => {
+        console.log("wae-body", JSON.stringify(body));
+        server.close(r);
+      });
+    });
+  });
+}
+// 2) 状态码门 13 形态（错码抛、抛后照常 200）。
+{
+  const cases = [
+    [-1, "-1"], [Infinity, "Infinity"], [NaN, "NaN"], [{}, "{}"],
+    [99, "99"], [1000, "1000"], ["1000", "1000"], [null, "null"],
+    [true, "true"], [[], "[]"],
+  ];
+  const server = Server((req, res) => {
+    for (const [v, want] of cases) {
+      try { res.writeHead(v); console.log("sc BAD", String(v)); }
+      catch (e) {
+        const ok = e.code === "ERR_HTTP_INVALID_STATUS_CODE" && e.message === `Invalid status code: ${want}`;
+        console.log("sc", ok, e.name);
+      }
+    }
+    res.statusCode = 200;
+    res.end("ok");
+    server.close();
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    get({ port: server.address().port }, (res) => {
+      console.log("sc-cli", res.statusCode);
+      res.resume().on("end", r);
+    });
+  });
+}
+console.log("respgate-done");
+"##,
+    );
+    for tag in [
+        "wae-ret false",
+        "wae-err ERR_STREAM_WRITE_AFTER_END",
+        "wae-body \"data.\"",
+        "sc-cli 200",
+        "respgate-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    // sc 十行逐项全对（code+message+RangeError 名）。
+    assert_eq!(out.matches("sc true RangeError").count(), 10);
+    dir.close().unwrap();
+}

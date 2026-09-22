@@ -292,6 +292,13 @@ BODY_NOT_ALLOWED，检查禁入 `_write`）+ 黑盒
 28 件头面对拍 SAME0（`header-overflow` 的 `socket.push` 系既定另轮）+
 http/net/https 域 + 冒烟 5/5 + 构建 0 警告；AGENTS §4.188）。
 
+**2026-09-22 G11 TIMEOUT 深水第一铲**：hostname 优先 + auth 补 Basic +
+CONNECT（authority-form/Host 取 path/隧道 detach 双端 end:1）+
+server timeout 进门 + socket HWM 65536 + 基类 setTimeout + req.protocol +
+黑盒 `tests/node/http/surface.rs::phase11_http_timeout_deep_host_auth_connect`；
+11 件转 SAME0；http 27/27 + net 18/18 + 冒烟；AGENTS §4.189。
+未闭环：`outgoing-properties`（wl 记账专项）+ handler 抛吞 hang（另单元）。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

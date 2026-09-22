@@ -1391,6 +1391,24 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > >   setheaders/distinct-proto/automatic/client-array/dont-default/host）；
 > >   28 件头面对拍 SAME0（`header-overflow` 的 `socket.push` 系既定另轮）；
 > >   黑盒 `tests/node/http/surface.rs::phase11_http_header_face_batch5`。
+>
+> ### G11 TIMEOUT 深水第一铲（2026-09-22；AGENTS §4.189）
+>
+> > - **host/auth**：url.parse 对象 `hostname` 优先（源码 400 行）/
+> >   `options.auth` 补 Basic（源码 551 行，显式头恒赢）/
+> >   URL userinfo 进 auth（decode 双侧）+ IPv6 去框。
+> > - **CONNECT**：authority-form 不补斜杠（源码 293-295 行，OPTIONS * 同免）/
+> >   Host 取 path 本体（源码 546 行）/隧道 detach（两端 end:1 其余 0 +
+> >   `_httpMessage` null + 摘池 + req destroyed/close；server FIN 守卫，
+> >   升级形不动）。
+> > - **小面**：server timeout 监听进 `if`/socket HWM 65536 对齐/
+> >   基类 setTimeout（事件实参）+ `req.protocol`。
+> > - **转 SAME0**：url.parse×5/auth×2/CONNECT×3（default-host-header/connect/
+> >   connect-req-res）/outgoing-settimeout（11 件）；黑盒
+> >   `tests/node/http/surface.rs::phase11_http_timeout_deep_host_auth_connect`。
+> > - **未闭环**：`outgoing-properties`（HWM 已对齐，余 `writableLength`
+> >   `len+8` 记账 = G3 outputData 专项）+ handler 抛吞进 400 通道即静默 hang
+> >  （真机 crash，另立单元）。
 
 ## https
 

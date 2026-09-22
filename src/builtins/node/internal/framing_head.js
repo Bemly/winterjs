@@ -613,6 +613,40 @@ export class ServerResponse extends Writable {
     // ['foo','3'] 即覆盖；与 ClientRequest 构造器数组形同源）。
     const __objArr = Array.isArray(obj) ? obj : null;
     const msg = rest.find((r) => typeof r === "string");
+    // node 口径：writeHead 原子提交——合并/校验抛错（TRAILER_INVALID 等）即
+    // 全量回滚（timeout 黑盒 t9：失败的 writeHead 不得污染 CL/状态码/旗位，
+    // 否则后续 removeHeader + end 全灭）。
+    const __snap = {
+      headers: this.__headers,
+      names: this.__headerNames,
+      removed: this._removedHeader,
+      code: this.statusCode,
+      message: this.statusMessage,
+      stored: this.__storedStatus,
+      sent: this.headersSent,
+    };
+    // 浅拷贝表层（值数组另拷，防合并中途污染原数组）。
+    const __copyHeaders = () => {
+      const __o = Object.create(null);
+      for (const __k of Object.keys(this.__headers)) {
+        const __v = this.__headers[__k];
+        __o[__k] = Array.isArray(__v) ? [...__v] : __v;
+      }
+      return __o;
+    };
+    this.__headers = __copyHeaders();
+    this.__headerNames = { ...(this.__headerNames ?? {}) };
+    this._removedHeader = { ...(this._removedHeader ?? {}) };
+    const __rollback = (e) => {
+      this.__headers = __snap.headers;
+      this.__headerNames = __snap.names;
+      this._removedHeader = __snap.removed;
+      this.statusCode = __snap.code;
+      this.statusMessage = __snap.message;
+      this.__storedStatus = __snap.stored;
+      this.headersSent = __snap.sent;
+      throw e;
+    };
     this.statusCode = status;
     // node 口径：wire 状态码以 writeHead 时为准，事后改 statusCode 属性只改
     // 属性值、不改 wire（mutable-headers writeHead 案：属性 201/wire 200）。
@@ -621,10 +655,30 @@ export class ServerResponse extends Writable {
     // node 口径：writeHead 合并头值数组原样存（逐行发出；multiple-headers 套件
     // 'x-res-c': ['HHH','III'] 即两行，旧 Object.assign 经 __lowerHeaders 洗成
     // 逗号串系伪语义）。扁平数组即逐对 setHeader（setheaders 套件块 4）。
+    // 内联合并（不得走 setHeader：headersSent 门会自炸；校验与存值同对象分支）。
+    // 合并 + 校验整体 try 包裹，抛错即回滚（上见 __rollback）。
+    try {
     if (__objArr !== null) {
       if (__objArr.length % 2 !== 0) throw new codes.ERR_INVALID_ARG_TYPE("headers", "object", obj);
       for (let __i = 0; __i < __objArr.length; __i += 2) {
-        this.setHeader(String(__objArr[__i]), __objArr[__i + 1]);
+        const __k = String(__objArr[__i]);
+        const __v = __objArr[__i + 1];
+        if (!__TOKEN_RE.test(__k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", __k);
+        if (__v === undefined) throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", __k);
+        const __lk = __k.toLowerCase();
+        if (this._removedHeader !== undefined) delete this._removedHeader[__lk];
+        if (Array.isArray(__v)) {
+          const __arr = [];
+          for (const __e of __v) {
+            __checkOutboundHeaderValue(this.__validation, __e);
+            __arr.push(__e);
+          }
+          this.__headers[__lk] = __arr;
+        } else {
+          __checkOutboundHeaderValue(this.__validation, __v);
+          this.__headers[__lk] = __v;
+        }
+        if (this.__headerNames[__lk] === undefined) this.__headerNames[__lk] = __k;
       }
     }
     this.headersSent = true;
@@ -663,6 +717,10 @@ export class ServerResponse extends Writable {
         throw e;
       }
     }
+    } catch (__whErr) {
+      __rollback(__whErr);
+    }
+    this.headersSent = true;
     // 头已存：随后的 end(data) 不再走 CL 快路径（真机 chunked 口径）。
     this.__headStored = true;
     return this;

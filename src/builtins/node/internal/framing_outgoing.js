@@ -1227,13 +1227,19 @@ export function withClientRequest(openSocket, flavor) {
       sock.__reqSockOnEnd = __sockOnEnd;
       sock.on("close", this.__onSockClose);
       sock.__reqSockOnClose = this.__onSockClose;
-      // 复用连接已连通：直接刷。
+      // 复用连接已连通：递延一拍再刷（loopback 套件：构造后同步 setHeader
+      // 必须赶在发头前；同步直刷会使复用形构造即发头，后续 setHeader 全炸）。
+      // 'socket' 事件 microtask 先排，发头随后——序与真机一致。
       if (reused === true) {
-        this.__connected = true;
-        this.__tryFlush();
-        if (this.__pendingFinal) {
-          this.__pendingFinal = false;
-          this.__flushFinal();
-        }
+        const __self = this;
+        queueMicrotask(() => {
+          if (__self.destroyed) return;
+          __self.__connected = true;
+          __self.__tryFlush();
+          if (__self.__pendingFinal) {
+            __self.__pendingFinal = false;
+            __self.__flushFinal();
+          }
+        });
       }
     }

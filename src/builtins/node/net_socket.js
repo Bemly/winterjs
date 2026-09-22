@@ -141,14 +141,16 @@ class Socket extends EventEmitter {
       if (options.readable !== undefined) this.readable = !!options.readable;
       if (options.writable !== undefined) this.writable = !!options.writable;
     }
-    // node 写背压：write 返回值 = 未超 highWaterMark（默认 64KB，真机 26.8.2
-    // `new Socket().writableHighWaterMark` 实测；hwm 0 恒 false）。
-    // writable/readableHighWaterMark 同值回显（outgoing-properties 套件：
-    // 与 ServerResponse 默认 65536 对齐）。
-    this.__hwm = options && options.highWaterMark !== undefined ? Number(options.highWaterMark) || 0 : 65536;
+    // node 读写 HWM（真机 26.8.2 实测：缺省双 65536；readableHighWaterMark/
+    // writableHighWaterMark/highWaterMark 逐级；incoming-message-options 套件
+    // 点名可配 readableHWM）。写背压沿用 __hwm（hwm 0 恒 false）。
+    this.__hwm = options && (options.highWaterMark !== undefined || options.writableHighWaterMark !== undefined)
+      ? Number(options.highWaterMark ?? options.writableHighWaterMark) || 0 : 65536;
+    this.__rhwm = options && (options.readableHighWaterMark !== undefined || options.highWaterMark !== undefined)
+      ? Number(options.readableHighWaterMark ?? options.highWaterMark) || 0 : 65536;
     this.__pendBytes = 0;
     Object.defineProperty(this, "writableHighWaterMark", { get: () => this.__hwm, enumerable: true });
-    Object.defineProperty(this, "readableHighWaterMark", { get: () => this.__hwm, enumerable: true });
+    Object.defineProperty(this, "readableHighWaterMark", { get: () => this.__rhwm, enumerable: true });
     // node 口径：bufferSize = 待刷写字节（本仓同步写队列，连接中缓冲计入，完成即 0）。
     Object.defineProperty(this, "bufferSize", { get: () => this.__pendBytes, enumerable: true });
     // 事件循环派发钩子：dispatch 以 global 为 this 调用，须预绑定（self 语义）

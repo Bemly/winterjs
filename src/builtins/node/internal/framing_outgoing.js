@@ -221,8 +221,12 @@ export function withHttpServer(Base) {
       const kb = o.keepAliveTimeoutBuffer !== undefined ? __validateInteger(o.keepAliveTimeoutBuffer, "keepAliveTimeoutBuffer") : undefined;
       if (kb !== undefined) self.keepAliveTimeoutBuffer = kb;
       if (o.maxRequestsPerSocket !== undefined) self.maxRequestsPerSocket = o.maxRequestsPerSocket;
-      // node 口径 uniqueHeaders：服务端响应侧名单（multiple-headers 套件；
-      // 名单内头 wire 用 '; ' 合并单行；请求侧见 ClientRequest 构造器）。
+      // node 口径（server-options-incoming-message/server-options-server-
+      // response 套件，真机无校验——任意值照收，请求期当构造器用）：
+      // IncomingMessage/ServerResponse 自定义类（须为可构造，子类无显式
+      // 构造器即透传）。
+      if (o.IncomingMessage !== undefined) self.IncomingMessage = o.IncomingMessage;
+      if (o.ServerResponse !== undefined) self.ServerResponse = o.ServerResponse;
       if (o.uniqueHeaders !== undefined) {
         if (!Array.isArray(o.uniqueHeaders)) throw new codes.ERR_INVALID_ARG_TYPE("uniqueHeaders", "Array", o.uniqueHeaders);
         self.uniqueHeaders = o.uniqueHeaders.map((h) => String(h).toLowerCase());
@@ -566,7 +570,10 @@ export function withHttpServer(Base) {
           }
           const { first, headers, rawHeaders, headersDistinct } = __parseHead(headText, this.__inboundMode ?? "strict", this.maxHeadersCount);
           __validateRequestHead(first, headers);
-          const req = new IncomingMessage(this.__highWaterMark !== undefined
+          // node 口径（server-options-incoming-message 套件）：IncomingMessage
+          // 选项类造 req（无显式构造器即透传同参）。
+          const __IM = this.IncomingMessage ?? IncomingMessage;
+          const req = new __IM(this.__highWaterMark !== undefined
             ? { highWaterMark: this.__highWaterMark } : undefined);
           req.method = first[0];
           req.url = first[1];
@@ -695,7 +702,11 @@ export function withHttpServer(Base) {
           const framing = __framingFor(headers, false, null, req.method);
           const conn = (headers.connection || "").toLowerCase();
           const keepAlive = req.httpVersion === "1.1" ? conn !== "close" : conn === "keep-alive";
-          const res = new ServerResponse(sock);
+          // node 口径（server-options-server-response 套件）：ServerResponse
+          // 选项类造 res（传 socket；子类无显式构造器即透传，见 ServerResponse
+          // ctor 双形兼容）。
+          const __SR = this.ServerResponse ?? ServerResponse;
+          const res = new __SR(sock);
           // 出站校验档随服务端 httpValidation（node 同一选项双向往返）。
           res.__validation = this.__inboundMode;
           // node _http_server.js 口径：res[kHighWaterMark] 记服务端 HWM

@@ -353,7 +353,12 @@ function Server(...args) {
 }
 Object.setPrototypeOf(Server, __ServerClass);
 Server.prototype = __ServerClass.prototype;
-export function createConnection(...args) { return new Socket().connect(...args); }
+export function createConnection(...args) {
+  // node 口径（incoming-message-options 套件）：options 进 Socket 构造器
+  //（readableHighWaterMark 等流选项生效；旧无参构造即丢）。
+  const __o = args.length > 0 && args[0] !== null && typeof args[0] === "object" && !Array.isArray(args[0]) ? args[0] : undefined;
+  return new Socket(__o).connect(...args);
+}
 export const connect = createConnection;
 // node BoundSocket（同步 bind 句柄；adopt 即迁入 server/socket，旧柄失效）。
 // 底座：TCP 占位 bind（地址/冲突语义真，fd 桩 -1 记档）；UDS 真 bind（path 串）。

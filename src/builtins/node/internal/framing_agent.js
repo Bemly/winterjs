@@ -721,7 +721,10 @@
             this.emit("information", info);
             continue;
           }
-          const res = new IncomingMessage();
+          const res = new IncomingMessage(
+            this.__sock !== null && this.__sock !== undefined &&
+            typeof this.__sock.readableHighWaterMark === "number"
+              ? { highWaterMark: this.__sock.readableHighWaterMark } : undefined);
           res.statusCode = __statusCode;
           // 状态行无短语合法（"HTTP/1.1 200\r\n"）：短语空串（status-message 套件）。
           res.statusMessage = first.length >= 3 ? first.slice(2).join(" ") : "";

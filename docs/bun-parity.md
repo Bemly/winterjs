@@ -1372,6 +1372,25 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > > - **转 SAME**：upgrade 6 件（advertise/client/server-callback/large-body×2/
 > >   body-error；修前 5 TIMEOUT + 1 DIFF）；黑盒
 > >   `tests/node/http/upgrade.rs::phase11_http_upgrade_faces`（15s unref 守卫）。
+>
+> ### G11 头面 batch5（2026-09-22；AGENTS §4.188）
+>
+> > - **校验门三件**：数字头名 HTTP_TOKEN（typeof 先判，set/append 双侧）/
+> >   奇长 writeHead 数组 ARG_VALUE 'headers'/已发头再 writeHead 即 HEADERS_SENT。
+> > - **拼写与短语**：writeHead 恒覆写拼写（首写优先仅 setHeader 之间）/
+> >   未知码短语 'unknown'（属性与 wire 双处）。
+> > - **数组与对形**：同键对逐行保留（首触覆写、再触累积）/
+> >   对形 `[[k,v]]` 归一扁平（坏对/超长元真机逐项）。
+> > - **Host 头**：显式 defaultPort 比较（缺席恒拼 `:80`）+ IPv6 双冒号加框。
+> > - **拒写**：`rejectNonStandardBodyWrites`（缺省 false）+ 新码
+> >   `ERR_HTTP_BODY_NOT_ALLOWED`（1xx/204/304/HEAD，空串亦抛；检查在
+> >   write/end 包装层，禁入 `_write`）。
+> > - **转 SAME**：write-head×2/write-head-after-set-header/head-throw/
+> >   host-header-ipv6-fail/set-trailers（修前 4 TIMEOUT + 2 DIFF）+
+> >   旧 11 件头面（validators/value-relaxed/mutable/multiple/remove-stays/
+> >   setheaders/distinct-proto/automatic/client-array/dont-default/host）；
+> >   28 件头面对拍 SAME0（`header-overflow` 的 `socket.push` 系既定另轮）；
+> >   黑盒 `tests/node/http/surface.rs::phase11_http_header_face_batch5`。
 
 ## https
 

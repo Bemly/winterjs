@@ -1427,6 +1427,16 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > >   `__checkOutboundHeaderValue` 全调用点传键（set/append/writeHead 三路）。
 > > - **转 SAME0**：response-splitting（修前 DIFF）；附带 6 件零回归；黑盒
 > >   `tests/node/http/surface.rs::phase11_http_invalid_char_key`。
+>
+> ### G11 response 双件（2026-09-22；AGENTS §4.192）
+>
+> > - **write-after-end**：`write()` 包装层先行拦截（自发 error + 回 false，
+> >   不进基类不置 errored；终结块走正常 `_final`；end 优先于拒写旗）。
+> > - **状态码门**：E 注册 `%s` RangeError + 传原值（`|0` 后判，对象走 inspect）。
+> > - **转 SAME0**：res-write-after-end/response-statuscode（修前双 TIMEOUT；
+> >   head-throw 零回归）；黑盒
+> >   `tests/node/http/surface.rs::phase11_http_response_gates`。
+> > - **未竟**：response-cork（流控手术另单元）。
 
 ## https
 

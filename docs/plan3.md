@@ -305,6 +305,9 @@ server timeout 进门 + socket HWM 65536 + 基类 setTimeout + req.protocol +
 3 件转 SAME0；http 28/28 + net 18/18 + 冒烟；AGENTS §4.190。
 附带 splitting 一件（ERR_INVALID_CHAR `["key"]` 后缀）：response-splitting
 转 SAME0 + 黑盒 `phase11_http_invalid_char_key`；AGENTS §4.191。
+附带 response 双件（write-after-end 拦截 + 状态码门注册）：res-write-after-end/
+response-statuscode 转 SAME0 + 黑盒 `phase11_http_response_gates`；
+AGENTS §4.192；未竟 response-cork（另单元）。
 
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 

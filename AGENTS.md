@@ -3299,3 +3299,26 @@ cargo build
 - 复现：`test-http-response-splitting`（修前 DIFF 修后 SAME0；附带
   validators/value-relaxed/mutable/multiple/invalidheaderfield×2 零回归）+
   `tests/node/http/surface.rs::phase11_http_invalid_char_key`。
+
+### 4.192 response 双件：write-after-end 毒化终结块 + 状态码门未注册（2026-09-22，G11）
+
+- 坑一（同步 extra 写吞终结块）：`write/end/同步write` 三连只差一步——异步
+  extra 写（100ms 后）终结块正常，同步即丢（`5\r\nDATA.\r\n` 后无 `0\r\n`）。
+  根因：基类见 errored 压住在途 `_final`，而终结块只活在 `_final` 里；
+  holdTimer 路径（发头+体）照走，终结无人补。修法：`write()` 包装层先行拦截
+  已 end 的写（自发 error + 回 false，不进基类不置 errored），终结块走正常
+  `_final`；优先级 end > 拒写旗（204 先 end 后写仍 WRITE_AFTER_END，真机实测）。
+  附带：类内曾有两个 `write()` 定义（旧拦截引未定义的 `__writeAfterEnd`，
+  被后者遮蔽零生效）——删死代码时把夹在中间的 `__isNoBodyStatus` 一并带走，
+  编译不报错（JS 方法悬空引用只在调用时炸），靠 grep 现形。教训：删遮蔽方法
+  必 grep 体内标识符。
+- 坑二（`ERR_HTTP_INVALID_STATUS_CODE` 从未注册）：`codes.X` 无 Proxy 兜底，
+  未注册即 undefined，`new` 即构造器 TypeError（码错）→ handler 抛吞 hang。
+  修法：E 注册 `'Invalid status code: %s'` RangeError + 调用传原值；门按 Node
+  原文 `statusCode |= 0` 后判（字符串 '1000' 照收越界才抛；`%s` 遇对象走
+  inspect——{}→'{}'；writeInformation 同换 E 形，门不动）。
+- 复现：`test-http-res-write-after-end`/`test-http-response-statuscode`
+  （修前双 TIMEOUT，修后 SAME0；head-throw 零回归）+
+  `tests/node/http/surface.rs::phase11_http_response_gates`。
+- 未竟：`response-cork`（cork 真缓冲 + socket 镜像计数 + end 排空三件，流控
+  手术另单元）。

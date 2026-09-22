@@ -211,6 +211,8 @@ export function withHttpServer(Base) {
       // node 口径：shouldUpgradeCallback(req) 逐请求门控升级（upgrade-server-
       // callback 套件：true 走 upgrade、false 走 request、抛错走 uncaught）。
       if (o.shouldUpgradeCallback !== undefined) self.shouldUpgradeCallback = o.shouldUpgradeCallback;
+      // node 口径（head-throw 套件）：rejectNonStandardBodyWrites 缺省 false。
+      self.rejectNonStandardBodyWrites = o.rejectNonStandardBodyWrites === true;
       self.__closing = false;
       self.__sockets = new Set();
       // node setupConnectionsTracking 口径（真机 toString 逐字对拍）：listening
@@ -654,6 +656,8 @@ export function withHttpServer(Base) {
           req.res = res;
           res.__keepAlive = keepAlive;
           res.__headOnly = req.method === "HEAD";
+          // node 口径（head-throw 套件）：服务端拒写旗逐响应透传。
+          res.__rejectBody = this.rejectNonStandardBodyWrites === true;
           // 响应头决策所需服务端上下文（Keep-Alive: timeout / maxRequestsPerSocket
           // / uniqueHeaders 名单）。
           res.__kaTimeout = this.keepAliveTimeout;
@@ -929,6 +933,21 @@ export function withClientRequest(openSocket, flavor) {
       this.__agentFalse = options.agent === false;
       this.__defaultPort = this.agent !== null && this.agent.defaultPort !== undefined
         ? this.agent.defaultPort : flavor.defaultPort;
+      // node 口径（lib/_http_client.js 真机源码 + host-header-ipv6-fail 套件）：
+      // Host 拼接比较的是**显式配置**的 defaultPort（options.defaultPort ??
+      // agent.defaultPort，未配置即 undefined），不是 flavor 缺省 80——
+      // `+port !== defaultPort` 在 defaultPort 缺席时恒成立，故缺省恒拼 `:80`
+      //（'example.com'→'example.com:80'）；仅显式缺省与 port 相等才省略。
+      // IPv6 加框：双冒号以上且首字符非 '[' 才加框（'::1'→'[::1]'，
+      // 'foo:1234' 单冒号不加框，直接拼端口）。
+      const __cfgDp = options.defaultPort ?? (this.agent !== null ? this.agent.defaultPort : undefined);
+      const __bracketHost = (() => {
+        const __pos = host.indexOf(":");
+        if (__pos !== -1 && host.includes(":", __pos + 1) && host.charCodeAt(0) !== 91) return `[${host}]`;
+        return host;
+      })();
+      const __hostHeader = port !== __cfgDp ? `${__bracketHost}:${port}` : __bracketHost;
+      this.__hostHeader = __hostHeader;
       // timeout 双检（node validateNumber 口径，真机 26.8.2 逐项：null/'x' →
       // ARG_TYPE，NaN/负 → OUT_OF_RANGE）。
       if (options.timeout !== undefined) {
@@ -1000,11 +1019,11 @@ export function withClientRequest(openSocket, flavor) {
       this.__noDefaults = __noDefaults;
       // setHost:true 即补 Host（dont-set 下亦补；拼写取规范 'Host'）。
       if (options.setHost === true && this.__headers.host === undefined) {
-        this.__headers.host = port === this.__defaultPort ? host : `${host}:${port}`;
+        this.__headers.host = this.__hostHeader;
         this.__headerNames.host = "Host";
       }
       if (!__noDefaults && this.__headers.host === undefined) {
-        this.__headers.host = port === this.__defaultPort ? host : `${host}:${port}`;
+        this.__headers.host = this.__hostHeader;
         this.__headerNames.host = "Host";
       }
       // node ctor 口径（_http_client.js）：有 agent 即默认 keep-alive，

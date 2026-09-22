@@ -440,6 +440,9 @@ E('ERR_HTTP_HEADERS_SENT', 'Cannot %s headers after they are sent to the client'
 // node lib/_http_common.js checkInvalidHeaderChar（真机逐字 'Invalid character
 // in header content'；header-validators/header-value-relaxed 套件）。
 E('ERR_INVALID_CHAR', 'Invalid character in header content', TypeError, HideStackFramesError);
+// node lib/_http_server.js（head-throw 套件逐字 'Adding content for this request
+// method or response status is not allowed.'；rejectNonStandardBodyWrites 真机实测）。
+E('ERR_HTTP_BODY_NOT_ALLOWED', 'Adding content for this request method or response status is not allowed.', Error);
 E('ERR_INVALID_HTTP_TOKEN',
   // node 口径 (kind, name) 双参 + %j JSON 渲染（真机 'Method must be a valid
   // HTTP token ["\u0000"]'）；单参历史调用（http2 validateHeaderName）兼容为

@@ -6,8 +6,8 @@
       // node 口径：发头后改头即 ERR_HTTP_HEADERS_SENT（multiple-headers 套件；
       // 无参亦先判此门，真机实测）。
       if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("set");
-      if (name === undefined) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", "undefined");
-      if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+      if (typeof name !== "string") throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+      if (!__TOKEN_RE.test(name)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", name);
       if (value === undefined) throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", String(name));
       const lk = String(name).toLowerCase();
       if (this._removedHeader !== undefined) delete this._removedHeader[lk];
@@ -47,7 +47,8 @@
     // 缺省追加为单元素（真机 new+s/a+s 探针）。发头后即 ERR_HTTP_HEADERS_SENT。
     appendHeader(name, value) {
       if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("append");
-      if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+      if (typeof name !== "string") throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+      if (!__TOKEN_RE.test(name)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", name);
       const lk = String(name).toLowerCase();
       const __vals = Array.isArray(value) ? [...value] : [value];
       for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e);

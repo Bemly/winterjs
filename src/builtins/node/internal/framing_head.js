@@ -514,6 +514,9 @@ export class ServerResponse extends Writable {
     this.__holdTimer = null;
     this.__headOnly = false;
     this.__noBody = false;
+    // node 口径（head-throw 套件真机实测）：rejectNonStandardBodyWrites 为 true
+    // 时，1xx/204/304/HEAD 响应的 write/end(chunk) 同步抛 BODY_NOT_ALLOWED。
+    this.__rejectBody = false;
     this.__userEnded = false;
     this.__onDone = null;
     // 独立构造：从 req 形对象提取版本/方法面（node ServerResponse ctor 口径）。
@@ -528,8 +531,10 @@ export class ServerResponse extends Writable {
   }
   setHeader(name, value) {
     if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("set");
-    if (name === undefined) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", "undefined");
-    if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+    // node 口径（write-head 套件真机实测）：数字名亦 HTTP_TOKEN（"3840" 本身是
+    // 合法 token 字符，故不能只测 String(name)，须先判 typeof）。
+    if (typeof name !== "string") throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+    if (!__TOKEN_RE.test(name)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", name);
     if (value === undefined) throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", String(name));
     const lk = String(name).toLowerCase();
     if (this._removedHeader !== undefined) delete this._removedHeader[lk];
@@ -555,7 +560,8 @@ export class ServerResponse extends Writable {
   // 任意一侧数组即数组拼接；发头后即 ERR_HTTP_HEADERS_SENT。
   appendHeader(name, value) {
     if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("append");
-    if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+    if (typeof name !== "string") throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+    if (!__TOKEN_RE.test(name)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", name);
     const lk = String(name).toLowerCase();
     const __vals = Array.isArray(value) ? value : [value];
     for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e);
@@ -600,6 +606,8 @@ export class ServerResponse extends Writable {
     return Object.keys(this.__headers).map((k) => __names[k] ?? k);
   }
   writeHead(status, ...rest) {
+    // node 口径（write-head 套件真机实测）：已发头再 write 即 HEADERS_SENT。
+    if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("write");
     // node 口径：writeHead 即算发头（setheaders 套件 writeHead 后 setHeaders
     // 即 HEADERS_SENT）——旗在合并完成后立，合并走 setHeader 不得自炸。
     // 状态码门（node validateStatusCode 口径，response-statuscode 套件 13 形态：
@@ -651,7 +659,10 @@ export class ServerResponse extends Writable {
     // node 口径：wire 状态码以 writeHead 时为准，事后改 statusCode 属性只改
     // 属性值、不改 wire（mutable-headers writeHead 案：属性 201/wire 200）。
     this.__storedStatus = status;
+    // node 口径（write-head 套件真机实测）：无显式短语即标准短语，未知码为
+    // 'unknown'（220 案；wire 同）。
     if (msg !== undefined) this.statusMessage = msg;
+    else this.statusMessage = STATUS_CODES[status] ?? "unknown";
     // node 口径：writeHead 合并头值数组原样存（逐行发出；multiple-headers 套件
     // 'x-res-c': ['HHH','III'] 即两行，旧 Object.assign 经 __lowerHeaders 洗成
     // 逗号串系伪语义）。扁平数组即逐对 setHeader（setheaders 套件块 4）。
@@ -659,26 +670,43 @@ export class ServerResponse extends Writable {
     // 合并 + 校验整体 try 包裹，抛错即回滚（上见 __rollback）。
     try {
     if (__objArr !== null) {
-      if (__objArr.length % 2 !== 0) throw new codes.ERR_INVALID_ARG_TYPE("headers", "object", obj);
-      for (let __i = 0; __i < __objArr.length; __i += 2) {
-        const __k = String(__objArr[__i]);
-        const __v = __objArr[__i + 1];
+      // node 口径（set-trailers 套件真机实测）：writeHead 收对形 `[[k,v],...]`
+      //（与 ClientRequest 构造器双形同源）——逐对取 [0]/[1]（ ["b"] 即 value
+      // undefined 走 INVALID_HEADER_VALUE；超长对多余元忽略），归一扁平后走
+      // 下方同套逻辑。
+      let __pairs = __objArr;
+      if (__objArr.length > 0 && Array.isArray(__objArr[0])) {
+        __pairs = [];
+        for (const __p of __objArr) __pairs.push(__p[0], __p[1]);
+      }
+      // node 口径（write-head 套件真机实测）：奇长数组即 ARG_VALUE 'headers'，
+      // 非 ARG_TYPE（"The argument 'headers' is invalid"）。
+      if (__pairs.length % 2 !== 0) throw new codes.ERR_INVALID_ARG_VALUE("headers", obj);
+      // node 口径（write-head-after-set-header 套件真机实测）：扁平数组内同键
+      // 对逐行保留（['a','1','a','2'] 即两行）；首对覆写先前 setHeader，同键后对
+      // 累积（首触覆写、再触累积）。
+      const __touched = new Set();
+      for (let __i = 0; __i < __pairs.length; __i += 2) {
+        const __k = String(__pairs[__i]);
+        const __v = __pairs[__i + 1];
         if (!__TOKEN_RE.test(__k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", __k);
         if (__v === undefined) throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", __k);
         const __lk = __k.toLowerCase();
         if (this._removedHeader !== undefined) delete this._removedHeader[__lk];
-        if (Array.isArray(__v)) {
-          const __arr = [];
-          for (const __e of __v) {
-            __checkOutboundHeaderValue(this.__validation, __e);
-            __arr.push(__e);
-          }
-          this.__headers[__lk] = __arr;
+        const __vals = Array.isArray(__v) ? __v : [__v];
+        for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e);
+        if (!__touched.has(__lk)) {
+          __touched.add(__lk);
+          this.__headers[__lk] = Array.isArray(__v) ? [...__v] : __v;
         } else {
-          __checkOutboundHeaderValue(this.__validation, __v);
-          this.__headers[__lk] = __v;
+          const __cur = this.__headers[__lk];
+          if (Array.isArray(__cur)) for (const __e of __vals) __cur.push(__e);
+          else this.__headers[__lk] = [__cur, ...__vals];
         }
-        if (this.__headerNames[__lk] === undefined) this.__headerNames[__lk] = __k;
+        // node 口径（write-head 套件真机实测）：writeHead 覆写拼写（setHeader
+        // 'test' 后 writeHead {Test:'2'}，wire 为 'Test'，非首写优先——首写优先
+        // 仅 setHeader 之间）。
+        this.__headerNames[__lk] = __k;
       }
     }
     this.headersSent = true;
@@ -699,7 +727,7 @@ export class ServerResponse extends Writable {
           __checkOutboundHeaderValue(this.__validation, __v);
           this.__headers[__lk] = __v;
         }
-        if (this.__headerNames[__lk] === undefined) this.__headerNames[__lk] = String(k);
+        this.__headerNames[__lk] = String(k);
       }
     }
     // node _storeHeader 口径（de-chunked-trailer 套件）：非 chunked 传输带
@@ -867,6 +895,21 @@ export class ServerResponse extends Writable {
     if (this.__sockGone || this.__sock === null || this.__sock.destroyed) return false;
     return super.write(chunk, encoding, cb);
   }
+  // node 口径（head-throw 套件）：1xx/204/304/HEAD 为无体响应（writeHead 置
+  // __noBody/方法置 __headOnly；writeHead 前按 statusCode 活读）。
+  __isNoBodyStatus() {
+    const __sc = this.__storedStatus !== undefined ? this.__storedStatus : this.statusCode;
+    return this.__headOnly || (__sc >= 100 && __sc <= 199) || __sc === 204 || __sc === 304;
+  }
+  // node 口径（head-throw 套件真机实测）：拒写旗下无体响应的 write 同步抛
+  //（含空串；校验在 write 包装层，不进 _write——流内抛会毒化 writing 态，
+  // 后续 end 永挂）。
+  write(chunk, encoding, cb) {
+    if (this.__rejectBody && this.__isNoBodyStatus()) {
+      throw new codes.ERR_HTTP_BODY_NOT_ALLOWED();
+    }
+    return super.write(chunk, encoding, cb);
+  }
   end(chunk, encoding, cb) {
     // Node OutgoingMessage.end 口径（end-multiple 套件）：finished 后 end(chunk)
     // 走 onError（cb + 'error'，不碰基类错误通道——基类会置 errored 毒化在途
@@ -876,6 +919,10 @@ export class ServerResponse extends Writable {
     else if (typeof encoding === "function") { cb = encoding; encoding = null; }
     const __hasChunk = chunk !== undefined && chunk !== null;
     const __cb = typeof cb === "function" ? cb : null;
+    // node 口径（head-throw 套件真机实测）：拒写旗下 end(chunk) 同步抛（write 同）。
+    if (__hasChunk && this.__rejectBody && this.__isNoBodyStatus()) {
+      throw new codes.ERR_HTTP_BODY_NOT_ALLOWED();
+    }
     if (this.writableFinished) {
       if (__hasChunk) {
         if (this.destroyed) return this;
@@ -978,7 +1025,7 @@ export class ServerResponse extends Writable {
       if (this.__chunked) { this.__chunked = false; this.__keepAlive = false; }
       this.__noBody = true;
     }
-    const reason = this.statusMessage ?? STATUS_CODES[__sc] ?? "";
+    const reason = this.statusMessage ?? STATUS_CODES[__sc] ?? "unknown";
     const head = [`HTTP/1.1 ${__sc} ${reason}`.trimEnd()];
     // node 口径：用户头（含 writeHead 合并头）恒在自动头（Date/Connection/
     // Keep-Alive/CL/TE）之前（真机三探针：plain/set/set+wh 全同序）。

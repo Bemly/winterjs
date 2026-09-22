@@ -3262,3 +3262,26 @@ cargo build
 - 复现：11 件转 SAME0（url.parse×5/auth×2/CONNECT×3/settimeout）+
   `tests/node/http/surface.rs::phase11_http_timeout_deep_host_auth_connect`；
   `outgoing-properties` 仍红（HWM 已对齐，余 wl 记账专项）。
+
+### 4.190 http TIMEOUT 深水第二铲：server 选项面三坑（2026-09-22，plan3 G11）
+
+- 坑一（选项类被无视即 handler 抛吞 hang）：`createServer({IncomingMessage:
+  MyIM})` 下 handler 调 `req.getUserAgent()` 在默认类上不存在 → 抛错吞进
+  400 通道即静默 hang（§4.189 deferred 同源）。真机无选项校验（任意值照收）。
+  修法：server 存 `IncomingMessage/ServerResponse` + 请求期当构造器用
+  （`new (self.IM ?? IM)(hwmOpts)`/`new (self.SR ?? SR)(sock)`；子类无显式
+  构造器即透传；裸 `http.Server()` 本就可调，无事）。
+- 坑二（createConnection 丢选项）：`net.createConnection` 以 `new Socket()`
+  无参构造再 connect，`readableHighWaterMark` 等流选项永不到构造器。
+  修法：首参对象即透传进 `new Socket(__o)`（构造器只读自家键，其余忽略）。
+- 坑三（res HWM 不同步）：`res.readableHighWaterMark` 恒 Readable 缺省，
+  真机跟 socket 走（1024 用例）。修法：客户端 res 构造传
+  `{highWaterMark: sock.readableHighWaterMark}`（Readable 原生键，server 侧
+  同款）；socket 侧补 `__rhwm`（readableHighWaterMark/highWaterMark 逐级，
+  缺省 65536）+ 双 getter。
+- 附带真机口径（同轮实测）：socket 读写 HWM 缺省双 65536（旧背压默认
+  16KB 一并改 64KB；黑盒无 write-false 依赖）；定制只改对应侧
+  （readable 定制不碰 writable）。
+- 复现：3 件转 SAME0（server-options-incoming-message/
+  server-options-server-response/incoming-message-options）+
+  `tests/node/http/surface.rs::phase11_http_server_options_surface`。

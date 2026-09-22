@@ -589,7 +589,53 @@
             this.__respDone = true;
             this.__upgraded = true;
             this.__res = res;
-            this.emit("connect", res, this.__sock, globalThis.Buffer.from(__leftover));
+            // node 口径（connect 套件 listenerCount 矩阵真机实测：connect 0/
+            // data 0/drain 0/end 1/free 0/close 0/error 0/agentRemove 0/
+            // timeout 0；_httpMessage null）：隧道建立即拆请求侧接线，只留
+            // agent onReadableStreamEnd 恰一个 end；req 置 destroyed + 异步
+            // 'close'（socket 不动，归用户；__sock 置空使后续 destroy 不及隧道）。
+            const __tunSock = this.__sock;
+            try {
+              const __s = __tunSock;
+              if (__s.__reqSockOnConnect !== undefined) __s.removeListener("connect", __s.__reqSockOnConnect);
+              if (__s.__reqSockOnSecureConnect !== undefined) __s.removeListener("secureConnect", __s.__reqSockOnSecureConnect);
+              if (__s.__reqSockOnData !== undefined) __s.removeListener("data", __s.__reqSockOnData);
+              if (__s.__reqSockOnError !== undefined) __s.removeListener("error", __s.__reqSockOnError);
+              if (__s.__reqSockOnEnd !== undefined) __s.removeListener("end", __s.__reqSockOnEnd);
+              if (__s.__reqSockOnClose !== undefined) __s.removeListener("close", __s.__reqSockOnClose);
+              if (__s.__lastTimeoutCb !== undefined) { try { __s.removeListener("timeout", __s.__lastTimeoutCb); } catch {} __s.__lastTimeoutCb = undefined; }
+              if (__s.__agTimeoutSingleton !== undefined) { try { __s.removeListener("timeout", __s.__agTimeoutSingleton); } catch {} }
+              if (__s.__freeSockErr !== undefined) { try { __s.removeListener("error", __s.__freeSockErr); } catch {} }
+              __s._httpMessage = null;
+            } catch { /* 摘除失败不阻隧道 */ }
+            // 摘池（101 升级同款：先摘后发；CONNECT 从不入 freeSockets，
+            // sockets 残留与 totalSocketCount 同步清）。
+            try {
+              if (this.agent !== null && this.agent !== undefined && this.__sock !== null) {
+                const __ag = this.agent;
+                if (this.__sock.__poolCleaner !== undefined) {
+                  try { this.__sock.removeListener("close", this.__sock.__poolCleaner); } catch { /* gone */ }
+                  this.__sock.__poolCleaner = undefined;
+                }
+                const __k = this.__poolKey;
+                if (__k !== undefined) {
+                  const __arr = __ag.sockets[__k];
+                  if (__arr !== undefined) {
+                    const __i = __arr.indexOf(this.__sock);
+                    if (__i !== -1) __arr.splice(__i, 1);
+                    if (__arr.length === 0) delete __ag.sockets[__k];
+                  }
+                }
+                if (__ag.totalSocketCount > 0) __ag.totalSocketCount--;
+              }
+            } catch { /* 摘池失败不阻隧道 */ }
+            try { this.destroyed = true; } catch { /* gone */ }
+            this.__sock = null;
+            if (!this.__closeEmitted) {
+              this.__closeEmitted = true;
+              queueMicrotask(() => { try { this.emit("close"); } catch { /* gone */ } });
+            }
+            this.emit("connect", res, __tunSock, globalThis.Buffer.from(__leftover));
             return;
           }
           // 1xx 信息响应（node parserOnIncomingClient 口径，真机 26.8.2 对拍）：
@@ -1008,14 +1054,16 @@ Agent.prototype.__trackSocket = function (sock, key) {
   if (!sock.__onTimeoutSingleton) {
     sock.__onTimeoutSingleton = true;
     const __ag = this;
-    sock.on("timeout", function onTimeout() {
+    // 存根供 CONNECT 隧道 detach 摘除（connect 套件 timeout:0 矩阵）。
+    sock.__agTimeoutSingleton = function onTimeout() {
       try {
         const __free = __ag.freeSockets;
         for (const __k of Object.keys(__free)) {
           if (__free[__k].includes(sock)) { try { sock.destroy(); } catch { /* gone */ } break; }
         }
       } catch { /* 池表不可读即跳过 */ }
-    });
+    };
+    sock.on("timeout", sock.__agTimeoutSingleton);
   }
   if (this.options && typeof this.options.timeout === "number" && this.options.timeout > 0) {
     if (typeof sock.setTimeout === "function") {
@@ -1260,7 +1308,7 @@ Agent.prototype.addRequest = function (req, options, port, localAddress) {
   }
   req.__poolKey = name;
   req.__queued = false;
-  const opts = { ...options, host: options.host ?? options.hostname ?? "localhost", port: options.port ?? this.__defaultPort ?? 80 };
+  const opts = { ...options, host: options.hostname ?? options.host ?? "localhost", port: options.port ?? this.__defaultPort ?? 80 };
   let done = false;
   const oncreate = (err, s) => {
     if (done) return;
@@ -1322,6 +1370,15 @@ export function normalizeRequestArgs(a, b, c, flavor) {
     const fromUrl = { hostname: u.hostname };
     if (u.port) fromUrl.port = Number(u.port);
     fromUrl.path = u.pathname + u.search;
+    // node 口径（internal/url urlToHttpOptions + decoded-auth 套件真机实测）：
+    // userinfo 进 options.auth（decodeURIComponent 双侧），IPv6 主机名去框
+    //（'[::1]'→'::1'，加框由发头侧按需做）。
+    if (fromUrl.hostname.startsWith("[") && fromUrl.hostname.endsWith("]")) {
+      fromUrl.hostname = fromUrl.hostname.slice(1, -1);
+    }
+    if (u.username || u.password) {
+      fromUrl.auth = `${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`;
+    }
     if (typeof b === "function") return [fromUrl, b];
     return [{ ...fromUrl, ...(b ?? {}) }, c];
   }

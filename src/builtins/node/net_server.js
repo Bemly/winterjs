@@ -77,7 +77,10 @@ class __ServerClass extends EventEmitter {
     if (this.pauseOnConnect) s.__paused = true;
     this.__conns = (this.__conns ?? 0) + 1;
     this.__connsSet.add(s);
-    s.once("close", () => { this.__conns = Math.max(0, (this.__conns ?? 1) - 1); this.__connsSet.delete(s); });
+    // 存根供 http CONNECT 隧道 detach 摘除（connect 套件 close:0 矩阵；摘除时
+    // 手工同步记账，见 framing_outgoing CONNECT 分支）。
+    s.__netConnsCleaner = () => { this.__conns = Math.max(0, (this.__conns ?? 1) - 1); this.__connsSet.delete(s); };
+    s.once("close", s.__netConnsCleaner);
     this.emit("connection", s);
   }
   // node：销毁全部已接受连接（server-drop-connections 套件）。

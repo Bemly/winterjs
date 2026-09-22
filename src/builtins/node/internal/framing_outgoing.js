@@ -18,6 +18,25 @@ export class OutgoingMessage extends Writable {
   _implicitHeader() {
     throw new Error("_implicitHeader() method is not implemented");
   }
+  // node 口径（lib/_http_outgoing.js + outgoing-settimeout 套件真机实测）：
+  // 基类 setTimeout——cb 挂 once('timeout')；有 socket 直转，无 socket 等
+  // 'socket' 事件再转（ClientRequest/ServerResponse 各有覆写，本实现只服务
+  // 基类直构与无覆写子类）。
+  setTimeout(msecs, callback) {
+    if (typeof callback === "function") this.once("timeout", callback);
+    // node 口径：无 socket 时等 'socket' 事件，用事件实参（非 this.socket——
+    // 手工 emit('socket', fake) 形下 this.socket 仍为 null）。
+    const __apply = (sock) => {
+      try {
+        const __s = sock ?? this.socket;
+        if (__s !== undefined && __s !== null &&
+            typeof __s.setTimeout === "function") __s.setTimeout(msecs);
+      } catch { /* gone */ }
+    };
+    if (this.socket !== undefined && this.socket !== null) __apply();
+    else this.once("socket", __apply);
+    return this;
+  }
   // node 口径：destroy(err) 不外发 'error'（仅记 errored），异步发一次 'close'
   //（outgoing-destroyed 套件：destroyed/closed/errored 三面 + close 事件）。
   destroy(err) {
@@ -247,7 +266,8 @@ export function withHttpServer(Base) {
         // 复用 holdback timer 同款步骤）再摧毁 req/res（res 'close' 无 'finish'）
         // + 毁 socket（badrequest 套件，客户端 FIN 后 lenient-end）；
         // ④ 无监听 + 无在途 res（升级/空闲）→ 重抛走 uncaught（u6c 真机实证）。
-        sock.on("error", function __httpSockOnError(e) {
+        // 存根供 CONNECT 隧道 detach 摘除（connect 套件 listenerCount 矩阵）。
+        sock.__httpSockOnError = function __httpSockOnError(e) {
           const __nErr = typeof sock.listenerCount === "function" ? sock.listenerCount("error") : 0;
           const __hasClientError = self.listenerCount("clientError") > 0;
           if (__hasClientError) {
@@ -280,8 +300,10 @@ export function withHttpServer(Base) {
           try { if (st.req !== null && st.req !== undefined && !st.req.destroyed) st.req.destroy(); } catch { /* gone */ }
           try { if (!__r.destroyed) __r.destroy(); } catch { /* gone */ }
           try { sock.destroy(); } catch { /* gone */ }
-        });
-        sock.on("close", () => {
+        };
+        sock.on("error", sock.__httpSockOnError);
+        // 存根供 CONNECT 隧道 detach 摘除（connect 套件 listenerCount 矩阵）。
+        sock.__httpSockOnClose = () => {
           self.__clearReqTimers(st);
           self.__sockets.delete(sock);
           // 连接断时未完的req/res一起收尾：req 先走 aborted 级联（aborted
@@ -303,13 +325,19 @@ export function withHttpServer(Base) {
           if (st.res !== null && !st.res.writableEnded && !st.res.destroyed) {
             st.res.destroy();
           }
-        });
+        };
+        sock.on("close", sock.__httpSockOnClose);
         // server.timeout：per-socket 空闲计时（10f；单发 timer，data 到达即重臂，
         // 见 data 处理器）。到期 server 发 'timeout'(socket)，不杀连接（net 口径）。
-        if (self.timeout > 0) sock.setTimeout(self.timeout);
-        sock.on("timeout", () => {
-          if (!sock.destroyed) self.emit("timeout", sock);
-        });
+        // 监听只在计时武装时挂（无条件挂会使 listenerCount 恒多 1——connect 套件
+        // 矩阵；缺省 timeout=0 即不挂）。存根供 CONNECT 隧道 detach 摘除。
+        if (self.timeout > 0) {
+          sock.setTimeout(self.timeout);
+          sock.__httpSockOnTimeout = () => {
+            if (!sock.destroyed) self.emit("timeout", sock);
+          };
+          sock.on("timeout", sock.__httpSockOnTimeout);
+        }
         // 具名存根供升级摘除（升级后 native 直调 __srvFeed，此监听再留着
         // 只会占 data 监听数、提前吞掉 spill 冲刷）。
         const __srvDataListener = (chunk) => {
@@ -344,7 +372,11 @@ export function withHttpServer(Base) {
         // node socketOnEnd 口径：客户端 FIN——非 half-open 直接销毁（res 'close'
         // 经 close 处理器）；half-open 留给响应自身收口（server.js 套件的半关
         // 后续响应仍须可写），被截断的请求体提前夭折（'aborted' 语义）。
+        // CONNECT/升级劫持后跳过（connect 套件：隧道内 FIN 不得销毁用户
+        // socket；监听计数保留 end:1）。仅 CONNECT 形（升级 FIN 语义另行，
+        // 不动）。
         sock.on("end", () => {
+          if (sock.__connectHijacked) return;
           sock.__finReceived = true;
           if (!self.httpAllowHalfOpen) {
             try { sock.destroy(); } catch { /* gone */ }
@@ -553,7 +585,27 @@ export function withHttpServer(Base) {
           //（req, socket, head；无监听则销毁连接），socket 停止 HTTP 解析。
           if (req.method === "CONNECT") {
             sock.__upgraded = true;
+            // CONNECT 劫持标记（end 处理器跳过 FIN 销毁；升级形不动）。
+            sock.__connectHijacked = true;
             try { sock.__detachSrvData && sock.__detachSrvData(); } catch { /* gone */ }
+            // node 口径（connect 套件 listenerCount 矩阵真机实测：close 0/
+            // drain 0/data 0/end 1/error 0/timeout 0）：隧道接管即拆 http 侧
+            // 全部接线，只留 end 监听；记账（__sockets/conns/计时器）即刻结算
+            //（close 监听既摘，后续 close 无需 http 收尾；hijacked 连接不再续
+            // server.close() 的等待）。
+            try { if (sock.__httpSockOnError !== undefined) sock.removeListener("error", sock.__httpSockOnError); } catch { /* gone */ }
+            try { if (sock.__httpSockOnClose !== undefined) sock.removeListener("close", sock.__httpSockOnClose); } catch { /* gone */ }
+            try { if (sock.__httpSockOnTimeout !== undefined) sock.removeListener("timeout", sock.__httpSockOnTimeout); } catch { /* gone */ }
+            try {
+              if (sock.__netConnsCleaner !== undefined) {
+                sock.removeListener("close", sock.__netConnsCleaner);
+                sock.__netConnsCleaner();
+                sock.__netConnsCleaner = undefined;
+              }
+            } catch { /* gone */ }
+            try { this.__clearReqTimers(st); } catch { /* gone */ }
+            try { this.__sockets.delete(sock); } catch { /* gone */ }
+            try { sock.parser = null; } catch { /* gone */ }
             const __leftover = st.buf.slice(headEnd + 4);
             st.buf = new Uint8Array(0);
             if (this.listenerCount("connect") > 0) {
@@ -867,7 +919,10 @@ export function withClientRequest(openSocket, flavor) {
           }
         }
         method = (options.method ?? "GET").toUpperCase() || "GET";
-        host = options.host ?? options.hostname ?? "localhost";
+        // node 口径（lib/_http_client.js 真机源码 + url.parse 套件）：
+        // hostname 优先于 host（url.parse 对象同时带 `host: "h:port"` 与
+        // `hostname: "h"`，取 host 会把端口当主机名连过去即 ECONNRESET）。
+        host = options.hostname ?? options.host ?? "localhost";
         // node 口径：defaultPort 逐级——显式 port > agent.defaultPort > flavor 缺省
         //（default-port 套件：globalAgent.defaultPort 动态改写生效，host 头
         // 按“port === 生效缺省”省略端口；agent 缺省取隐式 globalAgent）。
@@ -875,7 +930,11 @@ export function withClientRequest(openSocket, flavor) {
         const __agentDp = __ag && __ag.defaultPort !== undefined ? __ag.defaultPort : flavor.defaultPort;
         port = Number(options.port ?? __agentDp);
         path = options.path ?? "/";
-        if (!path.startsWith("/")) path = "/" + path;
+        // node 口径（lib/_http_client.js 293-295 行 + connect 套件真机实测）：
+        // CONNECT（authority-form）与 OPTIONS * 不补前导斜杠、不校验。
+        if (method !== "CONNECT" && !(method === "OPTIONS" && path === "*")) {
+          if (!path.startsWith("/")) path = "/" + path;
+        }
         userHeaders = options.headers ?? {};
         extra = options;
         // node addRequest 口径：socketPath 在场即以之改写 connect 用的 path
@@ -888,6 +947,9 @@ export function withClientRequest(openSocket, flavor) {
       }
       this.method = method;
       this.host = host;
+      // node 口径（outgoing-properties 套件真机实测）：req.protocol 恒 flavor
+      // 协议（'http:'/'https:'），非自有计算。
+      this.protocol = flavor.protocol;
       // node 口径 uniqueHeaders：请求侧名单（multiple-headers 套件；名单内头
       // wire 用 '; ' 合并单行，distinct 收单元素）。
       if (options.uniqueHeaders !== undefined) {
@@ -1017,13 +1079,38 @@ export function withClientRequest(openSocket, flavor) {
       // 自动 CL/TE 同禁（dont-set-default 套件：POST 空体不补 CL:0；显式
       // CL/TE 照发）。_final/刷盘路径经 __noDefaults 查之。
       this.__noDefaults = __noDefaults;
+      // node 口径（lib/_http_client.js 551 行 `if (options.auth && ...)` 真机原文 +
+      // url.parse-auth/decoded-auth 套件实测）：options.auth 真值在场且用户未显式
+      // 给 Authorization 即补 Basic（base64 全串；对象/数组双形都查，显式值恒赢）。
+      if (options.auth) {
+        let __hasAuth = this.__headers.authorization !== undefined;
+        if (!__hasAuth && Array.isArray(this.__headerList)) {
+          for (const [__k] of this.__headerList) {
+            if (String(__k).toLowerCase() === "authorization") { __hasAuth = true; break; }
+          }
+        }
+        if (!__hasAuth) {
+          const __cred = Buffer.from(String(options.auth)).toString("base64");
+          if (Array.isArray(this.__headerList)) {
+            this.__headerList.push(["Authorization", `Basic ${__cred}`]);
+          } else {
+            this.__headers.authorization = `Basic ${__cred}`;
+          }
+          this.__headerNames.authorization = "Authorization";
+        }
+      }
       // setHost:true 即补 Host（dont-set 下亦补；拼写取规范 'Host'）。
       if (options.setHost === true && this.__headers.host === undefined) {
         this.__headers.host = this.__hostHeader;
         this.__headerNames.host = "Host";
       }
       if (!__noDefaults && this.__headers.host === undefined) {
-        this.__headers.host = this.__hostHeader;
+        // node 口径（lib/_http_client.js 546 行 + connect-default-host-header
+        // 套件真机实测）：CONNECT 且 options.path 在场时 Host 取 path 本体
+        //（authority），不取连接主机。
+        this.__headers.host = (method === "CONNECT" && options.path !== undefined)
+          ? String(path)
+          : this.__hostHeader;
         this.__headerNames.host = "Host";
       }
       // node ctor 口径（_http_client.js）：有 agent 即默认 keep-alive，
@@ -1180,7 +1267,7 @@ export function withClientRequest(openSocket, flavor) {
           }
         });
       }
-      sock.on("connect", () => {
+      sock.on("connect", (sock.__reqSockOnConnect = () => {
         this.__connected = true;
         if (this.__pendingFinal) {
           // end() 已调：整事务一次刷出（CL 决策在 end 时已定）。
@@ -1191,8 +1278,8 @@ export function withClientRequest(openSocket, flavor) {
         // node _flush 口径：连通即发头（无体请求——如 Expect: 100-continue
         // 等 continue 的形态——头也必须立即出网）。
         this.__tryFlush();
-      });
-      sock.on("secureConnect", () => {
+      }));
+      sock.on("secureConnect", (sock.__reqSockOnSecureConnect = () => {
         this.__connected = true;
         if (this.__pendingFinal) {
           this.__pendingFinal = false;
@@ -1200,7 +1287,7 @@ export function withClientRequest(openSocket, flavor) {
           return;
         }
         this.__tryFlush();
-      });
+      }));
       const __sockOnData = (chunk) => {
         try {
           this.__onSockData(chunk);

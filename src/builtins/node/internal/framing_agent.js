@@ -3,37 +3,68 @@
     // ERR_HTTP_INVALID_HEADER_VALUE 'Invalid value "undefined" for header …'；
     // 值原样存（number/array 不转串，content-length/set-cookie 套件）。
     setHeader(name, value) {
+      // node 口径：发头后改头即 ERR_HTTP_HEADERS_SENT（multiple-headers 套件；
+      // 无参亦先判此门，真机实测）。
+      if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("set");
       if (name === undefined) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", "undefined");
       if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
       if (value === undefined) throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", String(name));
       const lk = String(name).toLowerCase();
       if (this._removedHeader !== undefined) delete this._removedHeader[lk];
       // node 口径：数组值按多行发出（dont-set-default 套件 foo 双行）；
-      // 用户拼写记 __headerNames 供上网（'HOST' 非 'host'）。
-      if (Array.isArray(value)) {
-        const __arr = [];
-        for (const __e of value) {
-          __checkOutboundHeaderValue(this.__validation, __e);
-          __arr.push(__e);
+      // 用户拼写首写优先（multiple-headers 套件全 'X-Req-a'）。
+      // 构造期数组形（__headerList 在场）下 setHeader 原位替换同键对——
+      // 真机 wire 探针：构造期对占位，后调 set 即原位顶替。
+      const __vals = Array.isArray(value) ? [...value] : [value];
+      for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e);
+      if (this.__headerList !== null && this.__headerList !== undefined) {
+        const __nl = [];
+        let __placed = false;
+        for (const [__k, __v] of this.__headerList) {
+          if (String(__k).toLowerCase() === lk) {
+            if (!__placed) {
+              __placed = true;
+              for (const __e of __vals) __nl.push([String(name), __e]);
+            }
+          } else {
+            __nl.push([__k, __v]);
+          }
         }
-        this.__headers[lk] = __arr;
+        if (!__placed) for (const __e of __vals) __nl.push([String(name), __e]);
+        this.__headerList = __nl;
+        this.__headers[lk] = Array.isArray(value) ? [...value] : value;
+      } else if (Array.isArray(value)) {
+        this.__headers[lk] = [...value];
       } else {
-        __checkOutboundHeaderValue(this.__validation, value);
         this.__headers[lk] = value;
       }
-      (this.__headerNames ??= {})[lk] = String(name);
+      if ((this.__headerNames ??= {})[lk] === undefined) this.__headerNames[lk] = String(name);
       if (lk === "connection") this.__autoConn = false;
       return this;
     }
     // node OutgoingMessage.appendHeader（header-value-relaxed 套件点名）。
+    // node 口径：数组值按元素追加（multiple-headers 套件 [BBB CCC] 形）；
+    // 缺省追加为单元素（真机 new+s/a+s 探针）。发头后即 ERR_HTTP_HEADERS_SENT。
     appendHeader(name, value) {
+      if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("append");
       if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
-      __checkOutboundHeaderValue(this.__validation, value);
       const lk = String(name).toLowerCase();
+      const __vals = Array.isArray(value) ? [...value] : [value];
+      for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e);
+      // 构造期数组形下 append 即尾部并入有序对（真机探针：既有行保留原位）。
+      if (this.__headerList !== null && this.__headerList !== undefined) {
+        for (const __e of __vals) this.__headerList.push([String(name), __e]);
+      }
+      // 查取表镜像：缺省单元素、数组恒数组（真机 new+s/a+s 探针）。
       const cur = this.__headers[lk];
-      if (Array.isArray(cur)) cur.push(String(value));
-      else this.__headers[lk] = cur !== undefined ? `${cur}, ${value}` : String(value);
-      (this.__headerNames ??= {})[lk] = String(name);
+      if (cur === undefined) {
+        this.__headers[lk] = Array.isArray(value) ? [...value] : value;
+      } else if (Array.isArray(cur)) {
+        for (const __e of __vals) cur.push(__e);
+      } else {
+        this.__headers[lk] = Array.isArray(value) ? [cur, ...value] : [cur, value];
+      }
+      if ((this.__headerNames ??= {})[lk] === undefined) this.__headerNames[lk] = String(name);
       if (lk === "connection") this.__autoConn = false;
       return this;
     }
@@ -43,6 +74,8 @@
       return this.__headers[name.toLowerCase()];
     }
     removeHeader(name) {
+      // node 口径：发头后即 ERR_HTTP_HEADERS_SENT（remove-header-after-sent 套件）。
+      if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("remove");
       if (typeof name !== "string") throw new codes.ERR_INVALID_ARG_TYPE("name", "string", name);
       const lk = name.toLowerCase();
       delete this.__headers[lk];
@@ -198,9 +231,17 @@
         if (typeof f === "function") f();
         return this;
       }
-      // CL 快路径判据：end 是首个头触发点（此前无 write）。
+      // CL 快路径判据：end 是首个头触发点（此前无 write）。TE 在场（含数组
+      // 形有序对——查取表看不见它；multiple-headers 套件 CL:0 伪影）即无 CL 快捷。
+      // node 口径：end() 返回后头即算发出（服务端同改）。
+      this.headersSent = true;
       this.__endFast = !this.__sawWrite;
       this.__userEnded = true;
+      if (this.__headers["transfer-encoding"] !== undefined ||
+          (this.__headerList !== null && this.__headerList !== undefined &&
+           this.__headerList.some(([k]) => String(k).toLowerCase() === "transfer-encoding"))) {
+        this.__endFast = false;
+      }
       // node maybePrepareFinalChunk 口径：end(data) 为首个头触发点时
       // _contentLength 即刻落定（UCED 方法族；GET 族无 CL——framing 顺序）。
       if (this.__endFast && !this.__headSent && !this.__headerStored &&
@@ -256,9 +297,16 @@
       // dont-set-default 套件 'HOST' 原样），数组值逐行发出。
       const canon = { "transfer-encoding": "Transfer-Encoding", "content-length": "Content-Length" };
       const __names = this.__headerNames ?? {};
+      // node 口径 uniqueHeaders：名单内头 wire 用 '; ' 合并单行（multiple-
+      // headers 套件；distinct 同收单元素）。
+      const __uniq = this.__uniqueHeaders;
       const __emitOne = (k, v) => {
         if (Array.isArray(v)) {
           const __n = __names[k] ?? (canon[k] ?? k);
+          if (Array.isArray(__uniq) && __uniq.includes(k)) {
+            head.push(`${__n}: ${v.join("; ")}`);
+            return;
+          }
           for (const __e of v) head.push(`${__n}: ${__e}`);
           return;
         }
@@ -273,7 +321,21 @@
       //（__autoConnVal，header 面不可见），用户未覆写即补发。
       if (this.__headerList !== null && this.__headerList !== undefined) {
         const __seen = new Set(this.__headerList.map(([k]) => String(k).toLowerCase()));
-        for (const [k, v] of this.__headerList) head.push(`${k}: ${v}`);
+        // node 口径 uniqueHeaders：名单内头合并单行 '; '（multiple-headers
+        // 套件；首现位置发出，后续同键跳过——与 __emitOne 同口径）。
+        const __uniq = this.__uniqueHeaders;
+        const __merged = new Set();
+        for (const [k, v] of this.__headerList) {
+          const __lk = String(k).toLowerCase();
+          if (Array.isArray(__uniq) && __uniq.includes(__lk)) {
+            if (__merged.has(__lk)) continue;
+            __merged.add(__lk);
+            const __all = this.__headerList.filter(([k2]) => String(k2).toLowerCase() === __lk).map(([, v2]) => v2);
+            head.push(`${k}: ${__all.join("; ")}`);
+            continue;
+          }
+          head.push(`${k}: ${v}`);
+        }
         for (const [k, v] of Object.entries(this.__headers)) {
           if (!__seen.has(k)) __emitOne(k, v);
         }
@@ -323,6 +385,8 @@
     _write(chunk, encoding, cb) {
       const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk));
       this.__sawWrite = true;
+      // node 口径：首个 write 即算发头（服务端同改；holdback 只延迟落盘）。
+      this.headersSent = true;
       if (this.__buf1 === null && !this.__headSent) {
         this.__buf1 = [u8];
         this.__holdTimer = setTimeout(() => {
@@ -367,6 +431,11 @@
         cb();
         return;
       }
+      // node 口径：用户显式 TE: chunked 即 chunked 帧（空体亦发终结块；
+      // mh58：TE 在场无终结即对端永等）。数组形有序对里的 TE 同算在场。
+      if (!this.__chunked && !this.__rawCL && this.__hasUserTEChunked()) {
+        this.__chunked = true;
+      }
       if (!this.__headSent) {
         if (!this.__connected) {
           // 连接未就绪：连通后一次性发出（CL 快捷；见 connect 回调）。
@@ -377,7 +446,7 @@
         this.__flushFinal();
       } else if (this.__chunked && !this.__rawCL) {
         if (this.__connected && this.__sock !== null) {
-          this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));
+          this.__sock.write(new TextEncoder().encode("0\r\n" + (this.__trailer ?? "") + "\r\n"));
         }
       }
       cb();
@@ -385,16 +454,36 @@
     // 收尾刷新（调用方保证已连通）：end(data) 为首个头触发点且方法允许体时
     // 走 CL 快捷（合并发出，真机单 write 口径）；write/flushHeaders 在前 →
     // chunked 逐帧（真机 per-write 帧口径）；GET/HEAD 族 → 无 CL/TE 裸体。
+    // 用户显式 TE: chunked 判定（含数组形有序对；三处帧决策共用）。
+    __hasUserTEChunked() {
+      if (/(?:^|\W)chunked/i.test(String(this.__headers["transfer-encoding"] ?? ""))) return true;
+      const __hl = this.__headerList;
+      if (__hl !== null && __hl !== undefined) {
+        for (const [k, v] of __hl) {
+          if (String(k).toLowerCase() === "transfer-encoding" && /(?:^|\W)chunked/i.test(String(v ?? ""))) return true;
+        }
+      }
+      return false;
+    }
     __flushFinal() {
       if (this.__sock === null || this.destroyed) return;
+      // 用户显式 TE: chunked 即 chunked 帧（_final 同款归一；pendingFinal
+      // 路径直达此处，绕过 _final 入口）。
+      if (!this.__chunked && !this.__rawCL && this.__hasUserTEChunked()) {
+        this.__chunked = true;
+      }
       if (!this.__headSent) {
         // CL 决策已在 end() 落定（node _contentLength 口径）；无 CL 的 UCED
-        // 请求 chunked；GET 族（UCED false）无 CL/TE 裸体。
+        // 请求 chunked；GET 族（UCED false）无 CL/TE 裸体。数组形有序对里的
+        // TE 同样算在场（multiple-headers 套件）。
+        const __hasTE = this.__headers["transfer-encoding"] !== undefined ||
+          (this.__headerList !== null && this.__headerList !== undefined &&
+           this.__headerList.some(([k]) => String(k).toLowerCase() === "transfer-encoding"));
         if (this.__contentLength !== undefined) {
           this.__headers["content-length"] = String(this.__contentLength);
           this.__rawCL = true;
         } else if (this.__chunkDefault && this.__headers["content-length"] === undefined &&
-                   this.__headers["transfer-encoding"] === undefined) {
+                   !__hasTE) {
           this.__chunked = true;
           this.__headers["transfer-encoding"] = "chunked";
         }
@@ -411,11 +500,12 @@
         // chunked 收尾终结块（服务端 _final 同款口径）。此前缺失——connect 前
         // write+end 的 POST 走 chunked，服务端 req 'end' 永不触发（loopback
         // 黑盒挂死实录；head 已发路径本就有此写入，两路对齐）。
+        // addTrailers 的 trailer 跟终结块（multiple-headers 套件）。
         if (this.__chunked && !this.__rawCL) {
-          this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));
+          this.__sock.write(new TextEncoder().encode("0\r\n" + (this.__trailer ?? "") + "\r\n"));
         }
       } else if (this.__chunked && !this.__rawCL) {
-        this.__sock.write(new TextEncoder().encode("0\r\n\r\n"));
+        this.__sock.write(new TextEncoder().encode("0\r\n" + (this.__trailer ?? "") + "\r\n"));
       }
     }
     _destroy(err, cb) {
@@ -462,7 +552,7 @@
             this.destroy(__hpe("HPE_LF_EXPECTED", "Expected LF after CR"));
             return;
           }
-          const { first, headers, rawHeaders } = __parseHead(headText, this.__inboundMode ?? (this.insecureHTTPParser === true ? "lenient" : "strict"), this.maxHeadersCount);
+          const { first, headers, rawHeaders, headersDistinct } = __parseHead(headText, this.__inboundMode ?? (this.insecureHTTPParser === true ? "lenient" : "strict"), this.maxHeadersCount);
           if (!first[0].startsWith("HTTP/") || !/^\d{3}$/.test(first[1] ?? "")) {
             this.destroy(__hpe("HPE_INVALID_CONSTANT", "invalid HTTP response line"));
             return;
@@ -489,6 +579,7 @@
             }
             res.headers = headers;
             res.rawHeaders = rawHeaders;
+            res.headersDistinct = headersDistinct;
             res.socket = this.__sock;
             res.connection = this.__sock;
             res.req = this;
@@ -518,6 +609,7 @@
                 }
                 res.headers = headers;
                 res.rawHeaders = rawHeaders;
+            res.headersDistinct = headersDistinct;
                 res.socket = this.__sock;
                 res.connection = this.__sock;
                 res.req = this;
@@ -574,6 +666,7 @@
             }
             info.headers = headers;
             info.rawHeaders = rawHeaders;
+            info.headersDistinct = headersDistinct;
             info.socket = this.__sock;
             info.connection = this.__sock;
             info.req = this;
@@ -593,6 +686,7 @@
           }
           res.headers = headers;
           res.rawHeaders = rawHeaders;
+          res.headersDistinct = headersDistinct;
           // node parserOnIncomingClient 口径：req.shouldKeepAlive 由响应决定
           //（1.1 缺省 keep、'close' 关；1.0 须显式 'keep-alive'；
           // should-keep-alive 套件逐项对拍）。

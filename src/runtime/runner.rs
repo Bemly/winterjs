@@ -71,6 +71,14 @@ async fn run_module(
 
     event_loop(rt, global, ErrorSource::Module { url: url.as_str() }, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx).await?;
 
+    // 自然退出：派发 process 'exit'（common.mustCall 计数结算点；Node 口径）。
+    // 显式 process.exit 已在 JS 侧派发过（process_exited 旗），此处跳过防双发。
+    // Entry 路径此前漏派发（--run 文件永不触发 exit 监听，见 §4.188）。
+    if state::with_plain(|p| p.process_exited.is_none()) {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        crate::builtins::node::process_::emit_exit(&mut realm, global.get());
+    }
+
     // 收割入口决议（事件循环的排空已驱动捕获回调）。
     let (fulfillment, rejection) =
         state::with_plain(|p| (p.entry_fulfillment.take(), p.entry_rejection.take()));

@@ -434,6 +434,9 @@ E('ERR_HTTP2_PUSH_DISABLED', 'Push streams are not enabled.', Error);
 // node lib/_http_common.js validateHeaderValue（header-validators 套件逐字
 // 'Invalid value "undefined" for header "x"'；与 HTTP2 同形不同码）。
 E('ERR_HTTP_INVALID_HEADER_VALUE', 'Invalid value "%s" for header "%s"', TypeError, HideStackFramesError);
+// node lib/_http_outgoing.js（multiple-headers 套件逐字，收发同文案
+// 'Cannot set/append headers after they are sent to the client'）。
+E('ERR_HTTP_HEADERS_SENT', 'Cannot %s headers after they are sent to the client', Error, HideStackFramesError);
 // node lib/_http_common.js checkInvalidHeaderChar（真机逐字 'Invalid character
 // in header content'；header-validators/header-value-relaxed 套件）。
 E('ERR_INVALID_CHAR', 'Invalid character in header content', TypeError, HideStackFramesError);

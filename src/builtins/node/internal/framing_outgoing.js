@@ -39,13 +39,65 @@ export class OutgoingMessage extends Writable {
   get errored() {
     return this.__omErrored ?? (this._writableState ? this._writableState.errored : null);
   }
+  // node setHeaders：收 Headers 实例或 Map（ServerResponse 同款双形；
+  // ClientRequest 侧同样可用）。
+  setHeaders(headers) {
+    if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("set");
+    let __isHeaders = false;
+    if (headers !== null && typeof headers === "object" && typeof headers.entries === "function") {
+      const __tag = headers[Symbol.toStringTag];
+      const __ctor = headers.constructor !== undefined && headers.constructor !== null
+        ? headers.constructor.name : "";
+      __isHeaders = __tag === "Headers" || __tag === "Map" || __ctor === "Headers" || __ctor === "Map";
+    }
+    if (!__isHeaders) {
+      throw new codes.ERR_INVALID_ARG_TYPE("headers", ["Headers instance"], headers);
+    }
+    for (const [k, v] of headers.entries()) this.appendHeader(k, v);
+    return this;
+  }
   // node 口径：OutgoingMessage.addTrailers（multiple-headers 套件：
-  // ClientRequest 亦有；分块终结块尾随头，原拼写输出）。
+  // ClientRequest 亦有；分块终结块尾随头。值数组按元素展开多行——真机
+  // addTrailers({k:[a,b]}) 即两行 k: a / k: b；拼写取用户原文。
+  // req.trailers/trailersDistinctrawTrailers 即时落账（wire 回环前可读，
+  // multiple-headers 套件 req 'end' 内断言）。
   addTrailers(trailers) {
-    const lowered = __lowerHeaders(trailers ?? {});
-    for (const k of Object.keys(lowered)) {
-      __validateHeaderValue(lowered[k]);
-      this.__trailer = (this.__trailer ?? "") + `${k}: ${lowered[k]}\r\n`;
+    if (trailers === null || trailers === undefined) return this;
+    for (const k of Object.keys(trailers)) {
+      if (!__TOKEN_RE.test(String(k))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(k));
+      const __v = trailers[k];
+      const __vals = Array.isArray(__v) ? __v : [__v];
+      // node 口径 uniqueHeaders：名单内 trailer 行 wire 合并单行 '; '
+      //（multiple-headers 套件 rawTrailers 收单对）。
+      const __uniq = this.__uniqueHeaders;
+      if (Array.isArray(__uniq) && __uniq.includes(String(k).toLowerCase())) {
+        for (const __e of __vals) __validateHeaderValue(__e);
+        this.__trailer = (this.__trailer ?? "") + `${k}: ${__vals.join("; ")}\r\n`;
+        if (this.trailers !== undefined) {
+          if (this.rawTrailers === undefined) this.rawTrailers = [];
+          this.rawTrailers.push(k, __vals.join("; "));
+          const __lk = String(k).toLowerCase();
+          this.trailers[__lk] = __vals.join("; ");
+          if (this.trailersDistinct === undefined) this.trailersDistinct = Object.create(null);
+          if (this.trailersDistinct[__lk] === undefined) this.trailersDistinct[__lk] = [];
+          this.trailersDistinct[__lk].push(__vals.join("; "));
+        }
+        continue;
+      }
+      for (const __e of __vals) {
+        __validateHeaderValue(__e);
+        this.__trailer = (this.__trailer ?? "") + `${k}: ${__e}\r\n`;
+        // 即时落账（wire 解析回填前可读）。
+        if (this.trailers !== undefined) {
+          if (this.rawTrailers === undefined) this.rawTrailers = [];
+          this.rawTrailers.push(k, String(__e));
+          const __lk = String(k).toLowerCase();
+          this.trailers[__lk] = `${this.trailers[__lk] !== undefined ? this.trailers[__lk] + ", " : ""}${__e}`;
+          if (this.trailersDistinct === undefined) this.trailersDistinct = Object.create(null);
+          if (this.trailersDistinct[__lk] === undefined) this.trailersDistinct[__lk] = [];
+          this.trailersDistinct[__lk].push(String(__e));
+        }
+      }
     }
     return this;
   }
@@ -150,6 +202,12 @@ export function withHttpServer(Base) {
       const kb = o.keepAliveTimeoutBuffer !== undefined ? __validateInteger(o.keepAliveTimeoutBuffer, "keepAliveTimeoutBuffer") : undefined;
       if (kb !== undefined) self.keepAliveTimeoutBuffer = kb;
       if (o.maxRequestsPerSocket !== undefined) self.maxRequestsPerSocket = o.maxRequestsPerSocket;
+      // node 口径 uniqueHeaders：服务端响应侧名单（multiple-headers 套件；
+      // 名单内头 wire 用 '; ' 合并单行；请求侧见 ClientRequest 构造器）。
+      if (o.uniqueHeaders !== undefined) {
+        if (!Array.isArray(o.uniqueHeaders)) throw new codes.ERR_INVALID_ARG_TYPE("uniqueHeaders", "Array", o.uniqueHeaders);
+        self.uniqueHeaders = o.uniqueHeaders.map((h) => String(h).toLowerCase());
+      }
       // node 口径：shouldUpgradeCallback(req) 逐请求门控升级（upgrade-server-
       // callback 套件：true 走 upgrade、false 走 request、抛错走 uncaught）。
       if (o.shouldUpgradeCallback !== undefined) self.shouldUpgradeCallback = o.shouldUpgradeCallback;
@@ -472,7 +530,7 @@ export function withHttpServer(Base) {
           if (this.insecureHTTPParser !== true && __hasBareCR(headText)) {
             throw __mkParseError("LF expected after CR");
           }
-          const { first, headers, rawHeaders } = __parseHead(headText, this.__inboundMode ?? "strict", this.maxHeadersCount);
+          const { first, headers, rawHeaders, headersDistinct } = __parseHead(headText, this.__inboundMode ?? "strict", this.maxHeadersCount);
           __validateRequestHead(first, headers);
           const req = new IncomingMessage(this.__highWaterMark !== undefined
             ? { highWaterMark: this.__highWaterMark } : undefined);
@@ -486,6 +544,7 @@ export function withHttpServer(Base) {
           }
           req.headers = headers;
           req.rawHeaders = rawHeaders;
+            req.headersDistinct = headersDistinct;
           req.socket = sock;
           req.connection = sock;
           // Node 口径：CONNECT 方法请求不进 request 管线——派发 'connect'
@@ -595,9 +654,11 @@ export function withHttpServer(Base) {
           req.res = res;
           res.__keepAlive = keepAlive;
           res.__headOnly = req.method === "HEAD";
-          // 响应头决策所需服务端上下文（Keep-Alive: timeout / maxRequestsPerSocket）。
+          // 响应头决策所需服务端上下文（Keep-Alive: timeout / maxRequestsPerSocket
+          // / uniqueHeaders 名单）。
           res.__kaTimeout = this.keepAliveTimeout;
           res.__maxReq = this.maxRequestsPerSocket;
+          if (this.uniqueHeaders !== undefined) res.__uniqueHeaders = this.uniqueHeaders;
           st.reqCount = (st.reqCount ?? 0) + 1;
           // node 口径：超 maxRequestsPerSocket 的管线请求回 503 +
           // 关连接（keep-alive-pipeline-max-requests 套件第 4 路），并派发
@@ -823,6 +884,12 @@ export function withClientRequest(openSocket, flavor) {
       }
       this.method = method;
       this.host = host;
+      // node 口径 uniqueHeaders：请求侧名单（multiple-headers 套件；名单内头
+      // wire 用 '; ' 合并单行，distinct 收单元素）。
+      if (options.uniqueHeaders !== undefined) {
+        if (!Array.isArray(options.uniqueHeaders)) throw new codes.ERR_INVALID_ARG_TYPE("uniqueHeaders", "Array", options.uniqueHeaders);
+        this.__uniqueHeaders = options.uniqueHeaders.map((h) => String(h).toLowerCase());
+      }
       // node 口径：.port 不是自有属性（req.port === undefined；取值走 getPort()）。
       this.__port = port;
       // IPC 形（node：req.socketPath 自有属性；openSocket 钩按它走 UDS）。
@@ -884,7 +951,8 @@ export function withClientRequest(openSocket, flavor) {
       }
       // node 口径：headers 数组形（[k,v,...]，dupes 有序保留）与
       // setDefaultHeaders=false（禁自动 Host/Connection；dont-set-default
-      // 套件）。数组形另存有序对供发头（对象形 last-wins 仅供查取）。
+      // 套件）。数组形另存有序对供发头（setHeader 后调即并入有序对——真机
+      // 构造期数组头不进查取表但占 wire 位，multiple-headers 套件）。
       this.__headerList = null;
       this.__headerNames = Object.create(null);
       if (Array.isArray(userHeaders)) {
@@ -901,7 +969,7 @@ export function withClientRequest(openSocket, flavor) {
             const __k = String(__p[0]);
             if (!__TOKEN_RE.test(__k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", __k);
             __list.push([__k, String(__p[1])]);
-            this.__headerNames[__k.toLowerCase()] = __k;
+            if (this.__headerNames[__k.toLowerCase()] === undefined) this.__headerNames[__k.toLowerCase()] = __k;
           }
         } else {
           if (userHeaders.length % 2 !== 0) {
@@ -912,11 +980,14 @@ export function withClientRequest(openSocket, flavor) {
             const __k = String(userHeaders[__i]);
             if (!__TOKEN_RE.test(__k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", __k);
             __list.push([__k, String(userHeaders[__i + 1])]);
-            this.__headerNames[__k.toLowerCase()] = __k;
+            if (this.__headerNames[__k.toLowerCase()] === undefined) this.__headerNames[__k.toLowerCase()] = __k;
           }
         }
         this.__headerList = __list;
-        this.__headers = __lowerHeaders(Object.fromEntries(__list.map(([k, v]) => [k, v])));
+        // node 口径：数组形 headers 不进 __headers 查取表（multiple-headers
+        // 套件：构造期数组头只走 wire 有序对；setHeader 后调才入表）。
+        // 旧 Object.fromEntries 版把首对洗进查取表系伪语义。
+        this.__headers = {};
       } else {
         this.__headers = __lowerHeaders(userHeaders);
         for (const __k of Object.keys(userHeaders ?? {})) {
@@ -1039,11 +1110,7 @@ export function withClientRequest(openSocket, flavor) {
       if (sock.__freeSockErr !== undefined) {
         try { sock.removeListener("error", sock.__freeSockErr); } catch { /* gone */ }
       }
-      // node onSocket 口径：'socket' 事件异步（nextTick）发出——get()/request()
-      // 返回后同步注册的监听器必须能收到（agent-timeout-option 套件形态）。
-      queueMicrotask(() => {
-        if (!this.destroyed) this.emit("socket", sock);
-      });
+
       if (this.__pendingNoDelay !== undefined) {
         try { sock.setNoDelay(this.__pendingNoDelay); } catch { /* gone */ }
       }
@@ -1079,6 +1146,21 @@ export function withClientRequest(openSocket, flavor) {
         sock.once("timeout", this.timeoutCb);
       }
       this.__onSockClose = () => this.__onSockCloseEv();
+      // node onSocket 口径：'socket' 事件异步发出——构造后同步挂载的监听
+      // 必须能收到（microtask 递延仍先于 'connect'/首包到达，socket-before-
+      // connect 序不变；同步直发会使构造后挂载全部 miss）。
+      // 监听器抛错不得阻断 attach 后续接线（probe85d：抛错会吞掉 connect/
+      // data 等全部后继注册；真机 emit 抛错同样向外抛但接线是 C++ 侧已就绪）。
+      if (!this.destroyed) {
+        queueMicrotask(() => {
+          if (this.destroyed) return;
+          try {
+            this.emit("socket", sock);
+          } catch (__sockEvErr) {
+            queueMicrotask(() => { throw __sockEvErr; });
+          }
+        });
+      }
       sock.on("connect", () => {
         this.__connected = true;
         if (this.__pendingFinal) {

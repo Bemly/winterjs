@@ -126,6 +126,9 @@ function __parseHead(headText, mode, maxPairs) {
   // 响应照常完成；null/0/undefined 即不限）。
   const headers = {};
   const rawHeaders = [];
+  // node 口径 headersDistinct：null 原型、每 wire 行一个元素（unique 合并行
+  // 为单元素；单例首个赢只影响 headers，distinct 照收——真机实测）。
+  const headersDistinct = Object.create(null);
   let __pairs = 0;
   const __capped = typeof maxPairs === "number" && maxPairs > 0;
   for (const line of lines) {
@@ -156,6 +159,8 @@ function __parseHead(headText, mode, maxPairs) {
     __pairs++;
     rawHeaders.push(k, v);
     const lk = k.toLowerCase();
+    if (headersDistinct[lk] === undefined) headersDistinct[lk] = [];
+    headersDistinct[lk].push(v);
     // node 口径：判重走自有属性（'constructor' 等继承键不得参与合并初值；
     // multiheaders 套件 'constructor: foo, bar, baz'）。重名合并：
     // set-cookie 恒数组、cookie 用 '; '、单例表首个赢（真机三轮实测），其余 ', '。
@@ -172,7 +177,7 @@ function __parseHead(headText, mode, maxPairs) {
       headers[lk] = `${headers[lk]}, ${v}`;
     }
   }
-  return { first, headers, rawHeaders };
+  return { first, headers, rawHeaders, headersDistinct };
 }
 function __toU8(data) {
   if (typeof data === "string") return new TextEncoder().encode(data);
@@ -219,14 +224,16 @@ function __mkParseError(msg) {
 const __EXPECT_CONTINUE_RE = /(?:^|[^\w])100-continue(?![\w])/i;
 // 泵收尾把 trailer 落到消息上（rawTrailers 保存原拼写；trailers 小写键）。
 function __applyTrailers(msg, trailersRaw) {
-  msg.rawTrailers = [];
-  msg.trailers = {};
+  // node 口径：wire 回填与 addTrailers 即时落账合并（multiple-headers 套件
+  // req 'end' 断言两者叠加：trailers 以 ", " 续接、distinct 续元素）。
+  if (msg.rawTrailers === undefined) msg.rawTrailers = [];
+  if (msg.trailers === undefined) msg.trailers = {};
   // node 口径：trailersDistinct 为 null 原型对象、值全数组（multiple-headers 套件）。
-  msg.trailersDistinct = Object.create(null);
+  if (msg.trailersDistinct === undefined) msg.trailersDistinct = Object.create(null);
   for (let i = 0; i < trailersRaw.length; i += 2) {
     msg.rawTrailers.push(trailersRaw[i], trailersRaw[i + 1]);
-    msg.trailers[trailersRaw[i].toLowerCase()] = trailersRaw[i + 1];
     const __lk = trailersRaw[i].toLowerCase();
+    msg.trailers[__lk] = `${msg.trailers[__lk] !== undefined ? msg.trailers[__lk] + ", " : ""}${trailersRaw[i + 1]}`;
     if (msg.trailersDistinct[__lk] === undefined) msg.trailersDistinct[__lk] = [];
     msg.trailersDistinct[__lk].push(trailersRaw[i + 1]);
   }
@@ -314,7 +321,10 @@ function __framingFor(headers, isResponse, statusCode, method) {
     if (statusCode !== null && (statusCode === 204 || statusCode === 304 ||
         (statusCode >= 100 && statusCode < 200))) return { type: "none" };
   }
-  const te = (headers["transfer-encoding"] || "").toLowerCase();
+  // node 口径：TE 值数组（重复 TE 行合并数组，multiheaders 套件）先 join
+  // 再判 chunked；字符串直判。
+  const __tev = headers["transfer-encoding"];
+  const te = (Array.isArray(__tev) ? __tev.join(", ") : (__tev || "")).toLowerCase();
   if (te.includes("chunked")) return { type: "chunked", need: -1, buf: new Uint8Array(0) };
   const cl = Number(headers["content-length"] ?? NaN);
   if (Number.isInteger(cl) && cl >= 0) return { type: "cl", remaining: cl };
@@ -421,6 +431,7 @@ export class IncomingMessage extends Readable {
     this.trailers = {};
     this.rawTrailers = [];
     this.trailersDistinct = Object.create(null);
+    this.headersDistinct = Object.create(null);
     this.complete = false;
     // node 口径：aborted 缺省 false，中止置 true（aborted 套件双侧断言）。
     this.__aborted = false;
@@ -516,6 +527,7 @@ export class ServerResponse extends Writable {
     }
   }
   setHeader(name, value) {
+    if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("set");
     if (name === undefined) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", "undefined");
     if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
     if (value === undefined) throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", String(name));
@@ -533,19 +545,29 @@ export class ServerResponse extends Writable {
       __checkOutboundHeaderValue(this.__validation, value);
       this.__headers[lk] = value;
     }
-    // node 口径：wire 保留用户原拼写（kOutHeaders 存 [name, value] 原文名）。
-    this.__headerNames[lk] = String(name);
+    // node 口径：wire 保留用户原拼写（kOutHeaders 存 [name, value] 原文名，
+    // 首写优先——multiple-headers 套件全 'X-Res-a'）。
+    if (this.__headerNames[lk] === undefined) this.__headerNames[lk] = String(name);
     return this;
   }
-  // node OutgoingMessage.appendHeader（header-value-relaxed 套件点名）：同门
-  // 校验后逗号拼接（node 口径：existing + ", " + value）。
+  // node OutgoingMessage.appendHeader（header-value-relaxed 套件点名）。
+  // node 口径（multiple-headers 套件 + 真机探针）：缺省追加为单元素；
+  // 任意一侧数组即数组拼接；发头后即 ERR_HTTP_HEADERS_SENT。
   appendHeader(name, value) {
+    if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("append");
     if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
-    __checkOutboundHeaderValue(this.__validation, value);
     const lk = String(name).toLowerCase();
+    const __vals = Array.isArray(value) ? value : [value];
+    for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e);
     const cur = this.__headers[lk];
-    this.__headers[lk] = cur !== undefined ? `${cur}, ${value}` : String(value);
-    this.__headerNames[lk] = String(name);
+    if (cur === undefined) {
+      this.__headers[lk] = Array.isArray(value) ? [...value] : value;
+    } else if (Array.isArray(cur)) {
+      for (const __e of __vals) cur.push(__e);
+    } else {
+      this.__headers[lk] = Array.isArray(value) ? [cur, ...value] : [cur, value];
+    }
+    if (this.__headerNames[lk] === undefined) this.__headerNames[lk] = String(name);
     return this;
   }
   getHeader(name) {
@@ -553,6 +575,8 @@ export class ServerResponse extends Writable {
     return this.__headers[name.toLowerCase()];
   }
   removeHeader(name) {
+    // node 口径：发头后即 ERR_HTTP_HEADERS_SENT（remove-header-after-sent 套件）。
+    if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("remove");
     if (typeof name !== "string") throw new codes.ERR_INVALID_ARG_TYPE("name", "string", name);
     const lk = name.toLowerCase();
     delete this.__headers[lk];
@@ -576,6 +600,8 @@ export class ServerResponse extends Writable {
     return Object.keys(this.__headers).map((k) => __names[k] ?? k);
   }
   writeHead(status, ...rest) {
+    // node 口径：writeHead 即算发头（setheaders 套件 writeHead 后 setHeaders
+    // 即 HEADERS_SENT）——旗在合并完成后立，合并走 setHeader 不得自炸。
     // 状态码门（node validateStatusCode 口径，response-statuscode 套件 13 形态：
     // undefined/Infinity/NaN/{}/99/1000/'1000'/null/true/[]/'this is not valid'/
     // '404 ...' 全拒；message 'Invalid status code: <String(值)>'，RangeError）。
@@ -583,13 +609,45 @@ export class ServerResponse extends Writable {
       throw new codes.ERR_HTTP_INVALID_STATUS_CODE(`Invalid status code: ${String(status)}`);
     }
     const obj = rest.find((r) => r && typeof r === "object");
+    // node 口径：writeHead 的头参数收扁平数组（setheaders 套件块 4
+    // ['foo','3'] 即覆盖；与 ClientRequest 构造器数组形同源）。
+    const __objArr = Array.isArray(obj) ? obj : null;
     const msg = rest.find((r) => typeof r === "string");
     this.statusCode = status;
     // node 口径：wire 状态码以 writeHead 时为准，事后改 statusCode 属性只改
     // 属性值、不改 wire（mutable-headers writeHead 案：属性 201/wire 200）。
     this.__storedStatus = status;
     if (msg !== undefined) this.statusMessage = msg;
-    Object.assign(this.__headers, __lowerHeaders(obj, this.__validation, this.__headerNames));
+    // node 口径：writeHead 合并头值数组原样存（逐行发出；multiple-headers 套件
+    // 'x-res-c': ['HHH','III'] 即两行，旧 Object.assign 经 __lowerHeaders 洗成
+    // 逗号串系伪语义）。扁平数组即逐对 setHeader（setheaders 套件块 4）。
+    if (__objArr !== null) {
+      if (__objArr.length % 2 !== 0) throw new codes.ERR_INVALID_ARG_TYPE("headers", "object", obj);
+      for (let __i = 0; __i < __objArr.length; __i += 2) {
+        this.setHeader(String(__objArr[__i]), __objArr[__i + 1]);
+      }
+    }
+    this.headersSent = true;
+    if (obj !== undefined && __objArr === null) {
+      for (const k of Object.keys(obj)) {
+        if (!__TOKEN_RE.test(String(k))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(k));
+        const __v = obj[k];
+        const __lk = String(k).toLowerCase();
+        if (this._removedHeader !== undefined) delete this._removedHeader[__lk];
+        if (Array.isArray(__v)) {
+          const __arr = [];
+          for (const __e of __v) {
+            __checkOutboundHeaderValue(this.__validation, __e);
+            __arr.push(__e);
+          }
+          this.__headers[__lk] = __arr;
+        } else {
+          __checkOutboundHeaderValue(this.__validation, __v);
+          this.__headers[__lk] = __v;
+        }
+        if (this.__headerNames[__lk] === undefined) this.__headerNames[__lk] = String(k);
+      }
+    }
     // node _storeHeader 口径（de-chunked-trailer 套件）：非 chunked 传输带
     // Trailer 头即同步抛 ERR_HTTP_TRAILER_INVALID（Trailer 只能随 chunked 走；
     // 无 CL/TE 时自动 chunked 故合法，不抛）。
@@ -684,20 +742,65 @@ export class ServerResponse extends Writable {
     } catch { return false; /* gone */ }
     return true;
   }
-  // node setHeaders：只收 Headers 实例（entries 方法），否则 ERR_INVALID_ARG_TYPE。
+  // node setHeaders：收 Headers 实例或 Map（setheaders 套件真机实测双形；
+  // 其余（数组/对象/null/undefined/字符串/数字）一律 ERR_INVALID_ARG_TYPE；
+  // 品牌按名判定，跨域稳定）。
+  // 发头后即 ERR_HTTP_HEADERS_SENT（首块）。
   setHeaders(headers) {
-    if (headers === null || typeof headers !== "object" || typeof headers.entries !== "function") {
+    if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("set");
+    let __isHeaders = false;
+    if (headers !== null && typeof headers === "object" && typeof headers.entries === "function") {
+      const __tag = headers[Symbol.toStringTag];
+      const __ctor = headers.constructor !== undefined && headers.constructor !== null
+        ? headers.constructor.name : "";
+      __isHeaders = __tag === "Headers" || __tag === "Map" || __ctor === "Headers" || __ctor === "Map";
+    }
+    if (!__isHeaders) {
       throw new codes.ERR_INVALID_ARG_TYPE("headers", ["Headers instance"], headers);
     }
-    for (const [k, v] of headers.entries()) this.setHeader(k, v);
+    for (const [k, v] of headers.entries()) this.appendHeader(k, v);
     return this;
   }
   // node addTrailers：分块响应终结块尾随头（原拼写输出；真机 rawTrailers 口径）。
+  // 值数组按元素展开多行（multiple-headers 套件；拼写取用户原文）。
+  // trailers/trailersDistinct/rawTrailers 即时落账（multiple-headers 套件
+  // req 'end' 内断言 wire 回环值）。
   addTrailers(trailers) {
-    const lowered = __lowerHeaders(trailers ?? {});
-    for (const k of Object.keys(lowered)) {
-      __validateHeaderValue(lowered[k]);
-      this.__trailer = (this.__trailer ?? "") + `${k}: ${lowered[k]}\r\n`;
+    if (trailers === null || trailers === undefined) return this;
+    for (const k of Object.keys(trailers)) {
+      if (!__TOKEN_RE.test(String(k))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(k));
+      const __v = trailers[k];
+      const __vals = Array.isArray(__v) ? __v : [__v];
+      // node 口径 uniqueHeaders：名单内 trailer 行 wire 合并单行 '; '
+      //（multiple-headers 套件；与 ClientRequest 侧同口径）。
+      const __uniq = this.__uniqueHeaders;
+      if (Array.isArray(__uniq) && __uniq.includes(String(k).toLowerCase())) {
+        for (const __e of __vals) __validateHeaderValue(__e);
+        this.__trailer = (this.__trailer ?? "") + `${k}: ${__vals.join("; ")}\r\n`;
+        if (this.trailers !== undefined) {
+          if (this.rawTrailers === undefined) this.rawTrailers = [];
+          this.rawTrailers.push(k, __vals.join("; "));
+          const __lk = String(k).toLowerCase();
+          this.trailers[__lk] = __vals.join("; ");
+          if (this.trailersDistinct === undefined) this.trailersDistinct = Object.create(null);
+          if (this.trailersDistinct[__lk] === undefined) this.trailersDistinct[__lk] = [];
+          this.trailersDistinct[__lk].push(__vals.join("; "));
+        }
+        continue;
+      }
+      for (const __e of __vals) {
+        __validateHeaderValue(__e);
+        this.__trailer = (this.__trailer ?? "") + `${k}: ${__e}\r\n`;
+        if (this.trailers !== undefined) {
+          if (this.rawTrailers === undefined) this.rawTrailers = [];
+          this.rawTrailers.push(k, String(__e));
+          const __lk = String(k).toLowerCase();
+          this.trailers[__lk] = `${this.trailers[__lk] !== undefined ? this.trailers[__lk] + ", " : ""}${__e}`;
+          if (this.trailersDistinct === undefined) this.trailersDistinct = Object.create(null);
+          if (this.trailersDistinct[__lk] === undefined) this.trailersDistinct[__lk] = [];
+          this.trailersDistinct[__lk].push(String(__e));
+        }
+      }
     }
     return this;
   }
@@ -734,6 +837,9 @@ export class ServerResponse extends Writable {
     }
     // CL 快路径判据（真机）：end 的数据块存在性——write 后裸 end() 不走快路径
     //（真机 chunked + 终结块口径）。
+    // node 口径：end() 返回后头即算发出（multiple-headers 套件 end 后
+    // appendHeader 即 HEADERS_SENT；_final 异步，旗必须同步立）。
+    this.headersSent = true;
     this.__endHadData = chunk !== undefined && chunk !== null && typeof chunk !== "function";
     this.__userEnded = true;
     try {
@@ -816,6 +922,18 @@ export class ServerResponse extends Writable {
     }
     const reason = this.statusMessage ?? STATUS_CODES[__sc] ?? "";
     const head = [`HTTP/1.1 ${__sc} ${reason}`.trimEnd()];
+    // node 口径：用户头（含 writeHead 合并头）恒在自动头（Date/Connection/
+    // Keep-Alive/CL/TE）之前（真机三探针：plain/set/set+wh 全同序）。
+    const __auto = [];
+    const __user = [];
+    const __autoKey = (k) => {
+      if (k === "connection" && this.__autoConn) return true;
+      if (k === "date" && this.__autoDate) return true;
+      if (k === "keep-alive" && this.__autoKA) return true;
+      // 本轮新补的自动 CL/TE（用户未显式设置时）。
+      if ((k === "content-length" || k === "transfer-encoding") && this.__headerNames[k] === undefined) return true;
+      return false;
+    };
     // Connection 自动决策（node keep-alive logic 口径）：
     // shouldSendKeepAlive = shouldKeepAlive && (用户CL || UCED)；
     // maxRequestsPerSocket 达标 → close；否则 keep-alive（+Keep-Alive: timeout）；
@@ -880,13 +998,21 @@ export class ServerResponse extends Writable {
       const user = this.__headerNames[k];
       const name = user !== undefined ? user
         : (__autoCase(k) ? (k === "keep-alive" ? "Keep-Alive" : k.charAt(0).toUpperCase() + k.slice(1)) : (canon[k] ?? k));
-      // node 口径：数组值逐行发出（set-cookie/多值头；multiple-headers 套件）。
+      // node 口径：数组值逐行发出（set-cookie/多值头）；uniqueHeaders 名单内
+      // 用 '; ' 合并单行（multiple-headers 套件；发送侧合并，解析侧天然单元素）。
       if (Array.isArray(v)) {
-        for (const __e of v) head.push(`${name}: ${__e}`);
+        const __uniq = this.__uniqueHeaders;
+        if (Array.isArray(__uniq) && __uniq.includes(k)) {
+          (__autoKey(k) ? __auto : __user).push(`${name}: ${v.join("; ")}`);
+          continue;
+        }
+        for (const __e of v) (__autoKey(k) ? __auto : __user).push(`${name}: ${__e}`);
         continue;
       }
-      head.push(`${name}: ${v}`);
+      (__autoKey(k) ? __auto : __user).push(`${name}: ${v}`);
     }
+    for (const __line of __user) head.push(__line);
+    for (const __line of __auto) head.push(__line);
     return new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n");
   }
   __sendHead() {
@@ -915,6 +1041,9 @@ export class ServerResponse extends Writable {
   _write(chunk, encoding, cb) {
     const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk));
     this.__sawWrite = true;
+    // node 口径：首个 write 即算发头（setheaders-after-sent 套件 write 后
+    // setHeader 即 HEADERS_SENT；holdback 只延迟落盘，旗同步立）。
+    this.headersSent = true;
     if (this.__buf1 === null && !this.__headSent) {
       // 首字节 holdback：一拍内 end 到达且此前无 writeHead 则走 CL 快捷，
       // 否则转 chunked 流式（1.0 裸写）。cb 经 microtask 回（base 依此排

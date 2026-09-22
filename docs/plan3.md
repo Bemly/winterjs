@@ -280,6 +280,10 @@ native 注册/JS 递延/黑盒；单测 `net_halfhold_balance` + 黑盒
 域 + bin 185 全绿；`server-keep-alive-timeout`/`server-close-idle-wait-
 response` 转 SAME0；AGENTS §4.186）。
 
+**2026-09-22 G11 upgrade 轮收官**：4 提交（升级块判定门 + 三形态 + 体路由/
+直调/spill + socket 暂存/destroy 异步 + 黑盒 `phase11_http_upgrade_faces`；
+node 域 271 全绿（t4）+ 冒烟 5/5；upgrade 6 件全转 SAME0；AGENTS §4.187）。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

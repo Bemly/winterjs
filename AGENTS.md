@@ -3157,3 +3157,33 @@ cargo build
 - 附带：`server.close-idle-wait-response` 同批转 SAME0；`server-request-
   timeout-keepalive` 真机自挂（node 142，超跑分 alarm），非我方回归；
   dd3/kadbg  park 偶发未复现（4/4 确定性触发 kaT，疑为同族残留计数所致）。
+
+### 4.187 http 升级流八坑（2026-09-22，plan3 G11 upgrade 轮）
+
+- 坑一（升级判定缺 connection 门）："带 Upgrade 头即升级"系伪语义——真机需
+  connection token `upgrade` + Upgrade 头双全（advertise case2/3 钉住；llhttp
+  同款）。修法：双门（token 大小写不敏感逗号切）。
+- 坑二（无监听回落 vs 销毁三形态）：无回调 + 无监听 → 回落 request（advertise
+  末段/`upgrade-server` no-listener 形 200）；回调放行 + 无监听 → 销毁
+  （TrueWithoutHandler 形 ECONNRESET）；回调否决 → request。旧"无监听即销毁"
+  系伪语义。修法：三向分流（`framing_outgoing.js` 升级块）。
+- 坑三（对形 headers）：客户端 `headers: [[k,v],...]` 在 errors 内部空错炸
+  （扁平形才通）。真机双形同发头。修法：首元数组即对形分支（`framing_outgoing.js`
+  ClientRequest 构造器）。
+- 坑四（spill 重入无限递归）：spill 经 `sock.emit("data")` 重入服务端同表监听
+  → `__feedUpgraded` 自递归（700+ 次才爆栈）。修法：`__spillGuard` 守卫。
+- 坑五（直调前双发）：native `__ev` 的 `emit("data")` 与 spill 同表——用户收到
+  原始体 + spill 双份。修法：升级后 native 改 `__srvFeed` 直调喂体，用户只收
+  spill（`net_socket.js` data 臂）。
+- 坑六（服务端监听占数吞 spill）：服务端自有 data 监听使 `listenerCount ≥ 1`
+  恒成立，spill 提前冲刷给空（unread 套件 'upgrade head' 丢）。修法：升级/
+  CONNECT 接管即 `off` 摘除服务端监听（native 已直调，残留无用）。
+- 坑七（迟挂监听丢字节）：101 先到、data 监听后挂（unread 套件 10ms）即丢——
+  真机缓冲至读。修法：`__dataBuf` 暂存 + `newListener` 递延冲刷（入表后，
+  §4.47）；直发改先暂存后冲刷，保序（`net_socket.js`）。
+- 坑八（destroy(err) 同步抛）：同步 `emit("error")` 把 uncaught 语义压成同步
+  异常（body-error 套件）。真机 `emitErrorNT` 走 nextTick。修法：`process.
+  nextTick` 异步发（tick 回调带 uncaught 路由；microtask 落 rejection 走 fatal，
+  不可用）。
+- 复现：6 目标套件（修前 5 TIMEOUT + 1 DIFF，修后 SAME0）+
+  `tests/node/http/upgrade.rs::phase11_http_upgrade_faces`（15s unref 守卫）。

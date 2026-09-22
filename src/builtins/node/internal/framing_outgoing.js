@@ -15,6 +15,20 @@ export class OutgoingMessage extends Writable {
   _write(chunk, encoding, cb) {
     this.__outputData.push([chunk, encoding, cb]);
   }
+  // node lib/_http_outgoing.js cork/uncork 原文（OutgoingMessage 基类；
+  // ClientRequest 可用）：消息级计数 + socket 镜像。node corked 写滞留
+  // kChunkedBuffer 由 uncork 尾flush 合并一帧——本仓客户端写机构无滞留层，
+  // cork 仅计数不持字节（无套件点名客户端 cork 缓冲；服务端 ServerResponse
+  // 的真缓冲在 framing_head.js，骑流机构 cork）。
+  cork() {
+    this.__kCorked = (this.__kCorked ?? 0) + 1;
+    if (this.socket && typeof this.socket.cork === "function") this.socket.cork();
+  }
+  uncork() {
+    if ((this.__kCorked ?? 0) > 0) this.__kCorked--;
+    if (this.socket && typeof this.socket.uncork === "function") this.socket.uncork();
+  }
+  get writableCorked() { return this.__kCorked ?? 0; }
   _implicitHeader() {
     throw new Error("_implicitHeader() method is not implemented");
   }

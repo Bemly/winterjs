@@ -548,3 +548,109 @@ console.log("END");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_http_cork_faces() {
+    // cork/uncork 面（response-cork / response-drain-cork / outgoing-end-cork
+    // 三套件形态）：镜像计数（res.writableCorked === res.socket.writableCorked）
+    // + corked 期间 socket.write 不被调（字节滞留，uncork/end 排空）+
+    // chunked 写粒度恰 5 发（头+hex/CRLF/体/CRLF/终结，node _send 链口径）+
+    // socket HWM 背压（写 10 true / 写 1000 false + needDrain → uncork →
+    // drain → end）+ ClientRequest 消息级计数 + end 全开（writableCorked===0）。
+    // 正常 + 报错 + 边界三件。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r##"
+import http from "node:http";
+import assert from "node:assert";
+
+// 1) 镜像计数 + corked 不落盘 + 粒度 5 发（response-cork 形）。
+{
+  const server = http.createServer((req, res) => {
+    let corked = false;
+    const orig = res.socket.write;
+    let n = 0;
+    res.socket.write = function (...args) {
+      n++;
+      assert.strictEqual(corked, false, "socket.write during cork");
+      return orig.call(res.socket, ...args);
+    };
+    corked = true;
+    res.cork();
+    res.cork();
+    console.log("cork2", res.writableCorked === res.socket.writableCorked, res.writableCorked);
+    res.writeHead(200, { "a-header": "v" });
+    res.uncork();
+    console.log("uncork1", res.writableCorked === res.socket.writableCorked, res.writableCorked);
+    corked = false;
+    res.end("asd");
+    console.log("endcork", res.writableCorked === res.socket.writableCorked, res.writableCorked);
+    // 写发生在 _final（异步），计数随 finish 收口（node mustCall 退出时核账同口径）。
+    res.on("finish", () => console.log("writes", n));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    http.get({ port: server.address().port }, (res) => {
+      let body = "";
+      res.on("data", (c) => (body += c));
+      res.on("end", () => { console.log("cork-body", JSON.stringify(body)); server.close(r); });
+    });
+  });
+}
+// 2) cork 背压（drain-cork 形）：socket HWM 1000 → false/needDrain → uncork
+//   → drain → end；客户端收全 1010 字节。
+{
+  const server = http.createServer((req, res) => {
+    res.cork();
+    const r1 = res.write("1".repeat(10));
+    const r2 = res.write("2".repeat(1000));
+    console.log("bp", r1, r2, res.writableNeedDrain);
+    res.once("drain", () => { console.log("drain", res.writableNeedDrain); res.end(); });
+    res.uncork();
+  });
+  server.on("connection", (s) => { s._writableState.highWaterMark = 1000; });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    http.get({ port: server.address().port }, (res) => {
+      let n = 0;
+      res.on("data", (c) => (n += c.length));
+      res.on("end", () => { console.log("bp-bytes", n); server.close(r); });
+    });
+  });
+}
+// 3) req 消息级计数 + res end 全开（outgoing-end-cork 形）。
+{
+  const server = http.createServer((req, res) => {
+    res.end("regular end");
+    console.log("res-corked-after-end", res.writableCorked === 0);
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    http.get({ port: server.address().port }, (res) => {
+      res.resume();
+      res.on("end", () => { console.log("req3-done"); server.close(r); });
+    });
+  });
+}
+console.log("cork-done");
+"##,
+    );
+    for tag in [
+        "cork2 true 2",
+        "uncork1 true 1",
+        "endcork true 0",
+        "writes 5",
+        "cork-body \"asd\"",
+        "bp true false true",
+        "drain false",
+        "bp-bytes 1010",
+        "res-corked-after-end true",
+        "req3-done",
+        "cork-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}

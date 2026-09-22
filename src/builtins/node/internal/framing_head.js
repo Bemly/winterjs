@@ -48,6 +48,8 @@ function __concat(a, b) {
   out.set(a, 0); out.set(b, a.length);
   return out;
 }
+// node _send 的 crlf_buf 常量（lib/_http_outgoing.js 915 行同款）。
+const __CRLF = new TextEncoder().encode("\r\n");
 function __join(parts) {
   return parts.reduce(__concat, new Uint8Array(0));
 }
@@ -478,7 +480,14 @@ export class ServerResponse extends Writable {
   constructor(sock) {
     // autoDestroy 关：finish 后连接必须活着（keep-alive 复用/优雅关由显式
     // destroy 负责；自动销毁会把保活连接一起杀掉）。
-    super({ autoDestroy: false });
+    // 写机构 HWM 跟 socket 可写 HWM（node 口径：res 背压由 conn.write 治理，
+    // socket 机构 HWM 是判据——response-drain-cork 套件改
+    // `socket._writableState.highWaterMark = 1000` 后 res.write(1010) 即 false；
+    // 本仓背压机构在 res 层，HWM 构造期取 socket 侧，缺省 socket 双 65536）。
+    const __shwm = sock && typeof sock.write === "function" &&
+      sock._writableState !== undefined && sock._writableState !== null
+      ? sock._writableState.highWaterMark : undefined;
+    super({ autoDestroy: false, highWaterMark: __shwm });
     // 构造首参：server 流程传 socket；独立构造传 req 形信息对象（node 口径
     // `new ServerResponse(req)`，standalone 套件）——非 socket 一律不入 __sock。
     this.__sock = sock && typeof sock.write === "function" ? sock : null;
@@ -954,6 +963,18 @@ export class ServerResponse extends Writable {
     //（真机 chunked + 终结块口径）。
     // node 口径：end() 返回后头即算发出（multiple-headers 套件 end 后
     // appendHeader 即 HEADERS_SENT；_final 异步，旗必须同步立）。
+    // node end() 原文：end 即全开——socket corked 置 1 再 uncork（强制归零）
+    // + 消息级 corked 置 1 再 uncork（滞留尾随排空；outgoing-end-cork 套件
+    // end 后 writableCorked===0；response-cork 套件 end 后双侧 corked 恒等）。
+    if (this._writableState && this._writableState.corked > 0) {
+      this._writableState.corked = 1;
+      super.uncork();
+    }
+    if (this.__sock !== null && typeof this.__sock.uncork === "function" &&
+        (this.__sock.__corkCnt ?? 0) > 0) {
+      this.__sock.__corkCnt = 1;
+      this.__sock.uncork();
+    }
     this.headersSent = true;
     this.__endHadData = chunk !== undefined && chunk !== null && typeof chunk !== "function";
     this.__userEnded = true;
@@ -967,9 +988,24 @@ export class ServerResponse extends Writable {
       throw e;
     }
   }
-  // 可写流最小面（ws Sender 的 cork/uncork；本仓写直通无聚合，no-op）。
-  cork() { return this; }
-  uncork() { return this; }
+  // node lib/_http_outgoing.js cork 口径（response-cork/response-drain-cork/
+  // outgoing-end-cork 三套件逐项对拍）：res.cork() = 消息级计数 + socket.cork()
+  // 镜像（writableCorked 双侧恒等；node 消息级 kCorked 以流机构 cork 承载——
+  // 本仓 res 即 Writable，机构 cork 滞留字节于 res 缓冲，corked 期间 _write
+  // 不被调、socket.write 不被调；node 由 socket 机构/kChunkedBuffer 持，
+  // 可观测等价：滞留不落盘、write() 返回值走 HWM、drain 随排空发射）。
+  // 偏差记档：node uncork 尾flush 把滞留块**合并为一个 chunk**（kChunkedBuffer
+  // 总长一帧），本仓机构排空逐块成帧——字节流恒等，chunk 边界不同，套件未点名。
+  cork() {
+    super.cork();
+    if (this.__sock !== null && typeof this.__sock.cork === "function") this.__sock.cork();
+    return this;
+  }
+  uncork() {
+    super.uncork();
+    if (this.__sock !== null && typeof this.__sock.uncork === "function") this.__sock.uncork();
+    return this;
+  }
   // CL/TE 被删掉时自动帧全停（remove-header 套件；__headBytes 帧决策同口径）。
   __frameSuppressed() {
     return this._removedHeader !== undefined &&
@@ -1142,15 +1178,44 @@ export class ServerResponse extends Writable {
   __chunkTerminator() {
     return "0\r\n" + (this.__trailer ?? "") + "\r\n";
   }
+  // node _send 粒度（lib/_http_outgoing.js write_ 原文 + response-cork 套件
+  // socket.write spy 恰 5 次）：chunked 帧四发——hex / CRLF / 体 / CRLF，
+  // 每次 _send 独立 conn.write；CL/裸体一发（头 prepend 首块，见
+  // __sendHeadWithFirst）。字节流恒等，write 调用次数与真机对齐。
   __frame(u8) {
     if (this.__noBody || this.__headOnly) return;
     if (u8.length === 0) return;
     if (this.__sock === null || this.__sock.destroyed) return;
     if (this.__chunked && !this.__rawCL) {
-      const hex = new TextEncoder().encode(u8.length.toString(16) + "\r\n");
-      this.__sock.write(__concat(hex, __concat(u8, new TextEncoder().encode("\r\n"))));
+      // node _send 粒度：尺寸行 hex **不含 CRLF**（crlf_buf 独立一发）——
+      // hex 带 CRLF 再发 __CRLF 即双 CRLF，整条 chunked 流错位（实锤坑）。
+      this.__sock.write(new TextEncoder().encode(u8.length.toString(16)));
+      this.__sock.write(__CRLF);
+      this.__sock.write(u8);
+      this.__sock.write(__CRLF);
     } else {
       this.__sock.write(u8);
+    }
+  }
+  // 首块带头发（node _send 的 _header prepend 口径：头未发即拼进首个 _send
+  //——chunked 拼 hex、CL/裸体拼体；空块/无体头独立一发）。
+  __sendHeadWithFirst(b) {
+    if (this.__sock === null || this.__sock.destroyed) return;
+    const head = this.__headBytes();
+    const __doChunk = this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly;
+    if (__doChunk && b !== null && b !== undefined && b.length > 0) {
+      // hex 不含 CRLF（见 __frame 注）：head+hex / CRLF / 体 / CRLF。
+      const hex = new TextEncoder().encode(b.length.toString(16));
+      this.__sock.write(head.length > 0 ? __concat(head, hex) : hex);
+      this.__sock.write(__CRLF);
+      this.__sock.write(b);
+      this.__sock.write(__CRLF);
+    } else if (head.length > 0 && b !== null && b !== undefined && b.length > 0) {
+      this.__sock.write(__concat(head, b));
+    } else if (head.length > 0) {
+      this.__sock.write(head);
+    } else if (b !== null && b !== undefined && b.length > 0) {
+      this.__frame(b);
     }
   }
   _write(chunk, encoding, cb) {
@@ -1169,10 +1234,9 @@ export class ServerResponse extends Writable {
         this.__holdTimer = null;
         if (this.__buf1 !== null && !this.__headSent && !this.destroyed) {
           if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined && !this.__frameSuppressed()) this.__chunked = true;
-          this.__sendHead();
           const b = this.__buf1;
           this.__buf1 = null;
-          this.__frame(b);
+          this.__sendHeadWithFirst(b);
         }
       }, 0);
       // node 口径：_write 完成异步回（socket 层 flush 节奏），同步回即
@@ -1183,12 +1247,10 @@ export class ServerResponse extends Writable {
     }
     if (!this.__headSent) {
       if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined && !this.__frameSuppressed()) this.__chunked = true;
-      this.__sendHead();
-      if (this.__buf1 !== null) {
-        const b = this.__buf1;
-        this.__buf1 = null;
-        this.__frame(b);
-      }
+      const b = this.__buf1;
+      this.__buf1 = null;
+      // node _header prepend：头未发即拼进首个 _send（头+hex 或 头+体一体）。
+      this.__sendHeadWithFirst(b);
     }
     this.__frame(u8);
     queueMicrotask(cb);
@@ -1220,12 +1282,17 @@ export class ServerResponse extends Writable {
         if (this.__buf1 !== null) {
           const b = this.__buf1;
           this.__buf1 = null;
-          if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
-            // chunked：头/体/终结分开帧（真机 per-chunk 帧口径；头体合并不带
-            // 帧头会被对端判坏 chunked 体）。
-            if (head.length > 0) this.__sock.write(head);
-            this.__frame(b);
-            this.__sock.write(new TextEncoder().encode(this.__chunkTerminator()));
+          const __chunkedFrame = this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly;
+          if (__chunkedFrame && b.length > 0) {
+            // chunked：头拼首帧 hex（node _send 的 _header prepend 口径）+
+            // CRLF/体/CRLF + 终结块独立发——response-cork 套件 socket.write
+            // spy 恰 5 次（头+hex/CRLF/体/CRLF/终结）。hex 不含 CRLF
+            //（crlf_buf 独立一发，真机 _send 链口径）。
+            const hex = new TextEncoder().encode(b.length.toString(16));
+            this.__sock.write(head.length > 0 ? __concat(head, hex) : hex);
+            this.__sock.write(__CRLF);
+            this.__sock.write(b);
+            this.__sock.write(__CRLF);
           } else if (head.length === 0) {
             this.__frame(b);
           } else if (!this.__noBody && !this.__headOnly && b.length > 0) {
@@ -1235,11 +1302,16 @@ export class ServerResponse extends Writable {
             this.__sock.write(head);
             this.__frame(b);
           }
-        } else if (head.length > 0) {
-          this.__sock.write(head);
-          // end() 无数据 + chunked：终结块紧随（真机 writeHead+end() 口径）。
-          if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
+          if (__chunkedFrame) {
             this.__sock.write(new TextEncoder().encode(this.__chunkTerminator()));
+          }
+        } else if (head.length > 0) {
+          // end() 无数据：node _send prepend——chunked 头拼终结块一发，
+          // 非 chunked 头独立一发（真机 writeHead+end() 口径）。
+          if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
+            this.__sock.write(__concat(head, new TextEncoder().encode(this.__chunkTerminator())));
+          } else {
+            this.__sock.write(head);
           }
         }
       }

@@ -149,7 +149,11 @@ class Socket extends EventEmitter {
     this.__rhwm = options && (options.readableHighWaterMark !== undefined || options.highWaterMark !== undefined)
       ? Number(options.readableHighWaterMark ?? options.highWaterMark) || 0 : 65536;
     this.__pendBytes = 0;
-    Object.defineProperty(this, "writableHighWaterMark", { get: () => this.__hwm, enumerable: true });
+    // _writableState 最小桩：HWM 存储随套件可变（response-drain-cork 套件
+    // `socket._writableState.highWaterMark = 1000` 后 res 侧经
+    // writableHighWaterMark 读到；真缓冲归 net.Socket 流式化另轮）。
+    this._writableState = { highWaterMark: this.__hwm };
+    Object.defineProperty(this, "writableHighWaterMark", { get: () => this._writableState.highWaterMark, enumerable: true });
     Object.defineProperty(this, "readableHighWaterMark", { get: () => this.__rhwm, enumerable: true });
     // node 口径：bufferSize = 待刷写字节（本仓同步写队列，连接中缓冲计入，完成即 0）。
     Object.defineProperty(this, "bufferSize", { get: () => this.__pendBytes, enumerable: true });
@@ -177,8 +181,10 @@ class Socket extends EventEmitter {
     // read 恒 null（数据已全经 data 事件投递，无缓冲可取——M5 dev 实测
     // `stream.resume is not a function`，缺桩即 TypeError）。
     // setTimeout 真实现见下（10f timers 对拍）。
-    this.cork = () => this;
-    this.uncork = () => this;
+    this.__corkCnt = 0;
+    this.cork = () => { this.__corkCnt++; return this; };
+    this.uncork = () => { if (this.__corkCnt > 0) this.__corkCnt--; return this; };
+    Object.defineProperty(this, "writableCorked", { get: () => this.__corkCnt, enumerable: true });
     // _handle 为空（未连接/已关闭）时 no-op 只缓存（after-close 套件：close 后调不抛）。
     this.setNoDelay = (enable) => { if (this._handle && typeof this._handle.setNoDelay === "function") { try { this._handle.setNoDelay(enable !== false); } catch {} } else { this.__noDelayApplied = enable !== false; } return this; };
     // node 口径（真机 26 实测）：setKeepAlive(enable, initialDelay, interval, count) /
@@ -755,12 +761,12 @@ class Socket extends EventEmitter {
       // node 口径：连接完成前 write 缓冲（connect 完成时按序冲刷）
       this.__pendW.push([u8, cb2]);
       this.__pendBytes += u8.length;
-      return u8.length + this.__pendBytes - u8.length <= this.__hwm;
+      return u8.length + this.__pendBytes - u8.length <= this._writableState.highWaterMark;
     }
     __wjs_net_write(this.__id, u8);
     // 记档：底层同步写队列，无 flush 语义，回调即刻
     if (cb2) queueMicrotask(cb2);
-    return u8.length <= this.__hwm;
+    return u8.length <= this._writableState.highWaterMark;
   }
   end(data, enc, cb) {
     // node 语义：end([chunk][, enc][, cb])——首参函数即 cb（async-iter 套件

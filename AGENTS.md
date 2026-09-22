@@ -3221,3 +3221,44 @@ cargo build
 - 复现：28 件头面对拍（修前 5 红 + 旧 11 件，修后 SAME0；`header-overflow`
   的 `socket.push` 系既定另轮）+
   `tests/node/http/surface.rs::phase11_http_header_face_batch5`。
+
+### 4.189 http TIMEOUT 深水第一铲：host/auth/CONNECT 隧道九坑（2026-09-22，plan3 G11）
+
+- 坑一（hostname/host 取反）：`url.parse` 对象同时带 `host: "h:port"` 与
+  `hostname: "h"`，旧实现取 host 当主机名连过去即 ECONNRESET。真机
+  （lib/_http_client.js 源码）`hostname` 优先。修法：两处（ClientRequest
+  构造器 + agent 建连 opts）同改。
+- 坑二（auth 丢失）：`options.auth` 从未转 `Authorization: Basic`（真机 551 行
+  口径）；URL userinfo 经 `urlToHttpOptions` 进 auth（decode 双侧）+ IPv6 去框。
+  修法：`normalizeRequestArgs` 补 auth + 构造器补 Basic（显式头恒赢）。
+- 坑三（CONNECT 补斜杠）：`path` 无条件补 `/` 把 authority-form 改成
+  `/target:443`。真机 293-295 行 CONNECT/OPTIONS * 豁免。修法：双豁免。
+- 坑四（CONNECT Host 取错）：Host 取连接主机，真机 546 行取 path 本体。
+  修法：`method === "CONNECT" && options.path` 即 `String(path)`。
+- 坑五（隧道不 detach）：隧道建立后两端挂满请求侧监听（client connect 1/
+  data 1/end 2/close 2/error 1/timeout 1，server close 2/error 1/timeout 1），
+  真机两端皆 end:1 其余 0。修法：具名存根（connect/secureConnect/agent 单例/
+  net conns/error/close/timeout）+ 双端 detach（client 留 agent
+  onReadableStreamEnd 恰一 end，server 留 end；`_httpMessage=null` + 摘池 +
+  req destroyed/close，socket 不动）+ server FIN 守卫（`__connectHijacked`，
+  升级形不动）。
+- 坑六（server timeout 无条件挂监听）：`sock.on("timeout")` 在 `if` 之外，
+  缺省 timeout=0 仍占数。修法：进 `if` + 存根。
+- 坑七（socket 无 HWM）：`net.Socket` 无 `writableHighWaterMark`（真机 65536，
+  与 ServerResponse 默认对齐）——旧背压默认 16KB 一并改 64KB（黑盒无
+  write-false 依赖，实测零回归）。
+- 坑八（基类无 setTimeout/protocol）：`new OutgoingMessage().setTimeout` 即
+  not a function；`req.protocol` 缺席。修法：基类 `setTimeout`（无 socket 等
+  'socket' 事件，**用事件实参**——手工 emit 形下 this.socket 恒 null）+
+  `this.protocol = flavor.protocol`。
+- 坑九（后块同步抛掩盖前块 hang）：多 server 文件里 B1 的 handler 抛（吞进
+  400 通道即静默 hang）与后块 protocol 同步抛竞速——后块赢即 rc=1（前块 hang
+  被掩盖），protocol 修好后前块 hang 现形。教训：多 server 文件定级只看
+  rc 会误判"后块全过"，必须分块二分（本轮拆 5 段钉死 B1）。
+-  deferred（另轮专项，不在本铲）：handler 抛进 400 通道即静默 hang（真机
+  crash；`uncaught-from-request-callback` 为关键套件，改动 blast radius 覆盖
+  全 http 域，另立单元）+ `writableLength` 精确记账（headers/帧头计入，
+  `len+8` 形；G3 outputData 专项同源）。
+- 复现：11 件转 SAME0（url.parse×5/auth×2/CONNECT×3/settimeout）+
+  `tests/node/http/surface.rs::phase11_http_timeout_deep_host_auth_connect`；
+  `outgoing-properties` 仍红（HWM 已对齐，余 wl 记账专项）。

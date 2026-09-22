@@ -50,6 +50,20 @@ try {
   };
 } catch { /* 符号缺席即跳过（事件域未备） */ }
 
+// spill 冲刷（升级接管流）：暂存非空且有 data 监听即按序发出（重入守卫
+// 防自发 data 回灌）。spill 点直调；迟挂监听经 newListener 钩递延一轮
+//（入表后，§4.47）——unread 套件 10ms 后挂 data 仍收齐。
+function __spillFlush(sock) {
+  const __stashed = sock.__spillBuf;
+  if (!__stashed || __stashed.length === 0) return;
+  if (typeof sock.listenerCount !== "function" || sock.listenerCount("data") === 0) return;
+  sock.__spillBuf = new Uint8Array(0);
+  const __out = globalThis.Buffer.from(__stashed);
+  sock.__spillGuard = true;
+  try { sock.emit("data", __out); } catch { /* 监听抛错不阻收尾 */ }
+  sock.__spillGuard = false;
+}
+
 // 头段内裸 CR（后随非 LF）检测——client/server 两侧严格门共用
 //（client-reject-cr-no-lf 套件；服务端同形走 400 通道）。
 function __hasBareCR(headText) {
@@ -126,6 +140,9 @@ export function withHttpServer(Base) {
       const kb = o.keepAliveTimeoutBuffer !== undefined ? __validateInteger(o.keepAliveTimeoutBuffer, "keepAliveTimeoutBuffer") : undefined;
       if (kb !== undefined) self.keepAliveTimeoutBuffer = kb;
       if (o.maxRequestsPerSocket !== undefined) self.maxRequestsPerSocket = o.maxRequestsPerSocket;
+      // node 口径：shouldUpgradeCallback(req) 逐请求门控升级（upgrade-server-
+      // callback 套件：true 走 upgrade、false 走 request、抛错走 uncaught）。
+      if (o.shouldUpgradeCallback !== undefined) self.shouldUpgradeCallback = o.shouldUpgradeCallback;
       self.__closing = false;
       self.__sockets = new Set();
       // node setupConnectionsTracking 口径（真机 toString 逐字对拍）：listening
@@ -180,18 +197,37 @@ export function withHttpServer(Base) {
         sock.on("timeout", () => {
           if (!sock.destroyed) self.emit("timeout", sock);
         });
-        sock.on("data", (chunk) => {
+        // 具名存根供升级摘除（升级后 native 直调 __srvFeed，此监听再留着
+        // 只会占 data 监听数、提前吞掉 spill 冲刷）。
+        const __srvDataListener = (chunk) => {
           // node 口径：close() 只停监听，既有连接（含在途上传与后续管线请求）
           // 照常服务——__closing 不得门控 data（outgoing-finish 套件 handler 内
-          // close 后 80KB 上传被吞根因）；仅升级后停解析。
-          if (sock.__upgraded) return;
+          // close 后 80KB 上传被吞根因）；升级后转体路由（体喂 req + 体完转
+          // socket data），不丢字节（large-body 系套件）。
+          if (sock.__upgraded) {
+            // spill 自发 data 的重入守卫（__feedUpgraded 尾部经同一 emitter
+            // 发 data，接管监听与本监听同表——无 guard 即无限递归）。
+            if (sock.__spillGuard) return;
+            try {
+              self.__feedUpgraded(sock, st, chunk);
+            } catch (e) {
+              self.__feedError(sock, e);
+            }
+            return;
+          }
           if (self.timeout > 0) sock.setTimeout(self.timeout);
           try {
             self.__feed(sock, st, chunk);
           } catch (e) {
             self.__feedError(sock, e);
           }
-        });
+        };
+        sock.on("data", __srvDataListener);
+        // 升级/CONNECT 接管即摘除（native 经 __srvFeed 直调；残留会占
+        // listenerCount 提前吞 spill——unread 套件 'upgrade head' 丢失根因）。
+        sock.__detachSrvData = () => {
+          try { sock.off("data", __srvDataListener); } catch { /* gone */ }
+        };
         // node socketOnEnd 口径：客户端 FIN——非 half-open 直接销毁（res 'close'
         // 经 close 处理器）；half-open 留给响应自身收口（server.js 套件的半关
         // 后续响应仍须可写），被截断的请求体提前夭折（'aborted' 语义）。
@@ -258,6 +294,37 @@ export function withHttpServer(Base) {
       if (st.__hdT !== null) { clearTimeout(st.__hdT); st.__hdT = null; }
       if (st.__rqT !== null) { clearTimeout(st.__rqT); st.__rqT = null; }
       if (st.__kaT !== null) { clearTimeout(st.__kaT); st.__kaT = null; }
+    }
+    // 升级后体路由（upgrade-body 系套件）：头后字节继续喂 req 体（CL/chunked
+    // 增量泵，与 __feed 同口径），体完结后续字节转 socket data（接管流）。
+    // 体解析错即杀连接（与 __feedError 400 通道不同：升级已接管，无响应可回）。
+    __feedUpgraded(sock, st, chunk) {
+      st.buf = __concat(st.buf, chunk);
+      const fr = st.framing;
+      if (st.req !== null && fr !== null && fr !== undefined && fr.type !== "none") {
+        let r;
+        if (fr.type === "cl") {
+          r = __pumpCL(fr, st.req, st.buf);
+        } else {
+          r = __pumpChunked(fr, st.req, st.buf);
+          if (r.error) { try { sock.destroy(); } catch { /* gone */ } return; }
+        }
+        st.buf = r.rest ?? new Uint8Array(0);
+        if (!r.done) return;
+        if (r.trailersRaw !== undefined && st.req !== null) __applyTrailers(st.req, r.trailersRaw);
+        if (st.req !== null) st.req.__complete();
+        st.req = null;
+        st.framing = null;
+      }
+      if (st.buf.length > 0) {
+        const __spill = globalThis.Buffer.from(st.buf);
+        st.buf = new Uint8Array(0);
+        // 迟挂监听不丢字节（unread 套件 10ms 后才挂 data）：无人监听即暂存，
+        // newListener 递延冲刷（入表后，§4.47）；有人即直发，保序
+        //（暂存 + 直发同走 __spillFlush，先到先发）。
+        sock.__spillBuf = __concat(sock.__spillBuf ?? new Uint8Array(0), __spill);
+        __spillFlush(sock);
+      }
     }
     // 空闲期（等下一请求头）：headersTimeout → 408；keepAliveTimeout → 静默销毁
     // （ka 只在响应完成后臂，withKa——体齐响应未完时挂 ka 会误杀在途响应）。
@@ -356,6 +423,7 @@ export function withHttpServer(Base) {
           //（req, socket, head；无监听则销毁连接），socket 停止 HTTP 解析。
           if (req.method === "CONNECT") {
             sock.__upgraded = true;
+            try { sock.__detachSrvData && sock.__detachSrvData(); } catch { /* gone */ }
             const __leftover = st.buf.slice(headEnd + 4);
             st.buf = new Uint8Array(0);
             if (this.listenerCount("connect") > 0) {
@@ -365,25 +433,82 @@ export function withHttpServer(Base) {
             }
             return;
           }
-          // Node 口径：带 Upgrade 头的请求不进 request 管线——派发 'upgrade'
-          //（req, 原始 socket；vite 的 ws 库经它完成 101 握手与帧收发），无监听
-          // 则销毁连接。升级后本连接停止 HTTP 解析（__upgraded 旗）；头后残留
-          // 字节（罕见）经 microtask 以裸 data 事件回灌（监听方已同步登记）。
-          if (headers.upgrade !== undefined) {
-            sock.__upgraded = true;
-            // node 口径：升级前释放解析器（parser-freed-before-upgrade 套件
-            // 断言 socket.parser === null，双侧）。
-            try { sock.parser = null; } catch { /* gone */ }
-            if (this.listenerCount("upgrade") > 0) {
+          // Node 口径：升级需 connection token 'upgrade' + Upgrade 头双全
+          //（advertise 套件：任缺其一即走 request 管线；llhttp 同款）。
+          // shouldUpgradeCallback(req) 为 false 即回落 request（server-callback
+          // 套件）；true/无回调时无 upgrade 监听才销毁（TrueWithoutHandler
+          // 形 ECONNRESET），有监听派发 'upgrade'（req, socket, head）。
+          // 无监听回落 request 时（advertise 末段）解析照常继续：不置
+          // __upgraded、不切 buf（下方 request 管线自理）。
+          const __connTokens = String(headers.connection ?? "").toLowerCase().split(",");
+          const __wantsUpgrade = headers.upgrade !== undefined
+            && __connTokens.some((t) => t.trim() === "upgrade");
+          if (__wantsUpgrade) {
+            const __hasCb = typeof this.shouldUpgradeCallback === "function";
+            // 决策：回调否决（false）即 request；回调放行/无回调时有监听即
+            // upgrade；回调放行但无监听即销毁（TrueWithoutHandler 形）；
+            // 无回调又无监听即回落 request（advertise 末段/upgrade-server
+            // no-listener 形 200，非销毁——旧"无监听即销毁"系伪语义）。
+            let __goUpgrade = true;
+            if (__hasCb) {
+              // 抛错经 nextTick 重抛交付 uncaughtException（server-callback
+              // 末段；IO 回调内裸抛到不了 uncaught 路由——dgram/nextTick 同款），
+              // 连接同步先销毁（客户端 ECONNRESET）。
+              let __cbOut;
+              try {
+                __cbOut = this.shouldUpgradeCallback(req);
+              } catch (__cbErr) {
+                try { sock.destroy(); } catch { /* gone */ }
+                // nextTick（非 microtask——后者落 rejection 表走 fatal，
+                // 只有 tick/定时回调带 uncaught 路由，见 process_.rs）。
+                process.nextTick(() => { throw __cbErr; });
+                return;
+              }
+              if (__cbOut === false) __goUpgrade = false;
+            }
+            if (__goUpgrade && this.listenerCount("upgrade") > 0) {
+              sock.__upgraded = true;
+              try { sock.__detachSrvData && sock.__detachSrvData(); } catch { /* gone */ }
+              // node 口径：升级前释放解析器（parser-freed-before-upgrade 套件
+              // 断言 socket.parser === null，双侧）。
+              try { sock.parser = null; } catch { /* gone */ }
+              // 升级后体路由：头后字节继续喂 req 体（CL/chunked 增量），体完
+              // 后续字节转 socket data（large-body/unread 系套件）。native
+              // __ev data 直调喂体（__srvFeed），不经 emitter（同表双发会使
+              // 用户收到原始体 + spill 双份）；迟挂监听经暂存 + newListener
+              // 冲刷，不丢字节。
+              st.req = req;
+              st.framing = __framingFor(headers, false, null, req.method);
+              sock.__srvUpgraded = true;
+              sock.__spillBuf = new Uint8Array(0);
+              sock.__srvFeed = (c) => this.__feedUpgraded(sock, st, c);
+              if (!sock.__spillFlushHook) {
+                sock.__spillFlushHook = true;
+                sock.on("newListener", (__evName) => {
+                  if (__evName === "data") queueMicrotask(() => __spillFlush(sock));
+                });
+              }
               // Node 口径三参 (req, socket, head)：head 恒 Buffer（零长=无残留，
-              // ws 库 setSocket 读 head.length——undefined 即 TypeError）。
-              const leftover = st.buf.slice(headEnd + 4);
+              // ws 库 setSocket 读 head.length——undefined 即 TypeError；
+              // server-callback 套件点名 instanceof Buffer）。
+              const leftover = globalThis.Buffer.from(st.buf.slice(headEnd + 4));
               st.buf = new Uint8Array(0);
               this.emit("upgrade", req, sock, leftover);
-            } else {
-              sock.destroy();
+              if (st.framing.type === "none") {
+                // 无体升级（GET 形）：当即完结，后续字节走 socket。
+                if (st.req !== null) st.req.__complete();
+                st.req = null;
+                st.framing = null;
+              }
+              return;
             }
-            return;
+            if (__goUpgrade && __hasCb) {
+              // 回调放行但无监听：销毁（TrueWithoutHandler 形 ECONNRESET）。
+              sock.destroy();
+              return;
+            }
+            // 回调否决 / 无回调无监听：落到下方 request 管线（__upgraded 不置，
+            // buf 不动）。
           }
           const framing = __framingFor(headers, false, null, req.method);
           const conn = (headers.connection || "").toLowerCase();
@@ -692,15 +817,32 @@ export function withClientRequest(openSocket, flavor) {
       this.__headerList = null;
       this.__headerNames = Object.create(null);
       if (Array.isArray(userHeaders)) {
-        if (userHeaders.length % 2 !== 0) {
-          throw new codes.ERR_INVALID_ARG_TYPE("headers", "object", userHeaders);
-        }
-        const __list = [];
-        for (let __i = 0; __i < userHeaders.length; __i += 2) {
-          const __k = String(userHeaders[__i]);
-          if (!__TOKEN_RE.test(__k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", __k);
-          __list.push([__k, String(userHeaders[__i + 1])]);
-          this.__headerNames[__k.toLowerCase()] = __k;
+        // node 口径：数组形收两种——扁平 `[k,v,...]` 与对形 `[[k,v],...]`
+        //（upgrade-client 套件对形；真机逐项实测，双形同发头）。
+        let __list;
+        if (userHeaders.length > 0 && Array.isArray(userHeaders[0])) {
+          __list = [];
+          for (let __i = 0; __i < userHeaders.length; __i++) {
+            const __p = userHeaders[__i];
+            if (!Array.isArray(__p) || __p.length !== 2) {
+              throw new codes.ERR_INVALID_ARG_TYPE(`headers[${__i}]`, "Array", __p);
+            }
+            const __k = String(__p[0]);
+            if (!__TOKEN_RE.test(__k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", __k);
+            __list.push([__k, String(__p[1])]);
+            this.__headerNames[__k.toLowerCase()] = __k;
+          }
+        } else {
+          if (userHeaders.length % 2 !== 0) {
+            throw new codes.ERR_INVALID_ARG_TYPE("headers", "object", userHeaders);
+          }
+          __list = [];
+          for (let __i = 0; __i < userHeaders.length; __i += 2) {
+            const __k = String(userHeaders[__i]);
+            if (!__TOKEN_RE.test(__k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", __k);
+            __list.push([__k, String(userHeaders[__i + 1])]);
+            this.__headerNames[__k.toLowerCase()] = __k;
+          }
         }
         this.__headerList = __list;
         this.__headers = __lowerHeaders(Object.fromEntries(__list.map(([k, v]) => [k, v])));

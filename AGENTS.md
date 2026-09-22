@@ -3187,3 +3187,37 @@ cargo build
   不可用）。
 - 复现：6 目标套件（修前 5 TIMEOUT + 1 DIFF，修后 SAME0）+
   `tests/node/http/upgrade.rs::phase11_http_upgrade_faces`（15s unref 守卫）。
+
+### 4.188 http 头面 batch5 九坑（2026-09-22，plan3 G11 头面轮）
+
+- 坑一（数字头名过 token 门）："3840" 全数字是合法 token 字符，
+  `TOKEN_RE.test(String(name))` 对数字名恒过。真机数字名即
+  `ERR_INVALID_HTTP_TOKEN`。修法：`typeof name !== "string"` 先判即抛
+  （set/append 双侧，`framing_head.js` + `framing_agent.js`）。
+- 坑二（奇长数组错码）：`writeHead(200, ['a','b','c'])` 真机
+  `ERR_INVALID_ARG_VALUE 'headers'`，旧实现错抛 ARG_TYPE。修法：改码。
+- 坑三（writeHead 无发头门）：已发头再 writeHead 真机即 HEADERS_SENT，
+  旧实现无入口检查直接覆写。修法：入口加门。
+- 坑四（writeHead 不覆写拼写）：`setHeader('test')` 后
+  `writeHead({Test})` 真机 wire 为 'Test'——首写优先仅 setHeader 之间，
+  writeHead 恒覆写。修法：合并分支无条件赋值 `__headerNames`。
+- 坑五（220 短语 undefined）：未知码真机短语 'unknown'（属性与 wire 同），
+  旧实现属性 undefined、wire 空串。修法：`STATUS_CODES[sc] ?? "unknown"` 双处。
+- 坑六（数组同键塌缩）：`writeHead([a,1,a,2])` 旧实现后值覆写前值丢一行。
+  真机逐行保留。修法：首触覆写、再触累积（`__touched` 集）。
+- 坑七（对形 writeHead 不认）：`writeHead(200, [[k,v]])` 真机合法（ClientRequest
+  构造器双形同源），旧实现当扁平判奇长即抛。修法：首元数组即逐对取 [0]/[1]
+  归一扁平（`["b"]` 对即 value undefined 走 INVALID_HEADER_VALUE，超长元忽略，
+  真机逐项实测）。
+- 坑八（Host 恒省略缺省端口）：旧实现 `port===80` 即省（flavor 缺省），真机
+  （lib/_http_client.js 源码）比较的是**显式配置** defaultPort（缺席即
+  undefined，`80 !== undefined` 恒拼）。修法：`__cfgDp`（options.defaultPort ??
+  agent.defaultPort）+ 恒拼 + IPv6 双冒号加框（单冒号 'foo:1234' 不加框）。
+- 坑九（拒写检查进 _write 毒化流）：`_write` 内同步抛使 writing 态永驻，
+  后续 `end()` 永挂。修法：检查提 `write()`/`end()` 包装层（Node 本体亦在
+  OutgoingMessage 层），`_write` 保持纯净；连带 `ERR_HTTP_BODY_NOT_ALLOWED`
+  新码 + 服务端选项透传（`rejectNonStandardBodyWrites` 缺省 false，
+  1xx/204/304/HEAD 无体判据，空串亦抛，真机矩阵实测）。
+- 复现：28 件头面对拍（修前 5 红 + 旧 11 件，修后 SAME0；`header-overflow`
+  的 `socket.push` 系既定另轮）+
+  `tests/node/http/surface.rs::phase11_http_header_face_batch5`。

@@ -108,6 +108,14 @@ function __checkOutboundHeaderValue(validation, value) {
     throw new codes.ERR_INVALID_CHAR("Invalid character in header content");
   }
 }
+// node 单例头（重名首个赢；multiheaders2 套件 11 件 + 真机三轮实测
+// Age/ETag/Server/Expires/Last-Modified/Retry-After 六件）。
+const __SINGLETON_HEADERS = new Set([
+  "age", "authorization", "content-type", "etag", "expires", "from", "host",
+  "if-modified-since", "if-unmodified-since", "last-modified", "location",
+  "max-forwards", "proxy-authorization", "referer", "retry-after",
+  "server", "user-agent",
+]);
 function __parseHead(headText, mode, maxPairs) {
   const lines = headText.split("\r\n");
   const first = lines.shift().split(" ");
@@ -136,13 +144,30 @@ function __parseHead(headText, mode, maxPairs) {
       // 分行），NUL 仍查；DEL/其余控制字符放行（header-value-relaxed 套件）。
       if (/[\x00\r\n]/.test(vRaw)) throw __mkParseError("invalid header value");
     }
-    // maxHeadersCount 截断：超限对 headers/raw 双双不收（计数按对）。
-    if (__capped && __pairs >= maxPairs) continue;
+    // maxHeadersCount 超限：node 口径抛 HPE_HEADER_OVERFLOW 走 clientError
+    //（count-overflow 套件；有监听自理 431，无监听默认 431 + 销毁——400 通道
+    // 不适用）。旧静默截断系伪语义（count 套件从未超限，边界 50/50 无恙）。
+    if (__capped && __pairs >= maxPairs) {
+      const __ov = new Error("HPE_HEADER_OVERFLOW: too many headers");
+      __ov.code = "HPE_HEADER_OVERFLOW";
+      __ov.__httpParse = true;
+      throw __ov;
+    }
     __pairs++;
     rawHeaders.push(k, v);
     const lk = k.toLowerCase();
-    if (headers[lk] === undefined) {
-      Object.defineProperty(headers, lk, { value: v, writable: true, enumerable: true, configurable: true });
+    // node 口径：判重走自有属性（'constructor' 等继承键不得参与合并初值；
+    // multiheaders 套件 'constructor: foo, bar, baz'）。重名合并：
+    // set-cookie 恒数组、cookie 用 '; '、单例表首个赢（真机三轮实测），其余 ', '。
+    if (!Object.prototype.hasOwnProperty.call(headers, lk)) {
+      const __first = lk === "set-cookie" ? [v] : v;
+      Object.defineProperty(headers, lk, { value: __first, writable: true, enumerable: true, configurable: true });
+    } else if (lk === "set-cookie") {
+      headers[lk].push(v);
+    } else if (lk === "cookie") {
+      headers[lk] = `${headers[lk]}; ${v}`;
+    } else if (__SINGLETON_HEADERS.has(lk)) {
+      // 首个赢，后续丢弃（rawHeaders 照收）。
     } else {
       headers[lk] = `${headers[lk]}, ${v}`;
     }
@@ -453,6 +478,8 @@ export class ServerResponse extends Writable {
     this.statusCode = 200;
     this.statusMessage = undefined;
     this.__headers = Object.create(null);
+    // node 口径 _removedHeader：删掉的头不再自动补（remove-header 套件）。
+    this._removedHeader = {};
     // 用户拼写记录（node kOutHeaders [name, value] 口径：wire 保留原大小写）。
     this.__headerNames = Object.create(null);
     this.headersSent = false;
@@ -493,6 +520,7 @@ export class ServerResponse extends Writable {
     if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
     if (value === undefined) throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", String(name));
     const lk = String(name).toLowerCase();
+    if (this._removedHeader !== undefined) delete this._removedHeader[lk];
     // node 口径：数组值原样存（set-cookie/array 套件；wire 逐行发出）。
     if (Array.isArray(value)) {
       const __arr = [];
@@ -529,6 +557,8 @@ export class ServerResponse extends Writable {
     const lk = name.toLowerCase();
     delete this.__headers[lk];
     delete this.__headerNames[lk];
+    // node _removedHeader 口径：删掉的自动头不再补（remove-header 套件）。
+    if (this._removedHeader !== undefined) this._removedHeader[lk] = true;
     return this;
   }
   getHeaderNames() { return Object.keys(this.__headers); }
@@ -555,6 +585,9 @@ export class ServerResponse extends Writable {
     const obj = rest.find((r) => r && typeof r === "object");
     const msg = rest.find((r) => typeof r === "string");
     this.statusCode = status;
+    // node 口径：wire 状态码以 writeHead 时为准，事后改 statusCode 属性只改
+    // 属性值、不改 wire（mutable-headers writeHead 案：属性 201/wire 200）。
+    this.__storedStatus = status;
     if (msg !== undefined) this.statusMessage = msg;
     Object.assign(this.__headers, __lowerHeaders(obj, this.__validation, this.__headerNames));
     // node _storeHeader 口径（de-chunked-trailer 套件）：非 chunked 传输带
@@ -716,10 +749,15 @@ export class ServerResponse extends Writable {
   // 可写流最小面（ws Sender 的 cork/uncork；本仓写直通无聚合，no-op）。
   cork() { return this; }
   uncork() { return this; }
+  // CL/TE 被删掉时自动帧全停（remove-header 套件；__headBytes 帧决策同口径）。
+  __frameSuppressed() {
+    return this._removedHeader !== undefined &&
+      !!(this._removedHeader["content-length"] || this._removedHeader["transfer-encoding"]);
+  }
   // 立即发头（Node flushHeaders：body 可经 chunked 帧，end 后补终结块）。
   flushHeaders() {
     if (this.__headSent || this.__noBody || this.__headOnly) return;
-    if (this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined && this.__uced) {
+    if (this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined && this.__uced && !this.__frameSuppressed()) {
       this.__chunked = true;
     }
     this.__sendHead();
@@ -770,17 +808,20 @@ export class ServerResponse extends Writable {
     }
     // 204/304 + chunked → 抑制零块 + 强制关连接（node _storeHeader 开头口径，
     // chunked-304 套件：响应带 Connection: close 且无 0\r\n 零块）。
-    if (this.statusCode === 204 || this.statusCode === 304) {
+    // wire 状态码以 writeHead 快照为准（__storedStatus；无 writeHead 即活读）。
+    const __sc = this.__headStored && this.__storedStatus !== undefined ? this.__storedStatus : this.statusCode;
+    if (__sc === 204 || __sc === 304) {
       if (this.__chunked) { this.__chunked = false; this.__keepAlive = false; }
       this.__noBody = true;
     }
-    const reason = this.statusMessage ?? STATUS_CODES[this.statusCode] ?? "";
-    const head = [`HTTP/1.1 ${this.statusCode} ${reason}`.trimEnd()];
+    const reason = this.statusMessage ?? STATUS_CODES[__sc] ?? "";
+    const head = [`HTTP/1.1 ${__sc} ${reason}`.trimEnd()];
     // Connection 自动决策（node keep-alive logic 口径）：
     // shouldSendKeepAlive = shouldKeepAlive && (用户CL || UCED)；
     // maxRequestsPerSocket 达标 → close；否则 keep-alive（+Keep-Alive: timeout）；
     // 否则 close + _last。
-    if (!__st.conn) {
+    // _removedHeader 口径：删掉的 connection 不再自动补（remove-header 套件）。
+    if (!__st.conn && !(this._removedHeader !== undefined && this._removedHeader.connection)) {
       const shouldSendKeepAlive = this.__keepAlive && (__st.cl || this.__uced);
       if (shouldSendKeepAlive && this.__maxReqReached) {
         this.__headers["connection"] = "close";
@@ -801,16 +842,23 @@ export class ServerResponse extends Writable {
         this.__last = true;
       }
     }
-    // 自动 Date 头（node 口径：响应缺 date 即补 UTC 串）。
-    if (this.__headers["date"] === undefined) {
+    // 自动 Date 头（node 口径：响应缺 date 即补 UTC 串；删掉的不补）。
+    if (this.__headers["date"] === undefined &&
+        !(this._removedHeader !== undefined && this._removedHeader.date)) {
       this.__headers["date"] = new Date().toUTCString();
       this.__autoDate = true;
     }
     // 帧决策（node：!contLen && !te 分支）：无用户 CL/TE 时按
     // noBody/UCED/__contentLength（end() 快路径预置）决定 auto CL 或 chunked；
-    // 1.0（UCED false）→ _last（close-delimited）。
+    // 1.0（UCED false）→ _last（close-delimited）。CL/TE 被删掉时不自动补
+    // CL/chunked，直接 _last（remove-header 套件：close-delimited 体）。
     if (!__st.cl && !__st.te) {
-      if (this.__noBody || this.__headOnly) {
+      const __frSup = this._removedHeader !== undefined &&
+        !!(this._removedHeader["content-length"] || this._removedHeader["transfer-encoding"]);
+      if (__frSup) {
+        this.__chunked = false;
+        this.__last = true;
+      } else if (this.__noBody || this.__headOnly) {
         this.__chunked = false;
       } else if (!this.__uced) {
         this.__last = true;
@@ -832,6 +880,11 @@ export class ServerResponse extends Writable {
       const user = this.__headerNames[k];
       const name = user !== undefined ? user
         : (__autoCase(k) ? (k === "keep-alive" ? "Keep-Alive" : k.charAt(0).toUpperCase() + k.slice(1)) : (canon[k] ?? k));
+      // node 口径：数组值逐行发出（set-cookie/多值头；multiple-headers 套件）。
+      if (Array.isArray(v)) {
+        for (const __e of v) head.push(`${name}: ${__e}`);
+        continue;
+      }
       head.push(`${name}: ${v}`);
     }
     return new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n");
@@ -864,12 +917,14 @@ export class ServerResponse extends Writable {
     this.__sawWrite = true;
     if (this.__buf1 === null && !this.__headSent) {
       // 首字节 holdback：一拍内 end 到达且此前无 writeHead 则走 CL 快捷，
-      // 否则转 chunked 流式（1.0 裸写）。
+      // 否则转 chunked 流式（1.0 裸写）。cb 经 microtask 回（base 依此排
+      // _final，抢在 timer(0) 前保 CL 快捷；defer 到落盘后会反让 timer 先赢，
+      // 实测回退）。
       this.__buf1 = u8;
       this.__holdTimer = setTimeout(() => {
         this.__holdTimer = null;
         if (this.__buf1 !== null && !this.__headSent && !this.destroyed) {
-          if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined) this.__chunked = true;
+          if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined && !this.__frameSuppressed()) this.__chunked = true;
           this.__sendHead();
           const b = this.__buf1;
           this.__buf1 = null;
@@ -883,7 +938,7 @@ export class ServerResponse extends Writable {
       return;
     }
     if (!this.__headSent) {
-      if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined) this.__chunked = true;
+      if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined && !this.__frameSuppressed()) this.__chunked = true;
       this.__sendHead();
       if (this.__buf1 !== null) {
         const b = this.__buf1;
@@ -910,7 +965,8 @@ export class ServerResponse extends Writable {
       const total = this.__buf1 !== null ? this.__buf1.length : 0;
       if (!this.__noBody && !this.__headOnly &&
           this.__headers["content-length"] === undefined &&
-          this.__headers["transfer-encoding"] === undefined) {
+          this.__headers["transfer-encoding"] === undefined &&
+          !this.__frameSuppressed()) {
         if (this.__uced && !this.__headStored && (!this.__sawWrite || this.__endHadData)) {
           this.__contentLength = this.__endHadData ? total : 0;
         }

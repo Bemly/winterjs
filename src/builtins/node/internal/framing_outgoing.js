@@ -178,6 +178,49 @@ export function withHttpServer(Base) {
         self.__sockets.add(sock);
         const st = { buf: new Uint8Array(0), req: null, framing: null, res: null, __hdT: null, __rqT: null, __kaT: null };
         sock.__httpState = st;
+        // node 口径 socketOnError：连接 socket 的 error 恒有兜底监听。分流：
+        // ① 用户自有 error 监听（除本兜底外）→ 纯多播（clientError 有监听才
+        // 转，不吞不毁——u6b）；
+        // ② 有 clientError 监听 → 交 handler（无后续动作；handler  idle 即挂，
+        // 真机 probe11 同款）；
+        // ③ 无监听 + 有在途 res → 刷盘（write-cb 先于落盘，真机 cb 恒在落盘后；
+        // 复用 holdback timer 同款步骤）再摧毁 req/res（res 'close' 无 'finish'）
+        // + 毁 socket（badrequest 套件，客户端 FIN 后 lenient-end）；
+        // ④ 无监听 + 无在途 res（升级/空闲）→ 重抛走 uncaught（u6c 真机实证）。
+        sock.on("error", function __httpSockOnError(e) {
+          const __nErr = typeof sock.listenerCount === "function" ? sock.listenerCount("error") : 0;
+          const __hasClientError = self.listenerCount("clientError") > 0;
+          if (__hasClientError) {
+            try { self.emit("clientError", e, sock); } catch { /* 监听抛错不阻收尾 */ }
+          }
+          if (__nErr > 1) return;
+          if (__hasClientError) return;
+          const __r = st.res;
+          if (__r === null || __r === undefined || __r.destroyed) throw e;
+          try {
+            if (!__r.__headSent) {
+              if (__r.__holdTimer !== null && __r.__holdTimer !== undefined) {
+                clearTimeout(__r.__holdTimer);
+                __r.__holdTimer = null;
+              }
+              if (__r.__buf1 !== null && __r.__buf1 !== undefined &&
+                  __r.__uced && __r.__headers["content-length"] === undefined &&
+                  __r.__headers["transfer-encoding"] === undefined &&
+                  (typeof __r.__frameSuppressed !== "function" || !__r.__frameSuppressed())) {
+                __r.__chunked = true;
+              }
+              if (typeof __r.__sendHead === "function") __r.__sendHead();
+              if (__r.__buf1 !== null && __r.__buf1 !== undefined) {
+                const __b = __r.__buf1;
+                __r.__buf1 = null;
+                if (typeof __r.__frame === "function") __r.__frame(__b);
+              }
+            }
+          } catch { /* gone */ }
+          try { if (st.req !== null && st.req !== undefined && !st.req.destroyed) st.req.destroy(); } catch { /* gone */ }
+          try { if (!__r.destroyed) __r.destroy(); } catch { /* gone */ }
+          try { sock.destroy(); } catch { /* gone */ }
+        });
         sock.on("close", () => {
           self.__clearReqTimers(st);
           self.__sockets.delete(sock);
@@ -258,6 +301,13 @@ export function withHttpServer(Base) {
         });
         // 连接即开 headers 计时（headersTimeout 内须收到完整头，否则 408）。
         self.__armIdleTimers(st, sock);
+        // node 口径：requestTimeout 从连接起算（delayed-headers 套件：零字节
+        // 空闲连接到期亦 408；首字节分支只在无计时时起算，故此处先臂后
+        // __feed 不再重臂，时序与真机一致；响应后空闲走 kaT，不归它管）。
+        if (self.requestTimeout > 0 && st.__rqT == null) {
+          st.__rqT = setTimeout(() => { st.__rqT = null; self.__reqTimeout(sock); }, self.requestTimeout);
+          if (typeof st.__rqT.unref === "function") st.__rqT.unref();
+        }
       });
   }
   class __HttpServer extends Base {
@@ -293,9 +343,17 @@ export function withHttpServer(Base) {
     // 裸抛会变成 unhandled rejection（chunked-smuggling 套件）。
     __feedError(sock, e) {
       if (e && e.__httpParse) {
-        // node 口径：clientError 事件恒发；无监听才落默认 400 + 销毁。
+        // node 口径：clientError 事件恒发；无监听才落默认响应 + 销毁——
+        // HPE_HEADER_OVERFLOW 默认 431（overflow 套件真机实证），其余 400。
         this.emit("clientError", e, sock);
-        if (this.listenerCount("clientError") === 0) this.__badRequest(sock);
+        if (this.listenerCount("clientError") === 0) {
+          if (e.code === "HPE_HEADER_OVERFLOW") {
+            try { sock.write(new TextEncoder().encode("HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
+            try { sock.destroy(); } catch { /* gone */ }
+          } else {
+            this.__badRequest(sock);
+          }
+        }
         return;
       }
       try { sock.destroy(); } catch { /* gone */ }
@@ -348,6 +406,7 @@ export function withHttpServer(Base) {
         // 连接本身 ref 续命，计时只负责到期销毁）。
         if (typeof st.__hdT.unref === "function") st.__hdT.unref();
       }
+
       if (withKa && st.sawRequest && this.keepAliveTimeout > 0) {
         st.__kaT = setTimeout(() => { st.__kaT = null; try { sock.destroy(); } catch { /* gone */ } }, this.keepAliveTimeout + this.keepAliveTimeoutBuffer);
         st.__kaT.unref();
@@ -691,6 +750,8 @@ export function withClientRequest(openSocket, flavor) {
   return class ClientRequest extends OutgoingMessage {
     constructor(options, cb) {
       super();
+      // node 口径 _removedHeader：删掉的头不再自动补（remove-header 套件）。
+      this._removedHeader = {};
       let host, port, path, method, userHeaders, extra;
       if (typeof options === "string" || options instanceof URL) {
         const u = __parseUrlArg(String(options));
@@ -890,7 +951,8 @@ export function withClientRequest(openSocket, flavor) {
       // undefined）。存旁路供发头，__headers 内不留痕。
       this.__autoConn = false;
       this.__autoConnVal = undefined;
-      if (!__noDefaults && this.__headers.connection === undefined) {
+      if (!__noDefaults && this.__headers.connection === undefined &&
+          !this._removedHeader.connection) {
         this.__autoConnVal = this.shouldKeepAlive ? "keep-alive" : "close";
         this.__autoConn = true;
       }

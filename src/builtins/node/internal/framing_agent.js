@@ -7,6 +7,7 @@
       if (!__TOKEN_RE.test(String(name))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
       if (value === undefined) throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", String(name));
       const lk = String(name).toLowerCase();
+      if (this._removedHeader !== undefined) delete this._removedHeader[lk];
       // node 口径：数组值按多行发出（dont-set-default 套件 foo 双行）；
       // 用户拼写记 __headerNames 供上网（'HOST' 非 'host'）。
       if (Array.isArray(value)) {
@@ -36,16 +37,17 @@
       if (lk === "connection") this.__autoConn = false;
       return this;
     }
+    // node 口径：getHeader 原样回（数组不 join；multiple-headers 套件）。
     getHeader(name) {
       if (typeof name !== "string") throw new codes.ERR_INVALID_ARG_TYPE("name", "string", name);
-      const v = this.__headers[name.toLowerCase()];
-      return Array.isArray(v) ? v.join(", ") : v;
+      return this.__headers[name.toLowerCase()];
     }
     removeHeader(name) {
       if (typeof name !== "string") throw new codes.ERR_INVALID_ARG_TYPE("name", "string", name);
       const lk = name.toLowerCase();
       delete this.__headers[lk];
       if (this.__headerNames !== undefined) delete this.__headerNames[lk];
+      if (this._removedHeader !== undefined) this._removedHeader[lk] = true;
       return this;
     }
     hasHeader(name) {
@@ -275,12 +277,14 @@
         for (const [k, v] of Object.entries(this.__headers)) {
           if (!__seen.has(k)) __emitOne(k, v);
         }
-        if (this.__autoConn && this.__headers.connection === undefined && !__seen.has("connection")) {
+        if (this.__autoConn && this.__headers.connection === undefined && !__seen.has("connection") &&
+            !(this._removedHeader !== undefined && this._removedHeader.connection)) {
           head.push(`Connection: ${this.__autoConnVal}`);
         }
       } else {
         for (const [k, v] of Object.entries(this.__headers)) __emitOne(k, v);
-        if (this.__autoConn && this.__headers.connection === undefined) {
+        if (this.__autoConn && this.__headers.connection === undefined &&
+            !(this._removedHeader !== undefined && this._removedHeader.connection)) {
           head.push(`Connection: ${this.__autoConnVal}`);
         }
       }

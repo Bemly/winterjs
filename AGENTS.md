@@ -3285,3 +3285,17 @@ cargo build
 - 复现：3 件转 SAME0（server-options-incoming-message/
   server-options-server-response/incoming-message-options）+
   `tests/node/http/surface.rs::phase11_http_server_options_surface`。
+
+### 4.191 splitting 一件：ERR_INVALID_CHAR 缺 `["key"]` 后缀（2026-09-22，G11）
+
+- 症状：`writeHead(200, {foo: "bar\r\nbaz"})` 码对文案错（缺 `["foo"]`）。
+- 根因：`E('ERR_INVALID_CHAR')` 定死裸串；`__checkOutboundHeaderValue` 不收键。
+  真机（lib/_http_outgoing.js 664/692/756 行 + internal/errors.js 1486 行）：
+  `(name='header content', field)` 双参，field 在场即拼后缀——set/append/
+  writeHead 三路全带键。
+- 修法：E 改 `(field = undefined)` 函数形（无参回裸文案，旧调用零回归）+
+  `__checkOutboundHeaderValue(validation, value, name)` 全调用点传键；
+  trailer 私有 `__validateHeaderValue` 保持无键（套件未点名）。
+- 复现：`test-http-response-splitting`（修前 DIFF 修后 SAME0；附带
+  validators/value-relaxed/mutable/multiple/invalidheaderfield×2 零回归）+
+  `tests/node/http/surface.rs::phase11_http_invalid_char_key`。

@@ -1420,6 +1420,13 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > > - **转 SAME0**：server-options-incoming-message/
 > >   server-options-server-response/incoming-message-options（3 件）；黑盒
 > >   `tests/node/http/surface.rs::phase11_http_server_options_surface`。
+>
+> ### G11 splitting 一件（2026-09-22；AGENTS §4.191）
+>
+> > - `ERR_INVALID_CHAR` 加可选 `field`（`["key"]` 后缀；无参回裸文案）+
+> >   `__checkOutboundHeaderValue` 全调用点传键（set/append/writeHead 三路）。
+> > - **转 SAME0**：response-splitting（修前 DIFF）；附带 6 件零回归；黑盒
+> >   `tests/node/http/surface.rs::phase11_http_invalid_char_key`。
 
 ## https
 

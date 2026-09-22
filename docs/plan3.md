@@ -303,6 +303,8 @@ server timeout 进门 + socket HWM 65536 + 基类 setTimeout + req.protocol +
 建连选项透传（HWM 进 Socket 构造器）+ socket 双 65536/res 跟随 +
 黑盒 `tests/node/http/surface.rs::phase11_http_server_options_surface`；
 3 件转 SAME0；http 28/28 + net 18/18 + 冒烟；AGENTS §4.190。
+附带 splitting 一件（ERR_INVALID_CHAR `["key"]` 后缀）：response-splitting
+转 SAME0 + 黑盒 `phase11_http_invalid_char_key`；AGENTS §4.191。
 
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 

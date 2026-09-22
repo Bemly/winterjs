@@ -478,3 +478,176 @@ console.log("strict-done");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_http_header_face_batch5() {
+    // 头面 batch5（真机 26.8.2 逐项对拍）：数字头名 HTTP_TOKEN（"3840" 本身合法
+    // token 故须 typeof 先判）+ 奇长 writeHead 数组 ARG_VALUE + 已发头再 write
+    // 即 HEADERS_SENT + writeHead 覆写拼写 + 220 短语 unknown + 数组同键双行 +
+    // 对形 writeHead + rejectNonStandardBodyWrites + Host 端口恒拼/IPv6 加框。
+    // 正常 + 报错 + 边界三件。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r##"
+import { createServer, get, request } from "node:http";
+import net from "node:net";
+import assert from "node:assert";
+
+// 1) 报错三件：数字名/奇数组/重发头。
+{
+  const s = createServer((req, res) => {
+    try { res.setHeader(0xf00, "bar"); console.log("num-name BAD"); }
+    catch (e) { console.log("num-name", e.code); }
+    try { res.writeHead(200, ["invalid", "headers", "args"]); console.log("odd BAD"); }
+    catch (e) { console.log("odd", e.code); }
+    res.writeHead(200, { Test: "2" });
+    console.log("spell", res.getHeader("test"), JSON.stringify(res.getRawHeaderNames()));
+    try { res.writeHead(100, {}); console.log("resend BAD"); }
+    catch (e) { console.log("resend", e.code); }
+    res.end();
+  });
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    get({ port: s.address().port }, (res) => {
+      res.resume().on("end", () => {
+        console.log("spell-wire", res.headers.test, res.rawHeaders.includes("Test"));
+        s.close(r);
+      });
+    });
+  });
+}
+// 2) 220 未知码 + 数组双行 + 对形。
+{
+  const s = createServer((req, res) => {
+    if (req.url === "/220") {
+      res.writeHead(220, ["test", "1"]);
+      console.log("msg220", res.statusMessage);
+      try { res.writeHead(200, ["t2", "2"]); console.log("re220 BAD"); }
+      catch (e) { console.log("re220", e.code); }
+      res.end();
+    } else if (req.url === "/dup") {
+      res.writeHead(200, ["array-val", "1", "array-val", "2"]);
+      res.end();
+    } else {
+      res.writeHead(200, [["content-type", "text/plain"]]);
+      res.end("hi");
+    }
+  });
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  const port = s.address().port;
+  await new Promise((r) => {
+    get({ port, path: "/220" }, (res) => {
+      res.resume().on("end", () => {
+        console.log("wire220", res.statusCode, res.statusMessage, res.headers.test);
+        r();
+      });
+    });
+  });
+  await new Promise((r) => {
+    get({ port, path: "/dup" }, (res) => {
+      res.resume().on("end", () => {
+        console.log("dup", JSON.stringify(res.rawHeaders.slice(0, 4)));
+        r();
+      });
+    });
+  });
+  await new Promise((r) => {
+    get({ port, path: "/pair" }, (res) => {
+      res.resume().on("end", () => {
+        console.log("pair", res.statusCode, res.headers["content-type"]);
+        r();
+      });
+    });
+  });
+  await new Promise((r) => s.close(r));
+}
+// 3) 拒写旗：204 write/end 同步抛，裸 end 正常结束。
+{
+  const s = createServer({ rejectNonStandardBodyWrites: true }, (req, res) => {
+    res.writeHead(204);
+    try { res.write("x"); console.log("rejw BAD"); }
+    catch (e) { console.log("rejw", e.code); }
+    try { res.end("x"); console.log("reje BAD"); }
+    catch (e) { console.log("reje", e.code); }
+    res.end();
+    console.log("rejend ok");
+  });
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    get({ port: s.address().port }, (res) => {
+      res.resume().on("end", () => {
+        console.log("rejcli", res.statusCode);
+        s.close(r);
+      });
+    });
+  });
+}
+// 4) Host 头：缺省恒拼端口 + IPv6 加框（raw 抓包断言）。
+async function rawHost(opts) {
+  return new Promise((resolve) => {
+    const srv = net.createServer((sock) => {
+      let buf = "";
+      sock.on("data", (c) => {
+        buf += c.toString();
+        if (buf.includes("\r\n\r\n")) {
+          const m = buf.match(/[Hh]ost: (.*)\r/);
+          console.log("host", JSON.stringify(opts), JSON.stringify(m && m[1]));
+          sock.end();
+          srv.close(() => resolve());
+        }
+      });
+    });
+    srv.listen(0, "127.0.0.1", () => {
+      const port = srv.address().port;
+      get({ ...opts, createConnection: () => net.connect(port, "127.0.0.1") }, () => {}).on("error", () => {});
+    });
+  });
+}
+await rawHost({ host: "foo:1234" });
+await rawHost({ host: "::1" });
+// 5) trailer 随终结块。
+{
+  const s = createServer((req, res) => {
+    res.writeHead(200, [["content-type", "text/plain"]]);
+    res.addTrailers({ "x-foo": "bar" });
+    res.end("stuff\n");
+  });
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  await new Promise((r) => {
+    get({ port: s.address().port, path: "/t" }, (res) => {
+      res.resume().on("end", () => {
+        console.log("trailer", res.trailers["x-foo"]);
+        s.close(r);
+      });
+    });
+  });
+}
+console.log("batch5-done");
+"##,
+    );
+    for tag in [
+        "num-name ERR_INVALID_HTTP_TOKEN",
+        "odd ERR_INVALID_ARG_VALUE",
+        "spell 2 [\"Test\"]",
+        "resend ERR_HTTP_HEADERS_SENT",
+        "spell-wire 2 true",
+        "msg220 unknown",
+        "re220 ERR_HTTP_HEADERS_SENT",
+        "wire220 220 unknown 1",
+        "dup [\"array-val\",\"1\",\"array-val\",\"2\"]",
+        "pair 200 text/plain",
+        "rejw ERR_HTTP_BODY_NOT_ALLOWED",
+        "reje ERR_HTTP_BODY_NOT_ALLOWED",
+        "rejend ok",
+        "rejcli 204",
+        "host {\"host\":\"foo:1234\"} \"foo:1234:80\"",
+        "host {\"host\":\"::1\"} \"[::1]:80\"",
+        "trailer bar",
+        "batch5-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}

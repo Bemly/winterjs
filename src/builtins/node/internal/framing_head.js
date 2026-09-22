@@ -611,11 +611,13 @@ export class ServerResponse extends Writable {
     if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("write");
     // node 口径：writeHead 即算发头（setheaders 套件 writeHead 后 setHeaders
     // 即 HEADERS_SENT）——旗在合并完成后立，合并走 setHeader 不得自炸。
-    // 状态码门（node validateStatusCode 口径，response-statuscode 套件 13 形态：
-    // undefined/Infinity/NaN/{}/99/1000/'1000'/null/true/[]/'this is not valid'/
-    // '404 ...' 全拒；message 'Invalid status code: <String(值)>'，RangeError）。
-    if (typeof status !== "number" || !(status >= 100 && status <= 999)) {
-      throw new codes.ERR_HTTP_INVALID_STATUS_CODE(`Invalid status code: ${String(status)}`);
+    // 状态码门（node lib/_http_server.js writeHead 原文 + response-statuscode
+    // 套件 13 形态：`statusCode |= 0` 后判 100..999，错抛原值（`%s` 遇对象走
+    // inspect——{}→'{}'；字符串 '1000' 越界仍原样；RangeError）。
+    const __origStatus = status;
+    status |= 0;
+    if (status < 100 || status > 999) {
+      throw new codes.ERR_HTTP_INVALID_STATUS_CODE(__origStatus);
     }
     const obj = rest.find((r) => r && typeof r === "object");
     // node 口径：writeHead 的头参数收扁平数组（setheaders 套件块 4
@@ -814,7 +816,7 @@ export class ServerResponse extends Writable {
       hdrs = headers;
     }
     if (typeof status !== "number" || !(status >= 100 && status <= 199)) {
-      throw new codes.ERR_HTTP_INVALID_STATUS_CODE(`Invalid status code: ${String(status)}`);
+      throw new codes.ERR_HTTP_INVALID_STATUS_CODE(status);
     }
     if (this.__sock === null || this.__sock.destroyed) return false;
     const reason = STATUS_CODES[status] ?? "";
@@ -891,8 +893,24 @@ export class ServerResponse extends Writable {
     }
     return this;
   }
+  // node 口径（write-after-end 套件 + head-throw 套件真机实测）：
+  // end 后再写不进基类（基类置 errored 会压住在途 _final 致 chunk 终结块丢失，
+  // 同步/异步双探针实证）——自发 error + 回 false；end 优先于拒写旗（204 先
+  // end 后写仍走 WRITE_AFTER_END，非同步抛）。
   write(chunk, encoding, cb) {
-    if (this.__userEnded) return __writeAfterEnd(this, encoding, cb);
+    if (!this.destroyed && (this.__userEnded || this.writableEnded)) {
+      if (typeof encoding === "function") { cb = encoding; encoding = null; }
+      const __cb = typeof cb === "function" ? cb : null;
+      const er = new codes.ERR_STREAM_WRITE_AFTER_END();
+      queueMicrotask(() => { if (__cb) __cb(er); if (!this.destroyed) this.emit("error", er); });
+      return false;
+    }
+    // node 口径（head-throw 套件真机实测）：拒写旗下无体响应的 write 同步抛
+    //（含空串；校验在 write 包装层，不进 _write——流内抛会毒化 writing 态，
+    // 后续 end 永挂）。
+    if (this.__rejectBody && this.__isNoBodyStatus()) {
+      throw new codes.ERR_HTTP_BODY_NOT_ALLOWED();
+    }
     if (this.__sockGone || this.__sock === null || this.__sock.destroyed) return false;
     return super.write(chunk, encoding, cb);
   }
@@ -901,15 +919,6 @@ export class ServerResponse extends Writable {
   __isNoBodyStatus() {
     const __sc = this.__storedStatus !== undefined ? this.__storedStatus : this.statusCode;
     return this.__headOnly || (__sc >= 100 && __sc <= 199) || __sc === 204 || __sc === 304;
-  }
-  // node 口径（head-throw 套件真机实测）：拒写旗下无体响应的 write 同步抛
-  //（含空串；校验在 write 包装层，不进 _write——流内抛会毒化 writing 态，
-  // 后续 end 永挂）。
-  write(chunk, encoding, cb) {
-    if (this.__rejectBody && this.__isNoBodyStatus()) {
-      throw new codes.ERR_HTTP_BODY_NOT_ALLOWED();
-    }
-    return super.write(chunk, encoding, cb);
   }
   end(chunk, encoding, cb) {
     // Node OutgoingMessage.end 口径（end-multiple 套件）：finished 后 end(chunk)

@@ -232,6 +232,23 @@ async fn run_inner(
     {
         let c_filename = CString::new(filename).unwrap_or_else(|_| c"script.js".into());
         let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
+        // node 口径：`-e` 自带 builtin 全局量（max-header-size 套件 `-p
+        // 'http.maxHeaderSize'` 形；真机 26.8.2 实测 30 项，test/sqlite 除外）。
+        // 独立 setup 脚本先行（行号零影响；失败忽略；已存在即跳过）。
+        // 仅 Eval 模式（--run 文件/REPL 不走，真机同）。
+        if mode == Mode::Eval {
+            let setup = CString::new("eval-globals.js").unwrap_or_else(|_| c"eval.js".into());
+            let setup_options = CompileOptionsWrapper::new(rt.cx(), setup, 1);
+            rooted!(&in(rt.cx()) let mut setup_rval = UndefinedValue());
+            const SETUP: &str = r#"try {
+  if (typeof require === "function") {
+    for (const __m of ["http","https","http2","fs","path","os","util","crypto","stream","events","url","querystring","net","dns","dgram","child_process","cluster","worker_threads","vm","assert","buffer","process","console","timers","zlib","readline","tty","v8","sys"]) {
+      try { if (globalThis[__m] === undefined) globalThis[__m] = require("node:" + __m); } catch {}
+    }
+  }
+} catch {}"#;
+            let _ = evaluate_script(rt.cx(), global.handle(), SETUP, setup_rval.handle_mut(), setup_options);
+        }
         // evaluate_script 内部自进 realm；rval 为 rooted 出参，跨事件循环存活
         let res = evaluate_script(rt.cx(), global.handle(), source, rval.handle_mut(), options);
         if res.is_err() {

@@ -626,10 +626,13 @@
             return;
           }
           // node llhttp strict：TE 与 CL 并存即拒（client-reject-chunked-with-
-          // content-length 套件）。
+          // content-length 套件；rawbytes 套件另要 bytesParsed/rawPacket）。
           if (this.insecureHTTPParser !== true && headers["transfer-encoding"] !== undefined &&
               headers["content-length"] !== undefined) {
-            this.destroy(__hpe("HPE_INVALID_TRANSFER_ENCODING", "Transfer-Encoding can't be present with Content-Length"));
+            const __e = __hpe("HPE_INVALID_TRANSFER_ENCODING", "Transfer-Encoding can't be present with Content-Length");
+            __e.bytesParsed = headEnd + 4;
+            try { __e.rawPacket = globalThis.Buffer.from(chunk); } catch { /* gone */ }
+            this.destroy(__e);
             return;
           }
           // node llhttp 口径：多 CL 行即拒（response-multi-content-length 套件；
@@ -640,7 +643,10 @@
               if (String(rawHeaders[__i]).toLowerCase() === "content-length") __clCount++;
             }
             if (__clCount > 1) {
-              this.destroy(__hpe("HPE_UNEXPECTED_CONTENT_LENGTH", "Duplicate Content-Length"));
+              const __e = __hpe("HPE_UNEXPECTED_CONTENT_LENGTH", "Duplicate Content-Length");
+              __e.bytesParsed = headEnd + 4;
+              try { __e.rawPacket = globalThis.Buffer.from(chunk); } catch { /* gone */ }
+              this.destroy(__e);
               return;
             }
           }

@@ -285,6 +285,28 @@ export function withHttpServer(Base) {
         self.__sockets.add(sock);
         const st = { buf: new Uint8Array(0), req: null, framing: null, res: null, __hdT: null, __rqT: null, __kaT: null };
         sock.__httpState = st;
+        // node 口径 socket.parser（connection-list-when-close 套件）：每连接
+        // 解析器对象（free/close/remove 可覆写；升级/CONNECT 即置 null）。
+        // free 单发语义（freeParser 口径）：res finish 与 socket close 各调一次
+        // 机会，已释放即跳过；新请求解析即复位（keep-alive 复用逐轮释放）。
+        if (sock.parser === undefined || sock.parser === null) {
+          sock.parser = {
+            free() { /* 默认：归池，无可观测 */ },
+            close() { /* 默认：关闭，无可观测 */ },
+            remove() { /* 默认：摘除，无可观测 */ },
+          };
+          // node 口径 kOnTimeout（memory-retention 套件：request 期为函数，
+          // socket close 即 null；键值见 _http_common 骨架 kOnTimeout=6）。
+          sock.parser[6] = function () { /* 默认：超时，无可观测 */ };
+        }
+        sock.__parserFreed = false;
+        self.__freeSocketParser = self.__freeSocketParser ?? ((s) => {
+          try {
+            if (s.__parserFreed || s.parser === undefined || s.parser === null) return;
+            s.__parserFreed = true;
+            s.parser.free();
+          } catch { /* 用户覆写抛错不阻收尾 */ }
+        });
         // node 口径 socketOnError：连接 socket 的 error 恒有兜底监听。分流：
         // ① 用户自有 error 监听（除本兜底外）→ 纯多播（clientError 有监听才
         // 转，不吞不毁——u6b）；
@@ -334,6 +356,10 @@ export function withHttpServer(Base) {
         sock.__httpSockOnClose = () => {
           self.__clearReqTimers(st);
           self.__sockets.delete(sock);
+          // 连接关闭即释放解析器（单发守卫见 connection 段）+ kOnTimeout 清理
+          // （memory-retention 套件：close 后为 null）。
+          try { self.__freeSocketParser(sock); } catch { /* gone */ }
+          try { if (sock.parser !== undefined && sock.parser !== null) sock.parser[6] = null; } catch { /* gone */ }
           // 连接断时未完的req/res一起收尾：req 先走 aborted 级联（aborted
           // 恒发、error 门控），再 destroy 推 close（客户端中断上传的
           // PREMATURE_CLOSE 与 aborted 套件双口径）。未完含两态：
@@ -842,9 +868,13 @@ export function withHttpServer(Base) {
           } else {
             st.res = res;
           }
+          // 新请求解析即复位解析器释放旗（keep-alive 复用逐轮 free）。
+          sock.__parserFreed = false;
           // 头已齐、体在途：消息期 requestTimeout 计时。
           this.__armMsgTimer(st, sock);
           res.__onDone = () => {
+            // res finish 即释放解析器（freeParser 口径，见 connection 段）。
+            try { self.__freeSocketParser(sock); } catch { /* gone */ }
             st.req = null;
             st.framing = null;
             st.res = null;
@@ -985,6 +1015,13 @@ export function withClientRequest(openSocket, flavor) {
       if (this._writableState !== undefined && this._writableState !== null) {
         this._writableState.highWaterMark = __reqHWM;
       }
+      // node 口径 request.parser（memory-retention 套件）：onIncoming 函数 +
+      // joinDuplicateHeaders 回显选项；res 'end' 即置空（见 agent 收尾）。
+      this.parser = {
+        onIncoming() { /* 默认：入站，无可观测 */ },
+        joinDuplicateHeaders: (options !== null && typeof options === "object" &&
+          !(options instanceof URL) && options.joinDuplicateHeaders === true),
+      };
       // node 口径 _removedHeader：删掉的头不再自动补（remove-header 套件）。
       this._removedHeader = {};
       let host, port, path, method, userHeaders, extra;

@@ -759,6 +759,17 @@
           res.socket = this.__sock;
           res.connection = this.__sock;
           res.req = this;
+          // node 口径 parser 清理（memory-retention 套件）：res 'end' 先于用户
+          // 监听置空 onIncoming/joinDuplicateHeaders（本监听挂载最早——res 创建
+          // 即挂，emit('response') 之前，用户监听恒后到）。
+          res.once("end", () => {
+            try {
+              if (this.parser !== undefined && this.parser !== null) {
+                this.parser.onIncoming = null;
+                this.parser.joinDuplicateHeaders = null;
+              }
+            } catch { /* gone */ }
+          });
           this.__framing = __framingFor(headers, true, res.statusCode, this.method);
           this.__res = res;
           this.__resBuf = this.__resBuf.slice(headEnd + 4);

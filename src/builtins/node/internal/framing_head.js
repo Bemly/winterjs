@@ -167,6 +167,9 @@ function __parseHead(headText, mode, maxPairs, __trunc, joinDup) {
   const headersDistinct = Object.create(null);
   let __pairs = 0;
   const __capped = typeof maxPairs === "number" && maxPairs > 0;
+  // 重复 Transfer-Encoding 行计数（Test 16：relaxed/strict 下 llhttp 拒收，
+  // 仅 lenient 放行；insecure 模式跳过此门）。
+  let __teLines = 0;
   for (const line of lines) {
     if (line === "") continue;
     const c = line.indexOf(":");
@@ -174,6 +177,14 @@ function __parseHead(headText, mode, maxPairs, __trunc, joinDup) {
     const k = line.slice(0, c).trim();
     const vRaw = line.slice(c + 1);
     const v = vRaw.trim();
+    if (k.toLowerCase() === "transfer-encoding") {
+      __teLines++;
+      // llhttp 口径（Test 16）：重复 TE 行在 strict/relaxed 下即拒，
+      // 仅 lenient（insecure）放行合并。
+      if (__teLines > 1 && mode !== "lenient") {
+        throw __mkParseError("duplicate Transfer-Encoding");
+      }
+    }
     // 严格门查原始值（trim 前）——前导控制字符（如 'x:\nTE' 的裸 LF）不得
     // 被 trim 吞掉而漏检（missing-header-separator 套件现场记录）。
     if (mode === "strict") {
@@ -257,9 +268,12 @@ function __validateInteger(v, name, min = 0) {
   return v;
 }
 // 解析期校验失败哨兵：连接层捕到后回 400 + 销毁（Node clientError 默认行为）。
+// __parseErr 旗供客户端 __sockOnData 区分解析错（→ req destroy+error）与用户
+// 回调 throw（→ 重抛 uncaught；10b 套件严格响应头错即走前者）。
 function __mkParseError(msg) {
   const e = new Error(msg ?? "parse error");
   e.__httpParse = true;
+  e.__parseErr = true;
   return e;
 }
 // llhttp 口径服务端解析错（真机逐形实测 10 探针）：'Parse Error: <msg>' +

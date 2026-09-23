@@ -369,8 +369,10 @@ Server.prototype = __ServerClass.prototype;
 export function createConnection(...args) {
   // node 口径（incoming-message-options 套件）：options 进 Socket 构造器
   //（readableHighWaterMark 等流选项生效；旧无参构造即丢）。
+  // 实例 connect 收数组形（nodelay 套件 patched-connect 按 args[0].noDelay
+  // 断言——真机 net.connect 即如此调用）。
   const __o = args.length > 0 && args[0] !== null && typeof args[0] === "object" && !Array.isArray(args[0]) ? args[0] : undefined;
-  return new Socket(__o).connect(...args);
+  return new Socket(__o).connect(args);
 }
 export const connect = createConnection;
 // node BoundSocket（同步 bind 句柄；adopt 即迁入 server/socket，旧柄失效）。

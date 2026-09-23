@@ -613,6 +613,13 @@ export class ServerResponse extends Writable {
         this.__wlen = Math.max(0, this.__wlen - (b !== undefined && b !== null ? b.length : 0));
       }
     } catch { /* 计数永不阻递送 */ }
+    // 停靠 drain 释放（计数清零即递送，异步一轮——真机 drain 恒异步）。
+    if (this.__wlen === 0 && this.__parkedDrain === true) {
+      this.__parkedDrain = false;
+      queueMicrotask(() => {
+        if (!this.destroyed) { try { super.emit("drain"); } catch { /* 监听抛错不阻收尾 */ } }
+      });
+    }
     return this.__sock.write(b);
   }
   // 头渲染 dry-run（计数专用）：快照→渲染→取值→还原。调用点保证头已终局
@@ -1049,7 +1056,17 @@ export class ServerResponse extends Writable {
     if (this.__rejectBody && this.__isNoBodyStatus()) {
       throw new codes.ERR_HTTP_BODY_NOT_ALLOWED();
     }
-    if (this.__sockGone || this.__sock === null || this.__sock.destroyed) return false;
+    if (this.__sockGone || this.__sock === null || (this.__sock !== null && this.__sock.destroyed)) {
+      // socket-null 有两种：入列停靠（__queued，写继续走流机构→_write park）与
+      // 独立构造（未入列，旧口径回 false——incoming-pipelined 套件管线续行写）。
+      if (this.__sock === null && this.__queued === true) {
+        if (chunk !== undefined && chunk !== null) {
+          try { this.__countOut(chunk instanceof Uint8Array ? chunk : __toU8(String(chunk))); } catch { /* 计数永不阻写 */ }
+        }
+        return super.write(chunk, encoding, cb);
+      }
+      return false;
+    }
     // 写时记账（writableLength 精确字节，见 __countOut）：write 包装层同步计
     // （流机构异步派发 _write，_write 时机计数会漏同步读——outgoing-properties
     // 套件连写两行后同步读）；end 块由 end 包装层计，_write 内不计（防双计）。
@@ -1148,6 +1165,16 @@ export class ServerResponse extends Writable {
     if (this.__sock !== null && typeof this.__sock.uncork === "function") this.__sock.uncork();
     return this;
   }
+  // drain 门控（drain-writable-length 套件）：socket 落盘未完（__wlen>0）时
+  // 流机构的 'drain' 递延至清零（早发即 writableLength 非零）；销毁即弃。
+  // 无积压即直通（常规路径零行为差）。
+  emit(ev, ...args) {
+    if (ev === "drain" && (this.__wlen ?? 0) > 0) {
+      if (!this.destroyed) this.__parkedDrain = true;
+      return false;
+    }
+    return super.emit(ev, ...args);
+  }
   // CL/TE 被删掉时自动帧全停（remove-header 套件；__headBytes 帧决策同口径）。
   __frameSuppressed() {
     return this._removedHeader !== undefined &&
@@ -1167,6 +1194,7 @@ export class ServerResponse extends Writable {
     }
   }
   // 独立构造的 res 后挂 socket（standalone 套件）；双挂即 ERR_HTTP_SOCKET_ASSIGNED。
+  // 管线轮转同样经此（排空停靠写 + 递补终结，见 __feed/__onDone）。
   assignSocket(sock) {
     if (this.__sockAssigned) {
       const e = new Error("Socket is already assigned");
@@ -1177,6 +1205,19 @@ export class ServerResponse extends Writable {
     this.__sock = sock;
     this.socket = sock;
     this.connection = sock;
+    this.__queued = false;
+    // node 口径：assign 即发 'socket'（setTimeout 无 sock 等待形与监听侧靠它）。
+    try { this.emit("socket", sock); } catch { /* 监听抛错不阻排空 */ }
+    const __q = this.__parked ?? [];
+    this.__parked = [];
+    for (const [__b, __c] of __q) {
+      try { this._write(__b, null, __c); } catch { try { __c(); } catch { /* gone */ } }
+    }
+    if (this.__finalParked !== null && this.__finalParked !== undefined) {
+      const __f = this.__finalParked;
+      this.__finalParked = null;
+      try { this._final(__f); } catch { try { __f(); } catch { /* gone */ } }
+    }
   }
   __headBytes() {
     if (this.__headSent) return new Uint8Array(0);
@@ -1387,6 +1428,13 @@ export class ServerResponse extends Writable {
   _write(chunk, encoding, cb) {
     const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk));
     this.__sawWrite = true;
+    // 管线停靠（drain-writable-length 套件）：socket 未就位的入列响应停靠
+    // chunk，cb 暂扣（流机构自然等待，背压天然成立）；assignSocket 回放。
+    // 独立构造（未入列）仍直落旧路（丢弃 + 回调，零行为差）。
+    if (this.__sock === null && this.__queued === true && !this.destroyed) {
+      (this.__parked ??= []).push([u8, cb]);
+      return;
+    }
     // 记账在 write/end 包装层同步完成（见上），此处不再计。
     // node 口径：首个 write 即算发头（setheaders-after-sent 套件 write 后
     // setHeader 即 HEADERS_SENT；holdback 只延迟落盘，旗同步立）。
@@ -1441,6 +1489,12 @@ export class ServerResponse extends Writable {
       this.__holdTimer = null;
     }
     if (this.__sockGone || this.__sock === null || this.__sock.destroyed) {
+      // 入列停靠中：终结 parked（流等待 assign 回放，Node 管线口径；回放后重
+      // 走本函数正常收尾，__onDone 照常轮转）。
+      if (this.__sock === null && this.__queued === true && !this.destroyed) {
+        this.__finalParked = cb;
+        return;
+      }
       // 无处可送：挂起计数清零（finish 口径 writableLength 恒 0）。
       this.__wlen = 0;
       cb();
@@ -1529,8 +1583,12 @@ export class ServerResponse extends Writable {
       clearTimeout(this.__holdTimer);
       this.__holdTimer = null;
     }
-    // 销毁即无后续落盘：挂起计数清零（destroy 不走 _final）。
+    // 销毁即无后续落盘：挂起计数/停靠 drain/停靠写/停靠终结全清
+    // （destroy 不走 _final；停靠回调永不递送）。
     this.__wlen = 0;
+    this.__parkedDrain = false;
+    this.__parked = [];
+    this.__finalParked = null;
     // capture-rejection 套件：destroy(err) 透传 socket（有 error 监听才带
     // err——裸杀配 err 会无监听抛错；node 侧由常驻 socketOnError 承接，
     // 本仓无此常驻监听故按可观测等价门控）。

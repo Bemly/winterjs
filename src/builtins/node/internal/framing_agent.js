@@ -865,6 +865,9 @@
         if (fr.type === "none") {
           this.__res.__complete();
           this.__finishResponse(false);
+          // node 口径：响应收齐即请求终结（end-close-event 套件：res 'end' 时
+          // req.destroyed 已 true；静默销毁，有响应不合成 error）。
+          if (!this.destroyed) { try { this.destroy(); } catch { /* gone */ } }
           return;
         }
         if (fr.type === "close") {
@@ -889,6 +892,8 @@
         if (r.trailersRaw !== undefined) __applyTrailers(this.__res, r.trailersRaw);
         this.__res.__complete();
         this.__finishResponse(false);
+        // node 口径：同上，体收齐即终结请求。
+        if (!this.destroyed) { try { this.destroy(); } catch { /* gone */ } }
         return;
       }
     }

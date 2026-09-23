@@ -542,3 +542,106 @@ console.log("queuedone");
     dir.close().unwrap();
 }
 
+#[test]
+fn phase11_http_header_join_faces() {
+    // 头合并面：joinDuplicateHeaders 缺省首个赢/true 即合并（单例表亦压过）、
+    // cookie 恒 '; '（解析/双端 wire）、缺 Host 1.1 即静默 400。
+    // 正常（缺省/合并/cookie）+ 报错（400）+ 边界（set-cookie 恒数组）三件套。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createServer, get } from "node:http";
+import net from "node:net";
+
+// 1) 缺省：重复 authorization 首个赢；cookie '; '；set-cookie 数组。
+await new Promise((resolve) => {
+  const server = createServer((req, res) => {
+    console.log("j-auth", JSON.stringify(req.headers.authorization));
+    console.log("j-cookie", JSON.stringify(req.headers.cookie));
+    console.log("j-setck", JSON.stringify(req.headers["set-cookie"]));
+    res.end();
+    server.close(resolve);
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const c = net.connect(server.address().port, () => {
+      c.end("GET / HTTP/1.1\r\nHost: x\r\nAuthorization: 1\r\nAuthorization: 2\r\nCookie: a=1\r\nCookie: b=2\r\nSet-Cookie: s1\r\nSet-Cookie: s2\r\n\r\n");
+    });
+    c.resume();
+    c.on("close", () => {});
+  });
+});
+// 2) join:true 即 ', ' 合并（压过单例表）。
+await new Promise((resolve) => {
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
+    console.log("j2-auth", JSON.stringify(req.headers.authorization));
+    res.end();
+    server.close(resolve);
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const c = net.connect(server.address().port, () => {
+      c.end("GET / HTTP/1.1\r\nHost: x\r\nAuthorization: 1\r\nAuthorization: 2\r\n\r\n");
+    });
+    c.resume();
+    c.on("close", () => {});
+  });
+});
+// 3) 缺 Host 1.1 即静默 400（无 request、无 clientError）。
+await new Promise((resolve) => {
+  const server = createServer((req, res) => {
+    console.log("j3 REQUEST?!");
+    res.end();
+  });
+  server.on("clientError", () => console.log("j3 CLIENTERROR?!"));
+  server.listen(0, "127.0.0.1", () => {
+    const c = net.connect(server.address().port, () => {
+      c.write("GET / HTTP/1.1\r\nConnection: close\r\n\r\n");
+    });
+    let buf = "";
+    c.on("data", (d) => (buf += d.toString()));
+    c.on("end", () => {
+      console.log("j3-400", buf.startsWith("HTTP/1.1 400 Bad Request"));
+      c.end();
+    });
+    c.on("close", () => server.close(resolve));
+  });
+});
+// 4) 客户端数组 cookie 走单行 '; ' wire。
+await new Promise((resolve) => {
+  const server = net.createServer((sock) => {
+    let buf = "";
+    sock.on("data", (d) => {
+      buf += d.toString();
+      if (buf.includes("\r\n\r\n")) {
+        const line = buf.split("\r\n").find((l) => l.toLowerCase().startsWith("cookie:"));
+        console.log("j4-wire", JSON.stringify(line));
+        sock.end("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+      }
+    });
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const req = get({ port: server.address().port, headers: { cookie: ["a=1", "b=2"] } }, (res) => {
+      res.resume().on("end", () => server.close(resolve));
+    });
+    req.on("error", () => {});
+    req.end();
+  });
+});
+console.log("joindone");
+"#,
+    );
+    for tag in [
+        "j-auth \"1\"",
+        "j-cookie \"a=1; b=2\"",
+        "j-setck [\"s1\",\"s2\"]",
+        "j2-auth \"1, 2\"",
+        "j3-400 true",
+        "j4-wire \"cookie: a=1; b=2\"",
+        "joindone",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}
+

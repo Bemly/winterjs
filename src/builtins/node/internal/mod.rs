@@ -151,8 +151,8 @@ mod tests {
         assert_eq!(normalize_internal("internal/nope"), None);
         assert_eq!(normalize_internal("errors"), None);
         assert_eq!(normalize_internal("node:internal/errors"), Some("node:internal/errors"));
-        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1；增删同步改此数）。
-        assert_eq!(INTERNALS.len(), 63);
+        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1；增删同步改此数）。
+        assert_eq!(INTERNALS.len(), 65);
         for (name, src) in INTERNALS {
             assert!(source(name).is_some(), "{name} missing");
             assert!(!src.is_empty(), "{name} empty source");

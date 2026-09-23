@@ -877,6 +877,22 @@ export class ServerResponse extends Writable {
     const __names = this.__headerNames ?? {};
     return Object.keys(this.__headers).map((k) => __names[k] ?? k);
   }
+  // node 口径 statusMessage 校验（status-reason-invalid-chars 套件）：
+  // \r\n/NUL/DEL/非 latin1 即同步抛 'Invalid character in statusMessage'；
+  // null/undefined 照存（构造与回滚路径）。
+  get statusMessage() { return this.__statusMessage; }
+  set statusMessage(v) {
+    if (v !== undefined && v !== null) {
+      const __s = String(v);
+      for (let __i = 0; __i < __s.length; __i++) {
+        const __cc = __s.charCodeAt(__i);
+        if (!(__cc === 9 || (__cc >= 32 && __cc <= 126) || (__cc >= 128 && __cc <= 255))) {
+          throw new Error("Invalid character in statusMessage");
+        }
+      }
+    }
+    this.__statusMessage = v;
+  }
   writeHead(status, ...rest) {
     // node 口径（write-head 套件真机实测）：已发头再 write 即 HEADERS_SENT。
     if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("write");
@@ -1127,6 +1143,16 @@ export class ServerResponse extends Writable {
   // req 'end' 内断言 wire 回环值）。
   addTrailers(trailers) {
     if (trailers === null || trailers === undefined) return this;
+    // node 口径：对形 `[[k,v],...]` 与对象形双收（raw-headers 套件）。
+    if (Array.isArray(trailers)) {
+      const __flat = {};
+      for (const __p of trailers) {
+        const __k = String(__p[0]);
+        if (__flat[__k] === undefined) __flat[__k] = [];
+        __flat[__k].push(__p[1]);
+      }
+      trailers = __flat;
+    }
     for (const k of Object.keys(trailers)) {
       if (!__TOKEN_RE.test(String(k))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(k));
       const __v = trailers[k];

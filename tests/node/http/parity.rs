@@ -727,3 +727,40 @@ fn phase_mapper_locate_suite() {
     println!("[mapper] {} rc={}", path, if ok { 0 } else { 1 });
     println!("{out}");
 }
+
+/// 请求级 createConnection 错误路由（真机 _http_client.js 591-607 行口径）：
+/// async cb 错 / sync throw 统一 nextTick emitErrorEvent——错误永不同步抛出
+/// 构造器，无监听经 EE 落 uncaught（修前 err 被吞 → 套件
+/// test-http-createConnection TIMEOUT）。
+#[test]
+fn phase11_http_create_connection_error_routing() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http from "node:http";
+await new Promise((resolve) => {
+  const r = http.get({ createConnection: (o, cb) => process.nextTick(cb, new Error("boom-async")) });
+  r.on("error", (e) => { console.log("async-err", e.message); resolve(); });
+});
+let syncThrew = false;
+const r2 = http.get({ createConnection: () => { throw new Error("boom-sync"); } });
+try { r2.on("error", (e) => { console.log("sync-err", e.message, "syncThrew", syncThrew); }); } catch { syncThrew = true; }
+process.on("uncaughtException", (e) => {
+  console.log("uncaught", e.message);
+  process.exit(0);
+});
+http.get({ createConnection: () => { throw new Error("boom-uncaught"); } });
+setTimeout(() => { console.log("uncaught MISSING"); process.exit(1); }, 500);
+"#,
+    );
+    for tag in [
+        "async-err boom-async",
+        "sync-err boom-sync syncThrew false",
+        "uncaught boom-uncaught",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}

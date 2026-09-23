@@ -331,6 +331,18 @@ parser 内省 ~4（_http_common parser.initialize/onIncoming 面，记档偏离�
 余散件（async_hooks 资源面/domain 集成/Atomics.wait/process.report/
 optimize-empty-requests 等）逐套件记 bun-parity。
 
+**2026-09-23 对拍提速 mapper + createConnection 转绿**：§4.202-① 断言 mapper
+落地（`tests/node/helpers.rs` run_suite_mapped：实际值截 200 字 + 套件侧
+调用点折算物理行 ±2 节选三行定位；`WJS_MAP_SUITE=` + `phase_mapper_locate_suite
+-- --ignored` 用；raw-headers 物理 110 / mutable-headers 物理 187 一击定位；
+实测钉住：无壳位置=assert SOURCE 行号安套件名、栈帧行号=CJS 前奏 +1、
+rejection 拦不到/exit-hook fatal 不触发；AGENTS §4.202）。同轮
+test-http-createConnection 转绿（修前 TIMEOUT：请求级 createConnection 的
+oncreate 吞 err——async cb 错永悬、sync throw 靠穿透构造器侥幸；修法真机
+_http_client.js 591-607 行逐字 err 臂 nextTick emitErrorEvent + try/catch
+收口 + settled 防双投；黑盒三形 `phase11_http_create_connection_error_routing`；
+AGENTS §4.203）。http/net/https 三域 52 绿 + node 域 285 绿 + 冒烟 5/5。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

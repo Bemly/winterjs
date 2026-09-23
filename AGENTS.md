@@ -3577,3 +3577,30 @@ cargo build
   worktree 每个 20GB（§4.142），磁盘先行 `df -h`。
 - 推广为铁律：机械开销（定位/分类/等数）用工具换，推理开销（hang 根因）
   用人换——前者不投半天，后者永远被前者拖慢；工具先行，啃数随后。
+
+### 4.203 请求级 createConnection 错误被吞：oncreate 只认 socket 不认 err（2026-09-23，G11 TIMEOUT 轮）
+
+- 症状：`test-http-createConnection.js` TIMEOUT 且零输出。套件六块插桩定位——
+  四个成功块全过（SRV-HIT 各一），async 错误块
+  （`createConnectionAsyncError`：`process.nextTick(cb, new Error('async'))`）
+  永不决议；sync throw 块（E1）反而正常 reject。
+- 根因：请求级 createConnection 的
+  `oncreate = (err, s) => { settled = true; if (s) this.__attach(s, false); }`
+  只认 socket、完全无视 err——async cb 错被吞，请求既不挂 socket 也不发
+  error，promise 永悬（挂死）；sync throw 形靠"异常穿透构造器"侥幸走到
+  assert.rejects（真机是 try/catch 收进 emitErrorEvent，永不同步抛——机制
+  不同结果碰巧同）。
+- 修法（真机 `_http_client.js` 591-607 行逐字）：oncreate err 臂
+  `process.nextTick(() => this.emit("error", err))`——无监听经 EE
+  rethrow 原错落 uncaughtException（真机 emit('error') 无监听语义，本仓
+  EE 已逐字）；sync throw `try/catch → oncreate(err)` 收进同路；
+  `settled` 门前置防双投（`createConnectionBoth1/2` 的 cb+return 双形，
+  node 用 `once()` 同义）。
+- 复现：套件修前 rc=142 修后 0；黑盒
+  `tests/node/http/parity.rs::phase11_http_create_connection_error_routing`
+  （async cb 错 / sync throw 不同步穿出 / 无监听 uncaught 原文 三形）。
+- 教训：① cb(err, s) 双参回调的 err 臂"暂时用不上"也必须路由——`if (s)`
+  单臂回调是 hang 制造机；套件四个成功块全绿掩盖了错误块，块标记插桩
+  十分钟定位（§4.202-① mapper 覆盖 uncaught 形，TIMEOUT 件仍走插桩）。
+  ② "结果碰巧对"（sync throw 穿透）不等于"机制对"——换一个调用形状
+  （async cb）即现形；对真机要对机制，不只对结果。

@@ -1484,6 +1484,22 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > >   队列**基建另轮；execPath spawn ~18（CLI 全 flag 铁律，需拍板）；
 > >   parser 内省 ~4（记档偏离）；余散件逐套件记档。
 
+> ### G11 createConnection 错误路由（2026-09-23；AGENTS §4.203）
+>
+> > - 请求级 createConnection 的 `oncreate` 只认 socket 不认 err——async
+> >   cb 错被吞（请求既不挂 socket 也不发 error，promise 永悬）；sync throw
+> >   靠异常穿透构造器侥幸 reject。修法（真机 _http_client.js 591-607 行
+> >   逐字）：err 臂 `process.nextTick(() => this.emit("error", err))`
+> >   （无监听经 EE 落 uncaught）+ sync throw try/catch 收进同路（永不同步
+> >   抛出构造器）+ settled 门前置防双投（Both1/2 cb+return 双形）。
+> > - **转 SAME0**：test-http-createConnection（修前 TIMEOUT，插桩六块
+> >   定位 async 错误块）；黑盒
+> >   `tests/node/http/parity.rs::phase11_http_create_connection_error_routing`
+> >   （async/sync/uncaught 三形）。http/net/https 三域 52 绿 + node 域
+> >   285 绿零回归。
+> > - 对拍 mapper（AGENTS §4.202-①）同日落地：本套件零输出挂死即靠块标记
+> >   插桩定位；mapper 覆盖 uncaught 形，TIMEOUT 件仍走插桩。
+
 ## https
 
 > 同 http 域随行（帧层共用，67 件）：同绿 8 → **13**（+5：Agent no-new/

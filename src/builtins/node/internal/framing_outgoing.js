@@ -1607,14 +1607,27 @@ export function withClientRequest(openSocket, flavor) {
         this.__createConn = options.createConnection;
         const connOpts = { ...(extra ?? {}) };
         connOpts.path = options.socketPath !== undefined ? options.socketPath : undefined;
-        let out;
         let settled = false;
         const oncreate = (err, s) => {
+          if (settled) return;
           settled = true;
-          if (s) this.__attach(s, false);
+          if (err) {
+            // node _http_client 591-607 行口径：createConnection 错误（async
+            // cb 错 / sync throw 统一收口）nextTick 异步 emitErrorEvent——
+            // 错误永不同步抛出构造器；无监听经 EE ERR_UNHANDLED_ERROR 落
+            // uncaught（create-connection-async-error 套件，修前 err 被吞
+            // 即 hang）。
+            process.nextTick(() => this.emit("error", err));
+          } else if (s) {
+            this.__attach(s, false);
+          }
         };
-        const maybe = this.__createConn(connOpts, oncreate);
-        if (!settled && maybe) this.__attach(maybe, false);
+        try {
+          const maybe = this.__createConn(connOpts, oncreate);
+          if (!settled && maybe) oncreate(null, maybe);
+        } catch (err) {
+          oncreate(err);
+        }
       } else if (this.agent !== null) {
         this.agent.__acquire(this, host, port, extra, (sock, reused) => this.__attach(sock, reused));
       } else {

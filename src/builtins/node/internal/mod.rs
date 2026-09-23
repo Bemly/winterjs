@@ -108,6 +108,8 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:_http_common", http_aliases::COMMON_SOURCE),
     ("node:_http_server", http_aliases::SERVER_SOURCE),
     ("node:_http_outgoing", http_aliases::OUTGOING_SOURCE),
+    // 残件轮：node:internal/http（套件直引 internal/http，kOutHeaders）。
+    ("node:internal/http", http_aliases::HTTP_SOURCE),
     // plan3 test Slice B1：MockTracker 核心（node:test 经此接线）。
     ("node:internal/test/mock", test_mock::SOURCE),
 ];

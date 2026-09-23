@@ -3,6 +3,13 @@
 //! node 26.8.2 实测逐键对拍（agent-keys/common-keys/server-keys/outgoing-keys）。
 //! HTTPParser 深件（llhttp 事件面兼容类 + lenient 位旗）另案，暂不导出。
 
+/// `node:internal/http`（真机 keys：kOutHeaders；套件直引 `internal/http`）。
+/// kOutHeaders 与帧层同源（http_framing 导出同一符号）。
+pub const HTTP_SOURCE: &str = r#"
+import { kOutHeaders } from "node:internal/http_framing";
+export { kOutHeaders };
+"#;
+
 /// `node:_http_agent`（真机 keys：Agent,globalAgent）。
 pub const AGENT_SOURCE: &str = r#"
 // node 口径（真机实测）：_http_agent.Agent 即 http.Agent 同一类、

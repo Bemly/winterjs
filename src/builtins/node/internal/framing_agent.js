@@ -276,8 +276,9 @@
     }
     // node 口径（弃用面仍测）：abort = destroy + 'abort' 事件 + aborted 旗；
     // 在途响应同步走 aborted 级联（aborted 套件：res aborted → error → close）。
-    // 'abort' 事件异步发（abort-stream-end 套件：调用方 abort() 后同步重置状态，
-    // 同步发即断言到重置前的值；aborted 旗保持同步）。
+    // 'abort' 事件经 nextTick（abort-stream-end 套件：调用方 abort() 后同步重置
+    // 状态；且真机序 abort 先于 error——destroy 的 error 同为 tick，按序排后）。
+    // aborted 旗保持同步。
     abort() {
       if (this.destroyed) return;
       this.__aborted = true;
@@ -285,8 +286,8 @@
           typeof this.__res.__abortWithError === "function") {
         try { this.__res.__abortWithError(); } catch { /* 监听抛错不阻销毁 */ }
       }
+      process.nextTick(() => { try { this.emit("abort"); } catch { /* 监听抛错不阻收尾 */ } });
       this.destroy();
-      queueMicrotask(() => { try { this.emit("abort"); } catch { /* 监听抛错不阻收尾 */ } });
     }
     get aborted() { return this.__aborted === true; }
     __sendHead() {
@@ -536,7 +537,7 @@
         try { this.__sigCleanup(); } catch { /* gone */ }
         this.__sigCleanup = null;
       }
-      if (this.agent !== null) this.agent.__cancel(this);
+      if (this.agent !== null && this.agent !== undefined) this.agent.__cancel(this);
       // node 口径：请求 error 即摘 socket data/end 请求级监听（agent 的
       // onReadableStreamEnd 保留；client-parse-error 套件 data=0/end=1）。
       // 注意走 this.socket（__sock 在 __finishResponse 即抽空，见 949 行）。
@@ -556,7 +557,8 @@
       }
       // 响应同销（Node：destroy 中止整个事务；否则 res 永不完结，
       // 挂在它上面的收尾——如 server.close()——永不到）。
-      if (this.__res !== null && !this.__res.complete) {
+      // 构造期同步 destroy（预 abort signal）下 __res 尚 undefined，守卫。
+      if (this.__res !== null && this.__res !== undefined && !this.__res.complete) {
         try { this.__res.destroy(); } catch { /* already gone */ }
       }
       if (this.__sock !== null) {
@@ -1034,7 +1036,15 @@
     }
     destroy(err) {
       if (this.destroyed) return this;
+      // node 口径：无响应即销毁 → ECONNRESET 'socket hang up'（abort-destroy
+      // 套件；有响应在途即静默；已发过错（__hadError）不重发）。
       // super.destroy 会走 _destroy（清 socket + 补 'close'）。
+      if ((err === undefined || err === null) && !this.__hadError &&
+          (this.__res === null || this.__res === undefined) && !this.__respDone) {
+        const __e = new Error("socket hang up");
+        __e.code = "ECONNRESET";
+        err = __e;
+      }
       return super.destroy(err);
     }
   };
@@ -1052,6 +1062,28 @@ function __writeAfterFIN(chunk, encoding, cb) {
   return false;
 }
 
+// Agent keylog 转发补挂（现存 + 后建；socket 侧恰 1，不重复挂）。
+Agent.prototype.__armKeylog = function (only, force) {
+  if (force !== true && (typeof this.listenerCount !== "function" || this.listenerCount("keylog") === 0)) return;
+  const __one = (sock) => {
+    if (sock === undefined || sock === null || sock.destroyed) return;
+    if (typeof sock.listenerCount === "function" && sock.listenerCount("keylog") > 0) return;
+    const self = this;
+    try {
+      sock.on("keylog", function __agentKeylogFwd(...a) {
+        try { self.emit("keylog", ...a); } catch { /* 监听抛错不阻收尾 */ }
+      });
+    } catch { /* gone */ }
+  };
+  if (only !== undefined && only !== null) { __one(only); return; }
+  for (const map of [this.freeSockets, this.sockets]) {
+    if (map === undefined || map === null) continue;
+    for (const bucket of Object.values(map)) {
+      if (!Array.isArray(bucket)) continue;
+      for (const sock of bucket) __one(sock);
+    }
+  }
+};
 // Agent：node lib/_http_agent.js 口径的函数式构造器——`http.Agent({...})` 无 new
 // 亦合法（keepalive-client/free/override 系套件点名）。键位统一走 getName 形
 // （'host:port:localAddress(:family)'，缺省位仍带分隔冒号——agent-getname 套件）。
@@ -1082,6 +1114,13 @@ Agent.prototype.__init = function (options = {}) {
   }
   this.totalSocketCount = 0;
   this.scheduling = options.scheduling ?? "lifo";
+  // node 口径 keylog 转发（keylog-existing-sockets 套件）：agent 挂 keylog
+  // 监听即给全部现存 socket（在用 + 空闲）各挂一个转发监听；后建/回池的经
+  // __armKeylog 补挂（socket 侧恒恰 1）。
+  this.on("newListener", (t) => {
+    // newListener 在入表前触发（§4.47），计数仍 0——直驱补挂，不走计数门。
+    if (t === "keylog") this.__armKeylog(undefined, true);
+  });
   // node 口径 agentKeepAliveTimeoutBuffer（keep-alive-timeout-buffer 套件）：
   // 缺省 1000；非有限数/负数回落 1000。
   {
@@ -1154,6 +1193,8 @@ Agent.prototype.__totalLive = function () {
 Agent.prototype.__trackSocket = function (sock, key) {
   this.__list(this.sockets, key).push(sock);
   this.totalSocketCount++;
+  // 后建 socket 补挂 keylog 转发（keylog 监听先行时）。
+  try { this.__armKeylog(sock); } catch { /* gone */ }
   // 池键随 socket 走（__noteClosed 按 sock.__poolKey 摘表；此前只记 req 侧，
   // 关闭后 sockets/freeSockets 残留——agent-keepalive 套件断言键消失）。
   sock.__poolKey = key;
@@ -1377,6 +1418,8 @@ Agent.prototype.__release = function (sock, key, req, poolable = true) {
         // guard 走 __ingestData（监听之外），listenerCount 恒 0）。
         try { sock.parser = null; } catch { /* gone */ }
         sock.__freeGuardArmed = true;
+        // 回池 socket 补挂 keylog 转发（监听先行时）。
+        try { this.__armKeylog(sock); } catch { /* gone */ }
         free.push(sock);
       // node 口径：入池即移出在用表（agent.sockets 只计在用——
       // agent-maxtotalsockets 的 getTotalSocketsCount 口径）；空键即删

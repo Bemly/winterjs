@@ -1080,7 +1080,11 @@ export function withClientRequest(openSocket, flavor) {
         host = u.hostname;
         port = u.port ? Number(u.port) : flavor.defaultPort;
         path = u.pathname + u.search;
-        userHeaders = {};
+        // node 口径：URL 实例 expando headers（request-options 套件往 URL 上挂
+        // headers；String() 会洗掉，直读原对象）。
+        userHeaders = (options !== null && typeof options === "object" &&
+          options.headers !== undefined && options.headers !== null &&
+          typeof options.headers === "object") ? options.headers : {};
         extra = {};
       } else {
         // node ClientRequest ctor 入口：ObjectAssign({__proto__: null}, input,

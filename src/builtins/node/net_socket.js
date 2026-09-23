@@ -748,12 +748,18 @@ class Socket extends EventEmitter {
         // 底层 RST/EOF 竞速错不再派发；write-after-close 套件双块并发下必现 flaky）。
         if (this.destroyed) break;
         // node connect 系标配：syscall + errno（uv 负值；ENOENT=-2/EACCES=-13/ECONNREFUSED=-61
-        // /ENOTSOCK=-38/EADDRNOTAVAIL=-49；未知 -4094）。
+        // /ENOTSOCK=-38/EADDRNOTAVAIL=-49；未知 -4094；ENOTFOUND 系 getaddrinfo -3008）。
         se.syscall = "connect";
         se.errno = { ENOENT: -2, EACCES: -13, ECONNREFUSED: -61, ENOTSOCK: -38, EADDRNOTAVAIL: -49, EINVAL: -22, EADDRINUSE: -48 }[o.code] ?? -4094;
+        if (o.code === "ENOTFOUND") {
+          se.syscall = "getaddrinfo";
+          se.errno = -3008;
+        }
         // node connect 错误消息形："connect CODE <target>"（target=host:port 或 path）。
-        // native msg 已是 "CODE: <os>"，此处按目标重塑（expectsError 逐字断言面）。
-        if (typeof o.msg === "string" && !o.msg.startsWith("connect ") && !o.msg.startsWith("IP(")) {
+        // native msg 已是 "CODE: <os>"，此处按目标重塑（expectsError 逐字断言面）；
+        // getaddrinfo 形保留原文（dns-error 套件 node 口径）。
+        if (typeof o.msg === "string" && !o.msg.startsWith("connect ") && !o.msg.startsWith("IP(") &&
+            !o.msg.startsWith("getaddrinfo ")) {
           const rh = this.__targetHost ?? this.remoteAddress;
           const rp = this.__targetPort ?? this.remotePort;
           const tgt = this.__udsTarget ?? ((rh !== undefined && rh !== null && rp !== undefined && rp !== null) ? `${rh}:${rp}` : null);

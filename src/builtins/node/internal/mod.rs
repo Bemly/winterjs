@@ -14,6 +14,7 @@ pub mod abort_listener;
 pub mod assert;
 pub mod async_context_frame;
 pub mod async_hooks_int;
+pub mod binding;
 pub mod blob;
 pub mod abort_controller;
 pub mod buffer;
@@ -64,6 +65,9 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/abort_controller", abort_controller::SOURCE),
     ("node:internal/async_context_frame", async_context_frame::SOURCE),
     ("node:internal/async_hooks_int", async_hooks_int::SOURCE),
+    ("node:internal/test/binding", binding::SOURCE),
+    // `internal/async_hooks` 即公开面同源（immediate-error 套件直引）。
+    ("node:internal/async_hooks", super::async_hooks::SOURCE),
     ("node:internal/debuglog", debuglog::SOURCE),
     ("node:internal/encoding", encoding::SOURCE),
     ("node:internal/buffer", buffer::SOURCE),
@@ -151,8 +155,8 @@ mod tests {
         assert_eq!(normalize_internal("internal/nope"), None);
         assert_eq!(normalize_internal("errors"), None);
         assert_eq!(normalize_internal("node:internal/errors"), Some("node:internal/errors"));
-        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1；增删同步改此数）。
-        assert_eq!(INTERNALS.len(), 65);
+        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；增删同步改此数）。
+        assert_eq!(INTERNALS.len(), 67);
         for (name, src) in INTERNALS {
             assert!(source(name).is_some(), "{name} missing");
             assert!(!src.is_empty(), "{name} empty source");

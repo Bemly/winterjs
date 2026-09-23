@@ -87,8 +87,9 @@ Agent.prototype.__openSocket = (host, port, extra) => {
   const o = extra ?? {};
   const base = o.socketPath !== undefined ? { path: o.socketPath, noDelay: true } : { port, host, noDelay: true };
   if (o.lookup !== undefined) base.lookup = o.lookup;
-  // node 口径：建连透传 signal（agent-abort-controller 套件）。
+  // node 口径：建连透传 signal/localAddress（abort-controller/localaddress 套件）。
   if (o.signal !== undefined) base.signal = o.signal;
+  if (o.localAddress !== undefined) base.localAddress = o.localAddress;
   return net.connect(base);
 };
 Agent.prototype.__defaultPort = 80;

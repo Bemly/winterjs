@@ -394,3 +394,83 @@ console.log("pushparse-done");
     dir.close().unwrap();
 }
 
+#[test]
+fn phase11_http_outgoing_writable_length_faces() {
+    // 基建轮 Slice B1：ServerResponse.writableLength 精确字节（渲染头同步计 +
+    // 帧化块同步计 + 落盘递减 + _final 兜底清零）。正常（131/139/finish 0/
+    // standalone 累计）+ writeHead 先行形三件套。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createServer, OutgoingMessage } from "node:http";
+import { get } from "node:http";
+
+// 1) 裸写形：'' 即 131（渲染头），'asd' 再 +8（chunked 帧），finish 回 0。
+await new Promise((resolve) => {
+  const server = createServer((req, res) => {
+    console.log("wl-init", res.writableLength === 0);
+    res.write("");
+    const len = res.writableLength;
+    console.log("wl-empty", len === 131);
+    res.write("asd");
+    console.log("wl-asd", res.writableLength === len + 8);
+    res.end();
+    res.on("finish", () => {
+      console.log("wl-finish", res.writableLength === 0);
+      server.close(resolve);
+    });
+  });
+  server.listen(0, "127.0.0.1", () => {
+    get({ port: server.address().port }, (res) => {
+      res.resume().on("end", () => {});
+    });
+  });
+});
+// 2) writeHead 先行形（157/165）。
+await new Promise((resolve) => {
+  const server = createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.write("");
+    const len = res.writableLength;
+    console.log("wl-wh-empty", len === 157);
+    res.write("asd");
+    console.log("wl-wh-asd", res.writableLength === len + 8);
+    res.end();
+    res.on("finish", () => server.close(resolve));
+  });
+  server.listen(0, "127.0.0.1", () => {
+    get({ port: server.address().port }, (res) => {
+      res.resume().on("end", () => {});
+    });
+  });
+});
+// 3) 独立构造：无头即裸块累计。
+{
+  const msg = new OutgoingMessage();
+  msg._implicitHeader = function() {};
+  console.log("wl-standalone", msg.writableLength === 0);
+  msg.write("a");
+  msg.write("bc");
+  console.log("wl-standalone-acc", msg.writableLength === 3);
+}
+console.log("wllen-done");
+"#,
+    );
+    for tag in [
+        "wl-init true",
+        "wl-empty true",
+        "wl-asd true",
+        "wl-finish true",
+        "wl-wh-empty true",
+        "wl-wh-asd true",
+        "wl-standalone true",
+        "wl-standalone-acc true",
+        "wllen-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}
+

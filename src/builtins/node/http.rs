@@ -95,6 +95,12 @@ Agent.prototype.__openSocket = (host, port, extra) => {
 Agent.prototype.__defaultPort = 80;
 const globalAgent = new Agent({ keepAlive: true, scheduling: "lifo" });
 FLAVOR.defaultAgent = globalAgent;
+// node 口径：WebSocket/CloseEvent/MessageEvent 即全局同源重导出
+//（import-websocket 套件逐项同一性；CloseEvent 全局缺席时双侧 undefined，
+// 全局类另案跟进，见 parity）。
+export const WebSocket = globalThis.WebSocket;
+export const CloseEvent = globalThis.CloseEvent;
+export const MessageEvent = globalThis.MessageEvent;
 // node 口径：`http.globalAgent = agent` 可整体替换（override-global-agent 套件）。
 // require 回的是 __api 对象（见下），在其上挂 accessor 劫持赋值；内部经
 // FLAVOR.__getDefaultAgent 读活值（具名 ESM 导入仍绑旧 const，记档）。
@@ -138,6 +144,7 @@ export {
 };
 const __api = {
   STATUS_CODES, METHODS, request, get, Agent,
+  WebSocket, CloseEvent, MessageEvent,
   // maxHeaderSize 经 CLI 兼容旗动态（max-header-size 套件；具名导出恒静态缺省）。
   get maxHeaderSize() {
     try { return __defaultMaxHeaderSize(); } catch { return maxHeaderSize; }

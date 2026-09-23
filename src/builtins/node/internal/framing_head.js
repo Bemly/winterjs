@@ -1325,6 +1325,15 @@ export class ServerResponse extends Writable {
       if ((k === "content-length" || k === "transfer-encoding") && this.__headerNames[k] === undefined) return true;
       return false;
     };
+    // 自动 Date 头（node 口径：响应缺 date 即补 UTC 串；删掉的不补；
+    // sendDate === false 不补——test-http-1.0 套件 curl 形断言无 Date 行）。
+    // 顺序：Date 恒在 Connection/Keep-Alive 之前（真机 wire 顺序，chunked-304
+    // 套件 `/^Connection: close\r\n$/m` 钉住 Connection 紧贴头终结）。
+    if (this.sendDate !== false && this.__headers["date"] === undefined &&
+        !(this._removedHeader !== undefined && this._removedHeader.date)) {
+      this.__headers["date"] = new Date().toUTCString();
+      this.__autoDate = true;
+    }
     // Connection 自动决策（node keep-alive logic 口径）：
     // shouldSendKeepAlive = shouldKeepAlive && (用户CL || UCED)；
     // maxRequestsPerSocket 达标 → close；否则 keep-alive（+Keep-Alive: timeout）；
@@ -1350,13 +1359,6 @@ export class ServerResponse extends Writable {
         this.__autoConn = true;
         this.__last = true;
       }
-    }
-    // 自动 Date 头（node 口径：响应缺 date 即补 UTC 串；删掉的不补；
-    // sendDate === false 不补——test-http-1.0 套件 curl 形断言无 Date 行）。
-    if (this.sendDate !== false && this.__headers["date"] === undefined &&
-        !(this._removedHeader !== undefined && this._removedHeader.date)) {
-      this.__headers["date"] = new Date().toUTCString();
-      this.__autoDate = true;
     }
     // 帧决策（node：!contLen && !te 分支）：无用户 CL/TE 时按
     // noBody/UCED/__contentLength（end() 快路径预置）决定 auto CL 或 chunked；

@@ -1727,6 +1727,13 @@ export function withClientRequest(openSocket, flavor) {
       // 去重经 once（触发即摘）+ 上方残留先摘。
       if (reused !== true) {
         sock.once("connect", (sock.__reqSockOnConnect = () => {
+          // abort-then-end 形：abort 已销毁请求后连接才到——杀掉孤儿 socket，
+          // 不刷盘（abort-before-end 套件：否则服务端收到半截请求 RST，
+          // 回 ECONNRESET 进请求 error；且 server 必须零收到）。
+          if (this.destroyed) {
+            try { sock.destroy(); } catch { /* gone */ }
+            return;
+          }
           this.__connected = true;
           if (this.__pendingFinal) {
             // end() 已调：整事务一次刷出（CL 决策在 end 时已定），结果回终结
@@ -1742,6 +1749,10 @@ export function withClientRequest(openSocket, flavor) {
           this.__tryFlush();
         }));
         sock.once("secureConnect", (sock.__reqSockOnSecureConnect = () => {
+          if (this.destroyed) {
+            try { sock.destroy(); } catch { /* gone */ }
+            return;
+          }
           this.__connected = true;
           if (this.__pendingFinal) {
             this.__pendingFinal = false;

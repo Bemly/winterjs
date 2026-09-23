@@ -3509,3 +3509,18 @@ cargo build
   ERR_STREAM_DESTROYED 进回调（outgoing-destroy 套件，不同步抛）。
 - 推广为铁律：凡"错误 + 终结"双事件设计，排期必须独立（嵌套排即谋杀)——
   uncaught 的 throw 是控制流，会吞掉同回调内的一切后继。
+
+### 4.200 abort 与 destroy 的错误分流 + 孤儿连接守卫（2026-09-24，剩余轮）
+
+- 症状：`test-http-abort-before-end.js` 报 error（mustNotCall）——`req.abort()`
+  后 `req.end()` 走出 ECONNRESET；堆栈 `destroy ← abort`，错在 destroy 内合成。
+- 根因：`ClientRequest.destroy` 无响应即合成 ECONNRESET（abort-destroy 套件
+  要的），abort() 经同一 destroy 即误合成。abort-destroy 套件三段即铁证：
+  abort 中途无错 / destroy 中途（有响应）无错 / destroy 事前才 ECONNRESET。
+- 修法：合成门加 `__aborted !== true`（abort 恒先置旗），回池门同加
+  （abort 不回池）；connect/secureConnect 到达发现已销毁即杀孤儿 socket
+  不刷盘（abort 后连接才到形；否则半截请求 RST 回 ECONNRESET 且 server
+  零收到被破）。
+- 附带同批绿：client-abort3（同源 throw）。
+- 推广为铁律：凡 destroy 内合成错误的面，必须区分调用源（abort/signal/
+  用户 destroy/内部错误销毁）——合成是 destroy 的语义，不是 abort 的。

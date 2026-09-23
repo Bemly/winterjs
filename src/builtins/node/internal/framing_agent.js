@@ -1213,18 +1213,20 @@
       // 用户显式无错销毁（abort-destroy 套件语义分流用；内部错误销毁带 err）。
       const __clean = err === undefined || err === null;
       // node 口径：无响应即销毁 → ECONNRESET 'socket hang up'（abort-destroy
-      // 套件；有响应在途即静默；已发过错（__hadError）不重发）。
+      // 套件；有响应在途即静默；已发过错（__hadError）不重发）。abort() 来的
+      // 干净销毁不合成（abort-before-end 套件：abort 只发 'abort' 不发 error；
+      // abort 恒先置 __aborted 旗）。
       // super.destroy 会走 _destroy（清 socket + 补 'close'）。
-      if (__clean && !this.__hadError &&
+      if (__clean && !this.__hadError && this.__aborted !== true &&
           (this.__res === null || this.__res === undefined) && !this.__respDone) {
         const __e = new Error("socket hang up");
         __e.code = "ECONNRESET";
         err = __e;
       }
-      // node 口径：干净销毁（用户 destroy/abort，无 err）+ keepAlive + 无响应 →
+      // node 口径：干净销毁（用户 destroy，非 abort）+ keepAlive + 无响应 →
       // socket 留用回池（listeners-leak 套件：11 次即时销毁只建 1 连接）。
-      // 错误销毁照旧杀连接。标记由 _destroy/__attach 消费。
-      if (__clean &&
+      // abort 不回池（销毁即杀）；错误销毁照旧杀连接。标记由 _destroy/__attach 消费。
+      if (__clean && this.__aborted !== true &&
           this.agent !== null && this.agent !== undefined && this.agent.keepAlive === true &&
           (this.__res === null || this.__res === undefined) && !this.__respDone) {
         this.__poolOnDestroy = true;

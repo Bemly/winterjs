@@ -1437,6 +1437,33 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > >   head-throw 零回归）；黑盒
 > >   `tests/node/http/surface.rs::phase11_http_response_gates`。
 > > - **未竟**：response-cork（流控手术另单元）。
+>
+> ### G11 收尾轮（2026-09-23；AGENTS §4.193）
+>
+> > - **cork 面**：res.cork()/uncork() = 流机构 cork 滞留 + socket.cork()
+> >   镜像（writableCorked 双侧恒等）+ socket cork 真计数/writableCorked/
+> >   `_writableState` HWM 桩 + res 写机构 HWM 跟 socket 可写侧（drain-cork
+> >   的 1000 背压）+ end 强制全开（机构与 socket 双侧置 1 再 uncork）。
+> >   偏差：uncork 尾flush node 合并单帧、本仓逐块成帧（字节流恒等）。
+> > - **写粒度**：chunked 四发 hex/CRLF/体/CRLF（hex 不含 CRLF——双 CRLF 曾
+> >   致整流错位）+ 首发头拼 hex/体（_header prepend）+ 终结独立 + end 无数据
+> >   chunked 头拼终结一发；response-cork 的 socket.write spy 恰 5。
+> > - **uncaught 双向**：解析错（__parseErr 旗）走 destroy 通道、用户 throw
+> >   nextTick 重抛（response 监听 + request handler 双位；400 通道只收解析错）。
+> > - **小面**：`res._send('')` 冲头 + holdback 补帧；`sendDate=false` 不补
+> >   Date；ClientRequest options 入口 null-proto 拷贝；客户端响应头超限
+> >   静默截断（服务端维持 HPE 抛错）；客户端拒多 CL（HPE_UNEXPECTED_
+> >   CONTENT_LENGTH 'Duplicate Content-Length'）。
+> > - **转 SAME0**：response-cork/response-drain-cork/outgoing-end-cork/
+> >   uncaught-from-request-callback/test-http-1.0/null-prototype-options/
+> >   max-headers-count/response-multi-content-length（8 件）；
+> >   request-timeout-keepalive 实为绿（15s sweep alarm 误判，25s 双边绿）。
+> >   黑盒 `phase11_http_cork_faces` + `phase11_http_uncaught_throws`。
+> > - **残件定性**：drain-writable-length/outgoing-properties（outputData
+> >   记账 + writableLength 合成 getter）与 header-overflow/read-in-error
+> >   （socket.push）同根 → **net.Socket 写侧流式化 + eager-parse outgoing
+> >   队列**基建另轮；execPath spawn ~18（CLI 全 flag 铁律，需拍板）；
+> >   parser 内省 ~4（记档偏离）；余散件逐套件记档。
 
 ## https
 

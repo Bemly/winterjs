@@ -3322,3 +3322,46 @@ cargo build
   `tests/node/http/surface.rs::phase11_http_response_gates`。
 - 未竟：`response-cork`（cork 真缓冲 + socket 镜像计数 + end 排空三件，流控
   手术另单元）。
+
+### 4.193 G11 收尾轮：cork 面双 CRLF + uncaught 吞错 + 小面四件（2026-09-23，plan3 G11）
+
+- 坑一（chunk 帧双 CRLF，整条流错位）：`__frame` 粒度对齐真机 `_send` 链时
+  把尺寸行 hex 写成 `len + "\r\n"`、又独立发一个 `__CRLF`——每 chunk 尺寸行
+  后双 CRLF，客户端 chunked 解析整体错位（首 chunk 吞字节、后续 size 行全歪
+  → 400/静默 hang；同会话回环全灭而跨进程双向皆绿——真实 node 客户端当
+  裁判才定位到"流错位"而非"泵停摆"）。真机 `_send` 链：hex **不含 CRLF**
+  （`_send(len)` 后 `_send(crlf_buf)` 独立一发）。教训：对齐"写调用粒度"时
+  逐 send 核对字节内容，CRLF 属于哪一发要看真机 crlf_buf 的使用点。
+- 坑二（catch 一刀切吞用户 throw）：`__sockOnData` 的 catch 把一切异常
+  `destroy(e)`——用户 response 监听里的 throw 被吞成 req 销毁，uncaught
+  永不触发（uncaught-from-request-callback 套件 hang）；服务端
+  `emit("request")` 同病（handler throw 进 400 通道静默 hang，§4.189
+  deferred）。修法：解析错带旗（`__hpe` 加 `__parseErr`）走原 destroy 通道，
+  用户 throw `process.nextTick(() => { throw e; })` 重抛（tick 回调带
+  uncaught 路由，§4.188 坑八同源）。推广：吞错 catch 必须区分"实现内部错"
+  与"用户代码异常"，后者永远上抛——node 语义解析错走返回值通道、用户
+  throw 原样冒泡。
+- 坑三（options 原型链陷阱）：套件在 `Object.prototype` 装 getter 陷阱，
+  我们的 ClientRequest 直读用户 options 走原型链即触发；真机构造器入口
+  `ObjectAssign({__proto__: null}, input, options)` 先拷 null-proto 再读。
+  修法照抄（`Object.assign({ __proto__: null }, options)`——own 枚举拷贝
+  不触发原型 getter）。推广：对接外部 options 的 API，读属性前先 null-proto
+  拷贝隔离。
+- 坑四（同一解析器两种超限口径）：客户端响应头超限 = **静默截断**
+  （node parserOnHeaders "stop collecting"，maxHeaderPairs 上限后不再收集、
+  响应照常完成）；服务端请求超限 = 抛 HPE_HEADER_OVERFLOW 走 clientError。
+  `__parseHead` 加 `__trunc` 旗按调用方分流。教训：max-headers-count 套件
+  的 expected=20 就是截断口径的铁证，"抛错"与"截断"两套件各钉一面。
+- 坑五（sweep alarm 量纲误判"真机自挂"）：`server-request-timeout-keepalive`
+  套件 requestTimeout 5s × 1.5 defer，全程 ~18s——15s sweep alarm 双边掐死
+  被记成"真机自挂（node 142）"（§4.186 的误判）；25s alarm 实证双边绿。
+  推广：TIMEOUT 分类前先算套件自身时长（platformTimeout × 倍数 + 余量），
+  alarm 必须 ≥ 套件最坏时长；"真机自挂"结论必须换 alarm 档复核。
+- 本轮转 SAME0：response-cork / response-drain-cork / outgoing-end-cork
+  （cork 面三件：机构 cork 滞留 + socket 镜像计数 + end 强制全开 + 写粒度
+  对齐）/ uncaught-from-request-callback / test-http-1.0（_send 面 +
+  sendDate=false 不补 Date）/ null-prototype-options / max-headers-count
+  （客户端截断）/ response-multi-content-length（客户端拒多 CL，
+  HPE_UNEXPECTED_CONTENT_LENGTH 'Duplicate Content-Length'）。
+- 黑盒：`phase11_http_cork_faces`（镜像/背压/粒度/end 全开 10 断言）+
+  `phase11_http_uncaught_throws`（cli/srv 双向 throw 原文到 uncaught）。

@@ -182,7 +182,7 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 
 | 域 | 欠账簇 | 规模 | 性质 |
 |---|---|---|---|
-| http | TIMEOUT 簇（expect-continue/upgrade/trailer/管线背压/max-connections） | ~110→约63 TIMEOUT+100 DIFF（http-only；2026-09-22 G11：18 提交约40件转 SAME + 半开双杀 5 提交转 SAME 2 件（keep-alive-timeout/close-idle-wait-response），见 bun-parity http 节 G11 增量；残 drain-writable-length（outputData 另轮专项） + request-timeout-keepalive 真机自挂非回归） | 流式深化，与 10b 整收口径的接缝工程 |
+| http | TIMEOUT 簇（expect-continue/upgrade/trailer/管线背压/max-connections） | ~110→2026-09-23 G11 收尾轮（见下）；残：drain-writable-length/outgoing-properties（net.Socket 写侧流式化 + eager-parse outgoing 队列，两件同根基建另轮）+ socket.push ×2（同基建）+ execPath spawn ~18（CLI 全 flag 铁律冲突，需拍板）+ parser 内省 ~4（_http_common 面，记档偏离） | 流式深化，与 10b 整收口径的接缝工程 |
 | http | ~~校验长尾 / chunk 限深~~ ✅ 2026-09-19 转绿（G3 六提交：chunk 扩展 413/trailer 431/校验门 15 件/Agent createSocket/IPC socketPath/write-after-end 语义/FIN 半开收口，点名 45 件 SAME0；余 OutgoingMessage outputData 缓冲模型 5 件**出局另轮专项**、假 socket socket.push 2 件需 net 流式化、TIMEOUT 110 归下行） | ~35→5 件 | 已收官，残件另案 |
 | http2 | compat 层 `Http2ServerRequest/Response` 全流面 | ~105 件 | 最大单体簇，与 10b 同型工程 |
 | http2 | server 流面 / settings/priority/ALPN 校验 | ~15 件 | 随 compat 轮 |
@@ -308,6 +308,22 @@ server timeout 进门 + socket HWM 65536 + 基类 setTimeout + req.protocol +
 附带 response 双件（write-after-end 拦截 + 状态码门注册）：res-write-after-end/
 response-statuscode 转 SAME0 + 黑盒 `phase11_http_response_gates`；
 AGENTS §4.192；未竟 response-cork（另单元）。
+
+**2026-09-23 G11 收尾轮收官**：7 提交（cork 面 / uncaught 双向 / 小面四件 /
+multi-CL；§4.193）。cork 三件套（response-cork/drain-cork/outgoing-end-cork）+
+uncaught-from-request-callback + test-http-1.0 + null-prototype-options +
+max-headers-count + response-multi-content-length 转 SAME0；request-timeout-
+keepalive 实为绿（15s sweep alarm 误判"真机自挂"，25s 实证双边绿——§4.193 坑五）。
+黑盒 `phase11_http_cork_faces` + `phase11_http_uncaught_throws` + http 域 25/25 +
+node 域 278/278 + 冒烟 5/5。**残件全部定性**：drain-writable-length +
+outgoing-properties（outputData 记账 + writableLength 合成 getter）与
+header-overflow/read-in-error（socket.push）同根——需 **net.Socket 写侧
+流式化**（socket 层写队列/HWM/drain）+ **eager-parse outgoing 队列**
+（管线请求立即建 res、无 socket 排队），基建轮另案；execPath spawn ~18 件
+（套件 spawn process.execPath 裸脚本 vs CLI 全 flag 铁律 §0.8，需拍板）；
+parser 内省 ~4（_http_common parser.initialize/onIncoming 面，记档偏离）；
+余散件（async_hooks 资源面/domain 集成/Atomics.wait/process.report/
+optimize-empty-requests 等）逐套件记 bun-parity。
 
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 

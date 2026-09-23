@@ -520,6 +520,22 @@
         this.__holdTimer = null;
       }
       if (this.agent !== null) this.agent.__cancel(this);
+      // node 口径：请求 error 即摘 socket data/end 请求级监听（agent 的
+      // onReadableStreamEnd 保留；client-parse-error 套件 data=0/end=1）。
+      // 正常 destroy（无 err）不动。
+      if (err !== undefined && err !== null && this.__sock !== null) {
+        try {
+          const __s = this.__sock;
+          if (__s.__reqSockOnData !== undefined) {
+            try { __s.removeListener("data", __s.__reqSockOnData); } catch { /* gone */ }
+            __s.__reqSockOnData = undefined;
+          }
+          if (__s.__reqSockOnEnd !== undefined) {
+            try { __s.removeListener("end", __s.__reqSockOnEnd); } catch { /* gone */ }
+            __s.__reqSockOnEnd = undefined;
+          }
+        } catch { /* gone */ }
+      }
       // 响应同销（Node：destroy 中止整个事务；否则 res 永不完结，
       // 挂在它上面的收尾——如 server.close()——永不到）。
       if (this.__res !== null && !this.__res.complete) {
@@ -552,7 +568,22 @@
       while (true) {
         if (this.__res === null) {
           const headEnd = __findHeadEnd(this.__resBuf);
-          if (headEnd === -1) return;
+          if (headEnd === -1) {
+            // node llhttp 增量语义：版本首字节即判（'bad http...' 无 CRLF 也
+            // 即时 HPE_INVALID_CONSTANT，不等 FIN；client-parse-error 套件）。
+            // 合法响应恒 'H' 开头，前导空行跳过后非 H 即错（分包安全：首字节
+            // 不可能后变）。
+            if (this.insecureHTTPParser !== true) {
+              let __i = 0;
+              const __b = this.__resBuf;
+              while (__i + 1 < __b.length && __b[__i] === 13 && __b[__i + 1] === 10) __i += 2;
+              if (__i < __b.length && __b[__i] !== 72) {
+                this.destroy(__hpe("HPE_INVALID_CONSTANT", "Expected HTTP/, RTSP/ or ICE/"));
+                return;
+              }
+            }
+            return;
+          }
           const headText = __latin1(this.__resBuf.slice(0, headEnd));
           if (this.insecureHTTPParser !== true && __hasBareCR(headText)) {
             this.destroy(__hpe("HPE_LF_EXPECTED", "Expected LF after CR"));
@@ -560,7 +591,7 @@
           }
           const { first, headers, rawHeaders, headersDistinct } = __parseHead(headText, this.__inboundMode ?? (this.insecureHTTPParser === true ? "lenient" : "strict"), this.maxHeadersCount, true, this.parser !== undefined && this.parser !== null && this.parser.joinDuplicateHeaders === true);
           if (!first[0].startsWith("HTTP/") || !/^\d{3}$/.test(first[1] ?? "")) {
-            this.destroy(__hpe("HPE_INVALID_CONSTANT", "invalid HTTP response line"));
+            this.destroy(__hpe("HPE_INVALID_CONSTANT", "Expected HTTP/, RTSP/ or ICE/"));
             return;
           }
           // node llhttp strict：TE 与 CL 并存即拒（client-reject-chunked-with-

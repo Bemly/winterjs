@@ -1510,6 +1510,16 @@ export function withClientRequest(openSocket, flavor) {
       // 必须先于本函数的一切注册，否则会把刚挂的监听当残留摘掉。
       // node 口径 attach 换装四件——socketOnEnd/socketErrorListener/
       // socketCloseListener/socketOnData + 池态 freeSocketErrorListener。
+      // connect/secureConnect 同摘（复用不再挂，timeout-connect-listener
+      // 套件计数恒 0；once 触发后自摘，此处清未触发残留）。
+      if (sock.__reqSockOnConnect !== undefined) {
+        try { sock.removeListener("connect", sock.__reqSockOnConnect); } catch { /* gone */ }
+        sock.__reqSockOnConnect = undefined;
+      }
+      if (sock.__reqSockOnSecureConnect !== undefined) {
+        try { sock.removeListener("secureConnect", sock.__reqSockOnSecureConnect); } catch { /* gone */ }
+        sock.__reqSockOnSecureConnect = undefined;
+      }
       if (sock.__reqSockOnEnd !== undefined) {
         try { sock.removeListener("end", sock.__reqSockOnEnd); } catch { /* gone */ }
       }
@@ -1576,27 +1586,32 @@ export function withClientRequest(openSocket, flavor) {
           }
         });
       }
-      sock.on("connect", (sock.__reqSockOnConnect = () => {
-        this.__connected = true;
-        if (this.__pendingFinal) {
-          // end() 已调：整事务一次刷出（CL 决策在 end 时已定）。
-          this.__pendingFinal = false;
-          this.__flushFinal();
-          return;
-        }
-        // node _flush 口径：连通即发头（无体请求——如 Expect: 100-continue
-        // 等 continue 的形态——头也必须立即出网）。
-        this.__tryFlush();
-      }));
-      sock.on("secureConnect", (sock.__reqSockOnSecureConnect = () => {
-        this.__connected = true;
-        if (this.__pendingFinal) {
-          this.__pendingFinal = false;
-          this.__flushFinal();
-          return;
-        }
-        this.__tryFlush();
-      }));
+      // node 口径：connect/secureConnect 换装监听只挂给新连接（复用已连通，
+      // 再挂即残留累积——timeout-connect-listener 套件断言复用后计数 0）。
+      // 去重经 once（触发即摘）+ 上方残留先摘。
+      if (reused !== true) {
+        sock.once("connect", (sock.__reqSockOnConnect = () => {
+          this.__connected = true;
+          if (this.__pendingFinal) {
+            // end() 已调：整事务一次刷出（CL 决策在 end 时已定）。
+            this.__pendingFinal = false;
+            this.__flushFinal();
+            return;
+          }
+          // node _flush 口径：连通即发头（无体请求——如 Expect: 100-continue
+          // 等 continue 的形态——头也必须立即出网）。
+          this.__tryFlush();
+        }));
+        sock.once("secureConnect", (sock.__reqSockOnSecureConnect = () => {
+          this.__connected = true;
+          if (this.__pendingFinal) {
+            this.__pendingFinal = false;
+            this.__flushFinal();
+            return;
+          }
+          this.__tryFlush();
+        }));
+      }
       const __sockOnData = (chunk) => {
         try {
           this.__onSockData(chunk);

@@ -169,10 +169,14 @@ function __hasBareCR(headText) {
 }
 
 // 客户端解析错（node llhttp 口径）：message 'Parse Error: ...' + HPE_* 码
-//（client-reject-* 套件断言 err.code 与 /^Parse Error/）。
+//（client-reject-* 套件断言 err.code 与 /^Parse Error/）。__parseErr 旗供
+// __sockOnData 区分解析错（→ req destroy+error）与用户回调 throw（→ 重抛，
+// uncaught-from-request-callback 套件：response 监听 throw 须到
+// uncaughtException，node 解析错走返回值通道、用户 throw 原样上抛）。
 function __hpe(code, msg) {
   const e = new Error(`Parse Error: ${msg}`);
   e.code = code;
+  e.__parseErr = true;
   return e;
 }
 
@@ -807,7 +811,13 @@ export function withHttpServer(Base) {
           st.buf = st.buf.slice(headEnd + 4);
           if (__wired) {
             // §4.35：先 emit("request")（监听器登记 data/end），再喂体。
-            this.emit(__ev, req, res);
+            // 用户 handler throw 不进 400 通道（node：原样上抛到 uncaught——
+            // handler-throw 真机 crash；旧"400+静默 hang"系伪语义）。
+            try {
+              this.emit(__ev, req, res);
+            } catch (e) {
+              process.nextTick(() => { throw e; });
+            }
           } else {
             // 417 默认路径：响应立即收尾；后续体字节走丢弃泵（st.req 为 null）。
             res.end();
@@ -1317,8 +1327,12 @@ export function withClientRequest(openSocket, flavor) {
         try {
           this.__onSockData(chunk);
         } catch (e) {
-          // node 口径：响应头解析错（严格门）→ req 'error'（经 destroy(err)）。
-          this.destroy(e);
+          // node 口径：响应头解析错（严格门）→ req 'error'（经 destroy(err)）；
+          // 用户回调 throw（emit('response') 里的监听异常）不得吞——重抛到
+          // uncaught 通道（node 解析错走返回值通道、用户 throw 原样上抛；
+          // uncaught-from-request-callback 套件：uncaughtException mustCall 1）。
+          if (e !== null && typeof e === "object" && e.__parseErr === true) this.destroy(e);
+          else process.nextTick(() => { throw e; });
         }
       };
       sock.on("data", __sockOnData);

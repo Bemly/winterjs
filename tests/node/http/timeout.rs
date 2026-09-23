@@ -654,3 +654,69 @@ console.log("cork-done");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_http_uncaught_throws() {
+    // 用户回调 throw 路由（uncaught-from-request-callback 套件 + handler-throw
+    // 真机 crash 口径）：客户端 response 监听 throw 与服务端 request handler
+    // throw 均须到 uncaughtException（原文 message），不吞、不 hang、不进
+    // 400 通道；uncaughtException 处理器在场即 server.close() 干净退出。
+    // 正常（抛+接）+ 边界（抛后退出码）两件。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r##"
+import http from "node:http";
+
+// 1) 客户端 response 监听 throw → uncaughtException（原文）。
+{
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end();
+  });
+  process.once("uncaughtException", (e) => {
+    console.log("cli-uncaught", e.message);
+    server.close();
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const req = http.get({ host: "localhost", port: server.address().port }, (res) => {
+    res.resume();
+    throw new Error("whoah");
+  });
+  process.once("uncaughtException", () => {
+    req.destroy();
+    server.closeAllConnections();
+  });
+  await new Promise((r) => setTimeout(r, 100));
+}
+// 2) 服务端 request handler throw → uncaughtException（真机 crash 口径，
+//   处理器在场则接住；客户端无响应可收）。
+{
+  const server = http.createServer((req, res) => {
+    throw new Error("handler-throw");
+  });
+  process.once("uncaughtException", (e) => {
+    console.log("srv-uncaught", e.message);
+    server.close();
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const req2 = http.get({ port: server.address().port }, () => {});
+  process.once("uncaughtException", () => {
+    req2.destroy();
+    server.closeAllConnections();
+  });
+  await new Promise((r) => setTimeout(r, 100));
+}
+console.log("uncaught-done");
+"##,
+    );
+    for tag in [
+        "cli-uncaught whoah",
+        "srv-uncaught handler-throw",
+        "uncaught-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}

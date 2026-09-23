@@ -177,7 +177,9 @@ pub unsafe extern "C" fn net_connect(
     let cmd_rx = state::net_socket_add(id, target);
     set_rval_str(&mut cx, &frame, &id.to_string());
     // 第4参 noDelay（http agent 默认 true；Node net 默认 false；tokio set_nodelay 零依赖）。
-    let no_delay = frame.argc() > 3 && frame.arg(3).is_boolean() && frame.arg(3).to_boolean();
+    // 源 bind 在场时 noDelay 后移到第 5 参（client-adopt/源地址面既有约定）。
+    let no_delay = (frame.argc() > 3 && frame.arg(3).is_boolean() && frame.arg(3).to_boolean())
+        || (frame.argc() > 4 && frame.arg(4).is_boolean() && frame.arg(4).to_boolean());
     // client-adopt 源 path（frame.arg(3) 非空串即 bind 本端；frame.arg(4) 布尔 noDelay 占位后移）。
     // 真机语义：new Socket({handle: srcBound}) + connect({path: dst}) 时本端 bind src（SO_REUSEADDR 式覆盖）。
     let src_bind: Option<String> = if frame.argc() > 3 && frame.arg(3).is_string() {
@@ -258,7 +260,7 @@ pub unsafe extern "C" fn net_connect(
         return true;
     }
     handle.spawn(async move {
-        match tcp_connect_resolved(host.as_str(), port as u16).await {
+        match tcp_connect_resolved(host.as_str(), port as u16, src_bind.as_deref()).await {
             Err((code, msg)) => {
                 let _ = ev_tx.send(NetEvent {
                     id,
@@ -284,6 +286,7 @@ pub unsafe extern "C" fn net_connect(
 pub(crate) async fn tcp_connect_resolved(
     host: &str,
     port: u16,
+    src: Option<&str>,
 ) -> Result<tokio::net::TcpStream, (String, String)> {
     // DNS 先解（dns-error 套件）：阻塞调用走 spawn_blocking。
     let resolved: Vec<std::net::SocketAddr> = match tokio::task::spawn_blocking({
@@ -302,10 +305,35 @@ pub(crate) async fn tcp_connect_resolved(
         }
     };
     // 逐个试连（首个成功即停；全败取末错——tokio connect 同语义）。
+    // 源地址 bind（localaddress 套件）：有 src 即按目标族建 sock 预 bind，
+    // 族不配即跳过该地址；bind 失败按连接错出。
+    let src_ip: Option<std::net::IpAddr> = src.and_then(|s| s.parse().ok());
     let mut last_err: Option<std::io::Error> = None;
     for addr in resolved {
-        match tokio::net::TcpStream::connect(addr).await {
-            Ok(s) => return Ok(s),
+        let res = if let Some(src_ip) = src_ip {
+            use tokio::net::TcpSocket as _;
+            let v6 = matches!(src_ip, std::net::IpAddr::V6(_));
+            let tv6 = matches!(addr.ip(), std::net::IpAddr::V6(_));
+            if v6 != tv6 {
+                continue;
+            }
+            let sock = if v6 {
+                tokio::net::TcpSocket::new_v6()
+            } else {
+                tokio::net::TcpSocket::new_v4()
+            };
+            match sock {
+                Ok(s) => match s.bind(std::net::SocketAddr::new(src_ip, 0)) {
+                    Ok(()) => s.connect(addr).await.map_err(|e| e),
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e),
+            }
+        } else {
+            tokio::net::TcpStream::connect(addr).await
+        };
+        match res {
+            Ok(stream) => return Ok(stream),
             Err(e) => {
                 last_err = Some(e);
             }

@@ -1156,15 +1156,30 @@ export class ServerResponse extends Writable {
       }
       return false;
     }
+    // node 口径 strictContentLength（content-length-mismatch 套件）：显式 CL +
+    // 严格旗即超写同步抛 ERR_HTTP_CONTENT_LENGTH_MISMATCH（校验在记账/落盘前，
+    // 抛错不污染计数）。
+    if (chunk !== undefined && chunk !== null) {
+      const __cl = this.__strictCL();
+      if (__cl !== null) {
+        const __len = chunk instanceof Uint8Array ? chunk.length : __toU8(String(chunk)).length;
+        if ((this.__clWritten ?? 0) + __len > __cl) {
+          throw new codes.ERR_HTTP_CONTENT_LENGTH_MISMATCH((this.__clWritten ?? 0) + __len, __cl);
+        }
+      }
+    }
     // 写时记账（writableLength 精确字节，见 __countOut）：write 包装层同步计
     // （流机构异步派发 _write，_write 时机计数会漏同步读——outgoing-properties
     // 套件连写两行后同步读）；end 块由 end 包装层计，_write 内不计（防双计）。
     // socket bytesWritten 同步预测（byteswritten 套件）：__wlen 增量同步到
     // socket pending（落盘 __sockWrite 核销、_final 兜底清零）。
+    // 严格 CL 体计数同行累加（上已校验不超，此处只落账）。
     if (chunk !== undefined && chunk !== null) {
       try {
+        const __u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk));
+        if (this.__strictCL() !== null) this.__clWritten = (this.__clWritten ?? 0) + __u8.length;
         const __before = this.__wlen ?? 0;
-        this.__countOut(chunk instanceof Uint8Array ? chunk : __toU8(String(chunk)));
+        this.__countOut(__u8);
         const __d = (this.__wlen ?? 0) - __before;
         if (__d > 0 && this.__sock !== null && typeof this.__sock.__bwAdd === "function") {
           this.__sock.__bwAdd(__d);
@@ -1172,6 +1187,15 @@ export class ServerResponse extends Writable {
       } catch { /* 计数永不阻写 */ }
     }
     return super.write(chunk, encoding, cb);
+  }
+  // node 口径 strictContentLength 有效 CL（content-length-mismatch 套件）：
+  // 严格旗 + 用户显式 CL（自动补的不算，__headerNames 有名才算）→ 数值，
+  // 否则 null（不 enforcement）。
+  __strictCL() {
+    if (this.strictContentLength !== true) return null;
+    if (this.__headerNames === undefined || this.__headerNames["content-length"] === undefined) return null;
+    const __n = Number(this.__headers["content-length"]);
+    return Number.isFinite(__n) && __n >= 0 ? __n : null;
   }
   // node 口径（head-throw 套件）：1xx/204/304/HEAD 为无体响应（writeHead 置
   // __noBody/方法置 __headOnly；writeHead 前按 statusCode 活读）。
@@ -1228,14 +1252,31 @@ export class ServerResponse extends Writable {
     this.headersSent = true;
     this.__endHadData = chunk !== undefined && chunk !== null && typeof chunk !== "function";
     this.__userEnded = true;
+    // node 口径 strictContentLength（content-length-mismatch 套件）：end 块超
+    // 即同步抛；收尾不足（累计 < CL）同样同步抛。校验在落盘前。
+    if (this.__endHadData || this.__strictCL() !== null) {
+      const __cl = this.__strictCL();
+      if (__cl !== null) {
+        const __add = this.__endHadData
+          ? (chunk instanceof Uint8Array ? chunk.length : __toU8(String(chunk)).length) : 0;
+        const __total = (this.__clWritten ?? 0) + __add;
+        if (__total !== __cl) {
+          this.__endHadData = false;
+          this.__userEnded = false;
+          throw new codes.ERR_HTTP_CONTENT_LENGTH_MISMATCH(__total, __cl);
+        }
+      }
+    }
     try {
       const __r = super.end(chunk, encoding, cb);
       // end 块同步记账（流 end 经内部 _write 直调，不走 write 包装层，此处补计；
-      // socket pending 同上）。
+      // socket pending 同上；严格 CL 体计数同步累加）。
       if (this.__endHadData) {
         try {
+          const __u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk));
+          if (this.__strictCL() !== null) this.__clWritten = (this.__clWritten ?? 0) + __u8.length;
           const __before = this.__wlen ?? 0;
-          this.__countOut(chunk instanceof Uint8Array ? chunk : __toU8(String(chunk)));
+          this.__countOut(__u8);
           const __d = (this.__wlen ?? 0) - __before;
           if (__d > 0 && this.__sock !== null && typeof this.__sock.__bwAdd === "function") {
             this.__sock.__bwAdd(__d);

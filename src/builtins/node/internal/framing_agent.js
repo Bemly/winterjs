@@ -561,18 +561,45 @@
       if (this.__res !== null && this.__res !== undefined && !this.__res.complete) {
         try { this.__res.destroy(); } catch { /* already gone */ }
       }
-      if (this.__sock !== null) {
+      if (this.__sock !== null && this.__sock !== undefined) {
         if (this.__onSockClose !== null) {
           try { this.__sock.removeListener("close", this.__onSockClose); } catch { /* closed meanwhile */ }
         }
-        // capture-rejection 套件：同服务端，destroy(err) 有 error 监听才带
-        // err 透传（经 __reqSockOnError 回 req 'error'）。
-        try {
-          const __s = this.__sock;
-          if (err !== undefined && err !== null && typeof __s.listenerCount === "function" && __s.listenerCount("error") > 0) __s.destroy(err);
-          else __s.destroy();
-        } catch { /* closed meanwhile */ }
-        this.__sock = null;
+        const __s = this.__sock;
+        // node 口径：__poolOnDestroy 标记 + socket 存活 + 干净（零收发——已发包
+        // 的超时/中断销毁照旧杀连接，t1 超时形）→ 摘请求级监听后回池
+        //（listeners-leak 套件；不销毁，防监听泄漏；error 照常经 cb 递送）。
+        const __pristine = ((__s.bytesWritten ?? 0) === 0) && ((__s.bytesRead ?? 0) === 0);
+        if (this.__poolOnDestroy === true && !__s.destroyed && __pristine &&
+            this.agent !== null && this.agent !== undefined) {
+          this.__poolOnDestroy = false;
+          try {
+            if (__s.__reqSockOnEnd !== undefined) { try { __s.removeListener("end", __s.__reqSockOnEnd); } catch {} __s.__reqSockOnEnd = undefined; }
+            if (__s.__reqSockOnError !== undefined) { try { __s.removeListener("error", __s.__reqSockOnError); } catch {} __s.__reqSockOnError = undefined; }
+            if (__s.__reqSockOnClose !== undefined) { try { __s.removeListener("close", __s.__reqSockOnClose); } catch {} __s.__reqSockOnClose = undefined; }
+            if (__s.__reqSockOnData !== undefined) { try { __s.removeListener("data", __s.__reqSockOnData); } catch {} __s.__reqSockOnData = undefined; }
+            if (__s.__freeSockErr !== undefined) { try { __s.removeListener("error", __s.__freeSockErr); } catch {} }
+            __s.__freeSockErr = function freeSocketErrorListener(err) {
+              this.destroy();
+              this.emit("agentRemove");
+            };
+            __s.on("error", __s.__freeSockErr);
+          } catch { /* 摘除失败即回落销毁 */ }
+          this.__sock = null;
+          if (this.__poolKey !== undefined) {
+            try { this.agent.__release(__s, this.__poolKey, this, true); } catch { /* gone */ }
+          } else {
+            try { __s.destroy(); } catch { /* gone */ }
+          }
+        } else {
+          // capture-rejection 套件：同服务端，destroy(err) 有 error 监听才带
+          // err 透传（经 __reqSockOnError 回 req 'error'）。
+          try {
+            if (err !== undefined && err !== null && typeof __s.listenerCount === "function" && __s.listenerCount("error") > 0) __s.destroy(err);
+            else __s.destroy();
+          } catch { /* closed meanwhile */ }
+          this.__sock = null;
+        }
       }
       cb(err);
       if (!this.__closeEmitted) {
@@ -871,9 +898,6 @@
         if (fr.type === "none") {
           this.__res.__complete();
           this.__finishResponse(false);
-          // node 口径：响应收齐即请求终结（end-close-event 套件：res 'end' 时
-          // req.destroyed 已 true；静默销毁，有响应不合成 error）。
-          if (!this.destroyed) { try { this.destroy(); } catch { /* gone */ } }
           return;
         }
         if (fr.type === "close") {
@@ -898,8 +922,6 @@
         if (r.trailersRaw !== undefined) __applyTrailers(this.__res, r.trailersRaw);
         this.__res.__complete();
         this.__finishResponse(false);
-        // node 口径：同上，体收齐即终结请求。
-        if (!this.destroyed) { try { this.destroy(); } catch { /* gone */ } }
         return;
       }
     }
@@ -922,6 +944,14 @@
       this.__res.once("end", __once);
       this.__res.once("close", __once);
       this.__gateOnce = __once;
+      // node 口径：响应 end 发射前请求已终结（end-close-event 套件 res-end
+      // 回调内 destroyed 已 true；data 时点仍可用 abort——destroy 不得早于
+      // end）。prepend 抢在用户 end 监听前；静默销毁。
+      if (typeof this.__res.prependListener === "function") {
+        this.__res.prependListener("end", () => {
+          if (!this.destroyed) { try { this.destroy(); } catch { /* gone */ } }
+        });
+      }
     }
     __finishSock(sock) {
       if (sock === null || sock.destroyed) return;
@@ -1047,14 +1077,24 @@
     }
     destroy(err) {
       if (this.destroyed) return this;
+      // 用户显式无错销毁（abort-destroy 套件语义分流用；内部错误销毁带 err）。
+      const __clean = err === undefined || err === null;
       // node 口径：无响应即销毁 → ECONNRESET 'socket hang up'（abort-destroy
       // 套件；有响应在途即静默；已发过错（__hadError）不重发）。
       // super.destroy 会走 _destroy（清 socket + 补 'close'）。
-      if ((err === undefined || err === null) && !this.__hadError &&
+      if (__clean && !this.__hadError &&
           (this.__res === null || this.__res === undefined) && !this.__respDone) {
         const __e = new Error("socket hang up");
         __e.code = "ECONNRESET";
         err = __e;
+      }
+      // node 口径：干净销毁（用户 destroy/abort，无 err）+ keepAlive + 无响应 →
+      // socket 留用回池（listeners-leak 套件：11 次即时销毁只建 1 连接）。
+      // 错误销毁照旧杀连接。标记由 _destroy/__attach 消费。
+      if (__clean &&
+          this.agent !== null && this.agent !== undefined && this.agent.keepAlive === true &&
+          (this.__res === null || this.__res === undefined) && !this.__respDone) {
+        this.__poolOnDestroy = true;
       }
       return super.destroy(err);
     }

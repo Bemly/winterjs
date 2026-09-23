@@ -1462,6 +1462,31 @@ export function withClientRequest(openSocket, flavor) {
     }
     __attach(sock, reused) {
       if (this.destroyed) {
+        // node 口径：销毁后到达的连接按 __poolOnDestroy 标记回池（listeners-leak
+        // 套件；连接中销毁不断连），否则销毁。回池要求干净（零收发）。
+        const __pristine = ((sock.bytesWritten ?? 0) === 0) && ((sock.bytesRead ?? 0) === 0);
+        if (this.__poolOnDestroy === true && !sock.destroyed && __pristine &&
+            this.agent !== null && this.agent !== undefined) {
+          this.__poolOnDestroy = false;
+          try {
+            if (sock.__reqSockOnEnd !== undefined) { try { sock.removeListener("end", sock.__reqSockOnEnd); } catch {} sock.__reqSockOnEnd = undefined; }
+            if (sock.__reqSockOnError !== undefined) { try { sock.removeListener("error", sock.__reqSockOnError); } catch {} sock.__reqSockOnError = undefined; }
+            if (sock.__reqSockOnClose !== undefined) { try { sock.removeListener("close", sock.__reqSockOnClose); } catch {} sock.__reqSockOnClose = undefined; }
+            if (sock.__reqSockOnData !== undefined) { try { sock.removeListener("data", sock.__reqSockOnData); } catch {} sock.__reqSockOnData = undefined; }
+            if (sock.__freeSockErr !== undefined) { try { sock.removeListener("error", sock.__freeSockErr); } catch {} }
+            sock.__freeSockErr = function freeSocketErrorListener(err) {
+              this.destroy();
+              this.emit("agentRemove");
+            };
+            sock.on("error", sock.__freeSockErr);
+          } catch { /* 摘除失败即回落销毁 */ }
+          if (this.__poolKey !== undefined) {
+            try { this.agent.__release(sock, this.__poolKey, this, true); } catch { /* gone */ }
+          } else {
+            try { sock.destroy(); } catch { /* closed meanwhile */ }
+          }
+          return;
+        }
         try { sock.destroy(); } catch { /* closed meanwhile */ }
         return;
       }

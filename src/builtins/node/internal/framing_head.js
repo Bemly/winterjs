@@ -44,6 +44,29 @@ export const METHODS = ["ACL", "BIND", "CHECKOUT", "CONNECT", "COPY", "DELETE", 
   "PUT", "QUERY", "REBIND", "REPORT", "SEARCH", "SOURCE", "SUBSCRIBE", "TRACE",
   "UNBIND", "UNLINK", "UNLOCK", "UNSUBSCRIBE"];
 export const maxHeaderSize = 16384;
+// node 口径默认头限动态值（max-header-size 套件）：CLI 兼容旗
+// `--max-http-header-size=N`（=值/空格两形，见 cli::strip_node_compat_args）
+// 覆写缺省；非法值回落 16384。http.maxHeaderSize 经 __api getter 同源。
+export function __defaultMaxHeaderSize() {
+  try {
+    const __compat = globalThis.__wjs_nodeCompat;
+    if (Array.isArray(__compat)) {
+      for (let __i = 0; __i < __compat.length; __i++) {
+        const __t = String(__compat[__i]);
+        let __v = null;
+        // "--max-http-header-size=" 长 23（2 横杠 + 20 名 + 1 等号）。
+        if (__t.startsWith("--max-http-header-size=")) __v = __t.slice(23);
+        else if (__t === "--max-http-header-size" && __i + 1 < __compat.length) __v = String(__compat[__i + 1]);
+        if (__v !== null) {
+          const __n = Number(__v);
+          if (Number.isFinite(__n) && __n >= 0) return __n;
+          return maxHeaderSize;
+        }
+      }
+    }
+  } catch { /* 环境不可读即缺省 */ }
+  return maxHeaderSize;
+}
 
 function __concat(a, b) {
   if (a.length === 0) return b;

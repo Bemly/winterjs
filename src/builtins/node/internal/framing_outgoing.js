@@ -1178,6 +1178,37 @@ export function withClientRequest(openSocket, flavor) {
       // node 口径：maxHeadersCount 缺省 null（不限），响应解析前可改写
       // （max-headers-count 套件：构造后赋值截断接收头数）。
       this.maxHeadersCount = null;
+      // node 口径 signal（agent-abort-controller 套件）：live 即挂单 abort 监听
+      //（listenerCount 恰 1；同步挂载），abort 即 AbortError 进 error；预 abort
+      // 即异步 error（不挂监听，计数 0）。收尾摘除。
+      if (options !== null && typeof options === "object" && !(options instanceof URL) &&
+          options.signal !== undefined && options.signal !== null) {
+        const __sig = options.signal;
+        const __abortErr = () => {
+          const e = new Error("This operation was aborted");
+          e.name = "AbortError";
+          e.code = "ABORT_ERR";
+          return e;
+        };
+        if (__sig.aborted === true) {
+          queueMicrotask(() => { if (!this.destroyed) this.destroy(__abortErr()); });
+        } else if (typeof __sig.addEventListener === "function") {
+          const __onAbort = () => {
+            try { __sig.removeEventListener("abort", __onAbort); } catch { /* gone */ }
+            try { __etRemove(__sig, "abort", __onAbort); } catch { /* gone */ }
+            this.__sigCleanup = null;
+            if (!this.destroyed) this.destroy(__abortErr());
+          };
+          try {
+            __sig.addEventListener("abort", __onAbort, { once: true });
+            __etAdd(__sig, "abort", __onAbort);
+            this.__sigCleanup = () => {
+              try { __sig.removeEventListener("abort", __onAbort); } catch { /* gone */ }
+              try { __etRemove(__sig, "abort", __onAbort); } catch { /* gone */ }
+            };
+          } catch { /* 异形 signal 即忽略（未定口径） */ }
+        }
+      }
       // node 口径 maxHeaderSize（缺省 16384；max-header-size-per-stream 套件
       // 客户端逐流覆写）。
       if (options !== null && typeof options === "object" && !(options instanceof URL) &&

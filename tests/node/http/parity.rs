@@ -474,3 +474,71 @@ console.log("wllen-done");
     dir.close().unwrap();
 }
 
+#[test]
+fn phase11_http_pipelined_outgoing_queue_faces() {
+    // 基建轮 Slice B2：eager-parse 管线队列（后继 res.socket null + 写停靠 +
+    // 前响 finish 即 assignSocket 轮转 + drain 递延至落盘清零）。正常（null/
+    // 回压/drain 零值/双体有序）三件套。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createServer } from "node:http";
+import net from "node:net";
+
+await new Promise((resolve) => {
+  let step = 0;
+  let done = false;
+  const finish = () => { if (!done) { done = true; resolve(); } };
+  const server = createServer((req, res) => {
+    step++;
+    if (step === 1) {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      setTimeout(() => res.end("one"), 50);
+      return;
+    }
+    console.log("q-socknull", res.socket === null);
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    const chunk = Buffer.alloc(16 * 1024, "x");
+    while (res.write(chunk));
+    console.log("q-needDrain", res.writableNeedDrain === true);
+    res.on("drain", () => {
+      console.log("q-drain-len", res.writableLength === 0);
+      res.end();
+      server.close(finish);
+    });
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const port = server.address().port;
+    const client = net.connect(port);
+    let buf = "";
+    client.on("data", (c) => (buf += c.toString()));
+    client.on("close", () => {
+      console.log("q-bodies", buf.includes("one") && buf.includes("xxxxxxxxxxxxxxxx"));
+      finish();
+    });
+    client.on("error", () => {});
+    client.write(
+      `GET /1 HTTP/1.1\r\nHost: localhost:${port}\r\n\r\n` +
+      `GET /2 HTTP/1.1\r\nHost: localhost:${port}\r\n\r\n`,
+    );
+    client.resume();
+    setTimeout(() => { try { client.destroy(); } catch {} finish(); }, 8000);
+  });
+});
+console.log("queuedone");
+"#,
+    );
+    for tag in [
+        "q-socknull true",
+        "q-needDrain true",
+        "q-drain-len true",
+        "q-bodies true",
+        "queuedone",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}
+

@@ -44,9 +44,17 @@ fn main() {
     // 两遍 argv 扫描（`i18n::prescan` 定语言 + clap 正式解析）是刻意设计：
     // clap 的 help 文本在解析前就要定死，不存在单遍解法。
     i18n::init_from_argv();
+    // Node 兼容旗预处理（测试套件 common.js 自举 respawn / 子进程自举透传）：
+    // 剥除 + 记录（execArgv 保真），裸文件条件补 --run。见 cli::strip_node_compat_args。
+    let compat_argv = {
+        let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        let (filtered, stripped) = cli::strip_node_compat_args(&raw);
+        builtins::node::process_::record_node_compat(stripped);
+        filtered
+    };
     let cli = {
         let m = cli::localized_command()
-            .try_get_matches_from(std::env::args_os())
+            .try_get_matches_from(compat_argv)
             .unwrap_or_else(|e| e.exit());
         Cli::from_arg_matches(&m).unwrap_or_else(|e| e.exit())
     };

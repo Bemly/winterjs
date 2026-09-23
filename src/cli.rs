@@ -349,3 +349,101 @@ fn tr_or(key: &str, original: &str) -> String {
     let hit = rust_i18n::t!(key).to_string();
     if hit == key { original.to_string() } else { hit }
 }
+
+/// Node 兼容旗（node 测试套件 `common.js` 自举 respawn / 子进程自举透传的
+/// node 运行时旗）。winterjs 无同名动作：解析前剥除（`--flag=value` 形整项剥），
+/// 剥下的名单交调用方记录（execArgv 保真 + 语义旗按需生效，见 `process_::record_node_compat`）。
+/// §0.8 不受影响：不新增动作/位置参数；裸文件补 `--run` 仅在剥除发生时
+/// （node-spawn 上下文的证据，与 `__selfArgv`/`__selfCmd` 同款"自举翻译"），
+/// 纯 `winterjs file.js`（无兼容旗）照旧报错。
+pub const NODE_COMPAT_FLAGS: &[&str] = &[
+    "--expose-internals",
+    "--expose-gc",
+    "--expose_gc",
+    "--insecure-http-parser",
+    "--allow_natives_syntax",
+    "--allow-natives-syntax",
+];
+
+/// 动作旗（条件 `--run` 插入时判"已有显式动作"用；`-v/-l` 修饰旗不在内）。
+const COMPAT_ACTION_FLAGS: &[&str] = &[
+    "-r", "--run", "-e", "--eval", "-c", "--config", "--completions", "-m", "--man",
+    "-a", "--add", "-i", "--install", "-p", "--publish", "--login", "-u", "--upgrade",
+    "-I", "--init", "--repl", "-t", "--test", "--lint", "-f", "--fmt", "-s", "--serve",
+];
+
+/// 剥除 node 兼容旗；返回（过滤后 argv，含 bin；被剥旗名）。
+/// 条件 `--run` 插入：剥过旗、过滤后首个位置参数非旗形、且无显式动作时，
+/// 在首个位置参数前补 `--run`（`node --flags file args...` 形）。
+pub fn strip_node_compat_args(
+    raw: &[std::ffi::OsString],
+) -> (Vec<std::ffi::OsString>, Vec<String>) {
+    use std::ffi::OsString;
+    let mut out: Vec<OsString> = Vec::with_capacity(raw.len());
+    let mut stripped: Vec<String> = Vec::new();
+    for (i, a) in raw.iter().enumerate() {
+        if i == 0 {
+            out.push(a.clone());
+            continue;
+        }
+        let s = a.to_string_lossy();
+        let base = s.split('=').next().unwrap_or("");
+        if NODE_COMPAT_FLAGS.contains(&base) {
+            stripped.push(base.to_string());
+            continue;
+        }
+        out.push(a.clone());
+    }
+    if !stripped.is_empty() && out.len() > 1 {
+        let has_action = out[1..].iter().any(|a| {
+            let s = a.to_string_lossy();
+            COMPAT_ACTION_FLAGS.contains(&s.as_ref())
+                || s.starts_with("--run=")
+                || s.starts_with("--eval=")
+        });
+        if !has_action && !out[1].to_string_lossy().starts_with('-') {
+            out.insert(1, OsString::from("--run"));
+        }
+    }
+    (out, stripped)
+}
+
+#[cfg(test)]
+mod node_compat_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn argv(v: &[&str]) -> Vec<OsString> {
+        v.iter().map(OsString::from).collect()
+    }
+    fn strs(v: &[OsString]) -> Vec<String> {
+        v.iter().map(|s| s.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn strip_and_rerun() {
+        // respawn 形：剥旗 + 补 --run。
+        let (f, s) = strip_node_compat_args(&argv(&["w", "--expose-internals", "a.js", "child"]));
+        assert_eq!(strs(&f), ["w", "--run", "a.js", "child"]);
+        assert_eq!(s, ["--expose-internals"]);
+        // 多旗 + =值形。
+        let (f, s) = strip_node_compat_args(&argv(&["w", "--expose-gc", "--allow_natives_syntax=1", "a.js"]));
+        assert_eq!(strs(&f), ["w", "--run", "a.js"]);
+        assert_eq!(s, ["--expose-gc", "--allow_natives_syntax"]);
+    }
+
+    #[test]
+    fn keeps_explicit_action() {
+        // 已有显式动作不补 --run。
+        let (f, s) = strip_node_compat_args(&argv(&["w", "--expose-gc", "--eval", "1+1"]));
+        assert_eq!(strs(&f), ["w", "--eval", "1+1"]);
+        assert_eq!(s, ["--expose-gc"]);
+        // 无兼容旗的裸文件不动（§0.8：纯裸形照旧报错）。
+        let (f, s) = strip_node_compat_args(&argv(&["w", "a.js"]));
+        assert_eq!(strs(&f), ["w", "a.js"]);
+        assert!(s.is_empty());
+        // 仅旗无文件：不过补（交 clap 按无动作报错）。
+        let (f, _) = strip_node_compat_args(&argv(&["w", "--expose-gc"]));
+        assert_eq!(strs(&f), ["w"]);
+    }
+}

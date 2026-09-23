@@ -212,6 +212,42 @@ pub unsafe extern "C" fn argv_json(
     true
 }
 
+/// Node 兼容旗记录（CLI 解析前剥下的 node 运行时旗，见 `cli::strip_node_compat_args`）。
+/// 用途：execArgv 保真 + 语义旗（insecure-http-parser/expose-gc）按需生效。
+/// 进程级静态：真子进程（OS 级）记录为空；同进程线程会话共享父记录（记档）。
+fn node_compat_store() -> &'static std::sync::Mutex<Vec<String>> {
+    static STORE: OnceLock<std::sync::Mutex<Vec<String>>> = OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// CLI 起点调用一次（main，引擎启动前；单线程）。
+pub fn record_node_compat(flags: Vec<String>) {
+    if let Ok(mut m) = node_compat_store().lock() {
+        *m = flags;
+    }
+}
+
+/// `__wjs_node_compat_json()` → 剥下的 node 兼容旗 JSON 数组（execArgv 底座）。
+///
+/// UNSAFE-BOUNDARY: 前置——引擎回调 cx 有效（调用约定）；覆盖测试——
+/// `process_::tests::node_compat_json_empty`（零参）+ 黑盒 execArgv 回显。
+pub unsafe extern "C" fn node_compat_json(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let json = node_compat_store()
+        .lock()
+        .ok()
+        .and_then(|m| serde_json::to_string(&*m).ok())
+        .unwrap_or_else(|| "[]".into());
+    set_rval_str(&mut cx, &frame, &json);
+    true
+}
+
 /// `__wjs_env_get(k)` → 值串；缺失置 undefined。
 pub unsafe extern "C" fn env_get(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -674,3 +710,22 @@ export function nextTick(cb, ...args) { return p.nextTick(cb, ...args); }
 export const stdout = p.stdout;
 export const stderr = p.stderr;
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn node_compat_record_roundtrip() {
+        // UNSAFE-BOUNDARY 覆盖（node_compat_json 的纯侧）：记录→读回一致；
+        // 空记录回空数组（黑盒 execArgv 回显另行覆盖）。
+        record_node_compat(vec!["--expose-internals".into()]);
+        let back = node_compat_store().lock().unwrap().clone();
+        assert_eq!(back, ["--expose-internals"]);
+        record_node_compat(Vec::new());
+        let back = node_compat_store().lock().unwrap().clone();
+        assert!(back.is_empty());
+    }
+}

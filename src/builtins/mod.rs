@@ -151,6 +151,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_os_prio_get", Some(node::os::os_prio_get), 1),
             ("__wjs_os_prio_set", Some(node::os::os_prio_set), 2),
             ("__wjs_argv_json", Some(node::process_::argv_json), 0),
+            ("__wjs_node_compat_json", Some(node::process_::node_compat_json), 0),
             ("__wjs_next_tick", Some(node::process_::next_tick_queue), 2),
             ("__wjs_process_getuid", Some(node::process_::getuid), 0),
             ("__wjs_process_getgid", Some(node::process_::getgid), 0),

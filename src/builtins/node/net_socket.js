@@ -154,11 +154,18 @@ class Socket extends EventEmitter {
     // write-after-close 套件点名 _handle.close()；unref-timer 套件点名 _unrefTimer）。
     this.__makeHandle = () => {
       const self = this;
-      return {
+      const __h = {
         setNoDelay: (enable) => { self.__noDelayApplied = enable; },
         setKeepAlive: (enable, delay, interval, count) => { self.__keepAliveApplied = [enable, delay, interval, count]; },
         close: () => { self.__handleClosed = true; queueMicrotask(() => self.destroy()); },
       };
+      // 句柄→socket 注册（parser consume() 经 handle 回查 socket；timeout-reset
+      // 套件。WeakMap 无泄漏）。
+      try {
+        globalThis.__wjs_sockByHandle ??= new WeakMap();
+        globalThis.__wjs_sockByHandle.set(__h, self);
+      } catch { /* 注册失败即 consume 空转 */ }
+      return __h;
     };
     if (options && typeof options === "object") {
       if (options.readable !== undefined) this.readable = !!options.readable;
@@ -556,6 +563,36 @@ class Socket extends EventEmitter {
       this.__realConnect(finalHost, port, cb, __noDelay, signal, sockPath);
       return this;
     };
+    // node 口径 localAddress（localaddress 套件）：本端源地址预 bind，
+    // 经 native 第 4 参透传（UDS 形不用）。校验已在上游完成，此处只透传。
+    this.__localAddrOpt = (args[0] !== null && typeof args[0] === "object" &&
+      typeof args[0].localAddress === "string" && args[0].localAddress !== "")
+      ? args[0].localAddress : null;
+    // node 口径：预置 _handle 自带 connect 即走假柄短路（immediate-error 套件：
+    // 注入假柄强制立即错；返回非零即 UV errno，异步 error + 销毁）。
+    // 仅 TCP 形（UDS 沿旧路）；置于 lookup/HE 之前。
+    if (sockPath === null && this._handle !== null && this._handle !== undefined &&
+        typeof this._handle.connect === "function") {
+      let __rc;
+      try {
+        __rc = this._handle.connect(null, host !== undefined ? String(host) : "", port);
+      } catch (__e) {
+        queueMicrotask(() => this.destroy(__e instanceof Error ? __e : new Error(String(__e))));
+        return this;
+      }
+      if (__rc !== 0 && __rc !== undefined && __rc !== null) {
+        const __code = { "-51": "ENETUNREACH" }[String(__rc)] ?? "UNKNOWN";
+        const __e = new Error(`connect ${__code} ${host ?? ""}:${port ?? ""}`);
+        __e.code = __code;
+        __e.syscall = "connect";
+        queueMicrotask(() => {
+          this.__hadError = true;
+          try { this.emit("error", __e); } catch { /* 无监听即抛，由调用方承接 */ }
+          try { this.destroy(); } catch { /* gone */ }
+        });
+        return this;
+      }
+    }
     if (sockPath !== null) return __doConnect(null);
     if (typeof __lookup === "function") {
       let called = false;
@@ -653,7 +690,9 @@ class Socket extends EventEmitter {
       this.__id = Number(__wjs_net_connect(sockPath, "", this, this.__adoptUds));
     } else this.__id = sockPath !== null
       ? Number(__wjs_net_connect(sockPath, "", this, false))
-      : Number(__wjs_net_connect(this.__targetHost, this.__targetPort, this, __noDelay === true));
+      : (this.__localAddrOpt !== null && this.__localAddrOpt !== undefined
+        ? Number(__wjs_net_connect(this.__targetHost, this.__targetPort, this, this.__localAddrOpt, __noDelay === true))
+        : Number(__wjs_net_connect(this.__targetHost, this.__targetPort, this, __noDelay === true)));
     // unref 闩锁结算（connect 前 unref 过即补调）。
     if (this.__unrefLatched === true && this.__id) {
       try { __wjs_net_unref(this.__id); } catch { /* entry gone 即无事 */ }

@@ -3544,14 +3544,29 @@ cargo build
 - 推广为铁律：流机构 autoDestroy 的 destroy 时机不可控（finish 链中重入）——
   要时序即手动排；"暂停流无 end"是天然门控，唤醒点与收尾点同放。
 
-### 4.202 对拍提速三件套（2026-09-24，效率专项·待落地）
+### 4.202 对拍提速三件套（2026-09-24，效率专项·①已落地②③待做）
 
 - 背景：http 剩余 32 件（9 hang + 23 文案），一周实测约三成时间花在机械活上。
   本条是施工计划，不是复盘——三件全落地前，对拍效率未达最优，不许再称"已最优"。
-- ① 断言 mapper 报实际值：现状只报包装位置（`424:53`/`9:5`），每件套件手写
-  二分脚本定位花 10–20 分钟。改法：mapper 打印实际值 + 套件侧行 + 期望节选，
-  落 `tests/node/helpers.rs`（`use common::*;` 同路）。验收：任取一红套件，
-  一次输出即定位到块。
+- ① 断言 mapper 报实际值：✅ 2026-09-23 落地（`tests/node/helpers.rs`
+  `run_suite_mapped` + 包装壳模板）。用法：
+  `WJS_MAP_SUITE=<套件名> cargo test --test node phase_mapper_locate_suite
+  -- --ignored --nocapture`（套件名按 /tmp/wjs-node-test/test/parallel 解析；
+  定位器非闸门，红绿不进门；门禁两件 `phase_mapper_locates_async_callsite`/
+  `phase_mapper_passthrough_on_success`）。实现：包装壳 require 套件 +
+  `uncaughtException` 监听，AssertionError 自带 `actual/expected/operator/code`
+  （JSON 可序列化，无需解析消息文本），栈里首个套件文件帧即真实调用点，
+  一次输出三行：`[mapper-actual]`（JSON.stringify 截 200 字）/`[mapper-callsite]`
+  （帧 + 折算物理行 + `>>` 源行 ±2 节选）/`[mapper-expected]`（期望值）。
+  验收：raw-headers → 物理 110 rawHeaders 断言、mutable-headers → 物理 187
+  数组头 join，均一击定位零二分。实测钉住三件引擎事实：
+  （a）无壳输出的位置是 assert SOURCE 内部行号（`node:assert:9:5`/prelude
+  `424:53`）安着套件文件名——包装位置是骗的，真实调用点只在 `.stack` 里；
+  （b）栈帧行号 = 物理行 + CJS 包装前奏行数（`.js` 恒 +1，6 处实验一致；
+  `.mjs` 无包装记 0），mapper 按此折算；
+  （c）`unhandledRejection` 监听拦不到（引擎自有收割先走，§4.137 路径），
+  `process.on('exit')` fatal 路径不触发——rejection 形失败回落引擎默认输出，
+  mapper 只覆盖 uncaught 形；TIMEOUT 件由 helper 20s 看门兜住不挂 cargo。
 - ② flake 先分类再动手：新红先自动跑 3 遍（单块×3/整文件×3），flaky 与必现
   分流——flaky 走定级法（§4.197），必现才 instrument。禁把 flake 当回归深挖
   （destroyed 整文件挂误判块间污染，实为 block3 管道缺口——§4.196 坑二教训）。

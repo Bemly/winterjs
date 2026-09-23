@@ -311,7 +311,6 @@ pub(crate) async fn tcp_connect_resolved(
     let mut last_err: Option<std::io::Error> = None;
     for addr in resolved {
         let res = if let Some(src_ip) = src_ip {
-            use tokio::net::TcpSocket as _;
             let v6 = matches!(src_ip, std::net::IpAddr::V6(_));
             let tv6 = matches!(addr.ip(), std::net::IpAddr::V6(_));
             if v6 != tv6 {

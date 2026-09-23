@@ -447,6 +447,7 @@ E('ERR_INVALID_CHAR',
 // node lib/internal/errors.js（response-statuscode 套件逐字；`%s` 遇对象走
 // inspect——{}→'{}'、[]→'[]'，字符串/图元走原文）。
 E('ERR_HTTP_INVALID_STATUS_CODE', 'Invalid status code: %s', RangeError);
+E('ERR_HTTP_SOCKET_ENCODING', 'Changing the socket encoding is not allowed per RFC7230 Section 3.', Error);
 E('ERR_HTTP_CONTENT_LENGTH_MISMATCH',
   (actual, expected) => `Response body's content-length of ${actual} byte(s) does not match the content-length of ${expected} byte(s) set in header`,
   Error);

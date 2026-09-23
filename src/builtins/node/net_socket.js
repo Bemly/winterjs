@@ -277,6 +277,53 @@ class Socket extends EventEmitter {
       if (typeof cb === "function") this.once("timeout", cb);
       return this;
     };
+    // 可读侧注入（readable.push 口径，真机 26.8.2 实测）：native 到包与
+    // 用户 push 走同一 ingest（bytesRead/暂停/升级直调/暂存冲刷全同）；
+    // push(null) = 可读 EOF（先冲暂存再 'end'；无传输（__id 0）即收尾 'close'）。
+    this.__ingestData = (u8) => {
+      // 服务端升级接管（upgrade-body 系）：体字节走服务端直调喂体，不经
+      // emitter（同表双发会使用户收到原始体 + spill 双份）；用户只收 spill。
+      if (this.__srvUpgraded === true && typeof this.__srvFeed === "function") {
+        this.bytesRead += u8.length;
+        try { this.__srvFeed(u8); } catch { /* 喂体错由服务端收口 */ }
+        return;
+      }
+      if (this.__paused) { this.__pauseBuf.push(u8); return; }
+      this.bytesRead += u8.length;
+      // 先暂存后冲刷（迟挂监听不丢字节；挂载竞态下仍保序——直发会反超暂存）。
+      this.__dataBuf.push(u8);
+      this.__flushData();
+    };
+    this.push = (chunk, encoding) => {
+      if (chunk === null || chunk === undefined) {
+        if (this.__pushEOF === true || this.readable === false) return false;
+        this.__pushEOF = true;
+        try { this.__flushData(); } catch { /* 监听抛错不阻收尾 */ }
+        if (this.__dec) {
+          const rest = this.__dec.end();
+          if (rest) this.emit("data", rest);
+        }
+        this.readable = false;
+        this.emit("end");
+        // 无传输即整流收尾（真机：未连接 socket push(null) 后 END + CLOSE）。
+        if (!this.__id && !this.destroyed) {
+          this.destroyed = true; this.writable = false; this._handle = null;
+          this.__dataBuf = [];
+          this.emit("close", false);
+        }
+        return false;
+      }
+      if (this.destroyed || this.readable === false || this.__pushEOF === true) return false;
+      let u8;
+      if (typeof chunk === "string") {
+        u8 = encoding !== undefined && encoding !== null
+          ? Buffer.from(chunk, String(encoding)) : new TextEncoder().encode(chunk);
+      } else {
+        u8 = __chunkU8(chunk);
+      }
+      this.__ingestData(u8);
+      return true;
+    };
     this.read = () => null;
     this._readableState = { endEmitted: false, length: 0 };
   }
@@ -588,18 +635,7 @@ class Socket extends EventEmitter {
       }
       case "data": {
         const u8 = __b64dec(payload);
-        // 服务端升级接管（upgrade-body 系）：体字节走服务端直调喂体，不经
-        // emitter（同表双发会使用户收到原始体 + spill 双份）；用户只收 spill。
-        if (this.__srvUpgraded === true && typeof this.__srvFeed === "function") {
-          this.bytesRead += u8.length;
-          try { this.__srvFeed(u8); } catch { /* 喂体错由服务端收口 */ }
-          break;
-        }
-        if (this.__paused) { this.__pauseBuf.push(u8); break; }
-        this.bytesRead += u8.length;
-        // 先暂存后冲刷（迟挂监听不丢字节；挂载竞态下仍保序——直发会反超暂存）。
-        this.__dataBuf.push(u8);
-        this.__flushData();
+        this.__ingestData(u8);
         break;
       }
       case "end": {

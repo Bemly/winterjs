@@ -33,6 +33,11 @@ const idStack = [1];
 const resourceStack = [ROOT_RESOURCE];
 
 function newAsyncId() { return nextAsyncId++; }
+// node 口径 symbols 表（immediate-error 套件 `symbols.async_id_symbol`）。
+const symbols = {
+  async_id_symbol,
+  trigger_async_id_symbol,
+};
 function executionAsyncId() { return idStack[idStack.length - 1]; }
 function executionAsyncResource() { return resourceStack[resourceStack.length - 1]; }
 function triggerAsyncId() { return executionAsyncId(); }
@@ -249,6 +254,8 @@ export {
   executionAsyncResource,
   triggerAsyncId,
   asyncWrapProviders,
+  newAsyncId,
+  symbols,
 };
-export default { AsyncLocalStorage, AsyncResource, createHook, executionAsyncId, executionAsyncResource, triggerAsyncId, asyncWrapProviders };
+export default { AsyncLocalStorage, AsyncResource, createHook, executionAsyncId, executionAsyncResource, triggerAsyncId, asyncWrapProviders, newAsyncId, symbols };
 "#;

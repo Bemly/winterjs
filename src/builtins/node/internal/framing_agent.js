@@ -304,6 +304,11 @@
       const __emitOne = (k, v) => {
         if (Array.isArray(v)) {
           const __n = __names[k] ?? (canon[k] ?? k);
+          // cookie 数组恒单行 '; ' 合并（真机 26.8.2 实测，双端同）。
+          if (k === "cookie") {
+            head.push(`${__n}: ${v.join("; ")}`);
+            return;
+          }
           if (Array.isArray(__uniq) && __uniq.includes(k)) {
             head.push(`${__n}: ${v.join("; ")}`);
             return;
@@ -553,7 +558,7 @@
             this.destroy(__hpe("HPE_LF_EXPECTED", "Expected LF after CR"));
             return;
           }
-          const { first, headers, rawHeaders, headersDistinct } = __parseHead(headText, this.__inboundMode ?? (this.insecureHTTPParser === true ? "lenient" : "strict"), this.maxHeadersCount, true);
+          const { first, headers, rawHeaders, headersDistinct } = __parseHead(headText, this.__inboundMode ?? (this.insecureHTTPParser === true ? "lenient" : "strict"), this.maxHeadersCount, true, this.parser !== undefined && this.parser !== null && this.parser.joinDuplicateHeaders === true);
           if (!first[0].startsWith("HTTP/") || !/^\d{3}$/.test(first[1] ?? "")) {
             this.destroy(__hpe("HPE_INVALID_CONSTANT", "invalid HTTP response line"));
             return;

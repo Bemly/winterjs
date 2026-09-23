@@ -1461,6 +1461,23 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > >   黑盒 `phase11_http_cork_faces` + `phase11_http_uncaught_throws`。
 > > - **终局 serial 重扫**（sweep4，2026-09-23，25s alarm，干净二进制）：
 > >   409 件 SAME0=294/SAME1=0/DIFF=102/TIMEOUT=13（TIMEOUT 全为 wjs=142/node=0）。
+> >
+> > ### 基建轮（2026-09-23；AGENTS §4.194）
+> >
+> > > - **socket.push**：可读侧注入（与 native 到包同 ingest；push(null)=可读
+> > >   EOF，无传输即收尾 close）→ read-in-error/header-overflow 转绿。
+> > > - **服务端 HPE 化**：方法增量匹配（首字节 A-Z + METHODS 前缀候选，分叉即
+> > >   偏移；7 探针）+ TE+CL/重 CL 门 + 溢出 HPE + 默认分支 socket-error 递送
+> > >   （有用户监听才 destroy(e)）+ rawPacket 当片补齐 → 5 件转绿 +
+> > >   socket-error-listeners hang 根除。
+> > > - **writableLength 记账**：dry-run 计数 + 落盘递减 + _final 兜底清零
+> > >   （131/139 与真机逐字同）→ outgoing-properties 转绿。
+> > > - **eager-parse 队列**：后继 res.socket null + 写停靠 + finish 轮转 +
+> > >   drain 门控 + socket 写队列（writableLength/HWM/drain）→
+> > >   outgoing-drain-writable-length 转绿，附带 1.0-keep-alive/
+> > >   pipeline-flood/pipeline-outgoing-destroy/catch-uncaughtexception。
+> > > - **终局重扫**（sweep6，同口径）：409 件 SAME0=307/SAME1=0/DIFF=91/
+> > >   TIMEOUT=11（+13，零新增红项）。残：reuse-drained（process.report 另域）。
 > > - **残件定性**：drain-writable-length/outgoing-properties（outputData
 > >   记账 + writableLength 合成 getter）与 header-overflow/read-in-error
 > >   （socket.push）同根 → **net.Socket 写侧流式化 + eager-parse outgoing

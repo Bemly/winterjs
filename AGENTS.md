@@ -3365,3 +3365,52 @@ cargo build
   HPE_UNEXPECTED_CONTENT_LENGTH 'Duplicate Content-Length'）。
 - 黑盒：`phase11_http_cork_faces`（镜像/背压/粒度/end 全开 10 断言）+
   `phase11_http_uncaught_throws`（cli/srv 双向 throw 原文到 uncaught）。
+
+### 4.194 基建轮：socket.push + 服务端解析错 + 写侧流式化（2026-09-23，plan3 基建）
+
+- 坑一（`expectsError` 无 mustCall 即空转）：header-overflow/destroy-socket
+  系套件的 socket-error 断言用裸 `expectsError`（不查调用次数）——实现缺失
+  时恒假绿，输出对、rc=0。本轮加 socket-error 递送后 validator 才真跑，
+  首跑即钉住三件（code/bytesParsed/rawPacket）。推广：对拍"绿"先问断言是
+  否执行过——无调用计数的错误断言一律视为假绿嫌疑，宿主侧以"validator 实跑"
+  为收敛标准（§4.126 ③的 expectsError 版）。
+- 坑二（rawPacket=当片非累计）：'FOO / HTTP/1.1' 整头与 '123…' 首字节 '1'
+  的 rawPacket 矛盾——前者整头、后者 1 字节——真相是 llhttp rawPacket=触发
+  本次解析的数据片（multiple-client-error 的 unshift 把 '1' 独立成片）。
+  修法：`__lastPkt` 存根（空 re-feed 不覆盖）+ 缺席补齐；bytesParsed=片内
+  偏移（方法分叉点/全消费=片长；TE/CL 重门未被点名，记档近似取头长）。
+  另：补齐须在 clientError emit **之前**（有监听分支直接返回，事后补即漏）。
+- 坑三（方法匹配是候选集不是 token 表）：token 门把 'FOO' 当合法（全大写
+  token），llhttp 却报 HPE@1——方法是已知表增量匹配（首字节 A-Z + 逐字节
+  前缀候选，分叉即偏移；空格终结未知词即词长，CR 终结同；'GE' 悬置等数据）。
+  7 探针钉住（FOO→1/Oopsie→1/GETX→3/老小写→0/'*'→0/GE 悬置超时）。
+  连带修好 socket-error-listeners 的 hang（'*' 旧口径合法致 clientError 永不发）。
+- 坑四（数组头在存不在发）：double-CL 套件 wire 单行 '1,2'——`__emitOne`
+  早就会数组分行，真凶是 `__lowerHeaders` 存值 `String(v)` 预洗。修法只改
+  存（数组原样），校验仍按合并串（同结果），writeInformation 模板 join 恒等
+  零回归。推广：发散路径（存→发）断链时先查存，不动发。
+- 坑五（流 buffering 吞同步计数）：`res.write('asd')` 后同步读 length 仍是旧值——
+  第二个 _write 还没跑（流一次只派发一个 _write，次块等 microtask）。
+  修法：记账上移到 write/end 包装层（同步），_write 内去重（end 块经内部
+  _write 直调不走 write 包装，由 end 包装层补计）。教训：凡"同步读"口径
+  （writableLength），计数点必须与用户调用同 tick，流派发节奏不可信。
+- 坑六（write 覆写的 socket-null 早拒）：管线队列上线后 `write` 覆写的
+  `__sock===null→false` 把入列写全拒（`while(write)` 零块即停，needDrain 永不立）。
+  修法：null 分两种——入列（__queued）走流机构→_write park，独立构造维持旧
+  false。§4.192"删遮蔽方法必 grep 体内标识符"姊妹篇：改守卫先数清有几种
+  null（独立/入列/已销毁三种）。
+- 坑七（CL 快捷与同步头渲染互斥）：early-render 头即杀 end-only-data 的 CL 快捷
+  （`!__headSent` 门）。修法：dry-run 计数（快照→渲染→取值→还原，Date 同长
+  恒等）+ 落盘递减 + _final 兜底清零——渲染时机零改动，只加记账。真值覆盖
+  （CL 快捷）天然对齐（终态清零），预测偏差不出终态。
+- 本轮转 SAME0（13 件）：read-in-error/header-overflow（push 面）/
+  server-client-error/invalid-te/double-content-length/
+  server-reject-chunked-with-content-length/socket-error-listeners（HPE 面）/
+  outgoing-properties（131/139 记账）/outgoing-drain-writable-length（队列+drain）/
+  附带 1.0-keep-alive/pipeline-flood/pipeline-outgoing-destroy（eager 队列连带）/
+  catch-uncaughtexception（destroy(e) 递送 uncaught 通道连带）。
+  黑盒 `phase11_http_socket_push_and_server_parse_errors` +
+  `phase11_http_outgoing_writable_length_faces` +
+  `phase11_http_pipelined_outgoing_queue_faces`。
+  残：reuse-drained（process.report 缺失，另域）/ execPath spawn ~18（待拍板）/
+  parser 内省 ~4（记档偏离）。

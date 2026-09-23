@@ -247,7 +247,7 @@ export function withHttpServer(Base) {
         const __mhs = Number(o.maxHeaderSize);
         if (Number.isFinite(__mhs) && __mhs >= 0) self.maxHeaderSize = __mhs;
       }
-      if (self.maxHeaderSize === undefined) self.maxHeaderSize = maxHeaderSize;
+      if (self.maxHeaderSize === undefined) self.maxHeaderSize = __defaultMaxHeaderSize();
       // 每服务器宽松解析旗（insecure-parser-per-stream 套件）。
       // httpValidation 门（node storeHTTPOptions 口径：validateOneOf + 与
       // insecureHTTPParser 互斥，ERR_INVALID_ARG_VALUE）。
@@ -1226,7 +1226,7 @@ export function withClientRequest(openSocket, flavor) {
         const __mhs = Number(options.maxHeaderSize);
         if (Number.isFinite(__mhs) && __mhs >= 0) this.maxHeaderSize = __mhs;
       }
-      if (this.maxHeaderSize === undefined) this.maxHeaderSize = maxHeaderSize;
+      if (this.maxHeaderSize === undefined) this.maxHeaderSize = __defaultMaxHeaderSize();
       // 自设请求头名字门（invalidheaderfield 套件：'testing 123' → TypeError）。
       for (const __k of Object.keys(userHeaders ?? {})) {
         if (!__TOKEN_RE.test(__k)) {

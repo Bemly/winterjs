@@ -399,7 +399,10 @@ Object.defineProperty(globalThis.process, Symbol.toStringTag, { value: "process"
 try {
   const __compat = JSON.parse(__wjs_node_compat_json());
   globalThis.__wjs_nodeCompat = Array.isArray(__compat) ? __compat : [];
-  if (globalThis.__wjs_nodeCompat.includes("--expose-gc") && typeof globalThis.gc !== "function") {
+  // gc 门控（--expose-gc/--expose_gc 双拼写， deterioration 套件用下划线形）。
+  const __hasGc = globalThis.__wjs_nodeCompat.includes("--expose-gc") ||
+    globalThis.__wjs_nodeCompat.includes("--expose_gc");
+  if (__hasGc && typeof globalThis.gc !== "function") {
     globalThis.gc = async function gc() { return undefined; };
   }
 } catch { globalThis.__wjs_nodeCompat = []; }

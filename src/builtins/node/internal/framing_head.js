@@ -206,7 +206,10 @@ function __lowerHeaders(obj, validation, namesSink) {
     // 头名字门（node checkIsHttpToken 口径；invalidheaderfield 套件）。
     if (!__TOKEN_RE.test(k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", k);
     if (validation !== undefined) __checkOutboundHeaderValue(validation, v, k);
-    out[k.toLowerCase()] = String(v);
+    // node 口径：数组值原样保留（wire 逐行发出——'Content-Length': [1,2] 即
+    // 两行，double-content-length 套件；旧 String(v) 洗成 '1,2' 系伪语义）。
+    // 校验仍按合并串（与旧口径同结果），仅存值分流。
+    out[k.toLowerCase()] = Array.isArray(v) ? v.map((__e) => String(__e)) : String(v);
     if (namesSink !== undefined) namesSink[k.toLowerCase()] = String(k);
   }
   return out;
@@ -224,6 +227,34 @@ function __mkParseError(msg) {
   const e = new Error(msg ?? "parse error");
   e.__httpParse = true;
   return e;
+}
+// llhttp 口径服务端解析错（真机逐形实测 10 探针）：'Parse Error: <msg>' +
+// HPE_* 码 + bytesParsed（当前消息内错误偏移）+ rawPacket（触发本次解析的
+// 数据片，非累计）+ __httpParse 旗。rawPacket 缺席时由 __feed 按当前片补齐。
+function __hpeServer(code, msg, bytesParsed, rawPacket) {
+  const e = new Error(`Parse Error: ${msg}`);
+  e.code = code;
+  e.bytesParsed = bytesParsed;
+  e.rawPacket = rawPacket;
+  e.__httpParse = true;
+  return e;
+}
+// llhttp 方法增量匹配（真机 7 探针钉住）：首字节须 A-Z（否则偏移 0）；后续与
+// METHODS 表逐字节取最长公共前缀（分叉处即偏移）；空格结尾但整词未知
+// （如 'GE'）偏移即词长。isComplete=false（头未齐）时前缀仍活即 -1（等更多
+// 字节，'GE' 未终结不等死不定错）；-1 恒表"合法或待定"。
+function __methodErrOffset(token, isComplete) {
+  if (token.length === 0) return -1;
+  const c0 = token.charCodeAt(0);
+  if (c0 < 65 || c0 > 90) return 0;
+  let cands = METHODS.filter((m) => m.charCodeAt(0) === c0);
+  for (let i = 1; i < token.length; i++) {
+    const cc = token.charCodeAt(i);
+    cands = cands.filter((m) => m.length > i && m.charCodeAt(i) === cc);
+    if (cands.length === 0) return i;
+  }
+  if (cands.some((m) => m.length === token.length)) return -1;
+  return isComplete ? token.length : -1;
 }
 // Expect: 100-continue 判据（真机 26.8.2 对拍：'100-continue'/'100-Continue'/
 // 'foo, 100-continue'/'100-continue, foo' 命中；'100continue'（无连字符）与
@@ -270,7 +301,11 @@ const __MAX_CHUNK_EXT = 16384;
 const __MAX_TRAILER_NV = 16384;
 // 请求行 + 头行校验（RFC token/版本形；Node llhttp 拒收面，失配即 400）。
 function __validateRequestHead(first, headers) {
-  if (first.length !== 3 || !__TOKEN_RE.test(first[0]) || /\s/.test(first[1]) ||
+  // 方法段走 llhttp 增量匹配终判（空格结尾整词未知即词长偏移；空方法仍走
+  // 通用门——真机未点名，400 口径不变）。
+  const __mOff = __methodErrOffset(first[0] ?? "", true);
+  if (__mOff !== -1) throw __hpeServer("HPE_INVALID_METHOD", "Invalid method encountered", __mOff);
+  if (first.length !== 3 || first[0] === "" || /\s/.test(first[1]) ||
       !/^HTTP\/\d(\.\d)?$/.test(first[2])) {
     throw __mkParseError("bad request line");
   }
@@ -293,18 +328,30 @@ function __checkRequestLinePrefix(buf) {
     const ch = buf[i];
     if (ch === 13) {
       if (seg === 2) return;
+      // 方法段内 CR 即方法终结（'Oopsie-doopsie\r\n' 形）：整词终判——分叉处
+      // 即偏移（真机 1，非词长），与空格终结同 matcher。
+      if (seg === 0 && method !== "") {
+        const __off = __methodErrOffset(method, true);
+        if (__off !== -1) throw __hpeServer("HPE_INVALID_METHOD", "Invalid method encountered", __off);
+      }
       throw __mkParseError("bad request line");
     }
     if (ch === 10 || ch === 0) throw __mkParseError("bad request line");
     if (ch === 32) {
-      if (seg === 2 || (seg === 0 && method === "") || (seg === 1 && !urlStarted)) {
+      if (seg === 0) {
+        if (method === "") throw __mkParseError("bad request line");
+        // 方法段终结：整词终判（增量匹配分叉处即偏移，未知词即词长）。
+        const __off = __methodErrOffset(method, true);
+        if (__off !== -1) throw __hpeServer("HPE_INVALID_METHOD", "Invalid method encountered", __off);
+      } else if (seg === 2 || (seg === 1 && !urlStarted)) {
         throw __mkParseError("bad request line");
       }
       seg++;
       continue;
     }
     if (seg === 0) {
-      if (!__TOKEN_RE.test(String.fromCharCode(ch))) throw __mkParseError("bad request line");
+      // 方法段收字节不设 token 门——合法性由尾部增量匹配统一判定
+      // （小写首字节/分叉字节在匹配器内定偏移）。
       method += String.fromCharCode(ch);
     } else if (seg === 1) {
       if (!urlStarted) {
@@ -316,6 +363,12 @@ function __checkRequestLinePrefix(buf) {
     } else {
       if (ch < 32 || ch === 127) throw __mkParseError("bad request line");
     }
+  }
+  // 尾部：方法段未终结（头未齐）→ 增量终判（分叉即错，前缀仍活即等更多字节，
+  // 'GE' 悬置不等死不定错——真机 request-timeout 形）。
+  if (seg === 0 && method !== "") {
+    const __off = __methodErrOffset(method, false);
+    if (__off !== -1) throw __hpeServer("HPE_INVALID_METHOD", "Invalid method encountered", __off);
   }
 }
 

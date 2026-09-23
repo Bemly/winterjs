@@ -290,6 +290,8 @@
       this.destroy();
     }
     get aborted() { return this.__aborted === true; }
+    // node 口径 req.res（destroyed-socket-write2 套件直读）：响应未到即 null。
+    get res() { return this.__res ?? null; }
     __sendHead() {
       if (this.__headSent) return;
       this.__headSent = true;

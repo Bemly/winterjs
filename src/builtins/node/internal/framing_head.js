@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { Readable, Writable } from "node:stream";
 import { codes } from "node:internal/errors";
+import { __etAdd, __etRemove } from "node:internal/events/abort_listener";
 
 // node 内部符号（_http_server re-export；close-destroy-timeout/async-dispose 套件）
 export const kConnectionsCheckingInterval = Symbol("kConnectionsCheckingInterval");

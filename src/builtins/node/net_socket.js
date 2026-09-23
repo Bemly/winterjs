@@ -116,7 +116,19 @@ class Socket extends EventEmitter {
     this.readable = true;
     this.writable = true;
     this.destroyed = false;
-    this.bytesWritten = 0;
+    // node 口径 bytesWritten（byteswritten 套件）：socket.write 调用即同步计。
+    // res 写经流机构异步落盘——同步读会漏计数，故 base（已落盘）+ pend（已写
+    // 未落盘，res 包装层按 __wlen 预测同步加、落盘核销）分家；直接读值与真机同。
+    this.__bwBase = 0;
+    this.__bwPend = 0;
+    Object.defineProperty(this, "bytesWritten", {
+      get: () => (this.__bwBase ?? 0) + (this.__bwPend ?? 0),
+      set: (v) => { this.__bwBase = Number(v) || 0; },
+      enumerable: true, configurable: true,
+    });
+    // pending 记账（res 写预测同步加，不阻写；落盘/收尾核销，钳零）。
+    this.__bwAdd = (n) => { this.__bwPend = (this.__bwPend ?? 0) + n; };
+    this.__bwSub = (n) => { this.__bwPend = Math.max(0, (this.__bwPend ?? 0) - n); };
     this.bytesRead = 0;
     this.__connected = false;   // 完成连接（connect/attach 后 true）
     this.__pendW = [];          // 连接完成前的缓冲写（node write 语义）
@@ -653,6 +665,7 @@ class Socket extends EventEmitter {
         this.__pendBytes = 0;
         for (const [u8, cb2] of pend) {
           __wjs_net_write(this.__id, u8);
+          // bytesWritten 已在 write 时同步计入 base，此处只补写队列记账。
           this.__sockQAdd(u8.length);
           if (cb2) queueMicrotask(cb2);
         }
@@ -831,7 +844,8 @@ class Socket extends EventEmitter {
       queueMicrotask(() => this.emit("error", e));
       return false;
     }
-    this.bytesWritten += u8.length;
+    this.__bwBase += u8.length;
+    this.__bwSub(u8.length);
     if (!this.__connected) {
       // node 口径：连接完成前 write 缓冲（connect 完成时按序冲刷）
       this.__pendW.push([u8, cb2]);
@@ -875,7 +889,9 @@ class Socket extends EventEmitter {
       this._handle = null;
       this.__dataBuf = [];
       // 写队列记账清零（排空 microtask 见 destroyed 门，不再递送 drain）。
+      // bytesWritten pending 同清（预测未落盘，销毁即不再落盘；base 保留实发）。
       this.__sockQ = 0; this.__needSockDrain = false;
+      this.__bwPend = 0;
       if (this.__id) __wjs_net_destroy(this.__id);
       // node 口径 emitErrorNT：error 经 nextTick 异步发（同步抛错会把
       // uncaughtException 语义压成同步异常——upgrade body-error 套件；

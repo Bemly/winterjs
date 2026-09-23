@@ -156,13 +156,13 @@ function __afterSockFlush(stream, box, fn) {
     });
   });
 }
-// node 单例头（重名首个赢；multiheaders2 套件 11 件 + 真机三轮实测
-// Age/ETag/Server/Expires/Last-Modified/Retry-After 六件）。
+// node _http_incoming.js matchKnownFields 无前缀单值表（重复头首个赢；
+// content-length 亦单值——重 CL 正常面由 HPE 门拒，lenient 下首个赢）。
 const __SINGLETON_HEADERS = new Set([
-  "age", "authorization", "content-type", "etag", "expires", "from", "host",
-  "if-modified-since", "if-unmodified-since", "last-modified", "location",
-  "max-forwards", "proxy-authorization", "referer", "retry-after",
-  "server", "user-agent",
+  "age", "authorization", "content-encoding", "content-length", "content-type",
+  "etag", "expires", "from", "host", "if-modified-since", "if-unmodified-since",
+  "last-modified", "location", "max-forwards", "proxy-authorization",
+  "referer", "retry-after", "server", "user-agent", "x-forwarded-host",
 ]);
 // __trunc：超限静默截断（node 客户端响应口径——lib/_http_common.js
 // parserOnHeaders "stop collecting"：maxHeaderPairs 上限后不再收集、
@@ -237,15 +237,14 @@ function __parseHead(headText, mode, maxPairs, __trunc, joinDup) {
       headers[lk].push(v);
     } else if (lk === "cookie") {
       headers[lk] = `${headers[lk]}; ${v}`;
-    } else if (joinDup === true) {
-      // joinDuplicateHeaders:true 压过单例表（authorization 套件 '1, 2'）。
+    } else if (joinDup === true || !__SINGLETON_HEADERS.has(lk)) {
+      // node _addHeaderLine 口径：joinable 表 + 未知头缺省恒 ', ' 合并
+      //（matchKnownFields flag \u0000；multiheaders2 套件 multipleAllowed
+      // 全 join）；joinDuplicateHeaders:true 压过单值表（join-authorization
+      // 套件 '1, 2'）。
       headers[lk] = `${headers[lk]}, ${v}`;
-    } else if (__SINGLETON_HEADERS.has(lk)) {
-      // 首个赢，后续丢弃（rawHeaders 照收）。
-    } else {
-      // 缺省：重复头首个赢（authorization 套件真机实测；cookie/set-cookie
-      // 上已分流，不受门控）。
     }
+    // else：单值表首个赢，后续丢弃（rawHeaders 照收）。
   }
   return { first, headers, rawHeaders, headersDistinct };
 }
@@ -955,9 +954,26 @@ export class ServerResponse extends Writable {
     if (this.__headerNames[lk] === undefined) this.__headerNames[lk] = String(name);
     return this;
   }
+  // node 口径：查询面只见用户头（[kOutHeaders]）——自动头（Date/Connection/
+  // Keep-Alive/自动 CL/TE）_storeHeader 时虽入 __headers 供状态机读，但对
+  // getHeader/hasHeader/getHeaderNames/getHeaders/getRawHeaderNames 不可见
+  //（mutable-headers：发送前后 hasHeader('Connection') 恒 false；
+  // multiple-headers：getHeaderNames 不见自动 TE）。
+  __isAutoKey(k) {
+    if (k === "connection" && this.__autoConn) return true;
+    if (k === "date" && this.__autoDate) return true;
+    if (k === "keep-alive" && this.__autoKA) return true;
+    if ((k === "content-length" || k === "transfer-encoding") &&
+        (this.__headerNames?.[k] === undefined)) return true;
+    return false;
+  }
+  __userKeys() {
+    return Object.keys(this.__headers).filter((k) => !this.__isAutoKey(k));
+  }
   getHeader(name) {
     if (typeof name !== "string") throw new codes.ERR_INVALID_ARG_TYPE("name", "string", name);
-    return this.__headers[name.toLowerCase()];
+    const lk = name.toLowerCase();
+    return this.__isAutoKey(lk) ? undefined : this.__headers[lk];
   }
   removeHeader(name) {
     // node 口径：发头后即 ERR_HTTP_HEADERS_SENT（remove-header-after-sent 套件）。
@@ -970,19 +986,20 @@ export class ServerResponse extends Writable {
     if (this._removedHeader !== undefined) this._removedHeader[lk] = true;
     return this;
   }
-  getHeaderNames() { return Object.keys(this.__headers); }
+  getHeaderNames() { return this.__userKeys(); }
   hasHeader(name) {
     if (typeof name !== "string") throw new codes.ERR_INVALID_ARG_TYPE("name", "string", name);
-    return this.__headers[name.toLowerCase()] !== undefined;
+    const lk = name.toLowerCase();
+    return !this.__isAutoKey(lk) && this.__headers[lk] !== undefined;
   }
   getHeaders() {
     const __out = Object.create(null);
-    for (const k of Object.keys(this.__headers)) __out[k] = this.__headers[k];
+    for (const k of this.__userKeys()) __out[k] = this.__headers[k];
     return __out;
   }
   getRawHeaderNames() {
     const __names = this.__headerNames ?? {};
-    return Object.keys(this.__headers).map((k) => __names[k] ?? k);
+    return this.__userKeys().map((k) => __names[k] ?? k);
   }
   // node 口径 statusMessage 校验（status-reason-invalid-chars 套件）：
   // \r\n/NUL/DEL/非 latin1 即同步抛 'Invalid character in statusMessage'；

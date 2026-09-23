@@ -296,6 +296,12 @@
       if (this.__headSent) return;
       this.__headSent = true;
       this.headersSent = true;
+      // node _storeHeader TE 扫描口径：用户 TE 值含 chunked（大小写不敏感，
+      // 数组形 join 后判）即 chunked 帧——与 UCED 族（__chunkDefault）无关
+      //（raw-headers 套件 GET+'CHUNKED' 形：真机体走 chunked 帧，非裸体）。
+      const __tev = this.__headers["transfer-encoding"];
+      const __teText = Array.isArray(__tev) ? __tev.join(", ") : (__tev ?? "");
+      if (__teText !== "" && /(?:^|\W)chunked/i.test(__teText)) this.__chunked = true;
       const head = [`${this.method} ${this.path} HTTP/1.1`];
       if (this.__headers["content-length"] !== undefined) {
         this.__rawCL = true;

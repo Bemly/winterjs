@@ -104,6 +104,9 @@ class Socket extends EventEmitter {
         };
         __sig.addEventListener("abort", __sigHandler, { once: true });
         __etAdd(__sig, "abort", __sigHandler);
+        // 同 signal 重复 connect 即复用此监听（真机恰 1；connect 侧认领）。
+        this.__sockSig = __sig;
+        this.__sockSigHandler = __sigHandler;
       }
     }
     // node 口径（remote-address 双套件点名）：连接完成前 remote* 全 undefined
@@ -516,16 +519,20 @@ class Socket extends EventEmitter {
       }
       {
         // 直调 addEventListener 须入侧表（abort-controller 套件 listenerCount 口径；
-        // 原生忽略 once，handler 自摘）。
-        const __connAbort = () => {
-          __etRemove(signal, "abort", __connAbort);
-          const e = new Error("The operation was aborted"); e.name = "AbortError"; e.code = "ABORT_ERR";
-          // postAbort 形：套件在 abort 之后才挂 once('close')——destroy 的
-          // error/close 必须推 microtask（node destroy 发射为 nextTick）。
-          queueMicrotask(() => this.destroy(e));
-        };
-        signal.addEventListener("abort", __connAbort, { once: true });
-        __etAdd(signal, "abort", __connAbort);
+        // 原生忽略 once，handler 自摘）。构造期同 signal 已挂即复用（真机恰 1）。
+        if (signal === this.__sockSig && this.__sockSigHandler !== undefined) {
+          // 已监听，无需重复挂载。
+        } else {
+          const __connAbort = () => {
+            __etRemove(signal, "abort", __connAbort);
+            const e = new Error("The operation was aborted"); e.name = "AbortError"; e.code = "ABORT_ERR";
+            // postAbort 形：套件在 abort 之后才挂 once('close')——destroy 的
+            // error/close 必须推 microtask（node destroy 发射为 nextTick）。
+            queueMicrotask(() => this.destroy(e));
+          };
+          signal.addEventListener("abort", __connAbort, { once: true });
+          __etAdd(signal, "abort", __connAbort);
+        }
       }
     }
     // node 口径：blockList 命中即 ERR_IP_BLOCKED（connect 前，不建连接）；

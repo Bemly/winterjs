@@ -17,6 +17,9 @@ export class OutgoingMessage extends Writable {
   // node lib/_http_outgoing.js _renderHeaders（renderHeaders 套件）：
   // 对表 [原名, 值] → {原名: 值}；null/非对象即 {}；_header 在场（已发头标记，
   // 真机按此字段判）即抛 ERR_HTTP_HEADERS_SENT。
+  // node 口径 outputData（destroyed-socket-write2 套件直读 length）：排队输出
+  // 明细；本仓同步落盘恒空（_write 缓冲语义见 __outputData）。
+  get outputData() { return this.__outputData ?? []; }
   _renderHeaders() {
     if (this._header) throw new codes.ERR_HTTP_HEADERS_SENT("render");
     const src = this[kOutHeaders];
@@ -1636,6 +1639,8 @@ export function withClientRequest(openSocket, flavor) {
         // 递送（max-http-headers 套件 mustCall(1) 形；二次抛会跳过 close 链即 hang）。
         if (this.destroyed) return;
         if (this.listenerCount("error") === 0) throw e;
+        // 已发错标记（后到的 Close 不再合成 hangup 走 destroy 幂等门）。
+        this.__hadError = true;
         this.emit("error", e);
         // node 口径：连接错无响应即销毁请求（'close' 时 req.destroyed === true，
         // agent-close/timeout-option 系套件断言）。

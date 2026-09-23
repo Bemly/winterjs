@@ -119,7 +119,10 @@ const __SINGLETON_HEADERS = new Set([
   "max-forwards", "proxy-authorization", "referer", "retry-after",
   "server", "user-agent",
 ]);
-function __parseHead(headText, mode, maxPairs) {
+// __trunc：超限静默截断（node 客户端响应口径——lib/_http_common.js
+// parserOnHeaders "stop collecting"：maxHeaderPairs 上限后不再收集，
+// 响应照常完成；服务端请求超限仍抛 HPE_HEADER_OVERFLOW 走 clientError）。
+function __parseHead(headText, mode, maxPairs, __trunc) {
   const lines = headText.split("\r\n");
   const first = lines.shift().split(" ");
   // 真机口径：req.headers/res.headers 是普通对象（Object.prototype，node 26.8.2
@@ -154,6 +157,7 @@ function __parseHead(headText, mode, maxPairs) {
     //（count-overflow 套件；有监听自理 431，无监听默认 431 + 销毁——400 通道
     // 不适用）。旧静默截断系伪语义（count 套件从未超限，边界 50/50 无恙）。
     if (__capped && __pairs >= maxPairs) {
+      if (__trunc) break;
       const __ov = new Error("HPE_HEADER_OVERFLOW: too many headers");
       __ov.code = "HPE_HEADER_OVERFLOW";
       __ov.__httpParse = true;
@@ -1111,8 +1115,9 @@ export class ServerResponse extends Writable {
         this.__last = true;
       }
     }
-    // 自动 Date 头（node 口径：响应缺 date 即补 UTC 串；删掉的不补）。
-    if (this.__headers["date"] === undefined &&
+    // 自动 Date 头（node 口径：响应缺 date 即补 UTC 串；删掉的不补；
+    // sendDate === false 不补——test-http-1.0 套件 curl 形断言无 Date 行）。
+    if (this.sendDate !== false && this.__headers["date"] === undefined &&
         !(this._removedHeader !== undefined && this._removedHeader.date)) {
       this.__headers["date"] = new Date().toUTCString();
       this.__autoDate = true;
@@ -1197,6 +1202,24 @@ export class ServerResponse extends Writable {
       this.__sock.write(u8);
     }
   }
+  // node _http_outgoing _send 内部面（test-http-1.0 套件直调 res._send('')）：
+  // 头未发即发头（'' 调用 = 强制冲头，_headerSent 口径）；已发且 data 非空即
+  // 直写（套件只用 ''；本仓帧化归 __frame，_send 不做 chunk 帧化）。
+  _send(data) {
+    const __d = data === undefined || data === null ? "" : String(data);
+    if (!this.__headSent) {
+      if (this.__sock !== null && !this.__sock.destroyed) {
+        const head = this.__headBytes();
+        if (head.length > 0) this.__sock.write(head);
+        if (__d.length > 0) this.__sock.write(new TextEncoder().encode(__d));
+      }
+      return this;
+    }
+    if (__d.length > 0 && this.__sock !== null && !this.__sock.destroyed) {
+      this.__sock.write(new TextEncoder().encode(__d));
+    }
+    return this;
+  }
   // 首块带头发（node _send 的 _header prepend 口径：头未发即拼进首个 _send
   //——chunked 拼 hex、CL/裸体拼体；空块/无体头独立一发）。
   __sendHeadWithFirst(b) {
@@ -1232,11 +1255,18 @@ export class ServerResponse extends Writable {
       this.__buf1 = u8;
       this.__holdTimer = setTimeout(() => {
         this.__holdTimer = null;
-        if (this.__buf1 !== null && !this.__headSent && !this.destroyed) {
-          if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined && !this.__frameSuppressed()) this.__chunked = true;
-          const b = this.__buf1;
-          this.__buf1 = null;
-          this.__sendHeadWithFirst(b);
+        if (this.__buf1 !== null && !this.destroyed) {
+          if (!this.__headSent) {
+            if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined && !this.__frameSuppressed()) this.__chunked = true;
+            const b = this.__buf1;
+            this.__buf1 = null;
+            this.__sendHeadWithFirst(b);
+          } else {
+            // _send('') 已冲头：滞留首块补帧（1.0 套件 write→_send('') 序）。
+            const b = this.__buf1;
+            this.__buf1 = null;
+            this.__frame(b);
+          }
         }
       }, 0);
       // node 口径：_write 完成异步回（socket 层 flush 节奏），同步回即
@@ -1244,6 +1274,12 @@ export class ServerResponse extends Writable {
       // （outgoing-finish 系无限 while hang 根因）。
       queueMicrotask(cb);
       return;
+    }
+    if (this.__headSent && this.__buf1 !== null) {
+      // _send('') 已冲头：滞留首块先行（保序——1.0 套件 write→_send('')→write 序）。
+      const b0 = this.__buf1;
+      this.__buf1 = null;
+      this.__frame(b0);
     }
     if (!this.__headSent) {
       if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined && !this.__frameSuppressed()) this.__chunked = true;

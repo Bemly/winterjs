@@ -553,7 +553,7 @@
             this.destroy(__hpe("HPE_LF_EXPECTED", "Expected LF after CR"));
             return;
           }
-          const { first, headers, rawHeaders, headersDistinct } = __parseHead(headText, this.__inboundMode ?? (this.insecureHTTPParser === true ? "lenient" : "strict"), this.maxHeadersCount);
+          const { first, headers, rawHeaders, headersDistinct } = __parseHead(headText, this.__inboundMode ?? (this.insecureHTTPParser === true ? "lenient" : "strict"), this.maxHeadersCount, true);
           if (!first[0].startsWith("HTTP/") || !/^\d{3}$/.test(first[1] ?? "")) {
             this.destroy(__hpe("HPE_INVALID_CONSTANT", "invalid HTTP response line"));
             return;

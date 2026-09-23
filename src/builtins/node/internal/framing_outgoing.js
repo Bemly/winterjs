@@ -917,6 +917,10 @@ export function withClientRequest(openSocket, flavor) {
         userHeaders = {};
         extra = {};
       } else {
+        // node ClientRequest ctor 入口：ObjectAssign({__proto__: null}, input,
+        // options)——后续读全走 null-proto 拷贝（null-prototype-options 套件：
+        // Object.prototype 上的同名 getter 陷阱不得触发，node 实测零触发）。
+        options = Object.assign({ __proto__: null }, options);
         // node _http_client.js：协议门（url.parse 形对象带 protocol 字段；
         // url.parse-only 套件——file:/mailto:/ftp: 等一律 ERR_INVALID_PROTOCOL）。
         if (options.protocol !== undefined && options.protocol !== flavor.protocol) {

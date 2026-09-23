@@ -1616,6 +1616,12 @@ export function normalizeRequestArgs(a, b, c, flavor) {
     if (u.username || u.password) {
       fromUrl.auth = `${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`;
     }
+    // node 口径：URL 实例 expando headers 随行（request-options 套件往 URL 上
+    // 挂 headers；String() 转换会洗掉，直读原对象）。
+    if (a !== null && typeof a === "object" &&
+        a.headers !== undefined && a.headers !== null && typeof a.headers === "object") {
+      fromUrl.headers = a.headers;
+    }
     if (typeof b === "function") return [fromUrl, b];
     return [{ ...fromUrl, ...(b ?? {}) }, c];
   }

@@ -1211,6 +1211,17 @@ Agent.prototype.keepSocketAlive = function (sock) {
 };
 Agent.prototype.__unpool = function (sock) {
   sock.__inPool = false;
+  // 出池即撤投毒 guard + 重挂解析器（node 复用即取新 parser；free 态的 null
+  // 只维持到出池，见 __release）。
+  try { sock.__freeGuardArmed = false; } catch { /* gone */ }
+  if (sock.parser === undefined || sock.parser === null) {
+    sock.parser = {
+      free() { /* 默认：归池，无可观测 */ },
+      close() { /* 默认：关闭，无可观测 */ },
+      remove() { /* 默认：摘除，无可观测 */ },
+    };
+    sock.parser[6] = function () { /* 默认：超时，无可观测 */ };
+  }
   if (sock.__poolCleaner !== undefined) {
     try { sock.removeListener("close", sock.__poolCleaner); } catch { /* gone */ }
     sock.__poolCleaner = undefined;
@@ -1339,6 +1350,11 @@ Agent.prototype.__release = function (sock, key, req, poolable = true) {
           this.__noteClosed(sock);
         } else {
         sock.__inPool = true;
+        // node 口径：回池即 detach 解析器 + 武装空闲投毒 guard（free-socket-
+        // data-guard 套件：parser null、零 data/readable 监听；投毒到达即销毁。
+        // guard 走 __ingestData（监听之外），listenerCount 恒 0）。
+        try { sock.parser = null; } catch { /* gone */ }
+        sock.__freeGuardArmed = true;
         free.push(sock);
       // node 口径：入池即移出在用表（agent.sockets 只计在用——
       // agent-maxtotalsockets 的 getTotalSocketsCount 口径）；空键即删

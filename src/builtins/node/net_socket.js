@@ -322,6 +322,13 @@ class Socket extends EventEmitter {
     // 用户 push 走同一 ingest（bytesRead/暂停/升级直调/暂存冲刷全同）；
     // push(null) = 可读 EOF（先冲暂存再 'end'；无传输（__id 0）即收尾 'close'）。
     this.__ingestData = (u8) => {
+      // 空闲池投毒 guard（free-socket-data-guard 套件）：回池后到达的首个
+      // 数据即销毁（监听之外，data/readable 计数恒 0）。
+      if (this.__freeGuardArmed === true) {
+        this.__freeGuardArmed = false;
+        try { this.destroy(); } catch { /* gone */ }
+        return;
+      }
       // 服务端升级接管（upgrade-body 系）：体字节走服务端直调喂体，不经
       // emitter（同表双发会使用户收到原始体 + spill 双份）；用户只收 spill。
       if (this.__srvUpgraded === true && typeof this.__srvFeed === "function") {

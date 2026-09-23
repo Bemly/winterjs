@@ -386,6 +386,9 @@ export function withHttpServer(Base) {
             }
             st.outgoing = [];
           }
+          // 手动 close 兼容（req-close-robust 套件直调 close 监听）：传输尚活
+          // 即真杀（正常路径已 destroy 即 no-op，不碰自然收尾）。
+          try { if (!sock.destroyed) sock.destroy(); } catch { /* gone */ }
         };
         sock.on("close", sock.__httpSockOnClose);
         // server.timeout：per-socket 空闲计时（10f；单发 timer，data 到达即重臂，

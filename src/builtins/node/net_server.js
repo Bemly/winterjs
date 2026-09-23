@@ -108,11 +108,13 @@ class __ServerClass extends EventEmitter {
       if (port.__isPipe) {
         this.__port = 0; this.__udsPath = port.__udsPath;
         this.__id = Number(__wjs_net_listen(0, "UDS:" + port.__udsPath, this));
+        this.__applyUnrefLatch();
       } else {
         this.__port = port.__boundPort;
         // reusePort 占位柄释放后重绑仍须带 SO_REUSEPORT（boundsocket reusePort
         // 双 listen 块；native 第 4 参 "1" 即开）。
         this.__id = Number(__wjs_net_listen(port.__boundPort, port.__boundHost, this, port.__reusePort === true ? "1" : ""));
+        this.__applyUnrefLatch();
       }
       return this;
     }
@@ -134,6 +136,7 @@ class __ServerClass extends EventEmitter {
         this.__port = 0; this.__udsPath = String(p);
         this.__setupHandle();
         this.__id = Number(__wjs_net_listen(0, "UDS:" + String(p) + "\n" + modeBits, this));
+        this.__applyUnrefLatch();
         return this;
       }
     }
@@ -145,6 +148,7 @@ class __ServerClass extends EventEmitter {
     // reusePort 直通 native 第 4 参（child reuseport 套件：fork 共享端口；
     // BoundSocket-adopt 路径早有同款，此处 direct 路径补齐）。
     this.__id = Number(__wjs_net_listen(Number(port), host === null ? "0.0.0.0" : host, this, reusePort === true ? "1" : ""));
+    this.__applyUnrefLatch();
     return this;
   }
   // node 口径：listen(cb)/listen()/listen(null) 即 listen(0)；listen(port[, host][, cb])
@@ -292,6 +296,8 @@ class __ServerClass extends EventEmitter {
   }
   close(cb) {
     if (typeof cb === "function") this.once("close", cb);
+    // unref 闩锁随柄消亡（node 口径：新 listen 即 fresh refed 柄；重听不继承）。
+    this.__unrefLatched = false;
     if (this.__id) {
       __wjs_net_destroy(this.__id);
       // 柄同步即清（node 口径：close 后 listen 立即可用，call-listen-multiple 第三段）。
@@ -304,9 +310,16 @@ class __ServerClass extends EventEmitter {
     }
     return this;
   }
-  // 10a：ref 真计数（同 Socket）。
-  ref() { if (this.__id) __wjs_net_ref(this.__id); return this; }
-  unref() { if (this.__id) __wjs_net_unref(this.__id); return this; }
+  // 10a：ref 真计数（同 Socket）。unref 闩锁（req-close-robust 套件：
+  // listen 前 unref 在 __id 为 0 时被吞——真机两侧皆闩锁，listen 落定即补调）。
+  ref() { this.__unrefLatched = false; if (this.__id) __wjs_net_ref(this.__id); return this; }
+  unref() { this.__unrefLatched = true; if (this.__id) __wjs_net_unref(this.__id); return this; }
+  // listen 落定即结算闩锁（各 __doListen 赋值点调用）。
+  __applyUnrefLatch() {
+    if (this.__unrefLatched === true && this.__id) {
+      try { __wjs_net_unref(this.__id); } catch { /* entry gone 即无事 */ }
+    }
+  }
 }
 
 Socket.prototype.__attachConn = function (info) {

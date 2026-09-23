@@ -9,10 +9,17 @@ function __b64dec(s) {
   for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
   return u8;
 }
-function __chunkU8(chunk) {
+function __chunkU8(chunk, enc) {
   // 真机逐字（write-arguments 套件）：'The "chunk" argument must be of type string
   // or an instance of Buffer, TypedArray, or DataView.' + invalidArgTypeHelper。
-  if (typeof chunk === "string") return new TextEncoder().encode(chunk);
+  // encoding 形（odd-hex-write 套件）：字符串 + 显式编码即按编码解码
+  // （'ff1'/'hex' → 单字节 0xff，尾 nibble 丢弃，Buffer.from 口径）。
+  if (typeof chunk === "string") {
+    if (enc !== undefined && enc !== null && enc !== "utf8" && enc !== "utf-8") {
+      return Buffer.from(chunk, String(enc));
+    }
+    return new TextEncoder().encode(chunk);
+  }
   if (typeof Buffer !== "undefined" && Buffer.isBuffer(chunk)) return chunk;
   if (ArrayBuffer.isView(chunk) && !(chunk instanceof DataView) || chunk instanceof DataView) {
     if (chunk instanceof DataView) return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
@@ -364,6 +371,8 @@ class Socket extends EventEmitter {
       this.__connected = false;
       this.__ended = false; this.__finSent = false; this.__endAfterFlush = false;
       this.__hadError = false; this.__handleClosed = false; this.__peerFin = false;
+      // 重连即 fresh 柄（闩锁随旧柄消亡，server close() 同理）。
+      this.__unrefLatched = false;
       this._handle = null;
       this.__pendW = []; this.__pendBytes = 0;
       this.__id = 0;
@@ -613,6 +622,10 @@ class Socket extends EventEmitter {
     } else this.__id = sockPath !== null
       ? Number(__wjs_net_connect(sockPath, "", this, false))
       : Number(__wjs_net_connect(this.__targetHost, this.__targetPort, this, __noDelay === true));
+    // unref 闩锁结算（connect 前 unref 过即补调）。
+    if (this.__unrefLatched === true && this.__id) {
+      try { __wjs_net_unref(this.__id); } catch { /* entry gone 即无事 */ }
+    }
   }
   // 事件循环派发钩子（Rust dispatch 调用；kind/data 均为字符串）
   __ev(kind, payload) {
@@ -801,7 +814,7 @@ class Socket extends EventEmitter {
       if (typeof cb2 === "function") { queueMicrotask(() => { try { cb2.call(this, e); } catch {} }); return false; }
       throw e;
     }
-    const u8 = __chunkU8(data);
+    const u8 = __chunkU8(data, typeof enc === "string" ? enc : undefined);
     if (this.destroyed || !this.writable) return this.__writeErr(cb2);
     // node 口径（write-after-close 套件双形，真机 26 实测均为异步 error 事件非同步抛）：
     // 已连接但 _handle 被置空后写 → ERR_SOCKET_CLOSED('Socket is closed')；
@@ -890,6 +903,11 @@ class Socket extends EventEmitter {
     return this;
   }
   // 10a：ref 真计数（net/dgram 共用 natives；__id 为 0 时静默 no-op）。
-  ref() { if (this.__id) __wjs_net_ref(this.__id); return this; }
-  unref() { if (this.__id) __wjs_net_unref(this.__id); return this; }
+  // unref 闩锁（connect 前 unref 同 server 侧：落定即补调，真机同）。
+  ref() { this.__unrefLatched = false; if (this.__id) __wjs_net_ref(this.__id); return this; }
+  unref() {
+    this.__unrefLatched = true;
+    if (this.__id) __wjs_net_unref(this.__id);
+    return this;
+  }
 }

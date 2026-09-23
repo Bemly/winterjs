@@ -495,6 +495,37 @@ export class IncomingMessage extends Readable {
     this.complete = false;
     // node 口径：aborted 缺省 false，中止置 true（aborted 套件双侧断言）。
     this.__aborted = false;
+    // node 口径 connection/socket 联动（connection-setter 套件）：
+    // connection 赋值同步 socket（反之亦然）；双双缺席即 undefined。
+    this.__connSock = undefined;
+  }
+  get connection() { return this.__connSock; }
+  set connection(v) { this.__connSock = v; }
+  get socket() { return this.__connSock; }
+  set socket(v) { this.__connSock = v; }
+  // node 口径 client（socket 废弃别名，req-close-robust 套件直读 _events）。
+  get client() { return this.socket; }
+  set client(v) { this.socket = v; }
+  // node lib/_http_incoming.js _addHeaderLine（matchKnownFields 套件）：
+  // 单例首个赢（含 undefined 占位）、set-cookie 数组、cookie '; '、其余 ', '。
+  // dest 缺席即落自身 headers（内部复用）。
+  _addHeaderLine(field, value, dest) {
+    const target = dest ?? this.headers;
+    const lk = String(field).toLowerCase();
+    if (lk === "set-cookie") {
+      if (!Array.isArray(target[lk])) target[lk] = [];
+      target[lk].push(value);
+      return;
+    }
+    if (__SINGLETON_HEADERS.has(lk)) {
+      if (!Object.prototype.hasOwnProperty.call(target, lk)) target[lk] = value;
+      return;
+    }
+    if (lk === "cookie") {
+      target[lk] = target[lk] === undefined ? value : `${target[lk]}; ${value}`;
+      return;
+    }
+    target[lk] = target[lk] === undefined ? value : `${target[lk]}, ${value}`;
   }
   _read() {}
   get aborted() { return this.__aborted === true; }

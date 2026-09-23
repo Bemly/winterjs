@@ -175,8 +175,9 @@ globalThis.process = {
     cached_builtins: true, require_module: true, quic: false,
   },
   execPath: __wjs_exec_path(),
-  // node 选项透传（M5 vitest 牵引：本仓无 node 旗标，恒空数组，真机口径）。
-  execArgv: [],
+  // node 选项透传（M5 vitest 牵引：无旗恒 []；CLI 起点剥下的 node 运行时旗
+  // 回填——common.js 自举 respawn 的 flags 可见性，真机口径）。
+  execArgv: JSON.parse(__wjs_node_compat_json()),
   pid: __wjs_pid(),
   // 文件创建掩码（10f：读无参回当前，置数回旧值；真机口径）。
   umask(mask) {
@@ -256,6 +257,9 @@ globalThis.process = {
           self.__wjs_polling = false;
           self.__wjs_ended = true;
           self.__wjs_emitStdin("end");
+          // node 口径：stdin EOF 后发 'close'（chunk-problem 的 shasum 形靠它；
+          // 异步一轮——end 监听内挂 close 仍可达）。
+          queueMicrotask(() => self.__wjs_emitStdin("close"));
           return;
         }
         if (r !== "") {
@@ -389,4 +393,23 @@ globalThis.process = {
 // 真机口径：process[Symbol.toStringTag] = "process"（不可枚举，实测 getter 面），
 // String(process) → '[object process]'（vm basic 套件 / util.inspect 点名）。
 Object.defineProperty(globalThis.process, Symbol.toStringTag, { value: "process" });
+// Node 兼容旗语义（CLI 起点剥下，见 cli::strip_node_compat_args）：
+// --expose-gc 即暴露 globalThis.gc（async no-op——真收集另案，调用形状先行；
+// 无旗不暴露，真机口径）；名单挂内部位供 http 默认宽松等消费（不进 process.env）。
+try {
+  const __compat = JSON.parse(__wjs_node_compat_json());
+  globalThis.__wjs_nodeCompat = Array.isArray(__compat) ? __compat : [];
+  if (globalThis.__wjs_nodeCompat.includes("--expose-gc") && typeof globalThis.gc !== "function") {
+    globalThis.gc = async function gc() { return undefined; };
+  }
+} catch { globalThis.__wjs_nodeCompat = []; }
+// Node 口径：NODE_DEBUG 置位即启动期警告一次（首 section 名；debug.js 套件
+// 逐字断言。stderr 直写，不走 warning 通道）。
+try {
+  const __nd = __wjs_env_get("NODE_DEBUG");
+  if (__nd !== undefined && __nd !== null && String(__nd).trim() !== "") {
+    const __sec = String(__nd).split(",")[0].trim();
+    __wjs_stderr_write(`Setting the NODE_DEBUG environment variable to '${__sec}' can expose sensitive data (such as passwords, tokens and authentication headers) in the resulting log.\n`);
+  }
+} catch { /* 环境不可读即跳过 */ }
 "#;

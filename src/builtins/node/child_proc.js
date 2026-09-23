@@ -249,36 +249,100 @@ function __spawnError(cmd, r, encoding) {
   }
   throw err;
 }
-// shell 串首自举翻译（execsync-maxbuf / exec-encoding / exec-timeout 系套件）：
-// `"<execPath>" -e/-p/-pe X` 经 shell 跑自身；`$NODE` token（env 透传）与
-// `${VAR}`（node 测试 helper escapePOSIXShell 的 env 间接形，opts.env 解引用）
-// 同理。仅串首二进制位 + 纯 [pe] 组合旗才改写为 `--eval`；**裸文件形**（首个
-// 参数解引用后不以 `-` 开头）改写为 `--run <file>`（与 spawnSync 的 __selfArgv
-// 同规则）；余下一律原样（误伤用户脚本更糟）。
+// shell 串分段自举翻译（execsync-maxbuf / chunk-problem 管道形）：
+// 顶层 `|` 切段（引号感知，`||` 不切），每段走 argv 翻译；非自举段原样。
+// `$VAR`/`${VAR}`（含引号包裹形）按 env 解引用判定；解不出且名为 NODE 即
+// 自举标记（测试 helper `$NODE` 口径）。段内 node 兼容旗（--expose-* 等）
+// 剥除后走 -e/-p/裸文件规则（CLI 入口同款，见 cli::strip_node_compat_args）。
+const __NODE_COMPAT_FLAGS = [
+  "--expose-internals", "--expose-gc", "--expose_gc",
+  "--insecure-http-parser", "--allow_natives_syntax", "--allow-natives-syntax",
+];
+function __splitShell(s, sep) {
+  const segs = [];
+  let cur = "", q = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q !== null) {
+      cur += c;
+      if (c === q) q = null;
+    } else if (c === '"' || c === "'") {
+      q = c; cur += c;
+    } else if (sep === "|" && c === "|" && s[i + 1] === "|") {
+      cur += "||"; i++;
+    } else if (sep === "|" && c === "|") {
+      segs.push(cur); cur = "";
+    } else {
+      cur += c;
+    }
+  }
+  segs.push(cur);
+  return segs;
+}
+function __splitArgs(s) {
+  const out = [];
+  let cur = "", q = null;
+  const flush = () => { if (cur !== "") { out.push(cur); cur = ""; } };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q !== null) {
+      cur += c;
+      if (c === q) { q = null; flush(); }
+    } else if (c === '"' || c === "'") {
+      q = c; cur += c;
+    } else if (c === " " || c === "\t") {
+      flush();
+    } else {
+      cur += c;
+    }
+  }
+  flush();
+  return out;
+}
+// 解引用一层引号（可多层）+ `$VAR`/`${VAR}` 查 env；`$NODE` 无值即自举标记。
+function __derefTok(t, env) {
+  let u = t;
+  for (;;) {
+    if (u.length >= 2 && ((u.startsWith('"') && u.endsWith('"')) || (u.startsWith("'") && u.endsWith("'")))) {
+      u = u.slice(1, -1);
+      continue;
+    }
+    break;
+  }
+  if (u.startsWith("$")) {
+    const m = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(u) || /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(u);
+    if (m) {
+      if (env && Object.prototype.hasOwnProperty.call(env, m[1])) return String(env[m[1]]);
+      if (m[1] === "NODE") return "$NODE";
+      return u;
+    }
+  }
+  return u;
+}
+function __selfSeg(seg, env) {
+  const toks = __splitArgs(seg);
+  if (toks.length === 0) return seg;
+  const binRes = __derefTok(toks[0], env);
+  const selfBin = binRes === process.execPath || binRes === "$NODE";
+  if (!selfBin) return seg;
+  // 兼容旗剥除（--flag / --flag=value 整 token）。
+  let rest = toks.slice(1);
+  while (rest.length > 0) {
+    const b = rest[0].split("=")[0];
+    if (__NODE_COMPAT_FLAGS.includes(b)) rest = rest.slice(1);
+    else break;
+  }
+  if (rest.length === 0) return seg;
+  const fm = /^-([A-Za-z]+)$/.exec(rest[0]);
+  if (fm && /^[pe]+$/.test(fm[1])) return `${toks[0]} --eval ${rest.slice(1).join(" ")}`;
+  if (!rest[0].startsWith("-")) return `${toks[0]} --run ${rest.join(" ")}`;
+  return seg;
+}
 function __selfCmd(cmd, env) {
   const s = String(cmd);
-  const m = s.match(/^("[^"]*"|'[^']*'|\$NODE|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\S+)\s*([\s\S]*)$/);
-  if (!m) return cmd;
-  const bin = m[1], rest = m[2] ?? "";
-  const unq = (t) => ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) ? t.slice(1, -1) : t;
-  const envGet = (t) => {
-    const u = unq(t);
-    const vm = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(u);
-    if (vm && env && Object.prototype.hasOwnProperty.call(env, vm[1])) return String(env[vm[1]]);
-    return u;
-  };
-  const selfBin = envGet(bin) === process.execPath || unq(bin) === "$NODE";
-  if (!selfBin) return cmd;
-  // 旗形（-e/-p/-pe …）——二 token 正则的 \s* 已吃掉分隔空白，此处用 \s*。
-  const fm = rest.match(/^\s*-([A-Za-z]+)\s?([\s\S]*)$/);
-  if (fm && /^[pe]+$/.test(fm[1])) return `${bin} --eval ${fm[2]}`;
-  // 裸文件形（首个参数解引用后非旗）
-  const am = rest.match(/^\s*("[^"]*"|'[^']*'|\$NODE|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\S+)([\s\S]*)$/);
-  if (am) {
-    const a0 = envGet(am[1]);
-    if (!a0.startsWith("-")) return `${bin} --run ${am[1]}${am[2] ?? ""}`;
-  }
-  return cmd;
+  // 旧单段正则已由分段翻译替代（管道形 chunk-problem 根因）；空串原样。
+  if (s === "") return cmd;
+  return __splitShell(s, "|").map((seg) => __selfSeg(seg, env)).join(" | ");
 }
 // send 参数校验（node target.send/_send 口径，父子双侧共用；send-type-error
 // 套件逐项：options 非对象即 ARG_TYPE；message 缺席 MISSING_ARGS、非

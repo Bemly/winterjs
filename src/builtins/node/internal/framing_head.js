@@ -650,6 +650,10 @@ export class ServerResponse extends Writable {
       if (typeof this.__wlen === "number") {
         this.__wlen = Math.max(0, this.__wlen - (b !== undefined && b !== null ? b.length : 0));
       }
+      // bytesWritten pending 核销（实际落盘长度；CL 快捷等真值偏差由 _final 兜底）。
+      if (this.__sock !== null && typeof this.__sock.__bwSub === "function") {
+        this.__sock.__bwSub(b !== undefined && b !== null ? b.length : 0);
+      }
     } catch { /* 计数永不阻递送 */ }
     // 停靠 drain 释放（计数清零即递送，异步一轮——真机 drain 恒异步）。
     if (this.__wlen === 0 && this.__parkedDrain === true) {
@@ -1108,8 +1112,17 @@ export class ServerResponse extends Writable {
     // 写时记账（writableLength 精确字节，见 __countOut）：write 包装层同步计
     // （流机构异步派发 _write，_write 时机计数会漏同步读——outgoing-properties
     // 套件连写两行后同步读）；end 块由 end 包装层计，_write 内不计（防双计）。
+    // socket bytesWritten 同步预测（byteswritten 套件）：__wlen 增量同步到
+    // socket pending（落盘 __sockWrite 核销、_final 兜底清零）。
     if (chunk !== undefined && chunk !== null) {
-      try { this.__countOut(chunk instanceof Uint8Array ? chunk : __toU8(String(chunk))); } catch { /* 计数永不阻写 */ }
+      try {
+        const __before = this.__wlen ?? 0;
+        this.__countOut(chunk instanceof Uint8Array ? chunk : __toU8(String(chunk)));
+        const __d = (this.__wlen ?? 0) - __before;
+        if (__d > 0 && this.__sock !== null && typeof this.__sock.__bwAdd === "function") {
+          this.__sock.__bwAdd(__d);
+        }
+      } catch { /* 计数永不阻写 */ }
     }
     return super.write(chunk, encoding, cb);
   }
@@ -1170,10 +1183,16 @@ export class ServerResponse extends Writable {
     this.__userEnded = true;
     try {
       const __r = super.end(chunk, encoding, cb);
-      // end 块同步记账（流 end 经内部 _write 直调，不走 write 包装层，此处补计）。
+      // end 块同步记账（流 end 经内部 _write 直调，不走 write 包装层，此处补计；
+      // socket pending 同上）。
       if (this.__endHadData) {
         try {
+          const __before = this.__wlen ?? 0;
           this.__countOut(chunk instanceof Uint8Array ? chunk : __toU8(String(chunk)));
+          const __d = (this.__wlen ?? 0) - __before;
+          if (__d > 0 && this.__sock !== null && typeof this.__sock.__bwAdd === "function") {
+            this.__sock.__bwAdd(__d);
+          }
         } catch { /* 计数永不阻收尾 */ }
       }
       return __r;
@@ -1538,8 +1557,14 @@ export class ServerResponse extends Writable {
         this.__finalParked = cb;
         return;
       }
-      // 无处可送：挂起计数清零（finish 口径 writableLength 恒 0）。
+      // 无处可送：挂起计数清零（finish 口径 writableLength 恒 0；
+      // socket 已死时 pending 同清，未落盘不再落盘）。
       this.__wlen = 0;
+      try {
+        if (this.__sock !== null && typeof this.__sock.__bwSub === "function") {
+          this.__sock.__bwPend = 0;
+        }
+      } catch { /* 计数永不阻收尾 */ }
       cb();
       return;
     }
@@ -1600,8 +1625,14 @@ export class ServerResponse extends Writable {
     const cont = this.__onDone;
     this.__onDone = null;
     // _final 落盘全量同步完成（CL 快捷真值可能覆盖写时预测）：收尾计数恒清零，
-    // 与 socket 实际落盘对齐（finish 口径 writableLength 恒 0）。
+    // 与 socket 实际落盘对齐（finish 口径 writableLength 恒 0；pending 预测
+    // 偏差一并清零，base 持有全部实发）。
     this.__wlen = 0;
+    try {
+      if (this.__sock !== null && typeof this.__sock.__bwSub === "function") {
+        this.__sock.__bwPend = 0;
+      }
+    } catch { /* 计数永不阻收尾 */ }
     // cont（re-feed 解析已读管线字节→503/408 等错误响应）先排，__last 的 FIN
     // 随后排：错误响应写落定时 socket 仍活，否则撞上已 end 即 "write after end"
     // 丢失（GET 管线超 maxRequests 形；POST 形靠体 pacing 碰巧，递延后确定性）。
@@ -1627,11 +1658,16 @@ export class ServerResponse extends Writable {
       this.__holdTimer = null;
     }
     // 销毁即无后续落盘：挂起计数/停靠 drain/停靠写/停靠终结全清
-    // （destroy 不走 _final；停靠回调永不递送）。
+    // （destroy 不走 _final；停靠回调永不递送；socket pending 同清）。
     this.__wlen = 0;
     this.__parkedDrain = false;
     this.__parked = [];
     this.__finalParked = null;
+    try {
+      if (this.__sock !== null && typeof this.__sock.__bwSub === "function") {
+        this.__sock.__bwPend = 0;
+      }
+    } catch { /* 计数永不阻销毁 */ }
     // capture-rejection 套件：destroy(err) 透传 socket（有 error 监听才带
     // err——裸杀配 err 会无监听抛错；node 侧由常驻 socketOnError 承接，
     // 本仓无此常驻监听故按可观测等价门控）。

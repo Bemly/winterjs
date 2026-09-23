@@ -429,10 +429,11 @@ export function withHttpServer(Base) {
       super(...args);
       __initServer(this, args);
     }
-    // 400 Bad Request（Node clientError 默认响应）+ 销毁。
-    __badRequest(sock) {
+    // 400 Bad Request（Node clientError 默认响应）+ 销毁（err 在场即经
+    // destroy 递送 socket 'error'，真机默认分支口径）。
+    __badRequest(sock, err) {
       try { sock.write(new TextEncoder().encode("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
-      try { sock.destroy(); } catch { /* gone */ }
+      try { err !== undefined ? sock.destroy(err) : sock.destroy(); } catch { /* gone */ }
     }
     // 408 Request Timeout（requestTimeout/headersTimeout 到期；精确字节见
     // test-http-server-request-timeout-delayed-headers 套件）+ 销毁。
@@ -457,15 +458,28 @@ export function withHttpServer(Base) {
     // 裸抛会变成 unhandled rejection（chunked-smuggling 套件）。
     __feedError(sock, e) {
       if (e && e.__httpParse) {
-        // node 口径：clientError 事件恒发；无监听才落默认响应 + 销毁——
-        // HPE_HEADER_OVERFLOW 默认 431（overflow 套件真机实证），其余 400。
+        // rawPacket 缺席即按触发当片补齐（llhttp rawPacket=当片，非累计；
+        // 有监听无监听一律补——clientError 监听侧照常断言 rawPacket）。
+        if (e.rawPacket === undefined || e.rawPacket === null) {
+          try {
+            const __st = sock.__httpState;
+            e.rawPacket = globalThis.Buffer.from((__st && __st.__lastPkt) ?? new Uint8Array(0));
+          } catch { /* gone */ }
+        }
+        // node 口径：clientError 恒发；无监听才落默认响应 + 销毁——
+        // HPE_HEADER_OVERFLOW 默认 431（overflow 套件真机实证），其余 400.
+        // 默认分支附带 socket 'error'（真机： SockError 先于 431 到达，close
+        // hadError=true）——只递送给用户监听（计数含 __httpSockOnError 兜底，
+        // 故 >1 才带 err 销毁；仅兜底时递送即 tick 内裸抛走 uncaught fatal）。
         this.emit("clientError", e, sock);
         if (this.listenerCount("clientError") === 0) {
+          const __hasSockErr = typeof sock.listenerCount === "function" && sock.listenerCount("error") > 1;
+          const __kill = () => { try { __hasSockErr ? sock.destroy(e) : sock.destroy(); } catch { /* gone */ } };
           if (e.code === "HPE_HEADER_OVERFLOW") {
             try { sock.write(new TextEncoder().encode("HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
-            try { sock.destroy(); } catch { /* gone */ }
+            __kill();
           } else {
-            this.__badRequest(sock);
+            this.__badRequest(sock, __hasSockErr ? e : undefined);
           }
         }
         return;
@@ -554,6 +568,9 @@ export function withHttpServer(Base) {
       }
     }
     __feed(sock, st, chunk) {
+      // 当片存根（rawPacket 口径：llhttp rawPacket=触发当片，非累计；空 re-feed
+      // 不覆盖——__feedError 按此补齐缺席的 rawPacket）。
+      if (chunk !== undefined && chunk !== null && chunk.length > 0) st.__lastPkt = chunk;
       st.buf = __concat(st.buf, chunk);
       while (true) {
         if (st.req === null) {
@@ -565,9 +582,12 @@ export function withHttpServer(Base) {
           }
           const headEnd = __findHeadEnd(st.buf);
           if (headEnd === -1) {
-            // 头段超出 maxHeaderSize：431 Request Header Fields Too Large
-            //（llhttp HPE_HEADER_OVERFLOW；header-overflow 套件精确字节）。
-            if (st.buf.length > maxHeaderSize) { this.__headerFieldsTooLarge(sock); return; }
+            // 头段超出 maxHeaderSize：llhttp HPE_HEADER_OVERFLOW（整片已消费，
+            // bytesParsed=buf 长；rawPacket 由 __feedError 按当片补齐），默认
+            // 431 + 销毁（header-overflow 套件精确字节 + socket error 三件）。
+            if (st.buf.length > maxHeaderSize) {
+              throw __hpeServer("HPE_HEADER_OVERFLOW", "Header overflow", st.buf.length);
+            }
             // 消息期 requestTimeout 从消息首字节起算（request-timeout-
             // pipelining 套件：管线第二请求的残缺头也必须在 requestTimeout
             // 内 408；已有计时（headersTimeout 空闲计时）在跑则不叠加，
@@ -588,6 +608,22 @@ export function withHttpServer(Base) {
           }
           const { first, headers, rawHeaders, headersDistinct } = __parseHead(headText, this.__inboundMode ?? "strict", this.maxHeadersCount);
           __validateRequestHead(first, headers);
+          // llhttp 头语义错（真机逐形实测）：TE+CL 并存 / 重复 CL 行——整头已
+          // 消费（bytesParsed=头长；子节偏移未被套件点名，记档近似），经
+          // clientError（默认 400）。rawPacket 由 __feedError 按当片补齐。
+          if (headers["transfer-encoding"] !== undefined && headers["content-length"] !== undefined) {
+            throw __hpeServer("HPE_INVALID_TRANSFER_ENCODING",
+              "Transfer-Encoding can't be present with Content-Length", headEnd + 4);
+          }
+          {
+            let __cln = 0;
+            for (let __i = 0; __i < rawHeaders.length; __i += 2) {
+              if (String(rawHeaders[__i]).toLowerCase() === "content-length") __cln++;
+            }
+            if (__cln > 1) {
+              throw __hpeServer("HPE_UNEXPECTED_CONTENT_LENGTH", "Duplicate Content-Length", headEnd + 4);
+            }
+          }
           // node 口径（server-options-incoming-message 套件）：IncomingMessage
           // 选项类造 req（无显式构造器即透传同参）。
           const __IM = this.IncomingMessage ?? IncomingMessage;

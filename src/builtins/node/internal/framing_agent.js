@@ -40,6 +40,8 @@
       }
       if ((this.__headerNames ??= {})[lk] === undefined) this.__headerNames[lk] = String(name);
       if (lk === "connection") this.__autoConn = false;
+      // 用户显式改 Host 即按原文发（wire 不补端口；自动 Host 的补端口旗失效）。
+      if (lk === "host") this.__hostBarePort = null;
       return this;
     }
     // node OutgoingMessage.appendHeader（header-value-relaxed 套件点名）。
@@ -67,6 +69,7 @@
       }
       if ((this.__headerNames ??= {})[lk] === undefined) this.__headerNames[lk] = String(name);
       if (lk === "connection") this.__autoConn = false;
+      if (lk === "host") this.__hostBarePort = null;
       return this;
     }
     // node 口径：getHeader 原样回（数组不 join；multiple-headers 套件）。
@@ -302,6 +305,13 @@
       // headers 套件；distinct 同收单元素）。
       const __uniq = this.__uniqueHeaders;
       const __emitOne = (k, v) => {
+        // node 口径：自动 Host 在 wire 补 `:port`（存储省缺省端口；batch5
+        // `foo:1234:80`；用户显式改 Host 即原文，__hostBarePort 已失效）。
+        if (k === "host" && this.__hostBarePort !== null && this.__hostBarePort !== undefined) {
+          const __n = __names[k] ?? (canon[k] ?? k);
+          head.push(`${__n}: ${v}:${this.__hostBarePort}`);
+          return;
+        }
         if (Array.isArray(v)) {
           const __n = __names[k] ?? (canon[k] ?? k);
           // cookie 数组恒单行 '; ' 合并（真机 26.8.2 实测，双端同）。
@@ -522,10 +532,11 @@
       if (this.agent !== null) this.agent.__cancel(this);
       // node 口径：请求 error 即摘 socket data/end 请求级监听（agent 的
       // onReadableStreamEnd 保留；client-parse-error 套件 data=0/end=1）。
+      // 注意走 this.socket（__sock 在 __finishResponse 即抽空，见 949 行）。
       // 正常 destroy（无 err）不动。
-      if (err !== undefined && err !== null && this.__sock !== null) {
+      if (err !== undefined && err !== null && this.socket !== null && this.socket !== undefined) {
         try {
-          const __s = this.__sock;
+          const __s = this.socket;
           if (__s.__reqSockOnData !== undefined) {
             try { __s.removeListener("data", __s.__reqSockOnData); } catch { /* gone */ }
             __s.__reqSockOnData = undefined;
@@ -582,6 +593,17 @@
                 return;
               }
             }
+            // 响应头超限（语义计数，见 __headSemCount；max-http-headers 套件
+            // test1：16KB 响应头即 HPE_HEADER_OVERFLOW，不等 FIN；上限取请求选项）。
+            if (__headSemCount(this.__resBuf, true) >= (this.maxHeaderSize ?? maxHeaderSize)) {
+              this.destroy(__hpe("HPE_HEADER_OVERFLOW", "Header overflow"));
+              return;
+            }
+            return;
+          }
+          // 整头超限（语义计数；一次凑齐亦拒；上限取请求选项）。
+          if (__headSemCount(this.__resBuf.slice(0, headEnd + 4), true) >= (this.maxHeaderSize ?? maxHeaderSize)) {
+            this.destroy(__hpe("HPE_HEADER_OVERFLOW", "Header overflow"));
             return;
           }
           const headText = __latin1(this.__resBuf.slice(0, headEnd));
@@ -961,7 +983,14 @@
         return;
       }
       // 响应体已齐但 res 未被消费时连接先断：毁 res 引发 'close' → finish 链。
+      // 但有残留字节时 node 按管线下条消息解析，失败即 req error（client-parse-
+      // error 套件 302 + 'hi world' 残留形）——先查残留。
       if (this.__respDone && this.__res !== null && !this.__res.readableEnded && !this.__res.destroyed) {
+        if (!this.__upgraded && this.__res.complete &&
+            this.__resBuf.length > 0 && !this.destroyed) {
+          this.destroy(__hpe("HPE_INVALID_CONSTANT", "Expected HTTP/, RTSP/ or ICE/"));
+          return;
+        }
         try { this.__res.destroy(); } catch { /* gone */ }
         return;
       }
@@ -985,6 +1014,15 @@
       if (this.__res === null && !this.__respDone) {
         this.__closeEmitted = true;
         this.emit("close");
+        return;
+      }
+      // 完整响应后的残留字节：node 按管线下条消息解析，失败即 req error
+      //（client-parse-error 套件：302 后 'hi world' 残留 + close 即
+      // HPE_INVALID_CONSTANT；正常复用残留恒空，此分支不可达）。
+      if (!this.__upgraded && this.__res !== null && this.__res.complete &&
+          this.__resBuf.length > 0 && !this.destroyed) {
+        this.destroy(__hpe("HPE_INVALID_CONSTANT", "Expected HTTP/, RTSP/ or ICE/"));
+        return;
       }
     }
     destroy(err) {

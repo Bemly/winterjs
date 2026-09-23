@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { StringDecoder } from "node:string_decoder";
 import { __etAdd, __etRemove } from "node:internal/events/abort_listener";
 import { kTimeout } from "node:internal/timers";
+import { codes } from "node:internal/errors";
 const Buffer = globalThis.Buffer;
 
 function __b64dec(s) {
@@ -392,6 +393,9 @@ class Socket extends EventEmitter {
     this._readableState = { endEmitted: false, length: 0 };
   }
   connect(...args) {
+    // node 口径：首参数组即参数表本身（agent 调 socket.connect([options]) 形，
+    // nodelay 套件 patched-connect 按 args[0].noDelay 断言）。
+    if (args.length === 1 && Array.isArray(args[0])) args = args[0];
     if (args.length === 0 || (args.length === 1 && typeof args[0] === "object" && args[0] !== null && args[0].port === undefined && args[0].path === undefined)) {
       // node ERR_MISSING_ARGS（connect-no-arg 套件逐字）
       const e = new TypeError('The "options" or "port" or "path" argument must be specified');
@@ -977,6 +981,11 @@ class Socket extends EventEmitter {
     return { address: this.localAddress, port: this.localPort, family: String(this.localAddress).includes(":") ? "IPv6" : "IPv4" };
   }
   setEncoding(enc) {
+    // node 口径：HTTP 服务端 socket 禁改编码（socket-encoding-error 套件；
+    // RFC7230 原始字节面）。纯 net socket 照常。
+    if (this.__httpServerSocket === true) {
+      throw new codes.ERR_HTTP_SOCKET_ENCODING();
+    }
     this.__enc = enc === null || enc === undefined ? null : String(enc);
     // 持久解码器（large-string 套件：分包多字节必须跨 chunk 保态——
     // 每 chunk 新建 TextDecoder 会把切断的序列各吐一个 U+FFFD）。

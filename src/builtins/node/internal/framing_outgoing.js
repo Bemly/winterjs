@@ -193,6 +193,8 @@ function __hasBareCR(headText) {
 function __hpe(code, msg) {
   const e = new Error(`Parse Error: ${msg}`);
   e.code = code;
+  // node 口径 reason（rawbytes 套件：裸消息，与 message 的前缀形并存）。
+  e.reason = msg;
   e.__parseErr = true;
   return e;
 }
@@ -1235,7 +1237,9 @@ export function withClientRequest(openSocket, flavor) {
       this.__validation = options.httpValidation ?? (options.insecureHTTPParser === true || __cliInsecDefault ? "insecure" : undefined);
       this.insecureHTTPParser = options.insecureHTTPParser ?? __cliInsecDefault;
       this.socket = null;
-      this.agent = options.agent === undefined ? (flavor.defaultAgent ?? null) : (options.agent || null);
+      this.agent = options.agent === undefined
+        ? (typeof flavor.__getDefaultAgent === "function" ? flavor.__getDefaultAgent() : (flavor.defaultAgent ?? null))
+        : (options.agent || null);
       this.__agentFalse = options.agent === false;
       this.__defaultPort = this.agent !== null && this.agent.defaultPort !== undefined
         ? this.agent.defaultPort : flavor.defaultPort;

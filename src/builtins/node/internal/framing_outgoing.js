@@ -347,6 +347,13 @@ export function withHttpServer(Base) {
           if (st.res !== null && !st.res.writableEnded && !st.res.destroyed) {
             st.res.destroy();
           }
+          // 管线排空销毁（轮转未及的入列响应同收尾，不悬挂 parked 回调）。
+          if (st.outgoing !== undefined && st.outgoing !== null) {
+            for (const __q of st.outgoing) {
+              try { if (__q !== undefined && !__q.destroyed) __q.destroy(); } catch { /* gone */ }
+            }
+            st.outgoing = [];
+          }
         };
         sock.on("close", sock.__httpSockOnClose);
         // server.timeout：per-socket 空闲计时（10f；单发 timer，data 到达即重臂，
@@ -816,7 +823,19 @@ export function withHttpServer(Base) {
           }
           st.req = __wired ? req : null;
           st.framing = framing;
-          st.res = res;
+          // 管线队列（node state.outgoing 口径）：在途响应未完时新 res 脱钩
+          // socket（res.socket/connection 置 null，drain-writable-length 套件
+          // 点名），写停靠（_write park），'request' 照常即时派发（eager-parse）；
+          // 前响 finish 即 assignSocket 轮转（见 __onDone）。
+          if (st.res !== null && st.res !== undefined && !st.res.destroyed) {
+            res.__sock = null;
+            res.socket = null;
+            res.connection = null;
+            res.__queued = true;
+            (st.outgoing ??= []).push(res);
+          } else {
+            st.res = res;
+          }
           // 头已齐、体在途：消息期 requestTimeout 计时。
           this.__armMsgTimer(st, sock);
           res.__onDone = () => {
@@ -824,6 +843,15 @@ export function withHttpServer(Base) {
             st.framing = null;
             st.res = null;
             st.sawRequest = true;
+            // 管线轮转：下一排空 assignSocket（停靠写排空 + 递补终结 + 'socket'
+            // 事件），st.res 移交，后续 re-feed 的新头排其后。
+            if (st.outgoing !== undefined && st.outgoing !== null && st.outgoing.length > 0) {
+              const __nx = st.outgoing.shift();
+              if (__nx !== undefined && !sock.destroyed && !__nx.destroyed) {
+                try { __nx.assignSocket(sock); } catch { /* 已挂即跳过 */ }
+                st.res = __nx;
+              }
+            }
             // 半关连接（客户端已 FIN）且这是最后一个在途响应：收口不续
             // keep-alive；还有管线中响应（st.res 已是后继请求的 res）则继续。
             if (sock.__finReceived && st.res === res) {

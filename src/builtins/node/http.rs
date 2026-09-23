@@ -11,7 +11,7 @@ import * as net from "node:net";
 import { codes } from "node:internal/errors";
 import { parsers } from "node:_http_common";
 import {
-  STATUS_CODES, METHODS, maxHeaderSize, IncomingMessage, ServerResponse,
+  STATUS_CODES, METHODS, maxHeaderSize, __defaultMaxHeaderSize, IncomingMessage, ServerResponse,
   OutgoingMessage, Agent as BaseAgent, withHttpServer, withClientRequest,
   normalizeRequestArgs, requestFrom, getFrom,
   validateHeaderName, validateHeaderValue,
@@ -136,7 +136,11 @@ export {
   validateHeaderName, validateHeaderValue,
 };
 const __api = {
-  STATUS_CODES, METHODS, maxHeaderSize, request, get, Agent,
+  STATUS_CODES, METHODS, request, get, Agent,
+  // maxHeaderSize 经 CLI 兼容旗动态（max-header-size 套件；具名导出恒静态缺省）。
+  get maxHeaderSize() {
+    try { return __defaultMaxHeaderSize(); } catch { return maxHeaderSize; }
+  },
   get globalAgent() { return __liveGlobalAgent; },
   set globalAgent(v) { __liveGlobalAgent = v; },
   Server, ServerResponse, IncomingMessage, ClientRequest, OutgoingMessage, createServer,

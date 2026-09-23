@@ -222,8 +222,14 @@ export function withHttpServer(Base) {
       // 每服务器宽松解析旗（insecure-parser-per-stream 套件）。
       // httpValidation 门（node storeHTTPOptions 口径：validateOneOf + 与
       // insecureHTTPParser 互斥，ERR_INVALID_ARG_VALUE）。
-      self.__inboundMode = __parseModeOf(__resolveHttpValidation(o.httpValidation, o.insecureHTTPParser));
-      self.insecureHTTPParser = o.insecureHTTPParser ?? false;
+      // node 口径：--insecure-http-parser 进程旗（兼容旗透传）未显式给选项时
+      // 即默认宽松（真机：旗开即全局 lenient；显式选项恒赢）。
+      const __insecDefault = o.httpValidation === undefined && o.insecureHTTPParser === undefined &&
+        typeof globalThis.__wjs_nodeCompat !== "undefined" &&
+        Array.isArray(globalThis.__wjs_nodeCompat) &&
+        globalThis.__wjs_nodeCompat.includes("--insecure-http-parser");
+      self.__inboundMode = __parseModeOf(__resolveHttpValidation(o.httpValidation, __insecDefault ? true : o.insecureHTTPParser));
+      self.insecureHTTPParser = o.insecureHTTPParser ?? __insecDefault;
       // node highWaterMark 选项（server-options-highwatermark 套件：req 流
       // HWM 与 res[kHighWaterMark] 同源；缺省 getDefaultHighWaterMark()）。
       self.__highWaterMark = o.highWaterMark;
@@ -966,6 +972,19 @@ export function withClientRequest(openSocket, flavor) {
   return class ClientRequest extends OutgoingMessage {
     constructor(options, cb) {
       super();
+      // node 口径（client-highwatermark 套件）：req[kHighWaterMark] 记用户 HWM
+      // （缺省 getDefaultHighWaterMark），写机构 HWM 同步——Path B（socket 未连
+      // 通前的缓冲写）回压判据走它（64KB/100KB 真、2KB/512 假 + drain）。
+      let __reqHWM = getDefaultHighWaterMark(false);
+      if (options !== null && typeof options === "object" && !(options instanceof URL) &&
+          options.highWaterMark !== undefined) {
+        const __n = Number(options.highWaterMark);
+        if (Number.isFinite(__n) && __n >= 0) __reqHWM = __n;
+      }
+      this[kHighWaterMark] = __reqHWM;
+      if (this._writableState !== undefined && this._writableState !== null) {
+        this._writableState.highWaterMark = __reqHWM;
+      }
       // node 口径 _removedHeader：删掉的头不再自动补（remove-header 套件）。
       this._removedHeader = {};
       let host, port, path, method, userHeaders, extra;
@@ -1089,10 +1108,14 @@ export function withClientRequest(openSocket, flavor) {
       }
       // 每请求宽松解析旗（insecure-parser-per-stream 套件：头值控制字符严格门）。
       // httpValidation 门（client 与 server 同口径：validateOneOf + 互斥，
-      // 真机 ERR_INVALID_ARG_VALUE 逐项对拍）。
-      this.__inboundMode = __parseModeOf(__resolveHttpValidation(options.httpValidation, options.insecureHTTPParser));
-      this.__validation = options.httpValidation ?? (options.insecureHTTPParser === true ? "insecure" : undefined);
-      this.insecureHTTPParser = options.insecureHTTPParser ?? false;
+      // 真机 ERR_INVALID_ARG_VALUE 逐项对拍）。进程旗默认宽松与服务端同理。
+      const __cliInsecDefault = options.httpValidation === undefined && options.insecureHTTPParser === undefined &&
+        typeof globalThis.__wjs_nodeCompat !== "undefined" &&
+        Array.isArray(globalThis.__wjs_nodeCompat) &&
+        globalThis.__wjs_nodeCompat.includes("--insecure-http-parser");
+      this.__inboundMode = __parseModeOf(__resolveHttpValidation(options.httpValidation, __cliInsecDefault ? true : options.insecureHTTPParser));
+      this.__validation = options.httpValidation ?? (options.insecureHTTPParser === true || __cliInsecDefault ? "insecure" : undefined);
+      this.insecureHTTPParser = options.insecureHTTPParser ?? __cliInsecDefault;
       this.socket = null;
       this.agent = options.agent === undefined ? (flavor.defaultAgent ?? null) : (options.agent || null);
       this.__agentFalse = options.agent === false;

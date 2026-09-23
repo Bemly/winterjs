@@ -1075,6 +1075,13 @@ Agent.prototype.__init = function (options = {}) {
   }
   this.totalSocketCount = 0;
   this.scheduling = options.scheduling ?? "lifo";
+  // node 口径 agentKeepAliveTimeoutBuffer（keep-alive-timeout-buffer 套件）：
+  // 缺省 1000；非有限数/负数回落 1000。
+  {
+    const __b = Number(options.agentKeepAliveTimeoutBuffer);
+    this.agentKeepAliveTimeoutBuffer = (options.agentKeepAliveTimeoutBuffer !== undefined &&
+      Number.isFinite(__b) && __b >= 0) ? __b : 1000;
+  }
   this.sockets = {};
   this.freeSockets = {};
   this.requests = {};
@@ -1096,6 +1103,12 @@ Agent.prototype.createSocket = function (req, options, cb) {
     settled = true;
     if (typeof cb === "function") cb(err, s);
   };
+  // node 口径：建连选项带 agent 保活面（keepalive-delay 套件点名
+  // options.keepAlive/keepAliveInitialDelay；缺席即补 agent 值）。
+  if (options !== null && typeof options === "object") {
+    if (options.keepAlive === undefined) options.keepAlive = this.keepAlive;
+    if (options.keepAliveInitialDelay === undefined) options.keepAliveInitialDelay = this.keepAliveMsecs;
+  }
   const maybe = this.createConnection(options, oncreate);
   if (!settled && maybe) oncreate(null, maybe);
   return maybe;

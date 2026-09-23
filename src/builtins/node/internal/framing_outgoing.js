@@ -77,7 +77,13 @@ export class OutgoingMessage extends Writable {
     }
     // node validChunk 口径（proto 套件 fake-this 形）：先校验块形态
     // （string/Uint8Array 系直收；null → NULL_VALUES；其余 → ARG_TYPE），
-    // 再调 _implicitHeader（NOT_IMPLEMENTED 门在后）。
+    // 再调 _implicitHeader（NOT_IMPLEMENTED 门在后）。已销毁即
+    // ERR_STREAM_DESTROYED 进回调（outgoing-destroy 套件；不同步抛）。
+    if (this.destroyed) {
+      const __cb = typeof cb === "function" ? cb : null;
+      queueMicrotask(() => { if (__cb) { try { __cb(new codes.ERR_STREAM_DESTROYED("write")); } catch {} } });
+      return false;
+    }
     if (chunk === null || chunk === undefined) {
       if (chunk === null) throw new codes.ERR_STREAM_NULL_VALUES("chunk");
       throw new codes.ERR_INVALID_ARG_TYPE("chunk", ["string", "Buffer", "Uint8Array"], chunk);

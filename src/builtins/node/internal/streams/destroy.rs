@@ -120,22 +120,25 @@ function _destroy(self, err, cb) {
 
     checkError(err, w, r);
 
+    // node 口径：writable 侧 closed 同步置位（destroy 后即 true）；
+    // readable 侧延到 close 发射（destroy 后同步仍 false，close 监听里才
+    // true——client-incomingmessage-destroy 套件 24/26/29 行三段钉住）。
+    // 旧统一置位把 readable 也同步翻 true，26 行必挂。
     if (w) {
       w[kState] |= kClosed;
-    }
-    if (r) {
-      r[kState] |= kClosed;
     }
 
     if (typeof cb === 'function') {
       cb(err);
     }
 
+    // node 口径：error 与 close 分开排（client-incomingmessage-destroy
+    // 套件：无监听 error 抛 uncaught 时 close 仍须发射；旧嵌套
+    // emitErrorCloseNT 形下 throw 会吞掉 close）。
     if (err) {
-      process.nextTick(emitErrorCloseNT, self, err);
-    } else {
-      process.nextTick(emitCloseNT, self);
+      process.nextTick(emitErrorNT, self, err);
     }
+    process.nextTick(emitCloseNT, self);
   }
   try {
     self._destroy(err || null, onDestroy);
@@ -157,6 +160,8 @@ function emitCloseNT(self) {
     w[kState] |= kCloseEmitted;
   }
   if (r) {
+    // readable closed 随 close 发射翻 true（见 onDestroy 注）。
+    r[kState] |= kClosed;
     r[kState] |= kCloseEmitted;
   }
 

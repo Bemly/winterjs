@@ -629,6 +629,28 @@ export class IncomingMessage extends Readable {
   }
   _read() {}
   get aborted() { return this.__aborted === true; }
+  // node 口径：消息销毁的 socket 联动（server-incomingmessage-destroy 套件：
+  // req.destroy(err) 不外发 req 'error'——uncaught mustNotCall；错误经 socket
+  // 递（服务端级联杀连接→客户端 hangup；客户端经请求 error 照常 uncaught）。
+  // errored 照记（destroy 侧 checkError 先行）；本体 error 吞掉（cb() 无错）。
+  // 分流：带错必杀；无错仅未收齐（incomplete）才杀——正常收齐后的自动 destroy
+  //（autoDestroy）不碰 socket（keep-alive 复用/响应在途；loopback 套件实锤，
+  // 杀了即 hangup）。无错销毁的收尾由 __finishSock（destroyed 即销）接管。
+  _destroy(err, cb) {
+    const __incomplete = this.readableEnded !== true;
+    if (err !== undefined && err !== null) {
+      const __s = this.socket;
+      if (__s !== null && __s !== undefined && !__s.destroyed && typeof __s.destroy === "function") {
+        try { __s.destroy(err); } catch { /* closed meanwhile */ }
+      }
+    } else if (__incomplete) {
+      const __s = this.socket;
+      if (__s !== null && __s !== undefined && !__s.destroyed && typeof __s.destroy === "function") {
+        try { __s.destroy(); } catch { /* closed meanwhile */ }
+      }
+    }
+    cb();
+  }
   // 中止级联（aborted 同步恒发；error 有监听才发且递延——无监听发即抛错
   // （块二）；同步发则抢在 res 侧 PREMATURE_CLOSE 之前（pipeline 中断
   // 上传套件上报 ECONNRESET 而非 PREMATURE_CLOSE），真机 destroy 时序为异步。
@@ -1101,13 +1123,18 @@ export class ServerResponse extends Writable {
     this.__headStored = true;
     return this;
   }
-  // node writeContinue：headersSent 前一次性发 100 Continue 中间响应。
-  writeContinue() {
-    if (this.__continueSent || this.headersSent || this.__headSent) return;
+  // node writeContinue：headersSent 前一次性发 100 Continue 中间响应；
+  // 回调落盘后触发（write-callbacks 套件；旧实现吞回调即挂死）。
+  writeContinue(cb) {
+    if (this.__continueSent || this.headersSent || this.__headSent) {
+      if (typeof cb === "function") queueMicrotask(cb);
+      return;
+    }
     this.__continueSent = true;
     if (this.__sock !== null) {
       try { this.__sockWrite(new TextEncoder().encode("HTTP/1.1 100 Continue\r\n\r\n")); } catch { /* gone */ }
     }
+    if (typeof cb === "function") queueMicrotask(cb);
   }
   // node writeProcessing()：writeInformation(102) 速记。
   writeProcessing() {

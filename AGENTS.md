@@ -3478,3 +3478,34 @@ cargo build
 - 附带卫生：开工先 `git status`（本轮工作区有前人未提交的 proto/buffer
   半成品，交接未提及——`git diff` 认领归属后再动手）；探针脚本放
   `/tmp/wjs-*` 用完即清（`__wjs_node_compat` 同族纪律）。
+
+### 4.198 readable closed 随 close 发射翻位（2026-09-23，剩余轮）
+
+- 症状：`test-http-client-incomingmessage-destroy` 首跑即挂——`res.destroy(err)`
+  后同步读 `res.closed` 得 true（套件 26 行要 false，close 监听 29 行要 true），
+  且随后 `server.close()` 挂死（开着的 res 致 in-flight unref 续命，另案）。
+- 根因：`destroy.rs onDestroy` 给读写双侧同步置 `kClosed`——node 口径读写有别
+  （writable 同步翻，readable 随 close 发射翻；套件三段即铁证）。
+- 修法：`onDestroy` 只置 w 侧，r 侧移到 `emitCloseNT`（bit 先置后 emit，
+  监听内恒 true；emitClose=false 形同样翻位，只是无事件）。
+- 推广为铁律：凡"销毁后同步读"口径（closed/destroyed/errored），读写双侧
+  分开对真机——读写的销毁时序在 node 从来不是对称的。
+
+### 4.199 incomingmessage-destroy 双件 + error/close 分排（2026-09-23，剩余轮）
+
+- 症状：`test-http-client/server-incomingmessage-destroy.js` 双 TIMEOUT——
+  服务端 `req.destroy(err)` 外发 req 'error'（uncaught mustNotCall 形本应静默），
+  且无监听 error 抛 uncaught 会吞掉同 tick 的 close（客户端形挂死）。
+- 根因二连：① IncomingMessage 无自有 `_destroy`，基类 destroy(err) 必排
+  error 发射；② `onDestroy` 把 error/close 嵌套排（`emitErrorCloseNT`）——
+  无监听 error 的 throw 直接吞掉 close。
+- 修法：① `IncomingMessage._destroy`：错误经 socket 递（服务端级联杀连接→
+  客户端 hangup ECONNRESET；客户端经请求 error 照常 uncaught）、本体 `cb()`
+  吞错；无错仅未收齐（`readableEnded !== true`）才销 socket——正常收齐后
+  的自动 destroy 不碰（keep-alive 复用/响应在途；loopback 实锤杀了即 hangup）。
+  ② `onDestroy` 改 error/close 分开排（各下一 tick；uncaught 抛错不再吞 close）。
+- 附带：`writeContinue(cb)` 旧实现吞回调（write-callbacks 套件挂死）——补
+  落盘后 microtask 触发；standalone `write` 已销毁形回
+  ERR_STREAM_DESTROYED 进回调（outgoing-destroy 套件，不同步抛）。
+- 推广为铁律：凡"错误 + 终结"双事件设计，排期必须独立（嵌套排即谋杀)——
+  uncaught 的 throw 是控制流，会吞掉同回调内的一切后继。

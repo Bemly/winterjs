@@ -34,6 +34,7 @@ pub mod snapshot;
 pub mod streams;
 pub mod symbols;
 pub mod test_mock;
+pub mod timers;
 pub mod types;
 pub mod util;
 pub mod validators;
@@ -57,6 +58,7 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/registry", registry::SOURCE),
     ("node:internal/assert", assert::SOURCE),
     ("node:internal/options", options::SOURCE),
+    ("node:internal/timers", timers::SOURCE),
     ("node:internal/snapshot", snapshot::SOURCE),
     ("node:internal/blob", blob::SOURCE),
     ("node:internal/abort_controller", abort_controller::SOURCE),

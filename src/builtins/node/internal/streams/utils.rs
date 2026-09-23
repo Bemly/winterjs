@@ -306,7 +306,12 @@ function willEmitClose(stream) {
   const rState = stream._readableState;
   const state = wState || rState;
 
-  return (!state && isServerResponse(stream)) || !!(
+  // OutgoingMessage 系（ServerResponse/ClientRequest）close 一律手动发
+  //（autoDestroy/emitClose 双 false，§4.86），但终会发——finished 语义按
+  // willEmitClose=true 等 close（outgoing-finished 套件钉住；node 侧因
+  // emitClose 未置 false 同为 true，结论一致）。
+  return (!state && isServerResponse(stream)) ||
+    (isOutgoingMessage(stream) && state?.closed === false) || !!(
     state?.autoDestroy &&
     state.emitClose &&
     state.closed === false

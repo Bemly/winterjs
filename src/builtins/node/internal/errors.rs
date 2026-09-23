@@ -440,9 +440,11 @@ E('ERR_HTTP_HEADERS_SENT', 'Cannot %s headers after they are sent to the client'
 // node lib/internal/errors.js（splitting 套件逐字 'Invalid character in header
 // content ["foo"]'；无字段即旧裸文案，header-validators/value-relaxed 套件）。
 E('ERR_INVALID_CHAR',
-  (field = undefined) => field === undefined
-    ? 'Invalid character in header content'
-    : `Invalid character in header content ["${field}"]`,
+  // node 原文双参 (name, field)；本仓旧调用只传 field（key），label 缺省
+  // 'header content'；trailer 面传 (key, 'trailer content')（proto 套件逐字）。
+  (field = undefined, label = 'header content') => field === undefined
+    ? `Invalid character in ${label}`
+    : `Invalid character in ${label} ["${field}"]`,
   TypeError, HideStackFramesError);
 // node lib/internal/errors.js（response-statuscode 套件逐字；`%s` 遇对象走
 // inspect——{}→'{}'、[]→'[]'，字符串/图元走原文）。

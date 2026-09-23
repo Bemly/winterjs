@@ -292,7 +292,7 @@
     get aborted() { return this.__aborted === true; }
     // node 口径 req.res（destroyed-socket-write2 套件直读）：响应未到即 null。
     get res() { return this.__res ?? null; }
-    __sendHead() {
+    __sendHead(box) {
       if (this.__headSent) return;
       this.__headSent = true;
       this.headersSent = true;
@@ -372,15 +372,81 @@
           head.push(`Connection: ${this.__autoConnVal}`);
         }
       }
-      this.__sock.write(new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n"));
+      // 头写同样计数确认（box 为空沿旧路）。
+      if (box === null || box === undefined) {
+        this.__sock.write(new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n"));
+      } else {
+        box.pend++;
+        try { this.__sock.write(new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n"), box.cap); } catch (e) { try { box.cap(e); } catch {} }
+      }
     }
-    __frame(u8) {
+    // socket 写错收集器（writable-finished 套件）：确认计数（pend）+ 首错
+    //（err）+ 迟到确认等待表（waiters）。收尾经顶层 __afterSockFlush
+    //（微任务拍，mock 异步确认可达；成功路回调值恒 undefined）。
+    __sockCap() {
+      const box = { err: null, pend: 0, waiters: [] };
+      box.cap = (e) => {
+        if (e !== undefined && e !== null && box.err === null) box.err = e;
+        box.pend--;
+        if (box.pend === 0) {
+          const ws = box.waiters;
+          box.waiters = [];
+          for (const w of ws) { try { w(box.err); } catch {} }
+        }
+      };
+      return box;
+    }
+    // 计数写（box 为空即沿旧路无回调，零行为差）。
+    __w(data, box) {
+      if (box === null || box === undefined) {
+        try { this.__sock.write(data); } catch { /* 落盘永不阻收尾 */ }
+        return;
+      }
+      box.pend++;
+      try { this.__sock.write(data, box.cap); } catch (e) { try { box.cap(e); } catch {} }
+    }
+    // 暂存写回调排空（holdback 期写回调随落盘结果递送，node _write 经
+    // socket.write 透传口径；成功路恒 undefined，与旧 microtaskcb 同值）。
+    // 出错由调用方显式递送同一 err 对象后 destroy() 收尾（destroy 不复发
+    // error——流机构 destroy 不碰在途回调，见 destroy.rs；带 err destroy 会
+    // 二次 emitError，mustCall(1) 形必红——实锤坑）。
+    __fireFlushCbs(err) {
+      const q = this.__flushCbs;
+      this.__flushCbs = [];
+      if (q !== null && q !== undefined) {
+        for (const f of q) { try { f(err ?? undefined); } catch { /* 回调抛错不阻排空 */ } }
+      }
+    }
+    // 落盘出错统一收尾（writable-finished 套件）：显式递送同一 err（暂存写
+    // 回调 + 终结回调，用户侧 strictEqual 同一性）→ destroy() 收尾。顺序是
+    // 语义：先递送（首个 err 触发唯一 error 事件），再 destroy 置位——后到
+    // 的 socket 'error' 被 destroyed 门吞掉（否则同一失败报两次；二次 emit
+    // 皆因递送后未置位，实锤坑）。destroy() 不带 err（不复发 error，只做
+    // close + socket 清理；带 err 会二次 emitError，mustCall(1) 形必红）。
+    __failFlush(err, finalCb) {
+      this.__fireFlushCbs(err);
+      try { this.destroy(); } catch {}
+      if (typeof finalCb === "function") { try { finalCb(err); } catch {} }
+    }
+    // 落盘收尾统一出口：确认计数等待（mock 异步错可达）后，结果递送——
+    // 出错显式递送同一 err + destroy() 收尾，成功排空 + 终结回调。
+    __finishFlush(box, finalCb) {
+      __afterSockFlush(this, box, (err) => {
+        if (err !== null && err !== undefined) { this.__failFlush(err, finalCb); return; }
+        this.__fireFlushCbs(undefined);
+        if (typeof finalCb === "function") {
+          try { finalCb(undefined); } catch {}
+        }
+      });
+    }
+    __frame(u8, box) {
       if (u8.length === 0) return;
+      // node 口径：socket 写经计数确认（writable-finished 套件；box 为空沿旧路）。
       if (this.__chunked && !this.__rawCL) {
         const hex = new TextEncoder().encode(u8.length.toString(16) + "\r\n");
-        this.__sock.write(__concat(hex, __concat(u8, new TextEncoder().encode("\r\n"))));
+        this.__w(__concat(hex, __concat(u8, new TextEncoder().encode("\r\n"))), box);
       } else {
-        this.__sock.write(u8);
+        this.__w(u8, box);
       }
     }
     // 连接就绪或刷盘时机到：头恒发（node _flush 口径）；有体位时按 UCED 定
@@ -388,6 +454,16 @@
     __tryFlush() {
       if (!this.__connected || this.__sock === null || this.__headSent) return;
       if (this.destroyed) return;
+      // 终结已暂存（_final 先到）：走完整收尾（含 chunked 终结块），不可只刷头
+      //（writable-finished 套件 end-again 形；收口经 __finishFlush）。
+      if (this.__finalStashed === true) {
+        const __fb = this.__flushFinal();
+        this.__finalStashed = false;
+        const __fcb = this.__pendingFinalCb;
+        this.__pendingFinalCb = null;
+        this.__finishFlush(__fb, __fcb);
+        return;
+      }
       if (this.__buf1 !== null) {
         if (this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined) {
           this.__chunked = this.__chunkDefault;
@@ -399,10 +475,13 @@
       }
       this.__forceHead = false;
       this.__headerStored = true;
-      this.__sendHead();
+      const __box = this.__sockCap();
+      this.__sendHead(__box);
       const q = this.__buf1;
       this.__buf1 = null;
-      if (q !== null) for (const b of q) this.__frame(b);
+      if (q !== null) for (const b of q) this.__frame(b, __box);
+      // holdback 暂存写回调随落盘结果递送（确认计数等待，mock 异步错可达）。
+      __afterSockFlush(this, __box, (err) => this.__fireFlushCbs(err));
     }
     _write(chunk, encoding, cb) {
       const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk));
@@ -415,20 +494,33 @@
           this.__holdTimer = null;
           if (this.__buf1 !== null && !this.__headSent && !this.destroyed) this.__tryFlush();
         }, 0);
-        // node 口径：_write 完成异步回（背压 falsy 信号；见服务端同改）。
-        queueMicrotask(cb);
+        // node 口径：holdback 期写回调随落盘结果递送（writable-finished 套件
+        // mock 失败形；成功路落盘后 microtask 回 null，与旧节奏同值不同拍——
+        // 旧 microtask 即回，现有落盘才回；无回调形零可观测差）。
+        (this.__flushCbs ??= []).push(cb);
         return;
       }
       if (!this.__headSent) {
         // 同拍内第二次写：必为流式，同步刷头。
         if (this.__connected && this.__sock !== null && !this.destroyed) {
           if (this.__chunkDefault) this.__chunked = true;
-          this.__sendHead();
+          const __box = this.__sockCap();
+          this.__sendHead(__box);
           if (this.__buf1 !== null) {
             const q = this.__buf1;
             this.__buf1 = null;
-            for (const b of q) this.__frame(b);
+            for (const b of q) this.__frame(b, __box);
           }
+          if (!this.__chunked && !this.__rawCL && this.__chunkDefault) this.__chunked = true;
+          this.__frame(u8, __box);
+          __afterSockFlush(this, __box, (err) => {
+            // 出错显式递送同一 err + destroy() 收尾（单次 error 事件，见
+            // __failFlush 注）；成功即排空暂存 + 本回调（undefined）。
+            if (err !== null && err !== undefined) { this.__failFlush(err, (e) => cb(e)); return; }
+            this.__fireFlushCbs(undefined);
+            cb(undefined);
+          });
+          return;
         } else {
           // 未连通：逐块排队（连通后逐帧刷出保分包，见 __tryFlush）。
           this.__buf1.push(u8);
@@ -438,7 +530,13 @@
       }
       if (this.__connected && this.__sock !== null && !this.destroyed) {
         if (!this.__chunked && !this.__rawCL && this.__chunkDefault) this.__chunked = true;
-        this.__frame(u8);
+        const __box = this.__sockCap();
+        this.__frame(u8, __box);
+        __afterSockFlush(this, __box, (err) => {
+          if (err !== null && err !== undefined) { this.__failFlush(err, (e) => cb(e)); return; }
+          cb(undefined);
+        });
+        return;
       } else {
         (this.__buf1 ??= []).push(u8);
       }
@@ -450,7 +548,10 @@
         this.__holdTimer = null;
       }
       if (this.destroyed) {
-        cb();
+        // node 口径：已销毁（多为先前写错）时 end 回调带已记错误
+        //（writable-finished 套件 end-again 形）；无错即沿旧路 null。
+        const __de = this._writableState !== null && this._writableState !== undefined ? this._writableState.errored : null;
+        cb(__de ?? undefined);
         return;
       }
       // node 口径：用户显式 TE: chunked 即 chunked 帧（空体亦发终结块；
@@ -461,17 +562,33 @@
       if (!this.__headSent) {
         if (!this.__connected) {
           // 连接未就绪：连通后一次性发出（CL 快捷；见 connect 回调）。
+          // holdback 在途（写后即 end）时终结回调随落盘结果递送（writable-
+          // finished 套件）；纯裸 end（无写在途）沿旧路即时回（timing 零改）。
           this.__pendingFinal = true;
+          if (this.__buf1 !== null) {
+            this.__finalStashed = true;
+            this.__pendingFinalCb = cb;
+            return;
+          }
           cb();
           return;
         }
-        this.__flushFinal();
+        // holdback 在途即就地收尾（end 已到无需再等一拍；CL 快捷判定即时）。
+        // 结果经统一出口（微任务拍读数，mock 异步错可达）。
+        this.__finishFlush(this.__flushFinal(), cb);
+        this.__finalStashed = false;
+        this.__pendingFinalCb = null;
       } else if (this.__chunked && !this.__rawCL) {
         if (this.__connected && this.__sock !== null) {
-          this.__sock.write(new TextEncoder().encode("0\r\n" + (this.__trailer ?? "") + "\r\n"));
+          const __box = this.__sockCap();
+          this.__w(new TextEncoder().encode("0\r\n" + (this.__trailer ?? "") + "\r\n"), __box)
+          this.__finishFlush(__box, cb);
+        } else {
+          cb();
         }
+      } else {
+        cb();
       }
-      cb();
     }
     // 收尾刷新（调用方保证已连通）：end(data) 为首个头触发点且方法允许体时
     // 走 CL 快捷（合并发出，真机单 write 口径）；write/flushHeaders 在前 →
@@ -487,13 +604,16 @@
       }
       return false;
     }
+    // 收尾刷新（调用方保证已连通）：回首个同步 socket 写错（无则 null），
+    // 暂存写回调随结果排空（writable-finished 套件）。
     __flushFinal() {
-      if (this.__sock === null || this.destroyed) return;
+      if (this.__sock === null || this.destroyed) return null;
       // 用户显式 TE: chunked 即 chunked 帧（_final 同款归一；pendingFinal
       // 路径直达此处，绕过 _final 入口）。
       if (!this.__chunked && !this.__rawCL && this.__hasUserTEChunked()) {
         this.__chunked = true;
       }
+      const __box = this.__sockCap();
       if (!this.__headSent) {
         // CL 决策已在 end() 落定（node _contentLength 口径）；无 CL 的 UCED
         // 请求 chunked；GET 族（UCED false）无 CL/TE 裸体。数组形有序对里的
@@ -509,14 +629,14 @@
           this.__chunked = true;
           this.__headers["transfer-encoding"] = "chunked";
         }
-        this.__sendHead();
+        this.__sendHead(__box);
         if (this.__buf1 !== null) {
           const q = this.__buf1;
           this.__buf1 = null;
           if (this.__chunked && !this.__rawCL) {
-            for (const b of q) this.__frame(b);
+            for (const b of q) this.__frame(b, __box);
           } else {
-            this.__frame(__join(q));
+            this.__frame(__join(q), __box);
           }
         }
         // chunked 收尾终结块（服务端 _final 同款口径）。此前缺失——connect 前
@@ -524,11 +644,13 @@
         // 黑盒挂死实录；head 已发路径本就有此写入，两路对齐）。
         // addTrailers 的 trailer 跟终结块（multiple-headers 套件）。
         if (this.__chunked && !this.__rawCL) {
-          this.__sock.write(new TextEncoder().encode("0\r\n" + (this.__trailer ?? "") + "\r\n"));
+          this.__w(new TextEncoder().encode("0\r\n" + (this.__trailer ?? "") + "\r\n"), __box)
         }
       } else if (this.__chunked && !this.__rawCL) {
-        this.__sock.write(new TextEncoder().encode("0\r\n" + (this.__trailer ?? "") + "\r\n"));
+        this.__w(new TextEncoder().encode("0\r\n" + (this.__trailer ?? "") + "\r\n"), __box)
       }
+      // 排空与终结回调由调用方经 __finishFlush 统一出口（微任务拍读数）。
+      return __box;
     }
     _destroy(err, cb) {
       if (this.__holdTimer !== null) {
@@ -958,6 +1080,14 @@
     }
     __finishSock(sock) {
       if (sock === null || sock.destroyed) return;
+      // node 口径：响应被销毁（非正常收齐）即销毁 socket，不回池——destroyed
+      // 响应不可复用（outgoing-destroyed pipe 形：客户端 res.destroy() 后
+      // 服务端必须见到连接死亡；正常 end+close 才可池化，keepalive 复用）。
+      if (this.__res !== null && this.__res !== undefined && this.__res.destroyed) {
+        try { sock.destroy(); } catch { /* gone */ }
+        try { if (this.agent !== null) this.agent.__noteClosed(sock); } catch { /* 记账永不阻收尾 */ }
+        return;
+      }
       const conn = this.__res !== null ? (this.__res.headers.connection || "").toLowerCase() : "close";
       const poolable = this.agent !== null && this.agent.keepAlive && conn !== "close";
       if (this.agent !== null) {

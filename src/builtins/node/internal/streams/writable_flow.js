@@ -304,7 +304,9 @@ Writable.prototype.end = function(chunk, encoding, cb) {
   } else if ((state[kState] & kFinished) !== 0) {
     err = new ERR_STREAM_ALREADY_FINISHED('end');
   } else if ((state[kState] & kDestroyed) !== 0) {
-    err = new ERR_STREAM_DESTROYED('end');
+    // node 口径：已销毁且记错时 end 回调带已记错误（writable-finished 套件
+    // end-again 形）；无错沿旧路 STREAM_DESTROYED。
+    err = state.errored ?? new ERR_STREAM_DESTROYED('end');
   }
 
   if (typeof cb === 'function') {

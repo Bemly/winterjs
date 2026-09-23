@@ -7,6 +7,16 @@ export class OutgoingMessage extends Writable {
     super({ autoDestroy: false, emitClose: false });
     this.headersSent = false;
     this.socket = null;
+    // node 口径 OM 标记（_closed/_defaultKeepAlive/_removedConnection/
+    // _removedContLen；isOutgoingMessage/willEmitClose 判定 + finished 语义）。
+    this._closed = false;
+    this._defaultKeepAlive = true;
+    this._removedConnection = false;
+    this._removedContLen = false;
+    // node 口径 finished（finish-writable 套件）：自有属性，end() 同步置 true
+    //（与 writableFinished 无关——后者按 finish 事件；真机 end 后 finished 真、
+    // writableFinished 假）。
+    this.finished = false;
     // node 口径 kOutHeaders（对表，供 _renderHeaders/internal/http 直读）。
     this[kOutHeaders] = {};
     // 独立构造（`new OutgoingMessage()`，outgoing-properties 系套件）：无 socket
@@ -14,12 +24,89 @@ export class OutgoingMessage extends Writable {
     // 有子类 socket 面时由子类 _write 覆写。
     this.__outputData = [];
   }
+  // node 口径 setHeader（基类本体；proto 套件 `new OutgoingMessage()` 直调）：
+  // headersSent 门 → 名 TOKEN 门（数字名亦错）→ 值 undefined 门；数组值原样存。
+  setHeader(name, value) {
+    // node 口径：发头标记走 `this._header`（真机按此字段判；外来 this 形
+    // proto 套件 `{_header:'test'}` 即此门）。本仓实现从不自置 `_header`，
+    // 故只拦外来已发头形，不误伤正常实例。
+    if (this.headersSent || this._header !== undefined) throw new codes.ERR_HTTP_HEADERS_SENT("set");
+    if (typeof name !== "string") throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(name));
+    if (!__TOKEN_RE.test(name)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", name);
+    if (value === undefined) throw new codes.ERR_HTTP_INVALID_HEADER_VALUE("undefined", String(name));
+    const lk = String(name).toLowerCase();
+    if (this._removedHeader !== undefined) delete this._removedHeader[lk];
+    if (this.__headers === null || this.__headers === undefined) this.__headers = {};
+    const __vals = Array.isArray(value) ? [...value] : [value];
+    for (const __e of __vals) __checkOutboundHeaderValue(this.__validation, __e, String(name));
+    this.__headers[lk] = Array.isArray(value) ? [...value] : value;
+  }
   // node lib/_http_outgoing.js _renderHeaders（renderHeaders 套件）：
   // 对表 [原名, 值] → {原名: 值}；null/非对象即 {}；_header 在场（已发头标记，
   // 真机按此字段判）即抛 ERR_HTTP_HEADERS_SENT。
-  // node 口径 outputData（destroyed-socket-write2 套件直读 length）：排队输出
-  // 明细；本仓同步落盘恒空（_write 缓冲语义见 __outputData）。
+  // node 口径 outputData（destroyed-socket-write2 套件直读 length；
+  // outgoing-buffer 套件 outputSize 累计）：排队输出明细 {data, encoding}；
+  // 本仓 socket 面同步落盘恒空（_write 缓冲语义见 __outputData）。
   get outputData() { return this.__outputData ?? []; }
+  // node 口径 writableLength：精确基类直构无 socket 时走 outputSize 累计
+  //（_write 缓冲语义；round1 p11 套件）；子类/有 socket 一律走流机构
+  //（零行为差——未连通客户端排队字节仍按 state.length）。
+  get writableLength() {
+    if (this.constructor.name === "OutgoingMessage" &&
+        (this.socket === null || this.socket === undefined) &&
+        (this.__sock === null || this.__sock === undefined)) {
+      return this.__outputSize ?? 0;
+    }
+    return super.writableLength;
+  }
+  // node 口径 write 分流（outgoing-buffer 套件）：纯 standalone（无 socket、
+  // 未停靠、基类直构）缓冲进 outputData，返回值走 outputSize/HWM（while 形可终）；
+  // 其余一律走流机构（子类 _write 面零行为差）。
+  write(chunk, encoding, cb) {
+    if (typeof encoding === "function") { cb = encoding; encoding = null; }
+    const __hasSock = (this.socket !== null && this.socket !== undefined) ||
+      (this.__sock !== null && this.__sock !== undefined);
+    // standalone = 精确基类直构无 socket（子类实例一律走流机构，保持旧语义；
+    // 外来 this（fake-this 形）按 standalone 校验块形态，proto 套件钉住）。
+    const __isExactOM = (this instanceof OutgoingMessage) && this.constructor.name === "OutgoingMessage";
+    if (!__isExactOM && (this instanceof OutgoingMessage)) {
+      return super.write(chunk, encoding, cb);
+    }
+    if (__isExactOM && (__hasSock || this.__queued === true)) {
+      return super.write(chunk, encoding, cb);
+    }
+    // node validChunk 口径（proto 套件 fake-this 形）：先校验块形态
+    // （string/Uint8Array 系直收；null → NULL_VALUES；其余 → ARG_TYPE），
+    // 再调 _implicitHeader（NOT_IMPLEMENTED 门在后）。
+    if (chunk === null || chunk === undefined) {
+      if (chunk === null) throw new codes.ERR_STREAM_NULL_VALUES("chunk");
+      throw new codes.ERR_INVALID_ARG_TYPE("chunk", ["string", "Buffer", "Uint8Array"], chunk);
+    }
+    if (typeof chunk !== "string" && !(chunk instanceof Uint8Array)) {
+      throw new codes.ERR_INVALID_ARG_TYPE("chunk", ["string", "Buffer", "Uint8Array"], chunk);
+    }
+    this._implicitHeader();
+    this.__outputData.push({ data: chunk, encoding, callback: cb });
+    if (typeof chunk === "string") this.__outputSize = (this.__outputSize ?? 0) + Buffer.byteLength(chunk);
+    else if (chunk instanceof Uint8Array) this.__outputSize = (this.__outputSize ?? 0) + chunk.length;
+    else if (chunk instanceof ArrayBuffer) this.__outputSize = (this.__outputSize ?? 0) + chunk.byteLength;
+    const __hwm = (this._writableState && this._writableState.highWaterMark) || 16384;
+    return this.outputSize < __hwm;
+  }
+  // node 口径 end 即 finished（finish-writable 套件同步断言；writableFinished
+  // 仍按 finish 事件）。
+  end(chunk, encoding, cb) {
+    if (typeof chunk === "function") { cb = chunk; chunk = null; encoding = null; }
+    else if (typeof encoding === "function") { cb = encoding; encoding = null; }
+    this.finished = true;
+    return super.end(chunk, encoding, cb);
+  }
+  // node 口径 outputSize：排队字节累计计数（逐写 O(1)；全量求和即 O(n²)，
+  // buffer 套件 21845 轮必超时）。
+  get outputSize() { return this.__outputSize ?? 0; }
+  // node 口径 writable 恒 true（finish-writable 套件：end/close 后仍 true，
+  // LEGACY；背压走 write() 返回值与 needDrain，不走此旗）。
+  get writable() { return true; }
   _renderHeaders() {
     if (this._header) throw new codes.ERR_HTTP_HEADERS_SENT("render");
     const src = this[kOutHeaders];
@@ -33,7 +120,11 @@ export class OutgoingMessage extends Writable {
     return out;
   }
   _write(chunk, encoding, cb) {
-    this.__outputData.push([chunk, encoding, cb]);
+    // node 口径：基类写即调 _implicitHeader（未覆写即
+    // ERR_METHOD_NOT_IMPLEMENTED；outgoing-buffer 套件先覆写再用）。
+    // 明细原样存（data/encoding/callback 三键）。
+    this._implicitHeader();
+    this.__outputData.push({ data: chunk, encoding, callback: cb });
   }
   // node lib/_http_outgoing.js cork/uncork 原文（OutgoingMessage 基类；
   // ClientRequest 可用）：消息级计数 + socket 镜像。node corked 写滞留
@@ -50,7 +141,7 @@ export class OutgoingMessage extends Writable {
   }
   get writableCorked() { return this.__kCorked ?? 0; }
   _implicitHeader() {
-    throw new Error("_implicitHeader() method is not implemented");
+    throw new codes.ERR_METHOD_NOT_IMPLEMENTED("_implicitHeader()");
   }
   // node 口径（lib/_http_outgoing.js + outgoing-settimeout 套件真机实测）：
   // 基类 setTimeout——cb 挂 once('timeout')；有 socket 直转，无 socket 等
@@ -90,7 +181,10 @@ export class OutgoingMessage extends Writable {
     return __ret;
   }
   get errored() {
-    return this.__omErrored ?? (this._writableState ? this._writableState.errored : null);
+    // node 口径：OutgoingMessage 无错时 errored 为 undefined（IncomingMessage
+    // 侧为 null；outgoing-destroyed:89 钉住），有错回 err 本体。
+    const __v = this.__omErrored ?? (this._writableState ? this._writableState.errored : null);
+    return __v === null || __v === undefined ? undefined : __v;
   }
   // node setHeaders：收 Headers 实例或 Map（ServerResponse 同款双形；
   // ClientRequest 侧同样可用）。
@@ -115,7 +209,11 @@ export class OutgoingMessage extends Writable {
   // req.trailers/trailersDistinctrawTrailers 即时落账（wire 回环前可读，
   // multiple-headers 套件 req 'end' 内断言）。
   addTrailers(trailers) {
-    if (trailers === null || trailers === undefined) return this;
+    // node 口径：无参即 TypeError（proto 套件只认类型不认文案；引擎
+    // Object.entries(undefined) 同款）。
+    if (trailers === null || trailers === undefined) {
+      throw new TypeError("Cannot convert undefined or null to object");
+    }
     // node 口径：对形 `[[k,v],...]` 与对象形双收（raw-headers 套件；writeHead
     // 对形同源）。对形逐对取 [0]/[1] 归一。
     if (Array.isArray(trailers)) {
@@ -128,14 +226,19 @@ export class OutgoingMessage extends Writable {
       trailers = __flat;
     }
     for (const k of Object.keys(trailers)) {
-      if (!__TOKEN_RE.test(String(k))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(k));
+      // node 口径：trailer 名门标签为 "Trailer name"（proto 套件逐字），
+      // 非 header 门。
+      if (!__TOKEN_RE.test(String(k))) throw new codes.ERR_INVALID_HTTP_TOKEN("Trailer name", String(k));
       const __v = trailers[k];
       const __vals = Array.isArray(__v) ? __v : [__v];
       // node 口径 uniqueHeaders：名单内 trailer 行 wire 合并单行 '; '
       //（multiple-headers 套件 rawTrailers 收单对）。
       const __uniq = this.__uniqueHeaders;
       if (Array.isArray(__uniq) && __uniq.includes(String(k).toLowerCase())) {
-        for (const __e of __vals) __validateHeaderValue(__e);
+        for (const __e of __vals) {
+          // node 口径：trailer 值门标签为 "trailer content"（proto 套件逐字）。
+          if (!__validHeaderValue(String(__e))) throw new codes.ERR_INVALID_CHAR(String(k), "trailer content");
+        }
         this.__trailer = (this.__trailer ?? "") + `${k}: ${__vals.join("; ")}\r\n`;
         if (this.trailers !== undefined) {
           if (this.rawTrailers === undefined) this.rawTrailers = [];
@@ -149,7 +252,8 @@ export class OutgoingMessage extends Writable {
         continue;
       }
       for (const __e of __vals) {
-        __validateHeaderValue(__e);
+        // node 口径：trailer 值门标签为 "trailer content"（proto 套件逐字）。
+        if (!__validHeaderValue(String(__e))) throw new codes.ERR_INVALID_CHAR(String(k), "trailer content");
         this.__trailer = (this.__trailer ?? "") + `${k}: ${__e}\r\n`;
         // 即时落账（wire 解析回填前可读）。
         if (this.trailers !== undefined) {
@@ -373,6 +477,14 @@ export function withHttpServer(Base) {
           if (__nErr > 1) return;
           if (__hasClientError) return;
           const __r = st.res;
+          // 同源迟到错（res 已因本次失败销毁且记错）：错误已走 res 通道递送，
+          // 不再重抛（writable-finished 套件 mock 形；否则同一失败报两次，
+          // 第二次变 uncaught）。
+          if (__r !== null && __r !== undefined && __r.destroyed) {
+            let __re = null;
+            try { __re = __r.errored; } catch {}
+            if (__re !== null && __re !== undefined) return;
+          }
           if (__r === null || __r === undefined || __r.destroyed) throw e;
           try {
             if (!__r.__headSent) {
@@ -1611,9 +1723,12 @@ export function withClientRequest(openSocket, flavor) {
         sock.once("connect", (sock.__reqSockOnConnect = () => {
           this.__connected = true;
           if (this.__pendingFinal) {
-            // end() 已调：整事务一次刷出（CL 决策在 end 时已定）。
+            // end() 已调：整事务一次刷出（CL 决策在 end 时已定），结果回终结
+            // 回调（writable-finished 套件 mock 失败形；成功 null 同旧）。
             this.__pendingFinal = false;
-            this.__flushFinal();
+            this.__finalStashed = false;
+            this.__finishFlush(this.__flushFinal(), this.__pendingFinalCb);
+            this.__pendingFinalCb = null;
             return;
           }
           // node _flush 口径：连通即发头（无体请求——如 Expect: 100-continue
@@ -1624,7 +1739,9 @@ export function withClientRequest(openSocket, flavor) {
           this.__connected = true;
           if (this.__pendingFinal) {
             this.__pendingFinal = false;
-            this.__flushFinal();
+            this.__finalStashed = false;
+            this.__finishFlush(this.__flushFinal(), this.__pendingFinalCb);
+            this.__pendingFinalCb = null;
             return;
           }
           this.__tryFlush();
@@ -1697,6 +1814,26 @@ export function withClientRequest(openSocket, flavor) {
             __self.__pendingFinal = false;
             __self.__flushFinal();
           }
+        });
+      } else if (sock.connecting !== true && sock.pending !== true &&
+                 (sock.__id === null || sock.__id === undefined)) {
+        // node 口径：createConnection 注入的已连通 socket（mock Duplex：无
+        // connecting/pending 面、无原生句柄 __id）不走 'connect' 事件等待——
+        // 直接视为已连通（writable-finished block2 套件：否则写永停靠、
+        // finish 误发）。真新建 socket（含 TLS：connecting 面缺席但有 __id）
+        // 仍等事件；序排在 'socket' emit 微任务之后。
+        const __self = this;
+        queueMicrotask(() => {
+          if (__self.destroyed || __self.__connected) return;
+          __self.__connected = true;
+          if (__self.__pendingFinal) {
+            __self.__pendingFinal = false;
+            __self.__finalStashed = false;
+            __self.__finishFlush(__self.__flushFinal(), __self.__pendingFinalCb);
+            __self.__pendingFinalCb = null;
+            return;
+          }
+          __self.__tryFlush();
         });
       }
     }

@@ -3414,3 +3414,67 @@ cargo build
   `phase11_http_pipelined_outgoing_queue_faces`。
   残：reuse-drained（process.report 缺失，另域）/ execPath spawn ~18（待拍板）/
   parser 内省 ~4（记档偏离）。
+
+### 4.195 socket 写错透传四坑：异步确认计数 + 递送顺序 + end 取已记错（2026-09-23，剩余轮 outgoing 面）
+
+- 坑一（mock 确认异步一跳）：socket 写错收集初版同步读 box——mock Duplex
+  的写确认经微任务到（自家 _write 异步一跳），同步读恒空，排空递送 null，
+  随后错才到（writable-finished 套件 `null !== {}` 顽固）。修法：pend 计数
+  + `__afterSockFlush` 等全部 ack（同步全回即下一拍，异步 mock 等确认；
+  确认永不到即 socket 违约，node 同款挂起）。
+- 坑二（显式递送 + 带 err destroy 双发 error）：`_write/_final` 显式 cb(err)
+  后再 `destroy(err)`——destroy 无 errored 去重（destroy.rs 实锤：有 err 即
+  排 emitError），mustCall(1) 形得 2 次。修法：显式递送（同一 err 对象，
+  strictEqual 同一性）→ `destroy()` 收尾（不带 err：只做 close + socket
+  清理；`__failFlush` 注）。顺序再有一层：递送 → destroy 置位 → 终结回调
+  （destroyed 门禁二次 emit；终结回调在 destroyed 流上仍触发用户 endCb，
+  仅压住 emit——onFinish 无 destroyed 门，实证）。
+- 坑三（end 短路恒 STREAM_DESTROYED）：`end()` 在已销毁流上恒回
+  STREAM_DESTROYED，end-again 形（失败后再次 end）与真机（回已记错）不符。
+  修法：`state.errored ?? STREAM_DESTROYED`（writable_flow endWritable；
+  其余两处同形早已如此）。
+- 坑四（trailer/基类门三件）：OM 基类缺 `setHeader`（子类各有，基类直调即
+  not a function——proto 套件现形）；trailer 名/值标签与 header 不同
+  （"Trailer name"/"trailer content"，`ERR_INVALID_CHAR` 加 label 次参，
+  旧单参调用零改）；`write` 覆写的子类分流误伤外来 this
+  （`constructor.name !== OM` 即走 super——fake-this 形须按
+  `instanceof` 判 standalone 先验块形态）。
+- 附带翻转（§4.65）：round1 p11 旧静默缓冲系伪语义（真机 proto 抛
+  NOT_IMPLEMENTED）——改 stub 后断言 + OM standalone `writableLength`
+  走 outputSize。
+- 本轮转 SAME0：outgoing-proto/outgoing-buffer（上轮预建，本轮收尾）/
+  outgoing-writableFinished/outgoing-finished（res close-on-finish +
+  willEmitClose OM 臂，见 §4.196）/outgoing-destroyed（silent-destroy +
+  errored-undefined，flaky hang 见 §4.197）。
+
+### 4.196 TLS 无 connecting 面 + 销毁响应禁回池（2026-09-23，剩余轮）
+
+- 坑一（TLS 误判已连通）：mock 识别用 `connecting !== true`——TLS socket
+  根本无 `connecting` 面（tls.rs 实锤零命中），新建 TLS 全走"已连通"分支
+  提前 flush，握手未成就发明文头，首请求即 hangup（https 全域红）。
+  修法：判据加原生柄（`__id` 缺席才是 mock；真新建含 TLS 皆有 __id，
+  照旧等事件）。
+- 坑二（destroy 的 res 回池即 hang）：客户端 `res.destroy()` 后 socket 按
+  正常收齐回池（ESTABLISHED 常驻、unref 不靠）、服务端永不见 FIN——pipe
+  形（outgoing-destroyed block3）服务端零感知挂死。真机 destroy 即销 socket
+  （不可复用）。修法：`__finishSock` 首门——res destroyed 即销毁不回池
+  （+ `agent.__noteClosed` 记账）；正常 end+close 才可池化（keepalive
+  复用零回归）。
+- 推广为铁律：凡"已连通"判定，先问"哪些真 socket 缺该面"（TLS/UDS/自定义
+  底座逐个核）；凡"复用/回池"路径，先问"销毁态到这了吗"（destroyed 进池
+  即泄漏 + 对端挂死）。
+
+### 4.197 同一失败的二次投递：socket 迟到错 + flaky 定级（2026-09-23，剩余轮）
+
+- 症状：mock socket 写失败同时走 cap（递送写回调）与 'error' 事件（兜底）
+  ——res 已因本次失败销毁且记错后，迟到的 socket 错又进兜底，
+  `throw e` 即 uncaught（writableFinished block3 `forced write failure` 实录）。
+- 修法：`__httpSockOnError` 首门——res destroyed 且 errored 有值即吞
+  （已走 res 通道递送）；无错销毁仍 throw（升级/空闲形旧口径）。
+- flaky 定级法（本轮沉淀）：单块过 + 整文件挂 ≠ 块间污染——先量化（单块×3/
+  整文件×3），再 instrument（分块标记 + lsof 看残留对端 + FIN 流向），
+  最后 master 基线裁决（stash + 同条件跑）。本轮 destroyed 整文件挂即按
+  此法定为 block3 管道收尾缺口（§4.196 坑二），非调度 flake。
+- 附带卫生：开工先 `git status`（本轮工作区有前人未提交的 proto/buffer
+  半成品，交接未提及——`git diff` 认领归属后再动手）；探针脚本放
+  `/tmp/wjs-*` 用完即清（`__wjs_node_compat` 同族纪律）。

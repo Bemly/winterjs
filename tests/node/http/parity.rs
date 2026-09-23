@@ -217,9 +217,13 @@ console.log("p2 server-options ok");
   });
 }
 
-// 11) OutgoingMessage 独立构造：_write 缓冲 + writableLength 保留。
+// 11) OutgoingMessage 独立构造：未覆写 _implicitHeader 即 NOT_IMPLEMENTED
+//（真机 proto 套件口径；旧静默缓冲系伪语义，§4.65 翻转）；覆写后缓冲 +
+// writableLength 按 outputSize 累计。
 {
   const om = new http.OutgoingMessage();
+  assert.throws(() => { om.write("asd"); }, { code: "ERR_METHOD_NOT_IMPLEMENTED" });
+  om._implicitHeader = function() {};
   om.write("asd");
   assert.strictEqual(om.writableLength, 3);
   const om2 = new http.OutgoingMessage();

@@ -138,6 +138,24 @@ function __checkOutboundHeaderValue(validation, value, name = undefined) {
     throw new codes.ERR_INVALID_CHAR(name);
   }
 }
+// socket 写确认等待（writable-finished 套件）：mock Duplex 的写确认经微任务
+// 到（_write 异步一跳），同步读 box 恒空——实锤坑。故落盘收尾一律经此等全部
+// ack（pend 计数）：同步全回即下一拍，异步 mock 等其确认；确认永不到即
+// socket 违约（node 同款挂起）。三文件（head/outgoing/agent）concat 同域共用。
+// box 形：{ err, pend, waiters }，由各类的 __sockCap 造。
+function __afterSockFlush(stream, box, fn) {
+  queueMicrotask(() => {
+    if (stream.destroyed) return;
+    if (box === null || box === undefined || box.pend === 0) {
+      try { fn(box !== null && box !== undefined && box.err !== null && box.err !== undefined ? box.err : undefined); } catch {}
+      return;
+    }
+    box.waiters.push((err) => {
+      if (stream.destroyed) return;
+      try { fn(err ?? undefined); } catch {}
+    });
+  });
+}
 // node 单例头（重名首个赢；multiheaders2 套件 11 件 + 真机三轮实测
 // Age/ETag/Server/Expires/Last-Modified/Retry-After 六件）。
 const __SINGLETON_HEADERS = new Set([
@@ -658,6 +676,10 @@ export class ServerResponse extends Writable {
       sock._writableState !== undefined && sock._writableState !== null
       ? sock._writableState.highWaterMark : undefined;
     super({ autoDestroy: false, highWaterMark: __shwm });
+    // socket 写错只进写/终结回调、不外发 res 'error'（writable-finished 套件
+    // block3/4 无 error 监听；用户自有监听仍可达，仅永不无监听抛错——
+    // OM destroy 吞错的构造期版，同口径）。
+    this.on("error", () => {});
     // 构造首参：server 流程传 socket；独立构造传 req 形信息对象（node 口径
     // `new ServerResponse(req)`，standalone 套件）——非 socket 一律不入 __sock。
     this.__sock = sock && typeof sock.write === "function" ? sock : null;
@@ -705,6 +727,8 @@ export class ServerResponse extends Writable {
     this.__rejectBody = false;
     this.__userEnded = false;
     this.__onDone = null;
+    // node 口径 finished（finish-writable 套件 end 后同步真）。
+    this.finished = false;
     // 独立构造：从 req 形对象提取版本/方法面（node ServerResponse ctor 口径）。
     if (this.__sock === null && sock && typeof sock === "object") {
       if (sock.method === "HEAD") this.__headOnly = true;
@@ -715,12 +739,39 @@ export class ServerResponse extends Writable {
       }
     }
   }
+  // node 口径 _implicitHeader（proto 套件：ServerResponse.prototype 上须为函数；
+  // 本仓发头走 __sendHead，此处转调）。
+  _implicitHeader() {
+    if (!this.__headSent) this.__sendHead();
+  }
   // node 口径 writableLength 覆写（基类流机构 getter 只计未调 _write 的字节，
   // 与 socket 落盘脱节——outgoing-properties 套件要渲染头+帧化块精确字节）。
   get writableLength() { return this.__wlen ?? 0; }
   // socket 落盘统一出口（记账递减 + 递送；钳零——100-continue/终结块等非 body
   // 写不参与计数，CL 快捷真值由 _final 兜底清零对齐）。
-  __sockWrite(b) {
+  // node 口径：socket 写错回传 _write/_final 回调（writable-finished 套件
+  // mock Duplex 形；确认计数等待，见顶层 __afterSockFlush）。
+  // box 为空即沿旧路无回调（零行为差）。
+  __sockCap() {
+    const box = { err: null, pend: 0, waiters: [] };
+    box.cap = (e) => {
+      if (e !== undefined && e !== null && box.err === null) box.err = e;
+      box.pend--;
+      if (box.pend === 0) {
+        const ws = box.waiters;
+        box.waiters = [];
+        for (const w of ws) { try { w(box.err); } catch {} }
+      }
+    };
+    return box;
+  }
+  // 落盘出错统一收尾（客户端 __failFlush 同款）：显式递送同一 err 后
+  // destroy() 收尾（silent，不外发 res error；close 照发）。
+  __failFlush(err, finalCb) {
+    if (typeof finalCb === "function") { try { finalCb(err); } catch {} }
+    try { this.destroy(); } catch {}
+  }
+  __sockWrite(b, box) {
     // node 口径：落盘同步（spurious-aborted 套件：字节即时上网），wlen 递减异步
     //（writableLength 按 onwrite 节奏——同步读 write() 后仍见排队字节，
     // outgoing-properties 131/139；微任务降零后释停靠 drain）。
@@ -746,7 +797,11 @@ export class ServerResponse extends Writable {
         this.__sock.__bwSub(__n);
       }
     } catch { /* 计数永不阻递送 */ }
-    return this.__sock.write(b);
+    if (box === null || box === undefined) {
+      try { return this.__sock.write(b); } catch { return false; }
+    }
+    box.pend++;
+    try { return this.__sock.write(b, box.cap); } catch (e) { try { box.cap(e); } catch {} return false; }
   }
   // 头渲染 dry-run（计数专用）：快照→渲染→取值→还原。调用点保证头已终局
   // （首 _write 后 setHeader/writeHead 即抛，头冻结），故重渲染逐字节恒等
@@ -893,6 +948,9 @@ export class ServerResponse extends Writable {
     }
     this.__statusMessage = v;
   }
+  // node 口径 writable 恒 true（finish-writable 套件 LEGACY；背压走 write()
+  // 返回值与 needDrain，不走此旗）。
+  get writable() { return true; }
   writeHead(status, ...rest) {
     // node 口径（write-head 套件真机实测）：已发头再 write 即 HEADERS_SENT。
     if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("write");
@@ -1315,6 +1373,7 @@ export class ServerResponse extends Writable {
     this.headersSent = true;
     this.__endHadData = chunk !== undefined && chunk !== null && typeof chunk !== "function";
     this.__userEnded = true;
+    this.finished = true;
     // node 口径 strictContentLength（content-length-mismatch 套件）：end 块超
     // 即同步抛；收尾不足（累计 < CL）同样同步抛。校验在落盘前。
     if (this.__endHadData || this.__strictCL() !== null) {
@@ -1581,19 +1640,19 @@ export class ServerResponse extends Writable {
   // socket.write spy 恰 5 次）：chunked 帧四发——hex / CRLF / 体 / CRLF，
   // 每次 _send 独立 conn.write；CL/裸体一发（头 prepend 首块，见
   // __sendHeadWithFirst）。字节流恒等，write 调用次数与真机对齐。
-  __frame(u8) {
+  __frame(u8, box) {
     if (this.__noBody || this.__headOnly) return;
     if (u8.length === 0) return;
     if (this.__sock === null || this.__sock.destroyed) return;
     if (this.__chunked && !this.__rawCL) {
       // node _send 粒度：尺寸行 hex **不含 CRLF**（crlf_buf 独立一发）——
       // hex 带 CRLF 再发 __CRLF 即双 CRLF，整条 chunked 流错位（实锤坑）。
-      this.__sockWrite(new TextEncoder().encode(u8.length.toString(16)));
-      this.__sockWrite(__CRLF);
-      this.__sockWrite(u8);
-      this.__sockWrite(__CRLF);
+      this.__sockWrite(new TextEncoder().encode(u8.length.toString(16)), box);
+      this.__sockWrite(__CRLF, box);
+      this.__sockWrite(u8, box);
+      this.__sockWrite(__CRLF, box);
     } else {
-      this.__sockWrite(u8);
+      this.__sockWrite(u8, box);
     }
   }
   // node _http_outgoing _send 内部面（test-http-1.0 套件直调 res._send('')）：
@@ -1621,23 +1680,23 @@ export class ServerResponse extends Writable {
   }
   // 首块带头发（node _send 的 _header prepend 口径：头未发即拼进首个 _send
   //——chunked 拼 hex、CL/裸体拼体；空块/无体头独立一发）。
-  __sendHeadWithFirst(b) {
+  __sendHeadWithFirst(b, box) {
     if (this.__sock === null || this.__sock.destroyed) return;
     const head = this.__headBytes();
     const __doChunk = this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly;
     if (__doChunk && b !== null && b !== undefined && b.length > 0) {
       // hex 不含 CRLF（见 __frame 注）：head+hex / CRLF / 体 / CRLF。
       const hex = new TextEncoder().encode(b.length.toString(16));
-      this.__sockWrite(head.length > 0 ? __concat(head, hex) : hex);
-      this.__sockWrite(__CRLF);
-      this.__sockWrite(b);
-      this.__sockWrite(__CRLF);
+      this.__sockWrite(head.length > 0 ? __concat(head, hex) : hex, box);
+      this.__sockWrite(__CRLF, box);
+      this.__sockWrite(b, box);
+      this.__sockWrite(__CRLF, box);
     } else if (head.length > 0 && b !== null && b !== undefined && b.length > 0) {
-      this.__sockWrite(__concat(head, b));
+      this.__sockWrite(__concat(head, b), box);
     } else if (head.length > 0) {
-      this.__sockWrite(head);
+      this.__sockWrite(head, box);
     } else if (b !== null && b !== undefined && b.length > 0) {
-      this.__frame(b);
+      this.__frame(b, box);
     }
   }
   _write(chunk, encoding, cb) {
@@ -1687,11 +1746,15 @@ export class ServerResponse extends Writable {
       queueMicrotask(cb);
       return;
     }
+    // node 口径：socket 写错回传写回调（writable-finished 套件 mock 形；
+    // 确认计数等待，见顶层 __afterSockFlush）。成功路回调 undefined
+    //（旧 cb() 同值）。
+    const __box = this.__sockCap();
     if (this.__headSent && this.__buf1 !== null) {
       // _send('') 已冲头：滞留首块先行（保序——1.0 套件 write→_send('')→write 序）。
       const b0 = this.__buf1;
       this.__buf1 = null;
-      this.__frame(b0);
+      this.__frame(b0, __box);
     }
     if (!this.__headSent) {
       if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined && !this.__frameSuppressed()) this.__chunked = true;
@@ -1700,21 +1763,37 @@ export class ServerResponse extends Writable {
       // node _header prepend：头未发即拼进首个 _send（头+hex 或 头+体一体；
       // 直发首块（CL/TE 已知）同样合并，standalone 套件单 write 断言）。
       if (b !== null && b !== undefined) {
-        this.__sendHeadWithFirst(b);
-        this.__frame(u8);
+        this.__sendHeadWithFirst(b, __box);
+        this.__frame(u8, __box);
       } else {
-        this.__sendHeadWithFirst(u8);
+        this.__sendHeadWithFirst(u8, __box);
       }
     } else {
-      this.__frame(u8);
+      this.__frame(u8, __box);
     }
-    queueMicrotask(cb);
+    // 出错显式递送同一 err + destroy() 收尾（silent；单次 error 被常驻吞错接住）；
+    // 成功 microtask 回 undefined（旧 cb() 同值）。
+    __afterSockFlush(this, __box, (err) => {
+      if (err !== null && err !== undefined) { this.__failFlush(err, (e) => cb(e)); return; }
+      cb(undefined);
+    });
   }
   _final(cb) {
     if (this.__holdTimer !== null) {
       clearTimeout(this.__holdTimer);
       this.__holdTimer = null;
     }
+    // node 口径：已销毁（多为先前写错）时 end 回调带已记错误（writable-
+    // finished 套件 end-again 形）；无错沿旧路（参缺席，与旧 cb() 同值）。
+    if (this.destroyed) {
+      const __de = this._writableState !== null && this._writableState !== undefined ? this._writableState.errored : null;
+      cb(__de ?? undefined);
+      return;
+    }
+    // node 口径：socket 写错回传终结回调（writable-finished 套件 mock 形；
+    // 确认计数等待，见顶层 __afterSockFlush）。成功路回调 undefined
+    //（旧 cb() 同值）。
+    const __box = this.__sockCap();
     if (this.__sockGone || this.__sock === null || this.__sock.destroyed) {
       // 入列停靠中：终结 parked（流等待 assign 回放，Node 管线口径；回放后重
       // 走本函数正常收尾，__onDone 照常轮转）。
@@ -1758,34 +1837,34 @@ export class ServerResponse extends Writable {
             // spy 恰 5 次（头+hex/CRLF/体/CRLF/终结）。hex 不含 CRLF
             //（crlf_buf 独立一发，真机 _send 链口径）。
             const hex = new TextEncoder().encode(b.length.toString(16));
-            this.__sockWrite(head.length > 0 ? __concat(head, hex) : hex);
-            this.__sockWrite(__CRLF);
-            this.__sockWrite(b);
-            this.__sockWrite(__CRLF);
+            this.__sockWrite(head.length > 0 ? __concat(head, hex) : hex, __box);
+            this.__sockWrite(__CRLF, __box);
+            this.__sockWrite(b, __box);
+            this.__sockWrite(__CRLF, __box);
           } else if (head.length === 0) {
-            this.__frame(b);
+            this.__frame(b, __box);
           } else if (!this.__noBody && !this.__headOnly && b.length > 0) {
             // node 口径：CL/raw 快捷时头 + 首块合并为一次 write（standalone 套件）。
-            this.__sockWrite(__concat(head, b));
+            this.__sockWrite(__concat(head, b), __box);
           } else {
-            this.__sockWrite(head);
-            this.__frame(b);
+            this.__sockWrite(head, __box);
+            this.__frame(b, __box);
           }
           if (__chunkedFrame) {
-            this.__sockWrite(new TextEncoder().encode(this.__chunkTerminator()));
+            this.__sockWrite(new TextEncoder().encode(this.__chunkTerminator()), __box);
           }
         } else if (head.length > 0) {
           // end() 无数据：node _send prepend——chunked 头拼终结块一发，
           // 非 chunked 头独立一发（真机 writeHead+end() 口径）。
           if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
-            this.__sockWrite(__concat(head, new TextEncoder().encode(this.__chunkTerminator())));
+            this.__sockWrite(__concat(head, new TextEncoder().encode(this.__chunkTerminator())), __box);
           } else {
-            this.__sockWrite(head);
+            this.__sockWrite(head, __box);
           }
         }
       }
     } else if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
-      this.__sockWrite(new TextEncoder().encode(this.__chunkTerminator()));
+      this.__sockWrite(new TextEncoder().encode(this.__chunkTerminator()), __box);
     }
     const cont = this.__onDone;
     this.__onDone = null;
@@ -1802,7 +1881,22 @@ export class ServerResponse extends Writable {
     // 随后排：错误响应写落定时 socket 仍活，否则撞上已 end 即 "write after end"
     // 丢失（GET 管线超 maxRequests 形；POST 形靠体 pacing 碰巧，递延后确定性）。
     // node _last 口径：响应后关连接（close-delimited/显式 close/1.0 裸体）。
-    cb();
+    // 终结回调确认计数等待（mock 错异步到；成功 undefined 与旧 cb() 同值）；
+    // 出错显式递送 + destroy() 收尾；cont/FIN 调度保持同步。
+    __afterSockFlush(this, __box, (err) => {
+      if (err !== null && err !== undefined) { this.__failFlush(err, (e) => cb(e)); return; }
+      cb(undefined);
+    });
+    // node onFinish 口径：响应收尾即 _closed 置位 + 发 'close'（保活连接同样
+    // 每响应一次；finished() 的 willEmitClose 等的就是它，outgoing-finished
+    // 套件钉住）。destroy 路径已发的不重发（__closeEmitted 门）。
+    queueMicrotask(() => {
+      if (this.destroyed || this.__closeEmitted) return;
+      this.__closeEmitted = true;
+      this.__srClosed = true;
+      try { this._closed = true; } catch {}
+      try { this.emit("close"); } catch { /* gone */ }
+    });
     if (cont !== null) queueMicrotask(cont);
     if (this.__last) {
       const __s = this.__sock;
@@ -1812,10 +1906,24 @@ export class ServerResponse extends Writable {
   // node 口径：destroy(err) 不外发 msg 'error'（outgoing-destroyed 要求吞错、
   // capture-rejection 经 socket 递错误；基类 trampoline 发 error 时序不可靠，
   // 吞错常驻——用户自有 error 监听仍可达，仅永不无监听抛错）。
+  // 真机实测：err 只落 errored（同步可读），不发 'error' 事件；socket 静默销毁。
   destroy(err) {
     if (this.destroyed) return this;
     this.on("error", () => {});
-    return super.destroy(err);
+    if (err !== undefined && err !== null) this.__resErrored = err;
+    return super.destroy();
+  }
+  // errored 优先记 destroy(err) 的错（真机同步可读），否则读流机构；
+  // 无错时回 undefined（OutgoingMessage 口径，outgoing-destroyed:89）。
+  get errored() {
+    if (this.__resErrored !== undefined && this.__resErrored !== null) return this.__resErrored;
+    const __v = this._writableState ? this._writableState.errored : null;
+    return __v === null || __v === undefined ? undefined : __v;
+  }
+  // node onFinish 置位：正常收尾后 closed 同步为 true（_final 微任务置
+  // __srClosed；destroy 路径走基类状态位）。
+  get closed() {
+    return this.__srClosed === true || super.closed;
   }
   _destroy(err, cb) {
     if (this.__holdTimer !== null) {
@@ -1833,12 +1941,17 @@ export class ServerResponse extends Writable {
         this.__sock.__bwPend = 0;
       }
     } catch { /* 计数永不阻销毁 */ }
-    // capture-rejection 套件：destroy(err) 透传 socket（有 error 监听才带
-    // err——裸杀配 err 会无监听抛错；node 侧由常驻 socketOnError 承接，
-    // 本仓无此常驻监听故按可观测等价门控）。
+    // capture-rejection 套件：destroy(err) 透传 socket——仅有用户 error 监听
+    // 才带 err（裸杀配 err 会无监听抛错；常驻 __httpSockOnError 兜底不算数，
+    // 否则兜底把 err 当用户错重抛即 uncaught——outgoing-destroyed 套件实录）。
     try {
       const __s = this.__sock;
-      if (err !== undefined && err !== null && typeof __s.listenerCount === "function" && __s.listenerCount("error") > 0) __s.destroy(err);
+      let __userErr = 0;
+      try {
+        const __ls = typeof __s.listeners === "function" ? __s.listeners("error") : [];
+        __userErr = __ls.filter((l) => l !== __s.__httpSockOnError && l !== __s.__freeSockErr).length;
+      } catch { /* 读表失败即按无用户监听 */ }
+      if (err !== undefined && err !== null && __userErr > 0) __s.destroy(err);
       else __s.destroy();
     } catch { /* closed meanwhile */ }
     cb(err);

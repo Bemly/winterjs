@@ -247,6 +247,7 @@ function __hpeServer(code, msg, bytesParsed, rawPacket) {
   e.code = code;
   e.bytesParsed = bytesParsed;
   e.rawPacket = rawPacket;
+  e.reason = msg;
   e.__httpParse = true;
   return e;
 }

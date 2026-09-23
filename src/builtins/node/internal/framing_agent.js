@@ -276,6 +276,8 @@
     }
     // node 口径（弃用面仍测）：abort = destroy + 'abort' 事件 + aborted 旗；
     // 在途响应同步走 aborted 级联（aborted 套件：res aborted → error → close）。
+    // 'abort' 事件异步发（abort-stream-end 套件：调用方 abort() 后同步重置状态，
+    // 同步发即断言到重置前的值；aborted 旗保持同步）。
     abort() {
       if (this.destroyed) return;
       this.__aborted = true;
@@ -284,7 +286,7 @@
         try { this.__res.__abortWithError(); } catch { /* 监听抛错不阻销毁 */ }
       }
       this.destroy();
-      this.emit("abort");
+      queueMicrotask(() => { try { this.emit("abort"); } catch { /* 监听抛错不阻收尾 */ } });
     }
     get aborted() { return this.__aborted === true; }
     __sendHead() {
@@ -528,6 +530,11 @@
       if (this.__holdTimer !== null) {
         clearTimeout(this.__holdTimer);
         this.__holdTimer = null;
+      }
+      // signal 监听收尾（abort 触发或正常结束皆摘，不泄漏）。
+      if (this.__sigCleanup !== undefined && this.__sigCleanup !== null) {
+        try { this.__sigCleanup(); } catch { /* gone */ }
+        this.__sigCleanup = null;
       }
       if (this.agent !== null) this.agent.__cancel(this);
       // node 口径：请求 error 即摘 socket data/end 请求级监听（agent 的
@@ -1103,12 +1110,6 @@ Agent.prototype.createSocket = function (req, options, cb) {
     settled = true;
     if (typeof cb === "function") cb(err, s);
   };
-  // node 口径：建连选项带 agent 保活面（keepalive-delay 套件点名
-  // options.keepAlive/keepAliveInitialDelay；缺席即补 agent 值）。
-  if (options !== null && typeof options === "object") {
-    if (options.keepAlive === undefined) options.keepAlive = this.keepAlive;
-    if (options.keepAliveInitialDelay === undefined) options.keepAliveInitialDelay = this.keepAliveMsecs;
-  }
   const maybe = this.createConnection(options, oncreate);
   if (!settled && maybe) oncreate(null, maybe);
   return maybe;
@@ -1274,6 +1275,14 @@ Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
   // host/port 后置归一（extra 的 null/undefined host 不得覆盖归一值——
   // hostname-typechecking 的 {host: null} 值形会漏进 net.connect 炸类型门）。
   const opts = { ...(extra ?? {}), host, port };
+  // node 口径（双探针实测）：内部建连剥离 signal（请求侧已挂单监听，透传即
+  // 双挂，agent-abort-controller 套件恰 1；直接调 createConnection 的显式
+  // signal 不动）；keepAlive 面仅 true 值透传（缺省 agent 即 absent）。
+  delete opts.signal;
+  if (this.keepAlive === true) {
+    if (opts.keepAlive === undefined) opts.keepAlive = true;
+    if (opts.keepAliveInitialDelay === undefined) opts.keepAliveInitialDelay = this.keepAliveMsecs;
+  }
   let done = false;
   const oncreate = (err, sock) => {
     if (done) return;

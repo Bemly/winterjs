@@ -549,6 +549,12 @@ export class ServerResponse extends Writable {
     // `new ServerResponse(req)`，standalone 套件）——非 socket 一律不入 __sock。
     this.__sock = sock && typeof sock.write === "function" ? sock : null;
     this.__sockAssigned = false;
+    // node 口径 writableLength（outgoing-properties 套件）：已排队待上 socket
+    // 的字节（渲染头 + 帧化块；standalone 无头即裸块累计）。流机构 length 不
+    // 可用（_write 回调 microtask 即清零，与落盘节奏脱节），故独立记账：
+    // 写时预测递增、落盘按实际递减、_final 兜底清零。
+    this.__wlen = 0;
+    this.__headCounted = false;
     // node 口径：res.socket / res.connection 指向响应 socket（agent-keepalive
     // 套件服务端经 res.connection 取 socket 再 end）。
     this.socket = this.__sock;
@@ -595,6 +601,72 @@ export class ServerResponse extends Writable {
         this.__keepAlive = false;
       }
     }
+  }
+  // node 口径 writableLength 覆写（基类流机构 getter 只计未调 _write 的字节，
+  // 与 socket 落盘脱节——outgoing-properties 套件要渲染头+帧化块精确字节）。
+  get writableLength() { return this.__wlen ?? 0; }
+  // socket 落盘统一出口（记账递减 + 递送；钳零——100-continue/终结块等非 body
+  // 写不参与计数，CL 快捷真值由 _final 兜底清零对齐）。
+  __sockWrite(b) {
+    try {
+      if (typeof this.__wlen === "number") {
+        this.__wlen = Math.max(0, this.__wlen - (b !== undefined && b !== null ? b.length : 0));
+      }
+    } catch { /* 计数永不阻递送 */ }
+    return this.__sock.write(b);
+  }
+  // 头渲染 dry-run（计数专用）：快照→渲染→取值→还原。调用点保证头已终局
+  // （首 _write 后 setHeader/writeHead 即抛，头冻结），故重渲染逐字节恒等
+  // （Date 同长），还原后真实渲染不受影响。
+  __predictHeadLen() {
+    const __snap = {
+      headers: { ...this.__headers },
+      headSent: this.__headSent,
+      headersSent: this.headersSent,
+      chunked: this.__chunked,
+      rawCL: this.__rawCL,
+      last: this.__last,
+      keepAlive: this.__keepAlive,
+      autoConn: this.__autoConn,
+      autoDate: this.__autoDate,
+      autoKA: this.__autoKA,
+      defaultKA: this.__defaultKA,
+      contentLength: this.__contentLength,
+    };
+    let __n = 0;
+    try {
+      __n = this.__headBytes().length;
+    } catch { __n = 0; }
+    this.__headers = __snap.headers;
+    this.__headSent = __snap.headSent;
+    this.headersSent = __snap.headersSent;
+    this.__chunked = __snap.chunked;
+    this.__rawCL = __snap.rawCL;
+    this.__last = __snap.last;
+    this.__keepAlive = __snap.keepAlive;
+    this.__autoConn = __snap.autoConn;
+    this.__autoDate = __snap.autoDate;
+    this.__autoKA = __snap.autoKA;
+    this.__defaultKA = __snap.defaultKA;
+    this.__contentLength = __snap.contentLength;
+    return __n;
+  }
+  // 块帧化长度预测（与 __frame / _write 落盘判定同谓词，见 _write 1338 行族）。
+  __predictFrameLen(u8) {
+    if (this.__noBody || this.__headOnly || u8.length === 0) return 0;
+    const __ch = this.__chunked || (this.__uced && this.__headers["content-length"] === undefined &&
+      this.__headers["transfer-encoding"] === undefined && !this.__frameSuppressed());
+    if (__ch && !this.__rawCL) return u8.length.toString(16).length + 2 + u8.length + 2;
+    return u8.length;
+  }
+  // 写时记账（_write/_send 入口）：首渲染头 + 帧化块。socket-null 停靠（Slice B
+  // 管线队列）同计数，assignSocket 排空时按实际递减。
+  __countOut(u8) {
+    if (!this.__headCounted && !this.__headSent) {
+      this.__headCounted = true;
+      this.__wlen += this.__predictHeadLen();
+    }
+    this.__wlen += this.__predictFrameLen(u8);
   }
   setHeader(name, value) {
     if (this.headersSent) throw new codes.ERR_HTTP_HEADERS_SENT("set");
@@ -827,7 +899,7 @@ export class ServerResponse extends Writable {
     if (this.__continueSent || this.headersSent || this.__headSent) return;
     this.__continueSent = true;
     if (this.__sock !== null) {
-      try { this.__sock.write(new TextEncoder().encode("HTTP/1.1 100 Continue\r\n\r\n")); } catch { /* gone */ }
+      try { this.__sockWrite(new TextEncoder().encode("HTTP/1.1 100 Continue\r\n\r\n")); } catch { /* gone */ }
     }
   }
   // node writeProcessing()：writeInformation(102) 速记。
@@ -893,7 +965,7 @@ export class ServerResponse extends Writable {
       lines.push(`${__names[k] ?? k}: ${v}`);
     }
     try {
-      this.__sock.write(new TextEncoder().encode(lines.join("\r\n") + "\r\n\r\n"));
+      this.__sockWrite(new TextEncoder().encode(lines.join("\r\n") + "\r\n\r\n"));
     } catch { return false; /* gone */ }
     return true;
   }
@@ -978,6 +1050,12 @@ export class ServerResponse extends Writable {
       throw new codes.ERR_HTTP_BODY_NOT_ALLOWED();
     }
     if (this.__sockGone || this.__sock === null || this.__sock.destroyed) return false;
+    // 写时记账（writableLength 精确字节，见 __countOut）：write 包装层同步计
+    // （流机构异步派发 _write，_write 时机计数会漏同步读——outgoing-properties
+    // 套件连写两行后同步读）；end 块由 end 包装层计，_write 内不计（防双计）。
+    if (chunk !== undefined && chunk !== null) {
+      try { this.__countOut(chunk instanceof Uint8Array ? chunk : __toU8(String(chunk))); } catch { /* 计数永不阻写 */ }
+    }
     return super.write(chunk, encoding, cb);
   }
   // node 口径（head-throw 套件）：1xx/204/304/HEAD 为无体响应（writeHead 置
@@ -1036,7 +1114,14 @@ export class ServerResponse extends Writable {
     this.__endHadData = chunk !== undefined && chunk !== null && typeof chunk !== "function";
     this.__userEnded = true;
     try {
-      return super.end(chunk, encoding, cb);
+      const __r = super.end(chunk, encoding, cb);
+      // end 块同步记账（流 end 经内部 _write 直调，不走 write 包装层，此处补计）。
+      if (this.__endHadData) {
+        try {
+          this.__countOut(chunk instanceof Uint8Array ? chunk : __toU8(String(chunk)));
+        } catch { /* 计数永不阻收尾 */ }
+      }
+      return __r;
     } catch (e) {
       // 基类校验抛（如数组 chunk）不得毒化旗位，否则后续合法 end 永不到
       // （end-types 套件 hang 根因）。
@@ -1230,7 +1315,7 @@ export class ServerResponse extends Writable {
     // 续行响应的写不抛，node 写毁 socket 回 false 口径）。
     if (this.__sock === null || this.__sock.destroyed) return;
     const head = this.__headBytes();
-    if (head.length > 0) this.__sock.write(head);
+    if (head.length > 0) this.__sockWrite(head);
   }
   // chunked 终结块：`0\r\n` + trailer 行 + 空行（addTrailers 的 trailer 跟尾）。
   __chunkTerminator() {
@@ -1247,12 +1332,12 @@ export class ServerResponse extends Writable {
     if (this.__chunked && !this.__rawCL) {
       // node _send 粒度：尺寸行 hex **不含 CRLF**（crlf_buf 独立一发）——
       // hex 带 CRLF 再发 __CRLF 即双 CRLF，整条 chunked 流错位（实锤坑）。
-      this.__sock.write(new TextEncoder().encode(u8.length.toString(16)));
-      this.__sock.write(__CRLF);
-      this.__sock.write(u8);
-      this.__sock.write(__CRLF);
+      this.__sockWrite(new TextEncoder().encode(u8.length.toString(16)));
+      this.__sockWrite(__CRLF);
+      this.__sockWrite(u8);
+      this.__sockWrite(__CRLF);
     } else {
-      this.__sock.write(u8);
+      this.__sockWrite(u8);
     }
   }
   // node _http_outgoing _send 内部面（test-http-1.0 套件直调 res._send('')）：
@@ -1260,16 +1345,21 @@ export class ServerResponse extends Writable {
   // 直写（套件只用 ''；本仓帧化归 __frame，_send 不做 chunk 帧化）。
   _send(data) {
     const __d = data === undefined || data === null ? "" : String(data);
+    // 先记账后落盘（_send 先于首 _write 时头尚未计数；已计数即只递减）。
+    if (!this.__headCounted && !this.__headSent) {
+      this.__headCounted = true;
+      this.__wlen += this.__predictHeadLen();
+    }
     if (!this.__headSent) {
       if (this.__sock !== null && !this.__sock.destroyed) {
         const head = this.__headBytes();
-        if (head.length > 0) this.__sock.write(head);
-        if (__d.length > 0) this.__sock.write(new TextEncoder().encode(__d));
+        if (head.length > 0) this.__sockWrite(head);
+        if (__d.length > 0) this.__sockWrite(new TextEncoder().encode(__d));
       }
       return this;
     }
     if (__d.length > 0 && this.__sock !== null && !this.__sock.destroyed) {
-      this.__sock.write(new TextEncoder().encode(__d));
+      this.__sockWrite(new TextEncoder().encode(__d));
     }
     return this;
   }
@@ -1282,14 +1372,14 @@ export class ServerResponse extends Writable {
     if (__doChunk && b !== null && b !== undefined && b.length > 0) {
       // hex 不含 CRLF（见 __frame 注）：head+hex / CRLF / 体 / CRLF。
       const hex = new TextEncoder().encode(b.length.toString(16));
-      this.__sock.write(head.length > 0 ? __concat(head, hex) : hex);
-      this.__sock.write(__CRLF);
-      this.__sock.write(b);
-      this.__sock.write(__CRLF);
+      this.__sockWrite(head.length > 0 ? __concat(head, hex) : hex);
+      this.__sockWrite(__CRLF);
+      this.__sockWrite(b);
+      this.__sockWrite(__CRLF);
     } else if (head.length > 0 && b !== null && b !== undefined && b.length > 0) {
-      this.__sock.write(__concat(head, b));
+      this.__sockWrite(__concat(head, b));
     } else if (head.length > 0) {
-      this.__sock.write(head);
+      this.__sockWrite(head);
     } else if (b !== null && b !== undefined && b.length > 0) {
       this.__frame(b);
     }
@@ -1297,6 +1387,7 @@ export class ServerResponse extends Writable {
   _write(chunk, encoding, cb) {
     const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk));
     this.__sawWrite = true;
+    // 记账在 write/end 包装层同步完成（见上），此处不再计。
     // node 口径：首个 write 即算发头（setheaders-after-sent 套件 write 后
     // setHeader 即 HEADERS_SENT；holdback 只延迟落盘，旗同步立）。
     this.headersSent = true;
@@ -1350,6 +1441,8 @@ export class ServerResponse extends Writable {
       this.__holdTimer = null;
     }
     if (this.__sockGone || this.__sock === null || this.__sock.destroyed) {
+      // 无处可送：挂起计数清零（finish 口径 writableLength 恒 0）。
+      this.__wlen = 0;
       cb();
       return;
     }
@@ -1378,37 +1471,40 @@ export class ServerResponse extends Writable {
             // spy 恰 5 次（头+hex/CRLF/体/CRLF/终结）。hex 不含 CRLF
             //（crlf_buf 独立一发，真机 _send 链口径）。
             const hex = new TextEncoder().encode(b.length.toString(16));
-            this.__sock.write(head.length > 0 ? __concat(head, hex) : hex);
-            this.__sock.write(__CRLF);
-            this.__sock.write(b);
-            this.__sock.write(__CRLF);
+            this.__sockWrite(head.length > 0 ? __concat(head, hex) : hex);
+            this.__sockWrite(__CRLF);
+            this.__sockWrite(b);
+            this.__sockWrite(__CRLF);
           } else if (head.length === 0) {
             this.__frame(b);
           } else if (!this.__noBody && !this.__headOnly && b.length > 0) {
             // node 口径：CL/raw 快捷时头 + 首块合并为一次 write（standalone 套件）。
-            this.__sock.write(__concat(head, b));
+            this.__sockWrite(__concat(head, b));
           } else {
-            this.__sock.write(head);
+            this.__sockWrite(head);
             this.__frame(b);
           }
           if (__chunkedFrame) {
-            this.__sock.write(new TextEncoder().encode(this.__chunkTerminator()));
+            this.__sockWrite(new TextEncoder().encode(this.__chunkTerminator()));
           }
         } else if (head.length > 0) {
           // end() 无数据：node _send prepend——chunked 头拼终结块一发，
           // 非 chunked 头独立一发（真机 writeHead+end() 口径）。
           if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
-            this.__sock.write(__concat(head, new TextEncoder().encode(this.__chunkTerminator())));
+            this.__sockWrite(__concat(head, new TextEncoder().encode(this.__chunkTerminator())));
           } else {
-            this.__sock.write(head);
+            this.__sockWrite(head);
           }
         }
       }
     } else if (this.__chunked && !this.__rawCL && !this.__noBody && !this.__headOnly) {
-      this.__sock.write(new TextEncoder().encode(this.__chunkTerminator()));
+      this.__sockWrite(new TextEncoder().encode(this.__chunkTerminator()));
     }
     const cont = this.__onDone;
     this.__onDone = null;
+    // _final 落盘全量同步完成（CL 快捷真值可能覆盖写时预测）：收尾计数恒清零，
+    // 与 socket 实际落盘对齐（finish 口径 writableLength 恒 0）。
+    this.__wlen = 0;
     // cont（re-feed 解析已读管线字节→503/408 等错误响应）先排，__last 的 FIN
     // 随后排：错误响应写落定时 socket 仍活，否则撞上已 end 即 "write after end"
     // 丢失（GET 管线超 maxRequests 形；POST 形靠体 pacing 碰巧，递延后确定性）。
@@ -1433,6 +1529,8 @@ export class ServerResponse extends Writable {
       clearTimeout(this.__holdTimer);
       this.__holdTimer = null;
     }
+    // 销毁即无后续落盘：挂起计数清零（destroy 不走 _final）。
+    this.__wlen = 0;
     // capture-rejection 套件：destroy(err) 透传 socket（有 error 监听才带
     // err——裸杀配 err 会无监听抛错；node 侧由常驻 socketOnError 承接，
     // 本仓无此常驻监听故按可观测等价门控）。

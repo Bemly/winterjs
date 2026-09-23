@@ -94,6 +94,11 @@ Agent.prototype.__openSocket = (host, port, extra) => {
 Agent.prototype.__defaultPort = 80;
 const globalAgent = new Agent({ keepAlive: true, scheduling: "lifo" });
 FLAVOR.defaultAgent = globalAgent;
+// node 口径：`http.globalAgent = agent` 可整体替换（override-global-agent 套件）。
+// require 回的是 __api 对象（见下），在其上挂 accessor 劫持赋值；内部经
+// FLAVOR.__getDefaultAgent 读活值（具名 ESM 导入仍绑旧 const，记档）。
+let __liveGlobalAgent = globalAgent;
+FLAVOR.__getDefaultAgent = () => __liveGlobalAgent;
 
 export function request(a, b, c) {
   const [options, cb] = normalizeRequestArgs(a, b, c, FLAVOR);
@@ -131,7 +136,9 @@ export {
   validateHeaderName, validateHeaderValue,
 };
 const __api = {
-  STATUS_CODES, METHODS, maxHeaderSize, request, get, Agent, globalAgent,
+  STATUS_CODES, METHODS, maxHeaderSize, request, get, Agent,
+  get globalAgent() { return __liveGlobalAgent; },
+  set globalAgent(v) { __liveGlobalAgent = v; },
   Server, ServerResponse, IncomingMessage, ClientRequest, OutgoingMessage, createServer,
   setMaxIdleHTTPParsers, validateHeaderName, validateHeaderValue,
 };

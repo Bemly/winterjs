@@ -255,8 +255,11 @@ export function withHttpServer(Base) {
         if (!Array.isArray(o.uniqueHeaders)) throw new codes.ERR_INVALID_ARG_TYPE("uniqueHeaders", "Array", o.uniqueHeaders);
         self.uniqueHeaders = o.uniqueHeaders.map((h) => String(h).toLowerCase());
       }
-      // node 口径：shouldUpgradeCallback(req) 逐请求门控升级（upgrade-server-
-      // callback 套件：true 走 upgrade、false 走 request、抛错走 uncaught）。
+      // node 口径 joinDuplicateHeaders（缺省 false：重复头首个赢；true 即
+      // ', ' 合并；cookie '; '/set-cookie 数组不受门控，真机 26.8.2 实测）+
+      // requireHostHeader（缺省 true：1.1 缺 Host 即静默 400）。
+      self.joinDuplicateHeaders = o.joinDuplicateHeaders === true;
+      self.requireHostHeader = o.requireHostHeader !== false;
       if (o.shouldUpgradeCallback !== undefined) self.shouldUpgradeCallback = o.shouldUpgradeCallback;
       // node 口径（head-throw 套件）：rejectNonStandardBodyWrites 缺省 false。
       self.rejectNonStandardBodyWrites = o.rejectNonStandardBodyWrites === true;
@@ -648,8 +651,16 @@ export function withHttpServer(Base) {
           if (this.insecureHTTPParser !== true && __hasBareCR(headText)) {
             throw __mkParseError("LF expected after CR");
           }
-          const { first, headers, rawHeaders, headersDistinct } = __parseHead(headText, this.__inboundMode ?? "strict", this.maxHeadersCount);
+          const { first, headers, rawHeaders, headersDistinct } = __parseHead(headText, this.__inboundMode ?? "strict", this.maxHeadersCount, undefined, this.joinDuplicateHeaders === true);
           __validateRequestHead(first, headers);
+          // node 口径 requireHostHeader（缺省 true）：1.1 缺 Host 即静默 400
+          //（无 request、无 clientError；request-host-header 套件）。
+          if (this.requireHostHeader !== false && (first[2] === "HTTP/1.1") &&
+              headers.host === undefined) {
+            try { sock.write(new TextEncoder().encode("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
+            try { sock.destroy(); } catch { /* gone */ }
+            return;
+          }
           // llhttp 头语义错（真机逐形实测）：TE+CL 并存 / 重复 CL 行——整头已
           // 消费（bytesParsed=头长；子节偏移未被套件点名，记档近似），经
           // clientError（默认 400）。rawPacket 由 __feedError 按当片补齐。
@@ -1215,7 +1226,10 @@ export function withClientRequest(openSocket, flavor) {
             }
             const __k = String(__p[0]);
             if (!__TOKEN_RE.test(__k)) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", __k);
-            __list.push([__k, String(__p[1])]);
+            // cookie 对值数组即 '; ' 单行（headers-array 套件；其余照 String）。
+            const __rv = Array.isArray(__p[1]) && __k.toLowerCase() === "cookie"
+              ? __p[1].join("; ") : String(__p[1]);
+            __list.push([__k, __rv]);
             if (this.__headerNames[__k.toLowerCase()] === undefined) this.__headerNames[__k.toLowerCase()] = __k;
           }
         } else {
@@ -1248,7 +1262,9 @@ export function withClientRequest(openSocket, flavor) {
       // node 口径（lib/_http_client.js 551 行 `if (options.auth && ...)` 真机原文 +
       // url.parse-auth/decoded-auth 套件实测）：options.auth 真值在场且用户未显式
       // 给 Authorization 即补 Basic（base64 全串；对象/数组双形都查，显式值恒赢）。
-      if (options.auth) {
+      // node 口径（headers-array 套件）：数组形 headers 不自动补 Host/Auth
+      //（显式值恒赢；数组形只发有序对，自动 connection 照常）。
+      if (options.auth && !Array.isArray(this.__headerList)) {
         let __hasAuth = this.__headers.authorization !== undefined;
         if (!__hasAuth && Array.isArray(this.__headerList)) {
           for (const [__k] of this.__headerList) {
@@ -1270,7 +1286,7 @@ export function withClientRequest(openSocket, flavor) {
         this.__headers.host = this.__hostHeader;
         this.__headerNames.host = "Host";
       }
-      if (!__noDefaults && this.__headers.host === undefined) {
+      if (!__noDefaults && this.__headers.host === undefined && !Array.isArray(this.__headerList)) {
         // node 口径（lib/_http_client.js 546 行 + connect-default-host-header
         // 套件真机实测）：CONNECT 且 options.path 在场时 Host 取 path 本体
         //（authority），不取连接主机。

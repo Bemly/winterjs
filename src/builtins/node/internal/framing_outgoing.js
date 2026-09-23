@@ -1435,6 +1435,12 @@ export function withClientRequest(openSocket, flavor) {
       // 套件在 'socket' 事件断言全等）。
       sock._httpMessage = this;
       this.reusedSocket = reused === true;
+      // node 口径：复用 socket 的 HWM 按新请求同步（highwatermark-reuse 套件
+      // 直读 socket.writableHighWaterMark；新建连接走构造期缺省）。
+      if (reused === true && this[kHighWaterMark] !== undefined &&
+          sock._writableState !== undefined && sock._writableState !== null) {
+        sock._writableState.highWaterMark = this[kHighWaterMark];
+      }
       // 防御：上轮请求侧监听残留即先摘（正常路径 __finishSock 已摘）——
       // 必须先于本函数的一切注册，否则会把刚挂的监听当残留摘掉。
       // node 口径 attach 换装四件——socketOnEnd/socketErrorListener/

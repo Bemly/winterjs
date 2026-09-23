@@ -299,7 +299,8 @@
       const head = [`${this.method} ${this.path} HTTP/1.1`];
       if (this.__headers["content-length"] !== undefined) {
         this.__rawCL = true;
-      } else if (this.__chunked) {
+      } else if (this.__chunked && this.__headers["transfer-encoding"] === undefined) {
+        // 用户显式 TE 原样保留（raw-headers 套件 'CHUNKED' 大小写；仅缺席才补）。
         this.__headers["transfer-encoding"] = "chunked";
       }
       // 自动头规范大写（真机口径）；自设头按用户拼写（__headerNames；
@@ -1191,6 +1192,8 @@ Agent.prototype.__init = function (options = {}) {
 // 同步回值、不调 cb——cb 由 createSocket 的 oncreate 统一收口）；测试以假
 // Duplex 覆盖做黑洞/依此注入 socket。同步回值与 cb 双形态由 createSocket 兜。
 Agent.prototype.createConnection = function (options, cb) {
+  // 首参数字即端口（socket-encoding-error 套件 createConnection(port, cb) 形）。
+  if (typeof options === "number") options = { port: options };
   return this.__openSocket(options.host, options.port, options);
 };
 // node lib/_http_agent.js：createConnection 的记账壳（req, options, cb 三参；

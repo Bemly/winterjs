@@ -5,6 +5,8 @@ pub const SOURCE: &str = r#"const options = {
   '--no-deprecation': false,
   '--enable-source-maps': false,
   '--experimental-stream-iter': false,
+  // node 口径：max-http-header-size 缺省 16384（max-http-headers 套件）。
+  '--max-http-header-size': 16384,
   hasIntl: false,
 };
 function getOptionValue(name) {

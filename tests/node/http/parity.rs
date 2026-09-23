@@ -277,3 +277,120 @@ setTimeout(() => console.log("END"), 900);
     dir.close().unwrap();
 }
 
+#[test]
+fn phase11_http_socket_push_and_server_parse_errors() {
+    // 基建轮 Slice A：Socket.push 可读侧注入 + 服务端 llhttp 解析错三件
+    // （code/message/bytesParsed/rawPacket）+ TE+CL/重 CL 门 + 客户端数组头
+    // 分行。正常（push 读写/null 收尾）+ 报错（overflow/method/TE/CL 四形）+
+    // 边界（非法块类型/销毁后 push）三件套。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createServer, get } from "node:http";
+import net from "node:net";
+
+// 1) push 基础：返回值 + 数据 + null 收尾（未连接即 END + CLOSE）。
+{
+  const s = new net.Socket();
+  const seen = [];
+  s.on("data", (c) => seen.push(String(c)));
+  console.log("push-ret", s.push("hi"), s.push(Buffer.from("!")));
+  s.on("end", () => console.log("push-end", seen.join("") === "hi!"));
+  s.on("close", () => console.log("push-close"));
+  console.log("push-null", s.push(null));
+  console.log("push-after", s.push("x"));
+}
+// 2) 边界：非法块类型 + 销毁后 push。
+{
+  const s = new net.Socket();
+  try { s.push({}); console.log("push-bad NO"); }
+  catch (e) { console.log("push-bad", e.code); }
+  s.push(null);
+}
+// 3) 服务端 overflow 三件（validator 实跑，非 vacuous）。
+await new Promise((resolve) => {
+  const server = createServer(() => {});
+  server.on("connection", (sock) => {
+    sock.on("error", (e) => {
+      console.log("ovf", e.code === "HPE_HEADER_OVERFLOW", e.bytesParsed,
+        Buffer.isBuffer(e.rawPacket), e.rawPacket.length);
+    });
+    sock.push("GET /blah HTTP/1.1\r\nCookie: " + "a".repeat(16384));
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const c = net.connect(server.address().port);
+    let got = "";
+    c.on("data", (d) => (got += d.toString()));
+    c.on("end", () => {
+      console.log("ovf-cli", got === "HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n");
+      c.end();
+    });
+    c.on("close", () => server.close(resolve));
+  });
+});
+// 4) 方法错：clientError 三件 + 默认 400 可达。
+await new Promise((resolve) => {
+  const server = createServer(() => console.log("m9y REQUEST?!"));
+  server.on("clientError", (e, sock) => {
+    console.log("m9y", e.code, e.bytesParsed, e.rawPacket.length, e.message);
+    sock.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+    server.close(resolve);
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const c = net.connect(server.address().port, () => c.end("FOO /\r\n"));
+    c.on("error", () => {});
+  });
+});
+// 5) TE+CL 并存门。
+await new Promise((resolve) => {
+  const server = createServer(() => console.log("te REQUEST?!"));
+  server.on("clientError", (e, sock) => {
+    console.log("te", e.code);
+    sock.destroy();
+    server.close(resolve);
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const c = net.connect(server.address().port, () => {
+      c.end("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\nTransfer-Encoding: chunked\r\n\r\n");
+    });
+    c.on("error", () => {});
+  });
+});
+// 6) 重 CL：客户端数组头走两行 wire，服务端拒收。
+await new Promise((resolve) => {
+  const server = createServer(() => console.log("dc REQUEST?!"));
+  server.on("clientError", (e, sock) => {
+    console.log("dc", e.code, e.message);
+    sock.destroy();
+    server.close(resolve);
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const req = get({ port: server.address().port, headers: { "Content-Length": [1, 2] } }, () => {});
+    req.on("error", () => {});
+    req.end();
+  });
+});
+console.log("pushparse-done");
+"#,
+    );
+    for tag in [
+        "push-ret true true",
+        "push-end true",
+        "push-close",
+        "push-null false",
+        "push-after false",
+        "push-bad ERR_INVALID_ARG_TYPE",
+        "ovf true 16412 true 16412",
+        "ovf-cli true",
+        "m9y HPE_INVALID_METHOD 1 7 Parse Error: Invalid method encountered",
+        "te HPE_INVALID_TRANSFER_ENCODING",
+        "dc HPE_UNEXPECTED_CONTENT_LENGTH Parse Error: Duplicate Content-Length",
+        "pushparse-done",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}
+

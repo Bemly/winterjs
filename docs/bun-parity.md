@@ -1459,6 +1459,8 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > >   max-headers-count/response-multi-content-length（8 件）；
 > >   request-timeout-keepalive 实为绿（15s sweep alarm 误判，25s 双边绿）。
 > >   黑盒 `phase11_http_cork_faces` + `phase11_http_uncaught_throws`。
+> > - **终局 serial 重扫**（sweep4，2026-09-23，25s alarm，干净二进制）：
+> >   409 件 SAME0=294/SAME1=0/DIFF=102/TIMEOUT=13（TIMEOUT 全为 wjs=142/node=0）。
 > > - **残件定性**：drain-writable-length/outgoing-properties（outputData
 > >   记账 + writableLength 合成 getter）与 header-overflow/read-in-error
 > >   （socket.push）同根 → **net.Socket 写侧流式化 + eager-parse outgoing

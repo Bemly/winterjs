@@ -314,6 +314,8 @@ multi-CL；§4.193）。cork 三件套（response-cork/drain-cork/outgoing-end-c
 uncaught-from-request-callback + test-http-1.0 + null-prototype-options +
 max-headers-count + response-multi-content-length 转 SAME0；request-timeout-
 keepalive 实为绿（15s sweep alarm 误判"真机自挂"，25s 实证双边绿——§4.193 坑五）。
+终局 serial 重扫（sweep4，25s alarm，干净二进制，TEST_THREAD_ID 3599）：
+409 件 SAME0=294/SAME1=0/DIFF=102/TIMEOUT=13（8 件转绿逐项复核在册）。
 黑盒 `phase11_http_cork_faces` + `phase11_http_uncaught_throws` + http 域 25/25 +
 node 域 278/278 + 冒烟 5/5。**残件全部定性**：drain-writable-length +
 outgoing-properties（outputData 记账 + writableLength 合成 getter）与

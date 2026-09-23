@@ -1191,7 +1191,8 @@ export function withClientRequest(openSocket, flavor) {
           return e;
         };
         if (__sig.aborted === true) {
-          queueMicrotask(() => { if (!this.destroyed) this.destroy(__abortErr()); });
+          // 预 abort：同步销毁（destroyed 旗同步立，error 照常异步；套件同步断言）。
+          try { this.destroy(__abortErr()); } catch { /* gone */ }
         } else if (typeof __sig.addEventListener === "function") {
           const __onAbort = () => {
             try { __sig.removeEventListener("abort", __onAbort); } catch { /* gone */ }

@@ -7,10 +7,27 @@ export class OutgoingMessage extends Writable {
     super({ autoDestroy: false, emitClose: false });
     this.headersSent = false;
     this.socket = null;
+    // node 口径 kOutHeaders（对表，供 _renderHeaders/internal/http 直读）。
+    this[kOutHeaders] = {};
     // 独立构造（`new OutgoingMessage()`，outgoing-properties 系套件）：无 socket
     // 时 _write 缓冲不落盘——cb 不调（writableLength 保持，Node outputData 口径），
     // 有子类 socket 面时由子类 _write 覆写。
     this.__outputData = [];
+  }
+  // node lib/_http_outgoing.js _renderHeaders（renderHeaders 套件）：
+  // 对表 [原名, 值] → {原名: 值}；null/非对象即 {}；_header 在场（已发头标记，
+  // 真机按此字段判）即抛 ERR_HTTP_HEADERS_SENT。
+  _renderHeaders() {
+    if (this._header) throw new codes.ERR_HTTP_HEADERS_SENT("render");
+    const src = this[kOutHeaders];
+    const out = {};
+    if (src !== null && typeof src === "object") {
+      for (const k of Object.keys(src)) {
+        const e = src[k];
+        if (Array.isArray(e) && e.length >= 2) out[e[0]] = e[1];
+      }
+    }
+    return out;
   }
   _write(chunk, encoding, cb) {
     this.__outputData.push([chunk, encoding, cb]);
@@ -219,6 +236,13 @@ export function withHttpServer(Base) {
       // node 口径：maxHeadersCount 缺省 null（不限），可动态改写
       // （max-headers-count 套件逐轮改写；接收侧截断，0/null 不限）。
       self.maxHeadersCount = null;
+      // node 口径 maxHeaderSize（缺省 16384；max-header-size-per-stream 套件
+      // 逐流覆写——服务端选项/客户端请求选项双侧）。
+      if (o.maxHeaderSize !== undefined) {
+        const __mhs = Number(o.maxHeaderSize);
+        if (Number.isFinite(__mhs) && __mhs >= 0) self.maxHeaderSize = __mhs;
+      }
+      if (self.maxHeaderSize === undefined) self.maxHeaderSize = maxHeaderSize;
       // 每服务器宽松解析旗（insecure-parser-per-stream 套件）。
       // httpValidation 门（node storeHTTPOptions 口径：validateOneOf + 与
       // insecureHTTPParser 互斥，ERR_INVALID_ARG_VALUE）。
@@ -627,10 +651,11 @@ export function withHttpServer(Base) {
           }
           const headEnd = __findHeadEnd(st.buf);
           if (headEnd === -1) {
-            // 头段超出 maxHeaderSize：llhttp HPE_HEADER_OVERFLOW（整片已消费，
-            // bytesParsed=buf 长；rawPacket 由 __feedError 按当片补齐），默认
-            // 431 + 销毁（header-overflow 套件精确字节 + socket error 三件）。
-            if (st.buf.length > maxHeaderSize) {
+            // 头段超出 maxHeaderSize：llhttp HPE_HEADER_OVERFLOW（语义计数，
+            // 见 __headSemCount；bytesParsed 照旧取 buf 长，header-overflow
+            // 套件逐字），默认 431 + 销毁。上限取服务端选项。
+            const __lim = this.maxHeaderSize ?? maxHeaderSize;
+            if (__headSemCount(st.buf, false) >= __lim) {
               throw __hpeServer("HPE_HEADER_OVERFLOW", "Header overflow", st.buf.length);
             }
             // 消息期 requestTimeout 从消息首字节起算（request-timeout-
@@ -646,6 +671,11 @@ export function withHttpServer(Base) {
             // 前导空行已在上方统一吞，此处不再重复）。
             __checkRequestLinePrefix(st.buf);
             return;
+          }
+          // 整头超限（语义计数，见 __headSemCount；一次凑齐/分包凑齐皆无例外；
+          // max-http-headers 套件 16KB 分包仍 431）。上限取服务端选项。
+          if (__headSemCount(st.buf.slice(0, headEnd + 4), false) >= (this.maxHeaderSize ?? maxHeaderSize)) {
+            throw __hpeServer("HPE_HEADER_OVERFLOW", "Header overflow", headEnd + 4);
           }
           const headText = __latin1(st.buf.slice(0, headEnd));
           if (this.insecureHTTPParser !== true && __hasBareCR(headText)) {
@@ -1096,9 +1126,6 @@ export function withClientRequest(openSocket, flavor) {
         // hostname 优先于 host（url.parse 对象同时带 `host: "h:port"` 与
         // `hostname: "h"`，取 host 会把端口当主机名连过去即 ECONNRESET）。
         host = options.hostname ?? options.host ?? "localhost";
-        // node 口径：defaultPort 逐级——显式 port > agent.defaultPort > flavor 缺省
-        //（default-port 套件：globalAgent.defaultPort 动态改写生效，host 头
-        // 按“port === 生效缺省”省略端口；agent 缺省取隐式 globalAgent）。
         const __ag = options.agent !== undefined ? options.agent : flavor.defaultAgent;
         const __agentDp = __ag && __ag.defaultPort !== undefined ? __ag.defaultPort : flavor.defaultPort;
         port = Number(options.port ?? __agentDp);
@@ -1151,6 +1178,14 @@ export function withClientRequest(openSocket, flavor) {
       // node 口径：maxHeadersCount 缺省 null（不限），响应解析前可改写
       // （max-headers-count 套件：构造后赋值截断接收头数）。
       this.maxHeadersCount = null;
+      // node 口径 maxHeaderSize（缺省 16384；max-header-size-per-stream 套件
+      // 客户端逐流覆写）。
+      if (options !== null && typeof options === "object" && !(options instanceof URL) &&
+          options.maxHeaderSize !== undefined) {
+        const __mhs = Number(options.maxHeaderSize);
+        if (Number.isFinite(__mhs) && __mhs >= 0) this.maxHeaderSize = __mhs;
+      }
+      if (this.maxHeaderSize === undefined) this.maxHeaderSize = maxHeaderSize;
       // 自设请求头名字门（invalidheaderfield 套件：'testing 123' → TypeError）。
       for (const __k of Object.keys(userHeaders ?? {})) {
         if (!__TOKEN_RE.test(__k)) {
@@ -1172,14 +1207,13 @@ export function withClientRequest(openSocket, flavor) {
       this.__agentFalse = options.agent === false;
       this.__defaultPort = this.agent !== null && this.agent.defaultPort !== undefined
         ? this.agent.defaultPort : flavor.defaultPort;
-      // node 口径（lib/_http_client.js 真机源码 + host-header-ipv6-fail 套件）：
-      // Host 拼接比较的是**显式配置**的 defaultPort（options.defaultPort ??
-      // agent.defaultPort，未配置即 undefined），不是 flavor 缺省 80——
-      // `+port !== defaultPort` 在 defaultPort 缺席时恒成立，故缺省恒拼 `:80`
-      //（'example.com'→'example.com:80'）；仅显式缺省与 port 相等才省略。
+      // node 口径（lib/_http_client.js 真机源码 + host-header-ipv6-fail 套件 +
+      // correct-hostname 套件）：Host 拼接比较的是**生效缺省**
+      //（options.defaultPort ?? agent.defaultPort ?? flavor 缺省）——URL 无端口
+      // 即 port 80 === 80，省略端口；显式缺省不同才拼 `:port`。
       // IPv6 加框：双冒号以上且首字符非 '[' 才加框（'::1'→'[::1]'，
       // 'foo:1234' 单冒号不加框，直接拼端口）。
-      const __cfgDp = options.defaultPort ?? (this.agent !== null ? this.agent.defaultPort : undefined);
+      const __cfgDp = options.defaultPort ?? (this.agent !== null && this.agent !== undefined ? this.agent.defaultPort : undefined) ?? flavor.defaultPort;
       const __bracketHost = (() => {
         const __pos = host.indexOf(":");
         if (__pos !== -1 && host.includes(":", __pos + 1) && host.charCodeAt(0) !== 91) return `[${host}]`;
@@ -1294,6 +1328,19 @@ export function withClientRequest(openSocket, flavor) {
           ? String(path)
           : this.__hostHeader;
         this.__headerNames.host = "Host";
+        // node 口径（真机 getHeader/wire 双探针）：存储省缺省端口（correct-hostname
+        // 套件），wire 在"存储省了端口且无显式 defaultPort"时补 `:port`（batch5
+        // `foo:1234:80`；default-port 套件显式缺省即 wire 亦省；已带端口不补）。
+        // CONNECT authority 形自带端口，不补。
+        this.__hostBarePort = null;
+        if (!(method === "CONNECT" && options.path !== undefined) && port === __cfgDp) {
+          const __explicitDp = (options !== null && typeof options === "object" && !(options instanceof URL))
+            ? (options.defaultPort ?? (this.agent !== null && this.agent !== undefined ? this.agent.defaultPort : undefined))
+            : (this.agent !== null && this.agent !== undefined ? this.agent.defaultPort : undefined);
+          if (__explicitDp === undefined && port !== undefined && port !== null) {
+            this.__hostBarePort = Number(port);
+          }
+        }
       }
       // node ctor 口径（_http_client.js）：有 agent 即默认 keep-alive，
       // 仅非 keepAlive agent + maxSockets 无限时回落 close；无 agent 即 close。
@@ -1316,6 +1363,15 @@ export function withClientRequest(openSocket, flavor) {
         this.__autoConn = true;
       }
       this.__headSent = false;
+      // node 口径 kOutHeaders 对表落账（correct-hostname 套件直读 .host 对；
+      // 构造期快照，后续 setHeader 变动不追——套件只读构造态）。
+      try {
+        const __pairs = {};
+        for (const k of Object.keys(this.__headers)) {
+          __pairs[k] = [this.__headerNames[k] ?? k, this.__headers[k]];
+        }
+        this[kOutHeaders] = __pairs;
+      } catch { /* 对表永不阻构造 */ }
       // 真机口径（10f G3，node 26.8.2 实测）：CL 快路径仅当 end(data) 是首个
       // 头触发点；write/flushHeaders 在前 → chunked；GET/HEAD/DELETE/OPTIONS/
       // TRACE/CONNECT（useChunkedEncodingByDefault=false 族）→ 无 CL/TE 裸体。
@@ -1490,6 +1546,9 @@ export function withClientRequest(openSocket, flavor) {
         try { sock.ref(); } catch { /* gone */ }
       }
       const __sockOnError = (e) => {
+        // 去重：请求已销毁（自身的 destroy(err) 先发过 error）即吞，不二次
+        // 递送（max-http-headers 套件 mustCall(1) 形；二次抛会跳过 close 链即 hang）。
+        if (this.destroyed) return;
         if (this.listenerCount("error") === 0) throw e;
         this.emit("error", e);
         // node 口径：连接错无响应即销毁请求（'close' 时 req.destroyed === true，

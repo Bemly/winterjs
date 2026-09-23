@@ -116,6 +116,17 @@ export class OutgoingMessage extends Writable {
   // multiple-headers 套件 req 'end' 内断言）。
   addTrailers(trailers) {
     if (trailers === null || trailers === undefined) return this;
+    // node 口径：对形 `[[k,v],...]` 与对象形双收（raw-headers 套件；writeHead
+    // 对形同源）。对形逐对取 [0]/[1] 归一。
+    if (Array.isArray(trailers)) {
+      const __flat = {};
+      for (const __p of trailers) {
+        const __k = String(__p[0]);
+        if (__flat[__k] === undefined) __flat[__k] = [];
+        __flat[__k].push(__p[1]);
+      }
+      trailers = __flat;
+    }
     for (const k of Object.keys(trailers)) {
       if (!__TOKEN_RE.test(String(k))) throw new codes.ERR_INVALID_HTTP_TOKEN("Header name", String(k));
       const __v = trailers[k];
@@ -286,9 +297,11 @@ export function withHttpServer(Base) {
       }
       // node 口径 joinDuplicateHeaders（缺省 false：重复头首个赢；true 即
       // ', ' 合并；cookie '; '/set-cookie 数组不受门控，真机 26.8.2 实测）+
-      // requireHostHeader（缺省 true：1.1 缺 Host 即静默 400）。
+      // requireHostHeader（缺省 true：1.1 缺 Host 即静默 400）+
+      // noDelay（缺省 true，真机实测；建连透传）。
       self.joinDuplicateHeaders = o.joinDuplicateHeaders === true;
       self.requireHostHeader = o.requireHostHeader !== false;
+      self.noDelay = o.noDelay !== false;
       if (o.shouldUpgradeCallback !== undefined) self.shouldUpgradeCallback = o.shouldUpgradeCallback;
       // node 口径（head-throw 套件）：rejectNonStandardBodyWrites 缺省 false。
       self.rejectNonStandardBodyWrites = o.rejectNonStandardBodyWrites === true;
@@ -315,6 +328,8 @@ export function withHttpServer(Base) {
       });
       self.on("connection", (sock) => {
         self.__sockets.add(sock);
+        // HTTP 服务端 socket 标记（socket-encoding-error 套件：禁 setEncoding）。
+        try { sock.__httpServerSocket = true; } catch { /* gone */ }
         const st = { buf: new Uint8Array(0), req: null, framing: null, res: null, __hdT: null, __rqT: null, __kaT: null };
         sock.__httpState = st;
         // node 口径 socket.parser（connection-list-when-close 套件）：每连接

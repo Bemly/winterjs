@@ -258,12 +258,11 @@ pub unsafe extern "C" fn net_connect(
         return true;
     }
     handle.spawn(async move {
-        match tokio::net::TcpStream::connect((host.as_str(), port as u16)).await {
-            Err(e) => {
-                let code = crate::builtins::node::fs::io_code(&e);
+        match tcp_connect_resolved(host.as_str(), port as u16).await {
+            Err((code, msg)) => {
                 let _ = ev_tx.send(NetEvent {
                     id,
-                    kind: NetKind::Error { code: code.into(), msg: format!("{code}: {e}") },
+                    kind: NetKind::Error { code: code.into(), msg },
                 });
                 let _ = ev_tx.send(NetEvent { id, kind: NetKind::Close });
             }
@@ -277,6 +276,45 @@ pub unsafe extern "C" fn net_connect(
         }
     });
     true
+}
+
+/// TCP 建连（DNS 先解 + 逐地址试连；node getaddrinfo 口径；供 `net::tls` 共用）。
+/// 成功回 stream；失败回 `(code, msg)`（DNS 解不出即 `ENOTFOUND` +
+/// `getaddrinfo ENOTFOUND <host>`，不再经 `io_code` 落 UNKNOWN）。
+pub(crate) async fn tcp_connect_resolved(
+    host: &str,
+    port: u16,
+) -> Result<tokio::net::TcpStream, (String, String)> {
+    // DNS 先解（dns-error 套件）：阻塞调用走 spawn_blocking。
+    let resolved: Vec<std::net::SocketAddr> = match tokio::task::spawn_blocking({
+        let host = host.to_owned();
+        move || {
+            use std::net::ToSocketAddrs as _;
+            (host.as_str(), port).to_socket_addrs().map(|it| it.collect::<Vec<_>>())
+        }
+    })
+    .await
+    {
+        Ok(Ok(addrs)) if !addrs.is_empty() => addrs,
+        _ => {
+            let code = "ENOTFOUND";
+            return Err((code.to_string(), format!("getaddrinfo {code} {host}")));
+        }
+    };
+    // 逐个试连（首个成功即停；全败取末错——tokio connect 同语义）。
+    let mut last_err: Option<std::io::Error> = None;
+    for addr in resolved {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
+    }
+    // addrs 非空，必有末错。
+    let e = last_err.expect("non-empty addrs always yield a result");
+    let code = crate::builtins::node::fs::io_code(&e);
+    Err((code.to_string(), format!("{code}: {e}")))
 }
 
 /// `__wjs_net_isip(s)` → "0"|"4"|"6"（`net.isIP` 底座；std::net 解析）。

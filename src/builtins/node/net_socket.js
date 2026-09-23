@@ -149,6 +149,28 @@ class Socket extends EventEmitter {
     this.__rhwm = options && (options.readableHighWaterMark !== undefined || options.highWaterMark !== undefined)
       ? Number(options.readableHighWaterMark ?? options.highWaterMark) || 0 : 65536;
     this.__pendBytes = 0;
+    // socket 写队列记账（Slice C：reuse-drained 套件要 socket.writableLength
+    // 可观测——同步落盘 + microtask 排空 + HWM 累计判定 + 背压后 'drain'；
+    // 原生写本身同步（内核缓冲），记账层只管可观测语义，传输不动）。
+    this.__sockQ = 0;
+    this.__needSockDrain = false;
+    this.__sockQFlush = null;
+    this.__sockQAdd = (n) => {
+      this.__sockQ = (this.__sockQ ?? 0) + n;
+      if (this.__sockQ > this._writableState.highWaterMark) this.__needSockDrain = true;
+      if (this.__sockQFlush === null || this.__sockQFlush === undefined) {
+        this.__sockQFlush = true;
+        queueMicrotask(() => {
+          this.__sockQFlush = null;
+          this.__sockQ = 0;
+          if (this.__needSockDrain) {
+            this.__needSockDrain = false;
+            if (!this.destroyed) { try { this.emit("drain"); } catch { /* 监听抛错不阻收尾 */ } }
+          }
+        });
+      }
+      return this.__sockQ < this._writableState.highWaterMark;
+    };
     // _writableState 最小桩：HWM 存储随套件可变（response-drain-cork 套件
     // `socket._writableState.highWaterMark = 1000` 后 res 侧经
     // writableHighWaterMark 读到；真缓冲归 net.Socket 流式化另轮）。
@@ -618,6 +640,7 @@ class Socket extends EventEmitter {
         this.__pendBytes = 0;
         for (const [u8, cb2] of pend) {
           __wjs_net_write(this.__id, u8);
+          this.__sockQAdd(u8.length);
           if (cb2) queueMicrotask(cb2);
         }
         if (this.__endAfterFlush) {
@@ -706,6 +729,9 @@ class Socket extends EventEmitter {
   // close 后**仍为 true**（test-net-connect-buffer 'close' 处理器点名）。
   // node 口径：net.Socket 亦有 writableEnded（remove-header 套件点名
   // response.socket.writableEnded；end() 后 true）。
+  // node 口径 writableLength（socket 写队列积压 + 连接前缓冲；reuse-drained
+  // 套件点名 req.socket.writableLength === 0 / > 0）。
+  get writableLength() { return (this.__sockQ ?? 0) + (this.__pendBytes ?? 0); }
   get writableEnded() { return this.__ended === true; }
   get pending() { return !this.__connected || this.destroyed; }
   get connecting() { return !this.__connected && !this.destroyed && this.__id > 0; }
@@ -800,9 +826,10 @@ class Socket extends EventEmitter {
       return u8.length + this.__pendBytes - u8.length <= this._writableState.highWaterMark;
     }
     __wjs_net_write(this.__id, u8);
-    // 记档：底层同步写队列，无 flush 语义，回调即刻
+    // 记账：底层同步写队列，无 flush 语义，回调即刻（排空/drain 见 __sockQAdd）。
+    const __wret = this.__sockQAdd(u8.length);
     if (cb2) queueMicrotask(cb2);
-    return u8.length <= this._writableState.highWaterMark;
+    return __wret;
   }
   end(data, enc, cb) {
     // node 语义：end([chunk][, enc][, cb])——首参函数即 cb（async-iter 套件
@@ -834,6 +861,8 @@ class Socket extends EventEmitter {
       this.writable = false; this.readable = false;
       this._handle = null;
       this.__dataBuf = [];
+      // 写队列记账清零（排空 microtask 见 destroyed 门，不再递送 drain）。
+      this.__sockQ = 0; this.__needSockDrain = false;
       if (this.__id) __wjs_net_destroy(this.__id);
       // node 口径 emitErrorNT：error 经 nextTick 异步发（同步抛错会把
       // uncaughtException 语义压成同步异常——upgrade body-error 套件；

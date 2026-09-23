@@ -565,6 +565,18 @@
             this.destroy(__hpe("HPE_INVALID_TRANSFER_ENCODING", "Transfer-Encoding can't be present with Content-Length"));
             return;
           }
+          // node llhttp 口径：多 CL 行即拒（response-multi-content-length 套件；
+          // 真机 26.8.2 实测文案 'Duplicate Content-Length'）。
+          if (this.insecureHTTPParser !== true) {
+            let __clCount = 0;
+            for (let __i = 0; __i < rawHeaders.length; __i += 2) {
+              if (String(rawHeaders[__i]).toLowerCase() === "content-length") __clCount++;
+            }
+            if (__clCount > 1) {
+              this.destroy(__hpe("HPE_UNEXPECTED_CONTENT_LENGTH", "Duplicate Content-Length"));
+              return;
+            }
+          }
           const __statusCode = Number(first[1]);
           // CONNECT 响应：隧道建立——'connect' 事件（res, socket, head 原始态），
           // 不发 'response'，socket 停止 HTTP 解析、不回池（node _http_client 口径）。

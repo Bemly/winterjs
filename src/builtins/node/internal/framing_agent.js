@@ -475,6 +475,15 @@
       }
       this.__forceHead = false;
       this.__headerStored = true;
+      // node 口径：end(data) 已落定 CL 即走捷径（content-length 套件 end-with-
+      // data/empty 形；_write holdback 暂存使 _final 滞后，timer 先刷时同样
+      // 认 CL——否则恒 chunked）。TE 在场/已设 CL 即不动。
+      if (this.__contentLength !== undefined &&
+          this.__headers["content-length"] === undefined &&
+          this.__headers["transfer-encoding"] === undefined) {
+        this.__headers["content-length"] = String(this.__contentLength);
+        this.__rawCL = true;
+      }
       const __box = this.__sockCap();
       this.__sendHead(__box);
       const q = this.__buf1;

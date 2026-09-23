@@ -3524,3 +3524,22 @@ cargo build
 - 附带同批绿：client-abort3（同源 throw）。
 - 推广为铁律：凡 destroy 内合成错误的面，必须区分调用源（abort/signal/
   用户 destroy/内部错误销毁）——合成是 destroy 的语义，不是 abort 的。
+
+### 4.201 req.signal 早夭 + res-close 排序重构（2026-09-24，剩余轮）
+
+- 症状三连：`request-signal` 要 server req.signal（AbortSignal，早夭 abort、
+  正常永不）；`req-res-close` 要 res-close 在 req-close 前 + 双 destroyed；
+  `content-length` 的 end-with-data 走 chunked（应 CL:11）。
+- 根因：① signal 面从零开始（惰性 AbortController + 早夭标记滞后补）；
+  socket-close 时 res 未完（或 req 未完）即 abort（正常收齐看 res end，
+  真机探针钉住）；② res-close 排序：node 是 finish→destroy→close 且 req
+  end 被 res 收尾唤醒（暂停流无 end；真机 finish→close→end→close 序实锤）——
+  本仓 res 从不 destroy + req 永暂停；③ `_write` holdback 暂存使 `_final`
+  滞后，timer 先刷不认 CL 捷径（end 侧已落 `__contentLength`）。
+- 修法：① signal getter + `__abortReq`/socket-close 早夭 abort（含
+  `__signalAborted` 滞后）；② res finish-hook 手动 destroy（流机构 auto
+  在 finish 链中重入即 b5 hang；microtask 排，finish 时 destroyed 仍 false）
+  + `_destroy` 干净 detach/显式杀分流 + `_destroy` 内 resume req；
+  ③ `__tryFlush` 认已落定 `__contentLength`。
+- 推广为铁律：流机构 autoDestroy 的 destroy 时机不可控（finish 链中重入）——
+  要时序即手动排；"暂停流无 end"是天然门控，唤醒点与收尾点同放。

@@ -629,24 +629,44 @@ export class IncomingMessage extends Readable {
   }
   _read() {}
   get aborted() { return this.__aborted === true; }
-  // node 口径：消息销毁的 socket 联动（server-incomingmessage-destroy 套件：
-  // req.destroy(err) 不外发 req 'error'——uncaught mustNotCall；错误经 socket
-  // 递（服务端级联杀连接→客户端 hangup；客户端经请求 error 照常 uncaught）。
-  // errored 照记（destroy 侧 checkError 先行）；本体 error 吞掉（cb() 无错）。
-  // 分流：带错必杀；无错仅未收齐（incomplete）才杀——正常收齐后的自动 destroy
-  //（autoDestroy）不碰 socket（keep-alive 复用/响应在途；loopback 套件实锤，
-  // 杀了即 hangup）。无错销毁的收尾由 __finishSock（destroyed 即销）接管。
+  // node 口径 req.signal（request-signal 套件）：AbortSignal，连接早夭
+  // （响应未完）即 abort，正常收齐永不 abort（真机探针：end+10ms 与 close
+  // 后皆 false）。惰性创建，__abortReq/socket-close 处触发（见 outgoing）。
+  get signal() {
+    if (this.__abortController === null || this.__abortController === undefined) {
+      try { this.__abortController = new AbortController(); } catch { return undefined; }
+      // 早夭先于首次访问：补 abort（真机：先死后读仍 aborted）。
+      if (this.__signalAborted === true) {
+        try { this.__abortController.abort(); } catch {}
+      }
+    }
+    return this.__abortController.signal;
+  }
+  // node 口径：消息销毁的 socket/signal 联动——
+  // ① socket：带错必杀；无错仅未收齐（incomplete）且无属主请求接管时才杀。
+  //    属主 ClientRequest._destroy 级联 res.destroy() 时不杀（socket 归属
+  //    req 的池化/清理逻辑；杀了即 listeners-leak 回退）。其余无错销毁
+  //    （如 pipe 形客户端 res.destroy()）由 res-close 闸门经 __finishSock
+  //    收尾（destroyed 即销），此处不动。
+  // ② signal：带错或未收齐即 abort（request-signal Test3/5；正常收齐的自动
+  //    destroy 不动——Test2）。errored 照记（destroy 侧 checkError 先行）；
+  //    本体 error 吞掉（cb() 无错，基类不排 error 发射）。
   _destroy(err, cb) {
+    const __hasErr = err !== undefined && err !== null;
     const __incomplete = this.readableEnded !== true;
-    if (err !== undefined && err !== null) {
+    if (__hasErr || __incomplete) {
+      try {
+        if (this.__abortController !== null && this.__abortController !== undefined) {
+          try { this.__abortController.abort(); } catch {}
+        } else {
+          this.__signalAborted = true;
+        }
+      } catch { /* signal 永不阻收尾 */ }
+    }
+    if (__hasErr) {
       const __s = this.socket;
       if (__s !== null && __s !== undefined && !__s.destroyed && typeof __s.destroy === "function") {
         try { __s.destroy(err); } catch { /* closed meanwhile */ }
-      }
-    } else if (__incomplete) {
-      const __s = this.socket;
-      if (__s !== null && __s !== undefined && !__s.destroyed && typeof __s.destroy === "function") {
-        try { __s.destroy(); } catch { /* closed meanwhile */ }
       }
     }
     cb();
@@ -688,8 +708,9 @@ export class IncomingMessage extends Readable {
 
 export class ServerResponse extends Writable {
   constructor(sock) {
-    // autoDestroy 关：finish 后连接必须活着（keep-alive 复用/优雅关由显式
-    // destroy 负责；自动销毁会把保活连接一起杀掉）。
+    // autoDestroy 关（finish 后连接必须活着；销毁由 finish-hook 手动排——
+    // 流机构 auto 会在 finish 发射链中重入 destroy，b5 实锤 hang。手动 destroy
+    // 在 finish 监听后 microtask 排，时序干净；req-res-close 套件时序同满足）。
     // 写机构 HWM 跟 socket 可写 HWM（node 口径：res 背压由 conn.write 治理，
     // socket 机构 HWM 是判据——response-drain-cork 套件改
     // `socket._writableState.highWaterMark = 1000` 后 res.write(1010) 即 false；
@@ -698,6 +719,15 @@ export class ServerResponse extends Writable {
       sock._writableState !== undefined && sock._writableState !== null
       ? sock._writableState.highWaterMark : undefined;
     super({ autoDestroy: false, highWaterMark: __shwm });
+    // finish 后手动 destroy（close 随后；req-res-close 套件：finish 时 destroyed
+    // 仍 false，close 时 true）。_destroy 智能分流（见下）。
+    this.once("finish", () => {
+      queueMicrotask(() => {
+        if (this.destroyed) return;
+        this.__autoTeardown = true;
+        try { this.destroy(); } catch { /* gone */ }
+      });
+    });
     // socket 写错只进写/终结回调、不外发 res 'error'（writable-finished 套件
     // block3/4 无 error 监听；用户自有监听仍可达，仅永不无监听抛错——
     // OM destroy 吞错的构造期版，同口径）。
@@ -1914,16 +1944,8 @@ export class ServerResponse extends Writable {
       if (err !== null && err !== undefined) { this.__failFlush(err, (e) => cb(e)); return; }
       cb(undefined);
     });
-    // node onFinish 口径：响应收尾即 _closed 置位 + 发 'close'（保活连接同样
-    // 每响应一次；finished() 的 willEmitClose 等的就是它，outgoing-finished
-    // 套件钉住）。destroy 路径已发的不重发（__closeEmitted 门）。
-    queueMicrotask(() => {
-      if (this.destroyed || this.__closeEmitted) return;
-      this.__closeEmitted = true;
-      this.__srClosed = true;
-      try { this._closed = true; } catch {}
-      try { this.emit("close"); } catch { /* gone */ }
-    });
+    // autoDestroy 接管 close（finish→destroy→close；req-res-close 套件时序）——
+    // 此处不再手动发 close（否则与流机构双发）。req 唤醒在 _destroy 内。
     if (cont !== null) queueMicrotask(cont);
     if (this.__last) {
       const __s = this.__sock;
@@ -1933,7 +1955,7 @@ export class ServerResponse extends Writable {
   // node 口径：destroy(err) 不外发 msg 'error'（outgoing-destroyed 要求吞错、
   // capture-rejection 经 socket 递错误；基类 trampoline 发 error 时序不可靠，
   // 吞错常驻——用户自有 error 监听仍可达，仅永不无监听抛错）。
-  // 真机实测：err 只落 errored（同步可读），不发 'error' 事件；socket 静默销毁。
+  // 真机实测：err 只落 errored（同步可读），不发 'error' 事件。
   destroy(err) {
     if (this.destroyed) return this;
     this.on("error", () => {});
@@ -1947,11 +1969,6 @@ export class ServerResponse extends Writable {
     const __v = this._writableState ? this._writableState.errored : null;
     return __v === null || __v === undefined ? undefined : __v;
   }
-  // node onFinish 置位：正常收尾后 closed 同步为 true（_final 微任务置
-  // __srClosed；destroy 路径走基类状态位）。
-  get closed() {
-    return this.__srClosed === true || super.closed;
-  }
   _destroy(err, cb) {
     if (this.__holdTimer !== null) {
       clearTimeout(this.__holdTimer);
@@ -1963,24 +1980,39 @@ export class ServerResponse extends Writable {
     this.__parkedDrain = false;
     this.__parked = [];
     this.__finalParked = null;
+    try { this._closed = true; } catch {}
+    // node 口径：暂停的服务端 req 随 res 收尾唤醒（req-res-close 套件：无 data
+    // 监听时 req 'end' 在 res-close 之后；有监听即 flowing 不受影响。升级/
+    // 劫持形无 st 即跳过）。
     try {
-      if (this.__sock !== null && typeof this.__sock.__bwSub === "function") {
-        this.__sock.__bwPend = 0;
+      const __ss = this.__sock;
+      const __st = __ss !== null && __ss !== undefined ? __ss.__httpState : null;
+      const __rq = __st !== null && __st !== undefined ? __st.req : null;
+      if (__rq !== null && __rq !== undefined && !__rq.destroyed &&
+          typeof __rq.resume === "function") {
+        try { __rq.resume(); } catch { /* 唤醒永不阻收尾 */ }
       }
-    } catch { /* 计数永不阻销毁 */ }
+    } catch { /* 无 st 即跳过 */ }
+    // node 口径：干净自动收尾（无错、无已记错、finish-hook 手动销毁）只
+    // detach 不杀 socket（keep-alive 复用）。显式/错误销毁照旧杀连接。
     // capture-rejection 套件：destroy(err) 透传 socket——仅有用户 error 监听
     // 才带 err（裸杀配 err 会无监听抛错；常驻 __httpSockOnError 兜底不算数，
     // 否则兜底把 err 当用户错重抛即 uncaught——outgoing-destroyed 套件实录）。
-    try {
-      const __s = this.__sock;
-      let __userErr = 0;
+    const __noRecErr = this.__resErrored === undefined || this.__resErrored === null;
+    const __cleanAuto = (err === undefined || err === null) &&
+      __noRecErr && this.__autoTeardown === true;
+    if (!__cleanAuto) {
       try {
-        const __ls = typeof __s.listeners === "function" ? __s.listeners("error") : [];
-        __userErr = __ls.filter((l) => l !== __s.__httpSockOnError && l !== __s.__freeSockErr).length;
-      } catch { /* 读表失败即按无用户监听 */ }
-      if (err !== undefined && err !== null && __userErr > 0) __s.destroy(err);
-      else __s.destroy();
-    } catch { /* closed meanwhile */ }
+        const __s = this.__sock;
+        let __userErr = 0;
+        try {
+          const __ls = typeof __s.listeners === "function" ? __s.listeners("error") : [];
+          __userErr = __ls.filter((l) => l !== __s.__httpSockOnError && l !== __s.__freeSockErr).length;
+        } catch { /* 读表失败即按无用户监听 */ }
+        if (err !== undefined && err !== null && __userErr > 0) __s.destroy(err);
+        else __s.destroy();
+      } catch { /* closed meanwhile */ }
+    }
     cb(err);
   }
 }

@@ -541,6 +541,27 @@ export function withHttpServer(Base) {
           };
           __abortReq(st.req);
           if (st.res !== null && st.res !== undefined) __abortReq(st.res.req);
+          // node 口径 req.signal 早夭 abort（request-signal 套件）：socket 关闭
+          // 时响应未完（res 缺席即请求未完）→ abort req signal；正常收齐
+          // （res 已 end）永不 abort（真机探针钉住）。幂等，多次关闭不重发。
+          try {
+            const __rq = st.req;
+            if (__rq !== null && __rq !== undefined) {
+              const __rs = st.res;
+              const __premature = (__rs === null || __rs === undefined)
+                ? (!__rq.complete || !__rq.readableEnded)
+                : (__rs.writableEnded !== true);
+              if (__premature) {
+                try {
+                  if (__rq.__abortController !== null && __rq.__abortController !== undefined) {
+                    try { __rq.__abortController.abort(); } catch { /* 幂等 */ }
+                  } else {
+                    __rq.__signalAborted = true;
+                  }
+                } catch { /* signal 永不阻收尾 */ }
+              }
+            }
+          } catch { /* signal 永不阻收尾 */ }
           if (st.res !== null && !st.res.writableEnded && !st.res.destroyed) {
             st.res.destroy();
           }

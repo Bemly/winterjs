@@ -205,7 +205,7 @@ pub unsafe extern "C" fn tls_connect(
     set_rval_str(&mut cx, &frame, &id.to_string());
     let servername = opts.servername.unwrap_or_else(|| host.clone());
     handle.spawn(async move {
-        let tcp = match crate::builtins::node::net_pumps::tcp_connect_resolved(host.as_str(), port as u16).await {
+        let tcp = match crate::builtins::node::net_pumps::tcp_connect_resolved(host.as_str(), port as u16, None).await {
             Ok(s) => {
                 // https 客户端默认 noDelay（Node https.js 口径）。
                 let _ = s.set_nodelay(true);

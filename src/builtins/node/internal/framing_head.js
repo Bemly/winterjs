@@ -7,6 +7,9 @@ export const kConnectionsCheckingInterval = Symbol("kConnectionsCheckingInterval
 // node kHighWaterMark（_http_outgoing 同符号；server-options-highwatermark
 // 套件断言 res[kHighWaterMark]）。
 export const kHighWaterMark = Symbol("kHighWaterMark");
+// node kOutHeaders（internal/http 同符号；correct-hostname/renderHeaders 套件）：
+// OutgoingMessage 上的 [原名, 值] 对表（小写键 → [name, value]）。
+export const kOutHeaders = Symbol("kOutHeaders");
 // node internal/streams/state getDefaultHighWaterMark（真机 65536/objectMode 16，
 // 本仓 state 模块同值——server highWaterMark 缺省取它）。
 import __streamsState from "node:internal/streams/state";
@@ -321,6 +324,39 @@ function __validateRequestHead(first, headers) {
   }
 }
 
+// llhttp 头字节计数（真机 10 点二分校准，2026-09-23）：
+// 请求 = url 长 + Σ(名长 + 值长)；响应 = 状态短语长 + Σ(名长 + 值长)；
+// 值计已到达部分（前导 OWS 剥离；完成行全 trim，与 __parseHead 同口径）；
+// 未完成行（无冒号）不计；首行未完成（buf 内无 CRLF）时按字节 backstop
+// （有效头首行恒短，无 CRLF 即超长行，旧字节门行为保留）。
+// 结论：`count >= limit` 即 HPE_HEADER_OVERFLOW（16383 过 / 16384 拒）。
+function __headSemCount(buf, isResponse) {
+  const text = __latin1(buf);
+  const lines = text.split("\r\n");
+  if (lines.length === 1) return buf.length;
+  let n = 0;
+  const first = lines[0].split(" ");
+  if (isResponse) {
+    n += first.length >= 3 ? first.slice(2).join(" ").length : 0;
+  } else {
+    n += first.length >= 2 ? first[1].length : 0;
+  }
+  for (let i = 1; i < lines.length - 1; i++) {
+    const line = lines[i];
+    const c = line.indexOf(":");
+    if (c <= 0) continue;
+    const v = line.slice(c + 1).replace(/^[ \t]+/, "").replace(/[ \t]+$/, "");
+    n += line.slice(0, c).trim().length + v.length;
+  }
+  const tail = lines[lines.length - 1];
+  if (tail !== "") {
+    const c = tail.indexOf(":");
+    if (c > 0) {
+      n += tail.slice(0, c).trim().length + tail.slice(c + 1).replace(/^[ \t]+/, "").length;
+    }
+  }
+  return n;
+}
 // 请求行前缀增量校验（llhttp strict 口径，真机 26.8.2 实测）：
 // - 方法段：token 字符；空格转入 URL 段（空方法/行首空格即 400）；
 // - URL 段：首字节须 '/'（origin-form）、'*'（asterisk-form）或 CONNECT 的

@@ -363,7 +363,12 @@ pub const NODE_COMPAT_FLAGS: &[&str] = &[
     "--insecure-http-parser",
     "--allow_natives_syntax",
     "--allow-natives-syntax",
+    // 语义旗（max-header-size 套件：值参与默认头限，需透传值；见下 VALUE_FLAGS）。
+    "--max-http-header-size",
 ];
+
+/// 取值形兼容旗（空格分隔值也一并剥除/记录；其余旗只认 `--k=v` 整项）。
+const COMPAT_VALUE_FLAGS: &[&str] = &["--max-http-header-size"];
 
 /// 动作旗（条件 `--run` 插入时判"已有显式动作"用；`-v/-l` 修饰旗不在内）。
 const COMPAT_ACTION_FLAGS: &[&str] = &[
@@ -372,7 +377,7 @@ const COMPAT_ACTION_FLAGS: &[&str] = &[
     "-I", "--init", "--repl", "-t", "--test", "--lint", "-f", "--fmt", "-s", "--serve",
 ];
 
-/// 剥除 node 兼容旗；返回（过滤后 argv，含 bin；被剥旗名）。
+/// 剥除 node 兼容旗；返回（过滤后 argv，含 bin；被剥旗原文，execArgv 保真）。
 /// 条件 `--run` 插入：剥过旗、过滤后首个位置参数非旗形、且无显式动作时，
 /// 在首个位置参数前补 `--run`（`node --flags file args...` 形）。
 pub fn strip_node_compat_args(
@@ -381,20 +386,51 @@ pub fn strip_node_compat_args(
     use std::ffi::OsString;
     let mut out: Vec<OsString> = Vec::with_capacity(raw.len());
     let mut stripped: Vec<String> = Vec::new();
-    for (i, a) in raw.iter().enumerate() {
+    let mut it = raw.iter().enumerate().peekable();
+    let mut script_args = false;
+    while let Some((i, a)) = it.next() {
         if i == 0 {
             out.push(a.clone());
             continue;
         }
         let s = a.to_string_lossy();
+        // `--` 之后是脚本参数，原样透传（勿剥脚本自有旗）。
+        if script_args {
+            out.push(a.clone());
+            continue;
+        }
+        if s == "--" {
+            script_args = true;
+            out.push(a.clone());
+            continue;
+        }
         let base = s.split('=').next().unwrap_or("");
         if NODE_COMPAT_FLAGS.contains(&base) {
-            stripped.push(base.to_string());
+            // 记录原文（含值，execArgv 保真；语义旗按原文解析）。
+            stripped.push(s.to_string());
+            // 取值形旗的空格分隔值一并剥除（`--max-http-header-size 10`）。
+            // 仅 VALUE_FLAGS 名单，防止吞脚本名。
+            if !s.contains('=') && COMPAT_VALUE_FLAGS.contains(&base) {
+                if let Some((_, nxt)) = it.peek() {
+                    let ns = nxt.to_string_lossy();
+                    if !ns.starts_with('-') {
+                        stripped.push(ns.to_string());
+                        it.next();
+                    }
+                }
+            }
             continue;
         }
         out.push(a.clone());
     }
     if !stripped.is_empty() && out.len() > 1 {
+        // node 自举翻译（max-header-size 套件：子进程即自身，`--flag -p expr`
+        // 形；`-p`（node print）→ `--eval`（本仓 --eval 即打印完成值）。
+        // 仅剥过兼容旗时（node-spawn 上下文证据），纯 `winterjs -p` 照旧 publish。
+        // `-e` 本就同 `--eval`，统一改写无害。
+        if out.len() > 2 && (out[1] == "-p" || out[1] == "-e") {
+            out[1] = OsString::from("--eval");
+        }
         let has_action = out[1..].iter().any(|a| {
             let s = a.to_string_lossy();
             COMPAT_ACTION_FLAGS.contains(&s.as_ref())
@@ -422,14 +458,33 @@ mod node_compat_tests {
 
     #[test]
     fn strip_and_rerun() {
-        // respawn 形：剥旗 + 补 --run。
+        // respawn 形：剥旗 + 补 --run（记录原文）。
         let (f, s) = strip_node_compat_args(&argv(&["w", "--expose-internals", "a.js", "child"]));
         assert_eq!(strs(&f), ["w", "--run", "a.js", "child"]);
         assert_eq!(s, ["--expose-internals"]);
-        // 多旗 + =值形。
+        // 多旗 + =值形（原文记录）。
         let (f, s) = strip_node_compat_args(&argv(&["w", "--expose-gc", "--allow_natives_syntax=1", "a.js"]));
         assert_eq!(strs(&f), ["w", "--run", "a.js"]);
-        assert_eq!(s, ["--expose-gc", "--allow_natives_syntax"]);
+        assert_eq!(s, ["--expose-gc", "--allow_natives_syntax=1"]);
+        // 取值形空格分隔（值一并剥除记录；-p 随自举翻译走 --eval）。
+        let (f, s) = strip_node_compat_args(&argv(&["w", "--max-http-header-size", "10", "-p", "x"]));
+        assert_eq!(strs(&f), ["w", "--eval", "x"]);
+        assert_eq!(s, ["--max-http-header-size", "10"]);
+        // `--` 后脚本旗不动。
+        let (f, s) = strip_node_compat_args(&argv(&["w", "--run", "a.js", "--", "--expose-gc"]));
+        assert_eq!(strs(&f), ["w", "--run", "a.js", "--", "--expose-gc"]);
+        assert!(s.is_empty());
+        // node 自举 `-p` 翻译（仅剥过旗时；纯 -p 不动，见 keeps_publish_bare）。
+        let (f, _) = strip_node_compat_args(&argv(&["w", "--max-http-header-size=10", "-p", "1+1"]));
+        assert_eq!(strs(&f), ["w", "--eval", "1+1"]);
+    }
+
+    #[test]
+    fn keeps_publish_bare() {
+        // 无兼容旗的裸 `-p` 照旧是 publish（§0.8）。
+        let (f, s) = strip_node_compat_args(&argv(&["w", "-p"]));
+        assert_eq!(strs(&f), ["w", "-p"]);
+        assert!(s.is_empty());
     }
 
     #[test]

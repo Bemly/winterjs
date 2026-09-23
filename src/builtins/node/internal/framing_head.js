@@ -684,22 +684,31 @@ export class ServerResponse extends Writable {
   // socket 落盘统一出口（记账递减 + 递送；钳零——100-continue/终结块等非 body
   // 写不参与计数，CL 快捷真值由 _final 兜底清零对齐）。
   __sockWrite(b) {
-    try {
-      if (typeof this.__wlen === "number") {
-        this.__wlen = Math.max(0, this.__wlen - (b !== undefined && b !== null ? b.length : 0));
+    // node 口径：落盘同步（spurious-aborted 套件：字节即时上网），wlen 递减异步
+    //（writableLength 按 onwrite 节奏——同步读 write() 后仍见排队字节，
+    // outgoing-properties 131/139；微任务降零后释停靠 drain）。
+    const __n = b !== undefined && b !== null ? b.length : 0;
+    queueMicrotask(() => {
+      try {
+        if (typeof this.__wlen === "number") {
+          this.__wlen = Math.max(0, this.__wlen - __n);
+        }
+      } catch { /* 计数永不阻递送 */ }
+      // 停靠 drain 释放（计数清零即递送，异步一轮——真机 drain 恒异步）。
+      if (this.__wlen === 0 && this.__parkedDrain === true) {
+        this.__parkedDrain = false;
+        queueMicrotask(() => {
+          if (!this.destroyed) { try { super.emit("drain"); } catch { /* 监听抛错不阻收尾 */ } }
+        });
       }
-      // bytesWritten pending 核销（实际落盘长度；CL 快捷等真值偏差由 _final 兜底）。
+    });
+    // bytesWritten pending 核销（实际落盘长度；CL 快捷等真值偏差由 _final 兜底）。
+    // 与 wlen 不同：bytesWritten 是累计值，同步核销无可观测差。
+    try {
       if (this.__sock !== null && typeof this.__sock.__bwSub === "function") {
-        this.__sock.__bwSub(b !== undefined && b !== null ? b.length : 0);
+        this.__sock.__bwSub(__n);
       }
     } catch { /* 计数永不阻递送 */ }
-    // 停靠 drain 释放（计数清零即递送，异步一轮——真机 drain 恒异步）。
-    if (this.__wlen === 0 && this.__parkedDrain === true) {
-      this.__parkedDrain = false;
-      queueMicrotask(() => {
-        if (!this.destroyed) { try { super.emit("drain"); } catch { /* 监听抛错不阻收尾 */ } }
-      });
-    }
     return this.__sock.write(b);
   }
   // 头渲染 dry-run（计数专用）：快照→渲染→取值→还原。调用点保证头已终局
@@ -1541,7 +1550,12 @@ export class ServerResponse extends Writable {
     // node 口径：首个 write 即算发头（setheaders-after-sent 套件 write 后
     // setHeader 即 HEADERS_SENT；holdback 只延迟落盘，旗同步立）。
     this.headersSent = true;
-    if (this.__buf1 === null && !this.__headSent) {
+    // 帧决策已知（显式 CL/TE 或 writeHead 已存）即直发，不 holdback（spurious-
+    // aborted 套件：holdback 停首包 + 服务端即时 destroy 即字节全丢，对端
+    // hangup；真机无 holdback，直发）。未知才停靠待 CL 快捷判定。
+    const __framingKnown = this.__headers["content-length"] !== undefined ||
+      this.__headers["transfer-encoding"] !== undefined || this.__headStored;
+    if (this.__buf1 === null && !this.__headSent && !__framingKnown) {
       // 首字节 holdback：一拍内 end 到达且此前无 writeHead 则走 CL 快捷，
       // 否则转 chunked 流式（1.0 裸写）。cb 经 microtask 回（base 依此排
       // _final，抢在 timer(0) 前保 CL 快捷；defer 到落盘后会反让 timer 先赢，
@@ -1579,10 +1593,17 @@ export class ServerResponse extends Writable {
       if (this.__uced && this.__headers["content-length"] === undefined && this.__headers["transfer-encoding"] === undefined && !this.__frameSuppressed()) this.__chunked = true;
       const b = this.__buf1;
       this.__buf1 = null;
-      // node _header prepend：头未发即拼进首个 _send（头+hex 或 头+体一体）。
-      this.__sendHeadWithFirst(b);
+      // node _header prepend：头未发即拼进首个 _send（头+hex 或 头+体一体；
+      // 直发首块（CL/TE 已知）同样合并，standalone 套件单 write 断言）。
+      if (b !== null && b !== undefined) {
+        this.__sendHeadWithFirst(b);
+        this.__frame(u8);
+      } else {
+        this.__sendHeadWithFirst(u8);
+      }
+    } else {
+      this.__frame(u8);
     }
-    this.__frame(u8);
     queueMicrotask(cb);
   }
   _final(cb) {

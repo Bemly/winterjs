@@ -211,10 +211,14 @@ function __normSpawnAsyncOpts(opts) {
       o.stdio = [one(opts.stdio), one(opts.stdio), one(opts.stdio)];
     }
     else if (Array.isArray(opts.stdio)) {
-      // 三元数组（缺省补 pipe；Node 的复杂组合如 fd 重定向不在此列，文档记录）
+      // 三元数组（缺省补 pipe；Node 的复杂组合如 fd 重定向不在此列，文档记录）。
+      // 四元 + [3] 'ipc' 即通道占位忽略（parser-lazy-loaded 套件只等 exit，
+      // 真 IPC 另案）；余下超长仍拒。
       if (opts.stdio.length > 3) {
         if (opts.stdio.filter((s) => s === "ipc").length > 1) throw new ERR_IPC_ONE_PIPE();
-        throw new Error("NotSupportedError: spawn stdio array takes at most 3 entries");
+        if (opts.stdio.length > 4 || opts.stdio[3] !== "ipc") {
+          throw new Error("NotSupportedError: spawn stdio array takes at most 3 entries");
+        }
       }
       // 流对象元（pipe-dataflow/merge/reuse 套件）：可读/可写流即转交位
       // （Rust 侧仍按 pipe 建真管，转交纯 JS 搭桥，见 __stdioWire）。

@@ -120,9 +120,12 @@ const __SINGLETON_HEADERS = new Set([
   "server", "user-agent",
 ]);
 // __trunc：超限静默截断（node 客户端响应口径——lib/_http_common.js
-// parserOnHeaders "stop collecting"：maxHeaderPairs 上限后不再收集，
+// parserOnHeaders "stop collecting"：maxHeaderPairs 上限后不再收集、
 // 响应照常完成；服务端请求超限仍抛 HPE_HEADER_OVERFLOW 走 clientError）。
-function __parseHead(headText, mode, maxPairs, __trunc) {
+// joinDup：重复头合并门（node joinDuplicateHeaders 口径，真机 26.8.2 实测）：
+// 缺省 false = 首个赢（cookie 恒 '; '、set-cookie 恒数组，不受门控）；
+// true = 其余 ', ' 合并。
+function __parseHead(headText, mode, maxPairs, __trunc, joinDup) {
   const lines = headText.split("\r\n");
   const first = lines.shift().split(" ");
   // 真机口径：req.headers/res.headers 是普通对象（Object.prototype，node 26.8.2
@@ -178,10 +181,14 @@ function __parseHead(headText, mode, maxPairs, __trunc) {
       headers[lk].push(v);
     } else if (lk === "cookie") {
       headers[lk] = `${headers[lk]}; ${v}`;
+    } else if (joinDup === true) {
+      // joinDuplicateHeaders:true 压过单例表（authorization 套件 '1, 2'）。
+      headers[lk] = `${headers[lk]}, ${v}`;
     } else if (__SINGLETON_HEADERS.has(lk)) {
       // 首个赢，后续丢弃（rawHeaders 照收）。
     } else {
-      headers[lk] = `${headers[lk]}, ${v}`;
+      // 缺省：重复头首个赢（authorization 套件真机实测；cookie/set-cookie
+      // 上已分流，不受门控）。
     }
   }
   return { first, headers, rawHeaders, headersDistinct };
@@ -1366,8 +1373,13 @@ export class ServerResponse extends Writable {
         : (__autoCase(k) ? (k === "keep-alive" ? "Keep-Alive" : k.charAt(0).toUpperCase() + k.slice(1)) : (canon[k] ?? k));
       // node 口径：数组值逐行发出（set-cookie/多值头）；uniqueHeaders 名单内
       // 用 '; ' 合并单行（multiple-headers 套件；发送侧合并，解析侧天然单元素）。
+      // cookie 数组恒单行 '; ' 合并（真机 26.8.2 实测，双端同）。
       if (Array.isArray(v)) {
         const __uniq = this.__uniqueHeaders;
+        if (k === "cookie") {
+          (__autoKey(k) ? __auto : __user).push(`${name}: ${v.join("; ")}`);
+          continue;
+        }
         if (Array.isArray(__uniq) && __uniq.includes(k)) {
           (__autoKey(k) ? __auto : __user).push(`${name}: ${v.join("; ")}`);
           continue;

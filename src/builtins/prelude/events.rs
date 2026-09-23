@@ -125,6 +125,22 @@ globalThis.MessageEvent = class MessageEvent extends Event {
   get source() { return this.#source; }
   get ports() { return this.#ports; }
 };
+// WebSocket CloseEvent（import-websocket 套件：node:http 重导出与全局同一性）。
+// WebIDL 口径：code/reason/wasClean 只读，缺省 0/""/false。
+globalThis.CloseEvent = class CloseEvent extends Event {
+  #code; #reason; #wasClean;
+  constructor(type, init = {}) {
+    if (arguments.length === 0) throw new TypeError("CloseEvent requires at least 1 argument, but only 0 were passed");
+    super(type, init);
+    const o = init ?? {};
+    this.#code = o.code ?? 0;
+    this.#reason = String(o.reason ?? "");
+    this.#wasClean = o.wasClean ?? false;
+  }
+  get code() { return this.#code; }
+  get reason() { return this.#reason; }
+  get wasClean() { return this.#wasClean; }
+};
 globalThis.EventTarget = class EventTarget {
   constructor() {
     __wjs_etState.set(this, new Map());

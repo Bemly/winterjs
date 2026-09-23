@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { StringDecoder } from "node:string_decoder";
 import { __etAdd, __etRemove } from "node:internal/events/abort_listener";
+import { kTimeout } from "node:internal/timers";
 const Buffer = globalThis.Buffer;
 
 function __b64dec(s) {
@@ -307,9 +308,13 @@ class Socket extends EventEmitter {
     // 0/负值 = 解除）。内部 timer 恒 unref：连接生死不归它管，socket 在场时
     // 事件循环照常泵到点（fire 不因 unrefed 豁免）。活动重置（node 收包即重置
     // idle 计时）未做——整收口径记档。
+    // node 口径 kTimeout（timeout-on-connect 套件）：无计时 null，有计时即
+    // timer 对象（_idleTimeout 可读）。
+    this[kTimeout] = null;
     this.setTimeout = (ms, cb) => {
       const delay = Number(ms) || 0;
       if (this.__wjs_stimer) { clearTimeout(this.__wjs_stimer); this.__wjs_stimer = null; }
+      this[kTimeout] = null;
       // node 口径：socket.timeout 反映最后一次 setTimeout（client-set-timeout
       // 套件断言；旧"不发布"偏差作废，真机 26 实测 socket.timeout 即 ms 值）。
       this.timeout = delay > 0 ? delay : 0;
@@ -317,6 +322,7 @@ class Socket extends EventEmitter {
         const t = setTimeout(() => { this.__wjs_stimer = null; this.emit("timeout"); }, delay);
         t.unref();
         this.__wjs_stimer = t;
+        this[kTimeout] = t;
       }
       if (typeof cb === "function") this.once("timeout", cb);
       return this;

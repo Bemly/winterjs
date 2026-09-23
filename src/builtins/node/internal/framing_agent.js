@@ -1098,7 +1098,11 @@
       // node 口径：响应被销毁（非正常收齐）即销毁 socket，不回池——destroyed
       // 响应不可复用（outgoing-destroyed pipe 形：客户端 res.destroy() 后
       // 服务端必须见到连接死亡；正常 end+close 才可池化，keepalive 复用）。
-      if (this.__res !== null && this.__res !== undefined && this.__res.destroyed) {
+      // 收齐后（readableEnded）才 destroy 的不杀——node responseOnEnd 即回池
+      //（keepSocketAlive），completed 消息的 destroy 不碰 socket（agent
+      // keep-alive 套件 res.destroy 后复用形，修前杀池 socket 即新建）。
+      if (this.__res !== null && this.__res !== undefined && this.__res.destroyed &&
+          this.__res.readableEnded !== true) {
         try { sock.destroy(); } catch { /* gone */ }
         try { if (this.agent !== null) this.agent.__noteClosed(sock); } catch { /* 记账永不阻收尾 */ }
         return;
@@ -1174,6 +1178,9 @@
     }
     __onSockCloseEv() {
       if (this.__closeEmitted) return;
+      // node socketCloseListener 首行口径：socket 关闭即 req.destroyed = true
+      //（close 蕴含 destroyed；override-global-agent 套件 'close' 读 destroyed）。
+      this.destroyed = true;
       // CONNECT/upgrade 后的裸 socket 关闭：直接发 req 'close'（不回池不触 res）。
       if (this.__upgraded) {
         this.__closeEmitted = true;

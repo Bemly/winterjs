@@ -192,6 +192,12 @@ function __parseHead(headText, mode, maxPairs, __trunc, joinDup) {
     if (line === "") continue;
     const c = line.indexOf(":");
     if (c <= 0) throw __mkParseError("malformed header line");
+    // RFC 7230 §3.2.4 / node llhttp 口径：冒号前空格即 HPE 拒收（走私向量；
+    // request-smuggling-content-length 套件 'Content-Length : 5'——lenient
+    // （insecure）维持旧行为放行）。
+    if (mode !== "lenient" && /[ \t]/.test(line.slice(0, c))) {
+      throw __mkParseError("invalid header field (space before colon)");
+    }
     const k = line.slice(0, c).trim();
     const vRaw = line.slice(c + 1);
     const v = vRaw.trim();
@@ -481,13 +487,20 @@ function __framingFor(headers, isResponse, statusCode, method) {
         (statusCode >= 100 && statusCode < 200))) return { type: "none" };
   }
   // node 口径：TE 值数组（重复 TE 行合并数组，multiheaders 套件）先 join
-  // 再判 chunked；字符串直判。
+  // 再判 chunked；字符串直判。chunked 必须是**整词 token**（逗号切分逐段
+  // 全等比对）——'chunkedchunked' 走私形不得命中（te-repeated-chunked 套件）。
   const __tev = headers["transfer-encoding"];
   const te = (Array.isArray(__tev) ? __tev.join(", ") : (__tev || "")).toLowerCase();
-  if (te.includes("chunked")) return { type: "chunked", need: -1, buf: new Uint8Array(0) };
+  const __teChunked = te.split(",").some((t) => t.trim() === "chunked");
+  if (__teChunked) return { type: "chunked", need: -1, buf: new Uint8Array(0) };
   const cl = Number(headers["content-length"] ?? NaN);
   if (Number.isInteger(cl) && cl >= 0) return { type: "cl", remaining: cl };
-  return isResponse ? { type: "close" } : { type: "none" };
+  if (isResponse) return { type: "close" };
+  // TE 在场但非 chunked（无 CL）：请求已派发但体不可帧化——data/end 永不发，
+  // 余字节按下一请求解析、垃圾即 HPE → 400 + close（真机 te-repeated-chunked
+  // 口径：handler mustCall×1 + 客户端见 400）。
+  if (te !== "") return { type: "teInvalid" };
+  return { type: "none" };
 }
 // CL 泵：取 min(remaining, available) 推流（msg 为 null 则纯跳过，不推流）。
 // 未完结时 rest 恒为空（余字节已进 fr 内部态；调用方直接覆盖缓冲）。
@@ -684,6 +697,20 @@ export class IncomingMessage extends Readable {
       queueMicrotask(() => {
         try { this.emit("error", e); } catch { /* 关闭竞态 */ }
       });
+    }
+  }
+  // node lib/_http_incoming.js 逐字（optimize-empty-requests 套件）：快路径
+  // 收口——跳过流生命周期，五个状态位全置位；readableEnded/destroyed 即 true，
+  // 后挂 data/end 监听永不触发。
+  _dumpAndCloseReadable() {
+    this._dumped = true;
+    const st = this._readableState;
+    if (st !== undefined && st !== null) {
+      st.ended = true;
+      st.endEmitted = true;
+      st.destroyed = true;
+      st.closed = true;
+      st.closeEmitted = true;
     }
   }
   // node lib/_http_incoming.js 口径：转发 socket 空闲计时（'timeout' 由 socket
@@ -1234,16 +1261,45 @@ export class ServerResponse extends Writable {
       status = info;
       hdrs = headers;
     }
-    if (typeof status !== "number" || !(status >= 100 && status <= 199)) {
+    // node _http_server.js 317 行逐字：发头门（ERR_HTTP_HEADERS_SENT）→
+    // validateInteger(100,199)（非数 ERR_INVALID_ARG_TYPE / 越界
+    // ERR_OUT_OF_RANGE）→ 101 拒收（ERR_HTTP_INVALID_STATUS_CODE——101 协议
+    // 切换非信息响应；write-information 套件错误块逐项）。
+    if (this.headersSent || this._header) {
+      throw new codes.ERR_HTTP_HEADERS_SENT("write");
+    }
+    if (typeof status !== "number") {
+      throw new codes.ERR_INVALID_ARG_TYPE("statusCode", "number", status);
+    }
+    if (!Number.isInteger(status) || status < 100 || status > 199) {
+      throw new codes.ERR_OUT_OF_RANGE("statusCode", ">= 100 && <= 199", status);
+    }
+    if (status === 101) {
       throw new codes.ERR_HTTP_INVALID_STATUS_CODE(status);
     }
     if (this.__sock === null || this.__sock.destroyed) return false;
     const reason = STATUS_CODES[status] ?? "";
     const lines = [`HTTP/1.1 ${status} ${reason}`.trimEnd()];
     // 原拼写上网（rawHeaders 回显；information 套件断言 'Foo' 非 'foo'）。
-    const __names = Object.create(null);
-    for (const [k, v] of Object.entries(__lowerHeaders(hdrs ?? {}, this.__validation, __names))) {
-      lines.push(`${__names[k] ?? k}: ${v}`);
+    // 三形（node _http_server.js 340-360 行逐字）：对形 [[k,v],...] / 扁平形
+    // [k1,v1,...]（奇长 ERR_INVALID_ARG_VALUE）/ 对象形。
+    if (Array.isArray(hdrs)) {
+      const __pairs = hdrs.length > 0 && Array.isArray(hdrs[0])
+        ? hdrs
+        : (hdrs.length % 2 !== 0
+          ? (() => { throw new codes.ERR_INVALID_ARG_VALUE("headers", hdrs); })()
+          : Array.from({ length: hdrs.length / 2 }, (_, i) => [hdrs[i * 2], hdrs[i * 2 + 1]]));
+      for (const [k, v] of __pairs) {
+        const __names = Object.create(null);
+        const __lv = __lowerHeaders({ [String(k)]: v }, this.__validation, __names);
+        const __lk = Object.keys(__lv)[0];
+        lines.push(`${__names[__lk] ?? __lk}: ${__lv[__lk]}`);
+      }
+    } else {
+      const __names = Object.create(null);
+      for (const [k, v] of Object.entries(__lowerHeaders(hdrs ?? {}, this.__validation, __names))) {
+        lines.push(`${__names[k] ?? k}: ${v}`);
+      }
     }
     try {
       this.__sockWrite(new TextEncoder().encode(lines.join("\r\n") + "\r\n\r\n"));

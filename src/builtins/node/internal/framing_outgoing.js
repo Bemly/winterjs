@@ -415,6 +415,8 @@ export function withHttpServer(Base) {
       if (o.shouldUpgradeCallback !== undefined) self.shouldUpgradeCallback = o.shouldUpgradeCallback;
       // node 口径（head-throw 套件）：rejectNonStandardBodyWrites 缺省 false。
       self.rejectNonStandardBodyWrites = o.rejectNonStandardBodyWrites === true;
+      // node kOptimizeEmptyRequests 口径（optimize-empty-requests 套件）：缺省 false。
+      self.optimizeEmptyRequests = o.optimizeEmptyRequests === true;
       self.__closing = false;
       self.__sockets = new Set();
       // node setupConnectionsTracking 口径（真机 toString 逐字对拍）：listening
@@ -1058,6 +1060,15 @@ export function withHttpServer(Base) {
           }
           st.req = __wired ? req : null;
           st.framing = framing;
+          // node parserOnIncoming 口径（optimize-empty-requests 套件）：选项
+          // 开启且无体头（framing none）→ _dumpAndCloseReadable 快路径——
+          // 跳过流生命周期（ended/endEmitted/destroyed/closed/closeEmitted
+          // 全置位），后挂 data/end 监听永不触发。
+          if (this.optimizeEmptyRequests === true && framing.type === "none" &&
+              typeof req._dumpAndCloseReadable === "function") {
+            req._dumpAndCloseReadable();
+            if (typeof req._read === "function") req._read();
+          }
           // 管线队列（node state.outgoing 口径）：在途响应未完时新 res 脱钩
           // socket（res.socket/connection 置 null，drain-writable-length 套件
           // 点名），写停靠（_write park），'request' 照常即时派发（eager-parse）；
@@ -1129,6 +1140,15 @@ export function withHttpServer(Base) {
         }
         // 体泵：CL / chunked 增量；none 直接完结（st.req 为 null = 417 丢弃泵）。
         const fr = st.framing;
+        if (fr.type === "teInvalid") {
+          // TE 在场但非整词 chunked：请求已派发（handler ×1）但体不可帧化
+          //——data/end 永不发；体字节到达即 HPE_INVALID_TRANSFER_ENCODING
+          // → 400 + close（真机 llhttp 口径；te-repeated-chunked 套件）。
+          if (st.buf.length > 0) {
+            throw __hpeServer("HPE_INVALID_TRANSFER_ENCODING", "invalid transfer encoding", st.buf.length);
+          }
+          return;
+        }
         if (fr.type === "none") {
           if (st.req !== null) st.req.__complete();
           st.req = null;
@@ -1218,13 +1238,13 @@ export function withClientRequest(openSocket, flavor) {
       if (this._writableState !== undefined && this._writableState !== null) {
         this._writableState.highWaterMark = __reqHWM;
       }
-      // node 口径 request.parser（memory-retention 套件）：onIncoming 函数 +
-      // joinDuplicateHeaders 回显选项；res 'end' 即置空（见 agent 收尾）。
-      this.parser = {
-        onIncoming() { /* 默认：入站，无可观测 */ },
-        joinDuplicateHeaders: (options !== null && typeof options === "object" &&
-          !(options instanceof URL) && options.joinDuplicateHeaders === true),
-      };
+      // node 口径 request.parser（memory-retention 套件）：parser 挂 socket
+      //（每连接共享，parser-free 套件 100 请求恒同一对象）；构造期 null，
+      // attach 时接线 + 回填 joinDuplicateHeaders（node lib/_http_client.js
+      // 1104 行口径）；res 'end' 即置空（见 agent 收尾）。
+      this.joinDuplicateHeaders = (options !== null && typeof options === "object" &&
+        !(options instanceof URL) && options.joinDuplicateHeaders === true) ? true : null;
+      this.parser = null;
       // node 口径 _removedHeader：删掉的头不再自动补（remove-header 套件）。
       this._removedHeader = {};
       let host, port, path, method, userHeaders, extra;
@@ -1669,6 +1689,15 @@ export function withClientRequest(openSocket, flavor) {
       // node setRequestProps 口径：socket._httpMessage 指回当前请求（connect
       // 套件在 'socket' 事件断言全等）。
       sock._httpMessage = this;
+      // node 口径：parser 出全局池（freelist）接线——req.parser 与 socket.parser
+      // 同一对象；onIncoming/joinDuplicateHeaders 每请求回填（free 置 null）。
+      this.parser = (this.agent !== null && this.agent !== undefined &&
+        typeof this.agent.__takeParser === "function")
+        ? this.agent.__takeParser()
+        : { onIncoming: null, joinDuplicateHeaders: null };
+      sock.parser = this.parser;
+      sock.parser.onIncoming = () => { /* 入站，无可观测 */ };
+      sock.parser.joinDuplicateHeaders = this.joinDuplicateHeaders;
       this.reusedSocket = reused === true;
       // node 口径：复用 socket 的 HWM 按新请求同步（highwatermark-reuse 套件
       // 直读 socket.writableHighWaterMark；新建连接走构造期缺省）。

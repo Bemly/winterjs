@@ -1007,6 +1007,11 @@
               if (this.parser !== undefined && this.parser !== null) {
                 this.parser.onIncoming = null;
                 this.parser.joinDuplicateHeaders = null;
+                // node freeParser 口径：字段置空即回全局池（复用同一对象）。
+                if (this.agent !== null && this.agent !== undefined &&
+                    typeof this.agent.__freeParser === "function") {
+                  this.agent.__freeParser(this.parser);
+                }
               }
             } catch { /* gone */ }
           });
@@ -1295,6 +1300,31 @@ Agent.prototype.__armKeylog = function (only, force) {
 // Agent：node lib/_http_agent.js 口径的函数式构造器——`http.Agent({...})` 无 new
 // 亦合法（keepalive-client/free/override 系套件点名）。键位统一走 getName 形
 // （'host:port:localAddress(:family)'，缺省位仍带分隔冒号——agent-getname 套件）。
+// node lib/_http_common.js parsers freelist 口径：parser 对象全局回收复用
+//（parser-free 套件 maxSockets=1 串行 100 请求恒同一对象）；free 即字段置空
+// 回池，attach 即出池接线。
+const __wjsParserFreeList = [];
+Agent.prototype.__takeParser = function () {
+  const p = __wjsParserFreeList.pop();
+  if (p !== undefined) {
+    p.__inPool = false;
+    return p;
+  }
+  return {
+    onIncoming: null,
+    joinDuplicateHeaders: null,
+    free() { /* 默认：归池，无可观测 */ },
+    close() { /* 默认：关闭，无可观测 */ },
+    remove() { /* 默认：摘除，无可观测 */ },
+  };
+};
+Agent.prototype.__freeParser = function (p) {
+  if (p === null || p === undefined || p.__inPool === true) return;
+  p.__inPool = true;
+  p.onIncoming = null;
+  p.joinDuplicateHeaders = null;
+  __wjsParserFreeList.push(p);
+};
 function Agent(options = {}) {
   if (!(this instanceof Agent)) return new Agent(options);
   Agent.prototype.__init.call(this, options);
@@ -1481,6 +1511,8 @@ Agent.prototype.__unpool = function (sock) {
   try { sock.__freeGuardArmed = false; } catch { /* gone */ }
   if (sock.parser === undefined || sock.parser === null) {
     sock.parser = {
+      onIncoming: null,
+      joinDuplicateHeaders: null,
       free() { /* 默认：归池，无可观测 */ },
       close() { /* 默认：关闭，无可观测 */ },
       remove() { /* 默认：摘除，无可观测 */ },

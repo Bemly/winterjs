@@ -293,12 +293,25 @@ class Socket extends EventEmitter {
     this.unpipe = (dest) => this;
     this._unrefTimer = () => {};
     // pause/resume 真语义（server-pause-on-connect 套件）：paused 期 data 分节
-    // 缓存（bytesRead 不进），resume 即冲刷。
+    // 缓存（bytesRead 不进），resume 即冲刷。'pause'/'resume' 事件随转换异步
+    // 发（node Readable emitPauseStreamEvent/emitResumeStreamEvent 口径；
+    // no-read-no-dump 套件：服务端 handler 借 'pause' 感知体背压）。
     this.__paused = false;
     this.__pauseBuf = [];
-    this.pause = () => { this.__paused = true; return this; };
+    this.pause = () => {
+      const __was = this.__paused;
+      this.__paused = true;
+      if (!__was) {
+        queueMicrotask(() => { try { this.emit("pause"); } catch { /* 监听抛错不阻暂停 */ } });
+      }
+      return this;
+    };
     this.resume = () => {
+      const __was = this.__paused;
       this.__paused = false;
+      if (__was) {
+        queueMicrotask(() => { try { this.emit("resume"); } catch { /* 监听抛错不阻续流 */ } });
+      }
       // node 流语义：resume 异步续流（同步冲刷会抢在调用方 resume 之后的
       // 语句前发 data——pause-on-connect 套件 stopped 旗现形）。
       queueMicrotask(() => {

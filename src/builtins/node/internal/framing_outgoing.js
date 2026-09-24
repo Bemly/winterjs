@@ -849,7 +849,11 @@ export function withHttpServer(Base) {
       if (chunk !== undefined && chunk !== null && chunk.length > 0) st.__lastPkt = chunk;
       st.buf = __concat(st.buf, chunk);
       while (true) {
-        if (st.req === null) {
+        // 头解析门：req 与 framing **双空**才解析新头——体在途的弃体模式
+        // （res 完成即 dump：st.req null + framing 存活，node dump 口径）
+        // 必须落体泵（msg null 纯跳过），否则体字节进头解析即
+        // HPE_INVALID_METHOD（no-read-no-dump 套件 64KB×2 实录）。
+        if (st.req === null && (st.framing === null || st.framing === undefined)) {
           // llhttp 口径：消息边界先吞前导空行（管线残段；insecure-parser
           // 套件尾部现形）再找头终结——此前只在头残缺分支吞，前导空行+
           // 完整头即误解析/400（incoming-pipelined 套件多请求连发只到首个）。
@@ -934,6 +938,17 @@ export function withHttpServer(Base) {
             req.headersDistinct = headersDistinct;
           req.socket = sock;
           req.connection = sock;
+          // 背压恢复钩（node IncomingMessage._read → readStart 口径）：消费端
+          // 拉数据即解暂停续读（__feed 置 st.__reqPaused 后在此恢复；
+          // no-read-no-dump 流控面——只 pause 不恢复即永不续读）。
+          const __reqBaseRead = req._read;
+          req._read = () => {
+            if (st !== undefined && st !== null && st.__reqPaused === true) {
+              st.__reqPaused = false;
+              try { sock.resume(); } catch { /* gone */ }
+            }
+            if (typeof __reqBaseRead === "function") __reqBaseRead.call(req);
+          };
           // Node 口径：CONNECT 方法请求不进 request 管线——派发 'connect'
           //（req, socket, head；无监听则销毁连接），socket 停止 HTTP 解析。
           if (req.method === "CONNECT") {
@@ -1138,9 +1153,23 @@ export function withHttpServer(Base) {
             // res finish 即释放解析器（freeParser 口径，见 connection 段）。
             try { self.__freeSocketParser(sock); } catch { /* gone */ }
             st.req = null;
-            st.framing = null;
+            // 体在途（framing 存活且非 none）：framing 必须保留到体完——
+            // 丢弃泵按帧丢弃（st.req null 纯跳过，node dump 口径）；置 null
+            // 即把体字节当新请求头解析（垃圾 → 400+断连，GET 排队永不到，
+            // no-read-no-dump/dump-req-when-res-ends 挂死根因）。
+            if (st.framing === null || st.framing === undefined || st.framing.type === "none") {
+              st.framing = null;
+            }
             st.res = null;
             st.sawRequest = true;
+            // 响应完即弃未消费体（node dump 口径）：解背压暂停续读——缓冲
+            // 字节回流经丢弃泵（st.req null 纯跳过），体完回空闲续下一请求
+            // （no-read-no-dump 套件：pause → res.end → 'something' 弃收 →
+            // GET 复用同连接）。
+            if (st.__reqPaused === true) {
+              st.__reqPaused = false;
+              try { sock.resume(); } catch { /* gone */ }
+            }
             // 管线轮转：下一排空 assignSocket（停靠写排空 + 递补终结 + 'socket'
             // 事件），st.res 移交，后续 re-feed 的新头排其后。
             if (st.outgoing !== undefined && st.outgoing !== null && st.outgoing.length > 0) {
@@ -1215,6 +1244,15 @@ export function withHttpServer(Base) {
           if (r.error) throw __mkParseError("bad chunked body");
         }
         st.buf = r.rest;
+        if (r.backpressured === true) {
+          // node parserOnBody→readStop 口径：消费端缓冲超 HWM 即停读。
+          // JS 侧 pause 缓冲后续原包（net_socket）+ 发 'pause' 事件
+          // （no-read-no-dump 套件：handler 借 pause 触发 res.end + 客户端续发
+          // 体）。恢复走 req._read 钩（消费）或 res.__onDone（弃体 dump）。
+          st.__reqPaused = true;
+          try { sock.pause(); } catch { /* gone */ }
+          return;
+        }
         if (!r.done) return;
         if (r.trailersRaw !== undefined && st.req !== null) __applyTrailers(st.req, r.trailersRaw);
         if (st.req !== null) st.req.__complete();

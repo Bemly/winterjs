@@ -3604,3 +3604,46 @@ cargo build
   十分钟定位（§4.202-① mapper 覆盖 uncaught 形，TIMEOUT 件仍走插桩）。
   ② "结果碰巧对"（sync throw 穿透）不等于"机制对"——换一个调用形状
   （async cb）即现形；对真机要对机制，不只对结果。
+
+### 4.204 http 欠账清扫轮七坑（2026-09-23，plan3 G11 sweep8 红件簇）
+
+- 坑一（重复头 join 缺省反转）：真机 `_http_incoming _addHeaderLine` 是
+  **表驱动**——joinable 表 + 未知头缺省恒 `', '` 合并，19 头单值表才首个赢
+  （matchKnownFields 无前缀名单：age/host/from/etag/referer/expires/server/
+  location/user-agent/content-type/max-forwards/authorization/last-modified/
+  content-length/if-modified-since/proxy-authorization/if-unmodified-since/
+  content-encoding/x-forwarded-host），cookie `'; '`、set-cookie 数组不受旗控；
+  joinDuplicateHeaders 旗**只压单值表**。旧"未知头首个赢"系 authorization
+  单值头行为被错误推广——对真机要对机制不只对结果（§4.203 教训实例）。
+- 坑二（查询面只见用户头）：node 查询面（getHeader/hasHeader/getHeaderNames/
+  getHeaders/getRawHeaderNames）读 `[kOutHeaders]` 用户头——自动头（Date/
+  Connection/Keep-Alive/自动 CL/TE）对查询不可见。修法 `__isAutoKey` 谓词
+  （date/connection/keep-alive 旗 + CL/TE 无用户拼写名），内部状态机读
+  `__headers` 不受影响。
+- 坑三（GET+用户 TE 裸体）：请求侧 `__sendHead` 缺真机 _storeHeader 的 TE
+  值扫描——用户 TE 含 chunked（整词）须置 `__chunked`，否则体裸发 + 终结块
+  照发（双机构打架），服务端 'bad chunked body' → 挂死。
+- 坑四（TE 整词 + 冒号空格，走私向量）：① chunked 判定必须逗号切分整词
+  全等——`chunkedchunked` 不得命中；TE 在场非 chunked = teInvalid 分型：
+  请求派发（handler ×1）但 data/end 永不发，体字节到达即 HPE → 400 + close。
+  ② strict 模式拒收冒号前空格（RFC7230 §3.2.4；lenient 放行）。
+- 坑五（parser 全局池）：真机 parser 来自 `_http_common` 全局 freelist
+  （回收复用），**不是每连接**更不是每请求——parser-free 套件 maxSockets=1
+  串行 100 请求恒同一对象；free（res end）字段置空回池，attach 回填
+  onIncoming/joinDuplicateHeaders。
+- 坑六（res 侧 timeout 桥 × 监听数契约）：socket 超时双路——req 侧走
+  req.setTimeout 的 timeoutCb 独立通路；res 侧 responseOnTimeout 打 **res**
+  （真机 1055 行）。**恒挂会多占 EE 监听数**（set-timeout-after-end 套件
+  `listenerCount('timeout')===1` 钉住——真机 net 单例不是 EE 监听，我们的
+  是）；res.setTimeout 后置形由 IM.setTimeout 桥自武装（complete 哑/close 摘）。
+  stash 基线定级（§4.197）实锤回归后回修——改超时路由必跑 timeout 家族全量。
+- 坑七（出局归类纪律）：红件先定性再动手——`--expose-gc/--expose-internals`
+  flag 门控 + internals 模块（reused-gc/leaky/keepalive-req-gc）、
+  process.report 另域（reuse-drained）出局；domain 异步路由（§1 记档）、
+  Atomics.wait 引擎面（ka-race）书面偏离；sweep 红绿互跳件先重扫再定级
+  （chunk-extensions-limit 两次扫描间自绿 = flake 族）。
+- 复现/回归：本轮 15 件转绿（multiheaders×5/mutable-headers/abort-keep-alive-
+  destroy-res/override-global-agent/parser-free/smuggling/te-repeated/
+  write-information/optimize-empty/chunk-extensions-limit/response-timeout/
+  dump-req-when-res-ends），timeout 家族 6 件守卫零回归；node 域 285 绿 +
+  冒烟 5/5 ×4 轮。

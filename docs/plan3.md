@@ -343,6 +343,23 @@ _http_client.js 591-607 行逐字 err 臂 nextTick emitErrorEvent + try/catch
 收口 + settled 防双投；黑盒三形 `phase11_http_create_connection_error_routing`；
 AGENTS §4.203）。http/net/https 三域 52 绿 + node 域 285 绿 + 冒烟 5/5。
 
+**2026-09-23 sweep8 红件簇清扫（15 件转绿）**：四簇连修——① 重复头真机
+表驱动口径（joinable+未知头恒 ', '、19 头单值表首个赢、查询面过滤自动头、
+GET+用户 TE 帧化；multiheaders×5/mutable-headers/raw-headers 转绿）；
+② agent 池（res.destroy 后复用 + req close 蕴含 destroyed；abort-keep-alive/
+override-global-agent 转绿）；③ parser 面（TE 整词 token+teInvalid 400、
+冒号空格拒收、parser 全局 freelist、writeInformation 门序三形、
+optimizeEmptyRequests+IM._dumpAndCloseReadable；smuggling/te-repeated/
+parser-free/write-information/optimize-empty/chunk-extensions-limit 转绿）；
+④ res 侧 timeout 桥（responseOnTimeout 打 res + IM.setTimeout 自武装，
+监听数契约守卫；client-response-timeout 转绿）。出局 4（internals/flags×3 +
+process.report）+ 偏离 2（domain 异步/Atomics.wait）+ 预存挂 1（client-
+timeout-on-connect）。残：DIFF 5（set-timeout-server/request-timeout-upgrade/
+url.parse-https.request/headers-timeout-keepalive/server-capture-rejections）+
+TIMEOUT 5（no-read-no-dump/capture-rejection/non-utf8-header/reject-chunked/
+should-keep-alive，流控与二进制头深水）。提交 f4b8a52/029a244/834bc15/431fc0e；
+AGENTS §4.204；node 域 285 绿 + 冒烟 5/5 ×4 轮。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

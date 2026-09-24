@@ -1499,6 +1499,36 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > >   285 绿零回归。
 > > - 对拍 mapper（AGENTS §4.202-①）同日落地：本套件零输出挂死即靠块标记
 > >   插桩定位；mapper 覆盖 uncaught 形，TIMEOUT 件仍走插桩。
+>
+> ### G11 sweep8 红件簇清扫（2026-09-23；AGENTS §4.204）
+>
+> > - **重复头表驱动**：`_addHeaderLine` 真机口径——joinable 表 + 未知头
+> >   缺省恒 `', '`、19 头单值表首个赢、cookie `'; '`/set-cookie 数组不受旗、
+> >   joinDuplicateHeaders 只压单值表；查询面过滤自动头（`__isAutoKey`）；
+> >   请求侧补 TE 值扫描（GET+用户 TE 帧化）。转 SAME0：multiple-headers/
+> >   response-multiheaders/server-multiheaders×2/mutable-headers/
+> >   raw-headers。
+> > - **agent 池**：`__finishSock` 销杀门补 `readableEnded` 豁免（end 后
+> >   destroy 不杀池 socket）+ `__onSockCloseEv` 首行 destroyed=true
+> >   （close 蕴含 destroyed）。转 SAME0：client-abort-keep-alive-destroy-res/
+> >   client-override-global-agent。
+> > - **parser 面**：TE 整词 token + teInvalid 分型（派发不完结、体字节即
+> >   HPE→400）/ 冒号空格 strict 拒收 / parser 全局 freelist /
+> >   writeInformation 门序+三形头 / optimizeEmptyRequests+
+> >   `_dumpAndCloseReadable`。转 SAME0：request-smuggling-content-length/
+> >   transfer-encoding-repeated-chunked/parser-free/write-information/
+> >   server-optimize-empty-requests/chunk-extensions-limit。
+> > - **timeout 桥**：responseOnTimeout 打 res + IM.setTimeout 自武装桥
+> >   （监听数契约：恒挂破 count===1，stash 定级抓回归）。转 SAME0：
+> >   client-response-timeout/dump-req-when-res-ends。
+> > - **出局/偏离**：internals+flags ×3（reused-gc/leaky/keepalive-req-gc）+
+> >   process.report（reuse-drained）出局；domain 异步路由（client-response-
+> >   domain）、Atomics.wait（ka-race）偏离；client-timeout-on-connect 预存挂。
+> > - **残**：DIFF 5（set-timeout-server/request-timeout-upgrade/url.parse-
+> >   https.request/headers-timeout-keepalive/server-capture-rejections）+
+> >   TIMEOUT 5（no-read-no-dump/capture-rejection/non-utf8/reject-chunked/
+> >   should-keep-alive——流控/二进制头深水）。timeout 家族 6 件守卫 +
+> >   node 域 285 绿 + 冒烟 5/5。
 
 ## https
 

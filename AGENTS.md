@@ -3567,14 +3567,21 @@ cargo build
   （c）`unhandledRejection` 监听拦不到（引擎自有收割先走，§4.137 路径），
   `process.on('exit')` fatal 路径不触发——rejection 形失败回落引擎默认输出，
   mapper 只覆盖 uncaught 形；TIMEOUT 件由 helper 20s 看门兜住不挂 cargo。
-- ② flake 先分类再动手：新红先自动跑 3 遍（单块×3/整文件×3），flaky 与必现
-  分流——flaky 走定级法（§4.197），必现才 instrument。禁把 flake 当回归深挖
-  （destroyed 整文件挂误判块间污染，实为 block3 管道缺口——§4.196 坑二教训）。
-  落 `wjs-10f-par.py` 同族跑分脚本（`exec or die` + 绝对路径，§4.145）。
-- ③ sweep 常驻后台：全量 serial sweep（15–25 分钟）永不挡手——后台直跑、
-  结果落盘、轮询进度；动手与等数解耦（§4.143：全量禁套 alarm）。
-  不并行多 agent 改同文件：全部套件收敛进 `framing_*.js` 同几件，并行即冲突；
-  worktree 每个 20GB（§4.142），磁盘先行 `df -h`。
+- ② flake 先分类再动手：✅ 2026-09-25 落地（`scripts/flake-classify.py`）——
+  新红先自动跑 3 遍（整文件×3 + 手抽单块 repro×N），GREEN / FLAKY(k/N) /
+  RED-DETERMINISTIC / NODE-FLAKY 四分流——flaky 走定级法（§4.197），必现才
+  instrument。禁把 flake 当回归深挖（destroyed 整文件挂误判块间污染，实为
+  block3 管道缺口——§4.196 坑二教训）。dogfood 首件：dump-req-when-res-ends
+  判 FLAKY(0,142,142，挂死型而非红绿互跳)。跑分纪律沿用 §4.145（exec or
+  die + glob 绝对路径）；与常驻 sweep 并跑时 `--thread-id/--port-base` 错开
+  （sweep 默认 3599/29999，classify 默认 3601/29999）。
+- ③ sweep 常驻后台：✅ 2026-09-25 落地（`scripts/sweep-bg.py`）——双 fork
+  脱离会话后台直跑、`status/wait/tail/stop` 轮询、工件落
+  `~/.wjs-sweep/<tag>/`（status.json/results.log/debug/，家目录 §4.144）；
+  失败行带 stderr 首行 + 整份落 debug/（本次排障一击即中）；killpg 连
+  suite 子进程一起收；全量禁套 alarm（§4.143），单套件 subprocess timeout。
+  与 sweep4 家族 409 件基线可比：`.js`/`.mjs` 都进——前缀过滤只认 `.js`
+  会静默丢 6 件 mjs（口径先对齐再比较）。
 - 推广为铁律：机械开销（定位/分类/等数）用工具换，推理开销（hang 根因）
   用人换——前者不投半天，后者永远被前者拖慢；工具先行，啃数随后。
 
@@ -3669,3 +3676,27 @@ cargo build
   残件族。本批 5 件转绿（capture-rejections/url.parse-https.request/
   reject-chunked/non-utf8-header + set-timeout-server 前四块），cork 家族
   4 件 + timeout 家族 6 件守卫，node 域全绿 + 冒烟 5/5 ×3 轮。
+
+### 4.205 统一 runner 给 node 也带 `--run`：假红全表 + 过滤丢件（2026-09-25，②③工具轮）
+
+- 症状一（node 假红全表）：smoke sweep 9/9 全 DIFF 且 `wjs=0 node=1`，2.7 秒
+  跑完 18 个进程——真套件不可能这么快。node stderr 一行：
+  `Can't find package.json for directory /private/tmp/.../parallel`。
+  根因：统一 `run_one(binary, path)` 给两个二进制都硬编码 `--run`——node 22+
+  的 `--run` 是"跑 package.json scripts"命令（node --run <name>），套件目录
+  无 package.json 即报此错 rc=1。wjs 侧 `--run` 是本仓动作 flag，同名不同义。
+- 症状二（409 基线缩水）：前缀过滤只认 `.endswith(".js")`，静默丢 6 件
+  `test-http-*.mjs`——与 sweep4 家族 409 件基线不可比。
+- 排障路径（值得记：三类对照全做完才定位）：① 环境二分（env -i 最小环境 +
+  逐变量加回）排除环境；② python 前台复刻（同 env 同 cwd 同 capture）绿；
+  ③ 内联双 fork 复刻绿——最后靠"失败行落 stderr 首行"一击命中。教训：
+  **失败行的 stderr 是最短路径，走复制粘贴式复刻对照是弯路**——工具先行
+  落 stderr 捕获，比人肉二分快一个量级。
+- 附带实测：上一轮 sweep 挂死留下的孤儿 winterjs（`--expose-gc`/`--expose-internals`
+  套件滞留数小时）会占端口/状态污染基线——两个工具 start 前均 pgrep 预警。
+- 修法：`run_one(..., prefix)`——wjs 传 `("--run",)`，node 传 `()`；文件过滤
+  `.js`/`.mjs` 双认。修后 smoke6 upgrade 9/9 SAME0 与在册记录一致。
+- 推广为铁律：① 包装两个相似 CLI 的统一 runner，实参差异必须参数化而非
+  取交集默认——同名 flag 语义不同（本仓 `--run` vs node `--run`）是重灾区；
+  ② 新跑分工具首跑必抽查 2-3 件已知绿套件对表，elapsed 异常短（<200ms/件）
+  即"根本没跑起来"的信号（§4.145"全绿得可疑"的姊妹篇：全红得可疑同理）。

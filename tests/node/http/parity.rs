@@ -764,3 +764,93 @@ setTimeout(() => { console.log("uncaught MISSING"); process.exit(1); }, 500);
     }
     dir.close().unwrap();
 }
+
+/// OutgoingMessage captureRejections 递送（真机
+/// test-http-outgoing-message-capture-rejection 三件）：
+/// events.captureRejections 下 res/req 监听器 rejection 经
+/// OutgoingMessage[nodejs.rejection] → destroy(err)——res 侧 socket 'error'
+/// 收**同一 err 对象**（修前 ServerResponse.destroy 把 err 丢在
+/// super.destroy() 外、_destroy 永裸杀）；client 侧体未齐断连带
+/// aborted → error ECONNRESET → close 序（修前 error 永不发）；req 侧
+/// 自身 'error' 收同一对象。边界：socket 无用户 error 监听 → 裸杀静默
+/// （吞错口径，无 uncaught）。
+#[test]
+fn phase11_http_outgoing_capture_rejection_routing() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http from "node:http";
+import events from "node:events";
+events.captureRejections = true;
+
+// 1) res drain-throw → res.socket 'error' 收同一 err（套件 block1）。
+await new Promise((resolve) => {
+  const server = http.createServer((req, res) => {
+    const _err = new Error("kaboom");
+    res.on("drain", async () => { throw _err; });
+    res.socket.on("error", (err) => {
+      console.log("res-socket-err", err.message, err === _err);
+      server.close();
+      resolve();
+    });
+    res.writeHead(200, { Connection: "close" });
+    while (res.write("hello"));
+  });
+  server.listen(0, () => {
+    const req = http.request({ method: "GET", host: server.address().host, port: server.address().port });
+    req.end();
+    req.on("response", (res) => {
+      res.on("aborted", () => console.log("client-aborted"));
+      res.on("error", (e) => console.log("client-err", e.code));
+      res.resume();
+    });
+  });
+});
+
+// 2) req drain-throw → req 'error' 收同一 err（套件 block2）。
+await new Promise((resolve) => {
+  let _res = null;
+  const server = http.createServer((req, res) => { _res = res; });
+  server.listen(0, () => {
+    const _err = new Error("kaboom2");
+    const req = http.request({ method: "POST", host: server.address().host, port: server.address().port });
+    req.on("error", (err) => {
+      console.log("req-err", err.message, err === _err);
+      server.close();
+      if (_res) _res.end();
+      resolve();
+    });
+    req.on("drain", async () => { throw _err; });
+    while (req.write("hello"));
+  });
+});
+
+// 3) 边界：socket 无用户 error 监听 → 裸杀静默（无 uncaught、进程自退）。
+await new Promise((resolve) => {
+  const server = http.createServer((req, res) => {
+    const _err = new Error("kaboom3");
+    res.on("drain", async () => { throw _err; });
+    res.writeHead(200, { Connection: "close" });
+    while (res.write("hello"));
+    setTimeout(() => { console.log("silent-kill ok"); server.close(); resolve(); }, 100);
+  });
+  server.listen(0, () => {
+    const rq = http.get({ host: server.address().host, port: server.address().port });
+    rq.on("response", (r) => r.resume());
+  });
+});
+"#,
+    );
+    for tag in [
+        "res-socket-err kaboom true",
+        "client-aborted",
+        "client-err ECONNRESET",
+        "req-err kaboom2 true",
+        "silent-kill ok",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    dir.close().unwrap();
+}

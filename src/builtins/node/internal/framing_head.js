@@ -2135,7 +2135,14 @@ export class ServerResponse extends Writable {
           const __ls = typeof __s.listeners === "function" ? __s.listeners("error") : [];
           __userErr = __ls.filter((l) => l !== __s.__httpSockOnError && l !== __s.__freeSockErr).length;
         } catch { /* 读表失败即按无用户监听 */ }
-        if (err !== undefined && err !== null && __userErr > 0) __s.destroy(err);
+        // destroy(err) 包装层把 err 只记 __resErrored（不进流机构防 res
+        // 'error' 外发），此处必须从 __resErrored 找回——capture-rejection
+        // 套件：res.destroy(err) 后 socket 'error' 收**同一 err 对象**
+        // （真机 OutgoingMessage.destroy 直 socket.destroy(error) 口径）；
+        // 只认 _destroy 入参 err 恒 undefined 即永裸杀（修前挂死根因）。
+        const __carryErr = err !== undefined && err !== null ? err
+          : (__noRecErr ? null : this.__resErrored);
+        if (__carryErr !== null && __userErr > 0) __s.destroy(__carryErr);
         else __s.destroy();
       } catch { /* closed meanwhile */ }
     }

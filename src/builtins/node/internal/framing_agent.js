@@ -1219,10 +1219,19 @@
         // 体未齐连接先断：node 口径一律 abort（aborted + ECONNRESET，无 end；
         // 真机实测：干净 FIN 中断同样 abort。旧 9d 宽容 end 系偏差。
         // close-delimited（framing 'close'）的 close 即终结，走正常完成。
+        // error 同步守门递送：真机序 aborted → error → close（p4 真机差分
+        // 2026-09-25）——error 须先于 destroy 的 close 上车；destroy(__e)
+        // 递不出去（IM._destroy 吞错口径）；无监听守门不发（无守门发即抛）。
         const __e = new Error("aborted");
         __e.code = "ECONNRESET";
         try { this.__res.__aborted = true; } catch { /* gone */ }
         try { this.__res.emit("aborted"); } catch { /* 监听抛错不阻收尾 */ }
+        try {
+          if (typeof this.__res.listenerCount === "function" &&
+              this.__res.listenerCount("error") > 0) {
+            this.__res.emit("error", __e);
+          }
+        } catch { /* 监听抛错不阻收尾 */ }
         try { this.__res.destroy(__e); } catch { /* gone */ }
         this.__finishResponse(true);
         return;

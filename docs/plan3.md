@@ -402,6 +402,22 @@ keepalive）+ set-timeout-server exit-hold（G6 infra 族）；sweep7 新现红
 catch-uncaughtexception / client-parse-error / writable-true-after-close /
 chunk-extensions-limit flake）另批分类。node 域 286 黑盒全绿 + 冒烟 5/5。
 
+**2026-09-25 sweep 残部四批收官（http 尾巴 5/7 转绿）**：接三批续啃——
+④ **should-keep-alive**（`a683ca5`）：__release 回池门只看 Connection 头，
+1.0 缺省响应 socket 被错误入池 → 复用死连接挂死；门改 req.shouldKeepAlive
++ 池态 socket 收 EOF 即销毁摘池。⑤ **no-read-no-dump**（`7c916b6`）：服务端
+体背压流控 infra 四件联动（泵 backpressured 旗 / __feed 停读+pause /
+Socket pause/resume 事件 / req._read 消费即解暂停）+ res 完成清 framing 根修
+（体在途字节被当新请求头 → HPE 断连）。⑥ **时序敏感两件**（`2ce37ef`）：
+Host 校验搬位到升级检测后（node parserOnIncoming 头部对 upgrade return 0）+
+劫持撤计时 + headersTimeout 计时模型统一（连接建立/新消息首字节开、请求完成
+撤、空闲归 keepAliveTimeout）。黑盒新增三件，node 域 288 全绿，冒烟 5/5；
+AGENTS §4.206。**残件**：dump-req-when-res-ends（挂死型 flaky——今日根因
+定位到流端口 flowing 排空语义，dump 机制需先修 readable_flow push/flow，
+独立轮；§4.206 坑二）+ set-timeout-server 末段 exit-hold（G6 infra 族）+
+sweep7 新现红件分类（outgoing-finished/matchKnownFields/1.0-keep-alive 文案
+等）。**sweep8 终局基线后台直跑中**（新二进制，终态 ~/.wjs-sweep/sweep8/）。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

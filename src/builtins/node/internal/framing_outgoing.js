@@ -947,14 +947,8 @@ export function withHttpServer(Base) {
           // 背压恢复钩（node IncomingMessage._read → readStart 口径）：消费端
           // 拉数据即解暂停续读（__feed 置 st.__reqPaused 后在此恢复；
           // no-read-no-dump 流控面——只 pause 不恢复即永不续读）。
-          const __reqBaseRead = req._read;
-          req._read = () => {
-            if (st !== undefined && st !== null && st.__reqPaused === true) {
-              st.__reqPaused = false;
-              try { sock.resume(); } catch { /* gone */ }
-            }
-            if (typeof __reqBaseRead === "function") __reqBaseRead.call(req);
-          };
+          // 背压事件由体泵统一管理（emit-only 转换沿，不停读不锁泵）。
+
           // Node 口径：CONNECT 方法请求不进 request 管线——派发 'connect'
           //（req, socket, head；无监听则销毁连接），socket 停止 HTTP 解析。
           if (req.method === "CONNECT") {
@@ -1188,7 +1182,7 @@ export function withHttpServer(Base) {
             // GET 复用同连接）。
             if (st.__reqPaused === true) {
               st.__reqPaused = false;
-              try { sock.resume(); } catch { /* gone */ }
+              try { sock.emit("resume"); } catch { /* 监听抛错不阻收尾 */ }
             }
             // 管线轮转：下一排空 assignSocket（停靠写排空 + 递补终结 + 'socket'
             // 事件），st.res 移交，后续 re-feed 的新头排其后。
@@ -1264,14 +1258,23 @@ export function withHttpServer(Base) {
           if (r.error) throw __mkParseError("bad chunked body");
         }
         st.buf = r.rest;
-        if (r.backpressured === true) {
-          // node parserOnBody→readStop 口径：消费端缓冲超 HWM 即停读。
-          // JS 侧 pause 缓冲后续原包（net_socket）+ 发 'pause' 事件
-          // （no-read-no-dump 套件：handler 借 pause 触发 res.end + 客户端续发
-          // 体）。恢复走 req._read 钩（消费）或 res.__onDone（弃体 dump）。
-          st.__reqPaused = true;
-          try { sock.pause(); } catch { /* gone */ }
-          return;
+        // 体背压事件语义（node parserOnBody 口径的可观测面，状态驱动）：
+        // req 缓冲 ≥HWM 发 'pause'（转换沿），落回 HWM 内发 'resume'——
+        // 泵**不停读不中断**：停读/早退的耦合在"体一次性到齐"形必死锁
+        // （残段/终结段扣在 fr.buf 等再喂而包不会再有——flush-drain 500KB
+        // 实录），缓冲有界（≤体长）无此忧。
+        if (st.req !== null && st.req._readableState !== undefined &&
+            st.req._readableState.highWaterMark > 0) {
+          const __rs = st.req._readableState;
+          if (__rs.length >= __rs.highWaterMark) {
+            if (st.__reqPaused !== true) {
+              st.__reqPaused = true;
+              try { sock.emit("pause"); } catch { /* 监听抛错不阻收尾 */ }
+            }
+          } else if (st.__reqPaused === true) {
+            st.__reqPaused = false;
+            try { sock.emit("resume"); } catch { /* 监听抛错不阻收尾 */ }
+          }
         }
         if (!r.done) return;
         if (r.trailersRaw !== undefined && st.req !== null) __applyTrailers(st.req, r.trailersRaw);

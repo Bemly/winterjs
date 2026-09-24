@@ -511,16 +511,11 @@ function __framingFor(headers, isResponse, statusCode, method) {
 }
 // CL 泵：取 min(remaining, available) 推流（msg 为 null 则纯跳过，不推流）。
 // 未完结时 rest 恒为空（余字节已进 fr 内部态；调用方直接覆盖缓冲）。
-// backpressured：push 返 false（消费端缓冲超 HWM）——调用方据此停读
-// （node parserOnBody→readStop 口径；no-read-no-dump 套件流控面）。
 function __pumpCL(fr, msg, bytes) {
   const take = Math.min(fr.remaining, bytes.length);
-  let backpressured = false;
-  if (take > 0 && msg !== null) {
-    if (!msg.push(globalThis.Buffer.from(bytes.slice(0, take)))) backpressured = true;
-  }
+  if (take > 0 && msg !== null) msg.push(globalThis.Buffer.from(bytes.slice(0, take)));
   fr.remaining -= take;
-  return { done: fr.remaining === 0, rest: bytes.slice(take), backpressured };
+  return { done: fr.remaining === 0, rest: bytes.slice(take) };
 }
 // chunked 泵：增量解 size 行/数据/CRLF；trailer 逐行计数（不收内容）。
 // 扩展/trailer 限深均按真机 26.8.2 逐项实测（见各常量注）。
@@ -594,14 +589,7 @@ function __pumpChunked(fr, msg, bytes) {
       continue; // 回 -2 分支续行（严禁落穿到数据泵：need 仍是 -2）
     }
     if (buf.length < fr.need + 2) { fr.buf = buf; return { done: false, rest: new Uint8Array(0) }; }
-    if (fr.need > 0 && msg !== null) {
-      if (!msg.push(globalThis.Buffer.from(buf.slice(0, fr.need)))) {
-        // 背压：整块（含后续字节）留在 fr.buf，re-entry 状态一致
-        //（need>0 分支原位续推——数据/CRLF 尚未消费）。
-        fr.buf = buf;
-        return { done: false, rest: new Uint8Array(0), backpressured: true };
-      }
-    }
+    if (fr.need > 0 && msg !== null) msg.push(globalThis.Buffer.from(buf.slice(0, fr.need)));
     buf = buf.slice(fr.need + 2);
     fr.need = -1;
   }

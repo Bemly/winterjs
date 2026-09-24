@@ -931,3 +931,42 @@ await new Promise((resolve) => {
     assert!(!out.contains("post-err"), "unexpected post error; out:\n{out}");
     dir.close().unwrap();
 }
+
+/// drain 不死锁（真机 test-http-outgoing-flush-drain，node#64680）：socket
+/// HWM(2MB) > OM HWM(64KB) 时写 500KB——write 返 false 后 drain 必达（服务
+/// 端慢消费 500ms）。服务端体背压为**状态驱动事件**（缓冲 ≥HWM 发 'pause'、
+/// 落回发 'resume'，泵不停读不中断）——停读+续喂耦合在"体一次性到齐"形
+/// 死锁（残段扣 fr.buf 等再喂而包不会再有，§4.206 坑二同源实录）。
+#[test]
+fn phase11_http_outgoing_flush_drain_no_deadlock() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http from "node:http";
+setTimeout(() => { console.log("WATCHDOG"); process.exit(9); }, 8000).unref();
+const server = http.createServer((req, res) => {
+  setTimeout(() => {
+    req.resume();
+    req.on("end", () => res.end("ok"));
+  }, 300);
+});
+server.listen(0, () => {
+  const agent = new http.Agent({ keepAlive: true });
+  const reqB = http.request({ host: "localhost", port: server.address().port, method: "POST", agent }, (res) => {
+    res.resume();
+    res.on("end", () => { console.log("b-end ok"); server.close(() => process.exit(0)); });
+  });
+  const result = reqB.write(Buffer.alloc(500 * 1024));
+  console.log("write-false", result === false);
+  reqB.on("drain", () => { console.log("drain fired"); reqB.end(); });
+});
+"#,
+    );
+    for tag in ["write-false true", "drain fired", "b-end ok"] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    assert!(!out.contains("WATCHDOG"), "deadlock; out:\n{out}");
+    dir.close().unwrap();
+}

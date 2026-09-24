@@ -360,6 +360,17 @@ TIMEOUT 5（no-read-no-dump/capture-rejection/non-utf8-header/reject-chunked/
 should-keep-alive，流控与二进制头深水）。提交 f4b8a52/029a244/834bc15/431fc0e；
 AGENTS §4.204；node 域 285 绿 + 冒烟 5/5 ×4 轮。
 
+**2026-09-25 sweep 残部二批（5 件转绿）**：server captureRejections 兜底
+（nodejs.rejection 逐字）+ TLSSocket _secureEstablished + ServerResponse.
+setTimeout + IM/server 超时桥带 socket 实参 + HPE 门序前置（TE+CL 先于
+requireHost）+ 头串 latin1 上网 + OutgoingMessage hasInstance 品牌判定
+（原型桥改道 super 全链实锤后弃用）。capture-rejections/url.parse-https.
+request/reject-chunked/non-utf8-header/set-timeout-server(前四块) 转绿；
+提交 2b1a1ab/566117d；AGENTS §4.204 追补；node 域全绿 + 冒烟 5/5 ×3 轮。
+残 4：outgoing-message-capture-rejection / should-keep-alive / no-read-no-dump
+（流控与判定矩阵深水）+ set-timeout-server 末段 exit-hold（paused client
+EOF 急切检测，G6 infra 族）。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

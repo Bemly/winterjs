@@ -3647,3 +3647,25 @@ cargo build
   write-information/optimize-empty/chunk-extensions-limit/response-timeout/
   dump-req-when-res-ends），timeout 家族 6 件守卫零回归；node 域 285 绿 +
   冒烟 5/5 ×4 轮。
+- 追补（2026-09-25 二批五件）：① server 兜底 `Server[nodejs.rejection]`
+  （_http_server 716 行逐字：未发头清头+500 / 已发头 destroy）+ TLSSocket
+  双路 `_secureEstablished` + ServerResponse.setTimeout + IM 桥 timeout 带
+  socket 实参 + server 连接级**无条件**三路转发（req 未完结/res/server）——
+  capture-rejections/url.parse-https.request/set-timeout-server 前四块转绿；
+  ② HPE 门序：TE+CL/重复 CL 门必须**先于** requireHost（llhttp 解析期校验
+  先行——TE+CL 缺 Host 形 clientError 先到且无 400 直写）；
+  ③ 头串 latin1 编码（逐 charCode 低 8 位）——`'binary'` 形非 ASCII 头值
+  按 latin1 字节上网（__storeHeader/writeInformation/__sendHead 三处）；
+  ④ **原型链桥接禁用**：`setPrototypeOf(ServerResponse.prototype,
+  OutgoingMessage.prototype)` 会改道 super.write/end/cork/destroy 全链
+  （cork 面实锤 writableCorked 错 0）——身份语义改走
+  `OutgoingMessage[Symbol.hasInstance]` 品牌判定（`Object.defineProperty`
+  ——`Symbol.hasInstance` 只读直赋即 throw）+ `ServerResponse.__omBrand`。
+- 残件定性（第三批）：outgoing-message-capture-rejection（res 写错 capture
+  通路）、should-keep-alive（1.0/1.1 × Connection 判定矩阵）、no-read-no-dump
+  （socket 'pause' 事件 + POST 背压 + 管线，§4.148 throttle infra 族）。
+  set-timeout-server 末段 exit-hold（paused client FIN 的 EOF 急切检测/
+  readStop——真机 readStop 后循环放行，本仓按需读永不见 EOF）归 G6 infra
+  残件族。本批 5 件转绿（capture-rejections/url.parse-https.request/
+  reject-chunked/non-utf8-header + set-timeout-server 前四块），cork 家族
+  4 件 + timeout 家族 6 件守卫，node 域全绿 + 冒烟 5/5 ×3 轮。

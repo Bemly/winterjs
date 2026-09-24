@@ -1529,6 +1529,24 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > >   TIMEOUT 5（no-read-no-dump/capture-rejection/non-utf8/reject-chunked/
 > >   should-keep-alive——流控/二进制头深水）。timeout 家族 6 件守卫 +
 > >   node 域 285 绿 + 冒烟 5/5。
+>
+> ### G11 残部二批（2026-09-25；AGENTS §4.204 追补）
+>
+> > - **capture 兜底**：`Server[nodejs.rejection]`（_http_server 716 逐字：
+> >   未发头清头 + 500 'Internal Server Error' / 已发头 destroy）——
+> >   server-capture-rejections 转绿。
+> > - **身份与门序**：`OutgoingMessage[Symbol.hasInstance]` 品牌判定
+> >   （ServerResponse 真继承结构偏离记档；原型桥改道 super 全链实锤弃用）/
+> >   HPE 门序前置（TE+CL 先于 requireHost，clientError 先到无 400 直写）/
+> >   TLSSocket 双路 `_secureEstablished` / 头串 latin1 上网（三处）。
+> > - **timeout 桥**：ServerResponse.setTimeout + IM/server 桥带 socket 实参
+> >   + 连接级无条件三路转发。
+> > - **转 SAME0**：server-capture-rejections/url.parse-https.request/
+> >   server-reject-chunked-with-content-length/server-non-utf8-header/
+> >   set-timeout-server（前四块）。残：outgoing-message-capture-rejection/
+> >   should-keep-alive/no-read-no-dump（流控与判定矩阵深水）+ set-timeout-
+> >   server 末段 exit-hold（G6 infra：paused client FIN EOF 急切检测）。
+> >   cork 家族 4 件 + timeout 家族 6 件守卫；node 域全绿 + 冒烟 5/5 ×3 轮。
 
 ## https
 

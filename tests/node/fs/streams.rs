@@ -239,7 +239,14 @@ fs.writeFileSync("g.txt", "0123456789");
   let ended = false;
   let i = 0;
   await new Promise((res) => {
-    const w = setInterval(() => { i++; fs.writeFileSync("g.txt", `x${i}\n`, { flag: "a" }); }, 2);
+    // i 上限护栏：全并行负载（他项目编译抢 CPU）下读恒满块、shorts 永不
+    // 达 3 即写循环跑飞挂死整轮 cargo（2026-09-25 实录，etime 37min）——
+    // 有界终止后 ended=false 照常落 tag，红可见而非 hang。
+    const w = setInterval(() => {
+      i++;
+      fs.writeFileSync("g.txt", `x${i}\n`, { flag: "a" });
+      if (i >= 2000) { clearInterval(w); }
+    }, 2);
     const s = fs.createReadStream("g.txt", { highWaterMark: 10, start: cur });
     s.on("data", (d) => {
       cur += d.length;

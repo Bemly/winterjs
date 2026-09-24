@@ -1118,8 +1118,13 @@
         try { if (this.agent !== null) this.agent.__noteClosed(sock); } catch { /* 记账永不阻收尾 */ }
         return;
       }
-      const conn = this.__res !== null ? (this.__res.headers.connection || "").toLowerCase() : "close";
-      const poolable = this.agent !== null && this.agent.keepAlive && conn !== "close";
+      // node responseOnEnd 口径：回池门是 **req.shouldKeepAlive**（响应版本×
+      // Connection 缺省已折算——1.0 缺省 false、1.0 'keep-alive' true、1.1
+      // 缺省 true、任意版本 'close' false）。只看 conn !== 'close' 会把 1.0
+      // 缺省响应的 socket 入池，复用撞服务端单发语义（永不回包）即挂死
+      // （should-keep-alive 套件 index 2 实录）。
+      const poolable = this.agent !== null && this.agent.keepAlive &&
+        this.shouldKeepAlive === true;
       if (this.agent !== null) {
         // node responseOnEnd 口径：res 收齐（回池/关连前）即摘请求侧三监听
         //（socketOnEnd/socketErrorListener 对应本仓 end/error + close）——
@@ -1459,6 +1464,12 @@ Agent.prototype.__trackSocket = function (sock, key) {
   sock.on("end", function onReadableStreamEnd() {
     if (!this.allowHalfOpen) {
       this.write = __writeAfterFIN;
+    }
+    // node socketOnEnd 口径：池态 socket 收 EOF 即销毁（close → __poolCleaner
+    // → noteClosed 摘池 + 续行队列）——free socket 半死滞留会被下个请求
+    // acquire 复用（单发语义服务端永不回包，req 静默挂死）。
+    if (this.__inPool) {
+      this.destroy();
     }
   });
   // node agent（installListeners 口径）：onTimeout 单例无条件挂（set-timeout-

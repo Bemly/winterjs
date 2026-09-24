@@ -854,3 +854,63 @@ await new Promise((resolve) => {
     }
     dir.close().unwrap();
 }
+
+/// shouldKeepAlive 判定矩阵 × 回池门（真机 test-http-should-keep-alive）：
+/// 客户端 req.shouldKeepAlive 六形态逐项（1.0 缺省 false / 1.0 'keep-alive'
+/// true / 1.0 'close' false / 1.1 缺省 true / 1.1 'keep-alive' true / 1.1
+/// 'close' false）；回池门同口径——1.0 缺省响应的 socket **不入池**
+/// （修前只看 conn !== 'close'，入池后被复用撞服务端单发语义 → 无响应
+/// 挂死）；池态 socket 收 EOF 即销毁摘池。六请求跑完即完成（修前 TIMEOUT）。
+#[test]
+fn phase11_http_should_keep_alive_matrix() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http from "node:http";
+import net from "node:net";
+
+const RESP = [
+  "HTTP/1.0 200 ok\r\nContent-Length: 0\r\n\r\n",
+  "HTTP/1.0 200 ok\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n",
+  "HTTP/1.0 200 ok\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+  "HTTP/1.1 200 ok\r\nContent-Length: 0\r\n\r\n",
+  "HTTP/1.1 200 ok\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n",
+  "HTTP/1.1 200 ok\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+];
+const EXPECT = [false, true, false, true, true, false];
+http.globalAgent.maxSockets = 5;
+let i = 0;
+const server = net.createServer((sock) => {
+  sock.write(RESP[i]);
+  if (EXPECT[i]) sock.end();
+});
+server.listen(0, () => {
+  function makeRequest() {
+    const req = http.get({ port: server.address().port }, (res) => {
+      console.log("ska", i, req.shouldKeepAlive === EXPECT[i]);
+      res.resume();
+      res.on("end", () => {
+        i++;
+        if (i < RESP.length) makeRequest();
+        else server.close(() => { clearTimeout(watchdog); console.log("matrix done"); });
+      });
+    });
+    req.on("error", (e) => console.log("req-err", i, e.code));
+  }
+  makeRequest();
+});
+// 看门只在矩阵未完成时触发（完成即 clearTimeout——node 同形脚本 5s 看门
+// 也会先炸，引擎退出卫生由真套件 rc=0 覆盖）。
+const watchdog = setTimeout(() => { console.log("stuck at", i); process.exit(9); }, 5000);
+watchdog.unref();
+"#,
+    );
+    for k in 0..6 {
+        assert!(out.contains(&format!("ska {k} true")), "missing `ska {k} true`; out:\n{out}");
+    }
+    assert!(out.contains("matrix done"), "suite did not complete; out:\n{out}");
+    assert!(!out.contains("req-err"), "unexpected req error; out:\n{out}");
+    dir.close().unwrap();
+}

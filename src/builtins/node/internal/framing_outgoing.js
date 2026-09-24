@@ -804,7 +804,13 @@ export function withHttpServer(Base) {
     // 不因部分数据重置（interrupted/delayed 系套件依赖）。
     __armIdleTimers(st, sock, withKa = false) {
       this.__clearReqTimers(st);
-      if (this.headersTimeout > 0) {
+      // node 口径（双套件钉出）：headersTimeout 计时开于 **连接建立**（首
+      // 消息未启，408 可先于首字节——request-timeout 黑盒 block5）与 **新
+      // 消息首字节**（残头未齐——headers-timeout-keepalive 第二请求）；
+      // 请求完成即撤（空闲 keep-alive 1.5×headersTimeout 无 408——同套件
+      // 第一阶段）。buf 非空=残头在途照开；sawRequest=false=首消息未启照开。
+      if (this.headersTimeout > 0 &&
+          (st.buf.length > 0 || st.sawRequest !== true)) {
         st.__hdT = setTimeout(() => { st.__hdT = null; this.__reqTimeout(sock); }, this.headersTimeout);
         // 看门狗计时不续命（kaT 同款；dont-set-default 套件 60s 空转根因，
         // 连接本身 ref 续命，计时只负责到期销毁）。
@@ -877,6 +883,12 @@ export function withHttpServer(Base) {
               st.__rqT = setTimeout(() => { st.__rqT = null; this.__reqTimeout(sock); }, this.requestTimeout);
               st.__rqT.unref();
             }
+            // headers 计时随首字节起算（残头超 headersTimeout 即 408；
+            // 每消息一次——guard 防逐包重置永不触发）。
+            if (st.buf.length > 0 && st.__hdT == null && this.headersTimeout > 0) {
+              st.__hdT = setTimeout(() => { st.__hdT = null; this.__reqTimeout(sock); }, this.headersTimeout);
+              if (typeof st.__hdT.unref === "function") st.__hdT.unref();
+            }
             // 头未齐也可先校验请求行（llhttp 增量语义；管线残渣 "hello world"
             // 在 URL 段首字节即 400，等不到行终结——blank-header 套件；
             // 前导空行已在上方统一吞，此处不再重复）。
@@ -914,12 +926,6 @@ export function withHttpServer(Base) {
               throw __hpeServer("HPE_UNEXPECTED_CONTENT_LENGTH", "Duplicate Content-Length", headEnd + 4);
             }
           }
-          if (this.requireHostHeader !== false && (first[2] === "HTTP/1.1") &&
-              headers.host === undefined) {
-            try { sock.write(new TextEncoder().encode("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
-            try { sock.destroy(); } catch { /* gone */ }
-            return;
-          }
           // node 口径（server-options-incoming-message 套件）：IncomingMessage
           // 选项类造 req（无显式构造器即透传同参）。
           const __IM = this.IncomingMessage ?? IncomingMessage;
@@ -953,6 +959,9 @@ export function withHttpServer(Base) {
           //（req, socket, head；无监听则销毁连接），socket 停止 HTTP 解析。
           if (req.method === "CONNECT") {
             sock.__upgraded = true;
+            // node 口径：劫持即脱离 http 管理——request/headers 计时全撤
+            //（request-timeout-upgrade 套件：408 不得打已劫持 socket）。
+            this.__clearReqTimers(st);
             // CONNECT 劫持标记（end 处理器跳过 FIN 销毁；升级形不动）。
             sock.__connectHijacked = true;
             try { sock.__detachSrvData && sock.__detachSrvData(); } catch { /* gone */ }
@@ -1018,6 +1027,8 @@ export function withHttpServer(Base) {
             }
             if (__goUpgrade && this.listenerCount("upgrade") > 0) {
               sock.__upgraded = true;
+              // node 口径：劫持即脱离 http 管理——request/headers 计时全撤。
+              this.__clearReqTimers(st);
               try { sock.__detachSrvData && sock.__detachSrvData(); } catch { /* gone */ }
               // node 口径：升级前释放解析器（parser-freed-before-upgrade 套件
               // 断言 socket.parser === null，双侧）。
@@ -1059,6 +1070,15 @@ export function withHttpServer(Base) {
             }
             // 回调否决 / 无回调无监听：落到下方 request 管线（__upgraded 不置，
             // buf 不动）。
+          }
+          // node parserOnIncoming 顺序（1350 行）：Host 校验属 **pipeline 路径**
+          // ——upgrade 请求在函数头已 return 0，无 Host 不得 400
+          // （request-timeout-upgrade 套件：Host-less GET + Upgrade 形）。
+          if (this.requireHostHeader !== false && (first[2] === "HTTP/1.1") &&
+              headers.host === undefined) {
+            try { sock.write(new TextEncoder().encode("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
+            try { sock.destroy(); } catch { /* gone */ }
+            return;
           }
           const framing = __framingFor(headers, false, null, req.method);
           const conn = (headers.connection || "").toLowerCase();

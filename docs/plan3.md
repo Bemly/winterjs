@@ -424,7 +424,10 @@ upgrade-large-body-unread DIFF，sweep7 均绿）。**回归根修**（`6a2d64e`
 'pause'、落回发 'resume'，泵不停读不中断，缓冲有界=体长）+ 泵恢复无早退形；
 两回归转绿 + 五件守卫绿 + node 域 288 全绿（fifo 按 §4.175 剔除）。AGENTS
 §4.206 坑四/坑五（分离 HEAD 提交：bisect 后直接 commit 落 detached，父=旧
-提交缺后续修复——cherry-pick 回 master 解）。**残件**：dump-req-when-res-
+提交缺后续修复——cherry-pick 回 master 解）。
+
+**sweep9 终局（本轮收官基线）**：409 件 SAME0=381 / SAME1=6 / DIFF=16 /
+TIMEOUT=6——**七件修复全零红**（sweep6 基线 307 → +74）。残件：dump-req-when-res-
 ends（挂死型——dump 机制需先修流端口 flowing 排空语义，独立轮）+
 set-timeout-server 末段 exit-hold（G6 infra 族）+ sweep8 散红分类
 （matchKnownFields/outgoing-finished/1.0-keep-alive 文案/catch-uncaughtexception/

@@ -1022,12 +1022,18 @@
           // 转发 socket 'timeout' → req 'timeout'，响应完结后不再转发）。
           // 计数契约：listeners('timeout') = [onTimeout, emitRequestTimeout,
           // responseOnTimeout]，跨 keep-alive 复用不累加（listeners 套件）。
+          // node _http_client.js 1055 行口径：responseOnTimeout 超时打 **res**
+          //（req 侧走 req.setTimeout 的 timeoutCb 独立通路）；complete 门 ≈
+          // 真机 responseOnEnd 的 removeListener。挂载条件保留 timeout>0——
+          // 恒挂会多占 EE 监听数（set-timeout-after-end 套件 count===1 钉住）；
+          // res.setTimeout 后置形由 IM.setTimeout 桥自武装（framing_head）。
           if (this.__sock !== null && this.__sock.timeout > 0 && !this.__sock.__respOnTimeout) {
             this.__sock.__respOnTimeout = true;
             const __req = this;
             this.__sock.on("timeout", function responseOnTimeout() {
-              if (__req.__res !== null && __req.__res.complete) return;
-              __req.emit("timeout");
+              const __res = __req.__res;
+              if (__res === null || __res === undefined || __res.complete) return;
+              __res.emit("timeout");
             });
           }
           // §4.35：先 emit("response")（监听器登记 data/end），再喂体。

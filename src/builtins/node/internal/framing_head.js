@@ -717,7 +717,23 @@ export class IncomingMessage extends Readable {
   // 发出；cb 注册为 once 监听）。
   setTimeout(msecs, callback) {
     if (typeof callback === "function") this.once("timeout", callback);
-    if (this.socket !== undefined && this.socket !== null) return this.socket.setTimeout(msecs);
+    if (this.socket !== undefined && this.socket !== null) {
+      // node responseOnTimeout 口径的 res 侧桥：res.setTimeout 后置武装
+      //（attach 期 socket.timeout 尚 0 的形，client-response-timeout 套件）；
+      // complete 即哑（≈真机 end 摘监听），res close 即摘。
+      if (!this.__resTimeoutFwd) {
+        this.__resTimeoutFwd = true;
+        const __fwd = () => {
+          if (this.complete) return;
+          this.emit("timeout");
+        };
+        try { this.socket.on("timeout", __fwd); } catch { /* gone */ }
+        this.once("close", () => {
+          try { this.socket.removeListener("timeout", __fwd); } catch { /* gone */ }
+        });
+      }
+      this.socket.setTimeout(msecs);
+    }
     return this;
   }
   // 一次性喂体（兼容口）：推流 + 结束。

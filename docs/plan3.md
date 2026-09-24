@@ -371,6 +371,37 @@ request/reject-chunked/non-utf8-header/set-timeout-server(前四块) 转绿；
 （流控与判定矩阵深水）+ set-timeout-server 末段 exit-hold（paused client
 EOF 急切检测，G6 infra 族）。
 
+**2026-09-25 §4.202-②③ 对拍提速工具落地**：① mapper 已落地（§4.202-①），
+本轮补齐 ② `scripts/flake-classify.py`（新红先分类：整文件×3 + 单块 repro×N，
+GREEN/FLAKY/RED-DETERMINISTIC/NODE-FLAKY 四分流，flaky 走定级法勿深挖）+
+③ `scripts/sweep-bg.py`（全量 serial sweep 双 fork 后台直跑、status/wait/
+tail/stop 轮询、工件落 ~/.wjs-sweep/、失败行 stderr 首行 + debug/ 全量落盘）。
+两坑实证（AGENTS §4.205）：统一 runner 给 node 带 `--run` 假红全表（node 22+
+--run=跑 package.json scripts）；前缀过滤只认 .js 丢 6 件 mjs（基线 409 口径）。
+dogfood 首件：**dump-req-when-res-ends 判 FLAKY（wjs 0,142,142 挂死型，
+node 2/2 绿）**——挂死型 flaky，归 §4.148 流控 infra 族随 no-read-no-dump
+同轮处理。sweep7 全量 409 件基线后台直跑中（终态见 ~/.wjs-sweep/sweep7/）。
+
+**2026-09-25 sweep 残部三批（2 件转绿 + ②③工具轮）**：②③落地后逐件啃
+http 尾巴——① **outgoing-message-capture-rejection** 转绿（`fcf416b`）：
+ServerResponse.destroy(err) 把 err 丢在 super.destroy() 外、_destroy 永裸杀
+（socket 'error' 不发）→ _destroy 从 __resErrored 找回；连带修 client 侧
+体未齐断连 error 递送（destroy(__e) 被 IM._destroy 吞错口径递不出去，改同步
+守门递送，真机 p4 差分序 aborted → error ECONNRESET → close 对齐）；②
+**should-keep-alive** 转绿（`a683ca5`）：__release 回池门只看 Connection 头，
+1.0 缺省响应 socket 被错误入池 → 复用死连接挂死 → 门改 req.shouldKeepAlive
+（版本×Connection 折算）+ 池态 socket 收 EOF 即销毁摘池（node socketOnEnd
+口径）。黑盒两件（capture_rejection_routing / should_keep_alive_matrix）+
+家族对拍零回归。**dogfood ② 分类**：dump-req-when-res-ends 判 FLAKY
+（0,142,142 挂死型）；child exec_shell_self 负载形 flaky（6/6 单跑绿）。
+**sweep7 终局基线**（409 件，sweep-bg 首跑）：SAME0=375 / SAME1=6 / DIFF=19 /
+TIMEOUT=9（sweep6 SAME0=307 → +68）。残件定性：http 尾巴剩 no-read-no-dump
+（流控 infra）+ 时序敏感两件（request-timeout-upgrade / headers-timeout-
+keepalive）+ set-timeout-server exit-hold（G6 infra 族）；sweep7 新现红
+（outgoing-finished / matchKnownFields / 1.0-keep-alive [object Object] 文案 /
+catch-uncaughtexception / client-parse-error / writable-true-after-close /
+chunk-extensions-limit flake）另批分类。node 域 286 黑盒全绿 + 冒烟 5/5。
+
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 
 1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；

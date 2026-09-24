@@ -348,6 +348,20 @@ function __writeAfterEnd(msg, encoding, cb) {
 // http 面选项（10f 对拍，node lib/_http_server.js 口径）：requestTimeout 默认
 // 300000、headersTimeout 默认 min(60000, requestTimeout)、keepAliveTimeout 5000、
 // keepAliveTimeoutBuffer 1000；headersTimeout > requestTimeout 即 ERR_OUT_OF_RANGE。
+// node 真机继承链 ServerResponse extends OutgoingMessage（_http_server 1294）。
+// 本仓 ServerResponse 帧机构独立成类（framing_head），原型桥会改道其
+// super.write/end/cork/destroy 全链（cork 面实锤）——身份语义改走品牌判定：
+// `x instanceof OutgoingMessage` = 真链命中（ClientRequest/OM 本体）或
+// ServerResponse 品牌位（set-timeout-server 套件 res 形断言）。
+Object.defineProperty(OutgoingMessage, Symbol.hasInstance, {
+  value: function (i) {
+  if (i === null || (typeof i !== "object" && typeof i !== "function")) return false;
+    return Object.prototype.isPrototypeOf.call(this.prototype, i) || i.__omBrand === true;
+  },
+  writable: true,
+  configurable: true,
+});
+
 export function withHttpServer(Base) {
   // 初始化逻辑独立成函数：`new Server()` 走构造器，`http.Server.call(this)`
   //（upgrade-server 套件 testServer 老式继承）直接在 this 上跑同一段。
@@ -583,13 +597,26 @@ export function withHttpServer(Base) {
         // 见 data 处理器）。到期 server 发 'timeout'(socket)，不杀连接（net 口径）。
         // 监听只在计时武装时挂（无条件挂会使 listenerCount 恒多 1——connect 套件
         // 矩阵；缺省 timeout=0 即不挂）。存根供 CONNECT 隧道 detach 摘除。
-        if (self.timeout > 0) {
-          sock.setTimeout(self.timeout);
-          sock.__httpSockOnTimeout = () => {
-            if (!sock.destroyed) self.emit("timeout", sock);
-          };
-          sock.on("timeout", sock.__httpSockOnTimeout);
-        }
+        // node socketOnTimeout（_http_server 785/900-906 行逐字）：每连接
+        // 无条件挂——socket 超时（server.timeout 空闲计时或 req/res.setTimeout
+        // 自设）即 req（未完结才发）/ res / server 三路转发，全带 socket 实参
+        //（set-timeout-server 套件 requestNotTimeoutAfterEnd/res 形/idle 形）。
+        sock.__httpSockOnTimeout = () => {
+          if (sock.destroyed) return;
+          try {
+            if (st.req !== null && st.req !== undefined && !st.req.complete) {
+              st.req.emit("timeout", sock);
+            }
+          } catch { /* gone */ }
+          try {
+            if (st.res !== null && st.res !== undefined) {
+              st.res.emit("timeout", sock);
+            }
+          } catch { /* gone */ }
+          try { self.emit("timeout", sock); } catch { /* gone */ }
+        };
+        sock.on("timeout", sock.__httpSockOnTimeout);
+        if (self.timeout > 0) sock.setTimeout(self.timeout);
         // 具名存根供升级摘除（升级后 native 直调 __srvFeed，此监听再留着
         // 只会占 data 监听数、提前吞掉 spill 冲刷）。
         const __srvDataListener = (chunk) => {
@@ -658,6 +685,25 @@ export function withHttpServer(Base) {
     constructor(...args) {
       super(...args);
       __initServer(this, args);
+    }
+    // node _http_server.js 716 行逐字：captureRejections 的 request 事件兜底
+    //（events.captureRejections = true 时 async handler throw 走此路，不进
+    // uncaught）——未发头：清头防泄漏 + 500 'Internal Server Error'；
+    // 已发头：destroy（server-capture-rejections 套件三块）。
+    [Symbol.for("nodejs.rejection")](err, event, ...args) {
+      if (event !== "request") return;
+      const res = args[1];
+      if (res === null || res === undefined) return;
+      if (!res.headersSent && !res.writableEnded) {
+        try {
+          for (const name of res.getHeaderNames()) res.removeHeader(name);
+          res.statusCode = 500;
+          // STATUS_CODES[500]（RFC 7231 6.6.1 reason 固定串）。
+          res.end("Internal Server Error");
+        } catch { /* 已销毁即无事可做 */ }
+      } else {
+        try { res.destroy(); } catch { /* gone */ }
+      }
     }
     // 400 Bad Request（Node clientError 默认响应）+ 销毁（err 在场即经
     // destroy 递送 socket 'error'，真机默认分支口径）。

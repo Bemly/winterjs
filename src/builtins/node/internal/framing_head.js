@@ -725,7 +725,9 @@ export class IncomingMessage extends Readable {
         this.__resTimeoutFwd = true;
         const __fwd = () => {
           if (this.complete) return;
-          this.emit("timeout");
+          // node socketOnTimeout（_http_server 903 行）口径：timeout 事件带
+          // socket 实参（set-timeout-server 套件 cb(socket) → socket.destroy()）。
+          this.emit("timeout", this.socket);
         };
         try { this.socket.on("timeout", __fwd); } catch { /* gone */ }
         this.once("close", () => {
@@ -1267,6 +1269,31 @@ export class ServerResponse extends Writable {
   // node writeInformation(statusCode[, headers])：1xx 中间响应直发（不占终态
   // 头、不置 headersSent；information/early-hints 套件；客户端侧 'information'
   // 事件既有）。非法码抛 ERR_HTTP_INVALID_STATUS_CODE（与 writeHead 同门）。
+  // node _http_outgoing OutgoingMessage.setTimeout 口径（set-timeout-server
+  // 套件 res 形）：cb 记 'timeout' 监听；socket 在场即武装 + res 侧桥带
+  // socket 实参（同 socketOnTimeout）；无 socket 记 timeoutCb/timeout
+  //（node _onTimeout 延迟武装形，本仓无 socket 场景未跑计时）。
+  setTimeout(msecs, callback) {
+    if (typeof callback === "function") this.on("timeout", callback);
+    if (this.socket === null || this.socket === undefined) {
+      this.timeoutCb = this._onTimeout;
+      this.timeout = msecs;
+      return this;
+    }
+    if (!this.__outTimeoutFwd) {
+      this.__outTimeoutFwd = true;
+      const __fwd = () => {
+        if (this.writableEnded || this.destroyed) return;
+        this.emit("timeout", this.socket);
+      };
+      try { this.socket.on("timeout", __fwd); } catch { /* gone */ }
+      this.once("close", () => {
+        try { this.socket.removeListener("timeout", __fwd); } catch { /* gone */ }
+      });
+    }
+    this.socket.setTimeout(msecs);
+    return this;
+  }
   writeInformation(info, headers) {
     let status;
     let hdrs;
@@ -1568,6 +1595,9 @@ export class ServerResponse extends Writable {
   // 可观测等价：滞留不落盘、write() 返回值走 HWM、drain 随排空发射）。
   // 偏差记档：node uncork 尾flush 把滞留块**合并为一个 chunk**（kChunkedBuffer
   // 总长一帧），本仓机构排空逐块成帧——字节流恒等，chunk 边界不同，套件未点名。
+  // node 口径：ServerResponse 品牌位（instanceof OutgoingMessage 身份语义；
+  // 真机为真继承——本仓结构偏离记档，见 framing_outgoing hasInstance）。
+  __omBrand = true;
   cork() {
     super.cork();
     if (this.__sock !== null && typeof this.__sock.cork === "function") this.__sock.cork();

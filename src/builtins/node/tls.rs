@@ -422,6 +422,9 @@ class TLSSocket extends EventEmitter {
         this.readable = true; this.writable = true;
         // 握手已过：校验开则授权成立，否则记未授权（Node 口径）
         this.authorized = this.__verify !== false;
+        // node _tls_wrap 口径：握手完成旗（url.parse-https.request 套件
+        // request.socket._secureEstablished）。
+        this._secureEstablished = true;
         if (!this.authorized) {
           this.authorizationError = __tlsErr("UNABLE_TO_VERIFY_LEAF_SIGNATURE", "self-signed certificate (rejectUnauthorized:false)");
         }
@@ -565,6 +568,8 @@ TLSSocket.prototype.__attachConn = function (info) {
   this.localPort = info.localPort;
   this.readable = true; this.writable = true;
   this.authorized = true;
+  // node 口径：服务端 TLS socket 握手完成旗（同上套件 req.socket 断言）。
+  this._secureEstablished = true;
   __wjs_net_attach(this.__id, this);
 };
 

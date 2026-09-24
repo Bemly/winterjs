@@ -3700,3 +3700,36 @@ cargo build
   取交集默认——同名 flag 语义不同（本仓 `--run` vs node `--run`）是重灾区；
   ② 新跑分工具首跑必抽查 2-3 件已知绿套件对表，elapsed 异常短（<200ms/件）
   即"根本没跑起来"的信号（§4.145"全绿得可疑"的姊妹篇：全红得可疑同理）。
+
+### 4.206 服务端流控/计时三面：pause 事件、dump 机制、headers 计时归属（2026-09-25，http 尾巴轮）
+
+- 坑一（服务端无体背压）：req 缓冲超 HWM 不停读、socket 不发 'pause'——
+  no-read-no-dump 套件（handler 借 'pause' 触发 res.end + 客户端才续发体）
+  整链挂死。修法四件联动：①体泵 backpressured 旗（push 返 false）；②__feed
+  停读 + sock.pause()；③net Socket pause/resume 发事件（转换沿守卫、异步，
+  node emitPauseStreamEvent 口径）；④req._read 钩消费即解暂停。
+- 坑二（res 完成清 framing）：__onDone 无条件 st.req/st.framing 双清——体
+  在途时后续体字节被当新请求头解析（HPE_INVALID_METHOD → 断连）。修法：
+  体未完保留 framing 到体完（node dump 口径按帧处置）。**已试并回退**：
+  node _dump 机制（removeAllListeners('data') + resume() + 续推）——本仓流
+  端口 flowing 排空节奏与 node 有差（push 在 flowing 态仍缓冲累积、返
+  false），dump 后二次背压 → 二次 'pause' → 二次 res.end → write-after-end；
+  msg=null 直通丢弃泵又致泵停摆体完不了。**结论：dump 机制需先修流端口
+  flowing 排空语义（readable_flow push/flow），独立轮另做**；维持孤儿弃收
+  （st.req=null）+ framing 存活口径，dump-req-when-res-ends 维持挂死定级。
+  同场钉死：`_consuming` 必须在 `_read` 钩置位（node 258 行），放公共
+  read() 会被流机构内部 read(0) 污染（resume_ → read(0)）。
+- 坑三（计时归属三混）：①Host 校验在升级检测之前——node parserOnIncoming
+  头部对 upgrade 请求 return 0，host 400 只属 pipeline 路径（Host-less
+  GET+Upgrade 形不得 400）；②劫持（CONNECT/upgrade）不撤 request/headers
+  计时——408 打进已劫持 socket；③headersTimeout 当空闲计时用——node 模型：
+  开于连接建立（首消息未启，408 可先于首字节）+ 新消息首字节（残头未齐），
+  请求完成即撤；空闲 keep-alive 归 keepAliveTimeout 专管（headers-timeout-
+  keepalive 套件：空闲 1.5×headersTimeout 无 408、残头超时 408 照发）。
+- 附：killed/中断后台任务后必 `pkill -f winterjs` 清孤儿再跑基线（§4.205
+  pgrep 预警的动版）；grep -c 退出码 1（计数 0）会断 `&&` 链——构建检查用
+  `|| true` 收尾。
+- 本轮战果：no-read-no-dump / server-request-timeout-upgrade / server-
+  headers-timeout-keepalive 三件转绿 + should-keep-alive / outgoing-message-
+  capture-rejection 两件（见各自提交）；黑盒三件新增，node 域 288 全绿，
+  冒烟 5/5。

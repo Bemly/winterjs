@@ -380,10 +380,10 @@
       }
       // 头写同样计数确认（box 为空沿旧路）。
       if (box === null || box === undefined) {
-        this.__sock.write(new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n"));
+        this.__sock.write(__latin1Bytes(head.join("\r\n") + "\r\n\r\n"));
       } else {
         box.pend++;
-        try { this.__sock.write(new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n"), box.cap); } catch (e) { try { box.cap(e); } catch {} }
+        try { this.__sock.write(__latin1Bytes(head.join("\r\n") + "\r\n\r\n"), box.cap); } catch (e) { try { box.cap(e); } catch {} }
       }
     }
     // socket 写错收集器（writable-finished 套件）：确认计数（pend）+ 首错

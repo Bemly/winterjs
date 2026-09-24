@@ -81,6 +81,13 @@ function __join(parts) {
   return parts.reduce(__concat, new Uint8Array(0));
 }
 function __latin1(u8) { return new TextDecoder("latin1").decode(u8); }
+// latin1 编码（真机 write latin1 口径）：头串逐 charCode 取低 8 位——
+// 非 ASCII 头值（'binary' 形）按 latin1 字节上网，非 UTF-8（non-utf8-header 套件）。
+function __latin1Bytes(str) {
+  const out = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) out[i] = str.charCodeAt(i) & 0xff;
+  return out;
+}
 function __findHeadEnd(u8) {
   for (let i = 0; i + 3 < u8.length; i++) {
     if (u8[i] === 13 && u8[i + 1] === 10 && u8[i + 2] === 13 && u8[i + 3] === 10) return i;
@@ -1345,7 +1352,7 @@ export class ServerResponse extends Writable {
       }
     }
     try {
-      this.__sockWrite(new TextEncoder().encode(lines.join("\r\n") + "\r\n\r\n"));
+      this.__sockWrite(__latin1Bytes(lines.join("\r\n") + "\r\n\r\n"));
     } catch { return false; /* gone */ }
     return true;
   }
@@ -1798,7 +1805,7 @@ export class ServerResponse extends Writable {
     }
     for (const __line of __user) head.push(__line);
     for (const __line of __auto) head.push(__line);
-    return new TextEncoder().encode(head.join("\r\n") + "\r\n\r\n");
+    return __latin1Bytes(head.join("\r\n") + "\r\n\r\n");
   }
   __sendHead() {
     // node 口径：header 独立成 write；首块合并只发生在 _final/flushFinal 快捷路。

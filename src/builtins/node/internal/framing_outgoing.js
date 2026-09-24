@@ -892,14 +892,10 @@ export function withHttpServer(Base) {
           __validateRequestHead(first, headers);
           // node 口径 requireHostHeader（缺省 true）：1.1 缺 Host 即静默 400
           //（无 request、无 clientError；request-host-header 套件）。
-          if (this.requireHostHeader !== false && (first[2] === "HTTP/1.1") &&
-              headers.host === undefined) {
-            try { sock.write(new TextEncoder().encode("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
-            try { sock.destroy(); } catch { /* gone */ }
-            return;
-          }
-          // llhttp 头语义错（真机逐形实测）：TE+CL 并存 / 重复 CL 行——整头已
-          // 消费（bytesParsed=头长；子节偏移未被套件点名，记档近似），经
+          // llhttp 头语义错先于 requireHost（llhttp 解析期校验——TE+CL 缺 Host
+          // 形：clientError HPE_INVALID_TRANSFER_ENCODING 先到，无 400 直写
+          // reject-chunked-with-content-length 套件）。整头已消费
+          //（bytesParsed=头长；子节偏移未被套件点名，记档近似），经
           // clientError（默认 400）。rawPacket 由 __feedError 按当片补齐。
           if (headers["transfer-encoding"] !== undefined && headers["content-length"] !== undefined) {
             throw __hpeServer("HPE_INVALID_TRANSFER_ENCODING",
@@ -913,6 +909,12 @@ export function withHttpServer(Base) {
             if (__cln > 1) {
               throw __hpeServer("HPE_UNEXPECTED_CONTENT_LENGTH", "Duplicate Content-Length", headEnd + 4);
             }
+          }
+          if (this.requireHostHeader !== false && (first[2] === "HTTP/1.1") &&
+              headers.host === undefined) {
+            try { sock.write(new TextEncoder().encode("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
+            try { sock.destroy(); } catch { /* gone */ }
+            return;
           }
           // node 口径（server-options-incoming-message 套件）：IncomingMessage
           // 选项类造 req（无显式构造器即透传同参）。

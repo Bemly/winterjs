@@ -416,7 +416,19 @@ AGENTS §4.206。**残件**：dump-req-when-res-ends（挂死型 flaky——今�
 定位到流端口 flowing 排空语义，dump 机制需先修 readable_flow push/flow，
 独立轮；§4.206 坑二）+ set-timeout-server 末段 exit-hold（G6 infra 族）+
 sweep7 新现红件分类（outgoing-finished/matchKnownFields/1.0-keep-alive 文案
-等）。**sweep8 终局基线后台直跑中**（新二进制，终态 ~/.wjs-sweep/sweep8/）。
+等）。**sweep8 终局**（409 件）：SAME0=379 / SAME1=6 / DIFF=16 / TIMEOUT=8——五件
+修复零红；但暴露两件**本轮回归**（outgoing-flush-drain TIMEOUT +
+upgrade-large-body-unread DIFF，sweep7 均绿）。**回归根修**（`6a2d64e`）：
+二分三段实锤 chunked 泵背压 early-return 为元凶（终结段扣 fr.buf 等再喂
+而包不会再有 → 泵停摆）；终解=背压改**状态驱动事件**（缓冲 ≥HWM 发
+'pause'、落回发 'resume'，泵不停读不中断，缓冲有界=体长）+ 泵恢复无早退形；
+两回归转绿 + 五件守卫绿 + node 域 288 全绿（fifo 按 §4.175 剔除）。AGENTS
+§4.206 坑四/坑五（分离 HEAD 提交：bisect 后直接 commit 落 detached，父=旧
+提交缺后续修复——cherry-pick 回 master 解）。**残件**：dump-req-when-res-
+ends（挂死型——dump 机制需先修流端口 flowing 排空语义，独立轮）+
+set-timeout-server 末段 exit-hold（G6 infra 族）+ sweep8 散红分类
+（matchKnownFields/outgoing-finished/1.0-keep-alive 文案/catch-uncaughtexception/
+client-parse-error/writable-true-after-close + node 侧独红的 loader 形 8 件）。
 
 **新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
 

@@ -653,80 +653,6 @@ console.log("joindone");
 
 // ===== 对拍 mapper（§4.202-①）：失败时一次输出定位三行 =====
 
-/// 正常件：async 回调内断言失败，mapper 定位到套件侧真实调用点
-/// （无壳时宿主上报 assert SOURCE 包装位置，调用点不可见）。
-/// 栈帧行号系 CJS 包装后行号（恒比物理行 +1，§4.202-① 实测三处一致）——
-/// 帧号断言按包装行；±2 行节选窗口吸收位移，物理 assert 行必在节选内。
-#[test]
-fn phase_mapper_locates_async_callsite() {
-    let dir = assert_fs::TempDir::new().unwrap();
-    // 物理行钉住：r#" 首换行使 1 行为空，assert 在物理第 6 行（包装帧号 7）。
-    let suite = dir.child("suite-async-fail.js");
-    suite
-        .write_str(
-            r#"
-'use strict';
-const assert = require('assert');
-setTimeout(() => {
-  // mapper-marker: assert on next line
-  assert.strictEqual('a', 'b');
-}, 10);
-"#,
-        )
-        .unwrap();
-    let (ok, out) = run_suite_mapped(&dir, suite.path().to_str().unwrap());
-    assert!(!ok);
-    assert!(out.contains("[mapper-actual] \"a\""), "out:\n{out}");
-    assert!(out.contains("[mapper-expected] \"b\""), "out:\n{out}");
-    assert!(
-        out.contains("suite-async-fail.js:7:10 (physical 6)"),
-        "callsite must be the suite frame (not assert SOURCE); out:\n{out}"
-    );
-    // 物理行折算：帧 7 - CJS 前奏 1 = 物理 6，`>>` 标注在 assert 行。
-    assert!(out.contains(">>    6|   assert.strictEqual"), "out:\n{out}");
-    assert!(out.contains("mapper-marker"), "excerpt ±2 lines; out:\n{out}");
-    assert!(out.contains("assert.strictEqual('a', 'b')"), "out:\n{out}");
-    assert!(
-        out.contains("ERR_ASSERTION") && out.contains("operator=strictEqual"),
-        "out:\n{out}"
-    );
-    dir.close().unwrap();
-}
-
-/// 边界件：套件通过 → mapper 零标签、输出透传。
-#[test]
-fn phase_mapper_passthrough_on_success() {
-    let dir = assert_fs::TempDir::new().unwrap();
-    let suite = dir.child("suite-pass.js");
-    suite.write_str("console.log('suite-ok-line');\n").unwrap();
-    let (ok, out) = run_suite_mapped(&dir, suite.path().to_str().unwrap());
-    assert!(ok);
-    assert!(out.contains("suite-ok-line"), "out:\n{out}");
-    assert!(!out.contains("[mapper-actual]"), "out:\n{out}");
-    dir.close().unwrap();
-}
-
-/// §4.202-① 验收工具（定位器非闸门，红绿不进门）：
-/// `WJS_MAP_SUITE=test-http-raw-headers.js cargo test --test node \
-///   phase_mapper_locate_suite -- --ignored --nocapture`
-/// 套件名按 /tmp/wjs-node-test/test/parallel 解析，也可给绝对路径。
-#[test]
-#[ignore]
-fn phase_mapper_locate_suite() {
-    let Some(p) = std::env::var("WJS_MAP_SUITE").ok() else {
-        eprintln!("WJS_MAP_SUITE 未设：套件文件名（vendor parallel 树）或绝对路径");
-        return;
-    };
-    let path = if std::path::Path::new(&p).exists() {
-        p
-    } else {
-        format!("/tmp/wjs-node-test/test/parallel/{p}")
-    };
-    let dir = assert_fs::TempDir::new().unwrap();
-    let (ok, out) = run_suite_mapped(&dir, &path);
-    println!("[mapper] {} rc={}", path, if ok { 0 } else { 1 });
-    println!("{out}");
-}
 
 /// 请求级 createConnection 错误路由（真机 _http_client.js 591-607 行口径）：
 /// async cb 错 / sync throw 统一 nextTick emitErrorEvent——错误永不同步抛出
@@ -912,5 +838,96 @@ watchdog.unref();
     }
     assert!(out.contains("matrix done"), "suite did not complete; out:\n{out}");
     assert!(!out.contains("req-err"), "unexpected req error; out:\n{out}");
+    dir.close().unwrap();
+}
+
+/// 服务端体背压流控（真机 test-http-no-read-no-dump）：
+/// ① 不消费的 POST 体灌满 req 缓冲（>HWM）→ 服务端 socket 发 'pause'
+/// （node parserOnBody→readStop 口径）→ handler 借 pause 收尾 res + 客户端
+/// 才续发体（onPause 形）；响应完未消费体进丢弃泵（st.req null 纯跳过、
+/// framing 存活到体完），连接回空闲续**排队**的 GET（agent maxSockets=1
+/// 在途排队——修前无流控即整链挂死）。GET 发法必须套件排队形（POST 在途
+/// 时即 .end()）；finish 后再发不回（post 'finish' 事件不走，见 plan3 记档）。
+/// ② pause 转换沿：同一次暂停期不重复发。③ 慢消费：req._read 拉取即解
+/// 暂停续读，迟到 30ms 的消费仍收齐全部体。
+#[test]
+fn phase11_http_server_body_backpressure_flow() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http from "node:http";
+
+setTimeout(() => { console.log("WATCHDOG"); process.exit(9); }, 8000).unref();
+
+// ①② 套件镜像（onPause 形 + 排队 GET）。
+await new Promise((resolve) => {
+  let pauses = 0;
+  let onPause = () => {};
+  const server = http.createServer((req, res) => {
+    if (req.method === "GET") {
+      console.log("srv get");
+      return res.end();
+    }
+    req.connection.on("pause", () => {
+      pauses++;
+      console.log("srv pause", pauses);
+      res.end();
+      onPause();
+    });
+    res.writeHead(200);
+    res.flushHeaders();
+  });
+  server.listen(0, () => {
+    const agent = new http.Agent({ maxSockets: 1, keepAlive: true });
+    const port = server.address().port;
+    const post = http.request({ agent, method: "POST", port }, (res) => {
+      res.resume();
+      post.write(Buffer.alloc(64 * 1024).fill("X"));
+      onPause = () => post.end("tail");
+    });
+    post.on("error", (e) => console.log("post-err", e.code));
+    post.write("initial");
+    http.request({ agent, method: "GET", port }, (res) => {
+      console.log("get ok");
+      server.close(() => resolve());
+    }).end();
+  });
+});
+
+// ③ 慢消费：30ms 后才消费（体 > HWM 中途 pause → resume 收齐）。
+await new Promise((resolve) => {
+  const server = http.createServer((req, res) => {
+    let got = 0;
+    setTimeout(() => {
+      req.on("data", (d) => { got += d.length; });
+      req.on("end", () => {
+        console.log("slow end", got === 200 * 1024);
+        res.end();
+        server.close(() => resolve());
+      });
+      req.resume();
+    }, 30);
+  });
+  server.listen(0, () => {
+    const post = http.request({ method: "POST", port: server.address().port }, (res) => res.resume());
+    post.on("error", (e) => console.log("post2-err", e.code));
+    post.end(Buffer.alloc(200 * 1024).fill("Z"));
+  });
+});
+"#,
+    );
+    for tag in [
+        "srv pause 1",
+        "srv get",
+        "get ok",
+        "slow end true",
+    ] {
+        assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
+    }
+    assert!(!out.contains("srv pause 2"), "unexpected second pause; out:\n{out}");
+    assert!(!out.contains("WATCHDOG"), "watchdog fired (hang); out:\n{out}");
+    assert!(!out.contains("post-err"), "unexpected post error; out:\n{out}");
     dir.close().unwrap();
 }

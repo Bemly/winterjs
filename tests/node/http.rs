@@ -6,6 +6,8 @@ mod loopback;
 mod keepalive;
 #[path = "http/parity.rs"]
 mod parity;
+#[path = "http/mapper.rs"]
+mod mapper;
 #[path = "http/surface.rs"]
 mod surface;
 #[path = "http/timeout.rs"]

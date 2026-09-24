@@ -3729,7 +3729,18 @@ cargo build
 - 附：killed/中断后台任务后必 `pkill -f winterjs` 清孤儿再跑基线（§4.205
   pgrep 预警的动版）；grep -c 退出码 1（计数 0）会断 `&&` 链——构建检查用
   `|| true` 收尾。
+- 坑四（背压两形态不可兼得的解法）：初版"停读+续喂"在两套件间必顾此失
+  彼——no-read 要停读事件，flush-drain 要泵永不停（体一次性到齐形，残段/
+  终结段扣 fr.buf 等再喂而包不会再有）。终解：**泵不停读不中断，事件改状
+  态驱动**（缓冲 ≥HWM 发 'pause' 转换沿、落回 HWM 内发 'resume'，缓冲有界
+  =体长）；chunked 泵背压 early-return 撤销（8c 版二分三段实锤元凶）。
+  推广：流控事件与流停读是两个正交面，事件可状态驱动，停读必须回答"残段
+  谁再喂"。
+- 坑五（分离 HEAD 提交）：二分 checkout 后直接 commit 落在 detached HEAD
+  （父=旧提交，缺后续修复）——cherry-pick 回 master 解。推广：bisect/checkout
+  后先 `git status` 看 HEAD 归属，提交前必 `git log --oneline -1` 核父。
 - 本轮战果：no-read-no-dump / server-request-timeout-upgrade / server-
-  headers-timeout-keepalive 三件转绿 + should-keep-alive / outgoing-message-
-  capture-rejection 两件（见各自提交）；黑盒三件新增，node 域 288 全绿，
-  冒烟 5/5。
+  headers-timeout-keepalive / outgoing-flush-drain / upgrade-large-body-unread
+  五件转绿 + should-keep-alive / outgoing-message-capture-rejection 两件
+  （见各自提交）；黑盒四件新增，node 域 288 全绿（fifo 按 §4.175 剔除），
+  冒烟 5/5，sweep8 终局 379/16/8（五件零红）。

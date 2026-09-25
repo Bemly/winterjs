@@ -88,7 +88,7 @@
 | P1 | http2 compat | `Http2ServerRequest/Response` 进 stream 全家（骑 10b 帧层经验）+ server 流面/settings 校验；按清单件分簇，差额降序啃 | 按 0.2 止损线 | ⬜ |
 | P2 | P0-3 排出的前 3 大差额域 | 同口径 | 各按止损线 | ⬜ |
 | P3 | http 冻结收口 | sweep9 真红 12 件中 `dump-req-when-res-ends` 在清单外已清出（0.7）；余 11 件一次性定性：清单内可半天修的修（`matchKnownFields`/`outgoing-finished`/`1.0-keep-alive` 文案），其余记档（`reuse-drained`=process.report、`client-response-domain`=domain 异步、`keep-alive-timeout-race`=Atomics.wait、`set-timeout-server` exit-hold/`catch-uncaughtexception`/`client-parse-error`/`writable-true-after-close`/`client-timeout-on-connect`=挂死型） | ≤1 天 | ⬜ |
-| D1 | **待用户拍板** | execPath 位置参数自 spawn（`spawnSync(execPath,[file,arg])` 等，跨 timers/stream/http/test ~18+ 件）：是否给 `--run` 自举映射补"裸文件 + 位置参数"形（不加 CLI 别名，只扩 `__selfArgv` 翻译层） | — | ⏸ |
+| D1 | ✅ 2026-09-25 已做 | node 运行时旗改**规则识别**（精确名单 + `--experimental-*`/`--trace-*`/`--stack-trace-limit=` 等前缀族，`cli::is_node_compat_flag`；`--watch`/`--test` 同名旗刻意不收）+ `internal/options` getOptionValue 读真实旗值 + DEP0005 认 `--pending-deprecation` + shell 串自举保旗交 CLI。实测：位置参数本就已通（旧"~18 件"口径过期）；`buffer-constructor-node-modules` 转绿；余红与 spawn 无关，已拆成 D4/P2 项（错误输出形状、`process.stdin/stdout` 非 Stream、`node:stream/iter` 未实现、vm-sigint stdio null） | — | ✅ |
 | D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |
 | D3 | **待用户拍板** | §0.9 单文件 ≤1000 行是否覆盖 `src/**/*.js`（现 8 件超限：`framing_head` 2151/`framing_outgoing` 2028/`framing_agent` 1855 等）；建议覆盖但排在 P1 之后顺手拆 | — | ⏸ |
 
@@ -100,8 +100,11 @@
   - sweep 工件：`wjs-data/sweep/<tag>/`（替代 `~/.wjs-sweep`）
   - Bun 清单：`wjs-data/bun-tree/`（blob-less 浅克隆）+ `bun-parallel.txt`
   - 探针脚本：`wjs-data/probe/`（替代 `/tmp/wjs-*`、`~/probe`）
-- 跑 `cargo test` / sweep / 手工探针前：`export TMPDIR=/Volumes/*/wjs-data/tmp`
-  （glob 展开后赋值）——assert_fs 临时目录与 node 套件 `.tmp.*` 全落外置盘。
+- sweep / 手工探针：`export TMPDIR=/Volumes/*/wjs-data/tmp`（glob 展开后赋值），
+  node 套件 `.tmp.*` 落外置盘。**`cargo test` 不改 `TMPDIR`**——卷名 U+F8FF 使
+  `URL.pathname` 百分号编码，黑盒假红（pitfalls 4.207）；assert_fs 临时文件小且即删。
+- 单件探针：`~/wjs-data/probe/run1.sh <suite> [secs]`（alarm + exec-or-die，
+  输出落 `probe/<suite>.out`）。
 - `target/` 已在外置盘（仓库内），不动；禁建 worktree（§4.142）。
 - 开工前 `df -h /`：系统盘余量 < 3GB 即先清 `/tmp/wjs-*`、`~/.wjs-sweep`、
   `~/Library/Caches/{JetBrains,Firefox,Homebrew}` 再跑任何构建。

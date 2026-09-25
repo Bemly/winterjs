@@ -218,6 +218,8 @@ function __nullCheck(s, name, reason) {
 function __selfArgv(file, args) {
   if (file !== process.execPath) return [file, args];
   const a = [...args];
+  // 前导 node 运行时旗（`--pending-deprecation file`/`--experimental-x -e …`）原样
+  // 透传，CLI 起点剥除 + 补 --run/-e→--eval（cli::strip_node_compat_args）。
   if (a[0] === "-e" || a[0] === "-p") return [file, ["--eval", ...a.slice(1)]];
   if (a[0] !== undefined && !String(a[0]).startsWith("-")) return [file, ["--run", ...a]];
   return [file, a];
@@ -254,9 +256,9 @@ function __spawnError(cmd, r, encoding) {
 // `$VAR`/`${VAR}`（含引号包裹形）按 env 解引用判定；解不出且名为 NODE 即
 // 自举标记（测试 helper `$NODE` 口径）。段内 node 兼容旗（--expose-* 等）
 // 剥除后走 -e/-p/裸文件规则（CLI 入口同款，见 cli::strip_node_compat_args）。
-const __NODE_COMPAT_FLAGS = [
-  "--expose-internals", "--expose-gc", "--expose_gc",
-  "--insecure-http-parser", "--allow_natives_syntax", "--allow-natives-syntax",
+const __WJS_ACTIONS = [
+  "--run", "--eval", "--config", "--completions", "--man", "--add", "--install", "--publish",
+  "--login", "--upgrade", "--init", "--repl", "--test", "--lint", "--fmt", "--serve",
 ];
 function __splitShell(s, sep) {
   const segs = [];
@@ -325,17 +327,23 @@ function __selfSeg(seg, env) {
   const binRes = __derefTok(toks[0], env);
   const selfBin = binRes === process.execPath || binRes === "$NODE";
   if (!selfBin) return seg;
-  // 兼容旗剥除（--flag / --flag=value 整 token）。
+  // node 运行时旗（`--flag` / `--flag=value` 整 token）原样保留在前，交 CLI
+  // 剥除并记录（cli::strip_node_compat_args——getOptionValue/execArgv 读回）；
+  // 本仓动作旗在场即已是 winterjs 形，不动。
   let rest = toks.slice(1);
-  while (rest.length > 0) {
-    const b = rest[0].split("=")[0];
-    if (__NODE_COMPAT_FLAGS.includes(b)) rest = rest.slice(1);
-    else break;
+  const flags = [];
+  while (rest.length > 0 && /^--[a-z]/.test(rest[0])) {
+    if (__WJS_ACTIONS.includes(rest[0].split("=")[0])) return seg;
+    flags.push(rest[0]);
+    // 取值形空格分隔值随旗走（名单同 cli::COMPAT_VALUE_FLAGS）。
+    if (rest[0] === "--max-http-header-size" && rest.length > 1) { flags.push(rest[1]); rest = rest.slice(1); }
+    rest = rest.slice(1);
   }
   if (rest.length === 0) return seg;
+  const head = [toks[0], ...flags].join(" ");
   const fm = /^-([A-Za-z]+)$/.exec(rest[0]);
-  if (fm && /^[pe]+$/.test(fm[1])) return `${toks[0]} --eval ${rest.slice(1).join(" ")}`;
-  if (!rest[0].startsWith("-")) return `${toks[0]} --run ${rest.join(" ")}`;
+  if (fm && /^[pe]+$/.test(fm[1])) return `${head} --eval ${rest.slice(1).join(" ")}`;
+  if (!rest[0].startsWith("-")) return `${head} --run ${rest.join(" ")}`;
   return seg;
 }
 function __selfCmd(cmd, env) {

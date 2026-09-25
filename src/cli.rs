@@ -365,7 +365,43 @@ pub const NODE_COMPAT_FLAGS: &[&str] = &[
     "--allow-natives-syntax",
     // 语义旗（max-header-size 套件：值参与默认头限，需透传值；见下 VALUE_FLAGS）。
     "--max-http-header-size",
+    // node 运行时旗（2026-09-25 D1：自 spawn `node --flag file|-e` 形；
+    // 值由 `internal/options` getOptionValue 读回，无语义的仅 execArgv 保真）。
+    "--pending-deprecation",
+    "--no-deprecation",
+    "--throw-deprecation",
+    "--no-warnings",
+    "--abort-on-uncaught-exception",
+    "--enable-source-maps",
+    "--preserve-symlinks",
+    "--preserve-symlinks-main",
+    "--zero-fill-buffers",
+    "--frozen-intrinsics",
+    "--no-force-async-hooks-checks",
 ];
+
+/// node 运行时旗前缀族（`--experimental-*`/`--trace-*` 等，node 自身命名空间，
+/// 与 winterjs 修饰旗无交集——`--watch`/`--test` 这类同名旗刻意不收）。
+/// 取值形只认 `--k=v` 整项（空格分隔值会吞脚本名）。
+const NODE_COMPAT_PREFIXES: &[&str] = &[
+    "--experimental-",
+    "--no-experimental-",
+    "--trace-",
+    "--no-trace-",
+    "--harmony",
+    "--unhandled-rejections=",
+    "--disable-warning=",
+    "--stack-trace-limit=",
+    "--stack-size=",
+    "--max-old-space-size=",
+    "--title=",
+];
+
+/// 是否 node 运行时兼容旗（精确名单按 `--k` 基名，前缀族按原文）。
+pub fn is_node_compat_flag(arg: &str) -> bool {
+    let base = arg.split('=').next().unwrap_or("");
+    NODE_COMPAT_FLAGS.contains(&base) || NODE_COMPAT_PREFIXES.iter().any(|p| arg.starts_with(p))
+}
 
 /// 取值形兼容旗（空格分隔值也一并剥除/记录；其余旗只认 `--k=v` 整项）。
 const COMPAT_VALUE_FLAGS: &[&str] = &["--max-http-header-size"];
@@ -405,7 +441,7 @@ pub fn strip_node_compat_args(
             continue;
         }
         let base = s.split('=').next().unwrap_or("");
-        if NODE_COMPAT_FLAGS.contains(&base) {
+        if is_node_compat_flag(&s) {
             // 记录原文（含值，execArgv 保真；语义旗按原文解析）。
             stripped.push(s.to_string());
             // 取值形旗的空格分隔值一并剥除（`--max-http-header-size 10`）。
@@ -477,6 +513,34 @@ mod node_compat_tests {
         // node 自举 `-p` 翻译（仅剥过旗时；纯 -p 不动，见 keeps_publish_bare）。
         let (f, _) = strip_node_compat_args(&argv(&["w", "--max-http-header-size=10", "-p", "1+1"]));
         assert_eq!(strs(&f), ["w", "--eval", "1+1"]);
+    }
+
+    #[test]
+    fn node_runtime_flags_by_rule() {
+        // D1：node 运行时旗（精确名单 + 前缀族）剥除并补 --run / -e→--eval。
+        let (f, s) = strip_node_compat_args(&argv(&["w", "--pending-deprecation", "a.js", "x"]));
+        assert_eq!(strs(&f), ["w", "--run", "a.js", "x"]);
+        assert_eq!(s, ["--pending-deprecation"]);
+        let (f, s) = strip_node_compat_args(&argv(&["w", "--experimental-stream-iter", "-e", "1"]));
+        assert_eq!(strs(&f), ["w", "--eval", "1"]);
+        assert_eq!(s, ["--experimental-stream-iter"]);
+        let (f, s) = strip_node_compat_args(&argv(&["w", "--stack-trace-limit=3", "--no-warnings", "a.mjs"]));
+        assert_eq!(strs(&f), ["w", "--run", "a.mjs"]);
+        assert_eq!(s, ["--stack-trace-limit=3", "--no-warnings"]);
+    }
+
+    #[test]
+    fn node_rule_spares_winterjs_flags() {
+        // 边界：winterjs 同名/修饰旗（--watch/--test/--dry-run）与取值形空格值不被吞。
+        for a in ["--watch", "--test", "--dry-run", "--port", "--stack-trace-limit"] {
+            assert!(!is_node_compat_flag(a), "{a}");
+        }
+        let (f, s) = strip_node_compat_args(&argv(&["w", "--test", "--watch"]));
+        assert_eq!(strs(&f), ["w", "--test", "--watch"]);
+        assert!(s.is_empty());
+        // `--` 之后的脚本旗原样透传。
+        let (f, _) = strip_node_compat_args(&argv(&["w", "--run", "a.js", "--", "--no-warnings"]));
+        assert_eq!(strs(&f), ["w", "--run", "a.js", "--", "--no-warnings"]);
     }
 
     #[test]

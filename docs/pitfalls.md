@@ -212,6 +212,7 @@
 - 4.204 http 欠账清扫轮七坑（2026-09-23，plan3 G11 sweep8 红件簇）
 - 4.205 统一 runner 给 node 也带 `--run`：假红全表 + 过滤丢件（2026-09-25，②③工具轮）
 - 4.206 服务端流控/计时三面：pause 事件、dump 机制、headers 计时归属（2026-09-25，http 尾巴轮）
+- 4.207 `TMPDIR` 放 U+F8FF 卷即黑盒假红：`URL.pathname` 是百分号编码（2026-09-25，D1 轮）
 
 ## 条目
 
@@ -3813,3 +3814,14 @@
   五件转绿 + should-keep-alive / outgoing-message-capture-rejection 两件
   （见各自提交）；黑盒四件新增，node 域 288 全绿（fifo 按 §4.175 剔除），
   冒烟 5/5，sweep8 终局 379/16/8（五件零红）。
+### 4.207 `TMPDIR` 放 U+F8FF 卷即黑盒假红：`URL.pathname` 是百分号编码（2026-09-25，D1 轮）
+
+- 症状：`TMPDIR=/Volumes//wjs-data/tmp cargo test --test node child::` 挂 2 件
+  （`envself/fileself false`、`fork-exit false`），默认 `TMPDIR` 全绿。
+- 根因：外置盘卷名含 U+F8FF；探针用 `new URL("x.mjs", import.meta.url).pathname`
+  取路径——pathname 是百分号编码（`/Volumes/%EF%A3%BF/...`），文件找不到。
+  软链 `~/wjs-data` 也躲不过（入口 URL 经 canonicalize，§4.12）。node 同款语义，非实现 bug。
+- 修法：`cargo test` 维持系统默认 `TMPDIR`（临时文件小且即删）；只有 node 套件检出 /
+  sweep 工件 / 探针等大数据放外置盘（plan3 §0.5 已改）。
+- 推广铁律：换数据盘/临时目录前先跑一次含 `import.meta.url` 的黑盒域；路径含非 ASCII
+  时 URL→路径一律 `fileURLToPath`。

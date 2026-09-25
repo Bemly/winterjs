@@ -11,7 +11,10 @@ function __wjs_bufShowFlaggedDeprecation() {
   const stack = new Error().stack || '';
   Error.stackTraceLimit = saved;
   const frames = stack.split('\n').slice(1, 5);
-  if (frames.some((f) => f.includes('node_modules'))) return;
+  // node lib/buffer.js 口径：--pending-deprecation 下 node_modules 内同样告警。
+  const pending = Array.isArray(globalThis.__wjs_nodeCompat) &&
+    globalThis.__wjs_nodeCompat.includes('--pending-deprecation');
+  if (!pending && frames.some((f) => f.includes('node_modules'))) return;
   __wjs_bufWarned = true;
   try {
     process.emitWarning(

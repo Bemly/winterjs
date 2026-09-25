@@ -36,8 +36,8 @@
    ② 一文件一提交，每步 0 警告 + 对应域测试绿；③ 引擎协议代码（`runtime`/`state`/
    `jsapi_glue`/`jobqueue`/`modules`）只拆纯逻辑，会话管线与 trace 不动；
    ④ Node 移植的 JS SOURCE 沿"域/算法族"切，SOURCE 随实现走。
-10. **大数据走外置盘**：系统盘余量紧张，node 套件检出、sweep 工件、探针、`TMPDIR`
-    一律放 `/Volumes//wjs-data`（软链 `~/wjs-data`），见 plan3 §0.5。
+10. **大数据走外置盘**：系统盘余量紧张，node 套件检出、sweep 工件、探针一律放
+    `/Volumes//wjs-data`（软链 `~/wjs-data`）；`cargo test` 不改 `TMPDIR`（4.207），见 plan3 §0.5。
 
 ## 1. 基线（2026-09-09）
 
@@ -83,7 +83,7 @@ cargo build
 ./target/debug/winterjs --eval 'await (await fetch("data:text/plain,x")).text()'         # → x
 ```
 
-## 4. 铁律摘要（全文 206 条见 `docs/pitfalls.md`，编号即 `§4.N`）
+## 4. 铁律摘要（全文见 `docs/pitfalls.md`，编号即 `§4.N`）
 
 **GC / 引擎边界**
 - `evaluate_script` 返回后、逐任务微任务执行前，调 JSAPI 先进 `AutoRealm`（4.1/4.116）。

@@ -509,3 +509,43 @@ fn serve_help_lists_handler() {
     let stdout = stdout_of(&mut winterjs().arg("--help"));
     assert!(stdout.contains("--handler"), "help: {stdout}");
 }
+
+#[test]
+fn node_runtime_flags_self_spawn_forms() {
+    // D1（2026-09-25）：node 运行时旗按规则剥除（精确名单 + `--experimental-*` 等前缀族），
+    // `node --flag file` / `node --flag -e` 自举形可跑，旗值经 execArgv/getOptionValue 读回。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("a.js")
+        .write_str(
+            "const { getOptionValue } = require('internal/options');\n\
+             console.log('argv', JSON.stringify(process.argv.slice(2)));\n\
+             console.log('exec', JSON.stringify(process.execArgv));\n\
+             console.log('opt', getOptionValue('--pending-deprecation'), getOptionValue('--stack-trace-limit'), getOptionValue('--no-warnings'));\n",
+        )
+        .unwrap();
+    // 正常：前缀族 + 精确名单 + `=值` 形，裸文件补 --run，位置参数透传。
+    let (ok, out, err) = wjs(
+        &["--pending-deprecation", "--stack-trace-limit=3", "--no-warnings", "a.js", "child"],
+        &dir,
+    );
+    assert!(ok, "stderr: {err}");
+    assert!(out.contains("argv [\"child\"]"), "out: {out}");
+    assert!(
+        out.contains("exec [\"--pending-deprecation\",\"--stack-trace-limit=3\",\"--no-warnings\"]"),
+        "out: {out}"
+    );
+    assert!(out.contains("opt true 3 true"), "out: {out}");
+    // 正常：`--experimental-x -e`（-e → --eval）。
+    let (ok, out, err) = wjs(&["--experimental-foo-bar", "-e", "console.log('ev', 6 * 7)"], &dir);
+    assert!(ok, "stderr: {err}");
+    assert!(out.contains("ev 42"), "out: {out}");
+    // 报错：非 node 旗（未知 `--bogus`）不被吞，clap 照常报错。
+    let (ok, _, _) = wjs(&["--bogus", "a.js"], &dir);
+    assert!(!ok);
+    // 边界：无兼容旗的裸文件照旧报错（§0.8），`--` 后的脚本旗原样透传。
+    let (ok, _, _) = wjs(&["a.js"], &dir);
+    assert!(!ok);
+    let (ok, out, err) = wjs(&["--run", "a.js", "--", "--no-warnings"], &dir);
+    assert!(ok, "stderr: {err}");
+    assert!(out.contains("argv [\"--no-warnings\"]") && out.contains("exec []"), "out: {out}");
+}

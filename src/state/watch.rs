@@ -76,21 +76,6 @@ pub fn watch_open() -> usize {
     with_plain(|p| p.watch_open)
 }
 
-/// fs 流续命（构造时 +1；close/终结时 -1，饱和减；幂等由调用方 __refed 旗保证）。
-pub fn fs_stream_ref() {
-    with_plain(|p| p.fs_stream_open += 1);
-}
-
-/// fs 流摘除（饱和减；事件循环退出条件用）。
-pub fn fs_stream_unref() {
-    with_plain(|p| p.fs_stream_open = p.fs_stream_open.saturating_sub(1));
-}
-
-/// 存活 fs 流数（事件循环退出条件用）。
-pub fn fs_stream_open() -> usize {
-    with_plain(|p| p.fs_stream_open)
-}
-
 /// 标记一路 watch 见过的文件（Create 去重用：见过的再 Create 即重写 artifact）。
 pub fn watch_seen_mark(id: u64, file: &str) {
     with_plain(|p| {

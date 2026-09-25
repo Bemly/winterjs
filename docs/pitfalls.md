@@ -217,6 +217,7 @@
 - 4.209 node 旗前缀放行 = 自 spawn 无限递归，fork 链吃光内核致系统 panic（2026-09-25，D1 回归）
 - 4.210 rustls/webpki 拒收 X.509 v1 证书：服务端绕 keys_match，客户端验签兜底（2026-09-25，P1）
 - 4.211 修一个结算点会放出一串假绿：beforeExit 缺失 + process.emit 吞错 + 致命错不发 exit（2026-09-26，P2）
+- 4.212 "同步底座 + 特判"的流实现一改就碎：fs 流改逐字移植，底座时序补两处（fs 回调微任务、setImmediate 钳 1ms）（2026-09-26，P2）
 
 ## 条目
 
@@ -3892,3 +3893,18 @@
 - 推广铁律：**基线数字下跌先分"假绿现形"与"真退化"**（按红因聚类：`MUSTCALL` 计数不符 vs
   `HANG` 挂死自报）；修结算点类 bug 后必须全量重跑，旧绿数不可信。宿主内部派发与用户可见
   `emit` 必须分开，前者可吞错，后者照 node 上抛。
+### 4.212 "同步底座 + 特判"的流实现一改就碎：fs 流改逐字移植，底座时序补两处（fs 回调微任务、setImmediate 钳 1ms）（2026-09-26，P2）
+
+- 症状：fs 流 18/39 件红（mustCall 簇）：mock `fs.read/fs.close`、`options.fs` 自定义、
+  `ReadStream.prototype.open` 补丁、destroy(err) 的 error/close 顺序全不对。旧实现是"快照读 +
+  live-follow + 续命计数"的特判堆（933 行里 500 行），每条补一个套件。
+- 根因：流不经 `this[kFs]` 调 fs（用户 mock 不可见），自带 open/读/关生命周期而非 node 的
+  `_construct/_read/_destroy` + kIsPerformingIO/kIoDone；为弥补同步底座又加了续命计数器。
+- 修法：`lib/internal/fs/streams.js` 逐字移植（kFs 缺省 = `node:fs` 默认导出对象），删续命
+  natives。移植后暴露两处底座时序偏差并修正：① fs 回调 API 在微任务里完成——整条读链在一个
+  检查点内跑到 EOF，定时器插不进（node 在后续轮次 poll 相送达）→ 改 `setImmediate` 派发；
+  ② `setImmediate` 走 setTimeout 的 1ms 钳——每个 immediate ≥1ms，链式读被 1ms 写端甩开 →
+  delay 恰 0 的非 interval 定时器不钳（`fire_due` 快照到期集，回调内新排的顺延一轮 = check 相）。
+- 复现：`test-fs-read-stream-pos.js`（写端 1ms 追加，读端跟随）；`tests/builtins.rs` immediate 吞吐用例。
+- 推广铁律：**有 node 原文的模块，优先逐字移植 + 修底座，而不是在自写实现上逐套件打补丁**；
+  移植后新红多半是底座时序（微任务 vs 宏任务、定时器钳制）偏差，按 node 事件循环相位去对。

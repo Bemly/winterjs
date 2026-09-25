@@ -215,8 +215,10 @@ import fs from "node:fs";
 
 #[test]
 fn phase10f_read_stream_live_follow() {
-    // read-pos 套件回归：live 增长文件短读不断流（无显式 end 时耗尽走
-    // macrotask 重查，有增长即续读），停写即落定。
+    // 2026-09-26 按真机 26.8.2 翻转：旧断言"短读不断流"是旧实现 live-follow 特判，
+    // node 读到 EOF（bytesRead 0）即 push(null) 落定——边写边读也照样 end（真机输出
+    // `live false true false`，shorts/cur 随时序浮动不断言）。read-pos 套件的"跟随"
+    // 靠每 10ms 从 cur 重开新流，不靠单流续读。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -258,9 +260,9 @@ fs.writeFileSync("g.txt", "0123456789");
 }
 "#,
     );
-    for line in ["snap true", "live true true true"] {
-        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
-    }
+    assert!(out.lines().any(|l| l == "snap true"), "out: {out}");
+    // 边界：写端仍在追加时单流读到 EOF 即 end（ended=true），不挂死。
+    assert!(out.lines().any(|l| l.starts_with("live ") && l.split(' ').nth(2) == Some("true")), "out: {out}");
     dir.close().unwrap();
 }
 
@@ -452,4 +454,50 @@ else {
         "missing fifo:\n{out}"
     );
     dir.close().unwrap();
+}
+
+#[test]
+fn phase11_fs_streams_node_port() {
+    // 2026-09-26：fs 流按 node lib/internal/fs/streams.js 逐字移植——读写关经 `this[kFs]`
+    // （缺省 = node:fs 默认导出，mock 可见；options.fs 自定义）；destroy(err) 先 error 后 close；
+    // 读流跟随追加（fs 回调在后续轮次送达，定时器可插入两次读之间）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "s.js",
+        r#"
+const fs = require("fs");
+fs.writeFileSync("a.txt", "hello world");
+// 正常：mock 默认导出的 read/close 被流调用。
+const read = fs.read, close = fs.close;
+let reads = 0, closes = 0;
+fs.read = function (...a) { reads++; return read.apply(fs, a); };
+fs.close = function (...a) { closes++; return close.apply(fs, a); };
+let got = "";
+fs.createReadStream("a.txt").on("data", (c) => { got += c; }).on("close", () => {
+  fs.read = read; fs.close = close;
+  console.log("mock", got, reads >= 2, closes);
+  // 报错：destroy(err) → error 先于 close，且 fd 已置空。
+  const order = [];
+  const w = fs.createWriteStream("b.txt");
+  w.on("open", () => w.destroy(new Error("D")));
+  w.on("error", (e) => order.push("error:" + e.message));
+  w.on("close", () => { order.push("close"); console.log("order", order.join(","), w.fd); follow(); });
+});
+// 边界：options.fs 自定义 open 非函数即同步 ARG_TYPE；追加跟随读到新数据。
+try { fs.createReadStream("a.txt", { fs: { open: 1 } }); } catch (e) { console.log("fs-opt", e.code); }
+function follow() {
+  fs.writeFileSync("c.txt", "");
+  let n = 0;
+  const t = setInterval(() => fs.appendFileSync("c.txt", "x".repeat(5)), 1);
+  const r = fs.createReadStream("c.txt", { highWaterMark: 5 });
+  r.on("data", () => { if (++n === 3) { clearInterval(t); r.destroy(); console.log("follow", n); } });
+  r.on("end", () => { clearInterval(t); console.log("follow-end", n); });
+}
+"#,
+    );
+    assert!(out.contains("fs-opt ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("mock hello world true 1"), "out: {out}");
+    assert!(out.contains("order error:D,close null"), "out: {out}");
+    assert!(out.contains("follow 3") || out.contains("follow-end"), "out: {out}");
 }

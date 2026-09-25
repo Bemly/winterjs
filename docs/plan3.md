@@ -154,6 +154,12 @@
   `/tmp/wjs-node-test` 可删）。卷名含 U+F8FF：个别以 `URL.pathname` 取文件路径的套件
   两侧可能同红（清单内约 10 件），P0-3 基线与 sweep9 对比时留意 SAME1 增量。
 - `target/` 已在外置盘（仓库内），不动；禁建 worktree（§4.142）。
+- **node 26.8.2 lib 源码**：`wjs-data/node-lib/`（`node -e` 经 `process.binding('natives')`
+  整体导出 416 个内建模块源，11MB；node-test 检出只带顶层 lib，缺 `internal/fs/*` 等）。
+  逐字移植先在此读原文（§4.115）。
+- **sweep 期间别动 `target/debug`**（sweep 正在用它）：开发改用
+  `CARGO_TARGET_DIR=~/wjs-data/target-alt cargo build`（首编 3.5 分钟，之后增量），
+  单件探针 `WJS=~/wjs-data/target-alt/debug/winterjs run1.sh …`。
 - 开工前 `df -h /`：系统盘余量 < 3GB 即先清 `/tmp/wjs-*`、`~/.wjs-sweep`、
   `~/Library/Caches/{JetBrains,Firefox,Homebrew}` 再跑任何构建。
 
@@ -190,6 +196,8 @@
    4 并发、每测独立进程、30s×4 挂死即杀、失败自动重试 1 次并标 FLAKY）。实测全量
    702 测试 **105s 全绿**（`cargo test` 同口径 15min+，且 dgram 组播挂死会拖住整个
    target——nextest 下单件隔离，本机也过了）。提交前最后一跑用 `--profile strict`（不重试）。
+8. ✅（2026-09-26）sweep 标签分 `HANG`（挂死自报）/ `MUSTCALL`（正常退出但回调次数不符），
+   红因聚类先按"未触发回调监听的事件名"分组找共性根因（beforeExit/expectWarning/fs 流簇即此法找到）。
 7. 每簇工作流固定为：`sweep-bg --prefix <域> --rerun-red <上轮tag>` → mapper/run1.sh
    定位 → 修 → 同命令复验；全域 sweep 只在 P 项收尾跑一次（0.6）。
 

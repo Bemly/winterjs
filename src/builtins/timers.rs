@@ -34,7 +34,15 @@ fn register_timer(cx: &mut JSContext, frame: &Frame, interval: bool) -> bool {
         return false;
     }
     let delay_ms = if ms.is_number() { ms.to_number() } else { 0.0 };
-    let delay = Duration::from_secs_f64(clamp_delay(delay_ms) / 1e3);
+    // 恰 0 且非 interval = setImmediate（JS 面 setTimeout 已钳 ≥1，唯一 0 来源）：不钳 1ms，
+    // 本轮到期、下一轮 pump 触发（fire_due 快照到期集，回调内新排的 immediate 顺延一轮，
+    // 同 node check 相）。修前每个 immediate 至少 1ms，读流/链式 immediate 被定时器甩开
+    //（read-stream-pos 套件：写端 1ms interval 追加，读端每块 1ms 永远追不上）。
+    let delay = if delay_ms == 0.0 && !interval {
+        Duration::ZERO
+    } else {
+        Duration::from_secs_f64(clamp_delay(delay_ms) / 1e3)
+    };
     let id = state::next_timer_id();
 
     // `Heap::boxed` 定址（set 后禁移动，见 §4.40；Vec push/interval 重排会搬运）。
@@ -134,6 +142,7 @@ pub fn fire_due(
     cx: &mut JSContext,
     global: *mut JSObject,
     err: crate::runtime::ErrorSource<'_>,
+    allow_unrefed: bool,
 ) -> Result<(usize, usize), Error> {
     // 快照到期 id（回调里可能再注册/清除，不能持借用调 JS）
     let due: Vec<u32> = state::with_rooted(|s| {
@@ -141,7 +150,7 @@ pub fn fire_due(
         let mut ids: Vec<u32> = s
             .timers
             .iter()
-            .filter(|t| t.at <= now)
+            .filter(|t| t.at <= now && (allow_unrefed || !t.unrefed))
             .map(|t| t.id)
             .collect();
         ids.sort();

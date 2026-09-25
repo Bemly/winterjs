@@ -389,3 +389,27 @@ fn phase11_console_node_format() {
     let o = winterjs().args(["--eval", "console.error('e %s', {k: 2})"]).output().unwrap();
     assert!(String::from_utf8_lossy(&o.stderr).contains("e { k: 2 }"));
 }
+
+#[test]
+fn phase11_set_immediate_not_clamped() {
+    // 2026-09-26：setImmediate 不走 setTimeout 的 1ms 钳（修前每个 immediate ≥1ms）；
+    // 顺序与真机 26.8.2 一致：I/O 回调内 immediate 先于 setTimeout(0)。
+    use assert_fs::prelude::*;
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("i.js")
+        .write_str(
+            "const t = Date.now(); let n = 0;\n\
+             const f = () => { if (++n < 1000) setImmediate(f); else console.log('fast', Date.now() - t < 300); };\n\
+             f();\n\
+             require('fs').readFile(__filename, () => { setTimeout(() => console.log('io-timeout'), 0); setImmediate(() => console.log('io-immediate')); });\n\
+             const im = setImmediate(() => console.log('BAD')); clearImmediate(im);\n",
+        )
+        .unwrap();
+    let (ok, out, _) = wjs(&["--run", "i.js"], &dir);
+    assert!(ok, "out: {out}");
+    // 正常：1000 条链式 immediate 远低于 1s；边界：clearImmediate 生效；顺序对齐真机。
+    assert!(out.contains("fast true") && !out.contains("BAD"), "out: {out}");
+    let a = out.find("io-immediate").unwrap();
+    let b = out.find("io-timeout").unwrap();
+    assert!(a < b, "out: {out}");
+}

@@ -786,7 +786,7 @@ pub use super::fs_fd::{
     fs_read_fd, fs_read_link, fs_symlink, fs_truncate, fs_utimes, fs_write_fd,
 };
 pub use super::fs_watch::{
-    WatchEvent, dispatch, fs_stream_ref, fs_stream_unref, glob_match, watch_close,
+    WatchEvent, dispatch, glob_match, watch_close,
     watch_persistent, watch_start,
 };
 

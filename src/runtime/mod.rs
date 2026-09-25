@@ -333,6 +333,7 @@ async fn pump_once(
     quic_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::builtins::node::quic::QuicEvent>,
     napi_rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::napi::asyncwork::NapiEvent>,
     dispatch_rx: &mut tokio::sync::mpsc::UnboundedReceiver<usize>,
+    unrefed_when_idle: bool,
 ) -> Result<PumpStats, Error> {
     use crate::builtins::{fetch, node::child as node_child, node::fs as node_fs, node::net as node_net, node::quic as node_quic, node::worker as node_worker, ws};
     use crate::napi::asyncwork as napi_aw;
@@ -454,11 +455,29 @@ async fn pump_once(
 
     {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
-        let (fired, fired_unrefed) = timers::fire_due(&mut realm, global.get(), err)?;
+        // node `uv_run`：循环不 alive 即一相不跑——unref 项（含 0ms 的 unref immediate）
+        // 只在他者续命时触发（immediate-unref 三套件）。REPL/serve 常驻，照触发。
+        let allow_unrefed = unrefed_when_idle || st.progressed || !loop_idle();
+        let (fired, fired_unrefed) = timers::fire_due(&mut realm, global.get(), err, allow_unrefed)?;
         st.timers = fired;
         st.timers_unrefed = fired_unrefed;
     }
     Ok(st)
+}
+
+/// 存活判定（node `uv_loop_alive` 口径：只看 refed 面——refed 定时器与各类未决句柄）。
+fn loop_idle() -> bool {
+    timers::next_deadline().is_none()
+        && state::fetch_pending() == 0
+        && state::ws_open() == 0
+        && state::stream_pending() == 0
+        && state::watch_open() == 0
+        && state::child_open() == 0
+        && state::net_open() == 0
+        && state::worker_open() == 0
+        && state::quic_open() == 0
+        && state::napi_pending() == 0
+        && crate::dispatch::pending() == 0
 }
 
 /// 事件循环：RunJobs 排空微任务 → 等（最近定时器 / fetch / ws 先到者）→
@@ -567,7 +586,7 @@ async fn event_loop(
     let mut before_exit_sent = false;
     loop {
         // 单轮推进与 `repl` 共用（§4.18 检查点顺序在内保持）。
-        let st = pump_once(rt, global, err, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx).await?;
+        let st = pump_once(rt, global, err, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx, false).await?;
         if st.exited {
             return Ok(());
         }
@@ -608,19 +627,7 @@ async fn event_loop(
             last_progress = std::time::Instant::now();
         }
 
-        let timers_empty = timers::next_deadline().is_none();
-        let idle = timers_empty
-            && state::fetch_pending() == 0
-            && state::ws_open() == 0
-            && state::stream_pending() == 0
-            && state::watch_open() == 0
-            && state::fs_stream_open() == 0
-            && state::child_open() == 0
-            && state::net_open() == 0
-            && state::worker_open() == 0
-            && state::quic_open() == 0
-            && state::napi_pending() == 0
-            && crate::dispatch::pending() == 0;
+        let idle = loop_idle();
         if idle && !progressed {
             if progressed_unrefed_only && !unrefed_grace {
                 // §4.18 完整形态：unrefed 回调排的 microtask 也要一轮 RunJobs
@@ -819,14 +826,13 @@ fn report_unhandled_rejections(
 fn hang_exit(rt: &mut Runtime, global: &RootedGuard<'_, *mut JSObject>, lim: std::time::Duration) {
     eprintln!(
         "winterjs: event loop made no progress for {}s (WINTERJS_HANG_EXIT) — open: timers={} fetch={} \
-         ws={} stream={} watch={} fs_stream={} child={} net={} worker={} quic={} napi={} dispatch={}",
+         ws={} stream={} watch={} child={} net={} worker={} quic={} napi={} dispatch={}",
         lim.as_secs(),
         timers::next_deadline().is_some() as u8,
         state::fetch_pending(),
         state::ws_open(),
         state::stream_pending(),
         state::watch_open(),
-        state::fs_stream_open(),
         state::child_open(),
         state::net_open(),
         state::worker_open(),

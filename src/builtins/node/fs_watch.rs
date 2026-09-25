@@ -376,42 +376,6 @@ pub unsafe extern "C" fn watch_persistent(
     true
 }
 
-/// `__wjs_fs_stream_ref()`（fs 流续命 +1；构造期调用）。
-///
-/// UNSAFE-BOUNDARY(fs_stream_ref)：前置——realm 内同步 native 调用（引擎回调
-/// 上下文）；无 JS 值出入、无 GC 触点（纯 Rust 计数器），不可 panic（usize 加法、
-/// 进程级流数恒远小于上限）；覆盖：tests/node/fs.rs phase10f_fs_stream_lifetime。
-pub unsafe extern "C" fn fs_stream_ref(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 引擎回调提供的 raw cx 有效；仅调 wrap_cx + Frame::from_raw（入口
-    // 固定两边界块），其后纯 Rust 计数，无堆/GC 触点。
-    let _cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, _argc) };
-    state::fs_stream_ref();
-    frame.set_rval(UndefinedValue());
-    true
-}
-
-/// `__wjs_fs_stream_unref()`（fs 流摘除 -1，饱和减；close/终结期调用）。
-///
-/// UNSAFE-BOUNDARY(fs_stream_unref)：前置同上；saturating_sub 不可 panic；
-/// 覆盖：同上（double-close 路径断言计数归零进程退出）。
-pub unsafe extern "C" fn fs_stream_unref(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    _argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 同上。
-    let _cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, _argc) };
-    state::fs_stream_unref();
-    frame.set_rval(UndefinedValue());
-    true
-}
-
 /// 事件循环分发一条 watch 事件（监听保留，多次触发；失败摘除并 WARN）。
 /// 前置条件：cx 已进入 global 所属 realm（事件循环上下文，`call_two` 合规）。
 pub fn dispatch(

@@ -482,9 +482,6 @@ pub struct PlainState {
     pub watch_next_id: u64,
     /// 存活 watch 数（仅 persistent 计数；事件循环退出条件用）。
     pub watch_open: usize,
-    /// 存活 fs 流数（ReadStream/WriteStream 构造→close；sync 底座无原生句柄，
-    /// 不计数则循环提前退出而 close 永不到，write-stream-end 套件现形）。
-    pub fs_stream_open: usize,
     pub watch_drivers: HashMap<u64, (notify::RecommendedWatcher, bool)>,
     /// 各路 watch 见过的文件（Create→rename/change 二判据；close 即清）。
     pub watch_seen: HashMap<u64, HashSet<String>>,

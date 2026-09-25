@@ -91,7 +91,7 @@ async fn serve_loop(
         }};
     }
     loop {
-        let st = pump_once(rt, global, err, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx).await?;
+        let st = pump_once(rt, global, err, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx, true).await?;
         if st.exited {
             return Ok(());
         }

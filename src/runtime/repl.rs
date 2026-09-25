@@ -96,7 +96,7 @@ pub async fn repl() -> Result<(), Error> {
     let err_src = ErrorSource::Script { source: "", filename: "repl.js" };
     loop {
         let st = match pump_once(
-            &mut rt, &global, err_src, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx,
+            &mut rt, &global, err_src, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx, true,
         )
         .await
         {

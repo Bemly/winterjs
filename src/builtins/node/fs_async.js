@@ -151,14 +151,18 @@ export const promises = {
   ...(typeof lchmodSync === "function" ? { lchmod: __as(lchmodSync) } : {}),
   watch: __promisesWatch,
 };
-// ---- 9c：回调全家（err-first；promise 底座经 queueMicrotask 派发）----
+// ---- 9c：回调全家（err-first；同步底座，回调经 __fsDefer 派发）----
+// node 口径：fs 回调由线程池完成、在后续事件循环轮次（poll 相）送达，不在当前微任务
+// 检查点内——定时器可在两次读之间插入（read-stream-pos 套件：写端 1ms interval 追加、
+// 读流跟随到新数据）。微任务派发会让整条读链在一个检查点内跑到 EOF。
+const __fsDefer = (fn) => setImmediate(fn);
 function __nodeify(p, cb) {
   __vCbArg(cb);
   p.then(
     // node 口径：无结果 API（close/access 等）回调只带 (err)，不补 undefined
     //（test-fs-close：deepStrictEqual(args, [null]) 点名）。
-    (v) => queueMicrotask(() => v === undefined ? cb(null) : cb(null, v)),
-    (e) => queueMicrotask(() => cb(e)),
+    (v) => __fsDefer(() => v === undefined ? cb(null) : cb(null, v)),
+    (e) => __fsDefer(() => cb(e)),
   );
 }
 const __cb1 = (syncFn, name, before) => function (...args) {
@@ -166,7 +170,7 @@ const __cb1 = (syncFn, name, before) => function (...args) {
   __vCbArg(cb);
   const rest = args.slice(0, -1);
   // node 口径：参数校验错误（ERR_INVALID_ARG_* / ERR_OUT_OF_RANGE）同步抛，
-  // 操作错误（ENOENT 等）走回调（syncFn 立即执行，回调仍经 queueMicrotask）。
+  // 操作错误（ENOENT 等）走回调（syncFn 立即执行，回调仍经 __fsDefer）。
   let p;
   try {
     p = Promise.resolve(syncFn(...before(rest)));
@@ -339,7 +343,7 @@ export function close(fd, cb) {
 function __nop() {}
 export function exists(p, cb) {
   __vCbArg(cb);
-  queueMicrotask(() => cb(existsSync(p)));
+  __fsDefer(() => cb(existsSync(p)));
 }
 // promisify(fs.exists) → boolean（node：回调非 err-first，走 custom promisified）。
 exists[Symbol.for("nodejs.util.promisify.custom")] = function (path) {
@@ -385,13 +389,13 @@ export function read(fd, buffer, offsetOrOptions, length, position, callback) {
   else __vInteger(offset, "offset", 0);
   length |= 0;
   if (position == null) position = -1;
-  if (length === 0) { queueMicrotask(() => cb(null, 0, buffer)); return; }
+  if (length === 0) { __fsDefer(() => cb(null, 0, buffer)); return; }
   __vEmptyBuffer(buffer);
   __vOffsetLength(offset, length, buffer.byteLength);
   Promise.resolve().then(() => readSync(fd, buffer, offset, length, position))
     .then(
-      (n) => queueMicrotask(() => cb(null, n || 0, buffer)),
-      (e) => queueMicrotask(() => cb(e)),
+      (n) => __fsDefer(() => cb(null, n || 0, buffer)),
+      (e) => __fsDefer(() => cb(e)),
     );
 }
 // util.promisify(fs.read) → { bytesRead, buffer }（test-fs-promisified 点名）。
@@ -418,8 +422,8 @@ export function write(fd, buffer, offsetOrOptions, length, position, callback) {
     __fsValidateOffsetLengthWrite(offset, length, buffer.byteLength);
     Promise.resolve().then(() => writeSync(fd, buffer, offset, length, position))
       .then(
-        (n) => queueMicrotask(() => cb(null, n || 0, buffer)),
-        (e) => queueMicrotask(() => cb(e)),
+        (n) => __fsDefer(() => cb(null, n || 0, buffer)),
+        (e) => __fsDefer(() => cb(e)),
       );
     return;
   }
@@ -443,8 +447,8 @@ export function write(fd, buffer, offsetOrOptions, length, position, callback) {
   const pos = typeof offset === "number" ? offset : -1;
   Promise.resolve().then(() => writeSync(fd, buffer, pos))
     .then(
-      (n) => queueMicrotask(() => cb(null, n || 0, buffer)),
-      (e) => queueMicrotask(() => cb(e)),
+      (n) => __fsDefer(() => cb(null, n || 0, buffer)),
+      (e) => __fsDefer(() => cb(e)),
     );
 }
 write[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesWritten", "buffer"];
@@ -480,8 +484,8 @@ export function readv(fd, buffers, position, cb) {
   if (typeof cb !== "function") __vErrType("cb", "function", cb);
   Promise.resolve().then(() => readvSync(fd, buffers, position))
     .then(
-      (n) => queueMicrotask(() => cb(null, n || 0, buffers)),
-      (e) => queueMicrotask(() => cb(e)),
+      (n) => __fsDefer(() => cb(null, n || 0, buffers)),
+      (e) => __fsDefer(() => cb(e)),
     );
 }
 readv[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesRead", "buffers"];
@@ -492,8 +496,8 @@ export function writev(fd, buffers, position, cb) {
   if (typeof cb !== "function") __vErrType("cb", "function", cb);
   Promise.resolve().then(() => writevSync(fd, buffers, position))
     .then(
-      (n) => queueMicrotask(() => cb(null, n || 0, buffers)),
-      (e) => queueMicrotask(() => cb(e)),
+      (n) => __fsDefer(() => cb(null, n || 0, buffers)),
+      (e) => __fsDefer(() => cb(e)),
     );
 }
 writev[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesWritten", "buffers"];

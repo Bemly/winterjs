@@ -222,8 +222,6 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_fs_fchown", Some(node::fs::fs_fchown), 3),
             ("__wjs_fs_futimes", Some(node::fs::fs_futimes), 3),
             ("__wjs_fs_fsync", Some(node::fs::fs_fsync), 2),
-            ("__wjs_fs_stream_ref", Some(node::fs::fs_stream_ref), 0),
-            ("__wjs_fs_stream_unref", Some(node::fs::fs_stream_unref), 0),
             ("__wjs_watch_start", Some(node::fs::watch_start), 4),
             ("__wjs_watch_close", Some(node::fs::watch_close), 1),
             ("__wjs_watch_persistent", Some(node::fs::watch_persistent), 2),

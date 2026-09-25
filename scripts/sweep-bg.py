@@ -5,6 +5,14 @@
 # 用法:
 #   scripts/sweep-bg.py start [--prefix test-http-] [--dir DIR] [--timeout 25]
 #       [--thread-id 3599] [--port-base 29999] [--tag TAG] [--wjs BIN] [--node BIN]
+#       [--scope docs/bun-scope.txt|none] [--rerun-red TAG] [--no-node-cache]
+#
+# 提速三件（2026-09-25，plan3 §0.8）：
+#   --scope      只跑 Bun 清单内的件（plan3 §0.2 范围；缺省 docs/bun-scope.txt）
+#   node 缓存    node 侧结果按 (node 版本, 文件, mtime, size) 缓存——node 结果不随
+#                本仓变化，二跑起 node 侧零开销（--no-node-cache 关闭）
+#   --rerun-red  只重跑某 tag 的红件（DIFF/TIMEOUT/SAME1），修完即验
+# 套件头 `// Flags: …` 两侧都透传（node 真跑旗；本仓 CLI 按规则剥除记录，§D1）。
 #   scripts/sweep-bg.py status [--tag TAG] [--json]
 #   scripts/sweep-bg.py tail   [--tag TAG] [-n 20]
 #   scripts/sweep-bg.py wait   [--tag TAG] [--interval 30]
@@ -26,7 +34,66 @@ import sys
 import time
 
 TOOL = "sweep-bg"
-HOME_ROOT = os.path.join(os.path.expanduser("~"), ".wjs-sweep")
+# 工件根：$WJS_SWEEP_ROOT > ~/wjs-data/sweep（外置盘软链，plan3 §0.5）> ~/.wjs-sweep。
+_DATA = os.path.join(os.path.expanduser("~"), "wjs-data")
+HOME_ROOT = os.environ.get("WJS_SWEEP_ROOT") or (
+    os.path.join(_DATA, "sweep") if os.path.isdir(_DATA)
+    else os.path.join(os.path.expanduser("~"), ".wjs-sweep")
+)
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_SCOPE = os.path.join(REPO, "docs", "bun-scope.txt")
+DEFAULT_DIR = (
+    os.path.join(_DATA, "node-test", "test", "parallel")
+    if os.path.isdir(os.path.join(_DATA, "node-test", "test", "parallel"))
+    else "/tmp/wjs-node-test/test/parallel"
+)
+
+
+def suite_flags(path):
+    # node 套件头 `// Flags: --a --b`（前 40 行内；多行 Flags 合并）。
+    flags = []
+    try:
+        with open(path, errors="replace") as f:
+            for _, line in zip(range(40), f):
+                if line.startswith("// Flags:"):
+                    flags += line[len("// Flags:"):].split()
+    except OSError:
+        pass
+    return flags
+
+
+def load_scope(spec):
+    if not spec or spec == "none":
+        return None
+    with open(spec) as f:
+        return {l.strip() for l in f if l.strip() and not l.startswith("#")}
+
+
+def node_version(node):
+    try:
+        return subprocess.run([node, "--version"], capture_output=True, timeout=10).stdout.decode().strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return "?"
+
+
+def cache_path():
+    return os.path.join(HOME_ROOT, "node-cache.json")
+
+
+def load_cache():
+    try:
+        with open(cache_path()) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_cache(c):
+    os.makedirs(HOME_ROOT, exist_ok=True)
+    tmp = cache_path() + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(c, f)
+    os.replace(tmp, cache_path())
 
 
 def die(msg):
@@ -143,6 +210,14 @@ def sweep_loop(st):
         if f.startswith(st["prefix"])
         and (f.endswith(".js") or f.endswith(".mjs"))
     )
+    scope = load_scope(st.get("scope"))
+    if scope is not None:
+        files = [f for f in files if f in scope]
+    if st.get("only"):
+        only = set(st["only"])
+        files = [f for f in files if f in only]
+    cache = load_cache() if st.get("node_cache", True) else None
+    nver = node_version(st["node"])
     st["pid"] = os.getpid()  # 双 fork 后只有孙进程知道真实 pid，回填给 status/stop
     st["state"] = "running"
     st["total"] = len(files)
@@ -151,8 +226,23 @@ def sweep_loop(st):
     dump_dir = os.path.join(tag_dir(st["tag"]), "debug")
     t0 = time.time()
     for i, f in enumerate(files):
-        wrc, werr = run_one(st["wjs"], f, d, env, st["timeout_s"], ("--run",), dump_dir, "wjs")
-        nrc, nerr = run_one(st["node"], f, d, env, st["timeout_s"], (), dump_dir, "node")
+        flags = tuple(suite_flags(os.path.join(d, f)))
+        wrc, werr = run_one(st["wjs"], f, d, env, st["timeout_s"], flags + ("--run",), dump_dir, "wjs")
+        fp = os.path.join(d, f)
+        try:
+            sb = os.stat(fp)
+            ckey = f"{nver}|{f}|{int(sb.st_mtime)}|{sb.st_size}"
+        except OSError:
+            ckey = None
+        if cache is not None and ckey in cache:
+            nrc, nerr = cache[ckey]
+        else:
+            nrc, nerr = run_one(st["node"], f, d, env, st["timeout_s"], flags, dump_dir, "node")
+            # TIMEOUT 不缓存（可能是机器负载，下次再测）。
+            if cache is not None and ckey and nrc != 142:
+                cache[ckey] = [nrc, nerr]
+                if (i + 1) % 25 == 0:
+                    save_cache(cache)
         line = None
         if 142 in (wrc, nrc):
             st["timeout"] += 1
@@ -178,6 +268,8 @@ def sweep_loop(st):
         st["elapsed_s"] = round(time.time() - t0, 1)
         write_status(st["tag"], st)
     results.close()
+    if cache is not None:
+        save_cache(cache)
     st["state"] = "done"
     st["finished"] = time.time()
     write_status(st["tag"], st)
@@ -221,6 +313,9 @@ def cmd_start(ap_args):
         "port_base": ap_args.port_base,
         "wjs": wjs,
         "node": node,
+        "scope": ap_args.scope,
+        "node_cache": not ap_args.no_node_cache,
+        "only": rerun_red_list(ap_args.rerun_red) if ap_args.rerun_red else None,
         "total": 0, "done": 0,
         "same0": 0, "same1": 0, "diff": 0, "timeout": 0,
         "started": time.time(), "updated": time.time(),
@@ -263,6 +358,20 @@ def cmd_start(ap_args):
     os.waitpid(pid, 0)
     print(f"started tag={ap_args.tag} dir={st['dir']} prefix={st['prefix']}", flush=True)
     print(f"  工件: {d}/  轮询: scripts/sweep-bg.py status --tag {ap_args.tag}", flush=True)
+
+
+def rerun_red_list(tag):
+    p = os.path.join(tag_dir(tag), "results.log")
+    if not os.path.isfile(p):
+        die(f"--rerun-red: 未找到 {p}")
+    out = []
+    with open(p) as f:
+        for line in f:
+            for tok in line.split():
+                if tok.startswith("test-") and (tok.endswith(".js") or tok.endswith(".mjs")):
+                    out.append(tok)
+                    break
+    return out
 
 
 def pid_alive(pid):
@@ -315,7 +424,7 @@ def cmd_wait(ap_args):
     while True:
         st = load_status(ap_args.tag)
         print(fmt_status(st), flush=True)
-        if st["state"] != "running":
+        if st["state"] not in ("running", "starting"):
             return
         if st.get("pid") and not pid_alive(st["pid"]):
             print("worker 已死且未落终态——查 worker.log", file=sys.stderr)
@@ -345,8 +454,11 @@ def main():
 
     p = sub.add_parser("start")
     p.add_argument("--prefix", default="test-http-")
-    p.add_argument("--dir", default="/tmp/wjs-node-test/test/parallel")
+    p.add_argument("--dir", default=DEFAULT_DIR)
     p.add_argument("--timeout", type=int, default=25)
+    p.add_argument("--scope", default=DEFAULT_SCOPE if os.path.isfile(DEFAULT_SCOPE) else "none")
+    p.add_argument("--rerun-red", default=None, metavar="TAG")
+    p.add_argument("--no-node-cache", action="store_true")
     p.add_argument("--thread-id", default="3599")
     p.add_argument("--port-base", default="29999")
     p.add_argument("--tag", default="main")

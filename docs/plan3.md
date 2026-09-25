@@ -82,15 +82,17 @@
 
 | # | 项 | 内容 | 预算 | 状态 |
 |---|---|---|---|---|
-| P0-1 | 数据迁外置盘 | 见 0.5；node 检出改完整 fixtures 检出到外置盘 | 1h | ⬜ |
-| P0-2 | sweep 读 `// Flags:` | node 侧按套件头传 flags；我们侧含 `--expose-*` 的件标 SKIP 不计分 | 1h | ⬜ |
+| P0-1 | 数据迁外置盘 | ✅ 2026-09-25：node 检出复制到 `wjs-data/node-test/`，sweep 工件缺省 `wjs-data/sweep/`；`cargo test` 不改 TMPDIR（4.207） | — | ✅ |
+| P0-2 | sweep 读 `// Flags:` | ✅ 2026-09-25：两侧透传（本仓 CLI 按 D1 规则剥除记录）+ `--scope` 清单过滤 + node 缓存（0.8） | — | ✅ |
 | P0-3 | 全域基线 | `sweep-bg.py` 按 Bun 清单过滤、逐域一次（serial，后台，外置盘工件）→ 回填 0.3 表"本仓现状"列 | ~3h 机时 | ⬜ |
 | P1 | http2 compat | `Http2ServerRequest/Response` 进 stream 全家（骑 10b 帧层经验）+ server 流面/settings 校验；按清单件分簇，差额降序啃 | 按 0.2 止损线 | ⬜ |
 | P2 | P0-3 排出的前 3 大差额域 | 同口径 | 各按止损线 | ⬜ |
 | P3 | http 冻结收口 | sweep9 真红 12 件中 `dump-req-when-res-ends` 在清单外已清出（0.7）；余 11 件一次性定性：清单内可半天修的修（`matchKnownFields`/`outgoing-finished`/`1.0-keep-alive` 文案），其余记档（`reuse-drained`=process.report、`client-response-domain`=domain 异步、`keep-alive-timeout-race`=Atomics.wait、`set-timeout-server` exit-hold/`catch-uncaughtexception`/`client-parse-error`/`writable-true-after-close`/`client-timeout-on-connect`=挂死型） | ≤1 天 | ⬜ |
 | D1 | ✅ 2026-09-25 已做 | node 运行时旗改**规则识别**（精确名单 + `--experimental-*`/`--trace-*`/`--stack-trace-limit=` 等前缀族，`cli::is_node_compat_flag`；`--watch`/`--test` 同名旗刻意不收）+ `internal/options` getOptionValue 读真实旗值 + DEP0005 认 `--pending-deprecation` + shell 串自举保旗交 CLI。实测：位置参数本就已通（旧"~18 件"口径过期）；`buffer-constructor-node-modules` 转绿；余红与 spawn 无关，已拆成 D4/P2 项（错误输出形状、`process.stdin/stdout` 非 Stream、`node:stream/iter` 未实现、vm-sigint stdio null） | — | ✅ |
 | D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |
-| D3 | **待用户拍板** | §0.9 单文件 ≤1000 行是否覆盖 `src/**/*.js`（现 8 件超限：`framing_head` 2151/`framing_outgoing` 2028/`framing_agent` 1855 等）；建议覆盖但排在 P1 之后顺手拆 | — | ⏸ |
+| D3 | ✅ 2026-09-25 已做 | §0.9 纳入 `src/**/*.js`：8 件超限按方法边界拆 17 片（`concat!(include_str!…)` 字节恒等，逐件 `cmp` HEAD 原件；一文件一提交，域测试 + 冒烟绿）；守门 `scripts/check-lines.sh` | — | ✅ |
+| O1 | 观察 | `dgram::phase10a_dgram_multicast_connect` 本机挂死（2026-09-25 基线 stash 对照同挂，非本轮引入；疑本机组播路由/网卡环境），全量暂以 `--skip` 跑；再现于他机即升级为必查 | — | 👀 |
+| D4 | **待用户拍板** | 未捕获错误输出改 node 形（非 TTY：`<file>:<line>` + 源行 + `^` + `Error: msg` + `    at …` 栈；TTY 仍 miette）。现一行格式 `Error: file:L:C: msg` 丢栈，且 node 套件断 stderr 含 `Error: xyz` 的件因此红（os-userinfo/vm-api-handles-getter/util-callbackify 等，均在 Bun 清单）。代价：AGENTS §3 冒烟第 2 例口径 + 黑盒里 `Error: eval.js:1:7:` 形断言需同步翻转 | 半天 | ⏸ |
 
 ### 0.5 运行环境（系统盘仅剩 ~5GB，大数据一律外置盘）
 
@@ -105,6 +107,9 @@
   `URL.pathname` 百分号编码，黑盒假红（pitfalls 4.207）；assert_fs 临时文件小且即删。
 - 单件探针：`~/wjs-data/probe/run1.sh <suite> [secs]`（alarm + exec-or-die，
   输出落 `probe/<suite>.out`）。
+- node 套件检出已复制到 `wjs-data/node-test/`（`sweep-bg.py` 缺省指向它；
+  `/tmp/wjs-node-test` 可删）。卷名含 U+F8FF：个别以 `URL.pathname` 取文件路径的套件
+  两侧可能同红（清单内约 10 件），P0-3 基线与 sweep9 对比时留意 SAME1 增量。
 - `target/` 已在外置盘（仓库内），不动；禁建 worktree（§4.142）。
 - 开工前 `df -h /`：系统盘余量 < 3GB 即先清 `/tmp/wjs-*`、`~/.wjs-sweep`、
   `~/Library/Caches/{JetBrains,Firefox,Homebrew}` 再跑任何构建。
@@ -116,6 +121,28 @@
 - 全域 sweep 只在 P0-3 与每个 P 项收尾各一次；禁重复全量子集（§4.126）。
 - 本节状态表是唯一进度真相；逐轮细节写进 `docs/plan3-journal.md`（追加）与
   `docs/bun-parity.md`，**不再写进 plan3**。
+
+### 0.8 开发提速（2026-09-25 盘点）
+
+**已落地（本轮）**
+1. **CJS 报错真位置 + 原异常透传**：node 套件几乎全是 CJS，修前任何未捕获错误都报
+   prelude `424:53`、NodeError 文案为空——定位只能靠 mapper/插桩二分。现：`require`
+   不再把用户异常转成字符串重抛（原对象透传，`catch` 到的即 node 同款异常，兼语义修复）；
+   CJS 包装头编在第 0 行，栈/报错行号 = 物理行（mapper 去掉 +1 折算）；空 message 从
+   `message` 属性回填（`jsapi_glue::fill_message`）。
+2. **sweep-bg 提速**：`--scope`（缺省 `docs/bun-scope.txt`，只跑清单件）/ node 结果缓存
+   （node 侧结果与本仓无关，二跑起 node 侧零开销；实测 url 域 11.1s→9.1s——大头是 25s 的 TIMEOUT 件，故红件复验一律 `--rerun-red`）/ `--rerun-red TAG`（修完只重跑红件）/
+   套件头 `// Flags:` 两侧透传（消 node 侧假红 + 我方假绿）/ 工件与 node 检出默认落外置盘。
+3. **守门与探针脚本**：`scripts/check-lines.sh`（§0.9）、`~/wjs-data/probe/run1.sh`（单件）。
+
+**建议（未做，按收益排序）**
+4. sweep 限并发 ≤3 worker（各自 `--thread-id/--port-base`，§4.122）：P0-3 全域基线
+   约 2h → 40min；受 §4.126 约束（上限 3、常驻内存 ≤8G，禁循环压测）。
+5. D4 错误输出改 node 形（见 0.4），顺带让 stderr 断言类套件转绿。
+6. `cargo nextest`（§0.5 需拍板）：进程级隔离 + 重试标注 flaky，替代人工
+   "单跑 + 整套件两档复核"（§4.174/4.179 族）。
+7. 每簇工作流固定为：`sweep-bg --prefix <域> --rerun-red <上轮tag>` → mapper/run1.sh
+   定位 → 修 → 同命令复验；全域 sweep 只在 P 项收尾跑一次（0.6）。
 
 ### 0.7 已清出（Bun 清单外且未做，2026-09-25 按规则 2 删除待办）
 

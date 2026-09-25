@@ -59,11 +59,23 @@ class Http2ServerStream extends Duplex {
   __feedBody(b64chunk) {
     const u8 = __b64dec(b64chunk ?? "");
     if (u8.length > 0) this.push(Buffer.from(u8));
+    // 流式体（P1）：compat req 从 stream 拉取——新块到达即唤它再拉（整收时代块在
+    // req._read 前已齐，无需此步）。
+    this.__pokeReq();
+  }
+  __pokeReq() {
+    const r = this.__req;
+    if (r && !r.__reqDone && !r.destroyed) queueMicrotask(() => r._read());
   }
   __endReq(trailersJson) {
     if (this.__reqEnded) return;
     this.__reqEnded = true;
     const t = JSON.parse(trailersJson ?? "[]");
+    // 流式体：compat req 的 trailers/rawTrailers 在体尾才知道（构造时为空）。
+    if (t.length > 0 && this.__req) {
+      this.__req.trailers = __pairsToObj(t);
+      this.__req.rawTrailers = t.flat();
+    }
     // node 序：trailers 帧到即发，与读取无关。流动态下体块的 data 事件尚待派发，
     // 为保 data… → trailers 序挂在 end 前（prepend）；非流动（无人读）即刻发——
     // 否则等不到 end，`on('trailers', () => stream.end())` 形永挂（trailers 套件）。
@@ -73,6 +85,7 @@ class Http2ServerStream extends Duplex {
       else queueMicrotask(fire);
     }
     this.push(null);
+    this.__pokeReq();
     this.__maybeAutoClose();
   }
   __onAborted() {
@@ -890,8 +903,9 @@ class Http2Server extends EventEmitter {
         };
         const session = this.__sessionFor(Number(o.connId), peerObj);
         const stream = new Http2ServerStream(session, Number(o.connId), id);
-        const bodyEmpty = (o.body ?? "") === "";
-        const trailersEmpty = (o.trailers ?? "[]") === "[]";
+        const streaming = o.streaming === true;
+        const bodyEmpty = !streaming && (o.body ?? "") === "";
+        const trailersEmpty = !streaming && (o.trailers ?? "[]") === "[]";
         const flags = bodyEmpty && trailersEmpty ? 5 : 4;
         stream.endAfterHeaders = bodyEmpty && trailersEmpty;
         const sock = __mkSocketProxy(stream, this, peerObj);
@@ -913,8 +927,11 @@ class Http2Server extends EventEmitter {
           this.emit("stream", stream, req.headers, flags, req.rawHeaders);
           const hasCompat = this.listenerCount("request") > 0;
           if (hasCompat) this.emit("request", req, res);
-          stream.__feedBody(o.body ?? "");
-          stream.__endReq(o.trailers ?? "[]");
+          // 流式体：`body`/`reqEnd` 流事件逐块跟进（见下）；否则头即终。
+          if (!streaming) {
+            stream.__feedBody(o.body ?? "");
+            stream.__endReq(o.trailers ?? "[]");
+          }
           if (hasCompat) queueMicrotask(() => { if (!req.destroyed && !req.__userPaused) req.resume(); });
         }
         break;

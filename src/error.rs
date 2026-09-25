@@ -149,6 +149,28 @@ fn render_script_node_style(
     source: &str,
     stack: Option<&str>,
 ) -> String {
+    // 头行定位：引擎报告的行列若与栈顶帧不符（错误在内建模块里构造、报告丢了文件名，
+    // 如 AssertionError 报 `node:assert:9` 的行号却安上入口名），以栈顶帧为准。
+    let frames = stack.map(node_stack_lines).unwrap_or_default();
+    let top = frames.first().and_then(|f| {
+        let loc = f.trim_start().strip_prefix("at ")?;
+        let loc = loc.rsplit_once(" (").map(|(_, l)| l.trim_end_matches(')')).unwrap_or(loc);
+        let mut it = loc.rsplitn(3, ':');
+        let (c, l, file) = (it.next()?.parse::<u32>().ok()?, it.next()?.parse::<u32>().ok()?, it.next()?);
+        Some((file.to_owned(), l, c))
+    });
+    let (filename, line, col, source) = match &top {
+        Some((file, l, c)) => {
+            let base = |p: &str| p.rsplit('/').next().unwrap_or(p).to_owned();
+            let same = file.ends_with(filename.trim_start_matches("./")) || base(file) == base(filename);
+            if (*l, *c) != (line, col) || !same {
+                (file.as_str(), *l, *c, if same { source } else { "" })
+            } else {
+                (filename, line, col, source)
+            }
+        }
+        None => (filename, line, col, source),
+    };
     let mut out = format!("{filename}:{line}\n");
     if let Some(text) = source.lines().nth(line.saturating_sub(1) as usize) {
         out.push_str(text);
@@ -175,7 +197,7 @@ fn render_script_node_style(
         out.push_str(&format!("{name}: {message}"));
     }
     out.push('\n');
-    for l in stack.map(node_stack_lines).unwrap_or_default() {
+    for l in frames {
         out.push_str(&l);
         out.push('\n');
     }
@@ -274,6 +296,16 @@ mod node_shape_tests {
         // 边界：非对象抛出直接打印值。
         let out = render_script_node_style("e.js", 1, 1, "uncaught exception: 42", None, "throw 42", None);
         assert!(out.ends_with("^\n\n42\n"), "{out}");
+    }
+
+    #[test]
+    fn header_follows_stack_top_when_report_disagrees() {
+        // 引擎报告行列（9:5，内建模块构造点）与栈顶不符 → 头行取栈顶帧，他文件不出代码框。
+        let out = render_script_node_style(
+            "t.js", 9, 5, "boom", Some("AssertionError"), "l1\n",
+            Some("AssertionError@node:assert:9:5\n@file:///x/t.js:26:16"),
+        );
+        assert!(out.starts_with("node:assert:9\n\nAssertionError: boom"), "{out}");
     }
 
     #[test]

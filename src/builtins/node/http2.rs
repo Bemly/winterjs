@@ -319,6 +319,49 @@ pub(crate) async fn read_body(
     }
 }
 
+/// 服务端请求体泵：逐帧转 `body`（b64 块）/ `reqEnd`（trailers JSON）流事件；
+/// 对端 RST 等中断转 `aborted`（payload 为 RST 码，JS 侧落 `stream.rstCode`）。
+async fn pump_request_body(
+    body: hyper::body::Incoming,
+    ev_tx: tokio::sync::mpsc::UnboundedSender<NetEvent>,
+    server_id: u64,
+    stream_id: u64,
+) {
+    use http_body::Body as _;
+    use std::future::poll_fn;
+    let mut body = body;
+    let send = |what: &str, payload: String| {
+        let _ = ev_tx.send(NetEvent {
+            id: server_id,
+            kind: NetKind::H2Stream { stream_id, what: what.into(), payload },
+        });
+    };
+    let mut trailers: Vec<(String, String)> = Vec::new();
+    loop {
+        match poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
+            None => break,
+            Some(Ok(f)) => {
+                if let Some(d) = f.data_ref() {
+                    if !d.is_empty() {
+                        send("body", b64(d));
+                    }
+                }
+                if let Some(t) = f.trailers_ref() {
+                    for (k, v) in t.iter() {
+                        trailers.push((k.as_str().to_owned(), String::from_utf8_lossy(v.as_bytes()).into_owned()));
+                    }
+                }
+            }
+            Some(Err(e)) => {
+                let (_msg, rst) = h2_err_msg_rst(&e);
+                send("aborted", rst.map(|c| c.to_string()).unwrap_or_default());
+                return;
+            }
+        }
+    }
+    send("reqEnd", serde_json::to_string(&trailers).unwrap_or_else(|_| "[]".into()));
+}
+
 /// 头应答后向体通道注入一条消息（未应答则暂存 outbox）。
 async fn feed_body(
     stream_id: u64,
@@ -393,20 +436,12 @@ pub(crate) async fn serve_conn<IO>(
                     .map(|a| a.as_str().to_owned())
                     .unwrap_or_default();
                 let headers = headers_json(req.headers());
-                let (body, trailers) = match read_body(req.into_body()).await {
-                    Ok(b) => b,
-                    Err((e, _rst)) => {
-                        let _ = ev_tx.send(NetEvent {
-                            id: server_id,
-                            kind: NetKind::Error {
-                                code: "ERR_HTTP2_STREAM_ERROR".into(),
-                                msg: e,
-                            },
-                        });
-                        (Vec::new(), Vec::new())
-                    }
-                };
-                let trailers_json = serde_json::to_string(&trailers).unwrap_or_else(|_| "[]".into());
+                // P1（2026-09-25）：请求体流式——头到即派发 'stream'/'request'，体帧逐块
+                // 以 `body`/`reqEnd` 流事件跟进（修前整收：读完整个请求体才派发，客户端
+                // 等服务端应答/wantTrailers 再收尾的交互形全挂死）。头带 END_STREAM 的
+                // 空体请求照旧一次派发（flags/endAfterHeaders 口径不变）。
+                let body_in = req.into_body();
+                let streaming = !http_body::Body::is_end_stream(&body_in);
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 responders.lock().await.insert(stream_id, tx);
                 let _ = ev_tx.send(NetEvent {
@@ -418,11 +453,16 @@ pub(crate) async fn serve_conn<IO>(
                         path,
                         authority,
                         headers,
-                        trailers_json,
-                        body_b64: b64(&body),
+                        trailers_json: "[]".into(),
+                        body_b64: String::new(),
                         peer: peer.to_string(),
+                        streaming,
                     },
                 });
+                if streaming {
+                    let ev_body = ev_tx.clone();
+                    tokio::spawn(pump_request_body(body_in, ev_body, server_id, stream_id));
+                }
                 // JS 不应答即挂起（记档）；reset 已发则 service 回 Err（hyper RST），
                 // 干净关（NO_ERROR）回 200 空体（偏差记档：body API 无法 RST NO_ERROR）。
                 let head = match tokio::select! {

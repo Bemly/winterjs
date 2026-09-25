@@ -57,7 +57,7 @@ pub enum NetKind {
     /// dgram：send 完成（回调 (null, bytes) 经此异步触发——uv_udp_send 完成回调同型）。
     DgramSendOk { seq: u64, bytes: usize },
     // ── http2（Phase 9d-7；与 net 共通道，零新 channel）─────────────────────
-    /// h2 服务端收到完整请求（ev.id = server id；整收口径，http 记档同款）。
+    /// h2 服务端收到请求头（ev.id = server id；体流式跟进见 `streaming`）。
     /// 10f：authority/trailers/peer 面（compat 伪头合成 + trailers 事件）。
     H2Request {
         conn_id: u64,
@@ -69,6 +69,8 @@ pub enum NetKind {
         trailers_json: String,
         body_b64: String,
         peer: String,
+        /// true = 体未随头结束，后续以 `body`/`reqEnd` 流事件逐块到达（P1 流式化）。
+        streaming: bool,
     },
     /// h2 流事件（客户端 ev.id = session id：response/data/trailers/end/error/
     /// aborted；服务端 ev.id = server id：aborted）。
@@ -428,13 +430,13 @@ pub fn dispatch(
         ),
         NetKind::DgramConnect => ("connect", String::new()),
         // http2：request 派发给 server target；stream/session 派发给 session target
-        NetKind::H2Request { conn_id, stream_id, method, path, authority, headers, trailers_json, body_b64, peer } => (
+        NetKind::H2Request { conn_id, stream_id, method, path, authority, headers, trailers_json, body_b64, peer, streaming } => (
             "request",
             serde_json::json!({
                 "connId": conn_id, "streamId": stream_id,
                 "method": method, "path": path, "authority": authority,
                 "headers": headers, "trailers": trailers_json, "body": body_b64,
-                "peer": peer,
+                "peer": peer, "streaming": streaming,
             })
             .to_string(),
         ),

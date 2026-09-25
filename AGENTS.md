@@ -33,8 +33,8 @@
    flag 生成（`localized_command`）。
 9. **单文件 ≤1000 行**：项目内全部 `.rs`（`src/`+`tests/`+`benches/`）与 `src/**/*.js`
    （内嵌 JS SOURCE，2026-09-25 D3 纳入）不超过 ~1000 行，无豁免（`sample/` 不管）；
-   提交前跑 `scripts/check-lines.sh`。JS 片经 `concat!(include_str!…)` 拼接，按方法边界切、
-   concat 字节恒等（HEAD 原件 `cmp` 新片拼接）。
+   提交前跑 `scripts/check-lines.sh`；超限 JS 用 `scripts/split-js.py <js> <rs>` 按方法边界切片
+   （`concat!(include_str!…)` 字节恒等，脚本内断言；提交前再 `cmp` HEAD 原件）。
    拆分纪律：① 纯搬移先行（`git diff -w` 只见路径），调用方经 `pub use` 原位重导出；
    ② 一文件一提交，每步 0 警告 + 对应域测试绿；③ 引擎协议代码（`runtime`/`state`/
    `jsapi_glue`/`jobqueue`/`modules`）只拆纯逻辑，会话管线与 trace 不动；

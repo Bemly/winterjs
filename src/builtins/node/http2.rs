@@ -771,6 +771,7 @@ pub unsafe extern "C" fn h2_reset(
 pub const SOURCE: &str = concat!(
     include_str!("h2_head.js"),
     include_str!("h2_server.js"),
+    include_str!("h2_server_http2server.js"),
     include_str!("h2_client.js"),
 );
 

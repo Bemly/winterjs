@@ -1,0 +1,15 @@
+# cargo-nextest 配置（2026-09-25 plan3 §0.8-6，用户拍板引入；工具不进 Cargo 依赖）。
+# 用法：`cargo nextest run`（全量）/ `cargo nextest run -E 'binary(node) & test(/dgram/)'`。
+# 每个测试独立进程：挂死件到点即杀（不再拖住整个 target，§4.175/O1 同族），
+# flaky 自动重试一次并在汇总里标 FLAKY——替代人工"单跑 + 整套件两档复核"。
+[profile.default]
+test-threads = 4
+retries = 1
+fail-fast = false
+slow-timeout = { period = "30s", terminate-after = 4 }
+status-level = "fail"
+final-status-level = "flaky"
+
+# 严格档：不重试（判定真 flaky 率 / 提交前最后一跑）。
+[profile.strict]
+retries = 0

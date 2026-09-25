@@ -22,6 +22,7 @@ mod ports;
 mod quic;
 mod serve;
 mod sqlite;
+mod stack;
 mod vm;
 mod watch;
 mod worker;
@@ -34,6 +35,7 @@ pub use ports::*;
 pub use quic::*;
 pub use serve::*;
 pub use sqlite::*;
+pub use stack::*;
 pub use vm::*;
 pub use watch::*;
 pub use worker::*;
@@ -836,6 +838,9 @@ fn entry_reason_string(cx: &mut JSContext, reason: JSVal) -> String {
     let col = get_prop_u32(cx, obj_root.get(), c"columnNumber").unwrap_or(1).max(1);
     let map = with_plain(|p| p.module_debug.get(&file).and_then(|d| d.map.clone()));
     let (line, col) = remap_location(map.as_deref(), line, col);
+    if let Some(st) = get_prop_string(cx, obj_root.get(), c"stack") {
+        crate::error::note_stack(&message, remap_stack(&st), get_prop_string(cx, obj_root.get(), c"name"));
+    }
     format!("{file}:{line}:{col}: {message}")
 }
 

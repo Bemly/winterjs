@@ -26,6 +26,7 @@
      `tests/node/<mod>.rs` 经 `#[path]` 挂壳，域内脚手架进 `tests/node/helpers.rs`）；
      每个新 API 含**正常 + 报错 + 边界**三件；`UNSAFE-BOUNDARY` 新增必配 panic 路径用例。
    - 冒烟：§3 五条，构建后必跑，不过不提交。
+   - 全量回归：`cargo nextest run`（见 §4 测试与跑分）。
 8. **CLI 全 flag 规范**：无裸子命令、无裸位置参数——所有动作一律 `-x/--xxx`；
    一次恰好一个动作，多给即错；动作的必需值紧贴其 flag；修饰 flag
    （`--dry-run/--registry/--port` 等）只在对应动作下生效。help/补全/man 由同一套
@@ -72,8 +73,9 @@ cargo build
 
 - `mozjs_sys` 走预构建 `libjs_static.a`，debug 全量约 25 秒，不用怕。
 - 验证：`./target/debug/winterjs --eval '40 + 2'` → `42`；
-  `./target/debug/winterjs --eval 'throw new Error("boom")'` → 非 TTY 下
-  `Error: eval.js:1:7: boom`，exit=1（TTY 下由 miette 图形渲染，带代码框，语义同）。
+  `./target/debug/winterjs --eval 'throw new Error("boom")'` → 非 TTY 下 node 形
+  （`eval.js:1` / 源行 / `^` / 空行 / `Error: boom` / `    at eval.js:1:7`），exit=1
+  （TTY 下由 miette 图形渲染，带代码框，语义同；2026-09-25 D4）。
 
 ### 冒烟（每次构建后必跑，不过不提交）
 
@@ -125,7 +127,7 @@ cargo build
 - 跑分包装 `exec @ARGV or die` + glob 解析路径；"全绿/全红得可疑"先查执行痕迹（4.145/4.168/4.205）。
 - 并行跑 node 套件逐进程设 `TEST_THREAD_ID`；对拍前断言 fixtures 完备（4.122/4.158）。
 - 判 hang 只认退出码；长驻探针输出落盘；管道取 `${PIPESTATUS[0]}`（4.45/4.67/4.93）。
-- 全量 `cargo test` 禁套 alarm；node 域 `--test-threads=4`；禁并行压力循环与重复全量子集（4.126/4.143/4.175）。
+- 全量测试用 `cargo nextest run`（约 2 分钟；挂死件自动杀、flaky 标注，配置 `.config/nextest.toml`），提交前 `--profile strict`；`cargo test` 仅作兜底（禁套 alarm）；禁并行压力循环与重复全量子集（4.126/4.143/4.175）。
 - 新红先 `scripts/flake-classify.py` 分类再动手；"手工过/cargo 挂"先查状态机残留，不是环境问题（4.140/4.197/4.202）。
 - stash/checkout 换过代码必重编再探（4.62/4.69）；改 `cfg(test)` 用到的结构体跑 `cargo test --bin`（4.173）。
 

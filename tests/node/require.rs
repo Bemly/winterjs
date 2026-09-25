@@ -484,7 +484,7 @@ fn phase11_require_rethrows_original_exception() {
     dir.child("boom.js").write_str("\n\nthrow new TypeError(\"deep\");\n").unwrap();
     let (ok, _, err) = wjs(&["--run", "boom.js"], &dir);
     assert!(!ok);
-    assert!(err.contains("boom.js:3:7: deep"), "stderr: {err}");
+    assert!(err.starts_with("boom.js:3\n") && err.contains("TypeError: deep"), "stderr: {err}");
     // 边界：NodeError（message 为属性而非引擎槽）文案非空、位置如实报内部文件。
     dir.child("ne.js")
         .write_str("require(\"stream\").pipeline(process.stdin, {}, () => {});\n")

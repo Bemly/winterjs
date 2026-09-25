@@ -92,7 +92,7 @@
 | D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |
 | D3 | ✅ 2026-09-25 已做 | §0.9 纳入 `src/**/*.js`：8 件超限按方法边界拆 17 片（`concat!(include_str!…)` 字节恒等，逐件 `cmp` HEAD 原件；一文件一提交，域测试 + 冒烟绿）；守门 `scripts/check-lines.sh` | — | ✅ |
 | O1 | 观察 | `dgram::phase10a_dgram_multicast_connect` 本机挂死（2026-09-25 基线 stash 对照同挂，非本轮引入；疑本机组播路由/网卡环境），全量暂以 `--skip` 跑；再现于他机即升级为必查 | — | 👀 |
-| D4 | **待用户拍板** | 未捕获错误输出改 node 形（非 TTY：`<file>:<line>` + 源行 + `^` + `Error: msg` + `    at …` 栈；TTY 仍 miette）。现一行格式 `Error: file:L:C: msg` 丢栈，且 node 套件断 stderr 含 `Error: xyz` 的件因此红（os-userinfo/vm-api-handles-getter/util-callbackify 等，均在 Bun 清单）。代价：AGENTS §3 冒烟第 2 例口径 + 黑盒里 `Error: eval.js:1:7:` 形断言需同步翻转 | 半天 | ⏸ |
+| D4 | ✅ 2026-09-25 已做 | 非 TTY 未捕获错误改 node 形（`file:line` + 源行 + `^` + `Name: msg` + `    at …` 栈；SM 帧转 `at fn (loc)`、`__wjs_` 管线帧滤掉、TS 帧经 sourcemap 回映射；`throw 42` 打印值本身；ESM 入口同形）。`Display` 一行格式不动（worker 透传/退出码解析依赖）。转绿：`os-userinfo-handles-getter-errors`/`vm-api-handles-getter-errors`；`util-callbackify` 余 stderr 行数差（node 多 `processTicksAndRejections` 帧 + `Node.js vX` 尾行） | — | ✅ |
 
 ### 0.5 运行环境（系统盘仅剩 ~5GB，大数据一律外置盘）
 
@@ -117,7 +117,7 @@
 ### 0.6 验收节奏（省机时）
 
 - 每簇：只跑对应域 sweep（清单过滤）+ 该域黑盒 + 冒烟 5/5。
-- 每个 P 项收尾：全量 `cargo test` 一次（node 域 `--test-threads=4`，§4.175）。
+- 每个 P 项收尾：全量 `cargo nextest run --profile strict` 一次（约 2 分钟）。
 - 全域 sweep 只在 P0-3 与每个 P 项收尾各一次；禁重复全量子集（§4.126）。
 - 本节状态表是唯一进度真相；逐轮细节写进 `docs/plan3-journal.md`（追加）与
   `docs/bun-parity.md`，**不再写进 plan3**。
@@ -135,12 +135,13 @@
    套件头 `// Flags:` 两侧透传（消 node 侧假红 + 我方假绿）/ 工件与 node 检出默认落外置盘。
 3. **守门与探针脚本**：`scripts/check-lines.sh`（§0.9）、`~/wjs-data/probe/run1.sh`（单件）。
 
-**建议（未做，按收益排序）**
-4. sweep 限并发 ≤3 worker（各自 `--thread-id/--port-base`，§4.122）：P0-3 全域基线
-   约 2h → 40min；受 §4.126 约束（上限 3、常驻内存 ≤8G，禁循环压测）。
-5. D4 错误输出改 node 形（见 0.4），顺带让 stderr 断言类套件转绿。
-6. `cargo nextest`（§0.5 需拍板）：进程级隔离 + 重试标注 flaky，替代人工
-   "单跑 + 整套件两档复核"（§4.174/4.179 族）。
+4. ✅ sweep `--jobs 1..3`（槽位各自 `TEST_THREAD_ID` + 端口段 +1000，结果收尾按名排序；
+   实测 path 域 4.8s→1.9s，结果与串行逐行一致）。上限 3 守 §4.126。
+5. ✅ D4 错误输出 node 形（见 0.4）。
+6. ✅ `cargo nextest`（brew 0.9.146，工具不进 Cargo 依赖；配置 `.config/nextest.toml`：
+   4 并发、每测独立进程、30s×4 挂死即杀、失败自动重试 1 次并标 FLAKY）。实测全量
+   702 测试 **105s 全绿**（`cargo test` 同口径 15min+，且 dgram 组播挂死会拖住整个
+   target——nextest 下单件隔离，本机也过了）。提交前最后一跑用 `--profile strict`（不重试）。
 7. 每簇工作流固定为：`sweep-bg --prefix <域> --rerun-red <上轮tag>` → mapper/run1.sh
    定位 → 修 → 同命令复验；全域 sweep 只在 P 项收尾跑一次（0.6）。
 

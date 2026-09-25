@@ -346,6 +346,13 @@ pub fn fill_message(
             info.message = m;
         }
     }
+    // D4：顺手记下异常栈，供 node 形渲染（`error::note_stack`，按 message 配对取走）。
+    if exc.is_object() {
+        if let Some(st) = get_prop_string(cx, exc.to_object(), c"stack") {
+            let kind = get_prop_string(cx, exc.to_object(), c"name");
+            crate::error::note_stack(&info.message, crate::state::remap_stack(&st), kind);
+        }
+    }
     Some(info)
 }
 

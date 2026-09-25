@@ -615,3 +615,9 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
 3. TLS 豁免已记录（§1/§12）：`reqwest`/`rustls`/`tokio-rustls`/`platform-verifier`/
    `oauth2`/`sentry`/`self_update`/`rcgen` 的 ring 后端不再标 ⚠️ 理由，
    但 §2 的后端选择门控继续有效（禁 aws-lc/cmake、禁 native-tls）。
+
+## 开发工具（不进 Cargo 依赖，2026-09-25）
+
+| 工具 | 版本 | 来源 | 用途 | 拍板 |
+|---|---|---|---|---|
+| cargo-nextest | 0.9.146 | Homebrew bottle（`brew install cargo-nextest`） | 全量测试：每测独立进程、挂死即杀、flaky 重试标注；配置 `.config/nextest.toml` | ✅ 用户 2026-09-25（plan3 §0.8-6） |

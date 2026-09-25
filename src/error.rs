@@ -1,6 +1,8 @@
 //! 错误模型：thiserror 定义类型，miette 渲染。
-//! 非 TTY（stderr 非终端或 NO_COLOR）输出稳定的一行格式 + `Caused by` 链——
-//! 脚本与测试依赖该格式（AGENTS.md §3 验收样例）；TTY 走 miette 图形渲染（带代码框）。
+//! 非 TTY：未捕获 JS 异常按 node 形渲染（`file:line` + 源行 + `^` + `Name: msg` +
+//! `    at …` 栈，2026-09-25 D4），其余错误一行格式 + `Caused by` 链；
+//! TTY 走 miette 图形渲染（带代码框）。`Display` 仍是一行 `file:L:C: msg`
+//! （worker 透传/退出码解析等程序化用途依赖它，不随渲染改）。
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -41,6 +43,8 @@ pub enum Error {
         span: SourceSpan,
         #[source_code]
         source_code: NamedSource<String>,
+        /// 异常对象的 `stack`（SM `fn@file:L:C` 形；渲染时转 node `    at` 形）。
+        stack: Option<String>,
     },
 
     #[error("{0}")]
@@ -81,6 +85,103 @@ fn span_for(source: &str, line: u32, col: u32) -> SourceSpan {
     SourceSpan::new(start.into(), len)
 }
 
+thread_local! {
+    /// 最近一次报错点记下的（message, stack）——`jsapi_glue::fill_message` 写，
+    /// `script_with_kind` 按 message 相等取走（不等即丢弃，防串到别的错误上）。
+    static NOTED_STACK: std::cell::RefCell<Option<(String, String, Option<String>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 报错点记下异常栈 + 类名（见 `NOTED_STACK`）。
+pub fn note_stack(message: &str, stack: String, kind: Option<String>) {
+    NOTED_STACK.with(|c| *c.borrow_mut() = Some((message.to_owned(), stack, kind)));
+}
+
+fn take_noted(message: &str) -> Option<(String, Option<String>)> {
+    NOTED_STACK.with(|c| {
+        let got = c.borrow_mut().take()?;
+        (got.0 == message).then_some((got.1, got.2))
+    })
+}
+
+/// 入口 rejection 串（`file:L:C: message`，见 `state::entry_reason_string`）→ node 形
+/// Script 错误；无位置的值串回 None（调用方走一行格式）。`source` 为入口源码（代码框用）。
+pub fn from_entry_reason(reason: &str, entry_url: &str, source: &str) -> Option<Error> {
+    let (head, message) = reason.split_once(": ")?;
+    let mut it = head.rsplitn(3, ':');
+    let col: u32 = it.next()?.parse().ok()?;
+    let line: u32 = it.next()?.parse().ok()?;
+    let file = it.next()?;
+    let src = if file == entry_url { source } else { "" };
+    Some(Error::script_with_kind(file, src, line, col, message.to_owned(), None))
+}
+
+/// SM 栈帧（`fn@file:L:C` / `@file:L:C`）→ node 形 `    at fn (file:L:C)`；
+/// 宿主管线帧（`__wjs_*` 文件）滤掉，空行丢弃。
+fn node_stack_lines(stack: &str) -> Vec<String> {
+    stack
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| {
+            let (name, loc) = match l.rfind('@') {
+                Some(i) => (&l[..i], &l[i + 1..]),
+                None => ("", l),
+            };
+            if loc.starts_with("__wjs_") {
+                return None;
+            }
+            Some(if name.is_empty() {
+                format!("    at {loc}")
+            } else {
+                format!("    at {name} ({loc})")
+            })
+        })
+        .collect()
+}
+
+/// node 形未捕获异常块（非 TTY）。
+fn render_script_node_style(
+    filename: &str,
+    line: u32,
+    col: u32,
+    message: &str,
+    kind: Option<&str>,
+    source: &str,
+    stack: Option<&str>,
+) -> String {
+    let mut out = format!("{filename}:{line}\n");
+    if let Some(text) = source.lines().nth(line.saturating_sub(1) as usize) {
+        out.push_str(text);
+        out.push('\n');
+        out.push_str(&" ".repeat(col.saturating_sub(1) as usize));
+        out.push_str("^\n");
+    }
+    out.push('\n');
+    // 头行：`Name: msg`；message 已自带同名前缀（native report_error 形）则不重复。
+    // 非对象抛出（`throw 42`）：node 直接打印值本身。
+    if kind.is_none() {
+        if let Some(v) = message.strip_prefix("uncaught exception: ") {
+            out.push_str(v);
+            out.push('\n');
+            return out;
+        }
+    }
+    let name = kind.unwrap_or("Error");
+    if message.starts_with(&format!("{name}:")) || message.starts_with(&format!("{name} [")) {
+        out.push_str(message);
+    } else if message.is_empty() {
+        out.push_str(name);
+    } else {
+        out.push_str(&format!("{name}: {message}"));
+    }
+    out.push('\n');
+    for l in stack.map(node_stack_lines).unwrap_or_default() {
+        out.push_str(&l);
+        out.push('\n');
+    }
+    out
+}
+
 impl Error {
     pub fn script(filename: &str, source: &str, line: u32, col: u32, message: String) -> Self {
         Self::script_with_kind(filename, source, line, col, message, None)
@@ -95,19 +196,21 @@ impl Error {
         message: String,
         kind: Option<String>,
     ) -> Self {
+        let noted = take_noted(&message);
         Error::Script {
             filename: filename.to_owned(),
             line,
             col,
-            message,
-            kind,
             span: span_for(source, line, col),
             source_code: NamedSource::new(filename, source.to_owned()),
+            stack: noted.as_ref().map(|n| n.0.clone()),
+            kind: kind.or_else(|| noted.and_then(|n| n.1)),
+            message,
         }
     }
 
     /// 渲染到 stderr 并返回退出码 1。TTY（或 color=always）时用 miette 图形渲染，
-    /// NO_COLOR / color=never 降为无色图形，非 TTY 走稳定一行格式。
+    /// NO_COLOR / color=never 降为无色图形；非 TTY：JS 异常 node 形，其余一行格式。
     pub fn render(&self, color: ColorChoice) -> std::process::ExitCode {
         let tty = std::io::stderr().is_terminal();
         let fancy = match color {
@@ -126,6 +229,13 @@ impl Error {
             let mut out = String::new();
             let _ = handler.render_report(&mut out, self);
             eprint!("{out}");
+        } else if let Error::Script { filename, line, col, message, kind, source_code, stack, .. } = self {
+            eprint!(
+                "{}",
+                render_script_node_style(
+                    filename, *line, *col, message, kind.as_deref(), source_code.inner(), stack.as_deref(),
+                )
+            );
         } else {
             eprintln!("Error: {self}");
             let mut source = std::error::Error::source(self);
@@ -141,5 +251,37 @@ impl Error {
             }
         }
         std::process::ExitCode::from(1)
+    }
+}
+
+#[cfg(test)]
+mod node_shape_tests {
+    use super::*;
+
+    #[test]
+    fn stack_frames_to_node_form() {
+        let st = "f@file:///a.js:3:21\n@file:///a.js:4:1\n@__wjs_main_bootstrap.js:1:1\n\n";
+        assert_eq!(node_stack_lines(st), ["    at f (file:///a.js:3:21)", "    at file:///a.js:4:1"]);
+    }
+
+    #[test]
+    fn render_block_shapes() {
+        let out = render_script_node_style("a.js", 1, 7, "boom", None, "throw new Error(\"boom\")", Some("@a.js:1:7"));
+        assert_eq!(out, "a.js:1\nthrow new Error(\"boom\")\n      ^\n\nError: boom\n    at a.js:1:7\n");
+        // 报错：message 自带同名前缀不重复；无源行不出代码框。
+        let out = render_script_node_style("x", 2, 1, "TypeError: t", Some("TypeError"), "", None);
+        assert_eq!(out, "x:2\n\nTypeError: t\n");
+        // 边界：非对象抛出直接打印值。
+        let out = render_script_node_style("e.js", 1, 1, "uncaught exception: 42", None, "throw 42", None);
+        assert!(out.ends_with("^\n\n42\n"), "{out}");
+    }
+
+    #[test]
+    fn entry_reason_parsing() {
+        let e = from_entry_reason("file:///m.mjs:3:7: bad: thing", "file:///m.mjs", "a\nb\nthrow x\n").unwrap();
+        let Error::Script { filename, line, col, message, .. } = e else { panic!() };
+        assert_eq!((filename.as_str(), line, col, message.as_str()), ("file:///m.mjs", 3, 7, "bad: thing"));
+        // 值串（无位置）回 None。
+        assert!(from_entry_reason("just a value", "file:///m.mjs", "").is_none());
     }
 }

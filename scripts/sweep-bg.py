@@ -5,7 +5,7 @@
 # 用法:
 #   scripts/sweep-bg.py start [--prefix test-http-] [--dir DIR] [--timeout 25]
 #       [--thread-id 3599] [--port-base 29999] [--tag TAG] [--wjs BIN] [--node BIN]
-#       [--scope docs/bun-scope.txt|none] [--rerun-red TAG] [--no-node-cache]
+#       [--scope docs/bun-scope.txt|none] [--rerun-red TAG] [--no-node-cache] [--jobs 1..3]
 #
 # 提速三件（2026-09-25，plan3 §0.8）：
 #   --scope      只跑 Bun 清单内的件（plan3 §0.2 范围；缺省 docs/bun-scope.txt）
@@ -225,48 +225,82 @@ def sweep_loop(st):
     results = open(os.path.join(tag_dir(st["tag"]), "results.log"), "w")
     dump_dir = os.path.join(tag_dir(st["tag"]), "debug")
     t0 = time.time()
-    for i, f in enumerate(files):
-        flags = tuple(suite_flags(os.path.join(d, f)))
-        wrc, werr = run_one(st["wjs"], f, d, env, st["timeout_s"], flags + ("--run",), dump_dir, "wjs")
-        fp = os.path.join(d, f)
-        try:
-            sb = os.stat(fp)
-            ckey = f"{nver}|{f}|{int(sb.st_mtime)}|{sb.st_size}"
-        except OSError:
-            ckey = None
-        if cache is not None and ckey in cache:
-            nrc, nerr = cache[ckey]
-        else:
-            nrc, nerr = run_one(st["node"], f, d, env, st["timeout_s"], flags, dump_dir, "node")
-            # TIMEOUT 不缓存（可能是机器负载，下次再测）。
-            if cache is not None and ckey and nrc != 142:
-                cache[ckey] = [nrc, nerr]
-                if (i + 1) % 25 == 0:
-                    save_cache(cache)
-        line = None
-        if 142 in (wrc, nrc):
-            st["timeout"] += 1
-            line = f"TIMEOUT wjs={wrc} node={nrc} {f}"
-        elif wrc == nrc:
-            if wrc == 0:
-                st["same0"] += 1
+    # 限并发 ≤3（plan3 §0.8-4；§4.126 上限）：每槽位独立 TEST_THREAD_ID 与端口段
+    # （§4.122 `.tmp.N` 互踩防线），结果行按完成序落盘、收尾排序。
+    import threading
+    jobs = max(1, min(3, int(st.get("jobs", 1))))
+    lock = threading.Lock()
+    queue = list(enumerate(files))
+    lines_out = []
+
+    def slot_env(k):
+        tid = str(int(st["thread_id"]) + k)
+        return dict(env, TEST_THREAD_ID=tid, TEST_SERIAL_ID=tid,
+                    NODE_COMMON_PORT=str(int(st["port_base"]) + k * 1000))
+
+    def worker(k):
+        wenv = slot_env(k)
+        while True:
+            with lock:
+                if not queue:
+                    return
+                i, f = queue.pop(0)
+            flags = tuple(suite_flags(os.path.join(d, f)))
+            wrc, werr = run_one(st["wjs"], f, d, wenv, st["timeout_s"], flags + ("--run",), dump_dir, "wjs")
+            fp = os.path.join(d, f)
+            try:
+                sb = os.stat(fp)
+                ckey = f"{nver}|{f}|{int(sb.st_mtime)}|{sb.st_size}"
+            except OSError:
+                ckey = None
+            with lock:
+                hit = cache[ckey] if cache is not None and ckey in cache else None
+            if hit is not None:
+                nrc, nerr = hit
             else:
-                st["same1"] += 1
-                line = f"SAME1({wrc}) {f}"
-        else:
-            st["diff"] += 1
-            line = f"DIFF wjs={wrc} node={nrc} {f}"
-        if line:
-            if nerr:
-                line += f" | node_err: {nerr}"
-            if werr:
-                line += f" | wjs_err: {werr}"
-            results.write(line + "\n")
-            results.flush()
-        st["done"] = i + 1
-        st["updated"] = time.time()
-        st["elapsed_s"] = round(time.time() - t0, 1)
-        write_status(st["tag"], st)
+                nrc, nerr = run_one(st["node"], f, d, wenv, st["timeout_s"], flags, dump_dir, "node")
+            with lock:
+                # TIMEOUT 不缓存（可能是机器负载，下次再测）。
+                if hit is None and cache is not None and ckey and nrc != 142:
+                    cache[ckey] = [nrc, nerr]
+                    if len(cache) % 25 == 0:
+                        save_cache(cache)
+                line = None
+                if 142 in (wrc, nrc):
+                    st["timeout"] += 1
+                    line = f"TIMEOUT wjs={wrc} node={nrc} {f}"
+                elif wrc == nrc:
+                    if wrc == 0:
+                        st["same0"] += 1
+                    else:
+                        st["same1"] += 1
+                        line = f"SAME1({wrc}) {f}"
+                else:
+                    st["diff"] += 1
+                    line = f"DIFF wjs={wrc} node={nrc} {f}"
+                if line:
+                    if nerr:
+                        line += f" | node_err: {nerr}"
+                    if werr:
+                        line += f" | wjs_err: {werr}"
+                    lines_out.append((f, line))
+                    results.write(line + "\n")
+                    results.flush()
+                st["done"] += 1
+                st["updated"] = time.time()
+                st["elapsed_s"] = round(time.time() - t0, 1)
+                write_status(st["tag"], st)
+
+    threads = [threading.Thread(target=worker, args=(k,), daemon=True) for k in range(jobs)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    # 收尾按文件名重写 results（并发完成序 → 稳定序，便于跨轮 diff）。
+    results.seek(0)
+    results.truncate()
+    for _, line in sorted(lines_out):
+        results.write(line + "\n")
     results.close()
     if cache is not None:
         save_cache(cache)
@@ -316,6 +350,7 @@ def cmd_start(ap_args):
         "scope": ap_args.scope,
         "node_cache": not ap_args.no_node_cache,
         "only": rerun_red_list(ap_args.rerun_red) if ap_args.rerun_red else None,
+        "jobs": ap_args.jobs,
         "total": 0, "done": 0,
         "same0": 0, "same1": 0, "diff": 0, "timeout": 0,
         "started": time.time(), "updated": time.time(),
@@ -459,6 +494,7 @@ def main():
     p.add_argument("--scope", default=DEFAULT_SCOPE if os.path.isfile(DEFAULT_SCOPE) else "none")
     p.add_argument("--rerun-red", default=None, metavar="TAG")
     p.add_argument("--no-node-cache", action="store_true")
+    p.add_argument("--jobs", type=int, default=1, help="并发槽位（上限 3，§4.126）")
     p.add_argument("--thread-id", default="3599")
     p.add_argument("--port-base", default="29999")
     p.add_argument("--tag", default="main")

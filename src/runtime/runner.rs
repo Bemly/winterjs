@@ -83,8 +83,11 @@ async fn run_module(
     let (fulfillment, rejection) =
         state::with_plain(|p| (p.entry_fulfillment.take(), p.entry_rejection.take()));
     if let Some(reason) = rejection {
-        // 入口决议串自带位置（`file:line:col: message`）或为值串，直接上报
-        return Err(Error::Other(reason));
+        // 入口决议串自带位置（`file:line:col: message`）→ node 形 Script（D4）；
+        // 值串（无位置）照旧一行上报。代码框源码按入口文件原文读（仅显示用）。
+        let src = url.to_file_path().ok().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+        return Err(crate::error::from_entry_reason(&reason, url.as_str(), &src)
+            .unwrap_or(Error::Other(reason)));
     }
     if let Some(s) = fulfillment {
         // 脚本语义对齐：决议 undefined 不打印
@@ -191,8 +194,8 @@ async fn run_inner(
                     "__wjs_require_main({})",
                     serde_json::to_string(url.as_str()).unwrap_or_else(|_| "\"\"".into())
                 );
-                let c_filename = CString::new(filename).unwrap_or_else(|_| c"main.cjs".into());
-                let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
+                // 引导脚本用 `__wjs_` 名：栈里这一帧属宿主管线，node 形渲染按前缀滤掉（D4）。
+                let options = CompileOptionsWrapper::new(rt.cx(), c"__wjs_main_bootstrap.js".into(), 1);
                 let res = evaluate_script(rt.cx(), global.handle(), &main_src, rval.handle_mut(), options);
                 if res.is_err() {
                     let err = {
@@ -228,7 +231,7 @@ async fn run_inner(
                     end_session(rt, engine);
                     return Err(err);
                 }
-                event_loop(&mut rt, &global, ErrorSource::Script { source: &main_src, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await?;
+                event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await?;
                 end_session(rt, engine);
                 return Ok(());
             }

@@ -19,7 +19,8 @@ fn eval_completion_value(#[case] code: &str, #[case] expected: &str) {
 
 #[test]
 fn eval_uncaught_exception_exit_1_with_plain_format() {
-    // AGENTS.md §3 验收格式：Error: eval.js:1:7: boom，exit=1（非 TTY）
+    // AGENTS.md §3 验收格式（D4，node 形，非 TTY）：`eval.js:1` + 源行 + `^` + 空行 +
+    // `Error: boom` + `    at eval.js:1:7`，exit=1。
     let out = winterjs()
         .args(["--eval", "throw new Error(\"boom\")"])
         .output()
@@ -27,9 +28,34 @@ fn eval_uncaught_exception_exit_1_with_plain_format() {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("Error: eval.js:1:7: boom"),
+        stderr.starts_with("eval.js:1\nthrow new Error(\"boom\")\n      ^\n\nError: boom\n    at eval.js:1:7\n"),
         "stderr: {stderr}"
     );
+}
+
+#[test]
+fn uncaught_error_node_shape_kinds_and_values() {
+    // D4：类名头行（TypeError/SyntaxError）、非对象抛出打印值本身、宿主管线帧不进栈。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("t.js").write_str("\nfunction f() { throw new TypeError(\"tt\"); }\nf();\n").unwrap();
+    let (ok, _, err) = wjs(&["--run", "t.js"], &dir);
+    assert!(!ok);
+    assert!(err.starts_with("t.js:2\n"), "stderr: {err}");
+    assert!(err.contains("\nTypeError: tt\n    at f ("), "stderr: {err}");
+    assert!(!err.contains("__wjs_"), "stderr: {err}");
+    // 报错：语法错误无栈，头行 SyntaxError。
+    dir.child("s.js").write_str("let = = ;\n").unwrap();
+    let (ok, _, err) = wjs(&["--run", "s.js"], &dir);
+    assert!(!ok);
+    assert!(err.contains("\nSyntaxError: "), "stderr: {err}");
+    // 边界：`throw 42` 打印值本身；ESM 入口同形（file: URL 头）。
+    let (ok, _, err) = wjs(&["--eval", "throw 42"], &dir);
+    assert!(!ok);
+    assert!(err.ends_with("^\n\n42\n"), "stderr: {err}");
+    dir.child("m.mjs").write_str("throw new RangeError(\"rr\");\n").unwrap();
+    let (ok, _, err) = wjs(&["--run", "m.mjs"], &dir);
+    assert!(!ok);
+    assert!(err.starts_with("file://") && err.contains("\nRangeError: rr\n"), "stderr: {err}");
 }
 
 #[test]

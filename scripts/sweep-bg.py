@@ -304,7 +304,10 @@ def run_one(binary, path, cwd, env, timeout, prefix=("--run",), dump_dir=None, s
         mm = next((i for i, l in enumerate(out_lines) if l.startswith("Mismatched")), None)
         if mm is not None:
             site = next((l for l in out_lines[mm + 1:mm + 4] if "test-" in l), "")
-            pick = "HANG mustCall@" + site.split("/")[-1] if site else out_lines[mm]
+            # 真挂死（HANG_EXIT 自报）标 HANG；正常退出但计数不符标 MUSTCALL。
+            hung = any("WINTERJS_HANG_EXIT" in l for l in err)
+            kind = "HANG" if hung else "MUSTCALL"
+            pick = f"{kind} {out_lines[mm][11:60]}@" + site.split("/")[-1] if site else out_lines[mm]
         else:
             pick = err[0] if err else ""
     tail = pick[:160].replace("\t", " ")

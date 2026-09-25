@@ -564,6 +564,7 @@ async fn event_loop(
         .filter(|&n| n > 0)
         .map(std::time::Duration::from_secs);
     let mut last_progress = std::time::Instant::now();
+    let mut before_exit_sent = false;
     loop {
         // 单轮推进与 `repl` 共用（§4.18 检查点顺序在内保持）。
         let st = pump_once(rt, global, err, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx).await?;
@@ -627,8 +628,18 @@ async fn event_loop(
                 unrefed_grace = true;
                 continue;
             }
+            // node `SpinEventLoop`：排空 → 发 'beforeExit' → 仍 alive 则续转，否则退。
+            // 每次排空只发一次；监听排了新任务（循环再非 idle）才复位再发。
+            if !before_exit_sent {
+                before_exit_sent = true;
+                let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+                if crate::builtins::node::process_::queue_before_exit(&mut realm, global.get()) {
+                    continue;
+                }
+            }
             break;
         }
+        before_exit_sent = false;
         // §4.18 推广：本轮结算/触发过就不能直接 park——结算可能只排了 microtask
         // （如 worker 端口 `__ev` 的 queueMicrotask），park 进 select 即再无 RunJobs
         // 机会（无 timer 时直接 hang，有 timer 则延迟到 sleep 醒才送达）。

@@ -216,6 +216,7 @@
 - 4.208 require 把用户异常转串重抛：位置恒 prelude 424:53、NodeError 空文案、原对象丢失（2026-09-25）
 - 4.209 node 旗前缀放行 = 自 spawn 无限递归，fork 链吃光内核致系统 panic（2026-09-25，D1 回归）
 - 4.210 rustls/webpki 拒收 X.509 v1 证书：服务端绕 keys_match，客户端验签兜底（2026-09-25，P1）
+- 4.211 修一个结算点会放出一串假绿：beforeExit 缺失 + process.emit 吞错 + 致命错不发 exit（2026-09-26，P2）
 
 ## 条目
 
@@ -3876,3 +3877,18 @@
   `/usr/bin/openssl x509 -req` 生成——OpenSSL 3 缺省出 v3）。
 - 推广铁律：轮子"拒收合法旧格式"时，先确认拒收点是**解析**还是**校验**；解析拒收可在
   出示侧绕开，校验侧兜底必须保住签名/有效期/主机名三件，不许退化成空校验。
+### 4.211 修一个结算点会放出一串假绿：beforeExit 缺失 + process.emit 吞错 + 致命错不发 exit（2026-09-26，P2）
+
+- 症状：base13 较 base12 净 −75——`exit` 事件修好后 mustCall 核对首次生效，143 件旧假绿翻红；
+  其中 `beforeExit` 监听 9 件整簇不触发、`beforeExit` 抛错被静默吞掉、未捕获异常后 `exit` 监听不跑。
+- 根因：① 事件循环排空即退，从未派发 `beforeExit`；② 公开 `process.emit` 与宿主内部派发
+  共用吞错的 `__wjs_emit`，监听抛错全被 `catch {}`；③ 致命错直接 `?` 上抛到 main 渲染，
+  node `triggerUncaughtException` 尾段（exitCode=1 → 派发 exit → 按 exitCode 退出）缺失。
+- 修法：idle 点投递 `beforeExit`（经 nextTick，抛错走 uncaughtException/fatal 同一路由；
+  每次排空只发一次，监听排新任务才复位）；公开 `emit` 改 EventEmitter 口径（抛错上抛、
+  无监听 `'error'` 即抛），内部派发仍走 `__wjs_emit`；runner 各致命出口经 `fatal_exit`：
+  先就地渲染错误（main 登记配色后才启用，testrun/worker 原错透传）再发 exit、按 exitCode 退出。
+- 复现：`tests/node/process_.rs::phase11_before_exit_and_fatal_exit_event`。
+- 推广铁律：**基线数字下跌先分"假绿现形"与"真退化"**（按红因聚类：`MUSTCALL` 计数不符 vs
+  `HANG` 挂死自报）；修结算点类 bug 后必须全量重跑，旧绿数不可信。宿主内部派发与用户可见
+  `emit` 必须分开，前者可吞错，后者照 node 上抛。

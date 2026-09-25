@@ -12,6 +12,18 @@ use thiserror::Error;
 
 use crate::settings::ColorChoice;
 
+/// CLI 主进程的错误渲染配色（main 启动时登记一次）。登记过 = 由运行时就地渲染致命错
+/// （node 序：先打印错误、再派发 process 'exit'）；testrun 等内嵌调用方不登记，照旧拿原错自理。
+static RENDER_COLOR: std::sync::OnceLock<ColorChoice> = std::sync::OnceLock::new();
+
+pub fn set_render_color(color: ColorChoice) {
+    let _ = RENDER_COLOR.set(color);
+}
+
+pub fn render_color() -> Option<ColorChoice> {
+    RENDER_COLOR.get().copied()
+}
+
 #[derive(Debug, Error, Diagnostic)]
 pub enum Error {
     #[error("failed to read {path}")]

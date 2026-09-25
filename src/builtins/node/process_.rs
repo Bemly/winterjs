@@ -139,6 +139,30 @@ pub fn emit_exit(cx: &mut mozjs::context::JSContext, global: *mut JSObject) {
     let _ = call_two(cx, proc_root.get(), emit_root.get(), kind_v.get(), code_v.get());
 }
 
+/// 事件循环排空：投递 process 'beforeExit'（JS 侧 nextTick 排队，下一轮 pump 派发）。
+/// 返回是否已投递（无监听 / process 缺失 → false，调用方直接收尾）。前置：cx 已进 global realm。
+pub fn queue_before_exit(cx: &mut mozjs::context::JSContext, global: *mut JSObject) -> bool {
+    use crate::jsapi_glue::get_prop_value;
+    let Some(proc_v) = get_prop_value(cx, global, c"process") else {
+        return false;
+    };
+    if !proc_v.is_object() {
+        return false;
+    }
+    rooted!(&in(cx) let proc_root: *mut JSObject = proc_v.to_object());
+    let Some(f) = get_prop_value(cx, proc_root.get(), c"__wjs_queueBeforeExit") else {
+        return false;
+    };
+    if !f.is_object() {
+        return false;
+    }
+    rooted!(&in(cx) let f_root = f);
+    matches!(
+        call_one(cx, proc_root.get(), f_root.get(), UndefinedValue()),
+        Some(r) if r.is_boolean() && r.to_boolean()
+    )
+}
+
 /// 收割 nextTick 原生队列（pump 专用：RunJobs 前后各一轮）。
 /// 回调经 prelude `__wjs_call(cb, args)` 展开；抛错走 uncaughtException 路由
 /// （有监听分发即吞，无监听保持 pending 走 fatal——fire_due 同款）。

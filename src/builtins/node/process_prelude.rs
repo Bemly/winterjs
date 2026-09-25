@@ -131,6 +131,14 @@ globalThis.process = {
     try { this.__wjs_emit("exit", code === undefined ? (this.exitCode || 0) : Number(code)); } catch {}
     __wjs_process_exit(code === undefined ? undefined : Number(code));
   },
+  // node 口径：循环排空即派发 'beforeExit'（exitCode 为参；监听可再排任务续命，
+  // 排空后再发）。经 nextTick 投递——监听抛错走 uncaughtException/fatal 同一路由。
+  // 返回是否有监听（无则事件循环直接收尾，不多转一轮）。
+  __wjs_queueBeforeExit() {
+    if (this.listenerCount("beforeExit") === 0) return false;
+    this.nextTick(() => this.emit("beforeExit", this.exitCode ?? 0));
+    return true;
+  },
   // node 口径：退出中标志（common.mustCall 在 exit 处理器内禁调；真机 process._exiting）。
   // 本仓 exit 经哨兵错 unwind：设旗后抛，'exit' 监听在 unwind 前同步派发（见下）。
   _exiting: false,
@@ -336,7 +344,21 @@ globalThis.process = {
   // node process 即 EventEmitter（套件 promises-scheduler：process.addListener/
   // process.emit 直用）；emit 返回是否命中监听（node 口径）。
   addListener(type, cb) { return this.on(type, cb); },
-  emit(type, ...args) { return this.__wjs_emit(type, ...args) > 0; },
+  // node 口径（EventEmitter.emit）：监听抛错原样上抛；无监听的 'error' 即抛。
+  // 宿主内部派发走 `__wjs_emit`（吞错，结算点不被用户监听打断）。
+  emit(type, ...args) {
+    const list = [...(this.__wjs_listeners[String(type)] ?? [])];
+    if (list.length === 0 && type === "error") {
+      const er = args[0];
+      if (er instanceof Error) throw er;
+      const e = new Error(`Unhandled error. (${require("node:util").inspect(er)})`);
+      e.code = "ERR_UNHANDLED_ERROR";
+      e.context = er;
+      throw e;
+    }
+    for (const l of list) Reflect.apply(l, this, args);
+    return list.length > 0;
+  },
   removeAllListeners(type) {
     if (type === undefined) this.__wjs_listeners = {};
     else delete this.__wjs_listeners[String(type)];

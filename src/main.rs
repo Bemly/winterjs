@@ -114,6 +114,7 @@ fn main() {
 
     // 已知问题（AGENTS §4.8）：引擎/运行时析构期 StoreBuffer 悬垂边 SEGV。
     // 结果（含错误渲染）就绪后直接 process::exit 跳过 teardown，由 dispatch 返回退出码。
+    error::set_render_color(settings.log.color);
     let code = tokio_rt.block_on(dispatch(cli, &settings));
     tracing::debug!(target: "winterjs", code, "finished");
     // §4.8：process::exit 跳过 teardown；上报事件先排空（panic 路径自身已 flush）

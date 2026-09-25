@@ -99,6 +99,27 @@ async fn run_module(
     print_completion(rt, global, rval.get())
 }
 
+/// 致命错收尾（node `triggerUncaughtException` 尾段）：先打印错误，再以 exitCode=1 派发
+/// process 'exit'（mustCall 核对照跑；监听可改 exitCode / 再 exit），返回静默 `Exit`。
+/// 仅 CLI 主进程主线程生效（登记了渲染配色）；worker/testrun 原错透传自理。
+fn fatal_exit(rt: &mut Runtime, global: &RootedGuard<'_, *mut JSObject>, e: Error) -> Error {
+    let e = map_exit_sentinel(e);
+    if matches!(e, Error::Exit(_)) || !state::worker_is_main() {
+        return e;
+    }
+    let Some(color) = crate::error::render_color() else { return e };
+    if state::with_plain(|p| p.process_exited.is_some()) {
+        return e;
+    }
+    let _ = e.render(color);
+    state::set_exit_code(1);
+    {
+        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+        crate::builtins::node::process_::emit_exit(&mut realm, global.get());
+    }
+    Error::Exit(state::with_plain(|p| p.process_exited).or(state::exit_code()).unwrap_or(1))
+}
+
 /// 求值 `source`（名 `filename`）并打印完成值；事件循环排空 timers/microtasks。
 /// `extra_args` 进 `process.argv`（Script：`[exec, filename, ...]`；Eval：`[exec, ...]`）。
 pub async fn run(source: &str, filename: &str, mode: Mode, extra_args: &[String]) -> Result<(), Error> {
@@ -164,7 +185,8 @@ async fn run_inner(
     // 解析失败 → 回落经典（经典求值会给出它自己的报错）。
     if mode == Mode::Script {
         if let Some(url) = sniff_module(filename, source) {
-            let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await;
+            let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await
+                .map_err(|e| fatal_exit(&mut rt, &global, e));
             // §4.8：跳过引擎/运行时析构
             end_session(rt, engine);
             return r;
@@ -228,10 +250,15 @@ async fn run_inner(
                             None => Error::Other("uncaught JS exception (no stack info)".into()),
                         }
                     };
+                    let err = fatal_exit(&mut rt, &global, err);
                     end_session(rt, engine);
                     return Err(err);
                 }
-                event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await?;
+                if let Err(e) = event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await {
+                    let e = fatal_exit(&mut rt, &global, e);
+                    end_session(rt, engine);
+                    return Err(e);
+                }
                 // 自然退出派发 process 'exit'（CJS 主模块路径此前漏派发——node 套件几乎
                 // 全走这条，common.mustCall 退出核对从未执行）。显式 exit 已派发过则跳过。
                 if state::with_plain(|p| p.process_exited.is_none()) {
@@ -271,7 +298,8 @@ async fn run_inner(
         let res = evaluate_script(rt.cx(), global.handle(), source, rval.handle_mut(), options);
         if res.is_err() {
             if mode == Mode::Eval {
-                let r = eval_syntax_fallback(&mut rt, &global, source, filename, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await;
+                let r = eval_syntax_fallback(&mut rt, &global, source, filename, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await
+                    .map_err(|e| fatal_exit(&mut rt, &global, e));
                 // §4.8：跳过引擎/运行时析构（StoreBuffer 悬垂边在 destroyRuntime 的小 GC 里 SEGV）
                 end_session(rt, engine);
                 return r;
@@ -300,7 +328,8 @@ async fn run_inner(
                 && crate::loader::load_js(source, filename, &path).is_ok()
             {
                 tracing::info!(target: "winterjs::runtime", url = url.as_str(), "retrying as module");
-                let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await;
+                let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await
+                    .map_err(|e| fatal_exit(&mut rt, &global, e));
                 end_session(rt, engine);
                 return r;
             }
@@ -310,6 +339,7 @@ async fn run_inner(
                     prim.unwrap_or(info.message), kind),
                 None => Error::Other("uncaught JS exception (no stack info)".into()),
             };
+            let err = fatal_exit(&mut rt, &global, err);
             end_session(rt, engine);
             return Err(err);
         }
@@ -317,7 +347,11 @@ async fn run_inner(
 
     // 未包装成功的场景（含全部 Script 与无顶层 await 的 Eval）：
     // 完成值就是 rval（老行为）；仅 async IIFE 包装路径才读 __wjs_value。
-    event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await?;
+    if let Err(e) = event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await {
+        let e = fatal_exit(&mut rt, &global, e);
+        end_session(rt, engine);
+        return Err(e);
+    }
     // 自然退出：派发 process 'exit'（common.mustCall 计数结算点；Node 口径）。
     // 显式 process.exit 已在 JS 侧派发过（process_exited 旗），此处跳过防双发。
     if state::with_plain(|p| p.process_exited.is_none()) {

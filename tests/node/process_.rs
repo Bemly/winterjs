@@ -239,3 +239,44 @@ fn phase11_exit_event_and_hang_exit() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("exit-hang"));
     assert!(String::from_utf8_lossy(&out.stderr).contains("no progress for 1s"));
 }
+
+#[test]
+fn phase11_before_exit_and_fatal_exit_event() {
+    // 2026-09-26：循环排空派发 'beforeExit'（监听排新任务即续转、排空再发）；致命错先打印
+    // 再以 code 1 派发 'exit'（监听可改 exitCode）；process.emit 监听抛错原样上抛。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("b.js")
+        .write_str(
+            "let n = 0;\nprocess.on('beforeExit', (c) => { console.log('be', c, n); if (++n < 3) setTimeout(() => {}, 1); });\n\
+             process.on('exit', (c) => console.log('exit', c));\n",
+        )
+        .unwrap();
+    // 正常：排空 3 次发 3 次，之后 exit。
+    let (ok, out, _) = wjs(&["--run", "b.js"], &dir);
+    assert!(ok, "out: {out}");
+    assert_eq!(out.lines().collect::<Vec<_>>(), ["be 0 0", "be 0 1", "be 0 2", "exit 0"]);
+    // 报错：beforeExit 抛错 → stderr 打印错误，exit 监听收到 1 并改 exitCode=0 → 退出 0。
+    dir.child("t.js")
+        .write_str(
+            "process.on('exit', (c) => { console.log('exit', c); process.exitCode = 0; });\n\
+             process.on('beforeExit', () => { throw new Error('be-boom'); });\n",
+        )
+        .unwrap();
+    let out = winterjs().args(["--run", "t.js"]).current_dir(dir.path()).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("exit 1"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Error: be-boom"));
+    // 边界：process.exit() 不发 beforeExit；process.emit 抛错可被 catch；无监听 'error' 即抛。
+    dir.child("x.js")
+        .write_str(
+            "process.on('beforeExit', () => console.log('BAD'));\n\
+             process.on('foo', () => { throw new Error('l'); });\n\
+             try { process.emit('foo'); } catch (e) { console.log('caught', e.message); }\n\
+             try { process.emit('error', 5); } catch (e) { console.log(e.code); }\n\
+             process.exit(0);\n",
+        )
+        .unwrap();
+    let (ok, out, _) = wjs(&["--run", "x.js"], &dir);
+    assert!(ok, "out: {out}");
+    assert_eq!(out.lines().collect::<Vec<_>>(), ["caught l", "ERR_UNHANDLED_ERROR"]);
+}

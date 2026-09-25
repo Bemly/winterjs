@@ -31,6 +31,8 @@
 ///（Agent/工厂/收尾），concat 字节恒等。
 pub const SOURCE: &str = concat!(
     include_str!("framing_head.js"),
+    include_str!("framing_head_serverresponse.js"),
+    include_str!("framing_head_headbytes.js"),
     include_str!("framing_outgoing.js"),
     include_str!("framing_agent.js"),
 );

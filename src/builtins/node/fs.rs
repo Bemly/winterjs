@@ -945,11 +945,12 @@ mod tests {
 }
 
 /// 内嵌 ESM 源（`node:fs`；§0.9 按域分块：`fs_base.js` 基础 + `fs_streams.js` 流 +
-/// `fs_fdsync.js` 校验/fd 同步 + `fs_async.js` promises/回调，concat 字节恒等；
+/// `fs_sync9c.js` 同步面增补 + `fs_fdsync.js` 校验/fd 同步 + `fs_async.js` promises/回调，concat 字节恒等；
 /// 错误带 `.code/.syscall/.path`，偏差见头注）。
 pub const SOURCE: &str = concat!(
     include_str!("fs_base.js"),
     include_str!("fs_streams.js"),
+    include_str!("fs_sync9c.js"),
     include_str!("fs_fdsync.js"),
     include_str!("fs_async.js"),
 );

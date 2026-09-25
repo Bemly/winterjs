@@ -849,6 +849,7 @@ pub unsafe extern "C" fn cp_spawn(
 /// `child_proc.js` ChildProcess 类 + `child_spawn.js` spawn/exec 族，concat 字节恒等）。
 pub const SOURCE: &str = concat!(
     include_str!("child_proc.js"),
+    include_str!("child_proc_onexit.js"),
     include_str!("child_spawn.js"),
 );
 

@@ -72,6 +72,11 @@ const __codes = {
   ERR_HTTP2_SOCKET_UNBOUND: () => __h2Err("ERR_HTTP2_SOCKET_UNBOUND", "The socket has been unbound from the session."),
   ERR_HTTP2_OUT_OF_BUFFERS: () => __h2Err("ERR_HTTP2_OUT_OF_BUFFERS", "Out of buffers"),
   ERR_HTTP2_HEADERS_OBJECT: () => __h2Err("ERR_HTTP2_HEADERS_OBJECT", "Headers must be an object"),
+  ERR_HTTP2_UNSUPPORTED_PROTOCOL: (p) => __h2Err("ERR_HTTP2_UNSUPPORTED_PROTOCOL", `protocol "${p}" is unsupported.`),
+  ERR_HTTP2_ALTSVC_INVALID_ORIGIN: () => __h2Err("ERR_HTTP2_ALTSVC_INVALID_ORIGIN", "HTTP/2 ALTSVC frames require a valid origin", "TypeError"),
+  ERR_HTTP2_ALTSVC_LENGTH: () => __h2Err("ERR_HTTP2_ALTSVC_LENGTH", "HTTP/2 ALTSVC frames are limited to 16382 bytes", "TypeError"),
+  ERR_HTTP2_INVALID_ORIGIN: () => __h2Err("ERR_HTTP2_INVALID_ORIGIN", "HTTP/2 ORIGIN frames require a valid origin", "TypeError"),
+  ERR_HTTP2_ORIGIN_LENGTH: () => __h2Err("ERR_HTTP2_ORIGIN_LENGTH", "HTTP/2 ORIGIN frames are limited to 16382 bytes", "TypeError"),
   ERR_HTTP2_CONNECT_AUTHORITY: () => __h2Err("ERR_HTTP2_CONNECT_AUTHORITY", ":authority header is required for CONNECT requests"),
   ERR_HTTP2_CONNECT_PATH: () => __h2Err("ERR_HTTP2_CONNECT_PATH", "The :path header is forbidden for CONNECT requests"),
   ERR_HTTP2_CONNECT_SCHEME: () => __h2Err("ERR_HTTP2_CONNECT_SCHEME", "The :scheme header is forbidden for CONNECT requests"),
@@ -96,6 +101,19 @@ function __h2RequestPriorityDeprecate() {
   if (__h2ReqPriorityWarned) return;
   __h2ReqPriorityWarned = true;
   process.emitWarning("Priority signaling has been deprecated as of RFC 9113.", "DeprecationWarning", "DEP0194");
+}
+// node Http2Stream.close(code, callback) 门：code 须 uint32 整数、callback 须函数（有则）。
+function __validateStreamClose(code, cb) {
+  if (typeof code !== "number") throw __code("ERR_INVALID_ARG_TYPE", "code", "number", code);
+  if (!Number.isInteger(code) || code < 0 || code > 4294967295) {
+    throw new codes.ERR_OUT_OF_RANGE("code", ">= 0 && <= 4294967295", code);
+  }
+  if (cb !== undefined && typeof cb !== "function") throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", cb);
+}
+// node getURLOrigin：`new URL(s).origin`——解析失败即抛 ERR_INVALID_URL（不吞），
+// 非特殊协议（foo://bar）得 'null' 由调用方判 INVALID_ORIGIN。
+function __urlOrigin(s) {
+  return new URL(s).origin;
 }
 function __code(name, ...args) {
   const f = codes[name];
@@ -500,12 +518,11 @@ class Http2Session extends EventEmitter {
   }
   goaway(code = 0, lastStreamID = 0, opaqueData) {
     if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
-    if (typeof code === "object" && code !== null) {
-      // goaway(options) 形（node：{errorCode, lastStreamID, opaqueData}）
-      const o = code;
-      code = o.errorCode ?? 0;
-      lastStreamID = o.lastStreamID ?? 0;
-      opaqueData = o.opaqueData;
+    // node core.js 逐字：三参各自类型门（无对象形重载）。
+    if (typeof code !== "number") throw __code("ERR_INVALID_ARG_TYPE", "code", "number", code);
+    if (typeof lastStreamID !== "number") throw __code("ERR_INVALID_ARG_TYPE", "lastStreamID", "number", lastStreamID);
+    if (opaqueData !== undefined && !ArrayBuffer.isView(opaqueData)) {
+      throw __code("ERR_INVALID_ARG_TYPE", "opaqueData", ["Buffer", "TypedArray", "DataView"], opaqueData);
     }
     this.__goaway = { code, lastStreamID, opaqueData };
     // 底座无 GOAWAY 帧下发（偏差记档）：本会话立即收尾（node goaway 后不再收流）。
@@ -520,12 +537,42 @@ class Http2Session extends EventEmitter {
     this.__nextStreamID = id;
     return this;
   }
-  altsvc(alt, origin) {
-    // ALTSVC 帧无底座（偏差记档）：参数校验后 no-op
-    if (typeof alt === "string" || alt === undefined) return this;
-    throw __code("ERR_INVALID_ARG_TYPE", "alt", "string", alt);
+  // ALTSVC/ORIGIN 帧无底座（偏差记档）：参数校验逐字移植 node core.js，校验过即 no-op。
+  altsvc(alt, originOrStream) {
+    if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
+    let origin;
+    if (typeof originOrStream === "string") {
+      origin = __urlOrigin(originOrStream);
+      if (origin === "null") throw __code("ERR_HTTP2_ALTSVC_INVALID_ORIGIN");
+    } else if (typeof originOrStream === "number") {
+      if (originOrStream >>> 0 !== originOrStream || originOrStream === 0) {
+        throw new codes.ERR_OUT_OF_RANGE("originOrStream", `> 0 && < ${2 ** 32}`, originOrStream);
+      }
+    } else if (originOrStream !== undefined) {
+      if (originOrStream !== null && typeof originOrStream === "object") origin = originOrStream.origin;
+      if (typeof origin !== "string") {
+        throw __code("ERR_INVALID_ARG_TYPE", "originOrStream", ["string", "number", "URL", "object"], originOrStream);
+      } else if (origin === "null" || origin.length === 0) {
+        throw __code("ERR_HTTP2_ALTSVC_INVALID_ORIGIN");
+      }
+    }
+    if (typeof alt !== "string") throw __code("ERR_INVALID_ARG_TYPE", "alt", "string", alt);
+    if (!/^[\x09\x20-\x5b\x5d-\x7e\x80-\xff]*$/.test(alt)) throw new codes.ERR_INVALID_CHAR(undefined, "alt");
+    if (alt.length + (origin !== undefined ? origin.length : 0) > 16382) throw __code("ERR_HTTP2_ALTSVC_LENGTH");
+    return this;
   }
-  origin(...origins) { return this; }
+  origin(...origins) {
+    if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
+    let len = 0;
+    for (let origin of origins) {
+      if (typeof origin === "string") origin = __urlOrigin(origin);
+      else if (origin != null && typeof origin === "object") origin = origin.origin;
+      if (typeof origin !== "string") throw __code("ERR_INVALID_ARG_TYPE", "origin", "string", origin);
+      if (origin === "null") throw __code("ERR_HTTP2_INVALID_ORIGIN");
+      len += origin.length;
+    }
+    if (len > 16382) throw __code("ERR_HTTP2_ORIGIN_LENGTH");
+  }
   __registerStream(stream) {
     this.__streams.set(stream.id, stream);
   }

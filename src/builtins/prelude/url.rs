@@ -34,11 +34,22 @@ function __wjs_uspTouch(usp) {
   const s = __wjs_uspState.get(usp);
   if (s.parent) __wjs_pushSearch(s.parent);
 }
+// node 口径：解析失败抛 TypeError "Invalid URL"，带 code=ERR_INVALID_URL、input（有 base 时另带 base）
+// ——修前是原生层文案的普通 Error（"TypeError: Invalid URL: …"），按 code 断言的套件全挂。
+function __wjs_urlParseOrThrow(url, base) {
+  try {
+    return base === undefined ? __wjs_url_parse(url) : __wjs_url_parse(url, base);
+  } catch {
+    const e = new TypeError("Invalid URL");
+    e.code = "ERR_INVALID_URL";
+    e.input = url;
+    if (base !== undefined) e.base = base;
+    throw e;
+  }
+}
 globalThis.URL = class URL {
   constructor(url, base) {
-    const href = (base === undefined)
-      ? __wjs_url_parse(String(url))
-      : __wjs_url_parse(String(url), String(base));
+    const href = __wjs_urlParseOrThrow(String(url), base === undefined ? undefined : String(base));
     __wjs_urlState.set(this, { href, usp: null });
   }
   static canParse(url, base) {
@@ -49,7 +60,7 @@ globalThis.URL = class URL {
     } catch { return false; }
   }
   get href() { return __wjs_urlState.get(this).href; }
-  set href(v) { __wjs_setHref(this, __wjs_url_parse(String(v))); }
+  set href(v) { __wjs_setHref(this, __wjs_urlParseOrThrow(String(v))); }
   get protocol() { return __wjs_url_get(this.href, "protocol"); }
   set protocol(v) { __wjs_setHref(this, __wjs_url_set(this.href, "protocol", String(v))); }
   get username() { return __wjs_url_get(this.href, "username"); }

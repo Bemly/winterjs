@@ -266,6 +266,8 @@ class Http2ServerStream extends Duplex {
     }
   }
   pushStream(headers, options, cb) {
+    // 注：node 门序首位是"对端未开推送即同步抛 PUSH_DISABLED"，但 hyper 服务端不暴露对端
+    // SETTINGS（enablePush 不可知）——同步抛会误伤对端开推送时的参数校验套件，维持回调形（记档）。
     if (typeof options === "function") { cb = options; options = {}; }
     if (typeof cb !== "function") {
       throw __code("ERR_INVALID_ARG_TYPE", "callback", "Function", cb);
@@ -338,6 +340,7 @@ class Http2ServerStream extends Duplex {
   }
   close(code = 0, cb) {
     if (typeof code === "function") { cb = code; code = 0; }
+    __validateStreamClose(code, cb);
     if (typeof cb === "function") this.once("close", cb);
     if (this.__closed || this.__destroyed) return this;
     if (!this.__trailersSent) {
@@ -775,11 +778,9 @@ class Http2ServerResponse extends Writable {
   }
   writeContinue(cb) { if (typeof cb === "function") queueMicrotask(cb); return this; }
   writeInformation(type, info, cb) {
-    if (typeof type !== "number" || !Number.isInteger(type) || type < 200 || type > 599) {
+    // 信息性应答：仅 1xx 且非 101（101 属协议切换），余者 STATUS_INVALID（套件逐项）。
+    if (typeof type !== "number" || !Number.isInteger(type) || type < 100 || type > 199 || type === 101) {
       throw __code("ERR_HTTP2_STATUS_INVALID", type);
-    }
-    if (type === 204 || type === 304) {
-      throw __code("ERR_HTTP2_INVALID_INFO_STATUS", type);
     }
     if (typeof info === "object" && info !== null && !Array.isArray(info)) {
       for (const [k, v] of Object.entries(info)) {

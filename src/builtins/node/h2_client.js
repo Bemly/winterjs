@@ -149,8 +149,9 @@ class ClientHttp2Stream extends Duplex {
     if (options.silent !== true) { /* 无 PRIORITY 帧底座（偏差记档） */ }
     return this;
   }
-  close(code, cb) {
+  close(code = 0, cb) {
     if (typeof code === "function") { cb = code; code = 0; }
+    __validateStreamClose(code, cb);
     if (!this.destroyed) {
       if (typeof cb === "function") this.once("close", cb);
       this.__ended = true;
@@ -692,6 +693,10 @@ export function connect(authority, options, listener) {
     options = authority ?? {};
   }
   if (typeof options === "function") { listener = options; options = {}; }
+  // node connect()：仅 http:/https:，余者同步抛 UNSUPPORTED_PROTOCOL。
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw __code("ERR_HTTP2_UNSUPPORTED_PROTOCOL", url.protocol);
+  }
   secure = url.protocol === "https:";
   const session = new ClientHttp2Session(url.host, { ...(options ?? {}), tls: secure ? (options ?? {}) : undefined });
   session.__secure = secure;

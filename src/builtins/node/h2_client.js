@@ -112,6 +112,9 @@ class ClientHttp2Stream extends Duplex {
   __onTrailers(t) { this.emit("trailers", t); }
   __onEnd() {
     this.push(null);
+    // node onStreamClose：客户端流 push(null) 后 read(0)——无人读的空体应答也能发 'end'
+    // （缓冲有数据时 read(0) 不消费，照旧等用户读）。
+    if (this.readableFlowing !== true) this.read(0);
     // node：END_STREAM 收到 + 请求侧已尽 → 流 close（不必等 readable 消费；
     // respond-file-errors 套件 req 无 data 监听仅等 'close'）
     if (this.writableEnded && !this.destroyed) {
@@ -525,11 +528,22 @@ class ClientHttp2Session extends EventEmitter {
       });
       return st;
     }
+    __validateRequestOptions(options);
+    // node core.js request() 逐字门序：CONNECT（无 :protocol）须带 :authority 且禁 :scheme/:path；
+    // 其余补缺省伪头；再经 mapToHeaders 口径校验（名 token、单值头重复）。
     const h = { ...headers };
     if (h[":method"] === undefined) h[":method"] = "GET";
-    if (h[":path"] === undefined && h[":method"] !== "CONNECT") h[":path"] = "/";
-    if (h[":authority"] === undefined && h.host === undefined) h[":authority"] = this.__authority;
-    if (h[":scheme"] === undefined) h[":scheme"] = this.__secure ? "https" : "http";
+    const isConnect = h[":method"] === "CONNECT" && h[":protocol"] === undefined;
+    if (!isConnect) {
+      if (h[":authority"] === undefined && h.host === undefined) h[":authority"] = this.__authority;
+      if (h[":scheme"] === undefined) h[":scheme"] = this.__secure ? "https" : "http";
+      if (h[":path"] === undefined) h[":path"] = "/";
+    } else {
+      if (h[":authority"] === undefined) throw __code("ERR_HTTP2_CONNECT_AUTHORITY");
+      if (h[":scheme"] !== undefined) throw __code("ERR_HTTP2_CONNECT_SCHEME");
+      if (h[":path"] !== undefined) throw __code("ERR_HTTP2_CONNECT_PATH");
+    }
+    __mapToHeadersCheck(h);
     const pseudoKeys = Object.keys(h).filter((k) => k.startsWith(":"));
     const canonical = [":method", ":scheme", ":authority", ":path"];
     const differs = pseudoKeys.length !== canonical.length ||

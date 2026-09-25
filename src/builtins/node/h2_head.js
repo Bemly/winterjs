@@ -72,6 +72,9 @@ const __codes = {
   ERR_HTTP2_SOCKET_UNBOUND: () => __h2Err("ERR_HTTP2_SOCKET_UNBOUND", "The socket has been unbound from the session."),
   ERR_HTTP2_OUT_OF_BUFFERS: () => __h2Err("ERR_HTTP2_OUT_OF_BUFFERS", "Out of buffers"),
   ERR_HTTP2_HEADERS_OBJECT: () => __h2Err("ERR_HTTP2_HEADERS_OBJECT", "Headers must be an object"),
+  ERR_HTTP2_CONNECT_AUTHORITY: () => __h2Err("ERR_HTTP2_CONNECT_AUTHORITY", ":authority header is required for CONNECT requests"),
+  ERR_HTTP2_CONNECT_PATH: () => __h2Err("ERR_HTTP2_CONNECT_PATH", "The :path header is forbidden for CONNECT requests"),
+  ERR_HTTP2_CONNECT_SCHEME: () => __h2Err("ERR_HTTP2_CONNECT_SCHEME", "The :scheme header is forbidden for CONNECT requests"),
   ERR_HTTP2_HEADERS_AFTER_RESPOND: () => __h2Err("ERR_HTTP2_HEADERS_AFTER_RESPOND", "Cannot specify additional headers after response has initiated"),
   ERR_HTTP2_INVALID_HEADER_VALUE: (v, n) => __h2Err("ERR_HTTP2_INVALID_HEADER_VALUE", `Invalid header value: "${v}" for header "${n}"`),
   ERR_HTTP2_NO_SOCKET_MANIPULATION: () => __h2Err("ERR_HTTP2_NO_SOCKET_MANIPULATION", "HTTP/2 sockets should not be directly manipulated (e.g. read and written)"),
@@ -178,6 +181,44 @@ function __validateH2Headers(headers, allowedPseudo = []) {
       __validateHeaderName(String(key));
       __validateHeaderValue(String(key), headers[key]);
     }
+  }
+}
+// node util.js kSingleValueHeaders：大小写变体重复或数组多值即 HEADER_SINGLE_VALUE。
+const __SINGLE_VALUE_HEADERS = new Set([
+  ":status", ":method", ":authority", ":scheme", ":path", ":protocol",
+  "access-control-allow-credentials", "access-control-max-age", "access-control-request-method",
+  "age", "authorization", "content-encoding", "content-language", "content-length",
+  "content-location", "content-md5", "content-range", "content-type", "date", "dnt", "etag",
+  "expires", "from", "host", "if-match", "if-modified-since", "if-none-match", "if-range",
+  "if-unmodified-since", "last-modified", "location", "max-forwards", "proxy-authorization",
+  "range", "referer", "retry-after", "tk", "upgrade-insecure-requests", "user-agent",
+  "x-content-type-options",
+]);
+// node mapToHeaders 的校验面：非伪头名须是 HTTP token（ERR_INVALID_HTTP_TOKEN），单值头不得重复。
+const __REQ_PSEUDO = new Set([":method", ":authority", ":scheme", ":path", ":protocol"]);
+function __mapToHeadersCheck(headers) {
+  const seen = new Set();
+  for (const key of Object.keys(headers)) {
+    const lk = String(key).toLowerCase();
+    if (lk.startsWith(":") && !__REQ_PSEUDO.has(lk)) throw __code("ERR_HTTP2_INVALID_PSEUDOHEADER", lk);
+  }
+  for (const key of Object.keys(headers)) {
+    const lk = String(key).toLowerCase();
+    const v = headers[key];
+    if (__SINGLE_VALUE_HEADERS.has(lk)) {
+      if (seen.has(lk) || (Array.isArray(v) && v.length > 1)) throw __code("ERR_HTTP2_HEADER_SINGLE_VALUE", lk);
+      seen.add(lk);
+    }
+    if (!lk.startsWith(":") && lk !== "x-wjs-pho") __validateHeaderName(String(key));
+  }
+}
+// node request() 选项类型门（validateBoolean/validateNumber 同码 ERR_INVALID_ARG_TYPE）。
+function __validateRequestOptions(options) {
+  if (options === undefined || options === null) return;
+  for (const [k, t] of [["endStream", "boolean"], ["exclusive", "boolean"], ["silent", "boolean"],
+    ["waitForTrailers", "boolean"], ["parent", "number"], ["weight", "number"]]) {
+    const v = options[k];
+    if (v !== undefined && typeof v !== t) throw __code("ERR_INVALID_ARG_TYPE", `options.${k}`, t, v);
   }
 }
 // 设置项取值/校验（node updateSettingsInternal 同口径；customSettings 放行）

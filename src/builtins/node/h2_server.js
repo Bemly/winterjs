@@ -609,6 +609,10 @@ class Http2ServerResponse extends Writable {
   get writableCorked() { return this.__stream.writableCorked; }
   get _header() { return this.headersSent; }
   setHeader(name, value) {
+    // node compat.js：名先 trim + 小写；伪头禁用（PSEUDOHEADER_NOT_ALLOWED）；再验 token/值。
+    if (typeof name !== "string") throw __code("ERR_INVALID_ARG_TYPE", "name", "string", name);
+    name = name.trim();
+    if (name.startsWith(":")) throw __code("ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED");
     __validateHeaderName(name);
     __validateHeaderValue(name, value);
     const k = String(name).toLowerCase();

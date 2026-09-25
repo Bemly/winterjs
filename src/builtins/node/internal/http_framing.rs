@@ -37,4 +37,6 @@ pub const SOURCE: &str = concat!(
     include_str!("framing_outgoing_feed.js"),
     include_str!("framing_outgoing_attach.js"),
     include_str!("framing_agent.js"),
+    include_str!("framing_agent_onsockdata.js"),
+    include_str!("framing_agent_tryresume.js"),
 );

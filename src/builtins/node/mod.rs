@@ -67,6 +67,7 @@ pub mod testmod;
 pub mod timers;
 pub mod timers_promises;
 pub mod tls;
+mod tls_v1;
 pub mod trace_events;
 pub mod tty;
 pub mod util;

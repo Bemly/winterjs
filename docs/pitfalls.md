@@ -215,6 +215,7 @@
 - 4.207 `TMPDIR` 放 U+F8FF 卷即黑盒假红：`URL.pathname` 是百分号编码（2026-09-25，D1 轮）
 - 4.208 require 把用户异常转串重抛：位置恒 prelude 424:53、NodeError 空文案、原对象丢失（2026-09-25）
 - 4.209 node 旗前缀放行 = 自 spawn 无限递归，fork 链吃光内核致系统 panic（2026-09-25，D1 回归）
+- 4.210 rustls/webpki 拒收 X.509 v1 证书：服务端绕 keys_match，客户端验签兜底（2026-09-25，P1）
 
 ## 条目
 
@@ -3861,3 +3862,17 @@
   `node_runtime_flags_self_spawn_forms`（非法值 exit 9）；原套件现 rc=0。
 - 推广铁律：**会让"同一文件再跑一次"的兼容翻译，必须同时回答"非法输入时会不会自递归"**；
   跑任何会 spawn 自身的批量任务前，先给进程数封顶（`ulimit -u` / `RLIMIT_NPROC`），超时一律杀进程组。
+### 4.210 rustls/webpki 拒收 X.509 v1 证书：服务端绕 keys_match，客户端验签兜底（2026-09-25，P1）
+
+- 症状：node 套件的 `agent*-cert.pem`（v1）在 `tls/https/http2.createServer` 即报
+  `bad key/cert pair (… UnsupportedCertVersion)`；客户端 `ca:` 校验同码失败。基线 37 件同因。
+- 根因：webpki 只解析 v3；`ServerConfig::with_single_cert` 经 `CertifiedKey::from_der` 做
+  keys_match 时解析终端证书即拒。OpenSSL 照收 v1。
+- 修法：服务端 provider 严格加载私钥后以固定解析器直出（`FixedCert`，不做 v1 解析）；
+  客户端 `ca:` 路径包一层 `V1FallbackVerifier`——标准 WebPki 报 `UnsupportedCertVersion`
+  时手工校验（issuer Name 全等 + 复用 `x509_verify_impl` 验签 + 有效期 + CN 主机名），
+  TLS 1.3 握手签名经 SPKI 走 `verify_tls13_signature_with_raw_key`（1.2 无原始公钥变体，记档）。
+- 复现：`tests/node/tls.rs::phase11_tls_x509_v1_certificates`（fixtures 用 LibreSSL
+  `/usr/bin/openssl x509 -req` 生成——OpenSSL 3 缺省出 v3）。
+- 推广铁律：轮子"拒收合法旧格式"时，先确认拒收点是**解析**还是**校验**；解析拒收可在
+  出示侧绕开，校验侧兜底必须保住签名/有效期/主机名三件，不许退化成空校验。

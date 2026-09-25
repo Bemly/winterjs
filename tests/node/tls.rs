@@ -101,3 +101,47 @@ setTimeout(() => console.log("end-ok"), 1500);
     dir.close().unwrap();
 }
 // ── Phase 9d-7：node:http2 ────
+
+#[test]
+fn phase11_tls_x509_v1_certificates() {
+    // P1（2026-09-25）：X.509 v1 证书（node fixtures agent* 同形，OpenSSL 照收、webpki 拒）——
+    // 服务端出示 + 客户端经 ca 校验（v1 兜底：issuer 验签 + 有效期 + CN 主机名）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let fx = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tls/");
+    let out = run_fs_file(
+        &dir,
+        "v1.mjs",
+        &format!(
+            r#"
+import tls from "node:tls";
+import fs from "node:fs";
+const key = fs.readFileSync("{fx}v1-key.pem", "utf8");
+const cert = fs.readFileSync("{fx}v1-cert.pem", "utf8");
+const ca = fs.readFileSync("{fx}ca-cert.pem", "utf8");
+const server = tls.createServer({{ key, cert }}, (s) => s.end("v1-ok"));
+server.listen(0, "127.0.0.1", () => {{
+  const port = server.address().port;
+  // 正常：servername=localhost 对上 CN，ca 验签通过。
+  const a = tls.connect({{ port, host: "127.0.0.1", servername: "localhost", ca }}, () => {{
+    console.log("v1-authorized", a.authorized);
+  }});
+  a.on("data", (c) => console.log("v1-data", String(c)));
+  a.on("close", () => {{
+    // 报错：主机名不符（CN=localhost vs other.test）。
+    const b = tls.connect({{ port, host: "127.0.0.1", servername: "other.test", ca }});
+    b.on("error", (e) => {{
+      console.log("v1-badname", /NotValidForName/.test(e.message));
+      // 边界：错的 ca（自身证书当 ca）→ 签发者不认识。
+      const c = tls.connect({{ port, host: "127.0.0.1", servername: "localhost", ca: cert }});
+      c.on("error", (e2) => {{ console.log("v1-badca", /UnknownIssuer/.test(e2.message)); server.close(); }});
+    }});
+  }});
+}});
+"#
+        ),
+    );
+    for line in ["v1-authorized true", "v1-data v1-ok", "v1-badname true", "v1-badca true"] {
+        assert!(out.contains(line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

@@ -10,7 +10,7 @@ mod ec;
 mod eddsa;
 mod rsa;
 mod symm;
-mod x509;
+pub(crate) mod x509;
 mod xdh;
 
 #[cfg(test)]

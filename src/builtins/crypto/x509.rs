@@ -252,7 +252,7 @@ pub unsafe extern "C" fn x509_verify(
 }
 
 /// 验签实现（native 的纯逻辑核，单测覆盖）。
-fn x509_verify_impl(der: &[u8], key: &[u8], key_type: &str) -> Result<bool, String> {
+pub(crate) fn x509_verify_impl(der: &[u8], key: &[u8], key_type: &str) -> Result<bool, String> {
     use der::Decode as _;
     let cert = x509_cert::Certificate::from_der(der)
         .map_err(|_| "TypeError: bad X.509 certificate".to_string())?;

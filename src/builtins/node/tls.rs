@@ -74,10 +74,29 @@ fn server_config(cert_pem: &str, key_pem: &str) -> Result<rustls::ServerConfig, 
     let key = rustls_pemfile::private_key(&mut key_pem.as_bytes())
         .map_err(|e| format!("TypeError: tls key: bad PEM ({e})"))?
         .ok_or_else(|| "TypeError: tls key: no private key in PEM".to_string())?;
-    rustls::ServerConfig::builder()
+    // 不走 `with_single_cert`：它经 webpki 解析终端证书做 keys_match，X.509 **v1** 证书
+    // （node 测试 fixtures 的 agent*-cert 全是 v1，OpenSSL 照收）被拒成
+    // `UnsupportedCertVersion`。服务端只需"出示"证书链，私钥仍由 provider 严格加载，
+    // 公私钥不配对照样在 provider 装载/握手签名处失败——这里固定解析器直出。
+    let provider = rustls::crypto::ring::default_provider();
+    let signing = provider
+        .key_provider
+        .load_private_key(key)
+        .map_err(|e| format!("TypeError: tls: bad key/cert pair ({e})"))?;
+    let ck = std::sync::Arc::new(rustls::sign::CertifiedKey::new(certs, signing));
+    Ok(rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| format!("TypeError: tls: bad key/cert pair ({e})"))
+        .with_cert_resolver(std::sync::Arc::new(FixedCert(ck))))
+}
+
+/// 固定证书解析器（见 `server_config`：绕开 v1 证书的 keys_match 拒收）。
+#[derive(Debug)]
+struct FixedCert(std::sync::Arc<rustls::sign::CertifiedKey>);
+
+impl rustls::server::ResolvesServerCert for FixedCert {
+    fn resolve(&self, _hello: rustls::server::ClientHello<'_>) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
+        Some(self.0.clone())
+    }
 }
 
 /// 客户端配置（纯函数，单元测试覆盖）。
@@ -91,15 +110,25 @@ fn client_config(ca_pem: Option<&str>, reject_unauthorized: bool) -> Result<rust
     }
     let mut roots = rustls::RootCertStore::empty();
     if let Some(pem) = ca_pem {
-        let mut n = 0usize;
+        let mut cas = Vec::new();
         for cert in rustls_pemfile::certs(&mut pem.as_bytes()) {
             let cert = cert.map_err(|e| format!("TypeError: tls ca: bad PEM ({e})"))?;
-            roots.add(cert).map_err(|e| format!("TypeError: tls ca: rejected ({e})"))?;
-            n += 1;
+            roots.add(cert.clone()).map_err(|e| format!("TypeError: tls ca: rejected ({e})"))?;
+            cas.push(cert);
         }
-        if n == 0 {
+        if cas.is_empty() {
             return Err("TypeError: tls ca: no certificate in PEM".into());
         }
+        // 用户 ca：标准 WebPki 校验 + X.509 v1 终端证书兜底（见 tls_v1）。
+        let inner = rustls::client::WebPkiServerVerifier::builder(std::sync::Arc::new(roots))
+            .build()
+            .map_err(|e| format!("TypeError: tls ca: rejected ({e})"))?;
+        return Ok(rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(
+                crate::builtins::node::tls_v1::V1FallbackVerifier::new(inner, cas),
+            ))
+            .with_no_client_auth());
     } else {
         let loaded = rustls_native_certs::load_native_certs();
         let mut added = 0usize;

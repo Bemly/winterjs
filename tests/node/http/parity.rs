@@ -1,7 +1,6 @@
 //! tests/node/http/parity.rs — 对拍 round1（对齐 src/builtins/node/http.rs）。
 
 use crate::helpers::*;
-use assert_fs::prelude::*;
 
 #[test]
 fn phase10f_http_parity_round1() {

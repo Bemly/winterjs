@@ -127,6 +127,7 @@ class ClientHttp2Stream extends Duplex {
     this.destroy(__code("ERR_HTTP2_STREAM_CANCEL"));
   }
   priority(options) {
+    __h2PriorityDeprecate();
     if (options === null || typeof options !== "object") {
       throw __code("ERR_INVALID_ARG_TYPE", "options", "object", options);
     }
@@ -495,6 +496,11 @@ class ClientHttp2Session extends EventEmitter {
     }
   }
   request(headers, options) {
+    // node：请求选项带优先级字段即弃用告警（DEP0194，RFC 9113 废止优先级信令；进程级一次）。
+    if (options && (options.weight !== undefined || options.parent !== undefined ||
+        options.exclusive !== undefined || options.silent !== undefined)) {
+      __h2RequestPriorityDeprecate();
+    }
     // node：closed（GOAWAY 后）新建流同步抛 ERR_HTTP2_GOAWAY_SESSION；
     // destroyed 会话上 request() 不同步抛——返回一个异步 error
     // ERR_HTTP2_INVALID_SESSION + 'close' 的流（client-destroy 套件）
@@ -547,8 +553,12 @@ class ClientHttp2Session extends EventEmitter {
     if (!st.__deferred) {
       if (this.connecting && !this.closed) this.__pendingOpens.push(st);
       else st.__openNow(null);
+      // node isPayloadMeaningless：GET/HEAD/DELETE 缺省 endStream=true → 可写侧即尽，
+      // 收完应答流即 'close'（修前可写侧悬着，req 'close' 永不到）。
+      const m = String(st.sentHeaders[":method"]);
+      const endStream = options?.endStream ?? (m === "GET" || m === "HEAD" || m === "DELETE");
+      if (endStream) st.end();
     }
-    return st;
     return st;
   }
   // node：client.close() 优雅关（GOAWAY）：新流被拒、已收到应答的流继续、

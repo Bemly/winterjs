@@ -76,6 +76,21 @@ const __codes = {
   ERR_HTTP2_INVALID_STREAM: () => __h2Err("ERR_HTTP2_INVALID_STREAM", "The stream has been destroyed"),
   ERR_HTTP2_HEADERS_SENT: () => __h2Err("ERR_HTTP2_HEADERS_SENT", "Response has already been initiated."),
 };
+// node core.js：Http2Stream.priority 在 RFC 9113 废止优先级信令后弃用（DEP0194，进程级一次）。
+let __h2PriorityWarned = false;
+function __h2PriorityDeprecate() {
+  if (__h2PriorityWarned) return;
+  __h2PriorityWarned = true;
+  process.emitWarning(
+    "http2Stream.priority is longer supported after priority signalling was deprecated in RFC 9113",
+    "DeprecationWarning", "DEP0194");
+}
+let __h2ReqPriorityWarned = false;
+function __h2RequestPriorityDeprecate() {
+  if (__h2ReqPriorityWarned) return;
+  __h2ReqPriorityWarned = true;
+  process.emitWarning("Priority signaling has been deprecated as of RFC 9113.", "DeprecationWarning", "DEP0194");
+}
 function __code(name, ...args) {
   const f = codes[name];
   // E() 工厂是 class（必须 new；返回对象的工厂 new 后同样取返回对象）

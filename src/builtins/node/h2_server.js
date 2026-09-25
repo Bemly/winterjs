@@ -293,6 +293,7 @@ class Http2ServerStream extends Duplex {
     return this;
   }
   priority(options) {
+    __h2PriorityDeprecate();
     if (options === null || typeof options !== "object") {
       throw __code("ERR_INVALID_ARG_TYPE", "options", "object", options);
     }
@@ -545,6 +546,20 @@ class Http2ServerRequest extends Readable {
   }
 }
 
+// node compat.js 的进程级一次性告警（UnsupportedWarning）。
+let __h2StatusMessageWarned = false;
+function __h2StatusMessageWarn() {
+  if (__h2StatusMessageWarned) return;
+  __h2StatusMessageWarned = true;
+  process.emitWarning("Status message is not supported by HTTP/2 (RFC7540 8.1.2.4)", "UnsupportedWarning");
+}
+let __h2ConnectionWarned = false;
+function __h2ConnectionHeaderWarn() {
+  if (__h2ConnectionWarned) return;
+  __h2ConnectionWarned = true;
+  process.emitWarning("The provided connection header is not valid, the value will be dropped from the header and will never be in use.", "UnsupportedWarning");
+}
+
 // ── Http2ServerResponse（Writable；写路径委派给底层 stream）──────────────────
 class Http2ServerResponse extends Writable {
   constructor(req, stream) {
@@ -588,7 +603,10 @@ class Http2ServerResponse extends Writable {
   setHeader(name, value) {
     __validateHeaderName(name);
     __validateHeaderValue(name, value);
-    this.__headers[String(name).toLowerCase()] = value;
+    const k = String(name).toLowerCase();
+    // node compat.js：h2 禁 connection 头——告警一次（进程级）并丢弃。
+    if (k === "connection") { __h2ConnectionHeaderWarn(); return this; }
+    this.__headers[k] = value;
     return this;
   }
   getHeader(name) {
@@ -613,10 +631,8 @@ class Http2ServerResponse extends Writable {
     else this.__headers[k] = [cur, value];
     return this;
   }
-  get statusMessage() { return ""; }
-  set statusMessage(v) {
-    process.emitWarning("Status message is not supported by HTTP/2 (RFC7540 8.1.2.4)");
-  }
+  get statusMessage() { __h2StatusMessageWarn(); return ""; }
+  set statusMessage(v) { __h2StatusMessageWarn(); }
   set statusCode(status) {
     if (typeof status !== "number" || !Number.isInteger(status) || status < 100 || status > 599) {
       throw __code("ERR_HTTP2_STATUS_INVALID", status);
@@ -645,7 +661,8 @@ class Http2ServerResponse extends Writable {
     this.__statusCode = status;
     for (const r of rest) {
       if (typeof r === "string") {
-        // reason phrase：h2 不支持（警告由 statusMessage setter 承担）
+        // reason phrase：h2 不支持——与 statusMessage 同一进程级一次性告警（node compat.js）。
+        __h2StatusMessageWarn();
       } else if (Array.isArray(r)) {
         for (let i = 0; i + 1 < r.length; i += 2) this.setHeader(r[i], r[i + 1]);
       } else if (r !== null && typeof r === "object") {

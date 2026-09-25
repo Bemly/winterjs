@@ -19,5 +19,6 @@
 /// `testmod_run.js` 事件流/run/发现，concat 字节恒等；调用点零改）。
 pub const SOURCE: &str = concat!(
     include_str!("testmod_core.js"),
+    include_str!("testmod_core_runafters.js"),
     include_str!("testmod_run.js"),
 );

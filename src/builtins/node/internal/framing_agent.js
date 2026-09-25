@@ -152,6 +152,17 @@
     // setTimeout 必须生效（client-timeout-with-data 套件）。
     setTimeout(msecs, callback) {
       if (this.__res !== null && this.__res !== undefined && this.__res.readableEnded) return this;
+      // getTimerDuration（node lib/internal/timers.js）：同步校验 + 溢出告警（告警栈含
+      // 调用点，timeout-client-warning 套件点名；落到 socket 再告警即丢调用栈）。
+      if (typeof msecs !== "number") throw new codes.ERR_INVALID_ARG_TYPE("msecs", "number", msecs);
+      if (msecs < 0 || !Number.isFinite(msecs)) {
+        throw new codes.ERR_OUT_OF_RANGE("msecs", "a non-negative finite number", msecs);
+      }
+      if (msecs > 2147483647) {
+        process.emitWarning(`${msecs} does not fit into a 32-bit signed integer.` +
+          "\nTimer duration was truncated to 2147483647.", "TimeoutOverflowWarning");
+        msecs = 2147483647;
+      }
       if (typeof callback === "function") this.once("timeout", callback);
       const ms = Number(msecs) || 0;
       this.__reqTimeoutMs = ms > 0 ? ms : undefined;

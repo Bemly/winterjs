@@ -280,3 +280,47 @@ fn phase11_before_exit_and_fatal_exit_event() {
     assert!(ok, "out: {out}");
     assert_eq!(out.lines().collect::<Vec<_>>(), ["caught l", "ERR_UNHANDLED_ERROR"]);
 }
+
+#[test]
+fn phase11_emit_warning_node_semantics() {
+    // 2026-09-26：emitWarning 按 node lib/internal/process/warning.js 移植——缺省打印是表内
+    // 普通监听（可 off 摘除）；once 监听只触发一次；noDeprecation/throwDeprecation 门控；
+    // CJS 栈帧是绝对路径（node 口径，stack.includes(__filename)）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("w.js")
+        .write_str(
+            "process.once('warning', (w) => console.log('once', w.name, w.code, w.stack.includes(__filename)));\n\
+             process.emitWarning('a', 'CustomWarning', 'C1');\n\
+             process.emitWarning('b');\n\
+             setTimeout(() => {\n\
+               process.removeListener('warning', process.listeners('warning')[0]);\n\
+               process.emitWarning('silent');\n\
+               process.noDeprecation = true; process.emitWarning('d', 'DeprecationWarning');\n\
+               process.noDeprecation = false; process.throwDeprecation = true;\n\
+               try { process.emitWarning('t', 'DeprecationWarning'); } catch (e) { console.log('thrown', e.name); }\n\
+             }, 5);\n",
+        )
+        .unwrap();
+    // 正常：once 收一次；缺省打印两条（含 code 前缀）+ 一次 trace 提示；摘除后静默。
+    let out = winterjs().args(["--run", "w.js"]).current_dir(dir.path()).output().unwrap();
+    let (so, se) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "stderr: {se}");
+    assert_eq!(so.lines().collect::<Vec<_>>(), ["once CustomWarning C1 true", "thrown DeprecationWarning"]);
+    assert!(se.contains("[C1] CustomWarning: a") && se.contains("Warning: b"), "stderr: {se}");
+    assert_eq!(se.matches("--trace-warnings").count(), 1, "stderr: {se}");
+    assert!(!se.contains("silent") && !se.contains("DeprecationWarning: d"), "stderr: {se}");
+    // 报错：非 string/Error 参数 → ERR_INVALID_ARG_TYPE 同步抛。
+    let (ok, out, _) = wjs(
+        &["--eval", "try { process.emitWarning(1) } catch (e) { console.log(e.code) }; 0"],
+        &dir,
+    );
+    assert!(ok && out.contains("ERR_INVALID_ARG_TYPE"), "out: {out}");
+    // 边界：--no-warnings 不登记缺省打印（监听表为空，stderr 无输出）。
+    let out = winterjs()
+        .args(["--no-warnings", "--eval", "process.emitWarning('x'); process.listenerCount('warning')"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).trim() == "0", "{out:?}");
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("Warning: x"));
+}

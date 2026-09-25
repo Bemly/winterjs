@@ -236,7 +236,7 @@ async fn run_inner(
                                 // 2026-09-25：require 透传原异常后，位置即真实抛点——
                                 // 抛点在入口文件用入口名 + 源码（代码框对得上），
                                 // 否则（node:internal/… 等）如实报其文件名、不给代码框。
-                                let in_entry = info.filename.is_empty() || info.filename == url.as_str();
+                                let in_entry = info.filename.is_empty() || state::debug_key(&info.filename) == url.as_str();
                                 let (shown, src): (&str, &str) = if in_entry {
                                     (filename, source)
                                 } else {

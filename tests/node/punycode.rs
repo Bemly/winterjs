@@ -51,12 +51,16 @@ import process from "node:process";
 let seen = null;
 process.on("warning", (w) => { seen = `${w.name} ${w.code} ${w.message.slice(0, 20)}`; });
 const punycode = (await import("node:punycode")).default;
+// 真机 26.8.2：warning 经 nextTick 派发，await 续体先跑（此刻仍 null），下一轮才到。
+console.log("warn-sync", seen);
+await new Promise((r) => setTimeout(r, 1));
 console.log("warn", seen);
 console.log("works", punycode.encode("ü") === "tda");
 await import("node:url");
 console.log("url-ok", (await import("node:url")).domainToASCII("münchen.de") === "xn--mnchen-3ya.de");
 "#,
     );
+    assert!(out.contains("warn-sync null"), "out: {out}");
     assert!(out.contains("warn DeprecationWarning DEP0040 The `punycode` modul"), "out: {out}");
     assert!(out.contains("works true"), "out: {out}");
     assert!(out.contains("url-ok true"), "out: {out}");

@@ -294,7 +294,7 @@ pub fn module_error(cx: &mut JSContext, fallback_url: &str) -> Error {
     } else {
         info.filename.clone()
     };
-    let debug = state::with_plain(|p| p.module_debug.get(&filename).cloned());
+    let debug = state::with_plain(|p| p.module_debug.get(&state::debug_key(&filename)).cloned());
     match debug {
         Some(d) => {
             let (line, col) =
@@ -327,7 +327,8 @@ fn referrer_base(script: *mut mozjs::jsapi::JSScript) -> Option<Url> {
         }
         std::ffi::CStr::from_ptr(c).to_string_lossy().into_owned()
     };
-    Url::parse(&name).ok()
+    // CJS 脚本以绝对路径编译（node 栈帧口径）→ 转 file URL。
+    Url::parse(&name).ok().or_else(|| if name.starts_with('/') { Url::from_file_path(&name).ok() } else { None })
 }
 
 /// payload 是否 Promise（是 → 动态 import；否 → 静态加载态）。

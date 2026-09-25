@@ -113,19 +113,23 @@ function _extend(target, source) {
 }
 
 // ── deprecate（warn-once；process.noDeprecation 尊重）──────────────────────
+const deprecateCodesWarned = new Set();
 function deprecate(fn, msg, code, { modifyPrototype } = {}) {
   validateFunction(fn, 'fn');
   if (code !== undefined) validateString(code, 'code');
   let warned = false;
+  // node 口径：同 code 全进程只告警一次（codesWarned），栈截到 deprecated 本身。
   function deprecated(...args) {
     if (!process.noDeprecation && !warned) {
       warned = true;
-      process.emitWarning(
-        msg ?? 'This API is deprecated.',
-        code !== undefined ? 'DeprecationWarning' : 'DeprecationWarning',
-        code,
-        deprecate,
-      );
+      if (code !== undefined) {
+        if (!deprecateCodesWarned.has(code)) {
+          deprecateCodesWarned.add(code);
+          process.emitWarning(msg ?? 'This API is deprecated.', 'DeprecationWarning', code, deprecated);
+        }
+      } else {
+        process.emitWarning(msg ?? 'This API is deprecated.', 'DeprecationWarning', deprecated);
+      }
     }
     if (new.target) {
       return Reflect.construct(fn, args, new.target);

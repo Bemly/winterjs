@@ -259,7 +259,20 @@ class Socket extends EventEmitter {
       if (typeof args[i] === "string") { address = args[i]; i++; }
       if (typeof args[i] === "function") cb = args[i];
     }
-    if (cb) this.once("listening", cb);
+    // node 口径：回调挂 'listening'，失败（errorMonitor）即摘除——否则失败重绑
+    // 逐次累积监听，第 11 次触发 MaxListenersExceededWarning（bind-error-repeat）。
+    if (cb) {
+      const removeListeners = () => {
+        this.removeListener(EventEmitter.errorMonitor, removeListeners);
+        this.removeListener("listening", onListening);
+      };
+      const onListening = () => {
+        removeListeners();
+        Reflect.apply(cb, this, []);
+      };
+      this.on(EventEmitter.errorMonitor, removeListeners);
+      this.on("listening", onListening);
+    }
     this.__binding = true;
     // 地址解析（真机 handle.lookup 口径：自定义 lookup 必经，默认走同步族匹配；
     // 通配符在自定义 lookup 下同样过一遍，custom-lookup 套件点名）。

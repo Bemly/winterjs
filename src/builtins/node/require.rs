@@ -259,6 +259,11 @@ fn require_esm_default(
     }
 }
 
+/// CJS 编译文件名：file URL → 绝对路径（非 file 方案原样）。
+fn cjs_script_name(url: &Url) -> String {
+    url.to_file_path().ok().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| url.as_str().to_owned())
+}
+
 /// CJS 包装执行（`load_js` 已转译；`module` 经 prelude 建；返回终态 `module.exports`）。
 #[allow(clippy::too_many_lines)]
 fn require_cjs_file(
@@ -271,8 +276,8 @@ fn require_cjs_file(
     let wrapped = format!(
         "((exports) => (require) => (module) => (__filename) => (__dirname) => {{\n{js}\n}})"
     );
-    let c_filename =
-        std::ffi::CString::new(url.as_str()).unwrap_or_else(|_| c"module.js".into());
+    // node 口径：CJS 栈帧是绝对路径（ESM 才是 file URL）——`stack.includes(__filename)` 类断言。
+    let c_filename = std::ffi::CString::new(cjs_script_name(url)).unwrap_or_else(|_| c"module.js".into());
     // 起始行 0：包装头独占第 0 行，用户代码第 1 行即物理第 1 行（栈/报错行号
     // 与源文件一致；修前恒 +1，mapper 需折算）。
     let options = CompileOptionsWrapper::new(cx, c_filename, 0);
@@ -734,8 +739,8 @@ pub unsafe extern "C" fn cjs_compile(
     let wrapped = format!(
         "((exports) => (require) => (module) => (__filename) => (__dirname) => {{\n{code}\n}})"
     );
-    let c_filename =
-        std::ffi::CString::new(url.as_str()).unwrap_or_else(|_| c"module.js".into());
+    // node 口径：CJS 栈帧是绝对路径（ESM 才是 file URL）——`stack.includes(__filename)` 类断言。
+    let c_filename = std::ffi::CString::new(cjs_script_name(&url)).unwrap_or_else(|_| c"module.js".into());
     // 起始行 0（同 require_cjs_file：用户代码行号 = 物理行号）。
     let options = CompileOptionsWrapper::new(&mut cx, c_filename, 0);
     rooted!(&in(cx) let mut fn_v = UndefinedValue());

@@ -5,6 +5,16 @@
 use super::with_plain;
 use crate::loader::sourcemap::remap_location;
 
+/// `module_debug` 键：CJS 脚本以绝对路径编译（node 栈帧口径），表按 URL 登记——路径转 URL。
+pub fn debug_key(file: &str) -> String {
+    if file.starts_with('/') {
+        if let Ok(u) = url::Url::from_file_path(file) {
+            return u.as_str().to_owned();
+        }
+    }
+    file.to_owned()
+}
+
 /// 逐帧回映射；无 map 的帧原样保留。
 pub fn remap_stack(stack: &str) -> String {
     stack
@@ -21,7 +31,7 @@ pub fn remap_stack(stack: &str) -> String {
             let (Ok(line), Ok(col)) = (ln.parse::<u32>(), c.parse::<u32>()) else {
                 return l.to_owned();
             };
-            let map = with_plain(|p| p.module_debug.get(file).and_then(|d| d.map.clone()));
+            let map = with_plain(|p| p.module_debug.get(&debug_key(file)).and_then(|d| d.map.clone()));
             if map.is_none() {
                 return l.to_owned();
             }

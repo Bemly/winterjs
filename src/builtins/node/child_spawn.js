@@ -279,6 +279,7 @@ function __stdioWire(proc, streams) {
 }
 // spawn 落地（函数与 ChildProcess.prototype.spawn 方法共用；proc 既是
 // native 事件 target 也是返回对象——事件接线必须挂最终对象，禁中转搬运）。
+let __dep0190Emitted = false;
 function __spawnInto(proc, file, args, o) {
   // \0 校验（reject-null-bytes 套件；函数与方法共道）。
   __nullCheck(String(file), "file");
@@ -291,7 +292,9 @@ function __spawnInto(proc, file, args, o) {
   let f2 = String(file);
   let a2 = [...(args || [])].map(String);
   if (o.shell !== undefined) {
-    if (a2.length > 0) {
+    // node 口径：全进程只告警一次（emittedDEP0190Already）。
+    if (a2.length > 0 && o.shell && !__dep0190Emitted) {
+      __dep0190Emitted = true;
       process.emitWarning("Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.", "DeprecationWarning", "DEP0190");
     }
     const command = [f2, ...a2].join(" ");

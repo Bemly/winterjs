@@ -309,18 +309,12 @@ globalThis.process = {
     // 全走 nextTick，throw 落成 rejection 即全族套件反红）。
     __wjs_next_tick(cb, args);
   },
-  // Phase 9a（node:events MaxListenersExceededWarning 路径）：warning 监听 + emitWarning。
-  // Node 语义收敛：string → 包 Error（name=type||'Warning'，code/detail 挂载）；
-  // Error 原样；第二参可 string（type）或 { type, code, detail }；有监听走监听，
-  // 否则 stderr 默认打印 `(node:<pid>) [code] Name: message`。
-  __wjs_warningListeners: [],
   // 通用监听表（warning 沿旧径；signal/stdin 等只登记不投递——偏差记档，
   // SIGTERM 默认行为不变）。emit 供未来事件循环接信号投递。
   // 方法一律走 `this`（套件 process-tampering：node common 载入期捕获
   // `const process = globalThis.process`，之后全局被换也不经它读表）。
   __wjs_listeners: {},
   on(type, cb) {
-    if (type === "warning" && typeof cb === "function") this.__wjs_warningListeners.push(cb);
     if (typeof cb !== "function") throw new TypeError("process.on: listener must be a function");
     (this.__wjs_listeners[String(type)] ??= []).push(cb);
     return this;
@@ -376,40 +370,66 @@ globalThis.process = {
     }
     return list.length;
   },
-  emitWarning(warning, typeOrOptions, code, _ctor) {
-    let type, detail;
-    if (typeof typeOrOptions === "object" && typeOrOptions !== null) {
-      type = typeOrOptions.type; code = typeOrOptions.code; detail = typeOrOptions.detail;
-    } else {
-      type = typeOrOptions;
+  // node lib/internal/process/warning.js 逐段移植：参数归一 → string 包 Error（栈截到 ctor）
+  // → Deprecation 受 noDeprecation/throwDeprecation 门控 → nextTick 派发 'warning'。
+  // 缺省打印是登记在表内的普通监听（`__wjs_onWarning`，--no-warnings 不登记），可被 off 摘除。
+  emitWarning(warning, type, code, ctor) {
+    let detail;
+    if (type !== null && typeof type === "object" && !Array.isArray(type)) {
+      ctor = type.ctor;
+      code = type.code;
+      if (typeof type.detail === "string") detail = type.detail;
+      type = type.type || "Warning";
+    } else if (typeof type === "function") {
+      ctor = type;
+      code = undefined;
+      type = "Warning";
+    }
+    const invalid = (name, exp, v) => new (require("internal/errors").codes.ERR_INVALID_ARG_TYPE)(name, exp, v);
+    if (type !== undefined && typeof type !== "string") throw invalid("type", "string", type);
+    if (typeof code === "function") {
+      ctor = code;
+      code = undefined;
+    } else if (code !== undefined && typeof code !== "string") {
+      throw invalid("code", "string", code);
     }
     if (typeof warning === "string") {
       warning = new Error(warning);
       warning.name = String(type || "Warning");
-      if (code) warning.code = String(code);
-      if (detail) warning.detail = String(detail);
-    } else if (warning !== null && typeof warning === "object") {
-      if (type && !warning.name) warning.name = String(type);
-      if (code && !warning.code) warning.code = String(code);
-    } else {
-      throw new TypeError("warning must be a string or an Error");
+      if (code !== undefined) warning.code = code;
+      if (detail !== undefined) warning.detail = detail;
+      if (typeof Error.captureStackTrace === "function") Error.captureStackTrace(warning, ctor || this.emitWarning);
+    } else if (!(warning instanceof Error)) {
+      throw invalid("warning", ["Error", "string"], warning);
     }
-    // node 口径：warning 异步派发（nextTick）——emitWarning 同步返回后
-    // 调用方才挂 'warning' 监听（套件"先 parse 后 expectWarning"的时序
-    // 依赖此，10f url DEP0169 现形）；§4.74 同源教训。
-    queueMicrotask(() => {
-      const listeners = this.__wjs_warningListeners;
-      if (listeners.length > 0) {
-        for (const l of listeners) {
-          try { l.call(this, warning); } catch {}
-        }
-      } else {
-        const codePart = warning.code ? `[${warning.code}] ` : "";
-        const line = `(node:${__wjs_pid()}) ${codePart}${warning.name}: ${warning.message}`;
-        __wjs_stderr_write(line + "\n");
-        if (warning.detail) __wjs_stderr_write(warning.detail + "\n");
-      }
-    });
+    if (warning.name === "DeprecationWarning") {
+      if (this.noDeprecation) return;
+      if (this.throwDeprecation) throw warning;
+    }
+    this.nextTick(() => this.emit("warning", warning));
+  },
+  __wjs_onWarning(warning) {
+    if (!(warning instanceof Error)) return;
+    const p = globalThis.process;
+    const isDeprecation = warning.name === "DeprecationWarning";
+    if (isDeprecation && p.noDeprecation) return;
+    const trace = p.traceProcessWarnings || (isDeprecation && p.traceDeprecation);
+    let msg = `(node:${__wjs_pid()}) `;
+    if (warning.code) msg += `[${warning.code}] `;
+    if (trace && warning.stack) msg += `${warning.stack}`;
+    else msg += typeof warning.toString === "function" ? `${warning.toString()}` : Error.prototype.toString.call(warning);
+    if (typeof warning.detail === "string") msg += `\n${warning.detail}`;
+    if (!trace && !p.__wjs_traceHelperShown) {
+      const flag = isDeprecation ? "--trace-deprecation" : "--trace-warnings";
+      const argv0 = String(p.argv0 || "node").split(/[\\/]/).pop().replace(/\.exe$/, "");
+      msg += `\n(Use \`${argv0} ${flag} ...\` to show where the warning was created)`;
+      p.__wjs_traceHelperShown = true;
+    }
+    const file = p.__wjs_warningFile;
+    if (file) {
+      try { require("node:fs").appendFileSync(file, `${msg}\n`); return; } catch {}
+    }
+    __wjs_stderr_write(`${msg}\n`);
   },
 };
 // 真机口径：process[Symbol.toStringTag] = "process"（不可枚举，实测 getter 面），
@@ -428,6 +448,20 @@ try {
     globalThis.gc = async function gc() { return undefined; };
   }
 } catch { globalThis.__wjs_nodeCompat = []; }
+// 告警旗（node 口径：旗在才定义属性）+ 缺省打印监听（--no-warnings / NODE_NO_WARNINGS=1 不登记）。
+{
+  const __f = globalThis.__wjs_nodeCompat;
+  const __p = globalThis.process;
+  if (__f.includes("--no-deprecation")) __p.noDeprecation = true;
+  if (__f.includes("--throw-deprecation")) __p.throwDeprecation = true;
+  if (__f.includes("--trace-deprecation")) __p.traceDeprecation = true;
+  if (__f.includes("--trace-warnings")) __p.traceProcessWarnings = true;
+  const __rw = __f.find((a) => a.startsWith("--redirect-warnings="));
+  if (__rw) __p.__wjs_warningFile = __rw.slice("--redirect-warnings=".length);
+  let __nw = false;
+  try { __nw = __wjs_env_get("NODE_NO_WARNINGS") === "1"; } catch {}
+  if (!__f.includes("--no-warnings") && !__nw) __p.on("warning", __p.__wjs_onWarning);
+}
 // Node 口径：NODE_DEBUG 置位即启动期警告一次（首 section 名；debug.js 套件
 // 逐字断言。stderr 直写，不走 warning 通道）。
 try {

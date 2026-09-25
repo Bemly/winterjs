@@ -256,3 +256,14 @@ G1/G2/G3/G9 已收官。）
 "exec or die"+glob 路径）+ 本节欠账表；跑分 `TEST_THREAD_ID` 用 35xx+
 （§4.122 互踩防线）；net 域黑盒先单跑验证（`cargo test --test node net`，
 全绿后再并发——§4.140/§4.141 两坑都在 cargo harness 时序下才现形）。
+
+## 2026-09-25 P1 http2 首轮（本会话）
+
+- 基线 base12（全域 Bun 清单 3574 件，2 并发 + 看门狗 42 分钟）：绿 2168（60%）。首跑 base10 因 D1
+  前缀旗放行致 `test-promise-unhandled-flag` 自 spawn 无限递归、整机 panic（pitfalls 4.209），作废。
+- 全局修复：`process 'exit'` 从未触发（this 绑错，mustCall 退出核对从未执行——此前假绿）、
+  全局 console 走 util.format、require 透传原异常 + CJS 行号物理对齐、未捕获错误 node 形渲染、
+  `new URL` 错误 node 形（ERR_INVALID_URL）、X.509 v1 证书（tls/https/http2 共 37 件同因）。
+- 提速：`WINTERJS_HANG_EXIT`（挂死件报出未触发回调的创建点）、nextest（全量 ~100s）、
+  sweep `--jobs/--scope/--rerun-red`/node 缓存/资源看门狗/进程组封顶、`scripts/split-js.py`。
+- http2：64（旧口径）→ 88/256（真口径），余件见 plan3 §0.4 P1 行。

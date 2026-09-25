@@ -80,7 +80,7 @@ console.log("done-ok");
     assert!(out.contains("links 8 t.txt true true"), "out: {out}");
     assert!(out.contains("cp A true"), "out: {out}");
     assert!(out.contains("cp-eisdir true"), "out: {out}");
-    assert!(out.contains("dir-read true [object Promise] ."), "out: {out}");
+    assert!(out.contains("dir-read true Promise { <pending> } ."), "out: {out}");
     assert!(out.contains("fd-read 4 abcd"), "out: {out}");
     assert!(out.contains("fd-write 2"), "out: {out}");
     assert!(out.contains("fstat true"), "out: {out}");

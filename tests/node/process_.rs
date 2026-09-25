@@ -207,3 +207,35 @@ setTimeout(() => console.log("exited-clean"), 300);
     assert!(!out.contains("data-after-destroy"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_exit_event_and_hang_exit() {
+    // 2026-09-25：自然退出派发 process 'exit'（修前 this 绑成 global，监听从不触发——
+    // node 套件 common.mustCall 的退出核对形同虚设）；WINTERJS_HANG_EXIT 到点发 'exit'
+    // 并以 1 退出（把挂死件变成带定位的红件）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("x.js").write_str("process.on('exit', (c) => console.log('exit-cjs', c));\n").unwrap();
+    dir.child("x.mjs").write_str("process.on('exit', (c) => console.log('exit-esm', c));\n").unwrap();
+    dir.child("h.js")
+        .write_str("process.on('exit', () => console.log('exit-hang'));\nrequire('net').createServer().listen(0);\n")
+        .unwrap();
+    // 正常：CJS / ESM 自然退出均触发，退出码 0。
+    let (ok, out, _) = wjs(&["--run", "x.js"], &dir);
+    assert!(ok && out.contains("exit-cjs 0"), "out: {out}");
+    let (ok, out, _) = wjs(&["--run", "x.mjs"], &dir);
+    assert!(ok && out.contains("exit-esm 0"), "out: {out}");
+    // 报错：exit 监听里 process.exit(3) 决定退出码（mustCall 失配的 common 路径）。
+    dir.child("e.js").write_str("process.on('exit', () => process.exit(3));\n").unwrap();
+    let out = winterjs().args(["--run", "e.js"]).current_dir(dir.path()).output().unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    // 边界：挂死（监听中的 server 永不关）+ HANG_EXIT=1 → 发 exit、stderr 报存活句柄、退出 1。
+    let out = winterjs()
+        .args(["--run", "h.js"])
+        .env("WINTERJS_HANG_EXIT", "1")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("exit-hang"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no progress for 1s"));
+}

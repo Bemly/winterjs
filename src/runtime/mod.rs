@@ -555,6 +555,15 @@ async fn event_loop(
             watches_settled += 1;
         }};
     }
+    // 排障：`WINTERJS_HANG_EXIT=<秒>`（sweep 缺省 20）——事件循环持续无进展超时即发
+    // process 'exit'（node 套件 common 的 mustCall 核对随之打印"哪个回调没被调"及其
+    // 创建栈），再以 1 退出。把 TIMEOUT 件变成带定位的红件；未设即不启用（默认语义不变）。
+    let hang_limit = std::env::var("WINTERJS_HANG_EXIT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .map(std::time::Duration::from_secs);
+    let mut last_progress = std::time::Instant::now();
     loop {
         // 单轮推进与 `repl` 共用（§4.18 检查点顺序在内保持）。
         let st = pump_once(rt, global, err, fetch_rx, ws_rx, watch_rx, child_rx, net_rx, worker_rx, quic_rx, napi_rx, dispatch_rx).await?;
@@ -594,6 +603,9 @@ async fn event_loop(
         let progressed = st.progressed || st.timers > st.timers_unrefed;
         let progressed_unrefed_only =
             !st.progressed && st.timers > 0 && st.timers == st.timers_unrefed;
+        if progressed || st.timers > 0 {
+            last_progress = std::time::Instant::now();
+        }
 
         let timers_empty = timers::next_deadline().is_none();
         let idle = timers_empty
@@ -624,10 +636,22 @@ async fn event_loop(
         if progressed {
             continue;
         }
+        if let Some(lim) = hang_limit {
+            if last_progress.elapsed() >= lim {
+                hang_exit(rt, global, lim);
+                return Err(Error::Exit(1));
+            }
+        }
         // park 唤醒目标用 next_wake（含 unrefed：到点须醒去触发，套件
         // unrefd-interval-still-fires）；存活/idle 判定上面已用 refed-only
         // 的 next_deadline 定案，走到这里说明循环确有存活理由。
-        match timers::next_wake() {
+        let hang_at = hang_limit.map(|l| last_progress + l);
+        let wake = match (timers::next_wake(), hang_at) {
+            (Some(a), Some(h)) => Some(a.min(h)),
+            (a, None) => a,
+            (None, h) => h,
+        };
+        match wake {
             Some(at) => {
                 let tokio_at = tokio::time::Instant::from_std(at);
                 tokio::select! {
@@ -778,6 +802,29 @@ fn report_unhandled_rejections(
         }
     }
     Ok(())
+}
+
+/// `WINTERJS_HANG_EXIT` 到点：打印存活句柄计数，发 process 'exit'（mustCall 核对）。
+fn hang_exit(rt: &mut Runtime, global: &RootedGuard<'_, *mut JSObject>, lim: std::time::Duration) {
+    eprintln!(
+        "winterjs: event loop made no progress for {}s (WINTERJS_HANG_EXIT) — open: timers={} fetch={} \
+         ws={} stream={} watch={} fs_stream={} child={} net={} worker={} quic={} napi={} dispatch={}",
+        lim.as_secs(),
+        timers::next_deadline().is_some() as u8,
+        state::fetch_pending(),
+        state::ws_open(),
+        state::stream_pending(),
+        state::watch_open(),
+        state::fs_stream_open(),
+        state::child_open(),
+        state::net_open(),
+        state::worker_open(),
+        state::quic_open(),
+        state::napi_pending(),
+        crate::dispatch::pending(),
+    );
+    let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+    crate::builtins::node::process_::emit_exit(&mut realm, global.get());
 }
 
 #[cfg(test)]

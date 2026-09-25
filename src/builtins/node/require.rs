@@ -532,6 +532,31 @@ globalThis.__wjs_make_module = (filename) => ({
 });
 globalThis.__wjs_make_base_require = (base) => (id) => __wjs_require_from(base, String(id));
 globalThis.__wjs_require_main = (url) => globalThis.require(String(url));
+// 全局 console 格式化（node 口径：`util.format`——%s/%d/%i/%f/%j/%o/%O/%c/%%、对象 inspect）。
+// Phase 1 原生 sink 只 ToString（`[object Object]`、`%s` 原样），2026-09-25 补齐。
+// 纯原始值且首参无 `%` 走快路径（不加载 node:util，启动/热路径零开销）。
+{
+  let fmt = null;
+  const getFmt = () => (fmt ??= globalThis.require("node:util"));
+  const prim = (x) => x === null || x === undefined || typeof x === "string" ||
+    typeof x === "boolean" || (typeof x === "number" && !Object.is(x, -0));
+  for (const k of ["log", "info", "debug", "warn", "error"]) {
+    const raw = console[k];
+    if (typeof raw !== "function") continue;
+    console[k] = function (...args) {
+      if (args.every(prim) && !(typeof args[0] === "string" && args[0].includes("%"))) {
+        return raw.apply(this, args);
+      }
+      return raw.call(this, getFmt().format(...args));
+    };
+  }
+  const rawDir = console.dir;
+  if (typeof rawDir === "function") {
+    console.dir = function (obj, options) {
+      return rawDir.call(this, getFmt().inspect(obj, { customInspect: false, ...options }));
+    };
+  }
+}
 // 直挂原生（禁 JS 闭包包装）：describe_scripted_caller 的最内层帧须是调用方
 // 文件——闭包帧（本 prelude）会盖掉它，相对 require.resolve 即丢 base
 // （jsdom api.js 实测：caller=__wjs_node_prelude.js）。

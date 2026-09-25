@@ -130,7 +130,13 @@ pub fn emit_exit(cx: &mut mozjs::context::JSContext, global: *mut JSObject) {
     (code as f64).to_jsval(cx, code_v.handle_mut());
     rooted!(&in(cx) let mut kind_v = UndefinedValue());
     "exit".to_jsval(cx, kind_v.handle_mut());
-    let _ = call_two(cx, global, emit_v, kind_v.get(), code_v.get());
+    // this 必须是 process：`__wjs_emit` 读 `this.__wjs_listeners`（§4.97 this 基）。
+    // 修前以 global 为 this 调，取表即 TypeError 被吞——自然退出的 'exit' 监听从不触发，
+    // node 套件 common 的 mustCall 退出核对形同虚设（假绿源，§4.126③）。
+    rooted!(&in(cx) let proc_root: *mut JSObject = proc_obj);
+    rooted!(&in(cx) let emit_root = emit_v);
+    let _ = global;
+    let _ = call_two(cx, proc_root.get(), emit_root.get(), kind_v.get(), code_v.get());
 }
 
 /// 收割 nextTick 原生队列（pump 专用：RunJobs 前后各一轮）。

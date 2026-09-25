@@ -297,7 +297,16 @@ def run_one(binary, path, cwd, env, timeout, prefix=("--run",), dump_dir=None, s
     err = (p.stderr or b"").decode("utf-8", "replace").strip().splitlines()
     # node 形报错块（D4 后两侧同形）首行只是 `file:line`——优先取 `XxxError: msg` 头行。
     import re as _re
-    pick = next((l for l in err if _re.match(r"^[A-Za-z]*(Error|Exception)\b", l)), err[0] if err else "")
+    pick = next((l for l in err if _re.match(r"^[A-Za-z]*(Error|Exception)\b", l)), None)
+    if pick is None:
+        # HANG_EXIT 形：取 mustCall 失配行后的首个套件帧（未触发回调的创建点）。
+        out_lines = (p.stdout or b"").decode("utf-8", "replace").splitlines()
+        mm = next((i for i, l in enumerate(out_lines) if l.startswith("Mismatched")), None)
+        if mm is not None:
+            site = next((l for l in out_lines[mm + 1:mm + 4] if "test-" in l), "")
+            pick = "HANG mustCall@" + site.split("/")[-1] if site else out_lines[mm]
+        else:
+            pick = err[0] if err else ""
     tail = pick[:160].replace("\t", " ")
     if dump_dir and side and p.returncode not in (0, 142) and (p.stderr or p.stdout):
         os.makedirs(dump_dir, exist_ok=True)
@@ -377,7 +386,10 @@ def sweep_loop(st):
                     return
                 i, f = queue.pop(0)
             flags = tuple(suite_flags(os.path.join(d, f)))
-            wrc, werr = run_one(st["wjs"], f, d, wenv, st["timeout_s"], flags + ("--run",), dump_dir, "wjs")
+            # 挂死件提前 5s 自报（WINTERJS_HANG_EXIT：发 exit → common.mustCall 打印未触发回调的
+            # 创建点），TIMEOUT 变成带定位的红件；node 侧不受影响。
+            wenv2 = dict(wenv, WINTERJS_HANG_EXIT=str(max(5, int(st["timeout_s"]) - 5)))
+            wrc, werr = run_one(st["wjs"], f, d, wenv2, st["timeout_s"], flags + ("--run",), dump_dir, "wjs")
             fp = os.path.join(d, f)
             try:
                 sb = os.stat(fp)

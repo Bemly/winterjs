@@ -232,6 +232,12 @@ async fn run_inner(
                     return Err(err);
                 }
                 event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await?;
+                // 自然退出派发 process 'exit'（CJS 主模块路径此前漏派发——node 套件几乎
+                // 全走这条，common.mustCall 退出核对从未执行）。显式 exit 已派发过则跳过。
+                if state::with_plain(|p| p.process_exited.is_none()) {
+                    let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+                    crate::builtins::node::process_::emit_exit(&mut realm, global.get());
+                }
                 end_session(rt, engine);
                 return Ok(());
             }

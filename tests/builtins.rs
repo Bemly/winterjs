@@ -364,3 +364,28 @@ fn phase10f_timer_face_unref_uncaught() {
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }
 }
+
+#[test]
+fn phase11_console_node_format() {
+    // 2026-09-25：全局 console 走 util.format（修前原生 sink 只 ToString：`[object Object]`、
+    // `%s` 原样）。正常：对象/数组/Map/Symbol/BigInt inspect；占位符；console.dir 深度。
+    let out = stdout_of(winterjs().args([
+        "--eval",
+        "console.log({x:1}, [1,2], new Map([[1,2]]), Symbol('s'), 10n, -0);\
+         console.log('a %s b %d c %i %j %%', 'S', 4.5, 4.5, {x:1});\
+         console.dir({a:{b:{c:{d:1}}}});\
+         console.log('50% plain', 1, true, null, undefined);",
+    ]));
+    for line in [
+        "{ x: 1 } [ 1, 2 ] Map(1) { 1 => 2 } Symbol(s) 10n -0",
+        "a S b 4.5 c 4 {\"x\":1} %",
+        "{ a: { b: { c: [Object] } } }",
+        // 边界：首参含 `%` 但无占位符按字面，原始值快路径与 node 同形。
+        "50% plain 1 true null undefined",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line:?}; out: {out}");
+    }
+    // 报错流：console.error 同样格式化（stderr）。
+    let o = winterjs().args(["--eval", "console.error('e %s', {k: 2})"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&o.stderr).contains("e { k: 2 }"));
+}

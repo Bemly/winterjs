@@ -217,7 +217,9 @@ impl http_body::Body for ChanBody {
                 }
                 Poll::Ready(None)
             }
-            Poll::Ready(Some(BodyMsg::EndPending)) => Poll::Pending,
+            // 悬置标记：继续轮询以登记 waker（直接回 Pending 而不再 poll_recv 就没人唤醒——
+            // 有体 + waitForTrailers 时 trailer 永不出线，两端互等挂死）。
+            Poll::Ready(Some(BodyMsg::EndPending)) => self.poll_frame(cx),
             Poll::Ready(Some(BodyMsg::Fail(msg))) => Poll::Ready(Some(Err(std::io::Error::other(msg)))),
             Poll::Ready(None) => {
                 self.done = true;

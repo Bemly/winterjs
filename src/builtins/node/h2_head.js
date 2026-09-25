@@ -40,6 +40,7 @@ const __codes = {
   ERR_HTTP2_HEADER_SINGLE_VALUE: (s) => __h2Err("ERR_HTTP2_HEADER_SINGLE_VALUE", `Header field "${s}" must only have a single value`, "TypeError"),
   ERR_HTTP2_TRAILERS_CANNOT_BE_SENT: () => __h2Err("ERR_HTTP2_TRAILERS_CANNOT_BE_SENT", "Trailers cannot be sent at this stage."),
   ERR_HTTP2_TRAILERS_ALREADY_SENT: () => __h2Err("ERR_HTTP2_TRAILERS_ALREADY_SENT", "Trailers has already been sent."),
+  ERR_HTTP2_TRAILERS_NOT_READY: () => __h2Err("ERR_HTTP2_TRAILERS_NOT_READY", "Trailing headers cannot be sent until after the wantTrailers event is emitted"),
   ERR_HTTP2_PUSH_DISABLED: () => __h2Err("ERR_HTTP2_PUSH_DISABLED", "Push streams are not enabled on this session."),
   ERR_HTTP2_NESTED_PUSH: () => __h2Err("ERR_HTTP2_NESTED_PUSH", "A push stream cannot be initiated from within a push stream."),
   ERR_HTTP2_GOAWAY_SESSION: () => __h2Err("ERR_HTTP2_GOAWAY_SESSION", "New streams cannot be created after receiving a GOAWAY"),

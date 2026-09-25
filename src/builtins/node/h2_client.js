@@ -70,7 +70,11 @@ class ClientHttp2Stream extends Duplex {
       this.__detachFromSession();
     }
     if (this.__waitTrailers) {
-      queueMicrotask(() => { if (!this.destroyed) this.emit("wantTrailers"); });
+      queueMicrotask(() => {
+        if (this.destroyed) return;
+        this.__wantTrailersFired = true;
+        this.emit("wantTrailers");
+      });
     }
   }
   _write(chunk, encoding, cb) {
@@ -87,10 +91,12 @@ class ClientHttp2Stream extends Duplex {
     cb();
   }
   sendTrailers(trailers) {
-    if (!this.__opened || !this.__waitTrailers) {
-      throw __code("ERR_HTTP2_TRAILERS_CANNOT_BE_SENT");
-    }
+    // node core.js 门序（同服务端 sendTrailers 注）。
+    if (this.destroyed || this.closed) throw __code("ERR_HTTP2_INVALID_STREAM");
     if (this.__trailersSent) throw __code("ERR_HTTP2_TRAILERS_ALREADY_SENT");
+    if (!this.__opened || !this.__waitTrailers || !this.__wantTrailersFired) {
+      throw __code("ERR_HTTP2_TRAILERS_NOT_READY");
+    }
     this.__trailersSent = true;
     const t = [];
     for (const [k, v] of Object.entries(trailers ?? {})) t.push([k, String(v)]);

@@ -262,3 +262,55 @@ setTimeout(() => console.log("end-ok"), 2500);
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_http2_trailers_with_body() {
+    // P1（2026-09-25）：有体 + waitForTrailers 双向 trailer（修前 ChanBody EndPending 不登记
+    // waker，trailer 永不出线两端互等）；trailers 事件序 data → trailers → end；
+    // sendTrailers 门序 NOT_READY / ALREADY_SENT / INVALID_STREAM（真机逐项）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "t.mjs",
+        r#"
+import http2 from "node:http2";
+const server = http2.createServer();
+server.on("stream", (stream) => {
+  const ev = [];
+  stream.on("data", (c) => ev.push("data:" + c));
+  stream.on("trailers", (h) => ev.push("trailers:" + h["x-up"]));
+  stream.on("end", () => { console.log("srv-order", ev.join(",")); });
+  try { stream.sendTrailers({}); } catch (e) { console.log("gate-early", e.code); }
+  stream.respond({ ":status": 200 }, { waitForTrailers: true });
+  stream.on("wantTrailers", () => {
+    stream.sendTrailers({ "x-down": "d" });
+    try { stream.sendTrailers({}); } catch (e) { console.log("gate-twice", e.code); }
+  });
+  stream.end("body");
+});
+server.listen(0, () => {
+  const client = http2.connect(`http://localhost:${server.address().port}`);
+  const req = client.request({ ":path": "/", ":method": "POST" }, { waitForTrailers: true });
+  req.on("wantTrailers", () => req.sendTrailers({ "x-up": "u" }));
+  req.on("trailers", (h) => console.log("cli-trailers", h["x-down"]));
+  req.resume();
+  req.on("close", () => {
+    try { req.sendTrailers({}); } catch (e) { console.log("gate-closed", e.code); }
+    client.close();
+    server.close();
+  });
+  req.end("up");
+});
+"#,
+    );
+    for line in [
+        "srv-order data:up,trailers:u",
+        "gate-early ERR_HTTP2_TRAILERS_NOT_READY",
+        "gate-twice ERR_HTTP2_TRAILERS_ALREADY_SENT",
+        "cli-trailers d",
+        "gate-closed ERR_HTTP2_INVALID_STREAM",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

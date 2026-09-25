@@ -189,7 +189,30 @@ function __checkThrow(e, expected, prefix) {
     });
   }
   if (!ok) {
-    throw new AssertionError({ message: `${prefix}: unexpected throw`, actual: e, expected, operator: prefix });
+    // 排障提速（2026-09-25）：文案带上实际抛出的错与首个不符键——修前只有
+    // "unexpected throw"，每次都要插桩才知道抛了什么。
+    let got;
+    try {
+      got = e instanceof Error
+        ? `${e.name}${e.code !== undefined ? ` [${e.code}]` : ""}: ${e.message}`
+        : String(e);
+    } catch { got = "<unprintable>"; }
+    let why = "";
+    if (typeof expected === "object" && expected !== null && !(expected instanceof RegExp)) {
+      for (const [k, v] of Object.entries(expected)) {
+        let a;
+        try { a = e ? e[k] : undefined; } catch { a = "<throws>"; }
+        const same = (typeof a === "string" && v instanceof RegExp) ? v.test(a) : a === v;
+        if (!same && !(v !== null && typeof v === "object")) {
+          why = `; key "${k}": got ${JSON.stringify(a)} expected ${v instanceof RegExp ? String(v) : JSON.stringify(v)}`;
+          break;
+        }
+      }
+    }
+    throw new AssertionError({
+      message: `${prefix}: unexpected throw (got ${got}${why})`,
+      actual: e, expected, operator: prefix,
+    });
   }
 }
 function __needFn(fn, what) {

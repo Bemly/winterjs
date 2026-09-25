@@ -64,7 +64,14 @@ class Http2ServerStream extends Duplex {
     if (this.__reqEnded) return;
     this.__reqEnded = true;
     const t = JSON.parse(trailersJson ?? "[]");
-    if (t.length > 0) this.emit("trailers", __pairsToObj(t));
+    // node 序：trailers 帧到即发，与读取无关。流动态下体块的 data 事件尚待派发，
+    // 为保 data… → trailers 序挂在 end 前（prepend）；非流动（无人读）即刻发——
+    // 否则等不到 end，`on('trailers', () => stream.end())` 形永挂（trailers 套件）。
+    if (t.length > 0) {
+      const fire = () => this.emit("trailers", __pairsToObj(t));
+      if (this.readableFlowing === true) this.prependOnceListener("end", fire);
+      else queueMicrotask(fire);
+    }
     this.push(null);
     this.__maybeAutoClose();
   }
@@ -294,9 +301,12 @@ class Http2ServerStream extends Duplex {
     if (trailers === null || typeof trailers !== "object") {
       throw __code("ERR_INVALID_ARG_TYPE", "trailers", "object", trailers);
     }
+    // node core.js sendTrailers 门序：已毁/已关 → INVALID_STREAM；已发 → ALREADY_SENT；
+    // 未到 wantTrailers（含未开 waitForTrailers）→ NOT_READY（真机逐项实测）。
+    if (this.destroyed || this.__closed) throw __code("ERR_HTTP2_INVALID_STREAM");
     if (this.__trailersSent) throw __code("ERR_HTTP2_TRAILERS_ALREADY_SENT");
     if (!this.__waitForTrailers || !this.__wantTrailersFired) {
-      throw __code("ERR_HTTP2_TRAILERS_CANNOT_BE_SENT");
+      throw __code("ERR_HTTP2_TRAILERS_NOT_READY");
     }
     __validateH2Headers(trailers, []);
     const t = [];

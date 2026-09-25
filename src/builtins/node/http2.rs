@@ -391,6 +391,16 @@ pub(crate) async fn serve_conn<IO>(
 ) where
     IO: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
+    // node 口径：会话随连接建立即生（server 'session' 先于任何流）——修前首个请求到才
+    // 懒建会话，只发原始帧/只 ping/settings 的连接永无 'session'（约 9 件套件挂死）。
+    let _ = ev_tx.send(NetEvent {
+        id: conn_id,
+        kind: NetKind::H2Stream {
+            stream_id: 0,
+            what: "connOpen".into(),
+            payload: format!("{conn_id} {peer}"),
+        },
+    });
     let responders: Responders = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let bodies: BodyFeeds = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let pendings: Pendings = Arc::new(tokio::sync::Mutex::new(HashMap::new()));

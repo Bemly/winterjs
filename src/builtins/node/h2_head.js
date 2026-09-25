@@ -370,7 +370,7 @@ class Http2Session extends EventEmitter {
   }
   ref() { if (this.__conn) __wjs_net_ref(this.__conn); return this; }
   unref() { if (this.__conn) __wjs_net_unref(this.__conn); return this; }
-  settings(settings, cb) {
+  settings(settings = {}, cb) {
     const validated = __validateSettings(settings);
     if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
     this.__pendingSettingsAck = true;

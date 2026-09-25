@@ -167,6 +167,19 @@ class Http2Server extends EventEmitter {
         this.__abortEntry(entry);
         break;
       }
+      case "connOpen": {
+        // 连接建立即建会话并发 'session'（包装层 streamId 恒 0；payload = "connId ip:port"）。
+        const raw = String(JSON.parse(payload).payload ?? "");
+        const sp = raw.indexOf(" ");
+        const connId = Number(raw.slice(0, sp));
+        const peer = raw.slice(sp + 1);
+        const peerObj = {
+          addr: peer.includes(":") ? peer.slice(0, peer.lastIndexOf(":")) : peer,
+          port: peer.includes(":") ? Number(peer.slice(peer.lastIndexOf(":") + 1)) : 0,
+        };
+        this.__sessionFor(connId, peerObj);
+        break;
+      }
       case "connClose": {
         // Rust 侧 payload = conn_id 裸串；包装层 streamId 恒 0，须读 .payload
         const connId = Number(JSON.parse(payload).payload);

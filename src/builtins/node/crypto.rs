@@ -156,6 +156,7 @@ pub const SOURCE: &str = concat!(
     include_str!("crypto_ec.js"),
     include_str!("crypto_ec_derivepublic.js"),
     include_str!("crypto_sign.js"),
+    include_str!("crypto_sign_diffiehellmanimpl.js"),
     include_str!("crypto_kdf.js"),
     include_str!("crypto_pqx509.js"),
 );

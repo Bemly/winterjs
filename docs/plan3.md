@@ -120,6 +120,11 @@
 - 每簇：只跑对应域 sweep（清单过滤）+ 该域黑盒 + 冒烟 5/5。
 - 每个 P 项收尾：全量 `cargo nextest run --profile strict` 一次（约 2 分钟）。
 - 全域 sweep 只在 P0-3 与每个 P 项收尾各一次；禁重复全量子集（§4.126）。
+- **资源看门狗（2026-09-25 事故后，默认开启）**：`sweep-bg` daemon 每 5s 采样系统盘/数据盘余量、
+  内存压力（`kern.memorystatus_vm_pressure_level` + `memory_pressure` 空闲%）、winterjs 进程数、
+  load，每 15s 落 `monitor.log`；越线（系统盘 <3GB / 数据盘 <5GB / 内存 critical 或空闲 <10% /
+  winterjs 进程 >80）即杀全部在跑进程组、状态 `aborted` 并写明原因；内存 warn 暂停发新件。
+  `status` 行尾带实时 `mon …` 读数。
 - 本节状态表是唯一进度真相；逐轮细节写进 `docs/plan3-journal.md`（追加）与
   `docs/bun-parity.md`，**不再写进 plan3**。
 

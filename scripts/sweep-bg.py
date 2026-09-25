@@ -162,6 +162,100 @@ def orphan_warning():
         )
 
 
+# 资源看门狗（2026-09-25 事故后，pitfalls 4.209）：在跑进程组登记表 + 中止/暂停旗。
+import threading as _th
+RUNNING = set()
+RUN_LOCK = _th.Lock()
+ABORT = _th.Event()
+PAUSE = _th.Event()
+# 阈值：系统盘 < 3GB / 数据盘 < 5GB / 内存压力 critical 或空闲 < 10% / winterjs 进程 > 80 → 中止；
+# 内存压力 warn → 暂停发新件，回落再继续。
+LIMITS = {"sys_gb": 3.0, "data_gb": 5.0, "free_pct": 10,
+          "wjs_procs": int(os.environ.get("WJS_SWEEP_MAX_PROCS", "80"))}
+
+
+def _disk_gb(path):
+    try:
+        st = os.statvfs(path)
+        return st.f_bavail * st.f_frsize / 1e9
+    except OSError:
+        return -1.0
+
+
+def _pressure_level():
+    try:
+        return int(subprocess.run(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+                                  capture_output=True, timeout=5).stdout.strip() or 1)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return 1
+
+
+def _free_pct():
+    try:
+        out = subprocess.run(["memory_pressure"], capture_output=True, timeout=10).stdout.decode()
+        m = [l for l in out.splitlines() if "free percentage" in l]
+        return int(m[-1].split(":")[1].strip().rstrip("%")) if m else -1
+    except (OSError, ValueError, subprocess.TimeoutExpired, IndexError):
+        return -1
+
+
+def _wjs_procs():
+    try:
+        return len(subprocess.run(["pgrep", "-f", "target/debug/winterjs"], capture_output=True,
+                                  timeout=5).stdout.split())
+    except (OSError, subprocess.TimeoutExpired):
+        return -1
+
+
+def _kill_all_running():
+    with RUN_LOCK:
+        pgs = list(RUNNING)
+    for pg in pgs:
+        try:
+            os.killpg(pg, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    subprocess.run(["pkill", "-9", "-f", "target/debug/winterjs"], capture_output=True)
+
+
+def watchdog(st, log_path):
+    """每 5s 采样，每 15s 落一行 monitor.log；越线即中止（杀全部在跑进程组）。"""
+    tick = 0
+    with open(log_path, "a") as log:
+        while not st.get("_finished"):
+            sysg, datag = _disk_gb("/"), _disk_gb(HOME_ROOT)
+            lvl, procs = _pressure_level(), _wjs_procs()
+            freep = _free_pct() if tick % 3 == 0 else st.get("mon_free_pct", -1)
+            load = os.getloadavg()[0]
+            st.update(mon_sys_gb=round(sysg, 1), mon_data_gb=round(datag, 1), mon_pressure=lvl,
+                      mon_free_pct=freep, mon_wjs_procs=procs, mon_load=round(load, 1))
+            reason = None
+            if 0 <= sysg < LIMITS["sys_gb"]:
+                reason = f"系统盘余量 {sysg:.1f}GB < {LIMITS['sys_gb']}GB"
+            elif 0 <= datag < LIMITS["data_gb"]:
+                reason = f"数据盘余量 {datag:.1f}GB < {LIMITS['data_gb']}GB"
+            elif lvl >= 4 or 0 <= freep < LIMITS["free_pct"]:
+                reason = f"内存压力 critical（level={lvl} free={freep}%）"
+            elif procs > LIMITS["wjs_procs"]:
+                reason = f"winterjs 进程 {procs} > {LIMITS['wjs_procs']}（疑自 spawn 失控）"
+            if tick % 3 == 0 or reason:
+                log.write(f"{time.strftime('%H:%M:%S')} done={st.get('done')} procs={procs} "
+                          f"free={freep}% pressure={lvl} sys={sysg:.1f}GB data={datag:.1f}GB "
+                          f"load={load:.1f}{' ABORT: ' + reason if reason else ''}\n")
+                log.flush()
+            if reason:
+                st["abort_reason"] = reason
+                ABORT.set()
+                _kill_all_running()
+                return
+            if lvl >= 2:
+                PAUSE.set()
+            else:
+                PAUSE.clear()
+            tick += 1
+            time.sleep(5)
+
+
 def run_one(binary, path, cwd, env, timeout, prefix=("--run",), dump_dir=None, side=None):
     # 返回 (rc, 首行 stderr)——失败行的 stderr 尾巴直接进 results.log，
     # 省一轮手工复跑（exec 失败必须显式落 error 态，绝不能静默当
@@ -179,6 +273,8 @@ def run_one(binary, path, cwd, env, timeout, prefix=("--run",), dump_dir=None, s
         )
     except OSError as e:
         raise RuntimeError(f"exec 失败 {binary}: {e}")
+    with RUN_LOCK:
+        RUNNING.add(proc.pid)
     try:
         out, errb = proc.communicate(timeout=timeout)
         timed_out = False
@@ -189,6 +285,8 @@ def run_one(binary, path, cwd, env, timeout, prefix=("--run",), dump_dir=None, s
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
+        with RUN_LOCK:
+            RUNNING.discard(proc.pid)
     if timed_out:
         try:
             proc.communicate(timeout=5)
@@ -270,6 +368,10 @@ def sweep_loop(st):
     def worker(k):
         wenv = slot_env(k)
         while True:
+            if ABORT.is_set():
+                return
+            while PAUSE.is_set() and not ABORT.is_set():
+                time.sleep(2)
             with lock:
                 if not queue:
                     return
@@ -320,6 +422,9 @@ def sweep_loop(st):
                 st["elapsed_s"] = round(time.time() - t0, 1)
                 write_status(st["tag"], st)
 
+    wd = threading.Thread(target=watchdog, args=(st, os.path.join(tag_dir(st["tag"]), "monitor.log")),
+                          daemon=True)
+    wd.start()
     threads = [threading.Thread(target=worker, args=(k,), daemon=True) for k in range(jobs)]
     for t in threads:
         t.start()
@@ -331,9 +436,10 @@ def sweep_loop(st):
     for _, line in sorted(lines_out):
         results.write(line + "\n")
     results.close()
+    st["_finished"] = True
     if cache is not None:
         save_cache(cache)
-    st["state"] = "done"
+    st["state"] = "aborted" if ABORT.is_set() else "done"
     st["finished"] = time.time()
     write_status(st["tag"], st)
     print(
@@ -463,6 +569,10 @@ def fmt_status(st):
         f"SAME0={st.get('same0', 0)} SAME1={st.get('same1', 0)} "
         f"DIFF={st.get('diff', 0)} TIMEOUT={st.get('timeout', 0)} "
         f"elapsed={el}s updated={time.strftime('%H:%M:%S', time.localtime(st.get('updated', 0)))}"
+        f" | mon procs={st.get('mon_wjs_procs')} free={st.get('mon_free_pct')}% "
+        f"pressure={st.get('mon_pressure')} sys={st.get('mon_sys_gb')}GB data={st.get('mon_data_gb')}GB "
+        f"load={st.get('mon_load')}"
+        + (f" ABORT: {st['abort_reason']}" if st.get("abort_reason") else "")
     )
 
 

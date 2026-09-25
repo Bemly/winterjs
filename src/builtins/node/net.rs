@@ -484,5 +484,6 @@ fn with_str_args(
 /// `net_server.js` Server/BoundSocket/校验族，concat 字节恒等）。
 pub const SOURCE: &str = concat!(
     include_str!("net_socket.js"),
+    include_str!("net_socket_end.js"),
     include_str!("net_server.js"),
 );

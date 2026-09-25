@@ -1,5 +1,8 @@
 # Bun node: 兼容清单与移植评估
 
+> **存档（2026-09-25）**：Bun 兼容表快照；范围判定已改用 `docs/bun-scope.txt`，本表 winterjs 列停在 09-15。 当前进度见 `docs/plan3.md` §0，索引 `docs/README.md`。
+
+
 > 来源：`oven-sh/bun` HEAD `6a92015`（2026-09-12 浅克隆至 `/tmp/wjs-bun`，
 > sparse 只取 `docs/runtime/` + `src/js/`；仓库内不留 Bun 源码）。
 > 兼容表原文 targeting **Node v26**（`docs/runtime/nodejs-compat.mdx`）。

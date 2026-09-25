@@ -7,12 +7,13 @@
 > targeting Node v26；第三方全量跑分 Bun 1.3.14 约 40.6%，见 bun-compat 头注）。
 > 立项后不追 Bun HEAD（它走得快），以快照为准；终局重测时再对新版复核。
 >
-> 方法（三源对照，沿用 plan2）：**node 定语义**（`lib/` 原文 +
-> `test/parallel` 断言原文入库），**bun 当词典**（`internal/` 文件名 1:1），
-> **deno 对分层**（`op_*` Rust 底 ↔ natives，TS 壳 ↔ prelude）。
+> 方法（2026-09-25 用户重申）：**Bun 定高度**（范围 = Bun 自带 node 测试清单
+> `docs/bun-scope.txt`，§0.2），**node 定逻辑**（`lib/` 原文 + `test/parallel`
+> 断言原文）。deno 参照随 plan2（deno 高度）对齐即完结，本期不再使用；
+> 早期"bun 当词典（`internal/` 文件名 1:1）"仅作命名参考。
 >
 > 纪律：AGENTS 三件套（模块单测 + 黑盒正常/报错/边界 + 冒烟 5/5，
-> `UNSAFE-BOUNDARY` 新增配 panic 用例）；踩坑记 AGENTS §4；
+> `UNSAFE-BOUNDARY` 新增配 panic 用例）；踩坑记 `docs/pitfalls.md`；
 > vendoring 三家 JS 文件保留 MIT 头；新 crate 一律先走 §0.5（找轮子 →
 > 记 `docs/dependencies.md` → **停下问用户** → 点头才引入）。
 >
@@ -37,6 +38,8 @@
    URLPattern 当待办，把 G11 标 ~110）；§5 堆了 250 行逐轮日志（已迁
    `docs/plan3-journal.md`）；AGENTS.md 286KB / 206 条 §4（每会话自动载入，
    约 10 万 token 量级上下文税，且 §4 顺序错乱：4.72→4.136→§5/§6→4.73）。
+   → 2026-09-25 已修：AGENTS 瘦身至 15KB、踩坑全集迁 `docs/pitfalls.md`、
+   旧入口作废、文档索引 `docs/README.md`（存档件加横幅）。
 5. **测量噪声**。sweep 不读套件头 `// Flags:`（node 侧 `--expose-internals`
    类 8 件 node 自红、我们"绿"=假绿，§4.126③）；`/tmp/wjs-node-test` 稀疏检出
    fixtures 不全（§4.158）且在系统盘 `/tmp`（会被清，§4.144）。
@@ -44,10 +47,15 @@
 ### 0.2 新口径（立即生效，覆盖 §5 旧口径）
 
 - **欠账 = Bun 自带 node 测试清单 ∩ 我们红**。清单：`oven-sh/bun`
-  `test/js/node/test/parallel/`（快照 `dc30df0` 2026-09-24，3656 件，
-  文件名表 `/Volumes//wjs-data/bun-parallel.txt`；与本仓 node 检出同名交集 3574）。
-  不在清单里的红件 **直接出局**，bun-parity 记一行"Bun 清单外"即可，不分析不修。
+  `test/js/node/test/parallel/`（快照 `dc30df0` 2026-09-24，3656 件），
+  入库为 `docs/bun-scope.txt`（文件名表）；与本仓 node 检出同名交集 3574。
   语义仍以 node 原文为准（Bun 的副本可能改过断言），清单只定**范围**。
+- **用户拍板（2026-09-25）三条范围规则**：
+  1. **已做且超过 Bun 的保留**（代码、黑盒、文档都不删，如 node:test 五个 Slice、
+     diagnostics_channel 全语义、crypto 超 Bun 差集）——回归照常守。
+  2. **清单外且未做的不做，直接清出**（清出名单见 0.7）；今后遇到清单外红件只在
+     bun-parity 记一行"Bun 清单外"，不分析不修。
+  3. 清单内的红件才进 0.4 队列，按 0.2 止损线啃。
 - **域止损线**：域内"清单件"通过数 ≥ Bun 清单件数 × 95% 即域收官，余件批量
   一行定性（出局/偏离/另案编号），不再逐件开轮。
 - **单件时间盒**：同一套件累计 2 轮（或约半天）无转绿即停手记档，换下一件；
@@ -79,9 +87,9 @@
 | P0-3 | 全域基线 | `sweep-bg.py` 按 Bun 清单过滤、逐域一次（serial，后台，外置盘工件）→ 回填 0.3 表"本仓现状"列 | ~3h 机时 | ⬜ |
 | P1 | http2 compat | `Http2ServerRequest/Response` 进 stream 全家（骑 10b 帧层经验）+ server 流面/settings 校验；按清单件分簇，差额降序啃 | 按 0.2 止损线 | ⬜ |
 | P2 | P0-3 排出的前 3 大差额域 | 同口径 | 各按止损线 | ⬜ |
-| P3 | http 冻结收口 | sweep9 真红 12 件一次性定性：清单内可半天修的修（`matchKnownFields`/`outgoing-finished`/`1.0-keep-alive` 文案），其余记档（`reuse-drained`=process.report、`client-response-domain`=domain 异步、`keep-alive-timeout-race`=Atomics.wait、`dump-req`/`set-timeout-server` exit-hold/`catch-uncaughtexception`/`client-parse-error`/`writable-true-after-close`/`client-timeout-on-connect`=挂死型） | ≤1 天 | ⬜ |
+| P3 | http 冻结收口 | sweep9 真红 12 件中 `dump-req-when-res-ends` 在清单外已清出（0.7）；余 11 件一次性定性：清单内可半天修的修（`matchKnownFields`/`outgoing-finished`/`1.0-keep-alive` 文案），其余记档（`reuse-drained`=process.report、`client-response-domain`=domain 异步、`keep-alive-timeout-race`=Atomics.wait、`set-timeout-server` exit-hold/`catch-uncaughtexception`/`client-parse-error`/`writable-true-after-close`/`client-timeout-on-connect`=挂死型） | ≤1 天 | ⬜ |
 | D1 | **待用户拍板** | execPath 位置参数自 spawn（`spawnSync(execPath,[file,arg])` 等，跨 timers/stream/http/test ~18+ 件）：是否给 `--run` 自举映射补"裸文件 + 位置参数"形（不加 CLI 别名，只扩 `__selfArgv` 翻译层） | — | ⏸ |
-| D2 | **待用户拍板** | AGENTS.md 瘦身：§4 全量迁 `docs/pitfalls.md`（按编号重排 + 一行索引），AGENTS 只留 §0–§3/§6 + 铁律摘要（目标 ≤40KB） | 1h | ⏸ |
+| D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |
 | D3 | **待用户拍板** | §0.9 单文件 ≤1000 行是否覆盖 `src/**/*.js`（现 8 件超限：`framing_head` 2151/`framing_outgoing` 2028/`framing_agent` 1855 等）；建议覆盖但排在 P1 之后顺手拆 | — | ⏸ |
 
 ### 0.5 运行环境（系统盘仅剩 ~5GB，大数据一律外置盘）
@@ -105,6 +113,28 @@
 - 全域 sweep 只在 P0-3 与每个 P 项收尾各一次；禁重复全量子集（§4.126）。
 - 本节状态表是唯一进度真相；逐轮细节写进 `docs/plan3-journal.md`（追加）与
   `docs/bun-parity.md`，**不再写进 plan3**。
+
+### 0.7 已清出（Bun 清单外且未做，2026-09-25 按规则 2 删除待办）
+
+以下待办从本计划与 §5 欠账表中**撤销**，不再排期；对应 bun-parity 条目视为
+"Bun 清单外"（已绿的不受影响，照常守回归）：
+
+| 域 | 清出项 | 原归类 |
+|---|---|---|
+| test（node:test） | 残 ~35 件全部（spawn CLI ~18 / reporter ~13 / run 并发·上报 ~6 / mocking 私有字段单行 / `test-runner-force-exit-flush`）——Bun 清单 test-runner 0 件 | Slice F+ 另轮 |
+| http | `test-http-dump-req-when-res-ends`（挂死型 flaky，dump 机制需重写流端口 flowing 排空） | 独立轮 |
+| child_process | `server-close` / `recv-handle` / `send-returns-boolean`（live 句柄跨会话） | 出局待定 |
+| net | `listen-handle-in-cluster-2` + `server-transfer-worker` / `socket-transfer-worker` / `socket-transfer-worker-http`（跨线程 fd 移交） | G6 残件 |
+| fs | `readfile-one-roundtrip` 末段（async_hooks FSREQCALLBACK 资源面） | 另轮 |
+| diagnostics_channel | child-process / gc-maintains-subscriptions / gc-race-condition / http / http-server-start / memory-leak / module-import(-error) / module-require(-error) / net / tracing-channel-promise-unhandled / web-locks | 🟡/⏭️ 记档 |
+| buffer / os / dns | buffer alloc-alignment · isutf8-isascii-fast · swap-fast；os checked-function · fast；dns lookup-promises · memory-error · perf_hooks | ⏭️ 记档 |
+| timers / url / util / vm | timers async-store-leak · fast-calls；url parse-deprecation；util format · inspect（`%o`/布局引擎边界）；vm dynamic-import-callback-missing-flag · module-linkmodulerequests · module-modulerequests · property-definer-partial-update · proxy-sandbox-property-query | 🟡 记档 |
+
+仍保留（在清单内，照 0.4 排队）：`net-throttle`、`net-listen-handle-in-cluster-1`、
+`child-process-send-keep-open`、`fs-glob` ×2、`fs-promises-file-handle-read-worker`/
+`pull`/`pullsync`/`writer`、fs flush 三件、`worker-terminate-*`、http P3 余 11 件、
+D1 涉及的 `timers-nan/negative-duration-warning` 等。未逐件核对的簇（dgram 余件、
+worker 环境面等）由 P0-3 基线按清单自动分流，不再人工判。
 
 ## §1 缺口清单（Bun 快照 vs winterjs 现状，2026-09-15）
 
@@ -253,6 +283,8 @@
 ## §5 Bun 🟢 域欠账清单（2026-09-19 盘点；**判定口径已由 §0.2 取代**：
 ## 以 Bun 自带 node 测试清单为准，下表仅作历史簇索引）
 
+> **2026-09-25：本节已被 §0.2/§0.7 取代——表中凡列入 §0.7 清出名单的残件作废。**
+>
 > 口径修正（本轮起生效）：欠账判定以 **bun-compat.md 快照的 Bun 列**为准，
 > 不再以 node 套件红数为准——child_process（Bun 🟡：IPC 若干缺口）与
 > worker_threads（Bun 🟡）整体降级为"parity 确认"档，其 DIFF 中 Bun 同缺的

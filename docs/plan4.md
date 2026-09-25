@@ -1,5 +1,8 @@
 # Phase 11 计划 — 独立 serve（WinterCG handler 全交 Rust 依赖）
 
+> **存档（2026-09-25）**：Phase 11 独立 serve 已收官并合入 master（2026-09-21）。 当前进度见 `docs/plan3.md` §0，索引 `docs/README.md`。
+
+
 > 立项 2026-09-21（用户拍板）。目标：`winterjs --serve` 从纯静态升级为
 > **独立动态服务端**——JS 写 `Request → Response`（WinterCG 形状），
 > H1/H2/H3 全由树内 Rust 轮子承载，自研只剩 JS 边界一圈。

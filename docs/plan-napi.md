@@ -1,5 +1,8 @@
 # napi 立项计划（已收官合流，存档）
 
+> **存档（2026-09-25）**：napi M0–M6 已收官合流。 当前进度见 `docs/plan3.md` §0，索引 `docs/README.md`。
+
+
 > 立项 2026-09-13（用户拍板）。目标：在 mozjs 上手写 host 侧 Node-API 实现，
 > 终验收线 = **用户 vue-project 上 `winterjs -r dev` / `-r build` / `-r test`
 > 三命令全绿**（vite 8.3.0 rolldown 系）。

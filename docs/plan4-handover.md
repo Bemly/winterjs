@@ -1,5 +1,8 @@
 # plan4 → master 合并交接（给 plan3 agent）
 
+> **存档（2026-09-25）**：plan4-serve 已于 2026-09-21 合入 master，交接事项完结。 当前进度见 `docs/plan3.md` §0，索引 `docs/README.md`。
+
+
 > plan4（独立 serve，WinterCG handler + H1/H2/H3 + WS）已收官。
 > 本分支 `plan4-serve` 基于 `04ff117`（与 master 共享基线），27 提交，工作区干净。
 > 合并预演（`git merge-tree 04ff117 master plan4-serve`，只读）结论先行：

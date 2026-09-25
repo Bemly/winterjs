@@ -199,7 +199,7 @@ async fn run_inner(
                         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
                         rooted!(&in(&mut realm) let mut exc = UndefinedValue());
                         // SAFETY: realm 内读取 pending exception（消费异常值）
-                        match error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
+                        match { let i = error_info_from_exception_stack(&mut realm, exc.handle_mut()); crate::jsapi_glue::fill_message(&mut realm, i, exc.get()) } {
                             Some(info) => {
                                 // 10f：worker 内非对象异常（throw 42 等）走原始值信封
                                 //（error-primitive 套件断同一性；主进程显示不受影响）。
@@ -208,8 +208,17 @@ async fn run_inner(
                                 } else {
                                     None
                                 };
+                                // 2026-09-25：require 透传原异常后，位置即真实抛点——
+                                // 抛点在入口文件用入口名 + 源码（代码框对得上），
+                                // 否则（node:internal/… 等）如实报其文件名、不给代码框。
+                                let in_entry = info.filename.is_empty() || info.filename == url.as_str();
+                                let (shown, src): (&str, &str) = if in_entry {
+                                    (filename, source)
+                                } else {
+                                    (info.filename.as_str(), "")
+                                };
                                 Error::script_with_kind(
-                                    filename, &main_src, info.line.max(1), info.col,
+                                    shown, src, info.line.max(1), info.col,
                                     prim.unwrap_or(info.message),
                                     crate::jsapi_glue::exc_name(&mut realm, exc.get()))
                             }
@@ -265,7 +274,7 @@ async fn run_inner(
                 let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
                 rooted!(&in(&mut realm) let mut exc = UndefinedValue());
                 // SAFETY: realm 内读取 pending exception（消费异常值）
-                let info = error_info_from_exception_stack(&mut realm, exc.handle_mut());
+                let info = { let i = error_info_from_exception_stack(&mut realm, exc.handle_mut()); crate::jsapi_glue::fill_message(&mut realm, i, exc.get()) };
                 let kind = exc_name(&mut realm, exc.get());
                 let is_syntax = kind.as_deref() == Some("SyntaxError");
                 // 10f：worker 内非对象异常走原始值信封（同模块路径）。

@@ -190,6 +190,34 @@ fn caller_base(cx: &mozjs::context::JSContext) -> Option<Url> {
     None
 }
 
+/// 用户代码异常原样透传的哨兵（2026-09-25）：CJS 包装/求值期的 JS 异常**不消费**，
+/// 留在 pending 位由 native 入口直接 `return false`——require 调用方拿到原异常对象
+/// （身份/类/code/stack 与 node 同），入口报错位置取真实抛点（修前一律
+/// `__wjs_require_main` 的 prelude 424:53，NodeError message 为空）。
+const KEEP_PENDING: &str = "\u{0}wjs-keep-pending";
+
+/// 是否为"异常仍 pending、原样透传"哨兵。
+fn is_keep_pending(e: &Error) -> bool {
+    matches!(e, Error::Other(s) if s == KEEP_PENDING)
+}
+
+/// 用户代码失败：有 pending 异常即保留并回哨兵，否则兜底文案。
+fn keep_pending(cx: &mut mozjs::context::JSContext) -> String {
+    if crate::jsapi_glue::exception_pending(cx) {
+        KEEP_PENDING.to_string()
+    } else {
+        "uncaught exception".to_string()
+    }
+}
+
+/// native 入口的 require 失败出口：哨兵即异常已 pending（直接 false），
+/// 其余按文案抛 Error。
+fn report_require_err(cx: &mut mozjs::context::JSContext, e: &Error) {
+    if !is_keep_pending(e) {
+        report_error(cx, &e.to_string());
+    }
+}
+
 /// pending 异常 → 消息串（消费异常；无则兜底）。
 fn pending_message(cx: &mut mozjs::context::JSContext) -> String {
     rooted!(&in(cx) let mut exc = UndefinedValue());
@@ -245,12 +273,14 @@ fn require_cjs_file(
     );
     let c_filename =
         std::ffi::CString::new(url.as_str()).unwrap_or_else(|_| c"module.js".into());
-    let options = CompileOptionsWrapper::new(cx, c_filename, 1);
+    // 起始行 0：包装头独占第 0 行，用户代码第 1 行即物理第 1 行（栈/报错行号
+    // 与源文件一致；修前恒 +1，mapper 需折算）。
+    let options = CompileOptionsWrapper::new(cx, c_filename, 0);
     rooted!(&in(cx) let global_root: *mut JSObject = global);
     rooted!(&in(cx) let mut fn_v = UndefinedValue());
     let res = evaluate_script(cx, global_root.handle(), wrapped.as_str(), fn_v.handle_mut(), options);
     if res.is_err() {
-        return Err(pending_message(cx));
+        return Err(keep_pending(cx));
     }
     if !fn_v.is_object() {
         return Err(format!("cannot load '{}': wrapper failed", url.as_str()));
@@ -314,7 +344,7 @@ fn require_cjs_file(
             }
             None => {
                 state::cjs_remove(url.as_str());
-                Err(pending_message(cx))
+                Err(keep_pending(cx))
             }
         }
     };
@@ -332,7 +362,7 @@ fn require_cjs_file(
         }
         None => {
             state::cjs_remove(url.as_str());
-            Err(pending_message(cx))
+            Err(keep_pending(cx))
         }
     }
 }
@@ -452,7 +482,7 @@ pub unsafe extern "C" fn require_native(
             true
         }
         Err(e) => {
-            report_error(&mut cx, &e.to_string());
+            report_require_err(&mut cx, &e);
             false
         }
     }
@@ -569,7 +599,7 @@ pub unsafe extern "C" fn require_from(
             true
         }
         Err(e) => {
-            report_error(&mut cx, &e.to_string());
+            report_require_err(&mut cx, &e);
             false
         }
     }
@@ -681,12 +711,12 @@ pub unsafe extern "C" fn cjs_compile(
     );
     let c_filename =
         std::ffi::CString::new(url.as_str()).unwrap_or_else(|_| c"module.js".into());
-    let options = CompileOptionsWrapper::new(&mut cx, c_filename, 1);
+    // 起始行 0（同 require_cjs_file：用户代码行号 = 物理行号）。
+    let options = CompileOptionsWrapper::new(&mut cx, c_filename, 0);
     rooted!(&in(cx) let mut fn_v = UndefinedValue());
     let res = evaluate_script(&mut cx, global_root.handle(), wrapped.as_str(), fn_v.handle_mut(), options);
     if res.is_err() {
-        let msg = pending_message(&mut cx);
-        report_error(&mut cx, &msg);
+        // 原 SyntaxError 等留 pending 透传（同 require_cjs_file 口径）。
         return false;
     }
     if !fn_v.is_object() {
@@ -722,27 +752,24 @@ pub unsafe extern "C" fn cjs_compile(
     filename_str.to_jsval(&mut cx, s_v.handle_mut());
     rooted!(&in(cx) let mut d_v = UndefinedValue());
     dirname_str.to_jsval(&mut cx, d_v.handle_mut());
-    // 五连单参调用（§4.9）。
-    let mut cur = fn_v.get();
-    let chain: [(&str, JSVal); 5] = [
-        ("exports", exports_root.get()),
-        ("require", require_root.get()),
-        ("module", mozjs::jsval::ObjectValue(module_root.get())),
-        ("__filename", s_v.get()),
-        ("__dirname", d_v.get()),
-    ];
-    for (label, arg) in chain {
-        if !cur.is_object() {
+    // 五连单参调用（§4.9）。§4.80：cur 全程 rooted、实参调用点现读（链内
+    // call_one 可 GC，裸 JSVal 栈拷贝会悬垂）；用户代码异常留 pending 透传。
+    rooted!(&in(cx) let mut cur = fn_v.get());
+    for step in 0..5 {
+        let (label, arg) = match step {
+            0 => ("exports", exports_root.get()),
+            1 => ("require", require_root.get()),
+            2 => ("module", mozjs::jsval::ObjectValue(module_root.get())),
+            3 => ("__filename", s_v.get()),
+            _ => ("__dirname", d_v.get()),
+        };
+        if !cur.get().is_object() {
             report_error(&mut cx, &format!("cannot compile '{}': {label} step is not callable", url.as_str()));
             return false;
         }
-        match call_one(&mut cx, global_root.get(), cur, arg) {
-            Some(v) => cur = v,
-            None => {
-                let msg = pending_message(&mut cx);
-                report_error(&mut cx, &msg);
-                return false;
-            }
+        match call_one(&mut cx, global_root.get(), cur.get(), arg) {
+            Some(v) => cur.set(v),
+            None => return false,
         }
     }
     frame.set_rval(UndefinedValue());
@@ -812,6 +839,11 @@ fn cjs_export_names_runtime(
 ) -> Vec<String> {
     let exports = match require_value(cx, global, url.as_str(), None) {
         Ok(v) if v.is_object() => v,
+        Err(e) if is_keep_pending(&e) => {
+            // 吞错路径：原异常仍 pending，清掉再回空（不外泄到后续 JSAPI）。
+            let _ = crate::jsapi_glue::take_pending_exception(cx);
+            return Vec::new();
+        }
         _ => return Vec::new(),
     };
     rooted!(&in(cx) let exports_root = exports);
@@ -873,7 +905,7 @@ pub unsafe extern "C" fn require_cjs_by_url(
             true
         }
         Err(e) => {
-            report_error(&mut cx, &e.to_string());
+            report_require_err(&mut cx, &e);
             false
         }
     }

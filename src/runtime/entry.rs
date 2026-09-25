@@ -122,7 +122,7 @@ pub(crate) async fn eval_syntax_fallback(
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         rooted!(&in(&mut realm) let mut exc = UndefinedValue());
         // realm 内读取 pending exception（会消费异常值）
-        let info = error_info_from_exception_stack(&mut realm, exc.handle_mut());
+        let info = { let i = error_info_from_exception_stack(&mut realm, exc.handle_mut()); crate::jsapi_glue::fill_message(&mut realm, i, exc.get()) };
         let exc_kind = exc_name(&mut realm, exc.get());
         let is_syntax = exc_kind.as_deref() == Some("SyntaxError");
         if !is_syntax {
@@ -201,7 +201,7 @@ pub(crate) async fn eval_syntax_fallback(
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
             rooted!(&in(&mut realm) let mut exc = UndefinedValue());
             // realm 内读取 pending exception（消费异常值）
-            let info = error_info_from_exception_stack(&mut realm, exc.handle_mut());
+            let info = { let i = error_info_from_exception_stack(&mut realm, exc.handle_mut()); crate::jsapi_glue::fill_message(&mut realm, i, exc.get()) };
             let exc_kind = exc_name(&mut realm, exc.get());
             let is_syntax = exc_kind.as_deref() == Some("SyntaxError");
             if is_syntax {
@@ -258,7 +258,7 @@ pub(crate) fn pending_error_in_realm(
 ) -> Error {
     rooted!(&in(realm) let mut exc = UndefinedValue());
     // realm 内读取 pending exception
-    match error_info_from_exception_stack(realm, exc.handle_mut()) {
+    match { let i = error_info_from_exception_stack(realm, exc.handle_mut()); crate::jsapi_glue::fill_message(realm, i, exc.get()) } {
         Some(info) => Error::script(
             filename,
             source,

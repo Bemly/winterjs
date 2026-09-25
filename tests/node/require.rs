@@ -455,3 +455,41 @@ fn phase10f_cjs_top_level_return_entry_and_dep() {
     );
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_require_rethrows_original_exception() {
+    // 2026-09-25：require 透传用户代码原异常（身份/类/code/stack，node 同），
+    // 入口报错取真实抛点行号（CJS 包装头编在第 0 行，行号 = 物理行），
+    // NodeError（super() 后 defineProperty message）文案不再为空。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("dep.js")
+        .write_str("class E extends Error {}\nmodule.exports = E;\nthrow Object.assign(new E(\"orig\"), { code: \"XC\" });\n")
+        .unwrap();
+    dir.child("main.js")
+        .write_str(
+            "let first;\n\
+             try { require(\"./dep.js\"); } catch (e) { first = e; console.log(\"cls\", e.constructor.name, e.code, e.message, /dep\\.js:3:/.test(e.stack)); }\n\
+             try { require(\"./dep.js\"); } catch (e) { console.log(\"again\", e !== first, e.code); }\n\
+             try { require(\"./nope-missing.js\"); } catch (e) { console.log(\"missing\", /Cannot find module/.test(e.message)); }\n\
+             console.log(\"line\", new Error().stack.split(\"\\n\")[0].includes(\"main.js:5:\"));\n",
+        )
+        .unwrap();
+    // 正常：原对象透传 + 行号物理对齐；二次 require 重新求值（失败清场，非缓存半成品）。
+    let (ok, out, err) = wjs(&["--run", "main.js"], &dir);
+    assert!(ok, "stderr: {err}");
+    for line in ["cls E XC orig true", "again true XC", "missing true", "line true"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}\nout: {out}");
+    }
+    // 报错：入口未捕获——位置是真实抛点（第 3 行），非 prelude 行号。
+    dir.child("boom.js").write_str("\n\nthrow new TypeError(\"deep\");\n").unwrap();
+    let (ok, _, err) = wjs(&["--run", "boom.js"], &dir);
+    assert!(!ok);
+    assert!(err.contains("boom.js:3:7: deep"), "stderr: {err}");
+    // 边界：NodeError（message 为属性而非引擎槽）文案非空、位置如实报内部文件。
+    dir.child("ne.js")
+        .write_str("require(\"stream\").pipeline(process.stdin, {}, () => {});\n")
+        .unwrap();
+    let (ok, _, err) = wjs(&["--run", "ne.js"], &dir);
+    assert!(!ok);
+    assert!(err.contains("argument must be"), "stderr: {err}");
+}

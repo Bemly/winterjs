@@ -30,8 +30,10 @@
    一次恰好一个动作，多给即错；动作的必需值紧贴其 flag；修饰 flag
    （`--dry-run/--registry/--port` 等）只在对应动作下生效。help/补全/man 由同一套
    flag 生成（`localized_command`）。
-9. **单文件 ≤1000 行**：项目内全部 `.rs`（`src/`+`tests/`+`benches/`）不超过 ~1000 行，
-   无豁免（`sample/` 不管）；`src/**/*.js` 是否纳入待用户拍板（plan3 §0.4 D3）。
+9. **单文件 ≤1000 行**：项目内全部 `.rs`（`src/`+`tests/`+`benches/`）与 `src/**/*.js`
+   （内嵌 JS SOURCE，2026-09-25 D3 纳入）不超过 ~1000 行，无豁免（`sample/` 不管）；
+   提交前跑 `scripts/check-lines.sh`。JS 片经 `concat!(include_str!…)` 拼接，按方法边界切、
+   concat 字节恒等（HEAD 原件 `cmp` 新片拼接）。
    拆分纪律：① 纯搬移先行（`git diff -w` 只见路径），调用方经 `pub use` 原位重导出；
    ② 一文件一提交，每步 0 警告 + 对应域测试绿；③ 引擎协议代码（`runtime`/`state`/
    `jsapi_glue`/`jobqueue`/`modules`）只拆纯逻辑，会话管线与 trace 不动；
@@ -111,6 +113,7 @@ cargo build
 - 校验放包装闭包外（`__callNative`/`__fsCall`/`__zCall`）；错误包装函数必须幂等、直通已带 code 的错误（4.37/4.51/4.119/4.157）。
 - 跨 compartment 按结构判形态，禁 `instanceof`（4.57）；`Object.create` 造的实例禁 `#` 私有成员（4.23）。
 - 宿主调用户回调走 `Reflect.apply`；内部调用经默认导出对象（用户可 mock）（4.95/4.166）。
+- 宿主转发用户异常留 pending 原样透传，禁转串重抛；文案读 `message` 属性兜底（4.208）。
 - node 文档写明异步的面（warning/写回调/destroy error）即使能同步完成也异步触发（4.74/4.102/4.187）。
 - 对接外部 JSON 一律显式 `serde(rename)` + 真实线名 roundtrip 单测（4.29/4.33）。
 - "JS 生成 JS"的模板块内禁内层模板字面量；`format!` 与 JS 同现改文件落盘（4.44/4.151）。

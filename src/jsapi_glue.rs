@@ -304,7 +304,7 @@ pub fn pending_exception_error(
         unsafe { mozjs::gc::Handle::from_marked_location(&global) },
     );
     rooted!(&in(&mut realm) let mut exc = mozjs::jsval::UndefinedValue());
-    match mozjs::rust::error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
+    match { let i = mozjs::rust::error_info_from_exception_stack(&mut realm, exc.handle_mut()); crate::jsapi_glue::fill_message(&mut realm, i, exc.get()) } {
         Some(info) => {
             let kind = exc_name(&mut realm, exc.get());
             let line = info.line.saturating_sub(state::line_adjust());
@@ -328,6 +328,32 @@ pub fn take_pending_exception(cx: &mut JSContext) -> Option<JSVal> {
     // SAFETY: cx 有效；出参为 rooted 槽位
     let got = unsafe { JS_GetPendingException(cx.raw_cx(), raw_handle_mut(val.as_ptr())) };
     if got { Some(val.get()) } else { None }
+}
+
+/// 报错信息补全：引擎报告里 message 为空、而异常对象有自有 `message` 属性时回填
+/// （node 口径 NodeError 为 `super()` 后 defineProperty 设 message，引擎内部
+/// message 槽为空——修前入口报错恒 `Error: file:L:C: ` 空文案）。
+/// UNSAFE-BOUNDARY：经 `get_prop_string` 只读；exc 须已 rooted（调用方槽位 `.get()`）。
+/// 覆盖：`tests/node/require.rs::phase11_require_rethrows_original_exception`。
+pub fn fill_message(
+    cx: &mut JSContext,
+    info: Option<mozjs::rust::ErrorInfo>,
+    exc: JSVal,
+) -> Option<mozjs::rust::ErrorInfo> {
+    let mut info = info?;
+    if info.message.is_empty() && exc.is_object() {
+        if let Some(m) = get_prop_string(cx, exc.to_object(), c"message") {
+            info.message = m;
+        }
+    }
+    Some(info)
+}
+
+/// UNSAFE-BOUNDARY: 是否有 pending exception（JS_IsExceptionPending 只读位，无副作用）。
+/// 前置：cx 有效。覆盖：`tests/node/require.rs::phase11_require_rethrows_original_exception`。
+pub fn exception_pending(cx: &mut JSContext) -> bool {
+    // SAFETY: cx 有效；只读 pending 位
+    unsafe { mozjs::jsapi::JS_IsExceptionPending(cx.raw_cx()) }
 }
 
 /// UNSAFE-BOUNDARY: 恢复 pending exception（JS_SetPendingException，Capture 栈）。

@@ -23,8 +23,8 @@ const __site = (e) => {
   const hit = fr.find((f) => f.indexOf(__base) !== -1);
   return hit || fr[0] || "no-frame";
 };
-// 栈帧行号 = 物理行 + CJS 包装前奏行数（.js 恒 1，实测 6/6；.mjs 无包装记 0）。
-const __shift = __suite.endsWith(".mjs") ? 0 : 1;
+// 栈帧行号 = 物理行（2026-09-25 起 CJS 包装头编在第 0 行，.js/.mjs 同口径）。
+const __shift = 0;
 const __src = (line) => {
   try {
     const fs = require("fs");

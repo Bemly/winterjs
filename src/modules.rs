@@ -120,7 +120,7 @@ fn compile_source(cx: &mut JSContext, filename: &str, js: &str) -> Result<*mut J
     if record.is_null() {
         rooted!(&in(cx) let mut exc = UndefinedValue());
         // CompileModule 刚失败，pending exception 存在；消费并转为定位错误
-        match mozjs::rust::error_info_from_exception_stack(cx, exc.handle_mut()) {
+        match { let i = mozjs::rust::error_info_from_exception_stack(cx, exc.handle_mut()); crate::jsapi_glue::fill_message(cx, i, exc.get()) } {
             Some(info) => Err(Error::script(filename, js, info.line.max(1), info.col, info.message)),
             None => Err(Error::Other(format!("failed to parse module {filename}"))),
         }
@@ -286,7 +286,7 @@ pub fn compile_entry(cx: &mut JSContext, url: &Url) -> Result<*mut JSObject, Err
 /// 前置条件：刚失败且 pending exception 存在（link/evaluate/定时器回调失败点）。
 pub fn module_error(cx: &mut JSContext, fallback_url: &str) -> Error {
     rooted!(&in(cx) let mut exc = UndefinedValue());
-    let Some(info) = mozjs::rust::error_info_from_exception_stack(cx, exc.handle_mut()) else {
+    let Some(info) = ({ let i = mozjs::rust::error_info_from_exception_stack(cx, exc.handle_mut()); crate::jsapi_glue::fill_message(cx, i, exc.get()) }) else {
         return Error::Other("uncaught module exception (no stack info)".into());
     };
     let filename = if info.filename.is_empty() {
@@ -383,7 +383,7 @@ pub(crate) fn ensure_subgraph(cx: &mut JSContext, root: &Url) -> Result<*mut JSO
     if !unsafe { ModuleLink(cx, root_obj.handle()) } {
         rooted!(&in(cx) let mut exc = UndefinedValue());
         // link 失败的 pending 异常消费为定位错误
-        match mozjs::rust::error_info_from_exception_stack(cx, exc.handle_mut()) {
+        match { let i = mozjs::rust::error_info_from_exception_stack(cx, exc.handle_mut()); crate::jsapi_glue::fill_message(cx, i, exc.get()) } {
             Some(info) => {
                 return Err(Error::script(
                     root.as_str(),
@@ -441,7 +441,7 @@ pub(crate) fn require_esm(cx: &mut JSContext, url: &Url) -> Result<JSVal, Error>
         // SAFETY: record 为 rooted 有效模块记录；realm 内求值
         if !unsafe { ModuleEvaluate(&mut realm, record_root.handle(), rval.handle_mut()) } {
             rooted!(&in(&mut realm) let mut exc = UndefinedValue());
-            match mozjs::rust::error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
+            match { let i = mozjs::rust::error_info_from_exception_stack(&mut realm, exc.handle_mut()); crate::jsapi_glue::fill_message(&mut realm, i, exc.get()) } {
                 Some(info) => Err(Error::script(
                     url.as_str(),
                     "",

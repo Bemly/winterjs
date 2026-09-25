@@ -213,6 +213,7 @@
 - 4.205 统一 runner 给 node 也带 `--run`：假红全表 + 过滤丢件（2026-09-25，②③工具轮）
 - 4.206 服务端流控/计时三面：pause 事件、dump 机制、headers 计时归属（2026-09-25，http 尾巴轮）
 - 4.207 `TMPDIR` 放 U+F8FF 卷即黑盒假红：`URL.pathname` 是百分号编码（2026-09-25，D1 轮）
+- 4.208 require 把用户异常转串重抛：位置恒 prelude 424:53、NodeError 空文案、原对象丢失（2026-09-25）
 
 ## 条目
 
@@ -3825,3 +3826,18 @@
   sweep 工件 / 探针等大数据放外置盘（plan3 §0.5 已改）。
 - 推广铁律：换数据盘/临时目录前先跑一次含 `import.meta.url` 的黑盒域；路径含非 ASCII
   时 URL→路径一律 `fileURLToPath`。
+### 4.208 require 把用户异常转串重抛：位置恒 prelude 424:53、NodeError 空文案、原对象丢失（2026-09-25）
+
+- 症状：`--run x.js`（node 套件几乎全是 CJS）任何未捕获错误都报 `Error: x.js:424:53: …`
+  （行列是 prelude `__wjs_require_main` 的调用点）；NodeError 报 `Error: x.js:424:53: `
+  空文案；`try { require('./m') } catch (e)` 拿到的是新 `Error`（丢类/code/stack）。
+- 根因：`require_cjs_file` 用户代码失败时 `pending_message` 消费异常取文案，native 入口
+  `report_error` 新抛一个 Error——异常栈变成重抛点；NodeError 的 message 是 `super()` 后
+  defineProperty 的属性，引擎报告里的 message 槽为空。另：CJS 包装头占第 1 行，栈行号恒 +1。
+- 修法：用户代码异常留 pending（`KEEP_PENDING` 哨兵 → native 直接 `return false`，吞错
+  调用方显式 `take_pending_exception` 清场）；包装编译起始行 0（行号 = 物理行，mapper 去 +1）；
+  报错点 `jsapi_glue::fill_message` 从 `message` 属性回填；入口报错抛点不在入口文件时如实
+  报其文件名。`__wjs_cjs_compile` 链顺带 §4.80 rooting 修复（cur 裸 JSVal 跨调用）。
+- 复现：`tests/node/require.rs::phase11_require_rethrows_original_exception`。
+- 推广铁律：宿主转发用户异常一律"留 pending 原样透传"，禁转串再抛；需要文案时读属性
+  而非只信引擎报告槽。

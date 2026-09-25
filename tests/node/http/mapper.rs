@@ -6,12 +6,11 @@ use assert_fs::prelude::*;
 
 /// 正常件：async 回调内断言失败，mapper 定位到套件侧真实调用点
 /// （无壳时宿主上报 assert SOURCE 包装位置，调用点不可见）。
-/// 栈帧行号系 CJS 包装后行号（恒比物理行 +1，§4.202-① 实测三处一致）——
-/// 帧号断言按包装行；±2 行节选窗口吸收位移，物理 assert 行必在节选内。
+/// 帧号即物理行（2026-09-25 起 CJS 包装头编在第 0 行）；±2 行节选窗口兜底。
 #[test]
 fn phase_mapper_locates_async_callsite() {
     let dir = assert_fs::TempDir::new().unwrap();
-    // 物理行钉住：r#" 首换行使 1 行为空，assert 在物理第 6 行（包装帧号 7）。
+    // 物理行钉住：r#" 首换行使 1 行为空，assert 在物理第 6 行（2026-09-25 起帧号即物理行）。
     let suite = dir.child("suite-async-fail.js");
     suite
         .write_str(
@@ -30,10 +29,10 @@ setTimeout(() => {
     assert!(out.contains("[mapper-actual] \"a\""), "out:\n{out}");
     assert!(out.contains("[mapper-expected] \"b\""), "out:\n{out}");
     assert!(
-        out.contains("suite-async-fail.js:7:10 (physical 6)"),
+        out.contains("suite-async-fail.js:6:10 (physical 6)"),
         "callsite must be the suite frame (not assert SOURCE); out:\n{out}"
     );
-    // 物理行折算：帧 7 - CJS 前奏 1 = 物理 6，`>>` 标注在 assert 行。
+    // CJS 包装头编在第 0 行后帧号 = 物理行（无需折算），`>>` 标注在 assert 行。
     assert!(out.contains(">>    6|   assert.strictEqual"), "out:\n{out}");
     assert!(out.contains("mapper-marker"), "excerpt ±2 lines; out:\n{out}");
     assert!(out.contains("assert.strictEqual('a', 'b')"), "out:\n{out}");

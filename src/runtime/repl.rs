@@ -35,7 +35,7 @@ async fn repl_eval(
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         rooted!(&in(&mut realm) let mut exc = UndefinedValue());
         // SAFETY: realm 内读取 pending exception（消费异常值）
-        match error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
+        match { let i = error_info_from_exception_stack(&mut realm, exc.handle_mut()); crate::jsapi_glue::fill_message(&mut realm, i, exc.get()) } {
             Some(info) => {
                 eprintln!("repl.js:{}:{}: {}", info.line.max(1), info.col, info.message);
                 if exc_name_is(&mut realm, exc.get(), "SyntaxError") && line.contains("await") {

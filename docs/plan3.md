@@ -16,16 +16,103 @@
 > vendoring 三家 JS 文件保留 MIT 头；新 crate 一律先走 §0.5（找轮子 →
 > 记 `docs/dependencies.md` → **停下问用户** → 点头才引入）。
 >
-> 验收线（终局）：§3 矩阵 Bun 🟢 项全 ✅、Bun 🟡 项 parity 确认（✅/🟡+偏离注），
+> 验收线（终局）：§1 矩阵 Bun 🟢 项全 ✅、Bun 🟡 项 parity 确认（✅/🟡+偏离注），
 > 10f 对拍报告入库，`cargo test` 全绿 0 警告，冒烟 5/5。
+
+## §0 执行方案修订（2026-09-25，**新会话只读本节 + §5 表即可开工**）
+
+### 0.1 诊断：为什么 09-22 起进度变慢（证据）
+
+1. **口径失焦——对着 node 100% 追，而非 Bun 高度**。§5"Bun 实现了的才是欠账"
+   被执行成"Bun 🟢 域里 node 套件每一件红都是欠账"。http 域 09-22→09-25 四天
+   ~150 提交（占同期 90%+，`framing_*.js` 三件从 ~2.6k 涨到 6.0k 行），
+   SAME0 307→381（409 件）；按 Bun 自带清单（0.3）Bun 在 http 口径约 388 件，
+   **http 已到 Bun 高度**，后面每件都是 node 独有的深水边角（挂死型/时序型）。
+2. **优先级倒挂**。同期 Bun 🟢 的 **http2：Bun 自带 256/277 件，我们 SAME0
+   8/276（3%）**——全仓最大真实缺口，四天零投入。node:test 五个 Slice（09-21）
+   也属 Bun 🟡 域（Bun 清单 test-runner 0 件），按用户口径本不该排在前面。
+3. **无止损线**。验收只写"全部转绿或逐簇书面偏离"，没有数量阈值和单件时间盒，
+   agent 默认选"修"——`dump-req-when-res-ends` 这类挂死型 flaky 反复开轮。
+4. **入口过期 + 文档负担**。旧"新会话入口"停在 09-20（仍把已收官的 G5/G8/
+   URLPattern 当待办，把 G11 标 ~110）；§5 堆了 250 行逐轮日志（已迁
+   `docs/plan3-journal.md`）；AGENTS.md 286KB / 206 条 §4（每会话自动载入，
+   约 10 万 token 量级上下文税，且 §4 顺序错乱：4.72→4.136→§5/§6→4.73）。
+5. **测量噪声**。sweep 不读套件头 `// Flags:`（node 侧 `--expose-internals`
+   类 8 件 node 自红、我们"绿"=假绿，§4.126③）；`/tmp/wjs-node-test` 稀疏检出
+   fixtures 不全（§4.158）且在系统盘 `/tmp`（会被清，§4.144）。
+
+### 0.2 新口径（立即生效，覆盖 §5 旧口径）
+
+- **欠账 = Bun 自带 node 测试清单 ∩ 我们红**。清单：`oven-sh/bun`
+  `test/js/node/test/parallel/`（快照 `dc30df0` 2026-09-24，3656 件，
+  文件名表 `/Volumes//wjs-data/bun-parallel.txt`；与本仓 node 检出同名交集 3574）。
+  不在清单里的红件 **直接出局**，bun-parity 记一行"Bun 清单外"即可，不分析不修。
+  语义仍以 node 原文为准（Bun 的副本可能改过断言），清单只定**范围**。
+- **域止损线**：域内"清单件"通过数 ≥ Bun 清单件数 × 95% 即域收官，余件批量
+  一行定性（出局/偏离/另案编号），不再逐件开轮。
+- **单件时间盒**：同一套件累计 2 轮（或约半天）无转绿即停手记档，换下一件；
+  `flake-classify.py` 判 FLAKY / 挂死型的，记档后不追（§4.202-②）。
+- **"另轮/infra"必须有编号进 0.4 队列**，否则等同出局——禁止无编号的"另案"。
+- 顺序永远按"清单件差额"降序排域，不按"手上正热的域"。
+
+### 0.3 各域 Bun 清单件数（排期依据，本仓现状待 P0 基线补齐）
+
+| 域（文件前缀） | Bun 清单件 | 本仓现状（最近对拍） | 差额判断 |
+|---|---|---|---|
+| http | 422（交集 388） | sweep9 SAME0 381/409 | **已达线，冻结（P3）** |
+| http2 | 256 | SAME0 8/276（09-18） | **最大缺口（P1）** |
+| fs | 336 | 七轮后 cp/write/read 126/129；全域待测 | P0 定 |
+| tls | 186 | 未系统对拍（Bun 🟡，但清单件多） | P0 定 |
+| stream | 218 | 190✅+50⏭️（10f） | 疑已达线 |
+| net | 141 | 86→+13（G6） | P0 定 |
+| crypto | 120 | 38（六轮） | P0 定，疑有大差额 |
+| worker | 108 | 55（七轮） | P0 定 |
+| child-process | 102 | 作用域 DIFF 4（G5b） | P0 定 |
+| vm 97 / cluster 80 / dgram 76 / https 76 / zlib 60 / timers 55 / buffer 63 | — | 见 bun-parity 各节 | P0 定 |
+
+### 0.4 执行队列（按序；每项完工改本表状态）
+
+| # | 项 | 内容 | 预算 | 状态 |
+|---|---|---|---|---|
+| P0-1 | 数据迁外置盘 | 见 0.5；node 检出改完整 fixtures 检出到外置盘 | 1h | ⬜ |
+| P0-2 | sweep 读 `// Flags:` | node 侧按套件头传 flags；我们侧含 `--expose-*` 的件标 SKIP 不计分 | 1h | ⬜ |
+| P0-3 | 全域基线 | `sweep-bg.py` 按 Bun 清单过滤、逐域一次（serial，后台，外置盘工件）→ 回填 0.3 表"本仓现状"列 | ~3h 机时 | ⬜ |
+| P1 | http2 compat | `Http2ServerRequest/Response` 进 stream 全家（骑 10b 帧层经验）+ server 流面/settings 校验；按清单件分簇，差额降序啃 | 按 0.2 止损线 | ⬜ |
+| P2 | P0-3 排出的前 3 大差额域 | 同口径 | 各按止损线 | ⬜ |
+| P3 | http 冻结收口 | sweep9 真红 12 件一次性定性：清单内可半天修的修（`matchKnownFields`/`outgoing-finished`/`1.0-keep-alive` 文案），其余记档（`reuse-drained`=process.report、`client-response-domain`=domain 异步、`keep-alive-timeout-race`=Atomics.wait、`dump-req`/`set-timeout-server` exit-hold/`catch-uncaughtexception`/`client-parse-error`/`writable-true-after-close`/`client-timeout-on-connect`=挂死型） | ≤1 天 | ⬜ |
+| D1 | **待用户拍板** | execPath 位置参数自 spawn（`spawnSync(execPath,[file,arg])` 等，跨 timers/stream/http/test ~18+ 件）：是否给 `--run` 自举映射补"裸文件 + 位置参数"形（不加 CLI 别名，只扩 `__selfArgv` 翻译层） | — | ⏸ |
+| D2 | **待用户拍板** | AGENTS.md 瘦身：§4 全量迁 `docs/pitfalls.md`（按编号重排 + 一行索引），AGENTS 只留 §0–§3/§6 + 铁律摘要（目标 ≤40KB） | 1h | ⏸ |
+| D3 | **待用户拍板** | §0.9 单文件 ≤1000 行是否覆盖 `src/**/*.js`（现 8 件超限：`framing_head` 2151/`framing_outgoing` 2028/`framing_agent` 1855 等）；建议覆盖但排在 P1 之后顺手拆 | — | ⏸ |
+
+### 0.5 运行环境（系统盘仅剩 ~5GB，大数据一律外置盘）
+
+- 数据根：`/Volumes//wjs-data/`（与仓库同盘，148GB 余量）。路径含 U+F8FF，
+  脚本一律 glob 解析（§4.145），或经家目录软链 `~/wjs-data`（只占一个链接）。
+  - node 套件检出：`wjs-data/node-test/`（替代 `/tmp/wjs-node-test`，完整 fixtures）
+  - sweep 工件：`wjs-data/sweep/<tag>/`（替代 `~/.wjs-sweep`）
+  - Bun 清单：`wjs-data/bun-tree/`（blob-less 浅克隆）+ `bun-parallel.txt`
+  - 探针脚本：`wjs-data/probe/`（替代 `/tmp/wjs-*`、`~/probe`）
+- 跑 `cargo test` / sweep / 手工探针前：`export TMPDIR=/Volumes/*/wjs-data/tmp`
+  （glob 展开后赋值）——assert_fs 临时目录与 node 套件 `.tmp.*` 全落外置盘。
+- `target/` 已在外置盘（仓库内），不动；禁建 worktree（§4.142）。
+- 开工前 `df -h /`：系统盘余量 < 3GB 即先清 `/tmp/wjs-*`、`~/.wjs-sweep`、
+  `~/Library/Caches/{JetBrains,Firefox,Homebrew}` 再跑任何构建。
+
+### 0.6 验收节奏（省机时）
+
+- 每簇：只跑对应域 sweep（清单过滤）+ 该域黑盒 + 冒烟 5/5。
+- 每个 P 项收尾：全量 `cargo test` 一次（node 域 `--test-threads=4`，§4.175）。
+- 全域 sweep 只在 P0-3 与每个 P 项收尾各一次；禁重复全量子集（§4.126）。
+- 本节状态表是唯一进度真相；逐轮细节写进 `docs/plan3-journal.md`（追加）与
+  `docs/bun-parity.md`，**不再写进 plan3**。
 
 ## §1 缺口清单（Bun 快照 vs winterjs 现状，2026-09-15）
 
 | 模块 | Bun | 现状 | 缺口 | 切片 |
 |---|---|---|---|---|
-| http | 🟢 | ✅（整收口径） | keep-alive、流式 req/res 体、IncomingMessage/ServerResponse 流全家 | 10b |
+| http | 🟢 | ✅（10b 流式；sweep9 SAME0 381/409，已达 Bun 线） | keep-alive、流式 req/res 体、IncomingMessage/ServerResponse 流全家 | 10b |
 | https | 🟡（无 SNI 等） | ✅（同 http 记档） | 随 http 流式化走；SNI 回调等与 Bun 同缺，不追 | 10b |
-| http2 | 🟢 | ✅（h2c+H3；无 push/trailer/Upgrade，10b-4 triage 全偏离） | trailer/push/Upgrade 三件评估：push 系 Web 已死特性、trailer 等 h2 流式切片、Upgrade 浏览器不用 | 10b |
+| http2 | 🟢 | 🟡（h2c+H3 可用；compat 层薄壳，node 套件 SAME0 8/276——§0.4 P1） | trailer/push/Upgrade 三件评估：push 系 Web 已死特性、trailer 等 h2 流式切片、Upgrade 浏览器不用 | 10b |
 | readline | 🟢 | ✅（10c-2：行/history/question/按键解码/Emacs 子集/迭代器全绿） | `question` 真实现、行编辑/history/异步迭代器、Emacs 快捷键子集 | 10c |
 | tty | 🟢 | ✅（10c-1：net.Socket 基座 + ioctl winsize + 真 raw；构造器非 TTY 即抛与真机同） | net.Socket 基座、ioctl winsize、setRawMode 真标志（termios 按平台记档） | 10c |
 | repl（模块面） | 🟡 | ✅ CLI + ✅ 模块（10c-3：REPLServer/start/Recoverable 全绿） | `node:repl` 注册：REPLServer/start/Recoverable（复用 10c 的 Interface） | 10c |
@@ -148,7 +235,7 @@
   timers/util/dns/zlib/vm/worker/buffer/path/url/querystring/punycode/
   string_decoder/diagnostics_channel/trace_events/os/assert/child_process），
   出 parity 报告：绿/红/偏离（红即修或记 §4，无第三种状态）。
-- 交付：`docs/bun-parity.md`（模块 × 用例 × 结果 × 偏离理由），§3 矩阵据此
+- 交付：`docs/bun-parity.md`（模块 × 用例 × 结果 × 偏离理由），§1 矩阵据此
   转正（✅/🟡/偏离注）；红项修完进三件套回归。
 
 ## §4 不做与书面偏离（v1）
@@ -163,8 +250,8 @@
   GCM iv 限 12B（除非 10e 批了重做）、promises 底层同步实现、CCW 跨域判定、
   H3 串行、`node:test` reporter 深度（Bun 同 🟡）。
 
-## §5 Bun 🟢 域欠账清单（2026-09-19 盘点，用户拍板："Bun 没实现的不做，
-## Bun 实现了的才是欠账"，先记档以后再说）
+## §5 Bun 🟢 域欠账清单（2026-09-19 盘点；**判定口径已由 §0.2 取代**：
+## 以 Bun 自带 node 测试清单为准，下表仅作历史簇索引）
 
 > 口径修正（本轮起生效）：欠账判定以 **bun-compat.md 快照的 Bun 列**为准，
 > 不再以 node 套件红数为准——child_process（Bun 🟡：IPC 若干缺口）与
@@ -182,7 +269,7 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 
 | 域 | 欠账簇 | 规模 | 性质 |
 |---|---|---|---|
-| http | TIMEOUT 簇（expect-continue/upgrade/trailer/管线背压/max-connections） | ~110→2026-09-23 G11 收尾轮（见下）；残：drain-writable-length/outgoing-properties（net.Socket 写侧流式化 + eager-parse outgoing 队列，两件同根基建另轮）+ socket.push ×2（同基建）+ execPath spawn ~18（CLI 全 flag 铁律冲突，需拍板）+ parser 内省 ~4（_http_common 面，记档偏离） | 流式深化，与 10b 整收口径的接缝工程 |
+| http | TIMEOUT 簇（expect-continue/upgrade/trailer/管线背压/max-connections） | ~110 → sweep9 真红 12 件（2026-09-25） | **冻结**：已达 Bun 线（§0.3），余件按 §0.4 P3 一次性定性，不再开轮；逐轮记录见 `docs/plan3-journal.md` |
 | http | ~~校验长尾 / chunk 限深~~ ✅ 2026-09-19 转绿（G3 六提交：chunk 扩展 413/trailer 431/校验门 15 件/Agent createSocket/IPC socketPath/write-after-end 语义/FIN 半开收口，点名 45 件 SAME0；余 OutgoingMessage outputData 缓冲模型 5 件**出局另轮专项**、假 socket socket.push 2 件需 net 流式化、TIMEOUT 110 归下行） | ~35→5 件 | 已收官，残件另案 |
 | http2 | compat 层 `Http2ServerRequest/Response` 全流面 | ~105 件 | 最大单体簇，与 10b 同型工程 |
 | http2 | server 流面 / settings/priority/ALPN 校验 | ~15 件 | 随 compat 轮 |
@@ -211,254 +298,8 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 > 逐字节到位；10f 的收官（§1 矩阵/报告/终局门）不受影响——欠账已全部
 > 定位、定性、定量。
 
-### 欠账轮落账与新会话入口（2026-09-19 session 收官，新会话据此开工）
+### 执行日志（已迁出）
 
-**本 session 完成（全部已提交 master）：**
-
-| 簇 | 状态 |
-|---|---|
-| G1 dgram recvbuf | ✅ 上 session（DIFF 53→32） |
-| G2 net server 选项面 | ✅ 上 session |
-| G9-1 zlib Rust 状态机 | ✅ 上 session |
-| G9-2 zlib JS 流类接线 | ✅ 上轮（6 目标套件全绿 + 连带 5 件，zlib 域 73/81） |
-| G3 http 校验长尾/chunk 限深 | ✅ 上轮（子 agent 六提交移植，点名 45 件 SAME0 + 连带 15 件） |
-| **G9-3 zlib 尾件**（brotli/zstd 字典/pledged/Web CS·DS） | ✅ 本轮（6 目标套件全绿 + 82 件对拍零回归；一次性压缩走引擎收口 + raw 字典构造期设 + 严格字典校验 + pledged errno=72 + constants 28 项 + Web 全局；AGENTS §4.145-147） |
-| **G6 net 尾件** | ✅ 本轮 13/16 转绿（large-string/async-iter/write-after-end-nt/abort/ipv6/HE×3 + G2 顺手 2 件；全量 159 件对拍零回归，black-box 223 全绿）；残件 6 件 infra 级记档（throttle 流控/cluster 协议×2/worker fd 移交×3）；AGENTS §4.148 |
-| **G4 fs validators 尾件** | ✅ 本轮 20 套件转绿（stat族/constants/bigint/throwIfNoEntry/DEP0180/fd标准流/statfs frsize+bigint/utimes秒口径/lchown·lchmod·lutimes·_toUnixTimestamp新面/null-byte全API/rename·truncate·fchown·mkdir校验面/latin1/writeFile encoding+abort/WriteStream真open）；黑盒 fs 13/13 + 冒烟 5/5；AGENTS §4.149（e94db50 + 3a4704e） |
-| **G5 child 尾件** | ✅ 本轮 25 套件转绿（ChildProcess.spawn 方法面/spawn 事件+多监听fan-out+dispose/stdio 数组+spawnargs/空字节横向校验/`-p` 自举/env 归一/ipc 门/paused 读/removeAllListeners/二次 disconnect 门/uid-gid EPERM/send 校验/stdin 继承/ERR_IPC_ONE_PIPE+INVALID_HANDLE_TYPE；黑盒 child 18/18 + 冒烟 5/5；AGENTS §4.150-151） |
-| **G8 fs watch 尾件** | ✅ 本轮 30 套件转绿（ignore 全形态+递归相对路径/StatWatcher 单例EE+异步 stop+零 Stats 首轮/FSWatcher ref-unref+异步 close/encoding 转码/promises.watch 迭代+全校验+_getActiveHandles/flush 选项/exit 首码赢/前沿防抖+Create 二判据分发侧+stat 真 unref+首轮 return 收口）；残件：fs.glob ×2（Bun 快照无此行，记档另案）+ flush 三套件（待 node:test runner 深度）；黑盒 fs 18/18 + 冒烟 5/5；AGENTS §4.152-155 |
-| 集成修复 ×2 | ✅ net relisten `__closing` 挂死（46 分钟）+ net SEGV（with_str_args GC 悬垂）+ stream 9b 回归（上轮） |
-| 验收 | `cargo test` 全量 21 target 0 失败 0 警告 + 冒烟 5/5 |
-| AGENTS.md | ✅ §4.140-144 四坑 + §4.145-147 三坑 + §4.148 net 五坑 |
-| 本节欠账表 | ✅ G3/G2/G9-2/G9-3/G6 划线转绿 |
-
-**2026-09-21 test Slice A 收官**：API 核心面 11 套件转绿（suite/ctx/tags/
-plan/waitFor/subtest/getTestContext/register；对拍 83 件 SAME0 6→17、
-DIFF 64→53，零回归；黑盒 `phase10f_test_*` 四件；AGENTS §4.178）。
-残 53：run API ~21/mock 全家并入下轮、spawn CLI ~18 与 reporter ~13 维持另案。
-
-**2026-09-21 test Slice B1 收官**：MockTracker 核心落地
-（`node:internal/test/mock` 新建 + 钩子归属重构为真机 Test.run 口径；
-mocking.js 55/56，唯一红为私有字段 V8 文案引擎偏离；82 件零回归；
-黑盒 `phase10f_test_mock_*` 两件；AGENTS §4.180）。
-残：mock-timers 2 件（B2：fake 计时器基建）+ run API ~21 另轮。
-
-**2026-09-21 test Slice B2 收官**：mock.timers 落地（对拍 SAME0 17→19、
-DIFF 53→51，零回归；黑盒 `phase10f_test_mock_timers_*` 两件；
-AGENTS §4.181）。残：run API ~21 另轮（`run()` 事件流）。
-
-**2026-09-21 test Slice C 收官**：run(none) 事件流落地（同进程加载 +
-事件六件 + 发现 + only/tag/plan 门 + 钩子时序全对；对拍 SAME0 19→24、
-DIFF 51→46，零回归；testmod 按域拆 core/run；黑盒
-`phase10f_test_run_none_and_plan_gates`；AGENTS §4.182）。
-残：run process 隔离 ~15（子进程/线程传输）+ spawn CLI ~18 + reporter ~13。
-
-**2026-09-21 test Slice E 收官**：run 语义深化（plan 子计数/stopTest 超时/
-TestPlan wait/legacy done/tag 过滤子集/entryFile/调用点文件/种子洗牌/run
-coverage 校验；对拍 plan/tags-events/entry-file/randomize 四转绿，
-SAME0 30→34、DIFF 39→35，零回归；黑盒 `phase10f_test_run_semantics_*` +
-`phase10f_test_run_tag_filter_and_randomize`；AGENTS §4.184）。
-残：run 并发/上报深度 ~6 + spawn CLI ~18 + reporter ~13 + mocking 单行。
-
-**2026-09-21 test Slice D 收官**：run(process) 经 worker 传输落地
-（expect-error ×2/todo-skip/filetest-location 四转绿 + coverage ×2 附带；
-对拍 SAME0 24→30、DIFF 46→39，零回归；黑盒
-`phase10f_test_run_process_and_expect_failure`；AGENTS §4.183）。
-残：run 并发/超时/randomize/tag 过滤 ~8 + spawn CLI ~18 + reporter ~13。
-
-**2026-09-22 G11 http TIMEOUT 首轮收官**：18 提交（请求超时全家/101 摘池/
-Trailer 校验/管线/FIN 递延/流出/abort 级联/1xx/头形态/maxHeadersCount/
-keep-alive 修正/回池门/池键/ready 解禁/setTimeout 门控订正 + 黑盒
-`tests/node/http/timeout.rs` 4 用例 + 构建 0 警告 + 冒烟 5/5 + http 域 17/17；
-约 40 件转 SAME，http-only TIMEOUT 82→63、DIFF 105→100；
-sweep2 混二进制（05:47–06:32 跨两次构建）仅当趋势，终局需干净重扫；
-未闭环 3 件见上表 http 行；AGENTS §4.185）。
-
-**2026-09-22 G11 半开双杀收官**：5 提交（写端 Close 即发 + holding/halfhold/
-native 注册/JS 递延/黑盒；单测 `net_halfhold_balance` + 黑盒
-`phase11_net_halfopen_releases_loop` + 冒烟 5/5 + http/net/stream/dgram
-域 + bin 185 全绿；`server-keep-alive-timeout`/`server-close-idle-wait-
-response` 转 SAME0；AGENTS §4.186）。
-
-**2026-09-22 G11 upgrade 轮收官**：4 提交（升级块判定门 + 三形态 + 体路由/
-直调/spill + socket 暂存/destroy 异步 + 黑盒 `phase11_http_upgrade_faces`；
-node 域 271 全绿（t4）+ 冒烟 5/5；upgrade 6 件全转 SAME0；AGENTS §4.187）。
-
-**2026-09-22 G11 头面 batch5 收官**：校验门三件（数字头名 HTTP_TOKEN/
-奇数组 ARG_VALUE/重发头 HEADERS_SENT）+ 拼写覆写 + 220 unknown +
-数组双行 + 对形 writeHead + Host 恒拼/IPv6 框 + 拒写旗（新码
-BODY_NOT_ALLOWED，检查禁入 `_write`）+ 黑盒
-`tests/node/http/surface.rs::phase11_http_header_face_batch5`；
-28 件头面对拍 SAME0（`header-overflow` 的 `socket.push` 系既定另轮）+
-http/net/https 域 + 冒烟 5/5 + 构建 0 警告；AGENTS §4.188）。
-
-**2026-09-22 G11 TIMEOUT 深水第一铲**：hostname 优先 + auth 补 Basic +
-CONNECT（authority-form/Host 取 path/隧道 detach 双端 end:1）+
-server timeout 进门 + socket HWM 65536 + 基类 setTimeout + req.protocol +
-黑盒 `tests/node/http/surface.rs::phase11_http_timeout_deep_host_auth_connect`；
-11 件转 SAME0；http 27/27 + net 18/18 + 冒烟；AGENTS §4.189。
-未闭环：`outgoing-properties`（wl 记账专项）+ handler 抛吞 hang（另单元）。
-
-**2026-09-22 G11 TIMEOUT 深水第二铲**：server 选项类（IM/SR 请求期构造）+
-建连选项透传（HWM 进 Socket 构造器）+ socket 双 65536/res 跟随 +
-黑盒 `tests/node/http/surface.rs::phase11_http_server_options_surface`；
-3 件转 SAME0；http 28/28 + net 18/18 + 冒烟；AGENTS §4.190。
-附带 splitting 一件（ERR_INVALID_CHAR `["key"]` 后缀）：response-splitting
-转 SAME0 + 黑盒 `phase11_http_invalid_char_key`；AGENTS §4.191。
-附带 response 双件（write-after-end 拦截 + 状态码门注册）：res-write-after-end/
-response-statuscode 转 SAME0 + 黑盒 `phase11_http_response_gates`；
-AGENTS §4.192；未竟 response-cork（另单元）。
-
-**2026-09-23 G11 收尾轮收官**：7 提交（cork 面 / uncaught 双向 / 小面四件 /
-multi-CL；§4.193）。cork 三件套（response-cork/drain-cork/outgoing-end-cork）+
-uncaught-from-request-callback + test-http-1.0 + null-prototype-options +
-max-headers-count + response-multi-content-length 转 SAME0；request-timeout-
-keepalive 实为绿（15s sweep alarm 误判"真机自挂"，25s 实证双边绿——§4.193 坑五）。
-终局 serial 重扫（sweep4，25s alarm，干净二进制，TEST_THREAD_ID 3599）：
-409 件 SAME0=294/SAME1=0/DIFF=102/TIMEOUT=13（8 件转绿逐项复核在册）。
-基建轮（2026-09-23，AGENTS §4.194）终局重扫（sweep6，同口径）：
-409 件 SAME0=307/SAME1=0/DIFF=91/TIMEOUT=11（+13：push 面 2 + HPE 面 5 +
-记账/队列 2 + eager 连带 4；零新增红项）。残件：reuse-drained（process.report
-缺失，另域）+ execPath spawn ~18（待拍板）+ parser 内省 ~4（记档偏离）。
-黑盒 `phase11_http_cork_faces` + `phase11_http_uncaught_throws` + http 域 25/25 +
-node 域 278/278 + 冒烟 5/5。**残件全部定性**：drain-writable-length +
-outgoing-properties（outputData 记账 + writableLength 合成 getter）与
-header-overflow/read-in-error（socket.push）同根——需 **net.Socket 写侧
-流式化**（socket 层写队列/HWM/drain）+ **eager-parse outgoing 队列**
-（管线请求立即建 res、无 socket 排队），基建轮另案；execPath spawn ~18 件
-（套件 spawn process.execPath 裸脚本 vs CLI 全 flag 铁律 §0.8，需拍板）；
-parser 内省 ~4（_http_common parser.initialize/onIncoming 面，记档偏离）；
-余散件（async_hooks 资源面/domain 集成/Atomics.wait/process.report/
-optimize-empty-requests 等）逐套件记 bun-parity。
-
-**2026-09-23 对拍提速 mapper + createConnection 转绿**：§4.202-① 断言 mapper
-落地（`tests/node/helpers.rs` run_suite_mapped：实际值截 200 字 + 套件侧
-调用点折算物理行 ±2 节选三行定位；`WJS_MAP_SUITE=` + `phase_mapper_locate_suite
--- --ignored` 用；raw-headers 物理 110 / mutable-headers 物理 187 一击定位；
-实测钉住：无壳位置=assert SOURCE 行号安套件名、栈帧行号=CJS 前奏 +1、
-rejection 拦不到/exit-hook fatal 不触发；AGENTS §4.202）。同轮
-test-http-createConnection 转绿（修前 TIMEOUT：请求级 createConnection 的
-oncreate 吞 err——async cb 错永悬、sync throw 靠穿透构造器侥幸；修法真机
-_http_client.js 591-607 行逐字 err 臂 nextTick emitErrorEvent + try/catch
-收口 + settled 防双投；黑盒三形 `phase11_http_create_connection_error_routing`；
-AGENTS §4.203）。http/net/https 三域 52 绿 + node 域 285 绿 + 冒烟 5/5。
-
-**2026-09-23 sweep8 红件簇清扫（15 件转绿）**：四簇连修——① 重复头真机
-表驱动口径（joinable+未知头恒 ', '、19 头单值表首个赢、查询面过滤自动头、
-GET+用户 TE 帧化；multiheaders×5/mutable-headers/raw-headers 转绿）；
-② agent 池（res.destroy 后复用 + req close 蕴含 destroyed；abort-keep-alive/
-override-global-agent 转绿）；③ parser 面（TE 整词 token+teInvalid 400、
-冒号空格拒收、parser 全局 freelist、writeInformation 门序三形、
-optimizeEmptyRequests+IM._dumpAndCloseReadable；smuggling/te-repeated/
-parser-free/write-information/optimize-empty/chunk-extensions-limit 转绿）；
-④ res 侧 timeout 桥（responseOnTimeout 打 res + IM.setTimeout 自武装，
-监听数契约守卫；client-response-timeout 转绿）。出局 4（internals/flags×3 +
-process.report）+ 偏离 2（domain 异步/Atomics.wait）+ 预存挂 1（client-
-timeout-on-connect）。残：DIFF 5（set-timeout-server/request-timeout-upgrade/
-url.parse-https.request/headers-timeout-keepalive/server-capture-rejections）+
-TIMEOUT 5（no-read-no-dump/capture-rejection/non-utf8-header/reject-chunked/
-should-keep-alive，流控与二进制头深水）。提交 f4b8a52/029a244/834bc15/431fc0e；
-AGENTS §4.204；node 域 285 绿 + 冒烟 5/5 ×4 轮。
-
-**2026-09-25 sweep 残部二批（5 件转绿）**：server captureRejections 兜底
-（nodejs.rejection 逐字）+ TLSSocket _secureEstablished + ServerResponse.
-setTimeout + IM/server 超时桥带 socket 实参 + HPE 门序前置（TE+CL 先于
-requireHost）+ 头串 latin1 上网 + OutgoingMessage hasInstance 品牌判定
-（原型桥改道 super 全链实锤后弃用）。capture-rejections/url.parse-https.
-request/reject-chunked/non-utf8-header/set-timeout-server(前四块) 转绿；
-提交 2b1a1ab/566117d；AGENTS §4.204 追补；node 域全绿 + 冒烟 5/5 ×3 轮。
-残 4：outgoing-message-capture-rejection / should-keep-alive / no-read-no-dump
-（流控与判定矩阵深水）+ set-timeout-server 末段 exit-hold（paused client
-EOF 急切检测，G6 infra 族）。
-
-**2026-09-25 §4.202-②③ 对拍提速工具落地**：① mapper 已落地（§4.202-①），
-本轮补齐 ② `scripts/flake-classify.py`（新红先分类：整文件×3 + 单块 repro×N，
-GREEN/FLAKY/RED-DETERMINISTIC/NODE-FLAKY 四分流，flaky 走定级法勿深挖）+
-③ `scripts/sweep-bg.py`（全量 serial sweep 双 fork 后台直跑、status/wait/
-tail/stop 轮询、工件落 ~/.wjs-sweep/、失败行 stderr 首行 + debug/ 全量落盘）。
-两坑实证（AGENTS §4.205）：统一 runner 给 node 带 `--run` 假红全表（node 22+
---run=跑 package.json scripts）；前缀过滤只认 .js 丢 6 件 mjs（基线 409 口径）。
-dogfood 首件：**dump-req-when-res-ends 判 FLAKY（wjs 0,142,142 挂死型，
-node 2/2 绿）**——挂死型 flaky，归 §4.148 流控 infra 族随 no-read-no-dump
-同轮处理。sweep7 全量 409 件基线后台直跑中（终态见 ~/.wjs-sweep/sweep7/）。
-
-**2026-09-25 sweep 残部三批（2 件转绿 + ②③工具轮）**：②③落地后逐件啃
-http 尾巴——① **outgoing-message-capture-rejection** 转绿（`fcf416b`）：
-ServerResponse.destroy(err) 把 err 丢在 super.destroy() 外、_destroy 永裸杀
-（socket 'error' 不发）→ _destroy 从 __resErrored 找回；连带修 client 侧
-体未齐断连 error 递送（destroy(__e) 被 IM._destroy 吞错口径递不出去，改同步
-守门递送，真机 p4 差分序 aborted → error ECONNRESET → close 对齐）；②
-**should-keep-alive** 转绿（`a683ca5`）：__release 回池门只看 Connection 头，
-1.0 缺省响应 socket 被错误入池 → 复用死连接挂死 → 门改 req.shouldKeepAlive
-（版本×Connection 折算）+ 池态 socket 收 EOF 即销毁摘池（node socketOnEnd
-口径）。黑盒两件（capture_rejection_routing / should_keep_alive_matrix）+
-家族对拍零回归。**dogfood ② 分类**：dump-req-when-res-ends 判 FLAKY
-（0,142,142 挂死型）；child exec_shell_self 负载形 flaky（6/6 单跑绿）。
-**sweep7 终局基线**（409 件，sweep-bg 首跑）：SAME0=375 / SAME1=6 / DIFF=19 /
-TIMEOUT=9（sweep6 SAME0=307 → +68）。残件定性：http 尾巴剩 no-read-no-dump
-（流控 infra）+ 时序敏感两件（request-timeout-upgrade / headers-timeout-
-keepalive）+ set-timeout-server exit-hold（G6 infra 族）；sweep7 新现红
-（outgoing-finished / matchKnownFields / 1.0-keep-alive [object Object] 文案 /
-catch-uncaughtexception / client-parse-error / writable-true-after-close /
-chunk-extensions-limit flake）另批分类。node 域 286 黑盒全绿 + 冒烟 5/5。
-
-**2026-09-25 sweep 残部四批收官（http 尾巴 5/7 转绿）**：接三批续啃——
-④ **should-keep-alive**（`a683ca5`）：__release 回池门只看 Connection 头，
-1.0 缺省响应 socket 被错误入池 → 复用死连接挂死；门改 req.shouldKeepAlive
-+ 池态 socket 收 EOF 即销毁摘池。⑤ **no-read-no-dump**（`7c916b6`）：服务端
-体背压流控 infra 四件联动（泵 backpressured 旗 / __feed 停读+pause /
-Socket pause/resume 事件 / req._read 消费即解暂停）+ res 完成清 framing 根修
-（体在途字节被当新请求头 → HPE 断连）。⑥ **时序敏感两件**（`2ce37ef`）：
-Host 校验搬位到升级检测后（node parserOnIncoming 头部对 upgrade return 0）+
-劫持撤计时 + headersTimeout 计时模型统一（连接建立/新消息首字节开、请求完成
-撤、空闲归 keepAliveTimeout）。黑盒新增三件，node 域 288 全绿，冒烟 5/5；
-AGENTS §4.206。**残件**：dump-req-when-res-ends（挂死型 flaky——今日根因
-定位到流端口 flowing 排空语义，dump 机制需先修 readable_flow push/flow，
-独立轮；§4.206 坑二）+ set-timeout-server 末段 exit-hold（G6 infra 族）+
-sweep7 新现红件分类（outgoing-finished/matchKnownFields/1.0-keep-alive 文案
-等）。**sweep8 终局**（409 件）：SAME0=379 / SAME1=6 / DIFF=16 / TIMEOUT=8——五件
-修复零红；但暴露两件**本轮回归**（outgoing-flush-drain TIMEOUT +
-upgrade-large-body-unread DIFF，sweep7 均绿）。**回归根修**（`6a2d64e`）：
-二分三段实锤 chunked 泵背压 early-return 为元凶（终结段扣 fr.buf 等再喂
-而包不会再有 → 泵停摆）；终解=背压改**状态驱动事件**（缓冲 ≥HWM 发
-'pause'、落回发 'resume'，泵不停读不中断，缓冲有界=体长）+ 泵恢复无早退形；
-两回归转绿 + 五件守卫绿 + node 域 288 全绿（fifo 按 §4.175 剔除）。AGENTS
-§4.206 坑四/坑五（分离 HEAD 提交：bisect 后直接 commit 落 detached，父=旧
-提交缺后续修复——cherry-pick 回 master 解）。
-
-**sweep9 终局（本轮收官基线）**：409 件 SAME0=381 / SAME1=6 / DIFF=16 /
-TIMEOUT=6——**七件修复全零红**（sweep6 基线 307 → +74）。残件：dump-req-when-res-
-ends（挂死型——dump 机制需先修流端口 flowing 排空语义，独立轮）+
-set-timeout-server 末段 exit-hold（G6 infra 族）+ sweep8 散红分类
-（matchKnownFields/outgoing-finished/1.0-keep-alive 文案/catch-uncaughtexception/
-client-parse-error/writable-true-after-close + node 侧独红的 loader 形 8 件）。
-
-**新会话入口（按优先级，2026-09-20 G8 轮后更新）：**
-
-1. **G5 child ~30 件 → G8 fs watch ~23 件 ✅ 双收官**（G5 25 套件 + G8 30 套件；
-   AGENTS §4.150-155；残件：fork/IPC handle 传递出局 + fs.glob×2/flush 三套件
-   待 node:test + enoent-after-deletion 间歇超时另查）。
-2. **fs 残簇**（2026-09-21 七轮收官：cp/write/read/handle 129 件 70/59 →
-    **126 SAME/3 DIFF**，e2f0d28/6412095/b2a473e/4703a16/4f9cc70/七轮读流，
-    残件与黑盒见 bun-parity fs 七轮注记）：残 3 全另案——read-worker ×1
-    （worker fd 移交，归 G6 残件同族）、eagain/flush ×2（node:test mock，
-    runner 深度）；expose-internals ×3 跳过类；pull/writer ×3（需
-    stream/iter+zlib/iter 新模块，另轮）；stream 余 err（增量流重写轮）+
-    write-patch-open（fork 父端 exit，child 域）；黑盒 fs 26/26 + 全量
-    cargo test 21 target 0 失败。
-3. **G6 残件 6 件**（infra 级，需独立轮）：throttle（native 读门控+写 EAGAIN
-   流控）、cluster×2（internalMessage 协议）、worker×3（跨线程 fd 移交）。
-4. **大簇另案**：G10 http2 compat ~105 件、G11 http TIMEOUT ~110 件、
-   dgram 余 ~32 件、http OutgoingMessage 缓冲模型 5 件（G3 遗留专项）、
-   async_hooks 资源面（FSREQCALLBACK 生命周期，fs roundtrip 末段牵引）。
-5. **URLPattern 归属**：对 Bun 1.3 实测后拍板（见上"待核对"）。
-
-（编号对表：G4=fs validators 尾件行、G5=child_process 行、G6=net 尾件行、
-G8=fs watch 簇行、G10=http2 compat 行、G11=http TIMEOUT 行；
-G1/G2/G3/G9 已收官。）
-
-**新会话开场提示**：先读 AGENTS.md §4.140-149（三轮十一坑，尤其 §4.140
-"手工过/cargo 挂≠环境问题"、§4.142 "禁连续建 worktree"、§4.145 跑分
-"exec or die"+glob 路径）+ 本节欠账表；跑分 `TEST_THREAD_ID` 用 35xx+
-（§4.122 互踩防线）；net 域黑盒先单跑验证（`cargo test --test node net`，
-全绿后再并发——§4.140/§4.141 两坑都在 cargo harness 时序下才现形）。
+> 2026-09-19 → 09-25 的逐轮落账（G1–G11、test Slice A–E、sweep4–9、工具轮）
+> 原样迁至 `docs/plan3-journal.md`；新会话不必读。最新基线：http sweep9
+> SAME0=381 / SAME1=6 / DIFF=16 / TIMEOUT=6（409 件）。下一步见 §0.4。

@@ -62,6 +62,35 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
     }
 }
 
+/// 握手结果 JSON（`tlsInfo` 事件体；JS 侧 getProtocol/getCipher/getPeerCertificate/alpnProtocol）。
+fn tls_info_json(
+    version: Option<rustls::ProtocolVersion>,
+    suite: Option<rustls::SupportedCipherSuite>,
+    alpn: Option<&[u8]>,
+    peer: Option<&[rustls::pki_types::CertificateDer<'_>]>,
+    servername: Option<&str>,
+) -> String {
+    use base64::Engine as _;
+    let protocol = match version {
+        Some(rustls::ProtocolVersion::TLSv1_3) => Some("TLSv1.3"),
+        Some(rustls::ProtocolVersion::TLSv1_2) => Some("TLSv1.2"),
+        _ => None,
+    };
+    let peer_chain: Vec<String> = peer
+        .unwrap_or(&[])
+        .iter()
+        .map(|c| base64::engine::general_purpose::STANDARD.encode(c.as_ref()))
+        .collect();
+    serde_json::json!({
+        "protocol": protocol,
+        "cipher": suite.map(|s| format!("{:?}", s.suite())),
+        "alpn": alpn.map(|a| String::from_utf8_lossy(a).into_owned()),
+        "peerChain": peer_chain,
+        "servername": servername,
+    })
+    .to_string()
+}
+
 /// 服务端配置（PEM 串 → ServerConfig；纯函数，单元测试覆盖）。
 fn server_config(cert_pem: &str, key_pem: &str) -> Result<rustls::ServerConfig, String> {
     let certs: Vec<rustls::pki_types::CertificateDer<'static>> =
@@ -87,6 +116,16 @@ fn server_config(cert_pem: &str, key_pem: &str) -> Result<rustls::ServerConfig, 
     Ok(rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_cert_resolver(std::sync::Arc::new(FixedCert(ck))))
+}
+
+/// 无证书解析器（createServer 未给 key/cert：握手必败 → tlsClientError）。
+#[derive(Debug)]
+struct NoCert;
+
+impl rustls::server::ResolvesServerCert for NoCert {
+    fn resolve(&self, _hello: rustls::server::ClientHello<'_>) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
+        None
+    }
 }
 
 /// 固定证书解析器（见 `server_config`：绕开 v1 证书的 keys_match 拒收）。
@@ -276,12 +315,71 @@ pub unsafe extern "C" fn tls_connect(
                 let _ = ev_tx.send(NetEvent { id, kind: NetKind::Close });
             }
             Ok(tls) => {
+                let info = {
+                    let c = tls.get_ref().1;
+                    tls_info_json(
+                        c.protocol_version(),
+                        c.negotiated_cipher_suite(),
+                        c.alpn_protocol(),
+                        c.peer_certificates(),
+                        Some(servername.as_str()),
+                    )
+                };
+                let _ = ev_tx.send(NetEvent { id, kind: NetKind::TlsInfo { json: info } });
                 let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local: None } });
                 let (r, w) = tokio::io::split(tls);
                 spawn_pumps(id, r, w, ev_tx, cmd_rx);
             }
         }
     });
+    true
+}
+
+/// DER → PEM（64 列折行，node `getCACertificates` 口径）。
+fn der_to_pem(der: &[u8]) -> String {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut out = String::from("-----BEGIN CERTIFICATE-----\n");
+    for chunk in b64.as_bytes().chunks(64) {
+        out.push_str(std::str::from_utf8(chunk).unwrap_or(""));
+        out.push('\n');
+    }
+    out.push_str("-----END CERTIFICATE-----\n");
+    out
+}
+
+/// CA 证书集（PEM 数组 JSON）。`system` = OS 信任库（rustls-native-certs）；`bundled` 暂同
+/// system（node 为内置 Mozilla 表——树内 webpki-root-certs 直引待拍板，记档偏离）；
+/// `extra` = `NODE_EXTRA_CA_CERTS` 文件内的证书。
+fn ca_certs_json(kind: &str) -> String {
+    let pems: Vec<String> = match kind {
+        "extra" => std::env::var("NODE_EXTRA_CA_CERTS")
+            .ok()
+            .and_then(|p| std::fs::read(p).ok())
+            .map(|bytes| {
+                rustls_pemfile::certs(&mut bytes.as_slice())
+                    .filter_map(Result::ok)
+                    .map(|c| der_to_pem(c.as_ref()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => rustls_native_certs::load_native_certs().certs.iter().map(|c| der_to_pem(c.as_ref())).collect(),
+    };
+    serde_json::to_string(&pems).unwrap_or_else(|_| "[]".into())
+}
+
+/// `__wjs_tls_ca_certs(kind)` → PEM 数组 JSON 串。
+///
+/// UNSAFE-BOUNDARY: 前置——引擎回调 cx 有效；覆盖测试——`tests/node/tls.rs::phase11_tls_socket_surface`。
+pub unsafe extern "C" fn tls_ca_certs(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let kind = if frame.argc() > 0 { value_to_string(&mut cx, frame.arg(0)) } else { "default".into() };
+    set_rval_str(&mut cx, &frame, &ca_certs_json(&kind));
     true
 }
 
@@ -306,16 +404,21 @@ pub unsafe extern "C" fn tls_listen(
         .unwrap_or_default();
     let target = frame.arg(3);
     ensure_provider();
-    let (Some(cert_pem), Some(key_pem)) = (opts.cert, opts.key) else {
-        report_error(&mut cx, "TypeError: tls server needs { key, cert } PEM strings");
-        return false;
-    };
-    let cfg = match server_config(&cert_pem, &key_pem) {
-        Ok(c) => std::sync::Arc::new(c),
-        Err(e) => {
-            report_error(&mut cx, &e);
-            return false;
-        }
+    // node 口径：无 key/cert 也可起服务（SNICallback/后续 context 场景）——握手时无证书可出示，
+    // 该连接握手失败走 'tlsClientError'，服务本身照常监听。
+    let cfg = match (opts.cert, opts.key) {
+        (Some(cert_pem), Some(key_pem)) => match server_config(&cert_pem, &key_pem) {
+            Ok(c) => std::sync::Arc::new(c),
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        },
+        _ => std::sync::Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_cert_resolver(std::sync::Arc::new(NoCert)),
+        ),
     };
     let Some((id, ev_tx)) = state::net_alloc() else {
         report_error(&mut cx, "OperationError: net driver not installed");
@@ -351,24 +454,55 @@ pub unsafe extern "C" fn tls_listen(
             tokio::select! {
                 acc = listener.accept() => {
                     let Ok((stream, peer)) = acc else { continue };
-                    let Ok(tls) = acceptor.accept(stream).await else { continue };
-                    let conn_local = tls
-                        .get_ref()
-                        .0
-                        .local_addr()
-                        .unwrap_or_else(|_| "0.0.0.0:0".parse::<std::net::SocketAddr>().expect("literal addr"));
-                    let (conn_id, conn_cmd_rx) = state::net_conn_add();
-                    let (r, w) = tokio::io::split(tls);
-                    spawn_pumps(conn_id, r, w, ev_tx.clone(), conn_cmd_rx);
-                    let _ = ev_tx.send(NetEvent {
-                        id,
-                        kind: NetKind::Connection {
-                            conn_id,
-                            remote_addr: peer.ip().to_string(),
-                            remote_port: peer.port(),
-                            local_addr: conn_local.ip().to_string(),
-                            local_port: conn_local.port(),
-                        },
+                    // 握手逐连接起任务（修前在 accept 循环里串行 await——慢/坏握手堵住后续连接），
+                    // 失败发 'tlsClientError'（修前静默丢弃）。
+                    let acceptor = acceptor.clone();
+                    let ev_tx = ev_tx.clone();
+                    tokio::spawn(async move {
+                        let tls = match acceptor.accept(stream).await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                let _ = ev_tx.send(NetEvent {
+                                    id,
+                                    kind: NetKind::TlsClientError {
+                                        code: "ERR_SSL_HANDSHAKE_FAILURE".into(),
+                                        msg: format!("{e}"),
+                                    },
+                                });
+                                return;
+                            }
+                        };
+                        let conn_local = tls
+                            .get_ref()
+                            .0
+                            .local_addr()
+                            .unwrap_or_else(|_| "0.0.0.0:0".parse::<std::net::SocketAddr>().expect("literal addr"));
+                        let info = {
+                            let c = tls.get_ref().1;
+                            tls_info_json(
+                                c.protocol_version(),
+                                c.negotiated_cipher_suite(),
+                                c.alpn_protocol(),
+                                c.peer_certificates(),
+                                c.server_name(),
+                            )
+                        };
+                        let (conn_id, conn_cmd_rx) = state::net_conn_add();
+                        // 序：Connection（server 侧 attach socket）→ TlsInfo（此时 conn target 已在）
+                        // → 起泵（数据事件必在 attach 之后，修前泵先起可能先于 attach 到达即丢）。
+                        let _ = ev_tx.send(NetEvent {
+                            id,
+                            kind: NetKind::Connection {
+                                conn_id,
+                                remote_addr: peer.ip().to_string(),
+                                remote_port: peer.port(),
+                                local_addr: conn_local.ip().to_string(),
+                                local_port: conn_local.port(),
+                            },
+                        });
+                        let _ = ev_tx.send(NetEvent { id: conn_id, kind: NetKind::TlsInfo { json: info } });
+                        let (r, w) = tokio::io::split(tls);
+                        spawn_pumps(conn_id, r, w, ev_tx, conn_cmd_rx);
                     });
                 }
                 _ = cmd_rx.recv() => break,
@@ -379,238 +513,8 @@ pub unsafe extern "C" fn tls_listen(
     true
 }
 
-/// 内嵌 ESM 源（`node:tls`；TLSSocket/Server 建在 node:events 之上，net 语义复刻）。
-pub const SOURCE: &str = r#"
-import { EventEmitter } from "node:events";
-const Buffer = globalThis.Buffer;
-
-function __b64dec(s) {
-  const bin = atob(s);
-  const u8 = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-  return u8;
-}
-function __toU8(data, what) {
-  if (typeof data === "string") return new TextEncoder().encode(data);
-  if (data instanceof Uint8Array) return data;
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  throw new TypeError(`${what}: data must be string or BufferSource`);
-}
-function __tlsErr(code, msg) {
-  const e = new Error(msg);
-  e.code = code;
-  return e;
-}
-
-class TLSSocket extends EventEmitter {
-  constructor(options) {
-    super();
-    this.__id = 0;
-    this.__enc = null;
-    this.remoteAddress = null;
-    this.remotePort = null;
-    this.localAddress = null;
-    this.localPort = null;
-    this.readable = false;
-    this.writable = false;
-    this.destroyed = false;
-    this.encrypted = true;
-    this.authorized = false;
-    this.authorizationError = null;
-    this.allowHalfOpen = !!(options && options.allowHalfOpen);
-    // 派发钩子预绑定（dispatch 以 global 为 this，见 §4.34/§4.36）
-    this.__ev = this.__ev.bind(this);
-  }
-  connect(...args) {
-    let port, host = "127.0.0.1", options = {}, cb;
-    if (typeof args[0] === "object" && args[0] !== null) {
-      const o = args[0];
-      port = o.port; host = o.host ?? o.servername ?? host; options = o;
-      cb = typeof args[1] === "function" ? args[1] : undefined;
-    } else {
-      port = args[0];
-      if (typeof args[1] === "string") { host = args[1]; options = args[2] ?? {}; cb = typeof args[3] === "function" ? args[3] : undefined; }
-      else if (typeof args[1] === "object" && args[1] !== null) { options = args[1]; cb = typeof args[2] === "function" ? args[2] : undefined; }
-      else { cb = typeof args[1] === "function" ? args[1] : undefined; }
-    }
-    if (cb) this.once("secureConnect", cb);
-    this.remoteAddress = String(host);
-    this.remotePort = Number(port);
-    this.__verify = options.rejectUnauthorized !== false;
-    const wire = {};
-    if (options.servername !== undefined) wire.servername = String(options.servername);
-    if (options.ca !== undefined) wire.ca = String(options.ca);
-    if (options.rejectUnauthorized !== undefined) wire.rejectUnauthorized = !!options.rejectUnauthorized;
-    this.__id = Number(__wjs_tls_connect(this.remoteAddress, this.remotePort, JSON.stringify(wire), this));
-    return this;
-  }
-  __ev(kind, payload) {
-    switch (kind) {
-      case "connect": {
-        this.readable = true; this.writable = true;
-        // 握手已过：校验开则授权成立，否则记未授权（Node 口径）
-        this.authorized = this.__verify !== false;
-        // node _tls_wrap 口径：握手完成旗（url.parse-https.request 套件
-        // request.socket._secureEstablished）。
-        this._secureEstablished = true;
-        if (!this.authorized) {
-          this.authorizationError = __tlsErr("UNABLE_TO_VERIFY_LEAF_SIGNATURE", "self-signed certificate (rejectUnauthorized:false)");
-        }
-        this.emit("secureConnect");
-        this.emit("connect");
-        break;
-      }
-      case "data": {
-        const u8 = __b64dec(payload);
-        this.emit("data", this.__enc ? new TextDecoder(this.__enc).decode(u8) : Buffer.from(u8));
-        break;
-      }
-      case "end": {
-        this.readable = false;
-        // 池化空闲 socket 见 FIN 即销毁（同 net.js，10b）。
-        if (this.__inPool) {
-          this.destroy();
-          break;
-        }
-        this.emit("end");
-        if (!this.allowHalfOpen && this.__id) __wjs_net_end(this.__id);
-        break;
-      }
-      case "error": {
-        const o = JSON.parse(payload);
-        this.emit("error", __tlsErr(o.code, o.msg));
-        break;
-      }
-      case "close": this.destroyed = true; this.emit("close"); break;
-    }
-  }
-  write(data, enc, cb) {
-    if (this.destroyed || !this.writable) throw __tlsErr("ERR_STREAM_DESTROYED", "Cannot call write after a stream was destroyed");
-    const cb2 = typeof enc === "function" ? enc : cb;
-    __wjs_net_write(this.__id, __toU8(data, "write"));
-    if (cb2) queueMicrotask(cb2);
-    return true;
-  }
-  end(data, enc, cb) {
-    if (data !== undefined && data !== null) this.write(data, typeof enc === "string" ? enc : undefined);
-    const cb2 = typeof enc === "function" ? enc : cb;
-    if (this.__id) __wjs_net_end(this.__id);
-    this.writable = false;
-    if (cb2) this.once("close", cb2);
-    return this;
-  }
-  destroy(err) {
-    if (!this.destroyed) {
-      this.destroyed = true;
-      this.writable = false; this.readable = false;
-      if (this.__id) __wjs_net_destroy(this.__id);
-      if (err) this.emit("error", err);
-    }
-    return this;
-  }
-  address() {
-    if (this.localAddress === null) return null;
-    return { address: this.localAddress, port: this.localPort, family: String(this.localAddress).includes(":") ? "IPv6" : "IPv4" };
-  }
-  setEncoding(enc) { this.__enc = enc === null || enc === undefined ? null : String(enc); return this; }
-  ref() { return this; }
-  unref() { return this; }
-}
-
-class Server extends EventEmitter {
-  constructor(options, cb) {
-    super();
-    this.__id = 0;
-    this.__listening = null;
-    this.__tlsOpts = {};
-    if (typeof options === "function") { cb = options; options = undefined; }
-    else if (options && typeof options === "object") {
-      if (options.key === undefined || options.cert === undefined) {
-        throw new TypeError("tls.createServer needs { key, cert } PEM strings");
-      }
-      this.__tlsOpts = { key: String(options.key), cert: String(options.cert) };
-    }
-    if (typeof cb === "function") this.on("secureConnection", cb);
-    // 派发钩子预绑定（同上）
-    this.__ev = this.__ev.bind(this);
-  }
-  listen(...args) {
-    let port, host = null, cb = null;
-    if (typeof args[0] === "object" && args[0] !== null) {
-      port = args[0].port;
-      host = args[0].host ?? null;
-      cb = typeof args[1] === "function" ? args[1] : null;
-    } else {
-      port = args[0];
-      for (let i = 1; i < args.length; i++) {
-        if (typeof args[i] === "string" && host === null) host = args[i];
-        else if (typeof args[i] === "function") cb = args[i];
-      }
-    }
-    if (cb) this.once("listening", cb);
-    this.__port = Number(port);
-    this.__id = Number(__wjs_tls_listen(Number(port), host === null ? "0.0.0.0" : host, JSON.stringify(this.__tlsOpts), this));
-    return this;
-  }
-  __ev(kind, payload) {
-    switch (kind) {
-      case "listening": {
-        const o = JSON.parse(payload);
-        this.__listening = { address: o.addr, port: o.port, family: String(o.addr).includes(":") ? "IPv6" : "IPv4" };
-        this.emit("listening");
-        break;
-      }
-      case "connection": {
-        const o = JSON.parse(payload);
-        const s = new TLSSocket();
-        s.__attachConn(o);
-        this.emit("secureConnection", s);
-        this.emit("connection", s);
-        break;
-      }
-      case "error": {
-        const o = JSON.parse(payload);
-        const e = __tlsErr(o.code, o.msg);
-        e.port = this.__listening ? this.__listening.port : this.__port;
-        this.emit("error", e);
-        break;
-      }
-      case "close": this.emit("close"); break;
-    }
-  }
-  address() { return this.__listening; }
-  close(cb) {
-    if (typeof cb === "function") this.once("close", cb);
-    if (this.__id) __wjs_net_destroy(this.__id);
-    return this;
-  }
-  ref() { return this; }
-  unref() { return this; }
-}
-
-TLSSocket.prototype.__attachConn = function (info) {
-  this.__id = Number(info.connId);
-  this.remoteAddress = info.remoteAddress;
-  this.remotePort = info.remotePort;
-  this.localAddress = info.localAddress;
-  this.localPort = info.localPort;
-  this.readable = true; this.writable = true;
-  this.authorized = true;
-  // node 口径：服务端 TLS socket 握手完成旗（同上套件 req.socket 断言）。
-  this._secureEstablished = true;
-  __wjs_net_attach(this.__id, this);
-};
-
-export function createServer(options, cb) {
-  return new Server(options, cb);
-}
-export function createConnection(...args) { return new TLSSocket().connect(...args); }
-export const connect = createConnection;
-export { TLSSocket, Server };
-const __api = { TLSSocket, Server, createServer, createConnection, connect };
-export default __api;
-"#;
+/// 内嵌 ESM 源（`node:tls`；P2 起 TLSSocket 建在 net.Socket 之上，JS 见 `tls.js`）。
+pub const SOURCE: &str = include_str!("tls.js");
 
 #[cfg(test)]
 mod tests {

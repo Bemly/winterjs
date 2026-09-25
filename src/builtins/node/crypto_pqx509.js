@@ -74,14 +74,21 @@ class X509Certificate {
   toString() { return __pemEncode("CERTIFICATE", this.__der); }
   toJSON() { return this.toLegacyObject(); }
   toLegacyObject() {
+    // node X509Certificate.toLegacyObject 键名（tls getPeerCertificate 同形）：valid_from/valid_to
+    // 下划线形、fingerprint 三档、ca、raw。
     return {
       subject: this.__info.subjectObj,
       issuer: this.__info.issuerObj,
       subjectaltname: this.__info.subjectAltName,
       infoAccess: undefined,
+      ca: this.ca,
+      valid_from: this.__info.validFrom,
+      valid_to: this.__info.validTo,
+      fingerprint: this.fingerprint,
+      fingerprint256: this.fingerprint256,
+      fingerprint512: this.fingerprint512,
       serialNumber: this.__info.serialNumber,
-      validFrom: this.__info.validFrom,
-      validTo: this.__info.validTo,
+      raw: Buffer.from(this.__der),
     };
   }
   verify(publicKey) {

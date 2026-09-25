@@ -823,6 +823,9 @@ class Socket extends EventEmitter {
         }
         // HE 串行回落：中间地址的连接失败被钩吞（不落用户监听），close 后重试。
         if (this.__heOnErr) { this.__heLast = se; break; }
+        // node：socket 错误经 destroy(err) 递送——'error' 监听里 destroyed 已为 true
+        // （修前 false；tls/net 回环套件 `socket.destroyed` 断言现形）。
+        this.destroyed = true; this.writable = false; this.readable = false;
         this.emit("error", se);
         break;
       }

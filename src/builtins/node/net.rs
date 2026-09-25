@@ -77,6 +77,10 @@ pub enum NetKind {
     H2Stream { stream_id: u64, what: String, payload: String },
     /// h2 客户端 session 终结（单次；派发后 purge）。
     H2SessionClose,
+    /// TLS 握手结果（协议/套件/ALPN/对端证书/SNI 的 JSON；先于 connect 派发给 socket）。
+    TlsInfo { json: String },
+    /// TLS 服务端单连接握手失败（派发给 server：node 'tlsClientError'）。
+    TlsClientError { code: String, msg: String },
 }
 
 /// socket 命令（写/半关/硬关；写端 task 消费。SendTo 为 dgram 专用）。
@@ -388,6 +392,10 @@ pub fn dispatch(
             ("connect", serde_json::json!({ "local": local }).to_string())
         }
         NetKind::Data { data_b64 } => ("data", data_b64.clone()),
+        NetKind::TlsInfo { json } => ("tlsInfo", json.clone()),
+        NetKind::TlsClientError { code, msg } => {
+            ("tlsClientError", serde_json::json!({ "code": code, "msg": msg }).to_string())
+        }
         NetKind::End => ("end", String::new()),
         NetKind::Error { code, msg } => {
             ("error", serde_json::json!({ "code": code, "msg": msg }).to_string())

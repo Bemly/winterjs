@@ -29,6 +29,7 @@ import { createInterface } from 'node:readline';
 import { inspect } from 'node:util';
 import * as vm from 'node:vm';
 import * as fs from 'node:fs';
+import errors from 'node:internal/errors';
 
 export const REPL_MODE_SLOPPY = Symbol('repl-sloppy');
 export const REPL_MODE_STRICT = Symbol('repl-strict');
@@ -153,31 +154,54 @@ export class REPLServer extends EventEmitter {
       this.emit('reset', this.context);
       this.displayPrompt();
     });
-    def('save', 'Save session lines to a file', function (file) {
-      if (!file) { this._writeOut('Invalid REPL keyword\n'); this.displayPrompt(); return; }
+    // .save/.load：node lib/repl.js action 体逐字（缺参 ERR_MISSING_ARGS 文案、非文件 /
+    // 失败分支文案、每次收尾 displayPrompt）。load 体仍逐行喂 _onLine（无 editor 模式）。
+    const missingFile = () => new errors.codes.ERR_MISSING_ARGS('file');
+    def('save', 'Save all evaluated commands in this REPL session to a file', function (file) {
       try {
-        fs.writeFileSync(file, this._lines.join('\n') + '\n');
-        this._writeOut(`Session saved to ${file}\n`);
-      } catch (e) {
-        this._writeOut(`${e.message}\n`);
+        if (file === '') {
+          throw missingFile();
+        }
+        fs.writeFileSync(file, this._lines.join('\n'));
+        this.output.write(`Session saved to: ${file}\n`);
+      } catch (error) {
+        if (error !== null && typeof error === 'object' && error.code === 'ERR_MISSING_ARGS') {
+          this.output.write(`${error.message}\n`);
+        } else {
+          this.output.write(`Failed to save: ${file}\n`);
+        }
       }
       this.displayPrompt();
     });
-    def('load', 'Evaluate lines from a file', function (file) {
-      if (!file) { this._writeOut('Invalid REPL keyword\n'); this.displayPrompt(); return; }
-      let text;
+    def('load', 'Load JS from a file into the REPL session', function (file) {
       try {
-        text = fs.readFileSync(file, 'utf8');
-      } catch (e) {
-        this._writeOut(`${e.message}\n`);
-        this.displayPrompt();
-        return;
+        if (file === '') {
+          throw missingFile();
+        }
+        const stats = fs.statSync(file);
+        if (stats && stats.isFile()) {
+          const data = fs.readFileSync(file, 'utf8');
+          for (const line of data.split('\n')) {
+            if (line !== '') this._onLine(line);
+          }
+        } else {
+          this.output.write(
+            `Failed to load: ${file} is not a valid file\n`,
+          );
+        }
+      } catch (error) {
+        if (error !== null && typeof error === 'object' && error.code === 'ERR_MISSING_ARGS') {
+          this.output.write(`${error.message}\n`);
+        } else {
+          this.output.write(`Failed to load: ${file}\n`);
+        }
       }
-      for (const line of text.split('\n')) {
-        if (line !== '') this._onLine(line);
-      }
-      // 尾 prompt 由最后一行 _onLine 打出，此处不再补（免双 prompt）。
+      this.displayPrompt();
     });
+  }
+  // node 口径：`replServer.lines` 为已求值行（.save 落盘源）。
+  get lines() {
+    return this._lines;
   }
   defineCommand(keyword, { help = '', action }) {
     this.commands[keyword] = { help, action: action.bind(this) };

@@ -291,6 +291,8 @@ class Socket extends EventEmitter {
       // 用户原文地址（bind 错误形 e.address 用；归一化串在字面量下同值）。
       this.__bindAddr = address === null ? null : String(address);
       this.__id = Number(__wjs_dgram_bind(Number(port), this.__addr, this, this.__bindFlags()));
+      // bind 前的 unref()（无句柄时只记旗）落到原生句柄（unref-in-cluster 套件）。
+      if (this.__id && this.__ref === false) __wjs_net_unref(this.__id);
     };
     if (this.__lookup) {
       try {

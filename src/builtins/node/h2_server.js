@@ -418,6 +418,10 @@ class Http2ServerStream extends Duplex {
     cb(err ?? this.__destroyErr);
   }
   setTimeout(msecs, callback) {
+    if (typeof msecs !== "number") throw __code("ERR_INVALID_ARG_TYPE", "msecs", "number", msecs);
+    if (callback !== undefined && typeof callback !== "function") {
+      throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", callback);
+    }
     if (typeof callback === "function") this.once("timeout", callback);
     const ms = Number(msecs) || 0;
     if (this.__timeoutTimer !== undefined) clearTimeout(this.__timeoutTimer);
@@ -526,6 +530,10 @@ class Http2ServerRequest extends Readable {
     }
   }
   setTimeout(msecs, callback) {
+    if (typeof msecs !== "number") throw __code("ERR_INVALID_ARG_TYPE", "msecs", "number", msecs);
+    if (callback !== undefined && typeof callback !== "function") {
+      throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", callback);
+    }
     if (typeof callback === "function") this.once("timeout", callback);
     const ms = Number(msecs) || 0;
     if (this.__timeoutTimer !== undefined) clearTimeout(this.__timeoutTimer);
@@ -634,10 +642,11 @@ class Http2ServerResponse extends Writable {
   get statusMessage() { __h2StatusMessageWarn(); return ""; }
   set statusMessage(v) { __h2StatusMessageWarn(); }
   set statusCode(status) {
-    if (typeof status !== "number" || !Number.isInteger(status) || status < 100 || status > 599) {
-      throw __code("ERR_HTTP2_STATUS_INVALID", status);
-    }
-    this.__statusCode = status;
+    // node compat.js 逐字：`code |= 0`；1xx → INFO_STATUS_NOT_ALLOWED；<100/>599 → STATUS_INVALID。
+    const code = status | 0;
+    if (code >= 100 && code < 200) throw __code("ERR_HTTP2_INFO_STATUS_NOT_ALLOWED");
+    if (code < 100 || code > 599) throw __code("ERR_HTTP2_STATUS_INVALID", code);
+    this.__statusCode = code;
   }
   get statusCode() { return this.__statusCode ?? 200; }
   setTrailer(name, value) {
@@ -654,11 +663,11 @@ class Http2ServerResponse extends Writable {
     return this;
   }
   writeHead(status, ...rest) {
-    if (typeof status !== "number" || !Number.isInteger(status) || status < 100 || status > 599) {
-      throw __code("ERR_HTTP2_STATUS_INVALID", status);
-    }
+    // node compat.js 门序：流已关/已毁 → 静默回 this；已发头 → HEADERS_SENT；
+    // 状态码经 statusCode setter 校验；末尾 kBeginSend 立即发头（修前只缓冲到 write/end）。
+    if (this.__stream.__destroyed || this.__stream.destroyed || this.__stream.__closed) return this;
     if (this.headersSent) throw __code("ERR_HTTP2_HEADERS_SENT");
-    this.__statusCode = status;
+    this.statusCode = status;
     for (const r of rest) {
       if (typeof r === "string") {
         // reason phrase：h2 不支持——与 statusMessage 同一进程级一次性告警（node compat.js）。
@@ -669,6 +678,7 @@ class Http2ServerResponse extends Writable {
         for (const [k, v] of Object.entries(r)) this.setHeader(k, v);
       }
     }
+    this.__sendHead();
     return this;
   }
   __sendHead() {
@@ -792,6 +802,10 @@ class Http2ServerResponse extends Writable {
     if (!this.headersSent) this.__sendHead();
   }
   setTimeout(msecs, callback) {
+    if (typeof msecs !== "number") throw __code("ERR_INVALID_ARG_TYPE", "msecs", "number", msecs);
+    if (callback !== undefined && typeof callback !== "function") {
+      throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", callback);
+    }
     if (typeof callback === "function") this.once("timeout", callback);
     const ms = Number(msecs) || 0;
     if (this.__timeoutTimer !== undefined) clearTimeout(this.__timeoutTimer);

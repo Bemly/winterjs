@@ -26,14 +26,17 @@ function __toU8(data, what) {
   throw new TypeError(`${what}: data must be string or BufferSource`);
 }
 function __h2Err(code, msg, name = "Error") {
-  const e = new Error(msg);
+  // 类按 name 取（node 的 RangeError/TypeError 系 instanceof 与 name 同真）。
+  const C = name === "RangeError" ? RangeError : name === "TypeError" ? TypeError : Error;
+  const e = new C(msg);
   e.code = code;
   e.name = name;
   return e;
 }
 // http2 专属错误码（errors.rs 内核表外补；消息逐字对齐 node/lib/internal/errors.js）
 const __codes = {
-  ERR_HTTP2_STATUS_INVALID: (s) => __h2Err("ERR_HTTP2_STATUS_INVALID", `Invalid status code: ${s}`),
+  ERR_HTTP2_STATUS_INVALID: (s) => __h2Err("ERR_HTTP2_STATUS_INVALID", `Invalid status code: ${s}`, "RangeError"),
+  ERR_HTTP2_INFO_STATUS_NOT_ALLOWED: () => __h2Err("ERR_HTTP2_INFO_STATUS_NOT_ALLOWED", "Informational status codes cannot be used", "RangeError"),
   ERR_HTTP2_INVALID_INFO_STATUS: (s) => __h2Err("ERR_HTTP2_INVALID_INFO_STATUS", `Invalid informational status code: ${s}`),
   ERR_HTTP2_INVALID_PSEUDOHEADER: (s) => __h2Err("ERR_HTTP2_INVALID_PSEUDOHEADER", `"${s}" is an invalid pseudoheader or is used incorrectly`, "TypeError"),
   ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED: () => __h2Err("ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED", "Cannot set HTTP/2 pseudo headers after regular headers", "TypeError"),
@@ -193,9 +196,9 @@ function __settingErr(name, v, isBool) {
   const e = __h2Err("ERR_HTTP2_INVALID_SETTING_VALUE", `Invalid value for setting "${name}": ${v}`, isBool ? "TypeError" : "RangeError");
   return e;
 }
-function __validateSettings(settings) {
+function __validateSettings(settings, argName = "settings") {
   if (settings === null || typeof settings !== "object") {
-    throw __code("ERR_INVALID_ARG_TYPE", "settings", "object", settings);
+    throw __code("ERR_INVALID_ARG_TYPE", argName, "object", settings);
   }
   const out = {};
   for (const key of Object.keys(settings)) {
@@ -357,6 +360,10 @@ class Http2Session extends EventEmitter {
   get alpnProtocol() { return this.encrypted ? "h2" : false; }
   get unrefed() { return false; }
   setTimeout(msecs, callback) {
+    if (typeof msecs !== "number") throw __code("ERR_INVALID_ARG_TYPE", "msecs", "number", msecs);
+    if (callback !== undefined && typeof callback !== "function") {
+      throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", callback);
+    }
     if (typeof callback === "function") this.once("timeout", callback);
     const ms = Number(msecs) || 0;
     if (this.__timeoutTimer !== undefined) clearTimeout(this.__timeoutTimer);

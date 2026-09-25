@@ -192,6 +192,10 @@ class ClientHttp2Stream extends Duplex {
     return this;
   }
   setTimeout(msecs, callback) {
+    if (typeof msecs !== "number") throw __code("ERR_INVALID_ARG_TYPE", "msecs", "number", msecs);
+    if (callback !== undefined && typeof callback !== "function") {
+      throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", callback);
+    }
     if (typeof callback === "function") this.once("timeout", callback);
     const ms = Number(msecs) || 0;
     if (this.__timeoutTimer !== undefined) clearTimeout(this.__timeoutTimer);
@@ -218,7 +222,7 @@ class ClientHttp2Session extends EventEmitter {
     this.type = 1; // NGHTTP2_SESSION_CLIENT
     this.encrypted = false;
     this.connecting = true;
-    this.__settings = { ...__DEFAULT_SETTINGS, ...(options?.settings ? __validateSettings(options.settings) : {}) };
+    this.__settings = { ...__DEFAULT_SETTINGS, ...(options?.settings !== undefined ? __validateSettings(options.settings, "options.settings") : {}) };
     this.__remoteSettings = { ...__DEFAULT_SETTINGS };
     this.__pendingSettingsAck = false;
     this.__outstandingSettings = 0;
@@ -275,6 +279,10 @@ class ClientHttp2Session extends EventEmitter {
   get originSet() { return this.__secure ? [] : undefined; }
   get unrefed() { return false; }
   setTimeout(msecs, callback) {
+    if (typeof msecs !== "number") throw __code("ERR_INVALID_ARG_TYPE", "msecs", "number", msecs);
+    if (callback !== undefined && typeof callback !== "function") {
+      throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", callback);
+    }
     if (typeof callback === "function") this.once("timeout", callback);
     const ms = Number(msecs) || 0;
     if (this.__timeoutTimer !== undefined) clearTimeout(this.__timeoutTimer);
@@ -627,6 +635,10 @@ class ClientHttp2Session extends EventEmitter {
 
 export function createServer(options, listener) {
   if (typeof options === "function") { listener = options; options = undefined; }
+  // node：options 须为对象（null 亦拒；函数形已在上行转 listener）。
+  if (options !== undefined && (typeof options !== "object" || options === null)) {
+    throw __code("ERR_INVALID_ARG_TYPE", "options", "object", options);
+  }
   const s = new Http2Server(options ?? {}, false);
   if (typeof listener === "function") s.on("request", listener);
   return s;

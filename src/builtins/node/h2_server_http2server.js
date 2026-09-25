@@ -14,7 +14,16 @@ class Http2Server extends EventEmitter {
     this.__sockBag = {};
     this.__opts = options;
     this[kPendingOptions] = this.__opts;
-    if (options.settings !== undefined) __validateSettings(options.settings);
+    if (options.settings !== undefined) __validateSettings(options.settings, "options.settings");
+    // node validateUint32（maxSessionInvalidFrames/maxSessionRejectedStreams）：非 uint32 即 OUT_OF_RANGE。
+    for (const k of ["maxSessionInvalidFrames", "maxSessionRejectedStreams"]) {
+      const v = options[k];
+      if (v === undefined) continue;
+      if (typeof v !== "number") throw __code("ERR_INVALID_ARG_TYPE", k, "number", v);
+      if (!Number.isInteger(v) || v < 0 || v > 4294967295) {
+        throw new (codes.ERR_OUT_OF_RANGE)(k, ">= 0 && <= 4294967295", v);
+      }
+    }
     if (options.maxOutstandingSettings !== undefined) {
       if (typeof options.maxOutstandingSettings !== "number" ||
           !Number.isInteger(options.maxOutstandingSettings) ||
@@ -44,6 +53,11 @@ class Http2Server extends EventEmitter {
   }
   get socket() { return this.__sockBag; }
   setTimeout(msecs, callback) {
+    if (callback !== undefined && typeof callback !== "function") {
+      throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", callback);
+    }
+    // node Http2Server.setTimeout：记 `this.timeout`，返回 this。
+    this.timeout = msecs;
     if (typeof callback === "function") this.once("timeout", callback);
     const ms = Number(msecs) || 0;
     if (this.__timeoutTimer !== undefined) clearTimeout(this.__timeoutTimer);

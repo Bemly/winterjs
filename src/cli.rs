@@ -365,42 +365,35 @@ pub const NODE_COMPAT_FLAGS: &[&str] = &[
     "--allow-natives-syntax",
     // 语义旗（max-header-size 套件：值参与默认头限，需透传值；见下 VALUE_FLAGS）。
     "--max-http-header-size",
-    // node 运行时旗（2026-09-25 D1：自 spawn `node --flag file|-e` 形；
-    // 值由 `internal/options` getOptionValue 读回，无语义的仅 execArgv 保真）。
-    "--pending-deprecation",
-    "--no-deprecation",
-    "--throw-deprecation",
-    "--no-warnings",
-    "--abort-on-uncaught-exception",
-    "--enable-source-maps",
-    "--preserve-symlinks",
-    "--preserve-symlinks-main",
-    "--zero-fill-buffers",
-    "--frozen-intrinsics",
-    "--no-force-async-hooks-checks",
 ];
 
-/// node 运行时旗前缀族（`--experimental-*`/`--trace-*` 等，node 自身命名空间，
-/// 与 winterjs 修饰旗无交集——`--watch`/`--test` 这类同名旗刻意不收）。
-/// 取值形只认 `--k=v` 整项（空格分隔值会吞脚本名）。
-const NODE_COMPAT_PREFIXES: &[&str] = &[
-    "--experimental-",
-    "--no-experimental-",
-    "--trace-",
-    "--no-trace-",
-    "--harmony",
-    "--unhandled-rejections=",
-    "--disable-warning=",
-    "--stack-trace-limit=",
-    "--stack-size=",
-    "--max-old-space-size=",
-    "--title=",
-];
-
-/// 是否 node 运行时兼容旗（精确名单按 `--k` 基名，前缀族按原文）。
+/// 是否 node 运行时兼容旗：本表（语义旗/兼容旗）或 `cli_node_flags::NODE_RUNTIME_FLAGS`
+/// 精确名单（按 `--k` 基名；**不收前缀族**，见 pitfalls 4.209）。
 pub fn is_node_compat_flag(arg: &str) -> bool {
     let base = arg.split('=').next().unwrap_or("");
-    NODE_COMPAT_FLAGS.contains(&base) || NODE_COMPAT_PREFIXES.iter().any(|p| arg.starts_with(p))
+    if NODE_COMPAT_FLAGS.contains(&base) {
+        return true;
+    }
+    // winterjs 自有同名旗（如 `--allow-ffi`）永远归 winterjs，不当 node 旗剥除。
+    if winterjs_longs().contains(base) {
+        return false;
+    }
+    // 必须带值的旗只认 `--k=v` 整项（空格分隔值会吞脚本名）。
+    if crate::cli_node_flags::VALUE_REQUIRED.contains(&base) && !arg.contains('=') {
+        return false;
+    }
+    crate::cli_node_flags::NODE_RUNTIME_FLAGS.contains(&base)
+}
+
+/// winterjs 自身全部长旗名（`--xxx`，含子结构 flatten 的）。
+fn winterjs_longs() -> &'static std::collections::HashSet<String> {
+    static SET: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        <Cli as clap::CommandFactory>::command()
+            .get_arguments()
+            .filter_map(|a| a.get_long().map(|l| format!("--{l}")))
+            .collect()
+    })
 }
 
 /// 取值形兼容旗（空格分隔值也一并剥除/记录；其余旗只认 `--k=v` 整项）。
@@ -527,6 +520,9 @@ mod node_compat_tests {
         let (f, s) = strip_node_compat_args(&argv(&["w", "--stack-trace-limit=3", "--no-warnings", "a.mjs"]));
         assert_eq!(strs(&f), ["w", "--run", "a.mjs"]);
         assert_eq!(s, ["--stack-trace-limit=3", "--no-warnings"]);
+        // 边界（4.209）：未知的前缀形旗不收——交 clap 报错，绝不剥除后重跑。
+        assert!(!is_node_compat_flag("--experimental-foo-bar"));
+        assert!(!is_node_compat_flag("--trace-bogus"));
     }
 
     #[test]

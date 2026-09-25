@@ -562,16 +562,40 @@ fn node_runtime_flags_self_spawn_forms() {
     );
     assert!(out.contains("opt true 3 true"), "out: {out}");
     // 正常：`--experimental-x -e`（-e → --eval）。
-    let (ok, out, err) = wjs(&["--experimental-foo-bar", "-e", "console.log('ev', 6 * 7)"], &dir);
+    let (ok, out, err) = wjs(&["--experimental-vm-modules", "-e", "console.log('ev', 6 * 7)"], &dir);
     assert!(ok, "stderr: {err}");
     assert!(out.contains("ev 42"), "out: {out}");
-    // 报错：非 node 旗（未知 `--bogus`）不被吞，clap 照常报错。
+    // 报错：非 node 旗（未知 `--bogus`、未登记的 `--experimental-foo-bar`）不被吞；
+    // 非法旗值 node 同款 exit 9（4.209：剥除后重跑即自 spawn 无限递归）。
     let (ok, _, _) = wjs(&["--bogus", "a.js"], &dir);
     assert!(!ok);
+    let (ok, _, _) = wjs(&["--experimental-foo-bar", "a.js"], &dir);
+    assert!(!ok);
+    let out = winterjs().args(["--unhandled-rejections=foobar", "a.js"]).current_dir(dir.path()).output().unwrap();
+    assert_eq!(out.status.code(), Some(9));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("invalid value for --unhandled-rejections"));
     // 边界：无兼容旗的裸文件照旧报错（§0.8），`--` 后的脚本旗原样透传。
     let (ok, _, _) = wjs(&["a.js"], &dir);
     assert!(!ok);
     let (ok, out, err) = wjs(&["--run", "a.js", "--", "--no-warnings"], &dir);
     assert!(ok, "stderr: {err}");
     assert!(out.contains("argv [\"--no-warnings\"]") && out.contains("exec []"), "out: {out}");
+}
+
+#[test]
+fn self_spawn_depth_guard_stops_recursion() {
+    // 4.209 防线二：自递归起自身的脚本止于有限深度（上限 32），而不是吃光系统。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("rec.js")
+        .write_str(
+            "const { spawnSync } = require('child_process');\n\
+             const r = spawnSync(process.execPath, [__filename], { encoding: 'utf8' });\n\
+             const d = Number((r.stdout.match(/depth=(\\d+)/) || [])[1] || 0);\n\
+             console.log('depth=' + (d + 1), 'visible=' + ('WINTERJS_SPAWN_DEPTH' in process.env));\n",
+        )
+        .unwrap();
+    let (ok, out, err) = wjs(&["--run", "rec.js"], &dir);
+    assert!(ok, "stderr: {err}");
+    // 链深 = 上限 + 1 层（最深一层被闸拒绝，stdout 无 depth）；变量对 JS 不可见。
+    assert!(out.contains("depth=33 visible=false"), "out: {out}");
 }

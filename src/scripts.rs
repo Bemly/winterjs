@@ -191,6 +191,7 @@ pub fn run(pkg_dir: &Path, script: &str, extra_args: &[String]) -> Result<i32, E
                     for a in rest {
                         cmd.arg(a);
                     }
+                    crate::builtins::node::child::tag_self_depth(&mut cmd);
                     return wait(cmd, script);
                 }
                 // 原生二进制：直接 argv（PATH 兜底其它可执行文件）。

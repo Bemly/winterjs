@@ -214,6 +214,7 @@
 - 4.206 服务端流控/计时三面：pause 事件、dump 机制、headers 计时归属（2026-09-25，http 尾巴轮）
 - 4.207 `TMPDIR` 放 U+F8FF 卷即黑盒假红：`URL.pathname` 是百分号编码（2026-09-25，D1 轮）
 - 4.208 require 把用户异常转串重抛：位置恒 prelude 424:53、NodeError 空文案、原对象丢失（2026-09-25）
+- 4.209 node 旗前缀放行 = 自 spawn 无限递归，fork 链吃光内核致系统 panic（2026-09-25，D1 回归）
 
 ## 条目
 
@@ -3841,3 +3842,22 @@
 - 复现：`tests/node/require.rs::phase11_require_rethrows_original_exception`。
 - 推广铁律：宿主转发用户异常一律"留 pending 原样透传"，禁转串再抛；需要文案时读属性
   而非只信引擎报告槽。
+### 4.209 node 旗前缀放行 = 自 spawn 无限递归，fork 链吃光内核致系统 panic（2026-09-25，D1 回归）
+
+- 症状：全域基线 sweep（3 并发）跑到 70% 时整机卡死、WindowServer 看门狗超时，
+  随后内核 panic 重启（`userspace watchdog timeout: no successful checkins from configd`）。
+  panic 快照：323 个 `winterjs` 进程，其中 321 个是**单链**（每个父进程只等一个子进程），
+  链根 12:50:12 起、ppid=1（孤儿）；内核 zone `VM map entries 10G`，winterjs 常驻合计 7.4GB。
+- 根因：D1 把 `--unhandled-rejections=` 等**前缀族**当 node 旗放行剥除。
+  `test-promise-unhandled-flag.js` 用 `spawnSync(execPath, ['--unhandled-rejections=foobar', __filename])`
+  验证非法值启动即拒（node exit 9）；本仓剥除后照跑**同一文件**——该文件再 spawnSync 自己，
+  无限递归。sweep 超时只杀直接子进程，孙辈成孤儿继续繁殖约 20 分钟，直到内核 VM 耗尽。
+- 修法（三道防线）：① 旗名单改**精确表**（`src/cli_node_flags.rs`，取自 `node --help`，剔除
+  改执行模式的旗与 winterjs 自有同名旗如 `--allow-ffi`），必须带值的旗只认 `--k=v`，值非法即
+  node 同款 exit 9；② 自 spawn 深度闸：起自身时子进程环境 `WINTERJS_SPAWN_DEPTH` 逐层 +1，
+  超 32 即拒（变量对 JS 的 `process.env` 不可见）；③ sweep 每件独立进程组，超时/收尾 `killpg`
+  连孙辈一起收，daemon 设 `RLIMIT_NPROC = 现有进程数 + 200`。
+- 复现：`tests/cli.rs::self_spawn_depth_guard_stops_recursion`（链止于 33 层）+
+  `node_runtime_flags_self_spawn_forms`（非法值 exit 9）；原套件现 rc=0。
+- 推广铁律：**会让"同一文件再跑一次"的兼容翻译，必须同时回答"非法输入时会不会自递归"**；
+  跑任何会 spawn 自身的批量任务前，先给进程数封顶（`ulimit -u` / `RLIMIT_NPROC`），超时一律杀进程组。

@@ -170,17 +170,37 @@ def run_one(binary, path, cwd, env, timeout, prefix=("--run",), dump_dir=None, s
     # prefix：wjs 用 ("--run",)，node 用 ()——node 22+ 的 `--run` 是
     # "跑 package.json scripts"（2026-09-25 实测坑：无 package.json 目录
     # 报 `Can't find package.json for directory` 假红全表）。
+    # 进程组隔离（pitfalls 4.209）：每件独立会话，超时/收尾 killpg 连孙进程一起收——
+    # 修前只杀直接子进程，自 spawn 链的孙辈成孤儿继续繁殖。
     try:
-        p = subprocess.run(
+        proc = subprocess.Popen(
             [binary, *prefix, path], cwd=cwd, env=env,
-            capture_output=True, timeout=timeout,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        return 142, ""
     except OSError as e:
         raise RuntimeError(f"exec 失败 {binary}: {e}")
+    try:
+        out, errb = proc.communicate(timeout=timeout)
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if timed_out:
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        return 142, ""
+    p = subprocess.CompletedProcess(proc.args, proc.returncode, out, errb)
     err = (p.stderr or b"").decode("utf-8", "replace").strip().splitlines()
-    tail = err[0][:160].replace("\t", " ") if err else ""
+    # node 形报错块（D4 后两侧同形）首行只是 `file:line`——优先取 `XxxError: msg` 头行。
+    import re as _re
+    pick = next((l for l in err if _re.match(r"^[A-Za-z]*(Error|Exception)\b", l)), err[0] if err else "")
+    tail = pick[:160].replace("\t", " ")
     if dump_dir and side and p.returncode not in (0, 142) and (p.stderr or p.stdout):
         os.makedirs(dump_dir, exist_ok=True)
         base = os.path.splitext(os.path.basename(path))[0]
@@ -218,6 +238,15 @@ def sweep_loop(st):
         files = [f for f in files if f in only]
     cache = load_cache() if st.get("node_cache", True) else None
     nver = node_version(st["node"])
+    # 进程数封顶（pitfalls 4.209 防线三）：本用户现有进程数 + 200，逃逸的自 spawn 链
+    # 最多再生 200 个进程即 EAGAIN，不会吃光内核 VM map（2026-09-25 系统 panic 教训）。
+    try:
+        import resource
+        n = len(subprocess.run(["ps", "-U", str(os.getuid())], capture_output=True).stdout.splitlines())
+        cap = n + 200
+        resource.setrlimit(resource.RLIMIT_NPROC, (cap, cap))
+    except (OSError, ValueError, ImportError):
+        pass
     st["pid"] = os.getpid()  # 双 fork 后只有孙进程知道真实 pid，回填给 status/stop
     st["state"] = "running"
     st["total"] = len(files)

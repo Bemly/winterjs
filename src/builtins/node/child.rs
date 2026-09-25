@@ -109,6 +109,28 @@ fn status_parts(st: std::process::ExitStatus) -> (Option<i32>, Option<String>) {
     return (None, None);
 }
 
+/// 自 spawn 深度闸（pitfalls 4.209）：环境变量名 / 上限。
+pub const SELF_SPAWN_ENV: &str = "WINTERJS_SPAWN_DEPTH";
+pub const SELF_SPAWN_LIMIT: u32 = 32;
+
+/// 本进程所处自 spawn 深度（未设为 0）。
+pub fn self_spawn_depth() -> u32 {
+    std::env::var(SELF_SPAWN_ENV).ok().and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
+/// 子命令若是起自身（程序即本二进制，或 shell 行里含本二进制路径）则把深度 +1 写进
+/// 子进程环境；他家程序不动（不污染其环境）。须在 `env_clear/envs` 之后调用。
+pub fn tag_self_depth(cmd: &mut std::process::Command) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let exe_s = exe.to_string_lossy().into_owned();
+    let canon = std::fs::canonicalize(&exe).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let hit = |s: &str| s.contains(&exe_s) || (!canon.is_empty() && s.contains(&canon));
+    let prog = cmd.get_program().to_string_lossy().into_owned();
+    if hit(&prog) || cmd.get_args().any(|a| hit(&a.to_string_lossy())) {
+        cmd.env(SELF_SPAWN_ENV, (self_spawn_depth() + 1).to_string());
+    }
+}
+
 /// base64（JSON 桥二进制；`base64` 直引轮子）。
 fn b64(bytes: &[u8]) -> String {
     use base64::Engine as _;
@@ -153,6 +175,7 @@ fn run_command(
         cmd.env_clear();
         cmd.envs(env);
     }
+    tag_self_depth(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -452,6 +475,7 @@ pub unsafe extern "C" fn spawn_start(
         cmd.env_clear();
         cmd.envs(&env);
     }
+    tag_self_depth(cmd.as_std_mut());
     #[cfg(unix)]
     if opts.detached {
         make_detached(cmd.as_std_mut());

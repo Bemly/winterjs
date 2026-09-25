@@ -266,7 +266,8 @@ pub unsafe extern "C" fn env_get(
         report_error(&mut cx, &msg);
         return false;
     }
-    match std::env::var_os(&key) {
+    // 自 spawn 深度闸变量属宿主管线，对 JS 不可见（pitfalls 4.209）。
+    match std::env::var_os(&key).filter(|_| key != crate::builtins::node::child::SELF_SPAWN_ENV) {
         Some(v) => set_rval_str(&mut cx, &frame, &v.to_string_lossy()),
         None => frame.set_rval(UndefinedValue()),
     }
@@ -335,7 +336,10 @@ pub unsafe extern "C" fn env_keys(
         report_error(&mut cx, &msg);
         return false;
     }
-    let keys: Vec<String> = std::env::vars_os().map(|(k, _)| k.to_string_lossy().into_owned()).collect();
+    let keys: Vec<String> = std::env::vars_os()
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .filter(|k| k != crate::builtins::node::child::SELF_SPAWN_ENV)
+        .collect();
     set_rval_str(&mut cx, &frame, &serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into()));
     true
 }

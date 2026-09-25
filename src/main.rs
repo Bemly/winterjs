@@ -4,6 +4,7 @@ mod acme;
 mod alloc;
 mod builtins;
 mod cli;
+mod cli_node_flags;
 mod dispatch;
 mod error;
 mod i18n;
@@ -49,9 +50,27 @@ fn main() {
     let compat_argv = {
         let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
         let (filtered, stripped) = cli::strip_node_compat_args(&raw);
+        // node 同款：非法旗值启动即拒（exit 9）——剥除后照跑同一文件会让自 spawn
+        // 套件无限递归（pitfalls 4.209）。
+        for f in &stripped {
+            if let Err(msg) = cli_node_flags::validate_node_flag(f) {
+                eprintln!("winterjs: {msg}");
+                std::process::exit(9);
+            }
+        }
         builtins::node::process_::record_node_compat(stripped);
         filtered
     };
+    // 自 spawn 深度闸（pitfalls 4.209 防线二）：子进程链经 `WINTERJS_SPAWN_DEPTH` 逐层 +1
+    //（child_process 起自身时设置，见 node::child::tag_self_depth），超限即拒，
+    // 任何未知的自递归形都止于有限深度而非吃光系统。
+    if builtins::node::child::self_spawn_depth() > builtins::node::child::SELF_SPAWN_LIMIT {
+        eprintln!(
+            "winterjs: self-spawn depth limit ({}) exceeded — recursive self-spawn aborted",
+            builtins::node::child::SELF_SPAWN_LIMIT
+        );
+        std::process::exit(9);
+    }
     let cli = {
         let m = cli::localized_command()
             .try_get_matches_from(compat_argv)

@@ -127,6 +127,7 @@ cargo build
 - 跑分包装 `exec @ARGV or die` + glob 解析路径；"全绿/全红得可疑"先查执行痕迹（4.145/4.168/4.205）。
 - 并行跑 node 套件逐进程设 `TEST_THREAD_ID`；对拍前断言 fixtures 完备（4.122/4.158）。
 - 判 hang 只认退出码；长驻探针输出落盘；管道取 `${PIPESTATUS[0]}`（4.45/4.67/4.93）。
+- **批量跑会 spawn 自身的任务（sweep/套件循环）前先封顶进程数**（`ulimit -u`/`RLIMIT_NPROC`），超时杀整个进程组；兼容翻译遇非法输入必须报错退出，禁"剥掉再跑同一文件"（4.209，曾致整机 panic）。
 - 全量测试用 `cargo nextest run`（约 2 分钟；挂死件自动杀、flaky 标注，配置 `.config/nextest.toml`），提交前 `--profile strict`；`cargo test` 仅作兜底（禁套 alarm）；禁并行压力循环与重复全量子集（4.126/4.143/4.175）。
 - 新红先 `scripts/flake-classify.py` 分类再动手；"手工过/cargo 挂"先查状态机残留，不是环境问题（4.140/4.197/4.202）。
 - stash/checkout 换过代码必重编再探（4.62/4.69）；改 `cfg(test)` 用到的结构体跑 `cargo test --bin`（4.173）。

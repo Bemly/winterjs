@@ -63,20 +63,45 @@
 - **"另轮/infra"必须有编号进 0.4 队列**，否则等同出局——禁止无编号的"另案"。
 - 顺序永远按"清单件差额"降序排域，不按"手上正热的域"。
 
-### 0.3 各域 Bun 清单件数（排期依据，本仓现状待 P0 基线补齐）
+### 0.3 全域基线（2026-09-25 base12，Bun 清单 3574 件，node 26.8.2 对照）
 
-| 域（文件前缀） | Bun 清单件 | 本仓现状（最近对拍） | 差额判断 |
-|---|---|---|---|
-| http | 422（交集 388） | sweep9 SAME0 381/409 | **已达线，冻结（P3）** |
-| http2 | 256 | SAME0 8/276（09-18） | **最大缺口（P1）** |
-| fs | 336 | 七轮后 cp/write/read 126/129；全域待测 | P0 定 |
-| tls | 186 | 未系统对拍（Bun 🟡，但清单件多） | P0 定 |
-| stream | 218 | 190✅+50⏭️（10f） | 疑已达线 |
-| net | 141 | 86→+13（G6） | P0 定 |
-| crypto | 120 | 38（六轮） | P0 定，疑有大差额 |
-| worker | 108 | 55（七轮） | P0 定 |
-| child-process | 102 | 作用域 DIFF 4（G5b） | P0 定 |
-| vm 97 / cluster 80 / dgram 76 / https 76 / zlib 60 / timers 55 / buffer 63 | — | 见 bun-parity 各节 | P0 定 |
+> 总计 **绿 2168/3574（60%）**。口径：`scripts/sweep-report.py base12`（工件
+> `~/wjs-data/sweep/base12/`，= base11 全量 + 旗表补齐后 272 件重跑）；"绿"= 双侧 rc=0，
+> "双红"= 两侧同红不计欠账。已知假绿风险：common `mustCall` 退出钩在本仓不执行（§4.126③）。
+> 下表只列红（DIFF+TIMEOUT）≥10 的域，按红数降序即排期顺序；其余 139 域见报告脚本输出。
+
+| 域 | 清单件 | 绿 | DIFF | TIMEOUT | 双红 | 绿率 |
+|---|---|---|---|---|---|---|
+| http2 | 256 | 64 | 125 | 67 | 0 | 25% |
+| tls | 185 | 19 | 148 | 17 | 1 | 10% |
+| crypto | 120 | 40 | 79 | 1 | 0 | 33% |
+| repl | 82 | 20 | 62 | 0 | 0 | 24% |
+| process | 82 | 21 | 59 | 0 | 2 | 26% |
+| stream | 215 | 158 | 55 | 2 | 0 | 73% |
+| cluster | 80 | 30 | 23 | 27 | 0 | 37% |
+| worker | 110 | 61 | 47 | 2 | 0 | 55% |
+| vm | 95 | 47 | 47 | 1 | 0 | 49% |
+| fs | 333 | 283 | 47 | 1 | 2 | 85% |
+| whatwg | 53 | 11 | 42 | 0 | 0 | 20% |
+| webcrypto | 39 | 1 | 38 | 0 | 0 | 2% |
+| https | 59 | 22 | 33 | 4 | 0 | 37% |
+| trace | 34 | 4 | 30 | 0 | 0 | 11% |
+| net | 138 | 115 | 20 | 2 | 1 | 83% |
+| child | 100 | 77 | 19 | 3 | 1 | 77% |
+| module | 27 | 6 | 21 | 0 | 0 | 22% |
+| util | 26 | 8 | 18 | 0 | 0 | 30% |
+| sqlite | 18 | 0 | 15 | 1 | 2 | 0% |
+| readline | 20 | 4 | 16 | 0 | 0 | 20% |
+| internal | 19 | 4 | 15 | 0 | 0 | 21% |
+| http | 389 | 374 | 9 | 6 | 0 | 96% |
+| async | 27 | 12 | 15 | 0 | 0 | 44% |
+| fastutf8stream | 14 | 0 | 14 | 0 | 0 | 0% |
+| console | 16 | 2 | 14 | 0 | 0 | 12% |
+| compile | 14 | 0 | 14 | 0 | 0 | 0% |
+| require | 21 | 8 | 13 | 0 | 0 | 38% |
+| dgram | 75 | 61 | 10 | 3 | 1 | 82% |
+| diagnostics | 35 | 23 | 12 | 0 | 0 | 65% |
+| v8 | 13 | 2 | 11 | 0 | 0 | 15% |
 
 ### 0.4 执行队列（按序；每项完工改本表状态）
 
@@ -84,9 +109,9 @@
 |---|---|---|---|---|
 | P0-1 | 数据迁外置盘 | ✅ 2026-09-25：node 检出复制到 `wjs-data/node-test/`，sweep 工件缺省 `wjs-data/sweep/`；`cargo test` 不改 TMPDIR（4.207） | — | ✅ |
 | P0-2 | sweep 读 `// Flags:` | ✅ 2026-09-25：两侧透传（本仓 CLI 按 D1 规则剥除记录）+ `--scope` 清单过滤 + node 缓存（0.8） | — | ✅ |
-| P0-3 | 全域基线 | `sweep-bg.py` 按 Bun 清单过滤、逐域一次（serial，后台，外置盘工件）→ 回填 0.3 表"本仓现状"列 | ~3h 机时 | ⬜ |
-| P1 | http2 compat | `Http2ServerRequest/Response` 进 stream 全家（骑 10b 帧层经验）+ server 流面/settings 校验；按清单件分簇，差额降序啃 | 按 0.2 止损线 | ⬜ |
-| P2 | P0-3 排出的前 3 大差额域 | 同口径 | 各按止损线 | ⬜ |
+| P0-3 | 全域基线 | ✅ 2026-09-25 base12（2 并发 + 看门狗，42 分钟，资源全程正常）；首跑 base10 触发 4.209 事故作废；旗表补齐（`--experimental-quic`/`--tls-min-v1.x` 等 24 个）后 272 件重跑，quic 233 件全转绿 | — | ✅ |
+| P1 | http2 | 红 192（DIFF 125 + TIMEOUT 67），绿 64/256。compat 层已是 stream 全家（09-18 流式化后 bun-parity 旧"薄壳"注记过期），按失败原因分簇啃 | 按 0.2 止损线 | ⬜ |
+| P2 | tls → crypto → repl → process → stream | 红 165 / 80 / 62 / 59 / 57（base12 降序）；tls 先看共性原因（`bad key/cert pair` 21、`getCACertificates` 缺 14、`createServer needs {key,cert}` 8 等） | 各按止损线 | ⬜ |
 | P3 | http 冻结收口 | sweep9 真红 12 件中 `dump-req-when-res-ends` 在清单外已清出（0.7）；余 11 件一次性定性：清单内可半天修的修（`matchKnownFields`/`outgoing-finished`/`1.0-keep-alive` 文案），其余记档（`reuse-drained`=process.report、`client-response-domain`=domain 异步、`keep-alive-timeout-race`=Atomics.wait、`set-timeout-server` exit-hold/`catch-uncaughtexception`/`client-parse-error`/`writable-true-after-close`/`client-timeout-on-connect`=挂死型） | ≤1 天 | ⬜ |
 | D1 | ✅ 2026-09-25 已做 | node 运行时旗改**精确名单**（`src/cli_node_flags.rs`，取自 `node --help`；前缀族方案致 4.209 事故后废弃；winterjs 自有同名旗与改执行模式的旗不收，必须带值的旗只认 `--k=v`、值非法 exit 9）+ `internal/options` getOptionValue 读真实旗值 + DEP0005 认 `--pending-deprecation` + shell 串自举保旗交 CLI。实测：位置参数本就已通（旧"~18 件"口径过期）；`buffer-constructor-node-modules` 转绿；余红与 spawn 无关，已拆成 D4/P2 项（错误输出形状、`process.stdin/stdout` 非 Stream、`node:stream/iter` 未实现、vm-sigint stdio null） | — | ✅ |
 | D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |

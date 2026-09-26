@@ -68,6 +68,7 @@ pub mod timers;
 pub mod timers_promises;
 pub mod tls;
 mod tls_v1;
+pub mod tls_wrap;
 pub mod trace_events;
 pub mod tty;
 pub mod util;
@@ -112,6 +113,8 @@ const BUILTINS: &[(&str, &str)] = &[
     // Phase 9d-6
     ("node:https", https::SOURCE),
     ("node:tls", tls::SOURCE),
+    // P2-tls-b：`_tls_wrap` 遗留别名（DEP0192 警告在 tls 源内按 import.meta.url 分流）。
+    ("node:_tls_wrap", tls::SOURCE),
     // Phase 9d-7
     ("node:http2", http2::SOURCE),
     // Phase 9e-1a
@@ -199,6 +202,7 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         // Phase 9d-6
         "https" => Some("node:https"),
         "tls" => Some("node:tls"),
+        "_tls_wrap" => Some("node:_tls_wrap"),
         // Phase 9d-7
         "http2" => Some("node:http2"),
         // Phase 9e-1a

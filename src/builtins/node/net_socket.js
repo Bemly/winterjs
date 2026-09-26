@@ -740,7 +740,7 @@ class Socket extends EventEmitter {
         const pend = this.__pendW; this.__pendW = [];
         this.__pendBytes = 0;
         for (const [u8, cb2] of pend) {
-          __wjs_net_write(this.__id, u8);
+          this.__nativeWrite(u8);
           // bytesWritten 已在 write 时同步计入 base，此处只补写队列记账。
           this.__sockQAdd(u8.length);
           if (cb2) queueMicrotask(cb2);
@@ -781,7 +781,7 @@ class Socket extends EventEmitter {
         }
         this.emit("end");
         // Node 口径：非 allowHalfOpen 时收 FIN 即自动回 FIN（'close' 随后）
-        if (!this.allowHalfOpen && this.__id) __wjs_net_end(this.__id);
+        if (!this.allowHalfOpen) this.__nativeEnd();
         // G11 半开案：allowHalfOpen 持有半开即不再续命（真机同款——读停转后
         // 空闲句柄不 ref 循环；k9/k12 实证：ref() 也留不住，真机照常退出）。
         // 递延一轮：end 监听内同步 destroy/auto-end 的走正常收尾通道，此处只收
@@ -937,7 +937,7 @@ class Socket extends EventEmitter {
       this.__pendBytes += u8.length;
       return u8.length + this.__pendBytes - u8.length <= this._writableState.highWaterMark;
     }
-    __wjs_net_write(this.__id, u8);
+    this.__nativeWrite(u8);
     // 记账：底层同步写队列，无 flush 语义，回调即刻（排空/drain 见 __sockQAdd）。
     const __wret = this.__sockQAdd(u8.length);
     if (cb2) queueMicrotask(cb2);

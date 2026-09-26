@@ -18,10 +18,17 @@ import {
 
 const FLAVOR = { protocol: "https:", defaultPort: 443, other: "node:http" };
 const __HttpServerBase = withHttpServer(tls.Server);
-// Server 首参 listener 形态（Node 口径，与 node:http 同）；options 对象才透传。
+// Server（node https.js Server 原文口径）：ALPNProtocols 缺省 ['http/1.1']（经
+// tls.Server 构造器 convertALPNProtocols 落 wire 形）——opts 显式给了
+// ALPNProtocols/ALPNCallback 才不注缺省；其余选项原样透传。
 function Server(...args) {
-  const opts = args[0] !== null && typeof args[0] === "object" && !Array.isArray(args[0]) ? args[0] : undefined;
-  const s = new __HttpServerBase(opts);
+  let ALPNProtocols = ["http/1.1"];
+  let opts = args[0] !== null && typeof args[0] === "object" && !Array.isArray(args[0]) ? args[0] : undefined;
+  if (typeof args[0] === "function") opts = {};
+  else if (opts === undefined) opts = {};
+  else if (opts.ALPNProtocols || opts.ALPNCallback) ALPNProtocols = undefined;
+  const wire = opts === undefined ? undefined : { noDelay: true, ALPNProtocols, ...opts };
+  const s = new __HttpServerBase(wire);
   const first = args[0];
   if (typeof first === "function") s.on("request", first);
   else if (args.length > 1 && typeof args[1] === "function") s.on("request", args[1]);
@@ -120,10 +127,9 @@ export function get(a, b, c) {
   return getFrom(ClientRequest, options, cb);
 }
 export function createServer(options, cb) {
-  const opts = options !== null && typeof options === "object" && !Array.isArray(options) ? options : undefined;
-  const server = new __HttpServerBase(opts);
-  if (typeof options === "function") server.on("request", options);
-  else if (typeof cb === "function") server.on("request", cb);
+  // node https.js：createServer = new Server(opts, cb)（ALPN 缺省面在 Server 内）。
+  const server = new Server(options, cb);
+  if (typeof cb === "function") server.on("request", cb);
   return server;
 }
 

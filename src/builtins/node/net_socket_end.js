@@ -6,8 +6,7 @@
     if (data !== undefined && data !== null) this.write(data, typeof enc === "string" ? enc : undefined);
     const cb2 = cb;
     this.writable = false; this.__ended = true;
-    if (this.__id && this.__connected) __wjs_net_end(this.__id);
-    else this.__endAfterFlush = true; // node 口径：FIN 排队到连接完成+缓冲写冲刷之后
+    this.__nativeEnd(); // node 口径：FIN 排队到连接完成+缓冲写冲刷之后（包裹面覆写）
     // node 口径：写侧刷完即 'finish'（早于 close；bytes-stats/bytes-read 套件点名）。
     // 本仓同步写队列：FIN 已发即 microtask 派发 finish。
     queueMicrotask(() => this.emit("finish"));
@@ -32,7 +31,7 @@
       // bytesWritten pending 同清（预测未落盘，销毁即不再落盘；base 保留实发）。
       this.__sockQ = 0; this.__needSockDrain = false;
       this.__bwPend = 0;
-      if (this.__id) __wjs_net_destroy(this.__id);
+      this.__nativeKill();
       // node 口径 emitErrorNT：error 经 nextTick 异步发（同步抛错会把
       // uncaughtException 语义压成同步异常——upgrade body-error 套件；
       // tick 回调带 uncaught 路由，无监听即交付 uncaughtException）。
@@ -70,5 +69,19 @@
     this.__unrefLatched = true;
     if (this.__id) __wjs_net_unref(this.__id);
     return this;
+  }
+  // 原生写/FIN/销毁钩子（P2-tls-b）：net 本形直通原 native；TLSSocket 包裹面覆写
+  // （写经 TLS 引擎出密文、end 带 close_notify、destroy 级联 wrapped socket）。
+  __nativeWrite(u8) { __wjs_net_write(this.__id, u8); }
+  __nativeEnd() {
+    if (this.__id && this.__connected) __wjs_net_end(this.__id);
+    else this.__endAfterFlush = true;
+  }
+  __nativeKill() { if (this.__id) __wjs_net_destroy(this.__id); }
+  // node destroySoon 原文口径：end 后写队列空即销毁，否则挂 'finish'。
+  destroySoon() {
+    if (this.writable) this.end();
+    if (this.writableLength === 0) this.destroy();
+    else this.once("finish", () => this.destroy());
   }
 }

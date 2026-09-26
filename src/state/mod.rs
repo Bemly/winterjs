@@ -23,6 +23,7 @@ mod quic;
 mod serve;
 mod sqlite;
 mod stack;
+mod tls_wrap;
 mod vm;
 mod watch;
 mod worker;
@@ -36,6 +37,7 @@ pub use quic::*;
 pub use serve::*;
 pub use sqlite::*;
 pub use stack::*;
+pub use tls_wrap::*;
 pub use vm::*;
 pub use watch::*;
 pub use worker::*;
@@ -500,6 +502,8 @@ pub struct PlainState {
     /// BoundSocket TCP 占位 listener 保活表（token → listener；close/adopt/listen 消费释放）。
     pub net_held: HashMap<u64, std::net::TcpListener>,
     pub net_hold_next: u64,
+    /// TLSSocket 包裹引擎表（rustls 手动模式；JS 字节驱动，见 builtins/node/tls_wrap）。
+    pub tls_engines: HashMap<u64, crate::builtins::node::tls_wrap::TlsWrapEngine>,
     /// worker 驱动端点（MessagePort/Worker；接收端由事件循环持有）。
     pub worker_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::worker::WorkerEvent>>,
     pub worker_next_id: u64,

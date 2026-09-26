@@ -258,6 +258,13 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_tls_connect", Some(node::tls::tls_connect), 4),
             ("__wjs_tls_listen", Some(node::tls::tls_listen), 4),
             ("__wjs_tls_ca_certs", Some(node::tls::tls_ca_certs), 1),
+            // P2-tls-b: TLSSocket 包裹引擎（rustls 手动模式，JS 字节驱动）
+            ("__wjs_tls_wrap_open", Some(node::tls_wrap::tls_wrap_open), 2),
+            ("__wjs_tls_wrap_feed", Some(node::tls_wrap::tls_wrap_feed), 2),
+            ("__wjs_tls_wrap_write", Some(node::tls_wrap::tls_wrap_write), 2),
+            ("__wjs_tls_wrap_eof", Some(node::tls_wrap::tls_wrap_eof), 1),
+            ("__wjs_tls_wrap_shutdown", Some(node::tls_wrap::tls_wrap_shutdown), 1),
+            ("__wjs_tls_wrap_kill", Some(node::tls_wrap::tls_wrap_kill), 1),
             // Phase 9d-7: node:http2（hyper 直引；关闭复用 __wjs_net_destroy）
             // 10f 流式化：头/体/收尾/RST 分离（ChanBody 增量应答）
             ("__wjs_h2_listen", Some(node::http2::h2_listen), 4),

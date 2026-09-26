@@ -20,13 +20,13 @@ use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
 
 /// rustls ring provider（fetch/serve 同款；重复安装忽略）。
-fn ensure_provider() {
+pub(crate) fn ensure_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
 /// `rejectUnauthorized:false` 用的空校验器（测试/自签场景；生产缺省仍校验）。
 #[derive(Debug)]
-struct NoVerifier;
+pub(crate) struct NoVerifier;
 
 impl rustls::client::danger::ServerCertVerifier for NoVerifier {
     fn verify_server_cert(
@@ -63,12 +63,14 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
 }
 
 /// 握手结果 JSON（`tlsInfo` 事件体；JS 侧 getProtocol/getCipher/getPeerCertificate/alpnProtocol）。
-fn tls_info_json(
+/// `verify_err`：捕获式校验错（node TLSSocket 口径——authorized=false 但连接存活）。
+pub(crate) fn tls_info_json(
     version: Option<rustls::ProtocolVersion>,
     suite: Option<rustls::SupportedCipherSuite>,
     alpn: Option<&[u8]>,
     peer: Option<&[rustls::pki_types::CertificateDer<'_>]>,
     servername: Option<&str>,
+    verify_err: Option<String>,
 ) -> String {
     use base64::Engine as _;
     let protocol = match version {
@@ -87,12 +89,13 @@ fn tls_info_json(
         "alpn": alpn.map(|a| String::from_utf8_lossy(a).into_owned()),
         "peerChain": peer_chain,
         "servername": servername,
+        "verifyErr": verify_err,
     })
     .to_string()
 }
 
 /// 服务端配置（PEM 串 → ServerConfig；纯函数，单元测试覆盖）。
-fn server_config(cert_pem: &str, key_pem: &str) -> Result<rustls::ServerConfig, String> {
+pub(crate) fn server_config(cert_pem: &str, key_pem: &str) -> Result<rustls::ServerConfig, String> {
     let certs: Vec<rustls::pki_types::CertificateDer<'static>> =
         rustls_pemfile::certs(&mut cert_pem.as_bytes())
             .collect::<Result<Vec<_>, _>>()
@@ -120,7 +123,7 @@ fn server_config(cert_pem: &str, key_pem: &str) -> Result<rustls::ServerConfig, 
 
 /// 无证书解析器（createServer 未给 key/cert：握手必败 → tlsClientError）。
 #[derive(Debug)]
-struct NoCert;
+pub(crate) struct NoCert;
 
 impl rustls::server::ResolvesServerCert for NoCert {
     fn resolve(&self, _hello: rustls::server::ClientHello<'_>) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
@@ -140,7 +143,7 @@ impl rustls::server::ResolvesServerCert for FixedCert {
 
 /// 客户端配置（纯函数，单元测试覆盖）。
 /// `reject_unauthorized=false` → 跳过校验；`ca_pem` → 自建 roots；缺省系统 roots。
-fn client_config(ca_pem: Option<&str>, reject_unauthorized: bool) -> Result<rustls::ClientConfig, String> {
+pub(crate) fn client_config(ca_pem: Option<&str>, reject_unauthorized: bool) -> Result<rustls::ClientConfig, String> {
     if !reject_unauthorized {
         return Ok(rustls::ClientConfig::builder()
             .dangerous()
@@ -192,6 +195,13 @@ pub(crate) fn server_config_h2(cert_pem: &str, key_pem: &str) -> Result<rustls::
     Ok(cfg)
 }
 
+/// 无证书服务端配置（TLSSocket 包裹期缺省形：握手无证书可出示，协议错回传 JS）。
+pub(crate) fn server_config_no_cert() -> rustls::ServerConfig {
+    rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_cert_resolver(std::sync::Arc::new(NoCert))
+}
+
 /// 客户端配置（HTTP/2，ALPN `h2`；`node:http2` 用）。
 pub(crate) fn client_config_h2(
     ca_pem: Option<&str>,
@@ -222,6 +232,8 @@ struct ConnectOpts {
     ca_pem: Option<String>,
     #[serde(rename = "rejectUnauthorized")]
     reject_unauthorized: Option<bool>,
+    #[serde(rename = "alpnB64")]
+    alpn_b64: Option<String>,
 }
 
 /// 监听选项 JSON（server）：`{cert, key}`（PEM 串；缺失即同步 TypeError）。
@@ -253,14 +265,29 @@ pub unsafe extern "C" fn tls_connect(
         .unwrap_or_default();
     let target = frame.arg(3);
     ensure_provider();
-    let reject = opts.reject_unauthorized.unwrap_or(true);
-    let cfg = match client_config(opts.ca_pem.as_deref(), reject) {
-        Ok(c) => c,
-        Err(e) => {
-            report_error(&mut cx, &e);
-            return false;
+    // node TLSSocket 口径：rejectUnauthorized:false 仍跑校验（错误捕获、连接存活、
+    // authorized=false）；true 维持 WebPki 硬失败（握手错 → ERR_TLS_HANDSHAKE 面）。
+    let rejected = opts.reject_unauthorized.unwrap_or(true);
+    let (mut cfg, caught) = if rejected {
+        match client_config(opts.ca_pem.as_deref(), true) {
+            Ok(c) => (c, None),
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        }
+    } else {
+        match crate::builtins::node::tls_wrap::capture_client_config(opts.ca_pem.as_deref()) {
+            Ok((c, h)) => (c, Some(h)),
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
         }
     };
+    // node exports.connect：ALPNProtocols 经 convertALPNProtocols 落 wire 形（JS 侧
+    // 编码为 alpnB64；此处解回 rustls 列表）。
+    cfg.alpn_protocols = crate::builtins::node::tls_wrap::parse_alpn(opts.alpn_b64.as_deref());
     let Some((id, ev_tx)) = state::net_alloc() else {
         report_error(&mut cx, "OperationError: net driver not installed");
         return false;
@@ -305,13 +332,23 @@ pub unsafe extern "C" fn tls_connect(
         let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(cfg));
         match connector.connect(name, tcp).await {
             Err(e) => {
-                let _ = ev_tx.send(NetEvent {
-                    id,
-                    kind: NetKind::Error {
-                        code: "ERR_TLS_HANDSHAKE".into(),
-                        msg: format!("ERR_TLS_HANDSHAKE: {e}"),
-                    },
-                });
+                // node onConnectEnd 口径：握手期对端 FIN（EOF）= 底层 'end'，由 JS 侧
+                // 映射 ECONNRESET；其余（证书/协议错）仍走 ERR_TLS_HANDSHAKE。
+                let msg = format!("{e}");
+                let eofish = e.kind() == std::io::ErrorKind::UnexpectedEof
+                    || msg.contains("unexpected eof")
+                    || msg.contains("handshake eof");
+                if eofish {
+                    let _ = ev_tx.send(NetEvent { id, kind: NetKind::End });
+                } else {
+                    let _ = ev_tx.send(NetEvent {
+                        id,
+                        kind: NetKind::Error {
+                            code: "ERR_TLS_HANDSHAKE".into(),
+                            msg: format!("ERR_TLS_HANDSHAKE: {e}"),
+                        },
+                    });
+                }
                 let _ = ev_tx.send(NetEvent { id, kind: NetKind::Close });
             }
             Ok(tls) => {
@@ -323,6 +360,7 @@ pub unsafe extern "C" fn tls_connect(
                         c.alpn_protocol(),
                         c.peer_certificates(),
                         Some(servername.as_str()),
+                        caught.as_ref().and_then(|h| h.lock().ok().and_then(|mut s| s.take())),
                     )
                 };
                 let _ = ev_tx.send(NetEvent { id, kind: NetKind::TlsInfo { json: info } });
@@ -432,6 +470,78 @@ pub unsafe extern "C" fn tls_listen(
     set_rval_str(&mut cx, &frame, &id.to_string());
     handle.spawn(async move {
         let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
+        // UDS listen（node tls.Server.listen(path)）：UnixListener + TlsAcceptor，
+        // 连接事件走 ConnectionUds（地址全 undefined，net 同口径）。
+        if let Some(uds_path) = host.strip_prefix("UDS:") {
+            #[cfg(unix)]
+            {
+                let _ = std::fs::remove_file(uds_path);
+                let bound = tokio::net::UnixListener::bind(uds_path);
+                let Ok(listener) = bound else {
+                    let e = bound.unwrap_err();
+                    let code = crate::builtins::node::fs::io_code(&e);
+                    let _ = ev_tx.send(NetEvent {
+                        id,
+                        kind: NetKind::ServerError { code: code.into(), msg: format!("listen {code} {uds_path}: {e}") },
+                    });
+                    let _ = ev_tx.send(NetEvent { id, kind: NetKind::ServerClose });
+                    return;
+                };
+                let _ = ev_tx.send(NetEvent { id, kind: NetKind::ListeningUds { path: uds_path.to_string() } });
+                loop {
+                    tokio::select! {
+                        acc = listener.accept() => {
+                            let Ok((stream, _peer)) = acc else { continue };
+                            let acceptor = acceptor.clone();
+                            let ev_tx = ev_tx.clone();
+                            tokio::spawn(async move {
+                                let tls = match acceptor.accept(stream).await {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        let _ = ev_tx.send(NetEvent {
+                                            id,
+                                            kind: NetKind::TlsClientError {
+                                                code: "ERR_SSL_HANDSHAKE_FAILURE".into(),
+                                                msg: format!("{e}"),
+                                            },
+                                        });
+                                        return;
+                                    }
+                                };
+                                let info = {
+                                    let c = tls.get_ref().1;
+                                    tls_info_json(
+                                        c.protocol_version(),
+                                        c.negotiated_cipher_suite(),
+                                        c.alpn_protocol(),
+                                        c.peer_certificates(),
+                                        c.server_name(),
+                                        None,
+                                    )
+                                };
+                                let (conn_id, conn_cmd_rx) = state::net_conn_add();
+                                let _ = ev_tx.send(NetEvent { id, kind: NetKind::ConnectionUds { conn_id } });
+                                let _ = ev_tx.send(NetEvent { id: conn_id, kind: NetKind::TlsInfo { json: info } });
+                                let (r, w) = tokio::io::split(tls);
+                                spawn_pumps(conn_id, r, w, ev_tx, conn_cmd_rx);
+                            });
+                        }
+                        _ = cmd_rx.recv() => break,
+                    }
+                }
+                let _ = ev_tx.send(NetEvent { id, kind: NetKind::ServerClose });
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = uds_path;
+                let _ = ev_tx.send(NetEvent {
+                    id,
+                    kind: NetKind::ServerError { code: "ENOTSUP".into(), msg: "listen ENOTSUP: unix socket not supported".into() },
+                });
+                let _ = ev_tx.send(NetEvent { id, kind: NetKind::ServerClose });
+            }
+            return;
+        }
         let bound = tokio::net::TcpListener::bind((host.as_str(), port as u16)).await;
         let Ok(listener) = bound else {
             let e = bound.unwrap_err();
@@ -477,16 +587,17 @@ pub unsafe extern "C" fn tls_listen(
                             .0
                             .local_addr()
                             .unwrap_or_else(|_| "0.0.0.0:0".parse::<std::net::SocketAddr>().expect("literal addr"));
-                        let info = {
-                            let c = tls.get_ref().1;
-                            tls_info_json(
-                                c.protocol_version(),
-                                c.negotiated_cipher_suite(),
-                                c.alpn_protocol(),
-                                c.peer_certificates(),
-                                c.server_name(),
-                            )
-                        };
+                            let info = {
+                                let c = tls.get_ref().1;
+                                tls_info_json(
+                                    c.protocol_version(),
+                                    c.negotiated_cipher_suite(),
+                                    c.alpn_protocol(),
+                                    c.peer_certificates(),
+                                    c.server_name(),
+                                    None,
+                                )
+                            };
                         let (conn_id, conn_cmd_rx) = state::net_conn_add();
                         // 序：Connection（server 侧 attach socket）→ TlsInfo（此时 conn target 已在）
                         // → 起泵（数据事件必在 attach 之后，修前泵先起可能先于 attach 到达即丢）。

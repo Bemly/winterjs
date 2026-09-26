@@ -3908,3 +3908,26 @@
 - 复现：`test-fs-read-stream-pos.js`（写端 1ms 追加，读端跟随）；`tests/builtins.rs` immediate 吞吐用例。
 - 推广铁律：**有 node 原文的模块，优先逐字移植 + 修底座，而不是在自写实现上逐套件打补丁**；
   移植后新红多半是底座时序（微任务 vs 宏任务、定时器钳制）偏差，按 node 事件循环相位去对。
+
+### 4.213 io_code 漏 ECONNRESET：拆链收尾错全落 UNKNOWN（2026-09-26，P2-tls-b）
+
+- **症状**：wrap-econnreset 断言 `e.code === 'ECONNRESET'` 拿到 `UNKNOWN`；net 错误形状
+  （errno -54、`connect ECONNRESET <target>`）全错。
+- **根因**：`fs::io_code` 按 errno 原值映射，只录了常见文件/连接错误——macOS ECONNRESET=54、
+  Linux=104 未录（ENOTCONN 57/107 同漏）。RST 类错误是 net/tls 收尾常态，不是边缘。
+- **修法**：补 `54 | 104 => "ECONNRESET"`、`57 | 107 => "ENOTCONN"`。
+- **复现**：net server `c.end()` + 客户端半关读，读端报错落 UNKNOWN。
+- **铁律**：新增 io 错误映射必须**双侧平台 errno**（macOS/Linux）成对录入；新增网络
+  断言面（e.code/errno）前先 grep io_code 是否覆盖目标错误。
+
+### 4.214 listen 字符串参误判 UDS path：address().port 全 undefined（2026-09-26，P2-tls-b）
+
+- **症状**：`tls.Server.listen(0, "127.0.0.1")` 后 `address().port === undefined`，全量
+  tls/https 黑盒与套件 listen 形崩（连接拨到 `localhost:NaN`）。
+- **根因**：给 listen 加 UDS path 支持时，把"非纯数字串"一律当 path（`udsPath = a`）——
+  字符串 host（`"127.0.0.1"`、`"localhost"`）被误判；`__udsPath` 残留使 address() 回串。
+- **修法**：node isPipeName 口径——**含 "/" 的串才是 path**，否则按 host；
+  `address()` 的 UDS 分支只在 `listen(path)` 显式给出时激活。
+- **复现**：`server.listen(0, "127.0.0.1", cb); server.address().port` → undefined。
+- **铁律**：JS 层多形态参数判别（host vs path vs port）必须引 node `isPipeName` 原文
+  判据，禁用"看起来像不像"的宽松启发；改动后须即跑既有黑盒（同域）再继续。

@@ -284,3 +284,31 @@ G1/G2/G3/G9 已收官。）
   （试过 onend 下一 tick end()，连带 write-after-close 反红，已回退）。`exec-maxbuf` 两版本同样偶红（既有 flaky）。
 - 待办：tls-b 内存 BIO 引擎（`tls.connect({socket})` 簇）；`test-http-keep-alive-max-requests` /
   `test-stream2-httpclient-response-end` 负载下偶红（immediate 不钳后时序敏感，单跑稳定绿）。
+
+## 2026-09-26 P2-tls-b：TLSSocket 包裹引擎（rustls 由 JS 字节驱动）
+
+- 仓库上 GitHub：私有库 `Bemly/winterjs`（master 跟踪 origin；此前无 remote 单副本）。
+- `tls.connect({socket})` / `new TLSSocket(duplex)` 簇（base15 时 21 件红）全链落地：
+  - 引擎 `src/builtins/node/tls_wrap.rs`：rustls 手动模式（read_tls → process_new_packets →
+    write_tls/reader 排空），引擎表 `PlainState.tls_engines`（state/tls_wrap.rs，与 net 共用 id
+    计数）；natives `__wjs_tls_wrap_{open,feed,write,eof,shutdown,kill}`——wrapped 密文 JS 喂入，
+    回程 JSON 一次带密文/明文/握手旗/校验捕获/信息（明文逐轮排空防 rustls received_plaintext 撑满）。
+  - CaptureVerifier：node 口径"校验失败不中止握手"——错误捕获后随 'secure' 回传 JS 处置；
+    rejectUnauthorized:false（直拨面同样改捕获式）→ authorized=false 连接存活，真机口径。
+  - tls.js：TLSSocket 构造器对齐现行 node（无 options 交换形；非 Duplex socket 参 TypeError；
+    allowHalfOpen 有 socket 参即取 socket 自身）；_start/_finishInit/onConnectSecure/onConnectEnd
+    逐字（'secure' 恒发，握手期 'end' → ECONNRESET 带 path/host/port，secureConnect 仅包装层发）；
+    convertALPNProtocols 全家原文；UDS path 形（client 内建 net.Socket + 包裹引擎，server
+    tls_listen UDS 分支：UnixListener+TlsAcceptor，连接走 ConnectionUds）。
+  - net 面最小钩子：write/end/destroy 收敛 `__nativeWrite/__nativeEnd/__nativeKill`（net 本形
+    直通原 native，包裹面覆写）；destroySoon 原文补齐。直拨面握手 EOF → End 事件（onConnectEnd 面）。
+  - io_code 补 ECONNRESET(54/104)、ENOTCONN(57/107)（收尾 RST 曾落 UNKNOWN，4.213）。
+  - https.Server：ALPNProtocols 缺省 ['http/1.1'] 原文口径；createServer 经 Server()。
+- 结果：wrap 簇 24 件 16 转绿（EADDRNOTAVAIL NaN / HANG / mustCall 不触发三簇清零）；
+  黑盒 tls/https 7/7；全量 nextest strict 717/717；冒烟 5/5。base16 待跑全域 sweep 计数。
+- 关键坑：tls.Server.listen 字符串参曾是 host，误改判 UDS path（含 "/" 才是 path，node
+  isPipeName 口径）——一度全量 tls/https listen(0,"127.0.0.1") 崩、address().port undefined（4.214）。
+- 余 8 件（挂死收尾簇为主，下轮按 §0.2 时间盒）：`test-tls-socket-close`/`-destroy`/
+  `-default-options`/`-streamwrap-buffersize`（收尾 net 不归零）、`-on-empty-socket`
+  （late teardown error 误上抛）、`-client-destroy-soon`（'readable' 流量面）、
+  `test-async-wrap-tlssocket-asyncreset`（ca 链另案）、`test-tls-wrap-econnreset-*` 已绿。

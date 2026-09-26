@@ -1768,3 +1768,27 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 > > DIFF 39→**35**，零回归）。
 > > 回归：`tests/node/testmod.rs::phase10f_test_run_semantics_*` +
 > > `phase10f_test_run_tag_filter_and_randomize`；坑见 AGENTS §4.184。
+
+
+## tls——P2-tls-b 包裹簇（2026-09-26，本轮 24 件 16 绿）
+
+`tls.connect({socket})`/`new TLSSocket(duplex)` 引擎落地后的逐件定性（run1.sh，20s 盒）：
+
+**转绿（16）**：test-tls-connect-given-socket、test-tls-connect-pipe（UDS）、
+test-tls-net-socket-keepalive(-12)、test-tls-reuse-host-from-socket、
+test-tls-socket-allow-half-open-option、test-tls-socket-constructor-alpn-options-parsing、
+test-tls-socket-failed-handshake-emits-error、test-tls-starttls-server、
+test-tls-wrap-econnreset(-localaddress/-pipe/-socket)、test-tls-wrap-event-emmiter、
+test-warn-tls-wrap-deprecation（DEP0192）、test-https-argument-of-creating、
+test-socket-writes-before-passed-to-tls-socket。
+
+**余 8（分簇记档，下轮按 §0.2 时间盒）**：
+- 挂死收尾簇（net 条目不归零，疑 wrapped destroy 与 pump Close 结算竞速）：
+  `test-tls-socket-close`、`test-tls-socket-destroy`、`test-tls-socket-default-options`、
+  `test-tls-streamwrap-buffersize`。
+- late teardown error 误上抛：`test-tls-on-empty-socket`（error 事件在已收尾 socket 上
+  抵达 JS——node 侧 destroyed 门应拦；疑派发时序）。
+- 'readable' 流量面：`test-tls-client-destroy-soon`（bytesRead 0/2MB——net Socket
+  paused/readable 模式缺口，net 域共性另案）。
+- ca 链另案：`test-async-wrap-tlssocket-asyncreset`（"unable to verify the first
+  certificate"——async_wrap 钩子面 + 根证书链，非 socket 包裹根因）。

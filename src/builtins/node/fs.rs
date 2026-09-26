@@ -23,6 +23,10 @@ pub fn io_code(e: &std::io::Error) -> &'static str {
             49 | 99 => "EADDRNOTAVAIL",
             // ECONNREFUSED：macOS 61 / Linux 111（net/http 客户端拒连）
             61 | 111 => "ECONNREFUSED",
+            // ECONNRESET：macOS=54 / Linux=104（拆链收尾 RST 噪声与 econnreset 断言面）
+            54 | 104 => "ECONNRESET",
+            // ENOTCONN：macOS=57 / Linux=107
+            57 | 107 => "ENOTCONN",
             13 => "EACCES",
             17 => "EEXIST",
             18 => "EXDEV",

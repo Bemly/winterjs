@@ -63,34 +63,33 @@
 - **"另轮/infra"必须有编号进 0.4 队列**，否则等同出局——禁止无编号的"另案"。
 - 顺序永远按"清单件差额"降序排域，不按"手上正热的域"。
 
-### 0.3 全域基线（2026-09-26 base13，Bun 清单 3574 件，node 26.8.2 对照）
+### 0.3 全域基线（2026-09-26 base15，Bun 清单 3574 件，node 26.8.2 对照）
 
-> 总计 **绿 2093/3574（59%）**。口径：`scripts/sweep-report.py base13`（工件
-> `~/wjs-data/sweep/base13/`，2 并发 + 看门狗，45 分钟，资源全程正常）；"绿"= 双侧 rc=0，
-> "双红"= 两侧同红不计欠账。**较 base12（2168）净 −75 不是退化**：process `exit` 事件修好后
-> `common.mustCall` 计数核对首次生效，143 件旧假绿翻红、67 件新修转绿。mustCall 红共 240 件
-> （sweep 标签 `HANG`=挂死自报 108 / `MUSTCALL`=正常退出但回调次数不符 132），跨域共性根因优先。
+> 总计 **绿 2136/3574（60%）**（base13 2093 → base14 2106 → base15 2136）。口径：
+> `scripts/sweep-report.py base15`（工件 `~/wjs-data/sweep/base15/`，2 并发 + 看门狗，40 分钟）；
+> "绿"= 双侧 rc=0，"双红"= 两侧同红不计欠账。base13 起 process `exit` 事件生效、mustCall 计数
+> 核对真实执行（旧 base12 2168 含 ~140 假绿）。sweep 标签：`HANG`=挂死自报 / `MUSTCALL`=计数不符。
 > 下表只列红（DIFF+TIMEOUT）≥10 的域，按红数降序即排期顺序；其余域见报告脚本输出。
 
 | 域 | 清单件 | 绿 | DIFF | TIMEOUT | 双红 | 绿率 |
 |---|---|---|---|---|---|---|
-| http2 | 256 | 87 | 165 | 4 | 0 | 33% |
-| tls | 185 | 39 | 145 | 1 | 0 | 21% |
-| crypto | 120 | 36 | 82 | 2 | 0 | 30% |
-| repl | 82 | 12 | 70 | 0 | 0 | 14% |
-| process | 82 | 15 | 65 | 0 | 2 | 18% |
-| fs | 333 | 266 | 64 | 1 | 2 | 80% |
+| http2 | 256 | 88 | 163 | 5 | 0 | 34% |
+| tls | 185 | 40 | 144 | 1 | 0 | 21% |
+| crypto | 120 | 37 | 83 | 0 | 0 | 30% |
+| repl | 82 | 17 | 64 | 1 | 0 | 20% |
 | stream | 215 | 156 | 57 | 2 | 0 | 72% |
-| worker | 110 | 52 | 58 | 0 | 0 | 47% |
+| process | 82 | 21 | 59 | 0 | 2 | 26% |
+| worker | 110 | 55 | 55 | 0 | 0 | 50% |
 | cluster | 80 | 27 | 52 | 1 | 0 | 33% |
 | vm | 95 | 46 | 48 | 1 | 0 | 48% |
+| fs | 333 | 285 | 45 | 1 | 2 | 86% |
 | whatwg | 53 | 12 | 41 | 0 | 0 | 22% |
-| net | 138 | 97 | 40 | 0 | 1 | 70% |
 | http | 389 | 349 | 36 | 4 | 0 | 89% |
 | webcrypto | 39 | 1 | 37 | 1 | 0 | 2% |
+| net | 138 | 99 | 38 | 0 | 1 | 72% |
 | trace | 34 | 3 | 31 | 0 | 0 | 8% |
 | https | 59 | 31 | 26 | 2 | 0 | 52% |
-| child | 100 | 71 | 27 | 1 | 1 | 71% |
+| child | 100 | 72 | 26 | 1 | 1 | 72% |
 | module | 27 | 4 | 23 | 0 | 0 | 14% |
 | diagnostics | 35 | 15 | 20 | 0 | 0 | 42% |
 | util | 26 | 8 | 18 | 0 | 0 | 30% |
@@ -98,10 +97,10 @@
 | sqlite | 18 | 0 | 15 | 1 | 2 | 0% |
 | internal | 19 | 4 | 15 | 0 | 0 | 21% |
 | async | 27 | 12 | 15 | 0 | 0 | 44% |
-| timers | 56 | 42 | 14 | 0 | 0 | 75% |
 | fastutf8stream | 14 | 0 | 14 | 0 | 0 | 0% |
 | console | 16 | 2 | 14 | 0 | 0 | 12% |
 | compile | 14 | 0 | 14 | 0 | 0 | 0% |
+| timers | 56 | 43 | 13 | 0 | 0 | 76% |
 | require | 21 | 8 | 13 | 0 | 0 | 38% |
 | dgram | 75 | 61 | 12 | 1 | 1 | 82% |
 | v8 | 13 | 2 | 11 | 0 | 0 | 15% |
@@ -116,8 +115,8 @@
 | buffer | 63 | 59 | 4 | 0 | 0 | 93% |
 | stdin | 11 | 9 | 2 | 0 | 0 | 81% |
 | url | 14 | 13 | 1 | 0 | 0 | 92% |
+| stream2 | 26 | 25 | 1 | 0 | 0 | 96% |
 | path | 16 | 15 | 1 | 0 | 0 | 93% |
-| stream2 | 26 | 26 | 0 | 0 | 0 | 100% |
 | eslint | 24 | 24 | 0 | 0 | 0 | 100% |
 
 ### 0.4 执行队列（按序；每项完工改本表状态）
@@ -128,7 +127,7 @@
 | P0-2 | sweep 读 `// Flags:` | ✅ 2026-09-25：两侧透传（本仓 CLI 按 D1 规则剥除记录）+ `--scope` 清单过滤 + node 缓存（0.8） | — | ✅ |
 | P0-3 | 全域基线 | ✅ 2026-09-25 base12（2 并发 + 看门狗，42 分钟，资源全程正常）；首跑 base10 触发 4.209 事故作废；旗表补齐（`--experimental-quic`/`--tls-min-v1.x` 等 24 个）后 272 件重跑，quic 233 件全转绿 | — | ✅ |
 | P1 | http2 | 🟡 2026-09-25 首轮：绿 64 → **88/256**（mustCall 退出核对生效后的真实口径；同口径起点 58）。已修：v1 证书、trailer 有体挂死、请求体流式化、GET 缺省 endStream、会话随连接建立、compat/优先级告警、参数校验六批。余 168 大头是 hyper 底座不可达面——PUSH_PROMISE、ALTSVC/ORIGIN 帧、对端 SETTINGS 内省、原始帧协议错映射（GOAWAY/窗口溢出/未请求 ACK），以及 tls 面（createSecureContext/getPeerCertificate 等，随 P2 tls 一并）。**按 0.2 时间盒暂停，转 P2 tls**；底座不可达簇下轮统一评估：换 `h2` 裸库直驱 vs 书面偏离 | 已用约 1 天 | 🟡 |
-| P2 | tls → crypto → repl → process → stream | 红 165 / 80 / 62 / 59 / 57（base12 降序）；tls 先看共性原因（`bad key/cert pair` 21、`getCACertificates` 缺 14、`createServer needs {key,cert}` 8 等） | 各按止损线 | ⬜ |
+| P2 | 共性簇 → tls → crypto → repl → process → stream | 🟡 2026-09-26 进行中。**共性簇先行**（mustCall 红按"未触发回调的事件名"聚类）：beforeExit 派发 + 致命错后发 exit + process.emit 上抛（+9）、emitWarning 按 node warning.js 移植 + CJS 栈帧绝对路径（+8）、fs 流 node 逐字移植 + fs 回调改宏任务 + setImmediate 不钳 1ms + unref 定时器按存活门控（+26）、repl .save/.load（+5）、dgram bind 前 unref。**tls**：SecureContext/createSecureContext/configSecureContext 逐字移植（选项校验 + OpenSSL 可观察报错）、Server 构造器/setSecureContext/connect 校验、tls.Server 无 new、rootCertificates 只读、setDefaultCACertificates 报错面（+23，未计入 base15）。**tls 下一簇**：`tls.connect({socket})`/`new TLSSocket(duplex)`（~10 件，需内存 BIO 引擎：rustls Connection 由 JS 字节驱动）→ 另起 P2-tls-b | 各按止损线 | 🟡 |
 | P3 | http 冻结收口 | sweep9 真红 12 件中 `dump-req-when-res-ends` 在清单外已清出（0.7）；余 11 件一次性定性：清单内可半天修的修（`matchKnownFields`/`outgoing-finished`/`1.0-keep-alive` 文案），其余记档（`reuse-drained`=process.report、`client-response-domain`=domain 异步、`keep-alive-timeout-race`=Atomics.wait、`set-timeout-server` exit-hold/`catch-uncaughtexception`/`client-parse-error`/`writable-true-after-close`/`client-timeout-on-connect`=挂死型） | ≤1 天 | ⬜ |
 | D1 | ✅ 2026-09-25 已做 | node 运行时旗改**精确名单**（`src/cli_node_flags.rs`，取自 `node --help`；前缀族方案致 4.209 事故后废弃；winterjs 自有同名旗与改执行模式的旗不收，必须带值的旗只认 `--k=v`、值非法 exit 9）+ `internal/options` getOptionValue 读真实旗值 + DEP0005 认 `--pending-deprecation` + shell 串自举保旗交 CLI。实测：位置参数本就已通（旧"~18 件"口径过期）；`buffer-constructor-node-modules` 转绿；余红与 spawn 无关，已拆成 D4/P2 项（错误输出形状、`process.stdin/stdout` 非 Stream、`node:stream/iter` 未实现、vm-sigint stdio null） | — | ✅ |
 | D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |

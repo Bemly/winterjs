@@ -267,3 +267,20 @@ G1/G2/G3/G9 已收官。）
 - 提速：`WINTERJS_HANG_EXIT`（挂死件报出未触发回调的创建点）、nextest（全量 ~100s）、
   sweep `--jobs/--scope/--rerun-red`/node 缓存/资源看门狗/进程组封顶、`scripts/split-js.py`。
 - http2：64（旧口径）→ 88/256（真口径），余件见 plan3 §0.4 P1 行。
+
+## 2026-09-26 P2 共性簇 + tls 首批
+
+- base13（2093）较 base12（2168）净 −75：exit 事件修好后 mustCall 核对生效，143 件旧假绿翻红
+  （聚类：`HANG` 挂死自报 108 / `MUSTCALL` 计数不符 132），非退化。sweep 标签由此拆分。
+- 共性簇按"未触发回调的监听事件名"聚类找根因：beforeExit（9）、expectWarning（9）、fs 流 close/error（~20）。
+  - process：beforeExit 派发、致命错先渲染再发 exit（exitCode 可改）、公开 emit 抛错上抛（4.211）。
+  - emitWarning 逐字移植（缺省打印是表内监听，off/once 生效）；CJS 以绝对路径编译（node 栈帧口径）。
+  - fs 流逐字移植 `internal/fs/streams.js`；暴露底座两处时序偏差：fs 回调微任务 → setImmediate、
+    setImmediate 钳 1ms → 不钳；unref 定时器循环不 alive 不触发（4.212）。
+  - 顺手：dgram bind 前 unref 落原生、repl .save/.load 逐字、ClientRequest.setTimeout 同步校验。
+- base14 2106、base15 2136。tls：SecureContext 层逐字移植 + 错误码补齐，tls/https 单域 +23（base16 计）。
+- 工具：`~/wjs-data/node-lib/` 导出 node 26.8.2 全部内建源；sweep 期间开发用 `CARGO_TARGET_DIR=~/wjs-data/target-alt`。
+- `test-socket-write-after-fin-error` 回红：旧绿靠 immediate 1ms 时序；忠实修法需建模 shutdown 完成 → autoDestroy
+  （试过 onend 下一 tick end()，连带 write-after-close 反红，已回退）。`exec-maxbuf` 两版本同样偶红（既有 flaky）。
+- 待办：tls-b 内存 BIO 引擎（`tls.connect({socket})` 簇）；`test-http-keep-alive-max-requests` /
+  `test-stream2-httpclient-response-end` 负载下偶红（immediate 不钳后时序敏感，单跑稳定绿）。

@@ -316,6 +316,29 @@ E('ERR_INVALID_ARG_VALUE', (name, value, reason = 'is invalid') => {
   return `The ${type} '${name}' ${reason}. Received ${inspected}`;
 }, TypeError, HideStackFramesError);
 E('ERR_INVALID_FD', '"fd" must be a positive integer: %s', RangeError);
+// node lib/internal/errors.js TLS/crypto 段逐字（2026-09-26，tls SecureContext 移植）。
+E('ERR_CRYPTO_CUSTOM_ENGINE_NOT_SUPPORTED',
+  'Custom engines not supported by this OpenSSL', Error);
+E('ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS',
+  'The ALPNCallback and ALPNProtocols TLS options are mutually exclusive',
+  TypeError);
+E('ERR_TLS_DH_PARAM_SIZE', 'DH parameter size %s is less than 2048', Error);
+E('ERR_TLS_HANDSHAKE_TIMEOUT', 'TLS handshake timeout', Error);
+E('ERR_TLS_INVALID_CONTEXT', '%s must be a SecureContext', TypeError);
+E('ERR_TLS_INVALID_PROTOCOL_METHOD', '%s', TypeError);
+E('ERR_TLS_INVALID_PROTOCOL_VERSION',
+  '%j is not a valid %s TLS protocol version', TypeError);
+E('ERR_TLS_INVALID_STATE', 'TLS socket connection must be securely established',
+  Error);
+E('ERR_TLS_PROTOCOL_VERSION_CONFLICT',
+  'TLS protocol version %j conflicts with secureProtocol %j', TypeError);
+E('ERR_TLS_RENEGOTIATION_DISABLED',
+  'TLS session renegotiation disabled for this socket', Error);
+E('ERR_TLS_REQUIRED_SERVER_NAME',
+  '"servername" is required parameter for Server.addContext', Error);
+E('ERR_TLS_SESSION_ATTACK', 'TLS session renegotiation attack detected', Error);
+E('ERR_TLS_SNI_FROM_SERVER',
+  'Cannot issue SNI from a TLS server-side socket', Error);
 E('ERR_TRACE_EVENTS_CATEGORY_REQUIRED', 'At least one category must be enabled', TypeError);
 E('ERR_INVALID_ASYNC_ID', 'Invalid %s value: %s', RangeError);
 E('ERR_INVALID_THIS', 'Value of "this" must be of type %s', TypeError, HideStackFramesError);

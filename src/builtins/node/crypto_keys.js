@@ -229,7 +229,14 @@ function __mlSeedPkcs8(akt, seed) {
   return __tlv(0x30, new Uint8Array([...zero, ...alg, ...oct]));
 }
 function __pemDecode(text) {
-  const m = String(text).match(/-----BEGIN ([^-]+)-----([\s\S]*?)-----END \1-----/);
+  // OpenSSL PEM_read 口径：跳过 `EC PARAMETERS` 等参数块取首个密钥/证书块
+  //（`openssl ecparam -genkey` 产物参数块在前，tls-no-rsa-key 套件点名）。
+  let m = null;
+  for (const hit of String(text).matchAll(/-----BEGIN ([^-]+)-----([\s\S]*?)-----END \1-----/g)) {
+    if (hit[1].trim() === "EC PARAMETERS") continue;
+    m = hit;
+    break;
+  }
   if (!m) return null;
   // 10f crypto二轮：RFC1421 头行（Proc-Type/DEK-Info）跳过记取，空行跳过。
   let dek = null;

@@ -1,5 +1,9 @@
 import { EventEmitter } from "node:events";
 import { Socket } from "node:net";
+import {
+  validateFunction as __tlsVFunction,
+  validateNumber as __tlsVNumber,
+} from "node:internal/validators";
 const Buffer = globalThis.Buffer;
 
 // ── node:tls（P2，2026-09-25）：TLSSocket 建在 net.Socket 之上（读写/流面/计时/ref 全继承，
@@ -200,16 +204,34 @@ class Server extends EventEmitter {
     this.__listening = null;
     this.__tlsOpts = {};
     this.__contexts = [];
-    if (typeof options === "function") { cb = options; options = undefined; }
-    if (options !== undefined && (options === null || typeof options !== "object")) {
-      throw __tlsErr("ERR_INVALID_ARG_TYPE", `The "options" argument must be of type object.`);
+    // node internal/tls/wrap.js Server()：参数形 → ALPN 互斥 → setSecureContext（校验全在
+    // createSecureContext）→ 握手超时/SNI/PSK 回调校验。
+    if (typeof options === "function") {
+      cb = options;
+      options = {};
+    } else if (options == null || typeof options === "object") {
+      options ??= {};
+    } else {
+      throw new __tlsC.ERR_INVALID_ARG_TYPE("options", "Object", options);
     }
-    options = options ?? {};
-    const sc = options.secureContext?.context ?? {};
-    const key = __pemOf(options.key ?? sc.key);
-    const cert = __pemOf(options.cert ?? sc.cert);
-    // node：key/cert 可缺（握手时无证书可出示 → tlsClientError）。
-    if (key !== undefined && cert !== undefined) this.__tlsOpts = { key, cert };
+    this._contexts = [];
+    this.requestCert = options.requestCert === true;
+    this.rejectUnauthorized = options.rejectUnauthorized !== false;
+    this.ALPNCallback = options.ALPNCallback;
+    if (this.ALPNCallback && options.ALPNProtocols) {
+      throw new __tlsC.ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS();
+    }
+    if (options.sessionTimeout) this.sessionTimeout = options.sessionTimeout;
+    if (options.ticketKeys) this.ticketKeys = options.ticketKeys;
+    this.setSecureContext(options);
+    this.__handshakeTimeout = options.handshakeTimeout || (120 * 1000);
+    this.__SNICallback = options.SNICallback;
+    this.__pskCallback = options.pskCallback;
+    this.__pskIdentityHint = options.pskIdentityHint;
+    __tlsVNumber(this.__handshakeTimeout, "options.handshakeTimeout");
+    if (this.__SNICallback) __tlsVFunction(this.__SNICallback, "options.SNICallback");
+    if (this.__pskCallback) __tlsVFunction(this.__pskCallback, "options.pskCallback");
+    if (this.__pskIdentityHint) __tlsVString(this.__pskIdentityHint, "options.pskIdentityHint");
     if (typeof cb === "function") this.on("secureConnection", cb);
     // 派发钩子预绑定（dispatch 以 global 为 this，见 §4.34/§4.36）
     this.__ev = this.__ev.bind(this);
@@ -283,35 +305,53 @@ class Server extends EventEmitter {
     // SNI 多证书：底座单证书解析器暂不分流（记档），先登记。
     this.__contexts.push([hostname, context]);
   }
+  // node Server.prototype.setSecureContext：选项逐项落实例 → createSecureContext 共享凭据；
+  // rustls 底座取其 key/cert PEM（secureContext 选项形同样经此）。
   setSecureContext(options) {
-    const key = __pemOf(options?.key);
-    const cert = __pemOf(options?.cert);
-    if (key !== undefined && cert !== undefined) this.__tlsOpts = { key, cert };
-  }
-  getTicketKeys() { return Buffer.alloc(48); }
-  setTicketKeys(keys) {
-    if (!Buffer.isBuffer(keys) || keys.length !== 48) {
-      throw __tlsErr("ERR_INVALID_ARG_VALUE", "Session ticket keys must be a 48-byte buffer");
+    __tlsVObject(options, "options");
+    for (const k of ["pfx", "key", "passphrase", "cert", "clientCertEngine", "ca", "minVersion",
+      "maxVersion", "secureProtocol", "crl", "ciphers", "dhparam"]) {
+      this[k] = options[k] ? options[k] : undefined;
     }
+    this.sigalgs = options.sigalgs;
+    this.ecdhCurve = options.ecdhCurve;
+    this.honorCipherOrder = options.honorCipherOrder !== undefined ? !!options.honorCipherOrder : true;
+    this.secureOptions = options.secureOptions || undefined;
+    this.sessionIdContext = options.sessionIdContext ? options.sessionIdContext : undefined;
+    if (options.sessionTimeout) this.sessionTimeout = options.sessionTimeout;
+    if (options.ticketKeys) this.ticketKeys = options.ticketKeys;
+    this.privateKeyIdentifier = options.privateKeyIdentifier;
+    this.privateKeyEngine = options.privateKeyEngine;
+    this.certificateCompression = options.certificateCompression;
+    this._sharedCreds = createSecureContext({
+      pfx: this.pfx, key: this.key, passphrase: this.passphrase, cert: this.cert,
+      clientCertEngine: this.clientCertEngine, ca: this.ca, ciphers: this.ciphers,
+      sigalgs: this.sigalgs, ecdhCurve: this.ecdhCurve, dhparam: this.dhparam,
+      minVersion: this.minVersion, maxVersion: this.maxVersion, secureProtocol: this.secureProtocol,
+      secureOptions: this.secureOptions, honorCipherOrder: this.honorCipherOrder, crl: this.crl,
+      sessionIdContext: this.sessionIdContext, ticketKeys: this.ticketKeys,
+      sessionTimeout: this.sessionTimeout, privateKeyIdentifier: this.privateKeyIdentifier,
+      privateKeyEngine: this.privateKeyEngine, certificateCompression: this.certificateCompression,
+    });
+    const sc = options.secureContext?.context ?? this._sharedCreds.context;
+    const key = __pemOf(sc.key);
+    const cert = __pemOf(sc.cert);
+    // node：key/cert 可缺（握手时无证书可出示 → tlsClientError）。
+    this.__tlsOpts = key !== undefined && cert !== undefined ? { key, cert } : {};
+  }
+  getTicketKeys() { return this._sharedCreds.context.getTicketKeys(); }
+  setTicketKeys(keys) {
+    __tlsVBuffer(keys);
+    if (keys.byteLength !== 48) {
+      throw __tlsErr("ERR_ASSERTION", "Session ticket keys must be a 48-byte buffer");
+    }
+    this._sharedCreds.context.setTicketKeys(keys);
   }
   ref() { return this; }
   unref() { return this; }
 }
 
-// ── SecureContext / CA 面 ────────────────────────────────────────────────
-class SecureContext {
-  constructor(options) {
-    this.context = { key: __pemOf(options?.key), cert: __pemOf(options?.cert), ca: __pemOf(options?.ca) };
-  }
-}
-export function createSecureContext(options) {
-  if (options !== undefined && (options === null || typeof options !== "object")) {
-    const e = new TypeError(`The "options" argument must be of type object.`);
-    e.code = "ERR_INVALID_ARG_TYPE";
-    throw e;
-  }
-  return new SecureContext(options);
-}
+// ── CA 面（SecureContext 见 tls_context.js）────────────────────────────────
 let __defaultCA = null;
 function __certsOf(kind) {
   return JSON.parse(__wjs_tls_ca_certs(kind));
@@ -322,21 +362,52 @@ export function getCACertificates(type = "default") {
     e.code = "ERR_INVALID_ARG_TYPE";
     throw e;
   }
-  if (type === "default") return __defaultCA !== null ? [...__defaultCA] : __certsOf("bundled");
-  if (type === "bundled" || type === "system" || type === "extra") return __certsOf(type);
+  if (type === "default") return __defaultCA !== null ? [...__defaultCA] : [...rootCertificates];
+  if (type === "bundled") return rootCertificates;
+  if (type === "system" || type === "extra") return __certsOf(type);
   const e = new TypeError(`The argument 'type' must be one of: 'default', 'bundled', 'system', 'extra'. Received '${type}'`);
   e.code = "ERR_INVALID_ARG_VALUE";
   throw e;
 }
+// node tls.js setDefaultCACertificates：数组/元素类型校验 → 原生 resetRootCertStore（逐个解析，
+// 一个都解析不出即 ERR_CRYPTO_OPERATION_FAILED，默认集不变）。
 export function setDefaultCACertificates(certs) {
   if (!Array.isArray(certs)) {
-    const e = new TypeError(`The "certs" argument must be an instance of Array.`);
-    e.code = "ERR_INVALID_ARG_TYPE";
+    throw new __tlsC.ERR_INVALID_ARG_TYPE("certs", "Array", certs);
+  }
+  for (let i = 0; i < certs.length; i++) {
+    if (typeof certs[i] !== "string" && !ArrayBuffer.isView(certs[i])) {
+      throw new __tlsC.ERR_INVALID_ARG_TYPE(`certs[${i}]`, ["string", "ArrayBufferView"], certs[i]);
+    }
+  }
+  const { X509Certificate } = globalThis.require("node:crypto");
+  const valid = [];
+  for (const c of certs) {
+    const pem = typeof c === "string" ? c : Buffer.from(c.buffer, c.byteOffset, c.byteLength).toString("utf8");
+    try {
+      new X509Certificate(pem);
+      if (!valid.includes(pem)) valid.push(pem);
+    } catch {
+      // 形似 PEM 证书块但 ASN.1 解不开 → OpenSSL PEM 层报错（整批作废，默认集不变）；
+      // 根本不是 PEM 的串才静默跳过。
+      if (pem.includes("-----BEGIN CERTIFICATE-----")) {
+        const e = new Error("error:0488000D:PEM routines::ASN1 lib");
+        e.code = "ERR_OSSL_PEM_ASN1_LIB";
+        e.library = "PEM routines";
+        e.reason = "ASN1 lib";
+        throw e;
+      }
+    }
+  }
+  if (certs.length > 0 && valid.length === 0) {
+    const e = new Error("No valid certificates found in the provided array");
+    e.code = "ERR_CRYPTO_OPERATION_FAILED";
     throw e;
   }
-  __defaultCA = certs.map((c) => (typeof c === "string" ? c : Buffer.from(c).toString("utf8")));
+  __defaultCA = valid;
 }
-export const rootCertificates = Object.freeze(__certsOf("bundled"));
+// node 口径：bundled/root 证书 PEM 无尾换行，且 getCACertificates('bundled') 即同一冻结数组。
+export const rootCertificates = Object.freeze(__certsOf("bundled").map((c) => c.replace(/\n+$/, "")));
 
 // node tls.checkServerIdentity：SAN(DNS/IP) 优先、无 SAN 回落 CN；通配仅最左单层。
 function __hostMatch(pattern, host) {
@@ -398,13 +469,43 @@ export function createServer(options, cb) {
 }
 export function connect(...args) {
   const o = typeof args[0] === "object" && args[0] !== null ? args[0] : (typeof args[1] === "object" && args[1] !== null ? args[1] : (typeof args[2] === "object" && args[2] !== null ? args[2] : {}));
+  // node exports.connect：缺省合并 → 回调/DH 校验 → createSecureContext(options)（套件/证书/密钥
+  // 校验同 server）→ servername 禁 IP。
+  const options = {
+    ciphers: __api.DEFAULT_CIPHERS,
+    checkServerIdentity: __api.checkServerIdentity,
+    minDHSize: 1024,
+    ...o,
+  };
+  __tlsVFunction(options.checkServerIdentity, "options.checkServerIdentity");
+  __tlsVNumber(options.minDHSize, "options.minDHSize", 1);
+  const context = options.secureContext || createSecureContext(options);
+  if (options.servername && __isIP(options.servername)) {
+    throw new __tlsC.ERR_INVALID_ARG_VALUE(
+      "options.servername",
+      options.servername,
+      "Setting the TLS ServerName to an IP address is not permitted.",
+    );
+  }
+  if (!o.secureContext) o.secureContext = context;
   return new TLSSocket(undefined, { allowHalfOpen: !!o.allowHalfOpen }).connect(...args);
 }
-export { connect as createConnection, TLSSocket, Server, SecureContext };
+// node 口径：`tls.Server(...)`/`SecureContext(...)` 无 new 可调（函数构造器自 new）；
+// Proxy apply→construct，extends/instanceof 照常（connect-simple 等 9 件）。
+const __callable = (C) => new Proxy(C, { apply(t, _this, args) { return new t(...args); } });
+const __ServerCallable = __callable(Server);
+export { connect as createConnection, TLSSocket, __ServerCallable as Server, SecureContext };
 const __api = {
-  TLSSocket, Server, SecureContext, createServer, connect, createConnection: connect,
-  createSecureContext, getCACertificates, setDefaultCACertificates, rootCertificates,
+  TLSSocket, Server: __ServerCallable, SecureContext, createServer, connect, createConnection: connect,
+  createSecureContext, getCACertificates, setDefaultCACertificates,
   checkServerIdentity, getCiphers, DEFAULT_ECDH_CURVE, DEFAULT_MIN_VERSION, DEFAULT_MAX_VERSION,
   DEFAULT_CIPHERS, CLIENT_RENEG_LIMIT, CLIENT_RENEG_WINDOW,
 };
+// node 口径：rootCertificates 为只读访问器（赋值在严格模式抛 TypeError，root-certificates 套件）。
+Object.defineProperty(__api, "rootCertificates", {
+  __proto__: null,
+  configurable: false,
+  enumerable: true,
+  get: () => rootCertificates,
+});
 export default __api;

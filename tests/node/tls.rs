@@ -72,8 +72,8 @@ import tls from "node:tls";
 import fs from "node:fs";
 const key = fs.readFileSync({key_path:?}, "utf8");
 const cert = fs.readFileSync({cert_path:?}, "utf8");
-// 坏 PEM 同步 TypeError（fail fast）
-try {{ tls.createServer({{ key: "nope", cert }}).listen(0); }} catch (e) {{ console.log("badkey", e.message.startsWith("TypeError:")); }}
+// 坏 PEM 同步抛（真机 26.8.2：OpenSSL DECODER 错，非 TypeError）
+try {{ tls.createServer({{ key: "nope", cert }}).listen(0); }} catch (e) {{ console.log("badkey", e.code, e.message); }}
 const server = tls.createServer({{ key, cert }});
 server.listen(0, "127.0.0.1", () => {{
   const port = server.address().port;
@@ -94,7 +94,7 @@ setTimeout(() => console.log("end-ok"), 1500);
 "#
         ),
     );
-    assert!(out.contains("badkey true"), "out: {out}");
+    assert!(out.contains("badkey ERR_OSSL_UNSUPPORTED error:1E08010C:DECODER routines::unsupported"), "out: {out}");
     // 真机为 DEPTH_ZERO_SELF_SIGNED_CERT（rustls 统报 UnknownIssuer，自签/缺签发者不分——记档）。
     assert!(out.contains("selfsign UNABLE_TO_VERIFY_LEAF_SIGNATURE true"), "out: {out}");
     assert!(out.contains("refused string true"), "out: {out}");
@@ -204,4 +204,58 @@ console.log("nocert", tls.createServer({{}}) instanceof tls.Server);
         assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
     }
     dir.close().unwrap();
+}
+
+#[test]
+fn phase11_tls_secure_context_validation() {
+    // P2（2026-09-26）：SecureContext/createSecureContext/configSecureContext 按 node 逐字移植——
+    // 选项校验、OpenSSL 可观察报错（未知方法 / no cipher match / 密钥不配对）、Server 构造器校验、
+    // tls.Server 无 new 可调、rootCertificates 只读、setDefaultCACertificates 报错面。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "v.js",
+        &format!(
+            r#"
+"use strict";
+const tls = require("tls");
+const fs = require("fs");
+const crypto = require("crypto");
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+const code = (f) => {{ try {{ f(); return "ok"; }} catch (e) {{ return e.code ?? e.message; }} }};
+// 正常：合法选项建上下文，旧读取面仍给 PEM；Server 无 new 可调。
+const sc = tls.createSecureContext({{ key, cert, ciphers: "ECDHE-RSA-AES128-GCM-SHA256:RSA@SECLEVEL=0" }});
+console.log("ctx", typeof sc.context.key, sc.context.cert.includes("BEGIN CERTIFICATE"), tls.Server({{ key, cert }}) instanceof tls.Server);
+// 报错：类型/方法/套件/密钥不配对/SNI 回调/servername 为 IP。
+const other = crypto.generateKeyPairSync("rsa", {{ modulusLength: 2048 }}).privateKey.export({{ type: "pkcs8", format: "pem" }});
+console.log("errs", [
+  code(() => tls.createSecureContext({{ ciphers: 1 }})),
+  code(() => tls.createSecureContext({{ secureProtocol: "blargh" }})),
+  code(() => tls.createSecureContext({{ ciphers: "FOOBARBAZ" }})),
+  code(() => tls.createSecureContext({{ key: other, cert }})),
+  code(() => tls.createServer({{ SNICallback: 42 }})),
+  code(() => tls.connect({{ port: 1, servername: "127.0.0.1" }})),
+].join(","));
+// 边界：rootCertificates 只读且无尾换行；bundled 即同一数组；非 PEM 全无效 / PEM 坏块两种报错。
+console.log("root", code(() => {{ tls.rootCertificates = 0; }}), tls.getCACertificates("bundled") === tls.rootCertificates,
+  tls.rootCertificates.every((c) => c.endsWith("\n-----END CERTIFICATE-----")));
+console.log("setca", code(() => tls.setDefaultCACertificates(["nope"])),
+  code(() => tls.setDefaultCACertificates(["-----BEGIN CERTIFICATE-----\nxx\n-----END CERTIFICATE-----"])),
+  code(() => tls.setDefaultCACertificates([1])));
+// EC PARAMETERS 块在前的密钥 PEM 可解析（OpenSSL 跳过参数块）。
+const ec = crypto.generateKeyPairSync("ec", {{ namedCurve: "prime256v1" }}).privateKey.export({{ type: "sec1", format: "pem" }});
+console.log("ecparams", crypto.createPrivateKey("-----BEGIN EC PARAMETERS-----\nBggqhkjOPQMBBw==\n-----END EC PARAMETERS-----\n" + ec).asymmetricKeyType);
+"#
+        ),
+    );
+    assert!(out.contains("ctx string true true"), "out: {out}");
+    assert!(
+        out.contains("errs ERR_INVALID_ARG_TYPE,ERR_TLS_INVALID_PROTOCOL_METHOD,ERR_SSL_NO_CIPHER_MATCH,ERR_OSSL_X509_KEY_VALUES_MISMATCH,ERR_INVALID_ARG_TYPE,ERR_INVALID_ARG_VALUE"),
+        "out: {out}"
+    );
+    assert!(out.lines().any(|l| l.starts_with("root ") && l.ends_with(" true true") && !l.starts_with("root ok")), "out: {out}");
+    assert!(out.contains("setca ERR_CRYPTO_OPERATION_FAILED ERR_OSSL_PEM_ASN1_LIB ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("ecparams ec"), "out: {out}");
 }

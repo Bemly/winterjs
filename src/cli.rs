@@ -465,7 +465,6 @@ pub fn banner_ascii() -> bool {
 /// 摘除 `--` 之前的 `-hide_banner` / `-ascii_banner` 并记开关。纯函数 + 副作用
 /// （静态开关），单测覆盖；单测内先调 `reset_banner_for_test` 复位（§4.41）。
 pub fn strip_banner_flags(raw: &[std::ffi::OsString]) -> Vec<std::ffi::OsString> {
-    use std::ffi::OsString;
     let mut out = Vec::with_capacity(raw.len());
     let mut script_args = false;
     for a in raw {

@@ -224,3 +224,49 @@ setTimeout(() => {
     assert!(out.contains("\"o['nest'].two\""), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn p2_repl_options_surface() {
+    // P2-repl R4：options 面（访问器/旗/校验/废弃表；standalone 另案）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "o.mjs",
+        r#"
+import repl from "node:repl";
+import { PassThrough } from "node:stream";
+console.log("norepl", repl.repl === undefined);
+// 入出必须分离（4.221：同流 + terminal:true 自回显递归，真机同挂）。
+const sin = new PassThrough();
+const sout = new PassThrough();
+const r1 = repl.start({ input: sin, output: sout, terminal: true });
+console.log("r1", r1.input === sin && r1.output === sout && r1.input === r1.inputStream
+  && r1.output === r1.outputStream && r1.terminal === true && r1.useColors === false
+  && r1.useGlobal === false && r1.ignoreUndefined === false
+  && r1.replMode === repl.REPL_MODE_SLOPPY && r1.historySize === 30);
+const r2 = repl.start({ input: sin, output: sout, terminal: false, historySize: 50, useGlobal: true });
+console.log("r2", r2.historySize === 50 && r2.useGlobal === true && r2.terminal === false);
+try {
+  repl.start({ breakEvalOnSigint: true, eval: true });
+  console.log("evalcfg FAIL");
+} catch (e) {
+  console.log("evalcfg", e.code === "ERR_INVALID_REPL_EVAL_CONFIG");
+}
+console.log("mods", Array.isArray(repl.builtinModules) && repl.builtinModules.length > 0
+  && Array.isArray(repl._builtinLibs));
+r1.close();
+r2.close();
+"#,
+    );
+    for line in [
+        "norepl true",
+        "r1 true",
+        "r2 true",
+        "evalcfg true",
+        "mods true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    assert!(!out.contains("FAIL"), "out: {out}");
+    dir.close().unwrap();
+}

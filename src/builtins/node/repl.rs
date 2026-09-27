@@ -34,6 +34,24 @@ import { inspect } from 'node:util';
 import * as vm from 'node:vm';
 import * as fs from 'node:fs';
 import errors from 'node:internal/errors';
+import { getOptionValue } from 'node:internal/options';
+import { builtinModules as __nodeBuiltinModules } from 'node:module';
+
+// P2-repl R4：pendingDeprecation 门控（harness 以 --pending-deprecation 子进程重跑
+// 废弃断言套件；D1 DEP0005 同款读旗）。
+function __isPendingDeprecation() {
+  try { return !!getOptionValue('--pending-deprecation'); }
+  catch { return false; }
+}
+// P2-repl R4b：废弃警告按 CODE 进程去重（node codesWarned 口径）。
+const __replWarnedCodes = new Set();
+function __replDepWarn(code, msg) {
+  if (!__isPendingDeprecation() || __replWarnedCodes.has(code)) return;
+  __replWarnedCodes.add(code);
+  try {
+    process.emitWarning(msg, { type: 'DeprecationWarning', code });
+  } catch { /* ignore */ }
+}
 
 export const REPL_MODE_SLOPPY = Symbol('repl-sloppy');
 export const REPL_MODE_STRICT = Symbol('repl-strict');
@@ -328,6 +346,12 @@ export class REPLServer extends EventEmitter {
     } else if (typeof prompt === 'string' && options.prompt === undefined) {
       options.prompt = prompt;
     }
+    // P2-repl R4：breakEvalOnSigint 与 eval 并存即抛（ERR_INVALID_REPL_EVAL_CONFIG）。
+    if (options.breakEvalOnSigint && options.eval) {
+      const err = new TypeError('Cannot specify both "breakEvalOnSigint" and "eval" for REPL');
+      err.code = 'ERR_INVALID_REPL_EVAL_CONFIG';
+      throw err;
+    }
     this.input = options.input ?? null;
     this.output = options.output ?? null;
     this.terminal = options.terminal ?? (this.output != null ? !!this.output.isTTY : false);
@@ -340,7 +364,8 @@ export class REPLServer extends EventEmitter {
     this.useColors = options.useColors ?? (this.output != null ? !!this.output.isTTY : false);
     this.ignoreUndefined = options.ignoreUndefined ?? false;
     this.replMode = options.replMode ?? REPL_MODE_SLOPPY;
-    this.useGlobal = false;
+    // P2-repl R4：useGlobal 仅存旗（真共享上下文另案；options 套件断旗）。
+    this.useGlobal = options.useGlobal ?? false;
     const seed = {
       console: globalThis.console,
       process: globalThis.process,
@@ -410,6 +435,36 @@ export class REPLServer extends EventEmitter {
     });
     this.rli.on('line', (line) => this._onLine(line));
     this.rli.on('close', () => this._onRlClose());
+    // P2-repl R4：historySize 随 rli；inputStream/outputStream 废弃访问器（DEP0141 门控）。
+    this.historySize = this.rli.historySize;
+    Object.defineProperties(this, {
+      inputStream: {
+        get: () => {
+          __replDepWarn('DEP0141',
+            'repl.inputStream and repl.outputStream are deprecated. Use repl.input and repl.output instead');
+          return this.input;
+        },
+        set: (v) => {
+          __replDepWarn('DEP0141',
+            'repl.inputStream and repl.outputStream are deprecated. Use repl.input and repl.output instead');
+          this.input = v;
+        },
+        enumerable: false, configurable: true,
+      },
+      outputStream: {
+        get: () => {
+          __replDepWarn('DEP0141',
+            'repl.inputStream and repl.outputStream are deprecated. Use repl.input and repl.output instead');
+          return this.output;
+        },
+        set: (v) => {
+          __replDepWarn('DEP0141',
+            'repl.inputStream and repl.outputStream are deprecated. Use repl.input and repl.output instead');
+          this.output = v;
+        },
+        enumerable: false, configurable: true,
+      },
+    });
   }
   _defineBuiltins() {
     const def = (keyword, help, action) => {
@@ -644,5 +699,36 @@ export function start(prompt, source, eval_, useGlobal, ignoreUndefined, replMod
 }
 
 export const writer = defaultWriter;
-export default { start, writer, REPLServer, REPL_MODE_SLOPPY, REPL_MODE_STRICT, Recoverable, isValidSyntax };
+// P2-repl R4：模块级废弃表（DEP0142/DEP0191 门控；值取 node:module 全集）。
+let __replBuiltinOverride = null;
+const __defaultExport = { start, writer, REPLServer, REPL_MODE_SLOPPY, REPL_MODE_STRICT, Recoverable, isValidSyntax };
+Object.defineProperties(__defaultExport, {
+  builtinModules: {
+    get: () => {
+      __replDepWarn('DEP0191',
+        'repl.builtinModules is deprecated. Check module.builtinModules instead');
+      return __replBuiltinOverride ?? [...__nodeBuiltinModules];
+    },
+    set: (v) => {
+      __replDepWarn('DEP0191',
+        'repl.builtinModules is deprecated. Check module.builtinModules instead');
+      __replBuiltinOverride = v;
+    },
+    enumerable: false, configurable: true,
+  },
+  _builtinLibs: {
+    get: () => {
+      __replDepWarn('DEP0142',
+        'repl._builtinLibs is deprecated. Check module.builtinModules instead');
+      return __replBuiltinOverride ?? [...__nodeBuiltinModules];
+    },
+    set: (v) => {
+      __replDepWarn('DEP0142',
+        'repl._builtinLibs is deprecated. Check module.builtinModules instead');
+      __replBuiltinOverride = v;
+    },
+    enumerable: false, configurable: true,
+  },
+});
+export default __defaultExport;
 "#;

@@ -417,7 +417,25 @@ class Interface extends EventEmitter {
       return undefined;
     }
     if (this.terminal) {
-      if (data !== undefined && data !== null) this._insert(String(data));
+      if (data !== undefined && data !== null) {
+        const s = String(data);
+        // P2-repl R4：终端写内 `\n` 即提交（真机逐行 `eval('\n')` 口径；empty 套件）。
+        if (s.includes('\n')) {
+          const parts = s.split('\n');
+          this.line = this.line.slice(0, this.cursor) + parts[0] +
+            this.line.slice(this.cursor);
+          const first = this.line;
+          this.line = '';
+          this.cursor = 0;
+          this._submit(first);
+          for (let k = 1; k < parts.length - 1; k++) this._submit(parts[k]);
+          this.line = parts[parts.length - 1];
+          this.cursor = this.line.length;
+          this._refreshLine();
+          return undefined;
+        }
+        this._insert(s);
+      }
     } else {
       if (data !== undefined && data !== null) {
         this._lineBuf += String(data);

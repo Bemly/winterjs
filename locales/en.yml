@@ -25,6 +25,12 @@ arg:
   install:
     help: "Install packages globally (shared data directory)"
     value: "PKG"
+  remove:
+    help: "Remove packages from the current project (local node_modules)"
+    value: "PKG"
+  uninstall:
+    help: "Uninstall packages installed globally (shared data directory)"
+    value: "PKG"
   publish:
     help: "Publish the current package (dry-run validates only)"
   login:
@@ -52,7 +58,7 @@ arg:
     help: "Script arguments for --run (as `process.argv.slice(2)`)"
     value: "ARGS"
   dry_run:
-    help: "Resolve/validate only and print, do not write anything (add/install/publish/init/upgrade, --serve ACME)"
+    help: "Resolve/validate only and print, do not write anything (add/install/remove/uninstall/publish/init/upgrade, --serve ACME)"
   registry:
     help: "Registry base URL for package actions (add/install/publish/login/init; default https://registry.npmjs.org)"
     value: "REGISTRY"

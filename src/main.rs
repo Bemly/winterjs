@@ -233,6 +233,15 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
         }
         return Ok(());
     }
+    if !cli.remove.is_empty() {
+        let cwd = std::env::current_dir()
+            .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
+        return pm::remove::remove_from(&cwd, &cli.remove, cli.dry_run).await;
+    }
+    if !cli.uninstall.is_empty() {
+        let root = pm::global_root()?;
+        return pm::remove::remove_from(&root, &cli.uninstall, cli.dry_run).await;
+    }
     if cli.publish {
         let cwd = std::env::current_dir()
             .map_err(|e| Error::Other(format!("cannot get cwd: {e}")))?;
@@ -320,7 +329,7 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
 /// 修饰 flag → 归属动作校验（AGENTS §0.8）。
 /// 返回首个错配的 `"--flag only works with --action"`，全对回 None。
 /// 归属（与 `--help` 括号注同源）：
-/// dry-run→add/install/publish/init/upgrade/serve；registry→add/install/publish/login/init；
+/// dry-run→add/install/remove/uninstall/publish/init/upgrade/serve；registry→add/install/publish/login/init；
 /// tag→publish；token/oauth→login；name/yes/force→init；filter/test-name-pattern/watch→test；
 /// dir/host/port/handler/limit-rps/cert/key/acme-*→serve；schema→config；
 /// allow-*→run/eval/test/repl。-v/-l 全局，不校验。
@@ -328,6 +337,8 @@ fn cli_modifier_scope(cli: &Cli, matches: &clap::ArgMatches) -> Option<String> {
     use clap::parser::ValueSource;
     let has_add = !cli.add.is_empty();
     let has_install = !cli.install.is_empty();
+    let has_remove = !cli.remove.is_empty();
+    let has_uninstall = !cli.uninstall.is_empty();
     let fail = |flag: &str, scope: &str| Some(format!("{flag} only works with {scope}"));
     // 带 clap 默认值的 flag 按值判会漏掉显式给默认值（`--port 3000` 与缺省同值，
     // 按值比较即漏判）；一律按解析来源判显式。
@@ -337,9 +348,9 @@ fn cli_modifier_scope(cli: &Cli, matches: &clap::ArgMatches) -> Option<String> {
             .is_some_and(|s| s == ValueSource::CommandLine)
     };
     if cli.dry_run
-        && !(has_add || has_install || cli.publish || cli.init.is_some() || cli.upgrade || cli.serve.is_some())
+        && !(has_add || has_install || has_remove || has_uninstall || cli.publish || cli.init.is_some() || cli.upgrade || cli.serve.is_some())
     {
-        return fail("--dry-run", "--add/--install/--publish/--init/--upgrade/--serve");
+        return fail("--dry-run", "--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve");
     }
     if cli.registry.is_some()
         && !(has_add || has_install || cli.publish || cli.login || cli.init.is_some())

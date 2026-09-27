@@ -32,6 +32,8 @@ permalink: /en/cli/
 | `-m/--man` | Print roff manual to stdout |
 | `-a/--add <PKG...>` | Add packages to local `node_modules` |
 | `-i/--install <PKG...>` | Install packages globally (shared data dir) |
+| `-R/--remove <PKG...>` | Remove packages from local `node_modules` (prunes `.bin` links + lockfile) |
+| `-U/--uninstall <PKG...>` | Uninstall globally installed packages |
 | `-p/--publish [--dry-run]` | Publish current package (`--dry-run` validates only) |
 | `--login` | Log in to a registry (token → `~/.npmrc`) |
 | `-u/--upgrade [--dry-run]` | Self-upgrade (needs `WINTERJS_UPDATE_GITHUB=owner/repo`) |
@@ -46,7 +48,7 @@ permalink: /en/cli/
 
 | Modifier(s) | Only with |
 |---|---|
-| `--dry-run` | `--add/--install/--publish/--init/--upgrade/--serve` (ACME plan print) |
+| `--dry-run` | `--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve` (ACME plan print) |
 | `--registry` | `--add/--install/--publish/--login/--init` |
 | `--tag` | `--publish` |
 | `--token`, `--oauth` | `--login` |

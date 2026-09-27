@@ -19,5 +19,7 @@ mod cache;
 mod lifecycle;
 #[path = "pm/release.rs"]
 mod release;
+#[path = "pm/remove.rs"]
+mod remove;
 #[path = "pm/helpers.rs"]
 mod helpers;

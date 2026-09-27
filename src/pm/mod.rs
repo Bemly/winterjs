@@ -11,6 +11,7 @@ pub mod platform;
 pub mod publish;
 pub mod release;
 pub mod registry;
+pub mod remove;
 pub mod resolve;
 pub mod spec;
 pub mod upgrade;

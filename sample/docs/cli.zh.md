@@ -31,6 +31,8 @@ permalink: /zh/cli/
 | `-m/--man` | 打印 roff 手册页到标准输出 |
 | `-a/--add <包...>` | 给本地 `node_modules` 加包 |
 | `-i/--install <包...>` | 全局安装包（共享数据目录） |
+| `-R/--remove <包...>` | 从本地 `node_modules` 删包（连带 `.bin` 链接 + lockfile） |
+| `-U/--uninstall <包...>` | 卸载全局安装的包 |
 | `-p/--publish [--dry-run]` | 发布当前包（`--dry-run` 只校验） |
 | `--login` | 登录 registry（令牌进 `~/.npmrc`） |
 | `-u/--upgrade [--dry-run]` | 自升级（需 `WINTERJS_UPDATE_GITHUB=owner/repo`） |
@@ -45,7 +47,7 @@ permalink: /zh/cli/
 
 | 修饰 | 只配 |
 |---|---|
-| `--dry-run` | `--add/--install/--publish/--init/--upgrade/--serve`（ACME 方案打印） |
+| `--dry-run` | `--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve`（ACME 方案打印） |
 | `--registry` | `--add/--install/--publish/--login/--init` |
 | `--tag` | `--publish` |
 | `--token`、`--oauth` | `--login` |

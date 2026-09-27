@@ -64,6 +64,14 @@ pub struct Cli {
     #[arg(short = 'i', long = "install", value_name = "PKG", num_args = 1..)]
     pub install: Vec<String>,
 
+    /// Remove packages from the current project (local node_modules)
+    #[arg(short = 'R', long = "remove", value_name = "PKG", num_args = 1..)]
+    pub remove: Vec<String>,
+
+    /// Uninstall packages installed globally (shared data directory)
+    #[arg(short = 'U', long = "uninstall", value_name = "PKG", num_args = 1..)]
+    pub uninstall: Vec<String>,
+
     /// Publish the current package (dry-run validates only)
     #[arg(short = 'p', long = "publish")]
     pub publish: bool,
@@ -105,7 +113,7 @@ pub struct Cli {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 
-    /// Resolve/validate only and print, do not write anything (add/install/publish/init/upgrade, --serve ACME)
+    /// Resolve/validate only and print, do not write anything (add/install/remove/uninstall/publish/init/upgrade, --serve ACME)
     #[arg(long)]
     pub dry_run: bool,
 
@@ -250,6 +258,12 @@ impl Cli {
         }
         if !self.install.is_empty() {
             v.push("--install");
+        }
+        if !self.remove.is_empty() {
+            v.push("--remove");
+        }
+        if !self.uninstall.is_empty() {
+            v.push("--uninstall");
         }
         if self.publish {
             v.push("--publish");
@@ -402,7 +416,8 @@ const COMPAT_VALUE_FLAGS: &[&str] = &["--max-http-header-size"];
 /// 动作旗（条件 `--run` 插入时判"已有显式动作"用；`-v/-l` 修饰旗不在内）。
 const COMPAT_ACTION_FLAGS: &[&str] = &[
     "-r", "--run", "-e", "--eval", "-c", "--config", "--completions", "-m", "--man",
-    "-a", "--add", "-i", "--install", "-p", "--publish", "--login", "-u", "--upgrade",
+    "-a", "--add", "-i", "--install", "-R", "--remove", "-U", "--uninstall",
+    "-p", "--publish", "--login", "-u", "--upgrade",
     "-I", "--init", "--repl", "-t", "--test", "--lint", "-f", "--fmt", "-s", "--serve",
 ];
 

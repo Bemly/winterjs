@@ -25,6 +25,12 @@ arg:
   install:
     help: "全局安装软件包（共享数据目录）"
     value: "包"
+  remove:
+    help: "从当前工程移除软件包（本地 node_modules）"
+    value: "包"
+  uninstall:
+    help: "卸载全局安装的软件包（共享数据目录）"
+    value: "包"
   publish:
     help: "发布当前软件包（dry-run 仅校验）"
   login:
@@ -52,7 +58,7 @@ arg:
     help: "传给 --run 的脚本参数（即 `process.argv.slice(2)`）"
     value: "参数"
   dry_run:
-    help: "只求解/校验并打印，不写任何文件（add/install/publish/init/upgrade、--serve 的 ACME）"
+    help: "只求解/校验并打印，不写任何文件（add/install/remove/uninstall/publish/init/upgrade、--serve 的 ACME）"
   registry:
     help: "Registry 基地址（仅软件包动作 add/install/publish/login/init；默认 https://registry.npmjs.org）"
     value: "注册表地址"

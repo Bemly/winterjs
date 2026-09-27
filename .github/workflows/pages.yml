@@ -1,4 +1,5 @@
-# Deploy sample/docs (Jekyll) to GitHub Pages.
+# Deploy sample/docs (static luolita site, no build step) to GitHub Pages.
+# Custom domain winterjs.bemly.moe is pinned by sample/docs/CNAME.
 # Enable once in repo Settings → Pages → Build and deployment → Source: GitHub Actions.
 name: Deploy docs to GitHub Pages
 
@@ -34,13 +35,10 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup Pages
         uses: actions/configure-pages@v5
-      - name: Build with Jekyll
-        uses: actions/jekyll-build-pages@v1
-        with:
-          source: ./sample/docs
-          destination: ./_site
-      - name: Upload artifact
+      - name: Upload static site
         uses: actions/upload-pages-artifact@v3
+        with:
+          path: sample/docs
 
   # Deployment job
   deploy:

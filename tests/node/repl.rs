@@ -139,3 +139,52 @@ setTimeout(() => {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn p2_repl_methods_define_help_editor_complete() {
+    // P2-repl 方法面：defineCommand 函数形 + help 版式 + editor 收尾 + complete 空回。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "m.mjs",
+        r#"
+import { start } from "node:repl";
+import { PassThrough } from "node:stream";
+const input = new PassThrough(), output = new PassThrough();
+let out = "";
+output.on("data", (c) => (out += c));
+const r = start({ input, output, prompt: "> ", terminal: true });
+r.defineCommand("say", function (t) { this.output.write(`hi ${t}\n`); this.displayPrompt(); });
+input.write(".help\n");
+input.write(".say yo\n");
+r.complete("foo", (err, res) => console.log("comp", err, JSON.stringify(res)));
+setTimeout(() => {
+  console.log("help-ed", out.includes(".editor   Enter editor mode"));
+  console.log("help-break", /\.break {4}Abort/.test(out));
+  console.log("say", out.includes("hi yo\n"));
+  const i2 = new PassThrough(), o2 = new PassThrough();
+  let o = "";
+  o2.on("data", (c) => (o += c));
+  const e = start({ input: i2, output: o2, prompt: "> ", terminal: true });
+  i2.write(".editor\n");
+  i2.write("21 + 21\n");
+  e.write("", { ctrl: true, name: "d" });
+  setTimeout(() => {
+    console.log("ed", o.includes("Entering editor mode") && o.includes("42"));
+    r.close();
+    e.close();
+  }, 100);
+}, 100);
+"#,
+    );
+    for line in [
+        "comp null [[],\"foo\"]",
+        "help-ed true",
+        "help-break true",
+        "say true",
+        "ed true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

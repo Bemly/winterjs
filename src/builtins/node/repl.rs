@@ -136,8 +136,23 @@ export class REPLServer extends EventEmitter {
       };
     }
     this.writer = options.writer ?? defaultWriter;
+    this.completer = typeof options.completer === 'function' ? options.completer : undefined;
+    this._editorMode = false;
+    this._editorBuf = '';
     this.commands = Object.create(null);
     this._defineBuiltins();
+    // P2-repl：editor 命令仅终端有（node 1454 行口径；列宽影响 help 版式）。
+    if (this.terminal) {
+      this.commands.editor = {
+        help: 'Enter editor mode',
+        action: (() => {
+          this._editorMode = true;
+          this._editorBuf = '';
+          this._setPrompt('');
+          this._writeOut('// Entering editor mode (Ctrl+D to finish, Ctrl+C to cancel)\n');
+        }).bind(this),
+      };
+    }
     this.rli = createInterface({
       input: this.input,
       output: this.output,
@@ -152,15 +167,22 @@ export class REPLServer extends EventEmitter {
     const def = (keyword, help, action) => {
       this.commands[keyword] = { help, action: action.bind(this) };
     };
-    def('help', 'Show repl options', function () {
-      const names = Object.keys(this.commands);
-      this._writeOut('Commands: ' + names.map((n) => '.' + n).join(', ') + '\n');
-      for (const n of names) this._writeOut(`.${n}  ${this.commands[n].help}\n`);
+    def('help', 'Print this help message', function () {
+      // P2-repl：node help 版式（排序 + 最长+3 空格 + 无 help 即裸名 + Ctrl 尾行）。
+      const names = Object.keys(this.commands).sort();
+      const longest = names.reduce((m, n) => Math.max(m, n.length), 0);
+      for (const n of names) {
+        const h = this.commands[n].help;
+        this._writeOut(`.${n}${h ? ' '.repeat(longest - n.length + 3) + h : ''}\n`);
+      }
+      this._writeOut('\nPress Ctrl+C to abort current expression, Ctrl+D to exit the REPL\n');
       this.displayPrompt();
     });
     def('exit', 'Exit the repl', function () { this.close(); });
     def('break', 'Abort multiline input', function () {
       this._buffer = '';
+      this._editorMode = false;
+      this._editorBuf = '';
       this._setPrompt(this._prompt);
       this.displayPrompt();
     });
@@ -231,8 +253,16 @@ export class REPLServer extends EventEmitter {
   get lines() {
     return this._lines;
   }
-  defineCommand(keyword, { help = '', action }) {
-    this.commands[keyword] = { help, action: action.bind(this) };
+  defineCommand(keyword, cmd) {
+    // P2-repl：node 口径（函数即 { action }；对象形校验 action 可调）。
+    if (typeof cmd === 'function') {
+      cmd = { action: cmd };
+    } else if (cmd === null || cmd === undefined || typeof cmd.action !== 'function') {
+      const err = new TypeError('The "cmd.action" property must be of type function');
+      err.code = 'ERR_INVALID_ARG_TYPE';
+      throw err;
+    }
+    this.commands[keyword] = { help: cmd.help ?? '', action: cmd.action.bind(this) };
   }
   _writeOut(s) {
     if (this.output !== null && this.output !== undefined) {
@@ -248,11 +278,44 @@ export class REPLServer extends EventEmitter {
     this._setPrompt(this._basePrompt);
   }
   // P2-repl：喂入行（node Interface.write 口径；`start()` 无 input 套件靠它驱动）。
-  write(data) {
-    return this.rli.write(data);
+  // editor 模式 C-d 即求值收尾（save-load-editor-mode 口径）。
+  write(data, key) {
+    if (key !== null && key !== undefined && typeof key === 'object' &&
+        key.ctrl === true && key.name === 'd' && this._editorMode) {
+      this._finishEditor();
+      return undefined;
+    }
+    return this.rli.write(data, key);
+  }
+  _finishEditor() {
+    const buf = this._editorBuf;
+    this._editorBuf = '';
+    this._editorMode = false;
+    this.eval(buf, this.context, 'repl', (err, result) => {
+      if (err !== null && err !== undefined) {
+        this._printError(err);
+      } else if (!(result === undefined && this.ignoreUndefined)) {
+        this._writeOut(this.writer(result) + '\n');
+      }
+      // node editor 收尾附一空行（lines 尾 '' 使 .save 落盘带末换行）。
+      this._lines.push('');
+      this._setPrompt(this._basePrompt);
+      this.displayPrompt();
+    });
   }
   getPrompt() {
     return this._prompt;
+  }
+  // P2-repl：补全透传（node `ReflectApply(this.completer, …)` 口径；
+  // completer 实现面另案，无即空补全）。
+  complete(...args) {
+    if (typeof this.completer === 'function') {
+      return Reflect.apply(this.completer, this, args);
+    }
+    const cb = args.find((a) => typeof a === 'function');
+    const line = typeof args[0] === 'string' ? args[0] : '';
+    if (typeof cb === 'function') queueMicrotask(() => cb(null, [[], line]));
+    return undefined;
   }
   displayPrompt(preserveCursor) {
     try { this.rli.prompt(preserveCursor); } catch { /* ignore */ }
@@ -268,6 +331,12 @@ export class REPLServer extends EventEmitter {
   }
   _onLine(line) {
     const trimmed = line.trim();
+    // P2-repl：editor 模式逐行缓冲（点行仍走普通分支以便 .break/.exit 可逃）。
+    if (this._editorMode && !(this._buffer === '' && trimmed.startsWith('.'))) {
+      this._editorBuf += (this._editorBuf !== '' ? '\n' : '') + line;
+      this._lines.push(line);
+      return;
+    }
     if (this._buffer === '' && trimmed.startsWith('.')) {
       const [keyword, ...rest] = trimmed.slice(1).split(/\s+/);
       const cmd = this.commands[keyword];

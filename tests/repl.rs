@@ -161,3 +161,23 @@ fn repl_tla_in_async_fn_untouched() {
     assert_eq!(code, 0);
     assert!(stdout.contains("7\n"), "stdout:\n{stdout}");
 }
+
+#[test]
+fn repl_tla_let_hoisting() {
+    // R6b：声明提升（node await.js VariableDeclaration 重写）——`let a = await x`
+    // 跨行存活（acorn vendored 8.18.0，node 26.8.2 内建同款）。
+    let (stdout, _, code) = repl_session("let a = await 41\na + 1\n.exit\n");
+    assert_eq!(code, 0);
+    // 声明完成值 undefined（node 同形：无 return 改写时不打印值）。
+    assert!(stdout.lines().any(|l| l == "42"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn repl_tla_multi_decl_and_fn() {
+    // 边界：多声明解构式提升 + function 声明提升（var 提升语义）。
+    let (stdout, _, code) = repl_session(
+        "let a = await 1, b = await 2\nfunction g() { return a + b }\ng()\n.exit\n",
+    );
+    assert_eq!(code, 0);
+    assert!(stdout.lines().any(|l| l == "3"), "stdout:\n{stdout}");
+}

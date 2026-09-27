@@ -323,6 +323,26 @@ pub async fn repl() -> Result<(), Error> {
         let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
         let _ = evaluate_script(rt.cx(), global.handle(), code, rval.handle_mut(), options);
     }
+    // acorn + TLA 包装（§0.5 拍板 vendored；prelude/repl_complete::REPL_TLA_JS）
+    // 注入 REPL 会话——不进 PRELUDE（全会话加载拖慢 worker/child 小窗口时序
+    // 测试的启动，R6b 实测）。注入失败仅降级（TLA 报原语法错，无包装）。
+    {
+        let c_filename = CString::new("repl.js").expect("no NUL");
+        rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
+        let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
+        let _ = evaluate_script(
+            rt.cx(),
+            global.handle(),
+            &format!(
+                "{}{}{}",
+                crate::builtins::prelude::vendor::ACORN_JS,
+                crate::builtins::prelude::vendor::ACORN_WALK_JS,
+                crate::builtins::prelude::repl_complete::REPL_TLA_JS
+            ),
+            rval.handle_mut(),
+            options,
+        );
+    }
     let mut fetch_rx = init.fetch_rx;
     let mut ws_rx = init.ws_rx;
     let mut watch_rx = init.watch_rx;

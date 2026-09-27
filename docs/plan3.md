@@ -478,7 +478,9 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 
 - **纠正① repl 求值面**：✅ TLA 落地（试错包装 + state Heap 挂起槽 +
   EOF drain + 非 TTY 哨兵背压；黑盒/管道/pty 全对）。求值面与 node
-  defaultEval 同构。缺口：声明提升（acorn）待拍板引包另案。
+  defaultEval 同构。**声明提升 ✅（R6b）**：acorn 8.18.0 vendored
+  （node 26.8.2 内建同款，用户拍板），processTopLevelAwait 逐字移植
+  （末表达式 return 化 + let/const/var/class/function 提升）。
 - **纠正③ readline 补全语义**：✅ R5 已位置纠正（核心模块注册内部面，
   桥/签名表住 prelude/repl_complete）。
 - **纠正② console 格式化**：⏳ 待单轮——全局 console 骑 util.format 牵动

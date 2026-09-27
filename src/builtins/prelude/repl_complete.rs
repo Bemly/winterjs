@@ -1,6 +1,8 @@
 //! winterjs REPL 底座·补全面（2026-09-28 R5 方向纠正：CLI REPL 是本体，
 //! node:repl 兼容面反向复用底座；CLI 专属能力一律住本域，禁进 node:* 公开导出面）。
 //!
+//! - `__wjs_repl_tla_wrap` 系（processTopLevelAwait 移植 + 本桥）随 REPL 会话
+//!   注入（runtime/repl），不在 PRELUDE——acorn 6827 行全会话加载拖慢启动。
 //! - `__wjs_cli_complete(line)`：CLI reedline Tab 的补全桥——骑
 //!   `globalThis.__wjs_repl_default_complete`（`node:repl` 模块加载时注册的
 //!   R3 子集补全核心：成员链逐步求值/fs 路径/bare 上下文键/大小写不敏感；
@@ -34,38 +36,6 @@ globalThis.__wjs_cli_complete = (line) => {
     return [text, __sigDesc(base, key, head2)];
   });
   return [withSig, completeOn];
-};
-
-// ---- TLA 包装桥（R6；node internal/repl/await.js 的线性近似）----
-// 末条顶层语句若非声明/return，改写为 `return { value: (expr) };`（node 原文
-// 同款：包对象防 async 返回时对 Promise 值二次解包）。声明提升（`let a =
-// await x` 跨行存活）为 node acorn AST 重写语义，另案拍板引包后逐字移植。
-globalThis.__wjs_repl_tla_wrap = (src) => {
-  src = String(src);
-  // 末条顶层语句起点（`;` 边界，括号/字符串/模板/注释感知）。
-  let depth = 0, start = 0, i = 0, inStr = null;
-  while (i < src.length) {
-    const c = src[i];
-    if (inStr) {
-      if (c === '\\') i += 2;
-      else { if (c === inStr) inStr = null; i += 1; }
-      continue;
-    }
-    if (c === '"' || c === "'" || c === '`') { inStr = c; i += 1; continue; }
-    if (c === '/' && src[i + 1] === '/') { while (i < src.length && src[i] !== '\n') i += 1; continue; }
-    if (c === '{' || c === '(' || c === '[') { depth += 1; i += 1; continue; }
-    if (c === '}' || c === ')' || c === ']') { depth -= 1; i += 1; continue; }
-    if (c === ';' && depth === 0) { start = i + 1; i += 1; continue; }
-    i += 1;
-  }
-  const stmt = src.slice(start).trim();
-  if (stmt === '') return null;
-  // 声明/return 结尾不改写（返回 undefined 完成值；提升语义另案）。
-  if (/^(?:let|const|var|function|class|return)\b/.test(stmt)) return null;
-  const body = stmt.replace(/;\s*$/, '');
-  return `(async () => { ${src.slice(0, start)} return { value: (${body}) }; })()`
-    + '.then(v => ({ __wjs_ok: 1, v: v && typeof v === "object" && "value" in v ? v.value : v }),'
-    + ' e => ({ __wjs_ok: 0, e }))';
 };
 
 // ---- 成员签名表（SM native toString 无形参名，常用面手写）----
@@ -235,4 +205,178 @@ function __sigDesc(base, key, head2) {
   if (typeof v === 'object') return ': {}';
   return `: ${typeof v}`;
 }
+"#;
+
+/// TLA 包装（R6b；processTopLevelAwait 逐字移植 + 本桥）——**仅 REPL 会话注入**
+/// （runtime/repl；acorn vendored 也在会话注入，PRELUDE 不带——全会话加载
+/// 6827 行拖慢 worker/child 小窗口时序测试的启动）。
+pub const REPL_TLA_JS: &str = r#"
+// 末条顶层语句若非声明/return，改写为 `return { value: (expr) };`（node 原文
+// 同款：包对象防 async 返回时对 Promise 值二次解包）。声明提升（`let a =
+// await x` 跨行存活）为 node acorn AST 重写语义，另案拍板引包后逐字移植。
+// processTopLevelAwait（node internal/repl/await.js 逐字移植，R6b；acorn 8.18.0）：
+// 末表达式 return 化 + 顶层 let/const/var/class/function 声明提升（跨 async
+// 边界存全局词法——`let a = await x` 跨行存活的正解）。primordials 按语义
+// 直映原生方法；Recoverable（Unterminated 续行）CLI 由 validator 保证平衡，
+// 统一抛 SyntaxError。acorn walk 用 recursive + 自定义 visitors（原文同款）。
+const __wjsReplAwaitState = {
+  containsAwait: false,
+  containsReturn: false,
+  body: null,
+  ancestors: [],
+  hoistedDeclarationStatements: [],
+  // replace/prepend/append 由调用轮换绑（wrappedArray 持有）。
+};
+function __wjsAwaitIsTopLevelDeclaration(state) {
+  return state.ancestors[state.ancestors.length - 2] === state.body;
+}
+const __wjsAwaitNoop = function () {};
+const __wjsAwaitVisitorsWithoutAncestors = {
+  ClassDeclaration(node, state, c) {
+    if (__wjsAwaitIsTopLevelDeclaration(state)) {
+      state.prepend(node, `${node.id.name}=`);
+      state.hoistedDeclarationStatements.push(`let ${node.id.name}; `);
+    }
+    acornWalk.base.ClassDeclaration(node, state, c);
+  },
+  ForOfStatement(node, state, c) {
+    if (node.await === true) state.containsAwait = true;
+    acornWalk.base.ForOfStatement(node, state, c);
+  },
+  FunctionDeclaration(node, state, c) {
+    state.prepend(node, `this.${node.id.name} = ${node.id.name}; `);
+    state.hoistedDeclarationStatements.push(`var ${node.id.name}; `);
+  },
+  FunctionExpression: __wjsAwaitNoop,
+  ArrowFunctionExpression: __wjsAwaitNoop,
+  MethodDefinition: __wjsAwaitNoop,
+  AwaitExpression(node, state, c) {
+    state.containsAwait = true;
+    acornWalk.base.AwaitExpression(node, state, c);
+  },
+  ReturnStatement(node, state, c) {
+    state.containsReturn = true;
+    acornWalk.base.ReturnStatement(node, state, c);
+  },
+  VariableDeclaration(node, state, c) {
+    const variableKind = node.kind;
+    const isIterableForDeclaration = ['ForOfStatement', 'ForInStatement']
+      .includes(state.ancestors[state.ancestors.length - 2].type);
+    if (variableKind === 'var' || __wjsAwaitIsTopLevelDeclaration(state)) {
+      state.replace(
+        node.start,
+        node.start + variableKind.length + (isIterableForDeclaration ? 1 : 0),
+        variableKind === 'var' && isIterableForDeclaration ? '' : 'void' + (node.declarations.length === 1 ? '' : ' ('),
+      );
+      if (!isIterableForDeclaration) {
+        node.declarations.forEach((decl) => {
+          state.prepend(decl, '(');
+          state.append(decl, decl.init ? ')' : '=undefined)');
+        });
+        if (node.declarations.length !== 1) {
+          state.append(node.declarations[node.declarations.length - 1], ')');
+        }
+      }
+      const variableIdentifiersToHoist = [['var', []], ['let', []]];
+      function registerVariableDeclarationIdentifiers(n) {
+        switch (n.type) {
+          case 'Identifier':
+            variableIdentifiersToHoist[variableKind === 'var' ? 0 : 1][1].push(n.name);
+            break;
+          case 'ObjectPattern':
+            n.properties.forEach((property) => {
+              registerVariableDeclarationIdentifiers(property.value || property.argument);
+            });
+            break;
+          case 'ArrayPattern':
+            n.elements.forEach((element) => {
+              registerVariableDeclarationIdentifiers(element);
+            });
+            break;
+        }
+      }
+      node.declarations.forEach((decl) => registerVariableDeclarationIdentifiers(decl.id));
+      variableIdentifiersToHoist.forEach(({ 0: kind, 1: identifiers }) => {
+        if (identifiers.length > 0) {
+          state.hoistedDeclarationStatements.push(`${kind} ${identifiers.join(', ')}; `);
+        }
+      });
+    }
+    acornWalk.base.VariableDeclaration(node, state, c);
+  },
+};
+const __wjsAwaitVisitors = {};
+for (const nodeType of Object.keys(acornWalk.base)) {
+  const callback = __wjsAwaitVisitorsWithoutAncestors[nodeType] || acornWalk.base[nodeType];
+  __wjsAwaitVisitors[nodeType] = (node, state, c) => {
+    const isNew = node !== state.ancestors[state.ancestors.length - 1];
+    if (isNew) state.ancestors.push(node);
+    callback(node, state, c);
+    if (isNew) state.ancestors.pop();
+  };
+}
+function __wjsProcessTopLevelAwait(src) {
+  const wrapPrefix = '(async () => { ';
+  const wrapped = `${wrapPrefix}${src} })()`;
+  const wrappedArray = wrapped.split('');
+  let root;
+  try {
+    root = acorn.Parser.parse(wrapped, { ecmaVersion: 'latest' });
+  } catch (e) {
+    if (String(e.message).startsWith('Unterminated ')) return null;
+    // 解析错在首个 await 之前 → 用执行错误（原码语义）；否则报本错（node 同款）。
+    const awaitPos = src.indexOf('await');
+    const errPos = e.pos - wrapPrefix.length;
+    if (awaitPos > errPos) return null;
+    if (errPos === awaitPos + 6 && String(e.message).includes('Expecting Unicode escape sequence')) return null;
+    if (errPos === awaitPos + 7 && String(e.message).includes('Unexpected token')) return null;
+    return null;
+  }
+  const body = root.body[0].expression.callee.body;
+  const state = {
+    body,
+    ancestors: [],
+    hoistedDeclarationStatements: [],
+    replace(from, to, str) {
+      for (let i = from; i < to; i++) wrappedArray[i] = '';
+      if (from === to) str += wrappedArray[from];
+      wrappedArray[from] = str;
+    },
+    prepend(node, str) {
+      wrappedArray[node.start] = str + wrappedArray[node.start];
+    },
+    append(node, str) {
+      wrappedArray[node.end - 1] += str;
+    },
+    containsAwait: false,
+    containsReturn: false,
+  };
+  acornWalk.recursive(body, state, __wjsAwaitVisitors);
+  // 无真 await / 顶层 return → 不改写（node 同款；null 走原码报错路径）。
+  if (!state.containsAwait || state.containsReturn) return null;
+  for (let i = body.body.length - 1; i >= 0; i--) {
+    const node = body.body[i];
+    if (node.type === 'EmptyStatement') continue;
+    if (node.type === 'ExpressionStatement') {
+      // 末表达式包 { value: (expr) }：防 async 返回对 Promise 值二次解包
+      //（node await.js 同款注释语义）。
+      state.prepend(node.expression, '{ value: (');
+      state.prepend(node, 'return ');
+      state.append(node.expression, ') }');
+    }
+    break;
+  }
+  return state.hoistedDeclarationStatements.join('') + wrappedArray.join('');
+}
+globalThis.__wjs_repl_tla_wrap = (src) => {
+  src = String(src);
+  if (!src.includes('await')) return null;
+  const wrapped = __wjsProcessTopLevelAwait(src);
+  if (wrapped === null) return null;
+  // .then 双臂装标记对：rejected 不进 jobqueue 的 unhandled 收割；值解包
+  // v?.value（node repl.js `(await promise)?.value` 同款——无 return 改写时
+  // P1 resolve undefined，完成值即 undefined，node 同形）。
+  return `${wrapped}.then(v => ({ __wjs_ok: 1, v: v === undefined || v === null ? undefined : v.value }),`
+    + ' e => ({ __wjs_ok: 0, e }))';
+};
 "#;

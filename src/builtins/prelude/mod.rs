@@ -1,4 +1,6 @@
 //! Web prelude（一次性全局脚本；§0.9 分域拆分：按 JS 语义域切分文件，concat 顺序不可动）。
+//! vendor（acorn）不进 PRELUDE——仅 REPL 会话注入（runtime/repl；全会话加载
+//! 拖慢 worker/child 等小窗口时序测试的启动，R6b 实测）。
 mod blob;
 mod bootstrap;
 mod buffer_api;
@@ -10,7 +12,8 @@ mod crypto;
 mod events;
 mod fetch;
 mod http;
-mod repl_complete;
+pub mod repl_complete;
+pub mod vendor;
 mod serve;
 mod storage;
 mod streams;

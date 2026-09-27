@@ -516,3 +516,24 @@ G1/G2/G3/G9 已收官。）
   （repl 域 35/35）；管道四场景 + pty TTY 两场景全对（41/tick/boom 渲染/
   后续行继续）；strict 772/773（child exec 单跑 1s 过=并发偶发）；
   冒烟 5/5；行数守门 ok（state/mod.rs 压行 1000）。
+
+## 2026-09-28 R6b：声明提升（acorn vendored 落地；§0.5 拍板）
+
+- 用户拍板引包：acorn 8.18.0 / acorn-walk（node 26.8.2 deps 内建同款，MIT，
+  `wjs-data/node-lib` 取得）——prelude/vendor/ 切片 7 片（split-js.py 字节恒等）+
+  包装 IIFE 强制 UMD CJS 分支挂 `globalThis.acorn`/`acornWalk`。
+- `__wjs_repl_tla_wrap` 升级为 node internal/repl/await.js 的
+  processTopLevelAwait **逐字移植**（primordials 直映原生方法；Recoverable 删——
+  CLI validator 保证行平衡）：末表达式 return 化 + 顶层 let/const/var/class/
+  function 声明提升（跨 async 边界存全局词法）。声明完成值 undefined（node 同形）。
+- 坑三枚：① split-js.py 把第一片写回原路径——项目内 acorn.js=片 1（设计使然），
+  完整原件在 wjs-data/node-lib；② UMD 包装两参 `({exports:{}}, {...}.exports)`
+  是**两个不同对象**——factory 写后者、module.exports 是前者空对象 → 同一对象
+  双参才挂得上；③ UMD global 分支挂好的对象会被我们的尾挂行**覆盖成空**
+  （单参调用时）——链路错位虚虚实实，必须 CJS 分支确定性。
+- 坑四：acorn 进 PRELUDE 后 worker/child 小窗口时序测试竞态翻红（worker
+  terminate 5/5 失败；全会话启动慢 ~10ms 错开 50ms 窗口）——**acorn 惰性化**：
+  移出 PRELUDE，仅 REPL 会话启动注入（vendor 常量 + repl_complete::REPL_TLA_JS
+  由 runtime/repl 注入）；摘除后 worker 5/5 恢复、启动开销归零。
+- 验证：`let a = await 41` 跨行 42、多声明+function 提升、resolve/reject/timer
+  全对（repl 域 37/37）；acorn 22 键 version 8.18.0；strict 见 §0.4。

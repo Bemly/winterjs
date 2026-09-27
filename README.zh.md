@@ -45,8 +45,8 @@ cargo build
 | `-s/--serve [目录]` | H1/H2/H3 提供静态 + JS `fetch` handler + WebSocket（`--watch` 变更重启） |
 | `--repl` | 交互式 REPL |
 | `-a/--add`、`-i/--install`、`-R/--remove`、`-U/--uninstall`、`-p/--publish`、`--login`、`-u/--upgrade`、`-I/--init` | 包生命周期（npm registry） |
-| `--lint`、`-f/--fmt` | 转发给 oxlint/oxfmt |
-| `-c/--config`、`--completions`、`-m/--man`、`-v`、`-l/--lang` | 配置/帮助/国际化/日志 |
+| `-L/--lint`、`-f/--fmt` | 转发给 oxlint/oxfmt |
+| `-c/--config`、`-C/--completions`、`-m/--man`、`-v`、`-l/--lang` | 配置/帮助/国际化/日志 |
 
 完整参考：[CLI (EN)](https://winterjs.bemly.moe/#/en/cli) / [CLI (中文)](https://winterjs.bemly.moe/#/zh/cli)。
 

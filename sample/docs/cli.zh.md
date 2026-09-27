@@ -29,7 +29,7 @@ permalink: /zh/cli/
 | `-r/--run <文件\|脚本名>` | 跑 JS 文件（已知脚本后缀）或 `package.json` 脚本（裸名）；打印完成值。`.bin` 里的 JS bin 经自身递归执行（零 node）。`--watch` 变更重跑文件（脚本串不可监视） |
 | `-e/--eval <代码>` | 求值内联 JS，打印完成值 |
 | `-c/--config [--schema]` | 打印解析后的配置，或其 JSON Schema |
-| `--completions <SHELL>` | 打印 shell 补全脚本（bash/elvish/fish/powershell/zsh） |
+| `-C/--completions <SHELL>` | 打印 shell 补全脚本（bash/elvish/fish/powershell/zsh） |
 | `-m/--man` | 打印 roff 手册页到标准输出 |
 | `-a/--add <包...>` | 给本地 `node_modules` 加包 |
 | `-i/--install <包...>` | 全局安装包（共享数据目录） |
@@ -41,7 +41,7 @@ permalink: /zh/cli/
 | `-I/--init [名]` | 建包脚手架；已有 `package.json` 依赖则安装 |
 | `--repl` | 交互式 REPL |
 | `-t/--test [路径...]` | 跑测试文件；无路径则从 cwd 自动发现。`--watch` 变更重跑 |
-| `--lint [参数...]` | 转发给 `oxlint`（`.bin` 或 `PATH`），参数原样 |
+| `-L/--lint [参数...]` | 转发给 `oxlint`（`.bin` 或 `PATH`），参数原样 |
 | `-f/--fmt [参数...]` | 转发给 `oxfmt`，参数原样 |
 | `-s/--serve [目录]` | 以 H1/H2/H3 提供目录/JS handler（`export default { fetch }`）；TLS 走 `--cert/--key` 或 ACME。`--watch` 变更重启服务 |
 
@@ -49,16 +49,16 @@ permalink: /zh/cli/
 
 | 修饰 | 只配 |
 |---|---|
-| `--dry-run` | `--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve`（ACME 方案打印） |
+| `-d/--dry-run` | `--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve`（ACME 方案打印） |
 | `--registry` | `--add/--install/--publish/--login/--init` |
-| `--tag` | `--publish` |
-| `--token`、`--oauth` | `--login` |
-| `--name`、`-y/--yes`、`--force` | `--init` |
-| `--filter`、`--test-name-pattern` | `--test` |
-| `--watch` | `--test`（重跑）/`--run`（重跑文件）/`--serve`（重启子进程） |
-| `--dir/--host/--port/--handler/--limit-rps/--cert/--key/--acme-*` | `--serve` |
-| `--schema` | `--config` |
-| `--allow-read/--allow-write/--allow-env/--allow-run/--allow-ffi/--allow-all` | `--run/--eval/--test/--repl` |
+| `-T/--tag` | `--publish` |
+| `--token`、`-o/--oauth` | `--login` |
+| `-n/--name`、`-y/--yes`、`--force` | `--init` |
+| `-F/--filter`、`--test-name-pattern` | `--test` |
+| `-w/--watch` | `--test`（重跑）/`--run`（重跑文件）/`--serve`（重启子进程） |
+| `-D/--dir`/`-H/--host`/`-P/--port`/`--handler`/`--limit-rps`/`--cert`/`-k/--key`/`--acme-domain`/`-E/--acme-email`/`--acme-cache`/`--acme-production` | `--serve` |
+| `-S/--schema` | `--config` |
+| `--allow-read`/`-W/--allow-write`/`--allow-env`/`--allow-run`/`--allow-ffi`/`-A/--allow-all` | `--run/--eval/--test/--repl` |
 | `-v/--verbose`、`-l/--lang` | 全局 |
 
 沙箱模型：不给任何 `--allow-*` → 全开放（历史行为）；给了任一 → 开沙箱，

@@ -31,7 +31,7 @@ permalink: /en/cli/
 | `-r/--run <FILE\|script>` | Run a JS file (known script extension) or a `package.json` script (bare name); prints the completion value. JS bins in `node_modules/.bin` re-execute through winterjs itself (no node needed). `--watch` re-runs files on change (scripts are not watchable) |
 | `-e/--eval <CODE>` | Evaluate inline JS, print completion value |
 | `-c/--config [--schema]` | Print resolved settings, or its JSON Schema |
-| `--completions <SHELL>` | Print shell completion script (bash/elvish/fish/powershell/zsh) |
+| `-C/--completions <SHELL>` | Print shell completion script (bash/elvish/fish/powershell/zsh) |
 | `-m/--man` | Print roff manual to stdout |
 | `-a/--add <PKG...>` | Add packages to local `node_modules` |
 | `-i/--install <PKG...>` | Install packages globally (shared data dir) |
@@ -43,7 +43,7 @@ permalink: /en/cli/
 | `-I/--init [NAME]` | Scaffold a package; installs deps when `package.json` exists |
 | `--repl` | Interactive REPL |
 | `-t/--test [PATH...]` | Run test files; no paths → auto-discover from cwd. `--watch` re-runs on change |
-| `--lint [ARGS...]` | Forward to `oxlint` (`.bin` or `PATH`), args verbatim |
+| `-L/--lint [ARGS...]` | Forward to `oxlint` (`.bin` or `PATH`), args verbatim |
 | `-f/--fmt [ARGS...]` | Forward to `oxfmt`, args verbatim |
 | `-s/--serve [DIR]` | Serve a directory and/or a JS handler (`export default { fetch }`) over H1/H2/H3; TLS via `--cert/--key` or ACME. `--watch` restarts the server on change |
 
@@ -51,16 +51,16 @@ permalink: /en/cli/
 
 | Modifier(s) | Only with |
 |---|---|
-| `--dry-run` | `--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve` (ACME plan print) |
+| `-d/--dry-run` | `--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve` (ACME plan print) |
 | `--registry` | `--add/--install/--publish/--login/--init` |
-| `--tag` | `--publish` |
-| `--token`, `--oauth` | `--login` |
-| `--name`, `-y/--yes`, `--force` | `--init` |
-| `--filter`, `--test-name-pattern` | `--test` |
-| `--watch` | `--test` (re-run) / `--run` (re-run file) / `--serve` (restart child) |
-| `--dir/--host/--port/--handler/--limit-rps/--cert/--key/--acme-*` | `--serve` |
-| `--schema` | `--config` |
-| `--allow-read/--allow-write/--allow-env/--allow-run/--allow-ffi/--allow-all` | `--run/--eval/--test/--repl` |
+| `-T/--tag` | `--publish` |
+| `--token`, `-o/--oauth` | `--login` |
+| `-n/--name`, `-y/--yes`, `--force` | `--init` |
+| `-F/--filter`, `--test-name-pattern` | `--test` |
+| `-w/--watch` | `--test` (re-run) / `--run` (re-run file) / `--serve` (restart child) |
+| `-D/--dir`/`-H/--host`/`-P/--port`/`--handler`/`--limit-rps`/`--cert`/`-k/--key`/`--acme-domain`/`-E/--acme-email`/`--acme-cache`/`--acme-production` | `--serve` |
+| `-S/--schema` | `--config` |
+| `--allow-read`/`-W/--allow-write`/`--allow-env`/`--allow-run`/`--allow-ffi`/`-A/--allow-all` | `--run/--eval/--test/--repl` |
 | `-v/--verbose`, `-l/--lang` | global |
 
 Sandbox model: no `--allow-*` → wide open (historic behavior); any `--allow-*`

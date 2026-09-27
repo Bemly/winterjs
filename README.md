@@ -45,8 +45,8 @@ One invocation runs **exactly one action**; modifiers only work with their actio
 | `-s/--serve [dir]` | Serve static + JS `fetch` handler + WebSocket over H1/H2/H3 (`--watch` restarts on change) |
 | `--repl` | Interactive REPL |
 | `-a/--add`, `-i/--install`, `-R/--remove`, `-U/--uninstall`, `-p/--publish`, `--login`, `-u/--upgrade`, `-I/--init` | Package lifecycle (npm registry) |
-| `--lint`, `-f/--fmt` | Forward to oxlint/oxfmt |
-| `-c/--config`, `--completions`, `-m/--man`, `-v`, `-l/--lang` | Config/help/i18n/logging |
+| `-L/--lint`, `-f/--fmt` | Forward to oxlint/oxfmt |
+| `-c/--config`, `-C/--completions`, `-m/--man`, `-v`, `-l/--lang` | Config/help/i18n/logging |
 
 Full reference: [CLI (EN)](https://winterjs.bemly.moe/#/en/cli) / [CLI (中文)](https://winterjs.bemly.moe/#/zh/cli).
 

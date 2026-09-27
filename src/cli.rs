@@ -49,7 +49,7 @@ pub struct Cli {
     pub config: bool,
 
     /// Print a shell completion script for the given shell
-    #[arg(long = "completions", value_name = "SHELL", value_enum)]
+    #[arg(short = 'C', long = "completions", value_name = "SHELL", value_enum)]
     pub completions: Option<clap_complete::Shell>,
 
     /// Print roff manual pages to stdout
@@ -97,7 +97,7 @@ pub struct Cli {
     pub test: Option<Vec<String>>,
 
     /// Forward to oxlint (found in node_modules/.bin or PATH; args pass through verbatim)
-    #[arg(long = "lint", value_name = "ARGS", num_args = 0.., allow_hyphen_values = true)]
+    #[arg(short = 'L', long = "lint", value_name = "ARGS", num_args = 0.., allow_hyphen_values = true)]
     pub lint: Option<Vec<String>>,
 
     /// Forward to oxfmt (found in node_modules/.bin or PATH; args pass through verbatim)
@@ -114,7 +114,7 @@ pub struct Cli {
     pub args: Vec<String>,
 
     /// Resolve/validate only and print, do not write anything (add/install/remove/uninstall/publish/init/upgrade, --serve ACME)
-    #[arg(long)]
+    #[arg(short = 'd', long)]
     pub dry_run: bool,
 
     /// Registry base URL for package actions (add/install/publish/login/init; default https://registry.npmjs.org)
@@ -122,7 +122,7 @@ pub struct Cli {
     pub registry: Option<String>,
 
     /// Dist-tag to publish under (publish only)
-    #[arg(long, default_value = "latest")]
+    #[arg(short = 'T', long, default_value = "latest")]
     pub tag: String,
 
     /// Auth token to store (login only; prompted on TTY when omitted)
@@ -130,11 +130,11 @@ pub struct Cli {
     pub token: Option<String>,
 
     /// Print an OAuth authorization URL instead (login only; code exchange deferred)
-    #[arg(long)]
+    #[arg(short = 'o', long)]
     pub oauth: bool,
 
     /// Package name for --init (default: current directory name)
-    #[arg(long, value_name = "NAME")]
+    #[arg(short = 'n', long, value_name = "NAME")]
     pub name: Option<String>,
 
     /// Skip the confirmation prompt (init only)
@@ -146,7 +146,7 @@ pub struct Cli {
     pub force: bool,
 
     /// Only run files matching this glob (test only; matched against relative path or file name)
-    #[arg(long)]
+    #[arg(short = 'F', long)]
     pub filter: Option<String>,
 
     /// Only run tests whose full name matches (test only; substring or /regex/flags)
@@ -154,19 +154,19 @@ pub struct Cli {
     pub test_name_pattern: Option<String>,
 
     /// Re-run when watched files change (test/run/serve only; Ctrl-C to stop)
-    #[arg(long)]
+    #[arg(short = 'w', long)]
     pub watch: bool,
 
     /// Directory to serve (serve only)
-    #[arg(long, default_value = ".")]
+    #[arg(short = 'D', long, default_value = ".")]
     pub dir: PathBuf,
 
     /// Interface to bind (serve only)
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(short = 'H', long, default_value = "127.0.0.1")]
     pub host: String,
 
     /// Port to bind (serve only; 0 = ephemeral, actual port printed on stdout)
-    #[arg(long, default_value_t = 3000)]
+    #[arg(short = 'P', long, default_value_t = 3000)]
     pub port: u16,
 
     /// JS handler file for --serve (export default { fetch } or export function fetch)
@@ -182,7 +182,7 @@ pub struct Cli {
     pub cert: Option<PathBuf>,
 
     /// TLS private key (serve only; PEM, must come with --cert)
-    #[arg(long)]
+    #[arg(short = 'k', long)]
     pub key: Option<PathBuf>,
 
     /// ACME domain for automatic certificates (serve only; default winterjs.bemly.moe; needs --acme-email)
@@ -190,7 +190,7 @@ pub struct Cli {
     pub acme_domain: Option<String>,
 
     /// ACME account email (serve only; mailto contact for Let's Encrypt)
-    #[arg(long, value_name = "EMAIL")]
+    #[arg(short = 'E', long, value_name = "EMAIL")]
     pub acme_email: Option<String>,
 
     /// ACME cache directory (serve only; default system cache)
@@ -202,7 +202,7 @@ pub struct Cli {
     pub acme_production: bool,
 
     /// Print the JSON Schema of the settings file instead (config only)
-    #[arg(long)]
+    #[arg(short = 'S', long)]
     pub schema: bool,
 
     #[command(flatten)]
@@ -217,7 +217,7 @@ pub struct PermissionArgs {
     #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
     pub allow_read: Option<Vec<String>>,
     /// Allow filesystem writes (run/eval/test/repl only; optionally: --allow-write=<path>[,<path>...])
-    #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
+    #[arg(short = 'W', long, value_name = "PATH", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
     pub allow_write: Option<Vec<String>>,
     /// Allow environment variable access (run/eval/test/repl only; optionally: --allow-env=<VAR>[,<VAR>...])
     #[arg(long, value_name = "VAR", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
@@ -229,7 +229,7 @@ pub struct PermissionArgs {
     #[arg(long)]
     pub allow_ffi: bool,
     /// Allow everything (run/eval/test/repl only; no sandbox)
-    #[arg(long)]
+    #[arg(short = 'A', long)]
     pub allow_all: bool,
 }
 
@@ -421,7 +421,7 @@ const COMPAT_ACTION_FLAGS: &[&str] = &[
     "-r", "--run", "-e", "--eval", "-c", "--config", "--completions", "-m", "--man",
     "-a", "--add", "-i", "--install", "-R", "--remove", "-U", "--uninstall",
     "-p", "--publish", "--login", "-u", "--upgrade",
-    "-I", "--init", "--repl", "-t", "--test", "--lint", "-f", "--fmt", "-s", "--serve",
+    "-I", "--init", "--repl", "-t", "--test", "-C", "--completions", "-L", "--lint", "-f", "--fmt", "-s", "--serve",
 ];
 
 /// 剥除 node 兼容旗；返回（过滤后 argv，含 bin；被剥旗原文，execArgv 保真）。

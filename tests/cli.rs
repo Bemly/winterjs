@@ -846,3 +846,49 @@ fn modifier_explicit_defaults_rejected_and_trailing_not_swallowed() {
     assert!(out.contains("argv [\"child\"]"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn short_flags_low_conflict_rule() {
+    // 短 flag 分配律：0 冲突→小写，1 冲突→大写（既有小写保留），2+ 冲突→不加。
+    // 新增 16 个全部在 --help 现形。
+    let help = stdout_of(&mut winterjs().arg("--help"));
+    for s in [
+        "-C, --completions", "-L, --lint", "-d, --dry-run", "-T, --tag",
+        "-o, --oauth", "-n, --name", "-F, --filter", "-w, --watch",
+        "-D, --dir", "-H, --host", "-P, --port", "-k, --key",
+        "-E, --acme-email", "-A, --allow-all", "-S, --schema", "-W, --allow-write",
+    ] {
+        assert!(help.contains(s), "help missing {s}");
+    }
+    // 报错：短 flag 走同一套归属校验。
+    for (args, expect) in [
+        (vec!["--eval", "1", "-T", "next"], "--tag only works with --publish"),
+        (vec!["--eval", "1", "-F", "*.js"], "--filter only works with --test"),
+        (vec!["--eval", "1", "-P", "8080"], "--port only works with --serve"),
+        (vec!["--eval", "1", "-S"], "--schema only works with --config"),
+        (vec!["--config", "-A"], "--allow-* only works with --run/--eval/--test/--repl"),
+        (vec!["--config", "-W"], "--allow-* only works with --run/--eval/--test/--repl"),
+        (vec!["--eval", "1", "-o"], "--oauth only works with --login"),
+        (vec!["--eval", "1", "-w"], "--watch only works with --test"),
+        (vec!["--eval", "1", "-n", "x"], "--name only works with --init"),
+        (vec!["--eval", "1", "-d"], "--dry-run only works with"),
+        (vec!["--eval", "1", "-D", "."], "--dir only works with --serve"),
+        (vec!["--eval", "1", "-H", "0.0.0.0"], "--host only works with --serve"),
+        (vec!["--eval", "1", "-E", "a@b.c"], "--acme-email only works with --serve"),
+        (vec!["--eval", "1", "-k", "k.pem"], "--key only works with --serve"),
+    ] {
+        let out = winterjs().args(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "args: {args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(expect) && stderr.contains("--help"),
+            "args: {args:?} stderr: {stderr}"
+        );
+    }
+    // 正常：短 flag 与长 flag 等价（补全 / 沙箱放行 / 多动作互斥）。
+    assert!(stdout_of(&mut winterjs().args(["-C", "bash"])).starts_with("_winterjs()"));
+    assert_eq!(stdout_of(&mut winterjs().args(["--eval", "40 + 2", "-A"])), "42\n");
+    let out = winterjs().args(["-r", "a.js", "-e", "1"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("exactly one action"));
+}

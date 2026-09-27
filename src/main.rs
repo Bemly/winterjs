@@ -198,7 +198,7 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
                         "--watch only works with file targets (package.json scripts are not watchable)".into(),
                     ));
                 }
-                let code = scripts::run(&pkg_dir, &script, &cli.args)?;
+                let code = scripts::run(&pkg_dir, &script, &cli.args).await?;
                 return Err(Error::Exit(code));
             }
         }

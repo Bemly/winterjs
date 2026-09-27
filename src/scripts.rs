@@ -154,8 +154,18 @@ pub fn resolve(target: &str) -> Result<RunTarget, Error> {
     Ok(RunTarget::File(PathBuf::from(target)))
 }
 
+// JS bin 进程内递归深度（F3：自举不再 spawn 子进程，同进程复用 Runtime 单次
+// 运行；直接递归（bin 调 bin）仍需封顶，与子进程 `WINTERJS_SPAWN_DEPTH` 同限 32）。
+thread_local! {
+    static JS_BIN_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+fn js_bin_depth() -> u32 {
+    JS_BIN_DEPTH.with(|c| c.get())
+}
+
 /// 执行脚本（`RunTarget::Script` 的后半程；退出码即进程退出码）。
-pub fn run(pkg_dir: &Path, script: &str, extra_args: &[String]) -> Result<i32, Error> {
+pub async fn run(pkg_dir: &Path, script: &str, extra_args: &[String]) -> Result<i32, Error> {
     let cmd_label = script.split_whitespace().next().unwrap_or(script);
     if let Err(e) = crate::permissions::check_run(cmd_label) {
         return Err(Error::Other(e));
@@ -179,20 +189,45 @@ pub fn run(pkg_dir: &Path, script: &str, extra_args: &[String]) -> Result<i32, E
         if let Some((_, rest)) = words.split_first() {
             if let Some(bin) = &resolved {
                 if is_js_bin(bin) {
-                    // 零 node 快路径：JS bin 递归调自身（子进程无沙箱旗，语义同 npm 直跑）。
-                    // `--` 收尾旗解析：rest 里的 `--version`/`--help` 这类**本仓已知 flag**
-                    // 不加会被子进程 clap 吃掉（2026-09-13 探针实测：
-                    // `scripts: {"v": "node-which --version"}` 打出 winterjs 版本横幅）。
-                    let exe = std::env::current_exe().map_err(|e| {
-                        Error::Other(format!("failed to locate current exe: {e}"))
-                    })?;
-                    let mut cmd = std::process::Command::new(exe);
-                    cmd.arg("--run").arg(bin).arg("--");
-                    for a in rest {
-                        cmd.arg(a);
+                    // F3 进程内快路径：JS bin 不再递归 spawn 自身（省一次完整启动
+                    // ~160ms wall），同进程直接 `runtime::run`（argv 形状与子进程
+                    // `--run <bin> -- <args>` 一致：[exe, bin, ...rest]，`--version`
+                    // 类已知 flag 天然落 bin argv，无需 `--` 收尾）。
+                    // 语义同 npm 直跑：子进程本无沙箱旗，此处临时全开、跑完恢复。
+                    // 深度与 `WINTERJS_SPAWN_DEPTH` 同限（pitfalls 4.209）。
+                    let depth = js_bin_depth()
+                        + crate::builtins::node::child::self_spawn_depth();
+                    if depth > crate::builtins::node::child::SELF_SPAWN_LIMIT {
+                        return Err(Error::Other(format!(
+                            "winterjs: self-spawn depth limit ({}) exceeded — recursive self-spawn aborted",
+                            crate::builtins::node::child::SELF_SPAWN_LIMIT
+                        )));
                     }
-                    crate::builtins::node::child::tag_self_depth(&mut cmd);
-                    return wait(cmd, script);
+                    let source = std::fs::read_to_string(bin).map_err(|source| {
+                        Error::IoRead {
+                            path: bin.clone(),
+                            source,
+                        }
+                    })?;
+                    let filename = bin.to_string_lossy().into_owned();
+                    JS_BIN_DEPTH.with(|c| c.set(c.get() + 1));
+                    let saved = crate::permissions::current();
+                    crate::permissions::install(crate::permissions::Permissions::open());
+                    let r = crate::runtime::run(
+                        &source,
+                        &filename,
+                        crate::runtime::Mode::Script,
+                        rest,
+                    )
+                    .await;
+                    crate::permissions::install(saved);
+                    JS_BIN_DEPTH.with(|c| c.set(c.get().saturating_sub(1)));
+                    return match r {
+                        Ok(()) => Ok(0),
+                        // 子进程已渲染（fatal_exit 内），父侧只透码（File 路径同款）。
+                        Err(Error::Exit(code)) => Ok(code),
+                        Err(e) => Err(e),
+                    };
                 }
                 // 原生二进制：直接 argv（PATH 兜底其它可执行文件）。
                 let mut cmd = std::process::Command::new(bin);

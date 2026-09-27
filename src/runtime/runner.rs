@@ -281,6 +281,9 @@ async fn run_inner(
         // 'http.maxHeaderSize'` 形；真机 26.8.2 实测 30 项，test/sqlite 除外）。
         // 独立 setup 脚本先行（行号零影响；失败忽略；已存在即跳过）。
         // 仅 Eval 模式（--run 文件/REPL 不走，真机同）。
+        // F1 懒加载：eager require 29 模块占 --eval 启动 175ms（--run 空文件
+        // 127ms vs --eval 1 302ms 实测）；此处只装 getter，首次访问才 require
+        // 并原位替换为值（enumerable/configurable/writable 与直接赋值一致）。
         if mode == Mode::Eval {
             let setup = CString::new("eval-globals.js").unwrap_or_else(|_| c"eval.js".into());
             let setup_options = CompileOptionsWrapper::new(rt.cx(), setup, 1);
@@ -288,10 +291,29 @@ async fn run_inner(
             const SETUP: &str = r#"try {
   if (typeof require === "function") {
     for (const __m of ["http","https","http2","fs","path","os","util","crypto","stream","events","url","querystring","net","dns","dgram","child_process","cluster","worker_threads","vm","assert","buffer","process","console","timers","zlib","readline","tty","v8","sys"]) {
-      try { if (globalThis[__m] === undefined) globalThis[__m] = require("node:" + __m); } catch {}
+      try {
+        if (globalThis[__m] !== undefined) continue;
+        Object.defineProperty(globalThis, __m, {
+          configurable: true,
+          enumerable: true,
+          get() {
+            let v;
+            try { v = require("node:" + __m); } catch (e) { return undefined; }
+            try {
+              Object.defineProperty(globalThis, __m, { value: v, writable: true, configurable: true, enumerable: true });
+            } catch (e) {}
+            return v;
+          },
+          set(v) {
+            try {
+              Object.defineProperty(globalThis, __m, { value: v, writable: true, configurable: true, enumerable: true });
+            } catch (e) {}
+          }
+        });
+      } catch (e) {}
     }
   }
-} catch {}"#;
+} catch (e) {}"#;
             let _ = evaluate_script(rt.cx(), global.handle(), SETUP, setup_rval.handle_mut(), setup_options);
         }
         // evaluate_script 内部自进 realm；rval 为 rooted 出参，跨事件循环存活

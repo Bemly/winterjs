@@ -329,3 +329,20 @@ G1/G2/G3/G9 已收官。）
   `test-tls-socket-default-options`（收尾 net=5 待建模）、`test-tls-client-destroy-soon`
   （'readable' 流量面，net 域共性）、`test-async-wrap-tlssocket-asyncreset`（ca 链）。
 - sweep 定量：tls 域（test-tls-，185 件）SAME0 40→**80**；https 域（59 件）18 绿——同构建对照（17≈18）证实 base15 的 31 系口径差异非回归；base16 全域待 P2 收尾统一跑。
+## 2026-09-27 Vue/Vite 生态实测（26.9.27 release 二进制，vite 8.3.1 + vue 3.5.43，~/wjs-data/probe/vue-app）
+
+- **✅ Vue 3.5 SSR 开箱即用**：`vue/server-renderer` renderToString 输出正确（ssr.mjs）。
+- **✅ vite 8 模块图完整加载**：纯 ESM 深链 import 无一失败。
+- **✅ N-API 原生 addon 生态**：rolldown 1.2 binding（.node）与 lightningcss 都能加载，
+  `rolldown.build` 原生打包调用跑通——napi M0-M6 的实战首考通过。
+- **✅ vite createServer 全链**：config 解析（vite:config/env 全过）、插件管线
+  （vite:oxc/builtin:vite-resolve 等 26 插件）、pluginContainer.buildStart、
+  **dev server LISTENING**（http://localhost:5199/）。
+- **❌ 首个 HTTP 请求挂起**：raw socket TCP 能连，请求后无响应——请求处理管线
+  （transformRequest/中间件）某处挂，transformRequest 探针另出现
+  「unhandled rejection 拒因为 Promise → 输出 [object Promise] 且提前退出」怪象，
+  同文件三连一致、与相邻文件行为不同，未定位（下轮首要）。
+- **❌ vite CLI 直跑静默退出**：bin 的 `import('../dist/node/cli.js')` 后无输出 rc=0；
+  cac/argv 形状（process.argv=[bin, script]）待查。
+- 未测：vite build、HMR、Vue 客户端 hydration。
+- 工程面：`--run x.js -- --help` 的 `--` 收尾口径（4.61）再次生效。

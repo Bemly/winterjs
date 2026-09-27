@@ -8,6 +8,8 @@ arg:
     value: "语言"
   hide_banner:
     help: "隐藏启动 banner（单横杠 -hide_banner 同样接受）"
+  ascii_banner:
+    help: "强制 ASCII banner，图形终端也不加载图片（单横杠 -ascii_banner 同样接受）"
   run:
     help: "运行 JS 文件（带脚本后缀）或 package.json 脚本（裸名），并打印其完成值"
     value: "文件"

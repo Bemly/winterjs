@@ -6,7 +6,9 @@
 //!   `viuer` 条）经 `cjxl` 转码为同 artwork 的 `logo.jxl`（`sips` 先验 alpha）。
 //! - 其余终端：纯 ASCII 雪花 + `w i n t e r j s <ver>`（字节恒 <0x80，单测钉住）。
 //! - 关闭：`-hide_banner`（破例单横杠 + 下划线，见 `cli::rewrite_banner_flag`）或
-//!   `--hide_banner`；stderr 非 TTY 自动跳过（管道/CI 零噪音）；`--completions`/
+//!   `--hide_banner`；强制 ASCII：`-ascii_banner` / `--ascii_banner`（图形终端也走
+//!   雪花，`-hide_banner` 优先）；stderr 非 TTY 自动跳过（管道/CI 零噪音）
+//!   `--completions` / `--man` 不打印（纯机器输出）。
 //!   `--man` 不打印（纯机器输出）。
 //!
 //! 约束（实测结论，见 `docs/dependencies.md` §14 `viuer` 条）：
@@ -127,10 +129,13 @@ pub fn stderr_is_tty() -> bool {
     std::io::stderr().is_terminal()
 }
 
-/// 总决策（纯函数化入参，便于单测；env 只在检测层读）。
-pub fn decide(hide: bool, stderr_tty: bool) -> Mode {
+/// 总决策（纯函数化入参，便于单测；env 只在检测层读；hide 优先于 ascii）。
+pub fn decide(hide: bool, ascii: bool, stderr_tty: bool) -> Mode {
     if hide || !stderr_tty {
         return Mode::Hidden;
+    }
+    if ascii {
+        return Mode::Ascii;
     }
     match detect() {
         Some(p) => Mode::Graphics(p),
@@ -292,8 +297,8 @@ fn print_graphics(p: Proto) -> bool {
 }
 
 /// 启动 banner 入口（尽力而为：永不报错，永不 panic，永不碰 stdout）。
-pub fn print_startup(hide: bool) {
-    match decide(hide, stderr_is_tty()) {
+pub fn print_startup(hide: bool, ascii: bool) {
+    match decide(hide, ascii, stderr_is_tty()) {
         Mode::Hidden => {}
         Mode::Ascii => {
             let mut err = std::io::stderr().lock();
@@ -378,11 +383,13 @@ mod tests {
 
     #[test]
     fn decide_matrix() {
-        // 纯入参矩阵（env 不参与此层）。
-        assert_eq!(decide(true, true), Mode::Hidden);
-        assert_eq!(decide(false, false), Mode::Hidden);
+        // 纯入参矩阵（env 不参与此层）；hide 优先于 ascii。
+        assert_eq!(decide(true, false, true), Mode::Hidden);
+        assert_eq!(decide(true, true, true), Mode::Hidden);
+        assert_eq!(decide(false, false, false), Mode::Hidden);
+        assert_eq!(decide(false, true, true), Mode::Ascii);
         // tty 下非 Hidden 即 Ascii/Graphics 二选一（本机 env 定）。
-        assert_ne!(decide(false, true), Mode::Hidden);
+        assert_ne!(decide(false, false, true), Mode::Hidden);
     }
 
     #[test]

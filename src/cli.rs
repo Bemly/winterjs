@@ -39,6 +39,10 @@ pub struct Cli {
     #[arg(long = "hide_banner")]
     pub hide_banner: bool,
 
+    /// Force the ASCII banner even on graphics-capable terminals (single-dash -ascii_banner also accepted)
+    #[arg(long = "ascii_banner")]
+    pub ascii_banner: bool,
+
     // ── 动作（恰好其一） ──────────────────────────────────────────────
     /// Run a JS file (with a script extension) or a package.json script (bare name), and print its completion value
     #[arg(short = 'r', long = "run", value_name = "FILE")]
@@ -443,9 +447,10 @@ const COMPAT_ACTION_FLAGS: &[&str] = &[
     "-I", "--init", "--repl", "-t", "--test", "-C", "--completions", "-L", "--lint", "-f", "--fmt", "-s", "--serve", "-b", "--db",
 ];
 
-/// 单横杠 `-hide_banner` 破例重写（2026-09-28 用户拍板）：clap 长形只认 `--` 开头，
-/// `-hide_banner` 会被当短旗簇（`-h` 即 help）误解析；此处把 `--` 之前的准确 token
-/// 改写成 `--hide_banner` 再交 clap，`--` 之后（脚本参数）不动。纯函数，单测覆盖。
+/// 单横杠 `-hide_banner` / `-ascii_banner` 破例重写（2026-09-28 用户拍板）：
+/// clap 长形只认 `--` 开头，`-hide_banner` 会被当短旗簇（`-h` 即 help）误解析；
+/// 此处把 `--` 之前的准确 token 改写成 `--` 双横杠形再交 clap，`--` 之后
+/// （脚本参数）不动。纯函数，单测覆盖。
 pub fn rewrite_banner_flag(raw: &[std::ffi::OsString]) -> Vec<std::ffi::OsString> {
     use std::ffi::OsString;
     let mut out = Vec::with_capacity(raw.len());
@@ -463,6 +468,10 @@ pub fn rewrite_banner_flag(raw: &[std::ffi::OsString]) -> Vec<std::ffi::OsString
         }
         if s == "-hide_banner" {
             out.push(OsString::from("--hide_banner"));
+            continue;
+        }
+        if s == "-ascii_banner" {
+            out.push(OsString::from("--ascii_banner"));
             continue;
         }
         out.push(a.clone());
@@ -646,6 +655,15 @@ mod node_compat_tests {
         assert_eq!(
             strs(&rewrite_banner_flag(&argv(&["w", "-hide_banne", "--hide-banner"]))),
             ["w", "-hide_banne", "--hide-banner"]
+        );
+        // ascii 形同理。
+        assert_eq!(
+            strs(&rewrite_banner_flag(&argv(&["w", "-ascii_banner", "--eval", "1"]))),
+            ["w", "--ascii_banner", "--eval", "1"]
+        );
+        assert_eq!(
+            strs(&rewrite_banner_flag(&argv(&["w", "--run", "a.js", "--", "-ascii_banner"]))),
+            ["w", "--run", "a.js", "--", "-ascii_banner"]
         );
     }
 }

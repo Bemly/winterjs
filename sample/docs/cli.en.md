@@ -66,6 +66,7 @@ permalink: /en/cli/
 | `--allow-read`/`-W/--allow-write`/`--allow-env`/`--allow-run`/`--allow-ffi`/`-A/--allow-all` | `--run/--eval/--test/--repl/--db` |
 | `-v/--verbose`, `-l/--lang` | global |
 | `-hide_banner` / `--hide_banner` | global (hide the startup banner; stderr, auto-skipped when not a TTY) |
+| `-ascii_banner` / `--ascii_banner` | global (force the ASCII banner even on graphics-capable terminals) |
 
 Sandbox model: no `--allow-*` → wide open (historic behavior); any `--allow-*`
 → sandbox on, unlisted classes denied with `PermissionError`.

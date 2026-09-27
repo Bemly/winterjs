@@ -234,7 +234,7 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
     }
     // 启动 banner：每次运行首行走 stderr（非 TTY 自动跳过；机器输出动作除外）。
     if cli.completions.is_none() && !cli.man {
-        crate::banner::print_startup(cli.hide_banner);
+        crate::banner::print_startup(cli.hide_banner, cli.ascii_banner);
     }
     // S1：WinterCG 存储默认库（修饰 flag，归属已由 scope 保证）。
     if cli.run.is_some() || cli.eval.is_some() || cli.test.is_some() || cli.repl || cli.serve.is_some() {

@@ -64,6 +64,7 @@ permalink: /zh/cli/
 | `--allow-read`/`-W/--allow-write`/`--allow-env`/`--allow-run`/`--allow-ffi`/`-A/--allow-all` | `--run/--eval/--test/--repl/--db` |
 | `-v/--verbose`、`-l/--lang` | 全局 |
 | `-hide_banner` / `--hide_banner` | 全局（隐藏启动 banner；走 stderr，非 TTY 自动跳过） |
+| `-ascii_banner` / `--ascii_banner` | 全局（强制 ASCII banner，图形终端也不加载图片） |
 
 沙箱模型：不给任何 `--allow-*` → 全开放（历史行为）；给了任一 → 开沙箱，
 未授权类别拒绝并报 `PermissionError`。

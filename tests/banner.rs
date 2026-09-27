@@ -35,4 +35,18 @@ fn help_lists_hide_banner() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("--hide_banner"), "help: {stdout}");
     assert!(stdout.contains("-hide_banner"), "help: {stdout}");
+    assert!(stdout.contains("--ascii_banner"), "help: {stdout}");
+}
+
+#[test]
+fn ascii_banner_forms() {
+    // 强制 ASCII 形：管道下与 hide 同样无 banner（TTY 面的 ASCII 由单测覆盖），
+    // 此处断言双形可解析且动作照跑。
+    for flag in ["-ascii_banner", "--ascii_banner"] {
+        let out = winterjs().args([flag, "--eval", "1"]).output().unwrap();
+        assert!(out.status.success(), "flag: {flag}");
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "1\n");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("w i n t e r j s"), "flag: {flag}, stderr: {stderr}");
+    }
 }

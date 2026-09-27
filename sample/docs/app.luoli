@@ -10,6 +10,9 @@ coffee:
   RAW_BASE = 'https://raw.githubusercontent.com/Bemly/winterjs/refs/heads/master/'
   THEME_KEY = 'wjs-docs-theme'
   previewCache = {}
+  BIG = { quickstart: ['Quickstart', '快速上手'], api: ['API reference', 'API 参考'], cli: ['CLI reference', 'CLI 参考'] }
+  pendingAnchor = null
+  apiVars = [{ "id": "api-console", "label": "console" }, { "id": "api-timers", "label": "timers" }, { "id": "api-structuredclone", "label": "structuredClone" }, { "id": "api-url-urlsearchparams-urlpattern", "label": "URL / URLSearchParams / URLPattern" }, { "id": "api-textencoder-textdecoder-atob-btoa", "label": "TextEncoder / TextDecoder / atob / btoa" }, { "id": "api-blob-file", "label": "Blob / File" }, { "id": "api-fetch-request-response-headers", "label": "fetch / Request / Response / Headers" }, { "id": "api-readablestream-writablestream-transformstream", "label": "ReadableStream / WritableStream / TransformStream" }, { "id": "api-compressionstream-decompressionstream", "label": "CompressionStream / DecompressionStream" }, { "id": "api-crypto-webcrypto", "label": "crypto (WebCrypto)" }, { "id": "api-event-eventtarget-abortcontroller", "label": "Event / EventTarget / AbortController" }, { "id": "api-domexception", "label": "DOMException" }, { "id": "api-performance", "label": "performance" }, { "id": "api-buffer", "label": "Buffer" }, { "id": "api-websocket-client", "label": "WebSocket (client)" }, { "id": "api-process-require-module", "label": "process / require / module" }, { "id": "api-node-assert-strict", "label": "node:assert (+/strict)" }, { "id": "api-node-async-hooks", "label": "node:async_hooks" }, { "id": "api-node-buffer", "label": "node:buffer" }, { "id": "api-node-child-process", "label": "node:child_process" }, { "id": "api-node-cluster", "label": "node:cluster" }, { "id": "api-node-console", "label": "node:console" }, { "id": "api-node-crypto", "label": "node:crypto" }, { "id": "api-node-domain", "label": "node:domain" }, { "id": "api-node-events", "label": "node:events" }, { "id": "api-node-fs-promises", "label": "node:fs (+/promises)" }, { "id": "api-node-module", "label": "node:module" }, { "id": "api-node-os", "label": "node:os" }, { "id": "api-node-path-posix-win32", "label": "node:path (+/posix, +/win32)" }, { "id": "api-node-process", "label": "node:process" }, { "id": "api-node-stream-promises-consumers-web", "label": "node:stream (+/promises, /consumers, /web)" }, { "id": "api-node-string-decoder", "label": "node:string_decoder" }, { "id": "api-node-querystring-node-punycode", "label": "node:querystring / node:punycode" }, { "id": "api-node-sys", "label": "node:sys" }, { "id": "api-node-test", "label": "node:test" }, { "id": "api-node-timers-promises", "label": "node:timers (+/promises)" }, { "id": "api-node-util-types", "label": "node:util (+/types)" }, { "id": "api-node-v8", "label": "node:v8" }, { "id": "api-node-vm", "label": "node:vm" }, { "id": "api-node-worker-threads", "label": "node:worker_threads" }, { "id": "api-node-zlib", "label": "node:zlib" }, { "id": "api-node-http", "label": "node:http" }, { "id": "api-node-http2", "label": "node:http2" }, { "id": "api-node-https", "label": "node:https" }, { "id": "api-node-tls-tls-wrap", "label": "node:tls (+_tls_wrap)" }, { "id": "api-node-net", "label": "node:net" }, { "id": "api-node-dgram", "label": "node:dgram" }, { "id": "api-node-dns-promises", "label": "node:dns (+/promises)" }, { "id": "api-node-quic", "label": "node:quic" }, { "id": "api-node-diagnostics-channel", "label": "node:diagnostics_channel" }, { "id": "api-node-inspector-promises", "label": "node:inspector (+/promises)" }, { "id": "api-node-trace-events", "label": "node:trace_events" }, { "id": "api-node-tty", "label": "node:tty" }, { "id": "api-node-readline", "label": "node:readline" }, { "id": "api-node-repl", "label": "node:repl" }, { "id": "api-bun-ffi", "label": "bun:ffi" }, { "id": "api-node-sqlite-bun-sqlite", "label": "node:sqlite / bun:sqlite" }, { "id": "api-node-url-legacy", "label": "node:url (legacy)" }, { "id": "api-node-perf-hooks", "label": "node:perf_hooks" }]
 
   routeKey = ->
     h = location.hash.replace /^#\/?/, ''
@@ -82,6 +85,16 @@ coffee:
       else
         a.classList.remove 'active'
       i += 1
+    # 侧栏三巨头跟随当前语言（中英不再分组）
+    bigs = document.querySelectorAll '[data-big]'
+    j = 0
+    while j < bigs.length
+      b = bigs[j]
+      stub = b.getAttribute 'data-big'
+      b.setAttribute 'href', '#/' + route.lang + '/' + stub
+      b.textContent = if route.lang is 'zh' then BIG[stub][1] else BIG[stub][0]
+      if stub is route.stub then b.classList.add 'active' else b.classList.remove 'active'
+      j += 1
     toggle = document.getElementById 'lang-toggle'
     if toggle
       if route.stub is 'home'
@@ -100,6 +113,26 @@ coffee:
       page.offsetWidth
       page.classList.add 'vp-page-enter'
 
+  # 侧栏变量锚点跳转：同页直接滚，跨页先切路由、渲染完再滚
+  scrollToAnchor = ->
+    if pendingAnchor
+      el = document.getElementById pendingAnchor
+      if el and el.scrollIntoView then el.scrollIntoView()
+      pendingAnchor = null
+    return
+
+  goAnchorTo = (id) ->
+    key = routeKey()
+    route = ROUTES[key]
+    lang = if route.stub is 'home' then 'en' else route.lang
+    target = lang + '/api'
+    pendingAnchor = id
+    if key is target
+      scrollToAnchor()
+    else
+      location.hash = '#/' + target
+    return
+
   render = ->
     key = routeKey()
     route = ROUTES[key]
@@ -115,6 +148,7 @@ coffee:
     ).then(->
       window.scrollTo 0, 0
       revealPage()
+      scrollToAnchor()
     ).catch((err) ->
       page.innerHTML = '<p class="vp-error">Failed to load ' + esc(route.file) + ': ' + esc(err.message) + '</p>'
     )
@@ -154,6 +188,11 @@ coffee:
 
   onPageClick = (e) ->
     if not e.target or not e.target.closest then return
+    an = e.target.closest '[data-anchor]'
+    if an
+      if e.preventDefault then e.preventDefault()
+      goAnchorTo an.getAttribute 'data-anchor'
+      return
     t = e.target.closest '[data-sample]'
     if not t then return
     e.preventDefault()
@@ -173,7 +212,9 @@ coffee:
 
 template:
   header.vp-nav
-    a.vp-brand(href='#/') winterjs #[span docs]
+    a.vp-brand(href='#/')
+      img.vp-logo(src='assets/logo.avif' alt='winterjs')
+      img.vp-wordmark(src='assets/winterjs.svg' alt='WinterJS')
     nav.vp-top-links
       a(href='#/en/quickstart' data-route='en/quickstart') Guide
       a(href='#/en/api' data-route='en/api') API
@@ -186,19 +227,13 @@ template:
       a(href='https://github.com/Bemly/winterjs' target='_blank' rel='noopener') GitHub
   .vp-shell
     aside.vp-sidebar
+      a.vp-side-big(href='#/en/quickstart' data-big='quickstart') Quickstart
+      a.vp-side-big(href='#/en/api' data-big='api') API reference
+      a.vp-side-big(href='#/en/cli' data-big='cli') CLI reference
       .vp-group
-        p.vp-group-title English
-        a(href='#/en/quickstart' data-route='en/quickstart') Quickstart
-        a(href='#/en/api' data-route='en/api') API reference
-        a(href='#/en/cli' data-route='en/cli') CLI reference
-      .vp-group
-        p.vp-group-title 中文
-        a(href='#/zh/quickstart' data-route='zh/quickstart') 快速上手
-        a(href='#/zh/api' data-route='zh/api') API 参考
-        a(href='#/zh/cli' data-route='zh/cli') CLI 参考
-      .vp-group
-        p.vp-group-title Samples
-        a(href='https://github.com/Bemly/winterjs/tree/master/sample' target='_blank' rel='noopener') 50 examples ↗
+        p.vp-group-title Modules · 模块
+        each v in apiVars
+          button.vp-side-var(type='button' data-anchor=v.id title=v.label)= v.label
     main.vp-main
       #page
         p.vp-loading Loading… / 加载中…
@@ -264,12 +299,20 @@ style:
     border-bottom: 1px solid var(--vp-c-divider)
 
   .vp-brand
-    font-size: 1.1rem
-    font-weight: 700
+    display: flex
+    align-items: center
+    gap: 10px
     color: var(--vp-c-text-1)
-    span
-      color: var(--vp-c-brand-1)
-      font-weight: 500
+
+  .vp-logo
+    width: 34px
+    height: 34px
+    border-radius: 8px
+    display: block
+
+  .vp-wordmark
+    height: 30px
+    display: block
 
   .vp-top-links
     display: flex
@@ -336,6 +379,9 @@ style:
     transform: rotate(0deg) scale(1)
 
   // --- View Transitions circular reveal (theme wipe) ---
+  // NEW snapshot is always on top; its clip-path wipes from circle(0) to
+  // full — symmetric in both directions (the old theme-swapped z-index
+  // version only animated dark-to-light).
   ::view-transition-old(root), ::view-transition-new(root)
     animation: none
     mix-blend-mode: normal
@@ -345,12 +391,6 @@ style:
 
   ::view-transition-new(root)
     z-index: 2147483646
-
-  [data-theme='dark']::view-transition-old(root)
-    z-index: 2147483646
-
-  [data-theme='dark']::view-transition-new(root)
-    z-index: 1
 
   .vp-no-transition, .vp-no-transition *, .vp-no-transition *::before, .vp-no-transition *::after
     transition: none !important
@@ -400,20 +440,38 @@ style:
     font-weight: 700
     margin: 0 0 8px 12px
 
-  .vp-sidebar a
+  .vp-side-big
     display: block
-    color: var(--vp-c-text-2)
-    font-size: .9rem
-    padding: 5px 12px
+    font-size: 1.05rem
+    font-weight: 700
+    color: var(--vp-c-text-1)
+    padding: 6px 12px
     border-radius: 6px
-    margin: 1px 0
+    margin: 2px 0
     &:hover
       color: var(--vp-c-brand-1)
 
-  .vp-sidebar a.active
+  .vp-side-big.active
     color: var(--vp-c-brand-1)
     background: var(--vp-c-brand-soft)
-    font-weight: 600
+
+  .vp-side-var
+    display: block
+    width: 100%
+    text-align: left
+    background: none
+    border: none
+    padding: 3px 12px 3px 24px
+    font-size: .82rem
+    font-family: inherit
+    color: var(--vp-c-text-2)
+    cursor: pointer
+    border-radius: 6px
+    white-space: nowrap
+    overflow: hidden
+    text-overflow: ellipsis
+    &:hover
+      color: var(--vp-c-brand-1)
 
   .vp-main
     flex: 1

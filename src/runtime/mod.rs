@@ -30,7 +30,7 @@ use mozjs::rust::wrappers2::JS_NewGlobalObject;
 use crate::builtins;
 use crate::builtins::timers;
 use crate::modules;use crate::error::Error;
-use crate::jsapi_glue::{exc_name, exc_name_is, get_prop_string, get_prop_u32, raw_handle, raw_handle_mut, value_to_string};
+use crate::jsapi_glue::{exc_name, get_prop_string, get_prop_u32, raw_handle, raw_handle_mut, value_to_string};
 use crate::state;
 
 mod entry;

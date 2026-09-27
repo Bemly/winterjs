@@ -37,8 +37,24 @@ async fn repl_eval(
         // SAFETY: realm 内读取 pending exception（消费异常值）
         match { let i = error_info_from_exception_stack(&mut realm, exc.handle_mut()); crate::jsapi_glue::fill_message(&mut realm, i, exc.get()) } {
             Some(info) => {
-                eprintln!("repl.js:{}:{}: {}", info.line.max(1), info.col, info.message);
-                if exc_name_is(&mut realm, exc.get(), "SyntaxError") && line.contains("await") {
+                let kind = exc_name(&mut realm, exc.get());
+                let is_syntax = kind.as_deref() == Some("SyntaxError");
+                // C 档：D4 渲染复用——`render()` 在非 TTY 下打 node 形多行
+                // （定位行 + 源码 + caret + at 栈帧），TTY 下走 miette 图形；
+                // 栈经 note_stack 按 message 配对取走（`script_with_kind` 内）。
+                // 返回的退出码丢弃（REPL 出错只打印不退出）。
+                let err = crate::error::Error::script_with_kind(
+                    "repl.js",
+                    line,
+                    info.line.max(1),
+                    info.col,
+                    info.message,
+                    kind,
+                );
+                let color =
+                    crate::error::render_color().unwrap_or(crate::settings::ColorChoice::Auto);
+                let _ = err.render(color);
+                if is_syntax && line.contains("await") {
                     eprintln!("hint: top-level await is not supported in repl yet (wrap in an async function)");
                 }
             }

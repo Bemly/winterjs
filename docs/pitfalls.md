@@ -4065,3 +4065,19 @@
 - 复现：`test-repl-tab-complete-files`。
 - 推广铁律：**探针复刻套件必须连 helper 的透传 options 一起抄**（`startNewREPLServer`
   的 `terminal: true` + `allowBlockingCompletions: true` 皆是行为开关）。
+
+### 4.224 TUI 行编辑替换三坑：管道分流/prompt 拼接/Display 单行（2026-09-28，REPL C 档）
+
+- 症状：rustyline→reedline 后，① 管道黑盒（`tests/repl.rs`）行为漂移；
+  ② 提示符打出 `❄ ❄>` 双份；③ 有栈错误仍只打一行。
+- 根因：① 旧代码靠 `Editor::new` 失败才退化逐行，新底座 `create()` 常成功，
+  不显式分流即把管道当 TTY；② reedline 渲染 `left + indicator` 拼接，
+  两边各写一份 `❄> ` 即翻倍；③ `Error` 的 `Display` 是一行格式，
+  node 形多行只在 `render()` 里（非 TTY 走 `render_script_node_style`）。
+- 修法：`stdin().is_terminal()` 为 false 直接 stdin 逐行（无 ANSI，黑盒原断言不动）；
+  `left="❄"` + `indicator="> "` 拼出 `❄> `；REPL 出错走
+  `Error::script_with_kind(...).render(color)` 并丢弃退出码（只打印不退出）。
+- 复现：`tests/repl.rs::repl_error_prints_stack`（`at f (repl.js:` 帧）；
+  `printf ... | winterjs --repl` 管道对照。
+- 推广铁律：**换行编辑底座必须三查**：非 TTY 显式 `is_terminal` 分流（禁依赖构造失败退化）、
+  prompt 按"左+指示器"拼接规则拼（禁两边各写全形）、报错走 `render()` 不走 `Display`。

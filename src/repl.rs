@@ -1,19 +1,29 @@
-//! 交互式 REPL 的纯逻辑侧（plan Phase 7-e3）：点命令、高亮、括号验证、历史。
+//! 交互式 REPL 的纯逻辑侧（plan Phase 7-e3；2026-09-28 C 档换 reedline）。
 //!
-//! - 引擎胶水（会话初始化/求值/事件泵）在 `runtime.rs`（需其私有项）；本模块
-//!   只放无引擎依赖的逻辑 + `rustyline` helper，可独立单测。
-//! - 高亮为手写扫描器（约 60 行）：`oxc` 的 `Lexer::new` 非公开（`pub(super)`），
-//!   词法结果直染走不通（见 §13 偏差，`docs/dependencies.md` 附记）；关键字 /
-//!   字符串（含模板 `${}`）/ 数字 / 注释四类，`console` 上色，仅 TTY 生效
-//!   （非 TTY 下 rustyline 退化逐行读，不调 highlighter，黑盒钉住无 ANSI）。
-//! - 多行：`Validator` 判括号平衡（字符串/注释感知），`Incomplete` 即续行；
-//!   非 TTY 逐行直求值（`1 +` 这类报 SyntaxError 后继续，行为差异文档记录）。
+//! - 引擎胶水（会话初始化/求值/事件泵）在 `runtime/repl.rs`（需其私有项）；本模块
+//!   只放无引擎依赖的逻辑 + reedline 接线（prompt/补全/高亮/校验/历史），可独立单测。
+//! - 行编辑：`reedline`（default 特性；禁 `sqlite`/`system_clipboard`，见
+//!   `docs/dependencies.md` §4）+ `IdeMenu` 浮窗补全（Tab 开菜单，右侧文档 pane）。
+//!   提示符保持 `❄> `（左 `❄` + indicator `> `），无编号（用户口径）。
+//! - 高亮为手写扫描器（关键字/字符串（含模板整段）/数字/注释四类；`oxc` 的
+//!   `Lexer::new` 非公开，走不通，见 §13 偏差）：同一 `tokenize` 产出两种渲染——
+//!   ANSI 串（`highlight_line`，单测/文档用）与 `StyledText`（TTY 实时渲染）。
+//!   模板 `${}` 内不高亮细分；跨行块注释退化为普通文本（文档记录）。
+//! - 多行：`SnowValidator` 以 `brace_balance` 判括号平衡（字符串/注释感知），
+//!   `Incomplete` 即续行（multiline indicator 同 `> `）。
+//! - 补全：`JsCompleter` 静态表（点命令/关键字/全局对象 + 一行文档，进右侧 pane）。
+//!   成员形（`console.` 等）暂不展开——要读存活 JS 上下文，需跨线程投递另案
+//!   （`node:repl` 的 `__defaultComplete` 是 JS 侧逻辑，CLI 线程够不着）；
+//!   空前缀不炸菜单（返回空集）。
+//! - 非 TTY（stdin 管道，黑盒即此）：退化 stdin 逐行读，不调 highlighter/menu，
+//!   输出无 ANSI（`tests/repl.rs` 钉住）。
 
 use std::borrow::Cow;
+use std::io::IsTerminal as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// Ctrl-C 连击退出窗口：两次 `Interrupted` 间隔内即退出，超窗重置
+/// Ctrl-C 连击退出窗口：两次 `CtrlC` 间隔内即退出，超窗重置
 /// （与 `.help` 文案同值；纯函数 `ctrl_c_should_exit` 单测覆盖）。
 pub const CTRL_C_WINDOW: Duration = Duration::from_secs(2);
 
@@ -46,7 +56,7 @@ pub fn history_path() -> Option<PathBuf> {
 }
 
 /// 括号平衡（字符串/模板/行块注释感知；`}` 超前即 false）。
-/// 纯函数，单测覆盖；`Validator` 与黑盒多行行为都以它为准。
+/// 纯函数，单测覆盖；`SnowValidator` 与黑盒多行行为都以它为准。
 pub fn brace_balance(src: &str) -> bool {
     let mut stack: Vec<char> = Vec::new();
     let mut chars = src.chars().peekable();
@@ -137,7 +147,7 @@ pub fn brace_balance(src: &str) -> bool {
     stack.is_empty()
 }
 
-/// JS 关键字表（高亮用；保留字全收，不过度求全）。
+/// JS 关键字表（高亮 + 补全共用；保留字全收，不过度求全）。
 const KEYWORDS: &[&str] = &[
     "await", "break", "case", "catch", "class", "const", "continue", "debugger",
     "default", "delete", "do", "else", "export", "extends", "finally", "for",
@@ -150,33 +160,37 @@ fn is_kw(word: &str) -> bool {
     KEYWORDS.contains(&word)
 }
 
-/// 行高亮（纯函数，单测覆盖；调用方只在 TTY 下用）。
-pub fn highlight_line(line: &str) -> String {
-    use console::Style;
-    let kw = Style::new().cyan();
-    let st = Style::new().green();
-    let num = Style::new().yellow();
-    let com = Style::new().dim();
-    let mut out = String::with_capacity(line.len() + 16);
+/// 高亮 token 种类（`tokenize` 产出，双渲染共用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tok {
+    Kw,
+    Str,
+    Num,
+    Com,
+    Plain,
+}
+
+/// 行切分（字节区间；注释/字符串/数字/标识符优先，余下逐字符透传）。
+fn tokenize(line: &str) -> Vec<(Tok, &str)> {
     let bytes = line.as_bytes();
+    let mut out = Vec::new();
     let mut i = 0;
-    // 标识符字符（含 `$`/`_`，Unicode 退化为逐字节透传）。
     let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
     while i < bytes.len() {
         let c = bytes[i];
         // 行注释。
         if c == b'/' && bytes.get(i + 1) == Some(&b'/') {
-            out.push_str(&com.apply_to(&line[i..]).to_string());
+            out.push((Tok::Com, &line[i..]));
             break;
         }
         // 块注释（单行内；跨行块注释退化为普通文本，不求全）。
         if c == b'/' && bytes.get(i + 1) == Some(&b'*') {
             let end = line[i..].find("*/").map(|e| i + e + 2).unwrap_or(line.len());
-            out.push_str(&com.apply_to(&line[i..end]).to_string());
+            out.push((Tok::Com, &line[i..end]));
             i = end;
             continue;
         }
-        // 字符串（含模板整段染绿；`${}` 内不高亮细分，文档记录）。
+        // 字符串（含模板整段；`${}` 内不细分，文档记录）。
         if c == b'\'' || c == b'"' || c == b'`' {
             let q = c;
             let mut j = i + 1;
@@ -191,7 +205,7 @@ pub fn highlight_line(line: &str) -> String {
                 }
                 j += 1;
             }
-            out.push_str(&st.apply_to(&line[i..j.min(line.len())]).to_string());
+            out.push((Tok::Str, &line[i..j.min(line.len())]));
             i = j;
             continue;
         }
@@ -201,7 +215,7 @@ pub fn highlight_line(line: &str) -> String {
             while j < bytes.len() && (ident(bytes[j]) || bytes[j] == b'.') {
                 j += 1;
             }
-            out.push_str(&num.apply_to(&line[i..j]).to_string());
+            out.push((Tok::Num, &line[i..j]));
             i = j;
             continue;
         }
@@ -212,91 +226,289 @@ pub fn highlight_line(line: &str) -> String {
                 j += 1;
             }
             let word = &line[i..j];
-            if is_kw(word) {
-                out.push_str(&kw.apply_to(word).to_string());
-            } else {
-                out.push_str(word);
-            }
+            out.push((if is_kw(word) { Tok::Kw } else { Tok::Plain }, word));
             i = j;
             continue;
         }
-        out.push(c as char);
-        i += 1;
+        // 余下逐字符透传（UTF-8 安全：非 ASCII 按字符步进）。
+        let ch_len = line[i..].chars().next().map(|ch| ch.len_utf8()).unwrap_or(1);
+        out.push((Tok::Plain, &line[i..i + ch_len]));
+        i += ch_len;
     }
     out
 }
 
-/// rustyline helper（高亮 + 括号续行；补全/提示用默认空实现）。
-pub struct ReplHelper;
-
-impl rustyline::completion::Completer for ReplHelper {
-    type Candidate = String;
+/// 行高亮（ANSI 串；单测钉 token 分类用；运行时走 `highlight_styled`）。
+#[cfg(test)]
+pub fn highlight_line(line: &str) -> String {
+    use console::Style;
+    let kw = Style::new().cyan();
+    let st = Style::new().green();
+    let num = Style::new().yellow();
+    let com = Style::new().dim();
+    let mut out = String::with_capacity(line.len() + 16);
+    for (kind, text) in tokenize(line) {
+        match kind {
+            Tok::Kw => out.push_str(&kw.apply_to(text).to_string()),
+            Tok::Str => out.push_str(&st.apply_to(text).to_string()),
+            Tok::Num => out.push_str(&num.apply_to(text).to_string()),
+            Tok::Com => out.push_str(&com.apply_to(text).to_string()),
+            Tok::Plain => out.push_str(text),
+        }
+    }
+    out
 }
 
-impl rustyline::hint::Hinter for ReplHelper {
-    type Hint = String;
+/// 行高亮（`StyledText`，TTY 实时渲染用；配色与 `highlight_line` 同族）。
+pub fn highlight_styled(line: &str) -> reedline::StyledText {
+    use nu_ansi_term::{Color, Style};
+    let mut out = reedline::StyledText::new();
+    for (kind, text) in tokenize(line) {
+        let style = match kind {
+            Tok::Kw => Style::new().fg(Color::Cyan),
+            Tok::Str => Style::new().fg(Color::Green),
+            Tok::Num => Style::new().fg(Color::Yellow),
+            Tok::Com => Style::new().dimmed(),
+            Tok::Plain => Style::new(),
+        };
+        out.push((style, text.to_owned()));
+    }
+    out
 }
 
-impl rustyline::highlight::Highlighter for ReplHelper {
-    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-        Cow::Owned(highlight_line(line))
+/// 补全候选（一行文档，进 IdeMenu 右侧 pane）。
+fn candidates() -> Vec<(&'static str, &'static str)> {
+    let mut out = vec![
+        (".exit", "quit the repl"),
+        (".help", "show repl help"),
+        ("exit", "REPL-only: quit the repl"),
+        ("quit", "REPL-only: quit the repl"),
+        ("q", "REPL-only: quit the repl"),
+        ("console", "global console object"),
+        ("process", "global process object"),
+        ("Buffer", "global Buffer class"),
+        ("globalThis", "global object"),
+        ("JSON", "global JSON object"),
+        ("Math", "global Math object"),
+        ("Object", "global Object class"),
+        ("Array", "global Array class"),
+        ("String", "global String class"),
+        ("Number", "global Number class"),
+        ("Boolean", "global Boolean class"),
+        ("BigInt", "global BigInt function"),
+        ("Symbol", "global Symbol function"),
+        ("Promise", "global Promise class"),
+        ("Map", "global Map class"),
+        ("Set", "global Set class"),
+        ("WeakMap", "global WeakMap class"),
+        ("WeakSet", "global WeakSet class"),
+        ("URL", "global URL class"),
+        ("URLSearchParams", "global URLSearchParams class"),
+        ("TextEncoder", "global TextEncoder class"),
+        ("TextDecoder", "global TextDecoder class"),
+        ("Blob", "global Blob class"),
+        ("fetch", "global fetch function"),
+        ("structuredClone", "global structuredClone function"),
+        ("setTimeout", "timer function"),
+        ("clearTimeout", "timer function"),
+        ("setInterval", "timer function"),
+        ("clearInterval", "timer function"),
+        ("queueMicrotask", "microtask function"),
+        ("require", "CJS require function"),
+        ("module", "CJS module object"),
+        ("exports", "CJS exports object"),
+        ("__dirname", "CJS directory name"),
+        ("__filename", "CJS file name"),
+    ];
+    for kw in KEYWORDS {
+        out.push((kw, "keyword"));
+    }
+    out
+}
+
+/// 静态补全器（bare 词 + 点命令；成员形暂拒，见模块注记）。
+pub struct JsCompleter;
+
+impl JsCompleter {
+    fn suggest(prefix: &str, dot_mode: bool) -> Vec<reedline::Suggestion> {
+        let low = prefix.to_lowercase();
+        let mut out = Vec::new();
+        for (word, doc) in candidates() {
+            if dot_mode && !word.starts_with('.') {
+                continue;
+            }
+            if !dot_mode && word.starts_with('.') {
+                continue;
+            }
+            let key = if dot_mode { &word[1..] } else { word };
+            if !key.to_lowercase().starts_with(&low) {
+                continue;
+            }
+            out.push(reedline::Suggestion {
+                value: if dot_mode {
+                    key.to_owned()
+                } else {
+                    word.to_owned()
+                },
+                display_override: if dot_mode { Some(word.to_owned()) } else { None },
+                description: Some(doc.to_owned()),
+                style: None,
+                extra: None,
+                // span 由调用方按前缀回填。
+                span: reedline::Span::new(0, 0),
+                append_whitespace: false,
+                match_indices: None,
+            });
+        }
+        out
     }
 }
 
-impl rustyline::validate::Validator for ReplHelper {
-    fn validate(
+impl reedline::Completer for JsCompleter {
+    fn complete(&mut self, line: &str, pos: usize) -> reedline::CompletionResult {
+        let upto = line.get(..pos.min(line.len())).unwrap_or(line);
+        // 点命令形（行首 `.` + 无空白）：补 `.help`/`.exit`。
+        let trimmed = upto.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('.')
+            && !rest.contains(char::is_whitespace)
+        {
+            let start = upto.len() - rest.len();
+            let mut items = Self::suggest(rest, true);
+            for s in &mut items {
+                s.span = reedline::Span::new(start, pos);
+            }
+            return reedline::CompletionResult::fresh(items);
+        }
+        // bare 词尾；成员形（`foo.` 前缀）暂拒（跨线程读存活上下文另案）。
+        let end = upto.len();
+        let mut start = end;
+        for (idx, ch) in upto.char_indices().rev() {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' {
+                start = idx;
+            } else {
+                break;
+            }
+        }
+        let prefix = &upto[start..end];
+        if prefix.is_empty() {
+            return reedline::CompletionResult::fresh(Vec::new());
+        }
+        if start > 0 && upto.as_bytes()[start - 1] == b'.' {
+            return reedline::CompletionResult::fresh(Vec::new());
+        }
+        let mut items = Self::suggest(prefix, false);
+        for s in &mut items {
+            s.span = reedline::Span::new(start, pos);
+        }
+        reedline::CompletionResult::fresh(items)
+    }
+}
+
+/// 提示符（左 `❄` + indicator `> ` = `❄> `，无编号；用户口径）。
+pub struct SnowPrompt;
+
+impl reedline::Prompt for SnowPrompt {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
+        Cow::Borrowed("❄")
+    }
+    fn render_prompt_right(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+    fn render_prompt_indicator(&self, _mode: reedline::PromptEditMode) -> Cow<'_, str> {
+        Cow::Borrowed("> ")
+    }
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
+        Cow::Borrowed("> ")
+    }
+    fn render_prompt_history_search_indicator(
         &self,
-        ctx: &mut rustyline::validate::ValidationContext,
-    ) -> rustyline::Result<rustyline::validate::ValidationResult> {
-        use rustyline::validate::ValidationResult;
-        if brace_balance(ctx.input()) {
-            Ok(ValidationResult::Valid(None))
+        _search: reedline::PromptHistorySearch,
+    ) -> Cow<'_, str> {
+        Cow::Borrowed("❄> ")
+    }
+}
+
+/// 括号续行校验（`brace_balance` 即真相）。
+pub struct SnowValidator;
+
+impl reedline::Validator for SnowValidator {
+    fn validate(&self, line: &str) -> reedline::ValidationResult {
+        if brace_balance(line) {
+            reedline::ValidationResult::Complete
         } else {
-            Ok(ValidationResult::Incomplete)
+            reedline::ValidationResult::Incomplete
         }
     }
 }
 
-impl rustyline::Helper for ReplHelper {}
+/// 实时高亮（`highlight_styled` 即真相）。
+pub struct SnowHighlighter;
+
+impl reedline::Highlighter for SnowHighlighter {
+    fn highlight(&self, line: &str, _cursor: usize) -> reedline::StyledText {
+        highlight_styled(line)
+    }
+}
 
 /// readline 线程主函数（阻塞 IO 独占线程；行经 `tx` 发主循环，`None` 表 EOF）。
-/// 历史加载失败忽略；退出时尽力存档。
+/// TTY 下走 reedline（IdeMenu/历史/高亮）；非 TTY（管道/黑盒）逐行直读无 ANSI。
+/// 历史加载失败忽略；`FileBackedHistory` drop 时尽力存档。
 pub fn readline_loop(
     tx: tokio::sync::mpsc::UnboundedSender<Option<String>>,
     history: Option<PathBuf>,
 ) {
-    let mut rl = match rustyline::Editor::<ReplHelper, rustyline::history::DefaultHistory>::new() {
-        Ok(rl) => rl,
-        Err(_) => {
-            // TTY 初始化失败（如无终端）：退化为 stdin 逐行读（仍无 ANSI）。
-            let stdin = std::io::stdin();
-            for line in stdin.lines() {
-                let Ok(line) = line else { break };
-                if tx.send(Some(line)).is_err() {
-                    break;
-                }
+    if !std::io::stdin().is_terminal() {
+        // 非 TTY：逐行直读（仍无 ANSI；`.exit` 等由主循环分类）。
+        let stdin = std::io::stdin();
+        for line in stdin.lines() {
+            let Ok(line) = line else { break };
+            if tx.send(Some(line)).is_err() {
+                break;
             }
-            let _ = tx.send(None);
-            return;
         }
-    };
-    rl.set_helper(Some(ReplHelper));
-    if let Some(h) = &history {
-        let _ = rl.load_history(h);
+        let _ = tx.send(None);
+        return;
     }
+    use reedline::{
+        MenuBuilder as _, default_emacs_keybindings, Emacs, FileBackedHistory, IdeMenu, KeyCode,
+        KeyModifiers, Reedline, ReedlineEvent, ReedlineMenu, Signal,
+    };
+    let mut keybindings = default_emacs_keybindings();
+    keybindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu("completion_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
+    let edit_mode = Box::new(Emacs::new(keybindings));
+    let mut rl = Reedline::create()
+        .with_completer(Box::new(JsCompleter))
+        .with_menu(ReedlineMenu::EngineCompleter(Box::new(
+            IdeMenu::default().with_name("completion_menu"),
+        )))
+        .with_highlighter(Box::new(SnowHighlighter))
+        .with_validator(Box::new(SnowValidator))
+        .with_edit_mode(edit_mode);
+    if let Some(h) = &history
+        && let Ok(db) = FileBackedHistory::with_file(1000, h.clone())
+    {
+        rl = rl.with_history(Box::new(db));
+    }
+    let prompt = SnowPrompt;
     // 上次 Ctrl-C 时刻（连击窗口判定用；首击只提示）。
     let mut last_interrupt: Option<Instant> = None;
     loop {
-        match rl.readline("❄> ") {
-            Ok(line) => {
-                let _ = rl.add_history_entry(line.as_str());
+        match rl.read_line(&prompt) {
+            Ok(Signal::Success(line)) => {
                 if tx.send(Some(line)).is_err() {
                     break;
                 }
             }
             // Ctrl-C：窗内连击即退出（`None` 表 EOF，同 Ctrl-D 路径收尾）；
             // 首击只提示，不断会话。
-            Err(rustyline::error::ReadlineError::Interrupted) => {
+            Ok(Signal::CtrlC) => {
                 let now = Instant::now();
                 if ctrl_c_should_exit(last_interrupt, now) {
                     let _ = tx.send(None);
@@ -305,15 +517,12 @@ pub fn readline_loop(
                 last_interrupt = Some(now);
                 println!("(To exit, press Ctrl+C again or Ctrl+D)");
             }
-            // Ctrl-D / EOF：退出。
-            Err(_) => {
+            // Ctrl-D / EOF / 其他中止：退出。
+            Ok(_) | Err(_) => {
                 let _ = tx.send(None);
                 break;
             }
         }
-    }
-    if let Some(h) = &history {
-        let _ = rl.save_history(h);
     }
 }
 
@@ -369,5 +578,71 @@ mod tests {
         assert!(out.len() > line.len(), "no ANSI emitted:\n{out}");
         console::set_colors_enabled(false);
         assert_eq!(highlight_line(line), line);
+    }
+
+    #[test]
+    fn styled_roundtrip() {
+        // StyledText 拼回即原文（TTY 渲染不断行不错位）。
+        for line in ["const s = 'hi' + 42; // c", "❄> emoji", "`a${b}c`", ""] {
+            let st = highlight_styled(line);
+            assert_eq!(st.raw_string(), line, "{line}");
+        }
+    }
+
+    #[test]
+    fn prompt_shape() {
+        // 提示符保持 ❄>（左 ❄ + indicator >），无编号无 irb 字样。
+        let p = SnowPrompt;
+        use reedline::Prompt as _;
+        assert_eq!(p.render_prompt_left(), "❄");
+        assert_eq!(p.render_prompt_indicator(reedline::PromptEditMode::Default), "> ");
+        assert_eq!(p.render_prompt_right(), "");
+    }
+
+    #[test]
+    fn validator_mirrors_brace() {
+        // 校验器即 brace_balance 的镜像（正常/报错/边界）。
+        use reedline::Validator as _;
+        let v = SnowValidator;
+        assert!(matches!(
+            v.validate("1 + 1"),
+            reedline::ValidationResult::Complete
+        ));
+        assert!(matches!(
+            v.validate("function f() {"),
+            reedline::ValidationResult::Incomplete
+        ));
+        assert!(matches!(v.validate("}"), reedline::ValidationResult::Incomplete));
+    }
+
+    #[test]
+    fn completer_faces() {
+        // 补全三件：正常（bare 词带文档）+ 点命令形 + 边界（空前缀/成员形拒答）。
+        use reedline::Completer as _;
+        let mut c = JsCompleter;
+        // 正常：`cons` → console（value 全词 + description 进右侧 pane）。
+        let items = match c.complete("cons", 4) {
+            reedline::CompletionResult::Fresh { suggestions, .. } => suggestions.to_vec(),
+            _ => panic!("expected fresh"),
+        };
+        let console = items.iter().find(|s| s.value == "console").expect("console");
+        assert_eq!(console.description.as_deref(), Some("global console object"));
+        assert_eq!((console.span.start, console.span.end), (0, 4));
+        // 点命令：`.he` → 显示 `.help`（value 补剩余部分，不吞点）。
+        let dots = match c.complete(".he", 3) {
+            reedline::CompletionResult::Fresh { suggestions, .. } => suggestions.to_vec(),
+            _ => panic!("expected fresh"),
+        };
+        let help = dots.iter().find(|s| s.value == "help").expect("help");
+        assert_eq!(help.display_override.as_deref(), Some(".help"));
+        // 报错/边界：空前缀与成员形一律空集（不炸菜单）。
+        for (line, pos) in [("", 0), ("console.", 8), ("1 + ", 4)] {
+            match c.complete(line, pos) {
+                reedline::CompletionResult::Fresh { suggestions, .. } => {
+                    assert!(suggestions.is_empty(), "{line:?}")
+                }
+                _ => panic!("expected fresh for {line:?}"),
+            }
+        }
     }
 }

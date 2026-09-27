@@ -71,6 +71,20 @@ fn repl_exit_functions() {
 }
 
 #[test]
+fn repl_error_prints_stack() {
+    // 报错：有栈错误打 node 形多行（定位行 + `at` 帧），会话继续。
+    let (stdout, stderr, code) =
+        repl_session("function f() { throw new Error(\"boom\") }\nf()\n40 + 2\n.exit\n");
+    assert_eq!(code, 0);
+    assert!(stderr.contains("Error: boom"), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("    at f (repl.js:"),
+        "missing stack frame:\n{stderr}"
+    );
+    assert!(stdout.contains("42\n"), "stdout:\n{stdout}");
+}
+
+#[test]
 fn repl_exit_functions_not_in_scripts() {
     // 边界：退出函数是 REPL 专属，脚本里不可见（不污染用户全局）。
     for name in ["exit", "quit", "q"] {

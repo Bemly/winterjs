@@ -232,6 +232,8 @@ FFI 仅经 `libc` 绑定）/`crossterm 0.29`（无 `build.rs`/`links`，win 侧 
 门控红线（配错即变 ⚠️/❌）：禁 `sqlite`（拖 `rusqlite/bundled` 的 C SQLite）、
 禁 `system_clipboard`（拖 `arboard` 平台 shims）、禁 `sqlite-dynlib`；
 `libc` 特性（`crossterm/libc` 透传）不主动开。
+接线直引（2026-09-28，C 档批后执行）：`nu-ansi-term = "0.50"`（Highlighter 的
+`StyledText` 配色用；锁内已有 0.50.3，零新增传递依赖，`Cargo.toml` §4 已引）。
 反转说明：§14 原“`reedline`（→`rustyline`）”是无浮窗文档需求时的选择；
 C 档要 IRB 式右侧文档 pane（`IdeMenu`+`DescriptionMode::PreferRight`），
 `rustyline 18`（`Candidate::display` 仅列表）做不到，故反转；若 C 档被否决，

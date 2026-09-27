@@ -26,15 +26,19 @@ const WORDMARK_SVG: &str = include_str!("../assets/winterjs.svg");
 const DARK_FILL: &str = "#16233a";
 const LIGHT_FILL: &str = "#f2f5f9";
 
-/// 图形展示列数（logo 窄些，wordmark 宽些；行数按 cell 1:2 换算）。
-/// 取小值：部分终端忽略尺寸参数按像素原尺寸直出，像素预缩才是真兜底。
-const LOGO_COLS: u32 = 20;
-const SVG_COLS: u32 = 36;
-/// logo 预缩像素宽（1261 原图太大；忽略 cell 参数的终端会原尺寸直出即灾难，
-/// 所以像素本身先缩到展示尺寸附近——参数 honor 与否都不炸）。
-const LOGO_PX_W: u32 = 256;
-/// wordmark 渲染像素宽（矢量直接按此 render，保证清晰；同上，取展示尺寸）。
-const SVG_PX_W: u32 = 384;
+/// 横式 lockup（2026-09-28）：logo 与字牌并排等高，一张图一次发射。
+/// 总高 4 行（logo 8 列 + 2 列缝 + 字牌 30 列 ≈ 40 列）。
+/// 取小值：部分终端忽略尺寸参数按像素原尺寸直出，像素本身取展示尺寸——
+/// 参数 honor 走 cell 精确尺寸，参数被忽略走小像素兜底，两边都不炸。
+const LOCKUP_ROWS: u32 = 4;
+/// logo 像素边长（1261 原图拉齐正方形，1% 拉伸不可见）。
+const LOGO_PX: u32 = 128;
+/// 字牌像素高（矢量按高直接 render，保证清晰）。
+const WORD_PX_H: u32 = 128;
+/// 两件之间像素缝。
+const GAP_PX: u32 = 16;
+/// 两件之间展示列数。
+const GAP_COLS: u32 = 2;
 /// Kitty 分块转义每块 base64 字符数（viuer 同值）。
 const KITTY_CHUNK: usize = 4096;
 
@@ -177,16 +181,21 @@ fn png_of(img: &image::DynamicImage) -> Option<Vec<u8>> {
     Some(buf)
 }
 
-/// logo 解码 + 预缩（`jxl-oxide` 的 `image` 集成直出 DynamicImage，含 alpha）。
-fn decode_logo() -> Option<image::DynamicImage> {
+/// logo 解码 + 拉齐正方形（`jxl-oxide` 的 `image` 集成直出 DynamicImage，含 alpha；
+/// 1% 拉伸不可见，lockup 拼版要求严丝合缝）。
+fn decode_logo() -> Option<image::RgbaImage> {
     let cursor = std::io::Cursor::new(LOGO_JXL);
     let decoder = jxl_oxide::integration::JxlDecoder::new(cursor).ok()?;
-    image::DynamicImage::from_decoder(decoder)
-        .ok()
-        .map(|img| img.thumbnail(LOGO_PX_W, LOGO_PX_W))
+    let img = image::DynamicImage::from_decoder(decoder).ok()?;
+    Some(image::imageops::resize(
+        &img.to_rgba8(),
+        LOGO_PX,
+        LOGO_PX,
+        image::imageops::FilterType::Lanczos3,
+    ))
 }
 
-/// wordmark 光栅化（矢量按目标宽直接 render；无字体/解析失败即 None→ASCII 回落）。
+/// wordmark 光栅化（矢量按目标高直接 render；无字体/解析失败即 None→ASCII 回落）。
 fn render_wordmark() -> Option<image::DynamicImage> {
     let owned;
     let src = if bg_is_light() {
@@ -202,8 +211,8 @@ fn render_wordmark() -> Option<image::DynamicImage> {
     if size.width() <= 0.0 || size.height() <= 0.0 {
         return None;
     }
-    let scale = SVG_PX_W as f32 / size.width();
-    let (w, h) = (SVG_PX_W, (size.height() * scale).max(1.0) as u32);
+    let scale = WORD_PX_H as f32 / size.height();
+    let (w, h) = ((size.width() * scale).max(1.0) as u32, WORD_PX_H);
     let mut pix = resvg::tiny_skia::Pixmap::new(w, h)?;
     resvg::render(
         &tree,
@@ -213,6 +222,36 @@ fn render_wordmark() -> Option<image::DynamicImage> {
     let raw = pix.data().to_vec();
     let buf = image::RgbaImage::from_raw(w, h, raw)?;
     Some(image::DynamicImage::ImageRgba8(buf))
+}
+
+/// 横式 lockup 拼版：logo 左 + 字牌右，等高（`LOCKUP_ROWS` 行），透明底。
+/// 任一素材失败即 None→调用方回落 ASCII（半幅不如全 ASCII）。
+fn lockup() -> Option<image::DynamicImage> {
+    let logo = decode_logo()?;
+    let word = render_wordmark()?;
+    let (lw, lh) = (logo.width(), logo.height());
+    let (ww, wh) = (word.width(), word.height());
+    let h = lh.max(wh).max(1);
+    let w = lw + GAP_PX + ww;
+    let mut canvas = image::RgbaImage::new(w, h);
+    let y_logo = (h - lh) / 2;
+    let y_word = (h - wh) / 2;
+    image::imageops::overlay(&mut canvas, &logo, 0, y_logo as i64);
+    image::imageops::overlay(&mut canvas, &word, (lw + GAP_PX) as i64, y_word as i64);
+    Some(image::DynamicImage::ImageRgba8(canvas))
+}
+
+/// lockup 展示列数（logo 2×行 + 缝 + 字牌按比换算；cell 高≈2 倍宽）。
+fn lockup_cols(word_px_w: u32, word_px_h: u32) -> u32 {
+    LOCKUP_ROWS * 2 + GAP_COLS + cell_cols(LOCKUP_ROWS, word_px_w, word_px_h)
+}
+
+/// cell 列数换算（`cell_rows` 逆运算；整数截断，至少 1）。
+fn cell_cols(rows: u32, w_px: u32, h_px: u32) -> u32 {
+    if h_px == 0 {
+        return 1;
+    }
+    ((rows as u64 * w_px as u64) / h_px as u64 * 2).max(1) as u32
 }
 
 /// cell 行数换算（cell 高≈2 倍宽，viuer `find_best_fit` 同口径）。
@@ -265,32 +304,22 @@ pub fn iterm_seq(png: &[u8], cols: u32, rows: u32) -> Vec<u8> {
     format!("\x1b]1337;File=inline=1;preserveAspectRatio=1;size={};width={cols};height={rows}:{b64}\x07", png.len()).into_bytes()
 }
 
-/// 图形 banner 发射（stderr；任一步失败即 None→调用方回落 ASCII）。
+/// 图形 banner 发射（stderr；lockup 任一步失败即 false→调用方回落 ASCII）。
 fn print_graphics(p: Proto) -> bool {
     let mut err = std::io::stderr().lock();
-    // avif 主图 + svg 字牌，任一失败整单回落（半幅 banner 不如全 ASCII）。
-    let logo = decode_logo().and_then(|img| {
-        let (w, h) = (img.width(), img.height());
-        png_of(&img).map(|png| (png, w, h, LOGO_COLS))
-    });
-    let word = render_wordmark().and_then(|img| {
-        let (w, h) = (img.width(), img.height());
-        png_of(&img).map(|png| (png, w, h, SVG_COLS))
-    });
-    let (Some((lpng, lw, lh, lcols)), Some((wpng, ww, wh, wcols))) = (logo, word) else {
+    let Some(img) = lockup() else {
         return false;
     };
+    let (w, h) = (img.width(), img.height());
+    let Some(png) = png_of(&img) else {
+        return false;
+    };
+    // 字牌像素宽按 lockup 实测回填列数（logo 2×行 + 缝 + 字牌换算）。
+    let word_px_w = w.saturating_sub(LOGO_PX + GAP_PX);
+    let cols = lockup_cols(word_px_w, h);
     let ok = match p {
-        Proto::Kitty => {
-            let a = kitty_seq(&lpng, lw, lh, lcols);
-            let b = kitty_seq(&wpng, ww, wh, wcols);
-            err.write_all(&a).and_then(|_| err.write_all(&b)).is_ok()
-        }
-        Proto::Iterm => {
-            let a = iterm_seq(&lpng, lcols, cell_rows(lcols, lw, lh));
-            let b = iterm_seq(&wpng, wcols, cell_rows(wcols, ww, wh));
-            err.write_all(&a).and_then(|_| err.write_all(&b)).is_ok()
-        }
+        Proto::Kitty => err.write_all(&kitty_seq(&png, w, h, cols)).is_ok(),
+        Proto::Iterm => err.write_all(&iterm_seq(&png, cols, LOCKUP_ROWS)).is_ok(),
     };
     if !ok {
         return false;
@@ -431,15 +460,14 @@ mod tests {
 
     #[test]
     fn decode_and_render_real_assets() {
-        // 真素材端到端（avif 解码 + svg 光栅 + PNG 编码；本机有系统字体）。
-        let logo = decode_logo().expect("avif decodes");
-        assert!(logo.width() <= LOGO_PX_W);
-        let png = png_of(&logo).expect("png encodes");
+        // 真素材端到端（jxl 解码 + svg 光栅 + lockup 拼版 + PNG 编码；本机有系统字体）。
+        let pic = lockup().expect("lockup composites");
+        assert_eq!((pic.width(), pic.height()), (627, 128));
+        let png = png_of(&pic).expect("png encodes");
         assert!(png.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"), "png magic");
-        let word = render_wordmark().expect("svg renders");
-        assert_eq!(word.width(), SVG_PX_W);
-        let _ = png_of(&word).expect("png encodes");
+        // 展示列数：logo 8 + 缝 2 + 字牌 30 = 40。
+        assert_eq!(lockup_cols(483, 128), 40);
         // 转义序列可发射（载荷往返见上两单测）。
-        assert!(!kitty_seq(&png, logo.width(), logo.height(), LOGO_COLS).is_empty());
+        assert!(!kitty_seq(&png, pic.width(), pic.height(), 40).is_empty());
     }
 }

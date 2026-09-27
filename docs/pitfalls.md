@@ -227,6 +227,8 @@
 - 4.219 原型污染 setter 探针：native 内部写 JS 层 grep 不到即结构性偏离（2026-09-27，P2-crypto）
 - 4.220 自家抛错与真机逐字同形时禁"修正"，修上游误喂（2026-09-27，P2-repl）
 - 4.221 同流自回显即真机亦无限递归：repl 黑盒入出分离（2026-09-27，P2-repl）
+- 4.222 补全分支劫持含引号成员行：成员→路径→等号段→拒答→bare（2026-09-27，P2-repl）
+- 4.223 allowBlockingCompletions 是 fs 补全面开关，无之回空（2026-09-27，P2-repl）
 
 ## 条目
 
@@ -4040,3 +4042,26 @@
   长驻探针输出落盘（4.45/4.93 重申）。
 - 复现：`tests/node/repl.rs::p2_repl_legacy_positional` 初版（已改）。
 - 推广铁律：**REPL/流黑盒入与出恒分离；同 duplex 必须 noop-write 或断言侧单向**。
+
+### 4.222 补全分支劫持含引号成员行：成员→路径→等号段→拒答→bare（2026-09-27，P2-repl）
+
+- 症状：`obj["one"].toFi` 一直回空，而无引号形正常；`nonExisting.f` 回出
+  `nonExisting.fetch`（bare 穿透）。
+- 根因：① 未闭合串分支的正则在成员行末引号处误命中（`["one"]` 的关引号被当
+  开引号），劫持整行走 fs；② 成员求值失败后穿透到 bare，残段当前缀乱配全局键。
+- 修法：分支重排——成员（成形求值失败即拒，不穿透）→路径→等号段→拒答集→bare；
+  bare 仅无点行（有点即拒）。
+- 复现：`test-repl-tab-complete-computed-props` 全红转全绿；`nonExisting.*` 回空。
+- 推广铁律：**多分支派发按"结构确定性"降序排；失败分"解析不成"（另寻他路）与
+  "求值不成"（即拒），后者禁穿透**。
+
+### 4.223 allowBlockingCompletions 是 fs 补全面开关，无之回空（2026-09-27，P2-repl）
+
+- 症状：本机探针 `complete('fs.readFileSync("../fixtures/x')` 回空，套件内同调用却有值。
+- 根因：套件经 helper 传了 `allowBlockingCompletions: true`；无此旗真机 fs 面回
+  `[[], null]`（defer）。另：既存目录如内列子项裸名且 completeOn 置空（反直觉，
+  实测为准）。
+- 修法：fs 分支镜像真机表（目录→子项裸名+空 completeOn；同级前缀过滤；坏径空）。
+- 复现：`test-repl-tab-complete-files`。
+- 推广铁律：**探针复刻套件必须连 helper 的透传 options 一起抄**（`startNewREPLServer`
+  的 `terminal: true` + `allowBlockingCompletions: true` 皆是行为开关）。

@@ -393,3 +393,19 @@ G1/G2/G3/G9 已收官。）
   setupHistory（3）/useGlobal（reset-event）/internal/repl（11）/ASSERT 散件 18/
   MUSTCALL 4/sigint 2（spawn 记档面）/杂项，另轮。`--interactive` 旗缺口
   （array-prototype-tempering HOST，wjs=-9/TIMEOUT）记 D1-CLI 另案。
+
+## 2026-09-27 P2-repl R3：子集补全 +8（31→39/82）
+
+- 转绿：save-load（成员补全）/computed-props（串数下标+大小写不敏感）/
+  buffer（键枚举去下标/非标识符）/files（fs 路径：既存目录列子项裸名）/
+  new-expression（new 剥除）/nosideeffects（调用形恒拒）/custom-completer
+  （同步返回形包回调）/on-editor-mode（公共前缀收敛）。
+- 关键真机口径（逐项实测）：补全过滤大小写不敏感；`allowBlockingCompletions`
+  为 fs 面开关（无之回空）；目录如内列子项且 completeOn 置空；分组/三元纯
+  表达式可求值（调用形才拒）；bare `Uin` 经 getOwnPropertyNames（SM 全局键
+  非枚举，keys 不可用）。
+- 坑：path 分支劫持含引号成员行（分支重排：成员→路径→等号段→拒答→bare；
+  walk-fail 即拒不穿透）；模板字面量拒答误杀纯串（纯模板放行/tag·插值拒）；
+  同流自回显教训重申（4.221）。
+- getters 套件 5/7：余 proxy 两块需 `isProxy`（恒 false 引擎缺口，native 活，
+  另案问用户）；plain/getter 拒绝面全过。黑盒新增 `p2_repl_subset_complete`。

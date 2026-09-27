@@ -54,11 +54,14 @@ arg:
   serve:
     help: "通过 HTTP 提供目录或 JS 处理器服务（H1/H2/H3；TLS 经 --cert/--key 或 ACME）"
     value: "目录"
+  db:
+    help: "查看 turso/SQLite 数据库文件（默认列出全部表，或执行 --exec SQL）"
+    value: "文件"
   args:
     help: "传给 --run 的脚本参数（即 `process.argv.slice(2)`）"
     value: "参数"
   dry_run:
-    help: "只求解/校验并打印，不写任何文件（add/install/remove/uninstall/publish/init/upgrade、--serve 的 ACME）"
+    help: "只求解/校验并打印，不写任何文件（add/install/remove/uninstall/publish/init/upgrade、--serve 的 ACME、--db 的计划打印）"
   registry:
     help: "Registry 基地址（仅软件包动作 add/install/publish/login/init；默认 https://registry.npmjs.org）"
     value: "注册表地址"
@@ -119,22 +122,28 @@ arg:
     help: "用 Let's Encrypt 生产环境（仅 serve；默认 staging，防限流误触）"
   schema:
     help: "改为打印配置文件的 JSON Schema（仅 config）"
+  exec:
+    help: "对数据库执行的 SQL（仅 db；默认列出全部表）"
+    value: "SQL"
+  storage_path:
+    help: "全局 storage/localStorage 的数据库文件（仅 run/eval/test/repl/serve；默认 ./winterjs-storage.db）"
+    value: "文件"
   allow_read:
-    help: "允许文件系统读取（仅 run/eval/test/repl；可选：--allow-read=<路径>[,<路径>...]）"
+    help: "允许文件系统读取（仅 run/eval/test/repl/db；可选：--allow-read=<路径>[,<路径>...]）"
     value: "路径"
   allow_write:
-    help: "允许文件系统写入（仅 run/eval/test/repl；可选：--allow-write=<路径>[,<路径>...]）"
+    help: "允许文件系统写入（仅 run/eval/test/repl/db；可选：--allow-write=<路径>[,<路径>...]）"
     value: "路径"
   allow_env:
-    help: "允许访问环境变量（仅 run/eval/test/repl；可选：--allow-env=<变量名>[,<变量名>...]）"
+    help: "允许访问环境变量（仅 run/eval/test/repl/db；可选：--allow-env=<变量名>[,<变量名>...]）"
     value: "变量名"
   allow_run:
-    help: "允许派生子进程（仅 run/eval/test/repl；可选：--allow-run=<命令>[,<命令>...]）"
+    help: "允许派生子进程（仅 run/eval/test/repl/db；可选：--allow-run=<命令>[,<命令>...]）"
     value: "命令"
   allow_ffi:
-    help: "允许 FFI（仅 run/eval/test/repl；dlopen 本地库）"
+    help: "允许 FFI（仅 run/eval/test/repl/db；dlopen 本地库）"
   allow_all:
-    help: "允许一切（仅 run/eval/test/repl；关闭沙箱）"
+    help: "允许一切（仅 run/eval/test/repl/db；关闭沙箱）"
   help:
     help: "打印帮助信息"
   version:

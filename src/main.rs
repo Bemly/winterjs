@@ -170,6 +170,12 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
     if let Some(msg) = cli_modifier_scope(&cli, matches) {
         return Err(Error::Other(format!("{msg} (see --help)")));
     }
+    // S1：WinterCG 存储默认库（修饰 flag，归属已由 scope 保证）。
+    if cli.run.is_some() || cli.eval.is_some() || cli.test.is_some() || cli.repl || cli.serve.is_some() {
+        crate::builtins::storage::set_default_path(
+            cli.storage_path.clone().map(|p| p.to_string_lossy().into_owned()),
+        );
+    }
     if let Some(target) = cli.run {
         install_permissions(&cli.perms);
         let target = target.to_string_lossy().into_owned();
@@ -335,16 +341,96 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
         }
         return serve::serve(&opts).await;
     }
+    if let Some(path) = cli.db {
+        install_permissions(&cli.perms);
+        return db_inspect(&path, cli.exec.as_deref(), cli.dry_run).await;
+    }
     Err(Error::Other("specify an action (see --help)".into()))
+}
+
+/// `--db` turso 透传查库（S1）：只读 SQL 走 query 打印 `{columns, rows}`，
+/// 写 SQL 走 execute 打印 `{changes}`；缺省 SQL 列出全部表。沙箱内走
+/// `check_read`（读）/`check_write`（写）门控。
+async fn db_inspect(path: &std::path::Path, exec: Option<&str>, dry_run: bool) -> Result<(), Error> {
+    use base64::Engine as _;
+    let path_s = path.to_string_lossy().into_owned();
+    let sql = exec
+        .unwrap_or("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        .to_string();
+    if dry_run {
+        println!("db dry-run: file={path_s} sql={sql}");
+        return Ok(());
+    }
+    if let Err(msg) = permissions::check_read(&path_s) {
+        return Err(Error::Other(msg));
+    }
+    let head = sql.trim_start().to_ascii_uppercase();
+    let read_only = ["SELECT", "WITH", "EXPLAIN", "PRAGMA", "VALUES"]
+        .iter()
+        .any(|p| head.starts_with(p));
+    if !read_only {
+        if let Err(msg) = permissions::check_write(&path_s) {
+            return Err(Error::Other(msg));
+        }
+    }
+    tracing::debug!(target: "winterjs::storage", path_len = path_s.len(), sql_len = sql.len(), "db inspect");
+    let db = turso::Builder::new_local(&path_s)
+        .build()
+        .await
+        .map_err(|e| Error::Other(format!("db open failed: {e}")))?;
+    let conn = db
+        .connect()
+        .map_err(|e| Error::Other(format!("db connect failed: {e}")))?;
+    if read_only {
+        let mut rows = conn
+            .query(&sql, turso::params::Params::Positional(Vec::new()))
+            .await
+            .map_err(|e| Error::Other(format!("db query failed: {e}")))?;
+        let columns = rows.column_names();
+        let mut out = Vec::new();
+        loop {
+            match rows.next().await {
+                Ok(None) => break,
+                Ok(Some(row)) => {
+                    let mut vals = Vec::with_capacity(row.column_count());
+                    for i in 0..row.column_count() {
+                        let v = row
+                            .get_value(i)
+                            .map_err(|e| Error::Other(format!("db row failed: {e}")))?;
+                        vals.push(match v {
+                            turso::Value::Null => serde_json::Value::Null,
+                            turso::Value::Integer(n) => serde_json::json!(n),
+                            turso::Value::Real(f) => serde_json::json!(f),
+                            turso::Value::Text(s) => serde_json::json!(s),
+                            turso::Value::Blob(b) => serde_json::json!({
+                                "$blob": base64::engine::general_purpose::STANDARD.encode(b)
+                            }),
+                        });
+                    }
+                    out.push(serde_json::Value::Array(vals));
+                }
+                Err(e) => return Err(Error::Other(format!("db row failed: {e}"))),
+            }
+        }
+        println!("{}", serde_json::json!({ "columns": columns, "rows": out }));
+    } else {
+        let n = conn
+            .execute(&sql, turso::params::Params::Positional(Vec::new()))
+            .await
+            .map_err(|e| Error::Other(format!("db execute failed: {e}")))?;
+        println!("{}", serde_json::json!({ "changes": n }));
+    }
+    Ok(())
 }
 
 /// 修饰 flag → 归属动作校验（AGENTS §0.8）。
 /// 返回首个错配的 `"--flag only works with --action"`，全对回 None。
 /// 归属（与 `--help` 括号注同源）：
-/// dry-run→add/install/remove/uninstall/publish/init/upgrade/serve；registry→add/install/publish/login/init；
+/// dry-run→add/install/remove/uninstall/publish/init/upgrade/serve/db；registry→add/install/publish/login/init；
 /// tag→publish；token/oauth→login；name/yes/force→init；filter/test-name-pattern→test；
 /// watch→test/run/serve；dir/host/port/handler/limit-rps/cert/key/acme-*→serve；schema→config；
-/// allow-*→run/eval/test/repl。-v/-l 全局，不校验。
+/// exec→db；storage-path→run/eval/test/repl/serve；
+/// allow-*→run/eval/test/repl/db。-v/-l 全局，不校验。
 fn cli_modifier_scope(cli: &Cli, matches: &clap::ArgMatches) -> Option<String> {
     use clap::parser::ValueSource;
     let has_add = !cli.add.is_empty();
@@ -360,9 +446,9 @@ fn cli_modifier_scope(cli: &Cli, matches: &clap::ArgMatches) -> Option<String> {
             .is_some_and(|s| s == ValueSource::CommandLine)
     };
     if cli.dry_run
-        && !(has_add || has_install || has_remove || has_uninstall || cli.publish || cli.init.is_some() || cli.upgrade || cli.serve.is_some())
+        && !(has_add || has_install || has_remove || has_uninstall || cli.publish || cli.init.is_some() || cli.upgrade || cli.serve.is_some() || cli.db.is_some())
     {
-        return fail("--dry-run", "--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve");
+        return fail("--dry-run", "--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve/--db");
     }
     if cli.registry.is_some()
         && !(has_add || has_install || cli.publish || cli.login || cli.init.is_some())
@@ -436,6 +522,14 @@ fn cli_modifier_scope(cli: &Cli, matches: &clap::ArgMatches) -> Option<String> {
     if cli.schema && !cli.config {
         return fail("--schema", "--config");
     }
+    if cli.exec.is_some() && cli.db.is_none() {
+        return fail("--exec", "--db");
+    }
+    if cli.storage_path.is_some()
+        && !(cli.run.is_some() || cli.eval.is_some() || cli.test.is_some() || cli.repl || cli.serve.is_some())
+    {
+        return fail("--storage-path", "--run/--eval/--test/--repl/--serve");
+    }
     let perms = &cli.perms;
     let perm_given = perms.allow_read.is_some()
         || perms.allow_write.is_some()
@@ -443,8 +537,8 @@ fn cli_modifier_scope(cli: &Cli, matches: &clap::ArgMatches) -> Option<String> {
         || perms.allow_run.is_some()
         || perms.allow_ffi
         || perms.allow_all;
-    if perm_given && !(cli.run.is_some() || cli.eval.is_some() || cli.test.is_some() || cli.repl) {
-        return fail("--allow-*", "--run/--eval/--test/--repl");
+    if perm_given && !(cli.run.is_some() || cli.eval.is_some() || cli.test.is_some() || cli.repl || cli.db.is_some()) {
+        return fail("--allow-*", "--run/--eval/--test/--repl/--db");
     }
     // 尾部透传只归 --run：`args` 是 trailing 收集，未知旗形（如 `--env-file=x`）
     // 会落进来；非 --run 动作携带来即未知 flag 误写，不静默吞掉（§0.8）。

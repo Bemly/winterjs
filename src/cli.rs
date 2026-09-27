@@ -108,12 +108,16 @@ pub struct Cli {
     #[arg(short = 's', long = "serve", value_name = "DIR", num_args = 0..=1, default_missing_value = ".")]
     pub serve: Option<String>,
 
+    /// Inspect a turso/SQLite database file (prints tables by default, or runs --exec SQL)
+    #[arg(short = 'b', long = "db", value_name = "FILE")]
+    pub db: Option<PathBuf>,
+
     // ── 修饰（只在对应动作下生效） ────────────────────────────────────
     /// Script arguments for --run (as `process.argv.slice(2)`)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 
-    /// Resolve/validate only and print, do not write anything (add/install/remove/uninstall/publish/init/upgrade, --serve ACME)
+    /// Resolve/validate only and print, do not write anything (add/install/remove/uninstall/publish/init/upgrade, --serve ACME, --db plan print)
     #[arg(short = 'd', long)]
     pub dry_run: bool,
 
@@ -205,6 +209,14 @@ pub struct Cli {
     #[arg(short = 'S', long)]
     pub schema: bool,
 
+    /// SQL to run against the database (db only; default lists tables)
+    #[arg(long, value_name = "SQL")]
+    pub exec: Option<String>,
+
+    /// Storage database file for global storage/localStorage (run/eval/test/repl/serve only; default ./winterjs-storage.db)
+    #[arg(long, value_name = "FILE")]
+    pub storage_path: Option<PathBuf>,
+
     #[command(flatten)]
     pub perms: PermissionArgs,
 }
@@ -213,22 +225,22 @@ pub struct Cli {
 /// 旗标无值 = 该类全开；`=a,b` 或重复出现 = 允许清单。
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PermissionArgs {
-    /// Allow filesystem reads (run/eval/test/repl only; optionally: --allow-read=<path>[,<path>...])
+    /// Allow filesystem reads (run/eval/test/repl/db only; optionally: --allow-read=<path>[,<path>...])
     #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
     pub allow_read: Option<Vec<String>>,
-    /// Allow filesystem writes (run/eval/test/repl only; optionally: --allow-write=<path>[,<path>...])
+    /// Allow filesystem writes (run/eval/test/repl/db only; optionally: --allow-write=<path>[,<path>...])
     #[arg(short = 'W', long, value_name = "PATH", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
     pub allow_write: Option<Vec<String>>,
-    /// Allow environment variable access (run/eval/test/repl only; optionally: --allow-env=<VAR>[,<VAR>...])
+    /// Allow environment variable access (run/eval/test/repl/db only; optionally: --allow-env=<VAR>[,<VAR>...])
     #[arg(long, value_name = "VAR", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
     pub allow_env: Option<Vec<String>>,
-    /// Allow spawning child processes (run/eval/test/repl only; optionally: --allow-run=<cmd>[,<cmd>...])
+    /// Allow spawning child processes (run/eval/test/repl/db only; optionally: --allow-run=<cmd>[,<cmd>...])
     #[arg(long, value_name = "CMD", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
     pub allow_run: Option<Vec<String>>,
-    /// Allow FFI (run/eval/test/repl only; dlopen of native libraries)
+    /// Allow FFI (run/eval/test/repl/db only; dlopen of native libraries)
     #[arg(long)]
     pub allow_ffi: bool,
-    /// Allow everything (run/eval/test/repl only; no sandbox)
+    /// Allow everything (run/eval/test/repl/db only; no sandbox)
     #[arg(short = 'A', long)]
     pub allow_all: bool,
 }
@@ -291,6 +303,9 @@ impl Cli {
         }
         if self.serve.is_some() {
             v.push("--serve");
+        }
+        if self.db.is_some() {
+            v.push("--db");
         }
         v
     }
@@ -421,7 +436,7 @@ const COMPAT_ACTION_FLAGS: &[&str] = &[
     "-r", "--run", "-e", "--eval", "-c", "--config", "--completions", "-m", "--man",
     "-a", "--add", "-i", "--install", "-R", "--remove", "-U", "--uninstall",
     "-p", "--publish", "--login", "-u", "--upgrade",
-    "-I", "--init", "--repl", "-t", "--test", "-C", "--completions", "-L", "--lint", "-f", "--fmt", "-s", "--serve",
+    "-I", "--init", "--repl", "-t", "--test", "-C", "--completions", "-L", "--lint", "-f", "--fmt", "-s", "--serve", "-b", "--db",
 ];
 
 /// 剥除 node 兼容旗；返回（过滤后 argv，含 bin；被剥旗原文，execArgv 保真）。

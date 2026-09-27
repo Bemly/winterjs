@@ -54,11 +54,14 @@ arg:
   serve:
     help: "Serve a directory or a JS handler over HTTP (H1/H2/H3; TLS via --cert/--key or ACME)"
     value: "DIR"
+  db:
+    help: "Inspect a turso/SQLite database file (prints tables by default, or runs --exec SQL)"
+    value: "FILE"
   args:
     help: "Script arguments for --run (as `process.argv.slice(2)`)"
     value: "ARGS"
   dry_run:
-    help: "Resolve/validate only and print, do not write anything (add/install/remove/uninstall/publish/init/upgrade, --serve ACME)"
+    help: "Resolve/validate only and print, do not write anything (add/install/remove/uninstall/publish/init/upgrade, --serve ACME, --db plan print)"
   registry:
     help: "Registry base URL for package actions (add/install/publish/login/init; default https://registry.npmjs.org)"
     value: "REGISTRY"
@@ -119,22 +122,28 @@ arg:
     help: "Use Let's Encrypt production (serve only; default staging, safe against rate limits)"
   schema:
     help: "Print the JSON Schema of the settings file instead (config only)"
+  exec:
+    help: "SQL to run against the database (db only; default lists tables)"
+    value: "SQL"
+  storage_path:
+    help: "Storage database file for global storage/localStorage (run/eval/test/repl/serve only; default ./winterjs-storage.db)"
+    value: "FILE"
   allow_read:
-    help: "Allow filesystem reads (run/eval/test/repl only; optionally: --allow-read=<path>[,<path>...])"
+    help: "Allow filesystem reads (run/eval/test/repl/db only; optionally: --allow-read=<path>[,<path>...])"
     value: "PATH"
   allow_write:
-    help: "Allow filesystem writes (run/eval/test/repl only; optionally: --allow-write=<path>[,<path>...])"
+    help: "Allow filesystem writes (run/eval/test/repl/db only; optionally: --allow-write=<path>[,<path>...])"
     value: "PATH"
   allow_env:
-    help: "Allow environment variable access (run/eval/test/repl only; optionally: --allow-env=<VAR>[,<VAR>...])"
+    help: "Allow environment variable access (run/eval/test/repl/db only; optionally: --allow-env=<VAR>[,<VAR>...])"
     value: "VAR"
   allow_run:
-    help: "Allow spawning child processes (run/eval/test/repl only; optionally: --allow-run=<cmd>[,<cmd>...])"
+    help: "Allow spawning child processes (run/eval/test/repl/db only; optionally: --allow-run=<cmd>[,<cmd>...])"
     value: "CMD"
   allow_ffi:
-    help: "Allow FFI (run/eval/test/repl only; dlopen of native libraries)"
+    help: "Allow FFI (run/eval/test/repl/db only; dlopen of native libraries)"
   allow_all:
-    help: "Allow everything (run/eval/test/repl only; no sandbox)"
+    help: "Allow everything (run/eval/test/repl/db only; no sandbox)"
   help:
     help: "Print help"
   version:

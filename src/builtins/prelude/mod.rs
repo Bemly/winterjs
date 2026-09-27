@@ -11,6 +11,7 @@ mod events;
 mod fetch;
 mod http;
 mod serve;
+mod storage;
 mod streams;
 mod url;
 
@@ -29,6 +30,7 @@ pub static PRELUDE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         events::EVENTS_JS,
         http::HTTP_JS,
         serve::SERVE_JS,
+        storage::STORAGE_JS,
         streams::STREAMS_JS,
         blob::BLOB_JS,
         fetch::FETCH_JS,

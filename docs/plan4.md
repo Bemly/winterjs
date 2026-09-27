@@ -137,6 +137,12 @@ TLS: 既有 TlsListener           WS: axum upgrade → tungstenite 会话
    end-entity 或直接复用 serve 黑盒同款。
 5. H3 环境：`curl --http3-only` 不可用即 harness 探针替代，不硬等外网。
 
+## §7 不做（书面）
+
+- `node:http` 不动（并存，另案演进；adapter 薄层思想保留给用户态）。
+- H3 之前 `Outgo
+...[truncated 615 chars]
+
 ## §8 S1 — WinterCG 侧存储（2026-09-28 新增，用户拍板）
 
 > plan4 已收官（§0 存档注），本节是用户指定的新活存放处（serve 后续活）。
@@ -151,9 +157,3 @@ TLS: 既有 TlsListener           WS: axum upgrade → tungstenite 会话
 | S1-b | JS 面（`prelude/storage.rs` 全局 `storage`/`localStorage`） | ✅ 2026-09-28（async KV + 同步垫片 + `$blob` 桥） |
 | S1-c | CLI（`--db`/`--exec`/`--storage-path` + 双语 help/补全/man） | ✅ 2026-09-28（归属校验 + 沙箱门控 + dry-run） |
 | S1-d | 样例/测试/文档（`sample/storage/` + `tests/storage.rs` + 中英 api/cli/README） | ✅ 2026-09-28（黑盒 4 + 全量 nextest strict） |
-
-## §7 不做（书面）
-
-- `node:http` 不动（并存，另案演进；adapter 薄层思想保留给用户态）。
-- H3 之前 `Outgo
-...[truncated 615 chars]

@@ -62,7 +62,13 @@ fn main() {
         }
         builtins::node::process_::record_node_compat(stripped);
         // 破例单横杠 banner 开关：摘 token 记静态开关（`--` 之后不动，见 cli::strip_banner_flags）。
-        cli::strip_banner_flags(&filtered)
+        let mut filtered = cli::strip_banner_flags(&filtered);
+        // 裸启动（除 bin 外无任何参数）进 REPL（node/python 同款；`winterjs -v`
+        // 等带 flag 的照旧走 help/报错，不在此补动作）。
+        if filtered.len() == 1 {
+            filtered.push(std::ffi::OsString::from("--repl"));
+        }
+        filtered
     };
     // 自 spawn 深度闸（pitfalls 4.209 防线二）：子进程链经 `WINTERJS_SPAWN_DEPTH` 逐层 +1
     //（child_process 起自身时设置，见 node::child::tag_self_depth），超限即拒，

@@ -73,6 +73,17 @@ pub async fn repl() -> Result<(), Error> {
     let _state_guard = init.state_guard;
     // SAFETY: 返回到此重 root 之间无 JSAPI 调用（无 GC 间隙）。
     rooted!(&in(rt.cx()) let global = init.global_ptr);
+    // REPL 专属退出函数（`--run/--eval` 脚本不可见，不污染用户全局）：
+    // exit()/quit()/q() 即 process.exit(0)。求值失败不致命（会话照起，仍可用 .exit）。
+    {
+        let code = "globalThis.exit = function exit() { process.exit(); };\n\
+            globalThis.quit = function quit() { process.exit(); };\n\
+            globalThis.q = function q() { process.exit(); };";
+        let c_filename = CString::new("repl.js").expect("no NUL");
+        rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
+        let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
+        let _ = evaluate_script(rt.cx(), global.handle(), code, rval.handle_mut(), options);
+    }
     let mut fetch_rx = init.fetch_rx;
     let mut ws_rx = init.ws_rx;
     let mut watch_rx = init.watch_rx;
@@ -133,6 +144,8 @@ pub async fn repl() -> Result<(), Error> {
                             crate::repl::Dot::Help => {
                                 println!(".exit  quit the repl");
                                 println!(".help  show this help");
+                                println!("exit()/quit()/q()  quit the repl (REPL-only functions)");
+                                println!("Ctrl+C twice in 2s / Ctrl+D  quit the repl");
                                 continue;
                             }
                             crate::repl::Dot::Code => {}

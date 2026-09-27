@@ -16,7 +16,8 @@ permalink: /zh/cli/
 2. **无裸子命令、无裸位置参数**。`winterjs a.js` 是错的，用
    `winterjs --run a.js`。唯一的尾部位置参数是 `--run` 的*脚本参数*
    （`process.argv.slice(2)`），建议用 `--` 分隔：
-   `winterjs --run app.js -- --port 8080`。
+   `winterjs --run app.js -- --port 8080`。无任何参数的裸 `winterjs`
+   直接进交互式 REPL（node/python 同款）。
 3. **修饰 flag 只在对应动作下生效**。配错直接 exit=1：
    `--X only works with --Y (see --help)`。显式传默认值也算给了（无 `--serve`
    却传 `--port 3000` 照样报错）；未知 `--flag` 直接拒绝、不吞掉：尾部位置参数

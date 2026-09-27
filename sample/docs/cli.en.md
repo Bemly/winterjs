@@ -17,7 +17,8 @@ permalink: /en/cli/
 2. **No bare subcommands, no positional actions.** `winterjs a.js` fails;
    use `winterjs --run a.js`. The only trailing positionals are *script
    arguments* for `--run` (`process.argv.slice(2)`), best separated by `--`:
-   `winterjs --run app.js -- --port 8080`.
+   `winterjs --run app.js -- --port 8080`. A bare `winterjs` with no arguments
+   enters the interactive REPL (like node/python).
 3. **Modifiers belong to their action.** A modifier given without its action
    exits 1 with `--X only works with --Y (see --help)`. Explicitly passing a
    default still counts as given (`--port 3000` without `--serve` errors).

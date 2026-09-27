@@ -11,6 +11,16 @@
 
 use std::borrow::Cow;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+/// Ctrl-C 连击退出窗口：两次 `Interrupted` 间隔内即退出，超窗重置
+/// （与 `.help` 文案同值；纯函数 `ctrl_c_should_exit` 单测覆盖）。
+pub const CTRL_C_WINDOW: Duration = Duration::from_secs(2);
+
+/// 连击判定（纯函数）：上次中断在窗口内即退出。
+pub fn ctrl_c_should_exit(last: Option<Instant>, now: Instant) -> bool {
+    matches!(last, Some(t) if now.duration_since(t) <= CTRL_C_WINDOW)
+}
 
 /// 点命令（行首 `.`；其余一律当代码）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,6 +284,8 @@ pub fn readline_loop(
     if let Some(h) = &history {
         let _ = rl.load_history(h);
     }
+    // 上次 Ctrl-C 时刻（连击窗口判定用；首击只提示）。
+    let mut last_interrupt: Option<Instant> = None;
     loop {
         match rl.readline("❄> ") {
             Ok(line) => {
@@ -282,8 +294,17 @@ pub fn readline_loop(
                     break;
                 }
             }
-            // Ctrl-C 空行：node 行为是清空重来（此处简化：直接重读）。
-            Err(rustyline::error::ReadlineError::Interrupted) => continue,
+            // Ctrl-C：窗内连击即退出（`None` 表 EOF，同 Ctrl-D 路径收尾）；
+            // 首击只提示，不断会话。
+            Err(rustyline::error::ReadlineError::Interrupted) => {
+                let now = Instant::now();
+                if ctrl_c_should_exit(last_interrupt, now) {
+                    let _ = tx.send(None);
+                    break;
+                }
+                last_interrupt = Some(now);
+                println!("(To exit, press Ctrl+C again or Ctrl+D)");
+            }
             // Ctrl-D / EOF：退出。
             Err(_) => {
                 let _ = tx.send(None);
@@ -326,6 +347,16 @@ mod tests {
         for bad in ["function f() {", "const a = [1,", "if (x {", "`unterminated", "const s = 'x;", "}"] {
             assert!(!brace_balance(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn ctrl_c_window() {
+        let now = Instant::now();
+        // 首击（无上次）不退；窗内连击退；超窗重置不退；边界恰窗退。
+        assert!(!ctrl_c_should_exit(None, now));
+        assert!(ctrl_c_should_exit(Some(now - Duration::from_millis(100)), now));
+        assert!(!ctrl_c_should_exit(Some(now - CTRL_C_WINDOW - Duration::from_millis(100)), now));
+        assert!(ctrl_c_should_exit(Some(now - CTRL_C_WINDOW), now));
     }
 
     #[test]

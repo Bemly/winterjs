@@ -9,7 +9,7 @@ template:
   h2 Rules
   ol
     li #[strong Exactly one action per invocation.] #[code --run a.js --eval 1] → exit 1.
-    li #[strong No bare subcommands, no positional actions.] #[code winterjs a.js] fails; use #[code winterjs --run a.js]. The only trailing positionals are #[em script arguments] for #[code --run] (#[code process.argv.slice(2)]), best separated by #[code --]: #[code winterjs --run app.js -- --port 8080].
+    li #[strong No bare subcommands, no positional actions.] #[code winterjs a.js] fails; use #[code winterjs --run a.js]. The only trailing positionals are #[em script arguments] for #[code --run] (#[code process.argv.slice(2)]), best separated by #[code --]: #[code winterjs --run app.js -- --port 8080]. A bare #[code winterjs] with no arguments enters the interactive REPL (like node/python).
     li #[strong Modifiers belong to their action.] A modifier given without its action exits 1 with #[code --X only works with --Y (see --help)].
   h2 Actions
   table

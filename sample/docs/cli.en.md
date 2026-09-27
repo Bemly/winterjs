@@ -65,6 +65,7 @@ permalink: /en/cli/
 | `--storage-path` | `--run/--eval/--test/--repl/--serve` |
 | `--allow-read`/`-W/--allow-write`/`--allow-env`/`--allow-run`/`--allow-ffi`/`-A/--allow-all` | `--run/--eval/--test/--repl/--db` |
 | `-v/--verbose`, `-l/--lang` | global |
+| `-hide_banner` / `--hide_banner` | global (hide the startup banner; stderr, auto-skipped when not a TTY) |
 
 Sandbox model: no `--allow-*` → wide open (historic behavior); any `--allow-*`
 → sandbox on, unlisted classes denied with `PermissionError`.

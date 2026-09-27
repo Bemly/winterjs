@@ -35,6 +35,10 @@ pub struct Cli {
         value_parser = clap::builder::PossibleValuesParser::new(["en", "zh"]))]
     pub lang: Option<String>,
 
+    /// Hide the startup banner (single-dash -hide_banner also accepted)
+    #[arg(long = "hide_banner")]
+    pub hide_banner: bool,
+
     // ── 动作（恰好其一） ──────────────────────────────────────────────
     /// Run a JS file (with a script extension) or a package.json script (bare name), and print its completion value
     #[arg(short = 'r', long = "run", value_name = "FILE")]
@@ -439,6 +443,33 @@ const COMPAT_ACTION_FLAGS: &[&str] = &[
     "-I", "--init", "--repl", "-t", "--test", "-C", "--completions", "-L", "--lint", "-f", "--fmt", "-s", "--serve", "-b", "--db",
 ];
 
+/// 单横杠 `-hide_banner` 破例重写（2026-09-28 用户拍板）：clap 长形只认 `--` 开头，
+/// `-hide_banner` 会被当短旗簇（`-h` 即 help）误解析；此处把 `--` 之前的准确 token
+/// 改写成 `--hide_banner` 再交 clap，`--` 之后（脚本参数）不动。纯函数，单测覆盖。
+pub fn rewrite_banner_flag(raw: &[std::ffi::OsString]) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+    let mut out = Vec::with_capacity(raw.len());
+    let mut script_args = false;
+    for a in raw {
+        let s = a.to_string_lossy();
+        if script_args {
+            out.push(a.clone());
+            continue;
+        }
+        if s == "--" {
+            script_args = true;
+            out.push(a.clone());
+            continue;
+        }
+        if s == "-hide_banner" {
+            out.push(OsString::from("--hide_banner"));
+            continue;
+        }
+        out.push(a.clone());
+    }
+    out
+}
+
 /// 剥除 node 兼容旗；返回（过滤后 argv，含 bin；被剥旗原文，execArgv 保真）。
 /// 条件 `--run` 插入：剥过旗、过滤后首个位置参数非旗形、且无显式动作时，
 /// 在首个位置参数前补 `--run`（`node --flags file args...` 形）。
@@ -593,5 +624,28 @@ mod node_compat_tests {
         // 仅旗无文件：不过补（交 clap 按无动作报错）。
         let (f, _) = strip_node_compat_args(&argv(&["w", "--expose-gc"]));
         assert_eq!(strs(&f), ["w"]);
+    }
+
+    #[test]
+    fn rewrite_single_dash_banner() {
+        // 破例形 `-hide_banner` 改写成 clap 可解析的 `--hide_banner`。
+        assert_eq!(
+            strs(&rewrite_banner_flag(&argv(&["w", "-hide_banner", "--eval", "1"]))),
+            ["w", "--hide_banner", "--eval", "1"]
+        );
+        // 双横杠形不动；`--` 之后（脚本参数）不动。
+        assert_eq!(
+            strs(&rewrite_banner_flag(&argv(&["w", "--hide_banner"]))),
+            ["w", "--hide_banner"]
+        );
+        assert_eq!(
+            strs(&rewrite_banner_flag(&argv(&["w", "--run", "a.js", "--", "-hide_banner"]))),
+            ["w", "--run", "a.js", "--", "-hide_banner"]
+        );
+        // 近似串不动（只认准确 token）。
+        assert_eq!(
+            strs(&rewrite_banner_flag(&argv(&["w", "-hide_banne", "--hide-banner"]))),
+            ["w", "-hide_banne", "--hide-banner"]
+        );
     }
 }

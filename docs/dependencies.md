@@ -214,7 +214,7 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 | 自升级 | `self_update` | 1.3.0 | 2017-07-25 | 2026-09-02 | ✅（TLS 豁免） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | CLI 双语 | `rust-i18n` | 4.2.2 | 2021 | 2026 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 启动 banner SVG 光栅 | `resvg` | 0.48.1 | 2017-12-18 | 2026-08-02 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
-| 启动 banner 图像解码 | `image` | 0.25.10 | 2014-11-20 | 2026-03-10 | ✅（`avif` 特性→ravif/rav1e 纯 Rust；禁 `avif-native`→dav1d 的 C） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| 启动 banner 图像解码 | `image` | 0.25.10 | 2014-11-20 | 2026-03-10 | ✅（`png` 发射载荷编码；`avif` 纯 Rust 只管编码不管解码，禁 `avif-native`→dav1d 的 C，见 §14） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | 启动 banner JXL 解码 | `jxl-oxide` | 0.12.6 | 2023-05-16 | 2026-05-29 | ✅（default 特性；禁 `lcms2` 的 C） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 
 备注：`rustyline`/`self_update` 的移动端格是“功能不需要”（REPL/自升级是桌面功能，
@@ -632,7 +632,7 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
 4. CLI 启动 banner（2026-09-28 候选，用户问“avif+svg 进 CLI”时立项；**2026-09-28 用户拍板全套，
    后按源码证据把 `viuer` 撤回（见 §14），实引 `resvg`+`image/avif`**，
    §4 表格 resvg/image 两行已填，移动端格按惯例 ⚠️ 待 CI 转正）：
-   素材已在库（`assets/logo.avif` 50KB 1261×1247 + `assets/winterjs.svg` 1.6KB，
+   素材已在库（`assets/logo.jxl` 126KB 1261×1247·alpha + `assets/winterjs.svg` 1.6KB，
    `include_bytes!` 零新文件）。   候选组合：`resvg`（SVG→像素）+ `image/avif`（→`ravif`→`rav1e` 纯 Rust，
    禁 `avif-native`→`dav1d` 的 C）；`viuer` 已筛掉（见 §14）。四问：resvg/image
    库龄均超十年且近一年有维护；传递闭包纯 Rust 口径成立（image 已在树内；
@@ -641,7 +641,8 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
    不另引轮子。   flag 定为 `-hide_banner`（用户拍板破例：单横杠 + 下划线；
    clap 长形记 `--hide_banner`，预处理同时收单横杠形）；每次运行全动作首行走
    stderr、非 TTY 自动跳过（`--completions/--man` 除外）。
-   JXL 审计（2026-09-28，用户问“avif→jxl”时补查，**四问全过，§4 行已填，待引入**）：
+   JXL 审计（2026-09-28，用户问“avif→jxl”时补查，四问全过，§4 行已填；
+   **2026-09-28 用户拍板引入**，`image` 的 `avif` 特性同步换成 `png`，ravif/rav1e 出树）：
    `jxl-oxide 0.12.6`（2023-05 建库/2026-05-29 维护/30 版/MIT OR Apache-2.0/2.3M 下载）；
    纯 Rust 口径成立——常开依赖仅 brotli-decompressor + jxl-* 系 + tracing（全纯），
    `lcms2`（C）与 `moxcms` 都是 opt-in 特性，不开；default 仅 `rayon`（已在树内）；

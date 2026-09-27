@@ -213,7 +213,7 @@ coffee:
 template:
   header.vp-nav
     a.vp-brand(href='#/')
-      img.vp-logo(src='assets/logo.avif' alt='winterjs')
+      img.vp-logo(src='assets/logo.jxl' alt='winterjs')
       img.vp-wordmark(src='assets/winterjs.svg' alt='WinterJS')
     nav.vp-top-links
       a(href='#/en/quickstart' data-route='en/quickstart') Guide

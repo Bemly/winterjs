@@ -6,6 +6,8 @@ arg:
   lang:
     help: "Language for help text (en/zh; defaults to the system language)"
     value: "LANG"
+  hide_banner:
+    help: "Hide the startup banner (single-dash -hide_banner also accepted)"
   run:
     help: "Run a JS file (with a script extension) or a package.json script (bare name), and print its completion value"
     value: "FILE"

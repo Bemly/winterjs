@@ -23,6 +23,7 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 | `console` (+`console.time/timeEnd/count/assert/dir`) | Stable | `sample/web/console.js`, `sample/web/performance.js` | `node:console` exports `Console` class over custom streams |
 | `setTimeout/clearTimeout/setInterval/clearInterval/setImmediate/clearImmediate/queueMicrotask` | Stable | `sample/web/timers.js` | `setImmediate` is not clamped to 1ms; `nextTick` uses its native queue |
 | `structuredClone` | Experimental | `sample/web/structured-clone.js` | **Deviation**: plain data only — Date/Map/Set/RegExp/TypedArray/ArrayBuffer come back as plain objects; no `transfer` detach |
+| `storage` / `localStorage` | Stable | `sample/storage/basics.js` | WinterCG own KV (turso single file, `--storage-path`, default `./winterjs-storage.db`); async `get/set/delete/has/keys/clear/size` + sync Web Storage shim; values JSON-serializable + `Uint8Array`; inspect via `-b/--db` |
 | `URL/URLSearchParams/URLPattern` | Stable | `sample/web/url.js` | WHATWG; legacy `url.parse/format` lives in `node:url` |
 | `TextEncoder/TextDecoder/atob/btoa` | Stable | `sample/web/url.js` | `fatal:true` supported |
 | `Blob/File` | Stable | `sample/web/blob-file.js` | `slice/text/arrayBuffer` |

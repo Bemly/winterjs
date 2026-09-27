@@ -22,6 +22,7 @@ permalink: /zh/api/
 | `console` | 稳定 | `sample/web/console.js`、`sample/web/performance.js` | 控制台输出：`time/timeEnd/count/assert/dir`；`node:console` 导出自定义流的 `Console` 类 |
 | `setTimeout/clearTimeout/setInterval/clearInterval/setImmediate/clearImmediate/queueMicrotask` | 稳定 | `sample/web/timers.js` | 定时器与任务调度：`setImmediate` 不钳 1ms；`nextTick` 走原生队列 |
 | `structuredClone` | 实验 | `sample/web/structured-clone.js` | 作用：对象深拷贝。**偏离**：仅纯数据——Date/Map/Set/正则/类型化数组/ArrayBuffer 回来都是普通对象；无 `transfer` 剥离 |
+| `storage` / `localStorage` | 稳定 | `sample/storage/basics.js` | WinterCG 自有 KV（turso 单文件，`--storage-path`，默认 `./winterjs-storage.db`）；异步 `get/set/delete/has/keys/clear/size` + 同步 Web Storage 垫片；值 JSON 可序列化 + `Uint8Array`；经 `-b/--db` 查看 |
 | `URL/URLSearchParams/URLPattern` | 稳定 | `sample/web/url.js` | URL 解析与构造（WHATWG）；legacy `url.parse/format` 在 `node:url` |
 | `TextEncoder/TextDecoder/atob/btoa` | 稳定 | `sample/web/url.js` | 文本编解码：支持 `fatal:true` |
 | `Blob/File` | 稳定 | `sample/web/blob-file.js` | 二进制对象：`slice/text/arrayBuffer` |

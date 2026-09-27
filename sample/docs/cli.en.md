@@ -46,12 +46,13 @@ permalink: /en/cli/
 | `-L/--lint [ARGS...]` | Forward to `oxlint` (`.bin` or `PATH`), args verbatim |
 | `-f/--fmt [ARGS...]` | Forward to `oxfmt`, args verbatim |
 | `-s/--serve [DIR]` | Serve a directory and/or a JS handler (`export default { fetch }`) over H1/H2/H3; TLS via `--cert/--key` or ACME. `--watch` restarts the server on change |
+| `-b/--db <FILE> [--exec <SQL>]` | Inspect a turso/SQLite database file (default lists tables). Storage files use `--storage-path` |
 
 ## Modifier scope
 
 | Modifier(s) | Only with |
 |---|---|
-| `-d/--dry-run` | `--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve` (ACME plan print) |
+| `-d/--dry-run` | `--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve` (ACME plan print) / `--db` (plan print) |
 | `--registry` | `--add/--install/--publish/--login/--init` |
 | `-T/--tag` | `--publish` |
 | `--token`, `-o/--oauth` | `--login` |
@@ -60,7 +61,9 @@ permalink: /en/cli/
 | `-w/--watch` | `--test` (re-run) / `--run` (re-run file) / `--serve` (restart child) |
 | `-D/--dir`/`-H/--host`/`-P/--port`/`--handler`/`--limit-rps`/`--cert`/`-k/--key`/`--acme-domain`/`-E/--acme-email`/`--acme-cache`/`--acme-production` | `--serve` |
 | `-S/--schema` | `--config` |
-| `--allow-read`/`-W/--allow-write`/`--allow-env`/`--allow-run`/`--allow-ffi`/`-A/--allow-all` | `--run/--eval/--test/--repl` |
+| `--exec` | `--db` |
+| `--storage-path` | `--run/--eval/--test/--repl/--serve` |
+| `--allow-read`/`-W/--allow-write`/`--allow-env`/`--allow-run`/`--allow-ffi`/`-A/--allow-all` | `--run/--eval/--test/--repl/--db` |
 | `-v/--verbose`, `-l/--lang` | global |
 
 Sandbox model: no `--allow-*` → wide open (historic behavior); any `--allow-*`

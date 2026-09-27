@@ -43,6 +43,7 @@ One invocation runs **exactly one action**; modifiers only work with their actio
 | `-e/--eval <code>` | Evaluate inline JS, print the completion value |
 | `-t/--test [paths]` | Run test files (auto-discovery, `--filter/--watch`) |
 | `-s/--serve [dir]` | Serve static + JS `fetch` handler + WebSocket over H1/H2/H3 (`--watch` restarts on change) |
+| `-b/--db <file> [--exec <sql>]` | Inspect a turso/SQLite database file (default lists tables); storage files use `--storage-path` |
 | `--repl` | Interactive REPL |
 | `-a/--add`, `-i/--install`, `-R/--remove`, `-U/--uninstall`, `-p/--publish`, `--login`, `-u/--upgrade`, `-I/--init` | Package lifecycle (npm registry) |
 | `-L/--lint`, `-f/--fmt` | Forward to oxlint/oxfmt |
@@ -70,6 +71,7 @@ Goal: everything in Bun's bundled node test list works; semantics follow Node
 | `crypto/zlib/buffer/stream/events/timers` | ✅ Stable | AEAD ciphers, brotli, WHATWG streams |
 | `child_process/cluster/worker_threads/vm/module/test` | ✅ Stable | thread-based cluster/workers |
 | `sqlite` (`node:` + `bun:sqlite`), `quic`, `readline/repl/tty` | ✅ / 🔶 | `quic` handshake on loopback times out (tracked) |
+| `storage` / `localStorage` (WinterCG own) | ✅ Stable | turso single-file KV (`--storage-path`, default `./winterjs-storage.db`); inspect via `-b/--db` |
 | `v8/inspector/trace_events/domain` | 🔶 Bridge | intentionally reduced (heap numbers are engine-specific) |
 | `wasi`, `sea` | ❌ | out of scope by design |
 

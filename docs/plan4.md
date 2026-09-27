@@ -147,10 +147,10 @@ TLS: 既有 TlsListener           WS: axum upgrade → tungstenite 会话
 
 | # | 项 | 状态 |
 |---|---|---|
-| S1-a | Rust 底座（`builtins/storage.rs` + `state/storage.rs` + 注册/收尾） | ⬜ |
-| S1-b | JS 面（`prelude/storage.rs` 全局 `storage`/`localStorage`） | ⬜ |
-| S1-c | CLI（`--db`/`--exec`/`--storage-path` + 双语 help/补全/man） | ⬜ |
-| S1-d | 样例/测试/文档（`sample/storage/` + `tests/storage.rs` + 中英 api/cli/README） | ⬜ |
+| S1-a | Rust 底座（`builtins/storage.rs` + 注册/收尾） | ✅ 2026-09-28（turso KV + 8 natives + 模块静态表 + 单测 2） |
+| S1-b | JS 面（`prelude/storage.rs` 全局 `storage`/`localStorage`） | ✅ 2026-09-28（async KV + 同步垫片 + `$blob` 桥） |
+| S1-c | CLI（`--db`/`--exec`/`--storage-path` + 双语 help/补全/man） | ✅ 2026-09-28（归属校验 + 沙箱门控 + dry-run） |
+| S1-d | 样例/测试/文档（`sample/storage/` + `tests/storage.rs` + 中英 api/cli/README） | ✅ 2026-09-28（黑盒 4 + 全量 nextest strict） |
 
 ## §7 不做（书面）
 

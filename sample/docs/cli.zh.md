@@ -44,12 +44,13 @@ permalink: /zh/cli/
 | `-L/--lint [参数...]` | 转发给 `oxlint`（`.bin` 或 `PATH`），参数原样 |
 | `-f/--fmt [参数...]` | 转发给 `oxfmt`，参数原样 |
 | `-s/--serve [目录]` | 以 H1/H2/H3 提供目录/JS handler（`export default { fetch }`）；TLS 走 `--cert/--key` 或 ACME。`--watch` 变更重启服务 |
+| `-b/--db <文件> [--exec <SQL>]` | 查看 turso/SQLite 数据库文件（默认列出全部表）。存储库经 `--storage-path` 指定 |
 
 ## 修饰归属
 
 | 修饰 | 只配 |
 |---|---|
-| `-d/--dry-run` | `--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve`（ACME 方案打印） |
+| `-d/--dry-run` | `--add/--install/--remove/--uninstall/--publish/--init/--upgrade/--serve`（ACME 方案打印）/`--db`（方案打印） |
 | `--registry` | `--add/--install/--publish/--login/--init` |
 | `-T/--tag` | `--publish` |
 | `--token`、`-o/--oauth` | `--login` |
@@ -58,7 +59,9 @@ permalink: /zh/cli/
 | `-w/--watch` | `--test`（重跑）/`--run`（重跑文件）/`--serve`（重启子进程） |
 | `-D/--dir`/`-H/--host`/`-P/--port`/`--handler`/`--limit-rps`/`--cert`/`-k/--key`/`--acme-domain`/`-E/--acme-email`/`--acme-cache`/`--acme-production` | `--serve` |
 | `-S/--schema` | `--config` |
-| `--allow-read`/`-W/--allow-write`/`--allow-env`/`--allow-run`/`--allow-ffi`/`-A/--allow-all` | `--run/--eval/--test/--repl` |
+| `--exec` | `--db` |
+| `--storage-path` | `--run/--eval/--test/--repl/--serve` |
+| `--allow-read`/`-W/--allow-write`/`--allow-env`/`--allow-run`/`--allow-ffi`/`-A/--allow-all` | `--run/--eval/--test/--repl/--db` |
 | `-v/--verbose`、`-l/--lang` | 全局 |
 
 沙箱模型：不给任何 `--allow-*` → 全开放（历史行为）；给了任一 → 开沙箱，

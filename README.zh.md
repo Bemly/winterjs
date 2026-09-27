@@ -43,6 +43,7 @@ cargo build
 | `-e/--eval <代码>` | 求值内联 JS，打印完成值 |
 | `-t/--test [路径]` | 跑测试文件（自动发现，`--filter/--watch`） |
 | `-s/--serve [目录]` | H1/H2/H3 提供静态 + JS `fetch` handler + WebSocket（`--watch` 变更重启） |
+| `-b/--db <文件> [--exec <SQL>]` | 查看 turso/SQLite 数据库文件（默认列出全部表）；存储库经 `--storage-path` 指定 |
 | `--repl` | 交互式 REPL |
 | `-a/--add`、`-i/--install`、`-R/--remove`、`-U/--uninstall`、`-p/--publish`、`--login`、`-u/--upgrade`、`-I/--init` | 包生命周期（npm registry） |
 | `-L/--lint`、`-f/--fmt` | 转发给 oxlint/oxfmt |
@@ -68,6 +69,7 @@ Rust 侧只经消息队列与之通信，绝不跨线程共享 `&mut JSContext`�
 | `crypto/zlib/buffer/stream/events/timers` | ✅ 稳定 | AEAD 套件、brotli、WHATWG 流 |
 | `child_process/cluster/worker_threads/vm/module/test` | ✅ 稳定 | 线程底座的 cluster/worker |
 | `sqlite`（`node:` + `bun:sqlite`）、`quic`、`readline/repl/tty` | ✅ / 🔶 | `quic` 回环握手超时（另案追查） |
+| `storage` / `localStorage`（WinterCG 自有） | ✅ 稳定 | turso 单文件 KV（`--storage-path`，默认 `./winterjs-storage.db`）；经 `-b/--db` 查看 |
 | `v8/inspector/trace_events/domain` | 🔶 桥接 | 有意裁剪（堆数字引擎口径不可比） |
 | `wasi`、`sea` | ❌ | 设计上不做 |
 

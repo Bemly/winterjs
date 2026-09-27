@@ -331,3 +331,28 @@ console.log("cert", x.verify(x.publicKey), x.publicKey.asymmetricKeyType === "ed
     dir.close().unwrap();
 }
 
+#[test]
+fn p2_crypto_sign_verify_nonew() {
+    // P2 crypto三件簇：Sign/Verify 无 new 调用形（legacy 函数口径；正常 + 报错）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import crypto from "node:crypto";
+const S = crypto.Sign("SHA256");
+console.log("sign-nonew", S instanceof crypto.Sign);
+const V = crypto.Verify("SHA256");
+console.log("verify-nonew", V instanceof crypto.Verify);
+console.log("exported", typeof crypto.Sign === "function" && typeof crypto.Verify === "function");
+try { crypto.Sign("nope-digest"); console.log("sig-alg FAIL"); }
+catch (e) { console.log("sig-alg", e.code === "ERR_CRYPTO_INVALID_DIGEST"); }
+"#,
+    );
+    assert!(out.contains("sign-nonew true"), "out: {out}");
+    assert!(out.contains("verify-nonew true"), "out: {out}");
+    assert!(out.contains("exported true"), "out: {out}");
+    assert!(out.contains("sig-alg true"), "out: {out}");
+    dir.close().unwrap();
+}
+

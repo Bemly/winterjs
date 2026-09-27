@@ -202,7 +202,7 @@ const __api = {
   createCipheriv, createDecipheriv, Cipheriv, Decipheriv, getCiphers, getCipherInfo,
   KeyObject, createSecretKey, createPrivateKey, createPublicKey,
   generateKeyPair, generateKeyPairSync, generateKey, generateKeySync,
-  createSign, createVerify, sign, verify,
+  createSign, createVerify, sign, verify, Sign, Verify,
   publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt,
   createECDH, ECDH, createDiffieHellman, createDiffieHellmanGroup, getDiffieHellman,
   DiffieHellman, DiffieHellmanGroup, diffieHellman, checkPrime, checkPrimeSync, generatePrime, generatePrimeSync,

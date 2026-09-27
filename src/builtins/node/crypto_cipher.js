@@ -8,10 +8,10 @@ const __CIPHERS = {
   "aes-128-gcm": { family: "gcm", key: 16, iv: 12, block: 16, mode: "gcm", nid: 961 },
   "aes-192-gcm": { family: "gcm", key: 24, iv: 12, block: 16, mode: "gcm", nid: 962 },
   "aes-256-gcm": { family: "gcm", key: 32, iv: 12, block: 16, mode: "gcm", nid: 963 },
-  // 10e：AES-CCM 三档（iv 7–13 可变，`__needKeyIv` 另分支；nid 真机 896/897/898）
+  // 10e：AES-CCM 三档（iv 7–13 可变，`__needKeyIv` 另分支；nid 真机 896/899/902）
   "aes-128-ccm": { family: "ccm", key: 16, iv: 12, block: 16, mode: "ccm", nid: 896 },
-  "aes-192-ccm": { family: "ccm", key: 24, iv: 12, block: 16, mode: "ccm", nid: 897 },
-  "aes-256-ccm": { family: "ccm", key: 32, iv: 12, block: 16, mode: "ccm", nid: 898 },
+  "aes-192-ccm": { family: "ccm", key: 24, iv: 12, block: 16, mode: "ccm", nid: 899 },
+  "aes-256-ccm": { family: "ccm", key: 32, iv: 12, block: 16, mode: "ccm", nid: 902 },
   "chacha20-poly1305": { family: "chacha", key: 32, iv: 12, block: 16, mode: "chacha20-poly1305", nid: 1018 },
   "des-ede3-cbc": { family: "cbc", key: 24, iv: 8, block: 8, mode: "cbc", nid: 44 },
   // 10f crypto首轮：ECB 三档（无 iv；nid 真机 418/422/426）。
@@ -23,6 +23,14 @@ function __cipherInfo(cipher) {
   const info = __CIPHERS[String(cipher).toLowerCase()];
   return info === undefined ? undefined : { name: String(cipher).toLowerCase(), ...info };
 }
+// P2 crypto三件簇：getCipherInfo 元数据扩展（真机 nid 958/959/960；iv 窗 1–15）。
+// 仅元数据面（create 系仍走 __CIPHERS，ocb 创建保持 Unknown cipher），故
+// getCiphers() 不含 ocb（siv 系同理按需再加）。
+const __CIPHER_INFO_EXTRA = {
+  "aes-128-ocb": { family: "ocb", key: 16, iv: 12, block: 16, mode: "ocb", nid: 958 },
+  "aes-192-ocb": { family: "ocb", key: 24, iv: 12, block: 16, mode: "ocb", nid: 959 },
+  "aes-256-ocb": { family: "ocb", key: 32, iv: 12, block: 16, mode: "ocb", nid: 960 },
+};
 function __needCipher(cipher) {
   // 10f crypto首轮：非串 cipher 先报 ARG_TYPE（真机口径，null 即 Received null）。
   __needStr(cipher, "cipher");
@@ -378,14 +386,81 @@ export function createDecipheriv(cipher, key, iv, options) {
 export function getCiphers() {
   return Object.keys(__CIPHERS);
 }
-export function getCipherInfo(name) {
-  const info = __cipherInfo(name);
-  if (info === undefined) return undefined;
+export function getCipherInfo(nameOrNid, options) {
+  // P2 crypto三件簇：逐字移植 internal/crypto/cipher.js getCipherInfo
+  //（string 空串→undefined；number 非整数/越界→undefined；其余非串非数→ARG_TYPE；
+  // options 非对象→ARG_TYPE；keyLength/ivLength 非 uint32→ARG_TYPE；
+  // 长短错配→undefined；ccm iv 7–13、ocb iv 1–15 为真机可变窗）。
+  if (options === undefined) options = {};
+  if (typeof options !== "object" || options === null) {
+    const err = new TypeError(
+      `The "options" argument must be of type object. Received ${options === null ? "null" : typeof options === "string" ? `type string ('${options}')` : `type ${typeof options} (${String(options)})`}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  let { keyLength, ivLength } = options;
+  const __uint32 = (v, name) => {
+    if (v === undefined) return undefined;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 4294967295) {
+      const recv = v === null ? "null"
+        : typeof v === "string" ? `type string ('${v}')`
+        : Array.isArray(v) ? `an instance of Array (${JSON.stringify(v)})`
+        : typeof v === "object" ? `an instance of ${v.constructor?.name ?? "Object"}`
+        : `type ${typeof v} (${String(v)})`;
+      const err = new TypeError(
+        `The "options.${name}" property must be of type number. Received ${recv}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    return v + 0;
+  };
+  keyLength = __uint32(keyLength, "keyLength");
+  ivLength = __uint32(ivLength, "ivLength");
+  const t = typeof nameOrNid;
+  let entry = null;
+  let canon = null;
+  if (t === "string") {
+    if (nameOrNid.length === 0) return undefined;
+    const k = nameOrNid.toLowerCase();
+    canon = k;
+    entry = __CIPHERS[k] ?? __CIPHER_INFO_EXTRA[k] ?? null;
+    if (entry === null) return undefined;
+  } else if (t === "number") {
+    if (!Number.isInteger(nameOrNid) || nameOrNid < 1 || nameOrNid > 2147483647) return undefined;
+    for (const [k, v] of Object.entries(__CIPHERS)) {
+      if (v.nid === nameOrNid) { entry = v; canon = k; break; }
+    }
+    if (entry === null) {
+      for (const [k, v] of Object.entries(__CIPHER_INFO_EXTRA)) {
+        if (v.nid === nameOrNid) { entry = v; canon = k; break; }
+      }
+    }
+    if (entry === null) return undefined;
+  } else {
+    const recv = nameOrNid === null ? "null"
+      : Array.isArray(nameOrNid) ? `an instance of Array (${JSON.stringify(nameOrNid)})`
+      : t === "object" ? `an instance of ${nameOrNid.constructor?.name ?? "Object"}`
+      : `type ${t} (${String(nameOrNid)})`;
+    const err = new TypeError(
+      `The "nameOrNid" argument must be of type string or number. Received ${recv}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (keyLength !== undefined && keyLength !== entry.key) return undefined;
+  if (ivLength !== undefined) {
+    if (entry.family === "ccm") {
+      if (ivLength < 7 || ivLength > 13) return undefined;
+    } else if (entry.family === "ocb") {
+      if (ivLength < 1 || ivLength > 15) return undefined;
+    } else if (ivLength !== entry.iv) {
+      return undefined;
+    }
+  }
   // 10f crypto首轮：ECB 无 ivLength 键（真机口径）。
   return {
-    name: info.name, mode: info.mode, keyLength: info.key,
-    ...(info.iv === 0 ? {} : { ivLength: info.iv }),
-    blockSize: info.block, nid: info.nid,
+    name: canon, mode: entry.mode, keyLength: entry.key,
+    ...(entry.iv === 0 ? {} : { ivLength: entry.iv }),
+    blockSize: entry.block, nid: entry.nid,
   };
 }
 

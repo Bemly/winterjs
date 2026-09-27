@@ -390,7 +390,7 @@ export function verify(alg, data, key, signature, callback) {
   const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key)) ? key : {};
   return __verifyCore(alg, data, k, signature, opts.dsaEncoding, opts.saltLength);
 }
-class Sign {
+class SignImpl {
   constructor(alg, options) {
     if (alg !== null && __normHashName(alg) === undefined && alg !== "ed25519") {
       const err = new Error("Invalid digest");
@@ -430,7 +430,7 @@ class Sign {
     return outputEncoding === undefined ? buf : buf.toString(outputEncoding);
   }
 }
-class Verify {
+class VerifyImpl {
   constructor(alg, options) {
     if (alg !== null && __normHashName(alg) === undefined && alg !== "ed25519") {
       const err = new Error("Invalid digest");
@@ -466,8 +466,18 @@ class Verify {
     return __verifyCore(this.__alg, flat, __keyArg(key, "key"), sigB, dsaEncoding, saltLength);
   }
 }
-export function createSign(alg, options) { return new Sign(alg, options); }
-export function createVerify(alg, options) { return new Verify(alg, options); }
+export function createSign(alg, options) { return new SignImpl(alg, options); }
+export function createVerify(alg, options) { return new VerifyImpl(alg, options); }
+// P2 crypto三件簇：真机 `crypto.Sign/Verify(...)` 可无 new 调用（legacy 函数形，
+// 无废弃警告；Cipheriv/Decipheriv 同款，见 crypto_cipher.js）。
+function Sign(...args) { return new SignImpl(...args); }
+Object.setPrototypeOf(Sign, SignImpl);
+Sign.prototype = SignImpl.prototype;
+Sign.prototype.constructor = Sign;
+function Verify(...args) { return new VerifyImpl(...args); }
+Object.setPrototypeOf(Verify, VerifyImpl);
+Verify.prototype = VerifyImpl.prototype;
+Verify.prototype.constructor = Verify;
 // 10f crypto二轮：混合 OAEP 编解码（oaepHash ≠ mgf1Hash；几何经真机预言机定案：
 // 种子长取 oaep 哈希长、掩码走 mgf1Hash、界为 k-2*hLen-2；双向真机交叉见黑盒）。
 const __OAEP_HLEN = { "SHA-1": 20, "SHA-224": 28, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 };

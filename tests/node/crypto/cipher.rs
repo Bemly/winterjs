@@ -381,3 +381,61 @@ setTimeout(() => console.log("dep-warn", warns.includes("DEP0179"), warns.includ
     dir.close().unwrap();
 }
 
+#[test]
+fn p2_crypto_cipherinfo_nid_options() {
+    // P2 crypto三件簇：getCipherInfo nid 形态 + options 校验/过滤 + ocb 元数据
+    //（正常 + 报错 + 边界；node internal/crypto/cipher.js 口径）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { getCipherInfo } from "node:crypto";
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// 正常：nid 往返与名查同构
+const info = getCipherInfo("aes-128-cbc");
+console.log("nid-rt", eq(info, getCipherInfo(419)));
+console.log("nid-192", getCipherInfo(899).keyLength === 24);
+console.log("nounk", getCipherInfo("nope") === undefined && getCipherInfo(-1) === undefined && getCipherInfo("") === undefined);
+// 边界：长短错配回 undefined（ccm/ocb 可变窗）
+console.log("kl-ok", !!getCipherInfo("aes-128-cbc", { keyLength: 16 }));
+console.log("kl-bad", getCipherInfo("aes-128-cbc", { keyLength: 12 }) === undefined);
+console.log("iv-ok", !!getCipherInfo("aes-128-cbc", { ivLength: 16 }));
+console.log("iv-bad", getCipherInfo("aes-128-cbc", { ivLength: 12 }) === undefined);
+console.log("ccm-win", !!getCipherInfo("aes-128-ccm", { ivLength: 7 }) && !!getCipherInfo("aes-128-ccm", { ivLength: 13 }));
+console.log("ccm-out", getCipherInfo("aes-128-ccm", { ivLength: 1 }) === undefined);
+console.log("ocb", getCipherInfo("aes-128-ocb").nid === 958 && !!getCipherInfo("aes-128-ocb", { ivLength: 15 }) && getCipherInfo("aes-128-ocb", { ivLength: 16 }) === undefined);
+console.log("ecb-noiv", getCipherInfo("aes-128-ecb").ivLength === undefined);
+// 报错：非串非数 / 非对象 options / 非 uint32 长
+for (const bad of [null, undefined, [], {}]) {
+  try { getCipherInfo(bad); console.log("noname FAIL", JSON.stringify(bad)); }
+  catch (e) { console.log("noname", e.code === "ERR_INVALID_ARG_TYPE"); }
+}
+for (const opt of [null, "", 1, true]) {
+  try { getCipherInfo("aes-192-cbc", opt); console.log("opt FAIL"); }
+  catch (e) { console.log("opt", e.code === "ERR_INVALID_ARG_TYPE"); }
+}
+for (const len of [null, "", {}, [], true]) {
+  try { getCipherInfo("aes-192-cbc", { keyLength: len }); console.log("len FAIL"); }
+  catch (e) { console.log("len", e.code === "ERR_INVALID_ARG_TYPE"); }
+}
+"#,
+    );
+    assert!(out.contains("nid-rt true"), "out: {out}");
+    assert!(out.contains("nid-192 true"), "out: {out}");
+    assert!(out.contains("nounk true"), "out: {out}");
+    assert!(out.contains("kl-ok true"), "out: {out}");
+    assert!(out.contains("kl-bad true"), "out: {out}");
+    assert!(out.contains("iv-ok true"), "out: {out}");
+    assert!(out.contains("iv-bad true"), "out: {out}");
+    assert!(out.contains("ccm-win true"), "out: {out}");
+    assert!(out.contains("ccm-out true"), "out: {out}");
+    assert!(out.contains("ocb true"), "out: {out}");
+    assert!(out.contains("ecb-noiv true"), "out: {out}");
+    assert!(!out.contains("FAIL"), "out: {out}");
+    assert_eq!(out.matches("noname true").count(), 4, "out: {out}");
+    assert_eq!(out.matches("opt true").count(), 4, "out: {out}");
+    assert_eq!(out.matches("len true").count(), 5, "out: {out}");
+    dir.close().unwrap();
+}
+

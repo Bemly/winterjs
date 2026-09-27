@@ -57,6 +57,7 @@ pub mod readline;
 /// 10c-3: node:repl（REPLServer/start/Recoverable，骑 readline Interface）。
 pub mod repl;
 pub mod require;
+mod require_cjs;
 pub mod sqlite;
 pub mod stream;
 pub mod stream_consumers;

@@ -83,7 +83,6 @@ struct Prepared {
 }
 
 fn prepare(url: &Url) -> Result<Prepared, Error> {
-    let _tg = crate::timing::guard(&crate::timing::N_PREP, &crate::timing::T_PREP);
     // node:/bun: 内建：内嵌源直给（仍走 load_js 统一转译/提 imports；源内禁 TS）。
     if url.scheme() == "node" || url.scheme() == "bun" {
         let table = if url.scheme() == "node" {
@@ -113,7 +112,6 @@ fn prepare(url: &Url) -> Result<Prepared, Error> {
 // ── 编译（registry 命中直接返回；同时返回静态 imports 供子图遍历）─────────
 
 fn compile_source(cx: &mut JSContext, filename: &str, js: &str) -> Result<*mut JSObject, Error> {
-    let _tg = crate::timing::guard(&crate::timing::N_COMP, &crate::timing::T_COMP);
     let c_filename = CString::new(filename).unwrap_or_else(|_| c"module.js".into());
     let options = mozjs::rust::CompileOptionsWrapper::new(cx, c_filename, 1);
     let mut src = transform_str_to_source_text(js);
@@ -138,7 +136,6 @@ fn compile_source(cx: &mut JSContext, filename: &str, js: &str) -> Result<*mut J
 /// 入口经典路径（`sniff_module`）不动。
 /// 10f：入口 `.js` CJS 化复用本判定（`pub(crate)`，见 runtime 入口分支）。
 pub(crate) fn cjs_interop(url: &Url, is_module: bool, text: &str) -> bool {
-    let _tg = crate::timing::guard(&crate::timing::N_CJS, &crate::timing::T_CJS);
     if url.scheme() != "file" {
         return false;
     }

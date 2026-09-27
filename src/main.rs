@@ -26,7 +26,6 @@ mod sentry_report;
 mod serve;
 mod serve_bridge;
 mod testrun;
-mod timing;
 mod settings;
 mod state;
 mod watch;

@@ -124,7 +124,6 @@ fn fatal_exit(rt: &mut Runtime, global: &RootedGuard<'_, *mut JSObject>, e: Erro
 /// `extra_args` 进 `process.argv`（Script：`[exec, filename, ...]`；Eval：`[exec, ...]`）。
 pub async fn run(source: &str, filename: &str, mode: Mode, extra_args: &[String]) -> Result<(), Error> {
     let r = run_inner(source, filename, mode, extra_args).await;
-    crate::timing::dump();
     // exit 优先于一切错误（哨兵被用户 catch 也照退，靠 `process_exited` 旗）。
     if let Some(code) = state::with_plain(|p| p.process_exited) {
         return Err(Error::Exit(code));

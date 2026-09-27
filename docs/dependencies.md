@@ -213,7 +213,6 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 | 初始化模板 | `askama` | 0.16.1 | 2017-02-15 | 2026-09-04 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 自升级 | `self_update` | 1.3.0 | 2017-07-25 | 2026-09-02 | ✅（TLS 豁免） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | CLI 双语 | `rust-i18n` | 4.2.2 | 2021 | 2026 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 启动 banner 图形 | `viuer` | 0.11.0 | 2020-09-27 | 2025-12-09 | ✅（default 特性，禁 sixel） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | 启动 banner SVG 光栅 | `resvg` | 0.48.1 | 2017-12-18 | 2026-08-02 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | 启动 banner 图像解码 | `image` | 0.25.10 | 2014-11-20 | 2026-03-10 | ✅（`avif` 特性→ravif/rav1e 纯 Rust；禁 `avif-native`→dav1d 的 C） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 
@@ -589,6 +588,13 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
 - `process-wrap`（2026-09-11 用户拍板不用）：watchexec 进程组包装（`command-group`
   血统），底细干净但只替 spawn wrapper（组长/JobObject），进程表/超时/pipe
   照样手写；双路径重构 + Win 语义 mac 上验不到，收益兑现不了，维持手写。
+- `viuer`（2026-09-28 banner 轮筛掉，已批全套后按源码证据撤回）：元信息过关
+  （2020 建库/2025-12 维护/MIT/rust 1.80），但两处不适配启动 banner——① Kitty
+  检测是交互式终端查询（往 stdout 写 `\x1b_Gi…`/`\x1b[c` 并从 stdin 读应答，
+  会污染 stdout 数据通道 + 吃掉 REPL 首键/管道 stdin）；② `Printer` trait 未导出，
+  `print` 只能走 stdout，stderr 定制要 fork 源码。改走 env 检测 + Kitty/iTerm
+  转义手写约 80 行（检测表照抄其 iTerm 名单），`resize` 由 `image` 自带；
+  若上游导出 writer 形 API 可再评估。
 - `oxc_linter`/`oxc_formatter`（2026-09-11 顺延，非否决）：oxc 门面无
   linter/formatter 特性；`oxc_linter` 未发布 crates.io，`oxc_formatter` 为
   2023 年 0.0.0 占位。git vendor 需拖未发布 workspace，不入表。`winterjs
@@ -622,16 +628,13 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
 3. TLS 豁免已记录（§1/§12）：`reqwest`/`rustls`/`tokio-rustls`/`platform-verifier`/
    `oauth2`/`sentry`/`self_update`/`rcgen` 的 ring 后端不再标 ⚠️ 理由，
    但 §2 的后端选择门控继续有效（禁 aws-lc/cmake、禁 native-tls）。
-4. CLI 启动 banner（2026-09-28 候选，用户问“avif+svg 进 CLI”时立项；**2026-09-28 用户拍板引入全套**，
-   §4 表格 viuer/resvg/image 三行已填，移动端格按惯例 ⚠️ 待 CI 转正）：
+4. CLI 启动 banner（2026-09-28 候选，用户问“avif+svg 进 CLI”时立项；**2026-09-28 用户拍板全套，
+   后按源码证据把 `viuer` 撤回（见 §14），实引 `resvg`+`image/avif`**，
+   §4 表格 resvg/image 两行已填，移动端格按惯例 ⚠️ 待 CI 转正）：
    素材已在库（`assets/logo.avif` 50KB 1261×1247 + `assets/winterjs.svg` 1.6KB，
-   `include_bytes!` 零新文件）。候选组合：`viuer 0.11`（default 特性，
-   Kitty/iTerm 自検 + 半块回落；sixel 默认关，不碰 `sixel-rs`）+ `crossterm 0.29`
-   + `image/avif`（→`ravif`→`rav1e` 纯 Rust，禁 `avif-native`→`dav1d` 的 C）+
-   `resvg`（SVG→像素，tiny-skia 系纯 Rust 口径）。四问：viuer/crossterm/image/
-   resvg/rav1e 库龄均超一年且近一年有维护（viuer 0.11 2025-12）；传递闭包纯 Rust
-   口径成立（console/base64/image/tempfile 已在树内；crossterm/resvg/ravif/rav1e
-   无 C——引入前必跑 `cargo tree -i` 穷尽审计，沿 §2 口径）；无 nightly。
+   `include_bytes!` 零新文件）。   候选组合：`resvg`（SVG→像素）+ `image/avif`（→`ravif`→`rav1e` 纯 Rust，
+   禁 `avif-native`→`dav1d` 的 C）；`viuer` 已筛掉（见 §14）。四问：resvg/image
+   库龄均超十年且近一年有维护；传递闭包纯 Rust 口径成立（image 已在树内；
    代价：rav1e 编译数分钟 + 常驻内存高；resvg 约 40 crate；二进制增数 MB；
    图形解码只走 Kitty/iTerm 终端（其余走零成本 ASCII）。ASCII 垫片与 env 检测手写，
    不另引轮子。flag 定为 `-hide_banner`（用户拍板破例：单横杠 + 下划线；

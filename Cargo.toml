@@ -115,6 +115,14 @@ self_update = { version = "1", default-features = false, features = ["reqwest", 
 # CLI 中英文双语：locales/*.yml 编译期打进二进制；YAML 解析只在 build/proc-macro（host 侧），
 # binary 新增仅 arc-swap（已在树内）/base62/siphasher/triomphe/smallvec（已在树内），全纯 Rust（见 §4 备注）
 rust-i18n = "4"
+# 启动 banner（2026-09-28 用户拍板，见 docs/dependencies.md §16-4）：
+# image 直引只加 `avif`（→ravif/rav1e 纯 Rust；`avif-native`→dav1d 的 C 禁用，见 §2）；
+# resvg 默认特性（SVG→像素，tiny-skia 系纯 Rust；类型经 resvg 重导出，不另引）。
+# 终端图形检测与 Kitty/iTerm 转义发射手写（viuer 的检测读 stdin/写 stdout、
+# 打印走 stdout，不适配启动 banner 的 stderr 约束，见 §14）。
+# 解码统一走显式 format，不依赖 default-formats。
+resvg = "0.48"
+image = { version = "0.25", features = ["avif"] }
 
 # ── §5 loader + 转译 + 编译期注册 + 内嵌资源 ───────────────────────────
 oxc_resolver = "11"

@@ -10,7 +10,7 @@ arg:
     help: "运行 JS 文件（带脚本后缀）或 package.json 脚本（裸名），并打印其完成值"
     value: "文件"
   eval:
-    help: "求值内联 JS 代码"
+    help: "求值内联 JS 代码并打印其完成值"
     value: "代码"
   config:
     help: "显示解析后的配置（加 --schema 显示其 JSON Schema）"
@@ -37,22 +37,22 @@ arg:
   repl:
     help: "启动交互式 REPL"
   test:
-    help: "运行测试文件"
+    help: "运行测试文件（无路径时从当前目录自动发现测试文件）"
     value: "路径"
   lint:
-    help: "转发给项目自带的 oxlint（透传；参数原样交给 oxlint）"
+    help: "转发给 oxlint（从 node_modules/.bin 或 PATH 查找；参数原样透传）"
     value: "参数"
   fmt:
-    help: "转发给项目自带的 oxfmt（透传；参数原样交给 oxfmt）"
+    help: "转发给 oxfmt（从 node_modules/.bin 或 PATH 查找；参数原样透传）"
     value: "参数"
   serve:
-    help: "通过 HTTP 提供目录服务"
+    help: "通过 HTTP 提供目录或 JS 处理器服务（H1/H2/H3；TLS 经 --cert/--key 或 ACME）"
     value: "目录"
   args:
     help: "传给 --run 的脚本参数（即 `process.argv.slice(2)`）"
     value: "参数"
   dry_run:
-    help: "只求解并打印依赖树，不写任何文件（add/install/upgrade）"
+    help: "只求解/校验并打印，不写任何文件（add/install/publish/init/upgrade、--serve 的 ACME）"
   registry:
     help: "Registry 基地址（默认 https://registry.npmjs.org）"
     value: "注册表地址"

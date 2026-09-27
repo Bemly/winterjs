@@ -36,11 +36,11 @@ pub struct Cli {
     pub lang: Option<String>,
 
     // ── 动作（恰好其一） ──────────────────────────────────────────────
-    /// Run a JS file and print its completion value
+    /// Run a JS file (with a script extension) or a package.json script (bare name), and print its completion value
     #[arg(short = 'r', long = "run", value_name = "FILE")]
     pub run: Option<PathBuf>,
 
-    /// Evaluate inline JS code
+    /// Evaluate inline JS code and print its completion value
     #[arg(short = 'e', long = "eval", value_name = "CODE")]
     pub eval: Option<String>,
 
@@ -76,7 +76,7 @@ pub struct Cli {
     #[arg(short = 'u', long = "upgrade")]
     pub upgrade: bool,
 
-    /// Scaffold a new package
+    /// Scaffold a new package (installs package.json dependencies when present)
     #[arg(short = 'I', long = "init", value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
     pub init: Option<String>,
 
@@ -84,19 +84,19 @@ pub struct Cli {
     #[arg(long = "repl")]
     pub repl: bool,
 
-    /// Run test files
+    /// Run test files (no paths: discover them from the current directory)
     #[arg(short = 't', long = "test", value_name = "PATH", num_args = 0..)]
     pub test: Option<Vec<String>>,
 
-    /// Forward to the project's oxlint (passthrough; args go to oxlint verbatim)
+    /// Forward to oxlint (found in node_modules/.bin or PATH; args pass through verbatim)
     #[arg(long = "lint", value_name = "ARGS", num_args = 0.., allow_hyphen_values = true)]
     pub lint: Option<Vec<String>>,
 
-    /// Forward to the project's oxfmt (passthrough; args go to oxfmt verbatim)
+    /// Forward to oxfmt (found in node_modules/.bin or PATH; args pass through verbatim)
     #[arg(short = 'f', long = "fmt", value_name = "ARGS", num_args = 0.., allow_hyphen_values = true)]
     pub fmt: Option<Vec<String>>,
 
-    /// Serve a directory over HTTP
+    /// Serve a directory or a JS handler over HTTP (H1/H2/H3; TLS via --cert/--key or ACME)
     #[arg(short = 's', long = "serve", value_name = "DIR", num_args = 0..=1, default_missing_value = ".")]
     pub serve: Option<String>,
 
@@ -105,7 +105,7 @@ pub struct Cli {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 
-    /// Only resolve and print the tree, do not write anything (add/install/upgrade)
+    /// Resolve/validate only and print, do not write anything (add/install/publish/init/upgrade, --serve ACME)
     #[arg(long)]
     pub dry_run: bool,
 

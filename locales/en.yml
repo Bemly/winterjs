@@ -10,7 +10,7 @@ arg:
     help: "Run a JS file (with a script extension) or a package.json script (bare name), and print its completion value"
     value: "FILE"
   eval:
-    help: "Evaluate inline JS code"
+    help: "Evaluate inline JS code and print its completion value"
     value: "CODE"
   config:
     help: "Show resolved settings (or their JSON Schema with --schema)"
@@ -37,22 +37,22 @@ arg:
   repl:
     help: "Start an interactive REPL"
   test:
-    help: "Run test files"
+    help: "Run test files (no paths: discover them from the current directory)"
     value: "PATH"
   lint:
-    help: "Forward to the project's oxlint (passthrough; args go to oxlint verbatim)"
+    help: "Forward to oxlint (found in node_modules/.bin or PATH; args pass through verbatim)"
     value: "ARGS"
   fmt:
-    help: "Forward to the project's oxfmt (passthrough; args go to oxfmt verbatim)"
+    help: "Forward to oxfmt (found in node_modules/.bin or PATH; args pass through verbatim)"
     value: "ARGS"
   serve:
-    help: "Serve a directory over HTTP"
+    help: "Serve a directory or a JS handler over HTTP (H1/H2/H3; TLS via --cert/--key or ACME)"
     value: "DIR"
   args:
     help: "Script arguments for --run (as `process.argv.slice(2)`)"
     value: "ARGS"
   dry_run:
-    help: "Only resolve and print the tree, do not write anything (add/install/upgrade)"
+    help: "Resolve/validate only and print, do not write anything (add/install/publish/init/upgrade, --serve ACME)"
   registry:
     help: "Registry base URL (default https://registry.npmjs.org)"
     value: "REGISTRY"

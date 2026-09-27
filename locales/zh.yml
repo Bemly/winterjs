@@ -54,78 +54,78 @@ arg:
   dry_run:
     help: "只求解/校验并打印，不写任何文件（add/install/publish/init/upgrade、--serve 的 ACME）"
   registry:
-    help: "Registry 基地址（默认 https://registry.npmjs.org）"
+    help: "Registry 基地址（仅软件包动作 add/install/publish/login/init；默认 https://registry.npmjs.org）"
     value: "注册表地址"
   tag:
-    help: "发布时使用的 dist-tag"
+    help: "发布时使用的 dist-tag（仅 publish）"
     value: "标签"
   token:
-    help: "要保存的认证令牌（TTY 下缺省会提示输入）"
+    help: "要保存的认证令牌（仅 login；TTY 下缺省会提示输入）"
     value: "令牌"
   oauth:
-    help: "改为打印 OAuth 授权 URL（code 交换顺延）"
+    help: "改为打印 OAuth 授权 URL（仅 login；code 交换顺延）"
   name:
     help: "--init 用的软件包名（默认取当前目录名）"
     value: "名称"
   yes:
-    help: "跳过确认提示"
+    help: "跳过确认提示（仅 init）"
   force:
-    help: "覆盖冲突文件而非报错"
+    help: "覆盖冲突文件而非报错（仅 init）"
   filter:
-    help: "只运行匹配该 glob 的文件（按相对路径或文件名匹配）"
+    help: "只运行匹配该 glob 的文件（仅 test；按相对路径或文件名匹配）"
     value: "过滤条件"
   test_name_pattern:
-    help: "只运行全名命中的测试（子串或 /正则/flags）"
+    help: "只运行全名命中的测试（仅 test；子串或 /正则/flags）"
     value: "匹配串"
   watch:
-    help: "文件变化时重跑测试（Ctrl-C 停止）"
+    help: "文件变化时重跑测试（仅 test；Ctrl-C 停止）"
   dir:
-    help: "要提供服务的目录"
+    help: "要提供服务的目录（仅 serve）"
     value: "目录"
   host:
-    help: "绑定的网卡地址"
+    help: "绑定的网卡地址（仅 serve）"
     value: "主机"
   port:
-    help: "绑定的端口（0 表示临时端口，实际端口打印到标准输出）"
+    help: "绑定的端口（仅 serve；0 表示临时端口，实际端口打印到标准输出）"
     value: "端口"
   handler:
     help: "--serve 用的 JS 处理文件（export default { fetch } 或 export function fetch）"
     value: "文件"
   limit_rps:
-    help: "每秒请求数限制，0 表示不限"
+    help: "每秒请求数限制（仅 serve；0 表示不限）"
     value: "限流值"
   cert:
-    help: "TLS 证书（PEM，必须与 --key 同给）"
+    help: "TLS 证书（仅 serve；PEM，必须与 --key 同给）"
     value: "证书"
   key:
-    help: "TLS 私钥（PEM，必须与 --cert 同给）"
+    help: "TLS 私钥（仅 serve；PEM，必须与 --cert 同给）"
     value: "密钥"
   acme_domain:
-    help: "ACME 自动证书域名（默认 winterjs.bemly.moe；需配 --acme-email）"
+    help: "ACME 自动证书域名（仅 serve；默认 winterjs.bemly.moe；需配 --acme-email）"
     value: "域名"
   acme_email:
-    help: "ACME 账户邮箱（Let's Encrypt 的 mailto 联系人）"
+    help: "ACME 账户邮箱（仅 serve；Let's Encrypt 的 mailto 联系人）"
     value: "邮箱"
   acme_cache:
-    help: "ACME 缓存目录（默认系统缓存）"
+    help: "ACME 缓存目录（仅 serve；默认系统缓存）"
     value: "目录"
   acme_production:
-    help: "用 Let's Encrypt 生产环境（默认 staging，防限流误触）"
+    help: "用 Let's Encrypt 生产环境（仅 serve；默认 staging，防限流误触）"
   schema:
-    help: "改为打印配置文件的 JSON Schema"
+    help: "改为打印配置文件的 JSON Schema（仅 config）"
   allow_read:
-    help: "允许文件系统读取（可选：--allow-read=<路径>[,<路径>...]）"
+    help: "允许文件系统读取（仅 run/eval/test/repl；可选：--allow-read=<路径>[,<路径>...]）"
     value: "路径"
   allow_write:
-    help: "允许文件系统写入（可选：--allow-write=<路径>[,<路径>...]）"
+    help: "允许文件系统写入（仅 run/eval/test/repl；可选：--allow-write=<路径>[,<路径>...]）"
     value: "路径"
   allow_env:
-    help: "允许访问环境变量（可选：--allow-env=<变量名>[,<变量名>...]）"
+    help: "允许访问环境变量（仅 run/eval/test/repl；可选：--allow-env=<变量名>[,<变量名>...]）"
     value: "变量名"
   allow_run:
-    help: "允许派生子进程（可选：--allow-run=<命令>[,<命令>...]）"
+    help: "允许派生子进程（仅 run/eval/test/repl；可选：--allow-run=<命令>[,<命令>...]）"
     value: "命令"
   allow_ffi:
-    help: "允许 FFI（dlopen 本地库）"
+    help: "允许 FFI（仅 run/eval/test/repl；dlopen 本地库）"
   allow_all:
-    help: "允许一切（关闭沙箱）"
+    help: "允许一切（仅 run/eval/test/repl；关闭沙箱）"

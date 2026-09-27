@@ -599,3 +599,29 @@ fn self_spawn_depth_guard_stops_recursion() {
     // 链深 = 上限 + 1 层（最深一层被闸拒绝，stdout 无 depth）；变量对 JS 不可见。
     assert!(out.contains("depth=33 visible=false"), "out: {out}");
 }
+
+#[test]
+fn modifier_flags_only_work_with_their_action() {
+    // §0.8：修饰 flag 错配即错（exit=1 + 指路 --help），不静默吞掉。
+    for (args, expect) in [
+        (vec!["--eval", "1", "--tag", "next"], "--tag only works with --publish"),
+        (vec!["--eval", "1", "--filter", "*.js"], "--filter only works with --test"),
+        (vec!["--eval", "1", "--port", "8080"], "--port only works with --serve"),
+        (vec!["--eval", "1", "--schema"], "--schema only works with --config"),
+        (vec!["--config", "--allow-read"], "--allow-* only works with --run/--eval/--test/--repl"),
+        (vec!["--eval", "1", "--registry", "https://x.invalid"], "--registry only works with"),
+        (vec!["--eval", "1", "--token", "abc"], "--token only works with --login"),
+        (vec!["--eval", "1", "--watch"], "--watch only works with --test"),
+        (vec!["--eval", "1", "--yes"], "--yes only works with --init"),
+    ] {
+        let out = winterjs().args(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "args: {args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(expect) && stderr.contains("--help"),
+            "args: {args:?} stderr: {stderr}"
+        );
+    }
+    // 正常：归属正确不报错（--config --schema 既有行为；--eval + --allow-all 放行）。
+    assert_eq!(stdout_of(&mut winterjs().args(["--eval", "40 + 2", "--allow-all"])), "42\n");
+}

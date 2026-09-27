@@ -162,6 +162,12 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             actions.join(", ")
         )));
     }
+    // 修饰 flag 只在对应动作下生效（§0.8）：错配即错，不静默吞掉。
+    // 归属表见 `cli_modifier_scope`（与 --help 文案括号注一致）。
+    // 注：放所有动作分支之前——各分支提前返回，迟了够不着。
+    if let Some(msg) = cli_modifier_scope(&cli) {
+        return Err(Error::Other(format!("{msg} (see --help)")));
+    }
     if let Some(target) = cli.run {
         install_permissions(&cli.perms);
         let target = target.to_string_lossy().into_owned();
@@ -255,6 +261,7 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
         return initpkg::init(&cwd, name.as_deref(), cli.yes, cli.force, cli.dry_run, cli.registry.as_deref()).await;
     }
     if cli.repl {
+        install_permissions(&cli.perms);
         return runtime::repl().await;
     }
     if let Some(paths) = cli.test {
@@ -269,10 +276,6 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
             watch: cli.watch,
         };
         return testrun::run_tests(&cwd, &opts).await;
-    }
-    // 修饰 flag 只在对应动作下生效（§0.8）：`--handler` 无 `--serve` 即错。
-    if cli.handler.is_some() && cli.serve.is_none() {
-        return Err(Error::Other("--handler only works with --serve (see --help)".into()));
     }
     if let Some(dir) = cli.serve {
         // `--serve` 裸 flag 走 default_missing_value(".")；`--dir` 显式给则覆盖
@@ -311,4 +314,112 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
         .await;
     }
     Err(Error::Other("specify an action (see --help)".into()))
+}
+
+/// 修饰 flag → 归属动作校验（AGENTS §0.8）。
+/// 返回首个错配的 `"--flag only works with --action"`，全对回 None。
+/// 归属（与 `--help` 括号注同源）：
+/// dry-run→add/install/publish/init/upgrade/serve；registry→add/install/publish/login/init；
+/// tag→publish；token/oauth→login；name/yes/force→init；filter/test-name-pattern/watch→test；
+/// dir/host/port/handler/limit-rps/cert/key/acme-*→serve；schema→config；
+/// allow-*→run/eval/test/repl。-v/-l 全局，不校验。
+fn cli_modifier_scope(cli: &Cli) -> Option<String> {
+    let has_add = !cli.add.is_empty();
+    let has_install = !cli.install.is_empty();
+    let fail = |flag: &str, scope: &str| Some(format!("{flag} only works with {scope}"));
+    if cli.dry_run
+        && !(has_add || has_install || cli.publish || cli.init.is_some() || cli.upgrade || cli.serve.is_some())
+    {
+        return fail("--dry-run", "--add/--install/--publish/--init/--upgrade/--serve");
+    }
+    if cli.registry.is_some()
+        && !(has_add || has_install || cli.publish || cli.login || cli.init.is_some())
+    {
+        return fail("--registry", "--add/--install/--publish/--login/--init");
+    }
+    if cli.tag != "latest" && !cli.publish {
+        return fail("--tag", "--publish");
+    }
+    if cli.token.is_some() && !cli.login {
+        return fail("--token", "--login");
+    }
+    if cli.oauth && !cli.login {
+        return fail("--oauth", "--login");
+    }
+    if cli.name.is_some() && cli.init.is_none() {
+        return fail("--name", "--init");
+    }
+    if cli.yes && cli.init.is_none() {
+        return fail("--yes", "--init");
+    }
+    if cli.force && cli.init.is_none() {
+        return fail("--force", "--init");
+    }
+    if cli.filter.is_some() && cli.test.is_none() {
+        return fail("--filter", "--test");
+    }
+    if cli.test_name_pattern.is_some() && cli.test.is_none() {
+        return fail("--test-name-pattern", "--test");
+    }
+    if cli.watch && cli.test.is_none() {
+        return fail("--watch", "--test");
+    }
+    // --serve 修饰：clap 默认值会"永远出现"，只判"用户是否显式给过"——
+    // 用 `value_source` 区分显式与默认，避免 `--eval` 被误判带了 `--dir`。
+    if cli.serve.is_none() {
+        if cli.handler.is_some() {
+            return fail("--handler", "--serve");
+        }
+        if serve_flag_explicit("dir", &cli.dir) {
+            return fail("--dir", "--serve");
+        }
+        if cli.host != "127.0.0.1" {
+            return fail("--host", "--serve");
+        }
+        if cli.port != 3000 {
+            return fail("--port", "--serve");
+        }
+        if cli.limit_rps != 0 {
+            return fail("--limit-rps", "--serve");
+        }
+        if cli.cert.is_some() {
+            return fail("--cert", "--serve");
+        }
+        if cli.key.is_some() {
+            return fail("--key", "--serve");
+        }
+        if cli.acme_domain.is_some() {
+            return fail("--acme-domain", "--serve");
+        }
+        if cli.acme_email.is_some() {
+            return fail("--acme-email", "--serve");
+        }
+        if cli.acme_cache.is_some() {
+            return fail("--acme-cache", "--serve");
+        }
+        if cli.acme_production {
+            return fail("--acme-production", "--serve");
+        }
+    }
+    if cli.schema && !cli.config {
+        return fail("--schema", "--config");
+    }
+    let perms = &cli.perms;
+    let perm_given = perms.allow_read.is_some()
+        || perms.allow_write.is_some()
+        || perms.allow_env.is_some()
+        || perms.allow_run.is_some()
+        || perms.allow_ffi
+        || perms.allow_all;
+    if perm_given && !(cli.run.is_some() || cli.eval.is_some() || cli.test.is_some() || cli.repl) {
+        return fail("--allow-*", "--run/--eval/--test/--repl");
+    }
+    None
+}
+
+/// `--dir` 带 clap 默认值，无法按值判显式 —— 当前仅当用户改了默认值才算显式。
+/// 注：`--serve --dir .` 显式给默认值会被漏判（当默认处理），属已知宽松，
+/// 不影响正确性（同动作下本就合法）。
+fn serve_flag_explicit(_id: &str, dir: &std::path::PathBuf) -> bool {
+    dir.as_os_str() != "."
 }

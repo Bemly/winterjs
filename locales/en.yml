@@ -54,78 +54,78 @@ arg:
   dry_run:
     help: "Resolve/validate only and print, do not write anything (add/install/publish/init/upgrade, --serve ACME)"
   registry:
-    help: "Registry base URL (default https://registry.npmjs.org)"
+    help: "Registry base URL for package actions (add/install/publish/login/init; default https://registry.npmjs.org)"
     value: "REGISTRY"
   tag:
-    help: "Dist-tag to publish under"
+    help: "Dist-tag to publish under (publish only)"
     value: "TAG"
   token:
-    help: "Auth token to store (prompted on TTY when omitted)"
+    help: "Auth token to store (login only; prompted on TTY when omitted)"
     value: "TOKEN"
   oauth:
-    help: "Print an OAuth authorization URL instead (code exchange deferred)"
+    help: "Print an OAuth authorization URL instead (login only; code exchange deferred)"
   name:
     help: "Package name for --init (default: current directory name)"
     value: "NAME"
   yes:
-    help: "Skip the confirmation prompt"
+    help: "Skip the confirmation prompt (init only)"
   force:
-    help: "Overwrite conflicting files instead of failing"
+    help: "Overwrite conflicting files instead of failing (init only)"
   filter:
-    help: "Only run files matching this glob (matched against relative path or file name)"
+    help: "Only run files matching this glob (test only; matched against relative path or file name)"
     value: "FILTER"
   test_name_pattern:
-    help: "Only run tests whose full name matches (substring or /regex/flags)"
+    help: "Only run tests whose full name matches (test only; substring or /regex/flags)"
     value: "PATTERN"
   watch:
-    help: "Re-run tests when watched files change (Ctrl-C to stop)"
+    help: "Re-run tests when watched files change (test only; Ctrl-C to stop)"
   dir:
-    help: "Directory to serve"
+    help: "Directory to serve (serve only)"
     value: "DIR"
   host:
-    help: "Interface to bind"
+    help: "Interface to bind (serve only)"
     value: "HOST"
   port:
-    help: "Port to bind (0 = ephemeral, actual port printed on stdout)"
+    help: "Port to bind (serve only; 0 = ephemeral, actual port printed on stdout)"
     value: "PORT"
   handler:
     help: "JS handler file for --serve (export default { fetch } or export function fetch)"
     value: "FILE"
   limit_rps:
-    help: "Requests per second limit, 0 = unlimited"
+    help: "Requests per second limit (serve only; 0 = unlimited)"
     value: "LIMIT_RPS"
   cert:
-    help: "TLS certificate (PEM, must come with --key)"
+    help: "TLS certificate (serve only; PEM, must come with --key)"
     value: "CERT"
   key:
-    help: "TLS private key (PEM, must come with --cert)"
+    help: "TLS private key (serve only; PEM, must come with --cert)"
     value: "KEY"
   acme_domain:
-    help: "ACME domain for automatic certificates (default winterjs.bemly.moe; needs --acme-email)"
+    help: "ACME domain for automatic certificates (serve only; default winterjs.bemly.moe; needs --acme-email)"
     value: "DOMAIN"
   acme_email:
-    help: "ACME account email (mailto contact for Let's Encrypt)"
+    help: "ACME account email (serve only; mailto contact for Let's Encrypt)"
     value: "EMAIL"
   acme_cache:
-    help: "ACME cache directory (default system cache)"
+    help: "ACME cache directory (serve only; default system cache)"
     value: "DIR"
   acme_production:
-    help: "Use Let's Encrypt production (default staging, safe against rate limits)"
+    help: "Use Let's Encrypt production (serve only; default staging, safe against rate limits)"
   schema:
-    help: "Print the JSON Schema of the settings file instead"
+    help: "Print the JSON Schema of the settings file instead (config only)"
   allow_read:
-    help: "Allow filesystem reads (optionally: --allow-read=<path>[,<path>...])"
+    help: "Allow filesystem reads (run/eval/test/repl only; optionally: --allow-read=<path>[,<path>...])"
     value: "PATH"
   allow_write:
-    help: "Allow filesystem writes (optionally: --allow-write=<path>[,<path>...])"
+    help: "Allow filesystem writes (run/eval/test/repl only; optionally: --allow-write=<path>[,<path>...])"
     value: "PATH"
   allow_env:
-    help: "Allow environment variable access (optionally: --allow-env=<VAR>[,<VAR>...])"
+    help: "Allow environment variable access (run/eval/test/repl only; optionally: --allow-env=<VAR>[,<VAR>...])"
     value: "VAR"
   allow_run:
-    help: "Allow spawning child processes (optionally: --allow-run=<cmd>[,<cmd>...])"
+    help: "Allow spawning child processes (run/eval/test/repl only; optionally: --allow-run=<cmd>[,<cmd>...])"
     value: "CMD"
   allow_ffi:
-    help: "Allow FFI (dlopen of native libraries)"
+    help: "Allow FFI (run/eval/test/repl only; dlopen of native libraries)"
   allow_all:
-    help: "Allow everything (no sandbox)"
+    help: "Allow everything (run/eval/test/repl only; no sandbox)"

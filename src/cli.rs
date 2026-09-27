@@ -109,19 +109,19 @@ pub struct Cli {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Registry base URL (default https://registry.npmjs.org)
+    /// Registry base URL for package actions (add/install/publish/login/init; default https://registry.npmjs.org)
     #[arg(long)]
     pub registry: Option<String>,
 
-    /// Dist-tag to publish under
+    /// Dist-tag to publish under (publish only)
     #[arg(long, default_value = "latest")]
     pub tag: String,
 
-    /// Auth token to store (prompted on TTY when omitted)
+    /// Auth token to store (login only; prompted on TTY when omitted)
     #[arg(long)]
     pub token: Option<String>,
 
-    /// Print an OAuth authorization URL instead (code exchange deferred)
+    /// Print an OAuth authorization URL instead (login only; code exchange deferred)
     #[arg(long)]
     pub oauth: bool,
 
@@ -129,35 +129,35 @@ pub struct Cli {
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
 
-    /// Skip the confirmation prompt
+    /// Skip the confirmation prompt (init only)
     #[arg(long, short = 'y')]
     pub yes: bool,
 
-    /// Overwrite conflicting files instead of failing
+    /// Overwrite conflicting files instead of failing (init only)
     #[arg(long)]
     pub force: bool,
 
-    /// Only run files matching this glob (matched against relative path or file name)
+    /// Only run files matching this glob (test only; matched against relative path or file name)
     #[arg(long)]
     pub filter: Option<String>,
 
-    /// Only run tests whose full name matches (substring or /regex/flags)
+    /// Only run tests whose full name matches (test only; substring or /regex/flags)
     #[arg(long, value_name = "PATTERN")]
     pub test_name_pattern: Option<String>,
 
-    /// Re-run tests when watched files change (Ctrl-C to stop)
+    /// Re-run tests when watched files change (test only; Ctrl-C to stop)
     #[arg(long)]
     pub watch: bool,
 
-    /// Directory to serve
+    /// Directory to serve (serve only)
     #[arg(long, default_value = ".")]
     pub dir: PathBuf,
 
-    /// Interface to bind
+    /// Interface to bind (serve only)
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
 
-    /// Port to bind (0 = ephemeral, actual port printed on stdout)
+    /// Port to bind (serve only; 0 = ephemeral, actual port printed on stdout)
     #[arg(long, default_value_t = 3000)]
     pub port: u16,
 
@@ -165,35 +165,35 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub handler: Option<PathBuf>,
 
-    /// Requests per second limit, 0 = unlimited
+    /// Requests per second limit (serve only; 0 = unlimited)
     #[arg(long, default_value_t = 0)]
     pub limit_rps: u32,
 
-    /// TLS certificate (PEM, must come with --key)
+    /// TLS certificate (serve only; PEM, must come with --key)
     #[arg(long)]
     pub cert: Option<PathBuf>,
 
-    /// TLS private key (PEM, must come with --cert)
+    /// TLS private key (serve only; PEM, must come with --cert)
     #[arg(long)]
     pub key: Option<PathBuf>,
 
-    /// ACME domain for automatic certificates (default winterjs.bemly.moe; needs --acme-email)
+    /// ACME domain for automatic certificates (serve only; default winterjs.bemly.moe; needs --acme-email)
     #[arg(long, value_name = "DOMAIN")]
     pub acme_domain: Option<String>,
 
-    /// ACME account email (mailto contact for Let's Encrypt)
+    /// ACME account email (serve only; mailto contact for Let's Encrypt)
     #[arg(long, value_name = "EMAIL")]
     pub acme_email: Option<String>,
 
-    /// ACME cache directory (default system cache)
+    /// ACME cache directory (serve only; default system cache)
     #[arg(long, value_name = "DIR")]
     pub acme_cache: Option<PathBuf>,
 
-    /// Use Let's Encrypt production (default staging, safe against rate limits)
+    /// Use Let's Encrypt production (serve only; default staging, safe against rate limits)
     #[arg(long)]
     pub acme_production: bool,
 
-    /// Print the JSON Schema of the settings file instead
+    /// Print the JSON Schema of the settings file instead (config only)
     #[arg(long)]
     pub schema: bool,
 
@@ -205,22 +205,22 @@ pub struct Cli {
 /// 旗标无值 = 该类全开；`=a,b` 或重复出现 = 允许清单。
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PermissionArgs {
-    /// Allow filesystem reads (optionally: --allow-read=<path>[,<path>...])
+    /// Allow filesystem reads (run/eval/test/repl only; optionally: --allow-read=<path>[,<path>...])
     #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
     pub allow_read: Option<Vec<String>>,
-    /// Allow filesystem writes (optionally: --allow-write=<path>[,<path>...])
+    /// Allow filesystem writes (run/eval/test/repl only; optionally: --allow-write=<path>[,<path>...])
     #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
     pub allow_write: Option<Vec<String>>,
-    /// Allow environment variable access (optionally: --allow-env=<VAR>[,<VAR>...])
+    /// Allow environment variable access (run/eval/test/repl only; optionally: --allow-env=<VAR>[,<VAR>...])
     #[arg(long, value_name = "VAR", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
     pub allow_env: Option<Vec<String>>,
-    /// Allow spawning child processes (optionally: --allow-run=<cmd>[,<cmd>...])
+    /// Allow spawning child processes (run/eval/test/repl only; optionally: --allow-run=<cmd>[,<cmd>...])
     #[arg(long, value_name = "CMD", num_args = 0..=1, require_equals = true, value_delimiter = ',')]
     pub allow_run: Option<Vec<String>>,
-    /// Allow FFI (dlopen of native libraries)
+    /// Allow FFI (run/eval/test/repl only; dlopen of native libraries)
     #[arg(long)]
     pub allow_ffi: bool,
-    /// Allow everything (no sandbox)
+    /// Allow everything (run/eval/test/repl only; no sandbox)
     #[arg(long)]
     pub allow_all: bool,
 }

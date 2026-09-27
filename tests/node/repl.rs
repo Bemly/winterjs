@@ -104,3 +104,38 @@ setTimeout(() => {
     assert!(out.lines().any(|l| l == "after-exit closed true"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn p2_repl_legacy_positional() {
+    // P2-repl：legacy 位置形 start(prompt, stream, eval) + writer.options 面。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "l.mjs",
+        r#"
+import { start } from "node:repl";
+import { PassThrough } from "node:stream";
+// 入出分离（同流自回显即真机亦无限递归，recoverable 套件靠 noop-write  duplex 避开）。
+const input = new PassThrough(), output = new PassThrough();
+let out = "";
+output.on("data", (c) => (out += c));
+// 位置形 duplex 取 stdin/stdout（node 299 行口径）。
+const r = start("leg> ", { stdin: input, stdout: output }, (cmd, context, filename, cb) => cb(null, cmd.trim()));
+console.log("prompt", JSON.stringify(r.getPrompt()));
+console.log("wopts", typeof r.writer.options);
+input.write("hi\n");
+setTimeout(() => {
+  console.log("out", JSON.stringify(out));
+  r.close();
+}, 100);
+"#,
+    );
+    for line in [
+        "prompt \"leg> \"",
+        "wopts object",
+        "out \"leg> 'hi'\\nleg> \"",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

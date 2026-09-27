@@ -54,8 +54,11 @@ export function isValidSyntax(code) {
 const __INCOMPLETE = /missing [\}\)\]]|got end of script|unterminated/i;
 
 function defaultWriter(value) {
-  return inspect(value);
+  // P2-repl：node 口径 `(obj) => inspect(obj, writer.options)`（repl.js 244 行；
+  // `writer.options` 可写，preview 套件改 colors 即此）。
+  return inspect(value, defaultWriter.options);
 }
+defaultWriter.options = { ...inspect.defaultOptions, showProxy: true };
 
 function defaultEval(cmd, context, filename, callback) {
   let result;
@@ -69,9 +72,34 @@ function defaultEval(cmd, context, filename, callback) {
 }
 
 export class REPLServer extends EventEmitter {
-  constructor(options = {}) {
+  // P2-repl：双形态（node lib/repl.js 口径）——options 形，或 legacy 位置形
+  // (prompt, stream, eval, useGlobal, ignoreUndefined, replMode)。
+  constructor(prompt = {}, stream, eval_, useGlobal, ignoreUndefined, replMode) {
     super();
-    if (typeof options === 'string') options = { prompt: options };
+    let options;
+    if (prompt !== null && typeof prompt === 'object') {
+      options = { ...prompt };
+      stream = options.stream ?? options.socket;
+      eval_ = options.eval;
+      ignoreUndefined = options.ignoreUndefined;
+      replMode = options.replMode;
+      prompt = options.prompt;
+    } else {
+      options = {};
+    }
+    if (!options.input && !options.output) {
+      // 双缺即 stdio（node 299 行；legacy duplex 取 stdin/stdout）。
+      const stdioIn = stream?.stdin ?? stream ?? globalThis.process?.stdin;
+      const stdioOut = stream?.stdout ?? stream ?? globalThis.process?.stdout;
+      options.input = stdioIn ?? null;
+      options.output = stdioOut ?? null;
+      if (typeof prompt === 'string') options.prompt = prompt;
+      if (typeof eval_ === 'function') options.eval = eval_;
+      if (ignoreUndefined !== undefined) options.ignoreUndefined = ignoreUndefined;
+      if (replMode !== undefined) options.replMode = replMode;
+    } else if (typeof prompt === 'string' && options.prompt === undefined) {
+      options.prompt = prompt;
+    }
     this.input = options.input ?? null;
     this.output = options.output ?? null;
     this.terminal = options.terminal ?? (this.output != null ? !!this.output.isTTY : false);
@@ -215,9 +243,13 @@ export class REPLServer extends EventEmitter {
     this._prompt = p;
     try { this.rli.setPrompt(p); } catch { /* ignore */ }
   }
-  setPrompt(prompt) {
+   setPrompt(prompt) {
     this._basePrompt = String(prompt);
     this._setPrompt(this._basePrompt);
+  }
+  // P2-repl：喂入行（node Interface.write 口径；`start()` 无 input 套件靠它驱动）。
+  write(data) {
+    return this.rli.write(data);
   }
   getPrompt() {
     return this._prompt;
@@ -283,8 +315,8 @@ export class REPLServer extends EventEmitter {
   }
 }
 
-export function start(options) {
-  const r = new REPLServer(options ?? {});
+export function start(prompt, source, eval_, useGlobal, ignoreUndefined, replMode) {
+  const r = new REPLServer(prompt, source, eval_, useGlobal, ignoreUndefined, replMode);
   r.displayPrompt();
   return r;
 }

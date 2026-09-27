@@ -30,6 +30,7 @@ import errors from 'node:internal/errors';
 const {
   codes: {
     ERR_INVALID_ARG_TYPE,
+    ERR_USE_AFTER_CLOSE,
   },
 } = errors;
 
@@ -184,13 +185,31 @@ function emitKeypressEvents(stream, iface) {
 class Interface extends EventEmitter {
   constructor(input, output, completer, terminal) {
     super();
+    // P2-repl：`new Interface(options)` 归一（node internal/readline 180 行
+    // `if (input?.input)` 口径；createInterface 同判定，见下）。
+    if (input !== undefined && input !== null && typeof input === 'object' && !Array.isArray(input) &&
+        (input.input !== undefined || input.terminal !== undefined || input.completer !== undefined ||
+         input.prompt !== undefined || input.historySize !== undefined ||
+         input.removeHistoryDuplicates !== undefined)) {
+      const o = input;
+      var __prompt = o.prompt;
+      var __historySize = o.historySize;
+      var __removeDup = o.removeHistoryDuplicates;
+      input = o.input;
+      output = o.output ?? output;
+      completer = o.completer ?? completer;
+      terminal = o.terminal ?? terminal;
+    }
     this.input = input ?? null;
     this.output = output ?? null;
     this.completer = typeof completer === 'function' ? completer : undefined;
     this.terminal = !!terminal;
     this.history = [];
     this.historySize = 30;
+    if (__historySize !== undefined) this.historySize = __historySize;
+    this.removeHistoryDuplicates = !!__removeDup;
     this._prompt = '';
+    if (__prompt !== undefined) this._prompt = String(__prompt);
     this.closed = false;
     this.paused = false;
     this.line = '';
@@ -231,8 +250,15 @@ class Interface extends EventEmitter {
   // ── 提交（两模式共用）──
   _submit(line) {
     if (this.terminal) {
-      if (line.length > 0 && this.history[0] !== line) {
-        this.history.unshift(line);
+      // P2-repl：多行历史倒序存（node internal/readline/utils reverseString 口径：
+      // history 文件单行格式使然；单行无变）。
+      const histLine = line.split('\n').reverse().join('\r');
+      // P2-repl：removeHistoryDuplicates 即清全表同行（node 口径；缺省仅去连续重）。
+      if (this.removeHistoryDuplicates) {
+        this.history = this.history.filter((h) => h !== histLine);
+      }
+      if (histLine.length > 0 && this.history[0] !== histLine) {
+        this.history.unshift(histLine);
         if (this.history.length > this.historySize) this.history.pop();
       }
       this._historyIndex = -1;
@@ -380,6 +406,12 @@ class Interface extends EventEmitter {
     this._questionCb = cb ?? null;
   }
   write(data, key) {
+    // P2-repl：关后写抛 ERR_USE_AFTER_CLOSE（真机逐字）；写即 resume（真机口径）；
+    // 非终端写即喂行缓冲并排空（node kNormalWrite：write 是入流，不是纯回显）。
+    if (this.closed) {
+      throw new ERR_USE_AFTER_CLOSE('readline');
+    }
+    if (this.paused) this.resume();
     if (key !== undefined && key !== null) {
       this._ttyWrite(undefined, typeof key === 'object' ? key : { name: String(key) });
       return undefined;
@@ -387,7 +419,10 @@ class Interface extends EventEmitter {
     if (this.terminal) {
       if (data !== undefined && data !== null) this._insert(String(data));
     } else {
-      if (data !== undefined && data !== null) this._lineBuf += String(data);
+      if (data !== undefined && data !== null) {
+        this._lineBuf += String(data);
+        this._drainLines();
+      }
     }
     return undefined;
   }

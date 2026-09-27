@@ -201,3 +201,47 @@ setTimeout(() => console.log("end-ok"), 300);
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn p2_readline_iface_options_and_write() {
+    // P2-repl：new Interface(options) 归一 + write 入流排空/关后码 + 多行历史倒序去重。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "w.mjs",
+        r#"
+import { Interface } from "node:readline";
+import { PassThrough } from "node:stream";
+const input = new PassThrough(), output = new PassThrough();
+const rl = new Interface({ input, output, terminal: true, prompt: "T> ", historySize: 5, removeHistoryDuplicates: true });
+console.log("opt", rl.terminal, JSON.stringify(rl.getPrompt()), rl.historySize, rl.removeHistoryDuplicates);
+rl.line = "line1\nline2";
+input.emit("keypress", "", { name: "enter" });
+rl.line = "other";
+input.emit("keypress", "", { name: "enter" });
+rl.line = "line1\nline2";
+input.emit("keypress", "", { name: "enter" });
+console.log("hist", JSON.stringify(rl.history));
+const i2 = new PassThrough(), o2 = new PassThrough();
+const r2 = new Interface({ input: i2, output: o2 });
+const got = [];
+r2.on("line", (l) => got.push(l));
+r2.write("a\nb\npartial");
+console.log("drain", JSON.stringify(got));
+r2.close();
+try { r2.write("x"); console.log("closed FAIL"); }
+catch (e) { console.log("closed", e.code); }
+rl.close();
+"#,
+    );
+    for line in [
+        "opt true \"T> \" 5 true",
+        "hist [\"line2\\rline1\",\"other\"]",
+        "drain [\"a\",\"b\"]",
+        "closed ERR_USE_AFTER_CLOSE",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    assert!(!out.contains("FAIL"), "out: {out}");
+    dir.close().unwrap();
+}

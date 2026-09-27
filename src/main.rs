@@ -80,6 +80,36 @@ fn main() {
         (cli, m)
     };
 
+    // F4 纯动作懒初始化：--completions/--man 不读 settings、不建 tokio、不打日志
+    //（--version/--help 已由 clap 提前 exit，同款）。仅单动作且修饰归属通过才走
+    // 快路径，否则落回 dispatch 走原错误口径（保持文案/退出码逐字节一致）。
+    if (cli.completions.is_some() || cli.man)
+        && cli.actions_present().len() == 1
+        && cli_modifier_scope(&cli, &matches).is_none()
+    {
+        if let Some(shell) = cli.completions {
+            let mut cmd = cli::localized_command();
+            clap_complete::generate(shell, &mut cmd, "winterjs", &mut std::io::stdout().lock());
+            std::process::exit(0);
+        }
+        if cli.man {
+            use std::io::Write as _;
+            let cmd = cli::localized_command();
+            let man = clap_mangen::Man::new(cmd).title("WINTERJS");
+            let mut buf = Vec::new();
+            match man.render(&mut buf) {
+                Ok(()) => match std::io::stdout().write_all(&buf) {
+                    Ok(()) => std::process::exit(0),
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                        std::process::exit(0)
+                    }
+                    Err(_) => std::process::exit(1),
+                },
+                Err(_) => std::process::exit(1),
+            }
+        }
+    }
+
     let settings = match settings::Settings::load() {
         Ok(settings) => settings,
         Err(source) => {
@@ -87,6 +117,36 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // F4（续）：--config 只需 settings，无需 logging/tokio/sentry。同上仅单动作
+    // 快路径，否则落回 dispatch。
+    if cli.config
+        && cli.actions_present().len() == 1
+        && cli_modifier_scope(&cli, &matches).is_none()
+    {
+        let code = match (cli.schema, serde_json::to_string_pretty(&settings)) {
+            (true, _) => match serde_json::to_string_pretty(&schemars::schema_for!(
+                settings::Settings
+            )) {
+                Ok(s) => {
+                    println!("{s}");
+                    0
+                }
+                Err(e) => {
+                    let _ = Error::Other(e.to_string()).render(settings.log.color);
+                    1
+                }
+            },
+            (false, Ok(s)) => {
+                println!("{s}");
+                0
+            }
+            (false, Err(e)) => {
+                let _ = Error::Other(e.to_string()).render(settings.log.color);
+                1
+            }
+        };
+        std::process::exit(code);
+    }
     logging::init(logging::LogOptions {
         verbosity: cli.verbose,
         filter: settings.log.filter.clone(),

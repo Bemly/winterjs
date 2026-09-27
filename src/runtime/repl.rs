@@ -10,6 +10,58 @@ use mozjs::rust::Runtime;
 use std::ffi::CString;
 use std::io::IsTerminal as _;
 use crate::error::Error;
+use crate::repl::{CompReq, CompResp};
+
+/// CLI 补全桥（P2-repl R5）：会话启动时注入——`node:repl` 的 `cliComplete`
+/// （R3 子集规则：成员链/fs 路径/bare 上下文键）对 CLI 全局求值面工作，
+/// 返回 JSON `[list, completeOn]`。`__wjs_` 前缀（4.48 已 grep 无重名）。
+const COMP_BRIDGE: &str = r#"
+const { cliComplete } = require('node:repl');
+globalThis.__wjs_cli_complete = (line) => cliComplete(String(line));
+"#;
+
+/// JS 线程执行补全（只在主循环调用）：求值 `__wjs_cli_complete(line)` 并解析
+/// `[list, completeOn]`；求值失败/形状不合法回 `(空, line)`（reedline 空集）。
+fn cli_complete_js(
+    rt: &mut Runtime,
+    global: &RootedGuard<'_, *mut JSObject>,
+    line: &str,
+) -> (Vec<String>, String) {
+    let fallback = (Vec::new(), line.to_owned());
+    let script = format!(
+        "JSON.stringify(globalThis.__wjs_cli_complete({}))",
+        serde_json::to_string(line).unwrap_or_else(|_| "\"\"".into()),
+    );
+    let c_filename = CString::new("repl.js").expect("no NUL");
+    rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
+    let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
+    if evaluate_script(rt.cx(), global.handle(), &script, rval.handle_mut(), options).is_err() {
+        return fallback;
+    }
+    let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+    rooted!(&in(&mut realm) let rv = rval.get());
+    let Ok(ConversionResult::Success(s)) = String::from_jsval(&mut realm, rv.handle(), ()) else {
+        return fallback;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) else {
+        return fallback;
+    };
+    let Some(items) = v.get(0).and_then(|x| x.as_array()) else {
+        return fallback;
+    };
+    let complete_on = v
+        .get(1)
+        .and_then(|x| x.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| line.to_owned());
+    (
+        items
+            .iter()
+            .filter_map(|x| x.as_str().map(str::to_owned))
+            .collect(),
+        complete_on,
+    )
+}
 
 /// REPL 输出统一口：CRLF 化 + 尾换行 + stdout 刷出（仅 TTY 会话——旗未置位的
 /// 管道/黑盒路径字节恒等原 println/eprintln 行为）。
@@ -142,6 +194,19 @@ pub async fn repl() -> Result<(), Error> {
         let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
         let _ = evaluate_script(rt.cx(), global.handle(), code, rval.handle_mut(), options);
     }
+    // 补全桥注册（node:repl cliComplete → __wjs_cli_complete；失败仅降级静态）。
+    {
+        let c_filename = CString::new("repl.js").expect("no NUL");
+        rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
+        let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
+        let _ = evaluate_script(
+            rt.cx(),
+            global.handle(),
+            COMP_BRIDGE,
+            rval.handle_mut(),
+            options,
+        );
+    }
     let mut fetch_rx = init.fetch_rx;
     let mut ws_rx = init.ws_rx;
     let mut watch_rx = init.watch_rx;
@@ -154,9 +219,14 @@ pub async fn repl() -> Result<(), Error> {
 
     let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<Option<String>>();
     let (flush_tx, flush_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    // 补全跨线程管线（readline 线程 Tab → 本循环 JS 求值 → 回包）。
+    let (comp_req_tx, mut comp_req_rx) = tokio::sync::mpsc::unbounded_channel::<CompReq>();
+    let (comp_resp_tx, comp_resp_rx) = tokio::sync::mpsc::unbounded_channel::<CompResp>();
     let hist = crate::repl::history_path();
     // readline 是阻塞 IO，独占线程跑（`Editor` 不出线程，无跨线程共享）。
-    std::thread::spawn(move || crate::repl::readline_loop(line_tx, hist, flush_rx));
+    std::thread::spawn(move || {
+        crate::repl::readline_loop(line_tx, hist, flush_rx, comp_req_tx, comp_resp_rx)
+    });
     // TTY 会话：用户输出 CRLF 化（raw mode 阶梯，`crate::repl::crlf`）；
     // SIGINT 置忽略——哨兵窗口（行处理期间）读行线程不在 `read_line`（非 raw、
     // ISIG 开），Ctrl-C 会走内核默认终止杀掉整个会话；忽略后该毫秒级窗口的
@@ -233,6 +303,14 @@ pub async fn repl() -> Result<(), Error> {
                             }
                         }
                     }
+                }
+            }
+            // 补全请求：JS 线程真上下文求值（node:repl cliComplete，R5 桥），
+            // 回包经 id 配对返回 readline 线程；readline 线程退出后通道断即枯竭。
+            req = comp_req_rx.recv() => {
+                if let Some(r) = req {
+                    let (items, complete_on) = cli_complete_js(&mut rt, &global, &r.line);
+                    let _ = comp_resp_tx.send(CompResp { id: r.id, items, complete_on });
                 }
             }
             // 短轮询：只做唤醒，工作全在顶部的 pump（channel 无 peek，

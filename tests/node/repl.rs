@@ -226,6 +226,32 @@ setTimeout(() => {
 }
 
 #[test]
+fn p2_repl_cli_complete_bridge() {
+    // P2-repl R5：CLI 补全桥（cliComplete 对 globalThis 全局面）——
+    // bare 真上下文键（global 在）/成员链/大小写不敏感/调用形拒答。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "o.mjs",
+        r#"
+import repl from "node:repl";
+const b = repl.cliComplete("gl");
+console.log("bare", Array.isArray(b[0]) && b[0].includes("global") && b[0].includes("globalThis") && b[1] === "gl");
+const m = repl.cliComplete("globalThis.Array.fr");
+console.log("member", m[0].includes("globalThis.Array.from") && m[1] === "globalThis.Array.fr");
+const ci = repl.cliComplete("globalThis.arraybuf");
+console.log("ci", ci[0].includes("globalThis.ArrayBuffer"));
+const call = repl.cliComplete("globalThis.Array().");
+console.log("call", call[0].length === 0);
+"#,
+    );
+    for line in ["bare true", "member true", "ci true", "call true"] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn p2_repl_options_surface() {
     // P2-repl R4：options 面（访问器/旗/校验/废弃表；standalone 另案）。
     let dir = assert_fs::TempDir::new().unwrap();

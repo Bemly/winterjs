@@ -121,6 +121,9 @@ function __descAt(obj, key) {
   return null;
 }
 function __ctxEval(expr, context) {
+  // P2-repl R5：CLI 桥传 globalThis（非 vm context）——走全局间接 eval，
+  // 与 CLI REPL 的经典脚本求值面同源（成员链/bare 键真上下文）。
+  if (context === globalThis) return (0, eval)(expr);
   return vm.runInContext(expr, context, 'repl-completion');
 }
 // base 文本拆根 + 步进（括号配平扫描；非法即 null）。
@@ -699,9 +702,20 @@ export function start(prompt, source, eval_, useGlobal, ignoreUndefined, replMod
 }
 
 export const writer = defaultWriter;
+
+// P2-repl R5：CLI reedline 补全桥（同步返回形）——同款子集规则（成员链/fs
+// 路径/bare 上下文键），求值面为全局（见 __ctxEval 的 globalThis 分支），
+// CLI REPL 与 node:repl 模块补全同源。返回 [list, completeOn]：list 元素为
+// 应写入的完整文本，completeOn 为行尾被替换段（CLI 侧换算 reedline span）。
+export function cliComplete(line) {
+  let out = null;
+  __defaultComplete(globalThis, line, (err, r) => { out = r; });
+  return out ?? [[], String(line)];
+}
 // P2-repl R4：模块级废弃表（DEP0142/DEP0191 门控；值取 node:module 全集）。
 let __replBuiltinOverride = null;
-const __defaultExport = { start, writer, REPLServer, REPL_MODE_SLOPPY, REPL_MODE_STRICT, Recoverable, isValidSyntax };
+// cliComplete 同挂默认导出（4.218：具名导出≠默认导出；CLI 桥经 require 取用）。
+const __defaultExport = { start, writer, REPLServer, REPL_MODE_SLOPPY, REPL_MODE_STRICT, Recoverable, isValidSyntax, cliComplete };
 Object.defineProperties(__defaultExport, {
   builtinModules: {
     get: () => {

@@ -11,9 +11,11 @@
 //!   模板 `${}` 内不高亮细分；跨行块注释退化为普通文本（文档记录）。
 //! - 多行：`SnowValidator` 以 `brace_balance` 判括号平衡（字符串/注释感知），
 //!   `Incomplete` 即续行（multiline indicator 同 `> `）。
-//! - 补全：`JsCompleter` 静态表（点命令/关键字/全局对象 + 一行文档，进右侧 pane）。
-//!   成员形（`console.` 等）暂不展开——要读存活 JS 上下文，需跨线程投递另案
-//!   （`node:repl` 的 `__defaultComplete` 是 JS 侧逻辑，CLI 线程够不着）；
+//! - 补全：`JsCompleter` 双源——静态表（点命令/关键字 + 一行签名）与
+//!   **真上下文动态**（Tab 请求经通道投递 JS 线程，调 `node:repl` 的
+//!   `cliComplete`：成员链逐步求值/fs 路径/bare 上下文键/大小写不敏感，
+//!   R3 同源；`JSContext` 是 `!Send` 故只在 JS 线程求值）；超时降级静态。
+//!   同名时动态优先，静态描述补充。
 //!   空前缀不炸菜单（返回空集）。
 //! - 非 TTY（stdin 管道，黑盒即此）：退化 stdin 逐行读，不调 highlighter/menu，
 //!   输出无 ANSI（`tests/repl.rs` 钉住）。
@@ -309,8 +311,8 @@ pub fn highlight_styled(line: &str) -> reedline::StyledText {
     out
 }
 
-/// 补全候选（一行文档，进 IdeMenu 右侧 pane）：签名形——传参 + 返回值，
-/// 不是"是什么"而是"怎么用"（用户口径 2026-09-27）。
+/// 静态补全表（点命令/关键字 + 一行签名文档；bare 全局名由动态补全给出，
+/// 静态表同名项的描述优先——见 `merge_dynamic_static`）。
 fn candidates() -> Vec<(&'static str, &'static str)> {
     let mut out = vec![
         (".exit", ".exit — quit the repl"),
@@ -360,8 +362,98 @@ fn candidates() -> Vec<(&'static str, &'static str)> {
     out
 }
 
-/// 静态补全器（bare 词 + 点命令；成员形暂拒，见模块注记）。
-pub struct JsCompleter;
+/// CLI 补全跨线程投递（readline 线程 ↔ JS 线程；`JSContext` 是 `!Send`，
+/// 真上下文枚举只在 JS 线程做——`runtime/repl` 桥调 `node:repl` 的
+/// `cliComplete`）。id 配对防超时后迟到的旧回包错配。
+#[derive(Debug)]
+pub(crate) struct CompReq {
+    pub id: u64,
+    pub line: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct CompResp {
+    pub id: u64,
+    /// 候选全文（bare 含行头、成员含 base），写入 span 段的完整文本。
+    pub items: Vec<String>,
+    /// 行尾被替换段（R3 `completeOn` 语义）。
+    pub complete_on: String,
+}
+
+/// `completeOn` → reedline 替换区间：completeOn 必须是行尾段（R3 语义），
+/// 即 `(行长 - completeOn 长, 行长)`；不是行尾段时回 None（拒映射，不乱替换）。
+fn complete_span(line: &str, complete_on: &str) -> Option<(usize, usize)> {
+    if complete_on.is_empty() || complete_on.len() > line.len() || !line.ends_with(complete_on) {
+        return None;
+    }
+    Some((line.len() - complete_on.len(), line.len()))
+}
+
+/// 静态+动态补全器（点命令/关键字静态表；bare/成员形经 JS 线程真上下文——
+/// 成员链逐步求值/fs 路径/大小写不敏感，与 `node:repl` 模块补全同源）。
+/// 超时或主循环退出时降级为纯静态（不阻塞行编辑）。
+pub struct JsCompleter {
+    req_tx: tokio::sync::mpsc::UnboundedSender<CompReq>,
+    resp_rx: tokio::sync::mpsc::UnboundedReceiver<CompResp>,
+    next_id: u64,
+    /// 动态回包总窗（单测注入缩短；缺省 150ms）。
+    timeout: Duration,
+}
+
+impl JsCompleter {
+    pub fn new(
+        req_tx: tokio::sync::mpsc::UnboundedSender<CompReq>,
+        resp_rx: tokio::sync::mpsc::UnboundedReceiver<CompResp>,
+    ) -> Self {
+        Self { req_tx, resp_rx, next_id: 0, timeout: Duration::from_millis(150) }
+    }
+
+    /// 动态补全请求（readline 线程阻塞等回包；超时/断链回 None）。
+    /// `line` 为光标前文本（R3 按行尾处理）。`UnboundedReceiver` 无同步带
+    /// 超时的 recv——`try_recv` 微步轮询（仅 Tab 触发，200µs 步进开销可忽略）。
+    fn request_dynamic(&mut self, line: &str) -> Option<(Vec<String>, String)> {
+        use tokio::sync::mpsc::error::TryRecvError;
+        self.next_id += 1;
+        let id = self.next_id;
+        self.req_tx.send(CompReq { id, line: line.to_owned() }).ok()?;
+        let start = Instant::now();
+        loop {
+            match self.resp_rx.try_recv() {
+                Ok(resp) if resp.id == id => return Some((resp.items, resp.complete_on)),
+                Ok(_) => continue, // 前次超时后迟到的旧回包，丢弃
+                Err(TryRecvError::Disconnected) => return None,
+                Err(TryRecvError::Empty) => {
+                    if start.elapsed() >= self.timeout {
+                        return None;
+                    }
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            }
+        }
+    }
+
+    /// 动态回包 → 候选（span 由 completeOn 换算；映射失败即空）。
+    fn dynamic_suggestions(&mut self, line: &str) -> Vec<reedline::Suggestion> {
+        let mut out = Vec::new();
+        if let Some((items, complete_on)) = self.request_dynamic(line)
+            && let Some((s0, s1)) = complete_span(line, &complete_on)
+        {
+            for v in items {
+                out.push(reedline::Suggestion {
+                    value: v,
+                    display_override: None,
+                    description: None,
+                    style: None,
+                    extra: None,
+                    span: reedline::Span::new(s0, s1),
+                    append_whitespace: false,
+                    match_indices: None,
+                });
+            }
+        }
+        out
+    }
+}
 
 impl JsCompleter {
     fn suggest(prefix: &str, dot_mode: bool) -> Vec<reedline::Suggestion> {
@@ -401,7 +493,7 @@ impl JsCompleter {
 impl reedline::Completer for JsCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> reedline::CompletionResult {
         let upto = line.get(..pos.min(line.len())).unwrap_or(line);
-        // 点命令形（行首 `.` + 无空白）：补 `.help`/`.exit`。
+        // 点命令形（行首 `.` + 无空白）：补 `.help`/`.exit`（纯静态）。
         let trimmed = upto.trim_start();
         if let Some(rest) = trimmed.strip_prefix('.')
             && !rest.contains(char::is_whitespace)
@@ -413,7 +505,7 @@ impl reedline::Completer for JsCompleter {
             }
             return reedline::CompletionResult::fresh(items);
         }
-        // bare 词尾；成员形（`foo.` 前缀）暂拒（跨线程读存活上下文另案）。
+        // bare 词尾起点（成员/静态共用）。
         let end = upto.len();
         let mut start = end;
         for (idx, ch) in upto.char_indices().rev() {
@@ -427,12 +519,20 @@ impl reedline::Completer for JsCompleter {
         if prefix.is_empty() {
             return reedline::CompletionResult::fresh(Vec::new());
         }
-        if start > 0 && upto.as_bytes()[start - 1] == b'.' {
-            return reedline::CompletionResult::fresh(Vec::new());
-        }
-        let mut items = Self::suggest(prefix, false);
-        for s in &mut items {
-            s.span = reedline::Span::new(start, pos);
+        let member_form = start > 0 && upto.as_bytes()[start - 1] == b'.';
+        // 动态优先：成员链逐步求值 / bare 上下文键（与 node:repl 模块同源）。
+        let mut items = self.dynamic_suggestions(upto);
+        // 静态表合并：仅 bare 面（静态表无成员形）；同 value 动态在前不重。
+        if !member_form {
+            let seen: std::collections::HashSet<String> =
+                items.iter().map(|s| s.value.clone()).collect();
+            for mut s in Self::suggest(prefix, false) {
+                if seen.contains(&s.value) {
+                    continue;
+                }
+                s.span = reedline::Span::new(start, pos);
+                items.push(s);
+            }
         }
         reedline::CompletionResult::fresh(items)
     }
@@ -492,10 +592,16 @@ impl reedline::Highlighter for SnowHighlighter {
 /// 的"本轮输出完毕"哨兵——期间**不进 `read_line`**（终端 raw 已退，主循环的
 /// 多行输出/错误框 ONLCR 正常换行，且下一轮 prompt 不与求值输出竞争渲染）。
 /// 主循环退出（`flush_tx` drop）→ `blocking_recv` 返回 `None` → 线程收尾。
+///
+/// 补全投递（`comp_req_tx`/`comp_resp_rx`）：Tab 时经 JS 线程真上下文补全
+/// （`JsCompleter` 注记），超时降级静态表。
+#[allow(clippy::too_many_arguments)]
 pub fn readline_loop(
     tx: tokio::sync::mpsc::UnboundedSender<Option<String>>,
     history: Option<PathBuf>,
     mut flush_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    comp_req_tx: tokio::sync::mpsc::UnboundedSender<CompReq>,
+    comp_resp_rx: tokio::sync::mpsc::UnboundedReceiver<CompResp>,
 ) {
     if !std::io::stdin().is_terminal() {
         // 非 TTY：逐行直读（仍无 ANSI；`.exit` 等由主循环分类）。
@@ -524,7 +630,7 @@ pub fn readline_loop(
     );
     let edit_mode = Box::new(Emacs::new(keybindings));
     let mut rl = Reedline::create()
-        .with_completer(Box::new(JsCompleter))
+        .with_completer(Box::new(JsCompleter::new(comp_req_tx, comp_resp_rx)))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(
             IdeMenu::default().with_name("completion_menu"),
         )))
@@ -674,17 +780,12 @@ mod tests {
 
     #[test]
     fn completer_faces() {
-        // 补全三件：正常（bare 词带文档）+ 点命令形 + 边界（空前缀/成员形拒答）。
+        // 补全三件：点命令形（静态）+ bare 降级面（通道无回应 → 静态关键字）
+        // + 边界（空前缀/超时窗）。动态真上下文面由黑盒盖（需 JS 线程桥）。
         use reedline::Completer as _;
-        let mut c = JsCompleter;
-        // 正常：`cons` → console（value 全词 + description 进右侧 pane）。
-        let items = match c.complete("cons", 4) {
-            reedline::CompletionResult::Fresh { suggestions, .. } => suggestions.to_vec(),
-            _ => panic!("expected fresh"),
-        };
-        let console = items.iter().find(|s| s.value == "console").expect("console");
-        assert_eq!(console.description.as_deref(), Some("console.log/info/warn/error/dir/…"));
-        assert_eq!((console.span.start, console.span.end), (0, 4));
+        let (req_tx, _req_rx) = tokio::sync::mpsc::unbounded_channel::<CompReq>();
+        let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel::<CompResp>();
+        let mut c = JsCompleter { req_tx, resp_rx, next_id: 0, timeout: Duration::from_millis(1) };
         // 点命令：`.he` → 显示 `.help`（value 补剩余部分，不吞点）。
         let dots = match c.complete(".he", 3) {
             reedline::CompletionResult::Fresh { suggestions, .. } => suggestions.to_vec(),
@@ -692,7 +793,14 @@ mod tests {
         };
         let help = dots.iter().find(|s| s.value == "help").expect("help");
         assert_eq!(help.display_override.as_deref(), Some(".help"));
-        // 报错/边界：空前缀与成员形一律空集（不炸菜单）。
+        // bare：动态无回应（空通道）→ 超时降级静态（keyword/CLI 名）。
+        let items = match c.complete("con", 3) {
+            reedline::CompletionResult::Fresh { suggestions, .. } => suggestions.to_vec(),
+            _ => panic!("expected fresh"),
+        };
+        assert!(items.iter().any(|s| s.value == "console"), "degraded static: {items:?}");
+        assert!(items.iter().any(|s| s.value == "const"), "keywords merged: {items:?}");
+        // 报错/边界：空前缀空集；成员形动态无回应即空集（不炸菜单）。
         for (line, pos) in [("", 0), ("console.", 8), ("1 + ", 4)] {
             match c.complete(line, pos) {
                 reedline::CompletionResult::Fresh { suggestions, .. } => {
@@ -701,5 +809,16 @@ mod tests {
                 _ => panic!("expected fresh for {line:?}"),
             }
         }
+        drop(resp_tx); // 断链路径：resp 通道关 → request_dynamic None。
+    }
+
+    #[test]
+    fn complete_span_table() {
+        // completeOn→span：行尾段正常映射；非行尾段/超长/空拒映射。
+        assert_eq!(complete_span("const gl", "gl"), Some((6, 8)));
+        assert_eq!(complete_span("globalThis.fr", "globalThis.fr"), Some((0, 13)));
+        assert_eq!(complete_span("abc", "x"), None);
+        assert_eq!(complete_span("abc", "abcd"), None);
+        assert_eq!(complete_span("abc", ""), None);
     }
 }

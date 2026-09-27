@@ -432,3 +432,24 @@ G1/G2/G3/G9 已收官。）
   `completer_faces` 断言随签名表更新。
 - 验证：pty 字节复验四场景（回显/错误框/console 多行/timer 异步）全行首对齐；
   repl 域 nextest 30/30；冒烟 5/5（target-alt）；全量 strict 见 plan3 §0.4。
+
+## 2026-09-28 P2-repl R5：CLI 补全接真上下文（Tab 与实际环境打通）
+
+- 用户实测指出：REPL 里 `global` 明明是对象，Tab 补全却只出静态表里的
+  `globalThis`——CLI 补全与真实环境脱节（R3 只把真上下文补全做进了
+  `node:repl` 模块，CLI reedline 仍是 Rust 静态表，成员形更是全拒）。
+- 方案：CLI 补全跨线程接 `node:repl` 的补全核心——`__defaultComplete`
+  增 `__ctxEval` 的 globalThis 分支（间接 eval，与 CLI 经典脚本求值面同源），
+  新导出 `cliComplete(line)`（同步返回 `[list, completeOn]`，同挂默认导出，
+  4.218 教训重申）；`JsCompleter` 改双源——Tab 请求经通道投递主循环
+  （`JSContext` !Send，真上下文枚举只在 JS 线程），JS 线程桥
+  `__wjs_cli_complete`（会话启动时注入）求值回 JSON，id 配对防迟到旧包，
+  150ms 超时降级静态表；`completeOn` → reedline span 换算
+  （非行尾段拒映射）；bare 面动态候选与静态表合并去重（静态描述补充）。
+- 坑两枚：① `cliComplete` 只挂具名导出致 `require` 面 undefined（4.218
+  重演，挂默认导出解决）；② 桥内与主循环脚本各 `JSON.stringify` 一次
+  ——双重编码使 Rust 侧拿到字符串而非数组，`v.get(0)` 落 fallback 空集
+  （pty 插桩定位：REQ 到、回包到、items=[]）。桥改返对象，主循环统一编码。
+- 验证：黑盒 `p2_repl_cli_complete_bridge`（bare 含 global/成员链/大小写
+  不敏感/调用形拒答）；repl 域 32/32；pty 端到端 `gl`+Tab 出 `global`、
+  `console.lo`+Tab 出 `console.log`；冒烟 5/5；strict 见 plan3 §0.4。

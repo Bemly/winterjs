@@ -135,3 +135,7 @@ arg:
     help: "Allow FFI (run/eval/test/repl only; dlopen of native libraries)"
   allow_all:
     help: "Allow everything (run/eval/test/repl only; no sandbox)"
+  help:
+    help: "Print help"
+  version:
+    help: "Print version"

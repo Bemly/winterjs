@@ -302,7 +302,10 @@ impl Cli {
 /// 缺 key（`t!` 回显 key 本身）则保留原文 → 英文输出逐字节不变。
 /// 已知局限：clap 自带词（Usage/Options）与 clap 自动报错保持英文。
 pub fn localized_command() -> clap::Command {
-    let cmd = Cli::command();
+    let mut cmd = Cli::command();
+    // clap 自动的 --help/--version 在 build() 期才 materialize：不先 build，
+    // get_arguments() 里见不到它们，arg.help/arg.version 的译文永远够不着。
+    cmd.build();
     let cmd = match cmd.get_about().map(|s| s.to_string()) {
         Some(orig) => cmd.about(tr_or("app.about", &orig)),
         None => cmd,

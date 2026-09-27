@@ -135,3 +135,7 @@ arg:
     help: "允许 FFI（仅 run/eval/test/repl；dlopen 本地库）"
   allow_all:
     help: "允许一切（仅 run/eval/test/repl；关闭沙箱）"
+  help:
+    help: "打印帮助信息"
+  version:
+    help: "打印版本信息"

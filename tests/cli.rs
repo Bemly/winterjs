@@ -220,6 +220,9 @@ fn i18n_help_zh() {
     let out = stdout_of(&mut winterjs().args(["-l", "zh", "--help"]));
     assert!(out.contains("运行 JS 文件"), "zh top help:\n{out}");
     assert!(out.contains("帮助文本语言"), "zh lang flag:\n{out}");
+    // clap 自动的 --help/--version 在 build() 期才进 get_arguments（中文缺失即此因）
+    assert!(out.contains("打印帮助信息"), "zh help flag:\n{out}");
+    assert!(out.contains("打印版本信息"), "zh version flag:\n{out}");
     // flag 世界：动作的值必须紧贴（--run 后直接跟别的 flag 会被当缺值）；
     // 跨 flag 写法是 -l 前置 + 动作给值（--help 短路只展示不执行；扁平 CLI 无 per-action 页）
     let out = stdout_of(&mut winterjs().args(["-l", "zh", "--run", "dummy.js", "--help"]));

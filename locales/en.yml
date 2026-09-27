@@ -1,7 +1,6 @@
 app:
   about: "Bun-like JS runtime on SpiderMonkey"
   banner_help: |
-    Single-dash switches (parsed before clap, work with every action):
       -hide_banner    Hide the startup banner, like ffmpeg does
       -ascii_banner   Force the ASCII banner even on graphics-capable terminals
 arg:

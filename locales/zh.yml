@@ -1,7 +1,6 @@
 app:
   about: "类 Bun 的 JS 运行时（基于 SpiderMonkey）"
   banner_help: |
-    单横杠开关（clap 解析前预处理，全动作通用）：
       -hide_banner    隐藏启动 banner（致敬 ffmpeg 同名选项）
       -ascii_banner   强制 ASCII banner，图形终端也不加载图片
 arg:

@@ -8,8 +8,9 @@
 
 ## 0. 工作流铁律
 
-1. **每次修改都要 `git commit`**：小步提交；提交前必看 `git status --short` +
-   `git diff`，只 stage 意图内的文件，绝不提交 secrets。
+1. **每次修改都要 `git commit`，提交后即 `git push`**：小步提交；提交前必看 `git status --short` +
+   `git diff`，只 stage 意图内的文件，绝不提交 secrets；push 到 `origin/master`
+  （用户已常设授权，今后无需再问；push 前确认工作区干净、无多余提交混入）。
 2. **先查证据再下结论**：读文件、跑构建、跑 `./target/debug/winterjs` 实测；
    与文档矛盾以实测为准并更新文档。
 3. **踩坑必记**：新坑追加到 `docs/pitfalls.md` 末尾（编号续排 `4.N`：症状 → 根因 →

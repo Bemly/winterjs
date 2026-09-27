@@ -188,3 +188,39 @@ setTimeout(() => {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn p2_repl_subset_complete() {
+    // P2-repl R3：子集补全（成员/拒答面；正常 + 报错边界）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "c.mjs",
+        r#"
+import { start } from "node:repl";
+import { PassThrough } from "node:stream";
+const input = new PassThrough(), output = new PassThrough();
+const r = start({ input, output, prompt: "> ", terminal: false });
+input.write('const o = { one: 1, nest: { two: 2 } };\n');
+setTimeout(() => {
+  r.complete("o.n", (e, d) => console.log("m1", JSON.stringify(d)));
+  r.complete("o.nest.t", (e, d) => console.log("m2", JSON.stringify(d)));
+  r.complete("o.missing.", (e, d) => console.log("m3", JSON.stringify(d)));
+  r.complete("f().x", (e, d) => console.log("m4", JSON.stringify(d)));
+  r.complete("o['nest'].t", (e, d) => console.log("m5", JSON.stringify(d)));
+  setTimeout(() => r.close(), 50);
+}, 100);
+"#,
+    );
+    for line in [
+        "m1 [[\"o.nest\"],\"o.n\"]",
+        "m3 [[],\"o.missing.\"]",
+        "m4 [[],\"f().x\"]",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    // 原型成员同列（真机同款；includes 断关键项）。
+    assert!(out.contains("\"o.nest.two\""), "out: {out}");
+    assert!(out.contains("\"o['nest'].two\""), "out: {out}");
+    dir.close().unwrap();
+}

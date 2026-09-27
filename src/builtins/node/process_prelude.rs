@@ -156,13 +156,13 @@ globalThis.process = {
   },
   get platform() { return __wjs_os_platform(); },
   get arch() { return __wjs_os_arch(); },
-  version: "v26.9.13",
+  version: "v26.9.27",
   // versions.node = Node API 兼容水位（Bun 同哲学：process.version 是自家版本，
   // versions.node 报兼容等级）。22.12 = vite 8 的最低地板（22 && minor>=12），
   // 22.x 大版本保 `^22` caret 区间可用；22.0.0 过不了 vite checkNodeVersion。
   // openssl/sqlite 为兼容水位（套件门控 `hasCrypto/hasSQLite` 用；TLS 底座实为
   // rustls/ring、DB 实为 turso，引擎差异见模块头注；10f 跑 test/common 前置）。
-  versions: { node: "22.12.0", winterjs: "26.9.13", mozjs: "153", openssl: "3.6.4", sqlite: "3.53.4" },
+  versions: { node: "22.12.0", winterjs: "26.9.27", mozjs: "153", openssl: "3.6.4", sqlite: "3.53.4" },
   // 构建配置（10f 跑 test/common 前置；键集按套件读取面收敛，非全量 115 键）。
   config: {
     target_defaults: { default_configuration: "Release" },

@@ -1,0 +1,508 @@
+coffee:
+  ROUTES =
+    '': { file: 'pages/home.luoli', title: 'winterjs docs', stub: 'home', lang: 'en' }
+    'en/quickstart': { file: 'pages/quickstart-en.luoli', title: 'Quickstart | winterjs docs', stub: 'quickstart', lang: 'en' }
+    'en/api': { file: 'pages/api-en.luoli', title: 'API reference | winterjs docs', stub: 'api', lang: 'en' }
+    'en/cli': { file: 'pages/cli-en.luoli', title: 'CLI reference | winterjs docs', stub: 'cli', lang: 'en' }
+    'zh/quickstart': { file: 'pages/quickstart-zh.luoli', title: '快速上手 | winterjs docs', stub: 'quickstart', lang: 'zh' }
+    'zh/api': { file: 'pages/api-zh.luoli', title: 'API 参考 | winterjs docs', stub: 'api', lang: 'zh' }
+    'zh/cli': { file: 'pages/cli-zh.luoli', title: 'CLI 参考 | winterjs docs', stub: 'cli', lang: 'zh' }
+  RAW_BASE = 'https://raw.githubusercontent.com/Bemly/winterjs/refs/heads/master/'
+  THEME_KEY = 'wjs-docs-theme'
+  previewCache = {}
+
+  routeKey = ->
+    h = location.hash.replace /^#\/?/, ''
+    if ROUTES[h] then h else ''
+
+  esc = (s) ->
+    String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+  readTheme = ->
+    saved = null
+    try
+      saved = localStorage.getItem THEME_KEY
+    catch err
+      saved = null
+    saved
+
+  applyTheme = (t) ->
+    theme = if t is 'dark' then 'dark' else 'light'
+    document.documentElement.setAttribute 'data-theme', theme
+    try
+      localStorage.setItem THEME_KEY, theme
+    catch err
+      theme = theme
+    btn = document.querySelector '.vp-theme-btn'
+    if btn
+      btn.textContent = if theme is 'dark' then '☀️' else '🌙'
+
+  toggleTheme = ->
+    cur = document.documentElement.getAttribute 'data-theme'
+    if cur is 'dark' then applyTheme 'light' else applyTheme 'dark'
+
+  initTheme = ->
+    saved = readTheme()
+    if saved is 'dark' or saved is 'light'
+      applyTheme saved
+    else if window.matchMedia and window.matchMedia('(prefers-color-scheme: dark)').matches
+      applyTheme 'dark'
+    else
+      applyTheme 'light'
+
+  paintNav = (key, route) ->
+    links = document.querySelectorAll '[data-route]'
+    i = 0
+    while i < links.length
+      a = links[i]
+      if a.getAttribute('data-route') is key
+        a.classList.add 'active'
+      else
+        a.classList.remove 'active'
+      i += 1
+    toggle = document.getElementById 'lang-toggle'
+    if toggle
+      if route.stub is 'home'
+        toggle.setAttribute 'href', '#/'
+        toggle.textContent = '中文 / EN'
+      else
+        other = if route.lang is 'en' then 'zh' else 'en'
+        toggle.setAttribute 'href', '#/' + other + '/' + route.stub
+        toggle.textContent = if route.lang is 'en' then '中文' else 'EN'
+    document.documentElement.lang = if route.lang is 'zh' then 'zh-CN' else 'en'
+
+  render = ->
+    key = routeKey()
+    route = ROUTES[key]
+    page = document.getElementById 'page'
+    document.title = route.title
+    paintNav key, route
+    page.innerHTML = '<p class="vp-loading">Loading… / 加载中…</p>'
+    fetch(route.file).then((res) ->
+      if not res.ok then throw new Error('HTTP ' + res.status + ' for ' + route.file)
+      res.text()
+    ).then((text) ->
+      Luolita.renderToDOM text, '#page', { outputName: 'page', debug: false }
+    ).then(->
+      window.scrollTo 0, 0
+    ).catch((err) ->
+      page.innerHTML = '<p class="vp-error">Failed to load ' + esc(route.file) + ': ' + esc(err.message) + '</p>'
+    )
+
+  showPreview = (row, path, text) ->
+    old = row.nextSibling
+    if old and old.classList and old.classList.contains 'vp-preview-row'
+      old.parentNode.removeChild old
+    tr = document.createElement 'tr'
+    tr.className = 'vp-preview-row'
+    td = document.createElement 'td'
+    td.setAttribute 'colspan', '4'
+    td.innerHTML = '<div class="vp-preview-head"><span>' + esc(path) + '</span><a href="https://github.com/Bemly/winterjs/blob/master/' + esc(path) + '" target="_blank" rel="noopener">GitHub ↗</a></div><pre><code>' + esc(text) + '</code></pre>'
+    tr.appendChild td
+    row.parentNode.insertBefore tr, row.nextSibling
+
+  loadPreview = (row, path, cell) ->
+    if previewCache[path]
+      showPreview row, path, previewCache[path]
+      return
+    tr = document.createElement 'tr'
+    tr.className = 'vp-preview-row'
+    td = document.createElement 'td'
+    td.setAttribute 'colspan', '4'
+    td.innerHTML = '<p class="vp-loading">Loading ' + esc(path) + '…</p>'
+    tr.appendChild td
+    row.parentNode.insertBefore tr, row.nextSibling
+    fetch(RAW_BASE + path).then((res) ->
+      if not res.ok then throw new Error('HTTP ' + res.status)
+      res.text()
+    ).then((text) ->
+      previewCache[path] = text
+      showPreview row, path, text
+    ).catch((err) ->
+      td.innerHTML = '<p class="vp-error">Preview failed: ' + esc(err.message) + '</p>'
+    )
+
+  onPageClick = (e) ->
+    if not e.target or not e.target.closest then return
+    t = e.target.closest '[data-sample]'
+    if not t then return
+    e.preventDefault()
+    row = t.closest 'tr'
+    if not row then return
+    path = t.getAttribute 'data-sample'
+    next = row.nextSibling
+    if next and next.classList and next.classList.contains 'vp-preview-row'
+      next.parentNode.removeChild next
+      return
+    loadPreview row, path, t
+
+  initTheme()
+  render()
+  document.addEventListener 'click', onPageClick
+  window.addEventListener 'hashchange', render
+
+template:
+  header.vp-nav
+    a.vp-brand(href='#/') winterjs #[span docs]
+    nav.vp-top-links
+      a(href='#/en/quickstart' data-route='en/quickstart') Guide
+      a(href='#/en/api' data-route='en/api') API
+      a(href='#/en/cli' data-route='en/cli') CLI
+      a#lang-toggle(href='#/zh/quickstart') 中文
+      button.vp-theme-btn(type='button' onclick='toggleTheme()' title='light / dark') 🌙
+      a(href='https://github.com/Bemly/winterjs' target='_blank' rel='noopener') GitHub
+  .vp-shell
+    aside.vp-sidebar
+      .vp-group
+        p.vp-group-title English
+        a(href='#/en/quickstart' data-route='en/quickstart') Quickstart
+        a(href='#/en/api' data-route='en/api') API reference
+        a(href='#/en/cli' data-route='en/cli') CLI reference
+      .vp-group
+        p.vp-group-title 中文
+        a(href='#/zh/quickstart' data-route='zh/quickstart') 快速上手
+        a(href='#/zh/api' data-route='zh/api') API 参考
+        a(href='#/zh/cli' data-route='zh/cli') CLI 参考
+      .vp-group
+        p.vp-group-title Samples
+        a(href='https://github.com/Bemly/winterjs/tree/master/sample' target='_blank' rel='noopener') 46 examples ↗
+    main.vp-main
+      #page
+        p.vp-loading Loading… / 加载中…
+      footer.vp-footer winterjs docs · rendered in-browser from #[code .luoli] via #[a(href='https://luolita.bemly.moe/') luolita]
+
+style:
+  :root
+    --vp-c-brand-1: #42b883
+    --vp-c-brand-2: #33a06f
+    --vp-c-brand-soft: rgba(66, 184, 131, .14)
+    --vp-c-bg: #ffffff
+    --vp-c-bg-soft: #f6f6f7
+    --vp-c-border: #e2e2e3
+    --vp-c-divider: #e2e2e3
+    --vp-c-text-1: #213547
+    --vp-c-text-2: #565867
+    --vp-c-text-3: #8b8b93
+    --vp-c-code-bg: #282c34
+    --vp-c-code-fg: #abb2bf
+    --vp-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace
+
+  [data-theme='dark']
+    --vp-c-brand-1: #42d392
+    --vp-c-brand-2: #42b883
+    --vp-c-brand-soft: rgba(66, 211, 146, .16)
+    --vp-c-bg: #1b1b1f
+    --vp-c-bg-soft: #202127
+    --vp-c-border: #2e2e32
+    --vp-c-divider: #2e2e32
+    --vp-c-text-1: rgba(255, 255, 245, .86)
+    --vp-c-text-2: rgba(235, 235, 245, .6)
+    --vp-c-text-3: rgba(235, 235, 245, .38)
+    --vp-c-code-bg: #0d1117
+    --vp-c-code-fg: #c9d1d9
+
+  *
+    margin: 0
+    padding: 0
+    box-sizing: border-box
+
+  body
+    font-family: -apple-system, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif
+    color: var(--vp-c-text-1)
+    background: var(--vp-c-bg)
+    line-height: 1.7
+
+  a
+    color: var(--vp-c-brand-1)
+    text-decoration: none
+    &:hover
+      color: var(--vp-c-brand-2)
+
+  .vp-nav
+    position: sticky
+    top: 0
+    z-index: 40
+    height: 64px
+    display: flex
+    align-items: center
+    justify-content: space-between
+    padding: 0 32px
+    background: var(--vp-c-bg)
+    border-bottom: 1px solid var(--vp-c-divider)
+
+  .vp-brand
+    font-size: 1.1rem
+    font-weight: 700
+    color: var(--vp-c-text-1)
+    span
+      color: var(--vp-c-brand-1)
+      font-weight: 500
+
+  .vp-top-links
+    display: flex
+    gap: 20px
+    align-items: center
+    a
+      color: var(--vp-c-text-1)
+      font-size: .9rem
+      font-weight: 500
+      &:hover
+        color: var(--vp-c-brand-1)
+
+  .vp-theme-btn
+    border: 1px solid var(--vp-c-border)
+    background: var(--vp-c-bg-soft)
+    border-radius: 999px
+    width: 34px
+    height: 34px
+    cursor: pointer
+    font-size: 1rem
+    line-height: 1
+
+  .vp-shell
+    display: flex
+    max-width: 1440px
+    margin: 0 auto
+
+  .vp-sidebar
+    width: 248px
+    flex-shrink: 0
+    position: sticky
+    top: 64px
+    height: calc(100vh - 64px)
+    overflow-y: auto
+    padding: 32px 16px 32px 32px
+    border-right: 1px solid var(--vp-c-divider)
+
+  .vp-group
+    margin-bottom: 24px
+
+  .vp-group-title
+    font-size: .82rem
+    font-weight: 700
+    margin: 0 0 8px 12px
+
+  .vp-sidebar a
+    display: block
+    color: var(--vp-c-text-2)
+    font-size: .9rem
+    padding: 5px 12px
+    border-radius: 6px
+    margin: 1px 0
+    &:hover
+      color: var(--vp-c-brand-1)
+
+  .vp-sidebar a.active
+    color: var(--vp-c-brand-1)
+    background: var(--vp-c-brand-soft)
+    font-weight: 600
+
+  .vp-main
+    flex: 1
+    min-width: 0
+    padding: 40px 48px 64px
+    max-width: 960px
+
+  #page h1
+    font-size: 2rem
+    letter-spacing: -.02em
+    margin: 0 0 1rem
+
+  #page h2
+    font-size: 1.4rem
+    margin: 2.2rem 0 1rem
+    padding-top: 1.2rem
+    border-top: 1px solid var(--vp-c-divider)
+
+  #page h3
+    font-size: 1.1rem
+    margin: 1.6rem 0 .6rem
+
+  #page blockquote
+    margin: 1rem 0
+    padding: .6rem 1rem
+    border-left: 4px solid var(--vp-c-brand-1)
+    background: var(--vp-c-bg-soft)
+    border-radius: 0 6px 6px 0
+    color: var(--vp-c-text-2)
+
+  #page table
+    border-collapse: collapse
+    width: 100%
+    margin: 1rem 0
+    font-size: .88rem
+    display: block
+    overflow-x: auto
+
+  #page th, #page td
+    border: 1px solid var(--vp-c-border)
+    padding: .45rem .7rem
+    text-align: left
+    vertical-align: top
+
+  #page th
+    background: var(--vp-c-bg-soft)
+    white-space: nowrap
+
+  #page code
+    font-family: var(--vp-font-mono)
+    font-size: .85em
+    background: var(--vp-c-bg-soft)
+    padding: .15rem .4rem
+    border-radius: 4px
+    color: var(--vp-c-brand-2)
+
+  #page pre
+    background: var(--vp-c-code-bg)
+    color: var(--vp-c-code-fg)
+    padding: 1rem 1.2rem
+    border-radius: 8px
+    overflow-x: auto
+    line-height: 1.6
+
+  #page pre code
+    background: none
+    padding: 0
+    color: inherit
+
+  #page .pill
+    display: inline-block
+    font-size: .75rem
+    font-weight: 600
+    padding: .1rem .55rem
+    border-radius: 999px
+    vertical-align: middle
+    white-space: nowrap
+
+  #page .pill-stable
+    background: var(--vp-c-brand-soft)
+    color: var(--vp-c-brand-2)
+
+  #page .pill-exp
+    background: rgba(234, 179, 8, .14)
+    color: #b7791f
+
+  #page .pill-bridge
+    background: var(--vp-c-bg-soft)
+    color: var(--vp-c-text-2)
+
+  #page .cards
+    display: grid
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr))
+    gap: 1rem
+    margin: 1.5rem 0
+
+  #page .card
+    border: 1px solid var(--vp-c-border)
+    border-radius: 8px
+    padding: 1rem 1.1rem
+    display: block
+    color: var(--vp-c-text-1)
+    &:hover
+      border-color: var(--vp-c-brand-1)
+
+  #page .card strong
+    display: block
+    color: var(--vp-c-brand-1)
+
+  #page .card span
+    color: var(--vp-c-text-2)
+    font-size: .86rem
+
+  #page .sample-link
+    background: none
+    border: none
+    padding: 0
+    cursor: pointer
+    color: var(--vp-c-brand-1)
+    font-size: inherit
+    font-family: inherit
+    text-decoration: underline
+    &:hover
+      color: var(--vp-c-brand-2)
+
+  #page .vp-preview-row td
+    background: var(--vp-c-bg-soft)
+
+  #page .vp-preview-head
+    display: flex
+    justify-content: space-between
+    align-items: center
+    font-size: .82rem
+    color: var(--vp-c-text-2)
+    margin-bottom: .4rem
+
+  .vp-hero
+    text-align: center
+    padding: 48px 0 32px
+
+  .vp-hero h1
+    font-size: 3rem
+    margin: 0
+    background: linear-gradient(135deg, #42b883 0%, #35495e 100%)
+    -webkit-background-clip: text
+    background-clip: text
+    -webkit-text-fill-color: transparent
+
+  .vp-hero .tagline
+    font-size: 1.25rem
+    color: var(--vp-c-text-2)
+    margin: .6rem 0
+
+  .vp-hero .actions
+    display: flex
+    gap: 12px
+    justify-content: center
+    margin-top: 1.5rem
+
+  .vp-btn
+    display: inline-block
+    padding: .5rem 1.6rem
+    border-radius: 999px
+    font-weight: 600
+    font-size: .92rem
+
+  .vp-btn-brand
+    background: var(--vp-c-brand-1)
+    color: #fff
+    &:hover
+      background: var(--vp-c-brand-2)
+      color: #fff
+
+  .vp-btn-alt
+    background: var(--vp-c-bg-soft)
+    color: var(--vp-c-text-1)
+    border: 1px solid var(--vp-c-border)
+
+  .vp-loading, .vp-error
+    color: var(--vp-c-text-2)
+    padding: 2rem 0
+
+  .vp-error
+    color: #b3261e
+
+  .vp-footer
+    margin-top: 3rem
+    padding-top: 1.2rem
+    border-top: 1px solid var(--vp-c-divider)
+    color: var(--vp-c-text-3)
+    font-size: .82rem
+
+  @media (max-width: 860px)
+    .vp-shell
+      flex-direction: column
+    .vp-sidebar
+      width: auto
+      height: auto
+      position: static
+      border-right: none
+      border-bottom: 1px solid var(--vp-c-divider)
+      padding: 16px 24px
+    .vp-main
+      padding: 24px 20px 48px
+    .vp-hero h1
+      font-size: 2.1rem
+    .vp-top-links
+      gap: 12px
+    .vp-nav
+      padding: 0 16px

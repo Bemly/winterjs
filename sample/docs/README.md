@@ -1,5 +1,10 @@
 # sample/docs — winterjs 样例与文档索引 / Samples & Docs Index
 
+> 在线站 <https://winterjs.bemly.moe/>（`index.html` 零逻辑，只引 `app.luoli`；
+> 路由/明暗模式/样例预览全在 `app.luoli` 的 coffee 里，内容页在 `pages/*.luoli`，
+> 经 [luolita](https://luolita.bemly.moe/) 在浏览器直载；API 表的 sample 文件名
+> 可点开预览（取 `raw.githubusercontent` master 原文）。
+
 | 文档 | 内容 |
 |---|---|
 | [quickstart.en.md](./quickstart.en.md) / [quickstart.zh.md](./quickstart.zh.md) | 5 分钟上手：构建、跑文件、测试、serve |

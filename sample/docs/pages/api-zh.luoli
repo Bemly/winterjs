@@ -22,7 +22,11 @@ template:
         tr
           td: code= g.m
           td: span.pill(class=g.c)= g.s
-          td= g.sample
+          td
+            if g.sample == '—'
+              | —
+            else
+              button.sample-link(type='button' data-sample=g.sample title='预览源码')= g.sample
           td!= g.notes
   h2 node: 模块——核心
   table
@@ -37,7 +41,11 @@ template:
         tr
           td: code= m.m
           td: span.pill(class=m.c)= m.s
-          td= m.sample
+          td
+            if m.sample == '—'
+              | —
+            else
+              button.sample-link(type='button' data-sample=m.sample title='预览源码')= m.sample
           td!= m.notes
   h2 node: 模块——网络与 I/O
   table
@@ -52,7 +60,11 @@ template:
         tr
           td: code= m.m
           td: span.pill(class=m.c)= m.s
-          td= m.sample
+          td
+            if m.sample == '—'
+              | —
+            else
+              button.sample-link(type='button' data-sample=m.sample title='预览源码')= m.sample
           td!= m.notes
   h2 不做（设计如此）
   ul

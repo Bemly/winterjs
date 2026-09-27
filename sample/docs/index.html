@@ -5,94 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>winterjs docs</title>
   <meta name="description" content="winterjs API reference, quickstart and CLI — EN/中文">
-  <link rel="stylesheet" href="assets/vp.css">
+  <link rel="luolita" href="app.luoli">
   <script src="https://luolita.bemly.moe/luolita.browser.bundle.js"></script>
 </head>
 <body>
-  <header class="vp-nav">
-    <a class="vp-brand" href="#/">winterjs <span>docs</span></a>
-    <nav class="vp-top-links">
-      <a data-route="en/quickstart" href="#/en/quickstart">Guide</a>
-      <a data-route="en/api" href="#/en/api">API</a>
-      <a data-route="en/cli" href="#/en/cli">CLI</a>
-      <a id="lang-toggle" href="#/zh/quickstart">中文</a>
-      <a href="https://github.com/Bemly/winterjs" target="_blank" rel="noopener">GitHub</a>
-    </nav>
-  </header>
-  <div class="vp-shell">
-    <aside class="vp-sidebar">
-      <div class="vp-group">
-        <p class="vp-group-title">English</p>
-        <a data-route="en/quickstart" href="#/en/quickstart">Quickstart</a>
-        <a data-route="en/api" href="#/en/api">API reference</a>
-        <a data-route="en/cli" href="#/en/cli">CLI reference</a>
-      </div>
-      <div class="vp-group">
-        <p class="vp-group-title">中文</p>
-        <a data-route="zh/quickstart" href="#/zh/quickstart">快速上手</a>
-        <a data-route="zh/api" href="#/zh/api">API 参考</a>
-        <a data-route="zh/cli" href="#/zh/cli">CLI 参考</a>
-      </div>
-      <div class="vp-group">
-        <p class="vp-group-title">Samples</p>
-        <a href="https://github.com/Bemly/winterjs/tree/master/sample" target="_blank" rel="noopener">46 examples ↗</a>
-      </div>
-    </aside>
-    <main class="vp-main">
-      <div id="page"><p class="vp-loading">Loading… / 加载中…</p></div>
-      <footer class="vp-footer">winterjs docs · rendered in-browser from <code>.luoli</code> via <a href="https://luolita.bemly.moe/">luolita</a></footer>
-    </main>
-  </div>
-  <script>
-    // Hash router: "#/en/api" -> fetch("pages/api-en.luoli") -> Luolita.renderToDOM.
-    var ROUTES = {
-      '': { file: 'pages/home.luoli', title: 'winterjs docs', stub: 'home', lang: 'en' },
-      'en/quickstart': { file: 'pages/quickstart-en.luoli', title: 'Quickstart | winterjs docs', stub: 'quickstart', lang: 'en' },
-      'en/api': { file: 'pages/api-en.luoli', title: 'API reference | winterjs docs', stub: 'api', lang: 'en' },
-      'en/cli': { file: 'pages/cli-en.luoli', title: 'CLI reference | winterjs docs', stub: 'cli', lang: 'en' },
-      'zh/quickstart': { file: 'pages/quickstart-zh.luoli', title: '快速上手 | winterjs docs', stub: 'quickstart', lang: 'zh' },
-      'zh/api': { file: 'pages/api-zh.luoli', title: 'API 参考 | winterjs docs', stub: 'api', lang: 'zh' },
-      'zh/cli': { file: 'pages/cli-zh.luoli', title: 'CLI 参考 | winterjs docs', stub: 'cli', lang: 'zh' }
-    };
-    function currentRoute() {
-      var h = location.hash.replace(/^#\/?/, '');
-      return ROUTES[h] || ROUTES[''];
-    }
-    function paintActive(route) {
-      var key = route.lang + '/' + route.stub;
-      document.querySelectorAll('[data-route]').forEach(function (a) {
-        a.classList.toggle('active', a.getAttribute('data-route') === key);
-      });
-      var toggle = document.getElementById('lang-toggle');
-      if (route.stub === 'home') {
-        toggle.href = '#/';
-        toggle.textContent = '中文 / EN';
-      } else {
-        var other = route.lang === 'en' ? 'zh' : 'en';
-        toggle.href = '#/' + other + '/' + route.stub;
-        toggle.textContent = route.lang === 'en' ? '中文' : 'EN';
-      }
-      document.documentElement.lang = route.lang === 'zh' ? 'zh-CN' : 'en';
-    }
-    function render() {
-      var route = currentRoute();
-      var el = document.getElementById('page');
-      document.title = route.title;
-      paintActive(route);
-      el.innerHTML = '<p class="vp-loading">Loading… / 加载中…</p>';
-      fetch(route.file).then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status + ' for ' + route.file);
-        return r.text();
-      }).then(function (text) {
-        return Luolita.renderToDOM(text, '#page', { outputName: 'page', debug: false });
-      }).then(function () {
-        window.scrollTo(0, 0);
-      }).catch(function (e) {
-        el.innerHTML = '<p class="vp-error">Failed to load ' + route.file + ': ' + e.message + '</p>';
-      });
-    }
-    window.addEventListener('hashchange', render);
-    render();
-  </script>
+  <noscript>winterjs docs renders .luoli in the browser and needs JavaScript.</noscript>
 </body>
 </html>

@@ -227,29 +227,46 @@ setTimeout(() => {
 
 #[test]
 fn p2_repl_cli_complete_bridge() {
-    // P2-repl R5：CLI 补全桥（cliComplete 对 globalThis 全局面）——
-    // bare 真上下文键（global 在）/成员链/大小写不敏感/调用形拒答。
+    // P2-repl R5（方向纠正）：CLI 补全桥 `__wjs_cli_complete`（winterjs repl
+    // 底座域，prelude/repl_complete）骑 node:repl 注册的补全核心——
+    // bare 真上下文键（global 在）/成员链/大小写不敏感/调用形拒答/签名描述。
+    // node:repl 公开导出面保持 node 同形（无 cliComplete）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
         "o.mjs",
         r#"
 import repl from "node:repl";
-const b = repl.cliComplete("gl");
-console.log("bare", Array.isArray(b[0]) && b[0].includes("global") && b[0].includes("globalThis") && b[1] === "gl");
-const m = repl.cliComplete("globalThis.Array.fr");
-console.log("member", m[0].includes("globalThis.Array.from") && m[1] === "globalThis.Array.fr");
-const ci = repl.cliComplete("globalThis.arraybuf");
-console.log("ci", ci[0].includes("globalThis.ArrayBuffer"));
-const call = repl.cliComplete("globalThis.Array().");
+console.log("clean", repl.cliComplete === undefined && typeof globalThis.__wjs_repl_default_complete === "function");
+const b = __wjs_cli_complete("gl");
+console.log("bare", b[0].some((e) => e[0] === "global") && b[0].some((e) => e[0] === "globalThis") && b[1] === "gl");
+const m = __wjs_cli_complete("globalThis.Array.fr");
+console.log("member", m[0].some((e) => e[0] === "globalThis.Array.from"));
+const sig = __wjs_cli_complete("globalThis.Object.assign");
+console.log("sig", sig[0][0][0] === "globalThis.Object.assign" && sig[0][0][1].includes("(target, ...sources)"));
+const ci = __wjs_cli_complete("globalThis.arraybuf");
+console.log("ci", ci[0].some((e) => e[0] === "globalThis.ArrayBuffer"));
+const call = __wjs_cli_complete("globalThis.Array().");
 console.log("call", call[0].length === 0);
-const e = repl.cliComplete("console.");
-console.log("dot-empty", e[0].includes("console.log") && e[0].includes("console.error") && e[1] === "console.");
-const g = repl.cliComplete("global.");
-console.log("global-dot", g[0].length > 0 && g[0].every((s) => s.startsWith("global.")) && g[1] === "global.");
+const e = __wjs_cli_complete("console.");
+console.log("dot-empty", e[0].some((p) => p[0] === "console.log" && (p[1] ?? "").startsWith("log(")) && e[0].some((p) => p[0] === "console.trace" && (p[1] ?? "").includes("stderr")) && e[1] === "console.");
+const g = __wjs_cli_complete("global.");
+console.log("global-dot", g[0].length > 0 && g[0].every((p) => p[0].startsWith("global.")) && g[1] === "global.");
+const v = __wjs_cli_complete("Object.p");
+console.log("value-sig", v[0].some((p) => p[0] === "Object.prototype" && p[1] === ": {}"));
 "#,
     );
-    for line in ["bare true", "member true", "ci true", "call true", "dot-empty true", "global-dot true"] {
+    for line in [
+        "clean true",
+        "bare true",
+        "member true",
+        "sig true",
+        "ci true",
+        "call true",
+        "dot-empty true",
+        "global-dot true",
+        "value-sig true",
+    ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }
     dir.close().unwrap();

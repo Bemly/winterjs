@@ -374,8 +374,9 @@ pub(crate) struct CompReq {
 #[derive(Debug)]
 pub(crate) struct CompResp {
     pub id: u64,
-    /// 候选全文（bare 含行头、成员含 base），写入 span 段的完整文本。
-    pub items: Vec<String>,
+    /// 候选 `(全文, 描述)`——全文写入 span 段，描述进 IdeMenu 右侧 pane
+    /// （底座桥 `__wjs_cli_complete` 产出：签名/类型摘要，可 `None`）。
+    pub items: Vec<(String, Option<String>)>,
     /// 行尾被替换段（R3 `completeOn` 语义）。
     pub complete_on: String,
 }
@@ -411,7 +412,7 @@ impl JsCompleter {
     /// 动态补全请求（readline 线程阻塞等回包；超时/断链回 None）。
     /// `line` 为光标前文本（R3 按行尾处理）。`UnboundedReceiver` 无同步带
     /// 超时的 recv——`try_recv` 微步轮询（仅 Tab 触发，200µs 步进开销可忽略）。
-    fn request_dynamic(&mut self, line: &str) -> Option<(Vec<String>, String)> {
+    fn request_dynamic(&mut self, line: &str) -> Option<(Vec<(String, Option<String>)>, String)> {
         use tokio::sync::mpsc::error::TryRecvError;
         self.next_id += 1;
         let id = self.next_id;
@@ -438,11 +439,11 @@ impl JsCompleter {
         if let Some((items, complete_on)) = self.request_dynamic(line)
             && let Some((s0, s1)) = complete_span(line, &complete_on)
         {
-            for v in items {
+            for (value, description) in items {
                 out.push(reedline::Suggestion {
-                    value: v,
+                    value,
                     display_override: None,
-                    description: None,
+                    description,
                     style: None,
                     extra: None,
                     span: reedline::Span::new(s0, s1),

@@ -12,21 +12,14 @@ use std::io::IsTerminal as _;
 use crate::error::Error;
 use crate::repl::{CompReq, CompResp};
 
-/// CLI 补全桥（P2-repl R5）：会话启动时注入——`node:repl` 的 `cliComplete`
-/// （R3 子集规则：成员链/fs 路径/bare 上下文键）对 CLI 全局求值面工作，
-/// 返回 JSON `[list, completeOn]`。`__wjs_` 前缀（4.48 已 grep 无重名）。
-const COMP_BRIDGE: &str = r#"
-const { cliComplete } = require('node:repl');
-globalThis.__wjs_cli_complete = (line) => cliComplete(String(line));
-"#;
-
-/// JS 线程执行补全（只在主循环调用）：求值 `__wjs_cli_complete(line)` 并解析
-/// `[list, completeOn]`；求值失败/形状不合法回 `(空, line)`（reedline 空集）。
+/// JS 线程执行补全（只在主循环调用）：求值 `__wjs_cli_complete(line)`
+/// （prelude/repl_complete 底座桥）并解析 `[[text, desc], ...], completeOn`；
+/// 求值失败/形状不合法回 `(空, line)`（reedline 空集）。
 fn cli_complete_js(
     rt: &mut Runtime,
     global: &RootedGuard<'_, *mut JSObject>,
     line: &str,
-) -> (Vec<String>, String) {
+) -> (Vec<(String, Option<String>)>, String) {
     let fallback = (Vec::new(), line.to_owned());
     let script = format!(
         "JSON.stringify(globalThis.__wjs_cli_complete({}))",
@@ -57,7 +50,15 @@ fn cli_complete_js(
     (
         items
             .iter()
-            .filter_map(|x| x.as_str().map(str::to_owned))
+            .filter_map(|x| {
+                if let Some(t) = x.as_str() {
+                    return Some((t.to_owned(), None));
+                }
+                let pair = x.as_array()?;
+                let text = pair.first()?.as_str()?.to_owned();
+                let desc = pair.get(1).and_then(|d| d.as_str()).map(str::to_owned);
+                Some((text, desc))
+            })
             .collect(),
         complete_on,
     )
@@ -193,19 +194,6 @@ pub async fn repl() -> Result<(), Error> {
         rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
         let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
         let _ = evaluate_script(rt.cx(), global.handle(), code, rval.handle_mut(), options);
-    }
-    // 补全桥注册（node:repl cliComplete → __wjs_cli_complete；失败仅降级静态）。
-    {
-        let c_filename = CString::new("repl.js").expect("no NUL");
-        rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
-        let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
-        let _ = evaluate_script(
-            rt.cx(),
-            global.handle(),
-            COMP_BRIDGE,
-            rval.handle_mut(),
-            options,
-        );
     }
     let mut fetch_rx = init.fetch_rx;
     let mut ws_rx = init.ws_rx;

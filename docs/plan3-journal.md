@@ -457,3 +457,33 @@ G1/G2/G3/G9 已收官。）
   `prefix.is_empty()` 提前返回挡在动态请求前（R3 JS 侧 filter="" 全键枚举本就
   支持）；修为成员形空前缀直发动态，黑盒补 `dot-empty`/`global-dot` 两断言，
   pty 复验 `console.`→log/assert、`global.`→全键。
+
+## 2026-09-28 R5 方向纠正（用户拍板）：winterjs repl 底座显性化，node:repl 反向复用
+
+- 用户指出根本架构问题：**CLI REPL 是 winterjs 本体，node:repl 兼容面应反过来
+  骑 winterjs 自身 repl 底座**——而不是把 CLI 专用能力塞进 node:repl。并要求
+  审计全仓同类"方向反了"的域。
+- 审计结论（plan3 §7 详表）：node:* ~50 域中 **13 域方向正确**（timers/buffer/
+  stream_web/console 无流面/process/path/crypto/sqlite/worker/vm/url/test/http），
+  ~25 域语义独立无对应物，**实锤反了 3 处**：① repl（CLI 与模块完全平行，
+  求值面都不同源——CLI 每行独立 evaluate_script vs 模块 vm context）；
+  ② readline 补全语义（R3 核心在模块、CLI 曾是静态表——桥接方向对但放置错）；
+  ③ console 格式化（全局 console Rust join_args vs node:console util.format，
+  部分反，待议）。
+- 本轮落点（位置纠正）：node:repl 公开导出面恢复 node 真机同形（删
+  cliComplete/签名表），补全核心经 `globalThis.__wjs_repl_default_complete`
+  注册内部面（`__wjs_` 惯例，不进导出）；CLI 桥 `__wjs_cli_complete` +
+  `__SIG` 签名表（~120 条，SM native toString 无形参名故手写；用户函数
+  toString 真形参优先）+ 描述摘要（描述符沿链安全读不触发 getter）全部
+  搬 **prelude/repl_complete.rs**（winterjs repl 底座第一块显性域）。
+  Rust 协议扩为 `(全文, 描述)` 对，IdeMenu 右侧 pane 成员方法也有签名。
+- 坑：`__wjsReplSig` 普通对象字面量查裸键沿**原型链**命中 Object.prototype
+  同名方法（propertyIsEnumerable 查表拿到函数自身，desc 序列化 null）——
+  查表对象一律 `Object.create(null)`（4.23 同型教训的查表版）。
+- 验证：黑盒九断言（公开面干净/注册/bare/成员/签名/类型摘要/拒答/点后空/
+  global.）；repl 域 32/32；pty `console.` 首屏带 `log(...args)`、
+  `assert(cond, ...data)`；strict 见 §0.4。
+- **方向铁律（入库 AGENTS §6）**：node:* 兼容面是 winterjs 自身能力的
+  下游包装，禁把 CLI/产品专用能力放进 node:* 公开导出面；共享逻辑经
+  `__wjs_` 内部注册面复用。repl 深度统一（CLI 求值改骑 vm context、
+  CLI=REPLServer 默认实例形态）另案 plan3 §7 待拍板。

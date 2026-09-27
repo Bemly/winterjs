@@ -442,3 +442,34 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 > 2026-09-19 → 09-25 的逐轮落账（G1–G11、test Slice A–E、sweep4–9、工具轮）
 > 原样迁至 `docs/plan3-journal.md`；新会话不必读。最新基线：http sweep9
 > SAME0=381 / SAME1=6 / DIFF=16 / TIMEOUT=6（409 件）。下一步见 §0.4。
+
+## §7 方向纠正：winterjs 本体与 node:* 兼容面的关系（2026-09-28 用户拍板）
+
+> 铁律见 AGENTS §6：CLI/产品能力是本体，`node:*` 兼容面是下游包装；禁把
+> CLI/产品专用能力放进 `node:*` 公开导出面；共享逻辑经 `__wjs_` 内部注册面。
+
+### 审计结论（node:* ~50 域）
+
+- **方向正确 13 域**（骑自身底座）：timers、buffer、stream_web、console（无流面）、
+  process、path、crypto、sqlite（骑 bun:sqlite turso 底座）、worker_threads、vm、
+  url、test（骑 --test runner）、http（骑 node:net；serve 的 axum 栈是产品功能，平行合理）。
+- **语义独立无对应物 ~25 域**：fs/net/dgram/tls/dns/zlib/assert/querystring/punycode/
+  string_decoder/child_process/cluster/domain/os/util/inspector/diagnostics_channel/
+  async_hooks/trace_events/perf_hooks/events(EventTarget 是另一 API)/nodemodule/
+  require_cjs/quic/v8 等——无反关系问题。
+- **实锤反了 3 处**：
+  1. **repl**（最重）：CLI REPL（src/repl.rs + runtime/repl.rs）与 node:repl
+     完全平行，求值面都不同源（CLI 每行独立 evaluate_script、无持久词法/
+     top-level await；模块走 vm context）。node 真机形态 = CLI 即 repl.start()
+     默认实例。
+  2. **readline 补全语义**（R5 已位置纠正：核心在模块注册内部面，桥/签名表住
+     prelude/repl_complete.rs）。
+  3. **console 格式化**（部分反，待议）：全局 console Rust join_args vs
+     node:console util.format；真机全局 console 即 Console 实例。
+
+### 另案：repl 深度统一（待拍板；非本 Phase）
+
+- CLI 求值改骑 vm context（持久词法 → top-level await 可用）；
+- CLI 会话形态向"REPLServer 默认实例"靠拢（node 原文形态）；
+- node:repl 的 REPLServer 求值/历史经底座桥复用；
+- 全局 console 格式化统一（骑 util.format）。

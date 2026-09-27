@@ -197,3 +197,8 @@ cargo build
 - 线程模型：`JSContext` 是 `!Send`，JS 永远跑在独占线程（tokio `LocalSet`），
   Rust 侧多线程只通过消息队列与 JS 线程通信，绝不跨线程共享 `&mut JSContext`
  （winterjs-old §7.9 的 aliasing-UB 教训）。
+- 模块方向（2026-09-28 用户拍板）：**CLI/产品能力是 winterjs 本体，`node:*`
+  兼容面是下游包装**——兼容面骑自身底座（timers/buffer/sqlite/vm 等既例），
+  禁把 CLI/产品专用能力放进 `node:*` 公开导出面；跨面复用经 `__wjs_` 内部
+  注册面（如 `__wjs_repl_default_complete`）。JS 查表对象一律 `Object.create(null)`
+  （裸键沿原型链会撞 Object.prototype 同名方法）。

@@ -309,6 +309,11 @@ function __defaultComplete(context, line, callback) {
   return done(list, line);
 }
 
+// P2-repl R5：补全核心注册 winterjs 内部面（`__wjs_` 惯例）——CLI REPL 底座
+// （prelude/repl_complete）复用同一套子集规则，node:repl 公开导出面保持
+// node 真机同形（不加非 node API）。
+globalThis.__wjs_repl_default_complete = __defaultComplete;
+
 function defaultEval(cmd, context, filename, callback) {
   let result;
   try {
@@ -703,19 +708,9 @@ export function start(prompt, source, eval_, useGlobal, ignoreUndefined, replMod
 
 export const writer = defaultWriter;
 
-// P2-repl R5：CLI reedline 补全桥（同步返回形）——同款子集规则（成员链/fs
-// 路径/bare 上下文键），求值面为全局（见 __ctxEval 的 globalThis 分支），
-// CLI REPL 与 node:repl 模块补全同源。返回 [list, completeOn]：list 元素为
-// 应写入的完整文本，completeOn 为行尾被替换段（CLI 侧换算 reedline span）。
-export function cliComplete(line) {
-  let out = null;
-  __defaultComplete(globalThis, line, (err, r) => { out = r; });
-  return out ?? [[], String(line)];
-}
 // P2-repl R4：模块级废弃表（DEP0142/DEP0191 门控；值取 node:module 全集）。
 let __replBuiltinOverride = null;
-// cliComplete 同挂默认导出（4.218：具名导出≠默认导出；CLI 桥经 require 取用）。
-const __defaultExport = { start, writer, REPLServer, REPL_MODE_SLOPPY, REPL_MODE_STRICT, Recoverable, isValidSyntax, cliComplete };
+const __defaultExport = { start, writer, REPLServer, REPL_MODE_SLOPPY, REPL_MODE_STRICT, Recoverable, isValidSyntax };
 Object.defineProperties(__defaultExport, {
   builtinModules: {
     get: () => {

@@ -10,6 +10,7 @@ mod crypto;
 mod events;
 mod fetch;
 mod http;
+mod repl_complete;
 mod serve;
 mod storage;
 mod streams;
@@ -34,6 +35,7 @@ pub static PRELUDE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         streams::STREAMS_JS,
         blob::BLOB_JS,
         fetch::FETCH_JS,
+        repl_complete::REPL_COMPLETE_JS,
     ]
     .concat()
 });

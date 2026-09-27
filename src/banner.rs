@@ -27,7 +27,7 @@ const DARK_FILL: &str = "#16233a";
 const LIGHT_FILL: &str = "#f2f5f9";
 
 /// 横式 lockup（2026-09-28）：logo 与字牌并排等高，一张图一次发射。
-/// 总高 4 行（logo 8 列 + 2 列缝 + 字牌 30 列 ≈ 40 列）。
+/// 总高 4 行（logo 8 列 + 2 列缝 + 字牌 30 列 ≈ 40 列）；图形版不带版本号。
 /// 取小值：部分终端忽略尺寸参数按像素原尺寸直出，像素本身取展示尺寸——
 /// 参数 honor 走 cell 精确尺寸，参数被忽略走小像素兜底，两边都不炸。
 const LOCKUP_ROWS: u32 = 4;
@@ -324,10 +324,11 @@ fn print_graphics(p: Proto) -> bool {
     if !ok {
         return false;
     }
-    // 先换行再打版本行：部分终端图片展示后光标停在行中（实测版本行飘到右侧），
-    // 一个 `\n` 保证版本行顶格起；行为良好的终端至多多一行空隙，可接受。
+    // 收尾换行：部分终端图片展示后光标停在行中，一个 `\n` 把光标送到下一行行首
+    // （图形版无版本行，ASCII 版版本行另拼，见 `ascii_text`）。
     let _ = err.write_all(b"\n");
-    writeln!(err, "{}", version_line()).is_ok()
+    let _ = err.flush();
+    true
 }
 
 /// 启动 banner 入口（尽力而为：永不报错，永不 panic，永不碰 stdout）。

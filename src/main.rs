@@ -77,7 +77,15 @@ fn main() {
     let (cli, matches) = {
         let m = cli::localized_command()
             .try_get_matches_from(compat_argv)
-            .unwrap_or_else(|e| e.exit());
+            .unwrap_or_else(|e| {
+                use clap::error::ErrorKind as EK;
+                if e.kind() == EK::DisplayHelp {
+                    // help 界面也打 banner（stderr 门控与正常路径同；stdout 只走 help 文本）。
+                    // 开关读预处理静态（单横杠唯一形；`-hide_banner --help` 照样关得掉）。
+                    crate::banner::print_startup(cli::banner_hide(), cli::banner_ascii());
+                }
+                e.exit()
+            });
         let cli = Cli::from_arg_matches(&m).unwrap_or_else(|e| e.exit());
         (cli, m)
     };

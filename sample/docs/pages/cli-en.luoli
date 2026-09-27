@@ -1,0 +1,40 @@
+coffee:
+  # NOTE (luolita 0.1.4): bridged data must be single-line valid JSON.
+  actions = [{ "f": "-r / --run &lt;FILE|script&gt;", "e": "Run a JS file or a package.json script; prints the completion value. JS bins re-execute through winterjs (no node needed)" }, { "f": "-e / --eval &lt;CODE&gt;", "e": "Evaluate inline JS, print completion value" }, { "f": "-c / --config [--schema]", "e": "Print resolved settings, or its JSON Schema" }, { "f": "--completions &lt;SHELL&gt;", "e": "Print shell completion script (bash/elvish/fish/powershell/zsh)" }, { "f": "-m / --man", "e": "Print roff manual to stdout" }, { "f": "-a / --add &lt;PKG...&gt;", "e": "Add packages to local node_modules" }, { "f": "-i / --install &lt;PKG...&gt;", "e": "Install packages globally (shared data dir)" }, { "f": "-p / --publish [--dry-run]", "e": "Publish current package (--dry-run validates only)" }, { "f": "--login", "e": "Log in to a registry (token goes to ~/.npmrc)" }, { "f": "-u / --upgrade [--dry-run]", "e": "Self-upgrade (needs WINTERJS_UPDATE_GITHUB=owner/repo)" }, { "f": "-I / --init [NAME]", "e": "Scaffold a package; installs deps when package.json exists" }, { "f": "--repl", "e": "Interactive REPL" }, { "f": "-t / --test [PATH...]", "e": "Run test files; no paths means auto-discover from cwd" }, { "f": "--lint [ARGS...]", "e": "Forward to oxlint (.bin or PATH), args verbatim" }, { "f": "-f / --fmt [ARGS...]", "e": "Forward to oxfmt, args verbatim" }, { "f": "-s / --serve [DIR]", "e": "Serve a directory and/or a JS handler (export default { fetch }) over H1/H2/H3; TLS via --cert/--key or ACME" }]
+  scope = [{ "m": "--dry-run", "w": "--add / --install / --publish / --init / --upgrade / --serve" }, { "m": "--registry", "w": "--add / --install / --publish / --login / --init" }, { "m": "--tag", "w": "--publish" }, { "m": "--token, --oauth", "w": "--login" }, { "m": "--name, -y/--yes, --force", "w": "--init" }, { "m": "--filter, --test-name-pattern, --watch", "w": "--test" }, { "m": "--dir / --host / --port / --handler / --limit-rps / --cert / --key / --acme-*", "w": "--serve" }, { "m": "--schema", "w": "--config" }, { "m": "--allow-read / --allow-write / --allow-env / --allow-run / --allow-ffi / --allow-all", "w": "--run / --eval / --test / --repl" }, { "m": "-v/--verbose, -l/--lang", "w": "global" }]
+
+template:
+  h1 winterjs CLI Reference
+  blockquote Source of truth is the binary itself: #[code winterjs --help] (or #[code -l zh --help] for Chinese). This page explains the #[strong rules] behind the flags. 中文版见 #[a(href='#/zh/cli') CLI 参考].
+  h2 Rules
+  ol
+    li #[strong Exactly one action per invocation.] #[code --run a.js --eval 1] → exit 1.
+    li #[strong No bare subcommands, no positional actions.] #[code winterjs a.js] fails; use #[code winterjs --run a.js]. The only trailing positionals are #[em script arguments] for #[code --run] (#[code process.argv.slice(2)]), best separated by #[code --]: #[code winterjs --run app.js -- --port 8080].
+    li #[strong Modifiers belong to their action.] A modifier given without its action exits 1 with #[code --X only works with --Y (see --help)].
+  h2 Actions
+  table
+    thead
+      tr
+        th Flag
+        th Effect
+    tbody
+      each a in actions
+        tr
+          td!= a.f
+          td!= a.e
+  h2 Modifier scope
+  table
+    thead
+      tr
+        th Modifier(s)
+        th Only with
+    tbody
+      each s in scope
+        tr
+          td!= s.m
+          td!= s.w
+  p Sandbox model: no #[code --allow-*] → wide open (historic behavior); any #[code --allow-*] → sandbox on, unlisted classes denied with #[code PermissionError].
+  h2 Exit codes
+  p #[code 0] ok · #[code 1] runtime/usage error (uncaught JS, wrong flag combo) · #[code 2] clap parse error (e.g. bad #[code -l] value) · #[code 9] illegal node-compat flag value or self-spawn recursion guard · script #[code process.exit(n)] propagates #[code n].
+  h2 Node-compat flags
+  p Node runtime flags (#[code --expose-internals], #[code --experimental-*], …) are stripped before parsing, recorded on #[code process.execArgv], and readable via #[code internal/options]. With a stripped flag, #[code node --flag file args] shapes are accepted (#[code --run] auto-inserted); bare #[code winterjs file.js] without compat flags is still an error. Illegal flag #[em values] exit 9 (never re-run the same file).

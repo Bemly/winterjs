@@ -1,0 +1,20 @@
+coffee:
+  # NOTE (luolita 0.1.4): bridged data must be single-line valid JSON —
+  # multi-line arrays arrive as a 1-char string, single-quoted as raw text.
+  cards = [{ "href": "#/en/quickstart", "title": "Quickstart", "desc": "5 minutes: build, run, test, serve" }, { "href": "#/en/api", "title": "API reference", "desc": "Every module, stability, known deviations" }, { "href": "#/en/cli", "title": "CLI reference", "desc": "All flags, modifier scope, exit codes" }, { "href": "#/zh/quickstart", "title": "快速上手", "desc": "5 分钟：构建、运行、测试、serve" }, { "href": "#/zh/api", "title": "API 参考", "desc": "全部模块、稳定性、已知偏离" }, { "href": "#/zh/cli", "title": "CLI 参考", "desc": "全 flag、修饰归属、退出码" }]
+
+template:
+  .vp-hero
+    h1 winterjs docs
+    p.tagline A Bun-like JavaScript runtime on SpiderMonkey
+    p.tagline 类 Bun 的 JS 运行时（基于 SpiderMonkey）
+    .actions
+      a.vp-btn.vp-btn-brand(href='#/en/quickstart') Quickstart
+      a.vp-btn.vp-btn-alt(href='#/zh/quickstart') 快速上手
+  .cards
+    each c in cards
+      a.card(href=c.href)
+        strong= c.title
+        span= c.desc
+  h2 Samples
+  p 46 runnable examples live in <code>sample/&lt;area&gt;/</code> — every API area has one, all offline-capable (<code>winterjs --run sample/&lt;area&gt;/&lt;file&gt;</code>). TLS samples use a local self-signed fixture. See the API reference for the per-module sample index.

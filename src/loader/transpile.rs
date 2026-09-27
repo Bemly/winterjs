@@ -106,6 +106,7 @@ fn load_js_goal(text: &str, filename: &str, path: &Path, cjs_goal: bool) -> Resu
             map: hit.map,
         });
     }
+    crate::timing::CACHE_MISS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let loaded = load_js_uncached(text, filename, path, cjs_goal)?;
     super::cache::put(
         text,

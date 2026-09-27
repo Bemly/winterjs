@@ -236,6 +236,7 @@ pub fn resolve_require(specifier: &str, base: Option<&Url>) -> Result<Url, Error
 }
 
 fn resolve_cond(cond: Cond, specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
+    let _tg = crate::timing::guard(&crate::timing::N_RESO, &crate::timing::T_RESO);
     // 绝对 URL（含 scheme）
     if let Ok(url) = Url::parse(specifier) {
         return match url.scheme() {

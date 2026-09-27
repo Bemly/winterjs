@@ -2,6 +2,7 @@
 
 mod acme;
 mod alloc;
+mod banner;
 mod builtins;
 mod cli;
 mod cli_node_flags;
@@ -25,6 +26,7 @@ mod sentry_report;
 mod serve;
 mod serve_bridge;
 mod testrun;
+mod timing;
 mod settings;
 mod state;
 mod watch;
@@ -60,7 +62,8 @@ fn main() {
             }
         }
         builtins::node::process_::record_node_compat(stripped);
-        filtered
+        // 破例单横杠 `-hide_banner` 改写（`--` 之后不动，见 cli::rewrite_banner_flag）。
+        cli::rewrite_banner_flag(&filtered)
     };
     // 自 spawn 深度闸（pitfalls 4.209 防线二）：子进程链经 `WINTERJS_SPAWN_DEPTH` 逐层 +1
     //（child_process 起自身时设置，见 node::child::tag_self_depth），超限即拒，
@@ -229,6 +232,10 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
     // 注：放所有动作分支之前——各分支提前返回，迟了够不着。
     if let Some(msg) = cli_modifier_scope(&cli, matches) {
         return Err(Error::Other(format!("{msg} (see --help)")));
+    }
+    // 启动 banner：每次运行首行走 stderr（非 TTY 自动跳过；机器输出动作除外）。
+    if cli.completions.is_none() && !cli.man {
+        crate::banner::print_startup(cli.hide_banner);
     }
     // S1：WinterCG 存储默认库（修饰 flag，归属已由 scope 保证）。
     if cli.run.is_some() || cli.eval.is_some() || cli.test.is_some() || cli.repl || cli.serve.is_some() {

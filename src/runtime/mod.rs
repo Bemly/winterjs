@@ -144,6 +144,7 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
         state::sqlite_reset();
         crate::builtins::storage::reset_session();
         builtins::define_all(&mut realm, global.get())?;
+        crate::timing::mark("define_all");
 
         // SAFETY: realm 内；追踪器仅在 JS 线程被引擎回调
         unsafe {
@@ -180,6 +181,7 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
                 0,
             ));
         }
+        crate::timing::mark("prelude");
 
         // 线程身份落地（10f 前移到 node prelude 之前：process.env 代理构建期
         // 就要读 env 快照——worker 会话带快照、主会话真 env）。纯 state 操作
@@ -212,6 +214,7 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
                 0,
             ));
         }
+        crate::timing::mark("node-prelude");
 
         // 缓存 prelude 辅助函数值（timers/structuredClone/fetch/ws 交付要用）
         for (prop, idx) in [

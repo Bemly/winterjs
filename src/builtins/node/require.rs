@@ -42,6 +42,7 @@ use crate::state;
 // `__esModule` 互操作标记剔除。
 
 fn cjs_static_names(path: &Path, depth: usize, seen: &mut HashSet<PathBuf>) -> Vec<String> {
+    let _tg = crate::timing::guard(&crate::timing::N_CJSN, &crate::timing::T_CJSN);
     if depth > 8 || !seen.insert(path.to_path_buf()) {
         return Vec::new();
     }
@@ -377,6 +378,7 @@ fn require_cjs_file(
 /// 纯函数（除 fs 外），单测覆盖判定表（用 tempfile 搭清单树）。
 /// `pub(crate)`：入口 ESM 判定（`runtime::sniff_module`）复用同一口径。
 pub(crate) fn nearest_pkg_type(path: &std::path::Path) -> Option<String> {
+    let _tg = crate::timing::guard(&crate::timing::N_PKG, &crate::timing::T_PKG);
     let mut dir = path.parent();
     while let Some(d) = dir {
         let cand = d.join("package.json");

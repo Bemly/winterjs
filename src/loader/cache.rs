@@ -67,6 +67,7 @@ pub fn get(source: &str, ext: &str) -> Option<Cached> {
         if b.v != 1 {
             return None;
         }
+        crate::timing::CACHE_MEM.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tracing::trace!(target: "winterjs::loader", "transpile cache memory hit");
         return Some(Cached {
             js: b.js.clone(),
@@ -78,6 +79,7 @@ pub fn get(source: &str, ext: &str) -> Option<Cached> {
     let dir = disk_dir()?;
     let bytes = fs_err::read(dir.join(format!("{k}.postcard"))).ok()?;
     let cached = decode(&bytes)?;
+    crate::timing::CACHE_DISK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     tracing::debug!(target: "winterjs::loader", "transpile cache disk hit");
     MEM.lock().put(
         k,

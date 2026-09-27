@@ -1,6 +1,13 @@
+---
+layout: docs
+title: 快速上手
+lang: zh
+stub: quickstart
+permalink: /zh/quickstart/
+---
 # winterjs 快速上手
 
-> 5 分钟从零跑起 JS。English version: [quickstart.en.md](./quickstart.en.md).
+> 5 分钟从零跑起 JS。English version: [Quickstart](../en/quickstart/).
 
 ## 1. 构建与验证
 
@@ -21,7 +28,7 @@ export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 ./target/debug/winterjs --repl                       # 交互式 REPL（Ctrl-D 退出）
 ```
 
-规矩（详见 [cli.zh.md](./cli.zh.md)）：
+规矩（详见 [CLI 参考](cli/)）：
 
 * **一次恰好一个动作**：`--run a.js --eval 1` 直接报错。
 * **无裸子命令/无裸位置参数**：`winterjs a.js` 是错的，写 `--run a.js`；
@@ -63,6 +70,6 @@ CommonJS 同样可用（`require`、`module.exports`、`__dirname`）。
 
 ## 5. 下一步
 
-* [api.zh.md](./api.zh.md) —— 全部模块、稳定性与已知偏离。
-* [cli.zh.md](./cli.zh.md) —— 全 flag 参考（含动作归属）。
+* [API 参考](api/) —— 全部模块、稳定性与已知偏离。
+* [CLI 参考](cli/) —— 全 flag 参考（含动作归属）。
 * `sample/<领域>/*.js` —— 46 个可运行样例，每个 API 域一件。

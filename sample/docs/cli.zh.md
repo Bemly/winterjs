@@ -1,7 +1,14 @@
+---
+layout: docs
+title: CLI 参考
+lang: zh
+stub: cli
+permalink: /zh/cli/
+---
 # winterjs CLI 参考
 
 > 真相以二进制为准：`winterjs --help`（中文用 `-l zh --help`）。
-> 本页讲 flag 背后的**规则**。English version: [cli.en.md](./cli.en.md).
+> 本页讲 flag 背后的**规则**。English version: [CLI reference](../en/cli/).
 
 ## 规则
 

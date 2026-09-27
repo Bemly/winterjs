@@ -1,8 +1,15 @@
+---
+layout: docs
+title: CLI reference
+lang: en
+stub: cli
+permalink: /en/cli/
+---
 # winterjs CLI Reference
 
 > Source of truth is the binary itself: `winterjs --help`
 > (or `-l zh --help` for Chinese). This page explains the **rules** behind the
-> flags. 中文版见 [cli.zh.md](./cli.zh.md).
+> flags. 中文版见 [CLI 参考](../zh/cli/).
 
 ## Rules
 

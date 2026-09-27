@@ -1,8 +1,15 @@
+---
+layout: docs
+title: API 参考
+lang: zh
+stub: api
+permalink: /zh/api/
+---
 # winterjs API 参考
 
 > 体例对标 https://nodejs.org/docs/latest/api/ ：每模块一节，标注稳定性、
 > 给出导入形态、链接样例，并列出**已知偏离**（2026-09-27 经
-> `winterjs --run sample/...` 逐项实测）。English version: [api.en.md](./api.en.md).
+> `winterjs --run sample/...` 逐项实测）。English version: [API reference](../en/api/).
 
 稳定性：`稳定` = 跟随 Node 语义；`实验` = 可用但在演进；`桥接` = 有意裁剪的面（下文注明）。
 

@@ -1,0 +1,18 @@
+# Jekyll settings for the winterjs docs site (built by .github/workflows/pages.yml).
+# Forks served at <user>.github.io/<repo>/ must set baseurl to "/<repo>".
+title: winterjs docs
+description: "winterjs API reference, quickstart and CLI — EN/中文"
+baseurl: "/winterjs"
+url: "https://bemly.github.io"
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+# README.md stays for repo browsing on github.com; it is not part of the site.
+exclude:
+  - README.md
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: docs

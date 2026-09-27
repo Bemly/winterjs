@@ -1,6 +1,13 @@
+---
+layout: docs
+title: Quickstart
+lang: en
+stub: quickstart
+permalink: /en/quickstart/
+---
 # winterjs Quickstart
 
-> 5-minute path from zero to running JavaScript. 中文版见 [quickstart.zh.md](./quickstart.zh.md).
+> 5-minute path from zero to running JavaScript. 中文版见 [快速上手](../zh/quickstart/).
 
 ## 1. Install & verify
 
@@ -21,7 +28,7 @@ export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 ./target/debug/winterjs --repl                       # interactive REPL (Ctrl-D to exit)
 ```
 
-Rules (see [cli.en.md](./cli.en.md)):
+Rules (see [CLI reference](cli/)):
 
 * **Exactly one action per invocation**: `--run a.js --eval 1` is an error.
 * **No bare subcommands / positional actions**: `winterjs a.js` is an error —
@@ -64,6 +71,6 @@ CommonJS also works (`require`, `module.exports`, `__dirname`).
 
 ## 5. Next steps
 
-* [api.en.md](./api.en.md) — every module, stability, and known deviations.
-* [cli.en.md](./cli.en.md) — full flag reference with action scope.
+* [API reference](api/) — every module, stability, and known deviations.
+* [CLI reference](cli/) — full flag reference with action scope.
 * `sample/<area>/*.js` — 46 runnable examples, one per API area.

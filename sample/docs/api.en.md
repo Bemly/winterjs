@@ -1,8 +1,15 @@
+---
+layout: docs
+title: API reference
+lang: en
+stub: api
+permalink: /en/api/
+---
 # winterjs API Reference
 
 > Style follows https://nodejs.org/docs/latest/api/ : one section per module,
 > stability marker, import form, sample link, and **known deviations** (verified
-> against `winterjs --run sample/...`, 2026-09-27). 中文版见 [api.zh.md](./api.zh.md).
+> against `winterjs --run sample/...`, 2026-09-27). 中文版见 [API 参考](../zh/api/).
 
 Stability: `Stable` = tracks Node semantics; `Experimental` = present but
 evolving; `Bridge` = intentionally reduced surface (documented below).

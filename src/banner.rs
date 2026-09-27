@@ -4,7 +4,7 @@
 //!   + `assets/winterjs.svg`（`resvg` 光栅化）经对应转义协议输出，之后跟版本行。
 //!   素材史：`logo.avif` 因纯 Rust 解码无轮子（`image/avif` 只管编码，见 §14
 //!   `viuer` 条）经 `cjxl` 转码为同 artwork 的 `logo.jxl`（`sips` 先验 alpha）。
-//! - 其余终端：纯 ASCII 雪花 + `w i n t e r j s <ver>`（字节恒 <0x80，单测钉住）。
+//! - 其余终端：用户定稿 ASCII art（❄/❆ 分隔线 + WINTER JS 块字，版本行居中）。
 //! - 关闭：`-hide_banner`（单横杠破例，非 clap flag，见 `cli::strip_banner_flags`）；
 //!   强制 ASCII：`-ascii_banner`（图形终端也走雪花，hide 优先）；stderr 非 TTY 自动跳过（管道/CI 零噪音）
 //!   `--completions` / `--man` 不打印（纯机器输出）。
@@ -38,15 +38,17 @@ const SVG_PX_W: u32 = 384;
 /// Kitty 分块转义每块 base64 字符数（viuer 同值）。
 const KITTY_CHUNK: usize = 4096;
 
-/// 纯 ASCII 雪花（7 行；每行 ≤17 列，左对齐块；`w i n t e r…` 版本行由代码另拼）。
-const ASCII_FLAKE: &[&str] = &[
-    "        *        ",
-    "   \\\\   |   /    ",
-    "    \\\\  |  /     ",
-    "------  *  ------",
-    "    /  |  \\\\     ",
-    "   /   |   \\\\    ",
-    "        *        ",
+/// ASCII banner（用户定稿 2026-09-28）：❄/❆ 分隔线 + WINTER JS 块字。
+/// 非纯 ASCII（块字符与雪花皆单 cell 宽，等宽终端下对齐）；版本行按最宽行居中。
+const ASCII_ART: &[&str] = &[
+    "❄     ·     ❆     ·     ❄     ·     ❆     ·     ❄     ·     ❆     ·     ❄",
+    "██╗    ██╗██╗███╗   ██╗████████╗███████╗██████╗      ██╗███████╗",
+    "██║    ██║██║████╗  ██║╚══██╔══╝██╔════╝██╔══██╗     ██║██╔════╝",
+    "██║ █╗ ██║██║██╔██╗ ██║   ██║   █████╗  ██████╔╝     ██║███████╗",
+    "██║███╗██║██║██║╚██╗██║   ██║   ██╔══╝  ██╔══██╗██   ██║╚════██║",
+    "╚███╔███╔╝██║██║ ╚████║   ██║   ███████╗██║  ██║╚█████╔╝███████║",
+    " ╚══╝╚══╝ ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚══════╝╚═╝  ╚═╝ ╚════╝ ╚══════╝",
+    "❆     ·     ❄     ·     ❆     ·     ❄     ·     ❆     ·     ❄     ·     ❆",
 ];
 
 /// 图形协议（env 检测，无终端查询）。
@@ -144,17 +146,21 @@ pub fn decide(hide: bool, ascii: bool, stderr_tty: bool) -> Mode {
 
 /// 版本行（ASCII 与图形共用收尾）。
 pub fn version_line() -> String {
-    format!("   w i n t e r j s  {}", env!("CARGO_PKG_VERSION"))
+    format!("v{}", env!("CARGO_PKG_VERSION"))
 }
 
 /// ASCII banner 全文（纯函数，单测 + 黑盒断言同一份）。
 pub fn ascii_text() -> String {
+    let width = ASCII_ART.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let ver = version_line();
+    let pad = width.saturating_sub(ver.chars().count()) / 2;
     let mut out = String::new();
-    for line in ASCII_FLAKE {
+    for line in ASCII_ART {
         out.push_str(line);
         out.push('\n');
     }
-    out.push_str(&version_line());
+    out.push_str(&" ".repeat(pad));
+    out.push_str(&ver);
     out.push('\n');
     out
 }
@@ -322,18 +328,15 @@ mod tests {
     use serial_test::serial;
 
     #[test]
-    fn ascii_is_pure_ascii() {
+    fn ascii_art_shape() {
+        // 用户定稿 art：不断言纯 ASCII（块字符/雪花），只钉形状与版本。
         let t = ascii_text();
-        assert!(t.bytes().all(|b| b < 0x80), "banner must stay pure ASCII");
-        assert!(t.contains("w i n t e r j s"), "{t}");
+        assert!(t.contains('❄') && t.contains('❆'), "{t}");
+        assert!(t.contains("██╗") && t.contains('·'), "{t}");
         assert!(t.contains(env!("CARGO_PKG_VERSION")), "{t}");
-    }
-
-    #[test]
-    fn flake_rows_aligned() {
-        // 雪花块左对齐等宽（行 0–6 等长 17 列）。
-        for line in ASCII_FLAKE {
-            assert_eq!(line.len(), 17, "{line:?}");
+        for line in t.lines() {
+            assert!(!line.ends_with(' ') && !line.ends_with('\t'), "{line:?}");
+            assert!(line.chars().count() <= 80, "{line:?}");
         }
     }
 

@@ -13,7 +13,7 @@ fn banner_hidden_when_piped() {
     assert!(out.status.success());
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "42\n");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!stderr.contains("w i n t e r j s"), "stderr: {stderr}");
+    assert!(!stderr.contains("❄"), "stderr: {stderr}");
 }
 
 #[test]
@@ -23,7 +23,7 @@ fn hide_banner_forms() {
     assert!(out.status.success());
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "1\n");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!stderr.contains("w i n t e r j s"), "stderr: {stderr}");
+    assert!(!stderr.contains("❄"), "stderr: {stderr}");
     // 双横杠形不存在：走未知 flag 统一通道（exit 1 + 指路 --help，与 --bogus 同口径）。
     let out = winterjs().args(["--hide_banner", "--eval", "1"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -51,5 +51,5 @@ fn ascii_banner_forms() {
     assert!(out.status.success());
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "1\n");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!stderr.contains("w i n t e r j s"), "stderr: {stderr}");
+    assert!(!stderr.contains("❄"), "stderr: {stderr}");
 }

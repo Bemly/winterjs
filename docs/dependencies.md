@@ -205,6 +205,7 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 | 进度条 | `indicatif` | 0.18.6 | 2017-04-26 | 2026-07-01 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 交互问答 | `dialoguer` | 0.12.0 | 2017-05-11 | 2025-08-23 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | REPL 行编辑 | `rustyline` | 18.0.1 | 2015-09-05 | 2026-06-24 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| REPL 行编辑（IdeMenu 浮窗补全+文档，候选待批） | `reedline` | 0.52.0 | 2021-04-09 | 2026-09-26 | ✅（default 特性；禁 `sqlite`/`system_clipboard`，见备注） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | shell 切词 | `shlex` | 2.0.1 | 2015-06-22 | 2026-05-17 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 波浪线展开 | `shellexpand` | 3.1.2 | 2016-03-13 | 2026-02-23 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 终端宽度 | `unicode-width` | 0.2.2 | 2015-04-14 | 2025-10-06 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -217,8 +218,24 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 | 启动 banner 图像解码 | `image` | 0.25.10 | 2014-11-20 | 2026-03-10 | ✅（`png` 发射载荷编码；`avif` 纯 Rust 只管编码不管解码，禁 `avif-native`→dav1d 的 C，见 §14） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | 启动 banner JXL 解码 | `jxl-oxide` | 0.12.6 | 2023-05-16 | 2026-05-29 | ✅（default 特性；禁 `lcms2` 的 C） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 
-备注：`rustyline`/`self_update` 的移动端格是“功能不需要”（REPL/自升级是桌面功能，
-模块可 cfg 门控），不是编不过。`vergen-gitcl` 开 `build`（调 git CLI），禁 `git`（→`git2` 的 C）。
+备注：`rustyline`/`reedline`（候选）/`self_update` 的移动端格是“功能不需要”
+（REPL/自升级是桌面功能，模块可 cfg 门控），不是编不过。
+`reedline` 四问实证（2026-09-28，REPL C 档；default 特性口径）：
+① 库龄 2021-04-09 建库超一年 ✅；② 0.52.0 发 2026-09-26（昨日），近一年活跃 ✅，
+3.4M 下载，MIT，`rust-version = 1.95.0`（stable，本仓 1.98 可编），edition 2021；
+③ 传递闭包纯 Rust ✅——default 特性只拉 `chrono`（`default-features=false`+`clock/serde`，
+FFI 仅经 `libc` 绑定）/`crossterm 0.29`（无 `build.rs`/`links`，win 侧 `winapi` 仅 FFI 绑定，
+同 `rustyline` ✅ 口径）/`nu-ansi-term`/`serde`/`strip-ansi-escapes`/`strum`（已在树内）
+/`unicode-segmentation`/`unicode-width`（已在树内）；`rusqlite`/`arboard`/`serde_json`
+全是 optional 且 default 未开，不进闭包；
+④ 无 nightly ✅。
+门控红线（配错即变 ⚠️/❌）：禁 `sqlite`（拖 `rusqlite/bundled` 的 C SQLite）、
+禁 `system_clipboard`（拖 `arboard` 平台 shims）、禁 `sqlite-dynlib`；
+`libc` 特性（`crossterm/libc` 透传）不主动开。
+反转说明：§14 原“`reedline`（→`rustyline`）”是无浮窗文档需求时的选择；
+C 档要 IRB 式右侧文档 pane（`IdeMenu`+`DescriptionMode::PreferRight`），
+`rustyline 18`（`Candidate::display` 仅列表）做不到，故反转；若 C 档被否决，
+本行连同 §16-5 作废，`rustyline` 留用。`vergen-gitcl` 开 `build`（调 git CLI），禁 `git`（→`git2` 的 C）。
 `shlex` 做 `bunx` 式参数透传的 shell 切词；`humantime`/`bytesize` 解析 `--timeout 30s`/`--max-old-space 512MB`；
 `askama`（编译期模板）做 `winterjs init` 脚手架。
 `rust-i18n` 审计（2026-09-11，用户拍板引入）：longbridge 出品（2021 起，4.2.2），MIT；
@@ -578,7 +595,7 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
   builder 只留 `derive_builder`（`bon` 库龄不够、`typed-builder` 不引）；
   样板三件套（`enum_dispatch`/`auto_impl`/`delegate`）样板量未到阈值时不引；
   `byteorder`（→`binrw`）、`bincode`（→`postcard`，更瘦）、`compact_str`+`lasso`（`smol_str`+`string-interner` 已各选其一）、
-  `directories`（用 `dirs`）、`multer`（随 axum 来）、`reedline`（→`rustyline`）、
+   `directories`（用 `dirs`）、`multer`（随 axum 来）、`reedline`（→`rustyline`；C 档反转见 §4 备注与 §16-5）、
   `pkcs12`（serve 只收 PEM）、`users`（→`uzers`）、`hex`（→`const-hex`）、
   `tree-sitter*`（→`oxc`）、`syntect`（→手写高亮）、`rental`/`owning_ref`（停更，用 `ouroboros`）、
   `qcell`（aliasing 靠架构纪律，不引 GhostCell）、`redb` 的其他包装（无）。
@@ -650,6 +667,11 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
    → `render_frame()`，`image` 特性直出 DynamicImage（含 alpha 通道，`ExtraChannelType::Alpha`
    在列）。门控：禁 `lcms2`（同 `avif-native` 口径）。素材侧待办：`logo.avif`→`logo.jxl`
    转码 + README/站点引用改 `.jxl`（用户已拍板，另步执行）。
+
+5. `reedline` C 档引入（2026-09-28 候选，证据见 §4 表格行与备注；**待用户拍板**，
+   拍板前不动 `Cargo.toml`/`src/repl.rs`）：提示符保持 `❄> ` 不变（无编号）；
+   只做 Tab 浮窗补全（`IdeMenu` 右侧文档 pane）+ 错误堆栈多行化；
+   `rustyline` 退役与历史/Ctrl-C 双击/非 TTY 退化平移另步执行。
 
 ## 开发工具（不进 Cargo 依赖，2026-09-25）
 

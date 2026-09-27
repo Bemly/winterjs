@@ -15,6 +15,18 @@ fn emit(stderr: bool, msg: &str) {
     let indent = state::console_state(|p| p.console_indent);
     let prefix = "  ".repeat(indent.min(16));
     let line = format!("{prefix}{msg}");
+    // REPL TTY 会话：读行线程 raw mode 期间裸 `\n` 不回车（阶梯右移），
+    // 用户输出统一 CRLF 化（crate::repl::REPL_TTY_OUTPUT 注记）。
+    if crate::repl::tty_output_enabled() {
+        let body = crate::repl::crlf(&line);
+        if stderr {
+            eprint!("{body}\r\n");
+        } else {
+            print!("{body}\r\n");
+            let _ = std::io::stdout().flush();
+        }
+        return;
+    }
     if stderr {
         let mut err = std::io::stderr().lock();
         let _ = writeln!(err, "{line}");

@@ -318,19 +318,27 @@ fn extract_eval_result(
 }
 
 /// Script 模式完成值打印（与既有行为一致：undefined 不打印）。
+/// `crlf_out`：REPL TTY 会话置真——读行线程 raw mode 期间裸 `\n` 不回车
+/// （`crate::repl::crlf` 注记），输出 CRLF 化；`--eval` 等单次进程传假。
 pub(crate) fn print_completion(
     rt: &mut Runtime,
     global: &RootedGuard<'_, *mut JSObject>,
     rval: mozjs::jsval::JSVal,
+    crlf_out: bool,
 ) -> Result<(), Error> {
     if rval.is_undefined() {
         return Ok(());
     }
     let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
     rooted!(&in(&mut realm) let rv = rval);
-    match String::from_jsval(&mut realm, rv.handle(), ()) {
-        Ok(ConversionResult::Success(s)) => println!("{s}"),
-        _ => println!("<non-stringifiable result>"),
+    let text = match String::from_jsval(&mut realm, rv.handle(), ()) {
+        Ok(ConversionResult::Success(s)) => s,
+        _ => "<non-stringifiable result>".to_owned(),
+    };
+    if crlf_out {
+        print!("{}\r\n", crate::repl::crlf(&text));
+    } else {
+        println!("{text}");
     }
     // 同上：REPL 管道下完成值行立即刷出（`run`/`eval` 单次进程无感，顺手）。
     use std::io::Write as _;

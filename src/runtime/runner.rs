@@ -96,7 +96,7 @@ async fn run_module(
         }
         return Ok(());
     }
-    print_completion(rt, global, rval.get())
+    print_completion(rt, global, rval.get(), false)
 }
 
 /// 致命错收尾（node `triggerUncaughtException` 尾段）：先打印错误，再以 exitCode=1 派发
@@ -380,7 +380,7 @@ async fn run_inner(
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         crate::builtins::node::process_::emit_exit(&mut realm, global.get());
     }
-    let r = print_completion(&mut rt, &global, rval.get());
+    let r = print_completion(&mut rt, &global, rval.get(), false);
     // §4.8：跳过引擎/运行时析构（带 timer 的路径在 JS_DestroyContext 里 SEGV）。
     // CLI 进程即将退出，内存由 OS 回收；见 AGENTS §4.8。
     end_session(rt, engine);

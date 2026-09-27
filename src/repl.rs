@@ -21,11 +21,44 @@
 use std::borrow::Cow;
 use std::io::IsTerminal as _;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Ctrl-C 连击退出窗口：两次 `CtrlC` 间隔内即退出，超窗重置
 /// （与 `.help` 文案同值；纯函数 `ctrl_c_should_exit` 单测覆盖）。
 pub const CTRL_C_WINDOW: Duration = Duration::from_secs(2);
+
+/// REPL TTY 输出旗（REPL 会话且 stdin 为终端时置位，进程级只增不减）。
+/// 读行线程阻塞在 `read_line` 时终端处于 raw mode（crossterm 关 OPOST/ONLCR），
+/// 主循环的**异步窗口输出**（timer 回调里 `console.log` 等）裸 `\n` 不回车，
+/// 真终端阶梯右移——该旗开着时用户输出统一 CRLF 化（ONLCR 开时多出的
+/// `\r` 光标已在行首，视觉无害）。行处理期间的输出不走此旗：哨兵协议下
+/// 读行线程不进 `read_line`（raw 已退），终端自然正常换行。
+static REPL_TTY_OUTPUT: AtomicBool = AtomicBool::new(false);
+
+/// REPL 会话开工置位（`runtime/repl::repl`，仅 TTY 会话调用）。
+pub fn set_tty_output(on: bool) {
+    REPL_TTY_OUTPUT.store(on, Ordering::Relaxed);
+}
+
+/// 用户输出写点查询（`builtins/console::emit`）。
+pub fn tty_output_enabled() -> bool {
+    REPL_TTY_OUTPUT.load(Ordering::Relaxed)
+}
+
+/// 裸 `\n` → `\r\n`（已带 `\r` 的不动；raw mode 终端 LF 不回车，见上）。
+pub fn crlf(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut prev_cr = false;
+    for ch in s.chars() {
+        if ch == '\n' && !prev_cr {
+            out.push('\r');
+        }
+        out.push(ch);
+        prev_cr = ch == '\r';
+    }
+    out
+}
 
 /// 连击判定（纯函数）：上次中断在窗口内即退出。
 pub fn ctrl_c_should_exit(last: Option<Instant>, now: Instant) -> bool {
@@ -276,49 +309,50 @@ pub fn highlight_styled(line: &str) -> reedline::StyledText {
     out
 }
 
-/// 补全候选（一行文档，进 IdeMenu 右侧 pane）。
+/// 补全候选（一行文档，进 IdeMenu 右侧 pane）：签名形——传参 + 返回值，
+/// 不是"是什么"而是"怎么用"（用户口径 2026-09-27）。
 fn candidates() -> Vec<(&'static str, &'static str)> {
     let mut out = vec![
-        (".exit", "quit the repl"),
-        (".help", "show repl help"),
-        ("exit", "REPL-only: quit the repl"),
-        ("quit", "REPL-only: quit the repl"),
-        ("q", "REPL-only: quit the repl"),
-        ("console", "global console object"),
-        ("process", "global process object"),
-        ("Buffer", "global Buffer class"),
-        ("globalThis", "global object"),
-        ("JSON", "global JSON object"),
-        ("Math", "global Math object"),
-        ("Object", "global Object class"),
-        ("Array", "global Array class"),
-        ("String", "global String class"),
-        ("Number", "global Number class"),
-        ("Boolean", "global Boolean class"),
-        ("BigInt", "global BigInt function"),
-        ("Symbol", "global Symbol function"),
-        ("Promise", "global Promise class"),
-        ("Map", "global Map class"),
-        ("Set", "global Set class"),
-        ("WeakMap", "global WeakMap class"),
-        ("WeakSet", "global WeakSet class"),
-        ("URL", "global URL class"),
-        ("URLSearchParams", "global URLSearchParams class"),
-        ("TextEncoder", "global TextEncoder class"),
-        ("TextDecoder", "global TextDecoder class"),
-        ("Blob", "global Blob class"),
-        ("fetch", "global fetch function"),
-        ("structuredClone", "global structuredClone function"),
-        ("setTimeout", "timer function"),
-        ("clearTimeout", "timer function"),
-        ("setInterval", "timer function"),
-        ("clearInterval", "timer function"),
-        ("queueMicrotask", "microtask function"),
-        ("require", "CJS require function"),
-        ("module", "CJS module object"),
-        ("exports", "CJS exports object"),
-        ("__dirname", "CJS directory name"),
-        ("__filename", "CJS file name"),
+        (".exit", ".exit — quit the repl"),
+        (".help", ".help — show repl help"),
+        ("exit", "exit() — quit the repl"),
+        ("quit", "quit() — quit the repl"),
+        ("q", "q() — quit the repl"),
+        ("console", "console.log/info/warn/error/dir/…"),
+        ("process", "process — argv/env/exit()/on()"),
+        ("Buffer", "Buffer.from/alloc/isBuffer (class)"),
+        ("globalThis", "globalThis — the global object"),
+        ("JSON", "JSON.parse(str) / stringify(v) / rawJSON()"),
+        ("Math", "Math.floor/abs/random/… (namespace)"),
+        ("Object", "Object.keys/assign/freeze/… (class)"),
+        ("Array", "Array.from/of/isArray (class)"),
+        ("String", "String.raw/fromCharCode/… (class)"),
+        ("Number", "Number.isInteger/parseFloat/… (class)"),
+        ("Boolean", "Boolean(value?) (class)"),
+        ("BigInt", "BigInt(v) → bigint"),
+        ("Symbol", "Symbol(desc?) → symbol"),
+        ("Promise", "Promise.all/race/allSettled/any/withResolvers"),
+        ("Map", "new Map() — set/get/has/delete"),
+        ("Set", "new Set() — add/has/delete"),
+        ("WeakMap", "new WeakMap() — set/get/has"),
+        ("WeakSet", "new WeakSet() — add/has"),
+        ("URL", "new URL(url, base?) — href/origin/…"),
+        ("URLSearchParams", "new URLSearchParams(init?) — get/set/…"),
+        ("TextEncoder", "new TextEncoder().encode(str) → Uint8Array"),
+        ("TextDecoder", "new TextDecoder(label?).decode(buf) → string"),
+        ("Blob", "new Blob(parts, opts?) — text()/arrayBuffer()"),
+        ("fetch", "fetch(url, init?) → Promise<Response>"),
+        ("structuredClone", "structuredClone(value, opts?) → clone"),
+        ("setTimeout", "setTimeout(cb, ms?, ...args) → Timeout"),
+        ("clearTimeout", "clearTimeout(t?: Timeout) → undefined"),
+        ("setInterval", "setInterval(cb, ms?, ...args) → Timeout"),
+        ("clearInterval", "clearInterval(t?: Timeout) → undefined"),
+        ("queueMicrotask", "queueMicrotask(cb)"),
+        ("require", "require(id) → exports (CJS)"),
+        ("module", "module — exports/require/id (CJS)"),
+        ("exports", "exports — alias of module.exports (CJS)"),
+        ("__dirname", "__dirname — script directory (CJS)"),
+        ("__filename", "__filename — script file path (CJS)"),
     ];
     for kw in KEYWORDS {
         out.push((kw, "keyword"));
@@ -453,9 +487,15 @@ impl reedline::Highlighter for SnowHighlighter {
 /// readline 线程主函数（阻塞 IO 独占线程；行经 `tx` 发主循环，`None` 表 EOF）。
 /// TTY 下走 reedline（IdeMenu/历史/高亮）；非 TTY（管道/黑盒）逐行直读无 ANSI。
 /// 历史加载失败忽略；`FileBackedHistory` drop 时尽力存档。
+///
+/// 哨兵协议（`flush_rx`）：TTY 下发一行后先收干积压旧哨兵，再阻塞等主循环
+/// 的"本轮输出完毕"哨兵——期间**不进 `read_line`**（终端 raw 已退，主循环的
+/// 多行输出/错误框 ONLCR 正常换行，且下一轮 prompt 不与求值输出竞争渲染）。
+/// 主循环退出（`flush_tx` drop）→ `blocking_recv` 返回 `None` → 线程收尾。
 pub fn readline_loop(
     tx: tokio::sync::mpsc::UnboundedSender<Option<String>>,
     history: Option<PathBuf>,
+    mut flush_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
 ) {
     if !std::io::stdin().is_terminal() {
         // 非 TTY：逐行直读（仍无 ANSI；`.exit` 等由主循环分类）。
@@ -503,6 +543,12 @@ pub fn readline_loop(
         match rl.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
                 if tx.send(Some(line)).is_err() {
+                    break;
+                }
+                // 哨兵协议：清 tick 轮积压的旧哨兵，再等本轮输出完毕
+                // （`None` = 主循环退出，同 EOF 路径收尾）。
+                while flush_rx.try_recv().is_ok() {}
+                if flush_rx.blocking_recv().is_none() {
                     break;
                 }
             }
@@ -590,6 +636,17 @@ mod tests {
     }
 
     #[test]
+    fn crlf_table() {
+        // CRLF 化：裸 LF 插 CR；已带 CR 不动；空串/无 LF 恒等。
+        assert_eq!(crlf("a\nb"), "a\r\nb");
+        assert_eq!(crlf("a\r\nb"), "a\r\nb");
+        assert_eq!(crlf("\n"), "\r\n");
+        assert_eq!(crlf("abc"), "abc");
+        assert_eq!(crlf(""), "");
+        assert_eq!(crlf("a\n\nb"), "a\r\n\r\nb");
+    }
+
+    #[test]
     fn prompt_shape() {
         // 提示符保持 ❄>（左 ❄ + indicator >），无编号无 irb 字样。
         let p = SnowPrompt;
@@ -626,7 +683,7 @@ mod tests {
             _ => panic!("expected fresh"),
         };
         let console = items.iter().find(|s| s.value == "console").expect("console");
-        assert_eq!(console.description.as_deref(), Some("global console object"));
+        assert_eq!(console.description.as_deref(), Some("console.log/info/warn/error/dir/…"));
         assert_eq!((console.span.start, console.span.end), (0, 4));
         // 点命令：`.he` → 显示 `.help`（value 补剩余部分，不吞点）。
         let dots = match c.complete(".he", 3) {

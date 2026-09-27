@@ -409,3 +409,26 @@ G1/G2/G3/G9 已收官。）
   同流自回显教训重申（4.221）。
 - getters 套件 5/7：余 proxy 两块需 `isProxy`（恒 false 引擎缺口，native 活，
   另案问用户）；plain/getter 拒绝面全过。黑盒新增 `p2_repl_subset_complete`。
+
+## 2026-09-27 REPL 渲染修复（阶梯/prompt 竞争）+ 文档 pane 签名化 + R4 收尾
+
+- 用户实测报 UI 三症：① 函数体回显多行阶梯右移；② miette 错误框碎片错位；
+  ③ 报错贴下一轮 prompt 后；④ 补全文档 pane 只有 "timer function" 一类短语，
+  无传参/输出提示。
+- 根因（pty 抓字节实锤）：读行线程 `read_line` 阻塞时终端处 crossterm raw
+  mode（OPOST/ONLCR 关），主循环直写终端的多行输出裸 LF 不回车即阶梯；
+  readline 线程发行后立即回环渲染下一轮 prompt，与求值输出竞争（详见 4.225）。
+- 修法两层（`7f…` 渲染修复提交）：① 哨兵协议——发行后 drain 旧哨兵 +
+  `blocking_recv` 等"本轮输出完毕"，期间不进 read_line（主循环端
+  `pending_flush` 旗，行处理轮 pump/rejection 收尾后发）；② REPL TTY 会话
+  `REPL_TTY_OUTPUT` 旗 + `crlf()` 工具，console emit 与 repl_out/
+  print_completion/error render_string 统一 CRLF 化（覆盖哨兵后异步窗口，
+  管道/黑盒路径字节恒等不受影响）；附带 SIGINT 置忽略（哨兵窗口防内核默认
+  终止）。`error.rs` 拆 `render_string`（render 文本恒等）。
+- 文档 pane（用户口径"要传参/输出提示"）：`candidates()` 全表签名化
+  （`setTimeout(cb, ms?, ...args) → Timeout` 形，40 项）。
+- R4 收尾：`p2_repl_options_surface` 挂死＝同流 input/output + terminal:true
+  自回显（4.221 真机同挂，测试写法对齐 bug）——input/output 分离复验过；
+  `completer_faces` 断言随签名表更新。
+- 验证：pty 字节复验四场景（回显/错误框/console 多行/timer 异步）全行首对齐；
+  repl 域 nextest 30/30；冒烟 5/5（target-alt）；全量 strict 见 plan3 §0.4。

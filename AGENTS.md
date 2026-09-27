@@ -138,6 +138,8 @@ cargo build
 - 同文件编辑串行；多行 edit 后 `git diff` 核对每条删除行；禁空参数工具调用（4.21/4.28/4.150）。
 - 禁连续建 worktree，bisect 用主仓 checkout/stash；bisect 后提交前核 HEAD 归属（4.142/4.206）。
 - 写文件命令的手工实测先进 probe 目录（4.20）；zsh 以 `=` 开头的词加引号（4.3）。
+- TUI 读行线程持 raw mode 时，他线程输出必过同步协议（哨兵）或 CRLF 化，禁裸直写终端；
+  阶梯判定用 pty 抓字节数 CR，文本流比对看不出（4.225）。
 
 **CLI 与依赖**
 - 动作值紧贴 flag；spawn 自家 CLI 透传参数用 `--` 收尾；fixture 参数不撞动作名（4.26/4.61/4.63）。

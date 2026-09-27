@@ -8,7 +8,45 @@ use mozjs::rooted;
 use mozjs::rust::RootedGuard;
 use mozjs::rust::Runtime;
 use std::ffi::CString;
+use std::io::IsTerminal as _;
 use crate::error::Error;
+
+/// REPL 输出统一口：CRLF 化 + 尾换行 + stdout 刷出（仅 TTY 会话——旗未置位的
+/// 管道/黑盒路径字节恒等原 println/eprintln 行为）。
+/// TTY 下读行线程 raw mode 期间裸 `\n` 不回车（`crate::repl::crlf` 注记）；
+/// 管道化自测/黑盒下 stdout 块缓冲需显式刷（沿用 `print_completion` 实测注记）。
+fn repl_out(text: &str, to_stderr: bool) {
+    if !crate::repl::tty_output_enabled() {
+        if to_stderr {
+            eprintln!("{text}");
+        } else {
+            println!("{text}");
+            use std::io::Write as _;
+            let _ = std::io::stdout().flush();
+        }
+        return;
+    }
+    let mut body = crate::repl::crlf(text);
+    if !body.ends_with('\n') {
+        body.push_str("\r\n");
+    }
+    if to_stderr {
+        eprint!("{body}");
+    } else {
+        print!("{body}");
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+    }
+}
+
+/// 哨兵发送：行处理轮的全部输出（含 pump 收割的 timer 错误/rejection）落流后
+/// 放行读行线程渲染下一轮 prompt（哨兵协议见 `crate::repl::readline_loop`）。
+fn send_flush(flush_tx: &tokio::sync::mpsc::UnboundedSender<()>, pending: &mut bool) {
+    if *pending {
+        *pending = false;
+        let _ = flush_tx.send(());
+    }
+}
 
 /// REPL 单步结果（求值永不抛错：错误打印后继续；只有 `process.exit` 跳出）。
 enum ReplStep {
@@ -39,10 +77,11 @@ async fn repl_eval(
             Some(info) => {
                 let kind = exc_name(&mut realm, exc.get());
                 let is_syntax = kind.as_deref() == Some("SyntaxError");
-                // C 档：D4 渲染复用——`render()` 在非 TTY 下打 node 形多行
-                // （定位行 + 源码 + caret + at 栈帧），TTY 下走 miette 图形；
-                // 栈经 note_stack 按 message 配对取走（`script_with_kind` 内）。
-                // 返回的退出码丢弃（REPL 出错只打印不退出）。
+                // C 档：D4 渲染复用——render_string 拿文本（TTY miette 图形 /
+                // 非 TTY node 形），经 repl_out CRLF 化落 stderr（raw mode 终端
+                // 裸 `\n` 阶梯，见 `crate::repl::crlf`）；栈经 note_stack 按
+                // message 配对取走（`script_with_kind` 内）。退出码丢弃
+                // （REPL 出错只打印不退出）。
                 let err = crate::error::Error::script_with_kind(
                     "repl.js",
                     line,
@@ -53,23 +92,26 @@ async fn repl_eval(
                 );
                 let color =
                     crate::error::render_color().unwrap_or(crate::settings::ColorChoice::Auto);
-                let _ = err.render(color);
+                repl_out(&err.render_string(color), true);
                 if is_syntax && line.contains("await") {
-                    eprintln!("hint: top-level await is not supported in repl yet (wrap in an async function)");
+                    repl_out(
+                        "hint: top-level await is not supported in repl yet (wrap in an async function)",
+                        true,
+                    );
                 }
             }
-            None => eprintln!("uncaught JS exception (no stack info)"),
+            None => repl_out("uncaught JS exception (no stack info)", true),
         }
         return ReplStep::Done;
     }
     if let Some(code) = exited() {
         return ReplStep::Exited(code);
     }
-    if let Err(e) = print_completion(rt, global, rval.get()) {
+    if let Err(e) = print_completion(rt, global, rval.get(), crate::repl::tty_output_enabled()) {
         if let Some(code) = exited() {
             return ReplStep::Exited(code);
         }
-        eprintln!("{e}");
+        repl_out(&e.to_string(), true);
     }
     ReplStep::Done
 }
@@ -111,9 +153,19 @@ pub async fn repl() -> Result<(), Error> {
     let mut dispatch_rx = init.dispatch_rx;
 
     let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<Option<String>>();
+    let (flush_tx, flush_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let hist = crate::repl::history_path();
     // readline 是阻塞 IO，独占线程跑（`Editor` 不出线程，无跨线程共享）。
-    std::thread::spawn(move || crate::repl::readline_loop(line_tx, hist));
+    std::thread::spawn(move || crate::repl::readline_loop(line_tx, hist, flush_rx));
+    // TTY 会话：用户输出 CRLF 化（raw mode 阶梯，`crate::repl::crlf`）；
+    // SIGINT 置忽略——哨兵窗口（行处理期间）读行线程不在 `read_line`（非 raw、
+    // ISIG 开），Ctrl-C 会走内核默认终止杀掉整个会话；忽略后该毫秒级窗口的
+    // Ctrl-C 丢失，等价于现行为（reedline 在读时才捕获连击）。libc FFI 面。
+    if std::io::stdin().is_terminal() {
+        crate::repl::set_tty_output(true);
+        // SAFETY: `signal` 无内存安全前置条件；REPL 进程生命周期内不恢复默认。
+        unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+    }
     println!("winterjs repl (type .exit to quit)");
     // stdout 管道时块缓冲：banner 立即刷出，否则与 stderr 行错序（实测）。
     use std::io::Write as _;
@@ -121,6 +173,7 @@ pub async fn repl() -> Result<(), Error> {
     tracing::info!(target: "winterjs::runtime", "repl start");
 
     let err_src = ErrorSource::Script { source: "", filename: "repl.js" };
+    let mut pending_flush = false;
     loop {
         let st = match pump_once(
             &mut rt, &global, err_src, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx, true,
@@ -133,7 +186,8 @@ pub async fn repl() -> Result<(), Error> {
                     end_session(rt, engine);
                     return Err(Error::Exit(code));
                 }
-                eprintln!("{e}");
+                repl_out(&e.to_string(), true);
+                send_flush(&flush_tx, &mut pending_flush);
                 continue;
             }
         };
@@ -144,24 +198,29 @@ pub async fn repl() -> Result<(), Error> {
         }
         // 每轮收割 unhandled rejection（Node 式打印，继续不退出）。
         if let Err(e) = report_unhandled_rejections(&mut rt, &global) {
-            eprintln!("{e}");
+            repl_out(&e.to_string(), true);
         }
+        send_flush(&flush_tx, &mut pending_flush);
         tokio::select! {
             line = line_rx.recv() => {
                 match line {
                     // EOF（Ctrl-D）或 readline 线程结束。
                     None | Some(None) => break,
                     Some(Some(text)) => {
+                        // 哨兵挂起：本行处理（含 continue 路径）完毕后放行读行线程。
+                        pending_flush = true;
                         if text.trim().is_empty() {
                             continue;
                         }
                         match crate::repl::dot_command(&text) {
                             crate::repl::Dot::Exit => break,
                             crate::repl::Dot::Help => {
-                                println!(".exit  quit the repl");
-                                println!(".help  show this help");
-                                println!("exit()/quit()/q()  quit the repl (REPL-only functions)");
-                                println!("Ctrl+C twice in 2s / Ctrl+D  quit the repl");
+                                repl_out(
+                                    ".exit  quit the repl\n.help  show this help\n\
+                                     exit()/quit()/q()  quit the repl (REPL-only functions)\n\
+                                     Ctrl+C twice in 2s / Ctrl+D  quit the repl",
+                                    false,
+                                );
                                 continue;
                             }
                             crate::repl::Dot::Code => {}

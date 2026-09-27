@@ -243,9 +243,10 @@ impl Error {
         }
     }
 
-    /// 渲染到 stderr 并返回退出码 1。TTY（或 color=always）时用 miette 图形渲染，
-    /// NO_COLOR / color=never 降为无色图形；非 TTY：JS 异常 node 形，其余一行格式。
-    pub fn render(&self, color: ColorChoice) -> std::process::ExitCode {
+    /// 渲染为文本（不落流）：三路同形——TTY（或 color=always）miette 图形、
+    /// NO_COLOR / color=never 无色图形、非 TTY JS 异常 node 形 / 其余一行格式。
+    /// `render()` 据此落 stderr；REPL 据此拿文本做 CRLF 化（raw mode 终端）。
+    pub(crate) fn render_string(&self, color: ColorChoice) -> String {
         let tty = std::io::stderr().is_terminal();
         let fancy = match color {
             ColorChoice::Always => true,
@@ -262,28 +263,31 @@ impl Error {
             let handler = GraphicalReportHandler::new_themed(theme);
             let mut out = String::new();
             let _ = handler.render_report(&mut out, self);
-            eprint!("{out}");
+            out
         } else if let Error::Script { filename, line, col, message, kind, source_code, stack, .. } = self {
-            eprint!(
-                "{}",
-                render_script_node_style(
-                    filename, *line, *col, message, kind.as_deref(), source_code.inner(), stack.as_deref(),
-                )
-            );
+            render_script_node_style(
+                filename, *line, *col, message, kind.as_deref(), source_code.inner(), stack.as_deref(),
+            )
         } else {
-            eprintln!("Error: {self}");
+            let mut out = format!("Error: {self}\n");
             let mut source = std::error::Error::source(self);
             let mut first = true;
             while let Some(err) = source {
                 if first {
-                    eprintln!();
-                    eprintln!("Caused by:");
+                    out.push('\n');
+                    out.push_str("Caused by:\n");
                     first = false;
                 }
-                eprintln!("    {err}");
+                out.push_str(&format!("    {err}\n"));
                 source = err.source();
             }
+            out
         }
+    }
+
+    /// 渲染到 stderr 并返回退出码 1（文本与 `render_string` 恒等，见其注记）。
+    pub fn render(&self, color: ColorChoice) -> std::process::ExitCode {
+        eprint!("{}", self.render_string(color));
         std::process::ExitCode::from(1)
     }
 }

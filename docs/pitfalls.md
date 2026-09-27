@@ -229,6 +229,8 @@
 - 4.221 同流自回显即真机亦无限递归：repl 黑盒入出分离（2026-09-27，P2-repl）
 - 4.222 补全分支劫持含引号成员行：成员→路径→等号段→拒答→bare（2026-09-27，P2-repl）
 - 4.223 allowBlockingCompletions 是 fs 补全面开关，无之回空（2026-09-27，P2-repl）
+- 4.224 TUI 行编辑替换三坑：管道分流/prompt 拼接/Display 单行（2026-09-28，REPL C 档）
+- 4.225 读行线程持 raw mode 时他线程直写终端：多行 LF 阶梯 + prompt 竞争（2026-09-27，REPL 渲染修复）
 
 ## 条目
 
@@ -4081,3 +4083,27 @@
   `printf ... | winterjs --repl` 管道对照。
 - 推广铁律：**换行编辑底座必须三查**：非 TTY 显式 `is_terminal` 分流（禁依赖构造失败退化）、
   prompt 按"左+指示器"拼接规则拼（禁两边各写全形）、报错走 `render()` 不走 `Display`。
+
+### 4.225 读行线程持 raw mode 时他线程直写终端：多行 LF 阶梯 + prompt 竞争（2026-09-27，REPL 渲染修复）
+
+- 症状：TTY REPL 里 ① 打函数体/多行返回值时每行阶梯状右移；② miette 错误框
+  碎片散布（框线行首错位、尾部悬空 `┌──`）；③ 报错文本贴在下一轮 prompt 后
+  （`❄> winterjs::js::uncaught_exception`）。pty 抓字节证实：多行输出行尾裸 LF 无 CR。
+- 根因：读行线程 `read_line` 阻塞时终端处 crossterm raw mode（OPOST/ONLCR 关），
+  主循环（求值/console/错误渲染）此时直写终端——LF 只下移不回车即阶梯；且
+  readline 线程 send 行后立即回环渲染下一轮 prompt（还发 DSR 光标查询），与慢
+  一拍的求值输出竞争。
+- 修法：两层。① **哨兵协议**：readline 线程发行后 drain 积压旧哨兵再
+  `blocking_recv` 等"本轮输出完毕"哨兵，期间不进 `read_line`（raw 已退，ONLCR
+  正常 + prompt 不再抢先）；主循环在行处理轮的 pump/rejection 收尾后发哨兵
+  （`pending_flush` 旗，tick 轮不发）。② **CRLF 化**：REPL TTY 会话置
+  `REPL_TTY_OUTPUT` 旗，用户输出（console emit）与 REPL 自有打印（`repl_out`/
+  `print_completion`/`render_string`）统一裸 `\n`→`\r\n`——覆盖哨兵之后的
+  异步窗口（timer 回调里 console.log 多行），ONLCR 开时多出的 `\r` 视觉无害。
+  附带：SIGINT 置忽略（哨兵窗口 ISIG 开会直接杀进程，reedline 读时才捕获）。
+- 复现：`~/wjs-data/probe/repl_pty.py`（pty 驱动 + DSR 应答，字节比对 CR）；
+  黑盒 `tests/node/repl.rs::p2_repl_options_surface`（R4 测试同流 input/output
+  踩 4.221 挂死，改分离流复验）。
+- 推广铁律：**凡"独占线程持 raw mode 行编辑 + 他线程产输出"的 TUI，输出面
+  必须过同步协议或 CRLF 化，禁裸直写终端**；判定用 pty 抓字节（数 CR），
+  文本流比对看不出阶梯（LF 在管道渲染里天然对齐）。

@@ -34,16 +34,17 @@ cargo build
 ## Usage
 
 One invocation runs **exactly one action**; modifiers only work with their action
-(`--port` → `--serve`, `--filter` → `--test`, `--schema` → `--config`):
+(`--port` → `--serve`, `--filter` → `--test`, `--watch` → `--test/--run/--serve`,
+`--schema` → `--config`):
 
 | Flag | Effect |
 |---|---|
-| `-r/--run <file\|script>` | Run a JS file or a `package.json` script (JS bins re-execute through winterjs, zero node) |
+| `-r/--run <file\|script>` | Run a JS file or a `package.json` script (JS bins re-execute through winterjs, zero node; `--watch` re-runs on change) |
 | `-e/--eval <code>` | Evaluate inline JS, print the completion value |
 | `-t/--test [paths]` | Run test files (auto-discovery, `--filter/--watch`) |
-| `-s/--serve [dir]` | Serve static + JS `fetch` handler + WebSocket over H1/H2/H3 |
+| `-s/--serve [dir]` | Serve static + JS `fetch` handler + WebSocket over H1/H2/H3 (`--watch` restarts on change) |
 | `--repl` | Interactive REPL |
-| `-a/--add`, `-i/--install`, `-p/--publish`, `--login`, `-u/--upgrade`, `-I/--init` | Package lifecycle (npm registry) |
+| `-a/--add`, `-i/--install`, `-R/--remove`, `-U/--uninstall`, `-p/--publish`, `--login`, `-u/--upgrade`, `-I/--init` | Package lifecycle (npm registry) |
 | `--lint`, `-f/--fmt` | Forward to oxlint/oxfmt |
 | `-c/--config`, `--completions`, `-m/--man`, `-v`, `-l/--lang` | Config/help/i18n/logging |
 

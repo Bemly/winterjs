@@ -34,16 +34,17 @@ cargo build
 ## 用法
 
 一次调用恰好一个动作；修饰 flag 只在对应动作下生效
-（`--port`→`--serve`、`--filter`→`--test`、`--schema`→`--config`）：
+（`--port`→`--serve`、`--filter`→`--test`、`--watch`→`--test/--run/--serve`、
+`--schema`→`--config`）：
 
 | Flag | 效果 |
 |---|---|
-| `-r/--run <文件\|脚本名>` | 跑 JS 文件或 `package.json` 脚本（JS bin 经自身递归执行，零 node） |
+| `-r/--run <文件\|脚本名>` | 跑 JS 文件或 `package.json` 脚本（JS bin 经自身递归执行，零 node；`--watch` 变更重跑） |
 | `-e/--eval <代码>` | 求值内联 JS，打印完成值 |
 | `-t/--test [路径]` | 跑测试文件（自动发现，`--filter/--watch`） |
-| `-s/--serve [目录]` | H1/H2/H3 提供静态 + JS `fetch` handler + WebSocket |
+| `-s/--serve [目录]` | H1/H2/H3 提供静态 + JS `fetch` handler + WebSocket（`--watch` 变更重启） |
 | `--repl` | 交互式 REPL |
-| `-a/--add`、`-i/--install`、`-p/--publish`、`--login`、`-u/--upgrade`、`-I/--init` | 包生命周期（npm registry） |
+| `-a/--add`、`-i/--install`、`-R/--remove`、`-U/--uninstall`、`-p/--publish`、`--login`、`-u/--upgrade`、`-I/--init` | 包生命周期（npm registry） |
 | `--lint`、`-f/--fmt` | 转发给 oxlint/oxfmt |
 | `-c/--config`、`--completions`、`-m/--man`、`-v`、`-l/--lang` | 配置/帮助/国际化/日志 |
 

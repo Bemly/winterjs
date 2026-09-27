@@ -72,4 +72,4 @@ CommonJS 同样可用（`require`、`module.exports`、`__dirname`）。
 
 * [API 参考](api/) —— 全部模块、稳定性与已知偏离。
 * [CLI 参考](cli/) —— 全 flag 参考（含动作归属）。
-* `sample/<领域>/*.js` —— 46 个可运行样例，每个 API 域一件。
+* `sample/<领域>/*.js` —— 50 个可运行样例，每个 API 域一件。

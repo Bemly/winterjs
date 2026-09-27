@@ -52,4 +52,4 @@ template:
   ul
     li #[a(href='#/zh/api') API 参考] —— 全部模块、稳定性与已知偏离。
     li #[a(href='#/zh/cli') CLI 参考] —— 全 flag 参考（含动作归属）。
-    li #[code sample/&lt;领域&gt;/*.js] —— 46 个可运行样例，每个 API 域一件。
+    li #[code sample/&lt;领域&gt;/*.js] —— 50 个可运行样例，每个 API 域一件。

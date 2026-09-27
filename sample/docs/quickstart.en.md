@@ -73,4 +73,4 @@ CommonJS also works (`require`, `module.exports`, `__dirname`).
 
 * [API reference](api/) — every module, stability, and known deviations.
 * [CLI reference](cli/) — full flag reference with action scope.
-* `sample/<area>/*.js` — 46 runnable examples, one per API area.
+* `sample/<area>/*.js` — 50 runnable examples, one per API area.

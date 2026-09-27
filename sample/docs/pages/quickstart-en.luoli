@@ -52,4 +52,4 @@ template:
   ul
     li #[a(href='#/en/api') API reference] — every module, stability, and known deviations.
     li #[a(href='#/en/cli') CLI reference] — full flag reference with action scope.
-    li #[code sample/&lt;area&gt;/*.js] — 46 runnable examples, one per API area.
+    li #[code sample/&lt;area&gt;/*.js] — 50 runnable examples, one per API area.

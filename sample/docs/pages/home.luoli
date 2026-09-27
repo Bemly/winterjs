@@ -17,4 +17,4 @@ template:
         strong= c.title
         span= c.desc
   h2 Samples
-  p 46 runnable examples live in <code>sample/&lt;area&gt;/</code> — every API area has one, all offline-capable (<code>winterjs --run sample/&lt;area&gt;/&lt;file&gt;</code>). TLS samples use a local self-signed fixture. See the API reference for the per-module sample index.
+  p 50 runnable examples live in <code>sample/&lt;area&gt;/</code> — every API area has one, all offline-capable (<code>winterjs --run sample/&lt;area&gt;/&lt;file&gt;</code>). TLS samples use a local self-signed fixture. See the API reference for the per-module sample index.

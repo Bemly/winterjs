@@ -198,7 +198,7 @@ template:
         a(href='#/zh/cli' data-route='zh/cli') CLI 参考
       .vp-group
         p.vp-group-title Samples
-        a(href='https://github.com/Bemly/winterjs/tree/master/sample' target='_blank' rel='noopener') 46 examples ↗
+        a(href='https://github.com/Bemly/winterjs/tree/master/sample' target='_blank' rel='noopener') 50 examples ↗
     main.vp-main
       #page
         p.vp-loading Loading… / 加载中…

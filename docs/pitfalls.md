@@ -3931,3 +3931,16 @@
 - **复现**：`server.listen(0, "127.0.0.1", cb); server.address().port` → undefined。
 - **铁律**：JS 层多形态参数判别（host vs path vs port）必须引 node `isPipeName` 原文
   判据，禁用"看起来像不像"的宽松启发；改动后须即跑既有黑盒（同域）再继续。
+
+### 4.215 rustls 对 FIN-无-close_notify 严格报错，node/OpenSSL 视为干净 EOF（2026-09-26，P2-tls-b）
+
+- **症状**：对端裸 destroy（RST/FIN 无 TLS close_notify）后，读端泵报
+  `Error [UNKNOWN]: peer closed connection without sending TLS close_notify`，
+  无监听即崩（test-tls-socket-close / -on-empty）。
+- **根因**：tokio-rustls 读端把 bare FIN 映射为 `UnexpectedEof`（io_code 不识 →
+  UNKNOWN）；node/OpenSSL 同场景按 TCP EOF 处理——'end' 无 error。
+- **修法**：`TlsCleanEof` 读端适配器（tls.rs）——`UnexpectedEof` 且消息含
+  `close_notify` → 映射 `Ok(0)`（干净 EOF）；三处 spawn_pumps 读端统一包。
+- **复现**：net server `c.end()` 后客户端继续读 TLS 流。
+- **铁律**：rustls 严格性与 OpenSSL/node 的宽容语义相悖处（close_notify、X.509 v1、
+  hostname 大小写）必须逐一适配层收敛，禁让引擎差异漏到可观察面。

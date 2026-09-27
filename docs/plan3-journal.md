@@ -312,3 +312,19 @@ G1/G2/G3/G9 已收官。）
   `-default-options`/`-streamwrap-buffersize`（收尾 net 不归零）、`-on-empty-socket`
   （late teardown error 误上抛）、`-client-destroy-soon`（'readable' 流量面）、
   `test-async-wrap-tlssocket-asyncreset`（ca 链另案）、`test-tls-wrap-econnreset-*` 已绿。
+
+## 2026-09-26 P2-tls-b 第二轮：accept 重排 + EOF 适配（wrap 簇 19/24）
+
+- `tls_listen`（TCP/UDS）：connection 在 TCP accept 即发（node net.Server 口径），
+  TlsInfo 随握手完成到 conn 侧——'secure'/'secureConnection' 点位后移；握手失败发
+  tlsClientError + conn Close。secureConnect 双发清零（直拨 __ev 只发 'secure'，
+  secureConnect 归 onConnectSecure）。
+- `TlsCleanEof` 读端适配器：rustls 对 FIN 无 close_notify 严格报 UnexpectedEof——
+  node/OpenSSL 同场景是干净 EOF。socket-close/on-empty 的 "connect UNKNOWN" 噪声
+  （无监听即崩）由此根除（4.215）。
+- Server 内部 'connection' 监听（手动升级形 tlsServer.emit('connection', rawSocket)）；
+  TLSSocket._destroySSL / bufferSize wrap 镜像 / Duplex 包裹即时起手。
+- 结果：wrap 簇 19/24。余 4 件定性：`test-tls-streamwrap-buffersize`（阻塞于
+  **stream.Duplex push(null) 不发 'end'**——duplexPair EOF 面断，stream 域另案）、
+  `test-tls-socket-default-options`（收尾 net=5 待建模）、`test-tls-client-destroy-soon`
+  （'readable' 流量面，net 域共性）、`test-async-wrap-tlssocket-asyncreset`（ca 链）。

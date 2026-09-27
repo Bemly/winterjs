@@ -1782,13 +1782,14 @@ test-tls-wrap-econnreset(-localaddress/-pipe/-socket)、test-tls-wrap-event-emmi
 test-warn-tls-wrap-deprecation（DEP0192）、test-https-argument-of-creating、
 test-socket-writes-before-passed-to-tls-socket。
 
-**余 8（分簇记档，下轮按 §0.2 时间盒）**：
-- 挂死收尾簇（net 条目不归零，疑 wrapped destroy 与 pump Close 结算竞速）：
-  `test-tls-socket-close`、`test-tls-socket-destroy`、`test-tls-socket-default-options`、
-  `test-tls-streamwrap-buffersize`。
-- late teardown error 误上抛：`test-tls-on-empty-socket`（error 事件在已收尾 socket 上
-  抵达 JS——node 侧 destroyed 门应拦；疑派发时序）。
-- 'readable' 流量面：`test-tls-client-destroy-soon`（bytesRead 0/2MB——net Socket
+**第二轮后余 4（2026-09-26）**：close/destroy/on-empty 三件经 accept 重排 +
+TlsCleanEof（rustls FIN-无-close_notify → 干净 EOF）+ 手动升级监听 + _destroySSL 转绿。
+- `test-tls-streamwrap-buffersize`：阻塞于 **stream.Duplex push(null) 不发 'end'**
+  （duplexPair EOF 面断，最小复现：`new Duplex({read(){}}).push(null)` 无 'end'）——
+  stream 域另案，非 tls。
+- `test-tls-socket-default-options`：收尾 net=5（fixture 三对连接 + raw TLSSocket 相位），
+  待建模。
+- `test-tls-client-destroy-soon`：'readable' 流量面（bytesRead 0/2MB——net Socket
   paused/readable 模式缺口，net 域共性另案）。
-- ca 链另案：`test-async-wrap-tlssocket-asyncreset`（"unable to verify the first
-  certificate"——async_wrap 钩子面 + 根证书链，非 socket 包裹根因）。
+- `test-async-wrap-tlssocket-asyncreset`：ca 链另案（"unable to verify the first
+  certificate"，非 socket 包裹根因）。

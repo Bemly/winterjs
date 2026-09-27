@@ -328,3 +328,4 @@ G1/G2/G3/G9 已收官。）
   **stream.Duplex push(null) 不发 'end'**——duplexPair EOF 面断，stream 域另案）、
   `test-tls-socket-default-options`（收尾 net=5 待建模）、`test-tls-client-destroy-soon`
   （'readable' 流量面，net 域共性）、`test-async-wrap-tlssocket-asyncreset`（ca 链）。
+- sweep 定量：tls 域（test-tls-，185 件）SAME0 40→**80**；https 域（59 件）18 绿——同构建对照（17≈18）证实 base15 的 31 系口径差异非回归；base16 全域待 P2 收尾统一跑。

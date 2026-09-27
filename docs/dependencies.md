@@ -212,7 +212,10 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 | 容量参数 | `bytesize` | 2.7.0 | 2015-04-19 | 2026-08-02 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 初始化模板 | `askama` | 0.16.1 | 2017-02-15 | 2026-09-04 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 自升级 | `self_update` | 1.3.0 | 2017-07-25 | 2026-09-02 | ✅（TLS 豁免） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
-| CLI 双语 | `rust-i18n` | 4.2.2 | 2021 | 2026 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| CLI 双语 | `rust-i18n` | 4.2.2 | 2021 | 2026 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 启动 banner 图形 | `viuer` | 0.11.0 | 2020-09-27 | 2025-12-09 | ✅（default 特性，禁 sixel） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| 启动 banner SVG 光栅 | `resvg` | 0.48.1 | 2017-12-18 | 2026-08-02 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| 启动 banner 图像解码 | `image` | 0.25.10 | 2014-11-20 | 2026-03-10 | ✅（`avif` 特性→ravif/rav1e 纯 Rust；禁 `avif-native`→dav1d 的 C） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 
 备注：`rustyline`/`self_update` 的移动端格是“功能不需要”（REPL/自升级是桌面功能，
 模块可 cfg 门控），不是编不过。`vergen-gitcl` 开 `build`（调 git CLI），禁 `git`（→`git2` 的 C）。
@@ -619,7 +622,8 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
 3. TLS 豁免已记录（§1/§12）：`reqwest`/`rustls`/`tokio-rustls`/`platform-verifier`/
    `oauth2`/`sentry`/`self_update`/`rcgen` 的 ring 后端不再标 ⚠️ 理由，
    但 §2 的后端选择门控继续有效（禁 aws-lc/cmake、禁 native-tls）。
-4. CLI 启动 banner（2026-09-28 候选，用户问“avif+svg 进 CLI”时立项，**待拍板未引入**）：
+4. CLI 启动 banner（2026-09-28 候选，用户问“avif+svg 进 CLI”时立项；**2026-09-28 用户拍板引入全套**，
+   §4 表格 viuer/resvg/image 三行已填，移动端格按惯例 ⚠️ 待 CI 转正）：
    素材已在库（`assets/logo.avif` 50KB 1261×1247 + `assets/winterjs.svg` 1.6KB，
    `include_bytes!` 零新文件）。候选组合：`viuer 0.11`（default 特性，
    Kitty/iTerm 自検 + 半块回落；sixel 默认关，不碰 `sixel-rs`）+ `crossterm 0.29`
@@ -630,7 +634,9 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
    无 C——引入前必跑 `cargo tree -i` 穷尽审计，沿 §2 口径）；无 nightly。
    代价：rav1e 编译数分钟 + 常驻内存高；resvg 约 40 crate；二进制增数 MB；
    图形解码只走 Kitty/iTerm 终端（其余走零成本 ASCII）。ASCII 垫片与 env 检测手写，
-   不另引轮子。flag 形（`--hide-banner` 全局，kebab 口径）与落盘位置待与引入一并拍板。
+   不另引轮子。flag 定为 `-hide_banner`（用户拍板破例：单横杠 + 下划线；
+   clap 长形记 `--hide_banner`，预处理同时收单横杠形）；每次运行全动作首行走
+   stderr、非 TTY 自动跳过（`--completions/--man` 除外）。
 
 ## 开发工具（不进 Cargo 依赖，2026-09-25）
 

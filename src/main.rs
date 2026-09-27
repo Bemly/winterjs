@@ -61,8 +61,8 @@ fn main() {
             }
         }
         builtins::node::process_::record_node_compat(stripped);
-        // 破例单横杠 banner 开关：摘 token 记静态开关（`--` 之后不动，见 cli::strip_banner_flags）。
-        cli::strip_banner_flags(&filtered)
+        // 破例单横杠 banner 形改写（`--` 之后不动，见 cli::rewrite_banner_flag）。
+        cli::rewrite_banner_flag(&filtered)
     };
     // 自 spawn 深度闸（pitfalls 4.209 防线二）：子进程链经 `WINTERJS_SPAWN_DEPTH` 逐层 +1
     //（child_process 起自身时设置，见 node::child::tag_self_depth），超限即拒，
@@ -77,7 +77,25 @@ fn main() {
     let (cli, matches) = {
         let m = cli::localized_command()
             .try_get_matches_from(compat_argv)
-            .unwrap_or_else(|e| e.exit());
+            .unwrap_or_else(|e| {
+                use clap::error::ErrorKind as EK;
+                if e.kind() == EK::DisplayHelp {
+                    // help 只展单横杠 banner 形：clap 渲染不了单横杠长形，此处把
+                    // token 列的 `--hide_banner` / `--ascii_banner` 换成单横杠
+                    // （描述列补一空格保对齐；样式码包在 token 外侧，不受影响）。
+                    // 双横杠形照常可解析（见 rewrite_banner_flag），补全/man 原样。
+                    let text = e
+                        .render()
+                        .to_string()
+                        .replace("--hide_banner", "-hide_banner ")
+                        .replace("--ascii_banner", "-ascii_banner ");
+                    print!("{text}");
+                    use std::io::Write as _;
+                    let _ = std::io::stdout().flush();
+                    std::process::exit(0);
+                }
+                e.exit()
+            });
         let cli = Cli::from_arg_matches(&m).unwrap_or_else(|e| e.exit());
         (cli, m)
     };
@@ -234,7 +252,7 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
     }
     // 启动 banner：每次运行首行走 stderr（非 TTY 自动跳过；机器输出动作除外）。
     if cli.completions.is_none() && !cli.man {
-        crate::banner::print_startup(cli::banner_hide(), cli::banner_ascii());
+        crate::banner::print_startup(cli.hide_banner, cli.ascii_banner);
     }
     // S1：WinterCG 存储默认库（修饰 flag，归属已由 scope 保证）。
     if cli.run.is_some() || cli.eval.is_some() || cli.test.is_some() || cli.repl || cli.serve.is_some() {

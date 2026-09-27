@@ -65,8 +65,8 @@ permalink: /en/cli/
 | `--storage-path` | `--run/--eval/--test/--repl/--serve` |
 | `--allow-read`/`-W/--allow-write`/`--allow-env`/`--allow-run`/`--allow-ffi`/`-A/--allow-all` | `--run/--eval/--test/--repl/--db` |
 | `-v/--verbose`, `-l/--lang` | global |
-| `-hide_banner` | global (hide the startup banner, like ffmpeg does) |
-| `-ascii_banner` | global (force the ASCII banner even on graphics-capable terminals) |
+| `-hide_banner` / `--hide_banner` | global (hide the startup banner, like ffmpeg does; `--help` shows the single-dash form) |
+| `-ascii_banner` / `--ascii_banner` | global (force the ASCII banner even on graphics-capable terminals) |
 
 Sandbox model: no `--allow-*` → wide open (historic behavior); any `--allow-*`
 → sandbox on, unlisted classes denied with `PermissionError`.

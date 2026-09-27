@@ -48,8 +48,8 @@ One invocation runs **exactly one action**; modifiers only work with their actio
 | `-a/--add`, `-i/--install`, `-R/--remove`, `-U/--uninstall`, `-p/--publish`, `--login`, `-u/--upgrade`, `-I/--init` | Package lifecycle (npm registry) |
 | `-L/--lint`, `-f/--fmt` | Forward to oxlint/oxfmt |
 | `-c/--config`, `-C/--completions`, `-m/--man`, `-v`, `-l/--lang` | Config/help/i18n/logging |
-| `-hide_banner` | Hide the startup banner, like ffmpeg does (stderr, auto-skipped when not a TTY) |
-| `-ascii_banner` | Force the ASCII banner even on graphics-capable terminals |
+| `-hide_banner` / `--hide_banner` | Hide the startup banner, like ffmpeg does (stderr, auto-skipped when not a TTY) |
+| `-ascii_banner` / `--ascii_banner` | Force the ASCII banner even on graphics-capable terminals |
 
 Full reference: [CLI (EN)](https://winterjs.bemly.moe/#/en/cli) / [CLI (中文)](https://winterjs.bemly.moe/#/zh/cli).
 

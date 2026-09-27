@@ -1,14 +1,15 @@
 app:
   about: "Bun-like JS runtime on SpiderMonkey"
-  banner_help: |
-      -hide_banner    Hide the startup banner, like ffmpeg does
-      -ascii_banner   Force the ASCII banner even on graphics-capable terminals
 arg:
   verbose:
     help: "Increase log verbosity (-v: info, -vv: debug, -vvv: trace)"
   lang:
     help: "Language for help text (en/zh; defaults to the system language)"
     value: "LANG"
+  hide_banner:
+    help: "Hide the startup banner, like ffmpeg does (-hide_banner)"
+  ascii_banner:
+    help: "Force the ASCII banner even on graphics-capable terminals (-ascii_banner)"
   run:
     help: "Run a JS file (with a script extension) or a package.json script (bare name), and print its completion value"
     value: "FILE"

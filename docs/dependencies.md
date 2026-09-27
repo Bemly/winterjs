@@ -639,7 +639,7 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
    代价：rav1e 编译数分钟 + 常驻内存高；resvg 约 40 crate；二进制增数 MB；
    图形解码只走 Kitty/iTerm 终端（其余走零成本 ASCII）。ASCII 垫片与 env 检测手写，
    不另引轮子。   flag 定为 `-hide_banner`（用户拍板破例：单横杠 + 下划线；
-   clap 长形记 `--hide_banner`，预处理同时收单横杠形）；每次运行全动作首行走
+   clap 表达不了单横杠多字符形，走预处理静态开关，双横杠形不存在）；每次运行全动作首行走
    stderr、非 TTY 自动跳过（`--completions/--man` 除外）。
    JXL 审计（2026-09-28，用户问“avif→jxl”时补查，四问全过，§4 行已填；
    **2026-09-28 用户拍板引入**，`image` 的 `avif` 特性同步换成 `png`，ravif/rav1e 出树）：

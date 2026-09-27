@@ -34,7 +34,8 @@ export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 * **无裸子命令/无裸位置参数**：`winterjs a.js` 是错的，写 `--run a.js`；
   脚本自己的参数放 `--` 之后：`winterjs --run app.js -- --port 8080`。
 * **修饰 flag 只在对应动作下生效**：`--port` 只配 `--serve`，
-  `--filter` 只配 `--test`，`--schema` 只配 `--config`，
+  `--filter` 只配 `--test`，`--watch` 配 `--test/--run/--serve`，
+  `--schema` 只配 `--config`，
   `--allow-*` 只配 `--run/--eval/--test/--repl`。配错 exit=1。
 
 ## 3. 用 Node API 与 Web 全局
@@ -62,6 +63,7 @@ CommonJS 同样可用（`require`、`module.exports`、`__dirname`）。
 ```bash
 ./target/debug/winterjs --test sample/test-runner/   # 发现并跑测试文件
 ./target/debug/winterjs --test sample/test-runner/ --filter 'basics*'
+./target/debug/winterjs --test sample/test-runner/ --watch   # 变更重跑（Ctrl-C 停止）
 ./target/debug/winterjs --lint -- --help              # 原样转发给 oxlint
 ./target/debug/winterjs --fmt                         # 转发给 oxfmt
 ./target/debug/winterjs --serve sample/serve-hello/public --port 8080 \

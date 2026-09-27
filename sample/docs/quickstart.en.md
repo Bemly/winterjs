@@ -35,7 +35,8 @@ Rules (see [CLI reference](cli/)):
   write `winterjs --run a.js`. Only script arguments go after `--`: 
   `winterjs --run app.js -- --port 8080`.
 * **Modifiers belong to their action**: `--port` only works with `--serve`,
-  `--filter` only with `--test`, `--schema` only with `--config`,
+  `--filter` only with `--test`, `--watch` with `--test/--run/--serve`,
+  `--schema` only with `--config`,
   `--allow-*` only with `--run/--eval/--test/--repl`. Mismatches exit 1.
 
 ## 3. Use Node APIs and Web globals
@@ -63,6 +64,7 @@ CommonJS also works (`require`, `module.exports`, `__dirname`).
 ```bash
 ./target/debug/winterjs --test sample/test-runner/   # discover + run test files
 ./target/debug/winterjs --test sample/test-runner/ --filter 'basics*'
+./target/debug/winterjs --test sample/test-runner/ --watch   # re-run on change (Ctrl-C to stop)
 ./target/debug/winterjs --lint -- --help              # forwarded to oxlint verbatim
 ./target/debug/winterjs --fmt                         # forwarded to oxfmt
 ./target/debug/winterjs --serve sample/serve-hello/public --port 8080 \

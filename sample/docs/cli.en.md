@@ -19,13 +19,16 @@ permalink: /en/cli/
    arguments* for `--run` (`process.argv.slice(2)`), best separated by `--`:
    `winterjs --run app.js -- --port 8080`.
 3. **Modifiers belong to their action.** A modifier given without its action
-   exits 1 with `--X only works with --Y (see --help)`.
+   exits 1 with `--X only works with --Y (see --help)`. Explicitly passing a
+   default still counts as given (`--port 3000` without `--serve` errors).
+   Unknown `--flags` are rejected, never swallowed: trailing positionals
+   belong only to `--run`.
 
 ## Actions
 
 | Flag | Effect |
 |---|---|
-| `-r/--run <FILE\|script>` | Run a JS file (known script extension) or a `package.json` script (bare name); prints the completion value. JS bins in `node_modules/.bin` re-execute through winterjs itself (no node needed) |
+| `-r/--run <FILE\|script>` | Run a JS file (known script extension) or a `package.json` script (bare name); prints the completion value. JS bins in `node_modules/.bin` re-execute through winterjs itself (no node needed). `--watch` re-runs files on change (scripts are not watchable) |
 | `-e/--eval <CODE>` | Evaluate inline JS, print completion value |
 | `-c/--config [--schema]` | Print resolved settings, or its JSON Schema |
 | `--completions <SHELL>` | Print shell completion script (bash/elvish/fish/powershell/zsh) |
@@ -39,10 +42,10 @@ permalink: /en/cli/
 | `-u/--upgrade [--dry-run]` | Self-upgrade (needs `WINTERJS_UPDATE_GITHUB=owner/repo`) |
 | `-I/--init [NAME]` | Scaffold a package; installs deps when `package.json` exists |
 | `--repl` | Interactive REPL |
-| `-t/--test [PATH...]` | Run test files; no paths → auto-discover from cwd |
+| `-t/--test [PATH...]` | Run test files; no paths → auto-discover from cwd. `--watch` re-runs on change |
 | `--lint [ARGS...]` | Forward to `oxlint` (`.bin` or `PATH`), args verbatim |
 | `-f/--fmt [ARGS...]` | Forward to `oxfmt`, args verbatim |
-| `-s/--serve [DIR]` | Serve a directory and/or a JS handler (`export default { fetch }`) over H1/H2/H3; TLS via `--cert/--key` or ACME |
+| `-s/--serve [DIR]` | Serve a directory and/or a JS handler (`export default { fetch }`) over H1/H2/H3; TLS via `--cert/--key` or ACME. `--watch` restarts the server on change |
 
 ## Modifier scope
 

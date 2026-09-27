@@ -18,13 +18,15 @@ permalink: /zh/cli/
    （`process.argv.slice(2)`），建议用 `--` 分隔：
    `winterjs --run app.js -- --port 8080`。
 3. **修饰 flag 只在对应动作下生效**。配错直接 exit=1：
-   `--X only works with --Y (see --help)`。
+   `--X only works with --Y (see --help)`。显式传默认值也算给了（无 `--serve`
+   却传 `--port 3000` 照样报错）；未知 `--flag` 直接拒绝、不吞掉：尾部位置参数
+   只归 `--run`。
 
 ## 动作
 
 | Flag | 效果 |
 |---|---|
-| `-r/--run <文件\|脚本名>` | 跑 JS 文件（已知脚本后缀）或 `package.json` 脚本（裸名）；打印完成值。`.bin` 里的 JS bin 经自身递归执行（零 node） |
+| `-r/--run <文件\|脚本名>` | 跑 JS 文件（已知脚本后缀）或 `package.json` 脚本（裸名）；打印完成值。`.bin` 里的 JS bin 经自身递归执行（零 node）。`--watch` 变更重跑文件（脚本串不可监视） |
 | `-e/--eval <代码>` | 求值内联 JS，打印完成值 |
 | `-c/--config [--schema]` | 打印解析后的配置，或其 JSON Schema |
 | `--completions <SHELL>` | 打印 shell 补全脚本（bash/elvish/fish/powershell/zsh） |
@@ -38,10 +40,10 @@ permalink: /zh/cli/
 | `-u/--upgrade [--dry-run]` | 自升级（需 `WINTERJS_UPDATE_GITHUB=owner/repo`） |
 | `-I/--init [名]` | 建包脚手架；已有 `package.json` 依赖则安装 |
 | `--repl` | 交互式 REPL |
-| `-t/--test [路径...]` | 跑测试文件；无路径则从 cwd 自动发现 |
+| `-t/--test [路径...]` | 跑测试文件；无路径则从 cwd 自动发现。`--watch` 变更重跑 |
 | `--lint [参数...]` | 转发给 `oxlint`（`.bin` 或 `PATH`），参数原样 |
 | `-f/--fmt [参数...]` | 转发给 `oxfmt`，参数原样 |
-| `-s/--serve [目录]` | 以 H1/H2/H3 提供目录/JS handler（`export default { fetch }`）；TLS 走 `--cert/--key` 或 ACME |
+| `-s/--serve [目录]` | 以 H1/H2/H3 提供目录/JS handler（`export default { fetch }`）；TLS 走 `--cert/--key` 或 ACME。`--watch` 变更重启服务 |
 
 ## 修饰归属
 

@@ -1,4 +1,7 @@
-[![winterjs logo](assets/logo.avif)](https://github.com/Bemly/winterjs)
+<p align="left">
+  <a href="https://github.com/Bemly/winterjs"><img src="assets/logo.avif" width="110" height="110" alt="winterjs logo" /></a>&nbsp;&nbsp;
+  <a href="https://github.com/Bemly/winterjs"><img src="assets/winterjs.svg" width="415" alt="WinterJS" /></a>
+</p>
 
 # winterjs ❄️
 

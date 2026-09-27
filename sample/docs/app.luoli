@@ -33,13 +33,35 @@ coffee:
       localStorage.setItem THEME_KEY, theme
     catch err
       theme = theme
-    btn = document.querySelector '.vp-theme-btn'
-    if btn
-      btn.textContent = if theme is 'dark' then '☀️' else '🌙'
+    meta = document.querySelector 'meta[name="theme-color"]'
+    if meta
+      meta.setAttribute 'content', if theme is 'dark' then '#1b1b1f' else '#ffffff'
 
-  toggleTheme = ->
+  # VitePress-style switch: View Transitions circular reveal from the click
+  # point; falls back to plain CSS color transitions. Honors reduced motion.
+  canViewTransition = ->
+    document.startViewTransition and window.matchMedia and window.matchMedia('(prefers-reduced-motion: no-preference)').matches
+
+  toggleTheme = (e) ->
     cur = document.documentElement.getAttribute 'data-theme'
-    if cur is 'dark' then applyTheme 'light' else applyTheme 'dark'
+    next = if cur is 'dark' then 'light' else 'dark'
+    if not canViewTransition()
+      applyTheme next
+      return
+    x = if e and e.clientX? then e.clientX else window.innerWidth - 40
+    y = if e and e.clientY? then e.clientY else 40
+    document.documentElement.classList.add 'vp-no-transition'
+    cleanup = ->
+      document.documentElement.classList.remove 'vp-no-transition'
+    tr = document.startViewTransition ->
+      applyTheme next
+    tr.ready.then(->
+      r = Math.hypot Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y)
+      document.documentElement.animate { clipPath: ['circle(0px at ' + x + 'px ' + y + 'px)', 'circle(' + r + 'px at ' + x + 'px ' + y + 'px)'] }, { duration: 350, easing: 'ease-in', pseudoElement: '::view-transition-new(root)' }
+    ).catch(->
+      cleanup()
+    )
+    tr.finished.then(cleanup, cleanup)
 
   initTheme = ->
     saved = readTheme()
@@ -71,6 +93,13 @@ coffee:
         toggle.textContent = if route.lang is 'en' then '中文' else 'EN'
     document.documentElement.lang = if route.lang is 'zh' then 'zh-CN' else 'en'
 
+  revealPage = ->
+    page = document.getElementById 'page'
+    if page
+      page.classList.remove 'vp-page-enter'
+      page.offsetWidth
+      page.classList.add 'vp-page-enter'
+
   render = ->
     key = routeKey()
     route = ROUTES[key]
@@ -85,6 +114,7 @@ coffee:
       Luolita.renderToDOM text, '#page', { outputName: 'page', debug: false }
     ).then(->
       window.scrollTo 0, 0
+      revealPage()
     ).catch((err) ->
       page.innerHTML = '<p class="vp-error">Failed to load ' + esc(route.file) + ': ' + esc(err.message) + '</p>'
     )
@@ -149,7 +179,10 @@ template:
       a(href='#/en/api' data-route='en/api') API
       a(href='#/en/cli' data-route='en/cli') CLI
       a#lang-toggle(href='#/zh/quickstart') 中文
-      button.vp-theme-btn(type='button' onclick='toggleTheme()' title='light / dark') 🌙
+      button.vp-appearance(type='button' onclick='toggleTheme(event)' title='toggle light / dark')
+        span.vp-appearance-knob
+          span.vp-icon-sun ☀
+          span.vp-icon-moon ☾
       a(href='https://github.com/Bemly/winterjs' target='_blank' rel='noopener') GitHub
   .vp-shell
     aside.vp-sidebar
@@ -249,15 +282,100 @@ style:
       &:hover
         color: var(--vp-c-brand-1)
 
-  .vp-theme-btn
+  // --- VitePress-style appearance switch (sliding knob + icon crossfade) ---
+  .vp-appearance
+    width: 44px
+    height: 22px
+    border-radius: 11px
     border: 1px solid var(--vp-c-border)
     background: var(--vp-c-bg-soft)
-    border-radius: 999px
-    width: 34px
-    height: 34px
+    position: relative
     cursor: pointer
-    font-size: 1rem
+    padding: 0
+    transition: background-color .25s ease, border-color .25s ease
+
+  .vp-appearance-knob
+    position: absolute
+    top: 1px
+    left: 1px
+    width: 18px
+    height: 18px
+    border-radius: 50%
+    background: var(--vp-c-bg)
+    border: 1px solid var(--vp-c-border)
+    transition: transform .25s ease, background-color .25s ease, border-color .25s ease
+    overflow: hidden
+
+  [data-theme='dark'] .vp-appearance-knob
+    transform: translateX(22px)
+
+  .vp-icon-sun, .vp-icon-moon
+    position: absolute
+    inset: 0
+    display: flex
+    align-items: center
+    justify-content: center
+    font-size: 11px
     line-height: 1
+    transition: opacity .25s ease, transform .25s ease
+
+  .vp-icon-sun
+    opacity: 1
+    transform: rotate(0deg) scale(1)
+
+  .vp-icon-moon
+    opacity: 0
+    transform: rotate(-90deg) scale(.5)
+
+  [data-theme='dark'] .vp-icon-sun
+    opacity: 0
+    transform: rotate(90deg) scale(.5)
+
+  [data-theme='dark'] .vp-icon-moon
+    opacity: 1
+    transform: rotate(0deg) scale(1)
+
+  // --- View Transitions circular reveal (theme wipe) ---
+  ::view-transition-old(root), ::view-transition-new(root)
+    animation: none
+    mix-blend-mode: normal
+
+  ::view-transition-old(root)
+    z-index: 1
+
+  ::view-transition-new(root)
+    z-index: 2147483646
+
+  [data-theme='dark']::view-transition-old(root)
+    z-index: 2147483646
+
+  [data-theme='dark']::view-transition-new(root)
+    z-index: 1
+
+  .vp-no-transition, .vp-no-transition *, .vp-no-transition *::before, .vp-no-transition *::after
+    transition: none !important
+
+  // --- smooth color shifts on the fallback path ---
+  body, .vp-nav, .vp-sidebar, .vp-main, #page blockquote, #page code, #page th, #page .card, #page .sample-link, .vp-appearance, .vp-group-title, .vp-footer
+    transition: background-color .25s ease, border-color .25s ease, color .25s ease
+
+  // --- page enter (route / language switch) ---
+  @keyframes vp-page-in
+    0%
+      opacity: 0
+      transform: translateY(8px)
+    100%
+      opacity: 1
+      transform: none
+
+  #page.vp-page-enter
+    animation: vp-page-in .25s ease
+
+  @media (prefers-reduced-motion: reduce)
+    #page.vp-page-enter
+      animation: none
+    .vp-appearance-knob, .vp-icon-sun, .vp-icon-moon
+      transition: none
 
   .vp-shell
     display: flex

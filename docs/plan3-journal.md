@@ -346,3 +346,27 @@ G1/G2/G3/G9 已收官。）
   cac/argv 形状（process.argv=[bin, script]）待查。
 - 未测：vite build、HMR、Vue 客户端 hydration。
 - 工程面：`--run x.js -- --help` 的 `--` 收尾口径（4.61）再次生效。
+
+## 2026-09-27 P2-crypto 首簇：三件同源簇转绿（getCipherInfo/Sign/Verify）
+
+- base15 crypto 红 83 件按 `wjs_err` 聚类：MISSING-EXCEPTION 9 / VALUE 6 / keygen-UNHANDLED
+  散簇 / STREAM-PIPE 4 / INTERNAL-MODULE 3（`--expose-internals` 件，node 侧过、我方
+  `Cannot find module 'internal/crypto/*'`）/ NO-BINDING 2 等。首刀选三件同源簇：
+  `getcipherinfo`（nid 往返 deepStrictEqual 红）+ `classes`（`crypto[clazz]` undefined）
+  + `sign-verify`（`Sign is not a function`）+ 附带 `verify-failure`（class 无 new 直调抛）。
+- 根因二：① `getCipherInfo` 只认名字符串（nid 入参回 undefined）且无视 options；
+  ② `Sign`/`Verify` 用 class 直出（无 new 即抛）且漏进默认导出表（`__api` 无此二门，
+  `typeof crypto.Sign === "undefined"`，`createX instanceof X` 全灭）。
+- 修法（`3c205a2`）：`getCipherInfo` 逐字移植 `internal/crypto/cipher.js`（空串/nid
+  越界→undefined；非串非数/非法 options→`ERR_INVALID_ARG_TYPE`；key/iv 错配→undefined；
+  ccm iv 7–13、ocb iv 1–15 可变窗；ocb 三档仅元数据，create 保持 Unknown）；
+  ccm 192/256 nid 勘误 897/898→899/902（真机）；`Sign/Verify` 改 legacy 函数形
+  （Cipheriv 同款无 new 包装）+ 进 `__api`。黑盒新增 `p2_crypto_cipherinfo_nid_options`
+  + `p2_crypto_sign_verify_nonew`（正常/报错/边界）。
+- 结果：三件转绿 0（`getcipherinfo`/`classes`/`verify-failure`，run1.sh 复验）；
+  crypto 黑盒 29/29、bin 单测 216、冒烟 5/5。`sign-verify` 行 57 止步：
+  真机探针证实 `this[kHandle].sign` 内 native 写 `.library`（C++ 层，JS 无此概念，
+  `grep library internal/crypto/*` 零命中）——结构性不可复刻；且该套件后续要
+  `Sign` 真流式（`s.end()`），与 STREAM-PIPE 4 件同源，记档 P2-stream，不追。
+- 顺手：`strip_banner_flags` 未用导入致 2 警告，去之回基线 1（linker 环境音）。
+- 下一站：crypto MISSING-EXCEPTION 9 件（逐件小校验）或按队列转 repl（64+1）。

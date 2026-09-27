@@ -223,6 +223,8 @@
 - 4.215 rustls 对 FIN-无-close_notify 严格报错，node/OpenSSL 视为干净 EOF（2026-09-26，P2-tls-b）
 - 4.216 watch 过滤复用 test 表：serve 改 html/css 不触发重启（2026-09-27，CLI --watch 轮）
 - 4.217 按调用编译 Regex::new 是启动慢放：CJS 发现 8 正则现场编译烧 1.7s（2026-09-27，F2 轮）
+- 4.218 concat ESM 具名导出≠默认导出：新类只挂具名即用户面 undefined（2026-09-27，P2-crypto）
+- 4.219 原型污染 setter 探针：native 内部写 JS 层 grep 不到即结构性偏离（2026-09-27，P2-crypto）
 
 ## 条目
 
@@ -3980,3 +3982,36 @@
   单测 `nearest_pkg_type_table`（改包文件即验 mtime 失效）；vite dist 哈希断行为一致。
 - 推广铁律：**热路径禁现场 `Regex::new`（一律进程级预编译）；纯 fs 判定函数配 mtime
   目录缓存；投机优化必须有同负载前后计数，无 measurable 差即回退**。
+
+### 4.218 concat ESM 具名导出≠默认导出：新类只挂具名即用户面 undefined（2026-09-27，P2-crypto）
+
+- 症状：`test-crypto-classes.js` 报 `invalid 'instanceof' operand crypto[clazz]`、
+  `test-crypto-sign-verify.js` 报 `Sign is not a function`——`typeof crypto.Sign`
+  实测 `undefined`，而 `Hash/Cipheriv` 正常。
+- 根因：本仓 `node:crypto` 由 9 片 JS `concat!` 成同一模块——`crypto_sign.js` 的
+  `class Sign` 只存在于模块作用域，`export { Sign }` 挂在 `crypto_pqx509.js`，
+  但用户面 `require("crypto")` 拿到的是 `__api` **默认导出表**，该表漏了 `Sign/Verify`
+  两门。具名导出绿了，默认表没跟上。
+- 修法：`__api` 补 `Sign, Verify`（一行）；`Sign/Verify` 同步改 legacy 函数形
+  （无 new 直调，Cipheriv 同款，4.129 坑一再进宫）。附带 `verify-failure` 同根转绿。
+- 复现：`tests/node/crypto/asym.rs::p2_crypto_sign_verify_nonew`；
+  对拍三件 `getcipherinfo`/`classes`/`verify-failure` 转绿 0。
+- 推广铁律：**concat 模块新增可导出的类/函数必须双挂（具名 export + `__api`
+  默认表），落地前用真机 `TEST_CASES` 键表逐项 `typeof` 点名**，缺一即此症。
+
+### 4.219 原型污染 setter 探针：native 内部写 JS 层 grep 不到即结构性偏离（2026-09-27，P2-crypto）
+
+- 症状：`test-crypto-sign-verify.js:57` 在 `Object.prototype` 挂 `library` setter
+  （写即抛），`createSign('sha1').sign(badPem)` 真机抛 `bye, bye, library`，
+  我方抛 `Invalid PKCS#1 key`。
+- 根因：真机探针（setter 内打栈）定位写入点在 `node:internal/crypto/sig:147`
+  即 `this[kHandle].sign(...)` **native 调用内部**；`grep library internal/crypto/*`
+  零命中——写发生在 C++ 层（OpenSSL provider 语境），JS 移植面无此概念，
+  RustCrypto 底座亦无对应物，逐字复刻等于伪造实现细节。
+- 修法：不修，记档（本条）；该套件后续另需 `Sign` 真流式（`s.end()`），与
+  STREAM-PIPE 4 件并案记档 P2-stream。
+- 复现：`node -e 'Object.defineProperty(Object.prototype,"library",{set(){...}}); …'`
+  逐段二分（create/update 不触发、sign 触发）。
+- 推广铁律：**"真机抛 X"先问"写 X 的主体在 JS 还是 native"**——setter 探针打栈，
+  栈底落 native 且 JS 全仓 grep 不到同名写，即判结构性偏离（记档不追），
+  禁在 JS 层硬塞 dummy 写去"骗过"断言。

@@ -135,7 +135,11 @@ listen path 误判 4.214、rustls close_notify 严格性适配 4.215）。**tls 
 （tlsb2）：SAME0 40→80（+40）/185**；https 域 18/59（同构建对照 17≈18，base15 的
 31 系口径差异非回归）。余 4 件定性：streamwrap（阻塞于 stream.Duplex push(null)
 不发 'end'——stream 域另案）、default-options（收尾 net=5 待建模）、destroy-soon
-（'readable' 流量面）、async-wrap（ca 链）。下一站 crypto（30%）| 各按止损线 | 🟡 |
+（'readable' 流量面）、async-wrap（ca 链）。**crypto 首簇** ✅ 2026-09-27：
+`getcipherinfo`/`classes`/`verify-failure` 转绿（getCipherInfo nid/options/ocb 逐字移植
++ ccm nid 勘误 899/902 + Sign/Verify 无 new 形进默认导出；黑盒 2 新增、crypto 域 29/29、
+bin 216、冒烟 5/5；`sign-verify` 余行 57 native `.library` 写 + STREAM-PIPE 4 件记档
+P2-stream）。下一站 repl（64+1）或 crypto MISSING-EXCEPTION 9 | 各按止损线 | 🟡 |
 | P3 | http 冻结收口 | sweep9 真红 12 件中 `dump-req-when-res-ends` 在清单外已清出（0.7）；余 11 件一次性定性：清单内可半天修的修（`matchKnownFields`/`outgoing-finished`/`1.0-keep-alive` 文案），其余记档（`reuse-drained`=process.report、`client-response-domain`=domain 异步、`keep-alive-timeout-race`=Atomics.wait、`set-timeout-server` exit-hold/`catch-uncaughtexception`/`client-parse-error`/`writable-true-after-close`/`client-timeout-on-connect`=挂死型） | ≤1 天 | ⬜ |
 | D1 | ✅ 2026-09-25 已做 | node 运行时旗改**精确名单**（`src/cli_node_flags.rs`，取自 `node --help`；前缀族方案致 4.209 事故后废弃；winterjs 自有同名旗与改执行模式的旗不收，必须带值的旗只认 `--k=v`、值非法 exit 9）+ `internal/options` getOptionValue 读真实旗值 + DEP0005 认 `--pending-deprecation` + shell 串自举保旗交 CLI。实测：位置参数本就已通（旧"~18 件"口径过期）；`buffer-constructor-node-modules` 转绿；余红与 spawn 无关，已拆成 D4/P2 项（错误输出形状、`process.stdin/stdout` 非 Stream、`node:stream/iter` 未实现、vm-sigint stdio null） | — | ✅ |
 | D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |

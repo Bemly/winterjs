@@ -5,9 +5,8 @@
 //!   素材史：`logo.avif` 因纯 Rust 解码无轮子（`image/avif` 只管编码，见 §14
 //!   `viuer` 条）经 `cjxl` 转码为同 artwork 的 `logo.jxl`（`sips` 先验 alpha）。
 //! - 其余终端：纯 ASCII 雪花 + `w i n t e r j s <ver>`（字节恒 <0x80，单测钉住）。
-//! - 关闭：`-hide_banner`（破例单横杠 + 下划线，见 `cli::rewrite_banner_flag`）或
-//!   `--hide_banner`；强制 ASCII：`-ascii_banner` / `--ascii_banner`（图形终端也走
-//!   雪花，`-hide_banner` 优先）；stderr 非 TTY 自动跳过（管道/CI 零噪音）
+//! - 关闭：`-hide_banner`（单横杠破例，非 clap flag，见 `cli::strip_banner_flags`）；
+//!   强制 ASCII：`-ascii_banner`（图形终端也走雪花，hide 优先）；stderr 非 TTY 自动跳过（管道/CI 零噪音）
 //!   `--completions` / `--man` 不打印（纯机器输出）。
 //!   `--man` 不打印（纯机器输出）。
 //!

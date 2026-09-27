@@ -18,35 +18,38 @@ fn banner_hidden_when_piped() {
 
 #[test]
 fn hide_banner_forms() {
-    // 破例单横杠与双横杠形都接受（重写不断言位置，只断言无 banner 且动作照跑）。
-    for flag in ["-hide_banner", "--hide_banner"] {
-        let out = winterjs().args([flag, "--eval", "1"]).output().unwrap();
-        assert!(out.status.success(), "flag: {flag}");
-        assert_eq!(String::from_utf8(out.stdout).unwrap(), "1\n");
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(!stderr.contains("w i n t e r j s"), "flag: {flag}, stderr: {stderr}");
-    }
+    // 单横杠是唯一形：可解析且动作照跑（管道下本就无 banner）。
+    let out = winterjs().args(["-hide_banner", "--eval", "1"]).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "1\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("w i n t e r j s"), "stderr: {stderr}");
+    // 双横杠形不存在：走未知 flag 统一通道（exit 1 + 指路 --help，与 --bogus 同口径）。
+    let out = winterjs().args(["--hide_banner", "--eval", "1"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unexpected argument '--hide_banner'"), "stderr: {stderr}");
 }
 
 #[test]
-fn help_lists_hide_banner() {
+fn help_lists_banner_switches() {
+    // help 只认单横杠形（after_help 双语段）。
     let out = winterjs().arg("--help").output().unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("--hide_banner"), "help: {stdout}");
     assert!(stdout.contains("-hide_banner"), "help: {stdout}");
-    assert!(stdout.contains("--ascii_banner"), "help: {stdout}");
+    assert!(stdout.contains("-ascii_banner"), "help: {stdout}");
+    assert!(!stdout.contains("--hide_banner"), "help: {stdout}");
+    assert!(!stdout.contains("--ascii_banner"), "help: {stdout}");
 }
 
 #[test]
 fn ascii_banner_forms() {
-    // 强制 ASCII 形：管道下与 hide 同样无 banner（TTY 面的 ASCII 由单测覆盖），
-    // 此处断言双形可解析且动作照跑。
-    for flag in ["-ascii_banner", "--ascii_banner"] {
-        let out = winterjs().args([flag, "--eval", "1"]).output().unwrap();
-        assert!(out.status.success(), "flag: {flag}");
-        assert_eq!(String::from_utf8(out.stdout).unwrap(), "1\n");
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(!stderr.contains("w i n t e r j s"), "flag: {flag}, stderr: {stderr}");
-    }
+    // 强制 ASCII 形：单横杠唯一（管道下与 hide 同样无 banner，TTY 面由单测覆盖），
+    // 此处断言可解析且动作照跑。
+    let out = winterjs().args(["-ascii_banner", "--eval", "1"]).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "1\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("w i n t e r j s"), "stderr: {stderr}");
 }

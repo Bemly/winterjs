@@ -1,15 +1,15 @@
 app:
   about: "类 Bun 的 JS 运行时（基于 SpiderMonkey）"
+  banner_help: |
+    单横杠开关（clap 解析前预处理，全动作通用）：
+      -hide_banner    隐藏启动 banner（致敬 ffmpeg 同名选项）
+      -ascii_banner   强制 ASCII banner，图形终端也不加载图片
 arg:
   verbose:
     help: "提高日志详细程度（-v：info，-vv：debug，-vvv：trace）"
   lang:
     help: "帮助文本语言（en 英文 / zh 中文，默认跟随系统语言）"
     value: "语言"
-  hide_banner:
-    help: "隐藏启动 banner（单横杠 -hide_banner 同样接受）"
-  ascii_banner:
-    help: "强制 ASCII banner，图形终端也不加载图片（单横杠 -ascii_banner 同样接受）"
   run:
     help: "运行 JS 文件（带脚本后缀）或 package.json 脚本（裸名），并打印其完成值"
     value: "文件"

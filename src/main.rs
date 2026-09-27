@@ -61,8 +61,8 @@ fn main() {
             }
         }
         builtins::node::process_::record_node_compat(stripped);
-        // 破例单横杠 `-hide_banner` 改写（`--` 之后不动，见 cli::rewrite_banner_flag）。
-        cli::rewrite_banner_flag(&filtered)
+        // 破例单横杠 banner 开关：摘 token 记静态开关（`--` 之后不动，见 cli::strip_banner_flags）。
+        cli::strip_banner_flags(&filtered)
     };
     // 自 spawn 深度闸（pitfalls 4.209 防线二）：子进程链经 `WINTERJS_SPAWN_DEPTH` 逐层 +1
     //（child_process 起自身时设置，见 node::child::tag_self_depth），超限即拒，
@@ -234,7 +234,7 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
     }
     // 启动 banner：每次运行首行走 stderr（非 TTY 自动跳过；机器输出动作除外）。
     if cli.completions.is_none() && !cli.man {
-        crate::banner::print_startup(cli.hide_banner, cli.ascii_banner);
+        crate::banner::print_startup(cli::banner_hide(), cli::banner_ascii());
     }
     // S1：WinterCG 存储默认库（修饰 flag，归属已由 scope 保证）。
     if cli.run.is_some() || cli.eval.is_some() || cli.test.is_some() || cli.repl || cli.serve.is_some() {

@@ -1,15 +1,15 @@
 app:
   about: "Bun-like JS runtime on SpiderMonkey"
+  banner_help: |
+    Single-dash switches (parsed before clap, work with every action):
+      -hide_banner    Hide the startup banner, like ffmpeg does
+      -ascii_banner   Force the ASCII banner even on graphics-capable terminals
 arg:
   verbose:
     help: "Increase log verbosity (-v: info, -vv: debug, -vvv: trace)"
   lang:
     help: "Language for help text (en/zh; defaults to the system language)"
     value: "LANG"
-  hide_banner:
-    help: "Hide the startup banner (single-dash -hide_banner also accepted)"
-  ascii_banner:
-    help: "Force the ASCII banner even on graphics-capable terminals (single-dash -ascii_banner also accepted)"
   run:
     help: "Run a JS file (with a script extension) or a package.json script (bare name), and print its completion value"
     value: "FILE"

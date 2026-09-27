@@ -147,8 +147,9 @@ class TLSSocket extends Socket {
       this.__wrapWire(this.__wrapped, this.__tlsOpts, false);
       this.readable = true; this.writable = true;
       this._handle = this.__makeHandle();
-      if (this.__wrapped.__connected === true) this.__tlsBegin();
-      else this.__wrapped.once("connect", () => this.__tlsBegin());
+      if (this.__wrapped instanceof Socket && this.__wrapped.__connected === true) this.__tlsBegin();
+      else if (this.__wrapped instanceof Socket) this.__wrapped.once("connect", () => this.__tlsBegin());
+      else queueMicrotask(() => this.__tlsBegin());
     }
   }
   connect(...args) {
@@ -236,6 +237,24 @@ class TLSSocket extends Socket {
     this.__id = Number(__wjs_tls_connect(this.__targetHost, this.__targetPort, JSON.stringify(wire), this));
     return this;
   }
+  get bufferSize() {
+    // node：bufferSize = 柄写队列；wrap 模式镜像 wrapped 流的 writableLength，
+    // 销毁（柄空）后 undefined。直拨面维持 net 口径。
+    if (this.__wrapped) {
+      if (this.destroyed || this._handle === null) return undefined;
+      return this.__wrapped.writableLength ?? this.__pendBytes;
+    }
+    return this.__pendBytes;
+  }
+  _destroySSL() {
+    // node TLSSocket._destroySSL：仅弃 TLS 柄（引擎摘表），不连带底层 socket——
+    // 随后用户 destroy() 收尾；直拨面 TLS 与流同体，引擎由 destroy 统一收。
+    if (this.__tlsId !== undefined) {
+      try { __wjs_tls_wrap_kill(this.__tlsId); } catch { /* 已摘即无事 */ }
+      this.__tlsId = undefined;
+    }
+    this._secureEstablished = false;
+  }
   __applyTlsInfo(info) {
     this.__tls = info;
     this.alpnProtocol = info.alpn ?? false;
@@ -250,6 +269,15 @@ class TLSSocket extends Socket {
   __ev(kind, payload) {
     if (kind === "tlsInfo") {
       try { this.__applyTlsInfo(JSON.parse(payload)); } catch { /* 坏载荷即无信息 */ }
+      // 直拨 server 面（tls_listen 派发的 conn TLSSocket）：握手完成点位——
+      // node _finishInit 口径 + server 'secureConnection'。
+      if (this.__tlsServer) {
+        this._secureEstablished = true;
+        this.authorized = false; // node：服务端未 requestCert 即 false（真机对拍）
+        this.emit("secure");
+        const srv = this.__tlsServer;
+        queueMicrotask(() => srv.emit("secureConnection", this));
+      }
       return;
     }
     if (kind === "error" && !this._secureEstablished) {
@@ -274,7 +302,8 @@ class TLSSocket extends Socket {
       this._secureEstablished = true;
       super.__ev(kind, payload);
       this.emit("secure");
-      this.emit("secureConnect");
+      // node：secureConnect 仅由 onConnectSecure 发（tls.connect() 包装层监听
+      // 'secure' 安装）——此处直发会与之双发。
       return;
     }
     return super.__ev(kind, payload);
@@ -306,10 +335,15 @@ class TLSSocket extends Socket {
     this.__wrapWire(mo.socket, mo, true);
     this.readable = true; this.writable = true;
     this._handle = this.__makeHandle();
-    // node _start 口径：connecting 则挂 'connect'，已连则立即起手。
+    // node _start 口径：connecting 则挂 'connect'，已连则立即起手；非 net.Socket 流
+    // （Duplex 包裹，JSStreamSocket 形）无 connect 生命周期——流即活，microtask 起手。
     const w = mo.socket;
-    if (w.__connected === true) this.__tlsBegin();
-    else w.once("connect", () => this.__tlsBegin());
+    if (w instanceof Socket) {
+      if (w.__connected === true) this.__tlsBegin();
+      else w.once("connect", () => this.__tlsBegin());
+    } else {
+      queueMicrotask(() => this.__tlsBegin());
+    }
     return this;
   }
   __wireConfig(mo, wrapped) {
@@ -620,6 +654,23 @@ class Server extends EventEmitter {
     if (this.__pskCallback) __tlsVFunction(this.__pskCallback, "options.pskCallback");
     if (this.__pskIdentityHint) __tlsVString(this.__pskIdentityHint, "options.pskIdentityHint");
     if (typeof cb === "function") this.on("secureConnection", cb);
+    // node tls.Server：内部 'connection' 监听承担手动升级形（net.Server 收链后
+    // `tlsServer.emit('connection', rawSocket)` 直入口径）——裸 net socket 即包
+    // TLSSocket(isServer) 发 secureConnection；Rust 派发面发的已是 TLSSocket
+    // （encrypted=true），经此监听原样放行不重包。
+    this.on("connection", (socket) => {
+      if (!(socket instanceof Socket) || socket.encrypted) return;
+      const s = new TLSSocket(socket, {
+        isServer: true,
+        server: this,
+        ...(this.__tlsOpts ?? {}),
+        ...(this.__SNICallback ? { SNICallback: this.__SNICallback } : {}),
+      });
+      s.server = this;
+      this.__conns = (this.__conns ?? 0) + 1;
+      s.once("close", () => { this.__conns = Math.max(0, (this.__conns ?? 1) - 1); });
+      queueMicrotask(() => this.emit("secureConnection", s));
+    });
     // 派发钩子预绑定（dispatch 以 global 为 this，见 §4.34/§4.36）
     this.__ev = this.__ev.bind(this);
   }
@@ -675,14 +726,14 @@ class Server extends EventEmitter {
         if (o.uds) Socket.prototype.__attachUds.call(s, o);
         else Socket.prototype.__attachConn.call(s, o);
         s.server = this;
+        s.__tlsServer = this;
         s.authorized = false;
-        s._secureEstablished = true;
-        // tlsInfo 事件紧随其后到 conn 自身（Rust 序：Connection → TlsInfo → 泵），
-        // secureConnection 推迟一拍，让握手信息先落位。
-        queueMicrotask(() => {
-          this.emit("connection", s);
-          this.emit("secureConnection", s);
-        });
+        this.__conns = (this.__conns ?? 0) + 1;
+        s.once("close", () => { this.__conns = Math.max(0, (this.__conns ?? 1) - 1); });
+        // node：connection 在 TCP accept 即发（握手未定）；secureConnection 由
+        // conn 侧 tlsInfo 事件点发（握手完成）——纯 net.connect 到 tls server
+        // 的面（streamwrap 系）依赖此序。
+        this.emit("connection", s);
         break;
       }
       case "tlsClientError": {

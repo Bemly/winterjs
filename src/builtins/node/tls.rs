@@ -19,6 +19,30 @@ use crate::builtins::node::net::{spawn_pumps, NetEvent, NetKind};
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
 
+/// TLS 读端 EOF 适配器：rustls 对对端 FIN 无 close_notify 严格报
+/// `UnexpectedEof("peer closed connection without sending TLS close_notify")`——
+/// node/OpenSSL 同场景是干净 EOF（'end' 无 error）。映射回 Ok(0)。
+pub(crate) struct TlsCleanEof<R>(pub R);
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for TlsCleanEof<R> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        match std::pin::Pin::new(&mut this.0).poll_read(cx, buf) {
+            std::task::Poll::Ready(Err(e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof
+                    && e.to_string().contains("close_notify") =>
+            {
+                std::task::Poll::Ready(Ok(())) // buf 未填充 = 干净 EOF
+            }
+            other => other,
+        }
+    }
+}
+
 /// rustls ring provider（fetch/serve 同款；重复安装忽略）。
 pub(crate) fn ensure_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -366,7 +390,7 @@ pub unsafe extern "C" fn tls_connect(
                 let _ = ev_tx.send(NetEvent { id, kind: NetKind::TlsInfo { json: info } });
                 let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local: None } });
                 let (r, w) = tokio::io::split(tls);
-                spawn_pumps(id, r, w, ev_tx, cmd_rx);
+                spawn_pumps(id, TlsCleanEof(r), w, ev_tx, cmd_rx);
             }
         }
     });
@@ -494,9 +518,11 @@ pub unsafe extern "C" fn tls_listen(
                             let Ok((stream, _peer)) = acc else { continue };
                             let acceptor = acceptor.clone();
                             let ev_tx = ev_tx.clone();
+                            let (conn_id, conn_cmd_rx) = state::net_conn_add();
+                            // connection 即发（TCP 同口径）；握手任务随后。
+                            let _ = ev_tx.send(NetEvent { id, kind: NetKind::ConnectionUds { conn_id } });
                             tokio::spawn(async move {
-                                let tls = match acceptor.accept(stream).await {
-                                    Ok(t) => t,
+                                match acceptor.accept(stream).await {
                                     Err(e) => {
                                         let _ = ev_tx.send(NetEvent {
                                             id,
@@ -505,25 +531,25 @@ pub unsafe extern "C" fn tls_listen(
                                                 msg: format!("{e}"),
                                             },
                                         });
-                                        return;
+                                        let _ = ev_tx.send(NetEvent { id: conn_id, kind: NetKind::Close });
                                     }
-                                };
-                                let info = {
-                                    let c = tls.get_ref().1;
-                                    tls_info_json(
-                                        c.protocol_version(),
-                                        c.negotiated_cipher_suite(),
-                                        c.alpn_protocol(),
-                                        c.peer_certificates(),
-                                        c.server_name(),
-                                        None,
-                                    )
-                                };
-                                let (conn_id, conn_cmd_rx) = state::net_conn_add();
-                                let _ = ev_tx.send(NetEvent { id, kind: NetKind::ConnectionUds { conn_id } });
-                                let _ = ev_tx.send(NetEvent { id: conn_id, kind: NetKind::TlsInfo { json: info } });
-                                let (r, w) = tokio::io::split(tls);
-                                spawn_pumps(conn_id, r, w, ev_tx, conn_cmd_rx);
+                                    Ok(tls) => {
+                                        let info = {
+                                            let c = tls.get_ref().1;
+                                            tls_info_json(
+                                                c.protocol_version(),
+                                                c.negotiated_cipher_suite(),
+                                                c.alpn_protocol(),
+                                                c.peer_certificates(),
+                                                c.server_name(),
+                                                None,
+                                            )
+                                        };
+                                        let _ = ev_tx.send(NetEvent { id: conn_id, kind: NetKind::TlsInfo { json: info } });
+                                        let (r, w) = tokio::io::split(tls);
+                                        spawn_pumps(conn_id, TlsCleanEof(r), w, ev_tx, conn_cmd_rx);
+                                    }
+                                }
                             });
                         }
                         _ = cmd_rx.recv() => break,
@@ -564,13 +590,28 @@ pub unsafe extern "C" fn tls_listen(
             tokio::select! {
                 acc = listener.accept() => {
                     let Ok((stream, peer)) = acc else { continue };
-                    // 握手逐连接起任务（修前在 accept 循环里串行 await——慢/坏握手堵住后续连接），
-                    // 失败发 'tlsClientError'（修前静默丢弃）。
+                    // node net.Server 口径：connection 在 TCP accept 即发（握手未定）；
+                    // 握手任务完成后发 TlsInfo（conn 侧 'secure'/'secureConnection' 点），
+                    // 失败发 tlsClientError + conn Close。泵随握手完成起（数据事件必在
+                    // JS attach 之后——Connection 先入队）。
                     let acceptor = acceptor.clone();
                     let ev_tx = ev_tx.clone();
+                    let conn_local = stream
+                        .local_addr()
+                        .unwrap_or_else(|_| "0.0.0.0:0".parse::<std::net::SocketAddr>().expect("literal addr"));
+                    let (conn_id, conn_cmd_rx) = state::net_conn_add();
+                    let _ = ev_tx.send(NetEvent {
+                        id,
+                        kind: NetKind::Connection {
+                            conn_id,
+                            remote_addr: peer.ip().to_string(),
+                            remote_port: peer.port(),
+                            local_addr: conn_local.ip().to_string(),
+                            local_port: conn_local.port(),
+                        },
+                    });
                     tokio::spawn(async move {
-                        let tls = match acceptor.accept(stream).await {
-                            Ok(t) => t,
+                        match acceptor.accept(stream).await {
                             Err(e) => {
                                 let _ = ev_tx.send(NetEvent {
                                     id,
@@ -579,41 +620,25 @@ pub unsafe extern "C" fn tls_listen(
                                         msg: format!("{e}"),
                                     },
                                 });
-                                return;
+                                let _ = ev_tx.send(NetEvent { id: conn_id, kind: NetKind::Close });
                             }
-                        };
-                        let conn_local = tls
-                            .get_ref()
-                            .0
-                            .local_addr()
-                            .unwrap_or_else(|_| "0.0.0.0:0".parse::<std::net::SocketAddr>().expect("literal addr"));
-                            let info = {
-                                let c = tls.get_ref().1;
-                                tls_info_json(
-                                    c.protocol_version(),
-                                    c.negotiated_cipher_suite(),
-                                    c.alpn_protocol(),
-                                    c.peer_certificates(),
-                                    c.server_name(),
-                                    None,
-                                )
-                            };
-                        let (conn_id, conn_cmd_rx) = state::net_conn_add();
-                        // 序：Connection（server 侧 attach socket）→ TlsInfo（此时 conn target 已在）
-                        // → 起泵（数据事件必在 attach 之后，修前泵先起可能先于 attach 到达即丢）。
-                        let _ = ev_tx.send(NetEvent {
-                            id,
-                            kind: NetKind::Connection {
-                                conn_id,
-                                remote_addr: peer.ip().to_string(),
-                                remote_port: peer.port(),
-                                local_addr: conn_local.ip().to_string(),
-                                local_port: conn_local.port(),
-                            },
-                        });
-                        let _ = ev_tx.send(NetEvent { id: conn_id, kind: NetKind::TlsInfo { json: info } });
-                        let (r, w) = tokio::io::split(tls);
-                        spawn_pumps(conn_id, r, w, ev_tx, conn_cmd_rx);
+                            Ok(tls) => {
+                                let info = {
+                                    let c = tls.get_ref().1;
+                                    tls_info_json(
+                                        c.protocol_version(),
+                                        c.negotiated_cipher_suite(),
+                                        c.alpn_protocol(),
+                                        c.peer_certificates(),
+                                        c.server_name(),
+                                        None,
+                                    )
+                                };
+                                let _ = ev_tx.send(NetEvent { id: conn_id, kind: NetKind::TlsInfo { json: info } });
+                                let (r, w) = tokio::io::split(tls);
+                                spawn_pumps(conn_id, TlsCleanEof(r), w, ev_tx, conn_cmd_rx);
+                            }
+                        }
                     });
                 }
                 _ = cmd_rx.recv() => break,

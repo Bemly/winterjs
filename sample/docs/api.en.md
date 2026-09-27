@@ -31,6 +31,7 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 | `CompressionStream/DecompressionStream` | Stable | `sample/web/compression.js` | `gzip` + `deflate` verified round-trips |
 | `crypto.getRandomValues/randomUUID/subtle` | Stable | `sample/web/webcrypto.js` | digest/AES-GCM/HMAC; `importKey` needs full `{name, hash}` params |
 | `Event/EventTarget/CustomEvent/MessageEvent/CloseEvent/AbortController/AbortSignal` | Stable | `sample/web/events.js` | |
+| `DOMException` | Stable | `sample/web/events.js` | named errors (`AbortError` code 20) |
 | `performance` (+`performance.now/timeOrigin`) | Stable | `sample/web/performance.js` | `node:perf_hooks` re-exports + extras |
 | `Buffer` | Stable | `sample/web/buffer.js` | **Deviation**: `isAscii/isUtf8/transcode` absent; pool covers `from(string)` small strings; `allocUnsafe` is zero-filled |
 | `WebSocket` (client) | Experimental | `sample/web/websocket.js` | constructor shape + constants offline; live echo via `--serve` handler, see `sample/serve-hello/` |
@@ -56,7 +57,7 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 | `node:http` | Stable | `sample/http/server-client.js` | keep-alive agent, streaming bodies |
 | `node:http2` | Stable | `sample/http2/h2c.js` | h2c compat server + client session |
 | `node:https` | Stable | `sample/https/get.js` | **Deviation**: `request` listener currently fires twice per request — guard idempotently; sample shows the guard |
-| `node:inspector`, `node:inspector/promises` | Bridge | — | `Session/open/url`; no live debugging wire |
+| `node:inspector`, `node:inspector/promises` | Bridge | `sample/inspector/basics.js` | `open/url/close` lifecycle; no live debugging wire (`url()` stays undefined) |
 | `node:module` | Stable | `sample/module/main.mjs` + `helper.cjs` | `createRequire`, builtin require |
 | `node:net` | Stable | `sample/net/tcp.js` | TCP echo; `isIP/isIPv4/isIPv6` |
 | `node:os` | Stable | `sample/os/info.js` | platform/arch/cpus/mem/user/uptime/net |
@@ -65,9 +66,10 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 | `node:process` | Stable | `sample/process/basics.js` | argv/env/cwd/versions/hrtime/nextTick |
 | `node:punycode` | Stable | `sample/codecs/basics.js` | toASCII/toUnicode/ucs2 |
 | `node:querystring` | Stable | `sample/codecs/basics.js` | parse/stringify/escape |
-| `node:quic` | Experimental | — | `QuicEndpoint/listen/connect`; needs UDP loopback |
+| `node:quic` | Experimental | — | `QuicEndpoint/listen/connect` surface only; loopback session handshake times out in this build (under investigation) |
 | `node:readline` | Stable | `sample/readline/basics.js` | stream-backed, no TTY needed |
-| `node:repl` | Stable | — | `REPLServer/start/Recoverable` over Interface |
+| `node:repl` | Stable | `sample/repl/basics.js` | `start` over memory streams (no TTY); `Recoverable` |
+| `bun:ffi` | Experimental | `sample/bun-ffi/strlen.js` | `dlopen` libc `strlen` (darwin/linux guarded); `ptr`/`CString` address model |
 | `node:sqlite` / `bun:sqlite` | Stable | `sample/sqlite/basics.js` | `DatabaseSync` / `Database`, in-memory verified |
 | `node:stream` (+`/promises`, `/consumers`, `/web`) | Stable | `sample/stream/basics.js`, `sample/stream/extras.js` | Readable/Writable/Transform/pipeline/finished/text/json |
 | `node:string_decoder` | Stable | `sample/codecs/basics.js` | split multibyte decode |
@@ -75,7 +77,7 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 | `node:test` | Stable | `sample/test-runner/basics.js` | describe/it, runs under `--run` and `--test` |
 | `node:timers`, `node:timers/promises` | Stable | `sample/url-timers/basics.js` | callback + promise faces |
 | `node:tls`, `node:_tls_wrap` | Stable | `sample/tls/server-client.js` | fixture cert; `_tls_wrap` emits DEP0192 |
-| `node:trace_events` | Bridge | — | `createTracing/getEnabledCategories` |
+| `node:trace_events` | Bridge | `sample/trace-events/basics.js` | `createTracing/enable/disable/getEnabledCategories` |
 | `node:tty` | Stable | `sample/observe/basics.js` | `isatty/ReadStream/WriteStream` |
 | `node:url` (legacy) | Stable | `sample/url-timers/basics.js` | parse/format/resolve/`Url` class |
 | `node:util`, `node:util/types` | Stable | `sample/util/basics.js` | format/inspect/promisify/isMap/isPromise |

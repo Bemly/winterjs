@@ -1,5 +1,5 @@
-// Events: EventTarget / Event / CustomEvent / MessageEvent / AbortController.
-// 事件：目标、分发、自定义事件与中止信号。
+// Events: EventTarget / Event / CustomEvent / MessageEvent / AbortController / DOMException.
+// 事件：目标、分发、自定义事件、中止信号与 DOM 异常。
 // Run / 运行: winterjs --run sample/web/events.js
 const et = new EventTarget();
 const seen = [];
@@ -18,3 +18,6 @@ console.log('[events] message data:', me.data.hello, 'type:', me.type);
 const errTarget = new EventTarget();
 errTarget.addEventListener('error', (e) => console.log('[events] error event:', e instanceof Event));
 errTarget.dispatchEvent(new Event('error'));
+
+const domErr = new DOMException('aborted here', 'AbortError');
+console.log('[events] domexception:', domErr.name, domErr.code === 20);

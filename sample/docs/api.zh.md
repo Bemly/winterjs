@@ -30,6 +30,7 @@ permalink: /zh/api/
 | `CompressionStream/DecompressionStream` | 稳定 | `sample/web/compression.js` | `gzip` + `deflate` 已验往返 |
 | `crypto.getRandomValues/randomUUID/subtle` | 稳定 | `sample/web/webcrypto.js` | 摘要/AES-GCM/HMAC；`importKey` 需完整 `{name, hash}` 参数 |
 | `Event/EventTarget/CustomEvent/MessageEvent/CloseEvent/AbortController/AbortSignal` | 稳定 | `sample/web/events.js` | |
+| `DOMException` | 稳定 | `sample/web/events.js` | 具名错误（`AbortError` 码 20） |
 | `performance`（含 `now/timeOrigin`） | 稳定 | `sample/web/performance.js` | `node:perf_hooks` 同源再导出 |
 | `Buffer` | 稳定 | `sample/web/buffer.js` | **偏离**：无 `isAscii/isUtf8/transcode`；仅 `from(string)` 小串池化；`allocUnsafe` 恒零填 |
 | `WebSocket`（客户端） | 实验 | `sample/web/websocket.js` | 构造形态与常量离线可验； live 回声走 `--serve`，见 `sample/serve-hello/` |
@@ -55,7 +56,7 @@ permalink: /zh/api/
 | `node:http` | 稳定 | `sample/http/server-client.js` | keep-alive 复用、流式体 |
 | `node:http2` | 稳定 | `sample/http2/h2c.js` | h2c 兼容服务 + 客户端会话 |
 | `node:https` | 稳定 | `sample/https/get.js` | **偏离**：单请求目前派发两次 `request` 监听——请幂等守卫，样例内有写法 |
-| `node:inspector`、`node:inspector/promises` | 桥接 | — | `Session/open/url`；无线上调试协议 |
+| `node:inspector`、`node:inspector/promises` | 桥接 | `sample/inspector/basics.js` | `open/url/close` 生命周期；无线上调试通道（`url()` 恒 undefined） |
 | `node:module` | 稳定 | `sample/module/main.mjs` + `helper.cjs` | `createRequire`、内建 require |
 | `node:net` | 稳定 | `sample/net/tcp.js` | TCP 回声；`isIP/isIPv4/isIPv6` |
 | `node:os` | 稳定 | `sample/os/info.js` | 平台/架构/CPU/内存/用户/时长/网卡 |
@@ -64,9 +65,10 @@ permalink: /zh/api/
 | `node:process` | 稳定 | `sample/process/basics.js` | 参数/环境/版本/高精度时间/nextTick |
 | `node:punycode` | 稳定 | `sample/codecs/basics.js` | toASCII/toUnicode/ucs2 |
 | `node:querystring` | 稳定 | `sample/codecs/basics.js` | parse/stringify/escape |
-| `node:quic` | 实验 | — | `QuicEndpoint/listen/connect`；需 UDP 回环 |
+| `node:quic` | 实验 | — | 仅 `QuicEndpoint/listen/connect` 形态面；本构建回环握手超时（另案追查） |
 | `node:readline` | 稳定 | `sample/readline/basics.js` | 内存流驱动，无需 TTY |
-| `node:repl` | 稳定 | — | `REPLServer/start/Recoverable` |
+| `node:repl` | 稳定 | `sample/repl/basics.js` | 内存流驱动（免 TTY）；`Recoverable` |
+| `bun:ffi` | 实验 | `sample/bun-ffi/strlen.js` | `dlopen` 调 libc `strlen`（darwin/linux 守卫）；`ptr`/`CString` 地址模型 |
 | `node:sqlite` / `bun:sqlite` | 稳定 | `sample/sqlite/basics.js` | `DatabaseSync` / `Database`，内存库已验 |
 | `node:stream`（+`/promises`、`/consumers`、`/web`） | 稳定 | `sample/stream/basics.js`、`extras.js` | 四类流/pipeline/finished/text/json |
 | `node:string_decoder` | 稳定 | `sample/codecs/basics.js` | 跨包多字节解码 |
@@ -74,7 +76,7 @@ permalink: /zh/api/
 | `node:test` | 稳定 | `sample/test-runner/basics.js` | describe/it，`--run` 与 `--test` 下都跑 |
 | `node:timers`、`node:timers/promises` | 稳定 | `sample/url-timers/basics.js` | 回调 + Promise 双形态 |
 | `node:tls`、`node:_tls_wrap` | 稳定 | `sample/tls/server-client.js` | 样例自签证书；`_tls_wrap` 报 DEP0192 |
-| `node:trace_events` | 桥接 | — | `createTracing/getEnabledCategories` |
+| `node:trace_events` | 桥接 | `sample/trace-events/basics.js` | `createTracing/enable/disable/getEnabledCategories` |
 | `node:tty` | 稳定 | `sample/observe/basics.js` | `isatty/ReadStream/WriteStream` |
 | `node:url`（legacy） | 稳定 | `sample/url-timers/basics.js` | parse/format/resolve/`Url` 类 |
 | `node:util`、`node:util/types` | 稳定 | `sample/util/basics.js` | format/inspect/promisify/isMap/isPromise |

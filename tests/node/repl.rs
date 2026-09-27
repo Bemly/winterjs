@@ -243,9 +243,13 @@ const ci = repl.cliComplete("globalThis.arraybuf");
 console.log("ci", ci[0].includes("globalThis.ArrayBuffer"));
 const call = repl.cliComplete("globalThis.Array().");
 console.log("call", call[0].length === 0);
+const e = repl.cliComplete("console.");
+console.log("dot-empty", e[0].includes("console.log") && e[0].includes("console.error") && e[1] === "console.");
+const g = repl.cliComplete("global.");
+console.log("global-dot", g[0].length > 0 && g[0].every((s) => s.startsWith("global.")) && g[1] === "global.");
 "#,
     );
-    for line in ["bare true", "member true", "ci true", "call true"] {
+    for line in ["bare true", "member true", "ci true", "call true", "dot-empty true", "global-dot true"] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }
     dir.close().unwrap();

@@ -516,10 +516,15 @@ impl reedline::Completer for JsCompleter {
             }
         }
         let prefix = &upto[start..end];
+        let member_form = start > 0 && upto.as_bytes()[start - 1] == b'.';
         if prefix.is_empty() {
+            // `console.` 点后空前缀：动态全键枚举（R3 filter="" 口径）。
+            if member_form {
+                return reedline::CompletionResult::fresh(self.dynamic_suggestions(upto));
+            }
+            // 空 bare 前缀：空集（R3 `bm === null` 同形）。
             return reedline::CompletionResult::fresh(Vec::new());
         }
-        let member_form = start > 0 && upto.as_bytes()[start - 1] == b'.';
         // 动态优先：成员链逐步求值 / bare 上下文键（与 node:repl 模块同源）。
         let mut items = self.dynamic_suggestions(upto);
         // 静态表合并：仅 bare 面（静态表无成员形）；同 value 动态在前不重。

@@ -453,3 +453,7 @@ G1/G2/G3/G9 已收官。）
 - 验证：黑盒 `p2_repl_cli_complete_bridge`（bare 含 global/成员链/大小写
   不敏感/调用形拒答）；repl 域 32/32；pty 端到端 `gl`+Tab 出 `global`、
   `console.lo`+Tab 出 `console.log`；冒烟 5/5；strict 见 plan3 §0.4。
+- 补遗（同轮）：`console.`/`global.` 点后**空前缀** Tab 仍 NO RECORDS——Rust 侧
+  `prefix.is_empty()` 提前返回挡在动态请求前（R3 JS 侧 filter="" 全键枚举本就
+  支持）；修为成员形空前缀直发动态，黑盒补 `dot-empty`/`global-dot` 两断言，
+  pty 复验 `console.`→log/assert、`global.`→全键。

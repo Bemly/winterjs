@@ -35,13 +35,9 @@ pub struct Cli {
         value_parser = clap::builder::PossibleValuesParser::new(["en", "zh"]))]
     pub lang: Option<String>,
 
-    /// Hide the startup banner, like ffmpeg does (-hide_banner); --hide_banner also accepted
-    #[arg(long = "hide_banner")]
-    pub hide_banner: bool,
-
-    /// Force the ASCII banner even on graphics-capable terminals (-ascii_banner); --ascii_banner also accepted
-    #[arg(long = "ascii_banner")]
-    pub ascii_banner: bool,
+    // 注：`-hide_banner` / `-ascii_banner` 不是 clap flag（单横杠多字符形 clap
+    // 表达不了），走下方的预处理静态开关（`strip_banner_flags` + `banner_hide/ascii`），
+    // help 文案见 `localized_command` 的 after_help（`app.banner_help`）。
 
     // ── 动作（恰好其一） ──────────────────────────────────────────────
     /// Run a JS file (with a script extension) or a package.json script (bare name), and print its completion value
@@ -333,6 +329,8 @@ pub fn localized_command() -> clap::Command {
         Some(orig) => cmd.about(tr_or("app.about", &orig)),
         None => cmd,
     };
+    // 单横杠 banner 开关：clap 表达不了，进不了上表，落 after_help（双语）。
+    let cmd = cmd.after_help(tr_or("app.banner_help", ""));
     with_localized_args(cmd)
 }
 
@@ -447,13 +445,26 @@ const COMPAT_ACTION_FLAGS: &[&str] = &[
     "-I", "--init", "--repl", "-t", "--test", "-C", "--completions", "-L", "--lint", "-f", "--fmt", "-s", "--serve", "-b", "--db",
 ];
 
-/// 单横杠 banner 形重写（2026-09-28 用户拍板：help 只展单横杠，向 ffmpeg 致敬）：
-/// clap 长形只认 `--` 开头，`-hide_banner` 会被当短旗簇（`-h` 即 help）误解析；
-/// 此处把 `--` 之前的准确 token 改写成 `--` 双横杠形再交 clap，`--` 之后
-/// （脚本参数）不动；help 展示层的单横杠化另见 `main.rs` 的 DisplayHelp 后处理。
-/// 纯函数，单测覆盖。
-pub fn rewrite_banner_flag(raw: &[std::ffi::OsString]) -> Vec<std::ffi::OsString> {
-    use std::ffi::OsString;
+/// 单横杠 banner 开关（2026-09-28 用户拍板：help 只认单横杠形，向 ffmpeg 致敬）。
+/// clap 表达不了单横杠多字符形（`-hide_banner` 会被当短旗簇误解析），故不进 clap：
+/// 预处理摘 token（`--` 之后不动）记进程级静态开关，`dispatch` 经 `banner_hide/ascii`
+/// 读取。`--hide_banner` 双横杠形不存在（clap 报 unexpected argument，exit 2）。
+static BANNER_HIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static BANNER_ASCII: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 预处理是否摘掉了 `-hide_banner`。
+pub fn banner_hide() -> bool {
+    BANNER_HIDE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// 预处理是否摘掉了 `-ascii_banner`。
+pub fn banner_ascii() -> bool {
+    BANNER_ASCII.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// 摘除 `--` 之前的 `-hide_banner` / `-ascii_banner` 并记开关。纯函数 + 副作用
+/// （静态开关），单测覆盖；单测内先调 `reset_banner_for_test` 复位（§4.41）。
+pub fn strip_banner_flags(raw: &[std::ffi::OsString]) -> Vec<std::ffi::OsString> {
     let mut out = Vec::with_capacity(raw.len());
     let mut script_args = false;
     for a in raw {
@@ -468,16 +479,23 @@ pub fn rewrite_banner_flag(raw: &[std::ffi::OsString]) -> Vec<std::ffi::OsString
             continue;
         }
         if s == "-hide_banner" {
-            out.push(OsString::from("--hide_banner"));
+            BANNER_HIDE.store(true, std::sync::atomic::Ordering::SeqCst);
             continue;
         }
         if s == "-ascii_banner" {
-            out.push(OsString::from("--ascii_banner"));
+            BANNER_ASCII.store(true, std::sync::atomic::Ordering::SeqCst);
             continue;
         }
         out.push(a.clone());
     }
     out
+}
+
+/// 单测复位 banner 静态开关（读全局态前先复位，§4.41）。
+#[cfg(test)]
+pub(crate) fn reset_banner_for_test() {
+    BANNER_HIDE.store(false, std::sync::atomic::Ordering::SeqCst);
+    BANNER_ASCII.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// 剥除 node 兼容旗；返回（过滤后 argv，含 bin；被剥旗原文，execArgv 保真）。
@@ -637,24 +655,44 @@ mod node_compat_tests {
     }
 
     #[test]
-    fn rewrite_single_dash_banner() {
-        // 破例形改写成 clap 可解析的双横杠形；`--` 之后（脚本参数）不动。
+    fn strip_single_dash_banner() {
+        // 破例形：摘 token 记开关（hide/ascii 各自独立）。
+        reset_banner_for_test();
         assert_eq!(
-            strs(&rewrite_banner_flag(&argv(&["w", "-hide_banner", "--eval", "1"]))),
-            ["w", "--hide_banner", "--eval", "1"]
+            strs(&strip_banner_flags(&argv(&["w", "-hide_banner", "--eval", "1"]))),
+            ["w", "--eval", "1"]
         );
+        assert!(banner_hide());
+        assert!(!banner_ascii());
+        reset_banner_for_test();
         assert_eq!(
-            strs(&rewrite_banner_flag(&argv(&["w", "-ascii_banner", "--eval", "1"]))),
-            ["w", "--ascii_banner", "--eval", "1"]
+            strs(&strip_banner_flags(&argv(&["w", "-ascii_banner", "--eval", "1"]))),
+            ["w", "--eval", "1"]
         );
+        assert!(!banner_hide());
+        assert!(banner_ascii());
+        // 双横杠形不存在：原样透传（交 clap 报 unexpected argument）。
+        reset_banner_for_test();
         assert_eq!(
-            strs(&rewrite_banner_flag(&argv(&["w", "--run", "a.js", "--", "-hide_banner", "-ascii_banner"]))),
+            strs(&strip_banner_flags(&argv(&["w", "--hide_banner"]))),
+            ["w", "--hide_banner"]
+        );
+        assert!(!banner_hide());
+        // `--` 之后（脚本参数）不动。
+        reset_banner_for_test();
+        assert_eq!(
+            strs(&strip_banner_flags(&argv(&["w", "--run", "a.js", "--", "-hide_banner", "-ascii_banner"]))),
             ["w", "--run", "a.js", "--", "-hide_banner", "-ascii_banner"]
         );
+        assert!(!banner_hide());
+        assert!(!banner_ascii());
         // 近似串不动（只认准确 token）。
+        reset_banner_for_test();
         assert_eq!(
-            strs(&rewrite_banner_flag(&argv(&["w", "-hide_banne", "--hide-banner"]))),
+            strs(&strip_banner_flags(&argv(&["w", "-hide_banne", "--hide-banner"]))),
             ["w", "-hide_banne", "--hide-banner"]
         );
+        assert!(!banner_hide());
+        reset_banner_for_test();
     }
 }

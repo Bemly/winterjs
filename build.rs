@@ -5,10 +5,6 @@
 use vergen_gitcl::{Build, Emitter, Gitcl};
 
 fn main() {
-    // locales/*.yml 经 rust-i18n 编译期打进二进制：显式声明，否则纯 yml 改动
-    // 不触发重编（2026-09-28 实测：help 文案改完二进制仍是旧串）。
-    println!("cargo:rerun-if-changed=locales/en.yml");
-    println!("cargo:rerun-if-changed=locales/zh.yml");
     let result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let build = Build::all_build();
         let gitcl = Gitcl::all_git();

@@ -48,8 +48,8 @@ cargo build
 | `-a/--add`、`-i/--install`、`-R/--remove`、`-U/--uninstall`、`-p/--publish`、`--login`、`-u/--upgrade`、`-I/--init` | 包生命周期（npm registry） |
 | `-L/--lint`、`-f/--fmt` | 转发给 oxlint/oxfmt |
 | `-c/--config`、`-C/--completions`、`-m/--man`、`-v`、`-l/--lang` | 配置/帮助/国际化/日志 |
-| `-hide_banner` / `--hide_banner` | 隐藏启动 banner，致敬 ffmpeg 同名选项（走 stderr，非 TTY 自动跳过） |
-| `-ascii_banner` / `--ascii_banner` | 强制 ASCII banner，图形终端也不加载图片 |
+| `-hide_banner` | 隐藏启动 banner，致敬 ffmpeg 同名选项（走 stderr，非 TTY 自动跳过） |
+| `-ascii_banner` | 强制 ASCII banner，图形终端也不加载图片 |
 
 完整参考：[CLI (EN)](https://winterjs.bemly.moe/#/en/cli) / [CLI (中文)](https://winterjs.bemly.moe/#/zh/cli)。
 

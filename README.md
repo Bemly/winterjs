@@ -1,5 +1,5 @@
 <p align="left">
-  <a href="https://github.com/Bemly/winterjs"><img src="assets/logo.avif" width="110" height="110" alt="winterjs logo" /></a>&nbsp;&nbsp;
+  <a href="https://github.com/Bemly/winterjs"><img src="assets/logo.jxl" width="110" height="110" alt="winterjs logo" /></a>&nbsp;&nbsp;
   <a href="https://github.com/Bemly/winterjs"><img src="assets/winterjs.svg" width="415" alt="WinterJS" /></a>
 </p>
 
@@ -48,6 +48,7 @@ One invocation runs **exactly one action**; modifiers only work with their actio
 | `-a/--add`, `-i/--install`, `-R/--remove`, `-U/--uninstall`, `-p/--publish`, `--login`, `-u/--upgrade`, `-I/--init` | Package lifecycle (npm registry) |
 | `-L/--lint`, `-f/--fmt` | Forward to oxlint/oxfmt |
 | `-c/--config`, `-C/--completions`, `-m/--man`, `-v`, `-l/--lang` | Config/help/i18n/logging |
+| `-hide_banner` / `--hide_banner` | Hide the startup banner (stderr, auto-skipped when not a TTY) |
 
 Full reference: [CLI (EN)](https://winterjs.bemly.moe/#/en/cli) / [CLI (中文)](https://winterjs.bemly.moe/#/zh/cli).
 
@@ -100,4 +101,4 @@ Working conventions: [AGENTS.md](./AGENTS.md) · progress: [`docs/plan3.md`](./d
 
 ## License
 
-MPL-2.0. Vendored third-party JS keeps its MIT headers.
+NPL-1.1 (see [LICENSE](./LICENSE)). Vendored third-party JS keeps its MIT headers.

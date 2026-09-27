@@ -1,5 +1,5 @@
 <p align="left">
-  <a href="https://github.com/Bemly/winterjs"><img src="assets/logo.avif" width="110" height="110" alt="winterjs 图标" /></a>&nbsp;&nbsp;
+  <a href="https://github.com/Bemly/winterjs"><img src="assets/logo.jxl" width="110" height="110" alt="winterjs 图标" /></a>&nbsp;&nbsp;
   <a href="https://github.com/Bemly/winterjs"><img src="assets/winterjs.svg" width="415" alt="WinterJS" /></a>
 </p>
 
@@ -48,6 +48,7 @@ cargo build
 | `-a/--add`、`-i/--install`、`-R/--remove`、`-U/--uninstall`、`-p/--publish`、`--login`、`-u/--upgrade`、`-I/--init` | 包生命周期（npm registry） |
 | `-L/--lint`、`-f/--fmt` | 转发给 oxlint/oxfmt |
 | `-c/--config`、`-C/--completions`、`-m/--man`、`-v`、`-l/--lang` | 配置/帮助/国际化/日志 |
+| `-hide_banner` / `--hide_banner` | 隐藏启动 banner（走 stderr，非 TTY 自动跳过） |
 
 完整参考：[CLI (EN)](https://winterjs.bemly.moe/#/en/cli) / [CLI (中文)](https://winterjs.bemly.moe/#/zh/cli)。
 
@@ -97,4 +98,4 @@ bash scripts/check-lines.sh        # 全部 .rs / 内嵌 JS ≤ 1000 行
 
 ## 许可
 
-MPL-2.0。vendored 第三方 JS 保留其 MIT 头。
+NPL-1.1（见 [LICENSE](./LICENSE)）。vendored 第三方 JS 保留其 MIT 头。

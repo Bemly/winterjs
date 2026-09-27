@@ -3,7 +3,7 @@ name = "winterjs"
 version = "26.9.27"   # CalVer YY.MM.发版日（26.9.27 = 2026-09-27），见 AGENTS.md §1
 edition = "2024"
 description = "A Bun-like JS runtime on Mozilla SpiderMonkey (via servo/mozjs)"
-license = "MPL-2.0"
+license = "NPL-1.1"
 
 # rustc 的 check-cfg 尚不认识 ohos（src/alloc.rs 移动端门控用）与 tokio_unstable
 #（tokio-console 实验埋点门控，经 RUSTFLAGS 传入）：此处声明为预期值，
@@ -116,13 +116,17 @@ self_update = { version = "1", default-features = false, features = ["reqwest", 
 # binary 新增仅 arc-swap（已在树内）/base62/siphasher/triomphe/smallvec（已在树内），全纯 Rust（见 §4 备注）
 rust-i18n = "4"
 # 启动 banner（2026-09-28 用户拍板，见 docs/dependencies.md §16-4）：
-# image 直引只加 `avif`（→ravif/rav1e 纯 Rust；`avif-native`→dav1d 的 C 禁用，见 §2）；
+# image 直引只加 `png`（Kitty/iTerm 发射载荷编码；`avif` 纯 Rust 只管编码不管解码、
+# `avif-native`→dav1d 的 C 禁用，见 §2 与 §14 `viuer` 条）；
+# `jxl-oxide` 默认特性 + `image` 集成（logo.jxl→DynamicImage 直出，含 alpha；
+# 只加 bytemuck 纯轮子；禁 `lcms2` 的 C）；
 # resvg 默认特性（SVG→像素，tiny-skia 系纯 Rust；类型经 resvg 重导出，不另引）。
 # 终端图形检测与 Kitty/iTerm 转义发射手写（viuer 的检测读 stdin/写 stdout、
 # 打印走 stdout，不适配启动 banner 的 stderr 约束，见 §14）。
 # 解码统一走显式 format，不依赖 default-formats。
 resvg = "0.48"
-image = { version = "0.25", features = ["avif"] }
+jxl-oxide = { version = "0.12", features = ["image"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # ── §5 loader + 转译 + 编译期注册 + 内嵌资源 ───────────────────────────
 oxc_resolver = "11"

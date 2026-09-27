@@ -130,3 +130,34 @@ fn repl_session_with_args(input: &str, args: &[&str]) -> (String, String, i32) {
         out.status.code().unwrap_or(-1),
     )
 }
+
+#[test]
+fn repl_tla_await_resolves() {
+    // R6：REPL 顶层 await（试错包装 + 挂起状态机；node defaultEval 同构语义）。
+    let (stdout, _, code) =
+        repl_session("await 41\nawait new Promise(r=>setTimeout(()=>r(\"tick\"),10))\n2+2\n.exit\n");
+    assert_eq!(code, 0);
+    assert!(stdout.lines().any(|l| l == "41"), "stdout:\n{stdout}");
+    assert!(stdout.lines().any(|l| l == "tick"), "stdout:\n{stdout}");
+    assert!(stdout.lines().any(|l| l == "4"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn repl_tla_await_rejects() {
+    // 报错件：rejected 走 uncaught 渲染（D4 形），会话继续。
+    let (stdout, stderr, code) =
+        repl_session("await Promise.reject(new Error(\"boom\"))\n2+2\n.exit\n");
+    assert_eq!(code, 0);
+    assert!(stderr.contains("Error: boom"), "stderr:\n{stderr}");
+    assert!(stdout.lines().any(|l| l == "4"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn repl_tla_in_async_fn_untouched() {
+    // 边界：await 在 async 函数内——原码编译即过，不进包装路径。
+    let (stdout, _, code) = repl_session(
+        "const f = async () => await 7\nf().then(v => console.log(v))\n.exit\n",
+    );
+    assert_eq!(code, 0);
+    assert!(stdout.contains("7\n"), "stdout:\n{stdout}");
+}

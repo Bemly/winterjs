@@ -473,3 +473,13 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 - CLI 会话形态向"REPLServer 默认实例"靠拢（node 原文形态）；
 - node:repl 的 REPLServer 求值/历史经底座桥复用；
 - 全局 console 格式化统一（骑 util.format）。
+
+### §7 进度（2026-09-28 R6）
+
+- **纠正① repl 求值面**：✅ TLA 落地（试错包装 + state Heap 挂起槽 +
+  EOF drain + 非 TTY 哨兵背压；黑盒/管道/pty 全对）。求值面与 node
+  defaultEval 同构。缺口：声明提升（acorn）待拍板引包另案。
+- **纠正③ readline 补全语义**：✅ R5 已位置纠正（核心模块注册内部面，
+  桥/签名表住 prelude/repl_complete）。
+- **纠正② console 格式化**：⏳ 待单轮——全局 console 骑 util.format 牵动
+  全量对拍基线（console 域 sweep 配合），单独开轮。

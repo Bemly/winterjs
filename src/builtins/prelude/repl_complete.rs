@@ -36,6 +36,38 @@ globalThis.__wjs_cli_complete = (line) => {
   return [withSig, completeOn];
 };
 
+// ---- TLA 包装桥（R6；node internal/repl/await.js 的线性近似）----
+// 末条顶层语句若非声明/return，改写为 `return { value: (expr) };`（node 原文
+// 同款：包对象防 async 返回时对 Promise 值二次解包）。声明提升（`let a =
+// await x` 跨行存活）为 node acorn AST 重写语义，另案拍板引包后逐字移植。
+globalThis.__wjs_repl_tla_wrap = (src) => {
+  src = String(src);
+  // 末条顶层语句起点（`;` 边界，括号/字符串/模板/注释感知）。
+  let depth = 0, start = 0, i = 0, inStr = null;
+  while (i < src.length) {
+    const c = src[i];
+    if (inStr) {
+      if (c === '\\') i += 2;
+      else { if (c === inStr) inStr = null; i += 1; }
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') { inStr = c; i += 1; continue; }
+    if (c === '/' && src[i + 1] === '/') { while (i < src.length && src[i] !== '\n') i += 1; continue; }
+    if (c === '{' || c === '(' || c === '[') { depth += 1; i += 1; continue; }
+    if (c === '}' || c === ')' || c === ']') { depth -= 1; i += 1; continue; }
+    if (c === ';' && depth === 0) { start = i + 1; i += 1; continue; }
+    i += 1;
+  }
+  const stmt = src.slice(start).trim();
+  if (stmt === '') return null;
+  // 声明/return 结尾不改写（返回 undefined 完成值；提升语义另案）。
+  if (/^(?:let|const|var|function|class|return)\b/.test(stmt)) return null;
+  const body = stmt.replace(/;\s*$/, '');
+  return `(async () => { ${src.slice(0, start)} return { value: (${body}) }; })()`
+    + '.then(v => ({ __wjs_ok: 1, v: v && typeof v === "object" && "value" in v ? v.value : v }),'
+    + ' e => ({ __wjs_ok: 0, e }))';
+};
+
 // ---- 成员签名表（SM native toString 无形参名，常用面手写）----
 // null 原型（查表裸键不得沿原型链撞 Object.prototype 的同名方法——
 // propertyIsEnumerable/toString 等 hits 自身，实测踩过）。

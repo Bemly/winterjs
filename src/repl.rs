@@ -610,11 +610,17 @@ pub fn readline_loop(
     comp_resp_rx: tokio::sync::mpsc::UnboundedReceiver<CompResp>,
 ) {
     if !std::io::stdin().is_terminal() {
-        // 非 TTY：逐行直读（仍无 ANSI；`.exit` 等由主循环分类）。
+        // 非 TTY：逐行直读（仍无 ANSI；`.exit` 等由主循环分类）。同 TTY 哨兵
+        // 协议背压——行按序处理，TLA 挂起期间管道自然阻塞（node 语义：await
+        // 期间不收新输入）。
         let stdin = std::io::stdin();
         for line in stdin.lines() {
             let Ok(line) = line else { break };
             if tx.send(Some(line)).is_err() {
+                break;
+            }
+            while flush_rx.try_recv().is_ok() {}
+            if flush_rx.blocking_recv().is_none() {
                 break;
             }
         }

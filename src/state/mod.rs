@@ -402,11 +402,11 @@ pub struct RootedState {
     pub bc_pending: Vec<(u64, String)>,
     pub fetch_callbacks: Vec<FetchCallback>, // 未决 fetch 的 resolve/reject（按 id 取出）
     pub fetch_streams: Vec<FetchStreamState>, // 流式 body（chunk 泵；cancel/终态时移除）
-    pub make_response_fn: Heap<JSVal>, // prelude 的 __wjs_make_response
-    pub make_fetch_error_fn: Heap<JSVal>, // prelude 的 __wjs_make_fetch_error
+    pub make_response_fn: Heap<JSVal>, pub make_fetch_error_fn: Heap<JSVal>, // fetch 双件
     pub ws_emit_fn: Heap<JSVal>, // prelude 的 __wjs_ws_emit
     pub uncaught_fn: Heap<JSVal>, // prelude 的 __wjs_uncaught（timer 回调未捕获异常分发）
     pub uncaught_count_fn: Heap<JSVal>, // prelude 的 __wjs_uncaught_count（监听器探针）
+    pub repl_tla: Heap<JSVal>, // REPL 顶层 await 挂起 promise（R6；跨轮/跨 GC 由 trace 保活）
     pub next_ticks: Vec<NextTickEntry>, // process.nextTick 原生队列（pump RunJobs 前后各收割一轮）
     pub vm_last_error: Heap<JSVal>, // vm_run 暂存的原始异常对象（JS 侧 __vmCall 取走重建，保 realm 身份）
     pub napi: Option<crate::napi::env::NapiEnv>, // napi 会话单例（首个 .node require 建起；plan-napi §2）
@@ -445,6 +445,7 @@ unsafe impl Traceable for RootedState {
         self.ws_emit_fn.trace(trc);
         self.uncaught_fn.trace(trc);
         self.uncaught_count_fn.trace(trc);
+        self.repl_tla.trace(trc);
         self.napi.trace(trc);
     }}
 }

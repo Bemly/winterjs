@@ -366,8 +366,7 @@ pub fn exception_pending(cx: &mut JSContext) -> bool {
 /// UNSAFE-BOUNDARY: 恢复 pending exception（JS_SetPendingException，Capture 栈）。
 /// 前置：cx 在目标 realm 内；v 由调用方 rooted 后传入（§4.80）。
 /// 覆盖：`tests/node/vm.rs` vm 对拍黑盒（原始异常透传，与 take 成对）。
-pub fn set_pending_exception(cx: &mut JSContext, v: JSVal) {
-    rooted!(&in(cx) let vroot: JSVal = v);
+pub fn set_pending_exception(cx: &mut JSContext, v: JSVal) {    rooted!(&in(cx) let vroot: JSVal = v);
     // SAFETY: cx 有效；入参为 rooted 槽位；Capture 保留异常栈语义
     unsafe {
         JS_SetPendingException(
@@ -376,6 +375,50 @@ pub fn set_pending_exception(cx: &mut JSContext, v: JSVal) {
             mozjs::jsapi::JS::ExceptionStackBehavior::Capture,
         )
     };
+}
+
+/// UNSAFE-BOUNDARY: 查 Promise 结算状态（GetPromiseState + JS_GetPromiseResult，
+/// 均只读；不推进 jobqueue——settle 由调用方经 RunJobs/pump 推进）。
+/// 前置：cx 有效；`obj` 为 Promise 对象且由调用方 rooted（§4.40/§4.80）。
+/// 返回：`Some(Some((fulfilled, value)))`=已结算（fulfilled?；value=结算值），
+/// `Some(None)`=Pending，`None`=API 失败（pending 由调用方处理）。
+/// 覆盖：`tests/repl.rs::repl_tla_await_resolves` / `repl_tla_await_rejects`。
+pub fn promise_settled_value(cx: &mut JSContext, obj: *mut JSObject) -> Option<Option<(bool, JSVal)>> {
+    rooted!(&in(cx) let obj_root = obj);
+    // SAFETY: obj 为调用方 rooted 的 Promise 对象（只读 state）
+    let state = unsafe { mozjs::jsapi::GetPromiseState(raw_handle(obj_root.as_ptr())) };
+    match state {
+        mozjs::jsapi::PromiseState::Pending => Some(None),
+        mozjs::jsapi::PromiseState::Fulfilled | mozjs::jsapi::PromiseState::Rejected => {
+            rooted!(&in(cx) let mut out = UndefinedValue());
+            // SAFETY: 出参为 rooted 槽位
+            unsafe {
+                mozjs::glue::JS_GetPromiseResult(raw_handle(obj_root.as_ptr()), raw_handle_mut(out.as_ptr()));
+            }
+            Some(Some((
+                state == mozjs::jsapi::PromiseState::Fulfilled,
+                out.get(),
+            )))
+        }
+    }
+}
+
+/// UNSAFE-BOUNDARY: 取 TLA 包装 promise 的结算对（读 `__wjs_ok` + `v`/`e`，
+/// 属性读不触发 GC，obj 内部 rooted，一次调用无 GC 间隙）。
+/// 前置：cx 当前 realm 为对象所属 realm（主循环 global）；obj 为 Promise 结算值
+/// 对象且调用方 rooted。返回 Some((resolved, value_or_reason))。
+/// 覆盖：`tests/repl.rs::repl_tla_await_resolves` / `repl_tla_await_rejects`。
+pub fn tla_pack_take(cx: &mut JSContext, obj: *mut JSObject) -> Option<(bool, JSVal)> {
+    rooted!(&in(cx) let mut obj_root: *mut JSObject = obj);
+    let optr = obj_root.get();
+    let ok = get_prop_value(cx, optr, c"__wjs_ok")?;
+    let is_ok = ok.is_int32() && ok.to_int32() == 1;
+    let field = if is_ok {
+        get_prop_value(cx, optr, c"v")?
+    } else {
+        get_prop_value(cx, optr, c"e")?
+    };
+    Some((is_ok, field))
 }
 
 /// UNSAFE-BOUNDARY: 调单参函数 `fun(arg)`（this=global；返回 rval；失败 None）。

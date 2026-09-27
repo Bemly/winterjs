@@ -487,3 +487,32 @@ G1/G2/G3/G9 已收官。）
   下游包装，禁把 CLI/产品专用能力放进 node:* 公开导出面；共享逻辑经
   `__wjs_` 内部注册面复用。repl 深度统一（CLI 求值改骑 vm context、
   CLI=REPLServer 默认实例形态）另案 plan3 §7 待拍板。
+
+## 2026-09-28 R6：repl 求值面统一（top-level await 落地；§7 反关系纠正①）
+
+- 用户拍板"把反的全部纠正了"。事实摸底：CLI 的 let/const 跨行**已天然成立**
+  （SM 经典脚本 global lexical env 跨 script 持久，真机同形）；求值面实质差异
+  = **top-level await**（node lib/repl.js defaultEval 经 internal/repl/await.js
+  的 acorn 重写 + awaitPromise 收割；CLI 直接不支持，带 hint 文案）。
+- 落法（无 acorn 的线性近似）：原码编译失败且行含 `await` → 试 async-IIFE
+  包装重试；包装文本经底座桥 `__wjs_repl_tla_wrap`（prelude/repl_complete）——
+  **末条顶层语句改写 `return { value: (expr) }`**（node await.js 同款语义：
+  防 async 返回对 Promise 值二次解包；声明/return 结尾不改写）+ `.then` 双臂
+  装标记对（rejected 不进 jobqueue 的 unhandled 收割）。挂起 promise 存
+  `state.repl_tla`（§4.40 Heap+trace；跨轮/跨 GC），主循环逐轮 pump 后
+  `settle_tla` 查结算（4.116 realm 回落 + wrap_cx）——Resolved 打印完成值、
+  rejected 当场 realm 内转 engine pending 取信息，realm 外 D4 渲染。EOF 时
+  drain（30s 上限）。非 TTY 分支同步兵背压（行按序，挂起期间管道阻塞）。
+- 坑三枚（调试实录）：① 跨 `.await` 的栈式 RootedGuard 存 Promise 不可靠且
+  违反 §4.40——改 state Heap 槽；② pump 后未回主 realm 直接裸 JSAPI
+  （JS_GetProperty→Atomize 空指针，macOS 崩溃报告定位）——settle 全包
+  AutoRealm；③ 初版包装无 return 改写，P1 resolve undefined 值被吞——
+  补末表达式改写后才通。`set_pending_exception` 的 rejected 处理也须
+  realm 内（同 ①②）。
+- 缺口（记 §7）：声明提升（`let a = await x` 跨行存活）为 node acorn AST
+  重写语义，待拍板引 acorn（vendored JS）后逐字移植；嵌套 Promise 双解防护
+  已随 `{ value }` 包装落地。
+- 验证：黑盒新增 repl_tla_await_resolves/rejects/in_async_fn_untouched
+  （repl 域 35/35）；管道四场景 + pty TTY 两场景全对（41/tick/boom 渲染/
+  后续行继续）；strict 772/773（child exec 单跑 1s 过=并发偶发）；
+  冒烟 5/5；行数守门 ok（state/mod.rs 压行 1000）。

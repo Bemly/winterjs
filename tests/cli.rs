@@ -625,3 +625,56 @@ fn modifier_flags_only_work_with_their_action() {
     // 正常：归属正确不报错（--config --schema 既有行为；--eval + --allow-all 放行）。
     assert_eq!(stdout_of(&mut winterjs().args(["--eval", "40 + 2", "--allow-all"])), "42\n");
 }
+
+#[test]
+fn modifier_explicit_defaults_rejected_and_trailing_not_swallowed() {
+    // 显式给默认值也算显式（按解析来源判，不按值比；修前 `--port 3000` 漏判）。
+    for (args, expect) in [
+        (vec!["--eval", "1", "--port", "3000"], "--port only works with --serve"),
+        (vec!["--eval", "1", "--host", "127.0.0.1"], "--host only works with --serve"),
+        (vec!["--eval", "1", "--dir", "."], "--dir only works with --serve"),
+        (vec!["--eval", "1", "--limit-rps", "0"], "--limit-rps only works with --serve"),
+        (vec!["--tag", "latest"], "--tag only works with --publish"),
+    ] {
+        let out = winterjs().args(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "args: {args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(expect) && stderr.contains("--help"),
+            "args: {args:?} stderr: {stderr}"
+        );
+    }
+    // 报错：trailing 透传只归 --run；未知旗形落进 args 不再静默吞掉。
+    for args in [
+        vec!["--eval", "1", "--env-file=x"],
+        vec!["--eval", "1", "--unknown-flag"],
+        vec!["--eval", "1", "--", "--env-file=x"],
+        vec!["--config", "stray-positional"],
+    ] {
+        let out = winterjs().args(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "args: {args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("only works with --run") && stderr.contains("--help"),
+            "args: {args:?} stderr: {stderr}"
+        );
+    }
+    // 报错：--test 的 `--` 打头位置值是 flag 误写，不报"无此路径"。
+    let out = winterjs().args(["--test", "--cov"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unknown flag '--cov'"), "stderr: {stderr}");
+    // 正常：--run 的 `--` 后旗形照旧透传给脚本（§4.61/§4.63）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("a.js")
+        .write_str("console.log('argv ' + JSON.stringify(process.argv.slice(2)))")
+        .unwrap();
+    let (ok, out, err) = wjs(&["--run", "a.js", "--", "--port", "3000"], &dir);
+    assert!(ok, "stderr: {err}");
+    assert!(out.contains("argv [\"--port\",\"3000\"]"), "out: {out}");
+    // 边界：裸位置脚本参数（无 `--`）照旧是脚本参数，不误判。
+    let (ok, out, err) = wjs(&["--run", "a.js", "child"], &dir);
+    assert!(ok, "stderr: {err}");
+    assert!(out.contains("argv [\"child\"]"), "out: {out}");
+    dir.close().unwrap();
+}

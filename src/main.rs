@@ -71,11 +71,12 @@ fn main() {
         );
         std::process::exit(9);
     }
-    let cli = {
+    let (cli, matches) = {
         let m = cli::localized_command()
             .try_get_matches_from(compat_argv)
             .unwrap_or_else(|e| e.exit());
-        Cli::from_arg_matches(&m).unwrap_or_else(|e| e.exit())
+        let cli = Cli::from_arg_matches(&m).unwrap_or_else(|e| e.exit());
+        (cli, m)
     };
 
     let settings = match settings::Settings::load() {
@@ -115,7 +116,7 @@ fn main() {
     // 已知问题（AGENTS §4.8）：引擎/运行时析构期 StoreBuffer 悬垂边 SEGV。
     // 结果（含错误渲染）就绪后直接 process::exit 跳过 teardown，由 dispatch 返回退出码。
     error::set_render_color(settings.log.color);
-    let code = tokio_rt.block_on(dispatch(cli, &settings));
+    let code = tokio_rt.block_on(dispatch(cli, &matches, &settings));
     tracing::debug!(target: "winterjs", code, "finished");
     // §4.8：process::exit 跳过 teardown；上报事件先排空（panic 路径自身已 flush）
     sentry_report::flush();
@@ -137,8 +138,8 @@ fn install_permissions(perms: &cli::PermissionArgs) {
     permissions::remember_cli(&p);
 }
 
-async fn dispatch(cli: Cli, settings: &settings::Settings) -> i32 {
-    let r = dispatch_inner(cli, settings).await;
+async fn dispatch(cli: Cli, matches: &clap::ArgMatches, settings: &settings::Settings) -> i32 {
+    let r = dispatch_inner(cli, matches, settings).await;
     match &r {
         Ok(()) => 0,
         // 管道下游提前关闭（如 `winterjs --man | head`）静默退出，不刷错误
@@ -152,7 +153,7 @@ async fn dispatch(cli: Cli, settings: &settings::Settings) -> i32 {
     }
 }
 
-async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), Error> {
+async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &settings::Settings) -> Result<(), Error> {
     // 全 flag 规范（AGENTS §0.8）：一次恰好一个动作。0 个时 `arg_required_else_help`
     // 已提前打印 help，只有透传 `args` 残留能到这里，照样报错指路。
     let actions = cli.actions_present();
@@ -165,7 +166,7 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
     // 修饰 flag 只在对应动作下生效（§0.8）：错配即错，不静默吞掉。
     // 归属表见 `cli_modifier_scope`（与 --help 文案括号注一致）。
     // 注：放所有动作分支之前——各分支提前返回，迟了够不着。
-    if let Some(msg) = cli_modifier_scope(&cli) {
+    if let Some(msg) = cli_modifier_scope(&cli, matches) {
         return Err(Error::Other(format!("{msg} (see --help)")));
     }
     if let Some(target) = cli.run {
@@ -323,10 +324,18 @@ async fn dispatch_inner(cli: Cli, settings: &settings::Settings) -> Result<(), E
 /// tag→publish；token/oauth→login；name/yes/force→init；filter/test-name-pattern/watch→test；
 /// dir/host/port/handler/limit-rps/cert/key/acme-*→serve；schema→config；
 /// allow-*→run/eval/test/repl。-v/-l 全局，不校验。
-fn cli_modifier_scope(cli: &Cli) -> Option<String> {
+fn cli_modifier_scope(cli: &Cli, matches: &clap::ArgMatches) -> Option<String> {
+    use clap::parser::ValueSource;
     let has_add = !cli.add.is_empty();
     let has_install = !cli.install.is_empty();
     let fail = |flag: &str, scope: &str| Some(format!("{flag} only works with {scope}"));
+    // 带 clap 默认值的 flag 按值判会漏掉显式给默认值（`--port 3000` 与缺省同值，
+    // 按值比较即漏判）；一律按解析来源判显式。
+    let explicit = |id: &str| {
+        matches
+            .value_source(id)
+            .is_some_and(|s| s == ValueSource::CommandLine)
+    };
     if cli.dry_run
         && !(has_add || has_install || cli.publish || cli.init.is_some() || cli.upgrade || cli.serve.is_some())
     {
@@ -337,7 +346,7 @@ fn cli_modifier_scope(cli: &Cli) -> Option<String> {
     {
         return fail("--registry", "--add/--install/--publish/--login/--init");
     }
-    if cli.tag != "latest" && !cli.publish {
+    if explicit("tag") && !cli.publish {
         return fail("--tag", "--publish");
     }
     if cli.token.is_some() && !cli.login {
@@ -364,22 +373,22 @@ fn cli_modifier_scope(cli: &Cli) -> Option<String> {
     if cli.watch && cli.test.is_none() {
         return fail("--watch", "--test");
     }
-    // --serve 修饰：clap 默认值会"永远出现"，只判"用户是否显式给过"——
-    // 用 `value_source` 区分显式与默认，避免 `--eval` 被误判带了 `--dir`。
+    // --serve 修饰：带默认值的（dir/host/port/limit-rps）按解析来源判显式，
+    // 按值比会漏掉显式给默认值（`--port 3000` 与缺省同值）。
     if cli.serve.is_none() {
         if cli.handler.is_some() {
             return fail("--handler", "--serve");
         }
-        if serve_flag_explicit("dir", &cli.dir) {
+        if explicit("dir") {
             return fail("--dir", "--serve");
         }
-        if cli.host != "127.0.0.1" {
+        if explicit("host") {
             return fail("--host", "--serve");
         }
-        if cli.port != 3000 {
+        if explicit("port") {
             return fail("--port", "--serve");
         }
-        if cli.limit_rps != 0 {
+        if explicit("limit_rps") {
             return fail("--limit-rps", "--serve");
         }
         if cli.cert.is_some() {
@@ -414,12 +423,21 @@ fn cli_modifier_scope(cli: &Cli) -> Option<String> {
     if perm_given && !(cli.run.is_some() || cli.eval.is_some() || cli.test.is_some() || cli.repl) {
         return fail("--allow-*", "--run/--eval/--test/--repl");
     }
+    // 尾部透传只归 --run：`args` 是 trailing 收集，未知旗形（如 `--env-file=x`）
+    // 会落进来；非 --run 动作携带来即未知 flag 误写，不静默吞掉（§0.8）。
+    // --run 的脚本参数走 `--` 之后（§4.61/§4.63），未知旗形同理透传无碍。
+    if !cli.args.is_empty() && cli.run.is_none() {
+        return fail(
+            &format!("unexpected argument '{}'", cli.args[0]),
+            "--run (script arguments go after `--`: `--run FILE -- ARGS`)",
+        );
+    }
+    // --test 的 paths 是位置值，clap 会把 `--cov` 类未知旗形吞成路径；
+    // `--` 打头的位置值几乎必为 flag 误写，指路 --help 而非报"无此路径"。
+    if let Some(paths) = &cli.test
+        && let Some(flaggy) = paths.iter().find(|p| p.starts_with("--"))
+    {
+        return fail(&format!("unknown flag '{flaggy}'"), "--help");
+    }
     None
-}
-
-/// `--dir` 带 clap 默认值，无法按值判显式 —— 当前仅当用户改了默认值才算显式。
-/// 注：`--serve --dir .` 显式给默认值会被漏判（当默认处理），属已知宽松，
-/// 不影响正确性（同动作下本就合法）。
-fn serve_flag_explicit(_id: &str, dir: &std::path::PathBuf) -> bool {
-    dir.as_os_str() != "."
 }

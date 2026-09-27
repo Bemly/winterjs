@@ -9,6 +9,7 @@ pub mod encoding;
 pub mod fetch;
 pub mod node;
 pub mod prelude;
+pub mod storage;
 pub mod timers;
 pub mod url;
 pub mod ws;
@@ -474,6 +475,15 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_nsqlite_rows", Some(node::sqlite::nsqlite_rows), 4),
             ("__wjs_nsqlite_cols", Some(node::sqlite::nsqlite_cols), 2),
             ("__wjs_nsqlite_close", Some(node::sqlite::nsqlite_close), 1),
+            // S1：WinterCG 存储（turso KV 底座；全局 storage/localStorage，见 storage.rs）
+            ("__wjs_storage_default_path", Some(storage::storage_default_path), 0),
+            ("__wjs_storage_open", Some(storage::storage_open), 1),
+            ("__wjs_storage_get", Some(storage::storage_get), 2),
+            ("__wjs_storage_set", Some(storage::storage_set), 3),
+            ("__wjs_storage_delete", Some(storage::storage_delete), 2),
+            ("__wjs_storage_keys", Some(storage::storage_keys), 2),
+            ("__wjs_storage_clear", Some(storage::storage_clear), 1),
+            ("__wjs_storage_close", Some(storage::storage_close), 1),
             // Phase 7-e6: bun:ffi（动态调用引擎见 ffi.rs 头注；UNSAFE-BOUNDARY 密集区）
             ("__wjs_ffi_dlopen", Some(bun::ffi::ffi_dlopen), 2),
             ("__wjs_ffi_ptr_str", Some(bun::ffi::ffi_ptr_str), 1),

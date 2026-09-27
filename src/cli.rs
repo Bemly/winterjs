@@ -153,7 +153,7 @@ pub struct Cli {
     #[arg(long, value_name = "PATTERN")]
     pub test_name_pattern: Option<String>,
 
-    /// Re-run tests when watched files change (test only; Ctrl-C to stop)
+    /// Re-run when watched files change (test/run/serve only; Ctrl-C to stop)
     #[arg(long)]
     pub watch: bool,
 

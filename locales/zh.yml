@@ -84,7 +84,7 @@ arg:
     help: "只运行全名命中的测试（仅 test；子串或 /正则/flags）"
     value: "匹配串"
   watch:
-    help: "文件变化时重跑测试（仅 test；Ctrl-C 停止）"
+    help: "文件变化时重跑/重载（仅 test/run/serve；Ctrl-C 停止）"
   dir:
     help: "要提供服务的目录（仅 serve）"
     value: "目录"

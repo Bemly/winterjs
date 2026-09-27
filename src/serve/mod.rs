@@ -709,6 +709,129 @@ pub(crate) async fn shutdown_signal() {
     }
 }
 
+/// `--serve --watch`：子进程监管（变更即重启）。
+///
+/// serve 绑定端口 + 安装进程全局 metrics recorder，同进程重启要处理端口交接与
+/// 全局单例——改子进程重启：父进程只看文件，子进程跑真 serve（`--watch` 不下传，
+/// 递归止于一层）。Ctrl-C 同时到父子（同进程组）：父先杀子再退出，避免子变孤儿。
+/// 偏差：重启是 SIGKILL（不优雅，in-flight 连接会断；dev loop 可接受，文档记录）。
+pub async fn serve_watch(opts: &ServeOpts, verbose: u8) -> Result<(), Error> {
+    // 监视根 = 服务目录 + handler 父目录（handler 在目录外时一并看）。
+    let mut roots = vec![opts.dir.clone()];
+    if let Some(h) = &opts.handler
+        && let Some(parent) = h.parent().filter(|p| !p.as_os_str().is_empty())
+    {
+        let parent = parent.to_path_buf();
+        if !roots.contains(&parent) {
+            roots.push(parent);
+        }
+    }
+    let mut watcher = crate::watch::watch_with(&roots, crate::watch::watch_any)?;
+    let argv = child_argv(opts, verbose)?;
+    loop {
+        let mut child = spawn_child(&argv)?;
+        tracing::info!(target: "winterjs::serve", pid = child.id(), "watch child spawned");
+        tokio::select! {
+            // 子自己退了（bind 失败/配置错）：不再复活，退出码透传。
+            status = child.wait() => {
+                let code = status.map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+                tracing::info!(target: "winterjs::serve", code, "watch child exited");
+                if code == 0 {
+                    return Ok(());
+                }
+                return Err(Error::Exit(code));
+            }
+            _ = shutdown_signal() => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                tracing::info!(target: "winterjs::serve", "watch stopped");
+                return Ok(());
+            }
+            n = async {
+                loop {
+                    if let Some(n) = watcher.changed().await {
+                        break n;
+                    }
+                    // changed() 的 None 即 shutdown——外层 shutdown_signal 分支
+                    // 同时就绪会先醒；此处把 None 当 0 吞掉等外层收口，避免双杀竞态。
+                    return 0;
+                }
+            } => {
+                if n == 0 {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    return Ok(());
+                }
+                eprintln!("watch: {n} change(s), restarting");
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                watcher.drain();
+            }
+        }
+    }
+}
+
+/// 子进程 argv（`--watch` 不下传；`-v` 原样转交；相对路径按父 cwd 原样传，
+/// 子与父同 cwd 启动，故语义不变）。
+fn child_argv(opts: &ServeOpts, verbose: u8) -> Result<Vec<String>, Error> {
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| Error::Other(format!("cannot find own binary: {e}")))?;
+    let mut argv = vec![exe, "--serve".into(), opts.dir.to_string_lossy().into_owned()];
+    argv.push("--host".into());
+    argv.push(opts.host.clone());
+    argv.push("--port".into());
+    argv.push(opts.port.to_string());
+    if opts.limit_rps != 0 {
+        argv.push("--limit-rps".into());
+        argv.push(opts.limit_rps.to_string());
+    }
+    if let Some(c) = &opts.cert {
+        argv.push("--cert".into());
+        argv.push(c.to_string_lossy().into_owned());
+    }
+    if let Some(k) = &opts.key {
+        argv.push("--key".into());
+        argv.push(k.to_string_lossy().into_owned());
+    }
+    if let Some(h) = &opts.handler {
+        argv.push("--handler".into());
+        argv.push(h.to_string_lossy().into_owned());
+    }
+    if let Some(a) = &opts.acme {
+        argv.push("--acme-domain".into());
+        argv.push(a.effective_domain().to_owned());
+        if let Some(email) = &a.email {
+            argv.push("--acme-email".into());
+            argv.push(email.clone());
+        }
+        if let Some(cache) = &a.cache_dir {
+            argv.push("--acme-cache".into());
+            argv.push(cache.to_string_lossy().into_owned());
+        }
+        if a.production {
+            argv.push("--acme-production".into());
+        }
+    }
+    for _ in 0..verbose {
+        argv.push("-v".into());
+    }
+    Ok(argv)
+}
+
+/// 起子进程（stdio 继承；`WINTERJS_SPAWN_DEPTH` 清掉——这是监管的新进程，
+/// 不是自递归（§4.209 深度闸只防递归链），带旧深度会误杀长 watch 会话）。
+fn spawn_child(argv: &[String]) -> Result<tokio::process::Child, Error> {
+    let mut cmd = tokio::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    cmd.env_remove("WINTERJS_SPAWN_DEPTH");
+    cmd.stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true);
+    cmd.spawn().map_err(|e| Error::Other(format!("cannot spawn serve child: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     // sd_notify 属 linux 运行面（mac 无 std::os::linux），本测试仅在 linux 上编译运行

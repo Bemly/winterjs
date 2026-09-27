@@ -53,7 +53,8 @@ permalink: /en/cli/
 | `--tag` | `--publish` |
 | `--token`, `--oauth` | `--login` |
 | `--name`, `-y/--yes`, `--force` | `--init` |
-| `--filter`, `--test-name-pattern`, `--watch` | `--test` |
+| `--filter`, `--test-name-pattern` | `--test` |
+| `--watch` | `--test` (re-run) / `--run` (re-run file) / `--serve` (restart child) |
 | `--dir/--host/--port/--handler/--limit-rps/--cert/--key/--acme-*` | `--serve` |
 | `--schema` | `--config` |
 | `--allow-read/--allow-write/--allow-env/--allow-run/--allow-ffi/--allow-all` | `--run/--eval/--test/--repl` |

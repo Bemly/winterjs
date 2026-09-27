@@ -27,6 +27,7 @@ mod serve_bridge;
 mod testrun;
 mod settings;
 mod state;
+mod watch;
 
 // 双语 help 文案：`locales/*.yml` 编译期打进二进制，缺译文回英文（`src/i18n.rs`）。
 rust_i18n::i18n!("locales", fallback = "en");
@@ -175,6 +176,9 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
         // 9i-10：带脚本后缀 → 文件直跑；裸名 → package.json scripts 优先、同名文件回落。
         match scripts::resolve(&target)? {
             scripts::RunTarget::File(path) => {
+                if cli.watch {
+                    return scripts::run_file_watch(&path, &cli.args, settings.log.color).await;
+                }
                 let source = std::fs::read_to_string(&path).map_err(|source| Error::IoRead {
                     path: path.clone(),
                     source,
@@ -183,6 +187,11 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
                 return runtime::run(&source, &filename, runtime::Mode::Script, &cli.args).await;
             }
             scripts::RunTarget::Script(pkg_dir, script) => {
+                if cli.watch {
+                    return Err(Error::Other(
+                        "--watch only works with file targets (package.json scripts are not watchable)".into(),
+                    ));
+                }
                 let code = scripts::run(&pkg_dir, &script, &cli.args)?;
                 return Err(Error::Exit(code));
             }
@@ -311,7 +320,7 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
                 return Ok(());
             }
         }
-        return serve::serve(&serve::ServeOpts {
+        let opts = serve::ServeOpts {
             dir,
             host: cli.host,
             port: cli.port,
@@ -320,8 +329,11 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
             key: cli.key,
             acme: Some(acme).filter(|a| a.enabled()),
             handler: cli.handler,
-        })
-        .await;
+        };
+        if cli.watch {
+            return serve::serve_watch(&opts, cli.verbose).await;
+        }
+        return serve::serve(&opts).await;
     }
     Err(Error::Other("specify an action (see --help)".into()))
 }
@@ -330,8 +342,8 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
 /// 返回首个错配的 `"--flag only works with --action"`，全对回 None。
 /// 归属（与 `--help` 括号注同源）：
 /// dry-run→add/install/remove/uninstall/publish/init/upgrade/serve；registry→add/install/publish/login/init；
-/// tag→publish；token/oauth→login；name/yes/force→init；filter/test-name-pattern/watch→test；
-/// dir/host/port/handler/limit-rps/cert/key/acme-*→serve；schema→config；
+/// tag→publish；token/oauth→login；name/yes/force→init；filter/test-name-pattern→test；
+/// watch→test/run/serve；dir/host/port/handler/limit-rps/cert/key/acme-*→serve；schema→config；
 /// allow-*→run/eval/test/repl。-v/-l 全局，不校验。
 fn cli_modifier_scope(cli: &Cli, matches: &clap::ArgMatches) -> Option<String> {
     use clap::parser::ValueSource;
@@ -381,8 +393,8 @@ fn cli_modifier_scope(cli: &Cli, matches: &clap::ArgMatches) -> Option<String> {
     if cli.test_name_pattern.is_some() && cli.test.is_none() {
         return fail("--test-name-pattern", "--test");
     }
-    if cli.watch && cli.test.is_none() {
-        return fail("--watch", "--test");
+    if cli.watch && cli.test.is_none() && cli.run.is_none() && cli.serve.is_none() {
+        return fail("--watch", "--test/--run/--serve");
     }
     // --serve 修饰：带默认值的（dir/host/port/limit-rps）按解析来源判显式，
     // 按值比会漏掉显式给默认值（`--port 3000` 与缺省同值）。

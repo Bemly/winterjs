@@ -225,6 +225,43 @@ fn wait(mut cmd: std::process::Command, label: &str) -> Result<i32, Error> {
     }
 }
 
+/// `--run FILE --watch`：入口文件跑一轮 → 变更重跑（入口重读，改即生效）→
+/// Ctrl-C 退出。失败不退出 watch（报错落 stderr，继续等变更；test watch 同款）。
+/// 监视根 = 入口父目录（递归，`watchable` 过滤）；package.json 脚本目标不支持
+/// watch（脚本串无文件可监，调用方先拦，见 dispatch）。
+pub async fn run_file_watch(
+    path: &Path,
+    args: &[String],
+    color: crate::settings::ColorChoice,
+) -> Result<(), Error> {
+    let root = path.parent().filter(|p| !p.as_os_str().is_empty()).map_or_else(
+        || PathBuf::from("."),
+        Path::to_path_buf,
+    );
+    let mut watcher = crate::watch::watch(std::slice::from_ref(&root))?;
+    loop {
+        match std::fs::read_to_string(path) {
+            Ok(source) => {
+                let filename = path.to_string_lossy().into_owned();
+                // §4.24：同进程再跑 JS 一律 `run_isolated` 新线程（同线程叠建
+                // Runtime 第二轮即挂——test watch 同款，修前黑盒单轮漏掉整层）。
+                if let Err(e) =
+                    crate::runtime::run_isolated(source, filename, args.to_vec())
+                {
+                    let _ = e.render(color);
+                }
+            }
+            Err(e) => eprintln!("Error: cannot read '{}': {e}", path.display()),
+        }
+        watcher.drain();
+        let Some(n) = watcher.changed().await else {
+            tracing::info!(target: "winterjs::scripts", "watch stopped");
+            return Ok(());
+        };
+        eprintln!("watch: {n} change(s), re-running");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

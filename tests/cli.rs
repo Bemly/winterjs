@@ -611,7 +611,7 @@ fn modifier_flags_only_work_with_their_action() {
         (vec!["--config", "--allow-read"], "--allow-* only works with --run/--eval/--test/--repl"),
         (vec!["--eval", "1", "--registry", "https://x.invalid"], "--registry only works with"),
         (vec!["--eval", "1", "--token", "abc"], "--token only works with --login"),
-        (vec!["--eval", "1", "--watch"], "--watch only works with --test"),
+        (vec!["--eval", "1", "--watch"], "--watch only works with --test/--run/--serve"),
         (vec!["--eval", "1", "--yes"], "--yes only works with --init"),
     ] {
         let out = winterjs().args(&args).output().unwrap();
@@ -624,6 +624,171 @@ fn modifier_flags_only_work_with_their_action() {
     }
     // 正常：归属正确不报错（--config --schema 既有行为；--eval + --allow-all 放行）。
     assert_eq!(stdout_of(&mut winterjs().args(["--eval", "40 + 2", "--allow-all"])), "42\n");
+}
+
+/// 行通道（watch 类长驻进程输出的超时断言脚手架）。
+fn piped_lines(
+    child: &mut std::process::Child,
+) -> std::sync::mpsc::Receiver<String> {
+    use std::io::BufRead as _;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let out = child.stdout.take().expect("stdout piped");
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+fn recv_line(rx: &std::sync::mpsc::Receiver<String>, secs: u64, what: &str) -> String {
+    rx.recv_timeout(std::time::Duration::from_secs(secs))
+        .unwrap_or_else(|_| panic!("timeout waiting for {what}"))
+}
+
+/// 简单 HTTP GET（只读状态行后首个空行前的头 + 全 body；够 watch 断言用）。
+fn http_get(port: u16, path: &str) -> Option<String> {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect_timeout(
+        &format!("127.0.0.1:{port}").parse().ok()?,
+        std::time::Duration::from_secs(2),
+    )
+    .ok()?;
+    s.set_read_timeout(Some(std::time::Duration::from_secs(3))).ok()?;
+    write!(s, "GET {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n").ok()?;
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf).ok()?;
+    String::from_utf8(buf).ok()
+}
+
+fn http_get_until(port: u16, want: &str, secs: u64) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(secs) {
+        if http_get(port, "/").is_some_and(|b| b.contains(want)) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    false
+}
+
+#[test]
+fn run_watch_reruns_file_on_change() {
+    // 正常：首跑 v1 → 改文件重跑 v2；报错文件不杀 watch（下轮可恢复）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("app.js").write_str("console.log('v1')").unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+        .args(["--run", "app.js", "--watch"])
+        .current_dir(dir.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let rx = piped_lines(&mut child);
+    assert_eq!(recv_line(&rx, 25, "v1"), "v1");
+    dir.child("app.js").write_str("console.log('v2')").unwrap();
+    assert_eq!(recv_line(&rx, 25, "v2"), "v2");
+    child.kill().unwrap();
+    child.wait().unwrap();
+    dir.close().unwrap();
+}
+
+#[test]
+fn run_watch_rejects_script_targets() {
+    // 报错：package.json 脚本串无文件可监。
+    let dir = assert_fs::TempDir::new().unwrap();
+    script_project(&dir, r#"{"scripts":{"dev":"echo hi"}}"#);
+    let out = winterjs()
+        .arg("--run")
+        .arg("dev")
+        .arg("--watch")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--watch only works with file targets"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    dir.close().unwrap();
+}
+
+#[test]
+fn serve_watch_restarts_child_on_static_change() {
+    // 正常：子进程起服 v1 → 改 html 触发重启 → 同端口回 v2；收尾杀进程组防孤儿。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let pubdir = dir.child("pub");
+    pubdir.create_dir_all().unwrap();
+    pubdir.child("index.html").write_str("hello-v1").unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+        .args(["--serve", "pub", "--port", "0", "--watch"])
+        .current_dir(dir.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let rx = piped_lines(&mut child);
+    // 首个 serving 行带实际端口（--port 0 回显）。
+    let port: u16 = loop {
+        let line = recv_line(&rx, 25, "serving");
+        if let Some(rest) = line.split("http://127.0.0.1:").nth(1) {
+            if let Ok(p) = rest.trim().parse() {
+                break p;
+            }
+        }
+    };
+    assert!(http_get_until(port, "hello-v1", 20), "serve v1 never came up");
+    pubdir.child("index.html").write_str("hello-v2").unwrap();
+    assert!(http_get_until(port, "hello-v2", 25), "restart never served v2");
+    // 收尾：TERM 监管者（优雅杀子），超时则按唯一目录串清孤儿。
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status();
+    }
+    let _ = child.wait_timeout_or_kill(&rx, &dir);
+    dir.close().unwrap();
+}
+
+/// test 收尾：等监管者退出，超时 SIGKILL + 按目录串清残留子进程（防端口泄漏）。
+trait WaitTimeoutOrKill {
+    fn wait_timeout_or_kill(
+        &mut self,
+        rx: &std::sync::mpsc::Receiver<String>,
+        dir: &assert_fs::TempDir,
+    ) -> std::io::Result<()>;
+}
+
+impl WaitTimeoutOrKill for std::process::Child {
+    fn wait_timeout_or_kill(
+        &mut self,
+        _rx: &std::sync::mpsc::Receiver<String>,
+        dir: &assert_fs::TempDir,
+    ) -> std::io::Result<()> {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(8) {
+            if let Some(_status) = self.try_wait()? {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let _ = self.kill();
+        let _ = self.wait();
+        #[cfg(unix)]
+        {
+            // 监管者被 SIGKILL 时子可能孤儿：按唯一目录串匹配 argv 清掉。
+            let pat = dir.path().to_string_lossy().into_owned();
+            if let Ok(out) = std::process::Command::new("pkill").args(["-9", "-f", &pat]).output() {
+                let _ = out;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[test]

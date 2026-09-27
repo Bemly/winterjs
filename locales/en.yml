@@ -84,7 +84,7 @@ arg:
     help: "Only run tests whose full name matches (test only; substring or /regex/flags)"
     value: "PATTERN"
   watch:
-    help: "Re-run tests when watched files change (test only; Ctrl-C to stop)"
+    help: "Re-run when watched files change (test/run/serve only; Ctrl-C to stop)"
   dir:
     help: "Directory to serve (serve only)"
     value: "DIR"

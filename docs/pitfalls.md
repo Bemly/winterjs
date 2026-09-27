@@ -218,6 +218,10 @@
 - 4.210 rustls/webpki 拒收 X.509 v1 证书：服务端绕 keys_match，客户端验签兜底（2026-09-25，P1）
 - 4.211 修一个结算点会放出一串假绿：beforeExit 缺失 + process.emit 吞错 + 致命错不发 exit（2026-09-26，P2）
 - 4.212 "同步底座 + 特判"的流实现一改就碎：fs 流改逐字移植，底座时序补两处（fs 回调微任务、setImmediate 钳 1ms）（2026-09-26，P2）
+- 4.213 io_code 漏 ECONNRESET/ENOTCONN：拆链收尾错全落 UNKNOWN（2026-09-26，P2-tls-b）
+- 4.214 listen 字符串参误判 UDS path：address().port 全 undefined（2026-09-26，P2-tls-b）
+- 4.215 rustls 对 FIN-无-close_notify 严格报错，node/OpenSSL 视为干净 EOF（2026-09-26，P2-tls-b）
+- 4.216 watch 过滤复用 test 表：serve 改 html/css 不触发重启（2026-09-27，CLI --watch 轮）
 
 ## 条目
 
@@ -3944,3 +3948,16 @@
 - **复现**：net server `c.end()` 后客户端继续读 TLS 流。
 - **铁律**：rustls 严格性与 OpenSSL/node 的宽容语义相悖处（close_notify、X.509 v1、
   hostname 大小写）必须逐一适配层收敛，禁让引擎差异漏到可观察面。
+
+### 4.216 watch 过滤复用 test 表：serve 改 html/css 不触发重启（2026-09-27，CLI --watch 轮）
+
+- 症状：`--serve pub --watch` 跑起后改 `index.html`，无 `restarting` 行、同端口一直回旧内容；
+  改 `app.js` 才触发重启。
+- 根因：`--serve --watch` 直接复用了 test watch 的 `watchable`（只认代码/JSON 后缀）——
+  静态 serve 的被监视物恰恰是 html/css/图等非代码资源，过滤表与监视目标错配。
+- 修法：`watch.rs` 拆两层——`ignored()`（node_modules/.git/target + 点文件，三处共用）+
+  `watchable()`（test/run 用，后缀表不变）/ `watch_any()`（serve 用，只去噪音不卡后缀）；
+  `watch_with(roots, filter)` 可注入，serve 传 `watch_any`。
+- 复现：`tests/cli.rs::serve_watch_restarts_child_on_static_change`（改 html 断同端口新内容）。
+- 推广铁律：**监视过滤表必须按"被监视物的语言"选，不按"已有表的语言"复用**；新增 watch
+  调用点先问"目标目录里什么文件会变"，再定过滤函数。

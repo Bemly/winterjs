@@ -225,6 +225,8 @@
 - 4.217 按调用编译 Regex::new 是启动慢放：CJS 发现 8 正则现场编译烧 1.7s（2026-09-27，F2 轮）
 - 4.218 concat ESM 具名导出≠默认导出：新类只挂具名即用户面 undefined（2026-09-27，P2-crypto）
 - 4.219 原型污染 setter 探针：native 内部写 JS 层 grep 不到即结构性偏离（2026-09-27，P2-crypto）
+- 4.220 自家抛错与真机逐字同形时禁"修正"，修上游误喂（2026-09-27，P2-repl）
+- 4.221 同流自回显即真机亦无限递归：repl 黑盒入出分离（2026-09-27，P2-repl）
 
 ## 条目
 
@@ -4015,3 +4017,26 @@
 - 推广铁律：**"真机抛 X"先问"写 X 的主体在 JS 还是 native"**——setter 探针打栈，
   栈底落 native 且 JS 全仓 grep 不到同名写，即判结构性偏离（记档不追），
   禁在 JS 层硬塞 dummy 写去"骗过"断言。
+
+### 4.220 自家抛错与真机逐字同形时禁"修正"，修上游误喂（2026-09-27，P2-repl）
+
+- 症状：10 件 `test-repl-*` 报 `input.on is not a function`，第一反应是改自家
+  `createInterface` 的抛错分支（改成 ERR_INVALID_ARG_TYPE 等"规范"码）。
+- 根因：真机实测 `createInterface({})` 抛的正是无码 `TypeError: input.on is not a function`
+  ——逐字同形。错不在抛错，在上游把坏 input 喂了进来（位置形吞参、options 直构、
+  双缺未缺省 stdio 三形态）。
+- 修法：抛错分支一字不动；修三处上游（Interface 构造器 options 归一、legacy 位置形、
+  双缺 stdio）。复验 8 件自绿。
+- 复现：任何"自家文案可疑"处，先跑真机同输入再动。
+- 推广铁律：**改抛错文案/码前必须真机同输入对照；逐字同形即无罪，往调用链上游找**。
+
+### 4.221 同流自回显即真机亦无限递归：repl 黑盒入出分离（2026-09-27，P2-repl）
+
+- 症状：新黑盒 `p2_repl_legacy_positional` 用同一 PassThrough 既当 input 又当 output，
+  输出回显又被当输入求值（每轮添引号），`cargo test` 挂死 150s+（4.140 家族）。
+- 根因：输出写入同流即触发 data→求值→输出正反馈；真机同构亦然（recoverable 套件
+  靠 noop-write 的 ArrayStream 避开）。
+- 修法：黑盒入出分离（位置形 duplex 走 `{ stdin, stdout }` 映射）；判 hang 只认退出码，
+  长驻探针输出落盘（4.45/4.93 重申）。
+- 复现：`tests/node/repl.rs::p2_repl_legacy_positional` 初版（已改）。
+- 推广铁律：**REPL/流黑盒入与出恒分离；同 duplex 必须 noop-write 或断言侧单向**。

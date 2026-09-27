@@ -370,3 +370,26 @@ G1/G2/G3/G9 已收官。）
   `Sign` 真流式（`s.end()`），与 STREAM-PIPE 4 件同源，记档 P2-stream，不追。
 - 顺手：`strip_banner_flags` 未用导入致 2 警告，去之回基线 1（linker 环境音）。
 - 下一站：crypto MISSING-EXCEPTION 9 件（逐件小校验）或按队列转 repl（64+1）。
+
+## 2026-09-27 P2-repl 首两轮：input 簇 +8，方法面 +6（17→31/82）
+
+- R1（`af13ccc`）：base15 repl 红按 `wjs_err` 聚类，`input.on is not a function` ~10 件
+  二形态——legacy 位置形 `start('', stream, eval)`（string 首参被吞成 `{prompt}`，
+  input 空）与 `new Interface(options)` 直构（位置形构造器误吃 options 对象）。
+  真机核对：`createInterface({})` 无码 `input.on` 与我方逐字同形——抛错不动，
+  修上游误喂。readline Interface 构造器 options 归一（node internal 180 行口径）；
+  write 入流排空 + 关后 `ERR_USE_AFTER_CLOSE`（新增码）+ 写即 resume；
+  终端历史多行倒序存（reverseString 口径，单文件单行格式使然）+
+  removeHistoryDuplicates 清全表；repl legacy 位置形 + 双缺 stdio（lib/repl.js
+  299 行）+ `write` 直通 + writer 携 options。黑盒 2 新增；readline 4/4、repl 2/2。
+- R2（`7623609`）：复验 repl1（65 红→8 绿：另含 multiline/nested-repls/evalcallback
+  被 write 带绿）。方法面：defineCommand 函数形 + help 版式（排序/最长+3/裸名/
+  Ctrl 尾行；editor 终端独有致列宽 6）+ editor 缓冲/C-d 求值/空行收尾（.save 末
+  换行 node 同款）+ complete 空回（completer 实现另案）。再 +6；
+  repl2 复验 57→6 绿。黑盒 1 新增；repl 4/4、readline 4/4、bin 215、冒烟 5/5。
+- 坑（记 pitfalls）：同流自回显即真机亦无限递归（黑盒改 duplex 映射避开）；
+  `{}` 抛错与真机逐字同形时禁"修正"（先对真机）；多行历史倒序存反直觉但原文有注。
+- 余 ~51：真 completer（save-load/computed-props/buffer/files 等约 8）/
+  setupHistory（3）/useGlobal（reset-event）/internal/repl（11）/ASSERT 散件 18/
+  MUSTCALL 4/sigint 2（spawn 记档面）/杂项，另轮。`--interactive` 旗缺口
+  （array-prototype-tempering HOST，wjs=-9/TIMEOUT）记 D1-CLI 另案。

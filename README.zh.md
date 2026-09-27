@@ -1,5 +1,5 @@
 <p align="left">
-  <a href="https://github.com/Bemly/winterjs"><img src="assets/logo.jxl" width="110" height="110" alt="升级浏览器Update Browser，JXL支持Support Chrome115+、Firefox158+、Safari17+" /></a>&nbsp;&nbsp;
+  <a href="https://github.com/Bemly/winterjs"><img src="assets/logo.jxl" width="110" height="110" alt="升级浏览器Update Browser，JXL支持Support Chrome155+、Firefox158+、Safari17+" /></a>&nbsp;&nbsp;
   <a href="https://github.com/Bemly/winterjs"><img src="assets/winterjs.svg" width="415" alt="WinterJS" /></a>
 </p>
 

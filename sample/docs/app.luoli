@@ -213,7 +213,7 @@ coffee:
 template:
   header.vp-nav
     a.vp-brand(href='#/')
-      img.vp-logo(src='assets/logo.jxl' alt='升级浏览器Update Browser，JXL支持Support Chrome115+、Firefox158+、Safari17+')
+      img.vp-logo(src='assets/logo.jxl' alt='升级浏览器Update Browser，JXL支持Support Chrome155+、Firefox158+、Safari17+')
       img.vp-wordmark(src='assets/winterjs.svg' alt='WinterJS')
     nav.vp-top-links
       a(href='#/en/quickstart' data-route='en/quickstart') Guide

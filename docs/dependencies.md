@@ -215,6 +215,7 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 | CLI 双语 | `rust-i18n` | 4.2.2 | 2021 | 2026 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 启动 banner SVG 光栅 | `resvg` | 0.48.1 | 2017-12-18 | 2026-08-02 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | 启动 banner 图像解码 | `image` | 0.25.10 | 2014-11-20 | 2026-03-10 | ✅（`avif` 特性→ravif/rav1e 纯 Rust；禁 `avif-native`→dav1d 的 C） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| 启动 banner JXL 解码 | `jxl-oxide` | 0.12.6 | 2023-05-16 | 2026-05-29 | ✅（default 特性；禁 `lcms2` 的 C） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 
 备注：`rustyline`/`self_update` 的移动端格是“功能不需要”（REPL/自升级是桌面功能，
 模块可 cfg 门控），不是编不过。`vergen-gitcl` 开 `build`（调 git CLI），禁 `git`（→`git2` 的 C）。
@@ -637,9 +638,17 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
    库龄均超十年且近一年有维护；传递闭包纯 Rust 口径成立（image 已在树内；
    代价：rav1e 编译数分钟 + 常驻内存高；resvg 约 40 crate；二进制增数 MB；
    图形解码只走 Kitty/iTerm 终端（其余走零成本 ASCII）。ASCII 垫片与 env 检测手写，
-   不另引轮子。flag 定为 `-hide_banner`（用户拍板破例：单横杠 + 下划线；
+   不另引轮子。   flag 定为 `-hide_banner`（用户拍板破例：单横杠 + 下划线；
    clap 长形记 `--hide_banner`，预处理同时收单横杠形）；每次运行全动作首行走
    stderr、非 TTY 自动跳过（`--completions/--man` 除外）。
+   JXL 审计（2026-09-28，用户问“avif→jxl”时补查，**四问全过，§4 行已填，待引入**）：
+   `jxl-oxide 0.12.6`（2023-05 建库/2026-05-29 维护/30 版/MIT OR Apache-2.0/2.3M 下载）；
+   纯 Rust 口径成立——常开依赖仅 brotli-decompressor + jxl-* 系 + tracing（全纯），
+   `lcms2`（C）与 `moxcms` 都是 opt-in 特性，不开；default 仅 `rayon`（已在树内）；
+   无 nightly（edition 2024，stable 直编）。API 面吻合：`JxlImage::builder().read()`
+   → `render_frame()`，`image` 特性直出 DynamicImage（含 alpha 通道，`ExtraChannelType::Alpha`
+   在列）。门控：禁 `lcms2`（同 `avif-native` 口径）。素材侧待办：`logo.avif`→`logo.jxl`
+   转码 + README/站点引用改 `.jxl`（用户已拍板，另步执行）。
 
 ## 开发工具（不进 Cargo 依赖，2026-09-25）
 

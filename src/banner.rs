@@ -25,13 +25,15 @@ const WORDMARK_SVG: &str = include_str!("../assets/winterjs.svg");
 const DARK_FILL: &str = "#16233a";
 const LIGHT_FILL: &str = "#f2f5f9";
 
-/// 图形展示列数（avif 方图窄些，wordmark 宽些；行数按 cell 1:2 换算）。
-const AVIF_COLS: u32 = 28;
-const SVG_COLS: u32 = 44;
-/// logo 预缩像素宽（1261 原图太大，转 PNG 发射前先缩，省转义字节）。
-const LOGO_PX_W: u32 = 384;
-/// wordmark 渲染像素宽（矢量直接按此 render，保证清晰）。
-const SVG_PX_W: u32 = 544;
+/// 图形展示列数（logo 窄些，wordmark 宽些；行数按 cell 1:2 换算）。
+/// 取小值：部分终端忽略尺寸参数按像素原尺寸直出，像素预缩才是真兜底。
+const LOGO_COLS: u32 = 20;
+const SVG_COLS: u32 = 36;
+/// logo 预缩像素宽（1261 原图太大；忽略 cell 参数的终端会原尺寸直出即灾难，
+/// 所以像素本身先缩到展示尺寸附近——参数 honor 与否都不炸）。
+const LOGO_PX_W: u32 = 256;
+/// wordmark 渲染像素宽（矢量直接按此 render，保证清晰；同上，取展示尺寸）。
+const SVG_PX_W: u32 = 384;
 /// Kitty 分块转义每块 base64 字符数（viuer 同值）。
 const KITTY_CHUNK: usize = 4096;
 
@@ -259,7 +261,7 @@ fn print_graphics(p: Proto) -> bool {
     // avif 主图 + svg 字牌，任一失败整单回落（半幅 banner 不如全 ASCII）。
     let logo = decode_logo().and_then(|img| {
         let (w, h) = (img.width(), img.height());
-        png_of(&img).map(|png| (png, w, h, AVIF_COLS))
+        png_of(&img).map(|png| (png, w, h, LOGO_COLS))
     });
     let word = render_wordmark().and_then(|img| {
         let (w, h) = (img.width(), img.height());
@@ -283,6 +285,9 @@ fn print_graphics(p: Proto) -> bool {
     if !ok {
         return false;
     }
+    // 先换行再打版本行：部分终端图片展示后光标停在行中（实测版本行飘到右侧），
+    // 一个 `\n` 保证版本行顶格起；行为良好的终端至多多一行空隙，可接受。
+    let _ = err.write_all(b"\n");
     writeln!(err, "{}", version_line()).is_ok()
 }
 
@@ -410,8 +415,8 @@ mod tests {
 
     #[test]
     fn cell_rows_math() {
-        assert_eq!(cell_rows(28, 1261, 1247), 13);
-        assert_eq!(cell_rows(44, 680, 180), 5);
+        assert_eq!(cell_rows(20, 1261, 1247), 9);
+        assert_eq!(cell_rows(36, 680, 180), 4);
         assert_eq!(cell_rows(8, 0, 0), 1);
     }
 
@@ -426,6 +431,6 @@ mod tests {
         assert_eq!(word.width(), SVG_PX_W);
         let _ = png_of(&word).expect("png encodes");
         // 转义序列可发射（载荷往返见上两单测）。
-        assert!(!kitty_seq(&png, logo.width(), logo.height(), AVIF_COLS).is_empty());
+        assert!(!kitty_seq(&png, logo.width(), logo.height(), LOGO_COLS).is_empty());
     }
 }

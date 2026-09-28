@@ -8,7 +8,7 @@
 | 文档 | 内容 |
 |---|---|
 | [quickstart.en.md](./quickstart.en.md) / [quickstart.zh.md](./quickstart.zh.md) | 5 分钟上手：构建、跑文件、测试、serve |
-| [api.en.md](./api.en.md) / [api.zh.md](./api.zh.md) | 全模块 API 参考（nodejs.org/api 体例：稳定性 + 样例 + 已知偏离） |
+| [pages/api-en.luoli](./pages/api-en.luoli) / [pages/api-zh.luoli](./pages/api-zh.luoli) | 全模块 API 参考（nodejs.org/api 体例：稳定性 + 样例 + 已知偏离；唯一真相，在线站直读） |
 | [cli.en.md](./cli.en.md) / [cli.zh.md](./cli.zh.md) | CLI 全 flag 参考：动作表、修饰归属表、退出码、node 兼容旗 |
 
 样例（`winterjs --run sample/<area>/<file>`，全部离线可跑，TLS 用本地自签 fixture）：

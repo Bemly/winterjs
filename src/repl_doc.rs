@@ -846,6 +846,17 @@ mod tests {
             ("WinterJS.assert", "prototypes"),
             ("WinterJS.util", "same port"),
             ("WinterJS.punycode", "DEP0040"),
+            ("WinterJS.tcp", "AsyncIterables"),
+            ("WinterJS.udp", "AsyncIterables"),
+            ("WinterJS.dns", "getaddrinfo"),
+            ("WinterJS.tls", "system roots"),
+            ("WinterJS.command", "captures output"),
+            ("WinterJS.cluster", "thread-based"),
+            ("WinterJS.vm", "transparently"),
+            ("WinterJS.os", "__wjs_os_"),
+            ("WinterJS.db", "turso"),
+            ("WinterJS.stream", "backpressure"),
+            ("WinterJS.serve", "shutdown"),
         ] {
             let s = summary(topic).unwrap_or_else(|| panic!("{topic} documented"));
             assert!(s.contains(needle), "{topic}: {s}");

@@ -41,6 +41,30 @@ WinterJS.httpdate
 WinterJS.assert
 WinterJS.util
 WinterJS.punycode
+WinterJS.tcp
+WinterJS.udp
+WinterJS.dns
+WinterJS.tls
+WinterJS.command
+WinterJS.terminal
+WinterJS.repl
+WinterJS.cluster
+WinterJS.test
+WinterJS.vm
+WinterJS.os
+WinterJS.path
+WinterJS.db
+WinterJS.inspect
+WinterJS.tty
+WinterJS.stream
+WinterJS.serve
+WinterJS.diagnostics
+WinterJS.domain
+WinterJS.trace
+WinterJS.AsyncLocalStorage
+WinterJS.quic
+WinterJS.crypto
+WinterJS.ffi
 ```
 
 ### Parameters
@@ -107,3 +131,13 @@ WinterJS.punycode
   - : `format`/`inspect` (same port node:util rides).
 - `punycode`
   - : Punycode core shared with `node:punycode`.
+- `tcp/udp/dns/tls`
+  - : Promise sockets and resolvers (B2 batch).
+- `command/terminal/repl`
+  - : Child processes and interactive faces (B3 batch).
+- `cluster/test/vm`
+  - : Concurrency and evaluation faces (B4 batch).
+- `os/path/db/inspect/tty`
+  - : System faces (B5 batch).
+- `stream/serve/diagnostics/domain/trace/AsyncLocalStorage/quic/crypto/ffi`
+  - : Event and misc faces (B6 batch).

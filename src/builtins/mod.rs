@@ -14,6 +14,7 @@ pub mod timers;
 pub mod url;
 pub mod ws;
 pub mod bun;
+pub mod mem;
 pub mod wfs;
 
 use std::ffi::CString;
@@ -497,6 +498,15 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_wfs_rename", Some(wfs::wfs_rename), 2),
             ("__wjs_wfs_copy", Some(wfs::wfs_copy), 2),
             ("__wjs_wfs_exists", Some(wfs::wfs_exists), 1),
+            // 本体内存三面（WinterJS.memory/alloc/unsafe*；裸指针不出 JS，id 表托管，见 mem.rs）
+            ("__wjs_mem_info", Some(mem::mem_info), 0),
+            ("__wjs_mem_alloc", Some(mem::mem_alloc), 1),
+            ("__wjs_mem_unsafe_alloc", Some(mem::mem_unsafe_alloc), 1),
+            ("__wjs_mem_unsafe_size", Some(mem::mem_unsafe_size), 1),
+            ("__wjs_mem_unsafe_write", Some(mem::mem_unsafe_write), 3),
+            ("__wjs_mem_unsafe_read", Some(mem::mem_unsafe_read), 3),
+            ("__wjs_mem_unsafe_free", Some(mem::mem_unsafe_free), 1),
+            ("__wjs_mem_unsafe_list", Some(mem::mem_unsafe_list), 0),
             // Phase 7-e6: bun:ffi（动态调用引擎见 ffi.rs 头注；UNSAFE-BOUNDARY 密集区）
             ("__wjs_ffi_dlopen", Some(bun::ffi::ffi_dlopen), 2),
             ("__wjs_ffi_ptr_str", Some(bun::ffi::ffi_ptr_str), 1),

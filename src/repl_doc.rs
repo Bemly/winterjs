@@ -831,6 +831,18 @@ mod tests {
             ("WinterJS.shlex", "argv"),
             ("WinterJS.spdx", "license expression"),
             ("WinterJS.qrcode", "2048"),
+            ("WinterJS.shell", "unallowed"),
+            ("WinterJS.hex", "const-hex"),
+            ("WinterJS.time", "jiff"),
+            ("WinterJS.retry", "backon"),
+            ("WinterJS.graph", "petgraph"),
+            ("WinterJS.git", "clone is a separate"),
+            ("WinterJS.oauth", "rides fetch"),
+            ("WinterJS.transpile", "loader runs"),
+            ("WinterJS.log", "4k"),
+            ("WinterJS.mime", "serve uses"),
+            ("WinterJS.cookie", "Set-Cookie"),
+            ("WinterJS.httpdate", "IMF"),
         ] {
             let s = summary(topic).unwrap_or_else(|| panic!("{topic} documented"));
             assert!(s.contains(needle), "{topic}: {s}");

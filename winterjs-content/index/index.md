@@ -26,6 +26,18 @@ WinterJS.ip
 WinterJS.shlex
 WinterJS.spdx
 WinterJS.qrcode
+WinterJS.shell
+WinterJS.hex
+WinterJS.time
+WinterJS.retry
+WinterJS.graph
+WinterJS.git
+WinterJS.oauth
+WinterJS.transpile
+WinterJS.log
+WinterJS.mime
+WinterJS.cookie
+WinterJS.httpdate
 ```
 
 ### Parameters
@@ -62,3 +74,27 @@ WinterJS.qrcode
   - : SPDX license-expression check.
 - `qrcode`
   - : Terminal QR art for a short text.
+- `shell`
+  - : Shell-word `expand` (`~`, `$VAR`; env-gated).
+- `hex`
+  - : Hex `encode`/`decode`.
+- `time`
+  - : Clock (`now/parse/format`, jiff).
+- `retry`
+  - : Backoff `delay` + async `run` helper.
+- `graph`
+  - : Directed/undirected graph heap.
+- `git`
+  - : Read-only `revParse`/`log`.
+- `oauth`
+  - : Authorize URL + PKCE + token exchange.
+- `transpile`
+  - : Same oxc pipeline the loader runs.
+- `log`
+  - : Structured log (`debug/info/warn/error`).
+- `mime`
+  - : File-name MIME lookup.
+- `cookie`
+  - : Cookie `parse`/`serialize`.
+- `httpdate`
+  - : IMF date `parse`/`format`.

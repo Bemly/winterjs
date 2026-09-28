@@ -764,3 +764,14 @@ G1/G2/G3/G9 已收官。）
 - 校验法：`scripts/check-luoli.js`（原版 coffee 编全部 8 页 coffee: 段；
   另用 pug 去缩进渲染验过 api 表格 5 组 + 新锚点，属一次性探针未进仓）。
 - 流程教训记 4.234：推站后等 Actions 成功再看站（本轮即此口径执行）。
+
+## 2026-09-29 站文档单源化（api.md 并入 luoli）
+
+- 结论：luoli 真站与 api.en/zh.md 双源并存且已裂（qrcode 只在 md+REPL 有，
+  站上无；md 另有 assert/util/punycode 行站上无）。md 无站外引用
+  （README 只链在线站；Jekyll frontmatter 已无消费方），遂删 md，
+  luoli 为唯一真相；别名注记（storage/CompressionStream 的 WinterJS.*）
+  已搬进 luoli。
+- 教训：`git add` 遇已删路径整体失败——删文件走 `git rm` 后同命令再 add
+  其余文件会全丢（本轮 cover 行漏提交，靠线上 raw 发现；SHA 钉死 URL
+  可破 CDN 缓存验）。

@@ -52,7 +52,7 @@ globalThis.__wjs_cli_complete = (line) => {
       } catch { /* ignore */ }
     }
     if (doc === null) return [text, sig];
-    return [text, sig === null ? doc : `${sig} — ${doc}`];
+    return [text, sig === null ? doc : `${sig}\n${doc}`];
   });
   return [withSig, completeOn];
 };

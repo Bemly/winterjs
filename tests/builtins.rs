@@ -448,11 +448,12 @@ fn phase11_repl_sig_js_docs() {
          globalThis.o = { assign(a, b) { return a; } };\
          j(globalThis.__wjs_cli_complete('o.')[0].filter(p=>p[0]==='o.assign'));",
     ]));
+    // 浮窗 = 签名行 + 实时文档（首段 + 调用形状，多行；`.doc` 同源）。
     for line in [
-        "[\"console.log\",\"(...data) — stdout — The console.log() static method outputs a message to the console.\"]",
-        "[\"console.trace\",\"(...data) — stderr + stack — The console.trace() static method outputs a stack trace to the console.\"]",
-        "[\"fetch\",\"fetch(input, init = {}) — The fetch() method of the Window interface starts the process of fetching a resource from the network, returning a promise that is fulfilled once the response is available.\"]",
-        "[\"u.get\",\"get(n) — The get() method of the URLSearchParams interface returns the first value associated to the given search parameter.\"]",
+        "console.log\",\"(...data) — stdout\\nThe console.log() static method",
+        "console.log(val1)",
+        "fetch(input, init = {})\\nThe fetch() method",
+        "u.get\",\"get(n)\\nThe get() method",
         "[\"o.assign\",\"assign(a, b)\"]",
     ] {
         assert!(out.contains(line), "missing {line:?}; out: {out}");

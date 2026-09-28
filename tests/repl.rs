@@ -187,7 +187,7 @@ fn repl_doc_mdn_page() {
     // `.doc` 整篇文档（irb show_doc 方向；CLI 本体面）：正常出官方首句+Syntax
     // 节；未知条目走 stderr 提示；空参打用法；非 TTY 纯文本无 ANSI。
     let (stdout, stderr, code) =
-        repl_session(".doc console.log\n.doc fetch\n.doc Array.from\n.doc encodeURI\n.doc o.assign\n.doc\n40 + 2\n.exit\n");
+        repl_session(".doc console.log\n.doc fetch\n.doc Array.from\n.doc encodeURI\n.doc Atomics.add\n.doc o.assign\n.doc\n40 + 2\n.exit\n");
     assert_eq!(code, 0);
     assert!(
         stdout.contains("The console.log() static method outputs a message to the console."),
@@ -203,6 +203,10 @@ fn repl_doc_mdn_page() {
     );
     assert!(
         stdout.contains("function encodes a URI by replacing"),
+        "stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("adds a given value at a given position"),
         "stdout:\n{stdout}"
     );
     assert!(stdout.contains("Syntax"), "stdout:\n{stdout}");

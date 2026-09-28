@@ -160,10 +160,61 @@ fn slug(topic: &str) -> Option<String> {
     None
 }
 
-/// 取原文（存在性校验：缺页即 `None`，调用方报未知条目）。
+/// 取原文（存在性校验：缺页即 `None`）。
+/// `slug` 主规则未命中时按形状试探（首中即返；全部只读静态语料）：
+/// - `A.b` → `global_objects/a/b`（sm_head 白名单外的头）、`web/api/a/b`、
+///   `web/api/a/b_static`（Web 静态方法惯例）；
+/// - bare → `reference/statements/t`、`reference/operators/t`、`web/api/t`。
+/// 段字符集限小写字母数字/`_`/`$`（无 `..`，无路径穿越）。
 pub fn lookup(topic: &str) -> Option<&'static str> {
-    let path = format!("{}/index.md", slug(topic.trim())?);
-    MDN.get_file(&path)?.contents_utf8()
+    let t = topic.trim();
+    if let Some(path) = slug(t).map(|s| format!("{s}/index.md"))
+        && let Some(f) = MDN.get_file(&path)
+        && let Some(s) = f.contents_utf8()
+    {
+        return Some(s);
+    }
+    for cand in fallback_paths(t) {
+        if let Some(f) = MDN.get_file(&cand)
+            && let Some(s) = f.contents_utf8()
+        {
+            return Some(s);
+        }
+    }
+    None
+}
+
+/// 试探候选路径（`lookup` 用；调用方只取首中）。
+fn fallback_paths(topic: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let t = topic
+        .trim()
+        .strip_prefix("globalThis.")
+        .unwrap_or(topic.trim());
+    if t.is_empty() {
+        return out;
+    }
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '$')
+    };
+    if let Some((a, b)) = t.split_once('.') {
+        let (a, b) = (a.to_lowercase(), b.to_lowercase());
+        if ok(&a) && ok(&b) {
+            out.push(format!("web/javascript/reference/global_objects/{a}/{b}/index.md"));
+            out.push(format!("web/api/{a}/{b}/index.md"));
+            out.push(format!("web/api/{a}/{b}_static/index.md"));
+        }
+        return out;
+    }
+    let l = t.to_lowercase();
+    if ok(&l) {
+        out.push(format!("web/javascript/reference/statements/{l}/index.md"));
+        out.push(format!("web/javascript/reference/operators/{l}/index.md"));
+        out.push(format!("web/api/{l}/index.md"));
+    }
+    out
 }
 
 /// `__wjs_doc_summary(topic)`（补全桥用；缺页回 `undefined`，桥保留签名原文）。
@@ -554,6 +605,17 @@ mod tests {
         assert!(v.contains("evaluates JavaScript code"), "{v}");
         assert!(summary("myVar").is_none());
         assert!(summary("../secret").is_none());
+        // 试探路（`lookup` fallback）：白名单外的头、Web 静态方法、语句/操作符。
+        let a = summary("Atomics.add").expect("Atomics.add documented");
+        assert!(a.contains("adds a given value at a given position"), "{a}");
+        let p = summary("URL.parse").expect("URL.parse documented");
+        assert!(p.contains("returns a newly created"), "{p}");
+        let fr = summary("for").expect("for documented");
+        assert!(fr.contains("creates a loop"), "{fr}");
+        let ty = summary("typeof").expect("typeof documented");
+        assert!(ty.contains("indicating the type"), "{ty}");
+        assert!(summary("document.querySelector").is_none());
+        assert!(summary("foo.bar").is_none());
         assert!(summary("o.assign").is_none());
         assert!(summary("globalThis.Object.assign").is_some());
     }

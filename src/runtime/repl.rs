@@ -13,13 +13,13 @@ use crate::error::Error;
 use crate::repl::{CompReq, CompResp};
 
 /// JS 线程执行补全（只在主循环调用）：求值 `__wjs_cli_complete(line)`
-/// （prelude/repl_complete 底座桥）并解析 `[[text, desc], ...], completeOn`；
+/// （prelude/repl_complete 底座桥）并解析 `[[text, disp, desc], ...], completeOn`；
 /// 求值失败/形状不合法回 `(空, line)`（reedline 空集）。
 fn cli_complete_js(
     rt: &mut Runtime,
     global: &RootedGuard<'_, *mut JSObject>,
     line: &str,
-) -> (Vec<(String, Option<String>)>, String) {
+) -> (Vec<(String, Option<String>, Option<String>)>, String) {
     let fallback = (Vec::new(), line.to_owned());
     let script = format!(
         "JSON.stringify(globalThis.__wjs_cli_complete({}))",
@@ -52,12 +52,14 @@ fn cli_complete_js(
             .iter()
             .filter_map(|x| {
                 if let Some(t) = x.as_str() {
-                    return Some((t.to_owned(), None));
+                    return Some((t.to_owned(), None, None));
                 }
+                // 桥三元组 `[全文, 左格签名后缀, 描述]`（后两项可 null）。
                 let pair = x.as_array()?;
                 let text = pair.first()?.as_str()?.to_owned();
-                let desc = pair.get(1).and_then(|d| d.as_str()).map(str::to_owned);
-                Some((text, desc))
+                let disp = pair.get(1).and_then(|d| d.as_str()).map(str::to_owned);
+                let desc = pair.get(2).and_then(|d| d.as_str()).map(str::to_owned);
+                Some((text, disp, desc))
             })
             .collect(),
         complete_on,

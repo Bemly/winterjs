@@ -29,11 +29,12 @@ globalThis.__wjs_cli_complete = (line) => {
     try { base = b === '' ? null : (0, eval)(b); } catch { base = null; }
   }
   const withSig = (Array.isArray(list) ? list : []).map((text) => {
-    if (typeof text !== 'string') return [text, null];
+    if (typeof text !== 'string') return [text, null, null];
     const key = text.slice(text.lastIndexOf('.') + 1);
     const parts = text.split('.');
     const head2 = parts.length >= 2 ? parts.slice(-2).join('.') : '';
     const sig = __sigDesc(base, key, head2);
+    const disp = __dispDesc(base, key, head2);
     // 浮窗文档实时读语料（`.doc` 同源；表里禁贴文档句）：有文档即整块只放
     // 文档（描述盒按空白重排，签名文档拼一行恒挤成一段，故不拼）；缺页回签名。
     // 实例面（`u.get`）文本是变量名，再试 `Ctor.key`（普通 Object 跳过，
@@ -52,8 +53,8 @@ globalThis.__wjs_cli_complete = (line) => {
         if (cn !== '' && cn !== 'Object') doc = docFor(`${cn}.${key}`);
       } catch { /* ignore */ }
     }
-    if (doc === null) return [text, sig];
-    return [text, doc];
+    if (doc === null) return [text, disp, sig];
+    return [text, disp, doc];
   });
   return [withSig, completeOn];
 };
@@ -198,7 +199,8 @@ function __wjsReplCtorName(base) {
 
 // 签名摘要：描述符沿链安全读（不触发 getter）；函数先查 `__wjsReplSig`，
 // 用户函数 toString 有真形参则直用；非函数给类型/值摘要。
-function __sigDesc(base, key, head2) {
+// 描述符沿链安全读（不触发 getter；失败即 null）。
+function __descOf(base, key) {
   if (base === null || base === undefined) return null;
   let d = null;
   let o = base;
@@ -207,7 +209,34 @@ function __sigDesc(base, key, head2) {
     if (d !== undefined && d !== null) break;
     try { o = Object.getPrototypeOf(o); } catch { return null; }
   }
-  if (d === null || d === undefined) return null;
+  return (d === null || d === undefined) ? null : d;
+}
+
+// 左格签名后缀（无名；Rust 拼 `display_override = text + disp`）。
+// 表精确项/Ctor 项本就无名，直返；toString 回落去名留参；
+// 无参/非函数/getter 即 null（左格只放原文）。
+function __dispDesc(base, key, head2) {
+  const d = __descOf(base, key);
+  if (d === null || d.get !== undefined) return null;
+  const v = d.value;
+  if (typeof v !== 'function') return null;
+  const exact = __wjsReplSig[head2];
+  if (exact !== undefined) return exact;
+  let src = '';
+  try { src = Function.prototype.toString.call(v); } catch { /* ignore */ }
+  const pm = /^[\s\S]*?\(([^)]*)\)/.exec(src);
+  const ctor = __wjsReplCtorName(base);
+  if (ctor !== '' && ctor !== 'Object') {
+    const csig = __wjsReplSig[`${ctor}.${key}`];
+    if (csig !== undefined) return csig;
+  }
+  if (pm !== null && pm[1] !== '') return `(${pm[1]})`;
+  return null;
+}
+
+function __sigDesc(base, key, head2) {
+  const d = __descOf(base, key);
+  if (d === null) return null;
   if (d.get !== undefined) return ': getter';
   const v = d.value;
   if (typeof v === 'function') {

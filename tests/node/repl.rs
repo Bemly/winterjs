@@ -243,19 +243,19 @@ console.log("bare", b[0].some((e) => e[0] === "global") && b[0].some((e) => e[0]
 const m = __wjs_cli_complete("globalThis.Array.fr");
 console.log("member", m[0].some((e) => e[0] === "globalThis.Array.from"));
 const sig = __wjs_cli_complete("globalThis.Object.assign");
-// 有语料页的内建显示整块文档（Object.assign 有 MDN 页；签名表仅缺页回落）。
-console.log("sig", sig[0][0][0] === "globalThis.Object.assign" && sig[0][0][1].includes("copies all enumerable own properties"));
+// 左格签名后缀回表（`p[1]`），整块文档走 `p[2]`（三元组桥）。
+console.log("sig", sig[0][0][0] === "globalThis.Object.assign" && sig[0][0][1] === "(target, ...sources) → object");
 const ci = __wjs_cli_complete("globalThis.arraybuf");
 console.log("ci", ci[0].some((e) => e[0] === "globalThis.ArrayBuffer"));
 const call = __wjs_cli_complete("globalThis.Array().");
 console.log("call", call[0].length === 0);
 const e = __wjs_cli_complete("console.");
-// pane 整块文档（实时读语料；签名不进描述，见 repl_complete.rs 头注）。
-console.log("dot-empty", e[0].some((p) => p[0] === "console.log" && (p[1] ?? "").includes("outputs a message")) && e[0].some((p) => p[0] === "console.trace" && (p[1] ?? "").includes("stack trace")) && e[1] === "console.");
+// 左格签名 `p[1]`、右盒文档 `p[2]`（三元组桥；签名文档分块）。
+console.log("dot-empty", e[0].some((p) => p[0] === "console.log" && (p[1] ?? "").includes("stdout")) && e[0].some((p) => p[0] === "console.trace" && (p[2] ?? "").includes("stack trace")) && e[1] === "console.");
 const g = __wjs_cli_complete("global.");
 console.log("global-dot", g[0].length > 0 && g[0].every((p) => p[0].startsWith("global.")) && g[1] === "global.");
 const v = __wjs_cli_complete("Object.p");
-console.log("value-sig", v[0].some((p) => p[0] === "Object.prototype" && p[1] === ": {}"));
+console.log("value-sig", v[0].some((p) => p[0] === "Object.prototype" && p[2] === ": {}"));
 "#,
     );
     for line in [

@@ -684,3 +684,15 @@ G1/G2/G3/G9 已收官。）
   `lookup` 存在性是唯一真相）。node 私货（`setImmediate`）有形无页，自然 None。
 - 验证：单测 slug 形状 + 存在性 + 穿越拒收；`.doc encodeURI` 黑盒；浮窗经
   `__wjs_doc_summary` 自动带出；strict 785/785；行数守门 ok。
+
+## 2026-09-28 文档全接上（用户：mdn 有的全接上）
+
+- 现状：已进仓但够不着的三块——sm_head 白名单外的头（Atomics/Temporal/
+  ArrayBuffer…）、Web 静态方法（`URL.parse` 的 `_static` 惯例）、语句/操作符
+  （`for`/`typeof`）。`WebAssembly` 等住 `web/` 别处的，不管（没进仓）。
+- 落法：`slug` 主规则不动（精确可测），`lookup` 加存在性试探（首中即返，
+  段字符集限定防穿越）：`A.b` → `global_objects/a/b`、`web/api/a/b`、
+  `web/api/a/b_static`；bare → `statements/t`、`operators/t`、`web/api/t`。
+  白名单从此只走快路径，不再是覆盖边界。
+- 验证：单测试探四路 + 双 miss；`.doc Atomics.add` 黑盒；浮窗自动带出；
+  strict 785/785；行数守门 ok。

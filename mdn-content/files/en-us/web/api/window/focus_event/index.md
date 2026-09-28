@@ -1,0 +1,89 @@
+---
+title: "Window: focus event"
+short-title: focus
+slug: Web/API/Window/focus_event
+page-type: web-api-event
+browser-compat: api.Window.focus_event
+---
+
+{{APIRef("UI Events")}}
+
+The **`focus`** event fires when the window has received focus, such as when focus transitions from the address bar into the page. Focus can be on the document's viewport or on an element within it.
+
+The opposite of `focus` is {{domxref("Window/blur_event", "blur")}}.
+
+This event is not cancelable and does not bubble.
+
+## Syntax
+
+Use the event name in methods like {{domxref("EventTarget.addEventListener", "addEventListener()")}}, or set an event handler property.
+
+```js-nolint
+addEventListener("focus", (event) => { })
+
+onfocus = (event) => { }
+```
+
+## Event type
+
+A {{domxref("FocusEvent")}}. Inherits from {{domxref("UIEvent")}} and {{domxref("Event")}}.
+
+{{InheritanceDiagram("FocusEvent")}}
+
+## Examples
+
+### Live example
+
+This example changes the appearance of a document when it loses focus. It uses {{domxref("EventTarget.addEventListener()", "addEventListener()")}} to monitor `focus` and {{domxref("Window/blur_event", "blur")}} events.
+
+#### HTML
+
+```html
+<p id="log">Click on this document to give it focus.</p>
+```
+
+#### CSS
+
+```css
+.paused {
+  background: #dddddd;
+  color: #555555;
+}
+```
+
+#### JavaScript
+
+```js
+const log = document.getElementById("log");
+
+function pause() {
+  document.body.classList.add("paused");
+  log.textContent = "FOCUS LOST!";
+}
+
+function play() {
+  document.body.classList.remove("paused");
+  log.textContent =
+    "This document has focus. Click outside the document to lose focus.";
+}
+
+window.addEventListener("blur", pause);
+window.addEventListener("focus", play);
+```
+
+#### Result
+
+{{EmbedLiveSample("Live_example")}}
+
+## Specifications
+
+{{Specifications}}
+
+## Browser compatibility
+
+{{Compat}}
+
+## See also
+
+- Related event: {{domxref("Window/blur_event", "blur")}}
+- This event on `Element` targets: {{domxref("Element/focus_event", "focus")}} event

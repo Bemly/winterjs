@@ -35,6 +35,6 @@ template:
           td!= s.w
   p 沙箱模型：不给任何 #[code --allow-*] → 全开放（历史行为）；给了任一 → 开沙箱，未授权类别拒绝并报 #[code PermissionError]。
   h2 退出码
-  p #[code 0] 正常 · #[code 1] 运行/用法错（未捕获 JS、flag 配错） · #[code 2] clap 解析错（如 #[code -l] 非法值） · #[code 9] 非法 node 兼容旗值或自递归守卫 · 脚本 #[code process.exit(n)] 透传 #[code n]。
+  p #[code 0] 正常 · #[code 1] 运行/用法错（未捕获 JS、flag 配错） · #[code 2] clap 解析错（如 #[code -l] 非法值） · #[code 9] 非法 node 兼容旗值或自递归拦截 · 脚本 #[code process.exit(n)] 即以 #[code n] 退出。
   h2 Node 兼容旗
   p node 运行时旗（#[code --expose-internals]、#[code --experimental-*] 等）解析前剥除，记在 #[code process.execArgv]，经 #[code internal/options] 读回。剥过旗时接受 #[code node --flag file args] 形（自动补 #[code --run]）；无兼容旗的裸 #[code winterjs file.js] 照旧报错。非法旗#[em 值] exit=9（绝不剥掉重跑同一文件）。

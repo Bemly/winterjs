@@ -9,7 +9,7 @@ template:
   h2 规则
   ol
     li #[strong 一次恰好一个动作]。#[code --run a.js --eval 1] → exit=1。
-    li #[strong 无裸子命令、无裸位置参数]。#[code winterjs a.js] 是错的，用 #[code winterjs --run a.js]。唯一的尾部位置参数是 #[code --run] 的#[em 脚本参数]（#[code process.argv.slice(2)]），建议用 #[code --] 分隔：#[code winterjs --run app.js -- --port 8080]。无任何参数的裸 #[code winterjs] 直接进交互式 REPL（node/python 同款）。]
+    li #[strong 无裸子命令、无裸位置参数]。#[code winterjs a.js] 是错的，用 #[code winterjs --run a.js]。唯一的尾部位置参数是 #[code --run] 的#[em 脚本参数]（#[code process.argv.slice(2)]），建议用 #[code --] 分隔：#[code winterjs --run app.js -- --port 8080]。无任何参数的裸 #[code winterjs] 直接进交互式 REPL（node/python 同款）。
     li #[strong 修饰 flag 只在对应动作下生效]。配错直接 exit=1：#[code --X only works with --Y (see --help)]。
   h2 动作
   table

@@ -33,8 +33,8 @@ const SceneBlock: React.FC<{ index: number; timing: SceneTiming; memes: Record<s
       <Audio src={staticFile("sfx/whoosh.wav")} volume={0.5} />
 
       {/* 角色常驻：说话的一方提亮弹跳 */}
-      <Portrait who="whale" speaking={speaker === "whale"} sceneIndex={index} />
-      <Portrait who="claude" speaking={speaker === "claude"} sceneIndex={index} />
+      <Portrait who="whale" speaking={speaker === "whale"} />
+      <Portrait who="claude" speaking={speaker === "claude"} />
 
       {timing.lines.map((lt, i) => {
         const line = scene.lines[i];

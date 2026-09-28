@@ -2,16 +2,12 @@
 
 全部取自 [蓝色大肥鱼](https://蓝色大肥鱼.com/)（AI 娘表情包开放档案），只选用详情页授权标注为 **CC0 公共领域** 的作品。
 
-## 立绘（public/cast/，白底抠图 + 裁半身）
+## 立绘（public/cast/，作者指定，birefnet 抠图 + 裁切）
 
-| 文件 | 作品 | slug |
-|---|---|---|
-| whale-sailor.webp | 一些肥鱼 · 02（@MX1951） | deepseek202609200006 |
-| whale-hoodie.webp | 一些肥鱼 · 03（@MX1951） | deepseek202609200007 |
-| whale-pajama.webp | 一些肥鱼 · 04（@MX1951） | deepseek202609200008 |
-| whale-plaid.webp | 一些肥鱼 · 05（@MX1951） | deepseek202609200009 |
-| whale-maid.webp | 一些肥鱼 · 07（@MX1951） | deepseek202609200011 |
-| claude.webp | 原生家庭有些不好的Claude · 07（@MX1951） | claude202609200007 |
+| 文件 | 内容 |
+|---|---|
+| whale.webp | DeepSeek娘 女仆装坐姿（作者提供） |
+| claude.webp | "小克 Claude" 角色卡中的 Claude娘（作者提供，已去掉卡框与背景） |
 
 ## 表情包（public/memes/）
 
@@ -101,3 +97,6 @@
 | pile.webp | 两只 Q 版叠罗汉 |
 | behindscreen.png | "当你想对我恶语相向时，请注意屏幕后面的我可是这样的"（带 NGA 水印） |
 | nowuser.png | "好的，现在我是用户了" 鹿角帽 DeepSeek娘 |
+| thinkpat.png | DeepSeek娘 想被摸头（思考气泡） |
+| bowl.png | DeepSeek娘 头顶铁盆 |
+| blink.gif | DeepSeek娘 Q 版眨眼动图 |

@@ -2,7 +2,7 @@
 
 基于 [Remotion](https://www.remotion.dev/) 的代码化视频工程。主分支 `master` 是 WinterJS 本体；本分支 `promo-video` 是独立的孤儿分支，只放视频工程。
 
-- 时长约 9 分钟，1920×1080 / 30fps，DeepSeek娘 × Claude娘 双人对话（立绘与 74 张 Q 版表情包均取自蓝色大肥鱼 CC0 作品），烧录字幕 + 外挂 SRT
+- 时长约 9 分钟，1920×1080 / 30fps，DeepSeek娘 × Claude娘 双人对话（立绘由作者指定；表情包为蓝色大肥鱼 CC0 作品 + 作者指定图），烧录字幕 + 外挂 SRT
 - 10 个段落：开场 → 底层 SpiderMonkey×mozjs → 横向对比 Node/Deno/Bun → 纵向家谱 → Vue 实战 → 接管 yarn/pnpm/bun/deno 项目 → WinterCG → REPL → `WinterJS.*` 原生 API（多媒体）→ 总结
 
 ## 实时预览
@@ -30,7 +30,7 @@ npm run studio                 # 打开 http://localhost:3000 实时预览，改
 | 角色音色 | `src/script.json` 的 `cast`（edge-tts 音色名、音高、语速） |
 | 各段画面 | `src/scenes/*.tsx`（画面元素按"第几句开始"对齐） |
 | 表情包 | `public/memes/`（`manifest.json` 映射 key → 文件；`script.json` 里每句 `meme` 弹一张、`burst` 放表情包雨） |
-| 角色立绘 | `public/cast/`（DeepSeek娘 每段换一套衣服，见 `src/components/Characters.tsx`） |
+| 角色立绘 | `public/cast/`（作者指定的 DeepSeek娘 与 Claude娘 立绘，抠图后裁半身） |
 
 ## 素材与授权
 

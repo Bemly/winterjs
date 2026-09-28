@@ -4151,3 +4151,20 @@
 - 复现：任意含撇号文案进 `__wjsReplSig` 后 `--eval '40 + 2'`。
 - 推广铁律：**凡进 prelude/loader 内嵌 JS 的外部文案（文档/错误文案/i18n），
   落盘前必须过引号转义检查**；跨语言搬运（MDN→JS 字面量）默认视为脏输入。
+
+### 4.229 具名函数表达式赋给 globalThis 属性不建词法绑定（2026-09-28，本体化轮）
+
+- 症状：补全核心下沉 prelude 后，`__wjs_cli_complete("globalThis.Object.assign")`
+  经 `--eval` 对、经 `--run` 文件即空集（`sig[0][0] is undefined`），且
+  `import "node:repl"` 与否无关——极易误判为 node 壳冲掉本体。
+- 根因：核心以 `globalThis.__wjs_repl_default_complete = function __defaultComplete(...)`
+  注册，函数名只在函数体内可见；桥里裸调 `__defaultComplete(...)` 即
+  ReferenceError，又被桥内 `try/catch` 吞掉回空集。`--eval` 对是因为当时
+  二进制仍是旧构建（未重编），非语义差异——stash/checkout 换代码必重编再探
+  （4.62/4.69）同族。
+- 修法：桥内经属性取后调用（`const __core = globalThis.__wjs_repl_default_complete`，
+  判函数形再调）；定位靠"core 直调对、桥调错"的同文件双探针逐段二分。
+- 复现：`--run` 文件内 core/bridge 同参连调（本轮 `/tmp/wjs-probe-o4.mjs` 口径）。
+- 推广铁律：**`globalThis.X = function Name` 后一律经 `globalThis.X` 调用**，
+  裸 `Name` 只在函数声明（`function Name(){}`）后可用；吞错的 `try/catch`
+  桥内，空结果先疑调用点绑定错，不疑被调用方。

@@ -227,15 +227,16 @@ setTimeout(() => {
 
 #[test]
 fn p2_repl_cli_complete_bridge() {
-    // P2-repl R5（方向纠正）：CLI 补全桥 `__wjs_cli_complete`（winterjs repl
-    // 底座域，prelude/repl_complete）骑 node:repl 注册的补全核心——
-    // bare 真上下文键（global 在）/成员链/大小写不敏感/调用形拒答/签名描述。
-    // node:repl 公开导出面保持 node 同形（无 cliComplete）。
+    // 本体拥有补全核心（prelude/repl_complete）：`__wjs_cli_complete` 与
+    // `__wjs_repl_default_complete` 开箱即有，不依赖 `node:repl` 加载；
+    // `node:repl` 仅薄包反向复用（注入 vm 求值器），公开面保持 node 同形
+    // （无 cliComplete）。bare 真上下文键/成员链/大小写不敏感/调用形拒答/签名描述。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
         "o.mjs",
         r#"
+console.log("pre", typeof globalThis.__wjs_cli_complete === "function" && typeof globalThis.__wjs_repl_default_complete === "function");
 import repl from "node:repl";
 console.log("clean", repl.cliComplete === undefined && typeof globalThis.__wjs_repl_default_complete === "function");
 const b = __wjs_cli_complete("gl");
@@ -259,6 +260,7 @@ console.log("value-sig", v[0].some((p) => p[0] === "Object.prototype" && p[1] ==
 "#,
     );
     for line in [
+        "pre true",
         "clean true",
         "bare true",
         "member true",

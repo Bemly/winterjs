@@ -19,7 +19,8 @@
 //!   不同步，vm 快照语义沿用）。
 //! - 无 `useGlobal`（恒隔离上下文）、无预览/高亮（无 completer 面）、
 //!   无 `reset` 方法（`.clear` 命令等价，`reset` 事件照发）。
-//! - 补全为保守子集（P2-repl R3）：成员链/串数下标/fs 路径/bare 上下文键；
+//! - 补全为保守子集（R3 口径，核心住 winterjs 底座 prelude，本模块薄包
+//!   注入 vm 求值器反向复用）：成员链/串数下标/fs 路径/bare 上下文键；
 //!   调用·分组外结构一律拒答；路径求值 getter 拒入；Proxy 不可探测（
 //!   `util.types.isProxy` 恒 false，引擎缺口）；bare 词法作用域不可枚举；
 //!   unicode 标识符过滤缺口；`resetContext`/`setupHistory` 未做。
@@ -82,148 +83,16 @@ function defaultWriter(value) {
 }
 defaultWriter.options = { ...inspect.defaultOptions, showProxy: true };
 
-// P2-repl R3：保守子集补全（见 complete 方法注记）。
-// P2-repl R3d：键枚举（node filteredOwnPropertyNames 口径子集：去数组下标、
-// 去非标识符；unicode 标识符缺口记档，套件全 ASCII）。
-function __isCompIdent(n) {
-  return /^[A-Za-z_$][\w$]*$/.test(n);
-}
-function __isIndexKey(n) {
-  if (n === '') return false;
-  const v = Number(n);
-  return Number.isInteger(v) && v >= 0 && String(v) === n;
-}
-function __enumKeys(obj) {
-  const out = [];
-  const seen = new Set();
-  let o = obj;
-  while (o !== null && o !== undefined && (typeof o === 'object' || typeof o === 'function')) {
-    let names = [];
-    try { names = Object.getOwnPropertyNames(o); } catch { break; }
-    for (const n of names) {
-      if (typeof n !== 'string' || seen.has(n)) continue;
-      seen.add(n);
-      if (__isIndexKey(n) || !__isCompIdent(n)) continue;
-      out.push(n);
-    }
-    try { o = Object.getPrototypeOf(o); } catch { break; }
-  }
-  return out;
-}
-function __descAt(obj, key) {
-  let o = obj;
-  while (o !== null && o !== undefined && (typeof o === 'object' || typeof o === 'function')) {
-    let d = null;
-    try { d = Object.getOwnPropertyDescriptor(o, key); } catch { return null; }
-    if (d !== undefined && d !== null) return d;
-    try { o = Object.getPrototypeOf(o); } catch { return null; }
-  }
-  return null;
-}
-function __ctxEval(expr, context) {
-  // P2-repl R5：CLI 桥传 globalThis（非 vm context）——走全局间接 eval，
-  // 与 CLI REPL 的经典脚本求值面同源（成员链/bare 键真上下文）。
-  if (context === globalThis) return (0, eval)(expr);
-  return vm.runInContext(expr, context, 'repl-completion');
-}
-// base 文本拆根 + 步进（括号配平扫描；非法即 null）。
-function __parseSteps(base) {
-  const root = /^[A-Za-z_$][\w$]*/.exec(base);
-  if (root === null || root.index !== 0) return null;
-  const steps = [];
-  let i = root[0].length;
-  while (i < base.length) {
-    const rest = base.slice(i);
-    let m = /^\s*\.\s*([A-Za-z_$][\w$]*)/.exec(rest);
-    if (m !== null) {
-      steps.push({ prop: m[1] });
-      i += m[0].length;
-      continue;
-    }
-    m = /^\s*\[/.exec(rest);
-    if (m === null) return null;
-    let j = i + m[0].length;
-    let depth = 1;
-    while (j < base.length && depth > 0) {
-      const c = base[j];
-      if (c === '"' || c === "'" || c === '`') {
-        const q = c;
-        j++;
-        while (j < base.length && base[j] !== q) j += base[j] === '\\' ? 2 : 1;
-        j++;
-        continue;
-      }
-      if (c === '[') depth++;
-      else if (c === ']') depth--;
-      j++;
-    }
-    if (depth !== 0) return null;
-    steps.push({ key: base.slice(i + m[0].length, j - 1).trim() });
-    i = j;
-    const ws = /^\s*/.exec(base.slice(i))[0];
-    i += ws.length;
-  }
-  return { root: root[0], steps };
-}
-function __walkSteps(parsed, context) {
-  let obj;
-  try { obj = __ctxEval(parsed.root, context); }
-  catch { return null; }
-  for (let si = 0; si < parsed.steps.length; si++) {
-    const st = parsed.steps[si];
-    const last = si === parsed.steps.length - 1;
-    if (obj === null || obj === undefined) return null;
-    // P2-repl R3b：末段允许原始值（`obj["one"].toFi` 的 Number 原型面）；
-    // 中段恒对象（描述符步进）。
-    if (typeof obj !== 'object' && typeof obj !== 'function') {
-      if (!last) return null;
-      obj = Object(obj);
-    }
-    let key;
-    if (st.prop !== undefined) {
-      key = st.prop;
-    } else {
-      // P2-repl R3c：仅调用形括号拒答（`f(`；分组/三元/算术求值，真机口径）；
-      // 箭头/插值/赋值一律拒；tag 模板拒、纯模板放行。
-      if (/[A-Za-z_$][\w$]*\s*\(|=>|\$\{|=/.test(st.key)) return null;
-      const __wide = st.key.trim();
-      if (!/^`(?:[^`\\]|\\.)*`$/.test(__wide) && __wide.includes('`')) return null;
-      try { key = __ctxEval(st.key, context); }
-      catch { return null; }
-      if (typeof key !== 'string' && typeof key !== 'number') return null;
-      key = String(key);
-    }
-    const d = __descAt(obj, key);
-    if (d === null || d.get !== undefined || d.set !== undefined) return null;
-    try { obj = obj[key]; }
-    catch { return null; }
-  }
-  // 末值装箱再枚举（Number 原型面；getter 拒入已在描述符处截停）。
-  if (obj === null || obj === undefined) return null;
-  return Object(obj);
-}
-function __fsComplete(dir, prefix) {
-  // P2-repl R3e：真机 fs 补全口径（allowBlockingCompletions 下实测）——
-  // 既存目录即列子项裸名（completeOn 置空），否则同级前缀过滤裸名；
-  // 坏径即空（completeOn 回前缀）。
-  const base = dir === '' ? '.' : dir;
-  const full = prefix === '' ? base : base + '/' + prefix;
-  let isDir = false;
-  try { isDir = fs.statSync(full).isDirectory(); }
-  catch { /* ignore */ }
-  if (isDir) {
-    let names = [];
-    try { names = fs.readdirSync(full); }
-    catch { return [[], '']; }
-    return [names.filter((n) => typeof n === 'string').sort(), ''];
-  }
-  let names = [];
-  try { names = fs.readdirSync(base); }
-  catch { return [[], prefix]; }
-  return [names.filter((n) => typeof n === 'string' && n.startsWith(prefix)).sort(), prefix];
-}
+// 补全薄壳（本体拥有核心）：调 winterjs 底座
+// `globalThis.__wjs_repl_default_complete`（prelude/repl_complete），
+// 注入 vm 上下文求值器；公开面保持 node 真机同形。
+// R3 保守子集口径见底座（成员链/串数下标/fs 路径/bare 上下文键；
+// 调用·分组外结构拒答；getter 拒入；Proxy 不可探测记档）。
 function __commonPrefix(list) {
-  if (list.length === 0) return '';
+  if (typeof globalThis.__wjs_repl_common_prefix === 'function') {
+    try { return globalThis.__wjs_repl_common_prefix(list); } catch { /* fallthrough */ }
+  }
+  if (!Array.isArray(list) || list.length === 0) return '';
   let p = list[0];
   for (let i = 1; i < list.length; i++) {
     const s = list[i];
@@ -234,85 +103,20 @@ function __commonPrefix(list) {
   }
   return p;
 }
-// 同长掩码（串内逐字空格，定位用；`=` 剥离不偏）。
-function __maskStrings(line) {
-  return line.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, (m) => ' '.repeat(m.length));
-}
 function __defaultComplete(context, line, callback) {
-  const done = (list, completeOn) => callback(null, [list, completeOn]);
-  if (typeof line !== 'string') line = String(line);
-  const masked0 = __maskStrings(line);
-  // 调用结果成员（`f().x`）恒拒答（nosideeffects 口径）。
-  if (/\)\s*\.\s*[\w$]*$/.test(masked0)) return done([], line);
-  // ① 成员形（末段点+前缀；new 剥除；声明赋值取等号后段）。
-  const tryMember = (text) => {
-    const mm = /^(.*?)\.\s*([\w$]*)$/.exec(text);
-    if (mm === null) return null;
-    let base = mm[1];
-    const filter = mm[2];
-    base = base.replace(/^new\s+/, '');
-    const parsed = __parseSteps(base);
-    if (parsed === null) return 'parse-fail';
-    const obj = __walkSteps(parsed, context);
-    if (obj === null) return 'walk-fail';
-    // P2-repl R3c：过滤大小写不敏感（真机 `tofi`→`toFixed`），回显原键。
-    const lowFilter = filter.toLowerCase();
-    const list = __enumKeys(obj).filter((k) => k.toLowerCase().startsWith(lowFilter))
-      .map((k) => `${base}.${k}`);
-    return [list, `${base}.${filter}`];
-  };
-  let mr = tryMember(line);
-  if (Array.isArray(mr)) return done(...mr);
-  // 解析成形成立而求值失败（缺键/getter/不可达）即拒答，不穿透 bare。
-  if (mr === 'walk-fail') return done([], line);
-  // mr 为 null（无成员形）或 parse-fail：先试路径。
-  const qm = /(['"`])((?:\\.|(?!\1).)*)$/.exec(line);
-  if (qm !== null) {
-    const content = qm[2];
-    const slash = content.lastIndexOf('/');
-    const dir = content.slice(0, slash);
-    const prefix = content.slice(slash + 1);
-    return done(...__fsComplete(dir, prefix));
+  const core = globalThis.__wjs_repl_default_complete;
+  const s = typeof line === 'string' ? line : String(line);
+  if (typeof core !== 'function') {
+    callback(null, [[], s]);
+    return;
   }
-  if (mr === 'parse-fail') {
-    const eq = masked0.lastIndexOf('=');
-    if (eq > 0 && line.slice(eq + 1).trim() !== '') {
-      const mr2 = tryMember(line.slice(eq + 1).trim());
-      if (Array.isArray(mr2)) return done(...mr2);
-      if (mr2 === 'walk-fail') return done([], line);
-    }
-  }
-  // ③ 剥字面量后残留结构符（含赋值）即拒答。
-  if (/[()=;{}=]|`/.test(masked0)) return done([], line);
-  // ④ bare 词仅无点行（SM 全局键非枚举，走 getOwnPropertyNames；
-  // 词法作用域不可枚举记档）。
-  if (masked0.includes('.')) return done([], line);
-  const bm = /([A-Za-z_$][\w$]*)$/.exec(line);
-  if (bm === null) return done([], line);
-  const prefix = bm[1];
-  const head = line.slice(0, line.length - prefix.length);
-  let keys = [];
+  const evalFn = (expr, ctx) => vm.runInContext(expr, ctx ?? context, 'repl-completion');
   try {
-    keys = keys.concat(Object.getOwnPropertyNames(context));
-  } catch { /* ignore */ }
-  try {
-    keys = keys.concat(Object.getOwnPropertyNames(globalThis));
-  } catch { /* ignore */ }
-  const seen = new Set();
-  const list = [];
-  const lowPrefix = prefix.toLowerCase();
-  for (const k of keys) {
-    if (!k.toLowerCase().startsWith(lowPrefix) || seen.has(k)) continue;
-    seen.add(k);
-    list.push(head + k);
+    core(context, s, callback, evalFn);
+  } catch {
+    callback(null, [[], s]);
   }
-  return done(list, line);
 }
-
-// P2-repl R5：补全核心注册 winterjs 内部面（`__wjs_` 惯例）——CLI REPL 底座
-// （prelude/repl_complete）复用同一套子集规则，node:repl 公开导出面保持
-// node 真机同形（不加非 node API）。
-globalThis.__wjs_repl_default_complete = __defaultComplete;
 
 function defaultEval(cmd, context, filename, callback) {
   let result;

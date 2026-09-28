@@ -1,28 +1,255 @@
-//! winterjs REPL 底座·补全面（2026-09-28 R5 方向纠正：CLI REPL 是本体，
-//! node:repl 兼容面反向复用底座；CLI 专属能力一律住本域，禁进 node:* 公开导出面）。
+//! winterjs REPL 底座·补全面（本体拥有补全核心；`node:repl` 仅兼容壳，
+//! 反向复用本域——CLI 专属能力一律住本域，禁进 node:* 公开导出面）。
 //!
 //! - `__wjs_repl_tla_wrap` 系（processTopLevelAwait 移植 + 本桥）随 REPL 会话
 //!   注入（runtime/repl），不在 PRELUDE——acorn 6827 行全会话加载拖慢启动。
-//! - `__wjs_cli_complete(line)`：CLI reedline Tab 的补全桥——骑
-//!   `globalThis.__wjs_repl_default_complete`（`node:repl` 模块加载时注册的
-//!   R3 子集补全核心：成员链逐步求值/fs 路径/bare 上下文键/大小写不敏感；
-//!   `require('node:repl')` 幂等触发加载），对 CLI 全局求值面工作，
-//!   返回 `[[全文, 描述], ...], completeOn`（描述进 IdeMenu 右侧 pane）。
+//! - `__wjs_repl_default_complete(context, line, callback, evalFn?)`：R3 子集
+//!   补全核心（成员链逐步求值/fs 路径/bare 上下文键/大小写不敏感），本体拥有。
+//!   `evalFn(expr, ctx)` 由调用方注入（`node:repl` 传 vm 求值器；CLI 传空走
+//!   全局间接 eval）。fs 经 `__wjs_fs_*` native 直调，不 import `node:fs`。
+//! - `__wjs_cli_complete(line)`：CLI reedline Tab 的补全桥——调本地核心，
+//!   对 CLI 全局求值面工作，返回 `[[全文, 描述], ...], completeOn`
+//!   （描述进 IdeMenu 右侧 pane）。不 require 任何 `node:*`。
 //! - 签名摘要：SM native `toString()` 不带形参名（实测空括号），常用面
 //!   手写 `__SIG` 表；用户函数抽 toString 真形参；非函数给类型/值摘要
 //!   （描述符沿链安全读，不触发 getter）。
 pub const REPL_COMPLETE_JS: &str = r#"
-// ---- winterjs repl 底座：CLI 补全桥（__wjs_ 内部面；调用时才骑模块核心）----
+// ---- winterjs repl 底座：补全核心（本体拥有；node:repl 薄包反向复用）----
+function __isCompIdent(n) {
+  return /^[A-Za-z_$][\w$]*$/.test(n);
+}
+function __isIndexKey(n) {
+  if (n === '') return false;
+  const v = Number(n);
+  return Number.isInteger(v) && v >= 0 && String(v) === n;
+}
+function __enumKeys(obj) {
+  const out = [];
+  const seen = new Set();
+  let o = obj;
+  while (o !== null && o !== undefined && (typeof o === 'object' || typeof o === 'function')) {
+    let names = [];
+    try { names = Object.getOwnPropertyNames(o); } catch { break; }
+    for (const n of names) {
+      if (typeof n !== 'string' || seen.has(n)) continue;
+      seen.add(n);
+      if (__isIndexKey(n) || !__isCompIdent(n)) continue;
+      out.push(n);
+    }
+    try { o = Object.getPrototypeOf(o); } catch { break; }
+  }
+  return out;
+}
+function __descAt(obj, key) {
+  let o = obj;
+  while (o !== null && o !== undefined && (typeof o === 'object' || typeof o === 'function')) {
+    let d = null;
+    try { d = Object.getOwnPropertyDescriptor(o, key); } catch { return null; }
+    if (d !== undefined && d !== null) return d;
+    try { o = Object.getPrototypeOf(o); } catch { return null; }
+  }
+  return null;
+}
+function __ctxEval(expr, context, evalFn) {
+  // 本体求值：调用方注入优先（node:repl 传 vm 求值器）；缺省全局间接 eval
+  // （CLI 全局面同源）；vm 上下文无注入即抛给上层转拒答，不静默错配。
+  if (typeof evalFn === 'function') return evalFn(expr, context);
+  if (context === globalThis) return (0, eval)(expr);
+  throw new Error('no evaluator');
+}
+// base 文本拆根 + 步进（括号配平扫描；非法即 null）。
+function __parseSteps(base) {
+  const root = /^[A-Za-z_$][\w$]*/.exec(base);
+  if (root === null || root.index !== 0) return null;
+  const steps = [];
+  let i = root[0].length;
+  while (i < base.length) {
+    const rest = base.slice(i);
+    let m = /^\s*\.\s*([A-Za-z_$][\w$]*)/.exec(rest);
+    if (m !== null) {
+      steps.push({ prop: m[1] });
+      i += m[0].length;
+      continue;
+    }
+    m = /^\s*\[/.exec(rest);
+    if (m === null) return null;
+    let j = i + m[0].length;
+    let depth = 1;
+    while (j < base.length && depth > 0) {
+      const c = base[j];
+      if (c === '"' || c === "'" || c === '`') {
+        const q = c;
+        j++;
+        while (j < base.length && base[j] !== q) j += base[j] === '\\' ? 2 : 1;
+        j++;
+        continue;
+      }
+      if (c === '[') depth++;
+      else if (c === ']') depth--;
+      j++;
+    }
+    if (depth !== 0) return null;
+    steps.push({ key: base.slice(i + m[0].length, j - 1).trim() });
+    i = j;
+    const ws = /^\s*/.exec(base.slice(i))[0];
+    i += ws.length;
+  }
+  return { root: root[0], steps };
+}
+function __walkSteps(parsed, context, evalFn) {
+  let obj;
+  try { obj = __ctxEval(parsed.root, context, evalFn); }
+  catch { return null; }
+  for (let si = 0; si < parsed.steps.length; si++) {
+    const st = parsed.steps[si];
+    const last = si === parsed.steps.length - 1;
+    if (obj === null || obj === undefined) return null;
+    // 末段允许原始值（Number 原型面）；中段恒对象（描述符步进）。
+    if (typeof obj !== 'object' && typeof obj !== 'function') {
+      if (!last) return null;
+      obj = Object(obj);
+    }
+    let key;
+    if (st.prop !== undefined) {
+      key = st.prop;
+    } else {
+      // 仅调用形括号拒答；箭头/插值/赋值一律拒；tag 模板拒、纯模板放行。
+      if (/[A-Za-z_$][\w$]*\s*\(|=>|\$\{|=/.test(st.key)) return null;
+      const __wide = st.key.trim();
+      if (!/^`(?:[^`\\]|\\.)*`$/.test(__wide) && __wide.includes('`')) return null;
+      try { key = __ctxEval(st.key, context, evalFn); }
+      catch { return null; }
+      if (typeof key !== 'string' && typeof key !== 'number') return null;
+      key = String(key);
+    }
+    const d = __descAt(obj, key);
+    if (d === null || d.get !== undefined || d.set !== undefined) return null;
+    try { obj = obj[key]; }
+    catch { return null; }
+  }
+  if (obj === null || obj === undefined) return null;
+  return Object(obj);
+}
+function __fsComplete(dir, prefix) {
+  // 真机 fs 补全口径：既存目录即列子项裸名（completeOn 置空），否则同级
+  // 前缀过滤裸名；坏径即空（completeOn 回前缀）。经 __wjs_fs_* native 直调。
+  const base = dir === '' ? '.' : dir;
+  const full = prefix === '' ? base : base + '/' + prefix;
+  let isDir = false;
+  try {
+    const meta = JSON.parse(__wjs_fs_stat(full, true));
+    isDir = !!(meta && meta.isDirectory === true);
+  } catch { isDir = false; }
+  if (isDir) {
+    let names = [];
+    try { names = JSON.parse(__wjs_fs_readdir(full, false)); }
+    catch { return [[], '']; }
+    if (!Array.isArray(names)) return [[], ''];
+    return [names.filter((n) => typeof n === 'string').sort(), ''];
+  }
+  let names = [];
+  try { names = JSON.parse(__wjs_fs_readdir(base, false)); }
+  catch { return [[], prefix]; }
+  if (!Array.isArray(names)) return [[], prefix];
+  return [names.filter((n) => typeof n === 'string' && n.startsWith(prefix)).sort(), prefix];
+}
+function __commonPrefix(list) {
+  if (list.length === 0) return '';
+  let p = list[0];
+  for (let i = 1; i < list.length; i++) {
+    const s = list[i];
+    let j = 0;
+    while (j < p.length && j < s.length && p[j] === s[j]) j++;
+    p = p.slice(0, j);
+    if (p === '') break;
+  }
+  return p;
+}
+// 同长掩码（串内逐字空格，定位用；`=` 剥离不偏）。
+function __maskStrings(line) {
+  return line.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, (m) => ' '.repeat(m.length));
+}
+globalThis.__wjs_repl_common_prefix = __commonPrefix;
+globalThis.__wjs_repl_default_complete = function __defaultComplete(context, line, callback, evalFn) {
+  const done = (list, completeOn) => callback(null, [list, completeOn]);
+  if (typeof line !== 'string') line = String(line);
+  const masked0 = __maskStrings(line);
+  // 调用结果成员恒拒答（nosideeffects 口径）。
+  if (/\)\s*\.\s*[\w$]*$/.test(masked0)) return done([], line);
+  // ① 成员形（末段点+前缀；new 剥除；声明赋值取等号后段）。
+  const tryMember = (text) => {
+    const mm = /^(.*?)\.\s*([\w$]*)$/.exec(text);
+    if (mm === null) return null;
+    let base = mm[1];
+    const filter = mm[2];
+    base = base.replace(/^new\s+/, '');
+    const parsed = __parseSteps(base);
+    if (parsed === null) return 'parse-fail';
+    const obj = __walkSteps(parsed, context, evalFn);
+    if (obj === null) return 'walk-fail';
+    // 过滤大小写不敏感，回显原键。
+    const lowFilter = filter.toLowerCase();
+    const list = __enumKeys(obj).filter((k) => k.toLowerCase().startsWith(lowFilter))
+      .map((k) => `${base}.${k}`);
+    return [list, `${base}.${filter}`];
+  };
+  let mr = tryMember(line);
+  if (Array.isArray(mr)) return done(...mr);
+  // 解析成立而求值失败即拒答，不穿透 bare。
+  if (mr === 'walk-fail') return done([], line);
+  // mr 为 null 或 parse-fail：先试路径。
+  const qm = /(['"`])((?:\\.|(?!\1).)*)$/.exec(line);
+  if (qm !== null) {
+    const content = qm[2];
+    const slash = content.lastIndexOf('/');
+    const dir = content.slice(0, slash);
+    const prefix = content.slice(slash + 1);
+    return done(...__fsComplete(dir, prefix));
+  }
+  if (mr === 'parse-fail') {
+    const eq = masked0.lastIndexOf('=');
+    if (eq > 0 && line.slice(eq + 1).trim() !== '') {
+      const mr2 = tryMember(line.slice(eq + 1).trim());
+      if (Array.isArray(mr2)) return done(...mr2);
+      if (mr2 === 'walk-fail') return done([], line);
+    }
+  }
+  // ③ 剥字面量后残留结构符即拒答。
+  if (/[()=;{}=]|`/.test(masked0)) return done([], line);
+  // ④ bare 词仅无点行。
+  if (masked0.includes('.')) return done([], line);
+  const bm = /([A-Za-z_$][\w$]*)$/.exec(line);
+  if (bm === null) return done([], line);
+  const prefix = bm[1];
+  const head = line.slice(0, line.length - prefix.length);
+  let keys = [];
+  try {
+    keys = keys.concat(Object.getOwnPropertyNames(context));
+  } catch { /* ignore */ }
+  try {
+    keys = keys.concat(Object.getOwnPropertyNames(globalThis));
+  } catch { /* ignore */ }
+  const seen = new Set();
+  const list = [];
+  const lowPrefix = prefix.toLowerCase();
+  for (const k of keys) {
+    if (!k.toLowerCase().startsWith(lowPrefix) || seen.has(k)) continue;
+    seen.add(k);
+    list.push(head + k);
+  }
+  return done(list, line);
+};
+
+// ---- winterjs repl 底座：CLI 补全桥（__wjs_ 内部面；调本地核心）----
 globalThis.__wjs_cli_complete = (line) => {
-  require('node:repl'); // 幂等：触发 node:repl 模块加载 → 注册补全核心
   const s = String(line);
   let list, completeOn;
   if (s.trim() === '') {
     // 空行 Tab：全局全枚举（node 真机同形：空行 Tab 即列全局）。
-    // R3 核心 `bm === null` 回空集，那是 node:repl 模块面的保守口径——
-    // CLI 本体面在此展开，模块不动。`__wjs_` 内部面不计入（400+ plumbing
-    // 名淹没有菜单；显式前缀仍可触达）；completeOn 置空（Rust 零宽 span
-    // 光标处插入）。排序保证稳定。词法绑定（let/const）不可枚举，同 R3 记档。
+    // 核心 `bm === null` 回空集是模块保守口径——CLI 本体面在此展开。
+    // `__wjs_` 内部面不计入（400+ plumbing 名淹没有菜单；显式前缀仍可触达）；
+    // completeOn 置空（Rust 零宽 span 光标处插入）。排序保证稳定。
+    // 词法绑定（let/const）不可枚举，记档。
     let keys = [];
     try { keys = Object.getOwnPropertyNames(globalThis); } catch { keys = []; }
     list = keys
@@ -30,10 +257,12 @@ globalThis.__wjs_cli_complete = (line) => {
       .sort();
     completeOn = '';
   } else {
-    const core = globalThis.__wjs_repl_default_complete;
-    if (typeof core !== 'function') return [[], s];
+    // 本地核心直调（本体拥有，不 require 任何 node:*；经 globalThis
+    // 属性取——具名函数表达式赋值不建词法绑定，裸名不可见）。
+    const __core = globalThis.__wjs_repl_default_complete;
+    if (typeof __core !== 'function') return [[], s];
     let out = null;
-    try { core(globalThis, s, (err, r) => { out = r; }); } catch { return [[], s]; }
+    try { __core(globalThis, s, (err, r) => { out = r; }); } catch { return [[], s]; }
     if (out === null || !Array.isArray(out)) return [[], s];
     [list, completeOn] = out;
   }

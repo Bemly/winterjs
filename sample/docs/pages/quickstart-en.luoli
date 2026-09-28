@@ -23,6 +23,15 @@ template:
   ul
     each r in rules
       li= r.text
+  h2 REPL cheat sheet
+  pre
+    code.
+      $ ./target/debug/winterjs                       # bare start also enters the REPL
+      ❄&gt; WinterJS. + Tab                           # complete WinterJS.* with a doc pane
+      ❄&gt; .doc WinterJS.fs.readFile                 # full doc page for any topic
+      ❄&gt; await fetch("data:text/plain,hi").then((r) => r.text())  # top-level await works
+      ❄&gt; .help / .exit                             # help, quit (.quit, exit(), Ctrl-D too)
+  p Tab shows a completion menu with a documentation pane on the right; unclosed brackets keep reading (multiline); Ctrl-C twice within 2s quits.
   h2 3. Use Node APIs and Web globals
   pre
     code.

@@ -23,6 +23,15 @@ template:
   ul
     each r in rules
       li= r.text
+  h2 REPL 速查
+  pre
+    code.
+      $ ./target/debug/winterjs                       # 裸启动也进 REPL
+      ❄&gt; WinterJS. + Tab                           # 补全 WinterJS.* 并附右侧文档
+      ❄&gt; .doc WinterJS.fs.readFile                 # 任意主题看整篇文档
+      ❄&gt; await fetch("data:text/plain,hi").then((r) => r.text())  # 顶层 await 可用
+      ❄&gt; .help / .exit                             # 帮助、退出（.quit、exit()、Ctrl-D 同）
+  p Tab 出补全菜单 + 右侧文档；括号未闭合自动续行；2 秒内连按两次 Ctrl-C 退出。
   h2 3. 用 Node API 与 Web 全局
   pre
     code.

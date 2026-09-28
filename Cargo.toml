@@ -141,7 +141,7 @@ image = { version = "0.25", default-features = false, features = ["png", "bmp", 
 # ── §5 loader + 转译 + 编译期注册 + 内嵌资源 ───────────────────────────
 oxc_resolver = "11"
 oxc = { version = "0.149", default-features = false, features = ["semantic", "codegen", "transformer", "mangler", "minifier"] }
-jsonc-parser = "0.33"
+jsonc-parser = { version = "0.33", features = ["serde"] }  # WinterJS.jsonc 用 parse_to_serde_value（serde/serde_json 已在树内，零新增包）
 sourcemap = "9"
 linkme = "0.3"
 paste = "1"

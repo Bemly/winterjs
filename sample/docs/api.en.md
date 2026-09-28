@@ -35,6 +35,7 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 | `WinterJS.memory/alloc/unsafe*` | Stable | `sample/mem/basics.js` | `memory()` rss+allocator; `alloc(n)` GC-managed zero-filled `Uint8Array`; `unsafeAlloc/Write/Read/Size/Free/List` manual id heap behind `--allow-ffi` |
 | `WinterJS.semver/yaml/jsonc/ip/shlex/spdx/qrcode` | Stable | `sample/wstd/basics.js` | Pure-function utilities on tree wheels (npm-semver via deno_semver; YAML first-doc; JSONC tolerant; CIDR via ipnet; shlex split; SPDX expr check; terminal QR art) |
 | `WinterJS.shell/hex/time/retry/graph/git/oauth/transpile/log/mime/cookie/httpdate` | Stable | `sample/wsys/basics.js` | Batch 2 (shell expand env-gated; hex; jiff clock; backon delays + async helper; petgraph id-heap; gix read-only; oauth URL+PKCE/fetch exchange; oxc transpile; tracing log; mime/cookie/httpdate) |
+| `WinterJS.assert/util/punycode` | Stable | `sample/wcover/b1.js` | Native coverage B1 (structural assert + AssertionError; format/inspect riding the port; punycode core shared with node:punycode) |
 | `URL/URLSearchParams/URLPattern` | Stable | `sample/web/url.js` | WHATWG; legacy `url.parse/format` lives in `node:url` |
 | `TextEncoder/TextDecoder/atob/btoa` | Stable | `sample/web/url.js` | `fatal:true` supported |
 | `Blob/File` | Stable | `sample/web/blob-file.js` | `slice/text/arrayBuffer` |

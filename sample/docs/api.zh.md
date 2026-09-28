@@ -34,6 +34,7 @@ permalink: /zh/api/
 | `WinterJS.memory/alloc/unsafe*` | 稳定 | `sample/mem/basics.js` | `memory()` 看 rss+分配器；`alloc(n)` GC 托管零填；`unsafeAlloc/Write/Read/Size/Free/List` 手动 id 堆，需 `--allow-ffi` |
 | `WinterJS.semver/yaml/jsonc/ip/shlex/spdx/qrcode` | 稳定 | `sample/wstd/basics.js` | 树内轮子上的纯函数小工具（npm-semver 经 deno_semver；YAML 首文档；JSONC 容忍注释；CIDR 经 ipnet；shlex 切分；SPDX 表达式校验；终端二维码字符画） |
 | `WinterJS.shell/hex/time/retry/graph/git/oauth/transpile/log/mime/cookie/httpdate` | 稳定 | `sample/wsys/basics.js` | 第二批（shell 展开 env 门控；hex；jiff 时钟；backon 档位 + 异步 helper；petgraph id 堆；gix 只读；oauth 构造 + PKCE/fetch 交换；oxc 转译；tracing 日志；mime/cookie/httpdate） |
+| `WinterJS.assert/util/punycode` | 稳定 | `sample/wcover/b1.js` | 原生覆盖 B1（结构化 assert + AssertionError；format/inspect 复用移植实现；punycode 与 node:punycode 同核） |
 | `URL/URLSearchParams/URLPattern` | 稳定 | `sample/web/url.js` | URL 解析与构造（WHATWG）；legacy `url.parse/format` 在 `node:url` |
 | `TextEncoder/TextDecoder/atob/btoa` | 稳定 | `sample/web/url.js` | 文本编解码：支持 `fatal:true` |
 | `Blob/File` | 稳定 | `sample/web/blob-file.js` | 二进制对象：`slice/text/arrayBuffer` |

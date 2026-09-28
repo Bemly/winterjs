@@ -843,6 +843,9 @@ mod tests {
             ("WinterJS.mime", "serve uses"),
             ("WinterJS.cookie", "Set-Cookie"),
             ("WinterJS.httpdate", "IMF"),
+            ("WinterJS.assert", "prototypes"),
+            ("WinterJS.util", "same port"),
+            ("WinterJS.punycode", "DEP0040"),
         ] {
             let s = summary(topic).unwrap_or_else(|| panic!("{topic} documented"));
             assert!(s.contains(needle), "{topic}: {s}");

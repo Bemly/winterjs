@@ -38,6 +38,9 @@ WinterJS.log
 WinterJS.mime
 WinterJS.cookie
 WinterJS.httpdate
+WinterJS.assert
+WinterJS.util
+WinterJS.punycode
 ```
 
 ### Parameters
@@ -98,3 +101,9 @@ WinterJS.httpdate
   - : Cookie `parse`/`serialize`.
 - `httpdate`
   - : IMF date `parse`/`format`.
+- `assert`
+  - : Structural assertions (`deepEqual` ignores prototypes).
+- `util`
+  - : `format`/`inspect` (same port node:util rides).
+- `punycode`
+  - : Punycode core shared with `node:punycode`.

@@ -678,6 +678,30 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
    已上线；`rustyline` 同日退役移出 `Cargo.toml`，历史/双 Ctrl-C/非 TTY 退化
    平移同批完成（`is_terminal` 分流等三坑见 pitfalls 4.224）。
 
+6. 音视频 codec 候选（2026-09-29，用户问纯 Rust 音视频编解码时立项；**待拍板，
+   一律未进 `Cargo.toml`**）：`.crate` 源码实证（`~/wjs-data/crates-probe/`，
+   查 `*.c/*.h`/`build.rs`/`links`/cc 系依赖），四问口径同 §15。
+
+   | 轮子 | 版本/维护/下载 | 纯度 | 覆盖 | 门控/备注 |
+   |---|---|---|---|---|
+   | `symphonia`（音频解码全家） | 0.6.1 / 2026-08-13 / 14.9M | ✅（facade+子 crate 全纯，无 build.rs；MPL-2.0 弱 copyleft，法务自决） | aac/adpcm/aiff/alac/ape/caf/flac/isomp4/mkv/mp1/mp2/mp3/ogg/pcm/vorbis/wav（feature 按格式开；另有 exp-video/subtitle 实验面，不开） | 首选：1 个顶 N 个；SIMD 走 opt-in（`opt-simd-neon` 等，默认关） |
+   | `hound`（WAV 读写） | 3.5.1 / 2023-09-25 / 19.4M | ✅（零 build.rs，Apache-2.0） | WAV 读+写 | symphonia 已盖 WAV；仅 span 小、API 极简时才要 |
+   | `claxon`（FLAC 解码） | 0.4.3 / 2020-08-09 / 4.8M | ✅（Apache-2.0） | FLAC 解（无编码） | 冻结型（6 年未动但稳定；symphonia 已盖解码） |
+   | `lewton`（Vorbis 解码） | 0.10.2 / 2021-01-20 / 9.3M | ✅（MIT OR Apache-2.0） | Vorbis 解（无编码） | 半冻结（5 年；symphonia 已盖解码） |
+   | `puremp3`（MP3 解码） | 0.1.0 / 2019-05-26 / 130K | ✅（MIT OR CC0-1.0） | MP3 解 | 下载量小 + 7 年未动；symphonia 已盖，不推荐单引 |
+   | `mp4parse`（MP4 demux） | 0.17.0 / 2023-05-29 / 2.1M | ✅（Mozilla，MPL-2.0） | iso-bmff 解析（配合 symphonia-aac 用） | symphonia 的 isomp4 已含 demux；二选一 |
+   | `rubato`（重采样） | 5.0.0 / 2026-08-10 / 12.0M | ✅（MIT OR Apache-2.0） | 任意采样率互转 | 解码输出采样率归一用；`dasp`（0.11/2020，5.1M，MIT OR Apache-2.0，纯 DSP 基元）可配 |
+   | `rodio`（播放） | 0.22.2 / 2026-03-05 / 11.9M | ✅ 本体（`cpal` 的 build.rs 仅 ASIO env 探测，无 C；禁 `minimp3` 特性——C bindings） | default 全家经 symphonia 解 + `cpal` 放音 | 放音才要；OHOS 无 cpal 后端（矩阵 ⚠️ 待定）；纯解码场景用 `default-features=false` + symphonia 系特性，去 cpal |
+   | `rav1e`（AV1 编码） | 0.8.1 / 2025-06-16 / 48.3M | ✅（BSD-2-Clause；`asm` 特性拖 nasm 汇编器，禁之即全纯） | AV1 编码（无解码） | AV1 解码纯 Rust 无轮（`dav1d` 是 C）；编慢 + 二进制大，值不值另议 |
+   | `webm` / `matroska` / `mp4` / `mpeg2ts`（容器） | 2.2.1/0.30.1/0.14.0/0.6.1（2026 均有维护） | ✅（MPL-2.0/MIT 混；零 build.rs） | WebM/MKV/MP4/TS 复用解复用（无编解码） | 配合上表解码器用 |
+   | `h264-reader`（H.264 解析） | 0.9.0 / 2026-09-14 / 2.1M | ✅（MIT/Apache-2.0） | H.264 NAL 解析（无完整解码） | 全解码纯 Rust 无轮，先拿它做探测/信息面也行 |
+
+   明确不引：`opus`（0.4.0，system libopus bindings）、`openh264`（0.4.0，
+   构建期下载 Cisco 二进制）、`ffmpeg-next`（8.0.0，WTFPL + 要系统 ffmpeg）、
+   `vorbis`/`flac`（2016 死库）；`fundsp`（0.23.0，合成用）下载 403 未实证，
+   暂不推荐。缺口诚实记：Opus 编解码、Vorbis/FLAC/MP3/AAC 编码、H.264/H.265/
+   VP9/AV1 完整解码——纯 Rust 目前无轮（要么 C bindings，要么 GPL）。
+
 ## 开发工具（不进 Cargo 依赖，2026-09-25）
 
 | 工具 | 版本 | 来源 | 用途 | 拍板 |

@@ -33,6 +33,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate luoli coffee segments
+        run: |
+          npm install --no-save coffeescript@2 >/dev/null 2>&1
+          node scripts/check-luoli.js
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload static site

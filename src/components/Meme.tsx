@@ -14,13 +14,19 @@ const FALLBACK: Record<string, [string, string]> = {
   blabla: ["💬", "blabla"], tail: ["✨", "尾巴立了"], work: ["💼", "上班"], hachi: ["😤", "哈基鲸！"], pat: ["🫳", "摸摸头"],
 };
 
+/** 单张表情包停留帧数（30fps）。 */
+export const MEME_FRAMES = 48;
+
 type Props = { memeKey: string; file?: string; side: "left" | "right"; frames: number };
 
 export const MemePop: React.FC<Props> = ({ memeKey, file, side, frames }) => {
   const f = useCurrentFrame();
   const { fps } = useVideoConfig();
   const s = spring({ frame: f, fps, config: { damping: 9, stiffness: 180 } });
-  const out = interpolate(f, [frames - 6, frames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  // 只弹一下：约 1.5 秒后收回，不长时间遮挡内容
+  const hold = Math.min(frames, MEME_FRAMES);
+  const out = interpolate(f, [hold - 8, hold], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  if (f >= hold) return null;
   const rot = (side === "left" ? -8 : 8) + Math.sin(f / 5) * 3;
   const size = 270;
   const style: React.CSSProperties = {

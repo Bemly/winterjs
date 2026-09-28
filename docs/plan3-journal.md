@@ -661,3 +661,16 @@ G1/G2/G3/G9 已收官。）
 - 环境注记：本轮 pty Tab 探针系统性 `NO RECORDS`（首 Tab 冷 `require` 撞 150ms
   超时）——bisect 证 triple 版同症，系机器负载（Blender/ffmpeg 并跑，load 11+），
   非本轮回归；交互真机验机待负载回落补。
+
+## 2026-09-28 空行 Tab 列全局（用户：别 NO RECORDS）
+
+- 落法：桥展开（`s.trim()===''` → `getOwnPropertyNames(globalThis)` 过标识符、
+  隐 `__wjs_` 内部面、排序；completeOn 置空）+ Rust 空前缀一律走动态 +
+  `complete_span` 空串回零宽 span（光标处插入）。R3 核心 `bm === null`
+  空集不动（node:repl 模块面保守口径，CLI 本体面展开，§7 方向）。
+  词法绑定（let/const）不可枚举，同 R3 记档。
+- 验证：新黑盒 `repl_empty_line_lists_globals`（量/有序/无内部面/空 completeOn）；
+  strict 785/785（中途两连负载抖动：`read_stream_fifo_end` 超时 +
+  `set_immediate_not_clamped` 计时，双双单跑 <1s 过，零交集，见 §4 先分类）。
+- 待补：交互 Tab 真机验机（首 Tab 冷 `require` 撞 150ms 超时；机器负载
+  load 10+ 未消除，bisect 已证非回归）。

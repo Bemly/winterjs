@@ -649,3 +649,15 @@ G1/G2/G3/G9 已收官。）
   白重排——分块是唯一正门，行内分色仍另案。
 - 验证：pty 左格 `console.info  (...data) — stdout`、右盒纯文档浅底块；
   会话 Tab/回车后求值正常、无签名串泄漏；strict 784/784；行数守门 ok。
+
+## 2026-09-28 右盒纯文档（用户：签名不进候选框；右盒签名上文档下）
+
+- 按截图字面落：候选框干净名（`display_override` 回 `None`，三元组退回对子），
+  右盒只放文档（分隔线方案经 `split_string` 仿真证伪：24 字规则窄屏并入文档
+  流、宽屏 trailingige sig，恒无干净断行——描述盒按空白重排是铁律，203 字自创
+  chrome 已删；签名表仅缺页回落，零搬运原则不动）。
+- 验实：仿真 `console.timeEnd` 在 30/40/46/48 列下的重排确认无断行手段；
+  strict 784/784；行数守门 ok。
+- 环境注记：本轮 pty Tab 探针系统性 `NO RECORDS`（首 Tab 冷 `require` 撞 150ms
+  超时）——bisect 证 triple 版同症，系机器负载（Blender/ffmpeg 并跑，load 11+），
+  非本轮回归；交互真机验机待负载回落补。

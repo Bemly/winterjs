@@ -436,23 +436,23 @@ fn phase11_console_global_unified() {
 
 #[test]
 fn phase11_repl_sig_js_docs() {
-    // 2026-09-28 irb 方向：补全文档覆盖 JS 面（WinterCG 全局 + console 富文档），
-    // node:* 兼容面不投文档。正常：console 通道/语义 + WinterCG 一句话；
-    // 边界：用户自有同名方法显示自身形参（不被内建表遮蔽）。
+    // 2026-09-28 用户裁定：pane 只放签名，不搬运文档句（文档只读语料，经 `.doc`）。
+    // 正常：R3 签名表命中 + 原生 toString 真形参；边界：用户自有同名方法显示自身。
     let out = stdout_of(winterjs().args([
         "--eval",
         "const j = (o) => console.log(JSON.stringify(o));\
-         j(globalThis.__wjs_cli_complete('console.')[0].filter(p=>p[0]==='console.log'||p[0]==='console.table'||p[0]==='console.countReset'));\
+         j(globalThis.__wjs_cli_complete('console.')[0].filter(p=>p[0]==='console.log'||p[0]==='console.trace'));\
          j(globalThis.__wjs_cli_complete('fet')[0]);\
-         j(globalThis.__wjs_cli_complete('crypt')[0]);\
+         const u = new URLSearchParams('a=1'); globalThis.u = u;\
+         j(globalThis.__wjs_cli_complete('u.')[0].filter(p=>p[0]==='u.get'));\
          globalThis.o = { assign(a, b) { return a; } };\
          j(globalThis.__wjs_cli_complete('o.')[0].filter(p=>p[0]==='o.assign'));",
     ]));
     for line in [
-        "[\"console.log\",\"log(...data) — stdout；首参字符串含 %s/%d/%i/%f/%j/%o 即格式化，否则 inspect 空格连接\"]",
-        "[\"console.table\",\"table(data) — 本实现 inspect 落盘（无列对齐，记档）\"]",
-        "[\"fetch\",\"fetch(input, init?) → Promise<Response>；发 HTTP 请求\"]",
-        "[\"crypto\",\"crypto；getRandomValues/randomUUID/subtle\"]",
+        "[\"console.log\",\"(...data) — stdout\"]",
+        "[\"console.trace\",\"(...data) — stderr + stack\"]",
+        "[\"fetch\",\"fetch(input, init = {})\"]",
+        "[\"u.get\",\"get(n)\"]",
         "[\"o.assign\",\"assign(a, b)\"]",
     ] {
         assert!(out.contains(line), "missing {line:?}; out: {out}");

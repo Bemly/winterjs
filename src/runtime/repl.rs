@@ -484,10 +484,29 @@ pub async fn repl() -> Result<(), Error> {
                             crate::repl::Dot::Help => {
                                 repl_out(
                                     ".exit  quit the repl\n.help  show this help\n\
+                                     .doc <topic>  show MDN docs (e.g. .doc console.log)\n\
                                      exit()/quit()/q()  quit the repl (REPL-only functions)\n\
                                      Ctrl+C twice in 2s / Ctrl+D  quit the repl",
                                     false,
                                 );
+                                continue;
+                            }
+                            crate::repl::Dot::Doc(topic) => {
+                                if topic.is_empty() {
+                                    repl_out(".doc <topic> — e.g. .doc console.log", true);
+                                    continue;
+                                }
+                                match crate::repl_doc::lookup(&topic) {
+                                    Some(md) => {
+                                        let body = if crate::repl::tty_output_enabled() {
+                                            crate::repl_doc::render_tty(md)
+                                        } else {
+                                            crate::repl_doc::render_plain(md)
+                                        };
+                                        repl_out(&body, false);
+                                    }
+                                    None => repl_out(&crate::repl_doc::unknown_hint(&topic), true),
+                                }
                                 continue;
                             }
                             crate::repl::Dot::Code => {}

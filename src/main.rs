@@ -20,6 +20,7 @@ mod initpkg;
 mod pm;
 mod permissions;
 mod repl;
+mod repl_doc;
 mod runtime;
 mod scripts;
 mod sentry_report;

@@ -249,8 +249,7 @@ console.log("ci", ci[0].some((e) => e[0] === "globalThis.ArrayBuffer"));
 const call = __wjs_cli_complete("globalThis.Array().");
 console.log("call", call[0].length === 0);
 const e = __wjs_cli_complete("console.");
-// 2026-09-28 §7-②跟进（4.227）：精确 dotted 路径手写表优先于 toString 提取——
-// console 主方法虽为 JS 包装（自带 `...args`），文档仍命中表里的通道/语义信息。
+// pane 签名本位（R3 表；文档句禁入表，见 repl_complete.rs 头注）。
 console.log("dot-empty", e[0].some((p) => p[0] === "console.log" && (p[1] ?? "").includes("stdout")) && e[0].some((p) => p[0] === "console.trace" && (p[1] ?? "").includes("stderr")) && e[1] === "console.");
 const g = __wjs_cli_complete("global.");
 console.log("global-dot", g[0].length > 0 && g[0].every((p) => p[0].startsWith("global.")) && g[1] === "global.");

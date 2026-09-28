@@ -72,14 +72,21 @@ pub fn ctrl_c_should_exit(last: Option<Instant>, now: Instant) -> bool {
 pub enum Dot {
     Exit,
     Help,
+    /// `.doc <topic>`（整篇 MDN 文档；CLI 本体面，`node:repl` 不动）。
+    Doc(String),
     Code,
 }
 
 /// 点命令分类（纯函数，单测覆盖）。
 pub fn dot_command(line: &str) -> Dot {
-    match line.trim() {
+    let t = line.trim();
+    match t {
         ".exit" | ".quit" => Dot::Exit,
         ".help" => Dot::Help,
+        ".doc" => Dot::Doc(String::new()),
+        _ if t.starts_with(".doc ") || t.starts_with(".doc\t") => {
+            Dot::Doc(t[4..].trim().to_string())
+        }
         s if s.starts_with('.') => Dot::Code, // 未知点命令当代码求值（自然报错）
         _ => Dot::Code,
     }
@@ -317,6 +324,7 @@ fn candidates() -> Vec<(&'static str, &'static str)> {
     let mut out = vec![
         (".exit", ".exit — quit the repl"),
         (".help", ".help — show repl help"),
+        (".doc", ".doc <topic> — show MDN docs (e.g. .doc console.log)"),
         ("exit", "exit() — quit the repl"),
         ("quit", "quit() — quit the repl"),
         ("q", "q() — quit the repl"),
@@ -699,6 +707,12 @@ mod tests {
         assert_eq!(dot_command(".exit"), Dot::Exit);
         assert_eq!(dot_command(".quit"), Dot::Exit);
         assert_eq!(dot_command("  .help  "), Dot::Help);
+        assert_eq!(dot_command(".doc"), Dot::Doc(String::new()));
+        assert_eq!(
+            dot_command(".doc console.log"),
+            Dot::Doc("console.log".to_string())
+        );
+        assert_eq!(dot_command(".doctrine"), Dot::Code);
         assert_eq!(dot_command("1 + 1"), Dot::Code);
         assert_eq!(dot_command(".nope"), Dot::Code);
     }

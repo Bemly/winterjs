@@ -104,6 +104,9 @@ dialoguer = "0.12"
 # REPL 行编辑（2026-09-28 C 档拍板）：reedline default 特性（禁 sqlite/system_clipboard，
 # 见 docs/dependencies.md §4 备注；rustyline 退役，IdeMenu 浮窗补全+文档 pane）。
 reedline = "0.52"
+# REPL 整篇文档渲染（2026-09-28 用户拍板，irb `.doc` 方向）：termimad 纯 Rust
+# 终端 markdown 渲染（minimad 解析；见 docs/dependencies.md §4 备注）。
+termimad = "0.35"
 # reedline 接线直引（Highlighter 的 StyledText 配色用；已在锁内 0.50.3，零新增传递依赖）。
 nu-ansi-term = "0.50"
 shlex = "2"

@@ -637,3 +637,15 @@ G1/G2/G3/G9 已收官。）
   一段——`__wjsReplSig` 只做缺页回落；`_斜体_` 去标记，标识符保留）。
 - 验证：pty 浅底块内纯文档（`outputs a message` 在 `107;30m` 块里）；
   strict 784/784；行数守门 ok。
+
+## 2026-09-28 签名文档分两块（用户：别挤一行）
+
+- 落法：桥改三元组 `[全文, 左格签名后缀, 描述]`（`__dispDesc` 去名留参，
+  非函数/无参即 null；`__descOf` 描述符抽取与 `__sigDesc` 共用）→ Rust
+  `display_override = 全文 + 后缀`（左格签名块，只改显示；选中写入仍走
+  `value` 原文——点命令 `.he` 线早有同构先例）→ 描述只放文档（右盒文档块）。
+- 可行性依据（源码实证）：左列三处全 ANSI 感知（`parse_ansi` 保留转义、
+  `strip_ansi` 算宽、`truncate_with_ansi` 截断），右盒 `split_string` 按空
+  白重排——分块是唯一正门，行内分色仍另案。
+- 验证：pty 左格 `console.info  (...data) — stdout`、右盒纯文档浅底块；
+  会话 Tab/回车后求值正常、无签名串泄漏；strict 784/784；行数守门 ok。

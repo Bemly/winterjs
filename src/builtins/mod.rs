@@ -18,6 +18,7 @@ pub mod bun;
 pub mod mem;
 pub mod wfs;
 pub mod wstd;
+pub mod wsys;
 
 use std::ffi::CString;
 
@@ -528,6 +529,31 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_wstd_shlex_split", Some(wstd::shlex_split), 1),
             ("__wjs_wstd_spdx_valid", Some(wstd::spdx_valid), 1),
             ("__wjs_wstd_qrcode", Some(wstd::qrcode), 1),
+            // 本体第二批（WinterJS.shell/hex/time/retry/graph/git/oauth/transpile/log/mime/cookie/httpdate，见 wsys.rs）
+            ("__wjs_wsys_shell_expand", Some(wsys::shell_expand), 1),
+            ("__wjs_wsys_hex_encode", Some(wsys::hex_encode), 1),
+            ("__wjs_wsys_hex_decode", Some(wsys::hex_decode), 1),
+            ("__wjs_wsys_time_now", Some(wsys::time_now), 0),
+            ("__wjs_wsys_time_parse", Some(wsys::time_parse), 1),
+            ("__wjs_wsys_time_format", Some(wsys::time_format), 3),
+            ("__wjs_wsys_retry_delay", Some(wsys::retry_delay), 5),
+            ("__wjs_wsys_graph_create", Some(wsys::graph_create), 1),
+            ("__wjs_wsys_graph_add_node", Some(wsys::graph_add_node), 2),
+            ("__wjs_wsys_graph_add_edge", Some(wsys::graph_add_edge), 4),
+            ("__wjs_wsys_graph_toposort", Some(wsys::graph_toposort), 1),
+            ("__wjs_wsys_graph_counts", Some(wsys::graph_counts), 1),
+            ("__wjs_wsys_graph_free", Some(wsys::graph_free), 1),
+            ("__wjs_wsys_git_rev_parse", Some(wsys::git_rev_parse), 2),
+            ("__wjs_wsys_git_log", Some(wsys::git_log), 3),
+            ("__wjs_wsys_oauth_authorize_url", Some(wsys::oauth_authorize_url), 6),
+            ("__wjs_wsys_oauth_pkce", Some(wsys::oauth_pkce), 0),
+            ("__wjs_wsys_transpile", Some(wsys::transpile), 2),
+            ("__wjs_wsys_log", Some(wsys::wlog), 2),
+            ("__wjs_wsys_mime_lookup", Some(wsys::mime_lookup), 1),
+            ("__wjs_wsys_cookie_parse", Some(wsys::cookie_parse), 1),
+            ("__wjs_wsys_cookie_serialize", Some(wsys::cookie_serialize), 3),
+            ("__wjs_wsys_httpdate_parse", Some(wsys::httpdate_parse), 1),
+            ("__wjs_wsys_httpdate_format", Some(wsys::httpdate_format), 1),
             // Phase 7-e6: bun:ffi（动态调用引擎见 ffi.rs 头注；UNSAFE-BOUNDARY 密集区）
             ("__wjs_ffi_dlopen", Some(bun::ffi::ffi_dlopen), 2),
             ("__wjs_ffi_ptr_str", Some(bun::ffi::ffi_ptr_str), 1),

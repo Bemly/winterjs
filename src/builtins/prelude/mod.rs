@@ -23,6 +23,7 @@ mod url;
 mod wfs;
 mod mem;
 mod wstd;
+mod wsys;
 
 /// 引擎启动时在全局对象上求值的一次性脚本（§1 路线 Phase 1）。
 /// parts 运行时一次拼接（`concat!` 只收字面量，不收 const 路径；LazyLock 进程级单例）。
@@ -48,6 +49,7 @@ pub static PRELUDE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         wfs::WFS_JS,
         mem::MEM_JS,
         wstd::WSTD_JS,
+        wsys::WSYS_JS,
         repl_complete::REPL_COMPLETE_JS,
     ]
     .concat()

@@ -132,12 +132,12 @@ WinterJS.ffi
 - `punycode`
   - : Punycode core shared with `node:punycode`.
 - `tcp/udp/dns/tls`
-  - : Promise sockets and resolvers (B2 batch).
+  - : Promise sockets, datagrams, resolvers and TLS clients.
 - `command/terminal/repl`
-  - : Child processes and interactive faces (B3 batch).
+  - : Child processes plus line-editing and REPL faces.
 - `cluster/test/vm`
-  - : Concurrency and evaluation faces (B4 batch).
+  - : Worker cluster, test runner and script evaluation.
 - `os/path/db/inspect/tty`
-  - : System faces (B5 batch).
+  - : OS facts, paths, embedded SQL, evaluator and TTY check.
 - `stream/serve/diagnostics/domain/trace/AsyncLocalStorage/quic/crypto/ffi`
-  - : Event and misc faces (B6 batch).
+  - : Streams, serving, diagnostics and system utilities.

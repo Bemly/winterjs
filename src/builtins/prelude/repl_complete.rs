@@ -195,11 +195,17 @@ function __sigDesc(base, key, head2) {
   if (d.get !== undefined) return ': getter';
   const v = d.value;
   if (typeof v === 'function') {
+    // 精确 dotted 路径的手写表优先（`console.log` 等）：JS 包装实现自带
+    // `(...args)` 形参，toString 优先会永久遮蔽表里的通道/语义信息
+    // （`— stdout`/`stderr + stack`，4.226/4.227）。只提 head2 精确项，
+    // Ctor/裸名回落仍在 toString 之后——用户自有同名方法不受内建表遮蔽。
+    const exact = __wjsReplSig[head2];
+    if (exact !== undefined) return exact;
     let src = '';
     try { src = Function.prototype.toString.call(v); } catch { /* ignore */ }
     const pm = /^[\s\S]*?\(([^)]*)\)/.exec(src);
     if (pm !== null && pm[1] !== '') return `${key}(${pm[1]})`;
-    const sig = __wjsReplSig[head2] ?? __wjsReplSig[`${__wjsReplCtorName(base)}.${key}`] ?? __wjsReplSig[key];
+    const sig = __wjsReplSig[`${__wjsReplCtorName(base)}.${key}`] ?? __wjsReplSig[key];
     return sig ?? `${key}()`;
   }
   if (v === null) return ': null';

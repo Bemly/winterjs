@@ -822,6 +822,19 @@ mod tests {
         assert!(wd.contains("zstd"), "{wd}");
         let wl = summary("WinterJS.localStorage").expect("WinterJS.localStorage documented");
         assert!(wl.contains("turso"), "{wl}");
+        // 小工具面（wstd 轮）：七组皆有页。
+        for (topic, needle) in [
+            ("WinterJS.semver", "satisfies"),
+            ("WinterJS.yaml", "first document"),
+            ("WinterJS.jsonc", "trailing commas"),
+            ("WinterJS.ip", "CIDR"),
+            ("WinterJS.shlex", "argv"),
+            ("WinterJS.spdx", "license expression"),
+            ("WinterJS.qrcode", "2048"),
+        ] {
+            let s = summary(topic).unwrap_or_else(|| panic!("{topic} documented"));
+            assert!(s.contains(needle), "{topic}: {s}");
+        }
     }
 
     #[test]

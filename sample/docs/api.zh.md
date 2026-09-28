@@ -32,6 +32,7 @@ permalink: /zh/api/
 | `structuredClone` | 实验 | `sample/web/structured-clone.js` | 作用：对象深拷贝。**偏离**：仅纯数据——Date/Map/Set/正则/类型化数组/ArrayBuffer 回来都是普通对象；无 `transfer` 剥离 |
 | `fs` / `WinterJS.fs` | 稳定 | `sample/wfs/basics.js` | 自有文件面，与 `node:fs` 分离（直用 `fs-err`）；异步 `readFile/readTextFile/writeFile/writeTextFile/stat/mkdir/readdir/remove/rename/copyFile/exists` |
 | `WinterJS.memory/alloc/unsafe*` | 稳定 | `sample/mem/basics.js` | `memory()` 看 rss+分配器；`alloc(n)` GC 托管零填；`unsafeAlloc/Write/Read/Size/Free/List` 手动 id 堆，需 `--allow-ffi` |
+| `WinterJS.semver/yaml/jsonc/ip/shlex/spdx/qrcode` | 稳定 | `sample/wstd/basics.js` | 树内轮子上的纯函数小工具（npm-semver 经 deno_semver；YAML 首文档；JSONC 容忍注释；CIDR 经 ipnet；shlex 切分；SPDX 表达式校验；终端二维码字符画） |
 | `URL/URLSearchParams/URLPattern` | 稳定 | `sample/web/url.js` | URL 解析与构造（WHATWG）；legacy `url.parse/format` 在 `node:url` |
 | `TextEncoder/TextDecoder/atob/btoa` | 稳定 | `sample/web/url.js` | 文本编解码：支持 `fatal:true` |
 | `Blob/File` | 稳定 | `sample/web/blob-file.js` | 二进制对象：`slice/text/arrayBuffer` |

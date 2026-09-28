@@ -33,6 +33,7 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 | `structuredClone` | Experimental | `sample/web/structured-clone.js` | **Deviation**: plain data only — Date/Map/Set/RegExp/TypedArray/ArrayBuffer come back as plain objects; no `transfer` detach |
 | `fs` / `WinterJS.fs` | Stable | `sample/wfs/basics.js` | Own file surface, separate from `node:fs` (direct `fs-err`); async `readFile/readTextFile/writeFile/writeTextFile/stat/mkdir/readdir/remove/rename/copyFile/exists` |
 | `WinterJS.memory/alloc/unsafe*` | Stable | `sample/mem/basics.js` | `memory()` rss+allocator; `alloc(n)` GC-managed zero-filled `Uint8Array`; `unsafeAlloc/Write/Read/Size/Free/List` manual id heap behind `--allow-ffi` |
+| `WinterJS.semver/yaml/jsonc/ip/shlex/spdx/qrcode` | Stable | `sample/wstd/basics.js` | Pure-function utilities on tree wheels (npm-semver via deno_semver; YAML first-doc; JSONC tolerant; CIDR via ipnet; shlex split; SPDX expr check; terminal QR art) |
 | `URL/URLSearchParams/URLPattern` | Stable | `sample/web/url.js` | WHATWG; legacy `url.parse/format` lives in `node:url` |
 | `TextEncoder/TextDecoder/atob/btoa` | Stable | `sample/web/url.js` | `fatal:true` supported |
 | `Blob/File` | Stable | `sample/web/blob-file.js` | `slice/text/arrayBuffer` |

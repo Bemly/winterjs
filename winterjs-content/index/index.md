@@ -19,6 +19,13 @@ WinterJS.alloc
 WinterJS.unsafeAlloc
 WinterJS.CompressionStream
 WinterJS.DecompressionStream
+WinterJS.semver
+WinterJS.yaml
+WinterJS.jsonc
+WinterJS.ip
+WinterJS.shlex
+WinterJS.spdx
+WinterJS.qrcode
 ```
 
 ### Parameters
@@ -41,3 +48,17 @@ WinterJS.DecompressionStream
   - : Same class as global `CompressionStream` (plus winterjs `zstd` format).
 - `DecompressionStream`
   - : Same class as global `DecompressionStream` (plus winterjs `zstd` format).
+- `semver`
+  - : npm-semantics version utilities (`valid/parse/satisfies/compare`).
+- `yaml`
+  - : YAML `parse`/`stringify` (first document).
+- `jsonc`
+  - : Comment-tolerant JSON `parse`.
+- `ip`
+  - : IP/CIDR utilities (`isNet/isAddr/contains/parse`).
+- `shlex`
+  - : Shell command-line `split`.
+- `spdx`
+  - : SPDX license-expression check.
+- `qrcode`
+  - : Terminal QR art for a short text.

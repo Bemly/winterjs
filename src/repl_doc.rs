@@ -169,8 +169,10 @@ fn slug(topic: &str) -> Option<String> {
     None
 }
 
-/// 命名空间语料路由（`Bun`/`Deno`/`WinterJS` 头；`lookup` 用）。
+/// 命名空间语料路由（`Bun`/`Deno`/`WinterJS`/`fs` 头；`lookup` 用）。
 /// `Bun.serve` → `bun-content/serve/index.md`，bare `Bun` → `index` 页；
+/// `WinterJS.fs.readFile` 双点形 → `winterjs-content/fs-readfile/index.md`
+/// （缺页回落 `fs` 组页）；`fs.readFile`（全局别名）同走 WinterJS 语料。
 /// 方法段限字母数字/`_`/`$`（`Bun.$` 的 `$` 在内；无 `..`，无路径穿越）。
 /// 存在性由 `lookup` 校验（缺页即未知条目，不猜）。
 fn ns_lookup(topic: &str) -> Option<&'static str> {
@@ -187,18 +189,70 @@ fn ns_lookup(topic: &str) -> Option<&'static str> {
         "Bun" | "bun" => &BUN,
         "Deno" | "deno" => &DENO,
         "WinterJS" | "winterjs" => &WJS,
+        // 全局别名 `fs.readFile`：同走 WinterJS 语料（`fs-readfile`，回落 `fs`）。
+        "fs" => {
+            return wjs_group_lookup(&WJS, "fs", method);
+        }
         // 未知头（含 `global.WinterJS.Bun.write` 形）：模糊回落找段内命名空间。
         _ => return ns_fuzzy(t),
     };
-    if method.is_empty()
-        || !method
+    if method.is_empty() {
+        return ns_fuzzy(t);
+    }
+    // 双点形 `fs.readFile`：组-方法页优先，组页回落；仍缺页走模糊回落
+    // （如 `WinterJS.Bun.write` 找段内 `Bun.write`）。
+    if let Some((group, sub)) = method.split_once('.')
+        && !group.is_empty()
+        && !sub.is_empty()
+        && !sub.contains('.')
+        && group
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+        && sub
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    {
+        let path = format!(
+            "{}-{}/index.md",
+            group.to_lowercase(),
+            sub.to_lowercase()
+        );
+        if let Some(s) = dir.get_file(&path).and_then(|f| f.contents_utf8()) {
+            return Some(s);
+        }
+        // 组页回落仍缺页：走模糊回落找段内命名空间。
+        return wjs_group_lookup(dir, group, "").or_else(|| ns_fuzzy(t));
+    }
+    if !method
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
     {
         // `WinterJS.Bun.write` 形（头对、方法段含点）：同走模糊回落。
         return ns_fuzzy(t);
     }
     let path = format!("{}/index.md", method.to_lowercase());
+    dir.get_file(&path)
+        .and_then(|f| f.contents_utf8())
+}
+
+/// WinterJS 组查表（`fs` 组：`fs-readfile` 优先，`fs` 组页回落；空方法即组页）。
+/// 大小写/穿越由调用方保证（仅字母数字/`_`/`$`，无点）。
+fn wjs_group_lookup(dir: &include_dir::Dir<'static>, group: &str, method: &str) -> Option<&'static str> {
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    };
+    if !ok(group) || (!method.is_empty() && !ok(method)) || method.contains('.') {
+        return None;
+    }
+    if !method.is_empty() {
+        let path = format!("{}-{}/index.md", group.to_lowercase(), method.to_lowercase());
+        if let Some(s) = dir.get_file(&path).and_then(|f| f.contents_utf8()) {
+            return Some(s);
+        }
+    }
+    let path = format!("{}/index.md", group.to_lowercase());
     dir.get_file(&path)
         .and_then(|f| f.contents_utf8())
 }
@@ -750,6 +804,17 @@ mod tests {
         assert!(wu.contains("--allow-ffi"), "{wu}");
         assert!(summary("winterjs.unsafefree").is_some());
         assert!(summary("WinterJS.unsafelost").is_none());
+        // 双点成员形（浮窗 `WinterJS.fs.readFile`）：组-方法页优先。
+        let wfr = summary("WinterJS.fs.readFile").expect("WinterJS.fs.readFile documented");
+        assert!(wfr.contains("Uint8Array"), "{wfr}");
+        let wfw = summary("WinterJS.fs.writeFile").expect("WinterJS.fs.writeFile documented");
+        assert!(wfw.contains("truncating"), "{wfw}");
+        // 全局别名 `fs.readFile` 同走 WinterJS 语料。
+        let fr = summary("fs.readFile").expect("fs.readFile documented");
+        assert!(fr.contains("Uint8Array"), "{fr}");
+        // 缺页成员回落组页（有文档，不裸签名）。
+        let fb = summary("WinterJS.fs.noSuchMethod").expect("falls back to fs group");
+        assert!(fb.contains("separate"), "{fb}");
     }
 
     #[test]

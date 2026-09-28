@@ -40,8 +40,12 @@ pub const IMAGE_JS: &str = r#"
       const info = this.info(bytes, fmt);
       const row = __wjs_image_by_name(info.format);
       if (!row || !row.decode) throw new TypeError(`WinterJS.image.decode: unsupported format '${info.format}'`);
-      const data = __wjs_image_pixels(bytes, info.format, sc === undefined ? 1 : Number(sc));
-      return { format: info.format, mime: info.mime, width: info.width, height: info.height, data };
+      const s = sc === undefined ? 1 : Number(sc);
+      const data = __wjs_image_pixels(bytes, info.format, s);
+      // svg 光栅按 scale 缩放：像素是缩放后的，宽高跟随（其余格式 scale 恒 1）。
+      const w = (info.format === 'svg' && s !== 1) ? Math.max(1, Math.round(info.width * s)) : info.width;
+      const h = (info.format === 'svg' && s !== 1) ? Math.max(1, Math.round(info.height * s)) : info.height;
+      return { format: info.format, mime: info.mime, width: w, height: h, data };
     },
     encode(img, format, options) {
       if (!img || !(img.data instanceof Uint8Array)) {

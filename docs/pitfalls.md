@@ -4224,3 +4224,14 @@
 - 推广铁律：**进 `unsafe extern "C"` 的第三方调用，`assert`/`panic` 路径
   一律前置校验转干净错误**；黑盒必须含 panic 路径用例（§0.7），且先跑通
   再提交——abort 不留现场。
+
+### 4.233 include_dir 语料加页不触发重编（2026-09-29，文档轮）
+
+- 症状：`winterjs-content/` 加了 4 页后构建"成功"但 `.doc` 仍出父页——新页不在二进制里。
+- 根因：`include_dir!` 编译期读目录，但 cargo 只盯源文件 mtime；新增的
+  非跟踪文件不触发重编，"成功"的是旧物。
+- 修法：加页后 `touch src/repl_doc.rs`（或对应引用页）再编；冒烟里加一条
+  新页 `.doc` 即现形。
+- 复现：加页 → 直接编 → `__wjs_doc_summary(新主题)` 回父页/None。
+- 推广铁律：**凡编译期嵌目录（include_dir!/include_str! 指向目录）加文件，
+  必 touch 引用处再编**；`git status` 见新页 + 二进制行为不变先疑此条。

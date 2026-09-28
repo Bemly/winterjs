@@ -611,6 +611,8 @@ fn image_roundtrip_and_params() {
          const svg = new TextEncoder().encode('<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"3\"><rect width=\"4\" height=\"3\" fill=\"red\"/></svg>');\n\
          const s = WinterJS.image.decode(svg);\n\
          console.log('s:' + s.format + ':' + s.width + 'x' + s.height + ':' + Array.from(s.data.slice(0, 4)).join(','));\n\
+         const s2 = WinterJS.image.decode(svg, 'svg', 2);\n\
+         console.log('s2:' + s2.width + 'x' + s2.height + ':' + (s2.data.length === 8 * 6 * 4));\n\
          console.log('i:' + JSON.stringify(WinterJS.image.info(svg)));",
     ]));
     assert!(out.contains("r:png:2x2:16,jpeg:2x2:16,gif:2x2:16,webp:2x2:16,tiff:2x2:16,bmp:2x2:16,qoi:2x2:16,pnm:2x2:16,farbfeld:2x2:16,tga:2x2:16,hdr:2x2:16,exr:2x2:16,ico:2x2:16"), "out: {out}");
@@ -619,6 +621,7 @@ fn image_roundtrip_and_params() {
     assert!(out.contains("g:true"), "out: {out}");
     assert!(out.contains("p:true"), "out: {out}");
     assert!(out.contains("s:svg:4x3:255,0,0,255"), "out: {out}");
+    assert!(out.contains("s2:8x6:true"), "out: {out}");
     assert!(out.contains(r#""format":"svg","width":4,"height":3"#), "out: {out}");
 }
 

@@ -487,3 +487,45 @@ fn phase11_set_immediate_not_clamped() {
     let b = out.find("io-timeout").unwrap();
     assert!(a < b, "out: {out}");
 }
+
+#[test]
+fn namespace_three_globals_present() {
+    // 正常：Deno/Bun/WinterJS 三命名空间存在 + 版本同源 + toStringTag。
+    let out = stdout_of(winterjs().args([
+        "--eval",
+        "console.log(JSON.stringify([typeof Deno, typeof Bun, typeof WinterJS]));\
+         console.log(JSON.stringify([Deno.version.deno, Bun.version, WinterJS.version]));\
+         console.log(JSON.stringify([Object.prototype.toString.call(Deno), Object.prototype.toString.call(Bun), Object.prototype.toString.call(WinterJS)]));",
+    ]));
+    assert!(out.contains(r#"["object","object","object"]"#), "out: {out}");
+    assert!(out.contains(r#"["26.9.27","26.9.27","26.9.27"]"#), "out: {out}");
+    assert!(out.contains("[object Deno]"), "out: {out}");
+    assert!(out.contains("[object Bun]"), "out: {out}");
+    assert!(out.contains("[object WinterJS]"), "out: {out}");
+}
+
+#[test]
+fn namespace_frozen_vs_mutable() {
+    // 报错/语义：Deno 冻结（赋值不生效），Bun/WinterJS 可改（setter 生效）。
+    let out = stdout_of(winterjs().args([
+        "--eval",
+        "Deno.version = 1; console.log('deno-mut:' + (Deno.version === 1));\
+         Bun.version = 'x'; WinterJS.version = 'y';\
+         console.log(JSON.stringify([Bun.version, WinterJS.version]));\
+         console.log(JSON.stringify(Object.isFrozen(Deno)));",
+    ]));
+    assert!(out.contains("deno-mut:false"), "out: {out}");
+    assert!(out.contains(r#"["x","y"]"#), "out: {out}");
+    assert!(out.contains("true"), "out: {out}");
+}
+
+#[test]
+fn namespace_user_predefine_kept() {
+    // 边界：用户在 prelude 后覆盖三命名空间不炸，会话继续。
+    let out = stdout_of(winterjs().args([
+        "--eval",
+        "Bun.foo = 42; WinterJS.bar = 's';\
+         console.log(JSON.stringify([Bun.foo, WinterJS.bar, typeof Deno.args]));",
+    ]));
+    assert!(out.contains(r#"[42,"s","object"]"#), "out: {out}");
+}

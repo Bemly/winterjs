@@ -3,6 +3,7 @@ import { CalculateMetadataFunction, Composition, staticFile } from "remotion";
 import { estimateTimeline, Timeline } from "./timeline";
 import { FPS, H, W } from "./theme";
 import { Promo } from "./Video";
+import { CastPreview } from "./components/CastPreview";
 
 export type PromoProps = {
   timeline: Timeline | null;
@@ -31,6 +32,16 @@ const calculateMetadata: CalculateMetadataFunction<PromoProps> = async () => {
 };
 
 export const RemotionRoot: React.FC = () => (
+  <>
+  <Composition
+    id="CastPreview"
+    component={CastPreview}
+    width={W}
+    height={H}
+    fps={FPS}
+    durationInFrames={FPS * 30}
+    defaultProps={{ name: "repl" }}
+  />
   <Composition
     id="WinterJSPromo"
     component={Promo}
@@ -41,4 +52,5 @@ export const RemotionRoot: React.FC = () => (
     defaultProps={{ timeline: null, memes: {}, voiced: false }}
     calculateMetadata={calculateMetadata}
   />
+  </>
 );

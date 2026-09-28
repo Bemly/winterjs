@@ -174,10 +174,11 @@ fn slug(topic: &str) -> Option<String> {
 /// 方法段限字母数字/`_`/`$`（`Bun.$` 的 `$` 在内；无 `..`，无路径穿越）。
 /// 存在性由 `lookup` 校验（缺页即未知条目，不猜）。
 fn ns_lookup(topic: &str) -> Option<&'static str> {
-    let t = topic
-        .trim()
-        .strip_prefix("globalThis.")
-        .unwrap_or(topic.trim());
+    // `global` 是 `globalThis` 的 Node 口径别名（bootstrap），补全 `global.Deno.x`
+    // 形主题与 `Deno.x` 同页。
+    let t = topic.trim();
+    let t = t.strip_prefix("globalThis.").unwrap_or(t);
+    let t = t.strip_prefix("global.").unwrap_or(t);
     let (head, method) = match t.split_once('.') {
         Some((h, m)) => (h, m),
         None => (t, "index"),

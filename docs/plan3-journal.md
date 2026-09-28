@@ -721,3 +721,14 @@ G1/G2/G3/G9 已收官。）
 - 接线：`repl_doc.rs` 三语料路由（MDN 之后、fallback 之前）+ 签名表 86 项；
   单测 `ns_lookup_hits_generated_corpus` + 黑盒 `repl_doc_ns_pages`。
 - 验证：builtins+repl 45/45 strict；vendor 与代码分两提交；冒烟 5/5。
+
+## 2026-09-29 命名空间补全轮（Deno.version. 空集）
+
+- 根因：R3 getter 拒入（刻意）撞上命名空间全 getter 值——`T2` 对照实证
+  （数据 ✓/getter ✗/冻结数据 ✓），冻结无辜。
+- 修法：值型成员全改数据属性 + `__wjs_ns_sync()`（NODE_PRELUDE 尾经 `__wjs_`
+  内部面调，§7 顺向；Deno 刷新后冻结，Bun/WinterJS 保持可写）+ 文档
+  `ns_lookup` 认 `global.` 前缀（`global` 是 Node 口径别名）。
+- 附带回答：`Deno.version` 求值 `[object Object]` 是对的（`{deno,v8,typescript}`
+  对象）；`Deno.args` 在 `--eval` 下空是 argv 本就短，`--run f -- a b` 即有值。
+- 验证：builtins+repl 47/47 strict；坑 4.231。

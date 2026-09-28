@@ -563,6 +563,39 @@ fn namespace_delegation_spot() {
 }
 
 #[test]
+fn namespace_member_completion_after_sync() {
+    // R3 getter 拒入纪律下值型成员须为数据属性：`Deno.version.` 等二级补全非空
+    //（含 `global.` 前缀形）；活值与 process 同源。
+    let out = stdout_of(winterjs().args([
+        "--eval",
+        "const j = (x) => console.log(x, JSON.stringify(globalThis.__wjs_cli_complete(x)[0].map((p) => p[0]).slice(0, 4)));\n\
+         j('Deno.version.');\n\
+         j('global.Deno.version.');\n\
+         j('Bun.argv.');\n\
+         j('WinterJS.versions.');\n\
+         console.log('live:' + JSON.stringify([Deno.pid === process.pid, WinterJS.pid === process.pid, Bun.main === String(process.argv[1] || '')]));",
+    ]));
+    assert!(out.contains("\"Deno.version.deno\""), "out: {out}");
+    assert!(out.contains("\"global.Deno.version.deno\""), "out: {out}");
+    assert!(out.contains("\"Bun.argv.length\""), "out: {out}");
+    assert!(out.contains("\"WinterJS.versions.winterjs\""), "out: {out}");
+    assert!(out.contains("live:[true,true,true]"), "out: {out}");
+}
+
+#[test]
+fn namespace_args_flow_to_run() {
+    // `--run file -- args` 透传进三命名空间（NODE_PRELUDE 尾同步）。
+    use assert_fs::prelude::*;
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("args.js")
+        .write_str("console.log(JSON.stringify([Deno.args, WinterJS.args]))\n")
+        .unwrap();
+    let (ok, out, _) = wjs(&["--run", "args.js", "--", "a", "b"], &dir);
+    assert!(ok, "out: {out}");
+    assert!(out.contains(r#"[["a","b"],["a","b"]]"#), "out: {out}");
+}
+
+#[test]
 fn namespace_user_predefine_kept() {
     // 边界：用户在 prelude 后覆盖三命名空间不炸，会话继续。
     let out = stdout_of(winterjs().args([

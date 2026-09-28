@@ -4182,3 +4182,17 @@
 - 复现：`Deno.env.set("WJS_NS_T","1")` 后读 `process.env.WJS_NS_T`。
 - 推广铁律：**prelude 顶层只放纯数据与函数定义，任何宿主对象一律调用期
   现场取**；自洽绿≠跨面绿，断言必须跨面读。
+
+### 4.231 补全要二级展开的值成员禁 getter（2026-09-29，命名空间轮）
+
+- 症状：`Deno.version.` Tab 恒 `NO RECORDS`，而 `Deno.env.`（数据对象）正常；
+  冻结与否无关（冻数据对象可补全）。
+- 根因：R3 补全核心对成员链逐步求值，getter 一律拒入（防副作用）。
+  `version/args/argv` 等写成 getter 即二级死胡同——值对但不可补全。
+- 修法：值型成员一律数据属性；`process` 侧活值经 `__wjs_ns_sync()` 在
+  NODE_PRELUDE 尾刷新（`node/mod.rs` 调 `__wjs_` 内部面，§7 顺向；用户代码
+  之前，无覆盖之忧），`Deno` 刷新后才冻结。标量 getter（`pid` 等）无二级
+  可展，不必改。
+- 复现：`__wjs_cli_complete("Deno.version.")` 修前 `[]`、修后非空。
+- 推广铁律：**凡要 `.x.` 二级补全的值，先问是不是 getter**；补全面只认
+  数据属性，活值走启动同步，不走 getter。

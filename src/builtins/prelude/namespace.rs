@@ -1,5 +1,8 @@
 //! 本体命名空间（prelude 分域；拼接顺序见 mod.rs）。
-//! `globalThis.Deno`（冻结只读）+ `globalThis.Bun` / `globalThis.WinterJS`（普通可写）。
+//! `globalThis.Deno`（同步后冻结）+ `globalThis.Bun` / `globalThis.WinterJS`（普通可写）。
+//! R3 getter 拒入纪律：值型成员一律数据属性（getter 值不可补全），`process`
+//! 侧活值经 `__wjs_ns_sync()` 在 NODE_PRELUDE 尾刷新（`node/mod.rs` 调内部面；
+//! 用户代码之前，无覆盖之忧；`Deno` 刷新后才冻结）。
 //! 全部经已有底座别名：fs 读 `node:fs/promises`、os 读 `node:os`、子进程读
 //! `node:child_process`、serve 经 `node:http` 转 Fetch 形、test 经 `node:test`。
 //! 无底座故记档另案：`Bun.TOML`/`Bun.YAML`/`Bun.Transpiler`/`Bun.FileSystemRouter`、
@@ -143,36 +146,22 @@ pub const NAMESPACE_JS: &str = r#"
     };
   };
   if (globalThis.Deno === undefined) {
-    const __wjs_deno_version = () => {
-      const w = __wjs_ns_version();
-      return { deno: w, v8: "13.6", typescript: "5.9" };
-    };
-    const __wjs_deno_errors = __wjs_ns_errs();
     globalThis.Deno = {
-      get version() { return __wjs_deno_version(); },
-      get args() {
-        try {
-          const a = __wjs_ns_proc() && __wjs_ns_proc().argv;
-          return Array.isArray(a) ? a.slice(2) : [];
-        } catch { return []; }
-      },
-      get pid() { try { return __wjs_ns_proc() ? __wjs_ns_proc().pid : 0; } catch { return 0; } },
-      get ppid() { try { return (__wjs_ns_proc() && __wjs_ns_proc().ppid) || 0; } catch { return 0; } },
-      get mainModule() {
-        try { return String((__wjs_ns_proc() && __wjs_ns_proc().argv[1]) || ""); } catch { return ""; }
-      },
-      get execPath() { try { return String(__wjs_ns_proc().execPath || ""); } catch { return ""; } },
-      get build() {
-        try {
-          const p = __wjs_ns_proc();
-          return { target: (p.arch || "aarch64") + "-apple-darwin", arch: p.arch || "aarch64", os: "darwin", vendor: "apple", env: undefined };
-        } catch { return { target: "aarch64-apple-darwin", arch: "aarch64", os: "darwin", vendor: "apple", env: undefined }; }
-      },
-      get arch() { try { return String(__wjs_ns_proc().arch || "aarch64"); } catch { return "aarch64"; } },
-      get platform() { try { return String(__wjs_ns_proc().platform || "darwin"); } catch { return "darwin"; } },
-      get noColor() { try { return !!process.env.NO_COLOR; } catch { return false; } },
+      version: { deno: __wjs_ns_version(), v8: "13.6", typescript: "5.9" },
+      args: [],
+      pid: 0,
+      ppid: 0,
+      mainModule: "",
+      execPath: "",
+      build: { target: "aarch64-apple-darwin", arch: "aarch64", os: "darwin", vendor: "apple", env: undefined },
+      arch: "aarch64",
+      platform: "darwin",
+      noColor: false,
       env: __wjs_ns_envface(),
-      errors: __wjs_deno_errors,
+      errors: __wjs_ns_errs(),
+      stdin: null,
+      stdout: null,
+      stderr: null,
       cwd() { return __wjs_ns_proc().cwd(); },
       chdir(d) { __wjs_ns_proc().chdir(String(d)); },
       exit(c) { __wjs_ns_proc().exit(c); },
@@ -196,9 +185,6 @@ pub const NAMESPACE_JS: &str = r#"
         } catch {}
         return { columns: 80, rows: 24 };
       },
-      get stdin() { return __wjs_ns_proc().stdin; },
-      get stdout() { return __wjs_ns_proc().stdout; },
-      get stderr() { return __wjs_ns_proc().stderr; },
       readFile(p) { return __wjs_ns_fsp().readFile(String(p)); },
       writeFile(p, d, o) { return __wjs_ns_fsp().writeFile(String(p), __wjs_ns_u8(d), o); },
       readTextFile(p) { return __wjs_ns_fsp().readFile(String(p), "utf8"); },
@@ -279,28 +265,17 @@ pub const NAMESPACE_JS: &str = r#"
     try {
       Object.defineProperty(globalThis.Deno, Symbol.toStringTag, { value: "Deno" });
     } catch {}
-    try { Object.freeze(globalThis.Deno); } catch {}
   }
   if (globalThis.Bun === undefined) {
-    let __wjs_bun_version, __wjs_bun_revision;
     globalThis.Bun = {
-      get version() { return __wjs_bun_version !== undefined ? __wjs_bun_version : __wjs_ns_version(); },
-      set version(v) { __wjs_bun_version = String(v); },
-      get revision() { return __wjs_bun_revision !== undefined ? __wjs_bun_revision : __wjs_ns_version(); },
-      set revision(v) { __wjs_bun_revision = String(v); },
-      get argv() {
-        try {
-          const a = __wjs_ns_proc() && __wjs_ns_proc().argv;
-          return Array.isArray(a) ? a.slice() : [];
-        } catch { return []; }
-      },
-      get main() {
-        try { return String((__wjs_ns_proc() && __wjs_ns_proc().argv[1]) || ""); } catch { return ""; }
-      },
-      get env() { try { return __wjs_ns_proc().env; } catch { return {}; } },
-      get stdout() { return __wjs_ns_proc().stdout; },
-      get stdin() { return __wjs_ns_proc().stdin; },
-      get stderr() { return __wjs_ns_proc().stderr; },
+      version: __wjs_ns_version(),
+      revision: __wjs_ns_version(),
+      argv: [],
+      main: "",
+      env: {},
+      stdout: null,
+      stdin: null,
+      stderr: null,
       file(p) { return __wjs_ns_bunfile(p); },
       write(p, d) {
         if (d instanceof Response) return d.arrayBuffer().then((b) => __wjs_ns_fsp().writeFile(String(p), Buffer.from(b)).then((r) => r));
@@ -380,34 +355,74 @@ pub const NAMESPACE_JS: &str = r#"
     } catch {}
   }
   if (globalThis.WinterJS === undefined) {
-    let __wjs_winterjs_version;
     globalThis.WinterJS = {
-      get version() { return __wjs_winterjs_version !== undefined ? __wjs_winterjs_version : __wjs_ns_version(); },
-      set version(v) { __wjs_winterjs_version = String(v); },
-      get versions() {
-        try {
-          const v = __wjs_ns_proc() && __wjs_ns_proc().versions;
-          if (v && typeof v === "object") return { ...v };
-        } catch {}
-        return { winterjs: __wjs_ns_version() };
-      },
-      get args() {
-        try {
-          const a = __wjs_ns_proc() && __wjs_ns_proc().argv;
-          return Array.isArray(a) ? a.slice(2) : [];
-        } catch { return []; }
-      },
-      get env() { try { return __wjs_ns_proc().env; } catch { return {}; } },
+      version: __wjs_ns_version(),
+      versions: { winterjs: __wjs_ns_version() },
+      args: [],
+      env: {},
       cwd() { return __wjs_ns_proc().cwd(); },
-      get pid() { try { return __wjs_ns_proc() ? __wjs_ns_proc().pid : 0; } catch { return 0; } },
-      get storage() { return globalThis.storage; },
-      get localStorage() { return globalThis.localStorage; },
-      get Deno() { return globalThis.Deno; },
-      get Bun() { return globalThis.Bun; },
+      pid: 0,
+      storage: null,
+      localStorage: null,
+      Deno: null,
+      Bun: null,
     };
     try {
       Object.defineProperty(globalThis.WinterJS, Symbol.toStringTag, { value: "WinterJS" });
     } catch {}
   }
+  // NODE_PRELUDE 尾调用的内部同步面（`node/mod.rs`）：活值刷新 + Deno 冻结。
+  // 用户代码之前跑，无覆盖之忧；幂等（冻结后跳过 Deno 段）。
+  globalThis.__wjs_ns_sync = () => {
+    const w = __wjs_ns_version();
+    let p = null;
+    try { p = globalThis.process || null; } catch {}
+    const argv = (() => {
+      try {
+        const a = p && p.argv;
+        return Array.isArray(a) ? a.slice() : [];
+      } catch { return []; }
+    })();
+    const D = globalThis.Deno;
+    if (D !== undefined && D !== null && !Object.isFrozen(D)) {
+      D.version = { deno: w, v8: "13.6", typescript: "5.9" };
+      D.args = argv.slice(2);
+      D.pid = (p && p.pid) || 0;
+      D.ppid = (p && p.ppid) || 0;
+      D.mainModule = String((p && p.argv[1]) || "");
+      D.execPath = String((p && p.execPath) || "");
+      D.arch = String((p && p.arch) || "aarch64");
+      D.platform = String((p && p.platform) || "darwin");
+      D.build = { target: D.arch + "-apple-darwin", arch: D.arch, os: "darwin", vendor: "apple", env: undefined };
+      try { D.noColor = !!(p && p.env && p.env.NO_COLOR); } catch { D.noColor = false; }
+      try { D.stdin = p.stdin; D.stdout = p.stdout; D.stderr = p.stderr; } catch {}
+      try { Object.defineProperty(D, Symbol.toStringTag, { value: "Deno" }); } catch {}
+      try { Object.freeze(D); } catch {}
+    }
+    const B = globalThis.Bun;
+    if (B !== undefined && B !== null) {
+      B.version = w;
+      B.revision = w;
+      B.argv = argv;
+      B.main = String((p && p.argv[1]) || "");
+      try { B.env = (p && p.env) || {}; } catch { B.env = {}; }
+      try { B.stdin = p.stdin; B.stdout = p.stdout; B.stderr = p.stderr; } catch {}
+    }
+    const W = globalThis.WinterJS;
+    if (W !== undefined && W !== null) {
+      W.version = w;
+      try {
+        const v = p && p.versions;
+        W.versions = (v && typeof v === "object") ? { ...v } : { winterjs: w };
+      } catch { W.versions = { winterjs: w }; }
+      W.args = argv.slice(2);
+      try { W.env = (p && p.env) || {}; } catch { W.env = {}; }
+      W.pid = (p && p.pid) || 0;
+      W.storage = globalThis.storage || null;
+      W.localStorage = globalThis.localStorage || null;
+      W.Deno = D || null;
+      W.Bun = B || null;
+    }
+  };
 }
 "#;

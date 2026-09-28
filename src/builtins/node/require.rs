@@ -386,6 +386,11 @@ globalThis.__wjs_require_main = (url) => globalThis.require(String(url));
 // 全局 console 格式化（node 口径：`util.format`——%s/%d/%i/%f/%j/%o/%O/%c/%%、对象 inspect）。
 // Phase 1 原生 sink 只 ToString（`[object Object]`、`%s` 原样），2026-09-25 补齐。
 // 纯原始值且首参无 `%` 走快路径（不加载 node:util，启动/热路径零开销）。
+// 2026-09-28 §7-②全量收尾：assert/trace 按 internal/console/constructor.js 原文
+// 语义包装备案 + 补 8 缺失方法（table/dirxml/groupCollapsed/context/createTask/
+// profile/profileEnd/timeStamp）+ 惰性 `Console` 类。table 沿 node:console 模块面
+// 既有偏离（format 落盘、无列对齐）；countReset 无标签警告沿模块面偏离；trace 帧行
+// 保留引擎口径（SM `fn@file:line` vs V8 `at` 形，首行 `Trace: msg` 对齐）。
 {
   let fmt = null;
   const getFmt = () => (fmt ??= globalThis.require("node:util"));
@@ -407,6 +412,59 @@ globalThis.__wjs_require_main = (url) => globalThis.require(String(url));
       return rawDir.call(this, getFmt().inspect(obj, { customInspect: false, ...options }));
     };
   }
+  // assert(expression, ...args)：constructor.js 原文——首参字符串即前缀
+  // `Assertion failed: `，否则 unshift；再经 warn（二次格式化）。
+  console.assert = function (expression, ...args) {
+    if (!expression) {
+      if (args.length > 0 && typeof args[0] === "string") {
+        args[0] = `Assertion failed: ${args[0]}`;
+      } else {
+        args.unshift("Assertion failed");
+      }
+      return this.warn(...args);
+    }
+  };
+  // trace(...args)：message 经 stderr 格式化 + 栈（captureStackTrace 本引擎
+  // 不合成首行，故自拼首行；空消息时 V8 省略 `: ` 即裸 `Trace`）→ error。
+  console.trace = function (...args) {
+    const msg = getFmt().format(...args);
+    let frames = "";
+    try {
+      const e = new Error(msg);
+      if (typeof Error.captureStackTrace === "function") {
+        try { Error.captureStackTrace(e, console.trace); } catch {}
+      }
+      const s = String(e.stack ?? "");
+      if (s !== "" && s !== msg) frames = `\n${s}`;
+    } catch {}
+    const head = msg === "" ? "Trace" : `Trace: ${msg}`;
+    return this.error(`${head}${frames}`);
+  };
+  // 别名（constructor.js 末：dirxml=log、groupCollapsed=group 同函数对象）。
+  console.dirxml = console.log;
+  console.groupCollapsed = console.group;
+  // table：沿模块面偏离（format 落盘；非对象直 log，与 constructor.js 同分支）。
+  console.table = function (data) {
+    return this.log(data);
+  };
+  // inspector 旁路 stubs（与 node:console 模块面同形；真机为 native）。
+  console.profile = function () {};
+  console.profileEnd = function () {};
+  console.timeStamp = function () {};
+  console.createTask = function () {
+    return { run(f, ...args) { return f(...args); } };
+  };
+  // context()/Console 经 node:console 模块面惰性取（与模块同一类/同一语义；
+  // 不在启动期加载，首调才进模块）。
+  let consoleMod = null;
+  const getConsoleMod = () => (consoleMod ??= globalThis.require("node:console"));
+  console.context = function () {
+    return getConsoleMod().context();
+  };
+  Object.defineProperty(console, "Console", {
+    configurable: true,
+    get() { return getConsoleMod().Console; },
+  });
 }
 // 直挂原生（禁 JS 闭包包装）：describe_scripted_caller 的最内层帧须是调用方
 // 文件——闭包帧（本 prelude）会盖掉它，相对 require.resolve 即丢 base

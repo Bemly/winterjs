@@ -391,6 +391,50 @@ fn phase11_console_node_format() {
 }
 
 #[test]
+fn phase11_console_global_unified() {
+    // 2026-09-28 §7-②：全局 console 统一收尾（assert/trace 原文语义 + 8 缺失方法）。
+    // 正常：方法表齐 + assert 格式化 + 多参/裸参 + trace 首行 + 别名/存根。
+    let out = stdout_of(winterjs().args([
+        "--eval",
+        "console.log(typeof console.table, typeof console.dirxml, typeof console.groupCollapsed,\
+         typeof console.context, typeof console.createTask, typeof console.profile,\
+         typeof console.timeStamp, typeof console.Console);\
+         console.table(42); console.table(null); console.dirxml('dx');\
+         console.groupCollapsed('gc'); console.log('in-gc'); console.groupEnd();\
+         console.log(typeof console.context().log, typeof console.createTask().run);\
+         import('node:console').then(m=>console.log(m.Console===console.Console));",
+    ]));
+    for line in [
+        "function function function function function function function function",
+        "42",
+        "null",
+        "dx",
+        "gc",
+        "  in-gc",
+        "function function",
+        "true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line:?}; out: {out}");
+    }
+    // 报错流（stderr）：assert 按 constructor.js 原文（首参字符串前缀/多参格式化/
+    // 裸参/真值静默）+ trace 首行 `Trace: msg`。
+    let o = winterjs()
+        .args(["--eval", "console.assert(false, '%s=%d', 'a', 1); console.assert(false, 'x', {k:1}); console.assert(false); console.assert(true, 'silent'); console.trace('%s', 't');"])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    for line in ["Assertion failed: a=1", "Assertion failed: x { k: 1 }", "Assertion failed"] {
+        assert!(err.lines().any(|l| l == line), "missing {line:?}; err: {err}");
+    }
+    assert!(!err.contains("silent"), "assert(true) must be silent; err: {err}");
+    assert!(err.lines().any(|l| l == "Trace: t"), "trace head; err: {err}");
+    // 边界：trace 无参 → 裸 `Trace`（空消息 V8 省略 `: `，真机同形）。
+    let o2 = winterjs().args(["--eval", "console.trace()"]).output().unwrap();
+    let err2 = String::from_utf8_lossy(&o2.stderr);
+    assert!(err2.lines().any(|l| l == "Trace"), "trace() head; err: {err2}");
+}
+
+#[test]
 fn phase11_set_immediate_not_clamped() {
     // 2026-09-26：setImmediate 不走 setTimeout 的 1ms 钳（修前每个 immediate ≥1ms）；
     // 顺序与真机 26.8.2 一致：I/O 回调内 immediate 先于 setTimeout(0)。

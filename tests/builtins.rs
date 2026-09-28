@@ -526,7 +526,7 @@ fn namespace_full_surface_types() {
         "--eval",
         "const d = ['readFile','writeFile','readTextFile','writeTextFile','open','stat','lstat','mkdir','remove','rename','copyFile','symlink','readLink','realPath','readDir','makeTempDir','truncate','chmod','chown','utime','watchFs','test','serve','connect','listen','listenDatagram','resolveDns','Command','permissions','errors','env','cwd','chdir','exit','hostname','osRelease','args','pid','version','build'];\n\
          const b = ['file','write','spawnSync','$','sleep','sleepSync','nanoseconds','randomUUIDv7','sha','serve','listen','connect','udpSocket','fileURLToPath','pathToFileURL','which','version','revision','argv','main','env'];\n\
-         const w = ['version','versions','args','env','cwd','pid','storage','localStorage','Deno','Bun'];\n\
+         const w = ['version','versions','args','env','cwd','pid','storage','localStorage','CompressionStream','DecompressionStream','Deno','Bun'];\n\
          console.log('deno-missing:' + JSON.stringify(d.filter((k) => typeof Deno[k] === 'undefined')));\n\
          console.log('bun-missing:' + JSON.stringify(b.filter((k) => typeof Bun[k] === 'undefined')));\n\
          console.log('wjs-missing:' + JSON.stringify(w.filter((k) => typeof WinterJS[k] === 'undefined')));",

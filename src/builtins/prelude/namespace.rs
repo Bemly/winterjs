@@ -364,6 +364,8 @@ pub const NAMESPACE_JS: &str = r#"
       pid: 0,
       storage: null,
       localStorage: null,
+      CompressionStream: null,
+      DecompressionStream: null,
       Deno: null,
       Bun: null,
     };
@@ -420,6 +422,8 @@ pub const NAMESPACE_JS: &str = r#"
       W.pid = (p && p.pid) || 0;
       W.storage = globalThis.storage || null;
       W.localStorage = globalThis.localStorage || null;
+      W.CompressionStream = globalThis.CompressionStream || null;
+      W.DecompressionStream = globalThis.DecompressionStream || null;
       W.Deno = D || null;
       W.Bun = B || null;
     }

@@ -744,3 +744,15 @@ G1/G2/G3/G9 已收官。）
 - 缺口诚实记：jxl 成功路径缺真 fixture（错误路径全覆盖，跟进项）。
 - 验证：全量 strict 811/812（唯一红 `child_stdin_legacy` 单跑即过，负载 flake，
   与本轮零交集）；冒烟 5/5；行数守门 ok。
+
+## 2026-09-29 站导航五分 + WinterJS 文档补齐
+
+- 站（`sample/docs`，中英 luoli + md 镜像）：导航 `Modules` 单组拆五组
+  （WinterJS 原生 / Web 标准 / Node 兼容 / Bun 兼容 / Deno 兼容）；表格同分
+  （原生表置顶：storage 移出 Web 表，sqlite 拆 node:sqlite + bun:sqlite，
+  bun:ffi 移 Bun 表；新增 WinterJS.image/WinterJS/Bun/Deno 四行）。
+  行列锚点双向 65↔65 对过；`api-node-sqlite-bun-sqlite` 旧锚改名（站新建不久，无外链）。
+- 样例：`sample/winterjs/image.js` + `namespaces.js`（双语头，全离线，`--run` 双绿）。
+- REPL：`winterjs-content/image-{decode,encode,info,formats}` 四页（组机制免改码直通；
+  加页须 touch 重编见 4.233）+ 签名表 4 项；`.doc WinterJS.image.decode` 可读。
+- 附带修：svg scale 宽高取自未缩放 info（像素已缩放）→ 跟随 scale。

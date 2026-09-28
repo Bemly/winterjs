@@ -15,6 +15,14 @@ permalink: /zh/api/
 
 可运行索引：每行对应 `sample/<领域>/` 下的样例。
 
+## WinterJS 原生
+
+| API | 稳定性 | 样例 | 说明 |
+|---|---|---|---|
+| `storage` / `localStorage` | 稳定 | `sample/storage/basics.js` | WinterCG 自有 KV（turso 单文件，`--storage-path`，默认 `./winterjs-storage.db`）；异步 `get/set/delete/has/keys/clear/size` + 同步 Web Storage 垫片；值 JSON 可序列化 + `Uint8Array`；经 `-b/--db` 查看 |
+| `WinterJS.image` | 稳定 | `sample/winterjs/image.js` | 图像编解码：解码出 RGBA8 / 编码回去：png/jpeg/gif/webp/tiff/tga/bmp/ico/hdr/exr/pnm/farbfeld/qoi + svg/jxl 纯解码；质量参数直通 |
+| `WinterJS` | 稳定 | `sample/winterjs/namespaces.js` | 运行时命名空间：版本/参数/环境/存储 + image；Deno/Bun 交叉引用 |
+
 ## Web 全局（免导入）
 
 | 全局 | 稳定性 | 样例 | 说明 |
@@ -22,7 +30,6 @@ permalink: /zh/api/
 | `console` | 稳定 | `sample/web/console.js`、`sample/web/performance.js` | 控制台输出：`time/timeEnd/count/assert/dir`；`node:console` 导出自定义流的 `Console` 类 |
 | `setTimeout/clearTimeout/setInterval/clearInterval/setImmediate/clearImmediate/queueMicrotask` | 稳定 | `sample/web/timers.js` | 定时器与任务调度：`setImmediate` 不钳 1ms；`nextTick` 走原生队列 |
 | `structuredClone` | 实验 | `sample/web/structured-clone.js` | 作用：对象深拷贝。**偏离**：仅纯数据——Date/Map/Set/正则/类型化数组/ArrayBuffer 回来都是普通对象；无 `transfer` 剥离 |
-| `storage` / `localStorage` | 稳定 | `sample/storage/basics.js` | WinterCG 自有 KV（turso 单文件，`--storage-path`，默认 `./winterjs-storage.db`）；异步 `get/set/delete/has/keys/clear/size` + 同步 Web Storage 垫片；值 JSON 可序列化 + `Uint8Array`；经 `-b/--db` 查看 |
 | `fs` / `WinterJS.fs` | 稳定 | `sample/wfs/basics.js` | 自有文件面，与 `node:fs` 分离（直用 `fs-err`）；异步 `readFile/readTextFile/writeFile/writeTextFile/stat/mkdir/readdir/remove/rename/copyFile/exists` |
 | `WinterJS.memory/alloc/unsafe*` | 稳定 | `sample/mem/basics.js` | `memory()` 看 rss+分配器；`alloc(n)` GC 托管零填；`unsafeAlloc/Write/Read/Size/Free/List` 手动 id 堆，需 `--allow-ffi` |
 | `URL/URLSearchParams/URLPattern` | 稳定 | `sample/web/url.js` | URL 解析与构造（WHATWG）；legacy `url.parse/format` 在 `node:url` |
@@ -71,8 +78,7 @@ permalink: /zh/api/
 | `node:quic` | 实验 | — | 仅 `QuicEndpoint/listen/connect` 形态面；本构建回环握手超时（另案追查） |
 | `node:readline` | 稳定 | `sample/readline/basics.js` | 交互行读取：内存流驱动，无需 TTY |
 | `node:repl` | 稳定 | `sample/repl/basics.js` | 交互式求值：内存流驱动（免 TTY）；`Recoverable` |
-| `bun:ffi` | 实验 | `sample/bun-ffi/strlen.js` | 原生库调用：`dlopen` 调 libc `strlen`（darwin/linux 守卫）；`ptr`/`CString` 地址模型 |
-| `node:sqlite` / `bun:sqlite` | 稳定 | `sample/sqlite/basics.js` | 内建数据库：`DatabaseSync` / `Database`，内存库已验 |
+| `node:sqlite` | 稳定 | `sample/sqlite/basics.js` | 内建数据库：`DatabaseSync`，内存库已验（turso 底座；`bun:sqlite` 见 Bun 兼容） |
 | `node:stream` (+`/promises`, `/consumers`, `/web`) | 稳定 | `sample/stream/basics.js`、`extras.js` | 数据流：四类流/pipeline/finished/text/json |
 | `node:string_decoder` | 稳定 | `sample/codecs/basics.js` | 跨包多字节解码：split 无乱码 |
 | `node:sys` | 稳定 | `sample/util/basics.js` | 废弃别名（同实例）：与 `node:util` 同实例 |
@@ -87,6 +93,20 @@ permalink: /zh/api/
 | `node:vm` | 稳定 | `sample/vm/basics.js` | 沙箱虚拟机：Script/上下文/compileFunction；宿主全局不泄漏 |
 | `node:worker_threads` | 稳定 | `sample/worker-threads/main.mjs` + `helper.mjs` | 工作线程：postMessage/terminate |
 | `node:zlib` | 稳定 | `sample/zlib/basics.js` | 压缩解压：gzip/deflate/brotli/crc32 |
+
+## Bun 兼容
+
+| API | 稳定性 | 样例 | 说明 |
+|---|---|---|---|
+| `bun:ffi` | 实验 | `sample/bun-ffi/strlen.js` | 原生库调用：`dlopen` 调 libc `strlen`（darwin/linux 守卫）；`ptr`/`CString` 地址模型 |
+| `bun:sqlite` | 稳定 | `sample/sqlite/basics.js` | 内建数据库：`Database`，内存库已验（turso 底座） |
+| `Bun` | 稳定 | `sample/winterjs/namespaces.js` | 文件/子进程/服务/休眠/shell；版本/参数/环境镜像 process |
+
+## Deno 兼容
+
+| API | 稳定性 | 样例 | 说明 |
+|---|---|---|---|
+| `Deno` | 稳定 | `sample/winterjs/namespaces.js` | 冻结命名空间：文件/环境/网络/服务/Command/test，骑 node: 底座 |
 
 ## 不做（设计如此）
 

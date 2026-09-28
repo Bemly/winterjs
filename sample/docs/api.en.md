@@ -16,6 +16,14 @@ evolving; `Bridge` = intentionally reduced surface (documented below).
 
 Quick runnable index: every row has a sample under `sample/<area>/`.
 
+## WinterJS native
+
+| API | Stability | Sample | Notes |
+|---|---|---|---|
+| `storage` / `localStorage` | Stable | `sample/storage/basics.js` | WinterCG own KV (turso single file, `--storage-path`, default `./winterjs-storage.db`); async `get/set/delete/has/keys/clear/size` + sync Web Storage shim; values JSON-serializable + `Uint8Array`; inspect via `-b/--db` |
+| `WinterJS.image` | Stable | `sample/winterjs/image.js` | decode to RGBA8 / encode back: png/jpeg/gif/webp/tiff/tga/bmp/ico/hdr/exr/pnm/farbfeld/qoi + svg/jxl decode-only; quality params pass through |
+| `WinterJS` | Stable | `sample/winterjs/namespaces.js` | runtime namespace: version/args/env/storage + image; Deno/Bun cross-refs |
+
 ## Web globals (no import)
 
 | Global | Stability | Sample | Notes |
@@ -23,7 +31,6 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 | `console` (+`console.time/timeEnd/count/assert/dir`) | Stable | `sample/web/console.js`, `sample/web/performance.js` | `node:console` exports `Console` class over custom streams |
 | `setTimeout/clearTimeout/setInterval/clearInterval/setImmediate/clearImmediate/queueMicrotask` | Stable | `sample/web/timers.js` | `setImmediate` is not clamped to 1ms; `nextTick` uses its native queue |
 | `structuredClone` | Experimental | `sample/web/structured-clone.js` | **Deviation**: plain data only — Date/Map/Set/RegExp/TypedArray/ArrayBuffer come back as plain objects; no `transfer` detach |
-| `storage` / `localStorage` | Stable | `sample/storage/basics.js` | WinterCG own KV (turso single file, `--storage-path`, default `./winterjs-storage.db`); async `get/set/delete/has/keys/clear/size` + sync Web Storage shim; values JSON-serializable + `Uint8Array`; inspect via `-b/--db` |
 | `fs` / `WinterJS.fs` | Stable | `sample/wfs/basics.js` | Own file surface, separate from `node:fs` (direct `fs-err`); async `readFile/readTextFile/writeFile/writeTextFile/stat/mkdir/readdir/remove/rename/copyFile/exists` |
 | `WinterJS.memory/alloc/unsafe*` | Stable | `sample/mem/basics.js` | `memory()` rss+allocator; `alloc(n)` GC-managed zero-filled `Uint8Array`; `unsafeAlloc/Write/Read/Size/Free/List` manual id heap behind `--allow-ffi` |
 | `URL/URLSearchParams/URLPattern` | Stable | `sample/web/url.js` | WHATWG; legacy `url.parse/format` lives in `node:url` |
@@ -72,8 +79,7 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 | `node:quic` | Experimental | — | `QuicEndpoint/listen/connect` surface only; loopback session handshake times out in this build (under investigation) |
 | `node:readline` | Stable | `sample/readline/basics.js` | stream-backed, no TTY needed |
 | `node:repl` | Stable | `sample/repl/basics.js` | `start` over memory streams (no TTY); `Recoverable` |
-| `bun:ffi` | Experimental | `sample/bun-ffi/strlen.js` | `dlopen` libc `strlen` (darwin/linux guarded); `ptr`/`CString` address model |
-| `node:sqlite` / `bun:sqlite` | Stable | `sample/sqlite/basics.js` | `DatabaseSync` / `Database`, in-memory verified |
+| `node:sqlite` | Stable | `sample/sqlite/basics.js` | `DatabaseSync`, in-memory verified (turso base; `bun:sqlite` see Bun compatibility) |
 | `node:stream` (+`/promises`, `/consumers`, `/web`) | Stable | `sample/stream/basics.js`, `sample/stream/extras.js` | Readable/Writable/Transform/pipeline/finished/text/json |
 | `node:string_decoder` | Stable | `sample/codecs/basics.js` | split multibyte decode |
 | `node:sys` | Stable | `sample/util/basics.js` | deprecated alias, same instance as `node:util` |
@@ -88,6 +94,20 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 | `node:vm` | Stable | `sample/vm/basics.js` | Script/context/compileFunction; host globals not leaked |
 | `node:worker_threads` | Stable | `sample/worker-threads/main.mjs` + `helper.mjs` | postMessage/terminate |
 | `node:zlib` | Stable | `sample/zlib/basics.js` | gzip/deflate/brotli/crc32 |
+
+## Bun compatibility
+
+| API | Stability | Sample | Notes |
+|---|---|---|---|
+| `bun:ffi` | Experimental | `sample/bun-ffi/strlen.js` | `dlopen` libc `strlen` (darwin/linux guarded); `ptr`/`CString` address model |
+| `bun:sqlite` | Stable | `sample/sqlite/basics.js` | `Database`, in-memory verified (turso base) |
+| `Bun` | Stable | `sample/winterjs/namespaces.js` | file/write/spawn/serve/sleep/shell; version/argv/env mirror process |
+
+## Deno compatibility
+
+| API | Stability | Sample | Notes |
+|---|---|---|---|
+| `Deno` | Stable | `sample/winterjs/namespaces.js` | frozen namespace: fs/env/net/serve/Command/test over the node: base |
 
 ## Not supported (by design)
 

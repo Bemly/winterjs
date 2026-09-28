@@ -815,6 +815,13 @@ mod tests {
         // 缺页成员回落组页（有文档，不裸签名）。
         let fb = summary("WinterJS.fs.noSuchMethod").expect("falls back to fs group");
         assert!(fb.contains("separate"), "{fb}");
+        // 压缩别名面（streams/zstd 轮）：类页 + WinterJS 索引含新成员。
+        let wc = summary("WinterJS.CompressionStream").expect("WinterJS.CompressionStream documented");
+        assert!(wc.contains("zstd"), "{wc}");
+        let wd = summary("WinterJS.DecompressionStream").expect("WinterJS.DecompressionStream documented");
+        assert!(wd.contains("zstd"), "{wd}");
+        let wl = summary("WinterJS.localStorage").expect("WinterJS.localStorage documented");
+        assert!(wl.contains("turso"), "{wl}");
     }
 
     #[test]

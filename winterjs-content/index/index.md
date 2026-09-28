@@ -12,10 +12,13 @@ non-standard, runtime-specific APIs. Web standards stay on their own globals
 ```js
 WinterJS.version
 WinterJS.storage
+WinterJS.localStorage
 WinterJS.fs
 WinterJS.memory
 WinterJS.alloc
 WinterJS.unsafeAlloc
+WinterJS.CompressionStream
+WinterJS.DecompressionStream
 ```
 
 ### Parameters
@@ -24,6 +27,8 @@ WinterJS.unsafeAlloc
   - : The current winterjs version string.
 - `storage`
   - : The WinterCG async KV store for the current project.
+- `localStorage`
+  - : The sync Web Storage shim (same object as global `localStorage`).
 - `fs`
   - : The own file surface (same object as global `fs`), separate from `node:fs`.
 - `memory`
@@ -32,3 +37,7 @@ WinterJS.unsafeAlloc
   - : Controlled zero-filled `Uint8Array` allocation.
 - `unsafeAlloc`
   - : Manual id-heap allocation behind `--allow-ffi`.
+- `CompressionStream`
+  - : Same class as global `CompressionStream` (plus winterjs `zstd` format).
+- `DecompressionStream`
+  - : Same class as global `DecompressionStream` (plus winterjs `zstd` format).

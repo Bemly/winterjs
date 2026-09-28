@@ -20,7 +20,7 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 
 | API | Stability | Sample | Notes |
 |---|---|---|---|
-| `storage` / `localStorage` | Stable | `sample/storage/basics.js` | WinterCG own KV (turso single file, `--storage-path`, default `./winterjs-storage.db`); async `get/set/delete/has/keys/clear/size` + sync Web Storage shim; values JSON-serializable + `Uint8Array`; inspect via `-b/--db` |
+| `storage` / `localStorage` (+`WinterJS.*` alias) | Stable | `sample/storage/basics.js` | WinterCG own KV (turso single file, `--storage-path`, default `./winterjs-storage.db`); async `get/set/delete/has/keys/clear/size` + sync Web Storage shim; values JSON-serializable + `Uint8Array`; inspect via `-b/--db` |
 | `WinterJS.image` | Stable | `sample/winterjs/image.js` | decode to RGBA8 / encode back: png/jpeg/gif/webp/tiff/tga/bmp/ico/hdr/exr/pnm/farbfeld/qoi + svg/jxl decode-only; quality params pass through |
 | `WinterJS` | Stable | `sample/winterjs/namespaces.js` | runtime namespace: version/args/env/storage + image; Deno/Bun cross-refs |
 
@@ -38,7 +38,7 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 | `Blob/File` | Stable | `sample/web/blob-file.js` | `slice/text/arrayBuffer` |
 | `fetch/Request/Response/Headers` | Stable | `sample/web/fetch.js` | `data:` URLs work offline; streaming bodies via Web Streams |
 | `ReadableStream/WritableStream/TransformStream/ByteLengthQueuingStrategy/CountQueuingStrategy` | Stable | `sample/web/streams.js` | `for await` consumption; **Deviation**: `new Response(readableStream)` body not accepted — collect via reader |
-| `CompressionStream/DecompressionStream` | Stable | `sample/web/compression.js` | `gzip` + `deflate` verified round-trips |
+| `CompressionStream/DecompressionStream` (+`WinterJS.*` alias) | Stable | `sample/web/compression.js` | `gzip` + `deflate` + winterjs-extension `zstd` (ruzstd; encodes at Fastest) verified round-trips |
 | `crypto.getRandomValues/randomUUID/subtle` | Stable | `sample/web/webcrypto.js` | digest/AES-GCM/HMAC; `importKey` needs full `{name, hash}` params |
 | `Event/EventTarget/CustomEvent/MessageEvent/CloseEvent/AbortController/AbortSignal` | Stable | `sample/web/events.js` | |
 | `DOMException` | Stable | `sample/web/events.js` | named errors (`AbortError` code 20) |

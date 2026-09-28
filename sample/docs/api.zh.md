@@ -19,7 +19,7 @@ permalink: /zh/api/
 
 | API | 稳定性 | 样例 | 说明 |
 |---|---|---|---|
-| `storage` / `localStorage` | 稳定 | `sample/storage/basics.js` | WinterCG 自有 KV（turso 单文件，`--storage-path`，默认 `./winterjs-storage.db`）；异步 `get/set/delete/has/keys/clear/size` + 同步 Web Storage 垫片；值 JSON 可序列化 + `Uint8Array`；经 `-b/--db` 查看 |
+| `storage` / `localStorage`（+`WinterJS.*` 别名） | 稳定 | `sample/storage/basics.js` | WinterCG 自有 KV（turso 单文件，`--storage-path`，默认 `./winterjs-storage.db`）；异步 `get/set/delete/has/keys/clear/size` + 同步 Web Storage 垫片；值 JSON 可序列化 + `Uint8Array`；经 `-b/--db` 查看 |
 | `WinterJS.image` | 稳定 | `sample/winterjs/image.js` | 图像编解码：解码出 RGBA8 / 编码回去：png/jpeg/gif/webp/tiff/tga/bmp/ico/hdr/exr/pnm/farbfeld/qoi + svg/jxl 纯解码；质量参数直通 |
 | `WinterJS` | 稳定 | `sample/winterjs/namespaces.js` | 运行时命名空间：版本/参数/环境/存储 + image；Deno/Bun 交叉引用 |
 
@@ -37,7 +37,7 @@ permalink: /zh/api/
 | `Blob/File` | 稳定 | `sample/web/blob-file.js` | 二进制对象：`slice/text/arrayBuffer` |
 | `fetch/Request/Response/Headers` | 稳定 | `sample/web/fetch.js` | 网络请求：`data:` URL 离线可用；流式体走 Web Streams |
 | `ReadableStream/WritableStream/TransformStream/ByteLengthQueuingStrategy/CountQueuingStrategy` | 稳定 | `sample/web/streams.js` | 流式数据处理：支持 `for await`；**偏离**：`new Response(可读流)` 体不接受——用 reader 收集 |
-| `CompressionStream/DecompressionStream` | 稳定 | `sample/web/compression.js` | 流式压缩：`gzip` + `deflate` 已验往返 |
+| `CompressionStream/DecompressionStream`（+`WinterJS.*` 别名） | 稳定 | `sample/web/compression.js` | 流式压缩：`gzip` + `deflate` + winterjs 扩展 `zstd`（ruzstd，编码恒 Fastest）已验往返 |
 | `crypto.getRandomValues/randomUUID/subtle` | 稳定 | `sample/web/webcrypto.js` | 密码学：摘要/AES-GCM/HMAC；`importKey` 需完整 `{name, hash}` 参数 |
 | `Event/EventTarget/CustomEvent/MessageEvent/CloseEvent/AbortController/AbortSignal` | 稳定 | `sample/web/events.js` | |
 | `DOMException` | 稳定 | `sample/web/events.js` | 具名错误（`AbortError` 码 20） |

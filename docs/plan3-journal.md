@@ -756,3 +756,11 @@ G1/G2/G3/G9 已收官。）
 - REPL：`winterjs-content/image-{decode,encode,info,formats}` 四页（组机制免改码直通；
   加页须 touch 重编见 4.233）+ 签名表 4 项；`.doc WinterJS.image.decode` 可读。
 - 附带修：svg scale 宽高取自未缩放 info（像素已缩放）→ 跟随 scale。
+
+## 2026-09-29 站全白抢修（luolita 双雷 + 部署门）
+
+- 修：`native`→`wjs`（保留字）+ cli-zh 两处多余括号（模板行 472a343 落的 +
+  actions 行尾 ` }]`，与英文版逐字对）+ `pages.yml` 部署门。
+- 校验法：`scripts/check-luoli.js`（原版 coffee 编全部 8 页 coffee: 段；
+  另用 pug 去缩进渲染验过 api 表格 5 组 + 新锚点，属一次性探针未进仓）。
+- 流程教训记 4.234：推站后等 Actions 成功再看站（本轮即此口径执行）。

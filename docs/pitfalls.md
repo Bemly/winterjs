@@ -4235,3 +4235,18 @@
 - 复现：加页 → 直接编 → `__wjs_doc_summary(新主题)` 回父页/None。
 - 推广铁律：**凡编译期嵌目录（include_dir!/include_str! 指向目录）加文件，
   必 touch 引用处再编**；`git status` 见新页 + 二进制行为不变先疑此条。
+
+### 4.234 站 luoli 炸了部署不拦（2026-09-29，文档轮）
+
+- 症状：`Failed to load pages/cli-zh.luoli: unmatched }` +
+  `pages/api-zh.luoli: reserved word 'native'`——站全白，但 Actions 全绿。
+- 根因三合一：① `native` 是 CoffeeScript 保留字（数据数组名撞了）；
+  ② cli-zh actions 行尾多 ` }]`（与英文版逐字对即现形）；③ 部署工作流
+  只做静态上传，零校验，带病上线。
+- 修法：数组改名 `wjs`；括号与英文版逐字对；`pages.yml` 加部署门
+  （`scripts/check-luoli.js`，原版 coffeescript 编 coffee: 段，exit 非零即拦）。
+  template:/style: 段是 luolita 预处理方言，裸 pug 验不了（缩进基不同），
+  只验 coffee + diff 评审。
+- 复现：`NODE_PATH=… node scripts/check-luoli.js`（旧文件必 FAIL）。
+- 推广铁律：**无校验的部署链等于没有门**；前端 DSL 进仓即配校验脚本，
+  今后推站前先等 Actions（用户令）再看站。

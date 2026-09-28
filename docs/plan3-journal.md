@@ -583,3 +583,19 @@ G1/G2/G3/G9 已收官。）
   原生短形参（`get(n)`）让位文档，普通用户对象永远真相。
 - 验证：新黑盒 `phase11_repl_sig_js_docs`（正常+遮蔽边界）；strict 777/777；
   冒烟 5/5；行数守门 ok。深水不追：`crypto.subtle` 方法面、table 列对齐。
+
+## 2026-09-28 `.doc` 整篇文档（irb show_doc 方向，用户拍板三连）
+
+- 语料 JS 全量进仓：`mdn-content/`（1783 `.md`，7.6MB；`web/javascript` 全量 +
+  `web/api/console` 全量 + WinterCG 接口页；图床不要，原件不动，路径即出处；
+  `ATTRIBUTION.md` 载 CC-BY-SA 署名）。只做 `.doc` 命令（CLI 专属，node:repl 不动；
+  TTY 走 termimad 样式，管道走纯文本）。termimad 0.35.5 MIT，闭包无 links，
+  §0.5 登记进 `docs/dependencies.md` §4。
+- 用户裁定（回头看最关键的一句）：pane 禁搬运文档句，文档只读语料——
+  `__wjsReplSig` 回签名本位（R3 原样 + 4.227 排序），我贴进去的 94 条 MDN 句、
+  23 个【】注记、80 个 WinterCG/存根表项全退（`git diff` 净删 100+ 行）。
+  偏离记档住老地方（bun-parity/模块头/journal），不嵌文档串，语料更新零负债。
+- 实现：`src/repl_doc.rs`（显式 slug 72 + console/SM 派生规则，存在性校验；
+  sanitize 修三族宏显示文字 + jsxref；`Dot::Doc` 进点命令分发，TTY/管道共用）。
+- 验证：单测 slug 全枚举 72/72 + 黑盒 `.doc` 三路 + TTY pty 实测样式化整篇；
+  strict 781/781；冒烟行数全过。坑 4.228（文案撇号）。

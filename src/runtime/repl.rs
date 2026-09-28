@@ -344,6 +344,21 @@ pub async fn repl() -> Result<(), Error> {
             options,
         );
     }
+    // 首 Tab 冷 `require('node:repl')` 易撞补全超时窗——会话启动时预热一次
+    // （REPL 专属；worker/child 会话不走此函数，R6b 启动代价纪律不受染）。
+    // 失败仅降级（首 Tab 回桥内惰性 require）。
+    {
+        let c_filename = CString::new("repl.js").expect("no NUL");
+        rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
+        let options = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
+        let _ = evaluate_script(
+            rt.cx(),
+            global.handle(),
+            "globalThis.require('node:repl');",
+            rval.handle_mut(),
+            options,
+        );
+    }
     let mut fetch_rx = init.fetch_rx;
     let mut ws_rx = init.ws_rx;
     let mut watch_rx = init.watch_rx;

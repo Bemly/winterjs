@@ -411,12 +411,39 @@ fn strip_italics(s: &str) -> String {
     out
 }
 
+/// 摘要缓存（语料静态，`summary` 纯函数；首轮 Tab 后复用——空行 148 项
+/// 逐页重洗实测 ~450ms，超补全超时窗。确定性内容，单测不断言空满，无需复位）。
+static SUMMARY_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 /// 补全浮窗摘要（实时读语料，无拷贝）：topic → 前两段 + 首个代码块
 /// （调用形状）+ Parameters 节（机械提取，无编撰；reedline 描述盒按空白
 /// 重排，`\n` 只做语义分隔，渲染恒成一段）。
 /// 缺页即 `None`。
 pub fn summary(topic: &str) -> Option<String> {
-    let t = topic.strip_prefix("globalThis.").unwrap_or(topic);
+    let key = topic
+        .strip_prefix("globalThis.")
+        .unwrap_or(topic)
+        .to_string();
+    if let Some(hit) = SUMMARY_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+        .cloned()
+    {
+        return hit;
+    }
+    let v = summary_inner(&key);
+    SUMMARY_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, v.clone());
+    v
+}
+
+/// `summary` 本体（缓存穿透时计算；纯函数）。
+fn summary_inner(t: &str) -> Option<String> {
     let md = lookup(t)?;
     let clean_src = sanitize(md);
     // 正文段（MDN 源码折行，段内空格连接；标题/引用/围栏行不计；取前两段）。

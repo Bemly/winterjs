@@ -419,7 +419,9 @@ pub struct JsCompleter {
     req_tx: tokio::sync::mpsc::UnboundedSender<CompReq>,
     resp_rx: tokio::sync::mpsc::UnboundedReceiver<CompResp>,
     next_id: u64,
-    /// 动态回包总窗（单测注入缩短；缺省 150ms）。
+    /// 动态回包总窗（单测注入缩短；缺省 800ms——成功路径 200µs 步进即时返回，
+    /// cap 只决定失败时 NO RECORDS 出现时机；空行 148 项摘要实测 ~450ms，
+    /// 800ms 覆盖首轮 + 负载余量）。
     timeout: Duration,
 }
 
@@ -428,7 +430,7 @@ impl JsCompleter {
         req_tx: tokio::sync::mpsc::UnboundedSender<CompReq>,
         resp_rx: tokio::sync::mpsc::UnboundedReceiver<CompResp>,
     ) -> Self {
-        Self { req_tx, resp_rx, next_id: 0, timeout: Duration::from_millis(150) }
+        Self { req_tx, resp_rx, next_id: 0, timeout: Duration::from_millis(800) }
     }
 
     /// 动态补全请求（readline 线程阻塞等回包；超时/断链回 None）。
@@ -860,6 +862,43 @@ mod tests {
             }
         }
         drop(resp_tx); // 断链路径：resp 通道关 → request_dynamic None。
+    }
+
+    #[test]
+    fn completer_empty_line_live_response() {
+        // 空行 Tab 真路径（有应答的假 JS 线程）：全局候选 + 零宽 span。
+        // 回归：桥调通但回包超时/span 错位即 NO RECORDS 或乱插。
+        use reedline::Completer as _;
+        let (req_tx, req_rx) = tokio::sync::mpsc::unbounded_channel::<CompReq>();
+        let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel::<CompResp>();
+        std::thread::spawn(move || {
+            let mut req_rx = req_rx;
+            if let Some(r) = req_rx.blocking_recv() {
+                let _ = resp_tx.send(CompResp {
+                    id: r.id,
+                    items: vec![
+                        ("console".to_owned(), None),
+                        ("fetch".to_owned(), None),
+                    ],
+                    complete_on: String::new(),
+                });
+            }
+        });
+        let mut c = JsCompleter {
+            req_tx,
+            resp_rx,
+            next_id: 0,
+            timeout: Duration::from_secs(5),
+        };
+        let items = match c.complete("", 0) {
+            reedline::CompletionResult::Fresh { suggestions, .. } => suggestions.to_vec(),
+            _ => panic!("expected fresh"),
+        };
+        assert_eq!(items.len(), 2, "{items:?}");
+        assert!(items.iter().any(|s| s.value == "console"), "{items:?}");
+        for s in &items {
+            assert_eq!((s.span.start, s.span.end), (0, 0), "{s:?}");
+        }
     }
 
     #[test]

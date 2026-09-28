@@ -1,0 +1,6 @@
+node_modules/
+out/
+.cache/
+public/voice/*.mp3
+public/voice/timeline.json
+public/sfx/

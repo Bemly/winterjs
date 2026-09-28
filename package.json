@@ -1,0 +1,24 @@
+{
+  "name": "winterjs-promo",
+  "private": true,
+  "version": "1.0.0",
+  "description": "WinterJS B站宣传片（Remotion 工程）",
+  "scripts": {
+    "tts": "python3 tools/tts.py",
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts WinterJSPromo out/winterjs-promo.mp4",
+    "still": "remotion still src/index.ts WinterJSPromo out/still.png",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.529",
+    "@remotion/gif": "4.0.529",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.529"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -24,6 +24,8 @@ Quick runnable index: every row has a sample under `sample/<area>/`.
 | `setTimeout/clearTimeout/setInterval/clearInterval/setImmediate/clearImmediate/queueMicrotask` | Stable | `sample/web/timers.js` | `setImmediate` is not clamped to 1ms; `nextTick` uses its native queue |
 | `structuredClone` | Experimental | `sample/web/structured-clone.js` | **Deviation**: plain data only — Date/Map/Set/RegExp/TypedArray/ArrayBuffer come back as plain objects; no `transfer` detach |
 | `storage` / `localStorage` | Stable | `sample/storage/basics.js` | WinterCG own KV (turso single file, `--storage-path`, default `./winterjs-storage.db`); async `get/set/delete/has/keys/clear/size` + sync Web Storage shim; values JSON-serializable + `Uint8Array`; inspect via `-b/--db` |
+| `fs` / `WinterJS.fs` | Stable | `sample/wfs/basics.js` | Own file surface, separate from `node:fs` (direct `fs-err`); async `readFile/readTextFile/writeFile/writeTextFile/stat/mkdir/readdir/remove/rename/copyFile/exists` |
+| `WinterJS.memory/alloc/unsafe*` | Stable | `sample/mem/basics.js` | `memory()` rss+allocator; `alloc(n)` GC-managed zero-filled `Uint8Array`; `unsafeAlloc/Write/Read/Size/Free/List` manual id heap behind `--allow-ffi` |
 | `URL/URLSearchParams/URLPattern` | Stable | `sample/web/url.js` | WHATWG; legacy `url.parse/format` lives in `node:url` |
 | `TextEncoder/TextDecoder/atob/btoa` | Stable | `sample/web/url.js` | `fatal:true` supported |
 | `Blob/File` | Stable | `sample/web/blob-file.js` | `slice/text/arrayBuffer` |

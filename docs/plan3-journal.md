@@ -775,3 +775,16 @@ G1/G2/G3/G9 已收官。）
 - 教训：`git add` 遇已删路径整体失败——删文件走 `git rm` 后同命令再 add
   其余文件会全丢（本轮 cover 行漏提交，靠线上 raw 发现；SHA 钉死 URL
   可破 CDN 缓存验）。
+
+## 2026-09-29 WinterJS.media 轮（symphonia+rodio+rav1e+mp4-rs）
+
+- 拍板四件全进树：`symphonia` 0.6（直引解码）+ `rodio` 0.22（只开 playback，
+  解码走直引 0.6——rodio 自带 0.5 子树已摘）+ `rav1e` 0.8（关 default：
+  含 git2/nasm/cli，只开 threading）+ `shiguredo_mp4`（git tag
+  2026.6.0-canary.0 钉死，零依赖）。
+- 面：`decodeAudio/audioInfo`（f32 交错全量，首轨）+ `play/stop`（后台线程
+  即返 id，rodio stderr 提示已关）+ `videoEncode`（RGBA→YUV420 BT.601，
+  手写 IVF，不另引轮子）+ `mp4Info/mp4Samples/mp4Sample`（demux；mux 跟进项）。
+  jxl 成功路径 fixture 同款缺口：mp4 用上游自带 beep-flac 进仓
+  （tests/fixtures/media/，Apache-2.0）。
+- 验证：模块单测 + 黑盒正常/报错/边界 + 冒烟；全量 strict 待收尾跑。

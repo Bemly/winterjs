@@ -678,8 +678,9 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
    已上线；`rustyline` 同日退役移出 `Cargo.toml`，历史/双 Ctrl-C/非 TTY 退化
    平移同批完成（`is_terminal` 分流等三坑见 pitfalls 4.224）。
 
-6. 音视频 codec 候选（2026-09-29，用户问纯 Rust 音视频编解码时立项；**待拍板，
-   一律未进 `Cargo.toml`**）：`.crate` 源码实证（`~/wjs-data/crates-probe/`，
+6. 音视频 codec 候选（2026-09-29，用户问纯 Rust 音视频编解码时立项；**用户拍板
+   symphonia + rodio + rav1e + shiguredo/mp4-rs（git tag 钉死），已进树**）：
+   `.crate` 源码实证（`~/wjs-data/crates-probe/`，
    查 `*.c/*.h`/`build.rs`/`links`/cc 系依赖），四问口径同 §15。
 
    | 轮子 | 版本/维护/下载 | 纯度 | 覆盖 | 门控/备注 |

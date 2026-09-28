@@ -3,7 +3,7 @@ title: "WinterJS.ip"
 slug: WinterJS/ip
 ---
 
-The **`WinterJS.ip`** property provides IP/CIDR utilities (ipnet backend): `isNet`, `isAddr`, `contains`, `parse`.
+The **`WinterJS.ip`** property provides IP/CIDR utilities: `isNet`, `isAddr`, `contains`, `parse`.
 
 ## Syntax
 

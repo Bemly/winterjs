@@ -3,7 +3,7 @@ title: "WinterJS.time"
 slug: WinterJS/time
 ---
 
-The **`WinterJS.time`** property provides clock utilities (jiff backend): `now` is epoch ms, `parse` reads RFC3339, `format` renders strtime (UTC default).
+The **`WinterJS.time`** property provides clock utilities: `now` is epoch ms, `parse` reads RFC3339, `format` renders strtime (UTC default).
 
 ## Syntax
 

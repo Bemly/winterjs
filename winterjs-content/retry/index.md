@@ -3,7 +3,7 @@ title: "WinterJS.retry"
 slug: WinterJS/retry
 ---
 
-The **`WinterJS.retry`** property provides retry utilities (backon schedule math): `delay` computes the wait, `run` awaits an async function with `setTimeout` waits.
+The **`WinterJS.retry`** property provides retry utilities with computed backoff: `delay` computes the wait, `run` awaits an async function with `setTimeout` waits.
 
 ## Syntax
 

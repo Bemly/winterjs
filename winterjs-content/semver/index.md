@@ -3,7 +3,7 @@ title: "WinterJS.semver"
 slug: WinterJS/semver
 ---
 
-The **`WinterJS.semver`** property provides npm-semantics version utilities (deno_semver backend): `valid`, `parse`, `satisfies`, `compare`. Prerelease ties compare lexicographically (approximation).
+The **`WinterJS.semver`** property provides npm-semantics version utilities: `valid`, `parse`, `satisfies`, `compare`. Prerelease ties compare lexicographically (approximation).
 
 ## Syntax
 

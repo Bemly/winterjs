@@ -4,7 +4,7 @@ slug: WinterJS/unsafeAlloc
 ---
 
 The **`WinterJS.unsafeAlloc()`** method allocates a manual byte block and
-returns its id (Rust-side `HashMap<id, Vec>`, no raw pointers reach JS).
+returns its id (the runtime keeps the bytes; your code only sees the id).
 Operate it with `unsafeWrite` / `unsafeRead` / `unsafeSize`, release with
 `unsafeFree`, list with `unsafeList`. Requires `--allow-ffi`; use-after-free,
 double-free and out-of-bounds are readable errors.

@@ -4,9 +4,9 @@ slug: WinterJS/memory
 ---
 
 The **`WinterJS.memory()`** method returns the observable memory info of the
-current process: `rss` (via sysinfo), the allocator kind (`smmalloc` on
-desktop, `talc` on mobile), and zeroed heap fields (cross-engine numbers are
-not comparable, same as `process.memoryUsage`).
+current process: `rss` in bytes, the allocator name, and zeroed heap
+fields (heap numbers depend on the engine and are not comparable, same as
+`process.memoryUsage`).
 
 ## Syntax
 

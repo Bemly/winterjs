@@ -5,7 +5,7 @@ slug: WinterJS/DecompressionStream
 
 The **`WinterJS.DecompressionStream`** property is the same class as the
 global `DecompressionStream`. Formats `gzip`, `deflate`, `deflate-raw` follow
-the Web standard; `zstd` is a winterjs extension (ruzstd backend, full decode).
+the Web standard; `zstd` is a winterjs extension (full decode).
 
 ## Syntax
 

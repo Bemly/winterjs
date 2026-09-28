@@ -3,7 +3,7 @@ title: "WinterJS.mime"
 slug: WinterJS/mime
 ---
 
-The **`WinterJS.mime`** property provides MIME lookup (mime_guess backend, same table serve uses): `lookup`.
+The **`WinterJS.mime`** property provides MIME lookup (same table the static server uses): `lookup`.
 
 ## Syntax
 

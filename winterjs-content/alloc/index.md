@@ -4,8 +4,8 @@ slug: WinterJS/alloc
 ---
 
 The **`WinterJS.alloc()`** method allocates a zero-filled `Uint8Array` of the
-given size (GC-managed, capped at 64MB). It is the controlled allocation face;
-no raw pointers leave the runtime.
+given size (garbage-collected, capped at 64MB). Memory is managed for you;
+there is nothing to free.
 
 ## Syntax
 

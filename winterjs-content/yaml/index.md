@@ -3,7 +3,7 @@ title: "WinterJS.yaml"
 slug: WinterJS/yaml
 ---
 
-The **`WinterJS.yaml`** property provides YAML utilities (yaml-rust2 backend): `parse` reads the first document, `stringify` emits it. Aliases are rejected.
+The **`WinterJS.yaml`** property provides YAML utilities: `parse` reads the first document, `stringify` emits it. Aliases are rejected.
 
 ## Syntax
 

@@ -3,7 +3,7 @@ title: "WinterJS.jsonc"
 slug: WinterJS/jsonc
 ---
 
-The **`WinterJS.jsonc`** property provides JSON-with-comments utilities (jsonc-parser backend): `parse` tolerates comments and trailing commas.
+The **`WinterJS.jsonc`** property provides JSON-with-comments utilities: `parse` tolerates comments and trailing commas.
 
 ## Syntax
 

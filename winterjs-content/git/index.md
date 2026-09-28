@@ -3,7 +3,7 @@ title: "WinterJS.git"
 slug: WinterJS/git
 ---
 
-The **`WinterJS.git`** property provides read-only git utilities (gix backend; clone is a separate project): `revParse`, `log`.
+The **`WinterJS.git`** property provides read-only git utilities (cloning is not included): `revParse`, `log`.
 
 ## Syntax
 

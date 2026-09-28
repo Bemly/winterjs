@@ -3,7 +3,7 @@ title: "WinterJS.httpdate"
 slug: WinterJS/httpdate
 ---
 
-The **`WinterJS.httpdate`** property provides IMF date codec (httpdate backend): `parse` to epoch ms, `format` back.
+The **`WinterJS.httpdate`** property provides IMF date codec: `parse` to epoch ms, `format` back.
 
 ## Syntax
 

@@ -3,7 +3,7 @@ title: "WinterJS.hex"
 slug: WinterJS/hex
 ---
 
-The **`WinterJS.hex`** property provides hex codec (const-hex backend): `encode` takes string/bytes, `decode` returns a `Uint8Array`.
+The **`WinterJS.hex`** property provides hex codec: `encode` takes string/bytes, `decode` returns a `Uint8Array`.
 
 ## Syntax
 

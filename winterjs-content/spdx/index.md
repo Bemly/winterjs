@@ -3,7 +3,7 @@ title: "WinterJS.spdx"
 slug: WinterJS/spdx
 ---
 
-The **`WinterJS.spdx`** property provides SPDX utilities (spdx backend): `valid` checks a license expression.
+The **`WinterJS.spdx`** property provides SPDX utilities: `valid` checks a license expression.
 
 ## Syntax
 

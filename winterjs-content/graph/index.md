@@ -3,7 +3,7 @@ title: "WinterJS.graph"
 slug: WinterJS/graph
 ---
 
-The **`WinterJS.graph`** property provides graph utilities (petgraph backend, id-heap like manual memory): `create`, `addNode`, `addEdge`, `toposort`, `counts`, `free`.
+The **`WinterJS.graph`** property provides graph utilities (manual id heap, like manual memory): `create`, `addNode`, `addEdge`, `toposort`, `counts`, `free`.
 
 ## Syntax
 

@@ -4,7 +4,7 @@ slug: WinterJS/fs
 ---
 
 The **`WinterJS.fs`** property is the own file surface of winterjs, separate
-from `node:fs` (direct `fs-err`, no Node error codes). It is the same object
+from `node:fs` (separate implementation, no Node error codes). It is the same object
 as the global `fs`.
 
 ## Syntax

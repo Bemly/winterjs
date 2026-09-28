@@ -3,7 +3,7 @@ title: "WinterJS.shlex"
 slug: WinterJS/shlex
 ---
 
-The **`WinterJS.shlex`** property provides Shell-lexing utilities (shlex backend): `split` cuts a command line into argv; unbalanced quotes throw.
+The **`WinterJS.shlex`** property provides Shell-lexing utilities: `split` cuts a command line into argv; unbalanced quotes throw.
 
 ## Syntax
 

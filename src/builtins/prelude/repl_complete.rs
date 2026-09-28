@@ -15,12 +15,28 @@ pub const REPL_COMPLETE_JS: &str = r#"
 // ---- winterjs repl 底座：CLI 补全桥（__wjs_ 内部面；调用时才骑模块核心）----
 globalThis.__wjs_cli_complete = (line) => {
   require('node:repl'); // 幂等：触发 node:repl 模块加载 → 注册补全核心
-  const core = globalThis.__wjs_repl_default_complete;
-  if (typeof core !== 'function') return [[], String(line)];
-  let out = null;
-  try { core(globalThis, String(line), (err, r) => { out = r; }); } catch { return [[], String(line)]; }
-  if (out === null || !Array.isArray(out)) return [[], String(line)];
-  const [list, completeOn] = out;
+  const s = String(line);
+  let list, completeOn;
+  if (s.trim() === '') {
+    // 空行 Tab：全局全枚举（node 真机同形：空行 Tab 即列全局）。
+    // R3 核心 `bm === null` 回空集，那是 node:repl 模块面的保守口径——
+    // CLI 本体面在此展开，模块不动。`__wjs_` 内部面不计入（400+ plumbing
+    // 名淹没有菜单；显式前缀仍可触达）；completeOn 置空（Rust 零宽 span
+    // 光标处插入）。排序保证稳定。词法绑定（let/const）不可枚举，同 R3 记档。
+    let keys = [];
+    try { keys = Object.getOwnPropertyNames(globalThis); } catch { keys = []; }
+    list = keys
+      .filter((k) => /^[A-Za-z_$][\w$]*$/.test(k) && !k.startsWith('__wjs_'))
+      .sort();
+    completeOn = '';
+  } else {
+    const core = globalThis.__wjs_repl_default_complete;
+    if (typeof core !== 'function') return [[], s];
+    let out = null;
+    try { core(globalThis, s, (err, r) => { out = r; }); } catch { return [[], s]; }
+    if (out === null || !Array.isArray(out)) return [[], s];
+    [list, completeOn] = out;
+  }
   // 描述的 base：成员形 = completeOn 去 `.filter` 的 base 表达式（核心 walk 已
   // 保证路径无 getter/调用，重求值无副作用）；bare 形 = globalThis。
   let base = globalThis;
@@ -66,7 +82,7 @@ globalThis.__wjs_cli_complete = (line) => {
 // 匹配序（`__sigDesc`）：精确 dotted 路径或 completed 名的表项优先——
 // toString/Ctor 全兜底；用户自有同名方法因键不命中而不受遮蔽（4.227）。
 // 整篇文档走 `mdn-content/` 语料（`.doc` 直读），此处禁贴文档句（2026-09-28
-// 用户裁定：pane 只放签名，文档更新只动语料）。
+// 用户裁定：右盒纯文档，候选框干净名，文档更新只动语料）。
 const __wjsReplSig = Object.assign(Object.create(null), {
   'Object.assign': '(target, ...sources) → object',
   'Object.keys': '(o) → string[]',

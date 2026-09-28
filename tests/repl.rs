@@ -211,3 +211,24 @@ fn repl_doc_mdn_page() {
     assert!(!stdout.contains('\u{1b}'), "stdout must not contain ANSI");
     assert!(!stderr.contains('\u{1b}'), "stderr must not contain ANSI");
 }
+
+#[test]
+fn repl_empty_line_lists_globals() {
+    // 空行 Tab：全局全枚举（node 真机同形），不再 NO RECORDS。
+    // 正常：含 console/fetch/globalThis 且有序；边界：无 `__wjs_` 内部面、
+    // completeOn 为空；会话继续。
+    let (stdout, _, code) = repl_session(
+        "const r = globalThis.__wjs_cli_complete(\"\");\n\
+         const names = r[0].map((p) => p[0]);\n\
+         console.log(\"n\", names.length > 50);\n\
+         console.log(\"has\", names.includes(\"console\") && names.includes(\"fetch\") && names.includes(\"globalThis\"));\n\
+         console.log(\"sorted\", JSON.stringify(names) === JSON.stringify([...names].sort()));\n\
+         console.log(\"no-internal\", names.every((n) => !n.startsWith(\"__wjs_\")));\n\
+         console.log(\"on\", JSON.stringify(r[1]));\n\
+         .exit\n",
+    );
+    assert_eq!(code, 0);
+    for line in ["n true", "has true", "sorted true", "no-internal true", "on \"\""] {
+        assert!(stdout.lines().any(|l| l == line), "missing {line:?}; stdout:\n{stdout}");
+    }
+}

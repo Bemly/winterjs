@@ -16,7 +16,7 @@
 //!   `cliComplete`：成员链逐步求值/fs 路径/bare 上下文键/大小写不敏感，
 //!   R3 同源；`JSContext` 是 `!Send` 故只在 JS 线程求值）；超时降级静态。
 //!   同名时动态优先，静态描述补充。
-//!   空前缀不炸菜单（返回空集）。
+//!   空前缀走动态（点后全键/空行全局；无回应即空集，不炸菜单）。
 //! - 文档 pane 配色（irb 方向）：整块浅底经 reedline 正门刷漆，布局无忧。
 //!   行内多色 reedline 0.52 做不到（描述盒按字节算宽 + 按 grapheme 裸切分，
 //!   内嵌 ANSI 会被切断；源码实证），要做须 fork 菜单渲染或等上游，另案。
@@ -401,8 +401,12 @@ pub(crate) struct CompResp {
 
 /// `completeOn` → reedline 替换区间：completeOn 必须是行尾段（R3 语义），
 /// 即 `(行长 - completeOn 长, 行长)`；不是行尾段时回 None（拒映射，不乱替换）。
+/// 空 completeOn（空行全局枚举）即零宽 span，光标处插入。
 fn complete_span(line: &str, complete_on: &str) -> Option<(usize, usize)> {
-    if complete_on.is_empty() || complete_on.len() > line.len() || !line.ends_with(complete_on) {
+    if complete_on.is_empty() {
+        return Some((line.len(), line.len()));
+    }
+    if complete_on.len() > line.len() || !line.ends_with(complete_on) {
         return None;
     }
     Some((line.len() - complete_on.len(), line.len()))
@@ -537,12 +541,10 @@ impl reedline::Completer for JsCompleter {
         let prefix = &upto[start..end];
         let member_form = start > 0 && upto.as_bytes()[start - 1] == b'.';
         if prefix.is_empty() {
-            // `console.` 点后空前缀：动态全键枚举（R3 filter="" 口径）。
-            if member_form {
-                return reedline::CompletionResult::fresh(self.dynamic_suggestions(upto));
-            }
-            // 空 bare 前缀：空集（R3 `bm === null` 同形）。
-            return reedline::CompletionResult::fresh(Vec::new());
+            // 空前缀一律动态：`console.` 点后全键枚举（R3 filter="" 口径），
+            // 空 bare 行全局全枚举（桥展开，node 真机同形）；动态无回应
+            // （超时/断链）即空集，不炸菜单。
+            return reedline::CompletionResult::fresh(self.dynamic_suggestions(upto));
         }
         // 动态优先：成员链逐步求值 / bare 上下文键（与 node:repl 模块同源）。
         let mut items = self.dynamic_suggestions(upto);
@@ -847,7 +849,8 @@ mod tests {
         };
         assert!(items.iter().any(|s| s.value == "console"), "degraded static: {items:?}");
         assert!(items.iter().any(|s| s.value == "const"), "keywords merged: {items:?}");
-        // 报错/边界：空前缀空集；成员形动态无回应即空集（不炸菜单）。
+        // 报错/边界：动态无回应（断链）即空集，不炸菜单（真机有 JS 线程时
+        // 空行回全局全枚举，见黑盒 `repl_empty_line_lists_globals`）。
         for (line, pos) in [("", 0), ("console.", 8), ("1 + ", 4)] {
             match c.complete(line, pos) {
                 reedline::CompletionResult::Fresh { suggestions, .. } => {
@@ -866,6 +869,8 @@ mod tests {
         assert_eq!(complete_span("globalThis.fr", "globalThis.fr"), Some((0, 13)));
         assert_eq!(complete_span("abc", "x"), None);
         assert_eq!(complete_span("abc", "abcd"), None);
-        assert_eq!(complete_span("abc", ""), None);
+        // 空 completeOn 即零宽 span（空行全局枚举，光标处插入）。
+        assert_eq!(complete_span("abc", ""), Some((3, 3)));
+        assert_eq!(complete_span("", ""), Some((0, 0)));
     }
 }

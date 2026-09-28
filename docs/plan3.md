@@ -483,5 +483,10 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
   （末表达式 return 化 + let/const/var/class/function 提升）。
 - **纠正③ readline 补全语义**：✅ R5 已位置纠正（核心模块注册内部面，
   桥/签名表住 prelude/repl_complete）。
-- **纠正② console 格式化**：⏳ 待单轮——全局 console 骑 util.format 牵动
-  全量对拍基线（console 域 sweep 配合），单独开轮。
+- **纠正② console 格式化**：✅ 2026-09-28 单轮收尾——09-25 已骑 util.format
+  的 5 方法不动；assert/trace 按 constructor.js 原文包装备案（assert 首参 past/
+  warn 二次格式化、trace 自拼首行+栈；空消息裸 `Trace`）+ 补 8 缺失方法
+  （table 沿模块面 format 落盘偏离、dirxml=log/groupCollapsed=group 别名、
+  context/Console 惰性复用模块面、profile 系 no-op）+ 补全签名表 7 项。
+  console 域 sweep 16 件 SAME0 2→3，余 13 深水（流写错/颜色/TTY/栈/proxy）记档；
+  strict 776/776；坑 4.226（形态变则 toString 消费者同步改）。

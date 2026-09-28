@@ -537,3 +537,23 @@ G1/G2/G3/G9 已收官。）
   由 runtime/repl 注入）；摘除后 worker 5/5 恢复、启动开销归零。
 - 验证：`let a = await 41` 跨行 42、多声明+function 提升、resolve/reject/timer
   全对（repl 域 37/37）；acorn 22 键 version 8.18.0；strict 见 §0.4。
+
+## 2026-09-28 §7-②：console 格式化统一收尾（全局 console 全量对齐 node）
+
+- 范围（纯 JS，零 Rust 改动、零新依赖、零 unsafe）：`REQUIRE_PRELUDE` 的 console
+  包装器扩展——assert（首参字符串前缀/否则 unshift，经 wrap 后的 warn 二次格式化，
+  constructor.js 475-484 行原文）+ trace（format 取 message + captureStackTrace 取帧，
+  自拼首行，空消息裸 `Trace`，V8 同形；帧行 SM 口径偏离记档）+ 8 缺失方法
+  （table 沿模块面 format 落盘偏离；dirxml/groupCollapsed 别名；context/Console
+  惰性复用 node:console 同一类；profile/profileEnd/timeStamp/createTask stubs 与
+  模块面同形）+ `__wjsReplSig` 补 7 项。
+- 实测：assert 4 场景（格式化/多参/裸参/真值静默）逐字对真机；trace 首行对齐；
+  8 方法 `typeof` 全 function；`console.Console === node:console Console` 同一类；
+  模块面 assert/table 经包装器同行为；冻结内建套件双侧 exit 0（包装器先于冻结安装）。
+- 连带红一枚：`p2_repl_cli_complete_bridge/dot-empty`（trace 文档 `stderr`→通用回落，
+  4.226）——修测试断言为回落形 + 补签名表，strict 回 776/776。
+- 量化：console 域 sweep（tag console3，前缀须 `test-console`）SAME0 2→3/16，
+  余 13 DIFF（写错流/颜色/TTY/栈/proxy/toString）深水记档不追（0.2 时间盒）；
+  黑盒新增 `phase11_console_global_unified`（正常+报错+边界）；冒烟 5/5；行数守门 ok。
+- 遗留记档：trace 帧含 2 行 `__wjs_` 管线帧（D4 过滤仅覆盖未捕获路径，另案）；
+  countReset 无标签警告沿模块面偏离；table 无列对齐沿既有偏离。

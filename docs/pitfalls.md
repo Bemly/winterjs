@@ -4107,3 +4107,21 @@
 - 推广铁律：**凡"独占线程持 raw mode 行编辑 + 他线程产输出"的 TUI，输出面
   必须过同步协议或 CRLF 化，禁裸直写终端**；判定用 pty 抓字节（数 CR），
   文本流比对看不出阶梯（LF 在管道渲染里天然对齐）。
+
+### 4.226 全局 console 改原生为 JS 包装后补全文档回落 + trace 空消息冒号（2026-09-28，§7-②）
+
+- 症状：`p2_repl_cli_complete_bridge` 的 `dot-empty` 由 true 翻 false——
+  `console.trace` 文档摘要从手写表 `(...data) — stderr + stack` 变成通用
+  `trace(...args)`；另 `console.trace()` 无参时自拼 `Trace: ` 与真机 `Trace`
+  （无冒号）差一字符。
+- 根因：① `__sigDesc` 先抽 `toString` 形参、非空即回落通用形，手写表只在
+  形参为空（原生函数）时命中——trace/assert 由原生改 JS 闭包 `(...args)` 后
+  命中分支改变，表中 `stderr` 文案永久不可达；② 本引擎
+  `Error.captureStackTrace` 不合成 `Name: message` 首行（plain object 上
+  stack 为空，见 §7-②探针），trace 首行须自拼，而 V8 空消息时省略 `: `。
+- 修法：补全侧——新暴露的 7 个 console 方法进 `__wjsReplSig` 表（原生/空形参
+  面仍命中），trace 的桥断言改为通用回落形 `startsWith("trace(")`（桥文档对
+  JS 实现面本就按此规则）；trace 侧——`msg === "" ? "Trace" : \`Trace: ${msg}\``。
+- 复现：`__wjs_cli_complete("console.")` 的 trace 项；`console.trace()` 双侧对照。
+- 推广铁律：**改某内建的实现形态（原生↔JS）时，同步 grep 其 toString 消费者**
+  （补全签名/错误文案快照类测试），形态变则文档分支变，旧断言多为过渡态 incidental。

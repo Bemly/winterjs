@@ -4168,3 +4168,17 @@
 - 推广铁律：**`globalThis.X = function Name` 后一律经 `globalThis.X` 调用**，
   裸 `Name` 只在函数声明（`function Name(){}`）后可用；吞错的 `try/catch`
   桥内，空结果先疑调用点绑定错，不疑被调用方。
+
+### 4.230 prelude 求值期 `process` 尚不存在：快照即死引用（2026-09-29，命名空间轮）
+
+- 症状：`Deno.env.set("K","1")` 后 `process.env.K` 取不到（`undefined`），
+  而 `Deno.env.get("K")` 自洽——双 store 分裂。
+- 根因：主 PRELUDE 求值先于 NODE_PRELUDE（`process` 挂载在后），顶层
+  `const store = process.env || {}` 快照到 `{}` 死对象；之后 `process.env`
+  是另一对象。`--eval` 单测若只验自洽（set 后 get）全绿，跨面一读即穿帮。
+- 修法：凡读 `process`/`require("node:*")` 的 prelude 逻辑一律懒求值——
+  每次调用经 `globalThis` 现场取（`__wjs_ns_envstore`），`require` 只在函数
+  体内调，不在顶层。
+- 复现：`Deno.env.set("WJS_NS_T","1")` 后读 `process.env.WJS_NS_T`。
+- 推广铁律：**prelude 顶层只放纯数据与函数定义，任何宿主对象一律调用期
+  现场取**；自洽绿≠跨面绿，断言必须跨面读。

@@ -709,3 +709,15 @@ G1/G2/G3/G9 已收官。）
 - 验证：130 件目标 + strict 786/786（load 21 下一次过）；行数守门 ok。
 - 残留诚实注记：load 20+ 时 pty 首 Tab 仍可能撞窗（冷摘要 450ms+ 畸变），
   二 Tab（缓存热）即稳；终极解法是描述懒加载（reedline 无此 API，另案）。
+
+## 2026-09-29 命名空间文档轮（Bun/Deno `.doc` 进语料）
+
+- 语料：`scripts/gen-ns-docs.py`（stdlib）由上游 `.d.ts` TSDoc 抽取 MDN 形状页
+  （散文+`## Syntax`+`### Parameters`，`summary_inner` 零改）：bun 29 页
+  （`bun.d.ts`+`serve.d.ts`+`shell.d.ts`）+ Deno 53 页（ns+net+unstable；
+  `listenDatagram` 注 unstable）+ WinterJS 手写 5 页；MIT 各记 ATTRIBUTION。
+- 真机校准三处：`Bun.cwd`/`Deno.statFs` 真机无（删别名，node 面照常用），
+  `Deno.readLink` 大写 L（小写旧别名改名）；坑 4.230（prelude 快照死引用）。
+- 接线：`repl_doc.rs` 三语料路由（MDN 之后、fallback 之前）+ 签名表 86 项；
+  单测 `ns_lookup_hits_generated_corpus` + 黑盒 `repl_doc_ns_pages`。
+- 验证：builtins+repl 45/45 strict；vendor 与代码分两提交；冒烟 5/5。

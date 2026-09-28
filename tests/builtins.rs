@@ -520,6 +520,49 @@ fn namespace_frozen_vs_mutable() {
 }
 
 #[test]
+fn namespace_full_surface_types() {
+    // 全量别名存在性：一行多断言分参打印（§4.42）。
+    let out = stdout_of(winterjs().args([
+        "--eval",
+        "const d = ['readFile','writeFile','readTextFile','writeTextFile','open','stat','lstat','mkdir','remove','rename','copyFile','symlink','readlink','realPath','readDir','makeTempDir','truncate','chmod','chown','utime','watchFs','test','serve','connect','listen','listenDatagram','resolveDns','Command','permissions','errors','env','cwd','chdir','exit','hostname','osRelease','args','pid','version','build'];\n\
+         const b = ['file','write','spawnSync','$','sleep','sleepSync','nanoseconds','randomUUIDv7','sha','serve','listen','connect','udpSocket','fileURLToPath','pathToFileURL','which','cwd','version','revision','argv','main','env'];\n\
+         const w = ['version','versions','args','env','cwd','pid','storage','localStorage','Deno','Bun'];\n\
+         console.log('deno-missing:' + JSON.stringify(d.filter((k) => typeof Deno[k] === 'undefined')));\n\
+         console.log('bun-missing:' + JSON.stringify(b.filter((k) => typeof Bun[k] === 'undefined')));\n\
+         console.log('wjs-missing:' + JSON.stringify(w.filter((k) => typeof WinterJS[k] === 'undefined')));",
+    ]));
+    assert!(out.contains("deno-missing:[]"), "out: {out}");
+    assert!(out.contains("bun-missing:[]"), "out: {out}");
+    assert!(out.contains("wjs-missing:[]"), "out: {out}");
+}
+
+#[test]
+fn namespace_delegation_spot() {
+    // 委派抽查：Deno.cwd/Bun.file+write/env 三方互通/Deno.Command/Bun.$。
+    use assert_fs::prelude::*;
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("ns.js")
+        .write_str(
+            "console.log('cwd:' + (Deno.cwd() === process.cwd() && Bun.cwd() === process.cwd()));\n\
+             await Bun.write('a.txt', 'bun');\n\
+             console.log('file:' + (await Bun.file('a.txt').text() === 'bun' && Bun.file('a.txt').exists()));\n\
+             Deno.env.set('WJS_NS_X', '9');\n\
+             console.log('env:' + (Deno.env.get('WJS_NS_X') === '9' && WinterJS.env.WJS_NS_X === '9' && Bun.env.WJS_NS_X === '9'));\n\
+             const r = await new Deno.Command('echo', { args: ['hi'] }).output();\n\
+             console.log('cmd:' + (r.code === 0 && String(r.stdout).trim() === 'hi'));\n\
+             const q = await Bun.$`echo hi`;\n\
+             console.log('dollar:' + (q.exitCode === 0 && String(q.stdout).trim() === 'hi'));\n\
+             console.log('which:' + (Bun.which('sh') === '/bin/sh'));\n",
+        )
+        .unwrap();
+    let (ok, out, _) = wjs(&["--run", "ns.js"], &dir);
+    assert!(ok, "out: {out}");
+    for line in ["cwd:true", "file:true", "env:true", "cmd:true", "dollar:true", "which:true"] {
+        assert!(out.lines().any(|l| l == line), "missing {line:?}; out: {out}");
+    }
+}
+
+#[test]
 fn namespace_user_predefine_kept() {
     // 边界：用户在 prelude 后覆盖三命名空间不炸，会话继续。
     let out = stdout_of(winterjs().args([

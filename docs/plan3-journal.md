@@ -557,3 +557,11 @@ G1/G2/G3/G9 已收官。）
   黑盒新增 `phase11_console_global_unified`（正常+报错+边界）；冒烟 5/5；行数守门 ok。
 - 遗留记档：trace 帧含 2 行 `__wjs_` 管线帧（D4 过滤仅覆盖未捕获路径，另案）；
   countReset 无标签警告沿模块面偏离；table 无列对齐沿既有偏离。
+
+## 2026-09-28 §7-②跟进：补全文档遮蔽（4.227）
+
+- 用户报 REPL `console.` 补全没有文档——实测手写表有文案但被 `__sigDesc` 的
+  toString 优先分支永久遮蔽（JS 包装自带 `...args`）。修法：精确 dotted 路径
+  表查询提到 toString 之前，Ctor/裸名回落不动（`o.assign(a,b)` 探针仍显示自身
+  形参）。`console.` 全员恢复通道/语义摘要；`dot-empty` 断言回到通道信息形。
+- 验证：repl/console/builtins 120 件全绿；行数守门 ok。

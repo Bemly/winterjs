@@ -1,11 +1,12 @@
 # Deno API 语料（REPL `.doc` 命令用，离线内置）
 
 来源：`github.com/denoland/deno`（MIT license）下 `cli/tsc/dts/*.d.ts` 的 TSDoc
-注释，经 `scripts/gen-ns-docs.py` 抽取为 MDN 形状页面：
+注释（源文件进仓见 `vendor/ns-dts/README.md`），经 `scripts/gen-ns-docs.py`
+抽取为 MDN 形状页面：
 
-- `lib.deno.ns.d.ts`（主体 50+ 符号）
-- `lib.deno_net.d.ts`（`connect`/`listen`/`resolveDns`）
-- `lib.deno.unstable.d.ts`（`listenDatagram`，unstable 面，页内保留注记）
+- `vendor/ns-dts/deno.ns.d.ts` ← `lib.deno.ns.d.ts`（主体）
+- `vendor/ns-dts/deno_net.d.ts` ← `lib.deno_net.d.ts`
+- `vendor/ns-dts/deno.unstable.d.ts` ← `lib.deno.unstable.d.ts`（unstable 面，页内保留注记）
 
 只收 winterjs 已别名的符号（53 页）；沿用上游原文，不编撰。
 

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Bun/Deno .d.ts TSDoc -> REPL .doc corpus pages (stdlib only).
 
-Usage:
-  scripts/gen-ns-docs.py --bun ~/wjs-data/probe/bun.d.ts \
-      --deno ~/wjs-data/probe/deno.ns.d.ts --out .
+Usage (repo root):
+  scripts/gen-ns-docs.py --bun vendor/ns-dts/bun.d.ts \
+      --bun vendor/ns-dts/bun.serve.d.ts --bun vendor/ns-dts/bun.shell.d.ts \
+      --deno vendor/ns-dts/deno.ns.d.ts --deno vendor/ns-dts/deno_net.d.ts \
+      --deno vendor/ns-dts/deno.unstable.d.ts --out .
 
 Reads the two vendored .d.ts sources, extracts the TSDoc block + first
 overload signature for each aliased symbol, and writes

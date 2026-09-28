@@ -616,3 +616,15 @@ G1/G2/G3/G9 已收官。）
 - 格式：`签名\n文档`（reedline 描述盒原生多行，50×10 容下）；文档 = 首页首段 +
   首个代码块（调用形状），机械提取（宏解析显示文字、跳引用块），无编撰。
 - 验证：pty Tab 菜单签名行/文档行同屏；strict 782/782；行数守门 ok。
+
+## 2026-09-28 文档 pane 浅底整块（irb 式区分，用户要色块）
+
+- 落法：`doc_description_style()`（黑字亮灰底）经
+  `IdeMenu::with_description_text_style` 正门刷漆，零布局风险；
+  pty 实证描述行包在 `\x1b[107;30m … \x1b[0m` 里（nu-ansi-term 的
+  LightGray 即亮白底 107）。
+- 行内多色（签名参/返、散文/code 各异）判不可做：reedline 0.52 描述盒
+  `split_string` 按字节算宽 + grapheme 裸切分，内嵌 ANSI 会被拦腰切断
+  （源码实证 `menu/ide_menu.rs:1014`）；要做须 fork 菜单渲染或等上游，另案。
+  行间已按"签名/散文/代码"分行落在同一浅底块里区分。
+- 验证：单测钉 Style 值；pty 验块；strict 783/783；行数守门 ok。

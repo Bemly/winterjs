@@ -17,6 +17,9 @@
 //!   R3 同源；`JSContext` 是 `!Send` 故只在 JS 线程求值）；超时降级静态。
 //!   同名时动态优先，静态描述补充。
 //!   空前缀不炸菜单（返回空集）。
+//! - 文档 pane 配色（irb 方向）：整块浅底经 reedline 正门刷漆，布局无忧。
+//!   行内多色 reedline 0.52 做不到（描述盒按字节算宽 + 按 grapheme 裸切分，
+//!   内嵌 ANSI 会被切断；源码实证），要做须 fork 菜单渲染或等上游，另案。
 //! - 非 TTY（stdin 管道，黑盒即此）：退化 stdin 逐行读，不调 highlighter/menu，
 //!   输出无 ANSI（`tests/repl.rs` 钉住）。
 
@@ -46,6 +49,13 @@ pub fn set_tty_output(on: bool) {
 /// 用户输出写点查询（`builtins/console::emit`）。
 pub fn tty_output_enabled() -> bool {
     REPL_TTY_OUTPUT.load(Ordering::Relaxed)
+}
+
+/// 文档 pane 配色：浅底整块（irb 式区分；黑字灰底，对比度优先）。
+/// 纯函数，单测钉住（布局由 reedline 负责，此处只定颜色）。
+pub fn doc_description_style() -> nu_ansi_term::Style {
+    use nu_ansi_term::Color;
+    nu_ansi_term::Style::new().fg(Color::Black).on(Color::LightGray)
 }
 
 /// 裸 `\n` → `\r\n`（已带 `\r` 的不动；raw mode 终端 LF 不回车，见上）。
@@ -652,7 +662,9 @@ pub fn readline_loop(
     let mut rl = Reedline::create()
         .with_completer(Box::new(JsCompleter::new(comp_req_tx, comp_resp_rx)))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(
-            IdeMenu::default().with_name("completion_menu"),
+            IdeMenu::default()
+                .with_name("completion_menu")
+                .with_description_text_style(doc_description_style()),
         )))
         .with_highlighter(Box::new(SnowHighlighter))
         .with_validator(Box::new(SnowValidator))
@@ -715,6 +727,15 @@ mod tests {
         assert_eq!(dot_command(".doctrine"), Dot::Code);
         assert_eq!(dot_command("1 + 1"), Dot::Code);
         assert_eq!(dot_command(".nope"), Dot::Code);
+    }
+
+    #[test]
+    fn doc_style_is_light_block() {
+        // 文档 pane 浅底整块（irb 式区分）：黑字灰底。
+        use nu_ansi_term::Color;
+        let st = doc_description_style();
+        assert_eq!(st.foreground, Some(Color::Black));
+        assert_eq!(st.background, Some(Color::LightGray));
     }
 
     #[test]

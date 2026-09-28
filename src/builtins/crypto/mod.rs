@@ -4,7 +4,7 @@
 //! 调用方路径 `pub use` 原位保持。
 
 #[macro_use]
-mod common;
+pub(crate) mod common;
 mod dsa;
 mod ec;
 mod eddsa;

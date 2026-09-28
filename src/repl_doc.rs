@@ -838,10 +838,12 @@ mod tests {
         assert!(summary("Bun.cwd").is_none());
         assert!(summary("Deno.").is_none());
         assert!(summary("Bun../secret").is_none());
-        assert!(summary("Deno.readFile.toString").is_none());
+        // 双点形组回落（fs 组轮合入）：父方法页兜底，非 None。
+        let rt = summary("Deno.readFile.toString").expect("group fallback to parent");
+        assert!(rt.contains("entire contents"), "{rt}");
         // 模糊回落：嵌套命名空间取最靠后段；段内出现不认；缺页仍 None。
         let fw = summary("global.WinterJS.Bun.write").expect("fuzzy hits Bun.write");
-        assert!(fw.contains("Write"), "{fw}");
+        assert!(fw.contains("syscalls"), "{fw}");
         let fd = summary("global.WinterJS.Deno.readFile").expect("fuzzy hits Deno.readFile");
         assert!(fd.contains("entire contents"), "{fd}");
         assert!(summary("myBun.serve").is_none());

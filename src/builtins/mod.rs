@@ -7,6 +7,7 @@ pub mod console;
 pub mod crypto;
 pub mod encoding;
 pub mod fetch;
+pub mod image;
 pub mod node;
 pub mod prelude;
 pub mod storage;
@@ -481,6 +482,10 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_nsqlite_close", Some(node::sqlite::nsqlite_close), 1),
             // S1：WinterCG 存储（turso KV 底座；全局 storage/localStorage，见 storage.rs）
             ("__wjs_storage_default_path", Some(storage::storage_default_path), 0),
+            // WinterJS.image（位图编解码 + SVG 光栅 + JXL 解码；见 image.rs）。
+            ("__wjs_image_info", Some(image::image_info), 2),
+            ("__wjs_image_pixels", Some(image::image_pixels), 3),
+            ("__wjs_image_encode", Some(image::image_encode), 5),
             ("__wjs_storage_open", Some(storage::storage_open), 1),
             ("__wjs_storage_get", Some(storage::storage_get), 2),
             ("__wjs_storage_set", Some(storage::storage_set), 3),

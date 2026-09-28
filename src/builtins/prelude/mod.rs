@@ -3,6 +3,7 @@
 //! 拖慢 worker/child 等小窗口时序测试的启动，R6b 实测）。
 mod blob;
 mod bootstrap;
+mod image;
 mod namespace;
 mod buffer_api;
 mod buffer_class;
@@ -42,6 +43,7 @@ pub static PRELUDE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         blob::BLOB_JS,
         fetch::FETCH_JS,
         namespace::NAMESPACE_JS,
+        image::IMAGE_JS,
         wfs::WFS_JS,
         mem::MEM_JS,
         repl_complete::REPL_COMPLETE_JS,

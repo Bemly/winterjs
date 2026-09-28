@@ -133,7 +133,10 @@ rust-i18n = "4"
 # 解码统一走显式 format，不依赖 default-formats。
 resvg = "0.48"
 jxl-oxide = { version = "0.12", features = ["image"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+# WinterJS.image 全格式面（2026-09-29）：png 外加 WinterJS.image 暴露的全部
+# 编解码格式；刻意不开 `avif`（无 ravif，见 §14）/`dds`（image 0.25 双 false）
+# /`default-formats`（含 avif）。新增传递 exr/tiff/qoi（全纯 Rust，见 §4 行注记）。
+image = { version = "0.25", default-features = false, features = ["png", "bmp", "exr", "ff", "gif", "hdr", "ico", "jpeg", "pnm", "qoi", "tga", "tiff", "webp"] }
 
 # ── §5 loader + 转译 + 编译期注册 + 内嵌资源 ───────────────────────────
 oxc_resolver = "11"

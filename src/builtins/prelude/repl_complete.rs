@@ -522,6 +522,10 @@ const __wjsReplSig = Object.assign(Object.create(null), {
   'fs.rename': '(a, b) → Promise<void>',
   'fs.copyFile': '(a, b) → Promise<void>',
   'fs.exists': '(path) → Promise<boolean>',
+  'WinterJS.image.formats': '() → { name, mime, decode, encode }[]',
+  'WinterJS.image.info': '(bytes, format?) → { format, width, height, mime }',
+  'WinterJS.image.decode': '(bytes, format?, scale?) → { format, width, height, data }',
+  'WinterJS.image.encode': '({ data, width, height }, format, options?) → Uint8Array',
 });
 
 function __wjsReplCtorName(base) {

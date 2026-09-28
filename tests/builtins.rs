@@ -596,6 +596,70 @@ fn namespace_args_flow_to_run() {
 }
 
 #[test]
+fn image_roundtrip_and_params() {
+    // 正常：多格式往返 + jpeg quality/png 压缩/gif repeat/pnm 子集/svg 矢量。
+    let out = stdout_of(winterjs().args([
+        "--eval",
+        "const px = new Uint8Array([255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,0,255]);\n\
+         const img = { data: px, width: 2, height: 2 };\n\
+         const rt = (f, o) => { const e = WinterJS.image.encode(img, f, o); const d = WinterJS.image.decode(e, f); return d.format + ':' + d.width + 'x' + d.height + ':' + d.data.length; };\n\
+         console.log('r:' + ['png','jpeg','gif','webp','tiff','bmp','qoi','pnm','farbfeld','tga','hdr','exr','ico'].map((f) => rt(f)).join(','));\n\
+         console.log('q:' + (WinterJS.image.encode(img, 'jpeg', { quality: 100 }).length > 0));\n\
+         console.log('c:' + (WinterJS.image.encode(img, 'png', { compression: 'best', filter: 'paeth' }).length > 0));\n\
+         console.log('g:' + (WinterJS.image.encode(img, 'gif', { speed: 10, repeat: 0 }).length > 0));\n\
+         console.log('p:' + (WinterJS.image.encode(img, 'pnm', { subtype: 'pgm', encoding: 'ascii' }).length > 0));\n\
+         const svg = new TextEncoder().encode('<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"3\"><rect width=\"4\" height=\"3\" fill=\"red\"/></svg>');\n\
+         const s = WinterJS.image.decode(svg);\n\
+         console.log('s:' + s.format + ':' + s.width + 'x' + s.height + ':' + Array.from(s.data.slice(0, 4)).join(','));\n\
+         console.log('i:' + JSON.stringify(WinterJS.image.info(svg)));",
+    ]));
+    assert!(out.contains("r:png:2x2:16,jpeg:2x2:16,gif:2x2:16,webp:2x2:16,tiff:2x2:16,bmp:2x2:16,qoi:2x2:16,pnm:2x2:16,farbfeld:2x2:16,tga:2x2:16,hdr:2x2:16,exr:2x2:16,ico:2x2:16"), "out: {out}");
+    assert!(out.contains("q:true"), "out: {out}");
+    assert!(out.contains("c:true"), "out: {out}");
+    assert!(out.contains("g:true"), "out: {out}");
+    assert!(out.contains("p:true"), "out: {out}");
+    assert!(out.contains("s:svg:4x3:255,0,0,255"), "out: {out}");
+    assert!(out.contains(r#""format":"svg","width":4,"height":3"#), "out: {out}");
+}
+
+#[test]
+fn image_errors_and_bounds() {
+    // 报错：垃圾字节/未知格式/dds 无编解码/svg 编码/jxl 编码/质量越界/像素长度错。
+    // 边界：1x1 最小；dds 行标 unsupported。
+    let out = stdout_of(winterjs().args([
+        "--eval",
+        "const t = (f) => { try { f(); return 'NO-THROW'; } catch (e) { return e.message; } };\n\
+         console.log('e1:' + t(() => WinterJS.image.decode(new Uint8Array([1,2,3]))));\n\
+         console.log('e2:' + t(() => WinterJS.image.decode(new Uint8Array([1,2,3]), 'nope')));\n\
+         console.log('e3:' + t(() => WinterJS.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'dds')));\n\
+         console.log('e4:' + t(() => WinterJS.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'svg')));\n\
+         console.log('e5:' + t(() => WinterJS.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'jxl')));\n\
+         console.log('e6:' + t(() => WinterJS.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'jpeg', { quality: 101 })));\n\
+         console.log('e7:' + t(() => WinterJS.image.encode({ data: new Uint8Array(15), width: 2, height: 2 }, 'png')));\n\
+         console.log('e8:' + t(() => WinterJS.image.encode({ data: new Uint8Array(16), width: 0, height: 2 }, 'png')));\n\
+         console.log('e9:' + t(() => WinterJS.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'png', { compression: 'turbo' })));\n\
+         const one = WinterJS.image.decode(WinterJS.image.encode({ data: new Uint8Array([9,9,9,255]), width: 1, height: 1 }, 'qoi'));\n\
+         console.log('b:' + (one.width === 1 && one.data[0] === 9));\n\
+         console.log('f:' + JSON.stringify(WinterJS.image.formats().find((r) => r.name === 'dds')));",
+    ]));
+    for line in [
+        "e1:TypeError: unsupported image format",
+        "e2:TypeError: unsupported image format",
+        "e3:WinterJS.image.encode: 'dds' has no encoder",
+        "e4:WinterJS.image.encode: 'svg' has no encoder",
+        "e5:WinterJS.image.encode: 'jxl' has no encoder",
+        "e6:RangeError: jpeg quality must be an integer within 1..100",
+        "e7:RangeError: pixel data length must equal width*height*4",
+        "e8:RangeError: image dimensions must be at least 1x1",
+        "e9:RangeError: png compression must be",
+        "b:true",
+        r#"f:{"name":"dds","mime":"image/vnd-ms.dds","decode":false,"encode":false}"#,
+    ] {
+        assert!(out.contains(line), "missing {line:?}; out: {out}");
+    }
+}
+
+#[test]
 fn namespace_user_predefine_kept() {
     // 边界：用户在 prelude 后覆盖三命名空间不炸，会话继续。
     let out = stdout_of(winterjs().args([

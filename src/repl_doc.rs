@@ -323,30 +323,69 @@ fn strip_inline_macros(s: &mut String) {
     }
 }
 
-/// 补全浮窗摘要（实时读语料，无拷贝）：topic → 首页首段 + 首个代码块
-/// （调用形状；IRB 方向 pane 信息量）。缺页即 `None`。
+/// 去 `_斜体_` 标记（内含空格才算强调；`snake_case`/`__wjs_x` 保留）。
+/// 浮窗纯文本用（`.doc` 整篇走 termimad 原生斜体，不动）。
+fn strip_italics(s: &str) -> String {
+    let ch: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < ch.len() {
+        if ch[i] == '_' && ch.get(i + 1) != Some(&'_') {
+            let mut j = i + 1;
+            while j < ch.len() && ch[j] != '_' {
+                j += 1;
+            }
+            if j < ch.len() && ch.get(j + 1) != Some(&'_') {
+                let inner: String = ch[i + 1..j].iter().collect();
+                if inner.contains(' ') {
+                    out.push_str(&inner);
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(ch[i]);
+        i += 1;
+    }
+    out
+}
+
+/// 补全浮窗摘要（实时读语料，无拷贝）：topic → 前两段 + 首个代码块
+/// （调用形状）+ Parameters 节（机械提取，无编撰；reedline 描述盒按空白
+/// 重排，`\n` 只做语义分隔，渲染恒成一段）。
+/// 缺页即 `None`。
 pub fn summary(topic: &str) -> Option<String> {
     let t = topic.strip_prefix("globalThis.").unwrap_or(topic);
     let md = lookup(t)?;
     let clean_src = sanitize(md);
-    // 首段（MDN 源码折行，段内空格连接；标题/引用行不计）。
-    let mut para = String::new();
+    // 正文段（MDN 源码折行，段内空格连接；标题/引用/围栏行不计；取前两段）。
+    let mut paras: Vec<String> = Vec::new();
+    let mut cur = String::new();
     for l in clean_src.lines().map(str::trim) {
-        if l.is_empty() || l.starts_with('#') || l.starts_with('>') {
-            if !para.is_empty() {
-                break;
+        if l.starts_with('#') || l.starts_with("```") {
+            break;
+        }
+        if l.is_empty() || l.starts_with('>') {
+            if !cur.is_empty() {
+                paras.push(std::mem::take(&mut cur));
+                if paras.len() >= 2 {
+                    break;
+                }
             }
             continue;
         }
-        if !para.is_empty() {
-            para.push(' ');
+        if !cur.is_empty() {
+            cur.push(' ');
         }
-        para.push_str(l);
+        cur.push_str(l);
     }
-    if para.is_empty() {
+    if !cur.is_empty() && paras.len() < 2 {
+        paras.push(cur);
+    }
+    if paras.is_empty() {
         return None;
     }
-    // 首个围栏代码块（调用形状；至多 10 行， fence 行不要）。
+    // 首个围栏代码块（调用形状；至多 10 行，fence 行不要）。
     let mut code: Vec<&str> = Vec::new();
     let mut in_fence = false;
     for l in clean_src.lines().map(str::trim) {
@@ -366,12 +405,68 @@ pub fn summary(topic: &str) -> Option<String> {
             }
         }
     }
-    let mut s = para.replace("**", "").replace('`', "");
-    if !code.is_empty() {
-        s.push('\n');
-        s.push_str(&code.join("\n"));
+    // Parameters 节（`### Parameters` 起到下个标题止；`- \`name\`` → `name:`，
+    // `  - : desc` 续接；先收条目再拼，截断不断在名后，上限约 600 字）。
+    let mut items: Vec<(String, String)> = Vec::new();
+    let mut cur_name: Option<String> = None;
+    let mut cur_desc = String::new();
+    let mut in_params = false;
+    for l in clean_src.lines().map(str::trim) {
+        if l.starts_with('#') {
+            if in_params {
+                break;
+            }
+            if l.trim_start_matches('#').trim().eq_ignore_ascii_case("Parameters") {
+                in_params = true;
+            }
+            continue;
+        }
+        if !in_params || l.is_empty() || l.starts_with('>') {
+            continue;
+        }
+        let mut s = l.to_string();
+        while let Some(rest) = s.strip_prefix("- ") {
+            s = rest.to_string();
+        }
+        s = s.strip_prefix(':').map_or(s.clone(), |r| r.trim_start().to_string());
+        if s.is_empty() {
+            continue;
+        }
+        if s.starts_with('`') {
+            if let Some(n) = cur_name.take() {
+                items.push((n, std::mem::take(&mut cur_desc)));
+            }
+            cur_name = Some(s.replace('`', ""));
+        } else {
+            if !cur_desc.is_empty() {
+                cur_desc.push(' ');
+            }
+            cur_desc.push_str(&s);
+        }
     }
-    Some(s)
+    if let Some(n) = cur_name.take() {
+        items.push((n, cur_desc));
+    }
+    let mut params = String::new();
+    for (n, d) in &items {
+        let piece = if d.is_empty() {
+            format!("{n} ")
+        } else {
+            format!("{n}: {d} ")
+        };
+        if params.len() + piece.len() > 600 {
+            break;
+        }
+        params.push_str(&piece);
+    }
+    let mut parts = paras;
+    if !code.is_empty() {
+        parts.push(code.join("\n"));
+    }
+    if !params.trim().is_empty() {
+        parts.push(params.trim().to_string());
+    }
+    Some(strip_italics(&parts.join("\n").replace("**", "").replace('`', "")))
 }
 
 /// 未知条目提示（精确键空间见 `explicit` + 两条派生规则）。
@@ -416,19 +511,29 @@ mod tests {
 
     #[test]
     fn summary_reads_corpus_live() {
-        // 浮窗摘要 = 语料首页首句（实时读，无拷贝）；e.g. 不切断；缺页 None。
+        // 浮窗摘要 = 前两段 + 调用形状 + Parameters（实时读，无拷贝）；缺页 None。
         let s = summary("console.log").expect("console.log documented");
         assert!(s.starts_with("The console.log()"), "{s}");
+        assert!(s.contains("console.log(val1)"), "{s}");
+        assert!(s.contains("val1 … valN:"), "{s}");
+        let t = summary("console.timeEnd").expect("timeEnd documented");
+        assert!(t.contains("See Timers"), "{t}");
+        assert!(t.contains("console.timeEnd(label)"), "{t}");
+        assert!(t.contains("label:"), "{t}");
         let e = summary("Event").expect("Event documented");
         assert!(e.starts_with("The Event interface represents an event"), "{e}");
-        // 多句首段不断（fetch 三句全留；`user action` 在首段内）。
         let f = summary("fetch").expect("fetch documented");
         assert!(f.contains("fulfilled once the response is available"), "{f}");
-        // 单句首段配调用形状（console.log 首段一句 + Syntax 块）。
-        let l = summary("console.log").expect("log documented");
-        assert!(l.contains("console.log(val1)"), "{l}");
         assert!(summary("o.assign").is_none());
         assert!(summary("globalThis.Object.assign").is_some());
+    }
+
+    #[test]
+    fn strip_italics_keeps_identifiers() {
+        assert_eq!(strip_italics("a _source object_ here"), "a source object here");
+        assert_eq!(strip_italics("snake_case kept"), "snake_case kept");
+        assert_eq!(strip_italics("__wjs_x kept"), "__wjs_x kept");
+        assert_eq!(strip_italics("a_b kept"), "a_b kept");
     }
 
     #[test]

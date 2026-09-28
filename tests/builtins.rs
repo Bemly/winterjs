@@ -448,12 +448,16 @@ fn phase11_repl_sig_js_docs() {
          globalThis.o = { assign(a, b) { return a; } };\
          j(globalThis.__wjs_cli_complete('o.')[0].filter(p=>p[0]==='o.assign'));",
     ]));
-    // 浮窗 = 签名行 + 实时文档（首段 + 调用形状，多行；`.doc` 同源）。
+    // 浮窗 = 整块文档（前两段 + 调用形状 + Parameters；`.doc` 同源）；
+    // 缺页（用户自有）回签名。
     for line in [
-        "console.log\",\"(...data) — stdout\\nThe console.log() static method",
+        "console.log\",\"The console.log() static method outputs a message",
         "console.log(val1)",
-        "fetch(input, init = {})\\nThe fetch() method",
-        "u.get\",\"get(n)\\nThe get() method",
+        "val1 … valN:",
+        "console.trace\",\"The console.trace() static method outputs a stack trace",
+        "fetch\",\"The fetch() method of the Window interface starts the process",
+        "fetch(resource",
+        "u.get\",\"The get() method of the URLSearchParams interface returns the first value",
         "[\"o.assign\",\"assign(a, b)\"]",
     ] {
         assert!(out.contains(line), "missing {line:?}; out: {out}");

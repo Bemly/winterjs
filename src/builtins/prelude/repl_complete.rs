@@ -34,7 +34,8 @@ globalThis.__wjs_cli_complete = (line) => {
     const parts = text.split('.');
     const head2 = parts.length >= 2 ? parts.slice(-2).join('.') : '';
     const sig = __sigDesc(base, key, head2);
-    // 浮窗文档实时读语料（`.doc` 同源；表里禁贴文档句）：有摘要即接在签名后。
+    // 浮窗文档实时读语料（`.doc` 同源；表里禁贴文档句）：有文档即整块只放
+    // 文档（描述盒按空白重排，签名文档拼一行恒挤成一段，故不拼）；缺页回签名。
     // 实例面（`u.get`）文本是变量名，再试 `Ctor.key`（普通 Object 跳过，
     // 用户自有方法不受染——与 `__sigDesc` 同规则）。
     const docFor = (t) => {
@@ -52,7 +53,7 @@ globalThis.__wjs_cli_complete = (line) => {
       } catch { /* ignore */ }
     }
     if (doc === null) return [text, sig];
-    return [text, sig === null ? doc : `${sig}\n${doc}`];
+    return [text, doc];
   });
   return [withSig, completeOn];
 };

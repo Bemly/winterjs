@@ -146,6 +146,16 @@ fn slug(topic: &str) -> Option<String> {
                 method.to_lowercase()
             ));
         }
+        return None;
+    }
+    // bare 全局（`encodeURI`/`eval`/`Proxy`/`parseInt`…）→ `global_objects/{lower}`。
+    // 无需 allowlist：`lookup` 经语料存在性校验，缺页即 `None`（用户变量同此）。
+    // 字符集限字母数字/`_`/`$`（无 `/`/`.`，无路径穿越）。
+    if !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$') {
+        return Some(format!(
+            "web/javascript/reference/global_objects/{}",
+            t.to_lowercase()
+        ));
     }
     None
 }
@@ -504,9 +514,22 @@ mod tests {
             Some("web/javascript/reference/global_objects/array/from")
         );
         assert_eq!(slug("fetch").as_deref(), Some("web/api/window/fetch"));
+        assert_eq!(
+            slug("encodeURI").as_deref(),
+            Some("web/javascript/reference/global_objects/encodeuri")
+        );
+        assert_eq!(
+            slug("Proxy").as_deref(),
+            Some("web/javascript/reference/global_objects/proxy")
+        );
         assert!(slug("").is_none());
         assert!(slug("o.assign").is_none());
-        assert!(slug("setImmediate").is_none());
+        // node 私货无 MDN 页：slug 有形状，lookup 必 None（存在性是唯一真相）。
+        assert!(summary("setImmediate").is_none());
+        // 用户变量无页（存在性由 lookup 校验）；路径穿越字符拒收。
+        assert!(slug("myVar").is_some()); // 有 slug 形状，但 lookup 必 None（下测）。
+        assert!(slug("../secret").is_none());
+        assert!(slug("a/b").is_none());
     }
 
     #[test]
@@ -524,6 +547,13 @@ mod tests {
         assert!(e.starts_with("The Event interface represents an event"), "{e}");
         let f = summary("fetch").expect("fetch documented");
         assert!(f.contains("fulfilled once the response is available"), "{f}");
+        // bare 全局（`encodeURI` 一族先前无 slug，直通 `None`）。
+        let u = summary("encodeURI").expect("encodeURI documented");
+        assert!(u.contains("function encodes a URI by replacing"), "{u}");
+        let v = summary("eval").expect("eval documented");
+        assert!(v.contains("evaluates JavaScript code"), "{v}");
+        assert!(summary("myVar").is_none());
+        assert!(summary("../secret").is_none());
         assert!(summary("o.assign").is_none());
         assert!(summary("globalThis.Object.assign").is_some());
     }

@@ -738,6 +738,21 @@ mod tests {
     }
 
     #[test]
+    fn ns_lookup_hits_winterjs_own_surface() {
+        // 本体自有面（wfs/mem 轮）：WinterJS.fs/memory/alloc/unsafe* 有页可查。
+        let wf = summary("WinterJS.fs").expect("WinterJS.fs documented");
+        assert!(wf.contains("separate"), "{wf}");
+        let wm = summary("WinterJS.memory").expect("WinterJS.memory documented");
+        assert!(wm.contains("allocator"), "{wm}");
+        let wa = summary("WinterJS.alloc").expect("WinterJS.alloc documented");
+        assert!(wa.contains("zero-filled"), "{wa}");
+        let wu = summary("WinterJS.unsafeAlloc").expect("WinterJS.unsafeAlloc documented");
+        assert!(wu.contains("--allow-ffi"), "{wu}");
+        assert!(summary("winterjs.unsafefree").is_some());
+        assert!(summary("WinterJS.unsafelost").is_none());
+    }
+
+    #[test]
     fn ns_lookup_hits_generated_corpus() {
         // 三命名空间：存在性即真相（缺页 None，不猜）；形状约束（空方法、
         // 路径穿越、大小写头宽容）。

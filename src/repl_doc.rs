@@ -181,6 +181,12 @@ fn ns_lookup(topic: &str) -> Option<&'static str> {
     let t = topic.trim();
     let t = t.strip_prefix("globalThis.").unwrap_or(t);
     let t = t.strip_prefix("global.").unwrap_or(t);
+    // 裸 `Worker`（Web 全局，本仓面；MDN 无页，存在性走 WinterJS 语料）。
+    if t == "Worker" {
+        return WJS
+            .get_file("worker/index.md")
+            .and_then(|f| f.contents_utf8());
+    }
     let (head, method) = match t.split_once('.') {
         Some((h, m)) => (h, m),
         None => (t, "index"),
@@ -844,6 +850,7 @@ mod tests {
             ("WinterJS.cookie", "Set-Cookie"),
             ("WinterJS.httpdate", "IMF"),
             ("WinterJS.assert", "prototypes"),
+            ("Worker", "new thread"),
             ("WinterJS.util", "same port"),
             ("WinterJS.punycode", "DEP0040"),
             ("WinterJS.tcp", "AsyncIterables"),

@@ -91,3 +91,13 @@
 | wow.gif | 哇奥！！！ | deepseek202609230010 | 大叫,震惊 |
 | yell.webp | 大叫 | deepseek202609230037 | 大叫,崩溃 |
 | zongzi.webp | 粽子 | deepseek202609230061 | 粽子,端午节 |
+
+## 用户提供（2026-09-28 由项目作者提供并指定使用）
+
+| 文件 | 内容 |
+|---|---|
+| watermelon.png | DeepSeek娘 女仆装捧西瓜 |
+| rage.png | DeepSeek娘 集中线大叫 |
+| pile.webp | 两只 Q 版叠罗汉 |
+| behindscreen.png | "当你想对我恶语相向时，请注意屏幕后面的我可是这样的"（带 NGA 水印） |
+| nowuser.png | "好的，现在我是用户了" 鹿角帽 DeepSeek娘 |

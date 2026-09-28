@@ -187,13 +187,13 @@
           "who": "claude",
           "text": "等等，一个运行时同时认 Node、Bun、Deno 三家的 API？",
           "say": "等等，一个运行时同时认 Node、Bun、Deno 三家的 A P I？",
-          "meme": "doubleclick",
+          "meme": "rage",
           "burst": [
+            "doubleclick",
             "wow",
             "waa",
             "yell",
-            "pounce",
-            "hiss"
+            "pounce"
           ]
         },
         {
@@ -256,7 +256,7 @@
         {
           "who": "claude",
           "text": "所以它们要么只做服务器，要么只做桌面，要么已经慢性弃用。",
-          "meme": "melon"
+          "meme": "watermelon"
         },
         {
           "who": "whale",
@@ -356,7 +356,7 @@
           "who": "whale",
           "text": "随时接管。WinterJS 直接读现成的 node_modules，不用重新安装。",
           "say": "随时接管。Winter J S 直接读现成的 node modules，不用重新安装。",
-          "meme": "catball"
+          "meme": "pile"
         },
         {
           "who": "whale",
@@ -379,7 +379,7 @@
         {
           "who": "claude",
           "text": "换运行时，零迁移成本！",
-          "meme": "bobo",
+          "meme": "nowuser",
           "burst": [
             "wantcake",
             "pounce",
@@ -542,11 +542,11 @@
           "say": "在 J S 运行时里直接编码 A V 1？这也太硬核了！",
           "meme": "waa",
           "burst": [
+            "rage",
             "wow",
             "hiss",
             "bite",
-            "yell",
-            "waa"
+            "yell"
           ]
         },
         {
@@ -598,7 +598,7 @@
         {
           "who": "claude",
           "text": "觉得不错的话，一键三连，我们下期见！",
-          "meme": "kiss",
+          "meme": "behindscreen",
           "burst": [
             "heart",
             "flower",

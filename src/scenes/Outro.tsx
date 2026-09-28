@@ -38,7 +38,7 @@ export const Outro: React.FC<SceneViewProps> = ({ starts }) => {
         )}
       </div>
       {triple && (
-        <div style={{ position: "absolute", left: 0, right: 0, top: 640, display: "flex", justifyContent: "center", gap: 70 }}>
+        <div style={{ position: "absolute", left: 0, right: 0, top: 700, display: "flex", justifyContent: "center", gap: 70 }}>
           {[["👍", "点赞"], ["🪙", "投币"], ["⭐", "收藏"]].map(([e, t], i) => {
             const s = spring({ frame: f - starts[3] - i * 6, fps, config: { damping: 8, stiffness: 200 } });
             return (

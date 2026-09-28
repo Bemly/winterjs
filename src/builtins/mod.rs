@@ -19,6 +19,8 @@ pub mod mem;
 pub mod wfs;
 pub mod wstd;
 pub mod wsys;
+pub mod wsys_git;
+pub mod wsys_graph;
 
 use std::ffi::CString;
 

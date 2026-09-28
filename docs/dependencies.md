@@ -217,7 +217,7 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 | 自升级 | `self_update` | 1.3.0 | 2017-07-25 | 2026-09-02 | ✅（TLS 豁免） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | CLI 双语 | `rust-i18n` | 4.2.2 | 2021 | 2026 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 启动 banner SVG 光栅 | `resvg` | 0.48.1 | 2017-12-18 | 2026-08-02 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
-| 启动 banner 图像解码 | `image` | 0.25.10 | 2014-11-20 | 2026-03-10 | ✅（`png` 发射载荷编码；`avif` 纯 Rust 只管编码不管解码，禁 `avif-native`→dav1d 的 C，见 §14） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| 启动 banner 图像解码 | `image` | 0.25.10 | 2014-11-20 | 2026-03-10 | ✅（`png` 发射载荷编码；`avif` 纯 Rust 只管编码不管解码，禁 `avif-native`→dav1d 的 C，见 §14。2026-09-29 WinterJS.image 开闸 13 格式特性（bmp/exr/ff/gif/hdr/ico/jpeg/pnm/qoi/tga/tiff/webp；禁 avif/dds/default-formats）：新增传递 `exr/tiff/qoi`（+`bit_field/lebe/fax/pulp` 等，逐包验无 build.rs/links，`pulp` 的 build.rs 只生成 Rust 源码；`cc` 仍仅 turso-`aegis` 的 build-dep） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | 启动 banner JXL 解码 | `jxl-oxide` | 0.12.6 | 2023-05-16 | 2026-05-29 | ✅（default 特性；禁 `lcms2` 的 C） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 
 备注：`rustyline`（退役留档）/`reedline`/`self_update` 的移动端格是“功能不需要”

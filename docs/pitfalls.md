@@ -4210,3 +4210,17 @@
 - 复现：本轮 `wjs_group_lookup` 三处改动"成功→通过→消失"，重做一次即稳。
 - 推广铁律：**构建/提交前先 `git diff --stat` 看改动还在不在**；状态机残留
   先查工作区，不先怪环境（§4.140/4.197 同族）。
+
+### 4.232 编码器色型断言在 nounwind 上下文即 abort（2026-09-29，image 轮）
+
+- 症状：`WinterJS.image.encode(px, "pnm")` 整进程 abort（`Invalid buffer length:
+  expected 32 got 16` + `panic in a function that cannot unwind`），非可捕获异常。
+- 根因：`image` 各编码器用 `assert_eq!` 校验（通道数×尺寸），色型不匹配
+  （ppm/Pixmap 要 RGB 却喂 RGBA、farbfeld 要 16 位、exr 只要 f32）即 panic；
+  native 经 `unsafe extern "C"` 进 JS 引擎，panic 不可 unwind，直接 abort。
+- 修法：调编码器前**先按目标色型转换**（ppm→RGB、farbfeld→u16、exr→f32），
+  把断言变成不可达；凡调第三方 `encode` 系，先 grep 其 `assert` 再定转换。
+- 复现：2x2 RGBA 调 pnm/ppm（修前 abort，修后 23 字节 P6）。
+- 推广铁律：**进 `unsafe extern "C"` 的第三方调用，`assert`/`panic` 路径
+  一律前置校验转干净错误**；黑盒必须含 panic 路径用例（§0.7），且先跑通
+  再提交——abort 不留现场。

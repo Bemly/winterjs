@@ -732,3 +732,15 @@ G1/G2/G3/G9 已收官。）
 - 附带回答：`Deno.version` 求值 `[object Object]` 是对的（`{deno,v8,typescript}`
   对象）；`Deno.args` 在 `--eval` 下空是 argv 本就短，`--run f -- a b` 即有值。
 - 验证：builtins+repl 47/47 strict；坑 4.231。
+
+## 2026-09-29 WinterJS.image 轮（15 格式编解码进本体）
+
+- 范围：`WinterJS.image.{formats,info,decode,encode}`；位图 13 格式经 `image`
+  （dds 双 false 进不来，avif 不在树内）；svg/svgz 经 `resvg`（解预乘）；
+  jxl 经 `jxl-oxide` 首帧。质量参数全透传（jpeg quality/png 压缩+滤波/gif
+  speed+repeat/pnm subtype+encoding；webp 无损无参、svg scale 记档）。
+- 坑三连（全 abort 级，修后进用例）：ppm-RGBA（4.232）、farbfeld-16 位、
+  exr-f32；另 TGA 无魔数须显式格式、jxl 截断零填不报错（上游流式语义）。
+- 缺口诚实记：jxl 成功路径缺真 fixture（错误路径全覆盖，跟进项）。
+- 验证：全量 strict 811/812（唯一红 `child_stdin_legacy` 单跑即过，负载 flake，
+  与本轮零交集）；冒烟 5/5；行数守门 ok。

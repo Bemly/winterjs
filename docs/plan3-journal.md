@@ -674,3 +674,13 @@ G1/G2/G3/G9 已收官。）
   `set_immediate_not_clamped` 计时，双双单跑 <1s 过，零交集，见 §4 先分类）。
 - 待补：交互 Tab 真机验机（首 Tab 冷 `require` 撞 150ms 超时；机器负载
   load 10+ 未消除，bisect 已证非回归）。
+
+## 2026-09-28 文档第 4 路 slug（用户：encodeURI 没文档？）
+
+- 根因：slug 只有三路（WinterCG 显式/`console.X`/`Head.method`），bare 全局函数
+  （`encodeURI`/`eval`/`Proxy`/`parseInt`…）直通 `None`。语料里 51 页全有
+  （`global_objects/{lower}/index.md`，git 精确校验；`WebAssembly` 住别处不管）。
+- 落法：第 4 路 bare 分支（字符集限字母数字/`_`/`$`，无穿越可能；无需 allowlist，
+  `lookup` 存在性是唯一真相）。node 私货（`setImmediate`）有形无页，自然 None。
+- 验证：单测 slug 形状 + 存在性 + 穿越拒收；`.doc encodeURI` 黑盒；浮窗经
+  `__wjs_doc_summary` 自动带出；strict 785/785；行数守门 ok。

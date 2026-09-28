@@ -1,8 +1,8 @@
 import script from "./script.json";
 import { FPS } from "./theme";
 
-export type Who = "dong" | "hu";
-export type Line = { who: Who; text: string; say?: string; meme?: string };
+export type Who = "whale" | "claude";
+export type Line = { who: Who; text: string; say?: string; meme?: string; burst?: string[] };
 export type Scene = { id: string; title: string; lines: Line[] };
 export type Cast = Record<Who, { name: string; color: string }>;
 

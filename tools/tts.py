@@ -211,7 +211,7 @@ async def main():
             frames = math.ceil(d * FPS)
             lines_out.append({"file": f"voice/{h}.mp3", "from": cur - s_start, "frames": frames})
             srt.append(f"{idx}\n{srt_time(cur / FPS)} --> {srt_time((cur + frames) / FPS)}\n"
-                       f"{cast[line['who']]['name']}：{line['text']}\n")
+                       f"{line['text']}\n")
             idx += 1
             cur += frames + round(LINE_GAP * FPS)
         cur += round(SCENE_TAIL * FPS)

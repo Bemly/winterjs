@@ -22,11 +22,11 @@ export const MemePop: React.FC<Props> = ({ memeKey, file, side, frames }) => {
   const s = spring({ frame: f, fps, config: { damping: 9, stiffness: 180 } });
   const out = interpolate(f, [frames - 6, frames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   const rot = (side === "left" ? -8 : 8) + Math.sin(f / 5) * 3;
-  const size = 300;
+  const size = 270;
   const style: React.CSSProperties = {
     position: "absolute",
-    top: 380,
-    [side]: side === "left" ? 250 : 250,
+    top: 370,
+    [side]: 40,
     width: size,
     height: size,
     transform: `scale(${s * out}) rotate(${rot}deg)`,
@@ -61,5 +61,44 @@ export const MemePop: React.FC<Props> = ({ memeKey, file, side, frames }) => {
       <div style={{ fontSize: 150, lineHeight: 1 }}>{emoji}</div>
       <div style={{ fontFamily: FONT, fontWeight: 900, fontSize: 40, color: "#0b1426", marginTop: 10 }}>{word}</div>
     </div>
+  );
+};
+
+/** 表情包雨：一句话期间一串表情包从底部抛物线飞过全屏。 */
+export const MemeBurst: React.FC<{ keys: string[]; memes: Record<string, string>; frames: number }> = ({ keys, memes, frames }) => {
+  const f = useCurrentFrame();
+  return (
+    <>
+      {keys.map((k, i) => {
+        const file = memes[k];
+        if (!file) return null;
+        const start = 6 + i * 7;
+        const life = Math.min(frames - start, 75);
+        const t = (f - start) / life;
+        if (t < 0 || t > 1) return null;
+        const x0 = 120 + ((i * 397) % 1500);
+        const dir = i % 2 === 0 ? 1 : -1;
+        const x = x0 + dir * 260 * t;
+        const y = 1080 - 1150 * t + 900 * t * t;
+        const size = 200 + (i % 3) * 30;
+        const src = staticFile(`memes/${file}`);
+        return (
+          <div
+            key={k + i}
+            style={{
+              position: "absolute", left: x, top: y, width: size, height: size,
+              transform: `rotate(${dir * (t * 60 - 20)}deg)`, borderRadius: 20, overflow: "hidden",
+              background: "#fff", border: "5px solid #fff", boxShadow: "0 10px 24px rgba(0,0,0,0.45)",
+            }}
+          >
+            {file.endsWith(".gif") ? (
+              <Gif src={src} width={size - 10} height={size - 10} fit="contain" />
+            ) : (
+              <Img src={src} style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+            )}
+          </div>
+        );
+      })}
+    </>
   );
 };

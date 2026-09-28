@@ -6,7 +6,7 @@ import type { SceneViewProps } from "../Video";
 
 const ANCESTORS = [
   { name: "wasmerio/winterjs", desc: "WinterCG 规范的 HTTP 服务端", status: "2026.03 已归档", tag: "只做服务器", line: 2 },
-  { name: "spiderfire", desc: "实验性 SpiderMonkey 运行时", status: "最后提交 2025.08", tag: "实验阶段", line: 5 },
+  { name: "spiderfire", desc: "SpiderMonkey 运行时", status: "最后提交 2025.08", tag: "慢性弃用", line: 5 },
   { name: "GJS", desc: "GNOME 桌面的 JS 绑定", status: "桌面应用 / 扩展", tag: "只做桌面", line: 6 },
 ];
 

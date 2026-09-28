@@ -51,7 +51,7 @@ export const Outro: React.FC<SceneViewProps> = ({ starts }) => {
         </div>
       )}
       <div style={{ position: "absolute", left: 0, right: 0, top: 880, textAlign: "center", fontFamily: FONT, fontSize: 22, color: C.dim, opacity: f >= starts[4] ? 1 : 0 }}>
-        表情包：蓝色大肥鱼（CC0） · 配音：Edge TTS · 引擎：Mozilla SpiderMonkey · 本片由 Remotion 渲染
+        角色与表情包：蓝色大肥鱼（CC0） · 配音：Edge TTS · 引擎：Mozilla SpiderMonkey · 本片由 Remotion 渲染
       </div>
     </>
   );

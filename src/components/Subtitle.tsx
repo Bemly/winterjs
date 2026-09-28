@@ -2,8 +2,8 @@ import React from "react";
 import { interpolate, useCurrentFrame } from "remotion";
 import { FONT } from "../theme";
 
-/** 显式字幕（烧录）：说话人色块 + 白字黑描边。 */
-export const Subtitle: React.FC<{ name: string; color: string; text: string; frames: number }> = ({ name, color, text, frames }) => {
+/** 显式字幕（烧录）：底边颜色区分说话人 + 白字黑描边。 */
+export const Subtitle: React.FC<{ color: string; text: string; frames: number }> = ({ color, text, frames }) => {
   const f = useCurrentFrame();
   const o = interpolate(f, [0, 5, frames - 4, frames], [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   const y = interpolate(f, [0, 6], [14, 0], { extrapolateRight: "clamp" });
@@ -38,7 +38,6 @@ export const Subtitle: React.FC<{ name: string; color: string; text: string; fra
           maxWidth: 1320,
         }}
       >
-        <span style={{ color, marginRight: 14 }}>{name}</span>
         {text}
       </div>
     </div>

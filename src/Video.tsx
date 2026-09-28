@@ -1,8 +1,8 @@
 import React from "react";
 import { AbsoluteFill, Audio, interpolate, Sequence, staticFile, useCurrentFrame } from "remotion";
 import { Background } from "./components/Background";
-import { NameTag, Yukkuri } from "./components/Characters";
-import { MemePop } from "./components/Meme";
+import { Portrait } from "./components/Characters";
+import { MemeBurst, MemePop } from "./components/Meme";
 import { Subtitle } from "./components/Subtitle";
 import { Logo, SceneTitle } from "./components/Ui";
 import type { PromoProps } from "./Root";
@@ -32,11 +32,9 @@ const SceneBlock: React.FC<{ index: number; timing: SceneTiming; memes: Record<s
       <SceneTitle title={scene.title} index={index} total={SCENES.length} />
       <Audio src={staticFile("sfx/whoosh.wav")} volume={0.5} />
 
-      {/* 角色常驻：说话的一方弹跳 + 张嘴 */}
-      <Yukkuri who="dong" speaking={speaker === "dong"} x={40} y={690} size={250} />
-      <Yukkuri who="hu" speaking={speaker === "hu"} x={1630} y={690} size={250} flip />
-      <NameTag text={CAST.dong.name} color={CAST.dong.color} x={110} y={928} active={speaker === "dong"} />
-      <NameTag text={CAST.hu.name} color={CAST.hu.color} x={1705} y={928} active={speaker === "hu"} />
+      {/* 角色常驻：说话的一方提亮弹跳 */}
+      <Portrait who="whale" speaking={speaker === "whale"} sceneIndex={index} />
+      <Portrait who="claude" speaking={speaker === "claude"} sceneIndex={index} />
 
       {timing.lines.map((lt, i) => {
         const line = scene.lines[i];
@@ -44,13 +42,19 @@ const SceneBlock: React.FC<{ index: number; timing: SceneTiming; memes: Record<s
         return (
           <Sequence key={i} from={lt.from} durationInFrames={lt.frames} layout="none">
             {lt.file && <Audio src={staticFile(lt.file)} />}
-            <Subtitle name={c.name} color={c.color} text={line.text} frames={lt.frames} />
             {line.meme && (
               <>
-                <MemePop memeKey={line.meme} file={memes[line.meme]} side={line.who === "dong" ? "left" : "right"} frames={lt.frames} />
+                <MemePop memeKey={line.meme} file={memes[line.meme]} side={line.who === "whale" ? "left" : "right"} frames={lt.frames} />
                 <Audio src={staticFile("sfx/pop.wav")} volume={0.6} />
               </>
             )}
+            {line.burst && (
+              <>
+                <MemeBurst keys={line.burst} memes={memes} frames={lt.frames} />
+                <Audio src={staticFile("sfx/ding.wav")} volume={0.5} />
+              </>
+            )}
+            <Subtitle color={c.color} text={line.text} frames={lt.frames} />
           </Sequence>
         );
       })}

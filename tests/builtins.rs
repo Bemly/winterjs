@@ -448,18 +448,17 @@ fn phase11_repl_sig_js_docs() {
          globalThis.o = { assign(a, b) { return a; } };\
          j(globalThis.__wjs_cli_complete('o.')[0].filter(p=>p[0]==='o.assign'));",
     ]));
-    // 桥三元组 `[全文, 左格签名后缀, 描述]`：左格签名块 + 右盒整块文档
-    // （前两段 + 调用形状 + Parameters；`.doc` 同源）；缺页（用户自有）
-    // 回签名（后缀去名留参）。
+    // 桥对子 `[全文, 描述]`：候选框干净名，右盒纯文档（前两段 + 调用形状
+    // + Parameters；`.doc` 同源）；缺页（用户自有）回签名。
     for line in [
-        "console.log\",\"(...data) — stdout\",\"The console.log() static method outputs a message",
+        "console.log\",\"The console.log() static method outputs a message",
         "console.log(val1)",
         "val1 … valN:",
-        "console.trace\",\"(...data) — stderr + stack\",\"The console.trace() static method outputs a stack trace",
-        "fetch\",\"(input, init = {})\",\"The fetch() method of the Window interface starts the process",
+        "console.trace\",\"The console.trace() static method outputs a stack trace",
+        "fetch\",\"The fetch() method of the Window interface starts the process",
         "fetch(resource",
-        "u.get\",\"(n)\",\"The get() method of the URLSearchParams interface returns the first value",
-        "[\"o.assign\",\"(a, b)\",\"assign(a, b)\"]",
+        "u.get\",\"The get() method of the URLSearchParams interface returns the first value",
+        "[\"o.assign\",\"assign(a, b)\"]",
     ] {
         assert!(out.contains(line), "missing {line:?}; out: {out}");
     }

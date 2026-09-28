@@ -392,10 +392,9 @@ pub(crate) struct CompReq {
 #[derive(Debug)]
 pub(crate) struct CompResp {
     pub id: u64,
-    /// 候选 `(全文, 左格签名后缀, 描述)`——全文写入 span 段；
-    /// 左格经 `display_override = 全文 + 后缀`（签名块），描述进 IdeMenu
-    /// 右侧 pane（文档块；底座桥 `__wjs_cli_complete` 三元组产出）。
-    pub items: Vec<(String, Option<String>, Option<String>)>,
+    /// 候选 `(全文, 描述)`——全文写入 span 段（左格只放干净名）；
+    /// 描述进 IdeMenu 右侧 pane（签名在上、文档在下；底座桥产出对子）。
+    pub items: Vec<(String, Option<String>)>,
     /// 行尾被替换段（R3 `completeOn` 语义）。
     pub complete_on: String,
 }
@@ -431,7 +430,7 @@ impl JsCompleter {
     /// 动态补全请求（readline 线程阻塞等回包；超时/断链回 None）。
     /// `line` 为光标前文本（R3 按行尾处理）。`UnboundedReceiver` 无同步带
     /// 超时的 recv——`try_recv` 微步轮询（仅 Tab 触发，200µs 步进开销可忽略）。
-    fn request_dynamic(&mut self, line: &str) -> Option<(Vec<(String, Option<String>, Option<String>)>, String)> {
+    fn request_dynamic(&mut self, line: &str) -> Option<(Vec<(String, Option<String>)>, String)> {
         use tokio::sync::mpsc::error::TryRecvError;
         self.next_id += 1;
         let id = self.next_id;
@@ -458,11 +457,10 @@ impl JsCompleter {
         if let Some((items, complete_on)) = self.request_dynamic(line)
             && let Some((s0, s1)) = complete_span(line, &complete_on)
         {
-            for (value, disp, description) in items {
+            for (value, description) in items {
                 out.push(reedline::Suggestion {
-                    value: value.clone(),
-                    // 左格签名块（只改显示；选中写入仍走 `value` 原文）。
-                    display_override: disp.map(|d| format!("{value}  {d}")),
+                    value,
+                    display_override: None,
                     description,
                     style: None,
                     extra: None,

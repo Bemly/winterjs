@@ -449,10 +449,10 @@ fn phase11_repl_sig_js_docs() {
          j(globalThis.__wjs_cli_complete('o.')[0].filter(p=>p[0]==='o.assign'));",
     ]));
     for line in [
-        "[\"console.log\",\"(...data) — stdout\"]",
-        "[\"console.trace\",\"(...data) — stderr + stack\"]",
-        "[\"fetch\",\"fetch(input, init = {})\"]",
-        "[\"u.get\",\"get(n)\"]",
+        "[\"console.log\",\"(...data) — stdout — The console.log() static method outputs a message to the console.\"]",
+        "[\"console.trace\",\"(...data) — stderr + stack — The console.trace() static method outputs a stack trace to the console.\"]",
+        "[\"fetch\",\"fetch(input, init = {}) — The fetch() method of the Window interface starts the process of fetching a resource from the network, returning a promise that is fulfilled once the response is available.\"]",
+        "[\"u.get\",\"get(n) — The get() method of the URLSearchParams interface returns the first value associated to the given search parameter.\"]",
         "[\"o.assign\",\"assign(a, b)\"]",
     ] {
         assert!(out.contains(line), "missing {line:?}; out: {out}");

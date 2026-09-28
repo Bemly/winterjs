@@ -333,6 +333,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_mldsa_verify", Some(node::crypto::mldsa_verify), 3),
             // Phase 9e-4: inspector 会话求值（同线程嵌套 evaluate_script）
             ("__wjs_inspector_eval", Some(node::inspector::inspector_eval), 1),
+            // REPL 整篇文档（irb `.doc` 方向；补全桥摘要直读语料，CLI 本体面）
+            ("__wjs_doc_summary", Some(crate::repl_doc::doc_summary), 1),
             // Phase 9f-1: node:vm（同 Runtime 多 global；id 字符串形态）
             ("__wjs_vm_create", Some(node::vm::vm_create), 0),
             ("__wjs_vm_compile", Some(node::vm::vm_compile), 2),

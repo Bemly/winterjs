@@ -33,7 +33,26 @@ globalThis.__wjs_cli_complete = (line) => {
     const key = text.slice(text.lastIndexOf('.') + 1);
     const parts = text.split('.');
     const head2 = parts.length >= 2 ? parts.slice(-2).join('.') : '';
-    return [text, __sigDesc(base, key, head2)];
+    const sig = __sigDesc(base, key, head2);
+    // 浮窗文档实时读语料（`.doc` 同源；表里禁贴文档句）：有摘要即接在签名后。
+    // 实例面（`u.get`）文本是变量名，再试 `Ctor.key`（普通 Object 跳过，
+    // 用户自有方法不受染——与 `__sigDesc` 同规则）。
+    const docFor = (t) => {
+      try {
+        if (typeof __wjs_doc_summary !== 'function') return null;
+        const d = __wjs_doc_summary(t);
+        return (typeof d === 'string' && d !== '') ? d : null;
+      } catch { return null; }
+    };
+    let doc = docFor(text);
+    if (doc === null) {
+      try {
+        const cn = __wjsReplCtorName(base);
+        if (cn !== '' && cn !== 'Object') doc = docFor(`${cn}.${key}`);
+      } catch { /* ignore */ }
+    }
+    if (doc === null) return [text, sig];
+    return [text, sig === null ? doc : `${sig} — ${doc}`];
   });
   return [withSig, completeOn];
 };

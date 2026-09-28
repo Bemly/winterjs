@@ -38,11 +38,16 @@ globalThis.__wjs_cli_complete = (line) => {
   return [withSig, completeOn];
 };
 
-// ---- 成员签名表（SM native toString 无形参名，常用面手写）----
+// ---- 成员签名表（手写一句话文档；irb 方向：签名 + 干什么）----
+// 语料来源（逐条改写，非原文复制）：console.* 释义 WHATWG Console Standard
+// （CC-BY 4.0，Code 部分 BSD-3；行为以本实现为准，偏离处如实写记档）；
+// WinterCG 全局（fetch/URL/streams/crypto…）释义对应 WHATWG 标准行为；
+// node:* 兼容面不投文档（兼容层非本体，§7 方向）。
 // null 原型（查表裸键不得沿原型链撞 Object.prototype 的同名方法——
 // propertyIsEnumerable/toString 等 hits 自身，实测踩过）。
-// 匹配序：候选尾二段（`globalThis.Object.assign` → `Object.assign`）→
-// constructor 名（实例面 `"".trim` → `String.trim`）→ 裸方法名。
+// 匹配序（`__sigDesc`）：精确 dotted 路径（`console.log`）或 completed 名
+// （bare `fetch`）的表项优先——toString/Ctor 全兜底；用户自有同名方法因键
+// 不命中而不受遮蔽（`o.assign(a,b)` 仍显示自身形参，4.227）。
 const __wjsReplSig = Object.assign(Object.create(null), {
   'Object.assign': '(target, ...sources) → object',
   'Object.keys': '(o) → string[]',
@@ -82,21 +87,23 @@ const __wjsReplSig = Object.assign(Object.create(null), {
   'Math.max': '(...x) → number',
   'Math.random': '() → number [0, 1)',
   'Math.log': '(x) → number',
-  'console.log': '(...data) — stdout',
-  'console.info': '(...data) — stdout',
-  'console.warn': '(...data) — stderr',
-  'console.error': '(...data) — stderr',
-  'console.debug': '(...data) — stdout',
-  'console.dir': '(obj, opts?) — stdout',
-  'console.assert': '(cond, ...data) — throw when false',
-  'console.table': '(tabular, props?)',
-  'console.time': '(label?) — start timer',
-  'console.timeLog': '(label?, ...data) — log elapsed',
-  'console.timeEnd': '(label?) — stop & log',
-  'console.count': '(label?) — count & log',
-  'console.group': '(...data) — indent',
-  'console.groupEnd': '() — dedent',
-  'console.trace': '(...data) — stderr + stack',
+  'console.log': 'log(...data) — stdout；首参字符串含 %s/%d/%i/%f/%j/%o 即格式化，否则 inspect 空格连接',
+  'console.info': 'info(...data) — stdout；同 log',
+  'console.warn': 'warn(...data) — stderr；格式化同 log',
+  'console.error': 'error(...data) — stderr；格式化同 log',
+  'console.debug': 'debug(...data) — stdout；同 log',
+  'console.dir': 'dir(item, opts?) — stdout；单对象 inspect（customInspect 关），opts 可传 depth',
+  'console.assert': 'assert(cond, ...data) — cond 为假输出 Assertion failed: …，不抛',
+  'console.table': 'table(data) — 本实现 inspect 落盘（无列对齐，记档）',
+  'console.time': 'time(label?=default) — 计时开始',
+  'console.timeLog': 'timeLog(label?, ...data) — 输出 label: xxms，可附 data',
+  'console.timeEnd': 'timeEnd(label?) — 输出耗时并删计时器',
+  'console.count': 'count(label?=default) — 计数+1，输出 label: n',
+  'console.countReset': 'countReset(label?) — 计数清零（本实现无警告，记档）',
+  'console.group': 'group(...data) — 打印标签并缩进+1',
+  'console.groupEnd': 'groupEnd() — 缩进-1',
+  'console.trace': 'trace(...data) — stderr；首参格式化作消息，附调用栈',
+  'console.clear': 'clear() — 当前无操作（记档）',
   'console.dirxml': '(...data) — stdout',
   'console.groupCollapsed': '(...data) — indent',
   'console.context': '() → Console',
@@ -170,6 +177,80 @@ const __wjsReplSig = Object.assign(Object.create(null), {
   'Array.reverse': '() → this',
   'Array.flat': '(depth?) → array',
   'Array.at': '(i) → v | undefined',
+  // WinterCG 全局（bare 名经 completed 名命中；实例面经 constructor 名命中）。
+  'console': 'console — 调试命名空间；见 console.log 等（WHATWG）',
+  'fetch': 'fetch(input, init?) → Promise<Response>；发 HTTP 请求',
+  'URL': 'URL(url, base?) → URL；.href/.search/.searchParams',
+  'URLSearchParams': 'URLSearchParams(init?)；get/set/append/delete',
+  'URLPattern': 'URLPattern(input)；test/exec 路由匹配',
+  'TextEncoder': 'TextEncoder()；encode → Uint8Array(utf-8)',
+  'TextDecoder': 'TextDecoder(enc?)；decode(bytes) → string',
+  'Headers': 'Headers(init?)；get/set/append/has/delete',
+  'Request': 'Request(input, init?)；.url/.method/.text()',
+  'Response': 'Response(body?, init?)；.ok/.status/.text()/.json()',
+  'Blob': 'Blob(parts?, opts?)；.size/.type/.text()',
+  'File': 'File(parts, name, opts?)；Blob 子类带 name',
+  'ReadableStream': 'ReadableStream(src?)；getReader/pipeTo',
+  'WritableStream': 'WritableStream(sink?)；getWriter',
+  'TransformStream': 'TransformStream(t?)；.readable/.writable',
+  'CompressionStream': 'CompressionStream(fmt)；流式压缩',
+  'DecompressionStream': 'DecompressionStream(fmt)；流式解压',
+  'crypto': 'crypto；getRandomValues/randomUUID/subtle',
+  'AbortController': 'AbortController()；.signal/.abort()',
+  'AbortSignal': 'AbortSignal；.aborted，timeout(ms)/any() 派生',
+  'Event': 'Event(type, opts?)；.type/.target',
+  'EventTarget': 'EventTarget()；add/removeListener/dispatch',
+  'CustomEvent': 'CustomEvent(type, {detail})；.detail',
+  'MessageChannel': 'MessageChannel()；.port1/.port2',
+  'WebSocket': 'WebSocket(url)；send/close（仅 client）',
+  'performance': 'performance；now()/timeOrigin',
+  'localStorage': 'localStorage；getItem/setItem/removeItem',
+  'structuredClone': 'structuredClone(v) → 深拷贝',
+  'queueMicrotask': 'queueMicrotask(cb) — 微任务',
+  'atob': 'atob(b64) → 二进制串',
+  'btoa': 'btoa(bin) → base64',
+  'setTimeout': 'setTimeout(cb, ms?, ...a) → Timeout（缺省钳 1ms）',
+  'setInterval': 'setInterval(cb, ms?, ...a) → Timeout',
+  'clearTimeout': 'clearTimeout(id)',
+  'clearInterval': 'clearInterval(id)',
+  'setImmediate': 'setImmediate(cb, ...a) — 次轮即执行（无分层，记档）',
+  'clearImmediate': 'clearImmediate(id)',
+  'URLSearchParams.append': '(k, v) — 追加（允重复键）',
+  'URLSearchParams.get': '(k) → string | null（首值）',
+  'URLSearchParams.set': '(k, v) — 覆盖同名全值',
+  'URLSearchParams.delete': '(k, v?) — 删同名全值',
+  'URLSearchParams.has': '(k, v?) → boolean',
+  'URLSearchParams.getAll': '(k) → string[]',
+  'URLSearchParams.sort': '() — 按键排序',
+  'URLSearchParams.entries': '() → [k, v] 迭代器',
+  'Headers.get': '(name) → string | null',
+  'Headers.set': '(name, v) — 覆盖',
+  'Headers.append': '(name, v) — 追加（逗号合并）',
+  'Headers.delete': '(name)',
+  'Headers.has': '(name) → boolean',
+  'Headers.entries': '() → [k, v] 迭代器',
+  'TextEncoder.encode': '(str) → Uint8Array(utf-8)',
+  'TextEncoder.encodeInto': '(str, u8) → {read, written}',
+  'TextDecoder.decode': '(bytes, {stream}?) → string',
+  'AbortController.abort': '(reason?) — signal 置 aborted',
+  'crypto.getRandomValues': '(typedArray) — 安全随机填充',
+  'crypto.randomUUID': '() → v4 uuid',
+  'performance.now': '() → ms（timeOrigin 起）',
+  'localStorage.getItem': '(k) → string | null',
+  'localStorage.setItem': '(k, v)',
+  'localStorage.removeItem': '(k)',
+  'localStorage.clear': '() — 清空',
+  'localStorage.key': '(i) → key | null',
+  'ReadableStream.getReader': '() → reader（read/releaseLock）',
+  'ReadableStream.cancel': '(reason?) → Promise',
+  'ReadableStream.pipeTo': '(dest) → Promise（背压）',
+  'Request.text': '() → Promise<string>（body 一次）',
+  'Blob.text': '() → Promise<string>',
+  'Blob.slice': '(start?, end?, type?) → Blob',
+  'EventTarget.addEventListener': '(type, cb, opts?)',
+  'EventTarget.removeEventListener': '(type, cb)',
+  'EventTarget.dispatchEvent': '(ev) → bool（cancelable 可否决）',
+  'AbortSignal.timeout': '(ms) → 超时 abort 的 signal',
 });
 
 function __wjsReplCtorName(base) {
@@ -195,18 +276,28 @@ function __sigDesc(base, key, head2) {
   if (d.get !== undefined) return ': getter';
   const v = d.value;
   if (typeof v === 'function') {
-    // 精确 dotted 路径的手写表优先（`console.log` 等）：JS 包装实现自带
-    // `(...args)` 形参，toString 优先会永久遮蔽表里的通道/语义信息
-    // （`— stdout`/`stderr + stack`，4.226/4.227）。只提 head2 精确项，
-    // Ctor/裸名回落仍在 toString 之后——用户自有同名方法不受内建表遮蔽。
-    const exact = __wjsReplSig[head2];
+    // 表优先：精确 dotted 路径（`console.log`）或 completed 名（bare `fetch`）；
+    // 具体构造器（`URLSearchParams.get`，Ctor 非 Object）次之——原生短形参
+    // （`get(n)`）不如一句话文档；普通对象（Ctor 为 Object）跳过此步，
+    // 用户自有方法永远显示真相（4.227）。toString/Ctor 兜底。
+    const exact = __wjsReplSig[head2] ?? __wjsReplSig[key];
     if (exact !== undefined) return exact;
     let src = '';
     try { src = Function.prototype.toString.call(v); } catch { /* ignore */ }
     const pm = /^[\s\S]*?\(([^)]*)\)/.exec(src);
+    const ctor = __wjsReplCtorName(base);
+    if (ctor !== '' && ctor !== 'Object') {
+      const csig = __wjsReplSig[`${ctor}.${key}`];
+      if (csig !== undefined) return csig;
+    }
     if (pm !== null && pm[1] !== '') return `${key}(${pm[1]})`;
-    const sig = __wjsReplSig[`${__wjsReplCtorName(base)}.${key}`] ?? __wjsReplSig[key];
+    const sig = __wjsReplSig[`${ctor}.${key}`];
     return sig ?? `${key}()`;
+  }
+  // 非函数：bare 命名空间给一句话（`crypto`），成员面沿用类型/值摘要。
+  if (head2 === '') {
+    const t = __wjsReplSig[key];
+    if (t !== undefined) return t;
   }
   if (v === null) return ': null';
   if (typeof v === 'string') {

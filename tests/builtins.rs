@@ -435,6 +435,31 @@ fn phase11_console_global_unified() {
 }
 
 #[test]
+fn phase11_repl_sig_js_docs() {
+    // 2026-09-28 irb 方向：补全文档覆盖 JS 面（WinterCG 全局 + console 富文档），
+    // node:* 兼容面不投文档。正常：console 通道/语义 + WinterCG 一句话；
+    // 边界：用户自有同名方法显示自身形参（不被内建表遮蔽）。
+    let out = stdout_of(winterjs().args([
+        "--eval",
+        "const j = (o) => console.log(JSON.stringify(o));\
+         j(globalThis.__wjs_cli_complete('console.')[0].filter(p=>p[0]==='console.log'||p[0]==='console.table'||p[0]==='console.countReset'));\
+         j(globalThis.__wjs_cli_complete('fet')[0]);\
+         j(globalThis.__wjs_cli_complete('crypt')[0]);\
+         globalThis.o = { assign(a, b) { return a; } };\
+         j(globalThis.__wjs_cli_complete('o.')[0].filter(p=>p[0]==='o.assign'));",
+    ]));
+    for line in [
+        "[\"console.log\",\"log(...data) — stdout；首参字符串含 %s/%d/%i/%f/%j/%o 即格式化，否则 inspect 空格连接\"]",
+        "[\"console.table\",\"table(data) — 本实现 inspect 落盘（无列对齐，记档）\"]",
+        "[\"fetch\",\"fetch(input, init?) → Promise<Response>；发 HTTP 请求\"]",
+        "[\"crypto\",\"crypto；getRandomValues/randomUUID/subtle\"]",
+        "[\"o.assign\",\"assign(a, b)\"]",
+    ] {
+        assert!(out.contains(line), "missing {line:?}; out: {out}");
+    }
+}
+
+#[test]
 fn phase11_set_immediate_not_clamped() {
     // 2026-09-26：setImmediate 不走 setTimeout 的 1ms 钳（修前每个 immediate ≥1ms）；
     // 顺序与真机 26.8.2 一致：I/O 回调内 immediate 先于 setTimeout(0)。

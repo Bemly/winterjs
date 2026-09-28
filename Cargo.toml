@@ -343,6 +343,22 @@ qrcode = "0.14"
 wide = "1"
 ml-dsa = "0.1.1"
 
+# ── §12 media（WinterJS.media，2026-09-29 用户拍板四件）─────────────────
+# - symphonia：音频解码全家（all-meta + opt-simd + aac/adpcm/flac/mp3/isomp4/
+#   ogg/pcm/vorbis/wav/mkv/alac/aiff/caf；上游 default 全纯，照抄）
+# - rodio：只开 playback（cpal 放音；解码一律走直引 symphonia 0.6 经
+#   SamplesBuffer 喂 PCM——rodio 0.22 自带 symphonia 0.5， decoder 特性全禁，
+#   0.5 子树不进树；recording/dither/minimp3 全禁。cpal 无 ohos 后端源码但走
+#   linux 分支可编译（§1 OHOS 口径），无设备时运行期干净报错，不断构建；
+#   ohos 格照惯例 ⚠️，见 §16-6）
+# - rav1e：AV1 编码（default-features=false 必关：default 含 git2/nasm/cli；
+#   只开 threading=rayon 纯 Rust；IVF 容器手写，不另引 ivf 轮子）
+# - shiguredo_mp4：MP4 demux+mux（git tag 钉死，Apache-2.0，零依赖 no-std）
+symphonia = { version = "0.6", default-features = false, features = ["all-meta", "opt-simd", "aac", "adpcm", "flac", "mp3", "isomp4", "ogg", "pcm", "vorbis", "wav", "mkv", "alac", "aiff", "caf"] }
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
+rav1e = { version = "0.8", default-features = false, features = ["threading"] }
+shiguredo_mp4 = { git = "https://github.com/shiguredo/mp4-rs", tag = "2026.6.0-canary.0" }
+
 # ── 平台专用行（§8 矩阵 ❌ 的按 cfg 门控）───────────────────────────────
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["process", "signal", "fs", "ioctl", "term"] }  # 10c（2026-09-15 用户拍板）：tty winsize（TIOCGWINSZ）；空依赖列表，零新 crate；term：setRawMode 真标志（同 crate 开特性，零新 crate）

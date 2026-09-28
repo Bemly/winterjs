@@ -17,6 +17,7 @@ pub mod ws;
 pub mod bun;
 pub mod mem;
 pub mod wfs;
+pub mod wstd;
 
 use std::ffi::CString;
 
@@ -512,6 +513,21 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_mem_unsafe_read", Some(mem::mem_unsafe_read), 3),
             ("__wjs_mem_unsafe_free", Some(mem::mem_unsafe_free), 1),
             ("__wjs_mem_unsafe_list", Some(mem::mem_unsafe_list), 0),
+            // 本体小工具（WinterJS.semver/yaml/jsonc/ip/shlex/spdx/qrcode，见 wstd.rs）
+            ("__wjs_wstd_semver_valid", Some(wstd::semver_valid), 1),
+            ("__wjs_wstd_semver_parse", Some(wstd::semver_parse), 1),
+            ("__wjs_wstd_semver_satisfies", Some(wstd::semver_satisfies), 2),
+            ("__wjs_wstd_semver_compare", Some(wstd::semver_compare), 2),
+            ("__wjs_wstd_yaml_parse", Some(wstd::yaml_parse), 1),
+            ("__wjs_wstd_yaml_stringify", Some(wstd::yaml_stringify), 1),
+            ("__wjs_wstd_jsonc_parse", Some(wstd::jsonc_parse), 1),
+            ("__wjs_wstd_ip_is_net", Some(wstd::ip_is_net), 1),
+            ("__wjs_wstd_ip_is_addr", Some(wstd::ip_is_addr), 1),
+            ("__wjs_wstd_ip_contains", Some(wstd::ip_contains), 2),
+            ("__wjs_wstd_ip_parse", Some(wstd::ip_parse), 1),
+            ("__wjs_wstd_shlex_split", Some(wstd::shlex_split), 1),
+            ("__wjs_wstd_spdx_valid", Some(wstd::spdx_valid), 1),
+            ("__wjs_wstd_qrcode", Some(wstd::qrcode), 1),
             // Phase 7-e6: bun:ffi（动态调用引擎见 ffi.rs 头注；UNSAFE-BOUNDARY 密集区）
             ("__wjs_ffi_dlopen", Some(bun::ffi::ffi_dlopen), 2),
             ("__wjs_ffi_ptr_str", Some(bun::ffi::ffi_ptr_str), 1),

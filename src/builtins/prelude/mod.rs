@@ -27,6 +27,11 @@ mod wsys;
 mod punycode;
 mod assert;
 mod util;
+mod wnet;
+mod wproc;
+mod wconc;
+mod wos;
+mod wevent;
 
 /// 引擎启动时在全局对象上求值的一次性脚本（§1 路线 Phase 1）。
 /// parts 运行时一次拼接（`concat!` 只收字面量，不收 const 路径；LazyLock 进程级单例）。
@@ -56,6 +61,11 @@ pub static PRELUDE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         punycode::PUNYCODE_JS,
         assert::ASSERT_JS,
         util::UTIL_JS,
+        wnet::WNET_JS,
+        wproc::WPROC_JS,
+        wconc::WCONC_JS,
+        wos::WOS_JS,
+        wevent::WEVENT_JS,
         repl_complete::REPL_COMPLETE_JS,
     ]
     .concat()

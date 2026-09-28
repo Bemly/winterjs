@@ -1,4 +1,4 @@
-// 原生覆盖 B3：WinterJS.command/terminal/repl。
+// WinterJS.command/terminal/repl：子进程、终端与 REPL。
 // Run / 运行: winterjs --run sample/wcover/b3.js --allow-run
 const r = await WinterJS.command.run(process.execPath, ['--eval', '40 + 2']);
 console.log('[wcover] run:', r.code === 0 && new TextDecoder().decode(r.stdout).trim() === '42');

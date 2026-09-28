@@ -16,4 +16,4 @@ console.log('[storage] ls:', localStorage.getItem('theme') === 'dark', localStor
 console.log('[storage] ls-key:', localStorage.key(0) === 'theme');
 
 // Inspect from another process (turso passthrough):
-// 换进程查看（turso 透传）：winterjs --db ./winterjs-storage.db --exec "SELECT k FROM wjs_kv ORDER BY k"
+// 换进程查看（直接读 turso 文件）：winterjs --db ./winterjs-storage.db --exec "SELECT k FROM wjs_kv ORDER BY k"

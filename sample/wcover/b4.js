@@ -1,4 +1,4 @@
-// 原生覆盖 B4：Worker 全局 + WinterJS.cluster/test/vm。
+// Worker 全局 + WinterJS.cluster/test/vm：线程、测试与求值。
 // Run / 运行: winterjs --run sample/wcover/b4.js
 const w = new Worker('sample/wcover/worker-echo.mjs');
 w.postMessage({ n: 1 });

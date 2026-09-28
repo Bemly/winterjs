@@ -1,5 +1,4 @@
-// 原生覆盖 B1：WinterJS.assert/util/punycode（Web 风）。
-// Native coverage B1: assert (structural), util.format/inspect, punycode core.
+// WinterJS.assert/util/punycode：结构化断言、format/inspect 与 punycode。
 // Run / 运行: winterjs --run sample/wcover/b1.js
 WinterJS.assert.ok(true);
 WinterJS.assert.deepEqual({ a: [1, { b: 2 }] }, { a: [1, { b: 2 }] });

@@ -1,5 +1,5 @@
 // node:repl: start a REPL over in-memory streams (no TTY needed).
-// repl：内存流驱动的交互求值，无需真实终端。
+// repl：无需真实终端的交互求值。
 // Run / 运行: winterjs --run sample/repl/basics.js
 import { start, Recoverable } from 'node:repl';
 import { Readable, Writable } from 'node:stream';

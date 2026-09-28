@@ -1,5 +1,5 @@
 // CompressionStream / DecompressionStream round-trip (gzip + deflate + zstd).
-// 压缩/解压流往返（gzip + deflate + zstd，zstd 为 winterjs 扩展，ruzstd 底座）。
+// 压缩/解压流往返（gzip + deflate + zstd，zstd 为 winterjs 扩展，由 ruzstd 提供）。
 // Run / 运行: winterjs --run sample/web/compression.js
 async function roundtrip(format, text) {
   const cs = new CompressionStream(format);

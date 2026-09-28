@@ -1,4 +1,4 @@
-// 原生覆盖 B6：WinterJS.stream/diag/domain/trace/async/serve（+ crypto 别名）。
+// WinterJS.stream 等杂项面：流管道、服务、诊断与系统工具。
 // Run / 运行: winterjs --run sample/wcover/b6.js
 const rs = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('hi')); c.close(); } });
 let out = '';

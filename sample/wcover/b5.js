@@ -1,4 +1,4 @@
-// 原生覆盖 B5：WinterJS.os/path/db/inspect/tty。
+// WinterJS.os/path/db/inspect/tty：系统、路径、数据库与检查。
 // Run / 运行: winterjs --run sample/wcover/b5.js
 console.log('[wcover] os:', WinterJS.os.platform(), WinterJS.os.arch());
 console.log('[wcover] path:', WinterJS.path.join('a', 'b'));

@@ -1,4 +1,4 @@
-// 原生覆盖 B2：WinterJS.tcp/udp/dns/tls（Web 风 Promise，loopback 自回环）。
+// WinterJS.tcp/udp/dns/tls：Promise 风格网络接口（本机回环自测）。
 // Run / 运行: winterjs --run sample/wcover/b2.js
 const s = await WinterJS.tcp.listen(0, '127.0.0.1');
 const c = await WinterJS.tcp.connect('127.0.0.1', s.address().port);

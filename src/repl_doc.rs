@@ -187,18 +187,54 @@ fn ns_lookup(topic: &str) -> Option<&'static str> {
         "Bun" | "bun" => &BUN,
         "Deno" | "deno" => &DENO,
         "WinterJS" | "winterjs" => &WJS,
-        _ => return None,
+        // 未知头（含 `global.WinterJS.Bun.write` 形）：模糊回落找段内命名空间。
+        _ => return ns_fuzzy(t),
     };
     if method.is_empty()
         || !method
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
     {
-        return None;
+        // `WinterJS.Bun.write` 形（头对、方法段含点）：同走模糊回落。
+        return ns_fuzzy(t);
     }
     let path = format!("{}/index.md", method.to_lowercase());
     dir.get_file(&path)
         .and_then(|f| f.contents_utf8())
+}
+
+/// 模糊回落（用户要的：主题含命名空间即命中；取位置最靠后的 `.` 分隔
+/// `Bun./Deno./WinterJS.` 段；`myBun.x` 这类段内出现（前驱非 `.`/串首）
+/// 不认，避免用户自有命名误撞语料）。仍以存在性为唯一真相，缺页即 None。
+fn ns_fuzzy(t: &str) -> Option<&'static str> {
+    let mut best: Option<(usize, &str)> = None;
+    for ns in ["Bun.", "Deno.", "WinterJS.", "bun.", "deno.", "winterjs."] {
+        if let Some(pos) = t.rfind(ns)
+            && (pos == 0 || t.as_bytes()[pos - 1] == b'.')
+            && best.is_none_or(|(bp, _)| pos >= bp)
+        {
+            best = Some((pos, ns));
+        }
+    }
+    if let Some((pos, _)) = best {
+        let (head, method) = t[pos..].split_once('.').unwrap();
+        let dir: &include_dir::Dir<'static> = match head {
+            "Bun" | "bun" => &BUN,
+            "Deno" | "deno" => &DENO,
+            _ => &WJS,
+        };
+        if !method.is_empty()
+            && method
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+        {
+            let path = format!("{}/index.md", method.to_lowercase());
+            if let Some(s) = dir.get_file(&path).and_then(|f| f.contents_utf8()) {
+                return Some(s);
+            }
+        }
+    }
+    None
 }
 
 /// 取原文（存在性校验：缺页即 `None`）。
@@ -723,6 +759,13 @@ mod tests {
         assert!(summary("Deno.").is_none());
         assert!(summary("Bun../secret").is_none());
         assert!(summary("Deno.readFile.toString").is_none());
+        // 模糊回落：嵌套命名空间取最靠后段；段内出现不认；缺页仍 None。
+        let fw = summary("global.WinterJS.Bun.write").expect("fuzzy hits Bun.write");
+        assert!(fw.contains("Write"), "{fw}");
+        let fd = summary("global.WinterJS.Deno.readFile").expect("fuzzy hits Deno.readFile");
+        assert!(fd.contains("entire contents"), "{fd}");
+        assert!(summary("myBun.serve").is_none());
+        assert!(summary("global.WinterJS.Bun.TOML").is_none());
     }
 
     #[test]

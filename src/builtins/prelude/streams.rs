@@ -523,8 +523,10 @@ globalThis.TransformStream = class TransformStream {
 // reject），junk = TypeError ERR_TRAILING_JUNK_AFTER_STREAM_END（node:zlib
 // 引擎 junk 码同文复用））----
 const __wjs_csState = new WeakMap();
-const __CS_KINDS = { gzip: 2, deflate: 0, "deflate-raw": 1, brotli: 8 };
-const __DS_KINDS = { gzip: 6, deflate: 3, "deflate-raw": 4, brotli: 9 };
+// Web 扩展 `zstd`（ruzstd 底座；编码恒 Fastest，见 node/zlib.rs 头注）：
+// 引擎侧 ZstdEnc=10/ZstdDec=11 已就绪，此处只加格式表（finish 档走 flag 2）。
+const __CS_KINDS = { gzip: 2, deflate: 0, "deflate-raw": 1, brotli: 8, zstd: 10 };
+const __DS_KINDS = { gzip: 6, deflate: 3, "deflate-raw": 4, brotli: 9, zstd: 11 };
 function __wjs_csFinishFlag(kind) { return kind <= 7 ? 4 : 2; }
 function __wjs_makeCSClass(name, kinds, reject) {
   const cls = class {

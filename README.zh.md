@@ -56,7 +56,7 @@ cargo build
 ## 原理
 
 winterjs 经 `servo/mozjs` 直连 **Mozilla SpiderMonkey**（`mozjs =0.26.0`，Gecko 153，精确钉版），
-其余一切——事件循环、loader、Web/Node 内建、`node:` 垫片——全是**纯 Rust**。
+其余一切——事件循环、loader、Web/Node 内建、`node:` 兼容层——全是**纯 Rust**。
 `unsafe` 只存在于 mozjs 边界（rooting、`AutoRealm`、FFI）；JS 跑在独占线程，
 Rust 侧只经消息队列与之通信，绝不跨线程共享 `&mut JSContext`。
 
@@ -69,8 +69,8 @@ Rust 侧只经消息队列与之通信，绝不跨线程共享 `&mut JSContext`�
 |---|---|---|
 | `fs/net/http/https/http2/tls/dgram/dns` | ✅ 稳定 | 流式体、keep-alive、H2C、UDP 回环 |
 | `crypto/zlib/buffer/stream/events/timers` | ✅ 稳定 | AEAD 套件、brotli、WHATWG 流 |
-| `child_process/cluster/worker_threads/vm/module/test` | ✅ 稳定 | 线程底座的 cluster/worker |
-| `sqlite`（`node:` + `bun:sqlite`）、`quic`、`readline/repl/tty` | ✅ / 🔶 | `quic` 回环握手超时（另案追查） |
+| `child_process/cluster/worker_threads/vm/module/test` | ✅ 稳定 | 基于线程的 cluster/worker |
+| `sqlite`（`node:` + `bun:sqlite`）、`quic`、`readline/repl/tty` | ✅ / 🔶 | `quic` 回环握手超时（已知问题，后续处理） |
 | `storage` / `localStorage`（WinterCG 自有） | ✅ 稳定 | turso 单文件 KV（`--storage-path`，默认 `./winterjs-storage.db`）；经 `-b/--db` 查看 |
 | `v8/inspector/trace_events/domain` | 🔶 桥接 | 有意裁剪（堆数字引擎口径不可比） |
 | `wasi`、`sea` | ❌ | 设计上不做 |
@@ -82,7 +82,7 @@ Web 全局（`fetch`、`URL`、`TextEncoder`、Web Streams、WebCrypto、`WebSoc
 
 * 跨引擎数字不可比（`v8` 堆统计；`allocUnsafe` 恒零填）。
 * `structuredClone` 只保纯数据（Date/Map/Set 回来是普通对象）。
-* `node:quic` 回环握手超时；`node:https` 单连接目前派发两次 `request`（请幂等守卫）。
+* `node:quic` 回环握手超时；`node:https` 单连接目前触发两次 `request`（请做幂等处理）。
 * `wasi` / `sea` 不会实现。
 
 ## 开发
@@ -95,7 +95,7 @@ bash scripts/check-lines.sh        # 全部 .rs / 内嵌 JS ≤ 1000 行
 ```
 
 工作规约：[AGENTS.md](./AGENTS.md) · 进度：[`docs/plan3.md`](./docs/plan3.md)
-· 踩坑全集：[`docs/pitfalls.md`](./docs/pitfalls.md)。
+· 内部实现注记（面向贡献者）：[`docs/pitfalls.md`](./docs/pitfalls.md)。
 
 ## 许可
 

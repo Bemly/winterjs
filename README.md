@@ -57,7 +57,7 @@ Full reference: [CLI (EN)](https://winterjs.bemly.moe/#/en/cli) / [CLI (中文)]
 
 winterjs links **Mozilla SpiderMonkey** (`mozjs =0.26.0`, Gecko 153, pinned) through
 `servo/mozjs` and implements everything else — event loop, loader, Web/Node
-builtins, `node:` shims — in **pure Rust**. `unsafe` lives only at the mozjs
+builtins, `node:` compatibility modules — in **pure Rust**. `unsafe` lives only at the mozjs
 boundary (rooting, `AutoRealm`, FFI); JS runs on a dedicated thread and Rust
 sides talk to it through message queues, never by sharing `&mut JSContext`.
 
@@ -72,7 +72,7 @@ Goal: everything in Bun's bundled node test list works; semantics follow Node
 | `fs/net/http/https/http2/tls/dgram/dns` | ✅ Stable | streaming bodies, keep-alive, H2C, UDP loopback |
 | `crypto/zlib/buffer/stream/events/timers` | ✅ Stable | AEAD ciphers, brotli, WHATWG streams |
 | `child_process/cluster/worker_threads/vm/module/test` | ✅ Stable | thread-based cluster/workers |
-| `sqlite` (`node:` + `bun:sqlite`), `quic`, `readline/repl/tty` | ✅ / 🔶 | `quic` handshake on loopback times out (tracked) |
+| `sqlite` (`node:` + `bun:sqlite`), `quic`, `readline/repl/tty` | ✅ / 🔶 | `quic` handshake on loopback times out (known issue, under investigation) |
 | `storage` / `localStorage` (WinterCG own) | ✅ Stable | turso single-file KV (`--storage-path`, default `./winterjs-storage.db`); inspect via `-b/--db` |
 | `v8/inspector/trace_events/domain` | 🔶 Bridge | intentionally reduced (heap numbers are engine-specific) |
 | `wasi`, `sea` | ❌ | out of scope by design |
@@ -85,7 +85,7 @@ Web globals (`fetch`, `URL`, `TextEncoder`, Web Streams, WebCrypto, `WebSocket`,
 * Cross-engine numbers are not comparable (`v8` heap stats, `allocUnsafe` is zero-filled).
 * `structuredClone` covers plain data (Date/Map/Set come back as plain objects).
 * `node:quic` session handshake on loopback times out; `node:https` currently
-  dispatches `request` twice per connection (guard idempotently).
+  triggers `request` twice per connection (handle it idempotently).
 * `wasi` / `sea` will not be implemented.
 
 ## Developing

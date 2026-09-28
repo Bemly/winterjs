@@ -17,4 +17,4 @@ MDN 形状页面（散文 + `## Syntax` + `### Parameters`）：
 - 更新：重拉上游 `.d.ts` 后重跑脚本；输出逐字节确定性（重跑无 diff 即可提交）。
 
 覆盖偏差（相对真机，文档记录）：`Bun.cwd` 真机不存在（用 `process.cwd()`），
-故无此页；`Bun.TOML`/`YAML`/`Transpiler`/`FileSystemRouter` 无底座，未别名、无页。
+故无此页；`Bun.TOML`/`YAML`/`Transpiler`/`FileSystemRouter` winterjs 未提供对应面，故无页。

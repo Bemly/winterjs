@@ -49,10 +49,10 @@ arg:
     help: "运行测试文件（无路径时从当前目录自动发现测试文件）"
     value: "路径"
   lint:
-    help: "转发给 oxlint（从 node_modules/.bin 或 PATH 查找；参数原样透传）"
+    help: "转发给 oxlint（从 node_modules/.bin 或 PATH 查找；参数原样转发）"
     value: "参数"
   fmt:
-    help: "转发给 oxfmt（从 node_modules/.bin 或 PATH 查找；参数原样透传）"
+    help: "转发给 oxfmt（从 node_modules/.bin 或 PATH 查找；参数原样转发）"
     value: "参数"
   serve:
     help: "通过 HTTP 提供目录或 JS 处理器服务（H1/H2/H3；TLS 经 --cert/--key 或 ACME）"

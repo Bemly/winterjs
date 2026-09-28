@@ -14,6 +14,7 @@ pub mod timers;
 pub mod url;
 pub mod ws;
 pub mod bun;
+pub mod wfs;
 
 use std::ffi::CString;
 
@@ -486,6 +487,16 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_storage_keys", Some(storage::storage_keys), 2),
             ("__wjs_storage_clear", Some(storage::storage_clear), 1),
             ("__wjs_storage_close", Some(storage::storage_close), 1),
+            // 本体 FS（WinterJS.fs；与 node:fs 分离，直用 fs-err，见 wfs.rs）
+            ("__wjs_wfs_read", Some(wfs::wfs_read), 1),
+            ("__wjs_wfs_write", Some(wfs::wfs_write), 2),
+            ("__wjs_wfs_stat", Some(wfs::wfs_stat), 1),
+            ("__wjs_wfs_mkdir", Some(wfs::wfs_mkdir), 2),
+            ("__wjs_wfs_readdir", Some(wfs::wfs_readdir), 1),
+            ("__wjs_wfs_remove", Some(wfs::wfs_remove), 2),
+            ("__wjs_wfs_rename", Some(wfs::wfs_rename), 2),
+            ("__wjs_wfs_copy", Some(wfs::wfs_copy), 2),
+            ("__wjs_wfs_exists", Some(wfs::wfs_exists), 1),
             // Phase 7-e6: bun:ffi（动态调用引擎见 ffi.rs 头注；UNSAFE-BOUNDARY 密集区）
             ("__wjs_ffi_dlopen", Some(bun::ffi::ffi_dlopen), 2),
             ("__wjs_ffi_ptr_str", Some(bun::ffi::ffi_ptr_str), 1),

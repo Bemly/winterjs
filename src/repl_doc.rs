@@ -11,6 +11,15 @@
 static MDN: include_dir::Dir<'static> =
     include_dir::include_dir!("$CARGO_MANIFEST_DIR/mdn-content/files/en-us");
 
+/// 内嵌命名空间语料（`scripts/gen-ns-docs.py` 由上游 `.d.ts` TSDoc 抽取，
+/// `winterjs-content` 为手写 5 页；见各目录 `ATTRIBUTION.md`）。
+static BUN: include_dir::Dir<'static> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/bun-content");
+static DENO: include_dir::Dir<'static> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/deno-content");
+static WJS: include_dir::Dir<'static> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/winterjs-content");
+
 /// WinterCG 显式 slug（MDN 路径不规则，逐条实证；`web/api/` 下，`index.md` 省略）。
 fn explicit(topic: &str) -> Option<&'static str> {
     Some(match topic {
@@ -160,18 +169,54 @@ fn slug(topic: &str) -> Option<String> {
     None
 }
 
+/// 命名空间语料路由（`Bun`/`Deno`/`WinterJS` 头；`lookup` 用）。
+/// `Bun.serve` → `bun-content/serve/index.md`，bare `Bun` → `index` 页；
+/// 方法段限字母数字/`_`/`$`（`Bun.$` 的 `$` 在内；无 `..`，无路径穿越）。
+/// 存在性由 `lookup` 校验（缺页即未知条目，不猜）。
+fn ns_lookup(topic: &str) -> Option<&'static str> {
+    let t = topic
+        .trim()
+        .strip_prefix("globalThis.")
+        .unwrap_or(topic.trim());
+    let (head, method) = match t.split_once('.') {
+        Some((h, m)) => (h, m),
+        None => (t, "index"),
+    };
+    let dir: &include_dir::Dir<'static> = match head {
+        "Bun" | "bun" => &BUN,
+        "Deno" | "deno" => &DENO,
+        "WinterJS" | "winterjs" => &WJS,
+        _ => return None,
+    };
+    if method.is_empty()
+        || !method
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    {
+        return None;
+    }
+    let path = format!("{}/index.md", method.to_lowercase());
+    dir.get_file(&path)
+        .and_then(|f| f.contents_utf8())
+}
+
 /// 取原文（存在性校验：缺页即 `None`）。
 /// `slug` 主规则未命中时按形状试探（首中即返；全部只读静态语料）：
 /// - `A.b` → `global_objects/a/b`（sm_head 白名单外的头）、`web/api/a/b`、
 ///   `web/api/a/b_static`（Web 静态方法惯例）；
 /// - bare → `reference/statements/t`、`reference/operators/t`、`web/api/t`。
 /// 段字符集限小写字母数字/`_`/`$`（无 `..`，无路径穿越）。
+/// 命名空间主题（`Bun`/`Deno`/`WinterJS` 头）走 `ns_lookup`（MDN 主规则之
+/// 后、fallback 试探之前；三语料互不串味）。
 pub fn lookup(topic: &str) -> Option<&'static str> {
     let t = topic.trim();
     if let Some(path) = slug(t).map(|s| format!("{s}/index.md"))
         && let Some(f) = MDN.get_file(&path)
         && let Some(s) = f.contents_utf8()
     {
+        return Some(s);
+    }
+    if let Some(s) = ns_lookup(t) {
         return Some(s);
     }
     for cand in fallback_paths(t) {
@@ -557,10 +602,10 @@ fn summary_inner(t: &str) -> Option<String> {
     Some(strip_italics(&parts.join("\n").replace("**", "").replace('`', "")))
 }
 
-/// 未知条目提示（精确键空间见 `explicit` + 两条派生规则）。
+/// 未知条目提示（精确键空间见 `explicit` + 两条派生规则 + `ns_lookup` 三头）。
 pub fn unknown_hint(topic: &str) -> String {
     format!(
-        "no documentation for '{topic}' (try: console.log, fetch, URL, Array.from, TextEncoder.encode)"
+        "no documentation for '{topic}' (try: console.log, fetch, URL, Array.from, TextEncoder.encode, Deno.readFile, Bun.serve)"
     )
 }
 
@@ -653,6 +698,30 @@ mod tests {
         assert_eq!(strip_italics("snake_case kept"), "snake_case kept");
         assert_eq!(strip_italics("__wjs_x kept"), "__wjs_x kept");
         assert_eq!(strip_italics("a_b kept"), "a_b kept");
+    }
+
+    #[test]
+    fn ns_lookup_hits_generated_corpus() {
+        // 三命名空间：存在性即真相（缺页 None，不猜）；形状约束（空方法、
+        // 路径穿越、大小写头宽容）。
+        let d = summary("Deno.readFile").expect("Deno.readFile documented");
+        assert!(d.contains("entire contents of a file"), "{d}");
+        assert!(d.contains("function readFile("), "{d}");
+        let b = summary("Bun.serve").expect("Bun.serve documented");
+        assert!(b.contains("high-performance HTTP server"), "{b}");
+        let w = summary("WinterJS.version").expect("WinterJS.version documented");
+        assert!(w.contains("winterjs version"), "{w}");
+        assert!(summary("Bun").is_some());
+        assert!(summary("Deno").is_some());
+        assert!(summary("WinterJS").is_some());
+        assert!(summary("globalThis.Deno.args").is_some());
+        assert!(summary("deno.readfile").is_some());
+        assert!(summary("Bun.TOML").is_none());
+        assert!(summary("Deno.statFs").is_none());
+        assert!(summary("Bun.cwd").is_none());
+        assert!(summary("Deno.").is_none());
+        assert!(summary("Bun../secret").is_none());
+        assert!(summary("Deno.readFile.toString").is_none());
     }
 
     #[test]

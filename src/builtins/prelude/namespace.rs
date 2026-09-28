@@ -211,7 +211,7 @@ pub const NAMESPACE_JS: &str = r#"
       rename(a, b) { return __wjs_ns_fsp().rename(String(a), String(b)); },
       copyFile(a, b) { return __wjs_ns_fsp().copyFile(String(a), String(b)); },
       symlink(a, b) { return __wjs_ns_fsp().symlink(String(a), String(b)); },
-      readlink(p) { return __wjs_ns_fsp().readlink(String(p)); },
+      readLink(p) { return __wjs_ns_fsp().readlink(String(p)); },
       realPath(p) { return __wjs_ns_fsp().realpath(String(p)); },
       readDir(p) {
         return __wjs_ns_fsp().readdir(String(p), { withFileTypes: true }).then((ents) =>
@@ -224,11 +224,6 @@ pub const NAMESPACE_JS: &str = r#"
       chown(p, u, g) { return __wjs_ns_fsp().chown(String(p), u, g); },
       utime(p, a, m) { return __wjs_ns_fsp().utimes(String(p), a, m); },
       watchFs(p, o) { return __wjs_ns_fs().watch(p, o); },
-      statFs(p) {
-        return __wjs_ns_fsp().statfs
-          ? __wjs_ns_fsp().statfs(String(p)).then((s) => ({ type: 0, bsize: 4096, blocks: 0, bfree: 0, bavail: 0, files: 0, ffree: 0 }))
-          : Promise.resolve({ type: 0, bsize: 4096, blocks: 0, bfree: 0, bavail: 0, files: 0, ffree: 0 });
-      },
       test(name, fn) {
         const t = __wjs_ns_req("node:test");
         if (!t) throw new Error("Deno.test requires node:test");
@@ -306,7 +301,6 @@ pub const NAMESPACE_JS: &str = r#"
       get stdout() { return __wjs_ns_proc().stdout; },
       get stdin() { return __wjs_ns_proc().stdin; },
       get stderr() { return __wjs_ns_proc().stderr; },
-      cwd() { return __wjs_ns_proc().cwd(); },
       file(p) { return __wjs_ns_bunfile(p); },
       write(p, d) {
         if (d instanceof Response) return d.arrayBuffer().then((b) => __wjs_ns_fsp().writeFile(String(p), Buffer.from(b)).then((r) => r));

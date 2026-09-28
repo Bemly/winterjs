@@ -221,6 +221,35 @@ fn repl_doc_mdn_page() {
 }
 
 #[test]
+fn repl_doc_ns_pages() {
+    // `.doc` 命名空间页（上游 .d.ts TSDoc 抽取）：正常出首句+Syntax节；
+    // 未别名（Bun.TOML/真机无 Bun.cwd）走未知提示；非 TTY 纯文本。
+    let (stdout, stderr, code) = repl_session(
+        ".doc Deno.readFile\n.doc Bun.serve\n.doc WinterJS.version\n.doc Bun.TOML\n.doc Bun.cwd\n.exit\n",
+    );
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("entire contents of a file"),
+        "stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("high-performance HTTP server"),
+        "stdout:\n{stdout}"
+    );
+    assert!(stdout.contains("winterjs version"), "stdout:\n{stdout}");
+    assert!(stdout.contains("Syntax"), "stdout:\n{stdout}");
+    assert!(
+        stderr.contains("no documentation for 'Bun.TOML'"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no documentation for 'Bun.cwd'"),
+        "stderr:\n{stderr}"
+    );
+    assert!(!stdout.contains('\u{1b}'), "stdout must not contain ANSI");
+}
+
+#[test]
 fn repl_empty_line_lists_globals() {
     // 空行 Tab：全局全枚举（node 真机同形），不再 NO RECORDS。
     // 正常：含 console/fetch/globalThis 且有序；边界：无 `__wjs_` 内部面、

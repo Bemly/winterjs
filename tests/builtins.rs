@@ -524,8 +524,8 @@ fn namespace_full_surface_types() {
     // 全量别名存在性：一行多断言分参打印（§4.42）。
     let out = stdout_of(winterjs().args([
         "--eval",
-        "const d = ['readFile','writeFile','readTextFile','writeTextFile','open','stat','lstat','mkdir','remove','rename','copyFile','symlink','readlink','realPath','readDir','makeTempDir','truncate','chmod','chown','utime','watchFs','test','serve','connect','listen','listenDatagram','resolveDns','Command','permissions','errors','env','cwd','chdir','exit','hostname','osRelease','args','pid','version','build'];\n\
-         const b = ['file','write','spawnSync','$','sleep','sleepSync','nanoseconds','randomUUIDv7','sha','serve','listen','connect','udpSocket','fileURLToPath','pathToFileURL','which','cwd','version','revision','argv','main','env'];\n\
+        "const d = ['readFile','writeFile','readTextFile','writeTextFile','open','stat','lstat','mkdir','remove','rename','copyFile','symlink','readLink','realPath','readDir','makeTempDir','truncate','chmod','chown','utime','watchFs','test','serve','connect','listen','listenDatagram','resolveDns','Command','permissions','errors','env','cwd','chdir','exit','hostname','osRelease','args','pid','version','build'];\n\
+         const b = ['file','write','spawnSync','$','sleep','sleepSync','nanoseconds','randomUUIDv7','sha','serve','listen','connect','udpSocket','fileURLToPath','pathToFileURL','which','version','revision','argv','main','env'];\n\
          const w = ['version','versions','args','env','cwd','pid','storage','localStorage','Deno','Bun'];\n\
          console.log('deno-missing:' + JSON.stringify(d.filter((k) => typeof Deno[k] === 'undefined')));\n\
          console.log('bun-missing:' + JSON.stringify(b.filter((k) => typeof Bun[k] === 'undefined')));\n\
@@ -543,7 +543,7 @@ fn namespace_delegation_spot() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("ns.js")
         .write_str(
-            "console.log('cwd:' + (Deno.cwd() === process.cwd() && Bun.cwd() === process.cwd()));\n\
+            "console.log('cwd:' + (Deno.cwd() === process.cwd() && WinterJS.cwd() === process.cwd()));\n\
              await Bun.write('a.txt', 'bun');\n\
              console.log('file:' + (await Bun.file('a.txt').text() === 'bun' && Bun.file('a.txt').exists()));\n\
              Deno.env.set('WJS_NS_X', '9');\n\

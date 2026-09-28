@@ -565,3 +565,21 @@ G1/G2/G3/G9 已收官。）
   表查询提到 toString 之前，Ctor/裸名回落不动（`o.assign(a,b)` 探针仍显示自身
   形参）。`console.` 全员恢复通道/语义摘要；`dot-empty` 断言回到通道信息形。
 - 验证：repl/console/builtins 120 件全绿；行数守门 ok。
+
+## 2026-09-28 irb 方向：JS 面补全文档全覆盖（node 面除外）
+
+- 用户拍板：对标 irb 不对标 node repl；JS 面全包（WinterCG + SpiderMonkey 内建 +
+  winterjs 自有），node:* 兼容面不投文档（兼容层非本体，"不是复刻 node"）。
+- 语料证据（实测）：mdn/content 全仓 ~496MB，其中 web/javascript 9.1MB（1356 件）、
+  web/api/console 168KB（30 件，`~/wjs-data/mdn-content` 稀疏检出可查）；
+  nodejs/node LICENSE 覆盖 doc（MIT，同既有 vendoring 纪律）；
+  WHATWG Console Standard 为 CC-BY 4.0 且源码内引用部分转 BSD-3——console 释义
+  按此改写零摩擦；MDN 正文 CC-BY-SA（NPL-1.1 不在其兼容名单，逐字搬运须独立文件
+  保留原协议头），故一律手写改写、只取事实（事实不受著作权保护）。
+- 落法：`__wjsReplSig` 从签名表升级为"签名 + 一句话"（console 17 项 WHATWG 改写，
+  偏离处如实写记档如 table/countReset/clear；WinterCG 36 bare + 33 成员，存在性逐项
+  `--eval` 实证，FormData/navigator/SubtleCrypto 缺席即跳过）；匹配序收敛为
+  "表（精确路径/completed 名）优先，具体 Ctor（非 Object）次之，toString 兜底"——
+  原生短形参（`get(n)`）让位文档，普通用户对象永远真相。
+- 验证：新黑盒 `phase11_repl_sig_js_docs`（正常+遮蔽边界）；strict 777/777；
+  冒烟 5/5；行数守门 ok。深水不追：`crypto.subtle` 方法面、table 列对齐。

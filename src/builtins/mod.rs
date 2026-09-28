@@ -8,6 +8,7 @@ pub mod crypto;
 pub mod encoding;
 pub mod fetch;
 pub mod image;
+pub mod media;
 pub mod node;
 pub mod prelude;
 pub mod storage;
@@ -490,6 +491,15 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_image_info", Some(image::image_info), 2),
             ("__wjs_image_pixels", Some(image::image_pixels), 3),
             ("__wjs_image_encode", Some(image::image_encode), 5),
+            // WinterJS.media（音频解码/放音 + AV1 编码 + MP4 demux；见 media.rs）。
+            ("__wjs_media_audio_info", Some(media::media_audio_info), 2),
+            ("__wjs_media_audio_pcm", Some(media::media_audio_pcm), 2),
+            ("__wjs_media_play", Some(media::media_play), 4),
+            ("__wjs_media_stop", Some(media::media_stop), 1),
+            ("__wjs_media_video_encode", Some(media::media_video_encode), 5),
+            ("__wjs_media_mp4info", Some(media::media_mp4info), 1),
+            ("__wjs_media_mp4samples", Some(media::media_mp4samples), 3),
+            ("__wjs_media_mp4sample", Some(media::media_mp4sample), 3),
             ("__wjs_storage_open", Some(storage::storage_open), 1),
             ("__wjs_storage_get", Some(storage::storage_get), 2),
             ("__wjs_storage_set", Some(storage::storage_set), 3),

@@ -575,6 +575,15 @@ const __wjsReplSig = Object.assign(Object.create(null), {
   'WinterJS.image.info': '(bytes, format?) → { format, width, height, mime }',
   'WinterJS.image.decode': '(bytes, format?, scale?) → { format, width, height, data }',
   'WinterJS.image.encode': '({ data, width, height }, format, options?) → Uint8Array',
+  'WinterJS.media.formats': '() → [{ name, kind, decode, encode }]',
+  'WinterJS.media.audioInfo': '(bytes, format?) → { format, codec, sampleRate, channels }',
+  'WinterJS.media.decodeAudio': '(bytes, format?) → { format, sampleRate, channels, data }',
+  'WinterJS.media.play': '({ data, sampleRate, channels }, options?) → id',
+  'WinterJS.media.stop': '(id) → boolean',
+  'WinterJS.media.videoEncode': '({ data, width, height, count }, options?) → Uint8Array',
+  'WinterJS.media.mp4Info': '(bytes) → { tracks }',
+  'WinterJS.media.mp4Samples': '(bytes, track?, limit?) → [{ index, timestamp, size }]',
+  'WinterJS.media.mp4Sample': '(bytes, track, index) → Uint8Array',
 });
 
 function __wjsReplCtorName(base) {

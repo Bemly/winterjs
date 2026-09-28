@@ -4,6 +4,7 @@
 mod blob;
 mod bootstrap;
 mod image;
+mod media;
 mod namespace;
 mod buffer_api;
 mod buffer_class;
@@ -54,6 +55,7 @@ pub static PRELUDE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         fetch::FETCH_JS,
         namespace::NAMESPACE_JS,
         image::IMAGE_JS,
+        media::MEDIA_JS,
         wfs::WFS_JS,
         mem::MEM_JS,
         wstd::WSTD_JS,

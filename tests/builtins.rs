@@ -663,6 +663,65 @@ fn image_errors_and_bounds() {
 }
 
 #[test]
+fn media_mp4_fixture() {
+    // 正常：mp4 demux（tracks/codec/samples/首字节）+ 经 demux 取出的 flac 全链解码。
+    // fixture：mp4-rs 自带 beep-flac（Apache-2.0，tests/fixtures/media/）。
+    use assert_fs::prelude::*;
+    let dir = assert_fs::TempDir::new().unwrap();
+    let fx = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/media/beep-flac-audio.mp4");
+    dir.child("m.js")
+        .write_str(&format!(
+            "const fs = require('node:fs');\n\
+             const b = new Uint8Array(fs.readFileSync('{fx}'));\n\
+             const info = WinterJS.media.mp4Info(b);\n\
+             console.log('tracks:' + JSON.stringify(info.tracks.map((t) => [t.id, t.kind, t.codec, t.sampleCount])));\n\
+             const ss = WinterJS.media.mp4Samples(b, 1, 2);\n\
+             console.log('ss:' + (ss.length === 2 && ss[0].index === 0 && ss[0].size > 0));\n\
+             const s0 = WinterJS.media.mp4Sample(b, 1, 0);\n\
+             console.log('s0:' + (s0.length === ss[0].size));\n\
+             const d = WinterJS.media.decodeAudio(b);\n\
+             console.log('dec:' + [d.format, d.codec, d.sampleRate, d.channels, d.data.length > 40000].join(','));\n"
+        ))
+        .unwrap();
+    let (ok, out, _) = wjs(&["--run", "m.js"], &dir);
+    assert!(ok, "out: {out}");
+    assert!(out.contains("tracks:[[1,\"audio\",\"flac\",10]]"), "out: {out}");
+    assert!(out.contains("ss:true"), "out: {out}");
+    assert!(out.contains("s0:true"), "out: {out}");
+    assert!(out.contains("dec:mp4,flac,44100,1,true"), "out: {out}");
+}
+
+#[test]
+fn media_errors_and_bounds() {
+    // 报错：垃圾音频/空字节/坏音量/坏视频维/坏帧数/越界样本/未知 id stop=false。
+    // 边界：volume 0 可放（有设备）或干净无设备错（CI）。
+    let out = stdout_of(winterjs().args([
+        "--eval",
+        "const t = (f) => { try { f(); return 'NO-THROW'; } catch (e) { return e.message; } };\n\
+         console.log('e1:' + t(() => WinterJS.media.decodeAudio(new Uint8Array([1,2,3]))));\n\
+         console.log('e2:' + t(() => WinterJS.media.decodeAudio(new Uint8Array(0))));\n\
+         console.log('e3:' + t(() => WinterJS.media.play({ data: new Float32Array(8), sampleRate: 8000, channels: 1 }, { volume: -1 })));\n\
+         console.log('e4:' + t(() => WinterJS.media.videoEncode({ data: new Uint8Array(16), width: 3, height: 2, count: 1 })));\n\
+         console.log('e5:' + t(() => WinterJS.media.videoEncode({ data: new Uint8Array(16), width: 2, height: 2, count: 0 })));\n\
+         console.log('e6:' + t(() => WinterJS.media.mp4Sample(new Uint8Array([1,2,3]), 1, 0)));\n\
+         console.log('e7:' + t(() => WinterJS.media.videoEncode({ data: new Uint8Array(16), width: 2, height: 2, count: 1 }, { speed: 11 })));\n\
+         console.log('b:' + (WinterJS.media.stop(424242) === false));",
+    ]));
+    for line in [
+        "e1:TypeError: unsupported audio format",
+        "e2:TypeError",
+        "e3:RangeError: WinterJS.media.play volume",
+        "e4:RangeError",
+        "e5:RangeError",
+        "e6:TypeError",
+        "e7:RangeError",
+        "b:true",
+    ] {
+        assert!(out.contains(line), "missing {line:?}; out: {out}");
+    }
+}
+
+#[test]
 fn namespace_user_predefine_kept() {
     // 边界：用户在 prelude 后覆盖三命名空间不炸，会话继续。
     let out = stdout_of(winterjs().args([

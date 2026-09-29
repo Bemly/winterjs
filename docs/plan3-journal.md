@@ -926,3 +926,19 @@ G1/G2/G3/G9 已收官。）
   （快照切片/serve 流 tee 源流；bodyUsed 即 TypeError）。
 - 验证：黑盒 `phase11_response_json_faces` + `phase11_request_clone_faces` 双绿；
   serve 流 tee 探针绿；fetch+stream 域 48/48；样例回填 + 站偏离注去掉；冒烟 5/5。
+
+## 2026-09-30 P2-crypto R4：keygen-async 簇 22 转绿（47→69/120）
+
+- 真根因（坑 4.242）：异步 `generateKeyPair` 调两次 `__genPairSync`，公钥私钥错配
+  （x-JWK/RSA 解密/DSA 超时同源）。同轮带走：jwk 免 type（6 件）/paramEncoding 翻正
+  （der/pem 系误读，无覆盖，按 4.65 翻转）/raw 格式放行 + 兼容门提前（省 RSA/DSA
+  慢生成空烧，raw 套件 9s→0.9s 快败）/JWK 曲线错码/传统缺口令改 INTERRUPTED/
+  DSA 参数校验（`{}` 缺省翻转，4.65）/P-521 掩码（528 位随机 99.2% 越界）/
+  PSS 约束回贴 + 非 PSS padding 禁  + salt 缺省摘要长/promisify 定制/ml
+  details `{}` + 私钥 JWK pub 派生/MISSING_PASSPHRASE（DER）。
+- 验证：crypto4 sweep（crypto3 红 76 件重跑）SAME0 25（R2/R3 3 件 + 本轮 22）；
+  crypto 域 62/62 strict；冒烟 5/5；行数守门 ok。
+- 留尾记档（时间盒止损）：bit-length（DSA-2049，dsa 0.7 无任意尺寸）/
+  dh-classic（无 dh keygen）/keygen.js（4096 debug 慢天花板）/raw-slh
+  （需新轮子，§0.5 待批）/pqc-key-objects×2 + sign-verify（priv-only 形态保持，
+  material 模型改）/GCM 短 tag 解密/legacy createCipher。

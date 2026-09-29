@@ -463,11 +463,11 @@ mod tests {
     fn decode_and_render_real_assets() {
         // 真素材端到端（jxl 解码 + svg 光栅 + lockup 拼版 + PNG 编码；本机有系统字体）。
         let pic = lockup().expect("lockup composites");
-        assert_eq!((pic.width(), pic.height()), (627, 128));
+        assert_eq!((pic.width(), pic.height()), (641, 128));
         let png = png_of(&pic).expect("png encodes");
         assert!(png.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"), "png magic");
-        // 展示列数：logo 8 + 缝 2 + 字牌 30 = 40。
-        assert_eq!(lockup_cols(483, 128), 40);
+        // 展示列数：logo 8 + 缝 2 + 字牌 30 = 40（整数截断下字牌多 14px 不进位）。
+        assert_eq!(lockup_cols(497, 128), 40);
         // 转义序列可发射（载荷往返见上两单测）。
         assert!(!kitty_seq(&png, pic.width(), pic.height(), 40).is_empty());
     }

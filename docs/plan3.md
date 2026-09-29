@@ -148,8 +148,10 @@ R3 子集补全 +8（成员链逐步求值/getter 拒入 + fs 路径 + bare 上�
 大小写不敏感 + editor 公共前缀；save-load/computed-props/buffer/files/
 new-expression/nosideeffects/custom-completer/on-editor-mode）。
 余 ~43：getters 仅 proxy 两块（isProxy 引擎缺口）/setupHistory/useGlobal/
-internal/repl（11）/ASSERT 散件，另轮 | 各按止损线 | 🟡 |
-| P3 | http 冻结收口 | sweep9 真红 12 件中 `dump-req-when-res-ends` 在清单外已清出（0.7）；余 11 件一次性定性：清单内可半天修的修（`matchKnownFields`/`outgoing-finished`/`1.0-keep-alive` 文案），其余记档（`reuse-drained`=process.report、`client-response-domain`=domain 异步、`keep-alive-timeout-race`=Atomics.wait、`set-timeout-server` exit-hold/`catch-uncaughtexception`/`client-parse-error`/`writable-true-after-close`/`client-timeout-on-connect`=挂死型） | ≤1 天 | ⬜ |
+internal/repl（11）/ASSERT 散件，另轮。**crypto R1** ✅ 2026-09-29 MISSING-EXCEPTION
+9 簇 4 转绿 44/120（坑 4.236）。**crypto R2** ✅ 2026-09-30 argon2 越界簇转绿
+45/120（坑 4.239；crypto 域 62/62、冒烟 5/5） | 各按止损线 | 🟡 |
+| P3 | http 冻结收口 | ✅ 2026-09-30 R1：`matchKnownFields`（单例表删 content-encoding/x-forwarded-host，4.237）+ `outgoing-finished`（ServerResponse 补 OM 品牌五项等 close，4.238）转绿，`1.0-keep-alive` 复验绿；http 相关 52/52 strict；余 8 件按原定性记档不再开轮 | ≤1 天 | ✅ |
 | D1 | ✅ 2026-09-25 已做 | node 运行时旗改**精确名单**（`src/cli_node_flags.rs`，取自 `node --help`；前缀族方案致 4.209 事故后废弃；winterjs 自有同名旗与改执行模式的旗不收，必须带值的旗只认 `--k=v`、值非法 exit 9）+ `internal/options` getOptionValue 读真实旗值 + DEP0005 认 `--pending-deprecation` + shell 串自举保旗交 CLI。实测：位置参数本就已通（旧"~18 件"口径过期）；`buffer-constructor-node-modules` 转绿；余红与 spawn 无关，已拆成 D4/P2 项（错误输出形状、`process.stdin/stdout` 非 Stream、`node:stream/iter` 未实现、vm-sigint stdio null） | — | ✅ |
 | D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |
 | D3 | ✅ 2026-09-25 已做 | §0.9 纳入 `src/**/*.js`：8 件超限按方法边界拆 17 片（`concat!(include_str!…)` 字节恒等，逐件 `cmp` HEAD 原件；一文件一提交，域测试 + 冒烟绿）；守门 `scripts/check-lines.sh` | — | ✅ |

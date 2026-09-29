@@ -4250,3 +4250,21 @@
 - 复现：`NODE_PATH=… node scripts/check-luoli.js`（旧文件必 FAIL）。
 - 推广铁律：**无校验的部署链等于没有门**；前端 DSL 进仓即配校验脚本，
   今后推站前先等 Actions（用户令）再看站。
+
+### 4.235 业务层 f32→u8 重解释禁手写 from_raw_parts（2026-09-29，media 轮）
+
+- 症状：`src/builtins/media.rs set_rval_f32` 用
+  `unsafe { std::slice::from_raw_parts(out.as_ptr() as *const u8, out.len() * 4) }`
+  把 `&[f32]` 重解释成 `&[u8]`——业务逻辑层出现 `unsafe`，违反 AGENTS §6
+  （业务层禁 unsafe）与 §0.6（存量只减不增）；注释只有 SAFETY，无 UNSAFE-BOUNDARY 标签。
+- 根因：§6 三问第①问即证伪：`bytemuck` 已在 `Cargo.lock` 内（1.25.2，
+  `image`/`jxl-oxide`/`resvg` 带入），`bytemuck::cast_slice(out)` 是同语义 safe 写法
+  （对齐/长度由类型保证，零拷贝视图）；不愿加依赖时 `to_ne_bytes` 拼 `Vec` 亦可（多一次拷贝）。
+- 修法：直引 `bytemuck = "1"`（零新增传递，见 `docs/dependencies.md` §16-6 跟进），
+  该行改为 `let bytes: &[u8] = bytemuck::cast_slice(out);`，删业务层 `unsafe`；
+  保留的 `TypedArray::<Uint8>::create` 那块 `unsafe` 是 §6 引擎边界（不可去），注释写明。
+- 复现：`rg "from_raw_parts" src/builtins/media.rs` 修前命中 1 处，修后 0 处；
+  `sample/media/basics.js` 解码能量断言照常绿。
+- 推广铁律：**标量切片重解释（f32/u16/i16↔u8）一律走 `bytemuck::cast_slice`，
+  禁手写 `from_raw_parts` + 裸指针强转**；凡在锁内已有的纯 Rust 轮子，直引即零成本，
+  不要为"省一个直接依赖"造业务层 unsafe。

@@ -354,6 +354,10 @@ ml-dsa = "0.1.1"
 # - rav1e：AV1 编码（default-features=false 必关：default 含 git2/nasm/cli；
 #   只开 threading=rayon 纯 Rust；IVF 容器手写，不另引 ivf 轮子）
 # - shiguredo_mp4：MP4 demux+mux（git tag 钉死，Apache-2.0，零依赖 no-std）
+# - bytemuck：f32↔u8 重解释（media.rs set_rval_f32 经 cast_slice，safe；
+#   锁内 1.25.2 已由 image/jxl-oxide/resvg 带入，直引零新增传递；纯 Rust，
+#   见 docs/dependencies.md §16-6 跟进）
+bytemuck = "1"
 symphonia = { version = "0.6", default-features = false, features = ["all-meta", "opt-simd", "aac", "adpcm", "flac", "mp3", "isomp4", "ogg", "pcm", "vorbis", "wav", "mkv", "alac", "aiff", "caf"] }
 rodio = { version = "0.22", default-features = false, features = ["playback"] }
 rav1e = { version = "0.8", default-features = false, features = ["threading"] }

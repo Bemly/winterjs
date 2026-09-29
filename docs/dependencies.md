@@ -703,6 +703,12 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
    暂不推荐。缺口诚实记：Opus 编解码、Vorbis/FLAC/MP3/AAC 编码、H.264/H.265/
    VP9/AV1 完整解码——纯 Rust 目前无轮（要么 C bindings，要么 GPL）。
 
+   跟进（2026-09-29，media 轮去 unsafe）：直引 `bytemuck = "1"`（锁内 1.25.2
+   已由 `image`/`jxl-oxide`/`resvg` 带入，零新增传递；纯 Rust，
+   无 build.rs/links；MIT OR Apache-2.0）。用途唯一：`src/builtins/media.rs`
+   `set_rval_f32` 的 f32→u8 重解释经 `bytemuck::cast_slice`（safe），
+   去掉业务层 `std::slice::from_raw_parts` unsafe（pitfalls 4.235）。
+
 ## 开发工具（不进 Cargo 依赖，2026-09-25）
 
 | 工具 | 版本 | 来源 | 用途 | 拍板 |

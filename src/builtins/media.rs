@@ -164,10 +164,10 @@ fn view_f32(cx: &mut JSContext, v: JSVal, what: &str) -> Option<Vec<f32>> {
 
 fn set_rval_f32(cx: &mut JSContext, frame: &Frame, out: &[f32]) -> bool {
     rooted!(&in(cx) let mut obj: *mut JSObject = std::ptr::null_mut());
-    // SAFETY: realm 内创建 Float32Array；obj 为 rooted 出参（§6 边界）
-    let bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(out.as_ptr() as *const u8, out.len() * 4)
-    };
+    // f32→u8 重解释走 bytemuck::cast_slice（safe：对齐/长度由类型保证，
+    // 零拷贝视图，仅在下方 CreateWith::Slice 拷贝期内借用；业务层无 unsafe）。
+    let bytes: &[u8] = bytemuck::cast_slice(out);
+    // SAFETY: realm 内创建 Uint8Array；obj 为 rooted 出参（§6 引擎边界，TypedArray::create 不可去）。
     let ok = unsafe {
         TypedArray::<Uint8, *mut JSObject>::create(cx, CreateWith::Slice(bytes), obj.handle_mut())
     };

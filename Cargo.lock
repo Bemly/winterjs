@@ -13374,6 +13374,7 @@ dependencies = [
  "blowfish",
  "brotli 9.0.0",
  "brotli-decompressor 6.0.0",
+ "bytemuck",
  "bytes",
  "bytesize",
  "camino",

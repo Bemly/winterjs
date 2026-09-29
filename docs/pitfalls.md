@@ -4372,3 +4372,20 @@
   privateKey.x`（修前恒 false，修后 true）。
 - 推广铁律：**凡"一次调用产一对"的 async 包装，生成器只调一次**；同簇多件同红
   先疑共享上游（本轮另例：jwk 免 type/paramEncoding 翻正，一改带走 6 件）。
+
+### 4.243 全仓机械改名 checklist（2026-09-30，winterjs→winterjs2）
+
+- 症状：改名后构建/测试多处挂——`include_str!` 路径（assets/svg、content 语料目录
+  先搬）、env 前缀裸串（`with_prefix("WINTERJS")` 无下划线被 pattern 漏过）、
+  前缀长度硬编码（`slice(11)` 随 `__wjs_prim:`→`__wjs2_prim:` 变长失效）、
+  fixture 数据被改名（签名向量绑定的消息串）、`CARGO_BIN_EXE_<旧名>`/insta
+  快照名随包名变。
+- 根因：① 改名分多遍跑时 pattern 缺"已改名"守卫会叠加（`__wjs2`→`__wjs22`）；
+  ② `rg` 不支持 lookahead——"零残留"校验必须换写法（字符类），不可信其空输出；
+  ③ 占位符本身含可匹配词会被二次改名。
+- 修法：单遍脚本（ alternation + 全守卫：`__wjs(?!2)` 等）+ 占位符用无意义串；
+  校验用 `rg -e "X([^2]|$)"` 字符类写法；改名前列禁区（上游 vendor/Bun/Deno/MDN
+  语料、历史文档、第三方链接/域名/标准格式名）。
+- 复现：本轮 `__wjs222`/`WinterJS22` 三连击 + `rg` lookahead 静默失败。
+- 推广铁律：**批量改名前先列"禁区 + 守卫 pattern + 校验命令"三件套**；fixture
+  数据与前缀长度常量逐个过目，不进机械替换。

@@ -942,3 +942,15 @@ G1/G2/G3/G9 已收官。）
   dh-classic（无 dh keygen）/keygen.js（4096 debug 慢天花板）/raw-slh
   （需新轮子，§0.5 待批）/pqc-key-objects×2 + sign-verify（priv-only 形态保持，
   material 模型改）/GCM 短 tag 解密/legacy createCipher。
+
+## 2026-09-30 chore(rename)：全仓 winterjs/WinterJS→winterjs2/WinterJS2 + 仓库改名
+
+- 动因：与 wasmerio/winterjs 重名（README 旧注记），改 winterjs2 避让。
+- 范围（用户拍板三条）：logo 双 SVG 改名 + 内文 WinterJS→WinterJS2（svg 格式名不动）；
+  历史文档（pitfalls/journal/plan 存档）不动；域名 winterjs.bemly.moe 不动。
+- 三提交：`0830586` 机械改名（595 文件：包/二进制/JS 全局/`__wjs2_`/`WINTERJS2_`/
+  tracing/语料/样例/站/活文档）+ `1f55941` 四处修复 + 本记账。
+- 改名抓出真 bug 三处：env 前缀裸 `WINTERJS`（pattern 漏下划线）、prim 信封
+  `slice(11)` 未跟前缀变长、c4x 向量消息串误改（fixture 禁改名）。见坑 4.243。
+- 验证：全量 strict 849/849；冒烟 5/5；站 132/132 + 门绿；`gh repo rename`
+  winterjs→winterjs2，remote 已切，RAW_BASE 200，Pages 成功，站 200 且新品牌。

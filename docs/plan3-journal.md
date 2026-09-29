@@ -897,3 +897,18 @@ G1/G2/G3/G9 已收官。）
 - 验证：12 样例 `--run` 行行 true；`check-luoli.js` 8 页全 ok（coffeescript 装
   `~/wjs-data/luoli-mod`，不进仓）；余下同类堆叠行（utils/cover/net/proc/conc/os/ev）
   未动，后续同 pattern 跟进。
+
+## 2026-09-30 docs(site)：全站堆叠行拆独立行 + 独立 sample（用户点名"写到一堆"）
+
+- 范围：web 8 行→24 行、wjs 7 行→35 行（utils/cover/net/proc/conc/os/ev）、core
+  querystring/punycode→2 行；共 132 行/132 锚，中英 id 集合一致、导航双向零缺口。
+  保留别名/变体行（storage/localStorage、fs/WinterJS.fs、`(+/promises)` 系同一事物，
+  非堆叠）。
+- 样例 78→128：每行独立文件（双语头、全离线；tcp/serve/tls 走回环，git 需检出目录，
+  quic 仅接口面）；orphan  lump 文件全 `git rm`（blob-file/streams/compression/events、
+  wstd/basics、wcover/b1-b6、codecs/basics 改名 string-decoder 并瘦身）。
+- 实测钉住两处真偏离（写进 row notes）：`Request.clone` / `Response.json` 不存在；
+  `WinterJS.ffi` 本构建恒 null（`require('bun:')` 不可用）——样例直引 bun:ffi。
+- 样例数 50→128：home/quickstart 中英 + 中英 README 同步（"每个模块一件"）。
+- 验证：新样例 `--run` 行行 true；`check-luoli.js` 8 页 ok；分三批提交推送
+ （`9ce38e6` web / `bbc11bd` wjs / `872b857` core+计数）。

@@ -35,15 +35,30 @@ export function generateKeyPair(type, options, ...rest) {
   if ((type === "rsa" || type === "rsa-pss") && typeof options === "object" && options !== null) {
     __checkRsaKeyOptions(options);
   }
+  // DSA 参数同步预检（同上，见 keygen.js 399 行）。
+  if (type === "dsa" && typeof options === "object" && options !== null) {
+    __checkDsaKeyOptions(options);
+  }
   queueMicrotask(() => {
     try {
-      cb(null, __applyEncoding(__genPairSync(type, options ?? {}), pubEnc, privEnc).publicKey,
-        __applyEncoding(__genPairSync(type, options ?? {}), pubEnc, privEnc).privateKey);
+      // 单次生成再分发编码：公钥私钥必须同对（双调 __genPairSync 即对不上，
+      // x-JWK 错配/RSA 解密失败/DSA 双倍慢超时同源，crypto3 keygen-async 簇）。
+      const out = __applyEncoding(__genPairSync(type, options ?? {}), pubEnc, privEnc);
+      cb(null, out.publicKey, out.privateKey);
     } catch (e) {
       cb(e);
     }
   });
 }
+// promisify 定制（keygen-promisify 套件）：默认 promisify 只取首个成功参，
+// 真机以 { publicKey, privateKey } 双键决议。
+generateKeyPair[Symbol.for("nodejs.util.promisify.custom")] = (type, options, ...rest) =>
+  new Promise((resolve, reject) => {
+    generateKeyPair(type, options, ...rest, (err, publicKey, privateKey) => {
+      if (err) reject(err);
+      else resolve({ publicKey, privateKey });
+    });
+  });
 // DER 编解码（ECDSA der 签名用）
 function __derLen(n) {
   if (n < 128) return new Uint8Array([n]);
@@ -81,7 +96,7 @@ function __derToRawSig(der, size) {
   out.set(norm(kids[1]), size);
   return out;
 }
-function __signCore(alg, data, keyObj, dsaEncoding, saltLength) {
+function __signCore(alg, data, keyObj, dsaEncoding, saltLength, padding) {
   const dataB = __cryptBytes(data, "data");
   const kt = keyObj.__keyType;
   if (kt === "ed448") {
@@ -141,6 +156,7 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength) {
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
+    __checkPssPadding(kt, padding);
     // SHA-1/MD5 走手写 v1.5（digest 0.10 版本面）；SHA-2 走既有 natives
     // 10f crypto六轮：PSS 的 SHA-1 走 sha1_010 底座（MD5 仍不支持，无 0.10 可引）。
     if (hash === "SHA-1" || hash === "MD5") {
@@ -236,7 +252,16 @@ function __osslKeytypeError() {
   err.code = "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE";
   throw err;
 }
-function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
+// rsa-pss 显式非 PSS padding 即非法（keygen-rsa-pss 套件；真机
+// ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE；RSA 键可 PSS padding 不限）。
+function __checkPssPadding(kt, padding) {
+  if (kt === "rsa-pss" && padding !== undefined && padding !== 6) {
+    const err = new Error("error:1C8000A5:Provider routines::illegal or unsupported padding mode");
+    err.code = "ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE";
+    throw err;
+  }
+}
+function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength, padding) {
   const dataB = __cryptBytes(data, "data");
   const sigB = __cryptBytes(sig, "signature");
   const kt = keyObj.__keyType;
@@ -301,6 +326,7 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength) {
   // 公钥派生（私钥亦可验，Node 同款）
   const pubDer = keyObj.__kind === "private" ? __derivePublic(keyObj).__material : keyObj.__material;
   if (kt === "rsa" || kt === "rsa-pss") {
+    __checkPssPadding(kt, padding);
     // 10f crypto二轮：签名长短 != 钥长即 false，不抛（空签名套件点名）。
     const det = __rsaDetailsFromMaterial("public", pubDer);
     if (det !== null && sigB.length !== det.modulusLength / 8) return false;
@@ -391,7 +417,7 @@ export function sign(alg, data, key, callback) {
   }
   const k = __keyArg(key, "key");
   const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key)) ? key : {};
-  const out = __signCore(alg, data, k, opts.dsaEncoding, opts.saltLength);
+  const out = __signCore(alg, data, k, opts.dsaEncoding, opts.saltLength, opts.padding);
   return Buffer.from(out);
 }
 export function verify(alg, data, key, signature, callback) {
@@ -405,7 +431,7 @@ export function verify(alg, data, key, signature, callback) {
   }
   const k = __keyArg(key, "key");
   const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key)) ? key : {};
-  return __verifyCore(alg, data, k, signature, opts.dsaEncoding, opts.saltLength);
+  return __verifyCore(alg, data, k, signature, opts.dsaEncoding, opts.saltLength, opts.padding);
 }
 class SignImpl {
   constructor(alg, options) {
@@ -438,11 +464,11 @@ class SignImpl {
     const flat = __joinParts(this.__parts);
     if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key) && !ArrayBuffer.isView(key)) {
       const k = __keyArg(key, "key");
-      const out = __signCore(this.__alg, flat, k, key.dsaEncoding ?? dsaEncoding, key.saltLength ?? saltLength);
+      const out = __signCore(this.__alg, flat, k, key.dsaEncoding ?? dsaEncoding, key.saltLength ?? saltLength, key.padding);
       const buf = Buffer.from(out);
       return outputEncoding === undefined ? buf : buf.toString(outputEncoding);
     }
-    const out = __signCore(this.__alg, flat, __keyArg(key, "key"), dsaEncoding, saltLength);
+    const out = __signCore(this.__alg, flat, __keyArg(key, "key"), dsaEncoding, saltLength, undefined);
     const buf = Buffer.from(out);
     return outputEncoding === undefined ? buf : buf.toString(outputEncoding);
   }
@@ -478,9 +504,9 @@ class VerifyImpl {
     const sigB = signatureEncoding !== undefined ? Buffer.from(String(signature), signatureEncoding) : signature;
     if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key) && !ArrayBuffer.isView(key)) {
       const k = __keyArg(key, "key");
-      return __verifyCore(this.__alg, flat, k, sigB, key.dsaEncoding ?? dsaEncoding, key.saltLength ?? saltLength);
+      return __verifyCore(this.__alg, flat, k, sigB, key.dsaEncoding ?? dsaEncoding, key.saltLength ?? saltLength, key.padding);
     }
-    return __verifyCore(this.__alg, flat, __keyArg(key, "key"), sigB, dsaEncoding, saltLength);
+    return __verifyCore(this.__alg, flat, __keyArg(key, "key"), sigB, dsaEncoding, saltLength, undefined);
   }
 }
 export function createSign(alg, options) { return new SignImpl(alg, options); }
@@ -594,6 +620,8 @@ function __rsaCrypt(key, data, isPublic, isEncrypt) {
   let k = __keyArg(key, "key");
   // 10f crypto二轮：public 方向遇私钥即派生公钥（`publicEncrypt(privPem)` 真机口径）。
   if (isPublic && k.type === "private") k = __derivePublic(k);
+  // rsa-pss 禁加解密（keygen-rsa-pss 套件：'operation not supported for this keytype'）。
+  if (k.__keyType === "rsa-pss") __osslKeytypeError();
   const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key)) ? key : {};
   // 10f crypto二轮：默认 padding 按方向（加解密 OAEP=4；签式 v1.5=1，真机口径）。
   const padding = opts.padding ?? (isEncrypt === isPublic ? 4 : 1);

@@ -294,9 +294,10 @@ function __pemPassBytes(pass) {
   throw err;
 }
 function __pemMissingPassphrase() {
-  // 缺口令：openssl 3.x 原文（本仓报 3.x 版；1.x 的 ERR_MISSING_PASSPHRASE 见 plan3 记档）。
+  // 缺口令（传统 PEM 路径）：openssl 3.x 口径 INTERRUPTED（empty-passphrase
+  // 套件钉住；DER/PBES2 路径走 MISSING_PASSPHRASE，见 __sniffPbes2 门）。
   const err = new Error("error:07880109:common libcrypto routines::interrupted or cancelled");
-  err.code = "ERR_MISSING_PASSPHRASE";
+  err.code = "ERR_OSSL_CRYPTO_INTERRUPTED_OR_CANCELLED";
   throw err;
 }
 function __pemBadDecrypt() {

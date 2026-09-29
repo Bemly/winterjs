@@ -26,11 +26,17 @@ pub unsafe extern "C" fn ec_generate(
         return false;
     };
     // 极小概率越界（随机标量 ≥ 阶）即重试，而非报错。
+    // P-521 阶 521 位而标量 66 字节（528 位）：不掩码则单次越界概率 99.2%，
+    // 8 次重试必挂——顶字节只留 1 位（真机逐字节口径外，纯概率修正）。
+    let mask_top = curve.as_str() == "P-521";
     for _ in 0..8 {
         let mut raw = vec![0u8; size];
         if getrandom::fill(&mut raw).is_err() {
             report_error(&mut cx, "OperationError: cannot get random values");
             return false;
+        }
+        if (mask_top) {
+            raw[0] &= 0x01;
         }
         let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {
             use K::elliptic_curve::pkcs8::EncodePrivateKey as _;

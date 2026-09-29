@@ -117,7 +117,7 @@ setTimeout(() => console.log("r2-done"), 20);
     assert!(out.contains("r2-privpriv ERR_INVALID_ARG_TYPE"), "out: {out}");
     assert!(out.contains("r2-enchdr true"), "out: {out}");
     assert!(out.contains("r2-encrt true"), "out: {out}");
-    assert!(out.contains("r2-nopass ERR_MISSING_PASSPHRASE"), "out: {out}");
+    assert!(out.contains("r2-nopass ERR_OSSL_CRYPTO_INTERRUPTED_OR_CANCELLED"), "out: {out}");
     assert!(out.contains("r2-badpass ERR_OSSL_BAD_DECRYPT"), "out: {out}");
     assert!(out.contains("r2-mgf1 true"), "out: {out}");
     assert!(out.contains("r2-mgf1bad ERR_INVALID_ARG_TYPE"), "out: {out}");

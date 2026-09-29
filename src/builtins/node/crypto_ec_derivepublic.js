@@ -70,11 +70,16 @@ function __inspectRecv(v) {
   }
   return String(v);
 }
-// `common.invalidArgTypeHelper` 形（真机 26.8.2 实测）。
+// `common.invalidArgTypeHelper` 形（真机 26.8.2 实测；keygen.js 302/399 行钉住
+// `{}` → 'an instance of Object'，非 JSON 形）。
 function __argTypeHelper(v) {
   if (v === null || v === undefined) return ` Received ${String(v)}`;
   if (Array.isArray(v)) return " Received an instance of Array";
-  if (typeof v === "object") return ` Received ${__inspectRecv(v)}`;
+  if (typeof v === "object") {
+    const cn = v.constructor !== undefined && v.constructor !== null ? v.constructor.name : undefined;
+    if (typeof cn === "string" && cn) return ` Received an instance of ${cn}`;
+    return ` Received ${__inspectRecv(v)}`;
+  }
   return ` Received type ${typeof v} (${__inspectRecv(v)})`;
 }
 function __checkKeyEncoding(prop, enc, typeSet) {
@@ -89,19 +94,41 @@ function __checkKeyEncoding(prop, enc, typeSet) {
     err.code = "ERR_INVALID_ARG_VALUE";
     throw err;
   }
-  if (typeof enc.type !== "string" || (typeSet && !typeSet.has(enc.type))) {
-    const err = new TypeError(`The property '${prop}.type' is invalid. Received ${__inspectRecv(enc.type)}`);
-    err.code = "ERR_INVALID_ARG_VALUE";
-    throw err;
-  }
   if (typeof enc.format !== "string" || !__KEY_FORMATS.has(enc.format)) {
     const err = new TypeError(`The property '${prop}.format' is invalid. Received ${__inspectRecv(enc.format)}`);
     err.code = "ERR_INVALID_ARG_VALUE";
     throw err;
   }
+  // node 口径 raw 系（keygen-raw 套件）：raw-public 的 type 仅缺省/uncompressed/
+  // compressed，raw-private/raw-seed 不得带 type。
+  if (enc.format === "raw-public") {
+    if (enc.type !== undefined && enc.type !== "uncompressed" && enc.type !== "compressed") {
+      const err = new TypeError(`The property '${prop}.type' is invalid. Received ${__inspectRecv(enc.type)}`);
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    return;
+  }
+  if (enc.format === "raw-private" || enc.format === "raw-seed") {
+    if (enc.type !== undefined) {
+      const err = new TypeError(`The property '${prop}.type' is invalid. Received ${__inspectRecv(enc.type)}`);
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
+    }
+    return;
+  }
+  // node 口径（lib/internal/crypto/keys.js parseKeyFormatAndType）：输出编码的
+  // type 仅 jwk 可缺（isRequired=false；crypto3 keygen-jwk 簇 6 件）；坏 type
+  // 照抛；format 先验（双坏即格式错）。
+  if (enc.type === undefined && enc.format === "jwk") return;
+  if (typeof enc.type !== "string" || (typeSet && !typeSet.has(enc.type))) {
+    const err = new TypeError(`The property '${prop}.type' is invalid. Received ${__inspectRecv(enc.type)}`);
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
 }
 // keypair 编码取值表（真机 26.8.2 实测；表外 key 类型只检形状，值交 export 判定）。
-const __KEY_FORMATS = new Set(["pem", "der", "jwk"]);
+const __KEY_FORMATS = new Set(["pem", "der", "jwk", "raw-public", "raw-private", "raw-seed"]);
 const __KEY_ENC_TYPES = {
   rsa: { pub: new Set(["spki", "pkcs1"]), priv: new Set(["pkcs1", "pkcs8"]) },
   "rsa-pss": { pub: new Set(["spki"]), priv: new Set(["pkcs8"]) },
@@ -196,6 +223,50 @@ function __checkRsaKeyOptions(options) {
   }
   return { bits, e: Number(e) };
 }
+// DSA 参数校验（真机 keygen.js 口径：modulusLength 必为 uint32 无缺省；
+// divisorLength 缺省 -1（按 modulus 取），显式值走 int32 ≥ 0）。
+function __checkDsaKeyOptions(options) {
+  const bits = options.modulusLength;
+  if (typeof bits !== "number") {
+    const err = new TypeError(
+      `The "options.modulusLength" property must be of type number.${__argTypeHelper(bits)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (!Number.isInteger(bits)) {
+    const err = new RangeError(
+      `The value of "options.modulusLength" is out of range. It must be an integer. Received ${__inspectRecv(bits)}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  if (bits < 0 || bits > 4294967295) {
+    const err = new RangeError(
+      `The value of "options.modulusLength" is out of range. It must be >= 0 && <= 4294967295. Received ${bits}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  let div = options.divisorLength;
+  if (div === undefined || div === null) return { bits, div: -1 };
+  if (typeof div !== "number") {
+    const err = new TypeError(
+      `The "options.divisorLength" property must be of type number.${__argTypeHelper(div)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (!Number.isInteger(div)) {
+    const err = new RangeError(
+      `The value of "options.divisorLength" is out of range. It must be an integer. Received ${__inspectRecv(div)}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  if (div < 0 || div > 2147483647) {
+    const err = new RangeError(
+      `The value of "options.divisorLength" is out of range. It must be >= 0 && <= 2147483647. Received ${div}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  return { bits, div };
+}
 function __genPairSync(type, options) {
   options = options ?? {};
   __checkKeyPairHead(type, options);
@@ -210,23 +281,53 @@ function __genPairSync(type, options) {
     priv.__detail = { modulusLength: bits, publicExponent: e };
     pub.__detail = { modulusLength: bits, publicExponent: e };
     if (type === "rsa-pss") {
+      // rsa-pss 约束面（keygen-rsa-pss 套件 deepStrictEqual 口径）：存 node
+      // 选项原名（缺省即不存，getter 跳 undefined；旧 `hash` 键无读者，保留）。
+      // rfc8017-a-2-3 口径：saltLength 缺省取摘要长（sha512→64），mgf1 缺省跟 hash。
+      const __pssDigLen = { "sha1": 20, "sha224": 28, "sha256": 32, "sha384": 48, "sha512": 64 };
       priv.__detail.hash = options.hash ?? "sha256";
       priv.__detail.saltLength = options.saltLength;
+      if (options.hashAlgorithm !== undefined) priv.__detail.hashAlgorithm = options.hashAlgorithm;
+      if (options.mgf1HashAlgorithm !== undefined) priv.__detail.mgf1HashAlgorithm = options.mgf1HashAlgorithm;
+      else if (options.hashAlgorithm !== undefined) priv.__detail.mgf1HashAlgorithm = options.hashAlgorithm;
+      if (options.saltLength === undefined) {
+        const __hl = priv.__detail.hashAlgorithm ?? priv.__detail.mgf1HashAlgorithm;
+        const __dl = __hl !== undefined ? __pssDigLen[String(__hl).toLowerCase()] : undefined;
+        if (__dl !== undefined) priv.__detail.saltLength = __dl;
+      }
       pub.__detail.hash = priv.__detail.hash;
       pub.__detail.saltLength = priv.__detail.saltLength;
+      pub.__detail.hashAlgorithm = priv.__detail.hashAlgorithm;
+      pub.__detail.mgf1HashAlgorithm = priv.__detail.mgf1HashAlgorithm;
     }
     return { privateKey: priv, publicKey: pub };
   }
   if (type === "ec") {
-    // 真机口径：paramEncoding 仅收 der/pem（缺省 der；其余同步抛）。
-    const pe = options.paramEncoding ?? "der";
-    if (pe !== "der" && pe !== "pem") {
+    // 真机口径（lib/internal/crypto/keygen.js）：paramEncoding 仅收
+    // undefined/null/'named'/'explicit'（旧 der/pem 系误读，无套件覆盖，
+    // 按 4.65 翻转；'otherEncoding' 照抛）。
+    const pe = options.paramEncoding;
+    if (pe !== undefined && pe !== null && pe !== "named" && pe !== "explicit") {
       const err = new TypeError(
         `The property 'options.paramEncoding' is invalid. Received '${pe}'`);
       err.code = "ERR_INVALID_ARG_VALUE";
       throw err;
     }
-    const curve = __normCurve(options.namedCurve);
+    // node 口径（keygen-invalid-parameter-encoding-ec 套件）：未知曲线 + jwk
+    // 编码即 ERR_CRYPTO_JWK_UNSUPPORTED_CURVE（plain Error），非 jwk 仍走
+    // INVALID_CURVE（本机底座造不出该曲线）。
+    let curve = null;
+    try {
+      curve = __normCurve(options.namedCurve);
+    } catch {
+      const isJwkEnc = (e) => e !== undefined && e !== null && typeof e === "object" && e.format === "jwk";
+      if (isJwkEnc(options.publicKeyEncoding) || isJwkEnc(options.privateKeyEncoding)) {
+        const err = new Error(`Unsupported JWK EC curve: ${options.namedCurve}.`);
+        err.code = "ERR_CRYPTO_JWK_UNSUPPORTED_CURVE";
+        throw err;
+      }
+      throw __badEcCurve();
+    }
     if (curve === "Ed25519" || curve === "X25519") {
       // 10f crypto六轮：真机口径（`generateKeyPair('ec',{namedCurve:'ed25519'})`
       // 即 INVALID_CURVE；旧指引文案退役）。
@@ -250,10 +351,12 @@ function __genPairSync(type, options) {
     };
   }
   if (type === "dsa") {
-    // Node 缺省：divisorLength 按 modulus 取（1024→160，其余→256；2048/224 须显式）。
-    let modulusLength = options.modulusLength ?? 2048;
-    let divisorLength = options.divisorLength;
-    if (divisorLength === undefined) divisorLength = modulusLength === 1024 ? 160 : 256;
+    // Node 口径：modulusLength 必给无缺省（keygen.js 399 行），divisorLength
+    // 缺省 -1 即按 modulus 取（1024→160，其余→256；2048/224 须显式）。
+    const { bits: modulusLength, div } = __checkDsaKeyOptions(options);
+    let divisorLength = div === -1
+      ? (modulusLength === 1024 ? 160 : 256)
+      : div;
     const env = JSON.parse(__cryptCall(() => __wjs_dsa_generate(modulusLength, divisorLength)));
     const priv = new PrivateKeyObject("private", "dsa", Buffer.from(JSON.stringify(env)));
     priv.__detail = { modulusLength, divisorLength };

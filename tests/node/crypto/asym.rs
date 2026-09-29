@@ -93,7 +93,7 @@ fn phase9e_crypto_asym_errors() {
 import { generateKeyPairSync, checkPrimeSync, generatePrimeSync, createECDH, createDiffieHellman, createDiffieHellmanGroup, sign } from "node:crypto";
 console.log("prime", checkPrimeSync(13n) === true && checkPrimeSync(15n) === false);
 console.log("primebuf", checkPrimeSync(Buffer.from([13])) === true);
-try { generateKeyPairSync("dsa", {}); console.log("dsa", true); } catch (e) { console.log("dsa", false); }
+try { generateKeyPairSync("dsa", {}); console.log("dsa", false); } catch (e) { console.log("dsa", e.code === "ERR_INVALID_ARG_TYPE"); }
 try { createECDH("secp256k1"); console.log("k1", true); } catch (e) { console.log("k1", false); }
 // 10f crypto二轮翻转（真机口径）：modp1 已支持（768B 素数），旧拒绝系伪语义。
 console.log("modp1", createDiffieHellmanGroup("modp1").getPrime("buffer").length === 96);

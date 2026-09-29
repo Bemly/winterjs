@@ -145,19 +145,27 @@ function __exportJwk(kobj) {
   }
   if (typeof kobj.__keyType === "string" && (kobj.__keyType.startsWith("ml-kem-") || kobj.__keyType.startsWith("ml-dsa-"))) {
     // 9i-4/9i-6 真机口径：kty "AKP"，alg 参数集名，pub=裸公钥 / priv=种子（均 b64url）。
+    // 公钥料从 SPKI BIT STRING 取；私钥料是种子形 PKCS#8，pub 经种子展开派生
+    //（直接按 SPKI 切会切到 OID 上，pqc-keygen-ml-dsa 套件 `10 !== 1312` 现形）。
     const isKem = kobj.__keyType.startsWith("ml-kem-");
     const num = kobj.__keyType.split("-")[2];
     const alg = isKem ? "ML-KEM-" + num : "ML-DSA-" + num;
-    const top = __derRead(kobj.__material, 0);
-    const kids = __derChildren(top.body);
-    const raw = kids[1].body.subarray(1);
-    const jwk = { kty: "AKP", alg, pub: b64u(raw) };
+    const set = __ML_SETS[kobj.__keyType];
+    let pubBytes, seedB64 = null;
     if (isPriv) {
       const parts = JSON.parse(__cryptCall(() => (isKem
         ? __wjs_mlkem_seed_from_pkcs8(kobj.__material)
         : __wjs_mldsa_seed_from_pkcs8(kobj.__material))));
-      jwk.priv = b64u(__b64dec(parts.seed));
+      const spki = Buffer.from(parts.spki, "base64");
+      pubBytes = spki.subarray(spki.length - set[2]);
+      seedB64 = parts.seed;
+    } else {
+      const top = __derRead(kobj.__material, 0);
+      const kids = __derChildren(top.body);
+      pubBytes = kids[1].body.subarray(1);
     }
+    const jwk = { kty: "AKP", alg, pub: b64u(pubBytes) };
+    if (isPriv) jwk.priv = b64u(__b64dec(seedB64));
     return jwk;
   }
   const err = new Error("JWK export not supported for this key type");
@@ -724,6 +732,13 @@ function __parseKeyMaterial(key, format, type, want, options) {
     // PBES2 DER 先解密（显式 pkcs8 + 口令 + 加密体嗅探；PEM 侧由标签触发见上）。
     if (options?.passphrase !== undefined && __sniffPbes2(der)) {
       der = __pbes2Decrypt(der, options);
+    }
+    // node 口径（keygen-async-dsa 套件）：加密体无口令即 MISSING_PASSPHRASE
+    //（'Passphrase required for encrypted key'），不进常 pkcs8 试解链。
+    if (options?.passphrase === undefined && __sniffPbes2(der)) {
+      const err = new TypeError("Passphrase required for encrypted key");
+      err.code = "ERR_MISSING_PASSPHRASE";
+      throw err;
     }
     // 以 RSA/EC/OKP 逐一试解（DER 自描述不足，顺序即优先级；失败信息统一）
     const tries = [

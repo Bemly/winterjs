@@ -9,3 +9,6 @@ const req = new Request('https://example.com/api?q=1', {
 console.log('[request] method/url/header:', req.method === 'POST' && req.url === 'https://example.com/api?q=1' && req.headers.get('x-a') === '1');
 console.log('[request] body:', await req.text() === 'payload');
 console.log('[request] headers-iter:', [...req.headers.keys()].join(',') === 'content-type,x-a');
+const q2 = new Request('https://example.com/api', { method: 'POST', body: 'payload' });
+const qc = q2.clone();
+console.log('[request] clone:', qc.url === q2.url && qc.method === 'POST' && await qc.text() === 'payload' && await q2.text() === 'payload');

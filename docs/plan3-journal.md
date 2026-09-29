@@ -848,3 +848,14 @@ G1/G2/G3/G9 已收官。）
   domain 异步、`keep-alive-timeout-race`=Atomics.wait、`set-timeout-server`/
   `catch-uncaughtexception`/`client-parse-error`/`writable-true-after-close`/
   `client-timeout-on-connect`=挂死型），不再开轮。
+
+## 2026-09-30 P2-crypto R2：argon2 越界簇转绿（44→45/120）
+
+- 根因：async 参数校验丢进 microtask（4.236 同族）+ `passes` 下限 0（真机 1）+
+  缺参错码（NaN 偷渡）+ nonce/算法文案分码与真机不合（逐项见坑 4.239）。
+- 修法：`crypto_kdf.js __argon2Args`（下限/缺参门/文案/算法分码）+ `argon2()`
+  先同步全校验再验回调排队（顺序先参数后回调）。
+- 验证：`run1.sh test-crypto-argon2.js` 0；crypto 域 nextest 62/62 strict；
+  冒烟 5/5；行数守门 ok。
+- 全量 strict 附记：P3 后首跑 846 passed + `phase9e_crypto_asym_errors` 1 超时；
+  单跑该件 2.2s 绿，判负载 flake（非本轮回归），下轮收尾重跑确认。

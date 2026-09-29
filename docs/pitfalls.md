@@ -4309,3 +4309,20 @@
 - 复现：`probe/fin.mjs`（`finish→FIN→close` 修前，`finish→close→FIN` 修后，与真机同序）。
 - 推广铁律：**凡 `extends Writable` 的 node 消息类，构造期先对 `lib/` 原文品牌字段**；
   `finished` 时序红先查 `willEmitClose`（`_closed` 四件套 + `_sent100`），不先调时序。
+
+### 4.239 argon2 的 async 校验必须同步抛 + 缺参/文案逐字对（2026-09-30，P2-crypto）
+
+- 症状：`test-crypto-argon2` 首败 `Missing expected exception`（9 条坏向量同步全抛，
+  异步坏参却进回调不抛）；修后连环三败（缺参错码/文案/算法缺参错码）。
+- 根因三合一：① async 把参数校验丢进 microtask（与 4.236 同族：真机校验同步抛，
+  生成才排队）；② `Number(undefined)=NaN` 致缺参落区间门（OUT_OF_RANGE），真机为
+  INVALID_ARG_TYPE；③ `passes` 下限手写 0（真机 ≥1）+ nonce 短文案自造 +
+  算法缺参/错值不分码（真机缺参 INVALID_ARG_TYPE、错值 INVALID_ARG_VALUE）。
+- 修法：JS 层 `passes` 改 1 起；`intArg` 首检 `undefined` 即 INVALID_ARG_TYPE；
+  `nonce` 文案改 `The value of "parameters.nonce.byteLength" is out of range…`；
+  算法分两支（非 string 即 TYPE、错值即 VALUE）；async 先同步跑全套
+  `__argon2Args` 再验回调（顺序先参数后回调，真机坏参+无回调即 OUT_OF_RANGE）。
+- 复现：`probe/argon2async.mjs`（修前 async 坏参 NO-THROW，修后与真机同码）；
+  全坏向量 `argon2bad2.mjs` 双侧 9/9 同码；`run1.sh test-crypto-argon2.js` 0。
+- 推广铁律：**KDF/密钥系 async 包装先问"校验在哪"（4.236）；区间门前先拦
+  `undefined`（NaN 会偷渡错码）；文案/分码一律真机逐项实测，不凭记忆拼**。

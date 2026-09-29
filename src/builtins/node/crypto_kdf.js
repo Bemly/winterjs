@@ -182,7 +182,12 @@ export function hkdf(hash, ikm, salt, info, keylen, callback) {
   });
 }
 function __argon2Args(algorithm, parameters) {
-  if (typeof algorithm !== "string" || !["argon2d", "argon2i", "argon2id"].includes(algorithm)) {
+  if (typeof algorithm !== "string") {
+    const err = new TypeError(`The "algorithm" argument must be of type string. Received ${algorithm}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (!["argon2d", "argon2i", "argon2id"].includes(algorithm)) {
     const err = new TypeError(`The argument 'algorithm' must be one of: 'argon2d', 'argon2i', 'argon2id'. Received '${algorithm}'`);
     err.code = "ERR_INVALID_ARG_VALUE";
     throw err;
@@ -203,11 +208,18 @@ function __argon2Args(algorithm, parameters) {
   const message = needView(parameters.message, "message");
   const nonce = needView(parameters.nonce, "nonce");
   if (nonce.length < 8) {
-    const err = new RangeError("parameters.nonce must have byteLength >= 8");
+    const err = new RangeError(`The value of "parameters.nonce.byteLength" is out of range. It must be >= 8 && <= 4294967295. Received ${nonce.length}`);
     err.code = "ERR_OUT_OF_RANGE";
     throw err;
   }
   const intArg = (v, name, min, max) => {
+    // node 口径：缺参（undefined）即 ERR_INVALID_ARG_TYPE（argon2 套件删键轮），
+    // 非法值才 ERR_OUT_OF_RANGE——Number(undefined)=NaN 直落区间门即错码。
+    if (v === undefined) {
+      const err = new TypeError(`The "parameters.${name}" property must be of type number.`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
     const n = Number(v);
     if (!Number.isInteger(n) || n < min || n > max) {
       const err = new RangeError(`The value of "parameters.${name}" is out of range. It must be >= ${min} && <= ${max}.`);
@@ -219,7 +231,7 @@ function __argon2Args(algorithm, parameters) {
   const parallelism = intArg(parameters.parallelism, "parallelism", 1, 16777215);
   const tagLength = intArg(parameters.tagLength, "tagLength", 4, 4294967295);
   const memory = intArg(parameters.memory, "memory", 8 * parallelism, 4294967295);
-  const passes = intArg(parameters.passes, "passes", 0, 4294967295);
+  const passes = intArg(parameters.passes, "passes", 1, 4294967295);
   const secret = parameters.secret === undefined ? new Uint8Array(0) : needView(parameters.secret, "secret");
   const ad = parameters.associatedData === undefined ? new Uint8Array(0) : needView(parameters.associatedData, "associatedData");
   return [algorithm, message, nonce, secret, ad, parallelism, tagLength, memory, passes];
@@ -230,6 +242,9 @@ export function argon2Sync(algorithm, parameters) {
   return Buffer.from(out);
 }
 export function argon2(algorithm, parameters, callback) {
+  // node 口径 + 4.236：参数校验一律同步抛（含算法/参数门），microtask 只留 KDF 体力活；
+  // 校验顺序先参数后回调（真机坏参+无回调即 OUT_OF_RANGE，非回调错）。
+  const a = __argon2Args(algorithm, parameters);
   if (typeof callback !== "function") {
     const err = new TypeError("argon2 requires a callback for async form");
     err.code = "ERR_INVALID_ARG_TYPE";
@@ -237,7 +252,8 @@ export function argon2(algorithm, parameters, callback) {
   }
   queueMicrotask(() => {
     try {
-      callback(null, argon2Sync(algorithm, parameters));
+      const out = __cryptCall(() => __wjs_kdf_argon2(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]));
+      callback(null, Buffer.from(out));
     } catch (e) {
       callback(e);
     }

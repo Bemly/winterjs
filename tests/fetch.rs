@@ -357,3 +357,45 @@ fn serve_split() -> u16 {
     });
     port
 }
+
+#[test]
+fn phase11_response_json_faces() {
+    // 正常：缺省 200+json 头/体；init 改状态+自带 content-type 优先。
+    // 报错：undefined/函数/BigInt 即 TypeError 同文案；坏 status 走 RangeError。
+    // 边界：null data 体 "null"；null init 视作 {}。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        r#"const r = Response.json({a:1}); console.log(r.status, r.headers.get("content-type"), await r.text());
+const r2 = Response.json({a:1}, {status: 201, headers: {"content-type": "text/plain"}});
+console.log(r2.status, r2.headers.get("content-type"), await r2.text());
+console.log(await Response.json(null).text(), Response.json({a:1}, null).status);
+for (const v of [undefined, () => {}, 1n]) { try { Response.json(v); console.log("NO-THROW"); } catch (e) { console.log(e.constructor.name, e.message); } }
+try { Response.json({a:1}, {status: 99}); console.log("NO-THROW"); } catch (e) { console.log(e.constructor.name); }"#]));
+    assert_eq!(
+        out,
+        "200 application/json {\"a\":1}\n201 text/plain {\"a\":1}\nnull 200\nTypeError Value is not JSON serializable\nTypeError Value is not JSON serializable\nTypeError Value is not JSON serializable\nRangeError\n",
+        "response.json faces: {out}"
+    );
+}
+
+#[test]
+fn phase11_request_clone_faces() {
+    // 正常：url/方法/头拷贝双可读；signal 永 fresh（无信号不 abort，有信号跟随）。
+    // 报错：bodyUsed 后 clone 即 TypeError。边界：GET 无体 clone。
+    let out = stdout_of(&mut winterjs().args(["--eval",
+        r#"const q = new Request("https://ex.com/", {method: "POST", headers: {"x-a": "1"}, body: "payload"});
+const c = q.clone();
+console.log(c.url === q.url, c.method, c.headers.get("x-a"), await c.text(), await q.text());
+c.headers.set("x-a", "2"); console.log(q.headers.get("x-a"));
+console.log(q.signal !== c.signal, c.signal.aborted);
+const ac = new AbortController();
+const q2 = new Request("https://ex.com/", {method: "POST", body: "y", signal: ac.signal});
+const c2 = q2.clone(); ac.abort("stop");
+console.log(q2.signal !== c2.signal, c2.signal.aborted, c2.signal.reason);
+try { q.clone(); console.log("NO-THROW"); } catch (e) { console.log(e.constructor.name); }
+const g = new Request("https://ex.com/"); console.log(g.clone().method, await g.clone().text() === "");"#]));
+    assert_eq!(
+        out,
+        "true POST 1 payload payload\n1\ntrue false\ntrue true stop\nTypeError\nGET true\n",
+        "request.clone faces: {out}"
+    );
+}

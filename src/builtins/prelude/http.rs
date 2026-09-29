@@ -241,6 +241,24 @@ globalThis.Response = class Response {
     h.set("location", String(url));
     return new Response(null, { status, headers: h });
   }
+  // Response.json(data, init)：body 为 JSON 串，缺省 content-type 且 init 未给
+  // 即补 application/json（真机 26.8.2 实测：init 显式 content-type 优先；
+  // undefined/函数/不可序列化即 TypeError "Value is not JSON serializable"，
+  // 用户 toJSON 抛错亦吞为该错；坏 status 走构造器 RangeError）。
+  static json(data, init) {
+    let text;
+    try {
+      text = JSON.stringify(data);
+    } catch {
+      throw new TypeError("Value is not JSON serializable");
+    }
+    if (text === undefined) throw new TypeError("Value is not JSON serializable");
+    if (init === undefined || init === null) init = {};
+    const headers = new Headers();
+    __wjs_fillHeaders(headers, init.headers);
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
+    return new Response(text, { ...init, headers });
+  }
 };
 const __wjs_reqState = new WeakMap();
 function __wjs_takeReqBody(req) {
@@ -336,6 +354,41 @@ globalThis.Request = class Request {
     const st = __wjs_reqState.get(this);
     if (st.bodyUsed) return null;
     return __wjs_reqStream(this);
+  }
+  // clone()：url/方法/头（拷贝）/信号（fresh follower）/体（tee）全复制。
+  // 真机 26.8.2 实测口径：bodyUsed 即 TypeError；clone().signal 永不 === 原
+  // signal（无信号即 fresh 未 abort，有信号即跟随 abort）；快照体直接切片，
+  // 流体（serve 请求）走源流 tee（已锁即抛原生错）。
+  clone() {
+    const st = __wjs_reqState.get(this);
+    if (st.bodyUsed) throw new TypeError("Request.clone: body already used");
+    let signal;
+    if (st.signal !== null && st.signal !== undefined) {
+      const c = new AbortController();
+      signal = c.signal;
+      const src = st.signal;
+      if (src.aborted) {
+        try { c.abort(src.reason); } catch {}
+      } else {
+        src.addEventListener("abort", () => { try { c.abort(src.reason); } catch {} }, { once: true });
+      }
+    } else {
+      signal = new AbortController().signal;
+    }
+    const headers = new Headers();
+    for (const [k, v] of st.headers) headers.append(k, v);
+    const out = new Request(st.url, { method: st.method, headers, signal });
+    const ost = __wjs_reqState.get(out);
+    if (st.streamId !== null && st.streamId !== undefined) {
+      const [b1, b2] = __wjs_reqStream(this).tee();
+      st.reqStream = b1;
+      ost.streamId = st.streamId;
+      ost.serveId = st.serveId;
+      ost.reqStream = b2;
+    } else {
+      ost.bodyU8 = st.bodyU8 ? st.bodyU8.slice() : null;
+    }
+    return out;
   }
   async text() { return new TextDecoder().decode(await __wjs_reqStreamBytes(this, "Request.text")); }
   async json() { return JSON.parse(await this.text()); }

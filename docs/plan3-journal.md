@@ -829,3 +829,22 @@ G1/G2/G3/G9 已收官。）
   **单件 4096 keygen debug 下 53s，sweep 天花板**，全绿需 release 探或分片）；
   GCM 短 tag 解密验签（native，對称 CTR+GHASH 手工）；argon2 越界；
   pqc 错口令；enc-validation legacy createCipher。
+
+## 2026-09-30 P3-http 冻结收口 R1：matchKnownFields + outgoing-finished 转绿
+
+- `matchKnownFields`：base15 DIFF（`content-encoding:test` vs `test, value`）—
+  单例表多收 `content-encoding`/`x-forwarded-host`（返回 `\u0000…` 系可合并，
+  单例仅 18 项无前缀）。删两项 + 注释列来源；`probe/dup.mjs` 双侧同串
+  （`content-encoding:gzip, br` / `x-forwarded-host:a, b` / `authorization:1` 首个赢）；
+  `run1.sh` 0（node 0），坑 4.237。
+- `outgoing-finished`：base15 DIFF（`closed` false）—`ServerResponse` 缺 OM 品牌
+  五项致 `willEmitClose=false`，`finished` 跑在 `close` 前。构造期补
+  `_closed/_defaultKeepAlive/_removedConnection/_removedContLen/_sent100`
+  （+ `writeContinue` 置位）；`probe/fin.mjs` 修后 `finish→close→FIN` 与真机同序；
+  `run1.sh` 0，坑 4.238。
+- `1.0-keep-alive`：`run1.sh` 0（base15 即绿，复验确认）。
+- 验证：http 相关 nextest 52/52 strict + 冒烟 5/5 + 行数守门 ok。
+- P3 余件按原定性记档（`reuse-drained`=process.report、`client-response-domain`=
+  domain 异步、`keep-alive-timeout-race`=Atomics.wait、`set-timeout-server`/
+  `catch-uncaughtexception`/`client-parse-error`/`writable-true-after-close`/
+  `client-timeout-on-connect`=挂死型），不再开轮。

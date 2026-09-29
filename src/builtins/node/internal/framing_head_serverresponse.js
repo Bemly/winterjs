@@ -73,6 +73,14 @@ export class ServerResponse extends Writable {
     this.__onDone = null;
     // node 口径 finished（finish-writable 套件 end 后同步真）。
     this.finished = false;
+    // node 口径 OM/SR 品牌位（lib/_http_outgoing.js 129行 + _http_server.js 214行）：
+    // isOutgoingMessage/willEmitClose 判定 + finished 等 close 语义（outgoing-finished
+    // 套件：缺此四项即 willEmitClose=false，finished 回调跑在 close 前，真机反之）。
+    this._closed = false;
+    this._defaultKeepAlive = true;
+    this._removedConnection = false;
+    this._removedContLen = false;
+    this._sent100 = false;
     // 独立构造：从 req 形对象提取版本/方法面（node ServerResponse ctor 口径）。
     if (this.__sock === null && sock && typeof sock === "object") {
       if (sock.method === "HEAD") this.__headOnly = true;
@@ -471,6 +479,7 @@ export class ServerResponse extends Writable {
       return;
     }
     this.__continueSent = true;
+    this._sent100 = true;
     if (this.__sock !== null) {
       try { this.__sockWrite(new TextEncoder().encode("HTTP/1.1 100 Continue\r\n\r\n")); } catch { /* gone */ }
     }

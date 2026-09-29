@@ -4294,3 +4294,18 @@
 - 复现：raw socket 发双 `Content-Encoding` + 双 `X-Forwarded-Host`，修前丢第二个，
   修后与真机同串。
 - 推广铁律：**移植 node 头表一律逐行对 `lib/` 原文前缀，不凭语义猜**（§4.115）。
+
+### 4.238 ServerResponse 缺 OM 品牌位即 finished 不等 close（2026-09-30，P3-http）
+
+- 症状：`test-http-outgoing-finished` 第二个 `finished(res)` 在 `close` 前回调，
+  `closed===false`（真机 `finish→close→FIN`，我方 `finish→FIN→close`）。
+- 根因：`ServerResponse extends Writable` 未继承 `OutgoingMessage` 品牌四件套
+  （`_closed/_defaultKeepAlive/_removedConnection/_removedContLen` + `_sent100`），
+  `isOutgoingMessage` 恒 false → `willEmitClose` 恒 false → `finished` 在 `finish`
+  即回（真机 `ServerResponse` 无 `_writableState`，走 `!state && isServerResponse` 为 true 等 close）。
+- 修法：构造期补五项（初值与 `OutgoingMessage`/`_http_server.js` 同源），
+  `writeContinue` 置 `_sent100=true`；`isClosed` 走 `wState` 路径不变，其余消费者仅
+  `willEmitClose`（意图内）。
+- 复现：`probe/fin.mjs`（`finish→FIN→close` 修前，`finish→close→FIN` 修后，与真机同序）。
+- 推广铁律：**凡 `extends Writable` 的 node 消息类，构造期先对 `lib/` 原文品牌字段**；
+  `finished` 时序红先查 `willEmitClose`（`_closed` 四件套 + `_sent100`），不先调时序。

@@ -4,7 +4,7 @@
 
 /// acorn 本体（node `internal/deps/acorn/acorn/dist/acorn.js`）。
 pub const ACORN_JS: &str = concat!(
-    "var __wjsAcornMod = { exports: {} };\n(function (module, exports) {\n",
+    "var __wjs2AcornMod = { exports: {} };\n(function (module, exports) {\n",
     include_str!("acorn.js"),
     include_str!("acorn_if.js"),
     include_str!("acorn_if2.js"),
@@ -12,7 +12,7 @@ pub const ACORN_JS: &str = concat!(
     include_str!("acorn_elts.js"),
     include_str!("acorn_if5.js"),
     include_str!("acorn_curcontext.js"),
-    "\nglobalThis.acorn = module.exports;\n})(__wjsAcornMod, __wjsAcornMod.exports);\n",
+    "\nglobalThis.acorn = module.exports;\n})(__wjs2AcornMod, __wjs2AcornMod.exports);\n",
 );
 
 /// acorn-walk（node `internal/deps/acorn/acorn-walk/dist/walk.js`）。

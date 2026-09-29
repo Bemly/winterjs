@@ -5,7 +5,7 @@
 /// 一事件。
 /// 10a 全家：connect/disconnect（task 级默认远端，无内核过滤）+ 组播
 /// （join/leave/setMulticastTTL/setMulticastLoopback）+ 广播/TTL +
-/// ref 真计数（`__wjs_net_ref/unref`）。
+/// ref 真计数（`__wjs2_net_ref/unref`）。
 /// 偏差记档：
 /// - sockopt 系失败走异步 Error 事件（真机同步抛；socket 活在 task，JS 线程
 ///   阻塞等回包会死锁 runtime——fire-and-forget 是架构选择，不是偷懒）。
@@ -261,7 +261,7 @@ fn dgram_mcast_if(sock: &tokio::net::UdpSocket, addr: &str, is_v4: bool) -> std:
     if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
-/// `__wjs_dgram_bind(port, address, target)` → id。bind 错误经 Error+Close 事件。
+/// `__wjs2_dgram_bind(port, address, target)` → id。bind 错误经 Error+Close 事件。
 pub unsafe extern "C" fn dgram_bind(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -596,7 +596,7 @@ async fn dgram_task(
         }
 }
 
-/// `__wjs_dgram_send(id, dataBytes, addrStr)`（addr = "ip:port"）。
+/// `__wjs2_dgram_send(id, dataBytes, addrStr)`（addr = "ip:port"）。
 pub unsafe extern "C" fn dgram_send(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -625,7 +625,7 @@ pub unsafe extern "C" fn dgram_send(
     true
 }
 
-/// `__wjs_dgram_sockopt(id, opJson)`（10a 组播/广播/TTL/connect 全家；
+/// `__wjs2_dgram_sockopt(id, opJson)`（10a 组播/广播/TTL/connect 全家；
 /// opJson 如 `{"op":"setBroadcast","v":true}`；fire-and-forget，失败走 Error 事件）。
 pub unsafe extern "C" fn dgram_sockopt(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -682,7 +682,7 @@ pub unsafe extern "C" fn dgram_sockopt(
 }
 
 /// dgram fd 表（id → 原生 fd）：bind 任务成功后登记、task 收尾摘除。
-/// `__wjs_dgram_bufsize` 同步 get/setsockopt 用——fd 归 task 所有，但 sockopt
+/// `__wjs2_dgram_bufsize` 同步 get/setsockopt 用——fd 归 task 所有，但 sockopt
 /// 系统调用只按号操作、跨线程安全；摘除后查表即 miss（JS 侧转
 /// ERR_SOCKET_BUFFER_SIZE），无悬垂窗口（§4.48：有收尾的进程内状态才可 static）。
 static DGRAM_FDS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u64, i32>>> =
@@ -710,7 +710,7 @@ fn dgram_fd_get(id: u64) -> Option<i32> {
         .copied()
 }
 
-/// `__wjs_dgram_bufsize(id, "recv"|"send"[, size])` → 当前值串（§4.33 字符串返回，
+/// `__wjs2_dgram_bufsize(id, "recv"|"send"[, size])` → 当前值串（§4.33 字符串返回，
 /// JS 侧 Number() 包装）。带 size 即 setsockopt，否则 getsockopt（SO_RCVBUF/SO_SNDBUF）。
 /// fd 查表 miss 或 syscall 失败回空串（JS 侧转 ERR_SOCKET_BUFFER_SIZE，真机
 /// "Could not get or set buffer size: uv_recv_buffer_size returned EBADF …" 口径）。

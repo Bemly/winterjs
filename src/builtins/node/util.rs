@@ -960,5 +960,5 @@ export {
 };
 export { debuglog as debug };
 // prelude Buffer custom inspect 的 re-entrant 钩子（extras 段回调 util.inspect）
-globalThis.__wjs_inspect = inspect;
+globalThis.__wjs2_inspect = inspect;
 "#;

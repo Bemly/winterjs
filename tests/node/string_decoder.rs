@@ -39,11 +39,11 @@ console.log("default", new StringDecoder().encoding, typeof utf8.lastChar, utf8.
 console.log("string-in", new StringDecoder().write("direct"));
 try { new StringDecoder("nope"); } catch (e) { console.log("e1", e.code); }
 try { new StringDecoder("utf8").write(42); } catch (e) { console.log("e2", e.code); }
-try { new StringDecoder("utf8").write.call({ __wjsId: undefined }, Buffer.alloc(1)); } catch (e) { console.log("e3", e.code); }
+try { new StringDecoder("utf8").write.call({ __wjs2Id: undefined }, Buffer.alloc(1)); } catch (e) { console.log("e3", e.code); }
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -100,7 +100,7 @@ console.log("b64u", b64s);
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();

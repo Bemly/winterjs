@@ -1,6 +1,6 @@
 // node:readline over in-memory streams (no TTY needed).
 // readline：无需真实终端的问答。
-// Run / 运行: winterjs --run sample/readline/basics.js
+// Run / 运行: winterjs2 --run sample/readline/basics.js
 import { createInterface } from 'node:readline';
 import { Readable, Writable } from 'node:stream';
 

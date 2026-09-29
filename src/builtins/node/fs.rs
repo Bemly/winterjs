@@ -207,7 +207,7 @@ pub(crate) fn set_rval_str(cx: &mut mozjs::context::JSContext, frame: &Frame, s:
     frame.set_rval(v.get());
 }
 
-/// `__wjs_fs_read_file(path)` → Uint8Array。
+/// `__wjs2_fs_read_file(path)` → Uint8Array。
 pub unsafe extern "C" fn fs_read_file(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -244,7 +244,7 @@ pub unsafe extern "C" fn fs_read_file(
     }
 }
 
-/// `__wjs_fs_write_file(path, dataU8, modeNum?)`（mode 仅 unix 生效；0/undefined 跳过）。
+/// `__wjs2_fs_write_file(path, dataU8, modeNum?)`（mode 仅 unix 生效；0/undefined 跳过）。
 pub unsafe extern "C" fn fs_write_file(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -282,7 +282,7 @@ pub unsafe extern "C" fn fs_write_file(
     true
 }
 
-/// `__wjs_fs_append_file(path, dataU8)`。
+/// `__wjs2_fs_append_file(path, dataU8)`。
 pub unsafe extern "C" fn fs_append_file(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -388,7 +388,7 @@ pub(crate) fn stat_json(md: &std::fs::Metadata, path: &str) -> String {
     v.to_string()
 }
 
-/// `__wjs_fs_stat(path, followLinksBool)` → 元 JSON（stat/lstat 由 prelude 分流）。
+/// `__wjs2_fs_stat(path, followLinksBool)` → 元 JSON（stat/lstat 由 prelude 分流）。
 pub unsafe extern "C" fn fs_stat(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -416,7 +416,7 @@ pub unsafe extern "C" fn fs_stat(
     }
 }
 
-/// `__wjs_fs_statfs(path)` → StatsFs JSON（M5 vitest 牵引）。
+/// `__wjs2_fs_statfs(path)` → StatsFs JSON（M5 vitest 牵引）。
 /// unix 经已批准轮子 `nix::sys::statvfs`（§8 直引，零新依赖）；`type` 取
 /// filesystem_id（nix 0.31 未暴露 f_type 魔数，记档）；非 unix 报 ENOSYS。
 pub unsafe extern "C" fn fs_statfs(
@@ -466,7 +466,7 @@ pub unsafe extern "C" fn fs_statfs(
     }
 }
 
-/// `__wjs_fs_mkdir(path, recursiveBool)`。
+/// `__wjs2_fs_mkdir(path, recursiveBool)`。
 pub unsafe extern "C" fn fs_mkdir(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -520,7 +520,7 @@ pub unsafe extern "C" fn fs_mkdir(
     }
 }
 
-/// `__wjs_fs_rm(path, recursiveBool, forceBool)`。
+/// `__wjs2_fs_rm(path, recursiveBool, forceBool)`。
 pub unsafe extern "C" fn fs_rm(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -570,7 +570,7 @@ pub unsafe extern "C" fn fs_rm(
     }
 }
 
-/// `__wjs_fs_readdir(path, withTypesBool)` → 名数组 / `[name, isDir, isFile][]` JSON。
+/// `__wjs2_fs_readdir(path, withTypesBool)` → 名数组 / `[name, isDir, isFile][]` JSON。
 pub unsafe extern "C" fn fs_readdir(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -630,7 +630,7 @@ pub unsafe extern "C" fn fs_readdir(
     }
 }
 
-/// `__wjs_fs_rename(old, new)`。
+/// `__wjs2_fs_rename(old, new)`。
 pub unsafe extern "C" fn fs_rename(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -657,7 +657,7 @@ pub unsafe extern "C" fn fs_rename(
     }
 }
 
-/// `__wjs_fs_copy_file(src, dst)`。
+/// `__wjs2_fs_copy_file(src, dst)`。
 pub unsafe extern "C" fn fs_copy_file(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -684,7 +684,7 @@ pub unsafe extern "C" fn fs_copy_file(
     }
 }
 
-/// `__wjs_fs_exists(path)` → boolean（缺失/非法一律 false，永不抛；文档记录）。
+/// `__wjs2_fs_exists(path)` → boolean（缺失/非法一律 false，永不抛；文档记录）。
 pub unsafe extern "C" fn fs_exists(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -707,7 +707,7 @@ pub unsafe extern "C" fn fs_exists(
     true
 }
 
-/// `__wjs_fs_realpath(path)` → 规范串。
+/// `__wjs2_fs_realpath(path)` → 规范串。
 pub unsafe extern "C" fn fs_realpath(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -731,7 +731,7 @@ pub unsafe extern "C" fn fs_realpath(
     }
 }
 
-/// `__wjs_fs_mkdtemp(prefix)` → 唯一目录串（prefix + 6 随机 alnum；0700）。
+/// `__wjs2_fs_mkdtemp(prefix)` → 唯一目录串（prefix + 6 随机 alnum；0700）。
 pub unsafe extern "C" fn fs_mkdtemp(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -795,7 +795,7 @@ pub use super::fs_watch::{
 };
 
 
-/// `__wjs_fs_unlink(path)`（`rm` 子集，单文件）。
+/// `__wjs2_fs_unlink(path)`（`rm` 子集，单文件）。
 pub unsafe extern "C" fn fs_unlink(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -819,7 +819,7 @@ pub unsafe extern "C" fn fs_unlink(
     }
 }
 
-/// `__wjs_fs_rmdir(path, recursiveBool)`（`rm` 子集，目录）。
+/// `__wjs2_fs_rmdir(path, recursiveBool)`（`rm` 子集，目录）。
 pub unsafe extern "C" fn fs_rmdir(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

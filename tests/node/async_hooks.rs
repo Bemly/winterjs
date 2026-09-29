@@ -29,7 +29,7 @@ console.log("hook", typeof hook.disable);
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -69,7 +69,7 @@ try { new AsyncResource("X", { triggerAsyncId: "no" }); } catch (e) { console.lo
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();

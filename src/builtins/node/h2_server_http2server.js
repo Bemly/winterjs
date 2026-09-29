@@ -80,7 +80,7 @@ class Http2Server extends EventEmitter {
     if (this.__closing) return this;
     this.__closing = true;
     if (this.__id) {
-      __wjs_net_destroy(this.__id);
+      __wjs2_net_destroy(this.__id);
       this.__id = 0;
     } else {
       // 未监听或已关：直接收尾（node server.close 无监听也回调）
@@ -237,7 +237,7 @@ class Http2Server extends EventEmitter {
     if (cb) this.once("listening", cb);
     this.__port = Number(port);
     this.__closing = false;
-    this.__id = Number(__wjs_h2_listen(Number(port), host === null ? "0.0.0.0" : host,
+    this.__id = Number(__wjs2_h2_listen(Number(port), host === null ? "0.0.0.0" : host,
       JSON.stringify(this.__tlsOpts ?? {}), this));
     return this;
   }
@@ -246,6 +246,6 @@ class Http2Server extends EventEmitter {
       this.close(() => resolve(undefined));
     });
   }
-  ref() { if (this.__id) __wjs_net_ref(this.__id); return this; }
-  unref() { if (this.__id) __wjs_net_unref(this.__id); return this; }
+  ref() { if (this.__id) __wjs2_net_ref(this.__id); return this; }
+  unref() { if (this.__id) __wjs2_net_unref(this.__id); return this; }
 }

@@ -1,6 +1,6 @@
 // ReadableStream: enqueue + for-await collection.
 // ReadableStream：入列与 for-await 收集。
-// Run / 运行: winterjs --run sample/web/readablestream.js
+// Run / 运行: winterjs2 --run sample/web/readablestream.js
 const rs = new ReadableStream({
   start(c) {
     c.enqueue('a');

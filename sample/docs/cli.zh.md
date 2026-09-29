@@ -5,18 +5,18 @@ lang: zh
 stub: cli
 permalink: /zh/cli/
 ---
-# winterjs CLI 参考
+# winterjs2 CLI 参考
 
-> 真相以二进制为准：`winterjs --help`（中文用 `-l zh --help`）。
+> 真相以二进制为准：`winterjs2 --help`（中文用 `-l zh --help`）。
 > 本页讲 flag 背后的**规则**。English version: [CLI reference](../en/cli/).
 
 ## 规则
 
 1. **一次恰好一个动作**。`--run a.js --eval 1` → exit=1。
-2. **无裸子命令、无裸位置参数**。`winterjs a.js` 是错的，用
-   `winterjs --run a.js`。唯一的尾部位置参数是 `--run` 的*脚本参数*
+2. **无裸子命令、无裸位置参数**。`winterjs2 a.js` 是错的，用
+   `winterjs2 --run a.js`。唯一的尾部位置参数是 `--run` 的*脚本参数*
    （`process.argv.slice(2)`），建议用 `--` 分隔：
-   `winterjs --run app.js -- --port 8080`。无任何参数的裸 `winterjs`
+   `winterjs2 --run app.js -- --port 8080`。无任何参数的裸 `winterjs2`
    直接进交互式 REPL（node/python 同款）。
 3. **修饰 flag 只在对应动作下生效**。配错直接 exit=1：
    `--X only works with --Y (see --help)`。显式传默认值也算给了（无 `--serve`
@@ -38,7 +38,7 @@ permalink: /zh/cli/
 | `-U/--uninstall <包...>` | 卸载全局安装的包 |
 | `-p/--publish [--dry-run]` | 发布当前包（`--dry-run` 只校验） |
 | `--login` | 登录 registry（令牌进 `~/.npmrc`） |
-| `-u/--upgrade [--dry-run]` | 自升级（需 `WINTERJS_UPDATE_GITHUB=owner/repo`） |
+| `-u/--upgrade [--dry-run]` | 自升级（需 `WINTERJS2_UPDATE_GITHUB=owner/repo`） |
 | `-I/--init [名]` | 建包脚手架；已有 `package.json` 依赖则安装 |
 | `--repl` | 交互式 REPL |
 | `-t/--test [路径...]` | 跑测试文件；无路径则从 cwd 自动发现。`--watch` 变更重跑 |
@@ -80,5 +80,5 @@ permalink: /zh/cli/
 
 node 运行时旗（`--expose-internals`、`--experimental-*` 等）解析前剥除，
 记在 `process.execArgv`，经 `internal/options` 读回。剥过旗时接受
-`node --flag file args` 形（自动补 `--run`）；无兼容旗的裸 `winterjs file.js`
+`node --flag file args` 形（自动补 `--run`）；无兼容旗的裸 `winterjs2 file.js`
 照旧报错。非法旗*值* exit=9（绝不剥掉重跑同一文件）。

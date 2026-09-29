@@ -12,7 +12,7 @@ fn phase5_git_dry_run_local() {
     let home = assert_fs::TempDir::new().unwrap();
     let dir = assert_fs::TempDir::new().unwrap();
     let out = stdout_of(
-        winterjs()
+        winterjs2()
             .args(["--add", &format!("git-pkg@git+{url}#v1.0.0"), "--dry-run"])
             .env("HOME", home.path())
             .env_remove("NPM_CONFIG_REGISTRY")
@@ -36,7 +36,7 @@ fn phase5_git_unknown_rev_errors() {
     let url = format!("file://{}", repo.path().display());
     let home = assert_fs::TempDir::new().unwrap();
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args([
             "--add",
             &format!("git-pkg@git+{url}#no-such-ref"),
@@ -63,7 +63,7 @@ fn phase5_git_bare_spec_reads_name() {
     let home = assert_fs::TempDir::new().unwrap();
     let dir = assert_fs::TempDir::new().unwrap();
     let out = stdout_of(
-        winterjs()
+        winterjs2()
             .args(["--add", &format!("git+{url}"), "--dry-run"])
             .env("HOME", home.path())
             .env_remove("NPM_CONFIG_REGISTRY")
@@ -86,11 +86,11 @@ fn phase5_git_end_to_end_local() {
     let home = assert_fs::TempDir::new().unwrap();
     let cache = assert_fs::TempDir::new().unwrap();
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--add")
         .arg(format!("git+{url}"))
         .env("HOME", home.path())
-        .env("WINTERJS_CACHE", cache.path())
+        .env("WINTERJS2_CACHE", cache.path())
         .env_remove("NPM_CONFIG_REGISTRY")
         .env_remove("npm_config_registry")
         .current_dir(dir.path())
@@ -110,7 +110,7 @@ fn phase5_git_end_to_end_local() {
         !dir.path().join("node_modules/git-e2e/.git").exists(),
         ".git must not land"
     );
-    let lock = std::fs::read_to_string(dir.path().join("winterjs-lock.json")).unwrap();
+    let lock = std::fs::read_to_string(dir.path().join("winterjs2-lock.json")).unwrap();
     assert!(
         lock.contains("\"git-e2e\"") && lock.contains(&format!("git+{url}#")),
         "lock: {lock}"
@@ -118,7 +118,7 @@ fn phase5_git_end_to_end_local() {
     let app = dir.child("app.cjs");
     app.write_str("const t = require(\"git-e2e\");\nconsole.log(t.add(19, 23));\n")
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())

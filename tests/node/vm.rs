@@ -314,10 +314,10 @@ fn phase10f_vm_sync_all_keys() {
         r#"
 import vm from "node:vm";
 const bad = (n, f) => { try { f(); console.log(n, "NO-THROW"); } catch (e) { console.log(n, e.constructor.name); } };
-bad("keysall", () => __wjs_vm_keys_all("999999"));
-bad("keyscount", () => __wjs_vm_keys_count("999999"));
-bad("same-arity", () => __wjs_vm_same(1));
-console.log("same-ok", __wjs_vm_same(1, 2) === false, __wjs_vm_same(NaN, NaN) === true);
+bad("keysall", () => __wjs2_vm_keys_all("999999"));
+bad("keyscount", () => __wjs2_vm_keys_count("999999"));
+bad("same-arity", () => __wjs2_vm_same(1));
+console.log("same-ok", __wjs2_vm_same(1, 2) === false, __wjs2_vm_same(NaN, NaN) === true);
 "#,
     );
     assert!(

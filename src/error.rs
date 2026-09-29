@@ -27,7 +27,7 @@ pub fn render_color() -> Option<ColorChoice> {
 #[derive(Debug, Error, Diagnostic)]
 pub enum Error {
     #[error("failed to read {path}")]
-    #[diagnostic(code(winterjs::io::read), help("check that the path exists and is readable"))]
+    #[diagnostic(code(winterjs2::io::read), help("check that the path exists and is readable"))]
     IoRead {
         path: PathBuf,
         #[source]
@@ -35,14 +35,14 @@ pub enum Error {
     },
 
     #[error("failed to load settings: {source}")]
-    #[diagnostic(code(winterjs::config))]
+    #[diagnostic(code(winterjs2::config))]
     Config {
         #[source]
         source: config::ConfigError,
     },
 
     #[error("{filename}:{line}:{col}: {message}")]
-    #[diagnostic(code(winterjs::js::uncaught_exception))]
+    #[diagnostic(code(winterjs2::js::uncaught_exception))]
     Script {
         filename: String,
         line: u32,
@@ -60,21 +60,21 @@ pub enum Error {
     },
 
     #[error("{0}")]
-    #[diagnostic(code(winterjs::internal))]
+    #[diagnostic(code(winterjs2::internal))]
     Other(String),
 
     /// `process.exit(code)` / `exitCode` 收尾：静默以 code 退出（不渲染）。
     /// 由 `process.exit` 哨兵错逐层转换（见 `runtime::exit_code_from_message`）。
     #[error("process exit({0})")]
-    #[diagnostic(code(winterjs::process::exit))]
+    #[diagnostic(code(winterjs2::process::exit))]
     Exit(i32),
 
     #[error("{0}")]
-    #[diagnostic(code(winterjs::io))]
+    #[diagnostic(code(winterjs2::io))]
     Io(#[from] std::io::Error),
 
     #[error("{0}")]
-    #[diagnostic(code(winterjs::json))]
+    #[diagnostic(code(winterjs2::json))]
     Json(#[from] serde_json::Error),
 }
 
@@ -129,7 +129,7 @@ pub fn from_entry_reason(reason: &str, entry_url: &str, source: &str) -> Option<
 }
 
 /// SM 栈帧（`fn@file:L:C` / `@file:L:C`）→ node 形 `    at fn (file:L:C)`；
-/// 宿主管线帧（`__wjs_*` 文件）滤掉，空行丢弃。
+/// 宿主管线帧（`__wjs2_*` 文件）滤掉，空行丢弃。
 fn node_stack_lines(stack: &str) -> Vec<String> {
     stack
         .lines()
@@ -139,7 +139,7 @@ fn node_stack_lines(stack: &str) -> Vec<String> {
                 Some(i) => (&l[..i], &l[i + 1..]),
                 None => ("", l),
             };
-            if loc.starts_with("__wjs_") {
+            if loc.starts_with("__wjs2_") {
                 return None;
             }
             Some(if name.is_empty() {
@@ -298,7 +298,7 @@ mod node_shape_tests {
 
     #[test]
     fn stack_frames_to_node_form() {
-        let st = "f@file:///a.js:3:21\n@file:///a.js:4:1\n@__wjs_main_bootstrap.js:1:1\n\n";
+        let st = "f@file:///a.js:3:21\n@file:///a.js:4:1\n@__wjs2_main_bootstrap.js:1:1\n\n";
         assert_eq!(node_stack_lines(st), ["    at f (file:///a.js:3:21)", "    at file:///a.js:4:1"]);
     }
 

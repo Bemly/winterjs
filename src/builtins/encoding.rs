@@ -25,7 +25,7 @@ fn set_rval_string(cx: &mut JSContext, frame: &Frame, s: &str) {
     frame.set_rval(v.get());
 }
 
-/// `__wjs_btoa(s)`：Latin-1 → base64；超界抛 InvalidCharacterError。
+/// `__wjs2_btoa(s)`：Latin-1 → base64；超界抛 InvalidCharacterError。
 pub unsafe extern "C" fn btoa_encode(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -47,7 +47,7 @@ pub unsafe extern "C" fn btoa_encode(
     true
 }
 
-/// `__wjs_atob(s)`：base64 → Latin-1 字符串；非法输入抛 InvalidCharacterError。
+/// `__wjs2_atob(s)`：base64 → Latin-1 字符串；非法输入抛 InvalidCharacterError。
 pub unsafe extern "C" fn atob_decode(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -78,7 +78,7 @@ pub unsafe extern "C" fn atob_decode(
     }
 }
 
-/// `__wjs_te_encode(s)` → Uint8Array（UTF-8）。
+/// `__wjs2_te_encode(s)` → Uint8Array（UTF-8）。
 pub unsafe extern "C" fn te_encode(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -103,7 +103,7 @@ pub unsafe extern "C" fn te_encode(
     true
 }
 
-/// `__wjs_te_encode_into(s, view)` → `{"read":utf16单位,"written":字节}` JSON。
+/// `__wjs2_te_encode_into(s, view)` → `{"read":utf16单位,"written":字节}` JSON。
 pub unsafe extern "C" fn te_encode_into(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -155,7 +155,7 @@ pub unsafe extern "C" fn te_encode_into(
     true
 }
 
-/// `__wjs_td_canonical(label)` → 规范编码名；未知抛 RangeError。
+/// `__wjs2_td_canonical(label)` → 规范编码名；未知抛 RangeError。
 pub unsafe extern "C" fn td_canonical(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -179,7 +179,7 @@ pub unsafe extern "C" fn td_canonical(
     }
 }
 
-/// `__wjs_td_decode(label, fatal, ignoreBOM, view)` → 解码字符串。
+/// `__wjs2_td_decode(label, fatal, ignoreBOM, view)` → 解码字符串。
 pub unsafe extern "C" fn td_decode(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -217,7 +217,7 @@ pub unsafe extern "C" fn td_decode(
     let Some(bytes) = view_bytes(&mut cx, view, "TextDecoder.decode") else {
         return false;
     };
-    // 切片 a：非流式（stream:true 走 `__wjs_td_stream_*` 有状态解码器，下方）。
+    // 切片 a：非流式（stream:true 走 `__wjs2_td_stream_*` 有状态解码器，下方）。
     let (text, had_errors) = if ignore_bom {
         let (t, e) = enc.decode_without_bom_handling(&bytes);
         (t, e)
@@ -309,7 +309,7 @@ fn stream_decode_chunk(
     Ok(out)
 }
 
-/// `__wjs_td_stream_open(label, fatalNum, ignoreBomNum)` → id（数值）。
+/// `__wjs2_td_stream_open(label, fatalNum, ignoreBomNum)` → id（数值）。
 pub unsafe extern "C" fn td_stream_open(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -356,7 +356,7 @@ pub unsafe extern "C" fn td_stream_open(
     true
 }
 
-/// `__wjs_td_stream_feed(idNum, viewU8?, lastNum)` → 字符串片；last=1 自动回收 id。
+/// `__wjs2_td_stream_feed(idNum, viewU8?, lastNum)` → 字符串片；last=1 自动回收 id。
 pub unsafe extern "C" fn td_stream_feed(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

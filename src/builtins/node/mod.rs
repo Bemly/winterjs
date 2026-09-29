@@ -87,14 +87,14 @@ mod zlib_engine;
 /// 版本占位 `26.9.27` 在求值前替换为 `CARGO_PKG_VERSION`（发版时两处同步改，不漂移）。
 pub fn node_prelude() -> String {
     let base = process_::PROCESS_PRELUDE.replace("26.9.27", env!("CARGO_PKG_VERSION"));
-    // 本体命名空间活值刷新 + Deno 冻结（`__wjs_` 内部面，下游调本体钩，§7 顺向）。
+    // 本体命名空间活值刷新 + Deno 冻结（`__wjs2_` 内部面，下游调本体钩，§7 顺向）。
     format!(
-        "{base}\n{}\ntry{{globalThis.__wjs_ns_sync()}}catch(e){{}}",
+        "{base}\n{}\ntry{{globalThis.__wjs2_ns_sync()}}catch(e){{}}",
         require::REQUIRE_PRELUDE
     )
 }
 
-/// 内建源表（规范名 → ESM 源；互引走绝对 `node:` URL，natives 走全局 `__wjs_*`）。
+/// 内建源表（规范名 → ESM 源；互引走绝对 `node:` URL，natives 走全局 `__wjs2_*`）。
 /// `node:internal/*` 不在本表——`internal::INTERNALS` 为其唯一源（source() 先查它），
 /// 保证 `available()` 天然不含 internal。
 const BUILTINS: &[(&str, &str)] = &[

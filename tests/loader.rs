@@ -18,7 +18,7 @@ fn phase2_relative_import() {
         ],
         "app.js",
     );
-    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "42\n");
+    assert_eq!(stdout_of(&mut winterjs2().arg("--run").arg(&entry)), "42\n");
 }
 
 #[test]
@@ -36,7 +36,7 @@ fn phase2_typescript_transpile() {
         ],
         "app.ts",
     );
-    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "42\n");
+    assert_eq!(stdout_of(&mut winterjs2().arg("--run").arg(&entry)), "42\n");
 }
 
 #[test]
@@ -50,7 +50,7 @@ fn phase2_circular_import_no_deadlock() {
     );
     // spec 求值序：b 先于 a，不死锁
     assert_eq!(
-        stdout_of(&mut winterjs().arg("--run").arg(&entry)),
+        stdout_of(&mut winterjs2().arg("--run").arg(&entry)),
         "b\na\n"
     );
 }
@@ -58,7 +58,7 @@ fn phase2_circular_import_no_deadlock() {
 #[test]
 fn phase2_import_meta_url() {
     let (_dir, entry) = mod_dir(&[("meta.js", "console.log(import.meta.url);\n")], "meta.js");
-    let out = stdout_of(&mut winterjs().arg("--run").arg(&entry));
+    let out = stdout_of(&mut winterjs2().arg("--run").arg(&entry));
     assert!(
         out.starts_with("file://") && out.trim_end().ends_with("/meta.js"),
         "meta url: {out}"
@@ -71,7 +71,7 @@ fn phase2_bare_specifier_missing_friendly_error() {
         &[("bare.js", "import \"left-pad-xyz-absent\";\n")],
         "bare.js",
     );
-    let out = winterjs().arg("--run").arg(&entry).output().unwrap();
+    let out = winterjs2().arg("--run").arg(&entry).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -94,7 +94,7 @@ fn phase2_bare_specifier_node_modules() {
         .unwrap();
     let entry = dir.child("nm.js").path().to_path_buf();
     assert_eq!(
-        stdout_of(&mut winterjs().arg("--run").arg(&entry)),
+        stdout_of(&mut winterjs2().arg("--run").arg(&entry)),
         "pad!\n"
     );
     dir.close().unwrap();
@@ -113,7 +113,7 @@ fn phase2_tsconfig_paths_alias() {
         .write_str("import { add } from \"@lib/add\";\nconsole.log(add(1, 2));\n")
         .unwrap();
     let entry = dir.child("app.ts").path().to_path_buf();
-    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "3\n");
+    assert_eq!(stdout_of(&mut winterjs2().arg("--run").arg(&entry)), "3\n");
     dir.close().unwrap();
 }
 
@@ -130,7 +130,7 @@ fn phase2_ts_js_extension_alias() {
         ],
         "app.ts",
     );
-    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "7\n");
+    assert_eq!(stdout_of(&mut winterjs2().arg("--run").arg(&entry)), "7\n");
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn phase2_dynamic_import() {
         ],
         "dyn.js",
     );
-    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "42\n");
+    assert_eq!(stdout_of(&mut winterjs2().arg("--run").arg(&entry)), "42\n");
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn phase2_top_level_await_entry() {
         "tla.js",
     );
     assert_eq!(
-        stdout_of(&mut winterjs().arg("--run").arg(&entry)),
+        stdout_of(&mut winterjs2().arg("--run").arg(&entry)),
         "tla 7\n"
     );
 }
@@ -172,7 +172,7 @@ fn phase2_data_url_import() {
         )],
         "data.js",
     );
-    assert_eq!(stdout_of(&mut winterjs().arg("--run").arg(&entry)), "99\n");
+    assert_eq!(stdout_of(&mut winterjs2().arg("--run").arg(&entry)), "99\n");
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn phase2_ts_runtime_error_location() {
         )],
         "e.ts",
     );
-    let out = winterjs().arg("--run").arg(&entry).output().unwrap();
+    let out = winterjs2().arg("--run").arg(&entry).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("e.ts:6:1"), "stderr: {stderr}");
@@ -222,7 +222,7 @@ fn loader_http_import_end_to_end() {
          console.log(m.double, m === m2);"
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         "84 true\n"
     );
 }
@@ -232,7 +232,7 @@ fn loader_http_errors() {
     // 报错：404 可读错（exit=1）；边界：超大/非 UTF-8 由单元口径覆盖，此处只钉 404。
     let port = serve_http(1, move |_head, _body| (404, vec![], b"nope".to_vec()));
     let code = format!("await import(\"http://127.0.0.1:{port}/missing.mjs\")");
-    let out = winterjs().args(["--eval", &code]).output().unwrap();
+    let out = winterjs2().args(["--eval", &code]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("404"), "stderr:\n{err}");
@@ -252,7 +252,7 @@ fn run_entry_respects_package_json_type() {
     dir.child("bin-noext")
         .write_str("import \"./lib.mjs\";\nconsole.log(\"esm-entry-ok\");\n")
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(dir.path().join("bin-noext"))
         .output()
@@ -268,7 +268,7 @@ fn run_entry_respects_package_json_type() {
     dir2.child("bin-noext")
         .write_str("import \"./lib.mjs\";\n")
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(dir2.path().join("bin-noext"))
         .output()

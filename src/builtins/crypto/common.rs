@@ -78,7 +78,7 @@ pub(crate) fn rng_probe(cx: &mut JSContext) -> bool {
     true
 }
 
-/// base64url 无填充编码（JWK 用；解码走 prelude 已有 `__wjs_b64urlDecode`）。
+/// base64url 无填充编码（JWK 用；解码走 prelude 已有 `__wjs2_b64urlDecode`）。
 pub(crate) fn b64url(bytes: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)

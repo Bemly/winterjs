@@ -100,7 +100,7 @@ fn prepare(url: &Url) -> Result<Prepared, Error> {
         let text = text.to_owned();
         let path = PathBuf::from(format!("{}.js", url.as_str().replace(':', "_")));
         let loaded = load_js(&text, url.as_str(), &path)?;
-        tracing::debug!(target: "winterjs::modules", url = url.as_str(), "builtin module prepared");
+        tracing::debug!(target: "winterjs2::modules", url = url.as_str(), "builtin module prepared");
         return Ok(Prepared { original: text, js: loaded.js, imports: loaded.imports, is_module: true, map: loaded.map });
     }
     let fetched = fetch(url)?;
@@ -212,21 +212,21 @@ fn cjs_goal_probe(text: &str, path: &std::path::Path) -> bool {
 /// 具名 `default` 即整包（真机实测：`import { default as d }` 得整包而非
 /// `.default` 属性，故 `default` 键映射回整包，不单列）。
 fn cjs_shim_js(url: &Url, names: &[String]) -> String {
-    let mut js = String::from("const __wjs_cjs_exports = globalThis.__wjs_require_cjs_by_url(");
+    let mut js = String::from("const __wjs2_cjs_exports = globalThis.__wjs2_require_cjs_by_url(");
     js.push_str(&serde_json::to_string(url.as_str()).unwrap_or_else(|_| "\"\"".into()));
     js.push_str(");\n");
     let mut entries: Vec<String> = Vec::with_capacity(names.len() + 1);
-    entries.push("__wjs_cjs_exports as default".to_owned());
+    entries.push("__wjs2_cjs_exports as default".to_owned());
     for (i, k) in names.iter().enumerate() {
         if k == "default" {
             continue;
         }
         js.push_str(&format!(
-            "const __wjs_e_{i} = __wjs_cjs_exports[{}];\n",
+            "const __wjs2_e_{i} = __wjs2_cjs_exports[{}];\n",
             serde_json::to_string(k).unwrap_or_default()
         ));
         entries.push(format!(
-            "__wjs_e_{i} as {}",
+            "__wjs2_e_{i} as {}",
             serde_json::to_string(k).unwrap_or_default()
         ));
     }
@@ -257,7 +257,7 @@ fn compile_url(cx: &mut JSContext, url: &Url) -> Result<(*mut JSObject, Vec<Stri
         let record = compile_source(cx, url.as_str(), &js)?;
         register_module(url.as_str().to_owned(), record);
         let Prepared { original, map, .. } = prepared;
-        tracing::debug!(target: "winterjs::modules", url = url.as_str(), "cjs interop shim compiled");
+        tracing::debug!(target: "winterjs2::modules", url = url.as_str(), "cjs interop shim compiled");
         let debug = state::ModuleDebug { original, map };
         state::with_plain(|p| {
             p.module_debug.insert(url.as_str().to_owned(), debug);
@@ -267,7 +267,7 @@ fn compile_url(cx: &mut JSContext, url: &Url) -> Result<(*mut JSObject, Vec<Stri
     let record = compile_source(cx, url.as_str(), &prepared.js)?;
     register_module(url.as_str().to_owned(), record);
     let Prepared { original, js: _, imports, map, .. } = prepared;
-    tracing::debug!(target: "winterjs::modules", url = url.as_str(), deps = imports.len(), "module compiled");
+    tracing::debug!(target: "winterjs2::modules", url = url.as_str(), deps = imports.len(), "module compiled");
     let debug = state::ModuleDebug { original, map };
     state::with_plain(|p| {
         p.module_debug.insert(url.as_str().to_owned(), debug);
@@ -345,7 +345,7 @@ fn payload_is_promise(cx: &mut JSContext, payload: JSVal) -> bool {
 
 /// 失败：暂存友好错误；动态场景额外 report（保住 rejection 原因）；一律返回 false。
 fn fail_load(cx: &mut JSContext, err: Error, dynamic: bool) -> bool {
-    tracing::debug!(target: "winterjs::modules", dynamic, "module load failed: {err}");
+    tracing::debug!(target: "winterjs2::modules", dynamic, "module load failed: {err}");
     if dynamic {
         report_error(cx, &err.to_string());
     }
@@ -543,7 +543,7 @@ unsafe extern "C" fn load_hook(
     let dynamic = payload_is_promise(cx, payload_val);
     // SAFETY: referrer Handle 在调用期内有效
     let base = unsafe { referrer_base(*referrer.ptr) };
-    tracing::debug!(target: "winterjs::modules", spec, dynamic, "load hook");
+    tracing::debug!(target: "winterjs2::modules", spec, dynamic, "load hook");
 
     let url = match resolve(&spec, base.as_ref()) {
         Ok(u) => u,
@@ -602,7 +602,7 @@ unsafe extern "C" fn metadata_hook(
     // vite config 打包链的 inject-file-scope-variables 面依赖）。
     // 助手缺席/构建失败不致命：import.meta 保持 url-only。
     let resolve_ok = (|| {
-        let Some(helper) = get_prop_value(cx, global, c"__wjs_make_meta_resolve") else {
+        let Some(helper) = get_prop_value(cx, global, c"__wjs2_make_meta_resolve") else {
             return true;
         };
         rooted!(&in(cx) let helper_root = helper);
@@ -637,7 +637,7 @@ pub fn install_hooks(rt: &mozjs::rust::Runtime) {
         SetModuleLoadHook(raw, Some(load_hook));
         SetModuleMetadataHook(raw, Some(metadata_hook));
     }
-    tracing::debug!(target: "winterjs::modules", "module hooks installed");
+    tracing::debug!(target: "winterjs2::modules", "module hooks installed");
 }
 
 // ── LoadRequestedModules 回调 ────────────────────────────────────────────

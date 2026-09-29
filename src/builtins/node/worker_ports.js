@@ -28,7 +28,7 @@ export class BroadcastChannel extends EventEmitter {
       throw new TypeError("Cannot convert a Symbol value to a string");
     }
     name = `${name}`;
-    const sub = String(__wjs_bc_sub(name));
+    const sub = String(__wjs2_bc_sub(name));
     if (sub === "") {
       throw new Error("OperationError: BroadcastChannel is not initialized");
     }
@@ -42,13 +42,13 @@ export class BroadcastChannel extends EventEmitter {
     this.__queue = [];
     this.__flushScheduled = false;
     this.__ev = this.__ev.bind(this);
-    this.on("newListener", (ev) => { if (ev === "message") __wjs_bc_flags(sub, "listen"); });
+    this.on("newListener", (ev) => { if (ev === "message") __wjs2_bc_flags(sub, "listen"); });
     // newListener 在入表前触发（§4.47）：延迟一轮再刷队。
     this.on("newListener", (ev) => { if (ev === "message") queueMicrotask(() => this.__maybeFlush()); });
     this.on("removeListener", (ev) => {
-      if (ev === "message" && this.listenerCount("message") === 0) __wjs_bc_flags(sub, "unlisten");
+      if (ev === "message" && this.listenerCount("message") === 0) __wjs2_bc_flags(sub, "unlisten");
     });
-    __wjs_bc_attach(sub, this);
+    __wjs2_bc_attach(sub, this);
   }
   __maybeFlush() {
     if (this.__flushScheduled || this.__queue.length === 0) return;
@@ -91,7 +91,7 @@ export class BroadcastChannel extends EventEmitter {
       // 套件逐项）；EE 'message' 载荷裸值不变。
       this.__onmessageWrap = (value) => {
         try {
-          this.__onmessage(new globalThis.MessageEvent("message", { data: value, __wjsTarget: this }));
+          this.__onmessage(new globalThis.MessageEvent("message", { data: value, __wjs2Target: this }));
         } catch { /* 忽略 */ }
       };
       this.on("message", this.__onmessageWrap);
@@ -110,7 +110,7 @@ export class BroadcastChannel extends EventEmitter {
     if (byType.has(t)) return;
     const wrap = (value) => {
       const ev = isMsg
-        ? new globalThis.MessageEvent(t, { data: value, __wjsTarget: this })
+        ? new globalThis.MessageEvent(t, { data: value, __wjs2Target: this })
         : new globalThis.CustomEvent(t, { detail: value });
       fn.call(this, ev);
     };
@@ -150,22 +150,22 @@ export class BroadcastChannel extends EventEmitter {
       throw err;
     }
     if (this.__closed) throw new Error("BroadcastChannel is closed");
-    __wjs_bc_pub(this.name, this.__sub, __toWire(value));
+    __wjs2_bc_pub(this.name, this.__sub, __toWire(value));
   }
   close() {
     if (!__bcState.has(this)) throw __bcInvalidThis();
     if (this.__closed) return;
     this.__closed = true;
-    __wjs_bc_unsub(this.__sub);
+    __wjs2_bc_unsub(this.__sub);
   }
   ref() {
     if (!__bcState.has(this)) throw __bcInvalidThis();
-    __wjs_bc_flags(this.__sub, "ref");
+    __wjs2_bc_flags(this.__sub, "ref");
     return this;
   }
   unref() {
     if (!__bcState.has(this)) throw __bcInvalidThis();
-    __wjs_bc_flags(this.__sub, "unref");
+    __wjs2_bc_flags(this.__sub, "unref");
     return this;
   }
   // node 口径：inspect 形 "BroadcastChannel { name: 'x', active: true|false }"
@@ -175,13 +175,13 @@ export class BroadcastChannel extends EventEmitter {
   }
 }
 
-export const isMainThread = __wjs_worker_is_main();
-export const threadId = Number(__wjs_worker_thread_id());
+export const isMainThread = __wjs2_worker_is_main();
+export const threadId = Number(__wjs2_worker_thread_id());
 // 10f：本线程构造名（主线程 null；worker 无名亦 null——thread-name 套件）。
-export const threadName = __wjs_worker_name() || null;
-const __parentId = String(__wjs_worker_parent());
+export const threadName = __wjs2_worker_name() || null;
+const __parentId = String(__wjs2_worker_parent());
 export const parentPort = (__parentId === "") ? null : new MessagePort(__parentId);
-const __dataRaw = __wjs_worker_data();
+const __dataRaw = __wjs2_worker_data();
 export const workerData = (__dataRaw === undefined || __dataRaw === "") ? null : __fromWire(String(__dataRaw));
 export const resourceLimits = {};
 export const SHARE_ENV = Symbol("SHARE_ENV");
@@ -190,11 +190,11 @@ export const SHARE_ENV = Symbol("SHARE_ENV");
 // （unsupported-things 套件逐项点名：disabled 位/() 形/无 () 属性形三种）。
 // 本模块在 worker 内首次求值时装上（worker 线程同一 prelude，__parentId 非空即 worker）。
 if (__parentId !== "") {
-  // 10f 对拍 + fork 兼容（§4.132 坑八）：fork 子进程（`__wjs_forkChild`）有
+  // 10f 对拍 + fork 兼容（§4.132 坑八）：fork 子进程（`__wjs2_forkChild`）有
   // IPC 通道——send/disconnect/channel/connected 是正道，不装桩；fork 的
   // 子端 src 随后覆写它们（getter 桩会让 strict 赋值直接炸，fork 全灭）。
   const __proc = globalThis.process;
-  const __isFork = __wjs_worker_is_fork() === true;
+  const __isFork = __wjs2_worker_is_fork() === true;
   const __throwUnsupported = (msg) => {
     const err = new Error(msg);
     err.code = "ERR_WORKER_UNSUPPORTED_OPERATION";
@@ -226,7 +226,7 @@ if (__parentId !== "") {
       if (mask !== undefined) {
         __throwUnsupported("Setting process.umask() is not supported in workers");
       }
-      return __wjs_umask();
+      return __wjs2_umask();
     };
   } catch { /* 同上 */ }
   for (const k of ["_startProfilerIdleNotifier", "_stopProfilerIdleNotifier",
@@ -241,7 +241,7 @@ export function setEnvironmentData(key, value) {
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
-  __wjs_worker_env_set(key, __toWire(value));
+  __wjs2_worker_env_set(key, __toWire(value));
 }
 export function getEnvironmentData(key) {
   if (typeof key !== "string") {
@@ -249,7 +249,7 @@ export function getEnvironmentData(key) {
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
-  const raw = __wjs_worker_env_get(key);
+  const raw = __wjs2_worker_env_get(key);
   if (raw === undefined) return undefined;
   return __fromWire(String(raw));
 }
@@ -340,7 +340,7 @@ export class Worker extends EventEmitter {
       dataJson = __toWire(options.workerData, options.transferList);
     }
     let ids;
-    ids = String(__wjs_worker_spawn(src, isEval, dataJson, options.name ?? "", options.__wjs_forkChild ? "1" : "0", envJson)).split(" ");
+    ids = String(__wjs2_worker_spawn(src, isEval, dataJson, options.name ?? "", options.__wjs2_forkChild ? "1" : "0", envJson)).split(" ");
     this.__id = ids[0];
     this.__tid = Number(ids[1]);
     this.__exited = null;
@@ -350,7 +350,7 @@ export class Worker extends EventEmitter {
     if (options.stdout) this.__stdout = new __WorkerStdio();
     if (options.stderr) this.__stderr = new __WorkerStdio();
     this.__ev = this.__ev.bind(this);
-    __wjs_worker_attach(this.__id, this);
+    __wjs2_worker_attach(this.__id, this);
   }
   __ev(kind, payload) {
     if (kind === "message") {
@@ -365,11 +365,11 @@ export class Worker extends EventEmitter {
     } else if (kind === "error") {
       // 10f 对拍：Rust 侧 "Kind: message" 前缀还原原错误类（SyntaxError 套件
       // 断 err.constructor === SyntaxError）；裸文本回 Error（uncaught-exception
-      // 套件断 String(err) === 'Error: foo'）；`__wjs_prim:` 信封还原原始值
+      // 套件断 String(err) === 'Error: foo'）；`__wjs2_prim:` 信封还原原始值
       // （error-primitive 套件断 err === 42 / Symbol.for('a') 等）。
       const text = String(payload);
-      if (text.startsWith("__wjs_prim:")) {
-        this.emit("error", __wjs_primFromText(text.slice(11)));
+      if (text.startsWith("__wjs2_prim:")) {
+        this.emit("error", __wjs2_primFromText(text.slice(11)));
         return;
       }
       const m = /^(SyntaxError|TypeError|RangeError|EvalError|ReferenceError|URIError|AggregateError): ([\s\S]*)$/.exec(text);
@@ -390,19 +390,19 @@ export class Worker extends EventEmitter {
   }
   postMessage(value, transfer) {
     const wire = __toWire(value, transfer);
-    __wjs_worker_post(this.__id, wire);
+    __wjs2_worker_post(this.__id, wire);
   }
   terminate() {
-    try { __wjs_worker_terminate(this.__id); } catch { /* 已退出即走下 */ }
+    try { __wjs2_worker_terminate(this.__id); } catch { /* 已退出即走下 */ }
     if (this.__exited !== null) return Promise.resolve(this.__exited);
     return new Promise((resolve) => { this.__termWaiters.push(resolve); });
   }
   ref() {
-    __wjs_worker_set_ref(this.__id, "1");
+    __wjs2_worker_set_ref(this.__id, "1");
     return this;
   }
   unref() {
-    __wjs_worker_set_ref(this.__id, "0");
+    __wjs2_worker_set_ref(this.__id, "0");
     return this;
   }
   get threadId() {
@@ -419,7 +419,7 @@ export class Worker extends EventEmitter {
 }
 // MessageEvent 的 source/ports 校验需要 MessagePort 品牌（主线程无全局
 // MessagePort，模块求值期登记到隐藏槽；求值前无从有端口，校验恒 TypeError）。
-globalThis.__wjs_MessagePort = MessagePort;
+globalThis.__wjs2_MessagePort = MessagePort;
 // 10f：BroadcastChannel 是 Web 全局（node 主/worker 线程均全局，messaging
 // 套件裸 `new BroadcastChannel(...)`；与 worker_threads 导出同一类）。
 globalThis.BroadcastChannel = BroadcastChannel;
@@ -440,14 +440,14 @@ class __WorkerStdio {
     if (typeof cb !== "function") throw new TypeError("listener must be a function");
     const self = this;
     const wrapped = (...args) => { self.off(ev, wrapped); cb(...args); };
-    wrapped.__wjs_orig = cb;
+    wrapped.__wjs2_orig = cb;
     return this.on(ev, wrapped);
   }
   off(ev, cb) {
     const list = this.__listeners[String(ev)];
     if (list) {
-      let i = list.findIndex((l) => l === cb || l.__wjs_orig === cb);
-      while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb || l.__wjs_orig === cb); }
+      let i = list.findIndex((l) => l === cb || l.__wjs2_orig === cb);
+      while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb || l.__wjs2_orig === cb); }
     }
     return this;
   }

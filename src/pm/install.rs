@@ -15,7 +15,7 @@ use crate::error::Error;
 use crate::pm::resolve::Resolved;
 
 /// lockfile 名（工程根）。
-pub const LOCKFILE: &str = "winterjs-lock.json";
+pub const LOCKFILE: &str = "winterjs2-lock.json";
 
 /// registry 树 + git 包 + release 二进制一次装完（锁只持一次；lockfile 合并写）。
 /// `releases` 为已落盘项（name, tag, resolved, integrity），只合并进 lockfile。
@@ -43,7 +43,7 @@ pub async fn install_all(
                 landed.push(r.clone());
             }
             Err(e) if r.optional => {
-                tracing::warn!(target: "winterjs::pm", package = r.name.as_str(), "optional install failed, skipping: {e}");
+                tracing::warn!(target: "winterjs2::pm", package = r.name.as_str(), "optional install failed, skipping: {e}");
                 println!("skipped optional {}@{} ({e})", r.name, r.version);
             }
             Err(e) => return Err(e),
@@ -73,7 +73,7 @@ fn cleanup_staging(nm: &Path) {
             } else {
                 let _ = std::fs::remove_file(&p);
             }
-            tracing::debug!(target: "winterjs::pm", staging = name.as_str(), "cleaned stale staging");
+            tracing::debug!(target: "winterjs2::pm", staging = name.as_str(), "cleaned stale staging");
         }
         // 缓存/锁的 tmp 残留（`.tmp-*`）同样清理，防堆积。
         if name.starts_with(".tmp-") || name.ends_with(".tmp") {
@@ -95,16 +95,16 @@ fn acquire_install_lock(nm: &Path) -> Result<std::fs::File, Error> {
         .map_err(|e| Error::Other(format!("cannot open install lock: {e}")))?;
     // 文件锁轮子用 `fs4`（与 std::fs::File::lock 同源 flock/LockFileEx，此处显式走 fs4）。
     if let Err(e) = fs4::FileExt::lock(&file) {
-        tracing::warn!(target: "winterjs::pm", "install lock busy, proceeding without: {e}");
+        tracing::warn!(target: "winterjs2::pm", "install lock busy, proceeding without: {e}");
     } else {
-        tracing::debug!(target: "winterjs::pm", "install lock acquired");
+        tracing::debug!(target: "winterjs2::pm", "install lock acquired");
     }
     Ok(file)
 }
 
 /// 单包：缓存命中则跳下载 → 校验 → 暂存解包 → 搬家 → bin → lifecycle。
 async fn install_one(nm: &Path, nm_bin: &Path, r: &Resolved) -> Result<(), Error> {
-    tracing::info!(target: "winterjs::pm", package = r.name.as_str(), version = r.version.as_str(), "installing");
+    tracing::info!(target: "winterjs2::pm", package = r.name.as_str(), version = r.version.as_str(), "installing");
     let bytes = fetch_bytes(r).await?;
     crate::pm::cache::verify_bytes(r.integrity.as_deref(), &bytes)
         .map_err(|e| Error::Other(format!("integrity check failed for {}@{}: {e}", r.name, r.version)))?;
@@ -121,7 +121,7 @@ async fn install_one(nm: &Path, nm_bin: &Path, r: &Resolved) -> Result<(), Error
         if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&text) {
             let nm_name = pkg.get("name").and_then(|v| v.as_str()).unwrap_or("");
             if !nm_name.is_empty() && nm_name != r.name {
-                tracing::warn!(target: "winterjs::pm", expected = r.name.as_str(), found = nm_name, "package.json name mismatch");
+                tracing::warn!(target: "winterjs2::pm", expected = r.name.as_str(), found = nm_name, "package.json name mismatch");
             }
         }
     }
@@ -149,7 +149,7 @@ async fn fetch_bytes(r: &Resolved) -> Result<Vec<u8>, Error> {
     {
         return Ok(hit);
     }
-    tracing::debug!(target: "winterjs::pm", package = r.name.as_str(), "tarball cache miss");
+    tracing::debug!(target: "winterjs2::pm", package = r.name.as_str(), "tarball cache miss");
     let bytes = download(&r.tarball).await?;
     // 回填失败吞掉（cache 侧已记 trace），不中断安装。
     crate::pm::cache::put(&r.tarball, r.integrity.as_deref(), &bytes);

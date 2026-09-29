@@ -1,5 +1,5 @@
 // Demonstrates directory operations: mkdir, readdir (Dirent), stat, copy, rm, exists. / 演示目录操作：mkdir、readdir（Dirent）、stat、copy、rm、exists。
-// Run / 运行: winterjs --run sample/fs/directory.js
+// Run / 运行: winterjs2 --run sample/fs/directory.js
 import fs from 'node:fs';
 import { mkdirSync, readdirSync, statSync, copyFileSync, rmSync, existsSync } from 'node:fs';
 import os from 'node:os';

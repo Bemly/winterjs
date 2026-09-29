@@ -215,7 +215,7 @@ pub(crate) fn der_ecdsa_sig_to_raw(sig: &[u8], size: usize) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// `__wjs_x509_verify(certDer, keyBytes, keyType)` → boolean。
+/// `__wjs2_x509_verify(certDer, keyBytes, keyType)` → boolean。
 /// keyBytes：rsa/rsa-pss/ec 为 SPKI DER，ed25519 为裸 32B，ed448 为裸 57B（10e）；
 /// 其余 keyType 一律 false
 /// （真机口径：错钥/异族 → false 不抛，private 入参的拒绝在 JS 壳做）。

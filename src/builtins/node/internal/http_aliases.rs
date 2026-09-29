@@ -53,10 +53,10 @@ export const parsers = {
   max: 1000,
   size: 0,
   alloc() {
-    const __cls = (globalThis.__wjs_bindHttpParser !== undefined &&
-      globalThis.__wjs_bindHttpParser !== null &&
-      typeof globalThis.__wjs_bindHttpParser.HTTPParser === "function")
-      ? globalThis.__wjs_bindHttpParser.HTTPParser
+    const __cls = (globalThis.__wjs2_bindHttpParser !== undefined &&
+      globalThis.__wjs2_bindHttpParser !== null &&
+      typeof globalThis.__wjs2_bindHttpParser.HTTPParser === "function")
+      ? globalThis.__wjs2_bindHttpParser.HTTPParser
       : HTTPParser;
     return new __cls();
   },
@@ -275,7 +275,7 @@ export class HTTPParser {
       throw new TypeError("Illegal invocation");
     }
     try {
-      const __reg = globalThis.__wjs_sockByHandle;
+      const __reg = globalThis.__wjs2_sockByHandle;
       const __sock = __reg !== undefined && __reg !== null ? __reg.get(handle) : undefined;
       if (__sock !== undefined && __sock !== null && typeof __sock.on === "function") {
         const __self = this;

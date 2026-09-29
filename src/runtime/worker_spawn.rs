@@ -20,7 +20,7 @@ impl WorkerThreadSpec {
     ) -> Self {
         let exe = std::env::current_exe()
             .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "winterjs".into());
+            .unwrap_or_else(|_| "winterjs2".into());
         if is_eval {
             WorkerThreadSpec { worker_id, file: None, code: Some(src), argv: vec![exe], boot }
         } else {
@@ -46,7 +46,7 @@ pub fn run_worker_thread(spec: WorkerThreadSpec) {
     // 终止槽（主线程注册；worker 线程 TLS 绑定同旗——interrupt 回调读取）。
     let term_slot = crate::builtins::node::worker::term_slot_register(spec.worker_id);
     let spawned = std::thread::Builder::new()
-        .name(format!("winterjs-worker-{}", spec.worker_id))
+        .name(format!("winterjs2-worker-{}", spec.worker_id))
         .stack_size(16 * 1024 * 1024)
         .spawn(move || {
             let wid = spec.worker_id;
@@ -93,7 +93,7 @@ pub fn run_worker_thread(spec: WorkerThreadSpec) {
                             .is_some_and(|l| l.is_module);
                         if is_module {
                             let tmp = std::env::temp_dir().join(format!(
-                                "winterjs-worker-{}-{}.mjs",
+                                "winterjs2-worker-{}-{}.mjs",
                                 std::process::id(),
                                 wid
                             ));
@@ -154,7 +154,7 @@ pub fn run_worker_thread(spec: WorkerThreadSpec) {
             }
         });
     if let Err(e) = spawned {
-        tracing::warn!(target: "winterjs::runtime", worker_id = spec.worker_id, "worker thread spawn failed: {e}");
+        tracing::warn!(target: "winterjs2::runtime", worker_id = spec.worker_id, "worker thread spawn failed: {e}");
     }
 }
 
@@ -170,8 +170,8 @@ fn worker_error_text(e: &Error) -> String {
             Some(k) if k != "Error" => format!("{k}: {message}"),
             _ => message.clone(),
         },
-        // 原始值信封直通（勿加前缀——JS 侧按 `__wjs_prim:` 还原）。
-        Error::Other(message) if message.starts_with("__wjs_prim:") => message.clone(),
+        // 原始值信封直通（勿加前缀——JS 侧按 `__wjs2_prim:` 还原）。
+        Error::Other(message) if message.starts_with("__wjs2_prim:") => message.clone(),
         Error::Other(message) => format!("Worker: {message}"),
         _ => format!("Worker: {e}"),
     }

@@ -1,6 +1,6 @@
 // Timers + microtasks: setTimeout / setInterval / setImmediate / queueMicrotask ordering.
 // 定时器与微任务：setTimeout / setInterval / setImmediate / queueMicrotask 顺序。
-// Run / 运行: winterjs --run sample/web/timers.js
+// Run / 运行: winterjs2 --run sample/web/timers.js
 const order = [];
 order.push('sync');
 

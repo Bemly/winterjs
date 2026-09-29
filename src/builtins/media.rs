@@ -1,4 +1,4 @@
-//! WinterJS.media 底座：音频解码/放音（symphonia/rodio）+ AV1 编码
+//! WinterJS2.media 底座：音频解码/放音（symphonia/rodio）+ AV1 编码
 //! （rav1e，手写 IVF）+ MP4 demux（shiguredo_mp4）。
 //! 约定：元信息走 JSON 桥；PCM 走 Float32Array（f32 交错），像素/包走 Uint8Array。
 //! 音频解码全量进内存（大文件走流式另案，见 caps）；动画/多轨只取首音频轨；
@@ -288,7 +288,7 @@ fn decode_all(bytes: &[u8], ext: Option<&str>) -> Result<Decoded, String> {
     })
 }
 
-/// `__wjs_media_audio_info(bytes, format?)` → JSON（不解包，只读头）。
+/// `__wjs2_media_audio_info(bytes, format?)` → JSON（不解包，只读头）。
 pub unsafe extern "C" fn media_audio_info(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -297,7 +297,7 @@ pub unsafe extern "C" fn media_audio_info(
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let what = "WinterJS.media.audioInfo";
+    let what = "WinterJS2.media.audioInfo";
     let Some(bytes) = arg_bytes(&mut cx, &frame, 0, what) else {
         return false;
     };
@@ -337,7 +337,7 @@ pub unsafe extern "C" fn media_audio_info(
     }
 }
 
-/// `__wjs_media_audio_pcm(bytes, format?)` → Float32Array（f32 交错全量）。
+/// `__wjs2_media_audio_pcm(bytes, format?)` → Float32Array（f32 交错全量）。
 pub unsafe extern "C" fn media_audio_pcm(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -346,7 +346,7 @@ pub unsafe extern "C" fn media_audio_pcm(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let what = "WinterJS.media.decodeAudio";
+    let what = "WinterJS2.media.decodeAudio";
     let Some(bytes) = arg_bytes(&mut cx, &frame, 0, what) else {
         return false;
     };
@@ -380,7 +380,7 @@ static PLAYERS: LazyLock<Mutex<HashMap<u32, (rodio::MixerDeviceSink, rodio::Play
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT_PLAY_ID: AtomicU32 = AtomicU32::new(1);
 
-/// `__wjs_media_play(pcm, sampleRate, channels, volume?)` → id（u32）。
+/// `__wjs2_media_play(pcm, sampleRate, channels, volume?)` → id（u32）。
 /// 非阻塞：cpal 线程放音，native 即返。
 pub unsafe extern "C" fn media_play(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -390,7 +390,7 @@ pub unsafe extern "C" fn media_play(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let what = "WinterJS.media.play";
+    let what = "WinterJS2.media.play";
     if frame.argc() < 3 {
         report_error(&mut cx, &format!("TypeError: {what} requires (samples, sampleRate, channels)"));
         return false;
@@ -444,7 +444,7 @@ pub unsafe extern "C" fn media_play(
     true
 }
 
-/// `__wjs_media_stop(id)` → true（未知 id 即 false，不报错）。
+/// `__wjs2_media_stop(id)` → true（未知 id 即 false，不报错）。
 pub unsafe extern "C" fn media_stop(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -515,7 +515,7 @@ fn mux_ivf(packets: &[Vec<u8>], w: u16, h: u16, fps_num: u32, fps_den: u32) -> V
     out
 }
 
-/// `__wjs_media_video_encode(width, height, framesConcat, count, optionsJson)` → IVF Uint8Array。
+/// `__wjs2_media_video_encode(width, height, framesConcat, count, optionsJson)` → IVF Uint8Array。
 pub unsafe extern "C" fn media_video_encode(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -524,7 +524,7 @@ pub unsafe extern "C" fn media_video_encode(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let what = "WinterJS.media.videoEncode";
+    let what = "WinterJS2.media.videoEncode";
     if frame.argc() < 4 {
         report_error(&mut cx, &format!("TypeError: {what} requires (width, height, frames, count)"));
         return false;
@@ -762,7 +762,7 @@ fn walk_mp4(bytes: &[u8]) -> Result<Mp4Walk, String> {
     Ok(Mp4Walk { tracks_json, samples })
 }
 
-/// `__wjs_media_mp4info(bytes)` → `{tracks:[...]}` JSON。
+/// `__wjs2_media_mp4info(bytes)` → `{tracks:[...]}` JSON。
 pub unsafe extern "C" fn media_mp4info(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -771,7 +771,7 @@ pub unsafe extern "C" fn media_mp4info(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let what = "WinterJS.media.mp4Info";
+    let what = "WinterJS2.media.mp4Info";
     let Some(bytes) = arg_bytes(&mut cx, &frame, 0, what) else {
         return false;
     };
@@ -793,7 +793,7 @@ pub unsafe extern "C" fn media_mp4info(
     }
 }
 
-/// `__wjs_media_mp4samples(bytes, trackId?, limit?)` → `[{index,timestamp,duration,size}]` JSON。
+/// `__wjs2_media_mp4samples(bytes, trackId?, limit?)` → `[{index,timestamp,duration,size}]` JSON。
 pub unsafe extern "C" fn media_mp4samples(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -802,7 +802,7 @@ pub unsafe extern "C" fn media_mp4samples(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let what = "WinterJS.media.mp4Samples";
+    let what = "WinterJS2.media.mp4Samples";
     let Some(bytes) = arg_bytes(&mut cx, &frame, 0, what) else {
         return false;
     };
@@ -856,7 +856,7 @@ pub unsafe extern "C" fn media_mp4samples(
     }
 }
 
-/// `__wjs_media_mp4sample(bytes, trackId, index)` → Uint8Array（样本字节）。
+/// `__wjs2_media_mp4sample(bytes, trackId, index)` → Uint8Array（样本字节）。
 pub unsafe extern "C" fn media_mp4sample(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -865,7 +865,7 @@ pub unsafe extern "C" fn media_mp4sample(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let what = "WinterJS.media.mp4Sample";
+    let what = "WinterJS2.media.mp4Sample";
     if frame.argc() < 3 {
         report_error(&mut cx, &format!("TypeError: {what} requires (bytes, trackId, index)"));
         return false;

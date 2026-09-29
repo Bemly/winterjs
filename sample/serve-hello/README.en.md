@@ -8,7 +8,7 @@
 
 ```bash
 # from the repo root (change the port if needed)
-./target/debug/winterjs --serve sample/serve-hello/public --port 8080 \
+./target/debug/winterjs2 --serve sample/serve-hello/public --port 8080 \
   --handler sample/serve-hello/handler.mjs
 ```
 
@@ -19,7 +19,7 @@ Wait for `serving … on http://127.0.0.1:8080`.
 | Request | Goes to | Expect |
 |---|---|---|
 | `GET /` | static (`public/index.html`, never touches JS) | 200 `hi static` |
-| `GET /api/hello` | handler | 200 `hello from winterjs serve [http:]` |
+| `GET /api/hello` | handler | 200 `hello from winterjs2 serve [http:]` |
 | `POST /api/echo` | handler (streaming upload) | 201, verbatim echo |
 | `GET /nope` | handler | 404 |
 | `GET /ws` + `Upgrade: websocket` | WS takeover (WS wins over static) | 101 |
@@ -68,7 +68,7 @@ EOF
 JS side (`handler.mjs`):
 
 ```js
-const ws = __wjs_serve_socket(req); // only valid for serve requests
+const ws = __wjs2_serve_socket(req); // only valid for serve requests
 ws.onmessage = (e) => ws.send(e.data); // echo text and binary
 ws.onclose = (e) => console.log("bye", e.code);
 return ws; // returning the socket accepts the upgrade; returning a Response declines (plain HTTP)
@@ -82,7 +82,7 @@ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 2 -nodes 
   -subj "/CN=127.0.0.1" -extensions v3_req \
   -config <(printf "[req]\ndistinguished_name=dn\n[v3_req]\nsubjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n[dn]")
 
-./target/debug/winterjs --serve sample/serve-hello/public --port 8443 \
+./target/debug/winterjs2 --serve sample/serve-hello/public --port 8443 \
   --cert cert.pem --key key.pem --handler sample/serve-hello/handler.mjs
 # https://127.0.0.1:8443/api/hello  → scheme shows https:
 # H1/H2 auto-negotiated (curl negotiates H2 by default); H3 on the same UDP port

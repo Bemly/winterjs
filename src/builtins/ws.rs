@@ -52,7 +52,7 @@ fn arg_string(cx: &mut JSContext, frame: &Frame, i: u32, what: &str) -> Option<S
     Some(value_to_string(cx, frame.arg(i)))
 }
 
-/// `__wjs_ws_connect(url, protocolsJson, target)` → id（存 target + 发送端 + 起任务）。
+/// `__wjs2_ws_connect(url, protocolsJson, target)` → id（存 target + 发送端 + 起任务）。
 pub unsafe extern "C" fn ws_connect(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -95,24 +95,24 @@ pub unsafe extern "C" fn ws_connect(
     true
 }
 
-/// 测试接缝（仅 `WINTERJS_TEST_CA_PEMFILE` 置位时）：给自签 CA 用的 rustls 连接器。
+/// 测试接缝（仅 `WINTERJS2_TEST_CA_PEMFILE` 置位时）：给自签 CA 用的 rustls 连接器。
 /// 生产行为（未置位）保持 `connect_async` 默认（webpki roots），不受影响。
 /// 前置：tokio 任务内（读文件用 `tokio::fs`）。
 async fn test_connector() -> Option<tokio_tungstenite::Connector> {
-    let path = std::env::var("WINTERJS_TEST_CA_PEMFILE").ok()?;
+    let path = std::env::var("WINTERJS2_TEST_CA_PEMFILE").ok()?;
     let pem = tokio::fs::read(&path).await.ok()?;
     let mut roots = rustls::RootCertStore::empty();
     // 系统根（`rustls-native-certs` 直引轮子）+ 自签 CA（`rustls-pemfile` 解析）。
     let native = rustls_native_certs::load_native_certs();
     let (added, _) = roots.add_parsable_certificates(native.certs);
-    tracing::debug!(target: "winterjs::ws", added, path, "test CA seam: native roots loaded");
+    tracing::debug!(target: "winterjs2::ws", added, path, "test CA seam: native roots loaded");
     let mut cursor = std::io::Cursor::new(pem);
     let extra: Vec<_> = rustls_pemfile::certs(&mut cursor).collect::<Result<_, _>>().ok()?;
     roots.add_parsable_certificates(extra);
     let config = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    tracing::info!(target: "winterjs::ws", path, "test CA seam active (wss self-signed)");
+    tracing::info!(target: "winterjs2::ws", path, "test CA seam active (wss self-signed)");
     Some(tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(config)))
 }
 
@@ -229,7 +229,7 @@ async fn run_socket(
     }
 }
 
-/// `__wjs_ws_send(id, kind, payload)`：kind 0=文本，1=二进制。
+/// `__wjs2_ws_send(id, kind, payload)`：kind 0=文本，1=二进制。
 pub unsafe extern "C" fn ws_send(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -266,7 +266,7 @@ pub unsafe extern "C" fn ws_send(
     }
 }
 
-/// `__wjs_ws_close(id, code, reason)`：未知 id 静默成功（幂等 close）。
+/// `__wjs2_ws_close(id, code, reason)`：未知 id 静默成功（幂等 close）。
 pub unsafe extern "C" fn ws_close(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -298,7 +298,7 @@ fn arg_u64(cx: &mut JSContext, frame: &Frame, i: u32, what: &str) -> Option<u64>
     Some(frame.arg(i).to_number() as u64)
 }
 
-/// 事件循环分发一条 Ws 事件（经 prelude `__wjs_ws_emit` 更新状态 + 调回调；
+/// 事件循环分发一条 Ws 事件（经 prelude `__wjs2_ws_emit` 更新状态 + 调回调；
 /// target 缺失也做 bookkeeping；失败清场）。
 /// 前置条件：cx 已进入 global 所属 realm。
 pub fn dispatch(
@@ -312,7 +312,7 @@ pub fn dispatch(
         state::ws_remove(ev.id);
         return Ok(());
     }
-    // kind 与 prelude `__wjs_ws_emit` 对齐
+    // kind 与 prelude `__wjs2_ws_emit` 对齐
     let (prop, kind, json, bin): (&std::ffi::CStr, &str, String, Option<Vec<u8>>) = match ev.kind {
         WsKind::Opened { protocol } => (
             c"onopen",
@@ -374,7 +374,7 @@ pub fn dispatch(
     })
 }
 
-/// 调 `__wjs_ws_emit(id, prop, kind, json, binU8)`（fire_due 的 rooted ValueArray 模式）。
+/// 调 `__wjs2_ws_emit(id, prop, kind, json, binU8)`（fire_due 的 rooted ValueArray 模式）。
 fn fire_emit(
     cx: &mut JSContext,
     global: *mut JSObject,

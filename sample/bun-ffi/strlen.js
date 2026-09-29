@@ -1,6 +1,6 @@
 // bun:ffi: dlopen libc and call strlen (platform-guarded).
 // FFI：打开系统 libc 并调用 strlen（按平台区分）。
-// Run / 运行: winterjs --run sample/bun-ffi/strlen.js
+// Run / 运行: winterjs2 --run sample/bun-ffi/strlen.js
 import { dlopen, ptr } from 'bun:ffi';
 import { platform } from 'node:os';
 

@@ -173,7 +173,7 @@ Object.defineProperty(globalThis.process, "domain", {
   set(v) { active = v; },
 });
 // 定时器面（prelude timers）的域捕获点：登记期取活域，回调抛错先路由域。
-globalThis.__wjs_domain_capture = () => active;
+globalThis.__wjs2_domain_capture = () => active;
 const __api = {
   Domain, create, createDomain,
   get active() { return active; },

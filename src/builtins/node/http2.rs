@@ -578,7 +578,7 @@ pub(crate) async fn serve_conn<IO>(
                         }
                     }
                     Some(NetCmd::Close) | None => {
-                        tracing::debug!(target: "winterjs::http2", conn_id, "serve_conn: Close cmd");
+                        tracing::debug!(target: "winterjs2::http2", conn_id, "serve_conn: Close cmd");
                         break;
                     }
                     _ => {}
@@ -619,7 +619,7 @@ pub(crate) async fn serve_conn<IO>(
     }
     // 会话终结通知（借 H2Stream 通道：what="connClose"，payload 带 conn_id；
     // JS 侧 server 收到后收尾对应 Http2Session 并发 'close'）。
-    tracing::debug!(target: "winterjs::http2", conn_id, "tail target_present={}", state::net_target(conn_id).is_some());
+    tracing::debug!(target: "winterjs2::http2", conn_id, "tail target_present={}", state::net_target(conn_id).is_some());
     let _ = ev_tx.send(NetEvent {
         id: conn_id,
         kind: NetKind::H2Stream {
@@ -652,7 +652,7 @@ pub(crate) fn report_error_static(
     }
 }
 
-/// `__wjs_h2_open(sessionId, streamId, reqJson, bodyB64)`。
+/// `__wjs2_h2_open(sessionId, streamId, reqJson, bodyB64)`。
 pub unsafe extern "C" fn h2_open(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -676,7 +676,7 @@ pub unsafe extern "C" fn h2_open(
     true
 }
 
-/// `__wjs_h2_open_trailers(sessionId, streamId, trailersJson)`——上传 trailer 帧。
+/// `__wjs2_h2_open_trailers(sessionId, streamId, trailersJson)`——上传 trailer 帧。
 pub unsafe extern "C" fn h2_open_trailers(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -696,8 +696,8 @@ pub unsafe extern "C" fn h2_open_trailers(
     true
 }
 
-/// `__wjs_h2_respond(connId, streamId, status, headersJson)`——应答头（10f 流式化：
-/// 体经 `__wjs_h2_data`/`__wjs_h2_end` 增量下发；status 0 表无头直 RST）。
+/// `__wjs2_h2_respond(connId, streamId, status, headersJson)`——应答头（10f 流式化：
+/// 体经 `__wjs2_h2_data`/`__wjs2_h2_end` 增量下发；status 0 表无头直 RST）。
 pub unsafe extern "C" fn h2_respond(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -720,7 +720,7 @@ pub unsafe extern "C" fn h2_respond(
     true
 }
 
-/// `__wjs_h2_data(connId, streamId, dataB64)`——应答体块。
+/// `__wjs2_h2_data(connId, streamId, dataB64)`——应答体块。
 pub unsafe extern "C" fn h2_data(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -737,7 +737,7 @@ pub unsafe extern "C" fn h2_data(
     true
 }
 
-/// `__wjs_h2_end(connId, streamId, trailersJson)`——应答收尾（trailer 可空）。
+/// `__wjs2_h2_end(connId, streamId, trailersJson)`——应答收尾（trailer 可空）。
 pub unsafe extern "C" fn h2_end(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -757,7 +757,7 @@ pub unsafe extern "C" fn h2_end(
     true
 }
 
-/// `__wjs_h2_reset(connId, streamId, code)`——RST_STREAM（0=NO_ERROR 干净，2=INTERNAL）。
+/// `__wjs2_h2_reset(connId, streamId, code)`——RST_STREAM（0=NO_ERROR 干净，2=INTERNAL）。
 pub unsafe extern "C" fn h2_reset(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

@@ -170,7 +170,7 @@ class CipherivImpl {
     this.__autoPad = !(options && options.autoPadding === false);
     if (info.family === "cbc" || info.family === "ctr" || info.family === "ecb") {
       this.__id = Number(__cryptCall(() =>
-        __wjs_cipher_new(info.name, kb, ivb, 1, this.__autoPad ? 1 : 0)));
+        __wjs2_cipher_new(info.name, kb, ivb, 1, this.__autoPad ? 1 : 0)));
       this.__parts = null;
     } else {
       // AEAD 无流式：buffered，final 时 oneshot（头注记档）
@@ -204,7 +204,7 @@ class CipherivImpl {
     if (this.__id !== null) {
       // final 后调即错（Node 同款时序守卫），余者透传 native 改 flag。
       if (this.__finalized) __badState();
-      __cryptCall(() => __wjs_cipher_set_autopad(String(this.__id), this.__autoPad ? 1 : 0));
+      __cryptCall(() => __wjs2_cipher_set_autopad(String(this.__id), this.__autoPad ? 1 : 0));
     }
     return this;
   }
@@ -221,7 +221,7 @@ class CipherivImpl {
     if (bytes.length > 2147483646) __unsupportedState();
     let out;
     if (this.__id !== null) {
-      out = __cryptCall(() => __wjs_cipher_update(String(this.__id), bytes));
+      out = __cryptCall(() => __wjs2_cipher_update(String(this.__id), bytes));
     } else {
       this.__parts.push(bytes);
       out = new Uint8Array(0);
@@ -233,12 +233,12 @@ class CipherivImpl {
     this.__finalized = true;
     let out;
     if (this.__id !== null) {
-      out = __cryptCall(() => __wjs_cipher_final(String(this.__id)));
+      out = __cryptCall(() => __wjs2_cipher_final(String(this.__id)));
     } else if (this.__info.family === "gcm") {
       // 10e-2：经 anyiv（12B 内走 crate，其余 J0 手工；iv 非空已在构造期校验）
       const pt = __joinParts(this.__parts);
       const tagged = __cryptCall(() =>
-        __wjs_gcm_anyiv(1, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), pt));
+        __wjs2_gcm_anyiv(1, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), pt));
       out = tagged.slice(0, tagged.length - 16);
       // 短 tag 取前导字节（GCM 截断口径；16 时与旧切片恒等）。
       this.__tag = Buffer.from(tagged.slice(tagged.length - 16, tagged.length - 16 + this.__tagLen));
@@ -246,14 +246,14 @@ class CipherivImpl {
       // 10e CCM：tag 长按实例 authTagLength 切分
       const pt = __joinParts(this.__parts);
       const tagged = __cryptCall(() =>
-        __wjs_ccm_crypt(1, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), pt, null, this.__tagLen));
+        __wjs2_ccm_crypt(1, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), pt, null, this.__tagLen));
       out = tagged.slice(0, tagged.length - this.__tagLen);
       this.__tag = Buffer.from(tagged.slice(tagged.length - this.__tagLen));
     } else {
       const pt = __joinParts(this.__parts);
       const aad = this.__aad ?? new Uint8Array(0);
       const tagged = __cryptCall(() =>
-        __wjs_cipher_chacha(1, this.__key, this.__iv, aad, pt, null));
+        __wjs2_cipher_chacha(1, this.__key, this.__iv, aad, pt, null));
       out = tagged.slice(0, tagged.length - 16);
       this.__tag = Buffer.from(tagged.slice(tagged.length - 16));
     }
@@ -294,7 +294,7 @@ class DecipherivImpl {
     this.__autoPad = !(options && options.autoPadding === false);
     if (info.family === "cbc" || info.family === "ctr" || info.family === "ecb") {
       this.__id = Number(__cryptCall(() =>
-        __wjs_cipher_new(info.name, kb, ivb, 0, this.__autoPad ? 1 : 0)));
+        __wjs2_cipher_new(info.name, kb, ivb, 0, this.__autoPad ? 1 : 0)));
       this.__parts = null;
     } else {
       this.__id = null;
@@ -341,7 +341,7 @@ class DecipherivImpl {
     if (this.__finalized) __badState();
     this.__autoPad = !!autoPad;
     if (this.__id !== null) {
-      __cryptCall(() => __wjs_cipher_set_autopad(String(this.__id), this.__autoPad ? 1 : 0));
+      __cryptCall(() => __wjs2_cipher_set_autopad(String(this.__id), this.__autoPad ? 1 : 0));
     }
     return this;
   }
@@ -357,7 +357,7 @@ class DecipherivImpl {
     if (bytes.length > 2147483646) __unsupportedState();
     let out;
     if (this.__id !== null) {
-      out = __cryptCall(() => __wjs_cipher_update(String(this.__id), bytes));
+      out = __cryptCall(() => __wjs2_cipher_update(String(this.__id), bytes));
     } else {
       this.__parts.push(bytes);
       out = new Uint8Array(0);
@@ -369,7 +369,7 @@ class DecipherivImpl {
     this.__finalized = true;
     let out;
     if (this.__id !== null) {
-      out = __cryptCall(() => __wjs_cipher_final(String(this.__id)));
+      out = __cryptCall(() => __wjs2_cipher_final(String(this.__id)));
     } else if (this.__info.family === "gcm") {
       const ct = __joinParts(this.__parts);
       if (this.__tag === null || this.__tag.length !== this.__tagLen) {
@@ -379,7 +379,7 @@ class DecipherivImpl {
       input.set(ct, 0); input.set(this.__tag, ct.length);
       try {
         // 10e-2：经 anyiv（iv 非空已在构造期校验）
-        out = __wjs_gcm_anyiv(0, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), input);
+        out = __wjs2_gcm_anyiv(0, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), input);
       } catch {
         throw new Error("Unsupported state or unable to authenticate data");
       }
@@ -390,7 +390,7 @@ class DecipherivImpl {
         throw new Error("Unsupported state or unable to authenticate data");
       }
       try {
-        out = __wjs_ccm_crypt(0, this.__key, this.__iv,
+        out = __wjs2_ccm_crypt(0, this.__key, this.__iv,
           this.__aad ?? new Uint8Array(0), ct, this.__tag, this.__tagLen);
       } catch {
         throw new Error("Unsupported state or unable to authenticate data");
@@ -400,7 +400,7 @@ class DecipherivImpl {
       if (this.__tag === null || this.__tag.length !== 16) {
         throw new Error("Unsupported state or unable to authenticate data");
       }
-      out = __cryptCall(() => __wjs_cipher_chacha(
+      out = __cryptCall(() => __wjs2_cipher_chacha(
         0, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), ct, this.__tag));
     }
     return __cipherOut(this, out, outputEncoding);

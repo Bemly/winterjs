@@ -341,14 +341,14 @@ function __fsReadWhole(p, flag) {
     // native open 再报（不在此吞）。
     const st = statSync(p, { throwIfNoEntry: false });
     if (st && st.size > __kIoMaxLength) throw __fsFileTooLarge(st.size);
-    return __wjs_fs_read_file(p);
+    return __wjs2_fs_read_file(p);
   }
-  const fd = Number(__wjs_fs_open(p, __fsFlags(flag, "readFile")));
+  const fd = Number(__wjs2_fs_open(p, __fsFlags(flag, "readFile")));
   try {
     const parts = [];
     let total = 0;
     while (true) {
-      const chunk = __wjs_fs_read_fd(fd, 1 << 20, -1);
+      const chunk = __wjs2_fs_read_fd(fd, 1 << 20, -1);
       if (chunk.length === 0) break;
       total += chunk.length;
       if (total > __kIoMaxLength) throw __fsFileTooLarge(total);
@@ -359,7 +359,7 @@ function __fsReadWhole(p, flag) {
     for (const c of parts) { out.set(c, off); off += c.length; }
     return out;
   } finally {
-    __wjs_fs_close(fd);
+    __wjs2_fs_close(fd);
   }
 }
 function __fsFdOf(p) {
@@ -379,7 +379,7 @@ export function readFileSync(p, opts) {
     const parts = [];
     let total = 0;
     for (;;) {
-      const chunk = __fsCall("read", "", () => __wjs_fs_read_fd(fd, 1 << 20, -1));
+      const chunk = __fsCall("read", "", () => __wjs2_fs_read_fd(fd, 1 << 20, -1));
       if (chunk.length === 0) break;
       total += chunk.length;
       if (total > __kIoMaxLength) throw __fsFileTooLarge(total);
@@ -404,9 +404,9 @@ function __fsFlushOpt(opts) {
 }
 // flush:true 的 one-shot 写后 fsync（另开 'r' fd 落盘；fd 形直刷原 fd）。
 function __fsFlushFile(p) {
-  const fd = Number(__wjs_fs_open(p, __fsFlags("r", "writeFile")));
+  const fd = Number(__wjs2_fs_open(p, __fsFlags("r", "writeFile")));
   try { fsyncSync(fd); }
-  finally { try { __wjs_fs_close(fd); } catch {} }
+  finally { try { __wjs2_fs_close(fd); } catch {} }
 }
 export function writeFileSync(p, data, opts) {
   const enc = __fsEncoding(opts);
@@ -428,16 +428,16 @@ export function writeFileSync(p, data, opts) {
   const bytes = __fsDataEnc(data, "writeFile", enc);
   __fsCall("open", p, () => {
     if (flag === undefined || flag === "w") {
-      __wjs_fs_write_file(p, bytes, __fsMode(opts));
+      __wjs2_fs_write_file(p, bytes, __fsMode(opts));
       if (needFlush) __fsFlushFile(p);
       return;
     }
-    const fd = Number(__wjs_fs_open(p, __fsFlags(flag, "writeFile")));
+    const fd = Number(__wjs2_fs_open(p, __fsFlags(flag, "writeFile")));
     try {
-      __wjs_fs_write_fd(fd, bytes, flag.startsWith("a") ? -1 : 0);
+      __wjs2_fs_write_fd(fd, bytes, flag.startsWith("a") ? -1 : 0);
       if (needFlush) fsyncSync(fd);
     }
-    finally { __wjs_fs_close(fd); }
+    finally { __wjs2_fs_close(fd); }
   });
   // mode 语义：仅新建文件时应用（存在性预判，记档近似）
   const mode = __fsMode(opts);
@@ -547,7 +547,7 @@ export function appendFileSync(p, data, opts) {
     return;
   }
   p = __fsPath(p, "appendFile");
-  __fsCall("open", p, () => __wjs_fs_append_file(p, bytes, __fsMode(opts)));
+  __fsCall("open", p, () => __wjs2_fs_append_file(p, bytes, __fsMode(opts)));
   if (needFlush) __fsFlushFile(p);
 }
 export function statSync(p) {
@@ -556,13 +556,13 @@ export function statSync(p) {
   const __o = arguments[1];
   if (__o && __o.throwIfNoEntry === false) {
     try {
-      return new __Stats(JSON.parse(__wjs_fs_stat(p, true)), __o.bigint === true);
+      return new __Stats(JSON.parse(__wjs2_fs_stat(p, true)), __o.bigint === true);
     } catch (e) {
       // 裸 native 错误无 code——先过 __fsErr 归一化（ENOENT 豁免，其余照抛）
       try { __fsErr(e, "stat", p); } catch (e2) { if (e2 && e2.code === "ENOENT") return undefined; throw e2; }
     }
   }
-  return new __Stats(JSON.parse(__fsCall("stat", p, () => __wjs_fs_stat(p, true))), __o?.bigint === true);
+  return new __Stats(JSON.parse(__fsCall("stat", p, () => __wjs2_fs_stat(p, true))), __o?.bigint === true);
 }
 // 文件系统级状态（M5 vitest 牵引；unix 经 statvfs，type 取 filesystem_id 记档）。
 export function statfsSync(p) {
@@ -572,23 +572,23 @@ export function statfsSync(p) {
   }
   p = __fsPath(p, "statfs");
   const __o = arguments[1];
-  return new __StatsFs(JSON.parse(__fsCall("statfs", p, () => __wjs_fs_statfs(p))), __o?.bigint === true);
+  return new __StatsFs(JSON.parse(__fsCall("statfs", p, () => __wjs2_fs_statfs(p))), __o?.bigint === true);
 }
 export function lstatSync(p) {
   p = __fsPath(p, "lstat");
   const __o = arguments[1];
   if (__o && __o.throwIfNoEntry === false) {
     try {
-      return new __Stats(JSON.parse(__wjs_fs_stat(p, false)), __o.bigint === true);
+      return new __Stats(JSON.parse(__wjs2_fs_stat(p, false)), __o.bigint === true);
     } catch (e) {
       try { __fsErr(e, "lstat", p); } catch (e2) { if (e2 && e2.code === "ENOENT") return undefined; throw e2; }
     }
   }
-  return new __Stats(JSON.parse(__fsCall("stat", p, () => __wjs_fs_stat(p, false))), __o?.bigint === true);
+  return new __Stats(JSON.parse(__fsCall("stat", p, () => __wjs2_fs_stat(p, false))), __o?.bigint === true);
 }
 export function existsSync(p) {
   try {
-    return __wjs_fs_exists(__fsPath(p, "exists"));
+    return __wjs2_fs_exists(__fsPath(p, "exists"));
   } catch {
     return false;
   }
@@ -626,23 +626,23 @@ export function mkdirSync(p, opts) {
     throw e;
   }
   const firstCreated = recursive ? __firstMissing(p) : null;
-  __fsCall("mkdir", p, () => __wjs_fs_mkdir(p, recursive, mode ?? 0o777));
+  __fsCall("mkdir", p, () => __wjs2_fs_mkdir(p, recursive, mode ?? 0o777));
   return firstCreated ?? undefined;
 }
 export function rmSync(p, opts) {
   p = __fsPath(p, "rm");
   const recursive = !!(opts && (opts.recursive ?? false));
   const force = !!(opts && (opts.force ?? false));
-  __fsCall("rm", p, () => __wjs_fs_rm(p, recursive, force));
+  __fsCall("rm", p, () => __wjs2_fs_rm(p, recursive, force));
 }
 export function rmdirSync(p, opts) {
   p = __fsPath(p, "rmdir");
   const recursive = !!(opts && (opts.recursive ?? false));
-  __fsCall("rmdir", p, () => __wjs_fs_rmdir(p, recursive));
+  __fsCall("rmdir", p, () => __wjs2_fs_rmdir(p, recursive));
 }
 export function unlinkSync(p) {
   p = __fsPath(p, "unlink");
-  __fsCall("unlink", p, () => __wjs_fs_unlink(p));
+  __fsCall("unlink", p, () => __wjs2_fs_unlink(p));
 }
 export function readdirSync(p, opts) {
   p = __fsPath(p, "readdir");
@@ -678,7 +678,7 @@ export function readdirSync(p, opts) {
     walk("");
     return out;
   }
-  const out = JSON.parse(__fsCall("scandir", p, () => __wjs_fs_readdir(p, withTypes)));
+  const out = JSON.parse(__fsCall("scandir", p, () => __wjs2_fs_readdir(p, withTypes)));
   if (!withTypes) return asBuf ? out.map((n) => Buffer.from(n)) : out;
   // node getDirent：dirent.parentPath = 目录路径（Dirent 亦挂 path 别名）。
   return out.map(([name, isDir, isFile, isLink]) => new __Dirent(asBuf ? Buffer.from(name) : name, isDir, isFile, isLink, p));
@@ -687,7 +687,7 @@ export function renameSync(a, b) {
   // node 口径：位置参数名 oldPath/newPath（rename-type-check 套件 message 逐字）。
   a = __fsPath(a, "rename", "oldPath");
   b = __fsPath(b, "rename", "newPath");
-  __fsCall("rename", a, () => __wjs_fs_rename(a, b));
+  __fsCall("rename", a, () => __wjs2_fs_rename(a, b));
 }
 export function copyFileSync(src, dst, mode) {
   if (mode !== undefined && typeof mode !== "number") {
@@ -696,12 +696,12 @@ export function copyFileSync(src, dst, mode) {
   }
   src = __fsPath(src, "copyFile");
   dst = __fsPath(dst, "copyFile");
-  __fsCall("copyfile", src, () => __wjs_fs_copy_file(src, dst));
+  __fsCall("copyfile", src, () => __wjs2_fs_copy_file(src, dst));
 }
 export function realpathSync(p, opts) {
   __fsEncoding(opts);
   p = __fsPath(p, "realpath");
-  return __fsCall("lstat", p, () => __wjs_fs_realpath(p));
+  return __fsCall("lstat", p, () => __wjs2_fs_realpath(p));
 }
 // Node 口径：.native = binding 级 realpath（无 JS 层缓存/规范化）。本仓两者
 // 同底座（std canonicalize），直接自引用（vite 8 的 safeRealpathSync 取此面）。
@@ -711,7 +711,7 @@ export function mkdtempSync(prefix, opts) {
   // 全 ARG_TYPE；mkdtemp-prefix-check 套件）。
   prefix = __fsPath(prefix, "prefix");
   __fsEncoding(opts);
-  return __fsCall("mkdir", String(prefix), () => __wjs_fs_mkdtemp(String(prefix)));
+  return __fsCall("mkdir", String(prefix), () => __wjs2_fs_mkdtemp(String(prefix)));
 }
 export const constants = {
   F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
@@ -760,7 +760,7 @@ function __validateIgnoreElement(m, name) {
   e.code = "ERR_INVALID_ARG_TYPE"; throw e;
 }
 // node 口径（lib/internal/fs/watchers.js createIgnoreMatcher）：string 经
-// minimatch（matchBase + win/mac nocase，本仓 `__wjs_glob_match` 近似）/
+// minimatch（matchBase + win/mac nocase，本仓 `__wjs2_glob_match` 近似）/
 // RegExp 经 exec 判空/Function 直透；filename 为 null 时不滤（调用方守卫）。
 const __globNocase = process.platform === "win32" || process.platform === "darwin";
 function __ignoreMatcher(ignore) {
@@ -768,7 +768,7 @@ function __ignoreMatcher(ignore) {
   const list = Array.isArray(ignore) ? ignore : [ignore];
   const compiled = list.map((m) => {
     if (typeof m === "string") {
-      return (fn) => __wjs_glob_match(m, fn, fn.split("/").pop(), __globNocase);
+      return (fn) => __wjs2_glob_match(m, fn, fn.split("/").pop(), __globNocase);
     }
     if (Object.prototype.toString.call(m) === "[object RegExp]") {
       return (fn) => m.exec(fn) !== null;
@@ -783,7 +783,7 @@ function __ignoreMatcher(ignore) {
   };
 }
 // 存活 watch 句柄集（`process._getActiveHandles` 桥；close/stop 即摘）。
-globalThis.__wjsFsHandles ??= new Set();
+globalThis.__wjs2FsHandles ??= new Set();
 // node 口径：filename 按 options.encoding 转码（hex/buffer/base64…；
 // null 直通——部分后端 filename 为 null，encoding 套件接受 null）。
 function __encodeWatchFilename(fn, encoding) {
@@ -803,15 +803,15 @@ class __FSWatcher extends EventEmitter {
     // node 口径（lib/internal/fs/watchers.js FSWatcher.close）：已关即 noop；
     // 'close' 经 nextTick 异步发（handler 内自调 close 安全）。
     if (this.#id !== 0) {
-      __wjs_watch_close(this.#id); this.#id = 0;
-      globalThis.__wjsFsHandles.delete(this);
+      __wjs2_watch_close(this.#id); this.#id = 0;
+      globalThis.__wjs2FsHandles.delete(this);
       process.nextTick(() => this.emit("close"));
     }
   }
   // node 口径：ref/unref 取/释底层句柄引用（watch-ref-unref 套件：unref 后
   // 进程可退；Rust 侧 watch_open 计数联动，幂等）。
-  ref() { if (this.#id !== 0) __wjs_watch_persistent(this.#id, true); return this; }
-  unref() { if (this.#id !== 0) __wjs_watch_persistent(this.#id, false); return this; }
+  ref() { if (this.#id !== 0) __wjs2_watch_persistent(this.#id, true); return this; }
+  unref() { if (this.#id !== 0) __wjs2_watch_persistent(this.#id, false); return this; }
   get closed() { return this.#id === 0; }
 }
 export function watch(p, opts, listener) {
@@ -831,12 +831,12 @@ export function watch(p, opts, listener) {
   const ignoreOpt = opts ? opts.ignore : undefined;
   __validateIgnoreOption(ignoreOpt, "options.ignore");
   const ignoreFn = __ignoreMatcher(ignoreOpt);
-  const id = __fsCall("watch", p, () => __wjs_watch_start(p, recursive, persistent, (ev, fn) => {
+  const id = __fsCall("watch", p, () => __wjs2_watch_start(p, recursive, persistent, (ev, fn) => {
     if (fn != null && ignoreFn && ignoreFn(fn)) return;
     watcher.emit("change", ev, __encodeWatchFilename(fn, watchEncoding));
   }));
   watcher.__attach(id);
-  globalThis.__wjsFsHandles.add(watcher);
+  globalThis.__wjs2FsHandles.add(watcher);
   if (opts && opts.signal) {
     if (opts.signal.aborted) watcher.close();
     else opts.signal.addEventListener("abort", () => watcher.close(), { once: true });
@@ -883,7 +883,7 @@ class __StatWatcher extends EventEmitter {
     //（真机 w2.stop 关共享句柄口径），摘表停 timer + nextTick 发 stop。
     if (this.#stopped) return this;
     this.#stopped = true;
-    globalThis.__wjsFsHandles.delete(this);
+    globalThis.__wjs2FsHandles.delete(this);
     const rec = __statWatchers.get(this.#path);
     if (rec && rec.watcher === this) {
       clearInterval(rec.timer);
@@ -924,7 +924,7 @@ export function watchFile(p, opts, listener) {
     __statWatchers.set(p, rec);
   }
   rec.watcher.on("change", listener);
-  globalThis.__wjsFsHandles.add(rec.watcher);
+  globalThis.__wjs2FsHandles.add(rec.watcher);
   return rec.watcher;
 }
 export function unwatchFile(p, listener) {

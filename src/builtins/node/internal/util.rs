@@ -99,7 +99,7 @@ function once(callback, { preserveReturnValue = false } = {}) {
 
 // Node _sleep 的阻塞实现（Atomics.wait）；运行时主线程禁用，恒 no-op（记档）。
 function sleep(msec) {
-  // Sync sleep unavailable on main thread in winterjs; no-op (deviation).
+  // Sync sleep unavailable on main thread in winterjs2; no-op (deviation).
 }
 
 function assignFunctionName(name, fn, descriptor = {}) {

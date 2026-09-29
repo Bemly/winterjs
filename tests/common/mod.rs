@@ -4,8 +4,8 @@
 use assert_cmd::Command;
 use assert_fs::prelude::*;
 
-pub fn winterjs() -> Command {
-    Command::cargo_bin("winterjs").expect("binary builds")
+pub fn winterjs2() -> Command {
+    Command::cargo_bin("winterjs2").expect("binary builds")
 }
 
 pub fn stdout_of(cmd: &mut Command) -> String {
@@ -125,7 +125,7 @@ float ffi_f32ret(double x) { return (float)(x * 2.0); }
 }
 
 pub fn wjs(args: &[&str], dir: &assert_fs::TempDir) -> (bool, String, String) {
-    let out = winterjs()
+    let out = winterjs2()
         .args(args)
         .current_dir(dir.path())
         .output()

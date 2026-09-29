@@ -20,7 +20,7 @@ try { punycode.decode("!!!!!"); } catch (e) { console.log("err", e instanceof Ra
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();

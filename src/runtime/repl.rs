@@ -12,7 +12,7 @@ use std::io::IsTerminal as _;
 use crate::error::Error;
 use crate::repl::{CompReq, CompResp};
 
-/// JS 线程执行补全（只在主循环调用）：求值 `__wjs_cli_complete(line)`
+/// JS 线程执行补全（只在主循环调用）：求值 `__wjs2_cli_complete(line)`
 /// （prelude/repl_complete 底座桥）并解析 `[[text, desc], ...], completeOn`；
 /// 求值失败/形状不合法回 `(空, line)`（reedline 空集）。
 fn cli_complete_js(
@@ -22,7 +22,7 @@ fn cli_complete_js(
 ) -> (Vec<(String, Option<String>)>, String) {
     let fallback = (Vec::new(), line.to_owned());
     let script = format!(
-        "JSON.stringify(globalThis.__wjs_cli_complete({}))",
+        "JSON.stringify(globalThis.__wjs2_cli_complete({}))",
         serde_json::to_string(line).unwrap_or_else(|_| "\"\"".into()),
     );
     let c_filename = CString::new("repl.js").expect("no NUL");
@@ -110,7 +110,7 @@ enum ReplStep {
     Exited(i32),
 }
 
-/// TLA 包装文本（R6）：调底座桥 `__wjs_repl_tla_wrap(line)`（prelude/repl_complete，
+/// TLA 包装文本（R6）：调底座桥 `__wjs2_repl_tla_wrap(line)`（prelude/repl_complete，
 /// 末表达式 return 化 + .then 双臂）；桥缺位/失败/返回非串（含 null=不改写）回 None。
 fn wrap_text_via_bridge(
     rt: &mut Runtime,
@@ -122,7 +122,7 @@ fn wrap_text_via_bridge(
     rooted!(&in(rt.cx()) let mut wtext = UndefinedValue());
     let wopts = CompileOptionsWrapper::new(rt.cx(), c_filename, 1);
     let wcall = format!(
-        "globalThis.__wjs_repl_tla_wrap({})",
+        "globalThis.__wjs2_repl_tla_wrap({})",
         serde_json::to_string(line).unwrap_or_else(|_| "\"\"".into()),
     );
     let ok = evaluate_script(rt.cx(), global.handle(), &wcall, wtext.handle_mut(), wopts);
@@ -305,7 +305,7 @@ async fn repl_eval(
 pub async fn repl() -> Result<(), Error> {
     let exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "winterjs".into());
+        .unwrap_or_else(|_| "winterjs2".into());
     let init = init_session(vec![exe])?;
     // 声明顺序即 drop 逆序（`engine` 先，见 `run_inner` 处注释，§4.22）。
     let engine = init.engine;
@@ -388,11 +388,11 @@ pub async fn repl() -> Result<(), Error> {
         // SAFETY: `signal` 无内存安全前置条件；REPL 进程生命周期内不恢复默认。
         unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
     }
-    println!("winterjs repl (type .exit to quit)");
+    println!("winterjs2 repl (type .exit to quit)");
     // stdout 管道时块缓冲：banner 立即刷出，否则与 stderr 行错序（实测）。
     use std::io::Write as _;
     let _ = std::io::stdout().flush();
-    tracing::info!(target: "winterjs::runtime", "repl start");
+    tracing::info!(target: "winterjs2::runtime", "repl start");
 
     let err_src = ErrorSource::Script { source: "", filename: "repl.js" };
     // TLA 挂起：state.repl_tla 槽（§4.40 Box<Heap>+trace 模式；跨轮/跨 GC 存活）。
@@ -550,7 +550,7 @@ pub async fn repl() -> Result<(), Error> {
             _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {}
         }
     }
-    tracing::info!(target: "winterjs::runtime", "repl done");
+    tracing::info!(target: "winterjs2::runtime", "repl done");
     end_session(rt, engine);
     Ok(())
 }

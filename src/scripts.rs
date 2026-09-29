@@ -155,7 +155,7 @@ pub fn resolve(target: &str) -> Result<RunTarget, Error> {
 }
 
 // JS bin 进程内递归深度（F3：自举不再 spawn 子进程，同进程复用 Runtime 单次
-// 运行；直接递归（bin 调 bin）仍需封顶，与子进程 `WINTERJS_SPAWN_DEPTH` 同限 32）。
+// 运行；直接递归（bin 调 bin）仍需封顶，与子进程 `WINTERJS2_SPAWN_DEPTH` 同限 32）。
 thread_local! {
     static JS_BIN_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
@@ -194,12 +194,12 @@ pub async fn run(pkg_dir: &Path, script: &str, extra_args: &[String]) -> Result<
                     // `--run <bin> -- <args>` 一致：[exe, bin, ...rest]，`--version`
                     // 类已知 flag 天然落 bin argv，无需 `--` 收尾）。
                     // 语义同 npm 直跑：子进程本无沙箱旗，此处临时全开、跑完恢复。
-                    // 深度与 `WINTERJS_SPAWN_DEPTH` 同限（pitfalls 4.209）。
+                    // 深度与 `WINTERJS2_SPAWN_DEPTH` 同限（pitfalls 4.209）。
                     let depth = js_bin_depth()
                         + crate::builtins::node::child::self_spawn_depth();
                     if depth > crate::builtins::node::child::SELF_SPAWN_LIMIT {
                         return Err(Error::Other(format!(
-                            "winterjs: self-spawn depth limit ({}) exceeded — recursive self-spawn aborted",
+                            "winterjs2: self-spawn depth limit ({}) exceeded — recursive self-spawn aborted",
                             crate::builtins::node::child::SELF_SPAWN_LIMIT
                         )));
                     }
@@ -290,7 +290,7 @@ pub async fn run_file_watch(
         }
         watcher.drain();
         let Some(n) = watcher.changed().await else {
-            tracing::info!(target: "winterjs::scripts", "watch stopped");
+            tracing::info!(target: "winterjs2::scripts", "watch stopped");
             return Ok(());
         };
         eprintln!("watch: {n} change(s), re-running");

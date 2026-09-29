@@ -4,7 +4,7 @@ export default {
 
     // WebSocket 回声：配对服务端 socket，收啥回啥。
     if ((req.headers.get("upgrade") || "").toLowerCase() === "websocket") {
-      const ws = __wjs_serve_socket(req);
+      const ws = __wjs2_serve_socket(req);
       ws.onmessage = (e) => {
         ws.send(e.data);
       };
@@ -22,7 +22,7 @@ export default {
 
     // GET 问候：顺手回显 handler 看到的 scheme（http/https）。
     if (url.pathname === "/api/hello") {
-      return new Response(`hello from winterjs serve [${url.protocol}]`, {
+      return new Response(`hello from winterjs2 serve [${url.protocol}]`, {
         headers: { "content-type": "text/plain; charset=utf-8" },
       });
     }

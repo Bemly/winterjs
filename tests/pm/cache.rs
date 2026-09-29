@@ -69,12 +69,12 @@ fn phase5_cache_second_install_hits_cache() {
     let reg = format!("http://127.0.0.1:{port}");
     let dir = assert_fs::TempDir::new().unwrap();
     let cache = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--add")
         .arg("cached-pkg")
         .arg("--registry")
         .arg(&reg)
-        .env("WINTERJS_CACHE", cache.path())
+        .env("WINTERJS2_CACHE", cache.path())
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -91,12 +91,12 @@ fn phase5_cache_second_install_hits_cache() {
     assert_eq!(cached.len(), 1, "cache dir should hold one tgz");
     // 删 node_modules 模拟二次安装（缓存保留）。
     std::fs::remove_dir_all(dir.path().join("node_modules")).unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--add")
         .arg("cached-pkg")
         .arg("--registry")
         .arg(&reg)
-        .env("WINTERJS_CACHE", cache.path())
+        .env("WINTERJS2_CACHE", cache.path())
         .current_dir(dir.path())
         .output()
         .unwrap();

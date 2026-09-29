@@ -1,6 +1,6 @@
 // node:vm: Script + runInNewContext sandboxing.
 // 虚拟机：脚本编译与沙箱求值隔离。
-// Run / 运行: winterjs --run sample/vm/basics.js
+// Run / 运行: winterjs2 --run sample/vm/basics.js
 import vm from 'node:vm';
 
 const script = new vm.Script('a * b + 1');

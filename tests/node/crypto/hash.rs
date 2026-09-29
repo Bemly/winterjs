@@ -211,7 +211,7 @@ console.log("x-dflt", createHash("shake256").update("abc").digest("hex").length 
 console.log("x-dflt128", createHash("shake128").update("abc").digest("hex").length === 32);
 "#,
     ).unwrap();
-    let out = winterjs().arg("--run").arg(file.path()).current_dir(dir.path()).output().unwrap();
+    let out = winterjs2().arg("--run").arg(file.path()).current_dir(dir.path()).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8(out.stdout).unwrap();
     for tag in ["x-ripemd", "x-s128", "x-s256", "x-hmacri", "x-hmacshake", "x-copy", "x-badlen", "x-hashes", "x-dflt", "x-dflt128"] {

@@ -53,7 +53,7 @@ pub(crate) fn client() -> &'static reqwest::Client {
         // TLS provider 与 fetch 同源（顶层 ring；reqwest 侧 no-provider，见 §2 门控）。
         let _ = rustls::crypto::ring::default_provider().install_default();
         reqwest::Client::builder()
-            .user_agent(concat!("winterjs/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("winterjs2/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest client builds")
@@ -70,7 +70,7 @@ pub async fn fetch_packument(
 ) -> Result<Packument, Error> {
     let base = registry.trim_end_matches('/');
     let url = format!("{base}/{name}");
-    tracing::info!(target: "winterjs::pm", url = url.as_str(), has_auth = token.is_some(), "fetching packument");
+    tracing::info!(target: "winterjs2::pm", url = url.as_str(), has_auth = token.is_some(), "fetching packument");
     let mut req = client().get(&url).header("Accept", "application/json");
     if let Some(t) = token.filter(|s| !s.trim().is_empty()) {
         req = req.header("Authorization", format!("Bearer {}", t.trim()));

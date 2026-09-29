@@ -5,19 +5,19 @@ lang: en
 stub: cli
 permalink: /en/cli/
 ---
-# winterjs CLI Reference
+# winterjs2 CLI Reference
 
-> Source of truth is the binary itself: `winterjs --help`
+> Source of truth is the binary itself: `winterjs2 --help`
 > (or `-l zh --help` for Chinese). This page explains the **rules** behind the
 > flags. 中文版见 [CLI 参考](../zh/cli/).
 
 ## Rules
 
 1. **Exactly one action per invocation.** `--run a.js --eval 1` → exit 1.
-2. **No bare subcommands, no positional actions.** `winterjs a.js` fails;
-   use `winterjs --run a.js`. The only trailing positionals are *script
+2. **No bare subcommands, no positional actions.** `winterjs2 a.js` fails;
+   use `winterjs2 --run a.js`. The only trailing positionals are *script
    arguments* for `--run` (`process.argv.slice(2)`), best separated by `--`:
-   `winterjs --run app.js -- --port 8080`. A bare `winterjs` with no arguments
+   `winterjs2 --run app.js -- --port 8080`. A bare `winterjs2` with no arguments
    enters the interactive REPL (like node/python).
 3. **Modifiers belong to their action.** A modifier given without its action
    exits 1 with `--X only works with --Y (see --help)`. Explicitly passing a
@@ -29,7 +29,7 @@ permalink: /en/cli/
 
 | Flag | Effect |
 |---|---|
-| `-r/--run <FILE\|script>` | Run a JS file (known script extension) or a `package.json` script (bare name); prints the completion value. JS bins in `node_modules/.bin` re-execute through winterjs itself (no node needed). `--watch` re-runs files on change (scripts are not watchable) |
+| `-r/--run <FILE\|script>` | Run a JS file (known script extension) or a `package.json` script (bare name); prints the completion value. JS bins in `node_modules/.bin` re-execute through winterjs2 itself (no node needed). `--watch` re-runs files on change (scripts are not watchable) |
 | `-e/--eval <CODE>` | Evaluate inline JS, print completion value |
 | `-c/--config [--schema]` | Print resolved settings, or its JSON Schema |
 | `-C/--completions <SHELL>` | Print shell completion script (bash/elvish/fish/powershell/zsh) |
@@ -40,7 +40,7 @@ permalink: /en/cli/
 | `-U/--uninstall <PKG...>` | Uninstall globally installed packages |
 | `-p/--publish [--dry-run]` | Publish current package (`--dry-run` validates only) |
 | `--login` | Log in to a registry (token → `~/.npmrc`) |
-| `-u/--upgrade [--dry-run]` | Self-upgrade (needs `WINTERJS_UPDATE_GITHUB=owner/repo`) |
+| `-u/--upgrade [--dry-run]` | Self-upgrade (needs `WINTERJS2_UPDATE_GITHUB=owner/repo`) |
 | `-I/--init [NAME]` | Scaffold a package; installs deps when `package.json` exists |
 | `--repl` | Interactive REPL |
 | `-t/--test [PATH...]` | Run test files; no paths → auto-discover from cwd. `--watch` re-runs on change |
@@ -83,5 +83,5 @@ or self-spawn recursion guard · script `process.exit(n)` propagates `n`.
 Node runtime flags (`--expose-internals`, `--experimental-*`, …) are stripped
 before parsing, recorded on `process.execArgv`, and readable via
 `internal/options`. With a stripped flag, `node --flag file args` shapes are
-accepted (`--run` auto-inserted); bare `winterjs file.js` without compat flags
+accepted (`--run` auto-inserted); bare `winterjs2 file.js` without compat flags
 is still an error. Illegal flag *values* exit 9 (never re-run the same file).

@@ -265,9 +265,9 @@ function __pemEncode(label, der) {
 // 10f crypto二轮：传统 OpenSSL 加密 PEM（EVP_BytesToKey/MD5 + AES-CBC；轮子全在树内）。
 // 引擎原文逐字（缺口令/坏解码）见各抛点注释——本仓报 openssl 3.x 版，与真机同条件对拍。
 function __md5bytes(data) {
-  const id = Number(__cryptCall(() => __wjs_crypto_hash_new("md5", "0")));
-  __cryptCall(() => __wjs_crypto_hash_update(String(id), Buffer.from(data)));
-  return Buffer.from(__cryptCall(() => __wjs_crypto_hash_digest(String(id))));
+  const id = Number(__cryptCall(() => __wjs2_crypto_hash_new("md5", "0")));
+  __cryptCall(() => __wjs2_crypto_hash_update(String(id), Buffer.from(data)));
+  return Buffer.from(__cryptCall(() => __wjs2_crypto_hash_digest(String(id))));
 }
 function __evpBytesToKey(pass, salt8, keyLen) {
   let out = Buffer.alloc(0), prev = Buffer.alloc(0);
@@ -314,7 +314,7 @@ function __osslInterrupted() {
   throw err;
 }
 // 10f crypto六轮：PBES2 解密（`ENCRYPTED PRIVATE KEY`；PBKDF2 + AES-CBC/
-// DES-EDE3，树内轮子零新增：`__wjs_kdf_pbkdf2` + cipher natives）。
+// DES-EDE3，树内轮子零新增：`__wjs2_kdf_pbkdf2` + cipher natives）。
 // 错误一律 OpenSSL 3.x 形：缺口令/口令超 1024B → INTERRUPTED；
 // 口令类型错 → ARG_TYPE（`__pemPassBytes`）；解密失败 → BAD_DECRYPT；
 // 非 PBKDF2/AES/DES-EDE3 参数 → ERR_OSSL_UNSUPPORTED（暂定口径，无 fixture 覆盖）。
@@ -384,12 +384,12 @@ function __pbes2Decrypt(der, options) {
   for (const b of prf[1].body) iter = iter * 256 + b;
   const salt = Buffer.from(prf[0].body);
   const key = Buffer.from(__cryptCall(() =>
-    __wjs_kdf_pbkdf2(hash, Buffer.from(passB), salt, iter, encEntry.keyLen)));
+    __wjs2_kdf_pbkdf2(hash, Buffer.from(passB), salt, iter, encEntry.keyLen)));
   try {
     const id = Number(__cryptCall(() =>
-      __wjs_cipher_new(encEntry.native, key, Buffer.from(enc[1].body), 0, 1)));
-    const head = __cryptCall(() => __wjs_cipher_update(String(id), Buffer.from(ct)));
-    const tail = __cryptCall(() => __wjs_cipher_final(String(id)));
+      __wjs2_cipher_new(encEntry.native, key, Buffer.from(enc[1].body), 0, 1)));
+    const head = __cryptCall(() => __wjs2_cipher_update(String(id), Buffer.from(ct)));
+    const tail = __cryptCall(() => __wjs2_cipher_final(String(id)));
     const pt = Buffer.concat([Buffer.from(head), Buffer.from(tail)]);
     return pt;
   } catch {
@@ -416,12 +416,12 @@ function __pbes2Encrypt(der, cipherOpt, passphrase) {
   const salt = __randFill(new Uint8Array(8));
   const iter = 2048;
   const key = Buffer.from(__cryptCall(() =>
-    __wjs_kdf_pbkdf2("SHA-256", Buffer.from(passB), Buffer.from(salt), iter, entry.keyLen)));
+    __wjs2_kdf_pbkdf2("SHA-256", Buffer.from(passB), Buffer.from(salt), iter, entry.keyLen)));
   const iv = __randFill(new Uint8Array(entry.ivLen));
   const id = Number(__cryptCall(() =>
-    __wjs_cipher_new(entry.native, key, Buffer.from(iv), 1, 1)));
-  const head = __cryptCall(() => __wjs_cipher_update(String(id), Buffer.from(der)));
-  const tail = __cryptCall(() => __wjs_cipher_final(String(id)));
+    __wjs2_cipher_new(entry.native, key, Buffer.from(iv), 1, 1)));
+  const head = __cryptCall(() => __wjs2_cipher_update(String(id), Buffer.from(der)));
+  const tail = __cryptCall(() => __wjs2_cipher_final(String(id)));
   const ct = Buffer.concat([Buffer.from(head), Buffer.from(tail)]);
   const oid = (hex) => __tlv(0x06, Buffer.from(hex, "hex"));
   const oct = (b) => __tlv(0x04, b);
@@ -467,9 +467,9 @@ function __pemEncryptTraditional(der, label, options) {  const table = __pemCiph
   const passB = __pemPassBytes(options.passphrase);
   const iv = __randFill(new Uint8Array(c.ivLen));
   const key = __evpBytesToKey(passB, iv.slice(0, 8), c.keyLen);
-  const id = Number(__cryptCall(() => __wjs_cipher_new(c.native, Buffer.from(key), Buffer.from(iv), 1, 1)));
-  const head = __cryptCall(() => __wjs_cipher_update(String(id), Buffer.from(der)));
-  const tail = __cryptCall(() => __wjs_cipher_final(String(id)));
+  const id = Number(__cryptCall(() => __wjs2_cipher_new(c.native, Buffer.from(key), Buffer.from(iv), 1, 1)));
+  const head = __cryptCall(() => __wjs2_cipher_update(String(id), Buffer.from(der)));
+  const tail = __cryptCall(() => __wjs2_cipher_final(String(id)));
   const ct = Buffer.concat([Buffer.from(head), Buffer.from(tail)]);
   const b64 = ct.toString("base64");
   let body = "";
@@ -495,9 +495,9 @@ function __pemDecryptTraditional(pem, options) {
   if (iv.length !== c.ivLen) __pemBadDecrypt();
   const key = __evpBytesToKey(passB, iv.slice(0, 8), c.keyLen);
   try {
-    const id = Number(__cryptCall(() => __wjs_cipher_new(c.native, Buffer.from(key), Buffer.from(iv), 0, 1)));
-    const head = __cryptCall(() => __wjs_cipher_update(String(id), Buffer.from(pem.der)));
-    const tail = __cryptCall(() => __wjs_cipher_final(String(id)));
+    const id = Number(__cryptCall(() => __wjs2_cipher_new(c.native, Buffer.from(key), Buffer.from(iv), 0, 1)));
+    const head = __cryptCall(() => __wjs2_cipher_update(String(id), Buffer.from(pem.der)));
+    const tail = __cryptCall(() => __wjs2_cipher_final(String(id)));
     return Buffer.concat([Buffer.from(head), Buffer.from(tail)]);
   } catch {
     __pemBadDecrypt();
@@ -756,8 +756,8 @@ class KeyObject {
         }
         if (format === "raw-seed" && s.kind === "private") {
           const parts = JSON.parse(__cryptCall(() => (isKem
-            ? __wjs_mlkem_seed_from_pkcs8(s.material)
-            : __wjs_mldsa_seed_from_pkcs8(s.material))));
+            ? __wjs2_mlkem_seed_from_pkcs8(s.material)
+            : __wjs2_mldsa_seed_from_pkcs8(s.material))));
           return Buffer.from(__b64dec(parts.seed));
         }
         const err = new Error("The selected key encoding is incompatible with the key type");
@@ -784,8 +784,8 @@ class KeyObject {
           throw err;
         }
         if (format === "raw-private") {
-          const pubDer = __cryptCall(() => __wjs_ec_public(curve, s.material));
-          const parts = JSON.parse(__cryptCall(() => __wjs_ec_jwk(curve, s.material, pubDer)));
+          const pubDer = __cryptCall(() => __wjs2_ec_public(curve, s.material));
+          const parts = JSON.parse(__cryptCall(() => __wjs2_ec_jwk(curve, s.material, pubDer)));
           return Buffer.from(__b64urlDec(parts.d));
         }
         // 10f crypto五轮：raw-public 的 type 选项（真机 26 口径）——缺省/
@@ -798,7 +798,7 @@ class KeyObject {
           err.code = "ERR_INVALID_ARG_VALUE";
           throw err;
         }
-        const parts = JSON.parse(__cryptCall(() => __wjs_ec_jwk_pub(curve, s.material)));
+        const parts = JSON.parse(__cryptCall(() => __wjs2_ec_jwk_pub(curve, s.material)));
         const x = __b64urlDec(parts.x), y = __b64urlDec(parts.y);
         if (t === "compressed") return Buffer.concat([Buffer.from([(y[y.length - 1] & 1) ? 3 : 2]), x]);
         return Buffer.concat([Buffer.from([4]), x, y]);

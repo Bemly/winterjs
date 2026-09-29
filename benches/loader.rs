@@ -44,7 +44,7 @@ fn bench_transpile(c: &mut Criterion) {
 
 /// resolver 裸导入（temp 小包；含一次 tsconfig 自动发现）。
 fn bench_resolve(c: &mut Criterion) {
-    let dir = std::env::temp_dir().join("winterjs-bench-resolve");
+    let dir = std::env::temp_dir().join("winterjs2-bench-resolve");
     std::fs::create_dir_all(dir.join("node_modules/pkg")).unwrap();
     std::fs::write(dir.join("node_modules/pkg/package.json"), "{\"main\":\"index.js\"}").unwrap();
     std::fs::write(dir.join("node_modules/pkg/index.js"), "export default 1;\n").unwrap();

@@ -5,7 +5,7 @@ lang: zh
 stub: quickstart
 permalink: /zh/quickstart/
 ---
-# winterjs 快速上手
+# winterjs2 快速上手
 
 > 5 分钟从零跑起 JS。English version: [Quickstart](../en/quickstart/).
 
@@ -17,22 +17,22 @@ export SDKROOT="$(xcrun --show-sdk-path)"          # macOS，每个新 shell 都
 export LIBCLANG_PATH="/opt/homebrew/opt/llvm/lib"
 export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 
-./target/debug/winterjs --eval '40 + 2'            # → 42
+./target/debug/winterjs2 --eval '40 + 2'            # → 42
 ```
 
 ## 2. 跑文件、求值、进 REPL
 
 ```bash
-./target/debug/winterjs --run sample/web/timers.js  # 跑 JS 文件并打印完成值
-./target/debug/winterjs --eval 'await Promise.resolve(7)'  # → 7
-./target/debug/winterjs --repl                       # 交互式 REPL（Ctrl-D 退出）
+./target/debug/winterjs2 --run sample/web/timers.js  # 跑 JS 文件并打印完成值
+./target/debug/winterjs2 --eval 'await Promise.resolve(7)'  # → 7
+./target/debug/winterjs2 --repl                       # 交互式 REPL（Ctrl-D 退出）
 ```
 
 规矩（详见 [CLI 参考](cli/)）：
 
 * **一次恰好一个动作**：`--run a.js --eval 1` 直接报错。
-* **无裸子命令/无裸位置参数**：`winterjs a.js` 是错的，写 `--run a.js`；
-  脚本自己的参数放 `--` 之后：`winterjs --run app.js -- --port 8080`。
+* **无裸子命令/无裸位置参数**：`winterjs2 a.js` 是错的，写 `--run a.js`；
+  脚本自己的参数放 `--` 之后：`winterjs2 --run app.js -- --port 8080`。
 * **修饰 flag 只在对应动作下生效**：`--port` 只配 `--serve`，
   `--filter` 只配 `--test`，`--watch` 配 `--test/--run/--serve`，
   `--schema` 只配 `--config`，
@@ -53,7 +53,7 @@ console.log(await res.text()); // hi
 ```
 
 ```bash
-./target/debug/winterjs --run hello.mjs
+./target/debug/winterjs2 --run hello.mjs
 ```
 
 CommonJS 同样可用（`require`、`module.exports`、`__dirname`）。
@@ -61,12 +61,12 @@ CommonJS 同样可用（`require`、`module.exports`、`__dirname`）。
 ## 4. 测试、lint、格式化与 serve
 
 ```bash
-./target/debug/winterjs --test sample/test-runner/   # 发现并跑测试文件
-./target/debug/winterjs --test sample/test-runner/ --filter 'basics*'
-./target/debug/winterjs --test sample/test-runner/ --watch   # 变更重跑（Ctrl-C 停止）
-./target/debug/winterjs --lint -- --help              # 原样转发给 oxlint
-./target/debug/winterjs --fmt                         # 转发给 oxfmt
-./target/debug/winterjs --serve sample/serve-hello/public --port 8080 \
+./target/debug/winterjs2 --test sample/test-runner/   # 发现并跑测试文件
+./target/debug/winterjs2 --test sample/test-runner/ --filter 'basics*'
+./target/debug/winterjs2 --test sample/test-runner/ --watch   # 变更重跑（Ctrl-C 停止）
+./target/debug/winterjs2 --lint -- --help              # 原样转发给 oxlint
+./target/debug/winterjs2 --fmt                         # 转发给 oxfmt
+./target/debug/winterjs2 --serve sample/serve-hello/public --port 8080 \
   --handler sample/serve-hello/handler.mjs            # 静态 + 动态 fetch + WS
 ```
 

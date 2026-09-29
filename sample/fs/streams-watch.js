@@ -1,6 +1,6 @@
 // node:fs streams + watch: pipe a file, then watchFile a temp file.
 // fs 流与监听：管道拷贝文件 + 轮询监听临时文件。
-// Run / 运行: winterjs --run sample/fs/streams-watch.js
+// Run / 运行: winterjs2 --run sample/fs/streams-watch.js
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

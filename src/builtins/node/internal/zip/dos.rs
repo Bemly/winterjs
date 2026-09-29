@@ -14,12 +14,12 @@ const { FLAG_UTF8, EXTRA_ID_UNICODE_PATH } = constants;
 const { forEachExtraField } = extraFields;
 
 function __zipCrc32(data, seed = 0) {
-  if (typeof __wjs_zlib_crc32 === 'function') {
+  if (typeof __wjs2_zlib_crc32 === 'function') {
     let bytes;
     if (typeof data === 'string') bytes = new TextEncoder().encode(data);
     else if (data instanceof Uint8Array) bytes = data;
     else bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    return __wjs_zlib_crc32(bytes, seed >>> 0);
+    return __wjs2_zlib_crc32(bytes, seed >>> 0);
   }
   let crc = (seed ^ -1) >>> 0;
   const table = __zipCrc32.table ??= (() => {

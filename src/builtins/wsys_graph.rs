@@ -1,4 +1,4 @@
-//! 本体图面（WinterJS.graph；petgraph id 表托管，裸指针不出 JS）。
+//! 本体图面（WinterJS2.graph；petgraph id 表托管，裸指针不出 JS）。
 //!
 //! 纯搬移拆分自 wsys.rs（§0.9 超限拆分；调用方经 wsys 原位重导出）。
 //! UNSAFE-BOUNDARY：全部 JSNative 入口经 `wrap_cx` + `Frame::from_raw`
@@ -38,7 +38,7 @@ fn arg_gid(cx: &mut JSContext, frame: &Frame, i: u32, what: &str) -> Option<u64>
     Some(n as u64)
 }
 
-/// `__wjs_wsys_graph_create(kind)` → id.
+/// `__wjs2_wsys_graph_create(kind)` → id.
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_graph_faces`。
 pub unsafe extern "C" fn graph_create(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -72,7 +72,7 @@ pub unsafe extern "C" fn graph_create(
     }
 }
 
-/// `__wjs_wsys_graph_add_node(id, label)` → idx。
+/// `__wjs2_wsys_graph_add_node(id, label)` → idx。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_graph_faces`。
 pub unsafe extern "C" fn graph_add_node(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -109,7 +109,7 @@ pub unsafe extern "C" fn graph_add_node(
     }
 }
 
-/// `__wjs_wsys_graph_add_edge(id, a, b, label?)` 。
+/// `__wjs2_wsys_graph_add_edge(id, a, b, label?)` 。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_graph_faces`。
 pub unsafe extern "C" fn graph_add_edge(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -179,7 +179,7 @@ pub unsafe extern "C" fn graph_add_edge(
     }
 }
 
-/// `__wjs_wsys_graph_toposort(id)` → idx 数组 JSON 串（有环即错；仅 directed）。
+/// `__wjs2_wsys_graph_toposort(id)` → idx 数组 JSON 串（有环即错；仅 directed）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_graph_faces`。
 pub unsafe extern "C" fn graph_toposort(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -228,7 +228,7 @@ pub unsafe extern "C" fn graph_toposort(
     }
 }
 
-/// `__wjs_wsys_graph_counts(id)` → `[nodes, edges]` JSON；`__wjs_wsys_graph_free(id)`。
+/// `__wjs2_wsys_graph_counts(id)` → `[nodes, edges]` JSON；`__wjs2_wsys_graph_free(id)`。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_graph_faces`。
 pub unsafe extern "C" fn graph_counts(
     cx_raw: *mut mozjs::jsapi::JSContext,

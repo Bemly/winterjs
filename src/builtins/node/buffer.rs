@@ -4,7 +4,7 @@
 //! (getter/setter)/File/Blob。SlowBuffer 已移除（真机 26 `typeof undefined`，§4.65）。
 pub const SOURCE: &str = r#"
 const Buffer = globalThis.Buffer;
-const api = globalThis.__wjs_bufApi;
+const api = globalThis.__wjs2_bufApi;
 
 const constants = {
   MAX_LENGTH: api.kMaxLength,

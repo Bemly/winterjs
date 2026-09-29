@@ -11,10 +11,10 @@
 //! - external 的 finalize 经 `JS::BufferContentsFreeFunc` 桥（Box 携带 env/
 //!   cb/hint；本运行时单 GC 线程 + FOREGROUND 语义，free 恒主线程——SM 文档
 //!   的"任意线程"在本运行时不会发生，记档）。
-//! - typedarray 建/读全走 global 构造器（`__wjs_napi_new`）——11 种含
+//! - typedarray 建/读全走 global 构造器（`__wjs2_napi_new`）——11 种含
 //!   BigInt64/BigUint64 一把覆盖；napi 与 SM 的 Scalar::Type 序号不同
 //!   （clamped 2↔8），显式映射表双向。
-//! - Buffer = Uint8Array + Buffer.prototype（`__wjs_napi_bufferify`），与
+//! - Buffer = Uint8Array + Buffer.prototype（`__wjs2_napi_bufferify`），与
 //!   Node 实例形状一致（instanceof Buffer ✓）。
 
 use std::ffi::{c_void, CStr};
@@ -160,7 +160,7 @@ unsafe fn new_owned_ab(cx: &mut JSContext, len: usize) -> Option<(*mut c_void, *
 /// # Safety
 /// `env` 有效；`ab` 为已 rooted 的 ArrayBuffer 对象。
 unsafe fn u8_over_ab(env: napi_env, ab: *mut JSObject) -> Option<JSVal> {
-    // SAFETY：ctor/实参先 rooted 再调 `__wjs_napi_new`（全语义构造）。
+    // SAFETY：ctor/实参先 rooted 再调 `__wjs2_napi_new`（全语义构造）。
     unsafe {
         let mut cx = cx_of(env);
         rooted!(&in(cx) let ab_root: *mut JSObject = ab);
@@ -182,7 +182,7 @@ unsafe fn u8_over_ab(env: napi_env, ab: *mut JSObject) -> Option<JSVal> {
         ) {
             return None;
         }
-        let Some(helper) = get_prop_value(&mut cx, crate::state::global(), c"__wjs_napi_new") else {
+        let Some(helper) = get_prop_value(&mut cx, crate::state::global(), c"__wjs2_napi_new") else {
             return None;
         };
         let Some(r) = call_two(
@@ -343,7 +343,7 @@ pub unsafe extern "C" fn napi_is_detached_arraybuffer(
 
 // ── TypedArray ───────────────────────────────────────────────────────────
 
-/// napi typedarray 类型 → global 构造器名（`__wjs_napi_new` 建）。
+/// napi typedarray 类型 → global 构造器名（`__wjs2_napi_new` 建）。
 fn ta_ctor_name(t: napi_typedarray_type) -> Option<&'static CStr> {
     Some(match t {
         sys::napi_typedarray_type_napi_int8_array => c"Int8Array",
@@ -404,7 +404,7 @@ pub unsafe extern "C" fn napi_create_typedarray(
     }
     let mut cx = unsafe { cx_of(env) };
     let env_ref = unsafe { e(env) };
-    // SAFETY：构造器/实参数组先 rooted 再调用（__wjs_napi_new = new 全语义）。
+    // SAFETY：构造器/实参数组先 rooted 再调用（__wjs2_napi_new = new 全语义）。
     unsafe {
         if !mozjs::jsapi::JS::IsArrayBufferObject(ab_v.to_object()) {
             return sys::napi_status_napi_arraybuffer_expected;
@@ -436,7 +436,7 @@ pub unsafe extern "C" fn napi_create_typedarray(
                 return NAPI_GENERIC_FAILURE;
             }
         }
-        let Some(helper) = get_prop_value(&mut cx, crate::state::global(), c"__wjs_napi_new")
+        let Some(helper) = get_prop_value(&mut cx, crate::state::global(), c"__wjs2_napi_new")
         else {
             return NAPI_GENERIC_FAILURE;
         };
@@ -678,7 +678,7 @@ unsafe fn bufferify(env: napi_env, obj: *mut JSObject) -> Option<JSVal> {
     // SAFETY：helper 调用（call_one 前置；异常经 pending）。
     unsafe {
         let mut cx = cx_of(env);
-        let Some(helper) = get_prop_value(&mut cx, crate::state::global(), c"__wjs_napi_bufferify")
+        let Some(helper) = get_prop_value(&mut cx, crate::state::global(), c"__wjs2_napi_bufferify")
         else {
             return None;
         };
@@ -829,7 +829,7 @@ pub unsafe extern "C" fn napi_is_buffer(
     let mut cx = unsafe { cx_of(env) };
     // SAFETY：prelude helper（instanceof Buffer；异常不可能，返回值恒布尔）。
     unsafe {
-        let Some(helper) = get_prop_value(&mut cx, crate::state::global(), c"__wjs_napi_is_buffer")
+        let Some(helper) = get_prop_value(&mut cx, crate::state::global(), c"__wjs2_napi_is_buffer")
         else {
             return NAPI_GENERIC_FAILURE;
         };

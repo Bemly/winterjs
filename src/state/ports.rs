@@ -93,7 +93,7 @@ pub fn port_has_ref(id: u64) -> bool {
     with_rooted(|s| s.worker_ports.iter().find(|p| p.id == id).is_some_and(|p| p.refed))
 }
 
-/// 摘目标（`__wjs_port_detach` 用）：迁移排空后/静默摘除，不通知对端，不碰路由。
+/// 摘目标（`__wjs2_port_detach` 用）：迁移排空后/静默摘除，不通知对端，不碰路由。
 pub fn port_detach(id: u64) {
     with_rooted(|s| {
         if let Some(p) = s.worker_ports.iter_mut().find(|p| p.id == id) {
@@ -325,7 +325,7 @@ fn port_xfer() -> &'static Mutex<HashMap<String, PortOffer>> {
     PORT_XFER.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 邀约迁移（`__wjs_port_offer` 用）：表项须 open 且未迁移；成功保留 target 收
+/// 邀约迁移（`__wjs2_port_offer` 用）：表项须 open 且未迁移；成功保留 target 收
 /// 竞态消息（`forwarded` 到达排空），置 moved 停计数，回 nonce 串；失败回 None。
 static PORT_XFER: OnceLock<Mutex<HashMap<String, PortOffer>>> = OnceLock::new();
 static PORT_XFER_NEXT: AtomicU64 = AtomicU64::new(1);
@@ -389,13 +389,13 @@ pub fn port_offer(id: u64) -> Option<String> {
     Some(nonce)
 }
 
-/// 撤邀约（`__wjs_port_withdraw` 用）：消息组装失败/未引用转让的槽回收；
+/// 撤邀约（`__wjs2_port_withdraw` 用）：消息组装失败/未引用转让的槽回收；
 /// 源表项保持摘 target（JS 侧已 neutered），对端无感知。
 pub fn port_withdraw(nonce: &str) -> bool {
     port_xfer().lock().ok().is_some_and(|mut m| m.remove(nonce).is_some())
 }
 
-/// 承接迁移（`__wjs_port_accept` 用）：nonce 有效即在当前会话建表（路由直连原
+/// 承接迁移（`__wjs2_port_accept` 用）：nonce 有效即在当前会话建表（路由直连原
 /// 对端），回发 `PortForward` 升源表项为转发器，回新 id；失败回 None。
 pub fn port_accept(nonce: &str) -> Option<u64> {
     let offer = port_xfer().lock().ok()?.remove(nonce)?;
@@ -481,7 +481,7 @@ fn bc_recount(id: u64) {
     port_bump(delta);
 }
 
-/// 订阅（`__wjs_bc_sub` 用）：进程注册 + 会话建表，回本地 sub id。
+/// 订阅（`__wjs2_bc_sub` 用）：进程注册 + 会话建表，回本地 sub id。
 pub fn bc_sub(name: String) -> Option<u64> {
     let own_tx = with_plain(|p| p.worker_tx.clone())?;
     let id = with_plain(|p| {
@@ -503,7 +503,7 @@ pub fn bc_sub(name: String) -> Option<u64> {
     Some(id)
 }
 
-/// 退订（`__wjs_bc_unsub` 用）：双表摘除；计过数即减。
+/// 退订（`__wjs2_bc_unsub` 用）：双表摘除；计过数即减。
 pub fn bc_unsub(id: u64) {
     let name = with_rooted(|s| {
         let mut out = None;
@@ -529,7 +529,7 @@ pub fn bc_unsub(id: u64) {
     }
 }
 
-/// 扇出（`__wjs_bc_pub` 用）：同名订阅全发（除发送者自身 `(sess, sub)`），
+/// 扇出（`__wjs2_bc_pub` 用）：同名订阅全发（除发送者自身 `(sess, sub)`），
 /// 关闭/死亡即摘。同会话订阅走 pending 表（`receiveMessageOnPort` 同步收信
 /// 口 + pump 逐轮派发双消费，端口 pending 同款；10f broadcastchannel 套件）。
 pub fn bc_pub(name: &str, except_sub: u64, json: String) {
@@ -585,7 +585,7 @@ pub fn take_bc_pending() -> Vec<(u64, String)> {
     })
 }
 
-/// 旗变更（`__wjs_bc_flags` 用）：`listen/unlisten/ref/unref` 四档。
+/// 旗变更（`__wjs2_bc_flags` 用）：`listen/unlisten/ref/unref` 四档。
 pub fn bc_flags(id: u64, what: &str) {
     with_rooted(|s| {
         if let Some(b) = s.bc_targets.iter_mut().find(|b| b.id == id) {

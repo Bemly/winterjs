@@ -152,7 +152,7 @@ fn okp_kind_arg(cx: &mut JSContext, frame: &Frame, idx: u32) -> Option<String> {
     }
 }
 
-/// `__wjs_okp_pkcs8_from_seed(kind, seedU8)` → PKCS#8 DER。
+/// `__wjs2_okp_pkcs8_from_seed(kind, seedU8)` → PKCS#8 DER。
 pub unsafe extern "C" fn okp_pkcs8_from_seed(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -180,7 +180,7 @@ pub unsafe extern "C" fn okp_pkcs8_from_seed(
     }
 }
 
-/// `__wjs_okp_spki_from_pub(kind, pubU8)` → SPKI DER。
+/// `__wjs2_okp_spki_from_pub(kind, pubU8)` → SPKI DER。
 pub unsafe extern "C" fn okp_spki_from_pub(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -208,7 +208,7 @@ pub unsafe extern "C" fn okp_spki_from_pub(
     }
 }
 
-/// `__wjs_okp_seed_from_pkcs8(kind, derU8)` → 32B seed。
+/// `__wjs2_okp_seed_from_pkcs8(kind, derU8)` → 32B seed。
 pub unsafe extern "C" fn okp_seed_from_pkcs8(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -236,7 +236,7 @@ pub unsafe extern "C" fn okp_seed_from_pkcs8(
     }
 }
 
-/// `__wjs_okp_pub_from_spki(kind, derU8)` → 32B pub。
+/// `__wjs2_okp_pub_from_spki(kind, derU8)` → 32B pub。
 pub unsafe extern "C" fn okp_pub_from_spki(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -264,7 +264,7 @@ pub unsafe extern "C" fn okp_pub_from_spki(
     }
 }
 
-/// `__wjs_ed_generate()` → 32B seed。
+/// `__wjs2_ed_generate()` → 32B seed。
 pub unsafe extern "C" fn ed_generate(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -281,11 +281,11 @@ pub unsafe extern "C" fn ed_generate(
         report_error(&mut cx, "OperationError: cannot get random values");
         return false;
     }
-    tracing::debug!(target: "winterjs::crypto", "Ed25519 key generated");
+    tracing::debug!(target: "winterjs2::crypto", "Ed25519 key generated");
     set_rval_bytes(&mut cx, &frame, &seed)
 }
 
-/// `__wjs_ed_public(seedU8)` → 32B pub。
+/// `__wjs2_ed_public(seedU8)` → 32B pub。
 pub unsafe extern "C" fn ed_public(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -309,7 +309,7 @@ pub unsafe extern "C" fn ed_public(
     set_rval_bytes(&mut cx, &frame, &publ)
 }
 
-/// `__wjs_ed_sign(seedU8, dataU8)` → 64B 签名。
+/// `__wjs2_ed_sign(seedU8, dataU8)` → 64B 签名。
 pub unsafe extern "C" fn ed_sign(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -337,7 +337,7 @@ pub unsafe extern "C" fn ed_sign(
     set_rval_bytes(&mut cx, &frame, &sig.to_bytes())
 }
 
-/// `__wjs_ed_verify(pubU8, sigU8, dataU8)` → boolean。
+/// `__wjs2_ed_verify(pubU8, sigU8, dataU8)` → boolean。
 pub unsafe extern "C" fn ed_verify(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -387,7 +387,7 @@ pub unsafe extern "C" fn ed_verify(
 // 口径：seed 57B（`ed25519` 32B 的放大版）；签名 114B 确定性档；验签失败回
 // false（`ed_verify` 同款）；DER 经上方 `okp_*` 57B 分支（真机逐字节对）。
 
-/// `__wjs_ed448_generate()` → 57B seed。
+/// `__wjs2_ed448_generate()` → 57B seed。
 pub unsafe extern "C" fn ed448_generate(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -404,11 +404,11 @@ pub unsafe extern "C" fn ed448_generate(
         report_error(&mut cx, "OperationError: cannot get random values");
         return false;
     }
-    tracing::debug!(target: "winterjs::crypto", "Ed448 key generated");
+    tracing::debug!(target: "winterjs2::crypto", "Ed448 key generated");
     set_rval_bytes(&mut cx, &frame, &seed)
 }
 
-/// `__wjs_ed448_public(seedU8)` → 57B pub。
+/// `__wjs2_ed448_public(seedU8)` → 57B pub。
 pub unsafe extern "C" fn ed448_public(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -433,7 +433,7 @@ pub unsafe extern "C" fn ed448_public(
     set_rval_bytes(&mut cx, &frame, publ)
 }
 
-/// `__wjs_ed448_sign(seedU8, dataU8)` → 114B 签名（确定性纯签名，真机同款）。
+/// `__wjs2_ed448_sign(seedU8, dataU8)` → 114B 签名（确定性纯签名，真机同款）。
 pub unsafe extern "C" fn ed448_sign(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -460,7 +460,7 @@ pub unsafe extern "C" fn ed448_sign(
     set_rval_bytes(&mut cx, &frame, &sig.to_bytes())
 }
 
-/// `__wjs_ed448_verify(pubU8, sigU8, dataU8)` → boolean。
+/// `__wjs2_ed448_verify(pubU8, sigU8, dataU8)` → boolean。
 pub unsafe extern "C" fn ed448_verify(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

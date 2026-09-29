@@ -159,10 +159,10 @@ function __emit(type, data) {
 }
 // 当前上下文栈（串行泵：测试/钩子/suite 回调执行期压栈，跨 setImmediate 有效）。
 const __ctxStack = [];
-// 名过滤（`winterjs test --test-name-pattern` 经 env 传入；子串或 /re/flags）。
+// 名过滤（`winterjs2 test --test-name-pattern` 经 env 传入；子串或 /re/flags）。
 const __namePat = (() => {
   try {
-    const p = globalThis.process && globalThis.process.env && globalThis.process.env.WINTERJS_TEST_NAME_PATTERN;
+    const p = globalThis.process && globalThis.process.env && globalThis.process.env.WINTERJS2_TEST_NAME_PATTERN;
     if (!p) return null;
     if (p.length > 1 && p.startsWith("/") && p.lastIndexOf("/") > 0) {
       return { re: new RegExp(p.slice(1, p.lastIndexOf("/")), p.slice(p.lastIndexOf("/") + 1)) };

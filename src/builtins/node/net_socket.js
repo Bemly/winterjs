@@ -75,7 +75,7 @@ class Socket extends EventEmitter {
         }
         h.__adopted = true;
         if (h.__udsPath !== undefined) __boundPaths.delete(h.__udsPath);
-        if (h.__holdToken) { try { __wjs_net_unhold(h.__holdToken); } catch {} }
+        if (h.__holdToken) { try { __wjs2_net_unhold(h.__holdToken); } catch {} }
         this.__adoptHost = h.__boundHost ?? null;
         this.__adoptPort = h.__boundPort ?? 0;
         this.__adoptUds = h.__isPipe ? h.__udsPath : null;
@@ -149,7 +149,7 @@ class Socket extends EventEmitter {
     // transfer-guards 套件：Socket 不可经 MessagePort transfer（node kTransferList
     // 断言族的最保守近似：任何 Socket 在 transfer list 即 ERR_WORKER_HANDLE_NOT_
     // TRANSFERABLE；worker 侧 __normTransfer 认领，成功转移面本就另案）。
-    try { (globalThis.__wjs_netXfer ??= new Map()).set(this, "net.Socket"); } catch {}
+    try { (globalThis.__wjs2_netXfer ??= new Map()).set(this, "net.Socket"); } catch {}
     this.__handleClosed = false;
     // node _handle 表面（10f：套件直接打补丁观测 setNoDelay/setKeepAlive 调用；
     // write-after-close 套件点名 _handle.close()；unref-timer 套件点名 _unrefTimer）。
@@ -163,8 +163,8 @@ class Socket extends EventEmitter {
       // 句柄→socket 注册（parser consume() 经 handle 回查 socket；timeout-reset
       // 套件。WeakMap 无泄漏）。
       try {
-        globalThis.__wjs_sockByHandle ??= new WeakMap();
-        globalThis.__wjs_sockByHandle.set(__h, self);
+        globalThis.__wjs2_sockByHandle ??= new WeakMap();
+        globalThis.__wjs2_sockByHandle.set(__h, self);
       } catch { /* 注册失败即 consume 空转 */ }
       return __h;
     };
@@ -334,15 +334,15 @@ class Socket extends EventEmitter {
     this[kTimeout] = null;
     this.setTimeout = (ms, cb) => {
       const delay = Number(ms) || 0;
-      if (this.__wjs_stimer) { clearTimeout(this.__wjs_stimer); this.__wjs_stimer = null; }
+      if (this.__wjs2_stimer) { clearTimeout(this.__wjs2_stimer); this.__wjs2_stimer = null; }
       this[kTimeout] = null;
       // node 口径：socket.timeout 反映最后一次 setTimeout（client-set-timeout
       // 套件断言；旧"不发布"偏差作废，真机 26 实测 socket.timeout 即 ms 值）。
       this.timeout = delay > 0 ? delay : 0;
       if (delay > 0) {
-        const t = setTimeout(() => { this.__wjs_stimer = null; this.emit("timeout"); }, delay);
+        const t = setTimeout(() => { this.__wjs2_stimer = null; this.emit("timeout"); }, delay);
         t.unref();
-        this.__wjs_stimer = t;
+        this.__wjs2_stimer = t;
         this[kTimeout] = t;
       }
       if (typeof cb === "function") this.once("timeout", cb);
@@ -704,15 +704,15 @@ class Socket extends EventEmitter {
     if (this.__kaState) { const [ke, kd, ki, kc] = this.__kaState; try { this._handle.setKeepAlive(ke, kd, ki, kc); } catch {} }
     if (sockPath !== null && this.__adoptUds) {
       this.localAddress = this.__adoptUds;
-      this.__id = Number(__wjs_net_connect(sockPath, "", this, this.__adoptUds));
+      this.__id = Number(__wjs2_net_connect(sockPath, "", this, this.__adoptUds));
     } else this.__id = sockPath !== null
-      ? Number(__wjs_net_connect(sockPath, "", this, false))
+      ? Number(__wjs2_net_connect(sockPath, "", this, false))
       : (this.__localAddrOpt !== null && this.__localAddrOpt !== undefined
-        ? Number(__wjs_net_connect(this.__targetHost, this.__targetPort, this, this.__localAddrOpt, __noDelay === true))
-        : Number(__wjs_net_connect(this.__targetHost, this.__targetPort, this, __noDelay === true)));
+        ? Number(__wjs2_net_connect(this.__targetHost, this.__targetPort, this, this.__localAddrOpt, __noDelay === true))
+        : Number(__wjs2_net_connect(this.__targetHost, this.__targetPort, this, __noDelay === true)));
     // unref 闩锁结算（connect 前 unref 过即补调）。
     if (this.__unrefLatched === true && this.__id) {
-      try { __wjs_net_unref(this.__id); } catch { /* entry gone 即无事 */ }
+      try { __wjs2_net_unref(this.__id); } catch { /* entry gone 即无事 */ }
     }
   }
   // 事件循环派发钩子（Rust dispatch 调用；kind/data 均为字符串）
@@ -747,7 +747,7 @@ class Socket extends EventEmitter {
         }
         if (this.__endAfterFlush) {
           this.__endAfterFlush = false;
-          if (this.__id) __wjs_net_end(this.__id);
+          if (this.__id) __wjs2_net_end(this.__id);
         }
         // HE 成功：拆回落钩（此后 close 走正常路径）。
         this.__heOnErr = null; this.__heSeq = null;
@@ -790,7 +790,7 @@ class Socket extends EventEmitter {
           const __s = this;
           queueMicrotask(() => {
             if (__s.allowHalfOpen && !__s.destroyed && __s.__id && __s.__peerFin) {
-              try { __wjs_net_halfhold(__s.__id); } catch { /* entry gone 即无事 */ }
+              try { __wjs2_net_halfhold(__s.__id); } catch { /* entry gone 即无事 */ }
             }
           });
         }

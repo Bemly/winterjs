@@ -1,6 +1,6 @@
 // CompressionStream: streaming compression (gzip/deflate + zstd extension).
-// CompressionStream：流式压缩（gzip/deflate + winterjs 扩展 zstd）。
-// Run / 运行: winterjs --run sample/web/compression-stream.js
+// CompressionStream：流式压缩（gzip/deflate + winterjs2 扩展 zstd）。
+// Run / 运行: winterjs2 --run sample/web/compression-stream.js
 async function compress(format, text) {
   const cs = new CompressionStream(format);
   const writer = cs.writable.getWriter();
@@ -20,4 +20,4 @@ async function compress(format, text) {
 const src = 'hello compression '.repeat(20);
 console.log('[compression-stream] gzip bytes:', (await compress('gzip', src)).length > 0);
 console.log('[compression-stream] deflate bytes:', (await compress('deflate', src)).length > 0);
-console.log('[compression-stream] ns:', WinterJS.CompressionStream === CompressionStream);
+console.log('[compression-stream] ns:', WinterJS2.CompressionStream === CompressionStream);

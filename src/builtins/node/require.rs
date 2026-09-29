@@ -7,7 +7,7 @@
 //!   `ERR_REQUIRE_ESM`；其余（`commonjs`/缺省/无清单）强制 CJS（ESM 语法自然
 //!   报 SyntaxError，不再走嗅探误判）。
 //! - 调用传参用柯里化 `call_one` 链（§4.9：native 内禁 `Rooted<ValueArray>`）。
-//! - 入口 `.cjs` 经 prelude `__wjs_require_main` 起（`run` 不打印其 exports）。
+//! - 入口 `.cjs` 经 prelude `__wjs2_require_main` 起（`run` 不打印其 exports）。
 
 use mozjs::conversions::ToJSValConvertible as _;
 use mozjs::jsapi::JSObject;
@@ -41,7 +41,7 @@ thread_local! {
 /// 求值），此处回落文件路径 → file URL，否则 CJS 入口的相对 require 全挂。
 fn caller_base(cx: &mozjs::context::JSContext) -> Option<Url> {
     let caller = mozjs::rust::describe_scripted_caller(cx).ok()?;
-    tracing::debug!(target: "winterjs::require", caller = caller.filename, "scripted caller");
+    tracing::debug!(target: "winterjs2::require", caller = caller.filename, "scripted caller");
     if let Ok(url) = Url::parse(&caller.filename) {
         return match url.scheme() {
             "file" | "node" => Some(url),
@@ -58,7 +58,7 @@ fn caller_base(cx: &mozjs::context::JSContext) -> Option<Url> {
 /// 用户代码异常原样透传的哨兵（2026-09-25）：CJS 包装/求值期的 JS 异常**不消费**，
 /// 留在 pending 位由 native 入口直接 `return false`——require 调用方拿到原异常对象
 /// （身份/类/code/stack 与 node 同），入口报错位置取真实抛点（修前一律
-/// `__wjs_require_main` 的 prelude 424:53，NodeError message 为空）。
+/// `__wjs2_require_main` 的 prelude 424:53，NodeError message 为空）。
 const KEEP_PENDING: &str = "\u{0}wjs-keep-pending";
 
 /// 是否为"异常仍 pending、原样透传"哨兵。
@@ -156,8 +156,8 @@ fn require_cjs_file(
         return Err(format!("cannot load '{}': wrapper failed", url.as_str()));
     }
     // module 对象（prelude 建；`{exports: {}, id, filename, paths}`）。
-    let Some(make_fn) = get_prop_value(cx, global_root.get(), c"__wjs_make_module") else {
-        return Err("prelude helper __wjs_make_module missing".into());
+    let Some(make_fn) = get_prop_value(cx, global_root.get(), c"__wjs2_make_module") else {
+        return Err("prelude helper __wjs2_make_module missing".into());
     };
     // §4.80 同族（async-dispose 138 实锤）：make_fn 裸值禁跨 to_jsval 分配——
     // 字符串具现可触发 GC 搬移，栈拷贝即悬垂（call_one 的入口 rooting 盖不住
@@ -339,7 +339,7 @@ pub unsafe extern "C" fn require_native(
     }
 }
 
-/// `__wjs_require_resolve(id)` → 解析后 URL 串（`require.resolve` 用；同调用方规则）。
+/// `__wjs2_require_resolve(id)` → 解析后 URL 串（`require.resolve` 用；同调用方规则）。
 pub unsafe extern "C" fn require_resolve(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -375,14 +375,14 @@ pub unsafe extern "C" fn require_resolve(
 
 /// `require` 附属 prelude（`NODE_PRELUDE` 尾部拼装；`require` 本体为裸 native）。
 pub const REQUIRE_PRELUDE: &str = r#"
-globalThis.__wjs_make_module = (filename) => ({
+globalThis.__wjs2_make_module = (filename) => ({
   exports: {},
   id: String(filename),
   filename: String(filename),
   paths: [],
 });
-globalThis.__wjs_make_base_require = (base) => (id) => __wjs_require_from(base, String(id));
-globalThis.__wjs_require_main = (url) => globalThis.require(String(url));
+globalThis.__wjs2_make_base_require = (base) => (id) => __wjs2_require_from(base, String(id));
+globalThis.__wjs2_require_main = (url) => globalThis.require(String(url));
 // 全局 console 格式化（node 口径：`util.format`——%s/%d/%i/%f/%j/%o/%O/%c/%%、对象 inspect）。
 // Phase 1 原生 sink 只 ToString（`[object Object]`、`%s` 原样），2026-09-25 补齐。
 // 纯原始值且首参无 `%` 走快路径（不加载 node:util，启动/热路径零开销）。
@@ -468,12 +468,12 @@ globalThis.__wjs_require_main = (url) => globalThis.require(String(url));
 }
 // 直挂原生（禁 JS 闭包包装）：describe_scripted_caller 的最内层帧须是调用方
 // 文件——闭包帧（本 prelude）会盖掉它，相对 require.resolve 即丢 base
-// （jsdom api.js 实测：caller=__wjs_node_prelude.js）。
-globalThis.require.resolve = __wjs_require_resolve;
+// （jsdom api.js 实测：caller=__wjs2_node_prelude.js）。
+globalThis.require.resolve = __wjs2_require_resolve;
 Object.defineProperty(globalThis.require, "main", {
   configurable: true,
   get() {
-    const u = __wjs_require_main_url();
+    const u = __wjs2_require_main_url();
     if (u === undefined) return undefined;
     return { filename: u, id: u, paths: [] };
   },
@@ -499,7 +499,7 @@ fn explicit_base(base_s: &str) -> Result<Url, String> {
     Url::from_file_path(&abs).map_err(|_| format!("bad require base '{base_s}'"))
 }
 
-/// UNSAFE-BOUNDARY: `__wjs_require_from(base, id)` → `createRequire` 底座，
+/// UNSAFE-BOUNDARY: `__wjs2_require_from(base, id)` → `createRequire` 底座，
 /// 显式 base 复用 `require_value`（调用方定位/JSON/CJS/ESM 口径与全局 `require`
 /// 完全一致）；前置：两参皆字符串（非串即 TypeError，不读值）；
 /// 覆盖：`tests/node.rs::phase9j_module_create_require`。
@@ -512,7 +512,7 @@ pub unsafe extern "C" fn require_from(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
     if frame.argc() < 2 || !frame.arg(0).is_string() || !frame.arg(1).is_string() {
-        report_error(&mut cx, "TypeError: __wjs_require_from needs (base, id) strings");
+        report_error(&mut cx, "TypeError: __wjs2_require_from needs (base, id) strings");
         return false;
     }
     let base_s = value_to_string(&mut cx, frame.arg(0));
@@ -539,7 +539,7 @@ pub unsafe extern "C" fn require_from(
     }
 }
 
-/// UNSAFE-BOUNDARY: `__wjs_require_resolve_from(base, id)` → 解析后 URL 串
+/// UNSAFE-BOUNDARY: `__wjs2_require_resolve_from(base, id)` → 解析后 URL 串
 /// （`createRequire().resolve` 用；同显式 base 规则）；
 /// 前置同上；覆盖：`tests/node.rs::phase9j_module_create_require`。
 pub unsafe extern "C" fn require_resolve_from(
@@ -551,7 +551,7 @@ pub unsafe extern "C" fn require_resolve_from(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
     if frame.argc() < 2 || !frame.arg(0).is_string() || !frame.arg(1).is_string() {
-        report_error(&mut cx, "TypeError: __wjs_require_resolve_from needs (base, id) strings");
+        report_error(&mut cx, "TypeError: __wjs2_require_resolve_from needs (base, id) strings");
         return false;
     }
     let base_s = value_to_string(&mut cx, frame.arg(0));
@@ -582,12 +582,12 @@ pub unsafe extern "C" fn require_resolve_from(
     }
 }
 
-/// UNSAFE-BOUNDARY: `__wjs_cjs_compile(module, code, filename)` → `module._compile`
+/// UNSAFE-BOUNDARY: `__wjs2_cjs_compile(module, code, filename)` → `module._compile`
 /// 底座（vite loadConfigFromBundledFile：require.extensions 钩子把内存中的 CJS
 /// 打包产物求值进给定 module 对象）。求值口径与 `require_cjs_file` 全同
 /// （柯里化包装五连：exports/require/module/__filename/__dirname），差异：
 /// module 由调用方传入、require 以 filename 为显式 base（prelude
-/// `__wjs_make_base_require`）、不进 cjs 注册表（缓存语义由调用方
+/// `__wjs2_make_base_require`）、不进 cjs 注册表（缓存语义由调用方
 /// require.cache 承载）。前置：module 对象、code 串、filename 为绝对路径或
 /// file: URL 串；覆盖：`tests/node.rs::phase9k_module_extensions_hook`。
 pub unsafe extern "C" fn cjs_compile(
@@ -605,7 +605,7 @@ pub unsafe extern "C" fn cjs_compile(
     {
         report_error(
             &mut cx,
-            "TypeError: __wjs_cjs_compile needs (module object, code string, filename string)",
+            "TypeError: __wjs2_cjs_compile needs (module object, code string, filename string)",
         );
         return false;
     }
@@ -662,8 +662,8 @@ pub unsafe extern "C" fn cjs_compile(
         return false;
     };
     rooted!(&in(cx) let exports_root = exports_v);
-    let Some(make_req) = get_prop_value(&mut cx, global_root.get(), c"__wjs_make_base_require") else {
-        report_error(&mut cx, "prelude helper __wjs_make_base_require missing");
+    let Some(make_req) = get_prop_value(&mut cx, global_root.get(), c"__wjs2_make_base_require") else {
+        report_error(&mut cx, "prelude helper __wjs2_make_base_require missing");
         return false;
     };
     rooted!(&in(cx) let mut url_v = UndefinedValue());
@@ -710,7 +710,7 @@ pub unsafe extern "C" fn cjs_compile(
     true
 }
 
-/// UNSAFE-BOUNDARY: `__wjs_builtin_modules()` → JSON 数组（`node:module` 的
+/// UNSAFE-BOUNDARY: `__wjs2_builtin_modules()` → JSON 数组（`node:module` 的
 /// `builtinModules`/`isBuiltin` 用；裸名 + `node:` 双形，与 `available()` 同源，
 /// 天然不漂移）；前置：无参；覆盖：`tests/node.rs::phase9j_module_surface`。
 pub unsafe extern "C" fn builtin_modules_json(
@@ -810,7 +810,7 @@ fn cjs_export_names_runtime(
     };
     serde_json::from_str::<Vec<String>>(&json).unwrap_or_default()
 }
-/// UNSAFE-BOUNDARY: `__wjs_require_cjs_by_url(url)` → CJS 互操作垫片底座
+/// UNSAFE-BOUNDARY: `__wjs2_require_cjs_by_url(url)` → CJS 互操作垫片底座
 /// （`import` 命中 CJS 文件时合成 `export default` + 命名导出；复用
 /// `require_value` 全口径：注册表命中则同值、CJS 循环见半成品；垫片求值期
 /// 同步执行 CJS 体——编译期发现已跑过则缓存复用）。
@@ -825,7 +825,7 @@ pub unsafe extern "C" fn require_cjs_by_url(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
     if frame.argc() < 1 || !frame.arg(0).is_string() {
-        report_error(&mut cx, "TypeError: __wjs_require_cjs_by_url needs a file URL string");
+        report_error(&mut cx, "TypeError: __wjs2_require_cjs_by_url needs a file URL string");
         return false;
     }
     let spec = value_to_string(&mut cx, frame.arg(0));
@@ -844,7 +844,7 @@ pub unsafe extern "C" fn require_cjs_by_url(
         }
     }
 }
-/// `__wjs_require_main_url()` → 主模块 URL 串｜undefined（prelude 包成对象）。
+/// `__wjs2_require_main_url()` → 主模块 URL 串｜undefined（prelude 包成对象）。
 pub unsafe extern "C" fn require_main_url(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

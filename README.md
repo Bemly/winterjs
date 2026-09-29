@@ -1,20 +1,20 @@
 <p align="left">
-  <a href="https://github.com/Bemly/winterjs"><img src="assets/logo.jxl" width="110" height="110" alt="升级浏览器Update Browser，JXL支持Support Chrome155+、Firefox158+、Safari17+" /></a>&nbsp;&nbsp;
-  <a href="https://github.com/Bemly/winterjs"><img src="assets/winterjs.svg" width="415" alt="WinterJS" /></a>
+  <a href="https://github.com/Bemly/winterjs2"><img src="assets/logo.jxl" width="110" height="110" alt="升级浏览器Update Browser，JXL支持Support Chrome155+、Firefox158+、Safari17+" /></a>&nbsp;&nbsp;
+  <a href="https://github.com/Bemly/winterjs2"><img src="assets/winterjs2.svg" width="415" alt="WinterJS2" /></a>
 </p>
 
-# winterjs ❄️
+# winterjs2 ❄️
 
 [中文版](./README.zh.md) · [Docs site](https://winterjs.bemly.moe/) · [Samples](./sample/) · [Changelog](./docs/plan3-journal.md)
 
-*winterjs is a **Bun-like JavaScript runtime on Mozilla SpiderMonkey** — one binary that runs JS files, `package.json` scripts, tests, linters and static/dynamic HTTP services, with `node:` compatibility tracking **Bun's height**.*
+*winterjs2 is a **Bun-like JavaScript runtime on Mozilla SpiderMonkey** — one binary that runs JS files, `package.json` scripts, tests, linters and static/dynamic HTTP services, with `node:` compatibility tracking **Bun's height**.*
 
 ```bash
-./target/debug/winterjs --run sample/http/server-client.js
-./target/debug/winterjs --eval 'await (await fetch("data:text/plain,hi")).text()'  # → hi
+./target/debug/winterjs2 --run sample/http/server-client.js
+./target/debug/winterjs2 --eval 'await (await fetch("data:text/plain,hi")).text()'  # → hi
 ```
 
-> Note: winterjs shares only the "Winter" name with [wasmerio/winterjs](https://github.com/wasmerio/winterjs)
+> Note: winterjs2 shares only the "Winter" name with [wasmerio/winterjs](https://github.com/wasmerio/winterjs)
 > (a WinterCG server, now deprecated). This project is a general-purpose JS runtime
 > in the Bun/Node lane — rebuilt from scratch on `servo/mozjs`, no server framework inside.
 
@@ -22,19 +22,19 @@
 
 **REPL — <kbd>Tab</kbd> completion with an inline docs pane** (like Ruby's `irb`; `.doc <name>` prints the full page)
 
-<img src="assets/screenshots/repl-completion.png" width="820" alt="winterjs REPL: WinterJS.image. completion menu with docs pane" />
+<img src="assets/screenshots/repl-completion.png" width="820" alt="winterjs2 REPL: WinterJS2.image. completion menu with docs pane" />
 
-**Engine versions at your fingertips** — `WinterJS.versions.mozjs` is the pinned SpiderMonkey (Gecko 153)
+**Engine versions at your fingertips** — `WinterJS2.versions.mozjs` is the pinned SpiderMonkey (Gecko 153)
 
-<img src="assets/screenshots/repl-versions.png" width="820" alt="winterjs REPL: WinterJS.versions completion showing mozjs 153" />
+<img src="assets/screenshots/repl-versions.png" width="820" alt="winterjs2 REPL: WinterJS2.versions completion showing mozjs 153" />
 
-**Vue 3 + Vite driven by winterjs** — `winterjs -r build` / `winterjs -r dev`, Vue DevTools live in the browser
+**Vue 3 + Vite driven by winterjs2** — `winterjs2 -r build` / `winterjs2 -r dev`, Vue DevTools live in the browser
 
-<img src="assets/screenshots/vue-build-dev.png" width="620" alt="vite build and vite dev run through winterjs, Vue app with DevTools in the browser" />
+<img src="assets/screenshots/vue-build-dev.png" width="620" alt="vite build and vite dev run through winterjs2, Vue app with DevTools in the browser" />
 
-**`WinterJS.media` + utilities** — decode FLAC from an MP4, encode AV1, draw a QR code in the terminal (Linux x86_64 build)
+**`WinterJS2.media` + utilities** — decode FLAC from an MP4, encode AV1, draw a QR code in the terminal (Linux x86_64 build)
 
-<img src="assets/screenshots/media-qrcode.png" width="820" alt="winterjs --run media.js and tools.js output with a terminal QR code" />
+<img src="assets/screenshots/media-qrcode.png" width="820" alt="winterjs2 --run media.js and tools.js output with a terminal QR code" />
 
 ## Quick start
 
@@ -43,7 +43,7 @@ export SDKROOT="$(xcrun --show-sdk-path)"          # macOS, every new shell
 export LIBCLANG_PATH="/opt/homebrew/opt/llvm/lib" # for bindgen
 export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 cargo build
-./target/debug/winterjs --eval '40 + 2'            # → 42
+./target/debug/winterjs2 --eval '40 + 2'            # → 42
 ```
 
 5-minute path: [English](https://winterjs.bemly.moe/#/en/quickstart) / [中文](https://winterjs.bemly.moe/#/zh/quickstart) ·
@@ -57,7 +57,7 @@ One invocation runs **exactly one action**; modifiers only work with their actio
 
 | Flag | Effect |
 |---|---|
-| `-r/--run <file\|script>` | Run a JS file or a `package.json` script (JS bins re-execute through winterjs, zero node; `--watch` re-runs on change) |
+| `-r/--run <file\|script>` | Run a JS file or a `package.json` script (JS bins re-execute through winterjs2, zero node; `--watch` re-runs on change) |
 | `-e/--eval <code>` | Evaluate inline JS, print the completion value |
 | `-t/--test [paths]` | Run test files (auto-discovery, `--filter/--watch`) |
 | `-s/--serve [dir]` | Serve static + JS `fetch` handler + WebSocket over H1/H2/H3 (`--watch` restarts on change) |
@@ -71,9 +71,9 @@ One invocation runs **exactly one action**; modifiers only work with their actio
 
 Full reference: [CLI (EN)](https://winterjs.bemly.moe/#/en/cli) / [CLI (中文)](https://winterjs.bemly.moe/#/zh/cli).
 
-## How winterjs works
+## How winterjs2 works
 
-winterjs links **Mozilla SpiderMonkey** (`mozjs =0.26.0`, Gecko 153, pinned) through
+winterjs2 links **Mozilla SpiderMonkey** (`mozjs =0.26.0`, Gecko 153, pinned) through
 `servo/mozjs` and implements everything else — event loop, loader, Web/Node
 builtins, `node:` compatibility modules — in **pure Rust**. `unsafe` lives only at the mozjs
 boundary (rooting, `AutoRealm`, FFI); JS runs on a dedicated thread and Rust
@@ -91,7 +91,7 @@ Goal: everything in Bun's bundled node test list works; semantics follow Node
 | `crypto/zlib/buffer/stream/events/timers` | ✅ Stable | AEAD ciphers, brotli, WHATWG streams |
 | `child_process/cluster/worker_threads/vm/module/test` | ✅ Stable | thread-based cluster/workers |
 | `sqlite` (`node:` + `bun:sqlite`), `quic`, `readline/repl/tty` | ✅ / 🔶 | `quic` handshake on loopback times out (known issue, under investigation) |
-| `storage` / `localStorage` (WinterCG own) | ✅ Stable | turso single-file KV (`--storage-path`, default `./winterjs-storage.db`); inspect via `-b/--db` |
+| `storage` / `localStorage` (WinterCG own) | ✅ Stable | turso single-file KV (`--storage-path`, default `./winterjs2-storage.db`); inspect via `-b/--db` |
 | `v8/inspector/trace_events/domain` | 🔶 Bridge | intentionally reduced (heap numbers are engine-specific) |
 | `wasi`, `sea` | ❌ | out of scope by design |
 
@@ -110,7 +110,7 @@ Web globals (`fetch`, `URL`, `TextEncoder`, Web Streams, WebCrypto, `WebSocket`,
 
 ```bash
 cargo build                        # ~25s full debug (mozjs uses a prebuilt static lib)
-./target/debug/winterjs --eval '40 + 2'   # smoke (5 canonical one-liners in AGENTS.md §3)
+./target/debug/winterjs2 --eval '40 + 2'   # smoke (5 canonical one-liners in AGENTS.md §3)
 cargo nextest run --profile strict # full suite (~2 min)
 bash scripts/check-lines.sh        # every .rs / src JS ≤ 1000 lines
 ```

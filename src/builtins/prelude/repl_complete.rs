@@ -1,20 +1,20 @@
-//! winterjs REPL 底座·补全面（本体拥有补全核心；`node:repl` 仅兼容壳，
+//! winterjs2 REPL 底座·补全面（本体拥有补全核心；`node:repl` 仅兼容壳，
 //! 反向复用本域——CLI 专属能力一律住本域，禁进 node:* 公开导出面）。
 //!
-//! - `__wjs_repl_tla_wrap` 系（processTopLevelAwait 移植 + 本桥）随 REPL 会话
+//! - `__wjs2_repl_tla_wrap` 系（processTopLevelAwait 移植 + 本桥）随 REPL 会话
 //!   注入（runtime/repl），不在 PRELUDE——acorn 6827 行全会话加载拖慢启动。
-//! - `__wjs_repl_default_complete(context, line, callback, evalFn?)`：R3 子集
+//! - `__wjs2_repl_default_complete(context, line, callback, evalFn?)`：R3 子集
 //!   补全核心（成员链逐步求值/fs 路径/bare 上下文键/大小写不敏感），本体拥有。
 //!   `evalFn(expr, ctx)` 由调用方注入（`node:repl` 传 vm 求值器；CLI 传空走
-//!   全局间接 eval）。fs 经 `__wjs_fs_*` native 直调，不 import `node:fs`。
-//! - `__wjs_cli_complete(line)`：CLI reedline Tab 的补全桥——调本地核心，
+//!   全局间接 eval）。fs 经 `__wjs2_fs_*` native 直调，不 import `node:fs`。
+//! - `__wjs2_cli_complete(line)`：CLI reedline Tab 的补全桥——调本地核心，
 //!   对 CLI 全局求值面工作，返回 `[[全文, 描述], ...], completeOn`
 //!   （描述进 IdeMenu 右侧 pane）。不 require 任何 `node:*`。
 //! - 签名摘要：SM native `toString()` 不带形参名（实测空括号），常用面
 //!   手写 `__SIG` 表；用户函数抽 toString 真形参；非函数给类型/值摘要
 //!   （描述符沿链安全读，不触发 getter）。
 pub const REPL_COMPLETE_JS: &str = r#"
-// ---- winterjs repl 底座：补全核心（本体拥有；node:repl 薄包反向复用）----
+// ---- winterjs2 repl 底座：补全核心（本体拥有；node:repl 薄包反向复用）----
 function __isCompIdent(n) {
   return /^[A-Za-z_$][\w$]*$/.test(n);
 }
@@ -132,23 +132,23 @@ function __walkSteps(parsed, context, evalFn) {
 }
 function __fsComplete(dir, prefix) {
   // 真机 fs 补全口径：既存目录即列子项裸名（completeOn 置空），否则同级
-  // 前缀过滤裸名；坏径即空（completeOn 回前缀）。经 __wjs_fs_* native 直调。
+  // 前缀过滤裸名；坏径即空（completeOn 回前缀）。经 __wjs2_fs_* native 直调。
   const base = dir === '' ? '.' : dir;
   const full = prefix === '' ? base : base + '/' + prefix;
   let isDir = false;
   try {
-    const meta = JSON.parse(__wjs_fs_stat(full, true));
+    const meta = JSON.parse(__wjs2_fs_stat(full, true));
     isDir = !!(meta && meta.isDirectory === true);
   } catch { isDir = false; }
   if (isDir) {
     let names = [];
-    try { names = JSON.parse(__wjs_fs_readdir(full, false)); }
+    try { names = JSON.parse(__wjs2_fs_readdir(full, false)); }
     catch { return [[], '']; }
     if (!Array.isArray(names)) return [[], ''];
     return [names.filter((n) => typeof n === 'string').sort(), ''];
   }
   let names = [];
-  try { names = JSON.parse(__wjs_fs_readdir(base, false)); }
+  try { names = JSON.parse(__wjs2_fs_readdir(base, false)); }
   catch { return [[], prefix]; }
   if (!Array.isArray(names)) return [[], prefix];
   return [names.filter((n) => typeof n === 'string' && n.startsWith(prefix)).sort(), prefix];
@@ -169,8 +169,8 @@ function __commonPrefix(list) {
 function __maskStrings(line) {
   return line.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, (m) => ' '.repeat(m.length));
 }
-globalThis.__wjs_repl_common_prefix = __commonPrefix;
-globalThis.__wjs_repl_default_complete = function __defaultComplete(context, line, callback, evalFn) {
+globalThis.__wjs2_repl_common_prefix = __commonPrefix;
+globalThis.__wjs2_repl_default_complete = function __defaultComplete(context, line, callback, evalFn) {
   const done = (list, completeOn) => callback(null, [list, completeOn]);
   if (typeof line !== 'string') line = String(line);
   const masked0 = __maskStrings(line);
@@ -240,26 +240,26 @@ globalThis.__wjs_repl_default_complete = function __defaultComplete(context, lin
   return done(list, line);
 };
 
-// ---- winterjs repl 底座：CLI 补全桥（__wjs_ 内部面；调本地核心）----
-globalThis.__wjs_cli_complete = (line) => {
+// ---- winterjs2 repl 底座：CLI 补全桥（__wjs2_ 内部面；调本地核心）----
+globalThis.__wjs2_cli_complete = (line) => {
   const s = String(line);
   let list, completeOn;
   if (s.trim() === '') {
     // 空行 Tab：全局全枚举（node 真机同形：空行 Tab 即列全局）。
     // 核心 `bm === null` 回空集是模块保守口径——CLI 本体面在此展开。
-    // `__wjs_` 内部面不计入（400+ plumbing 名淹没有菜单；显式前缀仍可触达）；
+    // `__wjs2_` 内部面不计入（400+ plumbing 名淹没有菜单；显式前缀仍可触达）；
     // completeOn 置空（Rust 零宽 span 光标处插入）。排序保证稳定。
     // 词法绑定（let/const）不可枚举，记档。
     let keys = [];
     try { keys = Object.getOwnPropertyNames(globalThis); } catch { keys = []; }
     list = keys
-      .filter((k) => /^[A-Za-z_$][\w$]*$/.test(k) && !k.startsWith('__wjs_'))
+      .filter((k) => /^[A-Za-z_$][\w$]*$/.test(k) && !k.startsWith('__wjs2_'))
       .sort();
     completeOn = '';
   } else {
     // 本地核心直调（本体拥有，不 require 任何 node:*；经 globalThis
     // 属性取——具名函数表达式赋值不建词法绑定，裸名不可见）。
-    const __core = globalThis.__wjs_repl_default_complete;
+    const __core = globalThis.__wjs2_repl_default_complete;
     if (typeof __core !== 'function') return [[], s];
     let out = null;
     try { __core(globalThis, s, (err, r) => { out = r; }); } catch { return [[], s]; }
@@ -285,15 +285,15 @@ globalThis.__wjs_cli_complete = (line) => {
     // 用户自有方法不受染——与 `__sigDesc` 同规则）。
     const docFor = (t) => {
       try {
-        if (typeof __wjs_doc_summary !== 'function') return null;
-        const d = __wjs_doc_summary(t);
+        if (typeof __wjs2_doc_summary !== 'function') return null;
+        const d = __wjs2_doc_summary(t);
         return (typeof d === 'string' && d !== '') ? d : null;
       } catch { return null; }
     };
     let doc = docFor(text);
     if (doc === null) {
       try {
-        const cn = __wjsReplCtorName(base);
+        const cn = __wjs2ReplCtorName(base);
         if (cn !== '' && cn !== 'Object') doc = docFor(`${cn}.${key}`);
       } catch { /* ignore */ }
     }
@@ -312,7 +312,7 @@ globalThis.__wjs_cli_complete = (line) => {
 // toString/Ctor 全兜底；用户自有同名方法因键不命中而不受遮蔽（4.227）。
 // 整篇文档走 `content/mdn/` 语料（`.doc` 直读），此处禁贴文档句（2026-09-28
 // 用户裁定：右盒纯文档，候选框干净名，文档更新只动语料）。
-const __wjsReplSig = Object.assign(Object.create(null), {
+const __wjs2ReplSig = Object.assign(Object.create(null), {
   'Object.assign': '(target, ...sources) → object',
   'Object.keys': '(o) → string[]',
   'Object.values': '(o) → array',
@@ -498,68 +498,68 @@ const __wjsReplSig = Object.assign(Object.create(null), {
   'Bun.which': '(cmd) → string | null',
   'Bun.gc': '(force?) → void',
   'Bun.shrink': '() → void',
-  'WinterJS.version': '() → string (getter)',
-  'WinterJS.storage': 'WinterCG async KV',
-  'WinterJS.localStorage': 'Web Storage sync shim',
-  'WinterJS.CompressionStream': '(format) → CompressionStream',
-  'WinterJS.DecompressionStream': '(format) → DecompressionStream',
-  'WinterJS.args': 'string[]',
-  'WinterJS.env': 'live env object',
-  'WinterJS.fs': 'own file surface (fs === WinterJS.fs)',
-  'WinterJS.memory': '() → { rss, allocator }',
-  'WinterJS.alloc': '(size) → Uint8Array (zero-filled)',
-  'WinterJS.unsafeAlloc': '(size) → id (--allow-ffi)',
-  'WinterJS.unsafeSize': '(id) → size',
-  'WinterJS.unsafeWrite': '(id, off, data) → void',
-  'WinterJS.unsafeRead': '(id, off, len) → Uint8Array',
-  'WinterJS.unsafeFree': '(id) → void',
-  'WinterJS.unsafeList': '() → id[]',
-  'WinterJS.semver': 'npm version utils (valid/parse/satisfies/compare)',
-  'WinterJS.yaml': 'YAML parse/stringify',
-  'WinterJS.jsonc': '(text) → value (comment-tolerant)',
-  'WinterJS.ip': 'CIDR utils (isNet/isAddr/contains/parse)',
-  'WinterJS.shlex': '(cmd) → argv[]',
-  'WinterJS.spdx': '(expr) → boolean',
-  'WinterJS.qrcode': '(text) → terminal QR art',
-  'WinterJS.shell': 'shell-word expand',
-  'WinterJS.hex': 'hex encode/decode',
-  'WinterJS.time': 'clock (now/parse/format)',
-  'WinterJS.retry': 'backoff delay + async run',
-  'WinterJS.graph': 'graph heap (create/addNode/addEdge/toposort)',
-  'WinterJS.git': 'read-only revParse/log',
-  'WinterJS.oauth': 'authorizeUrl/pkce/exchangeCode/refreshToken',
-  'WinterJS.transpile': '(src, opts?) → JS',
-  'WinterJS.log': 'debug/info/warn/error',
-  'WinterJS.mime': '(path) → MIME string',
-  'WinterJS.cookie': 'parse/serialize',
-  'WinterJS.httpdate': 'IMF parse/format',
-  'WinterJS.assert': 'structural assertions',
-  'WinterJS.util': 'format/inspect',
-  'WinterJS.punycode': 'toASCII/toUnicode/encode/decode',
-  'WinterJS.tcp': 'connect/listen (Promise sockets)',
-  'WinterJS.udp': 'bind/send (Promise datagrams)',
-  'WinterJS.dns': 'lookup/resolve',
-  'WinterJS.tls': 'connect (Promise TLS)',
-  'WinterJS.command': 'run/spawn child processes',
-  'WinterJS.terminal': 'createInterface',
-  'WinterJS.repl': 'start',
-  'WinterJS.cluster': 'ported cluster module',
-  'WinterJS.test': 'test/describe/it',
-  'WinterJS.vm': '(code) → completion',
-  'WinterJS.os': 'platform/arch/info/cpus/mem',
-  'WinterJS.path': 'ported path module',
-  'WinterJS.db': 'open/exec/run/query/close',
-  'WinterJS.inspect': '(code) → value',
-  'WinterJS.tty': 'isTTY predicate',
-  'WinterJS.stream': 'pipeline',
-  'WinterJS.serve': '(opts, fetch) → server',
-  'WinterJS.diagnostics': 'ported diagnostics_channel',
-  'WinterJS.domain': 'ported domain module',
-  'WinterJS.trace': 'ported trace_events',
-  'WinterJS.AsyncLocalStorage': 'ported ALS class',
-  'WinterJS.quic': 'ported quic (experimental)',
-  'WinterJS.crypto': 'global crypto alias',
-  'WinterJS.ffi': 'ported bun:ffi (--allow-ffi)',
+  'WinterJS2.version': '() → string (getter)',
+  'WinterJS2.storage': 'WinterCG async KV',
+  'WinterJS2.localStorage': 'Web Storage sync shim',
+  'WinterJS2.CompressionStream': '(format) → CompressionStream',
+  'WinterJS2.DecompressionStream': '(format) → DecompressionStream',
+  'WinterJS2.args': 'string[]',
+  'WinterJS2.env': 'live env object',
+  'WinterJS2.fs': 'own file surface (fs === WinterJS2.fs)',
+  'WinterJS2.memory': '() → { rss, allocator }',
+  'WinterJS2.alloc': '(size) → Uint8Array (zero-filled)',
+  'WinterJS2.unsafeAlloc': '(size) → id (--allow-ffi)',
+  'WinterJS2.unsafeSize': '(id) → size',
+  'WinterJS2.unsafeWrite': '(id, off, data) → void',
+  'WinterJS2.unsafeRead': '(id, off, len) → Uint8Array',
+  'WinterJS2.unsafeFree': '(id) → void',
+  'WinterJS2.unsafeList': '() → id[]',
+  'WinterJS2.semver': 'npm version utils (valid/parse/satisfies/compare)',
+  'WinterJS2.yaml': 'YAML parse/stringify',
+  'WinterJS2.jsonc': '(text) → value (comment-tolerant)',
+  'WinterJS2.ip': 'CIDR utils (isNet/isAddr/contains/parse)',
+  'WinterJS2.shlex': '(cmd) → argv[]',
+  'WinterJS2.spdx': '(expr) → boolean',
+  'WinterJS2.qrcode': '(text) → terminal QR art',
+  'WinterJS2.shell': 'shell-word expand',
+  'WinterJS2.hex': 'hex encode/decode',
+  'WinterJS2.time': 'clock (now/parse/format)',
+  'WinterJS2.retry': 'backoff delay + async run',
+  'WinterJS2.graph': 'graph heap (create/addNode/addEdge/toposort)',
+  'WinterJS2.git': 'read-only revParse/log',
+  'WinterJS2.oauth': 'authorizeUrl/pkce/exchangeCode/refreshToken',
+  'WinterJS2.transpile': '(src, opts?) → JS',
+  'WinterJS2.log': 'debug/info/warn/error',
+  'WinterJS2.mime': '(path) → MIME string',
+  'WinterJS2.cookie': 'parse/serialize',
+  'WinterJS2.httpdate': 'IMF parse/format',
+  'WinterJS2.assert': 'structural assertions',
+  'WinterJS2.util': 'format/inspect',
+  'WinterJS2.punycode': 'toASCII/toUnicode/encode/decode',
+  'WinterJS2.tcp': 'connect/listen (Promise sockets)',
+  'WinterJS2.udp': 'bind/send (Promise datagrams)',
+  'WinterJS2.dns': 'lookup/resolve',
+  'WinterJS2.tls': 'connect (Promise TLS)',
+  'WinterJS2.command': 'run/spawn child processes',
+  'WinterJS2.terminal': 'createInterface',
+  'WinterJS2.repl': 'start',
+  'WinterJS2.cluster': 'ported cluster module',
+  'WinterJS2.test': 'test/describe/it',
+  'WinterJS2.vm': '(code) → completion',
+  'WinterJS2.os': 'platform/arch/info/cpus/mem',
+  'WinterJS2.path': 'ported path module',
+  'WinterJS2.db': 'open/exec/run/query/close',
+  'WinterJS2.inspect': '(code) → value',
+  'WinterJS2.tty': 'isTTY predicate',
+  'WinterJS2.stream': 'pipeline',
+  'WinterJS2.serve': '(opts, fetch) → server',
+  'WinterJS2.diagnostics': 'ported diagnostics_channel',
+  'WinterJS2.domain': 'ported domain module',
+  'WinterJS2.trace': 'ported trace_events',
+  'WinterJS2.AsyncLocalStorage': 'ported ALS class',
+  'WinterJS2.quic': 'ported quic (experimental)',
+  'WinterJS2.crypto': 'global crypto alias',
+  'WinterJS2.ffi': 'ported bun:ffi (--allow-ffi)',
   'fs.readFile': '(path) → Promise<Uint8Array>',
   'fs.readTextFile': '(path) → Promise<string>',
   'fs.writeFile': '(path, data) → Promise<void>',
@@ -571,22 +571,22 @@ const __wjsReplSig = Object.assign(Object.create(null), {
   'fs.rename': '(a, b) → Promise<void>',
   'fs.copyFile': '(a, b) → Promise<void>',
   'fs.exists': '(path) → Promise<boolean>',
-  'WinterJS.image.formats': '() → { name, mime, decode, encode }[]',
-  'WinterJS.image.info': '(bytes, format?) → { format, width, height, mime }',
-  'WinterJS.image.decode': '(bytes, format?, scale?) → { format, width, height, data }',
-  'WinterJS.image.encode': '({ data, width, height }, format, options?) → Uint8Array',
-  'WinterJS.media.formats': '() → [{ name, kind, decode, encode }]',
-  'WinterJS.media.audioInfo': '(bytes, format?) → { format, codec, sampleRate, channels }',
-  'WinterJS.media.decodeAudio': '(bytes, format?) → { format, sampleRate, channels, data }',
-  'WinterJS.media.play': '({ data, sampleRate, channels }, options?) → id',
-  'WinterJS.media.stop': '(id) → boolean',
-  'WinterJS.media.videoEncode': '({ data, width, height, count }, options?) → Uint8Array',
-  'WinterJS.media.mp4Info': '(bytes) → { tracks }',
-  'WinterJS.media.mp4Samples': '(bytes, track?, limit?) → [{ index, timestamp, size }]',
-  'WinterJS.media.mp4Sample': '(bytes, track, index) → Uint8Array',
+  'WinterJS2.image.formats': '() → { name, mime, decode, encode }[]',
+  'WinterJS2.image.info': '(bytes, format?) → { format, width, height, mime }',
+  'WinterJS2.image.decode': '(bytes, format?, scale?) → { format, width, height, data }',
+  'WinterJS2.image.encode': '({ data, width, height }, format, options?) → Uint8Array',
+  'WinterJS2.media.formats': '() → [{ name, kind, decode, encode }]',
+  'WinterJS2.media.audioInfo': '(bytes, format?) → { format, codec, sampleRate, channels }',
+  'WinterJS2.media.decodeAudio': '(bytes, format?) → { format, sampleRate, channels, data }',
+  'WinterJS2.media.play': '({ data, sampleRate, channels }, options?) → id',
+  'WinterJS2.media.stop': '(id) → boolean',
+  'WinterJS2.media.videoEncode': '({ data, width, height, count }, options?) → Uint8Array',
+  'WinterJS2.media.mp4Info': '(bytes) → { tracks }',
+  'WinterJS2.media.mp4Samples': '(bytes, track?, limit?) → [{ index, timestamp, size }]',
+  'WinterJS2.media.mp4Sample': '(bytes, track, index) → Uint8Array',
 });
 
-function __wjsReplCtorName(base) {
+function __wjs2ReplCtorName(base) {
   try {
     if (typeof base === 'function' && base.name) return base.name;
     const p = Object.getPrototypeOf(base);
@@ -594,7 +594,7 @@ function __wjsReplCtorName(base) {
   } catch { return ''; }
 }
 
-// 签名摘要：描述符沿链安全读（不触发 getter）；函数先查 `__wjsReplSig`，
+// 签名摘要：描述符沿链安全读（不触发 getter）；函数先查 `__wjs2ReplSig`，
 // 用户函数 toString 有真形参则直用；非函数给类型/值摘要。
 // 描述符沿链安全读（不触发 getter；失败即 null）。
 function __descOf(base, key) {
@@ -619,23 +619,23 @@ function __sigDesc(base, key, head2) {
     // 具体构造器（`URLSearchParams.get`，Ctor 非 Object）次之——原生短形参
     // （`get(n)`）不如一句话文档；普通对象（Ctor 为 Object）跳过此步，
     // 用户自有方法永远显示真相（4.227）。toString/Ctor 兜底。
-    const exact = __wjsReplSig[head2] ?? __wjsReplSig[key];
+    const exact = __wjs2ReplSig[head2] ?? __wjs2ReplSig[key];
     if (exact !== undefined) return exact;
     let src = '';
     try { src = Function.prototype.toString.call(v); } catch { /* ignore */ }
     const pm = /^[\s\S]*?\(([^)]*)\)/.exec(src);
-    const ctor = __wjsReplCtorName(base);
+    const ctor = __wjs2ReplCtorName(base);
     if (ctor !== '' && ctor !== 'Object') {
-      const csig = __wjsReplSig[`${ctor}.${key}`];
+      const csig = __wjs2ReplSig[`${ctor}.${key}`];
       if (csig !== undefined) return csig;
     }
     if (pm !== null && pm[1] !== '') return `${key}(${pm[1]})`;
-    const sig = __wjsReplSig[`${ctor}.${key}`];
+    const sig = __wjs2ReplSig[`${ctor}.${key}`];
     return sig ?? `${key}()`;
   }
   // 非函数：bare 命名空间给一句话（`crypto`），成员面沿用类型/值摘要。
   if (head2 === '') {
-    const t = __wjsReplSig[key];
+    const t = __wjs2ReplSig[key];
     if (t !== undefined) return t;
   }
   if (v === null) return ': null';
@@ -662,7 +662,7 @@ pub const REPL_TLA_JS: &str = r#"
 // 边界存全局词法——`let a = await x` 跨行存活的正解）。primordials 按语义
 // 直映原生方法；Recoverable（Unterminated 续行）CLI 由 validator 保证平衡，
 // 统一抛 SyntaxError。acorn walk 用 recursive + 自定义 visitors（原文同款）。
-const __wjsReplAwaitState = {
+const __wjs2ReplAwaitState = {
   containsAwait: false,
   containsReturn: false,
   body: null,
@@ -670,13 +670,13 @@ const __wjsReplAwaitState = {
   hoistedDeclarationStatements: [],
   // replace/prepend/append 由调用轮换绑（wrappedArray 持有）。
 };
-function __wjsAwaitIsTopLevelDeclaration(state) {
+function __wjs2AwaitIsTopLevelDeclaration(state) {
   return state.ancestors[state.ancestors.length - 2] === state.body;
 }
-const __wjsAwaitNoop = function () {};
-const __wjsAwaitVisitorsWithoutAncestors = {
+const __wjs2AwaitNoop = function () {};
+const __wjs2AwaitVisitorsWithoutAncestors = {
   ClassDeclaration(node, state, c) {
-    if (__wjsAwaitIsTopLevelDeclaration(state)) {
+    if (__wjs2AwaitIsTopLevelDeclaration(state)) {
       state.prepend(node, `${node.id.name}=`);
       state.hoistedDeclarationStatements.push(`let ${node.id.name}; `);
     }
@@ -690,9 +690,9 @@ const __wjsAwaitVisitorsWithoutAncestors = {
     state.prepend(node, `this.${node.id.name} = ${node.id.name}; `);
     state.hoistedDeclarationStatements.push(`var ${node.id.name}; `);
   },
-  FunctionExpression: __wjsAwaitNoop,
-  ArrowFunctionExpression: __wjsAwaitNoop,
-  MethodDefinition: __wjsAwaitNoop,
+  FunctionExpression: __wjs2AwaitNoop,
+  ArrowFunctionExpression: __wjs2AwaitNoop,
+  MethodDefinition: __wjs2AwaitNoop,
   AwaitExpression(node, state, c) {
     state.containsAwait = true;
     acornWalk.base.AwaitExpression(node, state, c);
@@ -705,7 +705,7 @@ const __wjsAwaitVisitorsWithoutAncestors = {
     const variableKind = node.kind;
     const isIterableForDeclaration = ['ForOfStatement', 'ForInStatement']
       .includes(state.ancestors[state.ancestors.length - 2].type);
-    if (variableKind === 'var' || __wjsAwaitIsTopLevelDeclaration(state)) {
+    if (variableKind === 'var' || __wjs2AwaitIsTopLevelDeclaration(state)) {
       state.replace(
         node.start,
         node.start + variableKind.length + (isIterableForDeclaration ? 1 : 0),
@@ -748,17 +748,17 @@ const __wjsAwaitVisitorsWithoutAncestors = {
     acornWalk.base.VariableDeclaration(node, state, c);
   },
 };
-const __wjsAwaitVisitors = {};
+const __wjs2AwaitVisitors = {};
 for (const nodeType of Object.keys(acornWalk.base)) {
-  const callback = __wjsAwaitVisitorsWithoutAncestors[nodeType] || acornWalk.base[nodeType];
-  __wjsAwaitVisitors[nodeType] = (node, state, c) => {
+  const callback = __wjs2AwaitVisitorsWithoutAncestors[nodeType] || acornWalk.base[nodeType];
+  __wjs2AwaitVisitors[nodeType] = (node, state, c) => {
     const isNew = node !== state.ancestors[state.ancestors.length - 1];
     if (isNew) state.ancestors.push(node);
     callback(node, state, c);
     if (isNew) state.ancestors.pop();
   };
 }
-function __wjsProcessTopLevelAwait(src) {
+function __wjs2ProcessTopLevelAwait(src) {
   const wrapPrefix = '(async () => { ';
   const wrapped = `${wrapPrefix}${src} })()`;
   const wrappedArray = wrapped.split('');
@@ -794,7 +794,7 @@ function __wjsProcessTopLevelAwait(src) {
     containsAwait: false,
     containsReturn: false,
   };
-  acornWalk.recursive(body, state, __wjsAwaitVisitors);
+  acornWalk.recursive(body, state, __wjs2AwaitVisitors);
   // 无真 await / 顶层 return → 不改写（node 同款；null 走原码报错路径）。
   if (!state.containsAwait || state.containsReturn) return null;
   for (let i = body.body.length - 1; i >= 0; i--) {
@@ -811,15 +811,15 @@ function __wjsProcessTopLevelAwait(src) {
   }
   return state.hoistedDeclarationStatements.join('') + wrappedArray.join('');
 }
-globalThis.__wjs_repl_tla_wrap = (src) => {
+globalThis.__wjs2_repl_tla_wrap = (src) => {
   src = String(src);
   if (!src.includes('await')) return null;
-  const wrapped = __wjsProcessTopLevelAwait(src);
+  const wrapped = __wjs2ProcessTopLevelAwait(src);
   if (wrapped === null) return null;
   // .then 双臂装标记对：rejected 不进 jobqueue 的 unhandled 收割；值解包
   // v?.value（node repl.js `(await promise)?.value` 同款——无 return 改写时
   // P1 resolve undefined，完成值即 undefined，node 同形）。
-  return `${wrapped}.then(v => ({ __wjs_ok: 1, v: v === undefined || v === null ? undefined : v.value }),`
-    + ' e => ({ __wjs_ok: 0, e }))';
+  return `${wrapped}.then(v => ({ __wjs2_ok: 1, v: v === undefined || v === null ? undefined : v.value }),`
+    + ' e => ({ __wjs2_ok: 0, e }))';
 };
 "#;

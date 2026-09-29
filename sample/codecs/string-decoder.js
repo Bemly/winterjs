@@ -1,6 +1,6 @@
 // node:string_decoder: decoding split multi-byte sequences.
 // 跨包多字节解码。
-// Run / 运行: winterjs --run sample/codecs/string-decoder.js
+// Run / 运行: winterjs2 --run sample/codecs/string-decoder.js
 import { StringDecoder } from 'node:string_decoder';
 
 const dec = new StringDecoder('utf8');

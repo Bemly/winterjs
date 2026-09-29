@@ -1,8 +1,8 @@
 //! punycode 本体核心（punycode.js 2.1.0 算法，MIT；`node:punycode` 与
-//! `WinterJS.punycode` 同源，见 node/punycode.rs 头注；拼接顺序见 mod.rs）。
+//! `WinterJS2.punycode` 同源，见 node/punycode.rs 头注；拼接顺序见 mod.rs）。
 pub const PUNYCODE_JS: &str = r#"
 // Copyright Joyent, Inc. and other Node contributors. MIT.
-// Punycode core shared by node:punycode and WinterJS.punycode.
+// Punycode core shared by node:punycode and WinterJS2.punycode.
 {
 const maxInt = 2147483647; // aka. 0x7FFFFFFF or 2^31-1
 
@@ -300,9 +300,9 @@ const punycode = {
 	'toASCII': toASCII,
 	'toUnicode': toUnicode
 };
-  globalThis.__wjs_puny = punycode;
+  globalThis.__wjs2_puny = punycode;
   try {
-    const W = globalThis.WinterJS;
+    const W = globalThis.WinterJS2;
     if (W && W.punycode === undefined) W.punycode = punycode;
   } catch {}
 }

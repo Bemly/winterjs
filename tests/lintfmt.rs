@@ -41,7 +41,7 @@ fn phase8_lintfmt_exit_and_notfound() {
     make_tool_repo(&dir, "#!/bin/sh\nexit 3\n");
     let file = dir.child("l.mjs");
     let _ = file;
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--lint", "src"])
         .current_dir(dir.path())
         .output()
@@ -51,7 +51,7 @@ fn phase8_lintfmt_exit_and_notfound() {
 
     // 未找到：清 PATH（env 清空 + 本地无工具），报两种安装指引
     let empty = assert_fs::TempDir::new().unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs2"))
         .args(["--lint"])
         .current_dir(empty.path())
         .env("PATH", "")

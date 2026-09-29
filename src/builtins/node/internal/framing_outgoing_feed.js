@@ -669,9 +669,9 @@ export function withClientRequest(openSocket, flavor) {
       // httpValidation 门（client 与 server 同口径：validateOneOf + 互斥，
       // 真机 ERR_INVALID_ARG_VALUE 逐项对拍）。进程旗默认宽松与服务端同理。
       const __cliInsecDefault = options.httpValidation === undefined && options.insecureHTTPParser === undefined &&
-        typeof globalThis.__wjs_nodeCompat !== "undefined" &&
-        Array.isArray(globalThis.__wjs_nodeCompat) &&
-        globalThis.__wjs_nodeCompat.includes("--insecure-http-parser");
+        typeof globalThis.__wjs2_nodeCompat !== "undefined" &&
+        Array.isArray(globalThis.__wjs2_nodeCompat) &&
+        globalThis.__wjs2_nodeCompat.includes("--insecure-http-parser");
       this.__inboundMode = __parseModeOf(__resolveHttpValidation(options.httpValidation, __cliInsecDefault ? true : options.insecureHTTPParser));
       this.__validation = options.httpValidation ?? (options.insecureHTTPParser === true || __cliInsecDefault ? "insecure" : undefined);
       this.insecureHTTPParser = options.insecureHTTPParser ?? __cliInsecDefault;

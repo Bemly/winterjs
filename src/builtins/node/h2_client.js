@@ -51,7 +51,7 @@ class ClientHttp2Stream extends Duplex {
     let off = 0;
     for (const b of parts) { flat.set(b, off); off += b.length; }
     try {
-      __wjs_h2_open(this.__session.__id, this.id,
+      __wjs2_h2_open(this.__session.__id, this.id,
         JSON.stringify({
           method: this.sentHeaders[":method"], path: this.sentHeaders[":path"],
           scheme: this.sentHeaders[":scheme"], authority: this.sentHeaders[":authority"],
@@ -100,7 +100,7 @@ class ClientHttp2Stream extends Duplex {
     this.__trailersSent = true;
     const t = [];
     for (const [k, v] of Object.entries(trailers ?? {})) t.push([k, String(v)]);
-    __wjs_h2_open_trailers(this.__session.__id, this.id, JSON.stringify(t));
+    __wjs2_h2_open_trailers(this.__session.__id, this.id, JSON.stringify(t));
     return this;
   }
   __onResponse(headers, flags) {
@@ -156,7 +156,7 @@ class ClientHttp2Stream extends Duplex {
       if (typeof cb === "function") this.once("close", cb);
       this.__ended = true;
       if (this.__opened && this.__session.__id) {
-        __wjs_h2_reset(this.__session.__id, this.id, code ?? 0);
+        __wjs2_h2_reset(this.__session.__id, this.id, code ?? 0);
       }
       this.destroy();
     } else if (typeof cb === "function") {
@@ -171,7 +171,7 @@ class ClientHttp2Stream extends Duplex {
     if (this.__destroyed) return this;
     // node：流销毁 → RST(CANCEL) 通知对端（未收到应答且已出线的流）
     if (this.__opened && !this.__responseReceived && this.__session?.__id) {
-      __wjs_h2_reset(this.__session.__id, this.id, 8);
+      __wjs2_h2_reset(this.__session.__id, this.id, 8);
     }
     this.__detachFromSession();
     super.destroy(err);
@@ -298,8 +298,8 @@ class ClientHttp2Session extends EventEmitter {
     }
     return this;
   }
-  ref() { if (this.__id) __wjs_net_ref(this.__id); return this; }
-  unref() { if (this.__id) __wjs_net_unref(this.__id); return this; }
+  ref() { if (this.__id) __wjs2_net_ref(this.__id); return this; }
+  unref() { if (this.__id) __wjs2_net_unref(this.__id); return this; }
   settings(settings = {}, cb) {
     const validated = __validateSettings(settings);
     if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
@@ -419,7 +419,7 @@ class ClientHttp2Session extends EventEmitter {
       if (t.rejectUnauthorized !== undefined) wire.tls.rejectUnauthorized = !!t.rejectUnauthorized;
       if (t.servername !== undefined) wire.tls.servername = String(t.servername);
     }
-    this.__id = Number(__wjs_h2_connect(host, port, JSON.stringify(wire), this));
+    this.__id = Number(__wjs2_h2_connect(host, port, JSON.stringify(wire), this));
     return this;
   }
   __ev(kind, payload) {
@@ -617,7 +617,7 @@ class ClientHttp2Session extends EventEmitter {
     // （响应完成）不得关会话——否则后续请求报 INVALID_SESSION
     if ((this.closed || this.destroyed) && !this.destroyed && this.__streams.size === 0 && this.__id) {
       this.destroyed = true;
-      __wjs_net_destroy(this.__id);
+      __wjs2_net_destroy(this.__id);
       this.__id = 0;
     }
   }
@@ -631,7 +631,7 @@ class ClientHttp2Session extends EventEmitter {
       // 在途流：RST 对端（防 server 侧 service 永挂）+ 本地 CANCEL 错
       for (const [, st] of this.__streams) {
         if (!st.__responseReceived && this.__id) {
-          __wjs_h2_reset(this.__id, st.id, 8);
+          __wjs2_h2_reset(this.__id, st.id, 8);
         }
         st.__onAborted();
       }
@@ -640,7 +640,7 @@ class ClientHttp2Session extends EventEmitter {
         pst.destroy();
       }
       if (this.__id) {
-        __wjs_net_destroy(this.__id);
+        __wjs2_net_destroy(this.__id);
         this.__id = 0;
       }
     }

@@ -75,7 +75,7 @@ function enterStores(activeChannel, data, exits) {
           continue;
         }
       }
-      exits.push(store.__wjsWithScope(newContext));
+      exits.push(store.__wjs2WithScope(newContext));
     }
   }
 }

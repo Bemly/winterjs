@@ -32,9 +32,9 @@ fn eval_wrap(code: &str, kind: WrapKind) -> String {
     });
     // rejection 处理器重抛（`return Promise.reject(e)`）：链式 promise 保持
     // rejected，eval 路径据此挂 entry reactions（见 eval_syntax_fallback）——
-    // 否则失败只落 `__wjs_error`、循环尾才读，开着的句柄（子进程/socket）会让
+    // 否则失败只落 `__wjs2_error`、循环尾才读，开着的句柄（子进程/socket）会让
     // 循环永不 idle 即 hang（§4.70 姊妹案，spawn stdin 套件现形）。
-    s.push_str("})().then(v => { globalThis.__wjs_value = v; }, e => { globalThis.__wjs_error = e; return Promise.reject(e); });");
+    s.push_str("})().then(v => { globalThis.__wjs2_value = v; }, e => { globalThis.__wjs2_error = e; return Promise.reject(e); });");
     s
 }
 
@@ -59,7 +59,7 @@ pub(crate) fn sniff_module(filename: &str, source: &str) -> Option<Url> {
             return None;
         }
         if crate::builtins::node::require::nearest_pkg_type(&path).as_deref() == Some("module") {
-            tracing::info!(target: "winterjs::runtime", url = url.as_str(), "module detected (package.json type)");
+            tracing::info!(target: "winterjs2::runtime", url = url.as_str(), "module detected (package.json type)");
             return Some(url);
         }
         if ext.is_none() {
@@ -70,14 +70,14 @@ pub(crate) fn sniff_module(filename: &str, source: &str) -> Option<Url> {
             return None;
         }
     }
-    tracing::info!(target: "winterjs::runtime", url = url.as_str(), "module detected");
+    tracing::info!(target: "winterjs2::runtime", url = url.as_str(), "module detected");
     Some(url)
 }
 
-/// `process.exit` 哨兵错识别（native 报 `__wjs_exit:<code>`，见 `node/process_.rs`）。
+/// `process.exit` 哨兵错识别（native 报 `__wjs2_exit:<code>`，见 `node/process_.rs`）。
 /// 覆盖裸消息与 `unhandled rejection: …` 单因包装。
 pub fn exit_code_from_message(msg: &str) -> Option<i32> {
-    if let Some(code) = msg.strip_prefix("__wjs_exit:") {
+    if let Some(code) = msg.strip_prefix("__wjs2_exit:") {
         return code.trim().parse().ok();
     }
     if let Some(reason) = msg.strip_prefix("unhandled rejection: ") {
@@ -156,7 +156,7 @@ pub(crate) async fn eval_syntax_fallback(
 
     // 先试 return 包装（保住完成值），纯语句序列再退普通包装
     for (kind, adjust) in [(WrapKind::Return, 2u32), (WrapKind::Plain, 1u32)] {
-        tracing::debug!(target: "winterjs::runtime", ?kind, adjust, "eval fallback trying wrap");
+        tracing::debug!(target: "winterjs2::runtime", ?kind, adjust, "eval fallback trying wrap");
         state::set_line_adjust(adjust);
         let wrapped = eval_wrap(source, kind);
         let c_filename = CString::new(filename).unwrap_or_else(|_| c"eval.js".into());
@@ -187,7 +187,7 @@ pub(crate) async fn eval_syntax_fallback(
                                 raw_handle(rej_obj.as_ptr()),
                             );
                         }
-                        tracing::debug!(target: "winterjs::runtime", "eval wrapped entry capture attached");
+                        tracing::debug!(target: "winterjs2::runtime", "eval wrapped entry capture attached");
                     }
                 }
             }
@@ -239,11 +239,11 @@ pub(crate) unsafe extern "C" fn rejection_tracker(
     match state_ {
         PromiseRejectionHandlingState::Unhandled => {
             // `Heap::boxed` 定址（set 后禁移动，见 §4.40）。
-            tracing::debug!(target: "winterjs::promise", promise = ?promise.get(), "rejection unhandled");
+            tracing::debug!(target: "winterjs2::promise", promise = ?promise.get(), "rejection unhandled");
             state::with_rooted(|s| s.unhandled.push(mozjs::jsapi::Heap::boxed(promise.get())));
         }
         PromiseRejectionHandlingState::Handled => {
-            tracing::trace!(target: "winterjs::promise", promise = ?promise.get(), "rejection handled");
+            tracing::trace!(target: "winterjs2::promise", promise = ?promise.get(), "rejection handled");
             state::with_rooted(|s| s.unhandled.retain(|h| h.get() != promise.get()));
         }
     }
@@ -270,7 +270,7 @@ pub(crate) fn pending_error_in_realm(
     }
 }
 
-/// eval 结果：__wjs_error 优先（格式与未捕获异常一致），否则打印 __wjs_value。
+/// eval 结果：__wjs2_error 优先（格式与未捕获异常一致），否则打印 __wjs2_value。
 fn extract_eval_result(
     rt: &mut Runtime,
     global: &RootedGuard<'_, *mut JSObject>,
@@ -281,7 +281,7 @@ fn extract_eval_result(
     rooted!(&in(&mut realm) let mut err = UndefinedValue());
     // SAFETY: realm 内读全局属性；raw 调用不触发 GC
     let ok = unsafe {
-        JS_GetProperty((&mut realm).raw_cx(), raw_handle(global.as_ptr()), c"__wjs_error".as_ptr(), raw_handle_mut(err.as_ptr()))
+        JS_GetProperty((&mut realm).raw_cx(), raw_handle(global.as_ptr()), c"__wjs2_error".as_ptr(), raw_handle_mut(err.as_ptr()))
     };
     if ok && !err.is_undefined() {
         // Error 对象读 message/lineNumber/columnNumber；非对象值退化为 ToString
@@ -309,7 +309,7 @@ fn extract_eval_result(
     rooted!(&in(&mut realm) let mut val = UndefinedValue());
     // SAFETY: realm 内读全局属性；raw 调用不触发 GC
     let ok = unsafe {
-        JS_GetProperty((&mut realm).raw_cx(), raw_handle(global.as_ptr()), c"__wjs_value".as_ptr(), raw_handle_mut(val.as_ptr()))
+        JS_GetProperty((&mut realm).raw_cx(), raw_handle(global.as_ptr()), c"__wjs2_value".as_ptr(), raw_handle_mut(val.as_ptr()))
     };
     if ok && !val.is_undefined() {
         println!("{}", value_to_string(&mut realm, val.get()));

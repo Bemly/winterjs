@@ -179,7 +179,7 @@ pub(crate) fn pkcs7_unpad(block: usize, data: &[u8]) -> Option<Vec<u8>> {
     Some(data[..data.len() - n].to_vec())
 }
 
-/// `__wjs_cipher_new(alg, keyU8, ivU8, encNum, autoPadNum)` → id 字符串。
+/// `__wjs2_cipher_new(alg, keyU8, ivU8, encNum, autoPadNum)` → id 字符串。
 pub unsafe extern "C" fn cipher_new(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -296,7 +296,7 @@ pub unsafe extern "C" fn cipher_new(
     true
 }
 
-/// `__wjs_cipher_update(idStr, bytesU8)` → Uint8Array。
+/// `__wjs2_cipher_update(idStr, bytesU8)` → Uint8Array。
 pub unsafe extern "C" fn cipher_update(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -366,7 +366,7 @@ pub unsafe extern "C" fn cipher_update(
     }
 }
 
-/// `__wjs_cipher_final(idStr)` → Uint8Array（消费句柄）。
+/// `__wjs2_cipher_final(idStr)` → Uint8Array（消费句柄）。
 pub unsafe extern "C" fn cipher_final(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -450,7 +450,7 @@ pub unsafe extern "C" fn cipher_final(
     }
 }
 
-/// `__wjs_cipher_set_autopad(idStr, flagNum)` → undefined（原位改 flag，不消费句柄）。
+/// `__wjs2_cipher_set_autopad(idStr, flagNum)` → undefined（原位改 flag，不消费句柄）。
 /// UNSAFE-BOUNDARY：前置条件 = 引擎回调提供的 raw cx 有效 + `Frame::from_raw(vp, argc)`
 /// 的调用约定成立（与本文件其余 cipher 系 natives 同）；覆盖测试
 /// `tests/node/crypto/cipher.rs::p2_crypto_cipher_setautopadding`（含非法 id 的
@@ -494,7 +494,7 @@ pub unsafe extern "C" fn cipher_set_autopad(
     true
 }
 
-/// `__wjs_cipher_chacha(encNum, keyU8, nonceU8, aadOrNull, dataU8, tagOrNull)`：
+/// `__wjs2_cipher_chacha(encNum, keyU8, nonceU8, aadOrNull, dataU8, tagOrNull)`：
 /// enc=1 → ct‖tag16；enc=0 → pt（tag 必给，认证失败报原文无码错，Node 同款）。
 pub unsafe extern "C" fn cipher_chacha(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -637,7 +637,7 @@ pub(crate) fn ccm_crypt(
     }
 }
 
-/// `__wjs_ccm_crypt(encNum, keyU8, nonceU8, aadU8, dataU8, tagU8OrNull, tagLenNum)`：
+/// `__wjs2_ccm_crypt(encNum, keyU8, nonceU8, aadU8, dataU8, tagU8OrNull, tagLenNum)`：
 /// enc=1 → ct‖tag；enc=0 → pt（tag 必给；tag 长须等于 tagLen，认证失败原文无码错）。
 pub unsafe extern "C" fn ccm_crypt_native(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -700,7 +700,7 @@ pub unsafe extern "C" fn ccm_crypt_native(
 }
 
 // ── 10e GCM 任意 iv（NIST SP 800-38D J0 构造；`ghash` 0.6 直引）────────────
-// 说明：12B 走 `aes-gcm` crate 原路径（`__wjs_aesgcm_*`，WebCrypto 共用，spec 本就
+// 说明：12B 走 `aes-gcm` crate 原路径（`__wjs2_aesgcm_*`，WebCrypto 共用，spec 本就
 // 只收 12B）；node 侧非 12B 走本节手工路径（`aes` ECB 单块 + `ghash`，约 60 行）。
 // 计时侧信道与既有 PKCS#7 注记同口径（非恒定时间比较，功能等价）。
 
@@ -814,8 +814,8 @@ pub(crate) fn gcm_manual(key: &[u8], iv: &[u8], aad: &[u8], input: &[u8], enc: b
     }
 }
 
-/// `__wjs_gcm_anyiv(encNum, keyU8, ivU8, aadU8, dataU8)`：12B 走 `aes-gcm`
-/// crate（与 `__wjs_aesgcm_*` 同语义），其余走手工 J0 路径；输出形状与 CCM 对齐
+/// `__wjs2_gcm_anyiv(encNum, keyU8, ivU8, aadU8, dataU8)`：12B 走 `aes-gcm`
+/// crate（与 `__wjs2_aesgcm_*` 同语义），其余走手工 J0 路径；输出形状与 CCM 对齐
 /// （enc → ct‖tag16；dec 输入 ct‖tag16 → pt）。
 pub unsafe extern "C" fn gcm_anyiv(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -848,7 +848,7 @@ pub unsafe extern "C" fn gcm_anyiv(
     }
     let aad_ref = aad.as_deref().unwrap_or(&[]);
     let out = if iv.len() == 12 {
-        // 原 crate 路径（12B；错误文案与 `__wjs_aesgcm_*` 对齐）
+        // 原 crate 路径（12B；错误文案与 `__wjs2_aesgcm_*` 对齐）
         if enc {
             crate::builtins::crypto::gcm_encrypt_raw(&key, &iv, aad_ref, &data)
         } else {

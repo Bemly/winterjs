@@ -126,7 +126,7 @@ function __dnsIsIP(s) {
 function __entries(hostname) {
   let raw;
   try {
-    raw = JSON.parse(__wjs_dns_lookup(String(hostname)));
+    raw = JSON.parse(__wjs2_dns_lookup(String(hostname)));
   } catch (e) {
     throw __dnsMakeError("getaddrinfo", "EAI_AGAIN", hostname);
   }
@@ -176,7 +176,7 @@ export function lookup(hostname, options, cb) {
 }
 // ── 10d 深件：hickory 查询（callback + promise 双形态，Node 错误形状）──
 function __qkind(kind, hostname) {
-  const text = __wjs_dns_query(kind, String(hostname));
+  const text = __wjs2_dns_query(kind, String(hostname));
   return JSON.parse(text);
 }
 // Node DNSException 全文口径：`${syscall} ${code} ${hostname}`（无 detail；
@@ -238,7 +238,7 @@ export function resolve(hostname, rrtype, cb) {
   }
   queueMicrotask(() => {
     let raw;
-    try { raw = JSON.parse(__wjs_dns_query(kind, hostname)); }
+    try { raw = JSON.parse(__wjs2_dns_query(kind, hostname)); }
     catch (e) {
       try { __qerr(kind, hostname, e); } catch (err) { cb(err); }
       return;
@@ -260,7 +260,7 @@ export function reverse(ip, cb) {
     }
   });
 }
-export function getServers() { return JSON.parse(__wjs_dns_servers_get()); }
+export function getServers() { return JSON.parse(__wjs2_dns_servers_get()); }
 // setServers 全套校验（Node internal/dns/utils 口径：forEach 语义跳 holes；
 // getter 副作用（length 截断）天然收敛——forEach 只读一次 length；
 // 端口 0 视默认；非法 IP → ERR_INVALID_IP_ADDRESS；越界端口 → ERR_SOCKET_BAD_PORT）
@@ -331,7 +331,7 @@ function __dnsWireForm([ver, ip, port]) {
 }
 export function setServers(servers) {
   const triples = __dnsParseServers(servers);
-  __wjs_dns_servers_set(JSON.stringify(triples.map(__dnsPublicForm)));
+  __wjs2_dns_servers_set(JSON.stringify(triples.map(__dnsPublicForm)));
   // 全局 override 快照（模块级 resolveAny/4/6/Soa 遇 override 走定制单问；
   // 调用时判定，microtask 排空前已 set 即命中——phase10d 行 89/102 序安全）
   __dnsUserServers = triples;
@@ -344,7 +344,7 @@ function __dnsOverrideSnapshot() {
 function __moduleQueryCustom(kind, syscall, hostname, cb, wantTtl) {
   const st = { servers: __dnsOverrideSnapshot(), timeout: 5000, tries: 2, pending: 0, jobs: new Map() };
   const wire = JSON.stringify(st.servers.map(__dnsWireForm));
-  const id = Number(__wjs_dns_job_start(kind, hostname, wire, "5000", "2"));
+  const id = Number(__wjs2_dns_job_start(kind, hostname, wire, "5000", "2"));
   const rec = { poll: 0 };
   st.jobs.set(id, rec);
   const settle = (err, val) => {
@@ -355,7 +355,7 @@ function __moduleQueryCustom(kind, syscall, hostname, cb, wantTtl) {
   };
   rec.poll = setInterval(() => {
     let r;
-    try { r = JSON.parse(__wjs_dns_job_poll(String(id))); }
+    try { r = JSON.parse(__wjs2_dns_job_poll(String(id))); }
     catch { return; }
     if (r.status === "pending") return;
     if (r.status === "err") {
@@ -374,8 +374,8 @@ function __moduleQueryCustom(kind, syscall, hostname, cb, wantTtl) {
     settle(null, kind === "soa" ? norm[0] : norm);
   }, 5);
 }
-export function getDefaultResultOrder() { return __wjs_dns_order_get(); }
-export function setDefaultResultOrder(order) { __wjs_dns_order_set(String(order)); }
+export function getDefaultResultOrder() { return __wjs2_dns_order_get(); }
+export function setDefaultResultOrder(order) { __wjs2_dns_order_set(String(order)); }
 // 10f：resolve4/6 走 DNS-A/AAAA 查询（hickory 系统路径；`{ttl:true}` 回
 // [{address, ttl}]，否则 [address]）。localhost 经 hosts/系统 DNS（phase9d  pin）。
 function __resolveAddr(kind, syscall, hostname, options, cb) {
@@ -393,7 +393,7 @@ function __resolverQueryMod(kind, syscall, hostname, cb, wantTtl) {
   __dnsValidateFunction(cb, "callback");
   queueMicrotask(() => {
     let raw;
-    try { raw = JSON.parse(__wjs_dns_query(kind, hostname)); }
+    try { raw = JSON.parse(__wjs2_dns_query(kind, hostname)); }
     catch (e) {
       try { __qerr(kind, hostname, e); } catch (err) { cb(err); }
       return;
@@ -444,7 +444,7 @@ export function resolveSoa(hostname, options, cb) {
   if (__dnsOverrideSnapshot()) { __moduleQueryCustom("soa", "querySoa", hostname, cb, false); return; }
   queueMicrotask(() => {
     let raw;
-    try { raw = JSON.parse(__wjs_dns_query("soa", hostname)); }
+    try { raw = JSON.parse(__wjs2_dns_query("soa", hostname)); }
     catch (e) {
       try { __qerr("soa", hostname, e); } catch (err) { cb(err); }
       return;
@@ -548,7 +548,7 @@ function __lookupServiceImpl(address, port, callback) {
   });
 }
 // ── 10f：Resolver 独立实例（Node internal/dns/utils 口径）──────────────────
-// 自有 servers/timeout/tries/maxTimeout；查询经 `__wjs_dns_query_cfg` 定制单问；
+// 自有 servers/timeout/tries/maxTimeout；查询经 `__wjs2_dns_query_cfg` 定制单问；
 // pending 计数 + cancel 代际：cancel 后落定的 in-flight 一律合成 ECANCELLED
 // （真机 c-ares 回调语义；线程侧不强杀，只改 JS 侧结算，见模块头注）。
 const __resolverPriv = new WeakMap();
@@ -625,7 +625,7 @@ function __resolverQuery(inst, kind, syscall, hostname, cb) {
   const wire = JSON.stringify(st.servers.map(__dnsWireForm));
   // 投递即返（helper 线程跑查询，事件循环永不停转——阻塞 native 会饿死
   // stub 回包分发；5ms refed 轮询保活，结算/取消即清）
-  const id = Number(__wjs_dns_job_start(kind, hostname, wire, String(st.timeout), String(st.tries), String(st.maxTimeout)));
+  const id = Number(__wjs2_dns_job_start(kind, hostname, wire, String(st.timeout), String(st.tries), String(st.maxTimeout)));
   const rec = { kind, syscall, hostname, cb, poll: 0 };
   st.jobs.set(id, rec);
   const settle = (err, val) => {
@@ -638,7 +638,7 @@ function __resolverQuery(inst, kind, syscall, hostname, cb) {
   rec.cancel = () => settle(__dnsCancelled(syscall, hostname), undefined);
   rec.poll = setInterval(() => {
     let r;
-    try { r = JSON.parse(__wjs_dns_job_poll(String(id))); }
+    try { r = JSON.parse(__wjs2_dns_job_poll(String(id))); }
     catch { return; }
     if (r.status === "pending") return;
     if (r.status === "err") {
@@ -725,7 +725,7 @@ export class Resolver {
     // 事件循环不为取消的查询多等一轮超时）
     const st = __resolverPriv.get(this);
     for (const [id, rec] of [...st.jobs]) {
-      try { __wjs_dns_job_forget(String(id)); } catch { /* 摘除尽力 */ }
+      try { __wjs2_dns_job_forget(String(id)); } catch { /* 摘除尽力 */ }
       rec.cancel();
     }
   }
@@ -840,7 +840,7 @@ export const promises = {
     return new Promise((resolveP, reject) => {
     queueMicrotask(() => {
       let raw;
-      try { raw = JSON.parse(__wjs_dns_query("soa", h)); }
+      try { raw = JSON.parse(__wjs2_dns_query("soa", h)); }
       catch (e) {
         try { __qerr("soa", h, e); } catch (err) { reject(err); }
         return;

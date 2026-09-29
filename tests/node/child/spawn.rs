@@ -38,7 +38,7 @@ try {
 #[test]
 fn phase4_cp_timeout_and_shell() {
     // 超时杀（真机缺省 SIGTERM；旧 SIGKILL 形为伪语义，已翻转）+ shell:false 直跑。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const { spawnSync, execSync } = await import("node:child_process"); const r = spawnSync("sleep", ["5"], { timeout: 200 }); console.log(r.signal, !!r.error); console.log(execSync("echo noshell", { shell: false }).toString().trim());"#]));
     assert_eq!(out, "SIGTERM true\nnoshell\n", "timeout: {out}");
 }
@@ -46,13 +46,13 @@ fn phase4_cp_timeout_and_shell() {
 #[test]
 fn phase4_spawn_async_exit_close_kill() {
     // exit+close 双调 + kill 中断（SIGTERM 形）。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const { spawn } = await import("node:child_process"); const log = []; const c = spawn("echo", ["async-hi"], { stdio: "ignore" }); console.log("pid:", c.pid > 0, "killed:", c.killed); c.on("exit", (code) => log.push("exit:" + code)); c.on("close", () => { log.push("close"); console.log(log.join("|")); });"#]));
     assert_eq!(
         out, "pid: true killed: false\nexit:0|close\n",
         "spawn: {out}"
     );
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const { spawn } = await import("node:child_process"); const log = []; const c = spawn("sleep", ["30"]); c.on("exit", (code, signal) => log.push("exit:" + signal)); c.on("close", () => { log.push("close"); console.log(log.join("|")); }); setTimeout(() => console.log("killed:", c.kill()), 100);"#]));
     assert_eq!(out, "killed: true\nexit:SIGTERM|close\n", "kill: {out}");
 }
@@ -85,7 +85,7 @@ if (out !== "hi-stdin") throw new Error("cat failed: " + JSON.stringify(out));
 console.log("pipe-ok");
 "#;
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", code])),
+        stdout_of(&mut winterjs2().args(["--eval", code])),
         "pipe-ok\n"
     );
 }
@@ -163,7 +163,7 @@ await new Promise((r) => setTimeout(r, 200));
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -248,7 +248,7 @@ setTimeout(() => process.exit(0), 500);
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -277,7 +277,7 @@ fn phase10f_child_constructor_spawn_method() {
     // kill 未知信号 ERR_UNKNOWN_SIGNAL + 成功 spawn 后 pid 自有属性。
     // 正常：sleep 起后 hasOwn(pid)/整数/kill() true；报错：四组校验逐项
     // ARG_TYPE；边界：kill('foo') 抛 ERR_UNKNOWN_SIGNAL。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const { ChildProcess } = await import("node:child_process");
 const codes = [];
 for (const bad of [undefined, null, "foo", 0, 1, NaN, true, false]) {
@@ -347,7 +347,7 @@ console.log("kill", c.kill() === true);
 fn phase10f_child_spawn_arg_validation() {
     // spawn-typeerror 套件回归：spawn file/args/options/uid-gid 逐项 code +
     // execFile 位移 + fork 位移 + fork 子会话续命（无监听即退/有监听迟发可达）。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const { spawn, execFile, fork } = await import("node:child_process");
 const tags = [];
 const want = (tag, fn, code) => {
@@ -409,7 +409,7 @@ console.log(tags.join("\n"));"#]));
         .unwrap();
     let bye = dir.path().join("bye.mjs").to_string_lossy().into_owned();
     let late = dir.path().join("echo-late.mjs").to_string_lossy().into_owned();
-    let out = stdout_of(&mut winterjs().args(["--eval", &format!(
+    let out = stdout_of(&mut winterjs2().args(["--eval", &format!(
         r#"const {{ fork }} = await import("node:child_process");
 const a = fork({bye:?});
 a.on("exit", (code) => console.log("bye-exit", code));
@@ -427,7 +427,7 @@ setTimeout(() => console.log("done"), 2500);"#)]));
 fn phase10f_child_kill_stdin_surface() {
     // kill 套件回归：kill 即 SIGTERM + stdout/stderr end + kill(0) 只验活不杀 +
     // 父写 stdin/子回显（cat）+ 自家 stdout 逐次 flush（常驻不滞留）。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const { spawn } = await import("node:child_process");
 const c = spawn("cat");
 let ends = 0;
@@ -470,7 +470,7 @@ console.log("bye", e.signalCode === "SIGTERM");"#]));
 fn phase10f_child_stdin_backpressure() {
     // big-write-end 套件回归：stdin.write 持续写必回 false（16KB 高水位）+
     // drain 到达 + 全量按序回显 + end 关。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const { spawn } = await import("node:child_process");
 const c = spawn("cat");
 let sent = 0;
@@ -505,7 +505,7 @@ console.log("closed", c.exitCode === 0);"#]));
 fn phase10f_child_stdio_stream_handoff() {
     // pipe-dataflow/merge/reuse 套件回归：stdio 数组流对象转交（stdin 位读流
     // data/end 转入、stdout 位写流只转 data 不转 end）+ stdout._handle 桩。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const { spawn } = await import("node:child_process");
 // stdin 位：读流转入
 {

@@ -168,7 +168,7 @@ fn path_to_file_url(p: PathBuf) -> Result<Url, Error> {
 fn resolve_bare(cond: Cond, specifier: &str, base: Option<&Url>) -> Result<Url, Error> {
     // node 内建优先于 node_modules（与 Node 一致；`fs` 与 `node:fs` 同一模块）。
     if let Some(canonical) = crate::builtins::node::normalize_spec(specifier) {
-        tracing::debug!(target: "winterjs::loader", specifier, canonical, "builtin module");
+        tracing::debug!(target: "winterjs2::loader", specifier, canonical, "builtin module");
         return Url::parse(canonical).map_err(|e| Error::Other(format!("bad builtin URL: {e}")));
     }    if matches!(base.map(|u| u.scheme()), Some("data")) {
         return Err(Error::Other(format!(
@@ -177,7 +177,7 @@ fn resolve_bare(cond: Cond, specifier: &str, base: Option<&Url>) -> Result<Url, 
     }
     match resolve_with(cond, specifier, base) {
         Ok(p) => {
-            tracing::debug!(target: "winterjs::loader", specifier, path = %p.display(), "resolved via oxc_resolver");
+            tracing::debug!(target: "winterjs2::loader", specifier, path = %p.display(), "resolved via oxc_resolver");
             path_to_file_url(p)
         }
         Err(e) => Err(e),
@@ -214,14 +214,14 @@ fn resolve_relative(cond: Cond, specifier: &str, base: Option<&Url>) -> Result<U
         )));
     }
     if let Ok(p) = resolve_with(cond, specifier, Some(base)) {
-        tracing::debug!(target: "winterjs::loader", specifier, path = %p.display(), "resolved via oxc_resolver");
+        tracing::debug!(target: "winterjs2::loader", specifier, path = %p.display(), "resolved via oxc_resolver");
         return path_to_file_url(p);
     }
     // 兜底：自家实现（无 node_modules 参与的纯相对场景与之等价）
     let joined = base.join(specifier).map_err(|e| {
         Error::Other(format!("cannot resolve '{specifier}' from '{base}': {e}"))
     })?;
-    tracing::debug!(target: "winterjs::loader", specifier, "resolved via fallback join+probe");
+    tracing::debug!(target: "winterjs2::loader", specifier, "resolved via fallback join+probe");
     probe_file_url(&joined)
 }
 
@@ -244,7 +244,7 @@ fn resolve_cond(cond: Cond, specifier: &str, base: Option<&Url>) -> Result<Url, 
             "http" | "https" => Ok(url),
             "node" => match crate::builtins::node::normalize_spec(specifier) {
                 Some(canonical) => {
-                    tracing::debug!(target: "winterjs::loader", specifier, canonical, "builtin module");
+                    tracing::debug!(target: "winterjs2::loader", specifier, canonical, "builtin module");
                     Url::parse(canonical).map_err(|e| Error::Other(format!("bad builtin URL: {e}")))
                 }
                 None => Err(Error::Other(format!(
@@ -254,7 +254,7 @@ fn resolve_cond(cond: Cond, specifier: &str, base: Option<&Url>) -> Result<Url, 
             },
             "bun" => match crate::builtins::bun::normalize_spec(specifier) {
                 Some(canonical) => {
-                    tracing::debug!(target: "winterjs::loader", specifier, canonical, "builtin module");
+                    tracing::debug!(target: "winterjs2::loader", specifier, canonical, "builtin module");
                     Url::parse(canonical).map_err(|e| Error::Other(format!("bad builtin URL: {e}")))
                 }
                 None => Err(Error::Other(format!(

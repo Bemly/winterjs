@@ -53,19 +53,19 @@ impl AcmeOpts {
     }
 }
 
-/// 缓存根：显式 `--acme-cache` > `$WINTERJS_ACME_CACHE` > 系统缓存
-///（`dirs::cache_dir/winterjs/acme`；与 pkgs 缓存同源）。
+/// 缓存根：显式 `--acme-cache` > `$WINTERJS2_ACME_CACHE` > 系统缓存
+///（`dirs::cache_dir/winterjs2/acme`；与 pkgs 缓存同源）。
 pub fn cache_root(explicit: Option<&Path>) -> Result<PathBuf, Error> {
     if let Some(p) = explicit {
         return Ok(p.to_path_buf());
     }
-    if let Ok(v) = std::env::var("WINTERJS_ACME_CACHE")
+    if let Ok(v) = std::env::var("WINTERJS2_ACME_CACHE")
         && !v.trim().is_empty()
     {
         return Ok(PathBuf::from(v));
     }
     let base = dirs::cache_dir().ok_or_else(|| Error::Other("cannot find cache directory".into()))?;
-    Ok(base.join("winterjs").join("acme"))
+    Ok(base.join("winterjs2").join("acme"))
 }
 
 /// 域缓存三件（cert.pem/key.pem/account.json）。
@@ -112,10 +112,10 @@ pub async fn ensure_cert(opts: &AcmeOpts) -> Result<(Vec<u8>, Vec<u8>), Error> {
     let (cert_path, key_path, account_path) = cache_paths(&root, &domain);
     if let (Ok(cert), Ok(key)) = (std::fs::read(&cert_path), std::fs::read(&key_path)) {
         if cached_cert_valid(&cert, &key) {
-            tracing::info!(target: "winterjs::acme", domain = domain.as_str(), "using cached certificate");
+            tracing::info!(target: "winterjs2::acme", domain = domain.as_str(), "using cached certificate");
             return Ok((cert, key));
         }
-        tracing::info!(target: "winterjs::acme", domain = domain.as_str(), "cached certificate expired, renewing");
+        tracing::info!(target: "winterjs2::acme", domain = domain.as_str(), "cached certificate expired, renewing");
     }
     let email = opts.email.clone().filter(|e| !e.trim().is_empty()).ok_or_else(|| {
         Error::Other("ACME needs --acme-email <addr> for a new account (cached account not found)".into())
@@ -123,7 +123,7 @@ pub async fn ensure_cert(opts: &AcmeOpts) -> Result<(Vec<u8>, Vec<u8>), Error> {
     if !email.contains('@') {
         return Err(Error::Other(format!("bad --acme-email '{email}'")));
     }
-    tracing::info!(target: "winterjs::acme", domain = domain.as_str(), directory = opts.directory_url(), "requesting certificate");
+    tracing::info!(target: "winterjs2::acme", domain = domain.as_str(), directory = opts.directory_url(), "requesting certificate");
     let (cert_pem, key_pem) = issue(opts.directory_url(), &domain, &email, &account_path).await?;
     if let Some(parent) = cert_path.parent() {
         std::fs::create_dir_all(parent)
@@ -137,7 +137,7 @@ pub async fn ensure_cert(opts: &AcmeOpts) -> Result<(Vec<u8>, Vec<u8>), Error> {
         std::fs::rename(&tmp, path)
             .map_err(|e| Error::Other(format!("cannot commit {}: {e}", path.display())))?;
     }
-    tracing::info!(target: "winterjs::acme", domain = domain.as_str(), "certificate issued and cached");
+    tracing::info!(target: "winterjs2::acme", domain = domain.as_str(), "certificate issued and cached");
     Ok((cert_pem, key_pem))
 }
 

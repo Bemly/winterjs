@@ -32,7 +32,7 @@ console.log("rl-def", typeof rl.createInterface === "function");
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())

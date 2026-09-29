@@ -130,7 +130,7 @@ pub unsafe extern "C" fn napi_set_named_property(
     }
 }
 
-/// napi set 面的统一通道：经 sloppy prelude helper `__wjs_napi_set`
+/// napi set 面的统一通道：经 sloppy prelude helper `__wjs2_napi_set`
 /// （`obj[key] = value`）——JSAPI JS_SetProperty 是 strict 语义（只读/冻结
 /// 属性抛 TypeError），Node 的 napi_set_property 走 v8 非严格 set（静默
 /// 返回 ok，2026-09-14 实测对齐）。
@@ -145,7 +145,7 @@ pub(crate) unsafe fn set_via_helper(
 ) -> napi_status {
     // SAFETY：helper 与值均 rooted/槽位存活；异常经 pending 传播。
     {
-        let Some(helper) = get_prop_value(cx, crate::state::global(), c"__wjs_napi_set") else {
+        let Some(helper) = get_prop_value(cx, crate::state::global(), c"__wjs2_napi_set") else {
             return NAPI_GENERIC_FAILURE;
         };
         match call_three(cx, crate::state::global(), helper, obj_v, key_v, val) {

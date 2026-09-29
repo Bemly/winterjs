@@ -111,7 +111,7 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength, padding) {
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
-    return __cryptCall(() => __wjs_ed448_sign(keyObj.__material, dataB));
+    return __cryptCall(() => __wjs2_ed448_sign(keyObj.__material, dataB));
   }
   if (kt === "ed25519") {
     // EdDSA 无摘要算法（真 Node：非 null 即 ERR_OSSL_INVALID_DIGEST；
@@ -126,7 +126,7 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength, padding) {
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
-    return __cryptCall(() => __wjs_ed_sign(keyObj.__material, dataB));
+    return __cryptCall(() => __wjs2_ed_sign(keyObj.__material, dataB));
   }
   if (typeof kt === "string" && kt.startsWith("ml-dsa-")) {
     // 9i-6：纯签名（真机口径：非 null 即 ERR_OSSL_INVALID_DIGEST）。
@@ -140,7 +140,7 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength, padding) {
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
-    return __cryptCall(() => __wjs_mldsa_sign(keyObj.__material, dataB));
+    return __cryptCall(() => __wjs2_mldsa_sign(keyObj.__material, dataB));
   }
   const hash = __normHashName(alg);
   if (hash === undefined) {
@@ -167,7 +167,7 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength, padding) {
           throw err;
         }
       } else {
-        return __cryptCall(() => __wjs_node_rsa_v15_sign(keyObj.__material, dataB, hash));
+        return __cryptCall(() => __wjs2_node_rsa_v15_sign(keyObj.__material, dataB, hash));
       }
     }
     const pss = kt === "rsa-pss";
@@ -211,11 +211,11 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength, padding) {
           err.code = "ERR_INVALID_ARG_VALUE";
           throw err;
         }
-        return Buffer.from(__cryptCall(() => __wjs_rsa_raw(keyObj.__material, em, 1)));
+        return Buffer.from(__cryptCall(() => __wjs2_rsa_raw(keyObj.__material, em, 1)));
       }
-      return __cryptCall(() => __wjs_pss_sign(hash, salt, keyObj.__material, dataB));
+      return __cryptCall(() => __wjs2_pss_sign(hash, salt, keyObj.__material, dataB));
     }
-    return __cryptCall(() => __wjs_rsa_sign(hash, keyObj.__material, dataB));
+    return __cryptCall(() => __wjs2_rsa_sign(hash, keyObj.__material, dataB));
   }
   if (kt === "ec") {
     if (keyObj.__kind !== "private") {
@@ -224,7 +224,7 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength, padding) {
       throw err;
     }
     const curve = keyObj.__detail.namedCurve;
-    const raw = __cryptCall(() => __wjs_ecdsa_sign(curve, hash, keyObj.__material, dataB));
+    const raw = __cryptCall(() => __wjs2_ecdsa_sign(curve, hash, keyObj.__material, dataB));
     if ((dsaEncoding ?? "der") === "der") return __rawToDerSig(Buffer.from(raw));
     return Buffer.from(raw);
   }
@@ -235,7 +235,7 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength, padding) {
       throw err;
     }
     const envStr = Buffer.from(keyObj.__material).toString("utf8");
-    const der = __cryptCall(() => __wjs_dsa_sign(hash, envStr, dataB));
+    const der = __cryptCall(() => __wjs2_dsa_sign(hash, envStr, dataB));
     if ((dsaEncoding ?? "der") === "der") return Buffer.from(der);
     // ieee-p1363：r‖s 定长（q 长）；DER 解后拼。
     const qLen = Buffer.from(JSON.parse(envStr).q, "base64").length;
@@ -284,7 +284,7 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength, padding) 
     }
     // 10f crypto二轮：签名形态错（非 114B）回 false，不抛（空签名套件点名）。
     if (sigB.length !== 114) return false;
-    return __cryptCall(() => __wjs_ed448_verify(keyObj.__material, sigB, dataB));
+    return __cryptCall(() => __wjs2_ed448_verify(keyObj.__material, sigB, dataB));
   }
   if (kt === "ed25519") {
     if (alg !== null && alg !== undefined) {
@@ -299,7 +299,7 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength, padding) 
     }
     // 10f crypto二轮：签名形态错（非 64B）回 false，不抛（空签名套件点名）。
     if (sigB.length !== 64) return false;
-    return __cryptCall(() => __wjs_ed_verify(keyObj.__material, sigB, dataB));
+    return __cryptCall(() => __wjs2_ed_verify(keyObj.__material, sigB, dataB));
   }
   if (typeof kt === "string" && kt.startsWith("ml-dsa-")) {
     // 9i-6：纯签名（真机口径同 sign：非 null 即 ERR_OSSL_INVALID_DIGEST）。
@@ -313,7 +313,7 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength, padding) 
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
-    return __cryptCall(() => __wjs_mldsa_verify(keyObj.__material, sigB, dataB));
+    return __cryptCall(() => __wjs2_mldsa_verify(keyObj.__material, sigB, dataB));
   }
   const hash = __normHashName(alg);
   if (hash === undefined) {
@@ -339,7 +339,7 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength, padding) 
           throw err;
         }
       } else {
-        return __cryptCall(() => __wjs_node_rsa_v15_verify(pubDer, sigB, dataB, hash));
+        return __cryptCall(() => __wjs2_node_rsa_v15_verify(pubDer, sigB, dataB, hash));
       }
     }
     const pss = kt === "rsa-pss";
@@ -357,7 +357,7 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength, padding) 
         if (det === null) return false;
         let em;
         try {
-          em = Buffer.from(__cryptCall(() => __wjs_rsa_raw(pubDer, Buffer.from(sigB), 0)));
+          em = Buffer.from(__cryptCall(() => __wjs2_rsa_raw(pubDer, Buffer.from(sigB), 0)));
         } catch {
           return false;
         }
@@ -365,9 +365,9 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength, padding) 
         return __emsaPssVerify(hash, vmgf, det.modulusLength - 1, mHash, em,
           saltLength === undefined ? undefined : salt);
       }
-      return __cryptCall(() => __wjs_pss_verify(hash, salt, pubDer, sigB, dataB));
+      return __cryptCall(() => __wjs2_pss_verify(hash, salt, pubDer, sigB, dataB));
     }
-    return __cryptCall(() => __wjs_rsa_verify(hash, pubDer, sigB, dataB));
+    return __cryptCall(() => __wjs2_rsa_verify(hash, pubDer, sigB, dataB));
   }
   if (kt === "ec") {
     const curve = keyObj.__detail.namedCurve;
@@ -380,12 +380,12 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength, padding) 
       return false;
     }
     if (raw.length !== 2 * size) return false;
-    return __cryptCall(() => __wjs_ecdsa_verify(curve, hash, pubDer, raw, dataB));
+    return __cryptCall(() => __wjs2_ecdsa_verify(curve, hash, pubDer, raw, dataB));
   }
   if (kt === "dsa") {
     const envStr = Buffer.from(keyObj.__material).toString("utf8");
     const der = (dsaEncoding ?? "der") === "der" ? sigB : __rawToDerSig(sigB);
-    return __cryptCall(() => __wjs_dsa_verify(hash, envStr, der, dataB));
+    return __cryptCall(() => __wjs2_dsa_verify(hash, envStr, der, dataB));
   }
   if (kt === "x25519" || kt === "x448") __osslKeytypeError();
   const err = new Error(`verify not supported for ${kt}`);
@@ -577,7 +577,7 @@ function __mgf1Bytes(name, seed, outLen) {
   return out.slice(0, outLen);
 }
 // 10f crypto六轮：EMSA-PSS 手组（MGF1 哈希可与消息摘要不同；RFC4055 §3.1/3.3
-// 自动切换。MGF1/摘要走既有 __mgf1Bytes/__dgstBytes，模幂走 __wjs_rsa_raw；
+// 自动切换。MGF1/摘要走既有 __mgf1Bytes/__dgstBytes，模幂走 __wjs2_rsa_raw；
 // 零新 native。侧信道记档：非恒定时间实现，与混合 OAEP 手写同口径）。
 // 编码成功回 Buffer EM；长度不足回 null（调用方按 OpenSSL 口径报错）。
 function __emsaPssEncode(msgName, mgfName, emBits, mHash, salt) {
@@ -695,32 +695,32 @@ function __rsaCrypt(key, data, isPublic, isEncrypt) {
         const det = __rsaDetailsFromMaterial(k.type, k.__material);
         if (det !== null && __OAEP_HLEN[hash] !== undefined) {
           const em = __oaepMixedEncode(hash, mgfHash, det.modulusLength / 8, dataB, label);
-          return Buffer.from(__cryptCall(() => __wjs_rsa_raw(k.__material, em, 0)));
+          return Buffer.from(__cryptCall(() => __wjs2_rsa_raw(k.__material, em, 0)));
         }
       }
       if (hash === "SHA-1") {
-        return Buffer.from(__cryptCall(() => __wjs_node_rsa_oaep(k.__material, dataB, label, 1)));
+        return Buffer.from(__cryptCall(() => __wjs2_node_rsa_oaep(k.__material, dataB, label, 1)));
       }
-      return Buffer.from(__cryptCall(() => __wjs_rsa_encrypt(hash, k.__material, dataB, label)));
+      return Buffer.from(__cryptCall(() => __wjs2_rsa_encrypt(hash, k.__material, dataB, label)));
     }
     if (!isPublic && !isEncrypt) {
       // 10f crypto二轮：混合哈希解码（同上）。
       if (mixedHash) {
         const det = __rsaDetailsFromMaterial(k.type, k.__material);
         if (det !== null && __OAEP_HLEN[hash] !== undefined) {
-          const em = Buffer.from(__cryptCall(() => __wjs_rsa_raw(k.__material, dataB, 1)));
+          const em = Buffer.from(__cryptCall(() => __wjs2_rsa_raw(k.__material, dataB, 1)));
           return __oaepMixedDecode(hash, mgfHash, det.modulusLength / 8, em, label);
         }
       }
       if (hash === "SHA-1") {
-        return Buffer.from(__cryptCall(() => __wjs_node_rsa_oaep(k.__material, dataB, label, 0)));
+        return Buffer.from(__cryptCall(() => __wjs2_node_rsa_oaep(k.__material, dataB, label, 0)));
       }
-      return Buffer.from(__cryptCall(() => __wjs_rsa_decrypt(hash, k.__material, dataB, label)));
+      return Buffer.from(__cryptCall(() => __wjs2_rsa_decrypt(hash, k.__material, dataB, label)));
     }
     // 10f crypto二轮：私钥加密（OAEP-SHA1 反向 native；SHA-2 系另案）。
     if (!isPublic && isEncrypt) {
       if (hash === "SHA-1") {
-        return Buffer.from(__cryptCall(() => __wjs_node_rsa_oaep_flip(k.__material, dataB, label, 1)));
+        return Buffer.from(__cryptCall(() => __wjs2_node_rsa_oaep_flip(k.__material, dataB, label, 1)));
       }
       const err = new Error("RSA privateEncrypt not supported");
       err.code = "ERR_NOT_SUPPORTED";
@@ -729,7 +729,7 @@ function __rsaCrypt(key, data, isPublic, isEncrypt) {
     // 10f crypto二轮：公钥解密（同上）。
     if (isPublic && !isEncrypt) {
       if (hash === "SHA-1") {
-        return Buffer.from(__cryptCall(() => __wjs_node_rsa_oaep_flip(k.__material, dataB, label, 0)));
+        return Buffer.from(__cryptCall(() => __wjs2_node_rsa_oaep_flip(k.__material, dataB, label, 0)));
       }
       const err = new Error("RSA publicDecrypt not supported");
       err.code = "ERR_NOT_SUPPORTED";
@@ -738,22 +738,22 @@ function __rsaCrypt(key, data, isPublic, isEncrypt) {
   }
   if (padding === 1) {
     if (isPublic && isEncrypt) {
-      return Buffer.from(__cryptCall(() => __wjs_rsa_encrypt_v15(k.__material, dataB)));
+      return Buffer.from(__cryptCall(() => __wjs2_rsa_encrypt_v15(k.__material, dataB)));
     }
     if (!isPublic && !isEncrypt) {
-      return Buffer.from(__cryptCall(() => __wjs_rsa_decrypt_v15(k.__material, dataB)));
+      return Buffer.from(__cryptCall(() => __wjs2_rsa_decrypt_v15(k.__material, dataB)));
     }
     // 10f crypto二轮：v1.5 反向 native。
     if (!isPublic && isEncrypt) {
-      return Buffer.from(__cryptCall(() => __wjs_rsa_v15_flip(k.__material, dataB, 1)));
+      return Buffer.from(__cryptCall(() => __wjs2_rsa_v15_flip(k.__material, dataB, 1)));
     }
     if (isPublic && !isEncrypt) {
-      return Buffer.from(__cryptCall(() => __wjs_rsa_v15_flip(k.__material, dataB, 0)));
+      return Buffer.from(__cryptCall(() => __wjs2_rsa_v15_flip(k.__material, dataB, 0)));
     }
   }
   // 10f crypto二轮：NO_PADDING 裸运算（3；私钥 d 次幂/公钥 e 次幂）。
   if (padding === 3) {
-    return Buffer.from(__cryptCall(() => __wjs_rsa_raw(k.__material, dataB, isPublic ? 0 : 1)));
+    return Buffer.from(__cryptCall(() => __wjs2_rsa_raw(k.__material, dataB, isPublic ? 0 : 1)));
   }
   const err = new Error(`Unsupported RSA padding ${padding} for this operation`);
   err.code = "ERR_NOT_SUPPORTED";
@@ -776,8 +776,8 @@ class ECDHImpl {
     this.__pub = null;
   }
   generateKeys() {
-    this.__priv = __cryptCall(() => __wjs_ec_generate(this.__curve));
-    this.__pub = __cryptCall(() => __wjs_ec_public(this.__curve, this.__priv));
+    this.__priv = __cryptCall(() => __wjs2_ec_generate(this.__curve));
+    this.__pub = __cryptCall(() => __wjs2_ec_public(this.__curve, this.__priv));
     return this.getPublicKey();
   }
   getPublicKey(encoding, format) {
@@ -786,7 +786,7 @@ class ECDHImpl {
       err.code = "ERR_CRYPTO_INVALID_STATE";
       throw err;
     }
-    const parts = JSON.parse(__cryptCall(() => __wjs_ec_jwk_pub(this.__curve, this.__pub)));
+    const parts = JSON.parse(__cryptCall(() => __wjs2_ec_jwk_pub(this.__curve, this.__pub)));
     const x = __b64urlDec(parts.x), y = __b64urlDec(parts.y);
     const raw = new Uint8Array(1 + x.length + y.length);
     raw[0] = 4; raw.set(x, 1); raw.set(y, 1 + x.length);
@@ -805,7 +805,7 @@ class ECDHImpl {
       throw err;
     }
     const size = __curveSize(this.__curve);
-    const parts = JSON.parse(__cryptCall(() => __wjs_ec_jwk(this.__curve, this.__priv, this.__pub)));
+    const parts = JSON.parse(__cryptCall(() => __wjs2_ec_jwk(this.__curve, this.__priv, this.__pub)));
     const d = __b64urlDec(parts.d);
     const out = new Uint8Array(size);
     out.set(d, size - d.length);
@@ -814,8 +814,8 @@ class ECDHImpl {
   }
   setPrivateKey(priv) {
     const scalar = __cryptBytes(priv, "private key");
-    this.__priv = __cryptCall(() => __wjs_ec_import_priv(this.__curve, scalar));
-    this.__pub = __cryptCall(() => __wjs_ec_public(this.__curve, this.__priv));
+    this.__priv = __cryptCall(() => __wjs2_ec_import_priv(this.__curve, scalar));
+    this.__pub = __cryptCall(() => __wjs2_ec_public(this.__curve, this.__priv));
     return this;
   }
   computeSecret(peer, inputEncoding, outputEncoding) {
@@ -829,11 +829,11 @@ class ECDHImpl {
     if (peerB.length > 0 && peerB[0] === 4) {
       // 裸非压缩点 → 经 import 转 SPKI
       const size = (peerB.length - 1) / 2;
-      peerDer = __cryptCall(() => __wjs_ec_import_pub(this.__curve, peerB.slice(1, 1 + size), peerB.slice(1 + size)));
+      peerDer = __cryptCall(() => __wjs2_ec_import_pub(this.__curve, peerB.slice(1, 1 + size), peerB.slice(1 + size)));
     } else {
       peerDer = peerB;
     }
-    const secret = __cryptCall(() => __wjs_ecdh_derive(this.__curve, this.__priv, peerDer));
+    const secret = __cryptCall(() => __wjs2_ecdh_derive(this.__curve, this.__priv, peerDer));
     if (outputEncoding === undefined) return Buffer.from(secret);
     return Buffer.from(secret).toString(outputEncoding);
   }

@@ -39,7 +39,7 @@ try { dc.subscribe("t-ch2", "nope"); } catch (e) { console.log("e2", e.message.i
 "#,
     )
     .unwrap();
-    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    let out = winterjs2().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let out = String::from_utf8(out.stdout).unwrap();
     assert!(out.contains("idle false false") && out.contains("active true true"), "out: {out}");
@@ -96,7 +96,7 @@ setTimeout(() => console.log("uncaught", JSON.stringify(seen)), 20);
 "#,
     )
     .unwrap();
-    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    let out = winterjs2().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let out = String::from_utf8(out.stdout).unwrap();
     for line in [

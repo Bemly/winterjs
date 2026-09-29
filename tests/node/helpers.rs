@@ -75,7 +75,7 @@ pub(crate) fn run_suite_mapped(dir: &assert_fs::TempDir, suite_path: &str) -> (b
     wrapper.write_str(&suite_mapper_src(suite_path)).unwrap();
     use std::io::Read as _;
     // std Command（非 assert_cmd）：mapper 需要 spawn + 管道 + try_wait 看门。
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs2"))
         .arg("--run")
         .arg(wrapper.path())
         .stdout(std::process::Stdio::piped())
@@ -127,14 +127,14 @@ pub(crate) fn run_suite_mapped(dir: &assert_fs::TempDir, suite_path: &str) -> (b
 pub(crate) fn run_node_file(dir: &assert_fs::TempDir, name: &str, source: &str) -> std::process::Output {
     let file = dir.child(name);
     file.write_str(source).unwrap();
-    winterjs().arg("--run").arg(file.path()).output().unwrap()
+    winterjs2().arg("--run").arg(file.path()).output().unwrap()
 }
 
 /// node:fs 脚手架（workdir 内跑模块；返回 stdout）。
 pub(crate) fn run_fs_file(dir: &assert_fs::TempDir, name: &str, source: &str) -> String {
     let file = dir.child(name);
     file.write_str(source).unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())

@@ -1,6 +1,6 @@
 // node:punycode: IDNA conversion and ucs2 helpers.
 // node:punycode：域名编码转换与 ucs2 工具。
-// Run / 运行: winterjs --run sample/codecs/punycode.js
+// Run / 运行: winterjs2 --run sample/codecs/punycode.js
 import punycode from 'node:punycode';
 
 console.log('[punycode] ascii:', punycode.toASCII('münchen.de') === 'xn--mnchen-3ya.de');

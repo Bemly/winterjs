@@ -1,6 +1,6 @@
 // node:http: server + client round-trip (JSON echo, keep-alive agent).
 // HTTP：服务端与客户端往返（JSON 回声、复用连接）。
-// Run / 运行: winterjs --run sample/http/server-client.js
+// Run / 运行: winterjs2 --run sample/http/server-client.js
 import http from 'node:http';
 
 const server = http.createServer((req, res) => {

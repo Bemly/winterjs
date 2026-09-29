@@ -54,7 +54,7 @@ pub fn validate_manifest(dir: &Path) -> Result<Validated, String> {
             Some(l.to_owned())
         }
         _ => {
-            tracing::warn!(target: "winterjs::pm", package = name.as_str(), "no license field (publishing unlicensed)");
+            tracing::warn!(target: "winterjs2::pm", package = name.as_str(), "no license field (publishing unlicensed)");
             None
         }
     };
@@ -166,7 +166,7 @@ pub async fn publish(dir: &Path, dry_run: bool, registry: &str, tag: &str) -> Re
         println!("license: {}", v.license.as_deref().unwrap_or("(none)"));
         println!("files: {}", v.files);
         println!("tarball: {} bytes, {} file(s)", tgz.len(), names.len());
-        tracing::info!(target: "winterjs::pm", package = v.name.as_str(), version = v.version.as_str(), files = v.files, "publish dry-run ok");
+        tracing::info!(target: "winterjs2::pm", package = v.name.as_str(), version = v.version.as_str(), files = v.files, "publish dry-run ok");
         return Ok(());
     }
     // token 按生效 registry host 从 npmrc 取（`<dir>/.npmrc` > `$HOME/.npmrc`）。
@@ -176,7 +176,7 @@ pub async fn publish(dir: &Path, dry_run: bool, registry: &str, tag: &str) -> Re
         .or_else(|| home.auth_token_for(registry));
     let Some(token) = token else {
         return Err(Error::Other(format!(
-            "no auth token for {registry} (run `winterjs --login --token <token> --registry {registry}` first)"
+            "no auth token for {registry} (run `winterjs2 --login --token <token> --registry {registry}` first)"
         )));
     };
     put_package(registry, &token, &v, tag, &tgz).await
@@ -209,7 +209,7 @@ async fn put_package(registry: &str, token: &str, v: &Validated, tag: &str, tgz:
             }
         },
     });
-    tracing::info!(target: "winterjs::pm", package = v.name.as_str(), version = v.version.as_str(), bytes = tgz.len(), "publishing");
+    tracing::info!(target: "winterjs2::pm", package = v.name.as_str(), version = v.version.as_str(), bytes = tgz.len(), "publishing");
     let resp = super::registry::client()
         .put(&url)
         .header("Authorization", format!("Bearer {token}"))
@@ -221,7 +221,7 @@ async fn put_package(registry: &str, token: &str, v: &Validated, tag: &str, tgz:
     let status = resp.status();
     if status.is_success() {
         println!("published {}@{} (tag {tag}) to {registry}", v.name, v.version);
-        tracing::info!(target: "winterjs::pm", package = v.name.as_str(), version = v.version.as_str(), "published");
+        tracing::info!(target: "winterjs2::pm", package = v.name.as_str(), version = v.version.as_str(), "published");
         return Ok(());
     }
     // 409 已存在（npm 口径：不可覆盖已发布版本）。
@@ -234,7 +234,7 @@ async fn put_package(registry: &str, token: &str, v: &Validated, tag: &str, tgz:
     // 401/403 指到 login。
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
         return Err(Error::Other(format!(
-            "publish rejected by {registry} ({status}; check `winterjs --login --token` for this registry)"
+            "publish rejected by {registry} ({status}; check `winterjs2 --login --token` for this registry)"
         )));
     }
     let text = resp.text().await.unwrap_or_default();
@@ -288,7 +288,7 @@ pub fn login_with_token(home: &Path, registry_url: &str, token: &str) -> Result<
     let old = std::fs::read_to_string(&path).unwrap_or_default();
     let new = upsert_auth_token(&old, registry_url, token.trim()).map_err(Error::Other)?;
     super::cache::atomic_write(&path, new.as_bytes()).map_err(Error::Other)?;
-    tracing::info!(target: "winterjs::pm", host = host.as_str(), "login token saved");
+    tracing::info!(target: "winterjs2::pm", host = host.as_str(), "login token saved");
     println!("logged in to {registry_url} (token saved to {})", path.display());
     Ok(())
 }
@@ -297,7 +297,7 @@ pub fn login_with_token(home: &Path, registry_url: &str, token: &str) -> Result<
 pub fn oauth_authorize_url(registry_url: &str) -> Result<(String, String), String> {
     use oauth2::{AuthUrl, ClientId, CsrfToken, RedirectUrl, TokenUrl};
     let base = registry_url.trim_end_matches('/');
-    let client = oauth2::basic::BasicClient::new(ClientId::new("winterjs".to_string()))
+    let client = oauth2::basic::BasicClient::new(ClientId::new("winterjs2".to_string()))
         .set_auth_uri(AuthUrl::new(format!("{base}/oauth/authorize")).map_err(|e| format!("bad registry url: {e}"))?)
         .set_token_uri(TokenUrl::new(format!("{base}/oauth/token")).map_err(|e| format!("bad registry url: {e}"))?)
         .set_redirect_uri(RedirectUrl::new("http://localhost/callback".to_string()).map_err(|e| e.to_string())?);
@@ -310,7 +310,7 @@ pub fn oauth_authorize_url(registry_url: &str) -> Result<(String, String), Strin
 pub async fn exchange_code(registry_url: &str, code: &str) -> Result<String, String> {
     use oauth2::{AuthUrl, ClientId, RedirectUrl, TokenResponse as _, TokenUrl};
     let base = registry_url.trim_end_matches('/');
-    let client = oauth2::basic::BasicClient::new(ClientId::new("winterjs".to_string()))
+    let client = oauth2::basic::BasicClient::new(ClientId::new("winterjs2".to_string()))
         .set_auth_uri(AuthUrl::new(format!("{base}/oauth/authorize")).map_err(|e| format!("bad registry url: {e}"))?)
         .set_token_uri(TokenUrl::new(format!("{base}/oauth/token")).map_err(|e| format!("bad registry url: {e}"))?)
         .set_redirect_uri(RedirectUrl::new("http://localhost/callback".to_string()).map_err(|e| e.to_string())?);
@@ -411,7 +411,7 @@ mod tests {
     fn oauth_url_points_at_registry() {
         let (url, csrf) = oauth_authorize_url("https://r.example/npm/").unwrap();
         assert!(url.starts_with("https://r.example/npm/oauth/authorize?"), "url: {url}");
-        assert!(url.contains("client_id=winterjs"), "url: {url}");
+        assert!(url.contains("client_id=winterjs2"), "url: {url}");
         assert!(!csrf.is_empty());
     }
 

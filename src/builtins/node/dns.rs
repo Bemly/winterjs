@@ -19,7 +19,7 @@ use mozjs::rooted;
 
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
 
-/// `__wjs_dns_lookup(host)` → JSON 数组 `[{address, family}]`（v4+v6 全量；
+/// `__wjs2_dns_lookup(host)` → JSON 数组 `[{address, family}]`（v4+v6 全量；
 /// 空数组由 JS 侧翻 ENOTFOUND）。
 pub unsafe extern "C" fn dns_lookup(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -423,7 +423,7 @@ fn query_blocking(kind: &str, name: &str) -> Result<serde_json::Value, (String, 
     let servers = effective_servers();
     let (tx, rx) = crossbeam_channel::bounded::<Result<serde_json::Value, (String, String)>>(1);
     let spawned = std::thread::Builder::new()
-        .name("winterjs-dns".into())
+        .name("winterjs2-dns".into())
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -601,7 +601,7 @@ fn query_blocking(kind: &str, name: &str) -> Result<serde_json::Value, (String, 
         .unwrap_or_else(|_| Err(("EAI_AGAIN".to_string(), "dns thread died".to_string())))
 }
 
-/// `__wjs_dns_query(kind, name)` → 结果 JSON；失败抛 `CODE: queryKind 'name': msg`。
+/// `__wjs2_dns_query(kind, name)` → 结果 JSON；失败抛 `CODE: queryKind 'name': msg`。
 pub unsafe extern "C" fn dns_query(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -622,9 +622,9 @@ pub unsafe extern "C" fn dns_query(
     dns_query_inner(&mut cx, &frame, &kind, &name)
 }
 
-/// `__wjs_dns_job_start(kind, name, servers_json, timeout_ms, tries, max_timeout_ms)`
+/// `__wjs2_dns_job_start(kind, name, servers_json, timeout_ms, tries, max_timeout_ms)`
 /// 定制查询的异步投递：helper 线程跑 `query_custom_sync`，结果进 job 表；
-/// JS 侧 `setInterval` 轮询 `__wjs_dns_job_poll` 收割（5ms 粒度，refed 保活，
+/// JS 侧 `setInterval` 轮询 `__wjs2_dns_job_poll` 收割（5ms 粒度，refed 保活，
 /// 结算即清）。阻塞 native 会停转事件循环（stub 回包无人分发，见 §4.x），
 /// 故定制路径永不阻塞（系统 hickory 路径沿旧同步语义，不动）。
 /// `servers_json` 为 JSON 数组（规范形）；`timeout_ms < 0` 取 5000；
@@ -704,7 +704,7 @@ pub unsafe extern "C" fn dns_job_start(
     let id = DNS_JOB_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     dns_jobs().lock().insert(id, None);
     let spawned = std::thread::Builder::new()
-        .name("winterjs-dns-job".into())
+        .name("winterjs2-dns-job".into())
         .spawn(move || {
             let res = std::panic::catch_unwind(|| {
                 query_custom_sync(&servers, &name, qtype, timeout, tries, max_timeout)
@@ -728,7 +728,7 @@ pub unsafe extern "C" fn dns_job_start(
     true
 }
 
-/// `__wjs_dns_job_poll(id)` → `{"status":"pending"}` /
+/// `__wjs2_dns_job_poll(id)` → `{"status":"pending"}` /
 /// `{"status":"ok","value":[...]}` / `{"status":"err","code","msg"}`。
 /// 取走即摘除（收割语义）；未知 id 回 pending（已收割/已遗忘不报错）。
 pub unsafe extern "C" fn dns_job_poll(
@@ -763,7 +763,7 @@ pub unsafe extern "C" fn dns_job_poll(
     true
 }
 
-/// `__wjs_dns_job_forget(id)` → 丢弃 job（cancel 后线程迟归不堆积）。
+/// `__wjs2_dns_job_forget(id)` → 丢弃 job（cancel 后线程迟归不堆积）。
 pub unsafe extern "C" fn dns_job_forget(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -813,7 +813,7 @@ fn dns_query_inner(
     }
 }
 
-/// `__wjs_dns_servers_get()` → JSON 数组。
+/// `__wjs2_dns_servers_get()` → JSON 数组。
 pub unsafe extern "C" fn dns_servers_get(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -834,7 +834,7 @@ pub unsafe extern "C" fn dns_servers_get(
     true
 }
 
-/// `__wjs_dns_servers_set(json)`：存规范形覆盖层（JS 已按 Node 口径校验 +
+/// `__wjs2_dns_servers_set(json)`：存规范形覆盖层（JS 已按 Node 口径校验 +
 /// canonicalize；此处只做 backstop 解析，非法项跳过——空即清空）。
 pub unsafe extern "C" fn dns_servers_set(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -872,7 +872,7 @@ pub unsafe extern "C" fn dns_servers_set(
     true
 }
 
-/// `__wjs_dns_order_get()` → `"verbatim"` / `"ipv4first"`。
+/// `__wjs2_dns_order_get()` → `"verbatim"` / `"ipv4first"`。
 pub unsafe extern "C" fn dns_order_get(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -887,7 +887,7 @@ pub unsafe extern "C" fn dns_order_get(
     true
 }
 
-/// `__wjs_dns_order_set(s)`：只收 verbatim/ipv4first。
+/// `__wjs2_dns_order_set(s)`：只收 verbatim/ipv4first。
 pub unsafe extern "C" fn dns_order_set(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

@@ -39,7 +39,7 @@ fn scripts_of(pkg_dir: &Path) -> serde_json::Map<String, serde_json::Value> {
 
 /// 跑单个脚本（shell 包装；返回退出码语义错误）。
 async fn run_one(pkg_dir: &Path, event: &str, script: &str, env_extra: &[(String, String)]) -> Result<(), Error> {
-    tracing::info!(target: "winterjs::pm", event, script_len = script.len(), "lifecycle start");
+    tracing::info!(target: "winterjs2::pm", event, script_len = script.len(), "lifecycle start");
     let mut cmd = if cfg!(windows) {
         let mut c = tokio::process::Command::new("cmd.exe");
         c.arg("/C").arg(script);
@@ -68,10 +68,10 @@ async fn run_one(pkg_dir: &Path, event: &str, script: &str, env_extra: &[(String
     cmd.kill_on_drop(true);
     let status = cmd.status().await.map_err(|e| Error::Other(format!("lifecycle '{event}' spawn failed: {e}")))?;
     if status.success() {
-        tracing::info!(target: "winterjs::pm", event, "lifecycle done");
+        tracing::info!(target: "winterjs2::pm", event, "lifecycle done");
         Ok(())
     } else {
-        tracing::warn!(target: "winterjs::pm", event, ?status, "lifecycle failed");
+        tracing::warn!(target: "winterjs2::pm", event, ?status, "lifecycle failed");
         Err(Error::Other(format!("lifecycle '{event}' failed with {status}")))
     }
 }

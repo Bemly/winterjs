@@ -1,6 +1,6 @@
 // Web Worker: JSON-message threads.
 // Worker：JSON 消息线程。
-// Run / 运行: winterjs --run sample/wcover/worker.js
+// Run / 运行: winterjs2 --run sample/wcover/worker.js
 const w = new Worker('sample/wcover/worker-echo.mjs');
 w.postMessage({ n: 1 });
 const got = await new Promise((res, rej) => {

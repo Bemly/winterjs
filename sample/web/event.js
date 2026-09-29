@@ -1,6 +1,6 @@
 // Event: type/target plus CustomEvent, MessageEvent and CloseEvent.
 // Event：类型与目标，含 CustomEvent/MessageEvent/CloseEvent。
-// Run / 运行: winterjs --run sample/web/event.js
+// Run / 运行: winterjs2 --run sample/web/event.js
 const e = new Event('build');
 console.log('[event] type/bubbles:', e.type === 'build' && e.bubbles === false);
 const ce = new CustomEvent('data', { detail: { n: 1 } });

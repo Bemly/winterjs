@@ -25,7 +25,7 @@ globalThis.queueMicrotask = function (cb) {
   let __warnedNaN = false;
   // Node 原文直译：`!(after >= 1 && after <= TIMEOUT_MAX)` 一律钳 1（含
   // NaN/±Infinity/0/负数/溢出）；警告三态——溢出每次发、负数/NaN 每进程一次。
-  globalThis.__wjs_timer_after = (ms) => {
+  globalThis.__wjs2_timer_after = (ms) => {
     const after = ms * 1;
     if (!(after >= 1 && after <= 2147483647)) {
       const warn = (msg, name) => {
@@ -46,7 +46,7 @@ globalThis.queueMicrotask = function (cb) {
   };
   // Node validateCallback 口径：TypeError + ERR_INVALID_ARG_TYPE 码
   // （套件按 {code,name} 匹配，§4.51 校验在包装外先抛）。
-  globalThis.__wjs_timer_validate_cb = (cb) => {
+  globalThis.__wjs2_timer_validate_cb = (cb) => {
     if (typeof cb !== "function") {
       const e = new TypeError(`The "callback" argument must be of type function. Received type ${typeof cb}`);
       e.code = "ERR_INVALID_ARG_TYPE";
@@ -55,28 +55,28 @@ globalThis.queueMicrotask = function (cb) {
   };
   class Timeout {
     constructor(id) {
-      this.__wjs_id = id;
+      this.__wjs2_id = id;
       this._destroyed = false;
       this._idleTimeout = 1;
       this._idleStart = 0;
       this._onTimeout = null;
       this._timerArgs = undefined;
       this._repeat = null;
-      this.__wjs_unrefed = false;
+      this.__wjs2_unrefed = false;
     }
-    unref() { this.__wjs_unrefed = true; __wjs_timer_ref(this.__wjs_id, false); return this; }
-    ref() { this.__wjs_unrefed = false; __wjs_timer_ref(this.__wjs_id, true); return this; }
-    hasRef() { return !this.__wjs_unrefed; }
-    refresh() { __wjs_timer_refresh(this.__wjs_id); this._destroyed = false; return this; }
+    unref() { this.__wjs2_unrefed = true; __wjs2_timer_ref(this.__wjs2_id, false); return this; }
+    ref() { this.__wjs2_unrefed = false; __wjs2_timer_ref(this.__wjs2_id, true); return this; }
+    hasRef() { return !this.__wjs2_unrefed; }
+    refresh() { __wjs2_timer_refresh(this.__wjs2_id); this._destroyed = false; return this; }
     close() { __clear(this); return this; }
-    [Symbol.toPrimitive]() { return this.__wjs_id; }
+    [Symbol.toPrimitive]() { return this.__wjs2_id; }
     [Symbol.dispose]() { __clear(this); }
   }
   class Immediate extends Timeout {}
   // ALS 快照挂载点：async_hooks 模块载入时安装 capture/restore；未载入则
   // 定时器回调无异步上下文（缺省口径）。
   const __alsRun = (snap, fn) =>
-    snap !== undefined && globalThis.__wjs_als_restore ? __wjs_als_restore(snap, fn) : fn();
+    snap !== undefined && globalThis.__wjs2_als_restore ? __wjs2_als_restore(snap, fn) : fn();
   // 域内回调执行（10f 对拍 immediate-queue-throw）：登记期捕获活域
   // （node AsyncContextFrame 同口径），回调抛错先路由域 error，无域再抛。
   const __runCb = (self, snap, dom) => {
@@ -99,8 +99,8 @@ globalThis.queueMicrotask = function (cb) {
   //   `_repeat` 清失或 `_idleTimeout === -1`（legacy unenroll 技法），
   //   native 侧见布尔 false 即不重排。
   const __arm = (self, delay, interval) => {
-    const snap = globalThis.__wjs_als_capture?.();
-    const dom = globalThis.__wjs_domain_capture?.();
+    const snap = globalThis.__wjs2_als_capture?.();
+    const dom = globalThis.__wjs2_domain_capture?.();
     const step = interval
       ? () => {
           if (typeof self._onTimeout !== "function") { self._destroyed = true; return false; }
@@ -113,12 +113,12 @@ globalThis.queueMicrotask = function (cb) {
           try { __runCb(self, snap, dom); } finally { self._destroyed = true; }
           return false;
         };
-    const id = interval ? __wjs_setInterval(step, delay, []) : __wjs_setTimeout(step, delay, []);
-    self.__wjs_id = id;
+    const id = interval ? __wjs2_setInterval(step, delay, []) : __wjs2_setTimeout(step, delay, []);
+    self.__wjs2_id = id;
   };
   globalThis.setTimeout = function (cb, ms, ...rest) {
-    __wjs_timer_validate_cb(cb);
-    const after = ms === undefined ? 1 : __wjs_timer_after(ms);
+    __wjs2_timer_validate_cb(cb);
+    const after = ms === undefined ? 1 : __wjs2_timer_after(ms);
     const self = new Timeout(0);
     self._idleTimeout = after;
     self._onTimeout = cb;
@@ -128,8 +128,8 @@ globalThis.queueMicrotask = function (cb) {
     return self;
   };
   globalThis.setInterval = function (cb, ms, ...rest) {
-    __wjs_timer_validate_cb(cb);
-    const after = ms === undefined ? 1 : __wjs_timer_after(ms);
+    __wjs2_timer_validate_cb(cb);
+    const after = ms === undefined ? 1 : __wjs2_timer_after(ms);
     const self = new Timeout(0);
     self._idleTimeout = after;
     self._onTimeout = cb;
@@ -141,10 +141,10 @@ globalThis.queueMicrotask = function (cb) {
   // 三清同体（套件 api-refs：delete 全局后 clearInterval/clearImmediate
   // 不得二次解引用 globalThis.clearTimeout——那正是 131 报错的根）。
   const __clear = (id) => {
-    if (id !== null && id !== undefined && typeof id === "object" && "__wjs_id" in id) {
+    if (id !== null && id !== undefined && typeof id === "object" && "__wjs2_id" in id) {
       id._destroyed = true;
     }
-    __wjs_clearTimeout(__wjs_timer_id(id));
+    __wjs2_clearTimeout(__wjs2_timer_id(id));
   };
   globalThis.clearTimeout = __clear;
   globalThis.clearInterval = __clear;
@@ -152,7 +152,7 @@ globalThis.queueMicrotask = function (cb) {
   // 10a：全局 setImmediate/clearImmediate（本仓无 macrotask 分层，setTimeout(0)
   // 近似——与 node:timers 同口径，check 阶段语义记档；clearImmediate 复用同表）。
   globalThis.setImmediate = function (cb, ...rest) {
-    __wjs_timer_validate_cb(cb);
+    __wjs2_timer_validate_cb(cb);
     const self = new Immediate(0);
     self._idleTimeout = 0;
     self._onTimeout = cb;
@@ -163,40 +163,40 @@ globalThis.queueMicrotask = function (cb) {
   };
   // clearImmediate 已并入上方 __clear 三清同体。
 }
-globalThis.__wjs_timer_id = (id) => {
+globalThis.__wjs2_timer_id = (id) => {
   if (id === null || id === undefined) return 0;
-  if (typeof id === "object") return id.__wjs_id ?? 0;
+  if (typeof id === "object") return id.__wjs2_id ?? 0;
   if (typeof id === "number") return Number.isFinite(id) && id >= 0 ? id : 0;
   if (typeof id === "string") { const n = Number(id); return Number.isFinite(n) && n >= 0 ? n : 0; }
   return 0;
 };
 // 未捕获异常分发（timer 等异步回调抛错时由 native 调）。
-// __wjs_uncaught_count 先探监听器数——为 0 时 native 保持 pending 原样走
+// __wjs2_uncaught_count 先探监听器数——为 0 时 native 保持 pending 原样走
 // fatal 上报（错误信息/栈不经中转，不降级）；>0 时 native 取走异常经
-// __wjs_uncaught 逐个调用（Node 口径第二参 origin='uncaughtException'）。
-globalThis.__wjs_uncaught_count = () => {
+// __wjs2_uncaught 逐个调用（Node 口径第二参 origin='uncaughtException'）。
+globalThis.__wjs2_uncaught_count = () => {
   const p = globalThis.process;
-  const ls = p && p.__wjs_listeners ? p.__wjs_listeners["uncaughtException"] : undefined;
+  const ls = p && p.__wjs2_listeners ? p.__wjs2_listeners["uncaughtException"] : undefined;
   return ls ? ls.length : 0;
 };
-globalThis.__wjs_uncaught = (err) => {
+globalThis.__wjs2_uncaught = (err) => {
   const p = globalThis.process;
-  if (p && typeof p.__wjs_emit === "function") {
-    return p.__wjs_emit("uncaughtException", err, "uncaughtException") > 0;
+  if (p && typeof p.__wjs2_emit === "function") {
+    return p.__wjs2_emit("uncaughtException", err, "uncaughtException") > 0;
   }
   return false;
 };
 // 事件循环触发定时器 / structuredClone 枚举属性用的内部辅助
-globalThis.__wjs_call = (cb, args) => cb(...args);
+globalThis.__wjs2_call = (cb, args) => cb(...args);
 // napi_call_function：recv 语义的参数展开（Function.prototype.apply）
-globalThis.__wjs_napi_call = (recv, fn, args) => fn.apply(recv, args);
+globalThis.__wjs2_napi_call = (recv, fn, args) => fn.apply(recv, args);
 // ESM 定制钩子注册表（module.registerHooks 写、import.meta.resolve 消费）。
 // Node 口径：后注册者先跑（每个新钩子包住既有链，next = 链上已见部分）；
-// 默认底座 = 本仓解析器（parentURL 显式 base 的 __wjs_require_resolve_from）。
-globalThis.__wjs_module_hooks = [];
-globalThis.__wjs_module_resolve_chain = function (specifier, parentURL) {
-  let chain = (spec, ctx) => ({ url: __wjs_require_resolve_from(ctx.parentURL, spec) });
-  for (const h of globalThis.__wjs_module_hooks) {
+// 默认底座 = 本仓解析器（parentURL 显式 base 的 __wjs2_require_resolve_from）。
+globalThis.__wjs2_module_hooks = [];
+globalThis.__wjs2_module_resolve_chain = function (specifier, parentURL) {
+  let chain = (spec, ctx) => ({ url: __wjs2_require_resolve_from(ctx.parentURL, spec) });
+  for (const h of globalThis.__wjs2_module_hooks) {
     if (h && typeof h.resolve === "function") {
       const next = chain;
       const hook = h.resolve;
@@ -257,30 +257,30 @@ for (const name of ["MessageChannel", "MessagePort"]) {
   });
 }
 // import.meta.resolve 的每模块闭包（modules.rs metadata_hook 以模块 URL 调用）
-globalThis.__wjs_make_meta_resolve = function (url) {
+globalThis.__wjs2_make_meta_resolve = function (url) {
   return function resolve(specifier) {
-    return __wjs_module_resolve_chain(specifier, url);
+    return __wjs2_module_resolve_chain(specifier, url);
   };
 };
 // napi_new_instance：`new ctor(...args)` 全语义（new.target/prototype/异常传播）
-globalThis.__wjs_napi_new = (ctor, args) => new ctor(...args);
+globalThis.__wjs2_napi_new = (ctor, args) => new ctor(...args);
 // napi_set_* 的非严格赋值面：JSAPI JS_SetProperty 是 strict 语义（对只读/
 // 冻结属性抛 TypeError），Node 的 napi_set_property 走 v8 非严格 set（静默
 // 无操作返回 ok）。sloppy 函数内的 `obj[key] = value` 与后者精确对齐。
-globalThis.__wjs_napi_set = (obj, key, value) => { obj[key] = value; };
+globalThis.__wjs2_napi_set = (obj, key, value) => { obj[key] = value; };
 // napi Buffer 形状：Uint8Array + Buffer.prototype（Node 实例同款）；
 // is_buffer 判定（instanceof Buffer；Buffer 缺席恒 false）
-globalThis.__wjs_napi_bufferify = (u8) => {
+globalThis.__wjs2_napi_bufferify = (u8) => {
   if (typeof Buffer !== "function") throw new TypeError("Buffer is not available");
   Object.setPrototypeOf(u8, Buffer.prototype);
   return u8;
 };
-globalThis.__wjs_napi_is_buffer =
+globalThis.__wjs2_napi_is_buffer =
   (v) => typeof Buffer === "function" && v instanceof Buffer;
 // napi_define_class/define_properties 的访问器定义（setter 传 undefined =
 // Node getter-only 语义：sloppy 赋值静默、strict TypeError）
-globalThis.__wjs_napi_accessor =
+globalThis.__wjs2_napi_accessor =
   (obj, name, getter, setter, enumerable, configurable) =>
     Object.defineProperty(obj, name, { get: getter, set: setter, enumerable, configurable });
-globalThis.__wjs_entries = (v) => Object.entries(v);
+globalThis.__wjs2_entries = (v) => Object.entries(v);
 "#;

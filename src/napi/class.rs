@@ -16,8 +16,8 @@
 //!   实例；external 的 slot0 已被外部数据占用，二者不混——Node 用 internal
 //!   fields 分槽，我们单槽，偏差记档 M4）。任意对象 wrap 缺 GC 驱动的 finalize
 //!   通道（绑定无 finalize observer），fail-fast 报错，不静默泄漏。
-//! - new_instance / define_class 的访问器定义经 prelude helper（`__wjs_napi_new`
-//!   / `__wjs_napi_accessor`），免变长 HandleValueArray 与 JSAPI 访问器雷区。
+//! - new_instance / define_class 的访问器定义经 prelude helper（`__wjs2_napi_new`
+//!   / `__wjs2_napi_accessor`），免变长 HandleValueArray 与 JSAPI 访问器雷区。
 
 use std::ffi::{c_char, c_void, CString};
 use std::ptr;
@@ -323,7 +323,7 @@ pub unsafe extern "C" fn napi_new_instance(
                 return NAPI_GENERIC_FAILURE;
             }
         }
-        let Some(helper) = get_prop_value(&mut cx, crate::state::global(), c"__wjs_napi_new")
+        let Some(helper) = get_prop_value(&mut cx, crate::state::global(), c"__wjs2_napi_new")
         else {
             return NAPI_GENERIC_FAILURE;
         };

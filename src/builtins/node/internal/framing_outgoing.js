@@ -389,9 +389,9 @@ export function withHttpServer(Base) {
       // node 口径：--insecure-http-parser 进程旗（兼容旗透传）未显式给选项时
       // 即默认宽松（真机：旗开即全局 lenient；显式选项恒赢）。
       const __insecDefault = o.httpValidation === undefined && o.insecureHTTPParser === undefined &&
-        typeof globalThis.__wjs_nodeCompat !== "undefined" &&
-        Array.isArray(globalThis.__wjs_nodeCompat) &&
-        globalThis.__wjs_nodeCompat.includes("--insecure-http-parser");
+        typeof globalThis.__wjs2_nodeCompat !== "undefined" &&
+        Array.isArray(globalThis.__wjs2_nodeCompat) &&
+        globalThis.__wjs2_nodeCompat.includes("--insecure-http-parser");
       self.__inboundMode = __parseModeOf(__resolveHttpValidation(o.httpValidation, __insecDefault ? true : o.insecureHTTPParser));
       self.insecureHTTPParser = o.insecureHTTPParser ?? __insecDefault;
       // node highWaterMark 选项（server-options-highwatermark 套件：req 流

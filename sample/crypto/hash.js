@@ -1,6 +1,6 @@
 // node:crypto hashing: createHash / Hmac across algorithms.
 // 哈希：多算法摘要与 HMAC。
-// Run / 运行: winterjs --run sample/crypto/hash.js
+// Run / 运行: winterjs2 --run sample/crypto/hash.js
 import { createHash, createHmac, getHashes } from 'node:crypto';
 
 console.log('[hash] sha256:', createHash('sha256').update('abc').digest('hex').slice(0, 12));

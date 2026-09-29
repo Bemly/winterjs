@@ -227,7 +227,7 @@ fn resolve_done(cx: &mut JSContext, global: *mut JSObject, resolve: JSVal) -> bo
     call_one(cx, global, resolve, null_v.get()).is_some()
 }
 
-/// reject(Error(message))（经 prelude `__wjs_make_fetch_error`；前置同上）。
+/// reject(Error(message))（经 prelude `__wjs2_make_fetch_error`；前置同上）。
 fn reject_stream(cx: &mut JSContext, global: *mut JSObject, reject: JSVal, message: &str) -> bool {
     let Some((_, make_error)) = helpers() else {
         report_error(cx, "failed to load settings: fetch helpers missing (prelude?)");
@@ -241,7 +241,7 @@ fn reject_stream(cx: &mut JSContext, global: *mut JSObject, reject: JSVal, messa
     call_one(cx, global, reject, err_obj).is_some()
 }
 
-/// `__wjs_fetch_pull(streamId, resolve, reject)`：一律走回调结算（有即同步调，无则排队）。
+/// `__wjs2_fetch_pull(streamId, resolve, reject)`：一律走回调结算（有即同步调，无则排队）。
 /// resolve 约定：Uint8Array=chunk，null=终结；reject=流错误。前置：realm 内 native。
 pub unsafe extern "C" fn fetch_pull(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -274,7 +274,7 @@ pub unsafe extern "C" fn fetch_pull(
     ok
 }
 
-/// `__wjs_fetch_start(url, method, headersJson, bodyU8?, resolve, reject)` → id。
+/// `__wjs2_fetch_start(url, method, headersJson, bodyU8?, resolve, reject)` → id。
 /// 同步 settled（file:/data:/非法 scheme）返回 0；http(s) 未决返回正 id（abort 用）。
 pub unsafe extern "C" fn fetch_start(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -357,7 +357,7 @@ pub unsafe extern "C" fn fetch_start(
     true
 }
 
-/// `__wjs_fetch_abort(id)`：取消未决任务并摘除回调（幂等；外层拒绝由 prelude 侧 `reject`）。
+/// `__wjs2_fetch_abort(id)`：取消未决任务并摘除回调（幂等；外层拒绝由 prelude 侧 `reject`）。
 /// 流式 body 的排队 pull 一并拒绝（AbortError；调用时流可能已终结/取消，即静默）。
 /// 前置：realm 内（仅做状态操作 + 回调结算，无新任务）。
 pub unsafe extern "C" fn fetch_abort(

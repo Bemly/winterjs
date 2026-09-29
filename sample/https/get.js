@@ -1,6 +1,6 @@
 // node:https: same loopback shape as tls (fixture cert, no verification).
 // HTTPS：与 tls 同形的回环请求（样例证书，不校验）。
-// Run / 运行: winterjs --run sample/https/get.js
+// Run / 运行: winterjs2 --run sample/https/get.js
 import https from 'node:https';
 import fs from 'node:fs';
 

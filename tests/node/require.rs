@@ -13,7 +13,7 @@ fn phase4_require_cjs_builtin_relative_json() {
     data.write_str("{\"answer\": 42}").unwrap();
     let main = dir.child("main.cjs");
     main.write_str("const u = require(\"./lib/util.cjs\");\nconst d = require(\"./lib/data.json\");\nconsole.log(\"main:\", u.joined, d.answer, __filename.endsWith(\"main.cjs\"), require.main.filename.endsWith(\"main.cjs\"));\n").unwrap();
-    let out = winterjs().arg("--run").arg(main.path()).output().unwrap();
+    let out = winterjs2().arg("--run").arg(main.path()).output().unwrap();
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -41,7 +41,7 @@ fn phase4_require_cycle_partial_exports() {
     let main = dir.child("main.cjs");
     main.write_str("const a = require(\"./a.cjs\");\nconsole.log(\"cycle:\", a.a, a.bVal);\n")
         .unwrap();
-    let out = winterjs().arg("--run").arg(main.path()).output().unwrap();
+    let out = winterjs2().arg("--run").arg(main.path()).output().unwrap();
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -54,7 +54,7 @@ fn phase4_require_cycle_partial_exports() {
 #[test]
 fn phase4_require_errors() {
     // 缺失模块 / ESM 拒绝 / resolve 直给。
-    let out = winterjs().args(["--eval", "try { require(\"node:nope-xyz\"); } catch (e) { console.log(e.message.slice(0, 30)); }"]).output().unwrap();
+    let out = winterjs2().args(["--eval", "try { require(\"node:nope-xyz\"); } catch (e) { console.log(e.message.slice(0, 30)); }"]).output().unwrap();
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("Cannot find module"), "missing: {stdout}");
@@ -67,11 +67,11 @@ fn phase4_require_errors() {
         "try {{ const m = require({:?}); console.log(\"esm\", m.x); }} catch (e) {{ console.log(\"esm-err\", e.constructor.name); }}",
         mod_.path().to_string_lossy()
     );
-    let out = winterjs().args(["--eval", &code]).output().unwrap();
+    let out = winterjs2().args(["--eval", &code]).output().unwrap();
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("esm 1"), "esm: {stdout}");
     let out =
-        stdout_of(&mut winterjs().args(["--eval", "console.log(require.resolve(\"node:path\"));"]));
+        stdout_of(&mut winterjs2().args(["--eval", "console.log(require.resolve(\"node:path\"));"]));
     assert_eq!(out, "node:path\n", "resolve: {out}");
     dir.close().unwrap();
 }
@@ -124,7 +124,7 @@ console.log("ext-ok");
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -153,19 +153,19 @@ fn phase9j_cjs_interop_default() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("dep.cjs").write_str("module.exports = { v: 41 };\n").unwrap();
     dir.child("plain.js").write_str("module.exports = { w: 7 };\n").unwrap();
-    dir.child("side.cjs").write_str("globalThis.__wjs_side = 1;\n").unwrap();
+    dir.child("side.cjs").write_str("globalThis.__wjs2_side = 1;\n").unwrap();
     let file = dir.child("m.mjs");
     file.write_str(
         r#"
 import pkg from "./dep.cjs";
 import plain from "./plain.js";
 import "./side.cjs";
-console.log("cjs-def", pkg.v, plain.w, globalThis.__wjs_side);
+console.log("cjs-def", pkg.v, plain.w, globalThis.__wjs2_side);
 console.log("cjs-same", globalThis.require("./dep.cjs") === pkg);
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -179,7 +179,7 @@ console.log("cjs-same", globalThis.require("./dep.cjs") === pkg);
     // 边界：CJS 垫片具名直取成功（M5 具名导出；与 Node 同为 link 期解析）。
     let named = dir.child("n.mjs");
     named.write_str("import { v } from \"./dep.cjs\";\nconsole.log(\"cjs-named\", v);\n").unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(named.path())
         .current_dir(dir.path())
@@ -202,7 +202,7 @@ fn phase9j_native_node_rejected() {
     let dir = assert_fs::TempDir::new().unwrap();
     let fake = dir.child("fake.node");
     fake.write_str("not a real binary").unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval", &format!("try {{ require({:?}); }} catch (e) {{ console.log(String(e.message).slice(0, 200)); }}", fake.path().to_string_lossy())])
         .current_dir(dir.path())
         .output()
@@ -225,7 +225,7 @@ fn phase9j_tla_dep_stays_esm() {
         .unwrap();
     let file = dir.child("m.mjs");
     file.write_str("import v from \"./tla-dep.js\";\nconsole.log(\"tla-dep\", v);\n").unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -274,7 +274,7 @@ console.log("kebab", kebab);
 "#,
         )
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -293,7 +293,7 @@ console.log("kebab", kebab);
     let bad = dir.child("bad.mjs");
     bad.write_str("import { nope_missing_xyz } from \"./named.cjs\";\nconsole.log(nope_missing_xyz);\n")
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(bad.path())
         .current_dir(dir.path())
@@ -342,7 +342,7 @@ catch (e) { console.log("onlyerr", String(e.message).includes("Cannot find modul
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(main.path())
         .current_dir(dir.path())
@@ -372,7 +372,7 @@ fn phase9m_require_resolve_caller_relative() {
     a.child("one.cjs")
         .write_str("console.log(\"res\", require.resolve(\"./two.cjs\").endsWith(\"two.cjs\"));\n")
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(a.child("one.cjs").path())
         .current_dir(dir.path())
@@ -396,7 +396,7 @@ fn phase10f_require_cjs_entry_relative() {
     dir.child("a.js")
         .write_str("const x = require(\"./b.js\");\nconsole.log(\"entry\", x);\n")
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(dir.child("a.js").path())
         .current_dir(dir.path())
@@ -419,7 +419,7 @@ fn phase10f_cjs_top_level_return_entry_and_dep() {
     let dir = assert_fs::TempDir::new().unwrap();
     let entry = dir.child("early.js");
     entry.write_str("if (1 === 1) {\n  return;\n}\nconsole.log(\"unreachable\");\n").unwrap();
-    let out = winterjs().arg("--run").arg(entry.path()).output().unwrap();
+    let out = winterjs2().arg("--run").arg(entry.path()).output().unwrap();
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -441,7 +441,7 @@ fn phase10f_cjs_top_level_return_entry_and_dep() {
     dir.child("esmdep.js")
         .write_str("export default 1;\n")
         .unwrap();
-    let out2 = winterjs().arg("--run").arg(main.path()).output().unwrap();
+    let out2 = winterjs2().arg("--run").arg(main.path()).output().unwrap();
     assert!(
         out2.status.success(),
         "stderr: {}",

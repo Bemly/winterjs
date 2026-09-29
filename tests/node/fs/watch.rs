@@ -11,7 +11,7 @@ fn phase4_fs_watch_fires_and_closes() {
     std::fs::create_dir(watchdir.path()).unwrap();
     let file = dir.child("watch.mjs");
     file.write_str("import fs from \"node:fs\";\nconst w = fs.watch(\"watched\", (ev, file) => { console.log(\"ev:\", ev, file); w.close(); });\nsetTimeout(() => fs.writeFileSync(\"watched/n.txt\", \"x\"), 100);\n").unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -81,7 +81,7 @@ setTimeout(() => { console.log("ignore-done"); process.exit(0); }, 4000);
     std::fs::create_dir(dir.path().join("mix")).unwrap();
     std::fs::create_dir_all(dir.path().join("tree/node_modules")).unwrap();
     std::fs::create_dir_all(dir.path().join("tree/src")).unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -134,7 +134,7 @@ setTimeout(() => { console.log("enc-timeout"); process.exit(1); }, 6000);
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -204,7 +204,7 @@ setTimeout(() => { console.log("watch-done"); process.exit(0); }, 3000);
     )
     .unwrap();
     std::fs::create_dir(dir.path().join("sub")).unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -248,7 +248,7 @@ setTimeout(() => { console.log("handles-done"); process.exit(0); }, 500);
     .unwrap();
     std::fs::create_dir(dir.path().join("sub")).unwrap();
     std::fs::write(dir.path().join("sub/f.txt"), b"x").unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -311,7 +311,7 @@ setTimeout(() => { console.log("rapid-done"); process.exit(0); }, 6000);
     .unwrap();
     std::fs::create_dir(dir.path().join("loop")).unwrap();
     std::fs::create_dir(dir.path().join("fresh")).unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -357,7 +357,7 @@ setTimeout(() => {
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())

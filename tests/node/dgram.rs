@@ -180,7 +180,7 @@ s.bind(0, "127.0.0.1", () => {
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())

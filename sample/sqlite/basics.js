@@ -1,6 +1,6 @@
 // node:sqlite + bun:sqlite: create / insert / query (in-memory).
 // SQLite：建表、插入与查询（内存库，双形态）。
-// Run / 运行: winterjs --run sample/sqlite/basics.js
+// Run / 运行: winterjs2 --run sample/sqlite/basics.js
 import { DatabaseSync } from 'node:sqlite';
 import { Database } from 'bun:sqlite';
 

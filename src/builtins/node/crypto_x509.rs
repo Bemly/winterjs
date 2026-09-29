@@ -99,8 +99,8 @@ fn hex_colon(bytes: &[u8]) -> String {
     out
 }
 
-/// `__wjs_x509_parse(derU8)` → 证书 JSON（字段见 9e-1d；SAN/用法齐备；
-/// 9i-3 增 `ca`（BasicConstraints）与 `spkiB64`（公钥重建），验签底座走 `__wjs_x509_verify`）。
+/// `__wjs2_x509_parse(derU8)` → 证书 JSON（字段见 9e-1d；SAN/用法齐备；
+/// 9i-3 增 `ca`（BasicConstraints）与 `spkiB64`（公钥重建），验签底座走 `__wjs2_x509_verify`）。
 pub unsafe extern "C" fn x509_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -372,7 +372,7 @@ fn x509_check_issued_impl(der: &[u8], issuer_der: &[u8]) -> Result<bool, String>
     Ok(true)
 }
 
-/// `__wjs_x509_check_issued(certDer, issuerDer)` → boolean。
+/// `__wjs2_x509_check_issued(certDer, issuerDer)` → boolean。
 pub unsafe extern "C" fn x509_check_issued(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

@@ -18,7 +18,7 @@ fn main() {
         Ok(())
     })();
     if let Err(e) = result {
-        println!("cargo:warning=winterjs: build metadata unavailable: {e}");
+        println!("cargo:warning=winterjs2: build metadata unavailable: {e}");
     }
 }
 
@@ -79,7 +79,7 @@ fn emit_symbol_export() -> Result<(), Box<dyn std::error::Error>> {
     } else if target.contains("linux") {
         println!("cargo:rustc-link-arg=-rdynamic");
     } else if target.contains("windows") {
-        println!("cargo:warning=winterjs: napi symbol export for windows not wired yet (CI)");
+        println!("cargo:warning=winterjs2: napi symbol export for windows not wired yet (CI)");
     }
     Ok(())
 }

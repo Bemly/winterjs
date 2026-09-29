@@ -1,6 +1,6 @@
 // node:assert (+ strict): ok / equal / deepEqual / throws / rejects.
 // 断言：常用断言与异步断言。
-// Run / 运行: winterjs --run sample/assert/basics.js
+// Run / 运行: winterjs2 --run sample/assert/basics.js
 import assert, { strict as strictAssert } from 'node:assert';
 import { equal as strictEqualMod, deepEqual as strictDeepEqual } from 'node:assert/strict';
 

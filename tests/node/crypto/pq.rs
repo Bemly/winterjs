@@ -149,7 +149,7 @@ console.log("md-cert", cert.verify(cert.publicKey) === true, cert.ca === true, c
 "#
         ))
         .unwrap();
-        winterjs()
+        winterjs2()
             .arg("--run")
             .arg(file.path())
             .current_dir(dir.path())

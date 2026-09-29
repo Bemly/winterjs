@@ -20,7 +20,7 @@ pub static VERSION_TEXT: LazyLock<String> = LazyLock::new(|| {
 /// 一次恰好一个动作 flag；修饰 flag 只在对应动作下生效。
 #[derive(Parser, Debug)]
 #[command(
-    name = "winterjs",
+    name = "winterjs2",
     version = &**VERSION_TEXT,
     about = "Bun-like JS runtime on SpiderMonkey",
     arg_required_else_help = true
@@ -84,7 +84,7 @@ pub struct Cli {
     #[arg(long = "login")]
     pub login: bool,
 
-    /// Self-upgrade winterjs (needs WINTERJS_UPDATE_GITHUB=owner/repo)
+    /// Self-upgrade winterjs2 (needs WINTERJS2_UPDATE_GITHUB=owner/repo)
     #[arg(short = 'u', long = "upgrade")]
     pub upgrade: bool,
 
@@ -217,7 +217,7 @@ pub struct Cli {
     #[arg(long, value_name = "SQL")]
     pub exec: Option<String>,
 
-    /// Storage database file for global storage/localStorage (run/eval/test/repl/serve only; default ./winterjs-storage.db)
+    /// Storage database file for global storage/localStorage (run/eval/test/repl/serve only; default ./winterjs2-storage.db)
     #[arg(long, value_name = "FILE")]
     pub storage_path: Option<PathBuf>,
 
@@ -389,11 +389,11 @@ fn tr_or(key: &str, original: &str) -> String {
 }
 
 /// Node 兼容旗（node 测试套件 `common.js` 自举 respawn / 子进程自举透传的
-/// node 运行时旗）。winterjs 无同名动作：解析前剥除（`--flag=value` 形整项剥），
+/// node 运行时旗）。winterjs2 无同名动作：解析前剥除（`--flag=value` 形整项剥），
 /// 剥下的名单交调用方记录（execArgv 保真 + 语义旗按需生效，见 `process_::record_node_compat`）。
 /// §0.8 不受影响：不新增动作/位置参数；裸文件补 `--run` 仅在剥除发生时
 /// （node-spawn 上下文的证据，与 `__selfArgv`/`__selfCmd` 同款"自举翻译"），
-/// 纯 `winterjs file.js`（无兼容旗）照旧报错。
+/// 纯 `winterjs2 file.js`（无兼容旗）照旧报错。
 pub const NODE_COMPAT_FLAGS: &[&str] = &[
     "--expose-internals",
     "--expose-gc",
@@ -412,8 +412,8 @@ pub fn is_node_compat_flag(arg: &str) -> bool {
     if NODE_COMPAT_FLAGS.contains(&base) {
         return true;
     }
-    // winterjs 自有同名旗（如 `--allow-ffi`）永远归 winterjs，不当 node 旗剥除。
-    if winterjs_longs().contains(base) {
+    // winterjs2 自有同名旗（如 `--allow-ffi`）永远归 winterjs2，不当 node 旗剥除。
+    if winterjs2_longs().contains(base) {
         return false;
     }
     // 必须带值的旗只认 `--k=v` 整项（空格分隔值会吞脚本名）。
@@ -423,8 +423,8 @@ pub fn is_node_compat_flag(arg: &str) -> bool {
     crate::cli_node_flags::NODE_RUNTIME_FLAGS.contains(&base)
 }
 
-/// winterjs 自身全部长旗名（`--xxx`，含子结构 flatten 的）。
-fn winterjs_longs() -> &'static std::collections::HashSet<String> {
+/// winterjs2 自身全部长旗名（`--xxx`，含子结构 flatten 的）。
+fn winterjs2_longs() -> &'static std::collections::HashSet<String> {
     static SET: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
     SET.get_or_init(|| {
         <Cli as clap::CommandFactory>::command()
@@ -547,7 +547,7 @@ pub fn strip_node_compat_args(
     if !stripped.is_empty() && out.len() > 1 {
         // node 自举翻译（max-header-size 套件：子进程即自身，`--flag -p expr`
         // 形；`-p`（node print）→ `--eval`（本仓 --eval 即打印完成值）。
-        // 仅剥过兼容旗时（node-spawn 上下文证据），纯 `winterjs -p` 照旧 publish。
+        // 仅剥过兼容旗时（node-spawn 上下文证据），纯 `winterjs2 -p` 照旧 publish。
         // `-e` 本就同 `--eval`，统一改写无害。
         if out.len() > 2 && (out[1] == "-p" || out[1] == "-e") {
             out[1] = OsString::from("--eval");
@@ -618,8 +618,8 @@ mod node_compat_tests {
     }
 
     #[test]
-    fn node_rule_spares_winterjs_flags() {
-        // 边界：winterjs 同名/修饰旗（--watch/--test/--dry-run）与取值形空格值不被吞。
+    fn node_rule_spares_winterjs2_flags() {
+        // 边界：winterjs2 同名/修饰旗（--watch/--test/--dry-run）与取值形空格值不被吞。
         for a in ["--watch", "--test", "--dry-run", "--port", "--stack-trace-limit"] {
             assert!(!is_node_compat_flag(a), "{a}");
         }

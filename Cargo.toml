@@ -1,5 +1,5 @@
 [package]
-name = "winterjs"
+name = "winterjs2"
 version = "26.9.27"   # CalVer YY.MM.发版日（26.9.27 = 2026-09-27），见 AGENTS.md §1
 edition = "2024"
 description = "A Bun-like JS runtime on Mozilla SpiderMonkey (via servo/mozjs)"
@@ -133,7 +133,7 @@ rust-i18n = "4"
 # 解码统一走显式 format，不依赖 default-formats。
 resvg = "0.48"
 jxl-oxide = { version = "0.12", features = ["image"] }
-# WinterJS.image 全格式面（2026-09-29）：png 外加 WinterJS.image 暴露的全部
+# WinterJS2.image 全格式面（2026-09-29）：png 外加 WinterJS2.image 暴露的全部
 # 编解码格式；刻意不开 `avif`（无 ravif，见 §14）/`dds`（image 0.25 双 false）
 # /`default-formats`（含 avif）。新增传递 exr/tiff/qoi（全纯 Rust，见 §4 行注记）。
 image = { version = "0.25", default-features = false, features = ["png", "bmp", "exr", "ff", "gif", "hdr", "ico", "jpeg", "pnm", "qoi", "tga", "tiff", "webp"] }
@@ -141,7 +141,7 @@ image = { version = "0.25", default-features = false, features = ["png", "bmp", 
 # ── §5 loader + 转译 + 编译期注册 + 内嵌资源 ───────────────────────────
 oxc_resolver = "11"
 oxc = { version = "0.149", default-features = false, features = ["semantic", "codegen", "transformer", "mangler", "minifier"] }
-jsonc-parser = { version = "0.33", features = ["serde"] }  # WinterJS.jsonc 用 parse_to_serde_value（serde/serde_json 已在树内，零新增包）
+jsonc-parser = { version = "0.33", features = ["serde"] }  # WinterJS2.jsonc 用 parse_to_serde_value（serde/serde_json 已在树内，零新增包）
 sourcemap = "9"
 linkme = "0.3"
 paste = "1"
@@ -343,7 +343,7 @@ qrcode = "0.14"
 wide = "1"
 ml-dsa = "0.1.1"
 
-# ── §12 media（WinterJS.media，2026-09-29 用户拍板四件）─────────────────
+# ── §12 media（WinterJS2.media，2026-09-29 用户拍板四件）─────────────────
 # - symphonia：音频解码全家（all-meta + opt-simd + aac/adpcm/flac/mp3/isomp4/
 #   ogg/pcm/vorbis/wav/mkv/alac/aiff/caf；上游 default 全纯，照抄）
 # - rodio：只开 playback（cpal 放音；解码一律走直引 symphonia 0.6 经

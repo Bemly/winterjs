@@ -5,55 +5,55 @@ pub const PROCESS_PRELUDE: &str = r#"
 // stdout/stderr 造形（10f stream 对拍）：node Socket 形——写直通 fd + EE 全表面
 //（on/once/off/addListener/prependListener/removeAllListeners/listenerCount/
 // listeners/emit/end/destroy）。写完成回调 microtask 异步回（§4.74）。
-function __wjs_stdio_stream(fd) {
+function __wjs2_stdio_stream(fd) {
   return {
-    __wjs_fd: fd,
+    __wjs2_fd: fd,
     write(s, ...rest) {
-      const r = fd === 1 ? __wjs_stdout_write(String(s)) : __wjs_stderr_write(String(s));
+      const r = fd === 1 ? __wjs2_stdout_write(String(s)) : __wjs2_stderr_write(String(s));
       const cb = rest.find((a) => typeof a === "function");
       if (cb) queueMicrotask(() => cb());
       return r;
     },
-    get isTTY() { return __wjs_stdio_istty(fd); },
-    clearLine() { return __wjs_stdio_istty(fd); },
-    cursorTo() { return __wjs_stdio_istty(fd); },
-    getColorDepth() { return __wjs_stdio_istty(fd) ? 8 : 1; },
-    __wjs_listeners: {},
+    get isTTY() { return __wjs2_stdio_istty(fd); },
+    clearLine() { return __wjs2_stdio_istty(fd); },
+    cursorTo() { return __wjs2_stdio_istty(fd); },
+    getColorDepth() { return __wjs2_stdio_istty(fd) ? 8 : 1; },
+    __wjs2_listeners: {},
     on(type, cb) {
       if (typeof cb !== "function") throw new TypeError("stdio.on: listener must be a function");
-      (this.__wjs_listeners[String(type)] ??= []).push(cb);
+      (this.__wjs2_listeners[String(type)] ??= []).push(cb);
       return this;
     },
     addListener(type, cb) { return this.on(type, cb); },
     once(type, cb) {
       const self = this;
       const wrapped = (...a) => { self.off(type, wrapped); cb(...a); };
-      wrapped.__wjs_orig = cb;
+      wrapped.__wjs2_orig = cb;
       return self.on(type, wrapped);
     },
     prependListener(type, cb) {
       if (typeof cb !== "function") throw new TypeError("stdio.prependListener: listener must be a function");
-      (this.__wjs_listeners[String(type)] ??= []).unshift(cb);
+      (this.__wjs2_listeners[String(type)] ??= []).unshift(cb);
       return this;
     },
     off(type, cb) {
-      const list = this.__wjs_listeners[String(type)];
+      const list = this.__wjs2_listeners[String(type)];
       if (list) {
-        let i = list.findIndex((l) => l === cb || l.__wjs_orig === cb);
-        while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb || l.__wjs_orig === cb); }
+        let i = list.findIndex((l) => l === cb || l.__wjs2_orig === cb);
+        while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb || l.__wjs2_orig === cb); }
       }
       return this;
     },
     removeListener(type, cb) { return this.off(type, cb); },
     removeAllListeners(type) {
-      if (type === undefined) this.__wjs_listeners = {};
-      else delete this.__wjs_listeners[String(type)];
+      if (type === undefined) this.__wjs2_listeners = {};
+      else delete this.__wjs2_listeners[String(type)];
       return this;
     },
-    listenerCount(type) { return (this.__wjs_listeners[String(type)] || []).length; },
-    listeners(type) { return (this.__wjs_listeners[String(type)] || []).slice(); },
+    listenerCount(type) { return (this.__wjs2_listeners[String(type)] || []).length; },
+    listeners(type) { return (this.__wjs2_listeners[String(type)] || []).slice(); },
     emit(type, ...args) {
-      const list = (this.__wjs_listeners[String(type)] || []).slice();
+      const list = (this.__wjs2_listeners[String(type)] || []).slice();
       for (const l of list) l(...args);
       return list.length > 0;
     },
@@ -63,34 +63,34 @@ function __wjs_stdio_stream(fd) {
       return this;
     },
     destroy() { return this; },
-    __wjs_maxListeners: 10,
-    getMaxListeners() { return this.__wjs_maxListeners; },
-    setMaxListeners(n) { this.__wjs_maxListeners = Number(n); return this; },
+    __wjs2_maxListeners: 10,
+    getMaxListeners() { return this.__wjs2_maxListeners; },
+    setMaxListeners(n) { this.__wjs2_maxListeners = Number(n); return this; },
   };
 }
 
 globalThis.process = {
-  argv: JSON.parse(__wjs_argv_json()),
+  argv: JSON.parse(__wjs2_argv_json()),
   // 真机口径：argv0 缺省即 argv[0]（spawn-argv0 套件点名自举回显）。
-  argv0: JSON.parse(__wjs_argv_json())[0] ?? __wjs_exec_path(),
+  argv0: JSON.parse(__wjs2_argv_json())[0] ?? __wjs2_exec_path(),
   env: (() => {
     // 10f 对拍：worker 会话带 env 快照（创建时复制或自定义对象）——读写全落
     // 本地 store，不碰进程级 env（process-env 套件隔离/快照断言）；主会话与
     // SHARE_ENV 会话走真 env native（原语义不变）。
-    const snap = __wjs_worker_env_snapshot();
+    const snap = __wjs2_worker_env_snapshot();
     if (snap === undefined) {
       return new Proxy({}, {
         get(_, k) {
           if (typeof k !== "string") return undefined;
-          const v = __wjs_env_get(k);
+          const v = __wjs2_env_get(k);
           return v === undefined ? undefined : v;
         },
-        set(_, k, v) { __wjs_env_set(String(k), String(v)); return true; },
-        deleteProperty(_, k) { __wjs_env_del(String(k)); return true; },
-        has(_, k) { return __wjs_env_get(String(k)) !== undefined; },
-        ownKeys() { return JSON.parse(__wjs_env_keys()); },
+        set(_, k, v) { __wjs2_env_set(String(k), String(v)); return true; },
+        deleteProperty(_, k) { __wjs2_env_del(String(k)); return true; },
+        has(_, k) { return __wjs2_env_get(String(k)) !== undefined; },
+        ownKeys() { return JSON.parse(__wjs2_env_keys()); },
         getOwnPropertyDescriptor(_, k) {
-          const v = __wjs_env_get(String(k));
+          const v = __wjs2_env_get(String(k));
           if (v === undefined) return undefined;
           return { value: v, writable: true, enumerable: true, configurable: true };
         },
@@ -122,19 +122,19 @@ globalThis.process = {
       },
     });
   })(),
-  cwd() { return __wjs_cwd(); },
-  chdir(d) { __wjs_chdir(String(d)); },
+  cwd() { return __wjs2_cwd(); },
+  chdir(d) { __wjs2_chdir(String(d)); },
   exit(code) {
     // node 口径：'exit' 监听同步派发后再 unwind（mustCall 计数在监听内结算；
     // _exiting 置位，监听内再 mustCall 即抛，真机同）。
     this._exiting = true;
-    try { this.__wjs_emit("exit", code === undefined ? (this.exitCode || 0) : Number(code)); } catch {}
-    __wjs_process_exit(code === undefined ? undefined : Number(code));
+    try { this.__wjs2_emit("exit", code === undefined ? (this.exitCode || 0) : Number(code)); } catch {}
+    __wjs2_process_exit(code === undefined ? undefined : Number(code));
   },
   // node 口径：循环排空即派发 'beforeExit'（exitCode 为参；监听可再排任务续命，
   // 排空后再发）。经 nextTick 投递——监听抛错走 uncaughtException/fatal 同一路由。
   // 返回是否有监听（无则事件循环直接收尾，不多转一轮）。
-  __wjs_queueBeforeExit() {
+  __wjs2_queueBeforeExit() {
     if (this.listenerCount("beforeExit") === 0) return false;
     this.nextTick(() => this.emit("beforeExit", this.exitCode ?? 0));
     return true;
@@ -144,25 +144,25 @@ globalThis.process = {
   _exiting: false,
   // 存活句柄表（assert-leaks 套件：`process._getActiveHandles()` 数组；
   // 本仓收录 watch 句柄（fs 侧登记/摘除），其余底座另案记档）。
-  _getActiveHandles() { return [...(globalThis.__wjsFsHandles ?? [])]; },
+  _getActiveHandles() { return [...(globalThis.__wjs2FsHandles ?? [])]; },
   // 存活资源类型表（unref-in-cluster 套件：unref 的 UDP 不在表内；
   // 本仓现收录 UDPWrap（dgram 侧登记/摘除），其余底座另案记档）。
-  getActiveResourcesInfo() { return [...(globalThis.__wjsActiveResources?.values() ?? [])]; },
-  get exitCode() { return __wjs_exit_code_get(); },
+  getActiveResourcesInfo() { return [...(globalThis.__wjs2ActiveResources?.values() ?? [])]; },
+  get exitCode() { return __wjs2_exit_code_get(); },
   set exitCode(v) {
     const n = Number(v);
     if (!Number.isInteger(n)) throw new TypeError("process.exitCode must be an integer");
-    __wjs_exit_code_set(n);
+    __wjs2_exit_code_set(n);
   },
-  get platform() { return __wjs_os_platform(); },
-  get arch() { return __wjs_os_arch(); },
+  get platform() { return __wjs2_os_platform(); },
+  get arch() { return __wjs2_os_arch(); },
   version: "v26.9.27",
   // versions.node = Node API 兼容水位（Bun 同哲学：process.version 是自家版本，
   // versions.node 报兼容等级）。22.12 = vite 8 的最低地板（22 && minor>=12），
   // 22.x 大版本保 `^22` caret 区间可用；22.0.0 过不了 vite checkNodeVersion。
   // openssl/sqlite 为兼容水位（套件门控 `hasCrypto/hasSQLite` 用；TLS 底座实为
   // rustls/ring、DB 实为 turso，引擎差异见模块头注；10f 跑 test/common 前置）。
-  versions: { node: "22.12.0", winterjs: "26.9.27", mozjs: "153", openssl: "3.6.4", sqlite: "3.53.4" },
+  versions: { node: "22.12.0", winterjs2: "26.9.27", mozjs: "153", openssl: "3.6.4", sqlite: "3.53.4" },
   // 构建配置（10f 跑 test/common 前置；键集按套件读取面收敛，非全量 115 键）。
   config: {
     target_defaults: { default_configuration: "Release" },
@@ -182,20 +182,20 @@ globalThis.process = {
     tls: true, tls_alpn: true, tls_sni: true, tls_ocsp: true,
     cached_builtins: true, require_module: true, quic: false,
   },
-  execPath: __wjs_exec_path(),
+  execPath: __wjs2_exec_path(),
   // node 选项透传（M5 vitest 牵引：无旗恒 []；CLI 起点剥下的 node 运行时旗
   // 回填——common.js 自举 respawn 的 flags 可见性，真机口径）。
-  execArgv: JSON.parse(__wjs_node_compat_json()),
-  pid: __wjs_pid(),
+  execArgv: JSON.parse(__wjs2_node_compat_json()),
+  pid: __wjs2_pid(),
   // 文件创建掩码（10f：读无参回当前，置数回旧值；真机口径）。
   umask(mask) {
-    if (mask === undefined) return __wjs_umask();
-    return __wjs_umask(Number(mask));
+    if (mask === undefined) return __wjs2_umask();
+    return __wjs2_umask(Number(mask));
   },
-  uptime() { return __wjs_uptime(); },
+  uptime() { return __wjs2_uptime(); },
   hrtime: Object.assign(
     (t) => {
-      const now = BigInt(__wjs_hrtime_ns());
+      const now = BigInt(__wjs2_hrtime_ns());
       if (t === undefined) {
         const s = now / 1000000000n;
         return [Number(s), Number(now - s * 1000000000n)];
@@ -204,9 +204,9 @@ globalThis.process = {
       const d = now - base;
       return [Number(d / 1000000000n), Number(d % 1000000000n)];
     },
-    { bigint: () => BigInt(__wjs_hrtime_ns()) },
+    { bigint: () => BigInt(__wjs2_hrtime_ns()) },
   ),
-  memoryUsage() { return JSON.parse(__wjs_memory_usage()); },
+  memoryUsage() { return JSON.parse(__wjs2_memory_usage()); },
   // Node 22.3+（vite 用 getBuiltinModule('node:module').Module 做互操作）；
   // 裸名（'module'）与 'node:module' 双形均收（Node 口径），非内置走 require
   // 的可读报错；require 的 ESM-default 口径（node:module default 导出带 Module 类）。
@@ -220,23 +220,23 @@ globalThis.process = {
   // 非 TTY no-op（vite dev；TTY 下调用方自写 ANSI）。stdin：监听登记 +
   // isTTY + EOF read()（偏差记档：stdin EOF/data 不投递、信号不投递——
   // 注册表只收不发，SIGTERM 默认行为不变（OS 默认终止））。
-  stdout: __wjs_stdio_stream(1),
-  stderr: __wjs_stdio_stream(2),
+  stdout: __wjs2_stdio_stream(1),
+  stderr: __wjs2_stdio_stream(2),
   stdin: {
-    get isTTY() { return __wjs_stdio_istty(0); },
-    __wjs_listeners: {},
-    __wjs_enc: null,
-    __wjs_polling: false,
-    __wjs_ended: false,
+    get isTTY() { return __wjs2_stdio_istty(0); },
+    __wjs2_listeners: {},
+    __wjs2_enc: null,
+    __wjs2_polling: false,
+    __wjs2_ended: false,
     on(type, cb) {
       if (typeof cb !== "function") throw new TypeError("stdin.on: listener must be a function");
-      (this.__wjs_listeners[String(type)] ??= []).push(cb);
-      if (type === "data" || type === "readable" || type === "end") this.__wjs_startPoll();
+      (this.__wjs2_listeners[String(type)] ??= []).push(cb);
+      if (type === "data" || type === "readable" || type === "end") this.__wjs2_startPoll();
       return this;
     },
     once(type, cb) { return this.on(type, cb); },
     off(type, cb) {
-      const list = this.__wjs_listeners[String(type)];
+      const list = this.__wjs2_listeners[String(type)];
       if (list) {
         const i = list.indexOf(cb);
         if (i >= 0) list.splice(i, 1);
@@ -244,41 +244,41 @@ globalThis.process = {
       return this;
     },
     removeListener(type, cb) { return this.off(type, cb); },
-    setEncoding(e) { this.__wjs_enc = (e === null || e === undefined) ? null : String(e); return this; },
-    __wjs_emitStdin(type, arg) {
-      const list = (this.__wjs_listeners[String(type)] || []).slice();
+    setEncoding(e) { this.__wjs2_enc = (e === null || e === undefined) ? null : String(e); return this; },
+    __wjs2_emitStdin(type, arg) {
+      const list = (this.__wjs2_listeners[String(type)] || []).slice();
       for (const l of list) { try { l(arg); } catch {} }
       return list.length;
     },
-    // stdin 轮询投递（kill 套件：子进程读父写 stdin；echo x | winterjs 真机口径）：
+    // stdin 轮询投递（kill 套件：子进程读父写 stdin；echo x | winterjs2 真机口径）：
     // 首个 data/readable/end 监听即起 10ms refed 轮询（续命到 EOF），EOF 清环
     // 发 end；TTY 归 REPL，不管；Buffer 块（setEncoding 即转串）。
-    __wjs_startPoll() {
-      if (this.__wjs_polling || this.__wjs_ended) return;
-      if (__wjs_stdio_istty(0)) return;
-      this.__wjs_polling = true;
+    __wjs2_startPoll() {
+      if (this.__wjs2_polling || this.__wjs2_ended) return;
+      if (__wjs2_stdio_istty(0)) return;
+      this.__wjs2_polling = true;
       const self = this;
       const timer = setInterval(() => {        let r;
-        try { r = __wjs_stdin_poll(); } catch { r = "E"; }
+        try { r = __wjs2_stdin_poll(); } catch { r = "E"; }
         if (r === "E") {
           clearInterval(timer);
-          self.__wjs_polling = false;
-          self.__wjs_ended = true;
-          self.__wjs_emitStdin("end");
+          self.__wjs2_polling = false;
+          self.__wjs2_ended = true;
+          self.__wjs2_emitStdin("end");
           // node 口径：stdin EOF 后发 'close'（chunk-problem 的 shasum 形靠它；
           // 异步一轮——end 监听内挂 close 仍可达）。
-          queueMicrotask(() => self.__wjs_emitStdin("close"));
+          queueMicrotask(() => self.__wjs2_emitStdin("close"));
           return;
         }
         if (r !== "") {
           const bin = atob(r.slice(1));
           const u8 = new Uint8Array(bin.length);
           for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-          const chunk = self.__wjs_enc !== null ? Buffer.from(u8).toString(self.__wjs_enc) : Buffer.from(u8);
-          self.__wjs_emitStdin("data", chunk);
+          const chunk = self.__wjs2_enc !== null ? Buffer.from(u8).toString(self.__wjs2_enc) : Buffer.from(u8);
+          self.__wjs2_emitStdin("data", chunk);
         }
       }, 10);
-      this.__wjs_timer = timer;
+      this.__wjs2_timer = timer;
     },
     read() { return null; },
     pause() { return this; },
@@ -289,48 +289,48 @@ globalThis.process = {
     // destroy 即关（listen-after-destroying-stdin 套件）：停轮询、标终结、
     // 发 close（真机语义；读端已决议的不重发 end）。
     destroy() {
-      this.__wjs_ended = true;
-      try { if (this.__wjs_timer) clearInterval(this.__wjs_timer); } catch {}
-      this.__wjs_polling = false;
-      this.__wjs_emitStdin("close");
+      this.__wjs2_ended = true;
+      try { if (this.__wjs2_timer) clearInterval(this.__wjs2_timer); } catch {}
+      this.__wjs2_polling = false;
+      this.__wjs2_emitStdin("close");
       return this;
     },
   },
-  getuid() { return __wjs_process_getuid(); },
-  getgid() { return __wjs_process_getgid(); },
-  geteuid() { return __wjs_process_geteuid(); },
-  getegid() { return __wjs_process_getegid(); },
-  getgroups() { return __wjs_process_getgroups(); },
+  getuid() { return __wjs2_process_getuid(); },
+  getgid() { return __wjs2_process_getgid(); },
+  geteuid() { return __wjs2_process_geteuid(); },
+  getegid() { return __wjs2_process_getegid(); },
+  getgroups() { return __wjs2_process_getgroups(); },
   nextTick(cb, ...args) {
     if (typeof cb !== "function") throw new TypeError("nextTick: callback must be a function");
     // 原生队列（node 口径）：tick 由 pump 在 RunJobs 前后收割——同步期入队的
     // tick 先于微任务、微任务期入队的等整轮微任务排空（V8 checkpoint 原子性）。
     // 回调抛错经 drain 侧 uncaughtException 路由（destroy/emitErrorNT 等内建
     // 全走 nextTick，throw 落成 rejection 即全族套件反红）。
-    __wjs_next_tick(cb, args);
+    __wjs2_next_tick(cb, args);
   },
   // 通用监听表（warning 沿旧径；signal/stdin 等只登记不投递——偏差记档，
   // SIGTERM 默认行为不变）。emit 供未来事件循环接信号投递。
   // 方法一律走 `this`（套件 process-tampering：node common 载入期捕获
   // `const process = globalThis.process`，之后全局被换也不经它读表）。
-  __wjs_listeners: {},
+  __wjs2_listeners: {},
   on(type, cb) {
     if (typeof cb !== "function") throw new TypeError("process.on: listener must be a function");
-    (this.__wjs_listeners[String(type)] ??= []).push(cb);
+    (this.__wjs2_listeners[String(type)] ??= []).push(cb);
     return this;
   },
   once(type, cb) {
     if (typeof cb !== "function") throw new TypeError("process.once: listener must be a function");
     const self = this;
     const wrapped = (...args) => { self.off(type, wrapped); cb(...args); };
-    wrapped.__wjs_orig = cb;
+    wrapped.__wjs2_orig = cb;
     return self.on(type, wrapped);
   },
   off(type, cb) {
-    const list = this.__wjs_listeners[String(type)];
+    const list = this.__wjs2_listeners[String(type)];
     if (list) {
-      let i = list.findIndex((l) => l === cb || l.__wjs_orig === cb);
-      while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb || l.__wjs_orig === cb); }
+      let i = list.findIndex((l) => l === cb || l.__wjs2_orig === cb);
+      while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb || l.__wjs2_orig === cb); }
     }
     return this;
   },
@@ -339,9 +339,9 @@ globalThis.process = {
   // process.emit 直用）；emit 返回是否命中监听（node 口径）。
   addListener(type, cb) { return this.on(type, cb); },
   // node 口径（EventEmitter.emit）：监听抛错原样上抛；无监听的 'error' 即抛。
-  // 宿主内部派发走 `__wjs_emit`（吞错，结算点不被用户监听打断）。
+  // 宿主内部派发走 `__wjs2_emit`（吞错，结算点不被用户监听打断）。
   emit(type, ...args) {
-    const list = [...(this.__wjs_listeners[String(type)] ?? [])];
+    const list = [...(this.__wjs2_listeners[String(type)] ?? [])];
     if (list.length === 0 && type === "error") {
       const er = args[0];
       if (er instanceof Error) throw er;
@@ -354,17 +354,17 @@ globalThis.process = {
     return list.length > 0;
   },
   removeAllListeners(type) {
-    if (type === undefined) this.__wjs_listeners = {};
-    else delete this.__wjs_listeners[String(type)];
+    if (type === undefined) this.__wjs2_listeners = {};
+    else delete this.__wjs2_listeners[String(type)];
     return this;
   },
-  listenerCount(type) { return (this.__wjs_listeners[String(type)] ?? []).length; },
+  listenerCount(type) { return (this.__wjs2_listeners[String(type)] ?? []).length; },
   // EventEmitter 读表（M5 vitest 牵引：init 链 `process.listeners(..).bind(..)`）。
-  listeners(type) { return [...(this.__wjs_listeners[String(type)] ?? [])]; },
+  listeners(type) { return [...(this.__wjs2_listeners[String(type)] ?? [])]; },
   rawListeners(type) { return this.listeners(type); },
-  eventNames() { return Object.keys(this.__wjs_listeners); },
-  __wjs_emit(type, ...args) {
-    const list = [...(this.__wjs_listeners[String(type)] ?? [])];
+  eventNames() { return Object.keys(this.__wjs2_listeners); },
+  __wjs2_emit(type, ...args) {
+    const list = [...(this.__wjs2_listeners[String(type)] ?? [])];
     for (const l of list) {
       try { l.call(this, ...args); } catch {}
     }
@@ -372,7 +372,7 @@ globalThis.process = {
   },
   // node lib/internal/process/warning.js 逐段移植：参数归一 → string 包 Error（栈截到 ctor）
   // → Deprecation 受 noDeprecation/throwDeprecation 门控 → nextTick 派发 'warning'。
-  // 缺省打印是登记在表内的普通监听（`__wjs_onWarning`，--no-warnings 不登记），可被 off 摘除。
+  // 缺省打印是登记在表内的普通监听（`__wjs2_onWarning`，--no-warnings 不登记），可被 off 摘除。
   emitWarning(warning, type, code, ctor) {
     let detail;
     if (type !== null && typeof type === "object" && !Array.isArray(type)) {
@@ -408,28 +408,28 @@ globalThis.process = {
     }
     this.nextTick(() => this.emit("warning", warning));
   },
-  __wjs_onWarning(warning) {
+  __wjs2_onWarning(warning) {
     if (!(warning instanceof Error)) return;
     const p = globalThis.process;
     const isDeprecation = warning.name === "DeprecationWarning";
     if (isDeprecation && p.noDeprecation) return;
     const trace = p.traceProcessWarnings || (isDeprecation && p.traceDeprecation);
-    let msg = `(node:${__wjs_pid()}) `;
+    let msg = `(node:${__wjs2_pid()}) `;
     if (warning.code) msg += `[${warning.code}] `;
     if (trace && warning.stack) msg += `${warning.stack}`;
     else msg += typeof warning.toString === "function" ? `${warning.toString()}` : Error.prototype.toString.call(warning);
     if (typeof warning.detail === "string") msg += `\n${warning.detail}`;
-    if (!trace && !p.__wjs_traceHelperShown) {
+    if (!trace && !p.__wjs2_traceHelperShown) {
       const flag = isDeprecation ? "--trace-deprecation" : "--trace-warnings";
       const argv0 = String(p.argv0 || "node").split(/[\\/]/).pop().replace(/\.exe$/, "");
       msg += `\n(Use \`${argv0} ${flag} ...\` to show where the warning was created)`;
-      p.__wjs_traceHelperShown = true;
+      p.__wjs2_traceHelperShown = true;
     }
-    const file = p.__wjs_warningFile;
+    const file = p.__wjs2_warningFile;
     if (file) {
       try { require("node:fs").appendFileSync(file, `${msg}\n`); return; } catch {}
     }
-    __wjs_stderr_write(`${msg}\n`);
+    __wjs2_stderr_write(`${msg}\n`);
   },
 };
 // 真机口径：process[Symbol.toStringTag] = "process"（不可枚举，实测 getter 面），
@@ -439,36 +439,36 @@ Object.defineProperty(globalThis.process, Symbol.toStringTag, { value: "process"
 // --expose-gc 即暴露 globalThis.gc（async no-op——真收集另案，调用形状先行；
 // 无旗不暴露，真机口径）；名单挂内部位供 http 默认宽松等消费（不进 process.env）。
 try {
-  const __compat = JSON.parse(__wjs_node_compat_json());
-  globalThis.__wjs_nodeCompat = Array.isArray(__compat) ? __compat : [];
+  const __compat = JSON.parse(__wjs2_node_compat_json());
+  globalThis.__wjs2_nodeCompat = Array.isArray(__compat) ? __compat : [];
   // gc 门控（--expose-gc/--expose_gc 双拼写， deterioration 套件用下划线形）。
-  const __hasGc = globalThis.__wjs_nodeCompat.includes("--expose-gc") ||
-    globalThis.__wjs_nodeCompat.includes("--expose_gc");
+  const __hasGc = globalThis.__wjs2_nodeCompat.includes("--expose-gc") ||
+    globalThis.__wjs2_nodeCompat.includes("--expose_gc");
   if (__hasGc && typeof globalThis.gc !== "function") {
     globalThis.gc = async function gc() { return undefined; };
   }
-} catch { globalThis.__wjs_nodeCompat = []; }
+} catch { globalThis.__wjs2_nodeCompat = []; }
 // 告警旗（node 口径：旗在才定义属性）+ 缺省打印监听（--no-warnings / NODE_NO_WARNINGS=1 不登记）。
 {
-  const __f = globalThis.__wjs_nodeCompat;
+  const __f = globalThis.__wjs2_nodeCompat;
   const __p = globalThis.process;
   if (__f.includes("--no-deprecation")) __p.noDeprecation = true;
   if (__f.includes("--throw-deprecation")) __p.throwDeprecation = true;
   if (__f.includes("--trace-deprecation")) __p.traceDeprecation = true;
   if (__f.includes("--trace-warnings")) __p.traceProcessWarnings = true;
   const __rw = __f.find((a) => a.startsWith("--redirect-warnings="));
-  if (__rw) __p.__wjs_warningFile = __rw.slice("--redirect-warnings=".length);
+  if (__rw) __p.__wjs2_warningFile = __rw.slice("--redirect-warnings=".length);
   let __nw = false;
-  try { __nw = __wjs_env_get("NODE_NO_WARNINGS") === "1"; } catch {}
-  if (!__f.includes("--no-warnings") && !__nw) __p.on("warning", __p.__wjs_onWarning);
+  try { __nw = __wjs2_env_get("NODE_NO_WARNINGS") === "1"; } catch {}
+  if (!__f.includes("--no-warnings") && !__nw) __p.on("warning", __p.__wjs2_onWarning);
 }
 // Node 口径：NODE_DEBUG 置位即启动期警告一次（首 section 名；debug.js 套件
 // 逐字断言。stderr 直写，不走 warning 通道）。
 try {
-  const __nd = __wjs_env_get("NODE_DEBUG");
+  const __nd = __wjs2_env_get("NODE_DEBUG");
   if (__nd !== undefined && __nd !== null && String(__nd).trim() !== "") {
     const __sec = String(__nd).split(",")[0].trim();
-    __wjs_stderr_write(`Setting the NODE_DEBUG environment variable to '${__sec}' can expose sensitive data (such as passwords, tokens and authentication headers) in the resulting log.\n`);
+    __wjs2_stderr_write(`Setting the NODE_DEBUG environment variable to '${__sec}' can expose sensitive data (such as passwords, tokens and authentication headers) in the resulting log.\n`);
   }
 } catch { /* 环境不可读即跳过 */ }
 "#;

@@ -1,6 +1,6 @@
 // node:tls: server + client with local fixture cert (rejectUnauthorized:false).
 // TLS：本地自签证书的服务端与客户端（仅样例与测试用证书，勿用于生产）。
-// Run / 运行: winterjs --run sample/tls/server-client.js
+// Run / 运行: winterjs2 --run sample/tls/server-client.js
 import tls from 'node:tls';
 import fs from 'node:fs';
 

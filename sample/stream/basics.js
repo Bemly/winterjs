@@ -1,6 +1,6 @@
 // node:stream: Readable / Writable / Duplex / Transform / pipeline.
 // 流：四类流与管道（含 for-await 消费）。
-// Run / 运行: winterjs --run sample/stream/basics.js
+// Run / 运行: winterjs2 --run sample/stream/basics.js
 import { Readable, Writable, Transform, pipeline } from 'node:stream';
 
 const rs = Readable.from(['x', 'y', 'z']);

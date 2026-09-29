@@ -64,7 +64,7 @@
     }
     this.__connected = false;
     // 控制信封（单键载荷，子端 shim 解释为 disconnect，不投递给用户）。
-    try { this.__worker.postMessage({ __wjs_fork_ctl: "disconnect" }); } catch {}
+    try { this.__worker.postMessage({ __wjs2_fork_ctl: "disconnect" }); } catch {}
     if (typeof this.#ondisconnect === "function") {
       try { this.#ondisconnect(); } catch {}
     }

@@ -4,7 +4,7 @@
 //! `Request` 组装/`Response` 拆解只在 JS 线程（dispatch 内）发生。axum 线程
 //! 永不碰 TLS state（§4.153-review）：响应通道随 `Head` 事件过界，JS 侧落表。
 //!
-//! 请求体复用 fetch 流机制（`fetch_streams` + `__wjs_fetch_pull`，零新状态机）：
+//! 请求体复用 fetch 流机制（`fetch_streams` + `__wjs2_fetch_pull`，零新状态机）：
 //! Head 分发即 `stream_add`，Chunk/End/Fail 经 `fetch::settle` 原样泵入，
 //! JS 侧 `ReadableStream` 拉取。响应侧三 native（head/push/fail） Dram：
 //! 未知 id 一律静默成功（过期响应：客户端已走或已终结，不报错）。
@@ -127,7 +127,7 @@ pub fn valid_status(status: u16) -> bool {
     (200..600).contains(&status)
 }
 
-/// 响应头 JSON（`{status, headers:[[k,v]]}`；`__wjs_serve_head` 实参形）。
+/// 响应头 JSON（`{status, headers:[[k,v]]}`；`__wjs2_serve_head` 实参形）。
 #[derive(Debug, PartialEq)]
 struct ServeHeadMeta {
     status: u16,
@@ -232,7 +232,7 @@ pub fn dispatch(
     }
 }
 
-/// Head 分发：调 prelude 驱动 `__wjs_serve_on_head(id, metaJson, streamId)`。
+/// Head 分发：调 prelude 驱动 `__wjs2_serve_on_head(id, metaJson, streamId)`。
 /// 驱动内完成 Request 组装 + fetch 调用 + 响应排空（全异步，Rust 只 transport）。
 fn dispatch_head(
     cx: &mut JSContext,
@@ -242,8 +242,8 @@ fn dispatch_head(
 ) -> Result<(), Error> {
     rooted!(&in(cx) let global_root: *mut JSObject = global);
     let global_ptr = global_root.get();
-    let Some(driver) = get_prop_value(cx, global_ptr, c"__wjs_serve_on_head") else {
-        return Err(Error::Other("serve helper __wjs_serve_on_head missing (prelude?)".into()));
+    let Some(driver) = get_prop_value(cx, global_ptr, c"__wjs2_serve_on_head") else {
+        return Err(Error::Other("serve helper __wjs2_serve_on_head missing (prelude?)".into()));
     };
     let meta = serde_json::json!({
         "method": head.method,
@@ -271,7 +271,7 @@ fn dispatch_head(
     })
 }
 
-/// `__wjs_serve_head(id, metaJson)`：投递响应头。幂等：未知 id（过期响应）
+/// `__wjs2_serve_head(id, metaJson)`：投递响应头。幂等：未知 id（过期响应）
 /// 静默成功；非法状态即 500 短路（含头+空体），调用方无需再推。
 /// UNSAFE-BOUNDARY：引擎回调帧 + 会话 env；裸指针只在 realm 内解引用；
 /// 覆盖测试：`tests/serve.rs::phase11_serve_dynamic_*`（head 非法/重复终结行）。
@@ -315,7 +315,7 @@ pub unsafe extern "C" fn serve_head(
     true
 }
 
-/// `__wjs_serve_push(id, chunkU8|null)`：推响应体 chunk；null 即终结并摘表。
+/// `__wjs2_serve_push(id, chunkU8|null)`：推响应体 chunk；null 即终结并摘表。
 /// 发送失败（接收端已走）即收尾；未知 id 静默成功（过期响应）。
 /// UNSAFE-BOUNDARY：同上；覆盖测试同 `serve_head`。
 pub unsafe extern "C" fn serve_push(
@@ -354,7 +354,7 @@ pub unsafe extern "C" fn serve_push(
     true
 }
 
-/// `__wjs_serve_fail(id, message)`：handler 失败 → 500 短路（头未发则发 500 头 +
+/// `__wjs2_serve_fail(id, message)`：handler 失败 → 500 短路（头未发则发 500 头 +
 /// 消息体，已发则截断体）。未知 id 静默成功。UNSAFE-BOUNDARY：同上。
 pub unsafe extern "C" fn serve_fail(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -396,8 +396,8 @@ pub unsafe extern "C" fn serve_fail(
 
 /// handler 模块求值 + 双认 fetch（`default.fetch` 优先，回落具名 `fetch`；
 /// §0 四项-1）。缺其一即启动期可读错，不静默 500。落点为
-/// `globalThis.__wjs_serve_fetch`（global 本身是 GC 根，免新 slot、免 trace 改；
-/// 用户覆盖即自担，`__wjs_*` 内名前缀惯例）。
+/// `globalThis.__wjs2_serve_fetch`（global 本身是 GC 根，免新 slot、免 trace 改；
+/// 用户覆盖即自担，`__wjs2_*` 内名前缀惯例）。
 pub fn load_serve_handler(
     cx: &mut JSContext,
     global: *mut JSObject,
@@ -433,7 +433,7 @@ pub fn load_serve_handler(
         )));
     };
     rooted!(&in(rcx) let fetch_root = fetch);
-    if !crate::jsapi_glue::set_prop_value(rcx, global, c"__wjs_serve_fetch", fetch_root.get()) {
+    if !crate::jsapi_glue::set_prop_value(rcx, global, c"__wjs2_serve_fetch", fetch_root.get()) {
         return Err(Error::Other("serve handler: cannot stash fetch fn".into()));
     }
     Ok(())
@@ -485,8 +485,8 @@ pub fn serve_ws_take(
         .map(|p| (p.ws_id, p.ev_tx, p.out_rx))
 }
 
-/// `__wjs_serve_ws_create(serveId)` → wsId：分配 ws 表项 + 发送端并挂靠。
-/// 工厂（`__wjs_serve_socket`）调用；101 前未配对由 decline/fail 回收。
+/// `__wjs2_serve_ws_create(serveId)` → wsId：分配 ws 表项 + 发送端并挂靠。
+/// 工厂（`__wjs2_serve_socket`）调用；101 前未配对由 decline/fail 回收。
 /// UNSAFE-BOUNDARY：引擎回调帧 + 会话 env；覆盖测试：`tests/serve.rs::phase11_serve_ws_echo`。
 pub unsafe extern "C" fn serve_ws_create(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -512,7 +512,7 @@ pub unsafe extern "C" fn serve_ws_create(
     true
 }
 
-/// `__wjs_serve_ws_accept(serveId)`：handler 返回 socket 即接受升级 → 决策 Accept。
+/// `__wjs2_serve_ws_accept(serveId)`：handler 返回 socket 即接受升级 → 决策 Accept。
 /// 无挂靠（未调工厂）即抛错走 500；会话已走即静默回收。
 /// UNSAFE-BOUNDARY：同上；覆盖测试同 `serve_ws_create`。
 pub unsafe extern "C" fn serve_ws_accept(
@@ -529,7 +529,7 @@ pub unsafe extern "C" fn serve_ws_accept(
     }
     let serve_id = frame.arg(0).to_number() as u64;
     let Some((ws_id, ev_tx, out_rx)) = serve_ws_take(serve_id) else {
-        report_error(&mut cx, "TypeError: serve upgrade without socket (need __wjs_serve_socket + 101)");
+        report_error(&mut cx, "TypeError: serve upgrade without socket (need __wjs2_serve_socket + 101)");
         return false;
     };
     let Some(resp) = state::serve_take(serve_id) else {
@@ -550,7 +550,7 @@ pub unsafe extern "C" fn serve_ws_accept(
     true
 }
 
-/// `__wjs_serve_ws_decline(serveId)`：返回 Response → 决策 Decline（走普通管线）+ 挂靠回收。
+/// `__wjs2_serve_ws_decline(serveId)`：返回 Response → 决策 Decline（走普通管线）+ 挂靠回收。
 /// 未知 id/已决议一律静默成功（幂等）。
 /// UNSAFE-BOUNDARY：同上；覆盖测试同 `serve_ws_create`。
 pub unsafe extern "C" fn serve_ws_decline(

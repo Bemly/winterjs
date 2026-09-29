@@ -1,6 +1,6 @@
 // Response: status, headers and body readers.
 // Response：状态码、头与 body 读取。
-// Run / 运行: winterjs --run sample/web/response.js
+// Run / 运行: winterjs2 --run sample/web/response.js
 const out = new Response(JSON.stringify({ ok: true }), {
   status: 201,
   headers: { 'content-type': 'application/json' },

@@ -1,4 +1,4 @@
-//! winterjs init 黑盒测试(对齐 src/initpkg.rs)。
+//! winterjs2 init 黑盒测试(对齐 src/initpkg.rs)。
 
 mod common;
 
@@ -9,7 +9,7 @@ fn phase7_init_closed_loop() {
     // 正常：init 三件 + 内容含名 + 紧接着 `test` 即绿（闭环）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = stdout_of(
-        winterjs()
+        winterjs2()
             .args(["--init", "my-pkg", "--yes"])
             .current_dir(dir.path()),
     );
@@ -19,7 +19,7 @@ fn phase7_init_closed_loop() {
     );
     let pkg = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
     assert!(pkg.contains("\"my-pkg\""), "package.json:\n{pkg}");
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--test")
         .arg(".")
         .current_dir(dir.path())
@@ -38,7 +38,7 @@ fn phase7_init_closed_loop() {
 fn phase7_init_bad_name() {
     // 报错：非法名 exit=1 且可读。
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--init", "Bad Name!", "--yes"])
         .current_dir(dir.path())
         .output()
@@ -54,7 +54,7 @@ fn phase7_init_rebuild_keeps_existing() {
     // 重建：已存在文件不碰（exit=0），缺失的补齐。
     let dir = assert_fs::TempDir::new().unwrap();
     assert!(
-        winterjs()
+        winterjs2()
             .args(["--init", "p", "--yes"])
             .current_dir(dir.path())
             .output()
@@ -64,7 +64,7 @@ fn phase7_init_rebuild_keeps_existing() {
     );
     std::fs::write(dir.path().join("index.js"), b"mine\n").unwrap();
     std::fs::remove_file(dir.path().join("hello.test.js")).unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--init", "p", "--yes"])
         .current_dir(dir.path())
         .output()
@@ -84,7 +84,7 @@ fn phase7_init_rebuild_keeps_existing() {
 fn phase7_init_needs_yes_without_tty() {
     // 边界：非 TTY 缺 --yes 即报可读错（不挂起等输入）。
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--init", "p"])
         .current_dir(dir.path())
         .output()
@@ -104,7 +104,7 @@ fn phase9_init_adopts_existing_project() {
     let dir = assert_fs::TempDir::new().unwrap();
     let pkg = r#"{"name":"vue-project","version":"0.0.0","private":true,"type":"module","scripts":{"dev":"vite"}}"#;
     std::fs::write(dir.path().join("package.json"), pkg).unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--init", "--yes"])
         .current_dir(dir.path())
         .output()
@@ -116,7 +116,7 @@ fn phase9_init_adopts_existing_project() {
     assert!(dir.path().join("index.js").exists());
     assert!(dir.path().join("hello.test.js").exists());
     // 全齐再跑：already initialized，exit=0。
-    let out2 = winterjs()
+    let out2 = winterjs2()
         .args(["--init", "--yes"])
         .current_dir(dir.path())
         .output()
@@ -135,14 +135,14 @@ fn phase9_init_short_flag_and_force() {
     // -I 简写可用；--force 逐个覆盖并报 overwrote。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = stdout_of(
-        winterjs().args(["-I", "short-pkg", "--yes"]).current_dir(dir.path()),
+        winterjs2().args(["-I", "short-pkg", "--yes"]).current_dir(dir.path()),
     );
     assert!(out.contains("created package.json"), "init:\n{out}");
     let pkg = std::fs::read_to_string(dir.path().join("package.json")).unwrap();
     assert!(pkg.contains("\"short-pkg\""), "package.json:\n{pkg}");
 
     std::fs::write(dir.path().join("index.js"), b"mine\n").unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--init", "short-pkg", "--yes", "--force"])
         .current_dir(dir.path())
         .output()
@@ -248,9 +248,9 @@ fn serve_pkg_registry(pkgs: &'static [&'static str], missing: &'static [&'static
 }
 
 fn init_cmd(dir: &assert_fs::TempDir, reg: &str, cache: &assert_fs::TempDir) -> assert_cmd::Command {
-    let mut cmd = winterjs();
+    let mut cmd = winterjs2();
     cmd.args(["--init", "--yes", "--registry", reg])
-        .env("WINTERJS_CACHE", cache.path())
+        .env("WINTERJS2_CACHE", cache.path())
         .current_dir(dir.path());
     cmd
 }
@@ -275,7 +275,7 @@ fn phase9_init_installs_manifest_deps() {
     assert!(dir.path().join("node_modules/init-dep-a/index.js").is_file());
     assert!(dir.path().join("node_modules/init-dep-b/package.json").is_file());
     assert!(dir.path().join("node_modules/.bin/init-dep-a").exists());
-    let lock = std::fs::read_to_string(dir.path().join("winterjs-lock.json")).unwrap();
+    let lock = std::fs::read_to_string(dir.path().join("winterjs2-lock.json")).unwrap();
     assert!(lock.contains("init-dep-a") && lock.contains("init-dep-b"), "lock: {lock}");
     assert!(lock.contains("manifest"), "lock missing manifest field: {lock}");
     dir.close().unwrap();
@@ -330,7 +330,7 @@ fn phase9_init_manifest_edit_reinstalls_incrementally() {
     let so = String::from_utf8_lossy(&out2.stdout);
     assert!(so.contains("added init-dep-c@1.0.0"), "stdout: {so}");
     assert!(dir.path().join("node_modules/init-dep-a/package.json").is_file(), "old dep kept");
-    let lock = std::fs::read_to_string(dir.path().join("winterjs-lock.json")).unwrap();
+    let lock = std::fs::read_to_string(dir.path().join("winterjs2-lock.json")).unwrap();
     assert!(lock.contains("init-dep-a") && lock.contains("init-dep-c"), "lock merged: {lock}");
     dir.close().unwrap();
     cache.close().unwrap();
@@ -370,7 +370,7 @@ fn phase9_init_no_deps_and_bad_manifest() {
         r#"{"name":"p","scripts":{"dev":"vite"}}"#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--init", "--yes"])
         .current_dir(dir.path())
         .output()
@@ -382,7 +382,7 @@ fn phase9_init_no_deps_and_bad_manifest() {
 
     let bad = assert_fs::TempDir::new().unwrap();
     std::fs::write(bad.path().join("package.json"), r#"{"name": "#).unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--init", "--yes"])
         .current_dir(bad.path())
         .output()

@@ -258,7 +258,7 @@ fn arg_id(cx: &mut JSContext, frame: &Frame, i: u32) -> Option<u64> {
     })
 }
 
-/// 建直连端口对。`__wjs_port_pair()` → `"a b"`（两端各计 1 存活）。
+/// 建直连端口对。`__wjs2_port_pair()` → `"a b"`（两端各计 1 存活）。
 pub unsafe extern "C" fn port_pair(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -280,7 +280,7 @@ pub unsafe extern "C" fn port_pair(
     }
 }
 
-/// 登记 JS 目标。`__wjs_port_attach(id, target)` → undefined。
+/// 登记 JS 目标。`__wjs2_port_attach(id, target)` → undefined。
 pub unsafe extern "C" fn port_attach(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -302,7 +302,7 @@ pub unsafe extern "C" fn port_attach(
     true
 }
 
-/// 摘目标。`__wjs_port_detach(id)` → undefined（迁移排空后静默摘除）。
+/// 摘目标。`__wjs2_port_detach(id)` → undefined（迁移排空后静默摘除）。
 pub unsafe extern "C" fn port_detach(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -320,7 +320,7 @@ pub unsafe extern "C" fn port_detach(
     true
 }
 
-/// 投递。`__wjs_port_post(id, json)` → boolean（对端已关即 false，不抛）。
+/// 投递。`__wjs2_port_post(id, json)` → boolean（对端已关即 false，不抛）。
 pub unsafe extern "C" fn port_post(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -342,7 +342,7 @@ pub unsafe extern "C" fn port_post(
     true
 }
 
-/// 关闭。`__wjs_port_close(id)` → boolean（首次 true）。
+/// 关闭。`__wjs2_port_close(id)` → boolean（首次 true）。
 pub unsafe extern "C" fn port_close(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -359,7 +359,7 @@ pub unsafe extern "C" fn port_close(
     true
 }
 
-/// 取消引用。`__wjs_port_unref(id)` → undefined。
+/// 取消引用。`__wjs2_port_unref(id)` → undefined。
 pub unsafe extern "C" fn port_unref(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -377,7 +377,7 @@ pub unsafe extern "C" fn port_unref(
     true
 }
 
-/// 重新引用。`__wjs_port_ref(id)` → undefined。
+/// 重新引用。`__wjs2_port_ref(id)` → undefined。
 pub unsafe extern "C" fn port_ref(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -395,7 +395,7 @@ pub unsafe extern "C" fn port_ref(
     true
 }
 
-/// 邀约迁移。`__wjs_port_offer(id)` → nonce 串（失败空串，JS 侧翻 DataCloneError）。
+/// 邀约迁移。`__wjs2_port_offer(id)` → nonce 串（失败空串，JS 侧翻 DataCloneError）。
 pub unsafe extern "C" fn port_offer(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -413,7 +413,7 @@ pub unsafe extern "C" fn port_offer(
     true
 }
 
-/// 承接迁移。`__wjs_port_accept(nonce)` → 本地 id 串（失败空串）。
+/// 承接迁移。`__wjs2_port_accept(nonce)` → 本地 id 串（失败空串）。
 pub unsafe extern "C" fn port_accept(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -432,7 +432,7 @@ pub unsafe extern "C" fn port_accept(
     true
 }
 
-/// 撤邀约。`__wjs_port_withdraw(nonce)` → boolean。
+/// 撤邀约。`__wjs2_port_withdraw(nonce)` → boolean。
 pub unsafe extern "C" fn port_withdraw(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -450,7 +450,7 @@ pub unsafe extern "C" fn port_withdraw(
     true
 }
 
-/// BC 订阅。`__wjs_bc_sub(name)` → sub id 串（失败空串）。
+/// BC 订阅。`__wjs2_bc_sub(name)` → sub id 串（失败空串）。
 pub unsafe extern "C" fn bc_sub(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -469,7 +469,7 @@ pub unsafe extern "C" fn bc_sub(
     true
 }
 
-/// BC 退订。`__wjs_bc_unsub(subId)` → undefined。
+/// BC 退订。`__wjs2_bc_unsub(subId)` → undefined。
 pub unsafe extern "C" fn bc_unsub(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -487,7 +487,7 @@ pub unsafe extern "C" fn bc_unsub(
     true
 }
 
-/// BC 扇出。`__wjs_bc_pub(name, exceptSubId, json)` → undefined。
+/// BC 扇出。`__wjs2_bc_pub(name, exceptSubId, json)` → undefined。
 pub unsafe extern "C" fn bc_pub(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -509,7 +509,7 @@ pub unsafe extern "C" fn bc_pub(
 }
 
 /// BC 同步收信口（`receiveMessageOnPort` 对 BC 的底座；10f）。
-/// `__wjs_bc_try_recv(subId)` → 本会话 pending 队首 wire 串（空串 = 无）。
+/// `__wjs2_bc_try_recv(subId)` → 本会话 pending 队首 wire 串（空串 = 无）。
 pub unsafe extern "C" fn bc_try_recv(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -530,7 +530,7 @@ pub unsafe extern "C" fn bc_try_recv(
     true
 }
 
-/// BC 旗变更。`__wjs_bc_flags(subId, "listen"|"unlisten"|"ref"|"unref")` → undefined。
+/// BC 旗变更。`__wjs2_bc_flags(subId, "listen"|"unlisten"|"ref"|"unref")` → undefined。
 pub unsafe extern "C" fn bc_flags(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -553,7 +553,7 @@ pub unsafe extern "C" fn bc_flags(
     true
 }
 
-/// BC 登记 JS 目标。`__wjs_bc_attach(subId, target)` → undefined。
+/// BC 登记 JS 目标。`__wjs2_bc_attach(subId, target)` → undefined。
 pub unsafe extern "C" fn bc_attach(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -575,7 +575,7 @@ pub unsafe extern "C" fn bc_attach(
     true
 }
 
-/// 本线程是否主线程。`__wjs_worker_is_main()` → boolean。
+/// 本线程是否主线程。`__wjs2_worker_is_main()` → boolean。
 pub unsafe extern "C" fn worker_is_main(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -589,7 +589,7 @@ pub unsafe extern "C" fn worker_is_main(
     true
 }
 
-/// 本线程 id（数字字符串；主=0）。`__wjs_worker_thread_id()` → `"0"`。
+/// 本线程 id（数字字符串；主=0）。`__wjs2_worker_thread_id()` → `"0"`。
 pub unsafe extern "C" fn worker_thread_id(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -640,7 +640,7 @@ pub unsafe extern "C" fn worker_is_fork(
 }
 
 /// 父端口信息（主会话空串；worker 会话给 parentPort id）。
-/// `__wjs_worker_parent()` → `""` 或 id 串。
+/// `__wjs2_worker_parent()` → `""` 或 id 串。
 pub unsafe extern "C" fn worker_parent(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -655,7 +655,7 @@ pub unsafe extern "C" fn worker_parent(
 }
 
 /// workerData（主会话 undefined；worker 会话给克隆 JSON 串）。
-/// `__wjs_worker_data()` → undefined 或 JSON 串。
+/// `__wjs2_worker_data()` → undefined 或 JSON 串。
 pub unsafe extern "C" fn worker_data(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -674,7 +674,7 @@ pub unsafe extern "C" fn worker_data(
     true
 }
 
-/// worker env 快照读（`process_.rs` env 代理底座）。`__wjs_worker_env_snapshot()`
+/// worker env 快照读（`process_.rs` env 代理底座）。`__wjs2_worker_env_snapshot()`
 /// → JSON 对象串（快照模式）或 undefined（主会话/SHARE_ENV——真 env 直读）。
 pub unsafe extern "C" fn env_snapshot(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -695,7 +695,7 @@ pub unsafe extern "C" fn env_snapshot(
     true
 }
 
-/// 环境数据写。`__wjs_worker_env_set(key, json)` → undefined。
+/// 环境数据写。`__wjs2_worker_env_set(key, json)` → undefined。
 pub unsafe extern "C" fn env_set(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -717,7 +717,7 @@ pub unsafe extern "C" fn env_set(
     true
 }
 
-/// 环境数据读。`__wjs_worker_env_get(key)` → json 串或 undefined。
+/// 环境数据读。`__wjs2_worker_env_get(key)` → json 串或 undefined。
 pub unsafe extern "C" fn env_get(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -750,7 +750,7 @@ pub use super::worker_term::{
 };
 
 
-/// 登记 Worker JS 目标。`__wjs_worker_attach(workerId, target)` → undefined。
+/// 登记 Worker JS 目标。`__wjs2_worker_attach(workerId, target)` → undefined。
 pub unsafe extern "C" fn worker_attach(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -772,7 +772,7 @@ pub unsafe extern "C" fn worker_attach(
     true
 }
 
-/// 主→worker 投递（parentPort 收）。`__wjs_worker_post(workerId, json)` → boolean。
+/// 主→worker 投递（parentPort 收）。`__wjs2_worker_post(workerId, json)` → boolean。
 pub unsafe extern "C" fn worker_post(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -802,7 +802,7 @@ pub unsafe extern "C" fn worker_post(
 
 /// 终止 worker（`WTerminate`；退出码经 `WExit` 事件回传，恒 1）。
 /// 10f：置共享旗 + 请求引擎中断（忙循环斩断，见 term_request）——idle 路径
-/// 仍走收件箱 WTerminate 检查点。`__wjs_worker_terminate(workerId)` → boolean。
+/// 仍走收件箱 WTerminate 检查点。`__wjs2_worker_terminate(workerId)` → boolean。
 pub unsafe extern "C" fn worker_terminate(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -824,7 +824,7 @@ pub unsafe extern "C" fn worker_terminate(
     true
 }
 
-/// worker ref/unref（主循环续命开关）。`__wjs_worker_set_ref(id, "1"/"0")`。
+/// worker ref/unref（主循环续命开关）。`__wjs2_worker_set_ref(id, "1"/"0")`。
 pub unsafe extern "C" fn worker_set_ref(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -843,7 +843,7 @@ pub unsafe extern "C" fn worker_set_ref(
     true
 }
 
-/// worker 线程 id。`__wjs_worker_tid(workerId)` → 数字串（已退出即空串）。
+/// worker 线程 id。`__wjs2_worker_tid(workerId)` → 数字串（已退出即空串）。
 pub unsafe extern "C" fn worker_tid(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -861,7 +861,7 @@ pub unsafe extern "C" fn worker_tid(
     true
 }
 
-/// 监听装上。`__wjs_port_listen(id)` → undefined。
+/// 监听装上。`__wjs2_port_listen(id)` → undefined。
 pub unsafe extern "C" fn port_listen(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -879,7 +879,7 @@ pub unsafe extern "C" fn port_listen(
     true
 }
 
-/// 监听卸完。`__wjs_port_unlisten(id)` → undefined。
+/// 监听卸完。`__wjs2_port_unlisten(id)` → undefined。
 pub unsafe extern "C" fn port_unlisten(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -897,7 +897,7 @@ pub unsafe extern "C" fn port_unlisten(
     true
 }
 
-/// 是否引用中。`__wjs_port_has_ref(id)` → boolean。
+/// 是否引用中。`__wjs2_port_has_ref(id)` → boolean。
 pub unsafe extern "C" fn port_has_ref(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -914,7 +914,7 @@ pub unsafe extern "C" fn port_has_ref(
     true
 }
 
-/// 同步收信口（`receiveMessageOnPort` 底座；10f）。`__wjs_port_try_recv(id)`
+/// 同步收信口（`receiveMessageOnPort` 底座；10f）。`__wjs2_port_try_recv(id)`
 /// → 本端口 pending 表队首 wire 串（空串 = 无）。UNSAFE-BOUNDARY：纯 Rust
 /// 队列进出，无 JS 值存留；覆盖测试 `tests/node/worker.rs` 同步收信。
 pub unsafe extern "C" fn port_try_recv(

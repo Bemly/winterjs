@@ -1,7 +1,7 @@
 //! 启动 banner（2026-09-28，用户拍板）：每次运行首行走 stderr。
 //!
 //! - 图形终端（Kitty/iTerm 系）：`assets/logo.jxl`（`jxl-oxide` 解码，纯 Rust）
-//!   + `assets/winterjs.svg`（`resvg` 光栅化）经对应转义协议输出，之后跟版本行。
+//!   + `assets/winterjs2.svg`（`resvg` 光栅化）经对应转义协议输出，之后跟版本行。
 //!   素材史：`logo.avif` 因纯 Rust 解码无轮子（`image/avif` 只管编码，见 §14
 //!   `viuer` 条）经 `cjxl` 转码为同 artwork 的 `logo.jxl`（`sips` 先验 alpha）。
 //! - 其余终端：用户定稿 ASCII art（❄/❆ 分隔线 + WINTER JS 块字，版本行居中）。
@@ -20,7 +20,7 @@ use std::io::Write as _;
 
 /// 内嵌素材（`assets/`，`include_bytes!/str!` 零新文件）。
 const LOGO_JXL: &[u8] = include_bytes!("../assets/logo.jxl");
-const WORDMARK_SVG: &str = include_str!("../assets/winterjs.svg");
+const WORDMARK_SVG: &str = include_str!("../assets/winterjs2.svg");
 
 /// SVG 深色字（浅底用）→ 深底替换色（与 SVG 内 `@media` 同值，`COLORFGBG` 判定）。
 const DARK_FILL: &str = "#16233a";

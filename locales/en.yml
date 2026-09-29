@@ -39,7 +39,7 @@ arg:
   login:
     help: "Log in to a registry (stores a token in ~/.npmrc)"
   upgrade:
-    help: "Self-upgrade winterjs (needs WINTERJS_UPDATE_GITHUB=owner/repo)"
+    help: "Self-upgrade winterjs2 (needs WINTERJS2_UPDATE_GITHUB=owner/repo)"
   init:
     help: "Scaffold a new package (installs package.json dependencies when present)"
     value: "NAME"
@@ -129,7 +129,7 @@ arg:
     help: "SQL to run against the database (db only; default lists tables)"
     value: "SQL"
   storage_path:
-    help: "Storage database file for global storage/localStorage (run/eval/test/repl/serve only; default ./winterjs-storage.db)"
+    help: "Storage database file for global storage/localStorage (run/eval/test/repl/serve only; default ./winterjs2-storage.db)"
     value: "FILE"
   allow_read:
     help: "Allow filesystem reads (run/eval/test/repl/db only; optionally: --allow-read=<path>[,<path>...])"

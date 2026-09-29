@@ -378,8 +378,8 @@ unsafe impl Traceable for FetchStreamState {
 pub struct RootedState {
     pub timers: Vec<TimerEntry>,
     pub unhandled: Vec<Box<Heap<*mut JSObject>>>, // 未处理 rejection 的 promise（`Box` 定址）
-    pub call_fn: Heap<JSVal>,                // prelude 的 __wjs_call(cb, args)
-    pub entries_fn: Heap<JSVal>,             // prelude 的 __wjs_entries(v)
+    pub call_fn: Heap<JSVal>,                // prelude 的 __wjs2_call(cb, args)
+    pub entries_fn: Heap<JSVal>,             // prelude 的 __wjs2_entries(v)
     pub on_fulfilled: Heap<JSVal>,           // rejection 捕获用 native
     pub on_rejected: Heap<JSVal>,
     pub entry_fulfilled: Heap<JSVal>, // 模块入口 TLA 决议捕获用 native
@@ -403,9 +403,9 @@ pub struct RootedState {
     pub fetch_callbacks: Vec<FetchCallback>, // 未决 fetch 的 resolve/reject（按 id 取出）
     pub fetch_streams: Vec<FetchStreamState>, // 流式 body（chunk 泵；cancel/终态时移除）
     pub make_response_fn: Heap<JSVal>, pub make_fetch_error_fn: Heap<JSVal>, // fetch 双件
-    pub ws_emit_fn: Heap<JSVal>, // prelude 的 __wjs_ws_emit
-    pub uncaught_fn: Heap<JSVal>, // prelude 的 __wjs_uncaught（timer 回调未捕获异常分发）
-    pub uncaught_count_fn: Heap<JSVal>, // prelude 的 __wjs_uncaught_count（监听器探针）
+    pub ws_emit_fn: Heap<JSVal>, // prelude 的 __wjs2_ws_emit
+    pub uncaught_fn: Heap<JSVal>, // prelude 的 __wjs2_uncaught（timer 回调未捕获异常分发）
+    pub uncaught_count_fn: Heap<JSVal>, // prelude 的 __wjs2_uncaught_count（监听器探针）
     pub repl_tla: Heap<JSVal>, // REPL 顶层 await 挂起 promise（R6；跨轮/跨 GC 由 trace 保活）
     pub next_ticks: Vec<NextTickEntry>, // process.nextTick 原生队列（pump RunJobs 前后各收割一轮）
     pub vm_last_error: Heap<JSVal>, // vm_run 暂存的原始异常对象（JS 侧 __vmCall 取走重建，保 realm 身份）
@@ -616,28 +616,28 @@ pub fn init(cx: &mut JSContext) {
                 Some(on_fulfilled_native),
                 0,
                 0,
-                c"__wjs_onFulfilled".as_ptr(),
+                c"__wjs2_onFulfilled".as_ptr(),
             );
             let on_rejected = JS_NewFunction(
                 rcx,
                 Some(on_rejected_native),
                 1,
                 0,
-                c"__wjs_onRejected".as_ptr(),
+                c"__wjs2_onRejected".as_ptr(),
             );
             let entry_fulfilled = JS_NewFunction(
                 rcx,
                 Some(entry_fulfilled_native),
                 1,
                 0,
-                c"__wjs_entryFulfilled".as_ptr(),
+                c"__wjs2_entryFulfilled".as_ptr(),
             );
             let entry_rejected = JS_NewFunction(
                 rcx,
                 Some(entry_rejected_native),
                 1,
                 0,
-                c"__wjs_entryRejected".as_ptr(),
+                c"__wjs2_entryRejected".as_ptr(),
             );
             assert!(
                 !on_fulfilled.is_null()

@@ -1,6 +1,6 @@
 // node:cluster: primary forks one worker, message round-trip, clean exit.
 // 集群：主进程 fork 一个 worker，消息往返后干净退出。
-// Run / 运行: winterjs --run sample/cluster/primary-worker.js
+// Run / 运行: winterjs2 --run sample/cluster/primary-worker.js
 import cluster from 'node:cluster';
 
 if (cluster.isPrimary) {

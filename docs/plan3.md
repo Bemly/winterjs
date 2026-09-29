@@ -128,7 +128,7 @@
 | P0-3 | 全域基线 | ✅ 2026-09-25 base12（2 并发 + 看门狗，42 分钟，资源全程正常）；首跑 base10 触发 4.209 事故作废；旗表补齐（`--experimental-quic`/`--tls-min-v1.x` 等 24 个）后 272 件重跑，quic 233 件全转绿 | — | ✅ |
 | P1 | http2 | 🟡 2026-09-25 首轮：绿 64 → **88/256**（mustCall 退出核对生效后的真实口径；同口径起点 58）。已修：v1 证书、trailer 有体挂死、请求体流式化、GET 缺省 endStream、会话随连接建立、compat/优先级告警、参数校验六批。余 168 大头是 hyper 底座不可达面——PUSH_PROMISE、ALTSVC/ORIGIN 帧、对端 SETTINGS 内省、原始帧协议错映射（GOAWAY/窗口溢出/未请求 ACK），以及 tls 面（createSecureContext/getPeerCertificate 等，随 P2 tls 一并）。**按 0.2 时间盒暂停，转 P2 tls**；底座不可达簇下轮统一评估：换 `h2` 裸库直驱 vs 书面偏离 | 已用约 1 天 | 🟡 |
 | P2 | 共性簇 → tls → crypto → repl → process → stream | 🟡 2026-09-26 进行中。**共性簇先行**（mustCall 红按"未触发回调的事件名"聚类）：beforeExit 派发 + 致命错后发 exit + process.emit 上抛（+9）、emitWarning 按 node warning.js 移植 + CJS 栈帧绝对路径（+8）、fs 流 node 逐字移植 + fs 回调改宏任务 + setImmediate 不钳 1ms + unref 定时器按存活门控（+26）、repl .save/.load（+5）、dgram bind 前 unref。**tls**：SecureContext/createSecureContext/configSecureContext 逐字移植（选项校验 + OpenSSL 可观察报错）、Server 构造器/setSecureContext/connect 校验、tls.Server 无 new、rootCertificates 只读、setDefaultCACertificates 报错面（+23，未计入 base15）。**tls 下一簇**：✅ 2026-09-26 P2-tls-b 落地——TLSSocket 包裹引擎（rustls 手动模式由 JS 字节驱动，
-`state::tls_engines` + `__wjs_tls_wrap_*` 六 natives）+ CaptureVerifier（校验失败不中止握手）+
+`state::tls_engines` + `__wjs2_tls_wrap_*` 六 natives）+ CaptureVerifier（校验失败不中止握手）+
 onConnectEnd/'secure'/convertALPNProtocols/UDS/destroySoon 逐字对齐；wrap 簇 24 件 **19 转绿**
 （黑盒 7/7、nextest strict 717/717、冒烟 5/5；io_code 补 ECONNRESET/ENOTCONN 4.213、
 listen path 误判 4.214、rustls close_notify 严格性适配 4.215）。**tls 域 sweep
@@ -158,13 +158,13 @@ internal/repl（11）/ASSERT 散件，另轮。**crypto R1** ✅ 2026-09-29 MISS
 SAME0 25/76；crypto 域 62/62、冒烟 5/5；余 bit-length/dh-classic/keygen.js-4096/
 raw-slh/pqc-objects/GCM 短 tag 解密/legacy-createCipher 记档） | 各按止损线 | 🟡 |
 | P3 | http 冻结收口 | ✅ 2026-09-30 R1：`matchKnownFields`（单例表删 content-encoding/x-forwarded-host，4.237）+ `outgoing-finished`（ServerResponse 补 OM 品牌五项等 close，4.238）转绿，`1.0-keep-alive` 复验绿；http 相关 52/52 strict；余 8 件按原定性记档不再开轮 | ≤1 天 | ✅ |
-| D1 | ✅ 2026-09-25 已做 | node 运行时旗改**精确名单**（`src/cli_node_flags.rs`，取自 `node --help`；前缀族方案致 4.209 事故后废弃；winterjs 自有同名旗与改执行模式的旗不收，必须带值的旗只认 `--k=v`、值非法 exit 9）+ `internal/options` getOptionValue 读真实旗值 + DEP0005 认 `--pending-deprecation` + shell 串自举保旗交 CLI。实测：位置参数本就已通（旧"~18 件"口径过期）；`buffer-constructor-node-modules` 转绿；余红与 spawn 无关，已拆成 D4/P2 项（错误输出形状、`process.stdin/stdout` 非 Stream、`node:stream/iter` 未实现、vm-sigint stdio null） | — | ✅ |
+| D1 | ✅ 2026-09-25 已做 | node 运行时旗改**精确名单**（`src/cli_node_flags.rs`，取自 `node --help`；前缀族方案致 4.209 事故后废弃；winterjs2 自有同名旗与改执行模式的旗不收，必须带值的旗只认 `--k=v`、值非法 exit 9）+ `internal/options` getOptionValue 读真实旗值 + DEP0005 认 `--pending-deprecation` + shell 串自举保旗交 CLI。实测：位置参数本就已通（旧"~18 件"口径过期）；`buffer-constructor-node-modules` 转绿；余红与 spawn 无关，已拆成 D4/P2 项（错误输出形状、`process.stdin/stdout` 非 Stream、`node:stream/iter` 未实现、vm-sigint stdio null） | — | ✅ |
 | D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |
 | D3 | ✅ 2026-09-25 已做 | §0.9 纳入 `src/**/*.js`：8 件超限按方法边界拆 17 片（`concat!(include_str!…)` 字节恒等，逐件 `cmp` HEAD 原件；一文件一提交，域测试 + 冒烟绿）；守门 `scripts/check-lines.sh` | — | ✅ |
 | O2 | ✅ 2026-09-25 事故 | 基线 sweep 触发系统 panic：D1 前缀放行致 `test-promise-unhandled-flag` 自 spawn 无限递归（pitfalls 4.209）。已修三道防线（精确旗表 + 自 spawn 深度闸 32 + sweep 进程组/进程数封顶）；base10 基线作废重跑 | — | ✅ |
 | O1 | 观察 | `dgram::phase10a_dgram_multicast_connect` 本机挂死（2026-09-25 基线 stash 对照同挂，非本轮引入；疑本机组播路由/网卡环境），全量暂以 `--skip` 跑；再现于他机即升级为必查 | — | 👀 |
-| D4 | ✅ 2026-09-25 已做 | 非 TTY 未捕获错误改 node 形（`file:line` + 源行 + `^` + `Name: msg` + `    at …` 栈；SM 帧转 `at fn (loc)`、`__wjs_` 管线帧滤掉、TS 帧经 sourcemap 回映射；`throw 42` 打印值本身；ESM 入口同形）。`Display` 一行格式不动（worker 透传/退出码解析依赖）。转绿：`os-userinfo-handles-getter-errors`/`vm-api-handles-getter-errors`；`util-callbackify` 余 stderr 行数差（node 多 `processTicksAndRejections` 帧 + `Node.js vX` 尾行） | — | ✅ |
-| W1 | WinterJS 本体（§7 方向；09-28/29） | 🟡 进行中：repl 求值面统一（TLA + acorn vendored 声明提升；CLI 补全接真上下文 + `__wjs_` 内部面位置纠正）+ console 全局统一 + `.doc`/浮窗文档（mdn 语料 + Bun/Deno 命名空间页 + termimad/reedline）+ `WinterJS.image`（15 格式）+ `WinterJS.media`（symphonia/rodio/rav1e/mp4-rs；f32→u8 去 unsafe 见 4.235）+ wstd/wsys/wcover B1-B6 门面 + 站单源化（luoli 唯一真相 + 部署门）。明细只写 journal，本表只留状态 | — | 🟡 |
+| D4 | ✅ 2026-09-25 已做 | 非 TTY 未捕获错误改 node 形（`file:line` + 源行 + `^` + `Name: msg` + `    at …` 栈；SM 帧转 `at fn (loc)`、`__wjs2_` 管线帧滤掉、TS 帧经 sourcemap 回映射；`throw 42` 打印值本身；ESM 入口同形）。`Display` 一行格式不动（worker 透传/退出码解析依赖）。转绿：`os-userinfo-handles-getter-errors`/`vm-api-handles-getter-errors`；`util-callbackify` 余 stderr 行数差（node 多 `processTicksAndRejections` 帧 + `Node.js vX` 尾行） | — | ✅ |
+| W1 | WinterJS2 本体（§7 方向；09-28/29） | 🟡 进行中：repl 求值面统一（TLA + acorn vendored 声明提升；CLI 补全接真上下文 + `__wjs2_` 内部面位置纠正）+ console 全局统一 + `.doc`/浮窗文档（mdn 语料 + Bun/Deno 命名空间页 + termimad/reedline）+ `WinterJS2.image`（15 格式）+ `WinterJS2.media`（symphonia/rodio/rav1e/mp4-rs；f32→u8 去 unsafe 见 4.235）+ wstd/wsys/wcover B1-B6 门面 + 站单源化（luoli 唯一真相 + 部署门）。明细只写 journal，本表只留状态 | — | 🟡 |
 
 ### 0.5 运行环境（系统盘仅剩 ~5GB，大数据一律外置盘）
 
@@ -188,7 +188,7 @@ raw-slh/pqc-objects/GCM 短 tag 解密/legacy-createCipher 记档） | 各按止
   逐字移植先在此读原文（§4.115）。
 - **sweep 期间别动 `target/debug`**（sweep 正在用它）：开发改用
   `CARGO_TARGET_DIR=~/wjs-data/target-alt cargo build`（首编 3.5 分钟，之后增量），
-  单件探针 `WJS=~/wjs-data/target-alt/debug/winterjs run1.sh …`。
+  单件探针 `WJS=~/wjs-data/target-alt/debug/winterjs2 run1.sh …`。
 - 开工前 `df -h /`：系统盘余量 < 3GB 即先清 `/tmp/wjs-*`、`~/.wjs-sweep`、
   `~/Library/Caches/{JetBrains,Firefox,Homebrew}` 再跑任何构建。
 
@@ -198,9 +198,9 @@ raw-slh/pqc-objects/GCM 短 tag 解密/legacy-createCipher 记档） | 各按止
 - 每个 P 项收尾：全量 `cargo nextest run --profile strict` 一次（约 2 分钟）。
 - 全域 sweep 只在 P0-3 与每个 P 项收尾各一次；禁重复全量子集（§4.126）。
 - **资源看门狗（2026-09-25 事故后，默认开启）**：`sweep-bg` daemon 每 5s 采样系统盘/数据盘余量、
-  内存压力（`kern.memorystatus_vm_pressure_level` + `memory_pressure` 空闲%）、winterjs 进程数、
+  内存压力（`kern.memorystatus_vm_pressure_level` + `memory_pressure` 空闲%）、winterjs2 进程数、
   load，每 15s 落 `monitor.log`；越线（系统盘 <3GB / 数据盘 <5GB / 内存 critical 或空闲 <10% /
-  winterjs 进程 >80）即杀全部在跑进程组、状态 `aborted` 并写明原因；内存 warn 暂停发新件。
+  winterjs2 进程 >80）即杀全部在跑进程组、状态 `aborted` 并写明原因；内存 warn 暂停发新件。
   `status` 行尾带实时 `mon …` 读数。
 - 本节状态表是唯一进度真相；逐轮细节写进 `docs/plan3-journal.md`（追加）与
   `docs/bun-parity.md`，**不再写进 plan3**。
@@ -252,7 +252,7 @@ raw-slh/pqc-objects/GCM 短 tag 解密/legacy-createCipher 记档） | 各按止
 D1 涉及的 `timers-nan/negative-duration-warning` 等。未逐件核对的簇（dgram 余件、
 worker 环境面等）由 P0-3 基线按清单自动分流，不再人工判。
 
-## §1 缺口清单（Bun 快照 vs winterjs 现状，2026-09-15）
+## §1 缺口清单（Bun 快照 vs winterjs2 现状，2026-09-15）
 
 | 模块 | Bun | 现状 | 缺口 | 切片 |
 |---|---|---|---|---|
@@ -452,10 +452,10 @@ os、assert（message 文本偏离）、timers、util（`%o` 布局引擎边界�
 > 原样迁至 `docs/plan3-journal.md`；新会话不必读。最新基线：http sweep9
 > SAME0=381 / SAME1=6 / DIFF=16 / TIMEOUT=6（409 件）。下一步见 §0.4。
 
-## §7 方向纠正：winterjs 本体与 node:* 兼容面的关系（2026-09-28 用户拍板）
+## §7 方向纠正：winterjs2 本体与 node:* 兼容面的关系（2026-09-28 用户拍板）
 
 > 铁律见 AGENTS §6：CLI/产品能力是本体，`node:*` 兼容面是下游包装；禁把
-> CLI/产品专用能力放进 `node:*` 公开导出面；共享逻辑经 `__wjs_` 内部注册面。
+> CLI/产品专用能力放进 `node:*` 公开导出面；共享逻辑经 `__wjs2_` 内部注册面。
 
 ### 审计结论（node:* ~50 域）
 

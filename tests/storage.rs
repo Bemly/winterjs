@@ -25,7 +25,7 @@ console.log("deldel", await storage.delete("user:2"));
 "#,
         )
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", "p.mjs", "--storage-path", "t.db"])
         .current_dir(dir.path())
         .output()
@@ -70,7 +70,7 @@ console.log("cleared", localStorage.length, JSON.stringify(await storage.keys(""
 "#,
         )
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", "p.mjs"])
         .current_dir(dir.path())
         .output()
@@ -107,7 +107,7 @@ console.log("done");
 "#,
         )
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", "p.mjs"])
         .current_dir(dir.path())
         .output()
@@ -119,21 +119,21 @@ console.log("done");
     }
     assert!(stdout.contains("done"), "out: {stdout}");
     // --db 坏 SQL exit=1；--exec 裸给（无 --db）归属错；--storage-path 裸给归属错。
-    let bad = winterjs()
+    let bad = winterjs2()
         .args(["--db", "t.db", "--exec", "NOPE SYNTAX @@"])
         .current_dir(dir.path())
         .output()
         .unwrap();
     assert_eq!(bad.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&bad.stderr).contains("db execute failed"), "stderr: {}", String::from_utf8_lossy(&bad.stderr));
-    let scope = winterjs()
+    let scope = winterjs2()
         .args(["--run", "p.mjs", "--exec", "SELECT 1"])
         .current_dir(dir.path())
         .output()
         .unwrap();
     assert_eq!(scope.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&scope.stderr).contains("--exec only works with --db"), "stderr: {}", String::from_utf8_lossy(&scope.stderr));
-    let scope2 = winterjs()
+    let scope2 = winterjs2()
         .args(["--config", "--storage-path", "x.db"])
         .current_dir(dir.path())
         .output()
@@ -149,20 +149,20 @@ fn storage_default_path_and_isolation() {
     dir.child("p.mjs")
         .write_str(r#"await storage.set("k", "v"); console.log("ok", await storage.get("k"));"#)
         .unwrap();
-    // 缺省路径：cwd 下 winterjs-storage.db。
-    let out = winterjs()
+    // 缺省路径：cwd 下 winterjs2-storage.db。
+    let out = winterjs2()
         .args(["--run", "p.mjs"])
         .current_dir(dir.path())
         .output()
         .unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(dir.child("winterjs-storage.db").path().exists(), "default db not created");
+    assert!(dir.child("winterjs2-storage.db").path().exists(), "default db not created");
     // 两文件隔离（每文件写各自的值）。
     for (f, v) in [("a.db", "va"), ("b.db", "vb")] {
         dir.child("q.mjs")
             .write_str(&format!(r#"await storage.set("k", "{v}");"#))
             .unwrap();
-        let o = winterjs()
+        let o = winterjs2()
             .args(["--run", "q.mjs", "--storage-path", f])
             .current_dir(dir.path())
             .output()

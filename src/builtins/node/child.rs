@@ -22,7 +22,7 @@
 //! 快照，缺省继承）；子发消息无监听即丢
 //! （EventEmitter 口径）；kill 信号值忽略（terminate 语义）；message/disconnect
 //! 为单监听器位（spawn 路径 exit/close 同款风格）；控制信封单键对象
-//! `{__wjs_fork_ctl:"disconnect"}` 不投递给用户。
+//! `{__wjs2_fork_ctl:"disconnect"}` 不投递给用户。
 
 use std::io::{Read as _, Write as _};
 use std::time::{Duration, Instant};
@@ -110,7 +110,7 @@ fn status_parts(st: std::process::ExitStatus) -> (Option<i32>, Option<String>) {
 }
 
 /// 自 spawn 深度闸（pitfalls 4.209）：环境变量名 / 上限。
-pub const SELF_SPAWN_ENV: &str = "WINTERJS_SPAWN_DEPTH";
+pub const SELF_SPAWN_ENV: &str = "WINTERJS2_SPAWN_DEPTH";
 pub const SELF_SPAWN_LIMIT: u32 = 32;
 
 /// 本进程所处自 spawn 深度（未设为 0）。
@@ -297,7 +297,7 @@ fn parse_opts(cx: &mut mozjs::context::JSContext, frame: &Frame, i: u32) -> Opti
     }
 }
 
-/// `__wjs_cp_exec(cmdStr, optsJson)` → 结果 JSON（shell 由 prelude 包）。
+/// `__wjs2_cp_exec(cmdStr, optsJson)` → 结果 JSON（shell 由 prelude 包）。
 pub unsafe extern "C" fn cp_exec(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -394,7 +394,7 @@ fn arg_string(cx: &mut mozjs::context::JSContext, frame: &Frame, i: u32, what: &
     Some(value_to_string(cx, frame.arg(i)))
 }
 
-/// `__wjs_spawn_start(file, argsJson, optsJson, target, stdioStr)` → id。
+/// `__wjs2_spawn_start(file, argsJson, optsJson, target, stdioStr)` → id。
 /// target 为 prelude ChildProcess 对象（存 RootedState，事件读其 `on*` 属性）。
 pub unsafe extern "C" fn spawn_start(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -563,7 +563,7 @@ pub unsafe extern "C" fn spawn_start(
     let detached = opts.detached;
     let kill_signo = opts.kill_signo;
     state::child_add(id, child, detached, target, stdin_tx, pipes_expected);
-    tracing::info!(target: "winterjs::child", id, file = file.as_str(), pipe_in, pipe_out, pipe_err, "spawned");
+    tracing::info!(target: "winterjs2::child", id, file = file.as_str(), pipe_in, pipe_out, pipe_err, "spawned");
     handle.spawn(async move {
         if timeout_ms > 0 {
             tokio::time::sleep(Duration::from_millis(timeout_ms)).await;
@@ -590,7 +590,7 @@ pub unsafe extern "C" fn spawn_start(
     true
 }
 
-/// `__wjs_child_kill(id, signal)` → boolean（存活即作用）。
+/// `__wjs2_child_kill(id, signal)` → boolean（存活即作用）。
 pub unsafe extern "C" fn child_kill(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -609,7 +609,7 @@ pub unsafe extern "C" fn child_kill(
     true
 }
 
-/// `__wjs_child_stdin_write(id, b64)` → boolean（入队即 true；子进程已走/非 pipe 即 false，
+/// `__wjs2_child_stdin_write(id, b64)` → boolean（入队即 true；子进程已走/非 pipe 即 false，
 /// prelude 转 `ERR_STREAM_DESTROYED`）。
 pub unsafe extern "C" fn child_stdin_write(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -632,7 +632,7 @@ pub unsafe extern "C" fn child_stdin_write(
     true
 }
 
-/// `__wjs_child_stdin_close(id)`（幂等；写端关即子进程见 EOF）。
+/// `__wjs2_child_stdin_close(id)`（幂等；写端关即子进程见 EOF）。
 pub unsafe extern "C" fn child_stdin_close(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -650,7 +650,7 @@ pub unsafe extern "C" fn child_stdin_close(
     true
 }
 
-/// `__wjs_child_pid(id)` → pid｜-1。
+/// `__wjs2_child_pid(id)` → pid｜-1。
 pub unsafe extern "C" fn child_pid(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -803,7 +803,7 @@ fn push_pipe_close(
     }
 }
 
-/// `__wjs_cp_spawn(fileStr, argsJson, optsJson)` → 结果 JSON（同步版）。
+/// `__wjs2_cp_spawn(fileStr, argsJson, optsJson)` → 结果 JSON（同步版）。
 /// `shell:true` 时经 `shlex::try_quote` 拼串（拼不出退单引号包裹，文档记录）。
 pub unsafe extern "C" fn cp_spawn(
     cx_raw: *mut mozjs::jsapi::JSContext,

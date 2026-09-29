@@ -4,17 +4,17 @@
 //! 不包 code（Web 面无 node 错误码口径）；值编解码与 sqlite 同桥
 //!（`Uint8Array` ↔ `{"$blob": b64}`，分片拼串防大数组爆栈）。
 pub const STORAGE_JS: &str = r#"
-// WinterCG 存储（S1）：turso 单文件 KV，默认库见 __wjs_storage_default_path。
+// WinterCG 存储（S1）：turso 单文件 KV，默认库见 __wjs2_storage_default_path。
 // localStorage 键走 '__localStorage__:' 保留前缀（storage.keys 默认滤掉它；
 // storage.set 用该前缀直接 TypeError，防串域）。
 {
   const LS_PREFIX = '__localStorage__:';
-  let __wjs_storage_id = null;
+  let __wjs2_storage_id = null;
   const __openStorage = () => {
-    if (__wjs_storage_id === null) {
-      __wjs_storage_id = __wjs_storage_open(__wjs_storage_default_path());
+    if (__wjs2_storage_id === null) {
+      __wjs2_storage_id = __wjs2_storage_open(__wjs2_storage_default_path());
     }
-    return __wjs_storage_id;
+    return __wjs2_storage_id;
   };
   const __checkKey = (k) => {
     if (typeof k !== 'string' || k.length === 0) {
@@ -71,31 +71,31 @@ pub const STORAGE_JS: &str = r#"
   globalThis.storage = {
     async get(k) {
       __checkKey(k);
-      return __revive(JSON.parse(__wjs_storage_get(__openStorage(), k)));
+      return __revive(JSON.parse(__wjs2_storage_get(__openStorage(), k)));
     },
     async set(k, v) {
       __checkKey(k);
-      __wjs_storage_set(__openStorage(), k, __toJson(v));
+      __wjs2_storage_set(__openStorage(), k, __toJson(v));
     },
     async delete(k) {
       __checkKey(k);
-      return __wjs_storage_delete(__openStorage(), k);
+      return __wjs2_storage_delete(__openStorage(), k);
     },
     async has(k) {
       __checkKey(k);
-      return JSON.parse(__wjs_storage_get(__openStorage(), k)) !== null;
+      return JSON.parse(__wjs2_storage_get(__openStorage(), k)) !== null;
     },
     async keys(prefix) {
       if (prefix !== undefined && typeof prefix !== 'string') {
         throw new TypeError('storage keys prefix must be a string');
       }
-      const all = JSON.parse(__wjs_storage_keys(__openStorage(), prefix === undefined ? '' : prefix));
+      const all = JSON.parse(__wjs2_storage_keys(__openStorage(), prefix === undefined ? '' : prefix));
       return all.filter((k) => !k.startsWith(LS_PREFIX));
     },
     async clear() {
       // 只清 storage 域：逐键删（保留 localStorage 域；全清另调 localStorage.clear）。
       const all = await globalThis.storage.keys('');
-      for (const k of all) __wjs_storage_delete(__openStorage(), k);
+      for (const k of all) __wjs2_storage_delete(__openStorage(), k);
       return all.length;
     },
     async size() {
@@ -108,29 +108,29 @@ pub const STORAGE_JS: &str = r#"
   globalThis.localStorage = {
     getItem(k) {
       __lsCheck(k);
-      const hit = JSON.parse(__wjs_storage_get(__openStorage(), LS_PREFIX + k));
+      const hit = JSON.parse(__wjs2_storage_get(__openStorage(), LS_PREFIX + k));
       if (hit === null) return null;
       return hit;
     },
     setItem(k, v) {
       __lsCheck(k);
-      __wjs_storage_set(__openStorage(), LS_PREFIX + k, JSON.stringify(String(v)));
+      __wjs2_storage_set(__openStorage(), LS_PREFIX + k, JSON.stringify(String(v)));
     },
     removeItem(k) {
       __lsCheck(k);
-      __wjs_storage_delete(__openStorage(), LS_PREFIX + k);
+      __wjs2_storage_delete(__openStorage(), LS_PREFIX + k);
     },
     clear() {
-      const all = JSON.parse(__wjs_storage_keys(__openStorage(), LS_PREFIX));
-      for (const k of all) __wjs_storage_delete(__openStorage(), k);
+      const all = JSON.parse(__wjs2_storage_keys(__openStorage(), LS_PREFIX));
+      for (const k of all) __wjs2_storage_delete(__openStorage(), k);
     },
     key(n) {
-      const all = JSON.parse(__wjs_storage_keys(__openStorage(), LS_PREFIX));
+      const all = JSON.parse(__wjs2_storage_keys(__openStorage(), LS_PREFIX));
       if (typeof n !== 'number' || n < 0 || n >= all.length) return null;
       return all[n].slice(LS_PREFIX.length);
     },
     get length() {
-      return JSON.parse(__wjs_storage_keys(__openStorage(), LS_PREFIX)).length;
+      return JSON.parse(__wjs2_storage_keys(__openStorage(), LS_PREFIX)).length;
     },
   };
 }

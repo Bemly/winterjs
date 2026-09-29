@@ -23,7 +23,7 @@ try { pathToFileURL(42); } catch (e) { console.log("u-pt", e.code, e.message); }
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -116,7 +116,7 @@ try { urlToHttpOptions(42); } catch (e) { console.log("o-t", e.code, e.message);
 "##,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -205,7 +205,7 @@ console.log(L.join("\n"));
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())

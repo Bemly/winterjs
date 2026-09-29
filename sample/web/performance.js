@@ -1,6 +1,6 @@
 // performance: now / timeOrigin / marks + console timing.
 // performance 计时与 console 记时。
-// Run / 运行: winterjs --run sample/web/performance.js
+// Run / 运行: winterjs2 --run sample/web/performance.js
 const t0 = performance.now();
 await new Promise((r) => setTimeout(r, 20));
 console.log('[perf] elapsed>=20ms:', performance.now() - t0 >= 0, 'timeOrigin>0:', performance.timeOrigin > 0);

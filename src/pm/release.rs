@@ -102,13 +102,13 @@ async fn list_assets(spec: &ReleaseSpec) -> Result<Vec<Asset>, Error> {
     let mut req = super::registry::client()
         .get(&url)
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", concat!("winterjs/", env!("CARGO_PKG_VERSION")));
+        .header("User-Agent", concat!("winterjs2/", env!("CARGO_PKG_VERSION")));
     if let Ok(tok) = std::env::var("GITHUB_TOKEN")
         && !tok.trim().is_empty()
     {
         req = req.header("Authorization", format!("Bearer {}", tok.trim()));
     }
-    tracing::info!(target: "winterjs::pm", owner = spec.owner.as_str(), repo = spec.repo.as_str(), tag = spec.tag.as_str(), "listing release assets");
+    tracing::info!(target: "winterjs2::pm", owner = spec.owner.as_str(), repo = spec.repo.as_str(), tag = spec.tag.as_str(), "listing release assets");
     let resp = req.send().await.map_err(|e| Error::Other(format!("release lookup failed: {e}")))?;
     match resp.status() {
         s if s.is_success() => {}
@@ -166,10 +166,10 @@ pub async fn install_one_release(
 ) -> Result<(String, String, String, Option<String>), Error> {
     let name = bin_name(spec).to_owned();
     let (asset, url) = resolve_release(spec).await?;
-    tracing::info!(target: "winterjs::pm", package = name.as_str(), asset = asset.as_str(), "downloading release binary");
+    tracing::info!(target: "winterjs2::pm", package = name.as_str(), asset = asset.as_str(), "downloading release binary");
     let bytes = super::registry::client()
         .get(&url)
-        .header("User-Agent", concat!("winterjs/", env!("CARGO_PKG_VERSION")))
+        .header("User-Agent", concat!("winterjs2/", env!("CARGO_PKG_VERSION")))
         .send()
         .await
         .map_err(|e| Error::Other(format!("release download failed: {e}")))?
@@ -198,7 +198,7 @@ pub async fn install_one_release(
     }
     std::fs::rename(&tmp, &dest).map_err(|e| Error::Other(format!("cannot link .bin/{name}: {e}")))?;
     println!("added {name}@release:{}/{}@{} ({asset})", spec.owner, spec.repo, spec.tag);
-    tracing::info!(target: "winterjs::pm", package = name.as_str(), bytes = bin.len(), "release binary installed");
+    tracing::info!(target: "winterjs2::pm", package = name.as_str(), bytes = bin.len(), "release binary installed");
     let resolved = format!("github-release:{}/{}@{}/{}", spec.owner, spec.repo, spec.tag, asset);
     Ok((name, spec.tag.clone(), resolved, Some(integ)))
 }

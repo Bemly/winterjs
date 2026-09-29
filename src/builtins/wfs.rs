@@ -1,10 +1,10 @@
-//! 本体 FS（WinterJS.fs）：与 `node:fs` 分离的自有文件面。
+//! 本体 FS（WinterJS2.fs）：与 `node:fs` 分离的自有文件面。
 //!
 //! 方向（用户拍板）：本体走自己的，兼容走兼容的；本体直用已有 Rust 轮子
 //!（`fs-err` + `std::fs`，零新增依赖），不经 `node:fs` JS 层。
 //! 形态：Web 形 async（Rust 同步实现 + JS 包 Promise），错误 plain
 //! `TypeError`/`WfsError`（无 node 错误码口径，保持分离）。
-//! 暴露：`globalThis.WinterJS.fs` 主面 + `globalThis.fs` 别名（同 storage 既例）。
+//! 暴露：`globalThis.WinterJS2.fs` 主面 + `globalThis.fs` 别名（同 storage 既例）。
 
 use base64::Engine as _;
 use mozjs::conversions::ToJSValConvertible as _;
@@ -56,7 +56,7 @@ fn arg_bool(frame: &Frame, i: u32) -> bool {
     v.is_boolean() && v.to_boolean()
 }
 
-/// `__wjs_wfs_read(path)` → base64。
+/// `__wjs2_wfs_read(path)` → base64。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/wfs.rs::wfs_read_write_stat`。
 pub unsafe extern "C" fn wfs_read(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -72,7 +72,7 @@ pub unsafe extern "C" fn wfs_read(
         report_error(&mut cx, &msg);
         return false;
     }
-    tracing::debug!(target: "winterjs::wfs", path_len = p.len(), "read");
+    tracing::debug!(target: "winterjs2::wfs", path_len = p.len(), "read");
     match fs_err::read(&p) {
         Ok(bytes) => {
             let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -90,7 +90,7 @@ pub unsafe extern "C" fn wfs_read(
     }
 }
 
-/// `__wjs_wfs_write(path, b64)`。
+/// `__wjs2_wfs_write(path, b64)`。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/wfs.rs::wfs_read_write_stat`。
 pub unsafe extern "C" fn wfs_write(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -118,7 +118,7 @@ pub unsafe extern "C" fn wfs_write(
             return false;
         }
     };
-    tracing::debug!(target: "winterjs::wfs", path_len = p.len(), bytes_len = bytes.len(), "write");
+    tracing::debug!(target: "winterjs2::wfs", path_len = p.len(), bytes_len = bytes.len(), "write");
     match fs_err::write(&p, &bytes) {
         Ok(()) => {
             frame.set_rval(UndefinedValue());
@@ -150,7 +150,7 @@ fn stat_json(path: &str) -> Result<serde_json::Value, String> {
     }))
 }
 
-/// `__wjs_wfs_stat(path)` → JSON 串。
+/// `__wjs2_wfs_stat(path)` → JSON 串。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/wfs.rs::wfs_read_write_stat`。
 pub unsafe extern "C" fn wfs_stat(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -183,7 +183,7 @@ pub unsafe extern "C" fn wfs_stat(
     }
 }
 
-/// `__wjs_wfs_mkdir(path, recursiveBool)`。
+/// `__wjs2_wfs_mkdir(path, recursiveBool)`。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/wfs.rs::wfs_mkdir_readdir_remove`。
 pub unsafe extern "C" fn wfs_mkdir(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -200,7 +200,7 @@ pub unsafe extern "C" fn wfs_mkdir(
         report_error(&mut cx, &msg);
         return false;
     }
-    tracing::debug!(target: "winterjs::wfs", path_len = p.len(), recursive, "mkdir");
+    tracing::debug!(target: "winterjs2::wfs", path_len = p.len(), recursive, "mkdir");
     let r = if recursive {
         fs_err::create_dir_all(&p)
     } else {
@@ -218,7 +218,7 @@ pub unsafe extern "C" fn wfs_mkdir(
     }
 }
 
-/// `__wjs_wfs_readdir(path)` → JSON 串 `[{name,isFile,isDirectory,isSymlink}]`（按名排序）。
+/// `__wjs2_wfs_readdir(path)` → JSON 串 `[{name,isFile,isDirectory,isSymlink}]`（按名排序）。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/wfs.rs::wfs_mkdir_readdir_remove`。
 pub unsafe extern "C" fn wfs_readdir(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -276,7 +276,7 @@ pub unsafe extern "C" fn wfs_readdir(
     }
 }
 
-/// `__wjs_wfs_remove(path, recursiveBool)`。
+/// `__wjs2_wfs_remove(path, recursiveBool)`。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/wfs.rs::wfs_mkdir_readdir_remove`。
 pub unsafe extern "C" fn wfs_remove(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -293,7 +293,7 @@ pub unsafe extern "C" fn wfs_remove(
         report_error(&mut cx, &msg);
         return false;
     }
-    tracing::debug!(target: "winterjs::wfs", path_len = p.len(), recursive, "remove");
+    tracing::debug!(target: "winterjs2::wfs", path_len = p.len(), recursive, "remove");
     let meta = fs_err::symlink_metadata(&p);
     let r = match meta {
         Err(e) => Err(e),
@@ -321,7 +321,7 @@ pub unsafe extern "C" fn wfs_remove(
     }
 }
 
-/// `__wjs_wfs_rename(a, b)`。
+/// `__wjs2_wfs_rename(a, b)`。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/wfs.rs::wfs_rename_copy_exists`。
 pub unsafe extern "C" fn wfs_rename(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -356,7 +356,7 @@ pub unsafe extern "C" fn wfs_rename(
     }
 }
 
-/// `__wjs_wfs_copy(a, b)`（文件对文件）。
+/// `__wjs2_wfs_copy(a, b)`（文件对文件）。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/wfs.rs::wfs_rename_copy_exists`。
 pub unsafe extern "C" fn wfs_copy(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -391,7 +391,7 @@ pub unsafe extern "C" fn wfs_copy(
     }
 }
 
-/// `__wjs_wfs_exists(path)` → bool（不存在即 false，不抛）。
+/// `__wjs2_wfs_exists(path)` → bool（不存在即 false，不抛）。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/wfs.rs::wfs_errors_boundary`。
 pub unsafe extern "C" fn wfs_exists(
     cx_raw: *mut mozjs::jsapi::JSContext,

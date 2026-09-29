@@ -88,18 +88,18 @@ async fn run_server_socket(
     )
     .await;
     let _ = ev_tx.send(WsEvent { id: ws_id, kind: WsKind::Opened { protocol: String::new() } });
-    tracing::debug!(target: "winterjs::serve", ws_id, "WS opened");
+    tracing::debug!(target: "winterjs2::serve", ws_id, "WS opened");
     let (mut sink, mut stream) = stream.split();
     loop {
         tokio::select! {
             msg = stream.next() => {
                 match msg {
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Text(t))) => {
-                        tracing::trace!(target: "winterjs::serve", ws_id, bytes = t.len(), "WS text in");
+                        tracing::trace!(target: "winterjs2::serve", ws_id, bytes = t.len(), "WS text in");
                         let _ = ev_tx.send(WsEvent { id: ws_id, kind: WsKind::Text(t.to_string()) });
                     }
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(b))) => {
-                        tracing::trace!(target: "winterjs::serve", ws_id, bytes = b.len(), "WS bin in");
+                        tracing::trace!(target: "winterjs2::serve", ws_id, bytes = b.len(), "WS bin in");
                         let _ = ev_tx.send(WsEvent { id: ws_id, kind: WsKind::Bin(b.to_vec()) });
                     }
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Close(frame))) => {
@@ -111,7 +111,7 @@ async fn run_server_socket(
                         // 手动再发会被状态机拒绝（ClosedByPeer）；见 tungstenite protocol/mod.rs。
                         // 排空策略与 tests/ws.rs stub 同族（回帧再收尾，避免 RST 竞态）。
                         let flushed = sink.flush().await.is_ok();
-                        tracing::debug!(target: "winterjs::serve", ws_id, code, flushed, "WS peer close");
+                        tracing::debug!(target: "winterjs2::serve", ws_id, code, flushed, "WS peer close");
                         let _ = ev_tx.send(WsEvent { id: ws_id, kind: WsKind::Closed { code, reason, clean: true } });
                         break;
                     }

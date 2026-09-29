@@ -12,7 +12,7 @@ fn dh_range(p: &rsa::BigUint, x: &rsa::BigUint) -> bool {
     x > &one && x < &(p - &one)
 }
 
-/// `__wjs_dh_genkey(primeU8, generatorNum, privLenNum)` → JSON `{priv,pub}`（b64）。
+/// `__wjs2_dh_genkey(primeU8, generatorNum, privLenNum)` → JSON `{priv,pub}`（b64）。
 pub unsafe extern "C" fn dh_genkey(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -64,7 +64,7 @@ pub unsafe extern "C" fn dh_genkey(
     true
 }
 
-/// `__wjs_dh_secret(primeU8, privU8, pubU8)` → 定长密钥（prime 长左补零，Node 同款）。
+/// `__wjs2_dh_secret(primeU8, privU8, pubU8)` → 定长密钥（prime 长左补零，Node 同款）。
 pub unsafe extern "C" fn dh_secret(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -153,7 +153,7 @@ pub(crate) fn is_prime(n: &rsa::BigUint, checks: u32) -> bool {
     true
 }
 
-/// `__wjs_prime_check(bytesU8, checksNum)` → boolean。
+/// `__wjs2_prime_check(bytesU8, checksNum)` → boolean。
 pub unsafe extern "C" fn prime_check(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -180,7 +180,7 @@ pub unsafe extern "C" fn prime_check(
     true
 }
 
-/// `__wjs_prime_gen(bitsNum, checksNum, safeNum)` → 素数 Uint8Array（定长）。
+/// `__wjs2_prime_gen(bitsNum, checksNum, safeNum)` → 素数 Uint8Array（定长）。
 pub unsafe extern "C" fn prime_gen(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

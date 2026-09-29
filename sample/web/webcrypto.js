@@ -1,6 +1,6 @@
 // WebCrypto: getRandomValues / randomUUID / subtle.digest + AES-GCM + HMAC.
 // WebCrypto：随机数 / UUID / 摘要 + AES-GCM + HMAC。
-// Run / 运行: winterjs --run sample/web/webcrypto.js
+// Run / 运行: winterjs2 --run sample/web/webcrypto.js
 const rnd = crypto.getRandomValues(new Uint8Array(16));
 console.log('[webcrypto] random bytes:', rnd.length, rnd instanceof Uint8Array);
 console.log('[webcrypto] uuid shape:', crypto.randomUUID().split('-').length === 5);

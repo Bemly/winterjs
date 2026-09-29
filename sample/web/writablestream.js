@@ -1,6 +1,6 @@
 // WritableStream: write + close, pipeTo target.
 // WritableStream：写入与关闭，可作 pipeTo 目标。
-// Run / 运行: winterjs --run sample/web/writablestream.js
+// Run / 运行: winterjs2 --run sample/web/writablestream.js
 let count = 0;
 const counter = new WritableStream({
   write() {

@@ -46,7 +46,7 @@ pub(crate) fn rsa_pub_from_der(der: &[u8]) -> Result<rsa::RsaPublicKey, String> 
     rsa::RsaPublicKey::from_public_key_der(der).map_err(|_| "DataError: bad RSA public key (SPKI)".to_string())
 }
 
-/// `__wjs_rsa_generate(bits, e)` → PKCS#8 DER 私钥（2048/3072/4096；e 常用 65537）。
+/// `__wjs2_rsa_generate(bits, e)` → PKCS#8 DER 私钥（2048/3072/4096；e 常用 65537）。
 pub unsafe extern "C" fn rsa_generate(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -90,11 +90,11 @@ pub unsafe extern "C" fn rsa_generate(
             return false;
         }
     };
-    tracing::debug!(target: "winterjs::crypto", bits, "RSA key generated");
+    tracing::debug!(target: "winterjs2::crypto", bits, "RSA key generated");
     set_rval_bytes(&mut cx, &frame, &der)
 }
 
-/// `__wjs_rsa_public(privDer)` → SPKI DER 公钥。
+/// `__wjs2_rsa_public(privDer)` → SPKI DER 公钥。
 pub unsafe extern "C" fn rsa_public(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -128,7 +128,7 @@ pub unsafe extern "C" fn rsa_public(
     set_rval_bytes(&mut cx, &frame, &spki)
 }
 
-/// `__wjs_rsa_sign(hash, privDer, data)` → 签名（RSASSA-PKCS1-v1_5）。
+/// `__wjs2_rsa_sign(hash, privDer, data)` → 签名（RSASSA-PKCS1-v1_5）。
 pub unsafe extern "C" fn rsa_sign(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -182,7 +182,7 @@ pub unsafe extern "C" fn rsa_sign(
     }
 }
 
-/// `__wjs_rsa_verify(hash, pubDer, sig, data)` → boolean。
+/// `__wjs2_rsa_verify(hash, pubDer, sig, data)` → boolean。
 pub unsafe extern "C" fn rsa_verify(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -230,7 +230,7 @@ pub unsafe extern "C" fn rsa_verify(
     }
 }
 
-/// `__wjs_rsa_encrypt(hash, pubDer, data, label?)` → 密文（RSA-OAEP，label 可选）。
+/// `__wjs2_rsa_encrypt(hash, pubDer, data, label?)` → 密文（RSA-OAEP，label 可选）。
 pub unsafe extern "C" fn rsa_encrypt(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -293,7 +293,7 @@ pub unsafe extern "C" fn rsa_encrypt(
     }
 }
 
-/// `__wjs_rsa_decrypt(hash, privDer, data, label?)` → 明文（RSA-OAEP）。
+/// `__wjs2_rsa_decrypt(hash, privDer, data, label?)` → 明文（RSA-OAEP）。
 pub unsafe extern "C" fn rsa_decrypt(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -354,7 +354,7 @@ pub unsafe extern "C" fn rsa_decrypt(
     }
 }
 
-/// `__wjs_rsa_jwk(privDer, pubDer)` → JWK 参数 JSON（含私钥段；prelude 组 JWK 对象）。
+/// `__wjs2_rsa_jwk(privDer, pubDer)` → JWK 参数 JSON（含私钥段；prelude 组 JWK 对象）。
 pub unsafe extern "C" fn rsa_jwk(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -419,7 +419,7 @@ pub unsafe extern "C" fn rsa_jwk(
     true
 }
 
-/// `__wjs_rsa_jwk_pub(pubDer)` → 公钥参数 JSON（`{n,e}`；spki import 组 algorithm 用）。
+/// `__wjs2_rsa_jwk_pub(pubDer)` → 公钥参数 JSON（`{n,e}`；spki import 组 algorithm 用）。
 pub unsafe extern "C" fn rsa_jwk_pub(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -454,7 +454,7 @@ pub unsafe extern "C" fn rsa_jwk_pub(
     true
 }
 
-/// `__wjs_rsa_import_priv(nU8, eU8, dU8)` → PKCS#8 DER（p/q 按 SP 800-56B 恢复）。
+/// `__wjs2_rsa_import_priv(nU8, eU8, dU8)` → PKCS#8 DER（p/q 按 SP 800-56B 恢复）。
 pub unsafe extern "C" fn rsa_import_priv(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -497,7 +497,7 @@ pub unsafe extern "C" fn rsa_import_priv(
     set_rval_bytes(&mut cx, &frame, &der)
 }
 
-/// `__wjs_rsa_import_pub(nU8, eU8)` → SPKI DER。
+/// `__wjs2_rsa_import_pub(nU8, eU8)` → SPKI DER。
 pub unsafe extern "C" fn rsa_import_pub(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -540,7 +540,7 @@ pub unsafe extern "C" fn rsa_import_pub(
 //（UNSAFE-BOUNDARY，结构性计数；黑盒见 tests/cli.rs `subtle_c4x_*`）。
 // AES-192 经泛型 `AesGcm<Aes192, U12>`（aes-gcm 只给 128/256 起别名，无新依赖）。
 
-/// `__wjs_pss_sign(hash, saltLen, privDer, data)` → 签名（RSA-PSS，salt 随机）。
+/// `__wjs2_pss_sign(hash, saltLen, privDer, data)` → 签名（RSA-PSS，salt 随机）。
 pub unsafe extern "C" fn pss_sign(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -588,7 +588,7 @@ pub unsafe extern "C" fn pss_sign(
     }
 }
 
-/// `__wjs_pss_verify(hash, saltLen, pubDer, sig, data)` → boolean。
+/// `__wjs2_pss_verify(hash, saltLen, pubDer, sig, data)` → boolean。
 pub unsafe extern "C" fn pss_verify(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

@@ -114,7 +114,7 @@ t("xv-priv", () => x.verify(generateKeyPairSync("ec", { namedCurve: "P-256" }).p
 "#,
         )
         .unwrap();
-        winterjs()
+        winterjs2()
             .arg("--run")
             .arg(file.path())
             .current_dir(dir.path())
@@ -188,7 +188,7 @@ console.log("xi-pq-priv", pqcert.checkPrivateKey(pqpair.privateKey) === false, p
 "#,
         )
         .unwrap();
-        winterjs()
+        winterjs2()
             .arg("--run")
             .arg(file.path())
             .current_dir(dir.path())
@@ -240,7 +240,7 @@ console.log("xp-cross", pss.verify(ca.publicKey) === false, leaf.checkIssued(pss
 "#,
         )
         .unwrap();
-        winterjs()
+        winterjs2()
             .arg("--run")
             .arg(file.path())
             .current_dir(dir.path())

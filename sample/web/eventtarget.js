@@ -1,6 +1,6 @@
 // EventTarget: subscribe, dispatch and once.
 // EventTarget：订阅、分发与 once。
-// Run / 运行: winterjs --run sample/web/eventtarget.js
+// Run / 运行: winterjs2 --run sample/web/eventtarget.js
 const et = new EventTarget();
 const seen = [];
 et.addEventListener('data', (e) => seen.push(`on:${e.detail.n}`), { once: true });

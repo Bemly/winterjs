@@ -1,4 +1,4 @@
-//! 本体断言 JS 面：`WinterJS.assert`（prelude 自含，Web 形结构化比较）。
+//! 本体断言 JS 面：`WinterJS2.assert`（prelude 自含，Web 形结构化比较）。
 //!
 //! 与 `node:assert` 语义差（记档）：`deepEqual` 只比结构不比原型
 //!（node 比 `[[Prototype]]`）；`strictEqual` 用 `Object.is`；
@@ -15,7 +15,7 @@ pub const ASSERT_JS: &str = r#"
       this.operator = operator;
     }
   }
-  const __wjs_assert_same = (a, b) => {
+  const __wjs2_assert_same = (a, b) => {
     if (Object.is(a, b)) return true;
     if (typeof a !== typeof b) return false;
     if (a === null || b === null) return false;
@@ -36,59 +36,59 @@ pub const ASSERT_JS: &str = r#"
     }
     if (Array.isArray(a) || Array.isArray(b)) {
       if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-      for (let i = 0; i < a.length; i++) if (!__wjs_assert_same(a[i], b[i])) return false;
+      for (let i = 0; i < a.length; i++) if (!__wjs2_assert_same(a[i], b[i])) return false;
       return true;
     }
     const ka = Object.keys(a), kb = Object.keys(b);
     if (ka.length !== kb.length) return false;
     for (const k of ka) {
       if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
-      if (!__wjs_assert_same(a[k], b[k])) return false;
+      if (!__wjs2_assert_same(a[k], b[k])) return false;
     }
     return true;
   };
-  const __wjs_assert_fail = (actual, expected, msg, op) => {
+  const __wjs2_assert_fail = (actual, expected, msg, op) => {
     throw new AssertionError(msg, actual, expected, op);
   };
   const assert = {
     AssertionError,
-    ok(v, msg) { if (!v) __wjs_assert_fail(v, true, msg, "ok"); },
-    equal(a, b, msg) { if (a != b) __wjs_assert_fail(a, b, msg, "=="); },
-    notEqual(a, b, msg) { if (a == b) __wjs_assert_fail(a, b, msg, "!="); },
-    strictEqual(a, b, msg) { if (!Object.is(a, b)) __wjs_assert_fail(a, b, msg, "strictEqual"); },
-    notStrictEqual(a, b, msg) { if (Object.is(a, b)) __wjs_assert_fail(a, b, msg, "notStrictEqual"); },
-    deepEqual(a, b, msg) { if (!__wjs_assert_same(a, b)) __wjs_assert_fail(a, b, msg, "deepEqual"); },
-    notDeepEqual(a, b, msg) { if (__wjs_assert_same(a, b)) __wjs_assert_fail(a, b, msg, "notDeepEqual"); },
+    ok(v, msg) { if (!v) __wjs2_assert_fail(v, true, msg, "ok"); },
+    equal(a, b, msg) { if (a != b) __wjs2_assert_fail(a, b, msg, "=="); },
+    notEqual(a, b, msg) { if (a == b) __wjs2_assert_fail(a, b, msg, "!="); },
+    strictEqual(a, b, msg) { if (!Object.is(a, b)) __wjs2_assert_fail(a, b, msg, "strictEqual"); },
+    notStrictEqual(a, b, msg) { if (Object.is(a, b)) __wjs2_assert_fail(a, b, msg, "notStrictEqual"); },
+    deepEqual(a, b, msg) { if (!__wjs2_assert_same(a, b)) __wjs2_assert_fail(a, b, msg, "deepEqual"); },
+    notDeepEqual(a, b, msg) { if (__wjs2_assert_same(a, b)) __wjs2_assert_fail(a, b, msg, "notDeepEqual"); },
     throws(fn, msg) {
       if (typeof fn !== "function") throw new TypeError("assert.throws requires a function");
       try { fn(); } catch { return; }
-      __wjs_assert_fail(undefined, "throw", msg, "throws");
+      __wjs2_assert_fail(undefined, "throw", msg, "throws");
     },
     doesNotThrow(fn, msg) {
       if (typeof fn !== "function") throw new TypeError("assert.doesNotThrow requires a function");
-      try { fn(); } catch (e) { __wjs_assert_fail(e, "no throw", msg, "doesNotThrow"); }
+      try { fn(); } catch (e) { __wjs2_assert_fail(e, "no throw", msg, "doesNotThrow"); }
     },
     async rejects(fn, msg) {
       if (typeof fn !== "function") throw new TypeError("assert.rejects requires a function");
       try { await fn(); } catch { return; }
-      __wjs_assert_fail(undefined, "reject", msg, "rejects");
+      __wjs2_assert_fail(undefined, "reject", msg, "rejects");
     },
     async doesNotReject(fn, msg) {
       if (typeof fn !== "function") throw new TypeError("assert.doesNotReject requires a function");
-      try { await fn(); } catch (e) { __wjs_assert_fail(e, "no reject", msg, "doesNotReject"); }
+      try { await fn(); } catch (e) { __wjs2_assert_fail(e, "no reject", msg, "doesNotReject"); }
     },
-    fail(msg) { __wjs_assert_fail(undefined, undefined, msg, "fail"); },
+    fail(msg) { __wjs2_assert_fail(undefined, undefined, msg, "fail"); },
     match(s, re, msg) {
       if (typeof s !== "string" || !(re instanceof RegExp)) throw new TypeError("assert.match requires (string, RegExp)");
-      if (!re.test(s)) __wjs_assert_fail(s, re, msg, "match");
+      if (!re.test(s)) __wjs2_assert_fail(s, re, msg, "match");
     },
     doesNotMatch(s, re, msg) {
       if (typeof s !== "string" || !(re instanceof RegExp)) throw new TypeError("assert.doesNotMatch requires (string, RegExp)");
-      if (re.test(s)) __wjs_assert_fail(s, re, msg, "doesNotMatch");
+      if (re.test(s)) __wjs2_assert_fail(s, re, msg, "doesNotMatch");
     },
   };
   try {
-    const W = globalThis.WinterJS;
+    const W = globalThis.WinterJS2;
     if (W && W.assert === undefined) W.assert = assert;
   } catch {}
 }

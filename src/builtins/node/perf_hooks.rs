@@ -1,5 +1,5 @@
 //! `node:perf_hooks`：性能计时面（纯 JS，零 native，9e-3）。
-//! 时基：`__wjs_hrtime_ns`（单调纳秒，`process.hrtime` 同源）；`timeOrigin` 在
+//! 时基：`__wjs2_hrtime_ns`（单调纳秒，`process.hrtime` 同源）；`timeOrigin` 在
 //! 模块求值时固化（每进程一次，`run_isolated` 语义下等价进程启动）。
 //! 偏差记档：
 //! - `monitorEventLoopDelay` 为简化采样器（`setInterval` 漂移法，无 C++ 直方图；
@@ -13,9 +13,9 @@
 
 /// 内嵌 ESM 源（`node:perf_hooks`）。
 pub const SOURCE: &str = r#"
-const __t0 = BigInt(__wjs_hrtime_ns());
+const __t0 = BigInt(__wjs2_hrtime_ns());
 function __nowMs() {
-  return Number(BigInt(__wjs_hrtime_ns()) - __t0) / 1e6;
+  return Number(BigInt(__wjs2_hrtime_ns()) - __t0) / 1e6;
 }
 const __origin = Date.now() - __nowMs();
 

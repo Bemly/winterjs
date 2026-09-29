@@ -1,6 +1,6 @@
 // Headers: case-insensitive multi-value map.
 // Headers：大小写不敏感的多值表。
-// Run / 运行: winterjs --run sample/web/headers.js
+// Run / 运行: winterjs2 --run sample/web/headers.js
 const h = new Headers({ 'content-type': 'text/plain', 'X-A': '1' });
 console.log('[headers] get:', h.get('Content-Type') === 'text/plain' && h.get('x-a') === '1');
 h.append('x-a', '2');

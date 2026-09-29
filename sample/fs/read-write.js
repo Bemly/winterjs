@@ -1,5 +1,5 @@
 // Demonstrates reading and writing files: sync APIs, encodings, callback forms, and fs.promises. / 演示文件读写：同步 API、编码、回调形式与 fs.promises。
-// Run / 运行: winterjs --run sample/fs/read-write.js
+// Run / 运行: winterjs2 --run sample/fs/read-write.js
 import fs from 'node:fs';
 import { readFileSync, writeFileSync, appendFileSync, readFile, writeFile, promises } from 'node:fs';
 import { readFile as readFileP, writeFile as writeFileP } from 'node:fs/promises';
@@ -10,7 +10,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wjs-fs-rw-'));
 const file = path.join(dir, 'hello.txt');
 
 // 1. Sync write + read (utf8 default)
-writeFileSync(file, 'hello winterjs');
+writeFileSync(file, 'hello winterjs2');
 console.log('[fs] readFileSync:', readFileSync(file, 'utf8'));
 
 // 2. Sync append + encoding round-trips

@@ -669,9 +669,9 @@ for (const [label, v, expect] of [["str", "1", "ERR_INVALID_ARG_TYPE"], ["nul", 
   let threw = "";
   try { new DS("nope"); } catch (e) { threw = e.name; }
   console.log("cs-badfmt", threw === "TypeError");
-  // WinterJS 别名 + 扩展 `zstd`（ruzstd 底座；编码恒 Fastest）。
-  console.log("cs-winterjs", WinterJS.CompressionStream === globalThis.CompressionStream,
-    WinterJS.DecompressionStream === globalThis.DecompressionStream);
+  // WinterJS2 别名 + 扩展 `zstd`（ruzstd 底座；编码恒 Fastest）。
+  console.log("cs-winterjs2", WinterJS2.CompressionStream === globalThis.CompressionStream,
+    WinterJS2.DecompressionStream === globalThis.DecompressionStream);
   // 四族 roundtrip（CS → DS，pipeThrough + async 迭代）
   const text = "hello web streams compression " + "x".repeat(200);
   for (const fmt of ["deflate", "gzip", "deflate-raw", "brotli", "zstd"]) {
@@ -695,10 +695,10 @@ for (const [label, v, expect] of [["str", "1", "ERR_INVALID_ARG_TYPE"], ["nul", 
     await trail("gzip", [new Uint8Array([...validGz, ...validGz])]) === "TypeError ERR_TRAILING_JUNK_AFTER_STREAM_END");
   console.log("trail-brotli", await trail("brotli", [new Uint8Array([...validBr, 1])]) === "TypeError ERR_TRAILING_JUNK_AFTER_STREAM_END",
     await trail("brotli", [new Uint8Array([...validBr, ...validBr])]) === "TypeError ERR_TRAILING_JUNK_AFTER_STREAM_END");
-  // WinterJS 别名类 zstd 往返。
+  // WinterJS2 别名类 zstd 往返。
   {
     const chunks = [];
-    for await (const c of new Blob([text]).stream().pipeThrough(new WinterJS.CompressionStream("zstd")).pipeThrough(new WinterJS.DecompressionStream("zstd"))) chunks.push(c);
+    for await (const c of new Blob([text]).stream().pipeThrough(new WinterJS2.CompressionStream("zstd")).pipeThrough(new WinterJS2.DecompressionStream("zstd"))) chunks.push(c);
     console.log("wcs-rt-zstd", Buffer.concat(chunks).toString() === text);
   }
 }
@@ -726,7 +726,7 @@ for (const [label, v, expect] of [["str", "1", "ERR_INVALID_ARG_TYPE"], ["nul", 
         "cs-web true true true",
         "cs-shape true true true",
         "cs-badfmt true",
-        "cs-winterjs true true",
+        "cs-winterjs2 true true",
         "rt-deflate true",
         "rt-gzip true",
         "rt-deflate-raw true",

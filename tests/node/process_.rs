@@ -10,7 +10,7 @@ fn phase4_node_process_argv_env() {
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("argv.mjs");
     file.write_str(r#"console.log(process.argv.length, process.argv[2], process.execPath.length > 0, process.pid > 0);"#).unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .arg("hello")
@@ -28,8 +28,8 @@ fn phase4_node_process_argv_env() {
             .starts_with("4 hello true true\n"),
         "argv"
     );
-    let out = stdout_of(&mut winterjs().args(["--eval",
-        r#"process.env.WINTERJS_T4 = "v1"; console.log(process.env.WINTERJS_T4, "WINTERJS_T4" in process.env, Object.keys(process.env).includes("WINTERJS_T4")); delete process.env.WINTERJS_T4; console.log(process.env.WINTERJS_T4, "WINTERJS_T4" in process.env);"#]));
+    let out = stdout_of(&mut winterjs2().args(["--eval",
+        r#"process.env.WINTERJS2_T4 = "v1"; console.log(process.env.WINTERJS2_T4, "WINTERJS2_T4" in process.env, Object.keys(process.env).includes("WINTERJS2_T4")); delete process.env.WINTERJS2_T4; console.log(process.env.WINTERJS2_T4, "WINTERJS2_T4" in process.env);"#]));
     assert_eq!(out, "v1 true true\nundefined false\n", "env: {out}");
     dir.close().unwrap();
 }
@@ -41,7 +41,7 @@ fn phase4_process_exit_codes() {
     let run = |name: &str, src: &str| {
         let f = dir.child(name);
         f.write_str(src).unwrap();
-        winterjs().arg("--run").arg(f.path()).output().unwrap()
+        winterjs2().arg("--run").arg(f.path()).output().unwrap()
     };
     let out = run("e3.mjs", "process.exit(3);");
     assert_eq!(out.status.code(), Some(3));
@@ -74,8 +74,8 @@ fn phase4_process_exit_codes() {
 
 #[test]
 fn phase4_process_stdio_nexttick_cwd() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
-        r#"process.stdout.write("out-direct"); const order = []; process.nextTick(() => order.push("tick")); Promise.resolve().then(() => order.push("promise")); await new Promise((r) => setTimeout(r, 20)); console.log("|" + order.join(","), process.cwd().length > 0, typeof process.uptime(), typeof process.hrtime.bigint(), process.memoryUsage().rss > 0, process.versions.winterjs.length > 0);"#]));
+    let out = stdout_of(&mut winterjs2().args(["--eval",
+        r#"process.stdout.write("out-direct"); const order = []; process.nextTick(() => order.push("tick")); Promise.resolve().then(() => order.push("promise")); await new Promise((r) => setTimeout(r, 20)); console.log("|" + order.join(","), process.cwd().length > 0, typeof process.uptime(), typeof process.hrtime.bigint(), process.memoryUsage().rss > 0, process.versions.winterjs2.length > 0);"#]));
     assert!(out.starts_with("out-direct|"), "stdio: {out}");
     assert!(
         out.contains("tick,promise true number bigint true true\n"),
@@ -98,12 +98,12 @@ fn phase4_node_errors() {
         stderr.contains("node:nope") && stderr.contains("node:path"),
         "stderr: {stderr}"
     );
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval", "await import(\"node:nope\")"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval", "process.exitCode = 1.5;"])
         .output()
         .unwrap();
@@ -116,7 +116,7 @@ fn phase4_node_errors() {
 #[test]
 fn phase9j_global_alias() {
     // Node 口径：global 为全局自引用（vite bin 直引，-r dev 实测补齐）。
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval", "console.log(global === globalThis, typeof global.setTimeout, global.process === process)"])
         .output()
         .unwrap();
@@ -211,7 +211,7 @@ setTimeout(() => console.log("exited-clean"), 300);
 #[test]
 fn phase11_exit_event_and_hang_exit() {
     // 2026-09-25：自然退出派发 process 'exit'（修前 this 绑成 global，监听从不触发——
-    // node 套件 common.mustCall 的退出核对形同虚设）；WINTERJS_HANG_EXIT 到点发 'exit'
+    // node 套件 common.mustCall 的退出核对形同虚设）；WINTERJS2_HANG_EXIT 到点发 'exit'
     // 并以 1 退出（把挂死件变成带定位的红件）。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("x.js").write_str("process.on('exit', (c) => console.log('exit-cjs', c));\n").unwrap();
@@ -226,12 +226,12 @@ fn phase11_exit_event_and_hang_exit() {
     assert!(ok && out.contains("exit-esm 0"), "out: {out}");
     // 报错：exit 监听里 process.exit(3) 决定退出码（mustCall 失配的 common 路径）。
     dir.child("e.js").write_str("process.on('exit', () => process.exit(3));\n").unwrap();
-    let out = winterjs().args(["--run", "e.js"]).current_dir(dir.path()).output().unwrap();
+    let out = winterjs2().args(["--run", "e.js"]).current_dir(dir.path()).output().unwrap();
     assert_eq!(out.status.code(), Some(3));
     // 边界：挂死（监听中的 server 永不关）+ HANG_EXIT=1 → 发 exit、stderr 报存活句柄、退出 1。
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", "h.js"])
-        .env("WINTERJS_HANG_EXIT", "1")
+        .env("WINTERJS2_HANG_EXIT", "1")
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -262,7 +262,7 @@ fn phase11_before_exit_and_fatal_exit_event() {
              process.on('beforeExit', () => { throw new Error('be-boom'); });\n",
         )
         .unwrap();
-    let out = winterjs().args(["--run", "t.js"]).current_dir(dir.path()).output().unwrap();
+    let out = winterjs2().args(["--run", "t.js"]).current_dir(dir.path()).output().unwrap();
     assert_eq!(out.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&out.stdout).contains("exit 1"));
     assert!(String::from_utf8_lossy(&out.stderr).contains("Error: be-boom"));
@@ -302,7 +302,7 @@ fn phase11_emit_warning_node_semantics() {
         )
         .unwrap();
     // 正常：once 收一次；缺省打印两条（含 code 前缀）+ 一次 trace 提示；摘除后静默。
-    let out = winterjs().args(["--run", "w.js"]).current_dir(dir.path()).output().unwrap();
+    let out = winterjs2().args(["--run", "w.js"]).current_dir(dir.path()).output().unwrap();
     let (so, se) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success(), "stderr: {se}");
     assert_eq!(so.lines().collect::<Vec<_>>(), ["once CustomWarning C1 true", "thrown DeprecationWarning"]);
@@ -316,7 +316,7 @@ fn phase11_emit_warning_node_semantics() {
     );
     assert!(ok && out.contains("ERR_INVALID_ARG_TYPE"), "out: {out}");
     // 边界：--no-warnings 不登记缺省打印（监听表为空，stderr 无输出）。
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--no-warnings", "--eval", "process.emitWarning('x'); process.listenerCount('warning')"])
         .current_dir(dir.path())
         .output()

@@ -102,9 +102,9 @@ pub fn dot_command(line: &str) -> Dot {
     }
 }
 
-/// 历史文件（`$HOME/.winterjs_history`；拿不到则 `None`，不存档）。
+/// 历史文件（`$HOME/.winterjs2_history`；拿不到则 `None`，不存档）。
 pub fn history_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".winterjs_history"))
+    dirs::home_dir().map(|h| h.join(".winterjs2_history"))
 }
 
 /// 括号平衡（字符串/模板/行块注释感知；`}` 超前即 false）。

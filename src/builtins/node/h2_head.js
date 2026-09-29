@@ -434,8 +434,8 @@ class Http2Session extends EventEmitter {
     }
     return this;
   }
-  ref() { if (this.__conn) __wjs_net_ref(this.__conn); return this; }
-  unref() { if (this.__conn) __wjs_net_unref(this.__conn); return this; }
+  ref() { if (this.__conn) __wjs2_net_ref(this.__conn); return this; }
+  unref() { if (this.__conn) __wjs2_net_unref(this.__conn); return this; }
   settings(settings = {}, cb) {
     const validated = __validateSettings(settings);
     if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
@@ -587,7 +587,7 @@ class Http2Session extends EventEmitter {
     }
     this.closed = true;
     if (this.__conn) {
-      __wjs_net_destroy(this.__conn);
+      __wjs2_net_destroy(this.__conn);
     } else {
       setImmediate(() => this.__finish());
     }

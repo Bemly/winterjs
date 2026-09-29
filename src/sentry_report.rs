@@ -1,6 +1,6 @@
 //! 崩溃上报（opt-in，plan Phase 8-c）。
 //!
-//! 开关：`WINTERJS_SENTRY_DSN` 环境变量。未设/空 = 完全不初始化（零成本：无
+//! 开关：`WINTERJS2_SENTRY_DSN` 环境变量。未设/空 = 完全不初始化（零成本：无
 //! 线程、无 panic hook、无网络）；设了合法 DSN = panic 事件经 sentry 自带
 //! `ReqwestHttpTransport` 上报（`reqwest` 特性即含——§2 禁的是 `transport`
 //! 捆绑包，它拖 native-tls；TLS 走全图统一的 ring provider）。
@@ -16,7 +16,7 @@ use std::time::Duration;
 use sentry::types::Dsn;
 
 /// DSN 环境变量名。
-pub const DSN_ENV: &str = "WINTERJS_SENTRY_DSN";
+pub const DSN_ENV: &str = "WINTERJS2_SENTRY_DSN";
 
 /// DSN 开关读取（trim 后非空才算设置）。
 fn dsn_from_env() -> Option<String> {
@@ -29,13 +29,13 @@ fn dsn_from_env() -> Option<String> {
 /// opt-in 初始化（main 早期调用一次）。返回是否启用。
 pub fn init() -> bool {
     let Some(dsn) = dsn_from_env() else {
-        tracing::debug!(target: "winterjs::sentry", "crash reporting disabled (no {DSN_ENV})");
+        tracing::debug!(target: "winterjs2::sentry", "crash reporting disabled (no {DSN_ENV})");
         return false;
     };
     let Ok(parsed) = dsn.parse::<Dsn>() else {
         // 可读告警但不阻断（上报配置错误不该拦住用户的脚本）
         eprintln!("warning: {DSN_ENV} is not a valid Sentry DSN; crash reporting disabled");
-        tracing::warn!(target: "winterjs::sentry", "invalid DSN, crash reporting disabled");
+        tracing::warn!(target: "winterjs2::sentry", "invalid DSN, crash reporting disabled");
         return false;
     };
     // ring provider：reqwest-no-provider 要求首次用 TLS 前 install_default；
@@ -52,7 +52,7 @@ pub fn init() -> bool {
     let guard = sentry::init(options);
     // guard 生命周期 = 进程（main 末尾 process::exit 跳过 teardown，§4.8 同哲学）
     std::mem::forget(guard);
-    tracing::info!(target: "winterjs::sentry", "crash reporting enabled");
+    tracing::info!(target: "winterjs2::sentry", "crash reporting enabled");
     true
 }
 
@@ -149,7 +149,7 @@ mod tests {
         let client = sentry::Client::from(options);
         client.capture_event(
             Event {
-                message: Some("winterjs-transport-test".into()),
+                message: Some("winterjs2-transport-test".into()),
                 level: sentry::Level::Error,
                 ..Default::default()
             },
@@ -163,7 +163,7 @@ mod tests {
         assert!(headers.contains("sentry_key=testkey"), "headers: {headers}");
         // envelope 首行 headers + event item 内含消息
         let body_str = String::from_utf8_lossy(&body);
-        assert!(body_str.contains("winterjs-transport-test"), "body: {body_str}");
+        assert!(body_str.contains("winterjs2-transport-test"), "body: {body_str}");
     }
 
     #[test]
@@ -175,11 +175,11 @@ mod tests {
         unsafe { std::env::set_var(DSN_ENV, format!("http://panickey@{addr}/7")) };
         assert!(init());
         // panic hook 捕获 + flush(None)；catch_unwind 吞掉 unwind
-        let _ = std::panic::catch_unwind(|| panic!("winterjs-panic-test"));
+        let _ = std::panic::catch_unwind(|| panic!("winterjs2-panic-test"));
         let (request_line, _headers, body) = handle.join().unwrap();
         assert!(request_line.starts_with("POST /api/7/envelope/ "), "req: {request_line}");
         let body_str = String::from_utf8_lossy(&body);
-        assert!(body_str.contains("winterjs-panic-test"), "body: {body_str}");
+        assert!(body_str.contains("winterjs2-panic-test"), "body: {body_str}");
         // 清理：未设 = 关闭（后续测试不受影响）
         // SAFETY: 同上
         unsafe { std::env::remove_var(DSN_ENV) };

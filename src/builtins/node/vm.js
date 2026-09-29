@@ -19,7 +19,7 @@ function __vmCtxId(obj) {
 
 function __vmUnwrap(e) {
   const m = String((e && e.message) || e);
-  const mm = m.match(/^__wjs_vm_error:([A-Za-z]+)\n([\s\S]*)$/);
+  const mm = m.match(/^__wjs2_vm_error:([A-Za-z]+)\n([\s\S]*)$/);
   if (!mm) {
     const err = new Error(m);
     err.code = "ERR_VM_ERROR";
@@ -31,7 +31,7 @@ function __vmUnwrap(e) {
   // checkErr 类 `err.stack.startsWith(filename)` 校验靠首行；帧格式引擎口径记档。
   let message = body;
   let stk = null;
-  const sm = body.match(/^([\s\S]*)\n__wjs_vm_stk:(\{.*\})$/);
+  const sm = body.match(/^([\s\S]*)\n__wjs2_vm_stk:(\{.*\})$/);
   if (sm) {
     message = sm[1];
     try { stk = JSON.parse(sm[2]); } catch { stk = null; }
@@ -51,7 +51,7 @@ function __vmCall(fn) {
     // native 暂存的原始异常对象优先（保 vm realm 身份/原型/栈——跨域
     // `instanceof vmCtx.SyntaxError` 与栈断言点名）；信封重建只作兜底。
     let orig;
-    try { orig = __wjs_vm_take_error(); } catch { orig = undefined; }
+    try { orig = __wjs2_vm_take_error(); } catch { orig = undefined; }
     if (orig !== undefined && orig !== null) {
       // 赋值类 TypeError 文案桥（native bridge_vm_assign_message 同源规则——
       // 原物透传绕过了 native 侧桥，按 node contextify 拦截器口径补齐）。
@@ -76,7 +76,7 @@ function __vmCall(fn) {
         //（`f:l\n源行\ncaret\n\n` + 原栈首行 Name: message 同构拼接）。
         const m = String((e && e.message) || e);
         // 组序：1=name、2=message、3=json 栈标记（与 __vmUnwrap 的双组序不同！）
-        const sm = m.match(/^__wjs_vm_error:([A-Za-z]+)\n([\s\S]*)\n__wjs_vm_stk:(\{.*\})$/);
+        const sm = m.match(/^__wjs2_vm_error:([A-Za-z]+)\n([\s\S]*)\n__wjs2_vm_stk:(\{.*\})$/);
         if (sm) {
           try {
             const stk = JSON.parse(sm[3]);
@@ -100,7 +100,7 @@ function __vmAutoRelease(obj, id) {
     if (typeof FinalizationRegistry === "undefined") return;
     if (!__vmFinal) {
       __vmFinal = new FinalizationRegistry((held) => {
-        try { __wjs_vm_release(String(held)); } catch { /* 会话收尾期忽略 */ }
+        try { __wjs2_vm_release(String(held)); } catch { /* 会话收尾期忽略 */ }
       });
     }
     __vmFinal.register(obj, id);
@@ -111,7 +111,7 @@ function __vmModAutoRelease(obj, id) {
     if (typeof FinalizationRegistry === "undefined") return;
     if (!__vmModFinal) {
       __vmModFinal = new FinalizationRegistry((held) => {
-        try { __wjs_vm_mod_release(String(held)); } catch { /* 会话收尾期忽略 */ }
+        try { __wjs2_vm_mod_release(String(held)); } catch { /* 会话收尾期忽略 */ }
       });
     }
     __vmModFinal.register(obj, id);
@@ -149,25 +149,25 @@ function __vmSnapshot(id, obj) {
   const rec = __vmStdKeys(obj);
   let std = [];
   try {
-    std = JSON.parse(__vmCall(() => __wjs_vm_keys_all(id)));
+    std = JSON.parse(__vmCall(() => __wjs2_vm_keys_all(id)));
   } catch {
-    std = JSON.parse(__vmCall(() => __wjs_vm_keys(id)));
+    std = JSON.parse(__vmCall(() => __wjs2_vm_keys(id)));
   }
   rec.std = new Set(std);
   rec.init = new Map();
   for (const k of std) {
-    rec.init.set(k, __vmCall(() => __wjs_vm_get(id, k)));
+    rec.init.set(k, __vmCall(() => __wjs2_vm_get(id, k)));
   }
 }
 // symbol 键通道：键（symbol 本体作值）与完整描述符经字符串暂存位过域，
 // 目标域内 defineProperty 落定（defineProperty 不触发访问器，无 mustCall 污染；
 // 描述符对象过域照常工作，p38 实证）。
-const __kTmpKey = "__wjs_vm_tmp_key";
-const __kTmpDesc = "__wjs_vm_tmp_desc";
+const __kTmpKey = "__wjs2_vm_tmp_key";
+const __kTmpDesc = "__wjs2_vm_tmp_desc";
 function __vmStageAndDefine(id, key, dd) {
-  __vmCall(() => __wjs_vm_set(id, __kTmpKey, key));
-  __vmCall(() => __wjs_vm_set(id, __kTmpDesc, dd));
-  __vmCall(() => __wjs_vm_run(id,
+  __vmCall(() => __wjs2_vm_set(id, __kTmpKey, key));
+  __vmCall(() => __wjs2_vm_set(id, __kTmpDesc, dd));
+  __vmCall(() => __wjs2_vm_run(id,
     `Object.defineProperty(globalThis, globalThis[${JSON.stringify(__kTmpKey)}], globalThis[${JSON.stringify(__kTmpDesc)}]); delete globalThis[${JSON.stringify(__kTmpKey)}]; delete globalThis[${JSON.stringify(__kTmpDesc)}];`,
     "vm-sync-in.js"));
 }
@@ -191,13 +191,13 @@ function __syncIn(id, obj) {
   // 主域侧全部自有字符串键（含不可枚举；与目标 global 的 HIDDEN 枚举口径对齐）。
   // 纯 Object.keys 会漏沙箱不可枚举种子（defineProperty value 形），vm 内即 undefined。
   // 描述符携带：数据描述符传 d.value（值拷贝，此时求值）；访问器传描述符对象本身——
-  // 经 __wjs_vm_set 过 CCW 后在目标域内 Object.defineProperty 落定，getter/setter
+  // 经 __wjs2_vm_set 过 CCW 后在目标域内 Object.defineProperty 落定，getter/setter
   // 身份由引擎 CCW 透明代理（真机"访问器活绑定"同效：主域改 getter 实现即 vm 内可见；
   // 实证见 p38：描述符对象过沙箱属性中转后 define 照常工作）。
   // 只写目标缺席键（目标已有——首轮 define 产物或标准内建——即跳过）：
   // define+赋值双失败（目标只读）由 vm_set 静默跳过，但预检可省一次跨域调用；
   // 更重要的是预检以目标描述符为准，不以源值为准。
-  // 注意：__wjs_vm_keys 只回可枚举键；不可枚举目标键不在此集——
+  // 注意：__wjs2_vm_keys 只回可枚举键；不可枚举目标键不在此集——
   // 该分支漏检时 vm_set 的静默跳过是最后一道防线（本行注释钉住两层关系）。
   // 【10f 修订】预检取消：真机 contextify 的拦截器让 sandbox 自有键**遮蔽**
   // vm realm 内建（harmony-symbols/proxies：sandbox {Symbol} 后 vm 内读
@@ -218,8 +218,8 @@ function __syncIn(id, obj) {
     try { selfRef = obj[k] === obj; } catch { selfRef = false; }
     if (selfRef) {
       try {
-        const g = __vmCall(() => __wjs_vm_global(id));
-        __vmCall(() => __wjs_vm_set(id, k, g));
+        const g = __vmCall(() => __wjs2_vm_global(id));
+        __vmCall(() => __wjs2_vm_set(id, k, g));
         const rec0 = __vmStdKeys(obj);
         (rec0.selfRefs ??= new Set()).add(k);
       } catch { /* 跳过该键 */ }
@@ -241,23 +241,23 @@ function __syncIn(id, obj) {
       const hasSet = "set" in d && typeof d.set === "function";
       if (!hasGet && !hasSet) {
         // 伪访问器（get/set 皆不可调用）：按值语义走 obj[k]（此时求值）。
-        try { __vmCall(() => __wjs_vm_set(id, k, obj[k])); } catch { /* 跳过该键 */ }
+        try { __vmCall(() => __wjs2_vm_set(id, k, obj[k])); } catch { /* 跳过该键 */ }
         continue;
       }
       // 真访问器：描述符对象暂存 + 目标域内 defineProperty 落定后删暂存。
       // 不删则数据暂存遮蔽访问器（setter 永不触发，p45 实证）。
-      const t = `__wjs_vm_tmp_${k}`;
+      const t = `__wjs2_vm_tmp_${k}`;
       const dd = { enumerable: false, configurable: true };
       if (hasGet) dd.get = d.get;
       if (hasSet) dd.set = d.set;
       dd.enumerable = !!d.enumerable;
       dd.configurable = !!d.configurable;
-      __vmCall(() => __wjs_vm_set(id, t, dd));
-      __vmCall(() => __wjs_vm_run(id, `Object.defineProperty(globalThis, ${JSON.stringify(k)}, globalThis[${JSON.stringify(t)}]); delete globalThis[${JSON.stringify(t)}]`, "vm-sync-in.js"));
+      __vmCall(() => __wjs2_vm_set(id, t, dd));
+      __vmCall(() => __wjs2_vm_run(id, `Object.defineProperty(globalThis, ${JSON.stringify(k)}, globalThis[${JSON.stringify(t)}]); delete globalThis[${JSON.stringify(t)}]`, "vm-sync-in.js"));
     } else if (d && "value" in d) {
       if (d.writable === true && d.enumerable === true && d.configurable === true) {
         // 默认属性快路径（define_prop 即 {w,e,c}=true，无损失）。
-        __vmCall(() => __wjs_vm_set(id, k, d.value));
+        __vmCall(() => __wjs2_vm_set(id, k, d.value));
       } else {
         // 非默认属性（nonWritableProp 等）走描述符 staging：真机按源描述符落定，
         // vm 侧 writable:false 不可写/不可枚举都要保形（global-setter descriptor10）。
@@ -265,10 +265,10 @@ function __syncIn(id, obj) {
         try { __vmStageAndDefine(id, k, dd); } catch { /* 跳过该键 */ }
       }
     }
-    else if (d) __vmCall(() => __wjs_vm_set(id, k, obj[k]));
+    else if (d) __vmCall(() => __wjs2_vm_set(id, k, obj[k]));
     else {
       // 无描述符键：读值失败即跳过（globalThis 宿主键），不中断整表。
-      try { __vmCall(() => __wjs_vm_set(id, k, obj[k])); } catch { /* 跳过该键 */ }
+      try { __vmCall(() => __wjs2_vm_set(id, k, obj[k])); } catch { /* 跳过该键 */ }
     }
   }
   // symbol 键同步（真机 contextify 转发 symbol 面；ownkeys/ownpropertysymbols/
@@ -297,7 +297,7 @@ function __syncOut(id, obj) {
   const rec = __vmBookkeeping.get(obj);
   const std = rec ? rec.std : null;
   const init = rec ? rec.init : null;
-  const snap = JSON.parse(__vmCall(() => __wjs_vm_keys_all(id)));
+  const snap = JSON.parse(__vmCall(() => __wjs2_vm_keys_all(id)));
   for (const entry of snap) {
     // symbol 占位无跨 realm 身份：只维护存在性（ownkeys 计数口径），不做值同步。
     if (entry !== null && typeof entry === "object") continue;
@@ -323,12 +323,12 @@ function __syncOut(id, obj) {
       d = null;
     }
     if (d && ("get" in d || "set" in d)) continue;
-    const cur = __vmCall(() => __wjs_vm_get(id, k));
+    const cur = __vmCall(() => __wjs2_vm_get(id, k));
     if (std !== null && std.has(k)) {
       // 快照内键：仅当与创建快照发生 SameValue 变化时回写（this.Symbol = Symbol 等）；
       // 未改即跳过，防标准构造器污染沙箱。SameValue 经引擎比较（NaN 自等，±0 区分）。
       const before = init.get(k);
-      if (__vmCall(() => __wjs_vm_same(cur, before))) continue;
+      if (__vmCall(() => __wjs2_vm_same(cur, before))) continue;
     }
     // 目标描述符优先：主域侧已有同名只读数据（源端 defineProperty 默认不可写不可配置，
     // 首轮 sync-in 的 define 产物即如此）则赋值抛——只读数据即跳过。
@@ -423,10 +423,10 @@ export function createContext(contextObject = {}, options = {}) {
   // 对象本体——不等于主 globalThis、写入不穿透主域、runInContext("this")===返回值。
   // jsdom 29（vitest jsdom 环境）拿它当 window 直装 DOM 全局。
   // 注意：新 global 只有 SpiderMonkey 标准内建（Object/Array/Symbol 等），
-  // 无 winterjs 主域扩展（process/console/Buffer 等）——真机 vanilla 口径（§4.90 同源）。
+  // 无 winterjs2 主域扩展（process/console/Buffer 等）——真机 vanilla 口径（§4.90 同源）。
   if (contextObject === __dontCtx) {
-    const id = __vmCall(() => __wjs_vm_create());
-    const g = __vmCall(() => __wjs_vm_global(id));
+    const id = __vmCall(() => __wjs2_vm_create());
+    const g = __vmCall(() => __wjs2_vm_global(id));
     __vmStdKeys(g).id = id;
     return g;
   }
@@ -456,7 +456,7 @@ export function createContext(contextObject = {}, options = {}) {
     err.code = "ERR_INVALID_ARG_VALUE";
     throw err;
   }
-  const id = __vmCall(() => __wjs_vm_create());
+  const id = __vmCall(() => __wjs2_vm_create());
   __vmStdKeys(contextObject).id = id;
   __vmSnapshot(id, contextObject);
   if (contextObject !== null && contextObject !== undefined) __syncIn(id, contextObject);
@@ -468,7 +468,7 @@ export function runInContext(code, contextifiedObject, options) {
   const id = __validateCtx(contextifiedObject);
   const { filename } = __runArgs(contextifiedObject, options);
   __syncIn(id, contextifiedObject);
-  const r = __vmCall(() => __wjs_vm_run(id, String(code), filename));
+  const r = __vmCall(() => __wjs2_vm_run(id, String(code), filename));
   __syncOut(id, contextifiedObject);
   return r;
 }
@@ -491,7 +491,7 @@ export function runInNewContext(code, contextObject, options) {
 
 export function runInThisContext(code, options) {
   const { filename } = __runArgs(null, options);
-  return __vmCall(() => __wjs_vm_run_this(String(code), filename));
+  return __vmCall(() => __wjs2_vm_run_this(String(code), filename));
 }
 
 export class Script {
@@ -520,7 +520,7 @@ export class Script {
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
-    __vmCall(() => __wjs_vm_compile(code, this.__filename));
+    __vmCall(() => __wjs2_vm_compile(code, this.__filename));
   }
   // Script 方法层 options 只收 object/function/undefined（真机 assertErrors：
   // 'bad'/42/null 即 TypeError）。
@@ -604,7 +604,7 @@ export function compileFunction(code, params, options = {}) {
     }
   }
   const paramsCsv = (params ?? []).join(",");
-  const fn = __vmCall(() => __wjs_vm_compile_fn(ctxId, paramsCsv, code, filename));
+  const fn = __vmCall(() => __wjs2_vm_compile_fn(ctxId, paramsCsv, code, filename));
   if (ctxId === "") {
     for (const ext of exts) Object.assign(globalThis, ext);
   } else {
@@ -669,7 +669,7 @@ export class SourceTextModule extends Module {
       ctxId = __validateCtx(options.context);
       this.__context = options.context;
     } else {
-      ctxId = __vmCall(() => __wjs_vm_create());
+      ctxId = __vmCall(() => __wjs2_vm_create());
       const holder = {};
       __vmStdKeys(holder).id = ctxId;
       __vmSnapshot(ctxId, holder);
@@ -682,14 +682,14 @@ export class SourceTextModule extends Module {
     this.__error = null;
     this.__ns = undefined;
     // importModuleDynamically/initializeImportMeta 接受忽略（v1 未接线，记档）。
-    this.__id = __vmCall(() => __wjs_vm_compile_mod(ctxId, identifier, code));
+    this.__id = __vmCall(() => __wjs2_vm_compile_mod(ctxId, identifier, code));
     __vmModAutoRelease(this, this.__id);
   }
   get status() { return this.__status; }
   get identifier() { return this.__identifier; }
   get context() { return this.__context; }
   get dependencySpecifiers() {
-    return JSON.parse(__vmCall(() => __wjs_vm_mod_deps(this.__id)));
+    return JSON.parse(__vmCall(() => __wjs2_vm_mod_deps(this.__id)));
   }
   get namespace() {
     if (this.__status !== "evaluated") {
@@ -709,7 +709,7 @@ export class SourceTextModule extends Module {
     }
     void linker;
     return Promise.resolve().then(() => {
-      __vmCall(() => __wjs_vm_link(this.__id));
+      __vmCall(() => __wjs2_vm_link(this.__id));
       this.__status = "linked";
     });
   }
@@ -722,11 +722,11 @@ export class SourceTextModule extends Module {
       // native 同步抛错（参数/link 前置）即失败落定；完成值可能是跨域 promise
       // （§4.57：`instanceof Promise` 跨 compartment 恒 false，必须按 thenable 认领，
       // 否则落定被丢弃、报错变 unhandled rejection）。
-      const r = __vmCall(() => __wjs_vm_evaluate(this.__id));
+      const r = __vmCall(() => __wjs2_vm_evaluate(this.__id));
       const done = () => {
-        __vmCall(() => __wjs_vm_mod_settled(this.__id));
+        __vmCall(() => __wjs2_vm_mod_settled(this.__id));
         this.__status = "evaluated";
-        this.__ns = __vmCall(() => __wjs_vm_mod_ns(this.__id));
+        this.__ns = __vmCall(() => __wjs2_vm_mod_ns(this.__id));
         return undefined;
       };
       const failed = (e) => {

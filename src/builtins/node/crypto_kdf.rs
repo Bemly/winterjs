@@ -36,7 +36,7 @@ macro_rules! kdf_hash_dispatch {
     }};
 }
 
-/// `__wjs_kdf_pbkdf2(hashStr, passU8, saltU8, roundsNum, lenNum)` → 派生密钥。
+/// `__wjs2_kdf_pbkdf2(hashStr, passU8, saltU8, roundsNum, lenNum)` → 派生密钥。
 pub unsafe extern "C" fn kdf_pbkdf2(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -84,7 +84,7 @@ pub unsafe extern "C" fn kdf_pbkdf2(
     }
 }
 
-/// `__wjs_kdf_scrypt(passU8, saltU8, nNum, rNum, pNum, lenNum, maxmemNum)` → 派生密钥。
+/// `__wjs2_kdf_scrypt(passU8, saltU8, nNum, rNum, pNum, lenNum, maxmemNum)` → 派生密钥。
 pub unsafe extern "C" fn kdf_scrypt(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -147,7 +147,7 @@ pub unsafe extern "C" fn kdf_scrypt(
     }
 }
 
-/// `__wjs_kdf_hkdf(hashStr, ikmU8, saltU8, infoU8, lenNum)` → OKM（空 salt 即零串，RFC 口径）。
+/// `__wjs2_kdf_hkdf(hashStr, ikmU8, saltU8, infoU8, lenNum)` → OKM（空 salt 即零串，RFC 口径）。
 pub unsafe extern "C" fn kdf_hkdf(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -194,7 +194,7 @@ pub unsafe extern "C" fn kdf_hkdf(
     }
 }
 
-/// `__wjs_kdf_argon2(algoStr, msgU8, nonceU8, secretU8, adU8, parNum, tagNum, memNum, passNum)` → tag。
+/// `__wjs2_kdf_argon2(algoStr, msgU8, nonceU8, secretU8, adU8, parNum, tagNum, memNum, passNum)` → tag。
 pub unsafe extern "C" fn kdf_argon2(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

@@ -158,7 +158,7 @@ class Http2ServerStream extends Duplex {
     this.__headersSent = true;
     this.__sentHeaders = sent;
     this.__sentPseudoHeaders = sentPseudo;
-    __wjs_h2_respond(this.__conn, this.id, status, JSON.stringify(entries));
+    __wjs2_h2_respond(this.__conn, this.id, status, JSON.stringify(entries));
     if (options.endStream || endStreamAuto) {
       this.endAfterHeaders = true;
       this.__finishWritable();
@@ -245,10 +245,10 @@ class Http2ServerStream extends Duplex {
           const r = fs.readSync(fd, buf, 0, n, pos);
           if (r <= 0) break;
           if (r < n) {
-            __wjs_h2_data(this.__conn, this.id, __b64enc(buf.subarray(0, r)));
+            __wjs2_h2_data(this.__conn, this.id, __b64enc(buf.subarray(0, r)));
             break;
           }
-          __wjs_h2_data(this.__conn, this.id, __b64enc(buf));
+          __wjs2_h2_data(this.__conn, this.id, __b64enc(buf));
           pos += r;
         }
       }
@@ -333,7 +333,7 @@ class Http2ServerStream extends Duplex {
     }
     this.__trailersSent = true;
     this.__trailers = { ...trailers };
-    __wjs_h2_end(this.__conn, this.id, JSON.stringify(t));
+    __wjs2_h2_end(this.__conn, this.id, JSON.stringify(t));
     const cb = this.__finalCb;
     if (typeof cb === "function") queueMicrotask(cb);
     return this;
@@ -344,7 +344,7 @@ class Http2ServerStream extends Duplex {
     if (typeof cb === "function") this.once("close", cb);
     if (this.__closed || this.__destroyed) return this;
     if (!this.__trailersSent) {
-      __wjs_h2_reset(this.__conn, this.id, code);
+      __wjs2_h2_reset(this.__conn, this.id, code);
       this.__trailersSent = true;
     }
     this.destroy();
@@ -362,7 +362,7 @@ class Http2ServerStream extends Duplex {
   }
   __finishWritable() {
     // respond({endStream:true}) / respondWithFile 收尾路径；
-    // __trailersSent 由 _final 在 __wjs_h2_end 发出后置位（预置会跳过
+    // __trailersSent 由 _final 在 __wjs2_h2_end 发出后置位（预置会跳过
     // END_STREAM → 客户端 'end' 永不到，与 res.end 预置同款挂死）
     super.end();
   }
@@ -373,7 +373,7 @@ class Http2ServerStream extends Duplex {
     }
     this.__implicitRespond();
     const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk), "write");
-    __wjs_h2_data(this.__conn, this.id, __b64enc(u8));
+    __wjs2_h2_data(this.__conn, this.id, __b64enc(u8));
     queueMicrotask(cb);
   }
   _final(cb) {
@@ -393,7 +393,7 @@ class Http2ServerStream extends Duplex {
     if (!this.__trailersSent) {
       const t = this.__pendingTrailers ?? [];
       this.__trailersSent = true;
-      __wjs_h2_end(this.__conn, this.id, JSON.stringify(t));
+      __wjs2_h2_end(this.__conn, this.id, JSON.stringify(t));
     }
     this.__maybeAutoClose();
     cb();
@@ -412,7 +412,7 @@ class Http2ServerStream extends Duplex {
     // 有错 RST INTERNAL_ERROR，客户端 'error' ERR_HTTP2_STREAM_ERROR——真机实测）
     if (!this.__trailersSent && !this.__rstSent) {
       this.__rstSent = true;
-      __wjs_h2_reset(this.__conn, this.id, err ?? this.__destroyErr ? 2 : 0);
+      __wjs2_h2_reset(this.__conn, this.id, err ?? this.__destroyErr ? 2 : 0);
     }
     this.__closed = true;
     this.__destroyed = true;
@@ -702,7 +702,7 @@ class Http2ServerResponse extends Writable {
     }
     this.headersSent = true;
     this.__stream.__headersSent = true;
-    __wjs_h2_respond(this.__conn, this.__id, this.statusCode, JSON.stringify(entries));
+    __wjs2_h2_respond(this.__conn, this.__id, this.statusCode, JSON.stringify(entries));
   }
   write(chunk, encoding, cb) {
     if (this.__stream.__destroyed) {
@@ -744,7 +744,7 @@ class Http2ServerResponse extends Writable {
       else t.push([k, w]);
     }
     this.__stream.__pendingTrailers = t;
-    // __trailersSent 由 stream._final 在 __wjs_h2_end 发出后置位；
+    // __trailersSent 由 stream._final 在 __wjs2_h2_end 发出后置位；
     // 此处预置会让 _final 跳过 END_STREAM → 客户端 'end' 永不到（挂死根因）。
     this.__stream.end();
     return this;

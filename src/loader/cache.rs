@@ -2,7 +2,7 @@
 //!
 //! key 指纹 = 前缀版本（oxc/选项变更时 bump）+ 本包版本 + 后缀 + 源码。
 //! 缓存 IO 失败一律当 miss（正确性优先，只记 trace）。
-//! 磁盘目录：`$WINTERJS_CACHE` > 系统缓存目录 `winterjs/modules`；都没有则只用内存。
+//! 磁盘目录：`$WINTERJS2_CACHE` > 系统缓存目录 `winterjs2/modules`；都没有则只用内存。
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 /// bump 条件：oxc 升级、转译选项变更、blob 结构变更。
-const CACHE_PREFIX: &str = "winterjs-modcache-v1";
+const CACHE_PREFIX: &str = "winterjs2-modcache-v1";
 const MEM_CAP: usize = 128;
 
 #[derive(Serialize, Deserialize)]
@@ -35,10 +35,10 @@ static MEM: LazyLock<Mutex<lru::LruCache<String, Blob>>> =
     LazyLock::new(|| Mutex::new(lru::LruCache::new(NonZeroUsize::new(MEM_CAP).unwrap())));
 
 fn disk_dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("WINTERJS_CACHE") {
+    if let Some(d) = std::env::var_os("WINTERJS2_CACHE") {
         return Some(PathBuf::from(d));
     }
-    dirs::cache_dir().map(|d| d.join("winterjs").join("modules"))
+    dirs::cache_dir().map(|d| d.join("winterjs2").join("modules"))
 }
 
 fn key(source: &str, ext: &str) -> String {
@@ -67,7 +67,7 @@ pub fn get(source: &str, ext: &str) -> Option<Cached> {
         if b.v != 1 {
             return None;
         }
-        tracing::trace!(target: "winterjs::loader", "transpile cache memory hit");
+        tracing::trace!(target: "winterjs2::loader", "transpile cache memory hit");
         return Some(Cached {
             js: b.js.clone(),
             imports: b.imports.clone(),
@@ -78,7 +78,7 @@ pub fn get(source: &str, ext: &str) -> Option<Cached> {
     let dir = disk_dir()?;
     let bytes = fs_err::read(dir.join(format!("{k}.postcard"))).ok()?;
     let cached = decode(&bytes)?;
-    tracing::debug!(target: "winterjs::loader", "transpile cache disk hit");
+    tracing::debug!(target: "winterjs2::loader", "transpile cache disk hit");
     MEM.lock().put(
         k,
         Blob {
@@ -104,7 +104,7 @@ pub fn put(source: &str, ext: &str, cached: &Cached) {
     let bytes = match postcard::to_stdvec(&blob) {
         Ok(b) => b,
         Err(e) => {
-            tracing::trace!(target: "winterjs::loader", "transpile cache encode skip: {e}");
+            tracing::trace!(target: "winterjs2::loader", "transpile cache encode skip: {e}");
             return;
         }
     };
@@ -114,6 +114,6 @@ pub fn put(source: &str, ext: &str, cached: &Cached) {
         return;
     }
     if fs_err::write(dir.join(format!("{k}.postcard")), &bytes).is_err() {
-        tracing::trace!(target: "winterjs::loader", "transpile cache disk write skip");
+        tracing::trace!(target: "winterjs2::loader", "transpile cache disk write skip");
     }
 }

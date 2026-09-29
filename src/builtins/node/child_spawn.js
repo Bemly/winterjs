@@ -10,7 +10,7 @@ function __childEnv(o) {
   // FOO 经原型）；undefined 值跳过；余下 String() 化（null → "null"，否则
   // Rust 侧 JSON 解析报 "must be JSON"）；键值 \0 校验（reject-null-bytes 套件）。
   if (o.env === undefined || o.env === null) {
-    if (__wjs_worker_env_snapshot() !== undefined) o.env = { ...process.env };
+    if (__wjs2_worker_env_snapshot() !== undefined) o.env = { ...process.env };
     else return o.env;
   }
   const out = {};
@@ -318,7 +318,7 @@ function __spawnInto(proc, file, args, o) {
     return proc;
   }
   const [f3, a3] = __selfArgv(f2, a2);
-  const id = __wjs_spawn_start(String(f3), JSON.stringify(a3), JSON.stringify({
+  const id = __wjs2_spawn_start(String(f3), JSON.stringify(a3), JSON.stringify({
     cwd: o.cwd, env: o.env, detached: o.detached, timeout_ms: o.timeoutMs,
     kill_signo: o.killSigno, kill_signame: o.killSigname,
   }), proc, JSON.stringify(o.stdio));
@@ -329,7 +329,7 @@ function __spawnInto(proc, file, args, o) {
   if (o.signal) {
     const onAbort = () => {
       if (proc.exitCode !== null || proc.signalCode !== null) return;
-      if (__wjs_child_kill(id, String(o.killSigno))) proc.__emitAbort(o.signal.reason);
+      if (__wjs2_child_kill(id, String(o.killSigno))) proc.__emitAbort(o.signal.reason);
     };
     const disposable = addAbortListener(o.signal, onAbort);
     proc.__onExited = () => { try { disposable[Symbol.dispose](); } catch {} };
@@ -599,7 +599,7 @@ export function execFileSync(file, args, opts) {
   for (let i = 0; i < (args || []).length; i++) __nullCheck(String(args[i]), `args[${i}]`);
   const f = String(file);
   const [f2, a2] = __selfArgv(f, [...(args || [])].map(String));
-  const r = JSON.parse(__wjs_cp_spawn(f2, JSON.stringify(a2), JSON.stringify({
+  const r = JSON.parse(__wjs2_cp_spawn(f2, JSON.stringify(a2), JSON.stringify({
     cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
     shell: false, kill_signo: o.killSigno, kill_signame: o.killSigname,
     argv0: o.argv0, detached: !!o.detached,
@@ -613,7 +613,7 @@ export function execFileSync(file, args, opts) {
 // fork 子会话入口（worker eval 串；占位 `__FORK_MOD__`/`__FORK_ARGV__` 由
 // `fork()` 经 replacer 函数填 JSON——`format!` 拼 JS 禁花括号转义，见 §4.44）。
 // 子端 IPC 面：process.send/disconnect/on('message')/connected/channel，
-// 经 parentPort 与父端 ChildProcess 桥接；控制信封 `{__wjs_fork_ctl:
+// 经 parentPort 与父端 ChildProcess 桥接；控制信封 `{__wjs2_fork_ctl:
 // // "disconnect"}` 单键载荷不投递给用户（见父端 `disconnect()`）。
 const __FORK_CHILD_SRC = `
 import { parentPort } from "node:worker_threads";
@@ -645,7 +645,7 @@ process.send = (message, ...rest) => {
     const err = new Error("Channel closed");
     err.code = "ERR_IPC_CHANNEL_CLOSED";
     if (cb) queueMicrotask(() => cb(err));
-    else queueMicrotask(() => process.__wjs_emit("error", err));
+    else queueMicrotask(() => process.__wjs2_emit("error", err));
     return false;
   }
   if (message === undefined) {
@@ -667,7 +667,7 @@ process.send = (message, ...rest) => {
     const err = e instanceof Error ? e : new Error(String(e));
     if (!err.code) err.code = "ERR_IPC_CHANNEL_CLOSED";
     if (cb) queueMicrotask(() => cb(err));
-    else queueMicrotask(() => process.__wjs_emit("error", err));
+    else queueMicrotask(() => process.__wjs2_emit("error", err));
     return false;
   }
   if (cb) queueMicrotask(() => cb(null));
@@ -677,15 +677,15 @@ process.disconnect = () => {
   if (!process.connected) return;
   process.connected = false;
   try { parentPort.close(); } catch {}
-  process.__wjs_emit("disconnect");
+  process.__wjs2_emit("disconnect");
 };
 parentPort.on("message", (message) => {
   if (message !== null && typeof message === "object" && !Array.isArray(message) &&
-      Object.keys(message).length === 1 && message.__wjs_fork_ctl === "disconnect") {
+      Object.keys(message).length === 1 && message.__wjs2_fork_ctl === "disconnect") {
     if (process.connected) {
       process.connected = false;
       try { parentPort.close(); } catch {}
-      process.__wjs_emit("disconnect");
+      process.__wjs2_emit("disconnect");
     }
     return;
   }
@@ -693,15 +693,15 @@ parentPort.on("message", (message) => {
   // NODE_CLUSTER 信封走 internalMessage；listen-twice 套件点名）。
   if (message !== null && typeof message === "object" && !Array.isArray(message) &&
       typeof message.cmd === "string" && message.cmd.indexOf("NODE_") === 0) {
-    process.__wjs_emit("internalMessage", message);
+    process.__wjs2_emit("internalMessage", message);
     return;
   }
-  process.__wjs_emit("message", message);
+  process.__wjs2_emit("message", message);
 });
 parentPort.on("close", () => {
   if (process.connected) {
     process.connected = false;
-    process.__wjs_emit("disconnect");
+    process.__wjs2_emit("disconnect");
   }
 });
 // 内部监听不续命子会话（worker 空转即退，真机口径：无用户监听的子进程
@@ -710,11 +710,11 @@ parentPort.on("close", () => {
 // 事件），故直包 message 订阅入口（once/addListener 走 on，removeListener
 // 走 off）；投递走 listenerCount 门控，不受 counting 位影响。
 // 注意：本块在外层模板字符串内，禁用模板字面量与插值写法。
-try { __wjs_port_unlisten(parentPort.__id); } catch {}
+try { __wjs2_port_unlisten(parentPort.__id); } catch {}
 const __ppId = parentPort.__id;
-const __procListen = () => { try { __wjs_port_listen(__ppId); } catch {} };
+const __procListen = () => { try { __wjs2_port_listen(__ppId); } catch {} };
 const __procUnlisten = () => {
-  if (process.listenerCount("message") === 0) { try { __wjs_port_unlisten(__ppId); } catch {} }
+  if (process.listenerCount("message") === 0) { try { __wjs2_port_unlisten(__ppId); } catch {} }
 };
 const __procOn = process.on;
 process.on = function (type, cb) {
@@ -837,7 +837,7 @@ export function fork(modulePath, args, opts) {
   const src = __FORK_CHILD_SRC
     .replace("__FORK_MOD__", () => JSON.stringify(fileUrl))
     .replace("__FORK_ARGV__", () => JSON.stringify(argsArr));
-  const worker = new Worker(src, { eval: true, __wjs_forkChild: true, env: o.env });
+  const worker = new Worker(src, { eval: true, __wjs2_forkChild: true, env: o.env });
   proc.__worker = worker;
   proc.__connected = true;
   // 非 silent（stdio 继承）：stdout/stderr 恒 null（真机 26 逐项：fork 未 silent
@@ -872,12 +872,12 @@ function __forkNullStream() {
   const listeners = {};
   return {
     on(ev, cb) { (listeners[ev] ||= []).push(cb); return this; },
-    once(ev, cb) { const w = (...a) => { this.off(ev, w); cb(...a); }; w.__wjs_orig = cb; return this.on(ev, w); },
+    once(ev, cb) { const w = (...a) => { this.off(ev, w); cb(...a); }; w.__wjs2_orig = cb; return this.on(ev, w); },
     off(ev, cb) {
       const l = listeners[ev];
       if (l) {
-        let i = l.findIndex((f) => f === cb || f.__wjs_orig === cb);
-        while (i >= 0) { l.splice(i, 1); i = l.findIndex((f) => f === cb || f.__wjs_orig === cb); }
+        let i = l.findIndex((f) => f === cb || f.__wjs2_orig === cb);
+        while (i >= 0) { l.splice(i, 1); i = l.findIndex((f) => f === cb || f.__wjs2_orig === cb); }
       }
       return this;
     },

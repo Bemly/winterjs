@@ -18,7 +18,7 @@ fn rsa_priv_from_der(der: &[u8]) -> Result<rsa::RsaPrivateKey, String> {
         .map_err(|_| "DataError: bad RSA private key (PKCS#8)".to_string())
 }
 
-/// `__wjs_rsa_encrypt_v15(pubDerU8, dataU8)` → 密文（PKCS#1 v1.5）。
+/// `__wjs2_rsa_encrypt_v15(pubDerU8, dataU8)` → 密文（PKCS#1 v1.5）。
 pub unsafe extern "C" fn rsa_encrypt_v15(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -53,7 +53,7 @@ pub unsafe extern "C" fn rsa_encrypt_v15(
     }
 }
 
-/// `__wjs_rsa_decrypt_v15(privDerU8, dataU8)` → 明文（PKCS#1 v1.5）。
+/// `__wjs2_rsa_decrypt_v15(privDerU8, dataU8)` → 明文（PKCS#1 v1.5）。
 pub unsafe extern "C" fn rsa_decrypt_v15(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -88,7 +88,7 @@ pub unsafe extern "C" fn rsa_decrypt_v15(
     }
 }
 
-/// `__wjs_node_rsa_oaep(pubDerU8, dataU8, labelOrNull, encNum)`：
+/// `__wjs2_node_rsa_oaep(pubDerU8, dataU8, labelOrNull, encNum)`：
 /// OAEP-SHA1 加解密（enc=1 公钥加密 / enc=0 私钥解密）。
 pub unsafe extern "C" fn node_rsa_oaep(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -281,7 +281,7 @@ fn v15_type1_unpad(em: &[u8]) -> Result<Vec<u8>, String> {
     Ok(rest[one + 1..].to_vec())
 }
 
-/// `__wjs_node_rsa_oaep_flip(keyDerU8, dataU8, labelOrNull, privEncNum)`：
+/// `__wjs2_node_rsa_oaep_flip(keyDerU8, dataU8, labelOrNull, privEncNum)`：
 /// OAEP-SHA1 反向（privEnc=1 私钥加密 / 0 公钥解密；10f crypto二轮）。
 pub unsafe extern "C" fn node_rsa_oaep_flip(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -350,7 +350,7 @@ pub unsafe extern "C" fn node_rsa_oaep_flip(
     }
 }
 
-/// `__wjs_rsa_v15_flip(keyDerU8, dataU8, privEncNum)`：
+/// `__wjs2_rsa_v15_flip(keyDerU8, dataU8, privEncNum)`：
 /// v1.5 反向（1 私钥加密 / 0 公钥解密；10f crypto二轮）。
 pub unsafe extern "C" fn rsa_v15_flip(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -417,7 +417,7 @@ pub unsafe extern "C" fn rsa_v15_flip(
     }
 }
 
-/// `__wjs_rsa_raw(keyDerU8, dataU8, privNum)`：RSA 无填充裸运算
+/// `__wjs2_rsa_raw(keyDerU8, dataU8, privNum)`：RSA 无填充裸运算
 ///（priv=1 私钥 d 次幂 / 0 公钥 e 次幂；10f crypto二轮，NO_PADDING 用）。
 pub unsafe extern "C" fn rsa_raw(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -499,7 +499,7 @@ fn v15_digest(hash: &str, data: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// `__wjs_node_rsa_v15_legacy(privDerU8, dataU8, hashStr)` → 签名（SHA-1/MD5）。
+/// `__wjs2_node_rsa_v15_legacy(privDerU8, dataU8, hashStr)` → 签名（SHA-1/MD5）。
 pub unsafe extern "C" fn node_rsa_v15_sign(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -548,7 +548,7 @@ pub unsafe extern "C" fn node_rsa_v15_sign(
     set_rval_bytes(&mut cx, &frame, &pad_be(&s.to_bytes_be(), k))
 }
 
-/// `__wjs_node_rsa_v15_verify(pubDerU8, sigU8, dataU8, hashStr)` → boolean。
+/// `__wjs2_node_rsa_v15_verify(pubDerU8, sigU8, dataU8, hashStr)` → boolean。
 pub unsafe extern "C" fn node_rsa_v15_verify(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

@@ -1,6 +1,6 @@
 // node:util (+ node:sys alias, node:util/types): format / inspect / promisify.
 // 工具：格式化、检视、回调转 Promise（sys 为同实例别名）。
-// Run / 运行: winterjs --run sample/util/basics.js
+// Run / 运行: winterjs2 --run sample/util/basics.js
 import util, { format, inspect, promisify } from 'node:util';
 import sys from 'node:sys';
 import { isMap, isPromise } from 'node:util/types';

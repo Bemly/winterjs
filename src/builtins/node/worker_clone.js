@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
 import { codes } from "node:internal/errors";
-import { inspect as __wjsInspect } from "node:util";
+import { inspect as __wjs2Inspect } from "node:util";
 
 // node util.inspect 的字符串形（单引号——BroadcastChannel inspect 定制用）。
 function __inspectQuote(s) {
-  return __wjsInspect(String(s), { quotes: "single" });
+  return __wjs2Inspect(String(s), { quotes: "single" });
 }
 
 const __uncloneable = new WeakSet();
@@ -101,7 +101,7 @@ function __normTransfer(transfer, srcPort) {
       if (__isSAB(b)) __dataCloneErr("SharedArrayBuffer could not be cloned.");
       if (b.detached) __dataCloneErr("Detached buffer could not be cloned.");
       // 10f：池 AB 不可转移（Buffer.from 小串池化；真机 markAsUntransferable 口径）
-      if (globalThis.__wjs_bufPooled?.has(b)) __dataCloneErr("Pooled buffer could not be cloned.");
+      if (globalThis.__wjs2_bufPooled?.has(b)) __dataCloneErr("Pooled buffer could not be cloned.");
       out.push({ kind: "view", obj: t });
     } else if (__isSAB(t)) {
       __dataCloneErr("SharedArrayBuffer could not be cloned.");
@@ -110,14 +110,14 @@ function __normTransfer(transfer, srcPort) {
       // byteLength 不变；code 25/DataCloneError 由 __dataCloneErr 统一）。
       if (__untransferable.has(t)) __dataCloneErr("ArrayBuffer could not be cloned.");
       if (t.detached) __dataCloneErr("Detached buffer could not be cloned.");
-      if (globalThis.__wjs_bufPooled?.has(t)) __dataCloneErr("Pooled buffer could not be cloned.");
+      if (globalThis.__wjs2_bufPooled?.has(t)) __dataCloneErr("Pooled buffer could not be cloned.");
       out.push({ kind: "buf", obj: t });
     } else {
       // transfer-guards 套件（10f）：net.Socket/net.Server 在 transfer list 即
       // ERR_WORKER_HANDLE_NOT_TRANSFERABLE（node kTransferList 断言族；net 侧
-      // 构造时经 globalThis.__wjs_netXfer 登记，文案 errors.js 逐字）。
-      const __xt = (globalThis.__wjs_netXfer && typeof globalThis.__wjs_netXfer.get === "function")
-        ? globalThis.__wjs_netXfer.get(t) : undefined;
+      // 构造时经 globalThis.__wjs2_netXfer 登记，文案 errors.js 逐字）。
+      const __xt = (globalThis.__wjs2_netXfer && typeof globalThis.__wjs2_netXfer.get === "function")
+        ? globalThis.__wjs2_netXfer.get(t) : undefined;
       if (__xt !== undefined) {
         const e = new Error(`${__xt} cannot be transferred in its current state; it must be a freshly created or accepted handle that has not started reading and has no pending writes`);
         e.code = "ERR_WORKER_HANDLE_NOT_TRANSFERABLE";
@@ -143,42 +143,42 @@ function __packValue(v, st) {
   if (ti !== undefined) {
     st.seenTransfer.add(ti.obj);
     if (ti.kind === "port") {
-      const nonce = String(__wjs_port_offer(ti.id));
+      const nonce = String(__wjs2_port_offer(ti.id));
       if (nonce === "") __dataCloneErr("MessagePort in transfer list is already detached");
       st.neuterPorts.push({ o: ti.obj, live: true });
-      return { __wjs_xfer: st.nonce, k: "port", id: nonce };
+      return { __wjs2_xfer: st.nonce, k: "port", id: nonce };
     }
     if (ti.kind === "buf") {
       const bytes = __b64encode(new Uint8Array(ti.obj));
       __detachBuf(ti.obj);
-      return { __wjs_xfer: st.nonce, k: "buf", b: bytes };
+      return { __wjs2_xfer: st.nonce, k: "buf", b: bytes };
     }
     // view：整 underlying buffer 字节 + 偏移复原（transfer 即整块 detach）。
     const b = ti.obj.buffer;
     const bytes = __b64encode(new Uint8Array(b));
     __detachBuf(b);
-    return { __wjs_xfer: st.nonce, k: "view", t: ti.obj.constructor.name, b: bytes, o: ti.obj.byteOffset, n: ti.obj.byteLength };
+    return { __wjs2_xfer: st.nonce, k: "view", t: ti.obj.constructor.name, b: bytes, o: ti.obj.byteOffset, n: ti.obj.byteLength };
   }
   if (typeof v === "function" || typeof v === "symbol") __dataCloneErr(`${String(v)} could not be cloned.`);
   if ((typeof v === "object" && v !== null) || typeof v === "function") {
     if (__uncloneable.has(v)) __dataCloneErr("object could not be cloned.");
   }
   if ((typeof v === "object" && v !== null) && __denyClone(v)) __dataCloneErr("object could not be cloned.");
-  if (typeof v === "bigint") return { __wjs_xfer: st.nonce, k: "big", v: String(v) };
-  if (v === undefined) return { __wjs_xfer: st.nonce, k: "undef" };
-  if (v instanceof Date) return { __wjs_xfer: st.nonce, k: "date", v: v.toISOString() };
+  if (typeof v === "bigint") return { __wjs2_xfer: st.nonce, k: "big", v: String(v) };
+  if (v === undefined) return { __wjs2_xfer: st.nonce, k: "undef" };
+  if (v instanceof Date) return { __wjs2_xfer: st.nonce, k: "date", v: v.toISOString() };
   if (v instanceof Map) {
     // 容器先序 id：首访编号，祖先/共享重访即 `ref`（解码侧同序注册，恒后向引用）。
     const hit = st.path.get(v);
-    if (hit !== undefined) return { __wjs_xfer: st.nonce, k: "ref", id: hit };
+    if (hit !== undefined) return { __wjs2_xfer: st.nonce, k: "ref", id: hit };
     st.path.set(v, st.nextId++);
-    return { __wjs_xfer: st.nonce, k: "map", v: [...v].map(([k2, v2]) => [__packValue(k2, st), __packValue(v2, st)]) };
+    return { __wjs2_xfer: st.nonce, k: "map", v: [...v].map(([k2, v2]) => [__packValue(k2, st), __packValue(v2, st)]) };
   }
   if (v instanceof Set) {
     const hit = st.path.get(v);
-    if (hit !== undefined) return { __wjs_xfer: st.nonce, k: "ref", id: hit };
+    if (hit !== undefined) return { __wjs2_xfer: st.nonce, k: "ref", id: hit };
     st.path.set(v, st.nextId++);
-    return { __wjs_xfer: st.nonce, k: "set", v: [...v].map((x) => __packValue(x, st)) };
+    return { __wjs2_xfer: st.nonce, k: "set", v: [...v].map((x) => __packValue(x, st)) };
   }
   if (v instanceof MessagePort) {
     // 裸端口 vs 容器内端口文案分形（node V8 序列化器口径，broadcastchannel
@@ -188,26 +188,26 @@ function __packValue(v, st) {
   if (typeof SharedArrayBuffer === "function" && v instanceof SharedArrayBuffer) {
     // 10f 对拍：node postMessage(SAB) = 品牌保真的**副本**（真共享内存需跨线程
     // 底座，记档）；无 SAB 全局时不可达（typeof 守卫，§4.58）。
-    return { __wjs_xfer: st.nonce, k: "sab", b: __b64encode(new Uint8Array(v)) };
+    return { __wjs2_xfer: st.nonce, k: "sab", b: __b64encode(new Uint8Array(v)) };
   }
   if (v instanceof ArrayBuffer) {
     if (v.detached) __dataCloneErr("Detached buffer could not be cloned.");
-    return { __wjs_xfer: st.nonce, k: "buf", b: __b64encode(new Uint8Array(v)) };
+    return { __wjs2_xfer: st.nonce, k: "buf", b: __b64encode(new Uint8Array(v)) };
   }
   if (ArrayBuffer.isView(v)) {
     const b = v.buffer;
     if (b.detached) __dataCloneErr("Detached buffer could not be cloned.");
-    return { __wjs_xfer: st.nonce, k: "view", t: v.constructor.name, b: __b64encode(new Uint8Array(b)), o: v.byteOffset, n: v.byteLength };
+    return { __wjs2_xfer: st.nonce, k: "view", t: v.constructor.name, b: __b64encode(new Uint8Array(b)), o: v.byteOffset, n: v.byteLength };
   }
   if (Array.isArray(v)) {
     const hit = st.path.get(v);
-    if (hit !== undefined) return { __wjs_xfer: st.nonce, k: "ref", id: hit };
+    if (hit !== undefined) return { __wjs2_xfer: st.nonce, k: "ref", id: hit };
     st.path.set(v, st.nextId++);
     return v.map((x) => __packValue(x, st));
   }
   if (v !== null && typeof v === "object") {
     const hit = st.path.get(v);
-    if (hit !== undefined) return { __wjs_xfer: st.nonce, k: "ref", id: hit };
+    if (hit !== undefined) return { __wjs2_xfer: st.nonce, k: "ref", id: hit };
     st.path.set(v, st.nextId++);
     const out = {};
     st.depth++;
@@ -227,7 +227,7 @@ function __unpackValue(v, st) {
     return a;
   }
   if (v !== null && typeof v === "object") {
-    if (v.__wjs_xfer === st.nonce) {
+    if (v.__wjs2_xfer === st.nonce) {
       switch (v.k) {
         case "ref": return st.refs[v.id];
         case "big": return BigInt(v.v);
@@ -266,7 +266,7 @@ function __unpackValue(v, st) {
           return new Ctor(u8.buffer, o, Number.isFinite(n) ? n / bpe : undefined);
         }
         case "port": {
-          const local = String(__wjs_port_accept(String(v.id)));
+          const local = String(__wjs2_port_accept(String(v.id)));
           if (local === "") __dataCloneErr("MessagePort in transfer list is already detached");
           return new MessagePort(local);
         }
@@ -296,9 +296,9 @@ function __toWire(value, transfer, srcPort) {
   for (const t of list) {
     if (st.seenTransfer.has(t.obj)) continue;
     if (t.kind === "port") {
-      const nonce = String(__wjs_port_offer(t.obj.__id));
+      const nonce = String(__wjs2_port_offer(t.obj.__id));
       if (nonce !== "") {
-        __wjs_port_withdraw(nonce);
+        __wjs2_port_withdraw(nonce);
         st.neuterPorts.push({ o: t.obj, live: false });
       }
     } else if (t.kind === "buf") {
@@ -310,7 +310,7 @@ function __toWire(value, transfer, srcPort) {
   let json;
   try {
     // 顶层信封：nonce 随信封走（嵌套 marker 认领用；单 JSON 串，通道零改动）。
-    json = JSON.stringify({ __wjs_env: st.nonce, d: tree }) ?? "null";
+    json = JSON.stringify({ __wjs2_env: st.nonce, d: tree }) ?? "null";
   } catch {
     __dataCloneErr("object could not be cloned.");
   }
@@ -321,10 +321,10 @@ function __toWire(value, transfer, srcPort) {
 }
 
 // 10f：worker 未捕获的**原始值**（throw 42 / "boom" / Symbol.for('a') 等）经
-// Rust 捕获点打包 `__wjs_prim:{json}` 信封（Error::Script kind=None 且非对象
+// Rust 捕获点打包 `__wjs2_prim:{json}` 信封（Error::Script kind=None 且非对象
 // 异常时 message 即信封），error 事件按类还原（error-primitive 套件逐类型断
 // 同一性；注册 Symbol 经 Symbol.for 还原即跨线程同一）。
-function __wjs_primFromText(json) {
+function __wjs2_primFromText(json) {
   let o;
   try { o = JSON.parse(json); } catch { return undefined; }
   switch (o.t) {
@@ -348,8 +348,8 @@ function __fromWire(json) {
     err.name = "MessageError";
     throw err;
   }
-  if (raw !== null && typeof raw === "object" && typeof raw.__wjs_env === "string" && "d" in raw) {
-    return __unpackValue(raw.d, { nonce: raw.__wjs_env, refs: [], nextId: 0 });
+  if (raw !== null && typeof raw === "object" && typeof raw.__wjs2_env === "string" && "d" in raw) {
+    return __unpackValue(raw.d, { nonce: raw.__wjs2_env, refs: [], nextId: 0 });
   }
   // v1 载荷（本二进制内不产生；防御性直通，无 marker 可误认）。
   return raw;
@@ -373,11 +373,11 @@ export class MessagePort extends EventEmitter {
     // 注意 newListener 在监听入表*之前*触发，故延迟一轮 microtask 再刷。
     this.on("newListener", (ev) => { if (ev === "message") queueMicrotask(() => this.__maybeFlush()); });
     // 监听门控计数：有 message 监听才续命事件循环（worker 空转即退，Node 口径）。
-    this.on("newListener", (ev) => { if (ev === "message") __wjs_port_listen(__id); });
+    this.on("newListener", (ev) => { if (ev === "message") __wjs2_port_listen(__id); });
     this.on("removeListener", (ev) => {
-      if (ev === "message" && this.listenerCount("message") === 0) __wjs_port_unlisten(__id);
+      if (ev === "message" && this.listenerCount("message") === 0) __wjs2_port_unlisten(__id);
     });
-    __wjs_port_attach(__id, this);
+    __wjs2_port_attach(__id, this);
   }
   // onmessage 兼容面（真机语义：赋值即隐式开始流动——经 addEventListener 走
   // newListener 开闸；回调收真 MessageEvent（data/target/ports，真机逐项
@@ -388,7 +388,7 @@ export class MessagePort extends EventEmitter {
     this.__onmessage = (typeof fn === "function") ? fn : null;
     if (this.__onmessage) {
       this.__onmessageWrap = (value) => {
-        this.__onmessage(new globalThis.MessageEvent("message", { data: value, __wjsTarget: this }));
+        this.__onmessage(new globalThis.MessageEvent("message", { data: value, __wjs2Target: this }));
       };
       this.on("message", this.__onmessageWrap);
     } else {
@@ -408,7 +408,7 @@ export class MessagePort extends EventEmitter {
     if (byType.has(t)) return;
     const wrap = (value) => {
       const ev = isMsg
-        ? new globalThis.MessageEvent(t, { data: value, __wjsTarget: this })
+        ? new globalThis.MessageEvent(t, { data: value, __wjs2Target: this })
         : new globalThis.CustomEvent(t, { detail: value });
       fn.call(this, ev);
     };
@@ -460,9 +460,9 @@ export class MessagePort extends EventEmitter {
       // 迁移升级到达：源端排队消息经现转发路由排空后静默摘除。
       const pending = this.__queue.splice(0);
       for (const wire of pending) {
-        try { __wjs_port_post(this.__id, String(wire)); } catch { /* 丢弃 */ }
+        try { __wjs2_port_post(this.__id, String(wire)); } catch { /* 丢弃 */ }
       }
-      try { __wjs_port_detach(this.__id); } catch { /* 忽略 */ }
+      try { __wjs2_port_detach(this.__id); } catch { /* 忽略 */ }
       return;
     }
     if (kind !== "message") return;
@@ -476,27 +476,27 @@ export class MessagePort extends EventEmitter {
     // 10f 对拍：本地 pair 经 Rust pending 表投递——`receiveMessageOnPort`
     // 同步可收（receive-message 套件），事件派发仍由 pump 逐轮驱动（node 的
     // task 级节奏；纯微任务链式 ping-pong 会饿死定时器，infinite-loop 实证）。
-    __wjs_port_post(this.__id, wire);
+    __wjs2_port_post(this.__id, wire);
   }
   start() {}
   close() {
     if (this.__closed || this.__neutered) return;
     this.__closed = true;
     this.__queue.length = 0;
-    __wjs_port_close(this.__id);
+    __wjs2_port_close(this.__id);
     this.emit("close");
   }
   ref() {
-    __wjs_port_ref(this.__id);
+    __wjs2_port_ref(this.__id);
     return this;
   }
   unref() {
-    __wjs_port_unref(this.__id);
+    __wjs2_port_unref(this.__id);
     return this;
   }
   hasRef() {
     try {
-      return Boolean(__wjs_port_has_ref(this.__id));
+      return Boolean(__wjs2_port_has_ref(this.__id));
     } catch {
       return true;
     }
@@ -514,11 +514,11 @@ export function receiveMessageOnPort(port) {
   // 10f：优先 Rust pending 表（postMessage 本地路由的同步收信口）；再退 JS
   // 队列（迁移/BC 排队/历史路径）。
   if (port instanceof MessagePort) {
-    const wire = __wjs_port_try_recv(port.__id);
+    const wire = __wjs2_port_try_recv(port.__id);
     if (wire !== "") return { message: __fromWire(wire) };
   }
   if (port instanceof BroadcastChannel) {
-    const wire = __wjs_bc_try_recv(port.__sub);
+    const wire = __wjs2_bc_try_recv(port.__sub);
     if (wire !== "") return { message: __fromWire(wire) };
   }
   if (port.__queue.length === 0) return undefined;
@@ -537,7 +537,7 @@ export function moveMessagePortToContext(port, context) {
 
 export class MessageChannel {
   constructor() {
-    const [a, b] = String(__wjs_port_pair()).split(" ");
+    const [a, b] = String(__wjs2_port_pair()).split(" ");
     this.port1 = new MessagePort(a);
     this.port2 = new MessagePort(b);
   }

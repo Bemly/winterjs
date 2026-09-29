@@ -5,7 +5,7 @@ use assert_fs::prelude::*;
 
 #[test]
 fn phase4_node_os_basic() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const os = await import("node:os"); console.log([os.platform(), os.arch()].join(",")); console.log(os.EOL.length, os.hostname().length > 0, os.tmpdir().length > 0, os.totalmem() > 0, os.freemem() >= 0, os.cpus().length > 0, typeof os.cpus()[0].model, Object.keys(os.networkInterfaces()).length > 0, os.userInfo().username.length >= 0, os.uptime() >= 0, os.loadavg().length, os.release().length >= 0);"#]));
     let mut lines = out.lines();
     let pa = lines.next().unwrap_or("");
@@ -72,7 +72,7 @@ console.log("cidr", Object.values(os.networkInterfaces()).flat().every((e) => ty
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -155,7 +155,7 @@ catch (e) { console.log(e.code === "ERR_SYSTEM_ERROR" ? "restore-denied" : "FAIL
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())

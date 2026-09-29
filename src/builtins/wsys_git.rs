@@ -1,4 +1,4 @@
-//! 本体 git 只读面（WinterJS.git.revParse/log；gix 底座，clone 另案）。
+//! 本体 git 只读面（WinterJS2.git.revParse/log；gix 底座，clone 另案）。
 //!
 //! 纯搬移拆分自 wsys.rs（§0.9 超限拆分；调用方经 wsys 原位重导出）。
 //! UNSAFE-BOUNDARY：全部 JSNative 入口经 `wrap_cx` + `Frame::from_raw`
@@ -36,7 +36,7 @@ fn git_open(cx: &mut JSContext, frame: &Frame, i: u32, what: &str) -> Option<gix
     }
 }
 
-/// `__wjs_wsys_git_rev_parse(path, rev)` → sha。
+/// `__wjs2_wsys_git_rev_parse(path, rev)` → sha。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_git_faces`。
 pub unsafe extern "C" fn git_rev_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -63,7 +63,7 @@ pub unsafe extern "C" fn git_rev_parse(
     }
 }
 
-/// `__wjs_wsys_git_log(path, rev, n)` → `[{sha,title}]` JSON（n 封顶 100）。
+/// `__wjs2_wsys_git_log(path, rev, n)` → `[{sha,title}]` JSON（n 封顶 100）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_git_faces`。
 pub unsafe extern "C" fn git_log(
     cx_raw: *mut mozjs::jsapi::JSContext,

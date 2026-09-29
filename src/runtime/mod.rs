@@ -161,7 +161,7 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
             crate::builtins::node::worker::term_install(raw);
         }
 
-        let prelude_filename = CString::new("__wjs_prelude.js").expect("no NUL");
+        let prelude_filename = CString::new("__wjs2_prelude.js").expect("no NUL");
         let prelude_options = CompileOptionsWrapper::new(&realm, prelude_filename, 1);
         rooted!(&in(&mut realm) let mut prelude_rval = UndefinedValue());
         // prelude 是项目自带常量脚本，语法必然正确
@@ -176,7 +176,7 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
             return Err(pending_error_in_realm(
                 &mut realm,
                 builtins::PRELUDE.as_str(),
-                "__wjs_prelude.js",
+                "__wjs2_prelude.js",
                 0,
             ));
         }
@@ -194,7 +194,7 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
         }
         // Phase 4a：node 全局（process；同“语法必然正确”约定，失败即内部错）。
         let node_prelude = crate::builtins::node::node_prelude();
-        let node_filename = CString::new("__wjs_node_prelude.js").expect("no NUL");
+        let node_filename = CString::new("__wjs2_node_prelude.js").expect("no NUL");
         let node_options = CompileOptionsWrapper::new(&realm, node_filename, 1);
         rooted!(&in(&mut realm) let mut node_rval = UndefinedValue());
         let ok = evaluate_script(
@@ -208,20 +208,20 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
             return Err(pending_error_in_realm(
                 &mut realm,
                 &node_prelude,
-                "__wjs_node_prelude.js",
+                "__wjs2_node_prelude.js",
                 0,
             ));
         }
 
         // 缓存 prelude 辅助函数值（timers/structuredClone/fetch/ws 交付要用）
         for (prop, idx) in [
-            (c"__wjs_call", 0u8),
-            (c"__wjs_entries", 1u8),
-            (c"__wjs_make_response", 2u8),
-            (c"__wjs_make_fetch_error", 3u8),
-            (c"__wjs_ws_emit", 4u8),
-            (c"__wjs_uncaught", 5u8),
-            (c"__wjs_uncaught_count", 6u8),
+            (c"__wjs2_call", 0u8),
+            (c"__wjs2_entries", 1u8),
+            (c"__wjs2_make_response", 2u8),
+            (c"__wjs2_make_fetch_error", 3u8),
+            (c"__wjs2_ws_emit", 4u8),
+            (c"__wjs2_uncaught", 5u8),
+            (c"__wjs2_uncaught_count", 6u8),
         ] {
             rooted!(&in(&mut realm) let mut v = UndefinedValue());
             // SAFETY: global 为有效 rooted 对象
@@ -576,10 +576,10 @@ async fn event_loop(
             watches_settled += 1;
         }};
     }
-    // 排障：`WINTERJS_HANG_EXIT=<秒>`（sweep 缺省 20）——事件循环持续无进展超时即发
+    // 排障：`WINTERJS2_HANG_EXIT=<秒>`（sweep 缺省 20）——事件循环持续无进展超时即发
     // process 'exit'（node 套件 common 的 mustCall 核对随之打印"哪个回调没被调"及其
     // 创建栈），再以 1 退出。把 TIMEOUT 件变成带定位的红件；未设即不启用（默认语义不变）。
-    let hang_limit = std::env::var("WINTERJS_HANG_EXIT")
+    let hang_limit = std::env::var("WINTERJS2_HANG_EXIT")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&n| n > 0)
@@ -776,7 +776,7 @@ async fn event_loop(
             }
         }
     }
-    tracing::info!(target: "winterjs::runtime", iterations, timers_fired, fetches_settled, ws_settled, watches_settled, children_settled, nets_settled, workers_settled, quics_settled, napis_settled, dispatches_settled, "event loop drained");
+    tracing::info!(target: "winterjs2::runtime", iterations, timers_fired, fetches_settled, ws_settled, watches_settled, children_settled, nets_settled, workers_settled, quics_settled, napis_settled, dispatches_settled, "event loop drained");
 
     report_unhandled_rejections(rt, global)
 }
@@ -794,7 +794,7 @@ fn report_unhandled_rejections(
             .collect::<Vec<*mut JSObject>>()
     });
     if !unhandled.is_empty() {
-        tracing::warn!(target: "winterjs::runtime", count = unhandled.len(), "unhandled rejections detected");
+        tracing::warn!(target: "winterjs2::runtime", count = unhandled.len(), "unhandled rejections detected");
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         let (on_fulfilled, on_rejected) = state::capture_native_values();
         for promise_obj in unhandled {
@@ -824,10 +824,10 @@ fn report_unhandled_rejections(
     Ok(())
 }
 
-/// `WINTERJS_HANG_EXIT` 到点：打印存活句柄计数，发 process 'exit'（mustCall 核对）。
+/// `WINTERJS2_HANG_EXIT` 到点：打印存活句柄计数，发 process 'exit'（mustCall 核对）。
 fn hang_exit(rt: &mut Runtime, global: &RootedGuard<'_, *mut JSObject>, lim: std::time::Duration) {
     eprintln!(
-        "winterjs: event loop made no progress for {}s (WINTERJS_HANG_EXIT) — open: timers={} fetch={} \
+        "winterjs2: event loop made no progress for {}s (WINTERJS2_HANG_EXIT) — open: timers={} fetch={} \
          ws={} stream={} watch={} child={} net={} worker={} quic={} napi={} dispatch={}",
         lim.as_secs(),
         timers::next_deadline().is_some() as u8,
@@ -852,19 +852,19 @@ mod tests {
 
     #[test]
     fn exit_sentinel_parse() {
-        assert_eq!(exit_code_from_message("__wjs_exit:3"), Some(3));
-        assert_eq!(exit_code_from_message("__wjs_exit: 0"), Some(0));
-        assert_eq!(exit_code_from_message("unhandled rejection: __wjs_exit:2"), Some(2));
-        assert_eq!(exit_code_from_message("__wjs_exit:abc"), None);
+        assert_eq!(exit_code_from_message("__wjs2_exit:3"), Some(3));
+        assert_eq!(exit_code_from_message("__wjs2_exit: 0"), Some(0));
+        assert_eq!(exit_code_from_message("unhandled rejection: __wjs2_exit:2"), Some(2));
+        assert_eq!(exit_code_from_message("__wjs2_exit:abc"), None);
         assert_eq!(exit_code_from_message("plain-boom"), None);
         assert_eq!(exit_code_from_message(""), None);
         // 位置前缀不误判（收割串自带位置时由旗兜底，此处只认裸哨兵）。
-        assert_eq!(exit_code_from_message("a.mjs:1:1: __wjs_exit:3"), None);
+        assert_eq!(exit_code_from_message("a.mjs:1:1: __wjs2_exit:3"), None);
     }
 
     #[test]
     fn exit_sentinel_map() {
-        let err = Error::Other("__wjs_exit:9".into());
+        let err = Error::Other("__wjs2_exit:9".into());
         assert!(matches!(map_exit_sentinel(err), Error::Exit(9)));
         let err = Error::Other("boom".into());
         assert!(matches!(map_exit_sentinel(err), Error::Other(_)));

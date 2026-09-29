@@ -109,7 +109,7 @@ pub(crate) async fn install_one_git(
     spec: &GitSpec,
     cwd: &Path,
 ) -> Result<(String, String), Error> {
-    tracing::info!(target: "winterjs::pm", url = spec.url.as_str(), "installing git package");
+    tracing::info!(target: "winterjs2::pm", url = spec.url.as_str(), "installing git package");
     let mut rand = [0u8; 4];
     getrandom::fill(&mut rand)
         .map_err(|e| Error::Other(format!("cannot get random values: {e}")))?;
@@ -121,7 +121,7 @@ pub(crate) async fn install_one_git(
             Ok(c) => c,
             // 裸仓/打不开：回落 `git clone`（file:// 天然支持，含 bare 源）。
             Err(e) => {
-                tracing::debug!(target: "winterjs::pm", "local gix path failed, trying git clone: {e}");
+                tracing::debug!(target: "winterjs2::pm", "local gix path failed, trying git clone: {e}");
                 clone_remote(&path.to_string_lossy(), spec.rev.as_deref(), &staging).await?;
                 parse_commit(&staging, "HEAD").map_err(Error::Other)?
             }
@@ -134,7 +134,7 @@ pub(crate) async fn install_one_git(
     let staged_name = package_name(&staging).map_err(Error::Other)?;
     let name = spec.name.clone().unwrap_or_else(|| staged_name.clone());
     if name != staged_name {
-        tracing::warn!(target: "winterjs::pm", expected = name.as_str(), found = staged_name.as_str(), "package.json name mismatch");
+        tracing::warn!(target: "winterjs2::pm", expected = name.as_str(), found = staged_name.as_str(), "package.json name mismatch");
     }
     let dest = nm.join(&name);
     if dest.exists() {
@@ -230,7 +230,7 @@ async fn clone_remote(url: &str, rev: Option<&str>, dst: &Path) -> Result<(), Er
     }
     // 克隆自带的 `.git` 不进 node_modules（tarball 无此物，对齐）。
     let _ = std::fs::remove_dir_all(dst.join(".git"));
-    tracing::debug!(target: "winterjs::pm", url, rev = rev.unwrap_or("HEAD"), "git cloned");
+    tracing::debug!(target: "winterjs2::pm", url, rev = rev.unwrap_or("HEAD"), "git cloned");
     Ok(())
 }
 

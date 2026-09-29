@@ -64,7 +64,7 @@ fn phase11_serve_h3_skipped_without_cert() {
     use std::io::Read;
     let dir = serve_fixture();
     let port = free_port();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs2"))
         .args(["--serve", ".", "--port"])
         .arg(port.to_string())
         .current_dir(dir.path())

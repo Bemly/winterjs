@@ -119,7 +119,7 @@ export class QuicEndpoint extends EventEmitter {
     this.__id = __id;
     this.__closed = false;
     this.__ev = this.__ev.bind(this);
-    __wjs_quic_ep_attach(__id, this);
+    __wjs2_quic_ep_attach(__id, this);
   }
   __ev(kind, payload) {
     if (kind === "session") {
@@ -135,13 +135,13 @@ export class QuicEndpoint extends EventEmitter {
     }
   }
   address() {
-    const s = __callNative(() => __wjs_quic_ep_addr(this.__id));
+    const s = __callNative(() => __wjs2_quic_ep_addr(this.__id));
     const { host, port } = __parseAddr(String(s));
     return { address: host, port, family: host.includes(":") ? "IPv6" : "IPv4" };
   }
   close() {
     if (this.__closed) return;
-    __callNative(() => __wjs_quic_ep_close(this.__id));
+    __callNative(() => __wjs2_quic_ep_close(this.__id));
   }
 }
 
@@ -159,7 +159,7 @@ export class QuicSession extends EventEmitter {
     this.__closed = false;
     this.__h3Pending = new Set();
     this.__ev = this.__ev.bind(this);
-    __wjs_quic_sess_attach(__id, this);
+    __wjs2_quic_sess_attach(__id, this);
   }
   __ev(kind, payload) {
     if (kind === "secure") {
@@ -191,7 +191,7 @@ export class QuicSession extends EventEmitter {
           const b64 = body === undefined || body === null ? ""
             : Buffer.isBuffer(body) ? body.toString("base64")
             : Buffer.from(body).toString("base64");
-          __callNative(() => __wjs_quic_h3_respond(this.__id, info.streamId,
+          __callNative(() => __wjs2_quic_h3_respond(this.__id, info.streamId,
             JSON.stringify({ status, headers, body: b64 })));
         },
       };
@@ -208,14 +208,14 @@ export class QuicSession extends EventEmitter {
   get alpnProtocol() {
     if (!this.__secure) return null;
     if (this.__peer.alpn) return this.__peer.alpn;
-    const info = JSON.parse(__callNative(() => __wjs_quic_sess_info(this.__id)));
+    const info = JSON.parse(__callNative(() => __wjs2_quic_sess_info(this.__id)));
     return info.alpn || null;
   }
   get servername() {
     if (!this.__secure) return null;
     // 发起侧 handshake 无 SNI 回显（quinn 口径恒 None），用 secure 事件缓存值。
     if (this.__peer.servername) return this.__peer.servername;
-    const info = JSON.parse(__callNative(() => __wjs_quic_sess_info(this.__id)));
+    const info = JSON.parse(__callNative(() => __wjs2_quic_sess_info(this.__id)));
     return info.servername || null;
   }
   get localAddress() { return this.__addrOf("local"); }
@@ -225,14 +225,14 @@ export class QuicSession extends EventEmitter {
       const { host, port } = __parseAddr(this.__peer.remote);
       return { address: host, port, family: host.includes(":") ? "IPv6" : "IPv4" };
     }
-    const info = JSON.parse(__callNative(() => __wjs_quic_sess_info(this.__id)));
+    const info = JSON.parse(__callNative(() => __wjs2_quic_sess_info(this.__id)));
     const raw = which === "local" ? info.local : info.remote;
     if (!raw) return null;
     const { host, port } = __parseAddr(raw);
     return { address: host, port, family: host.includes(":") ? "IPv6" : "IPv4" };
   }
   stats() {
-    return JSON.parse(__callNative(() => __wjs_quic_sess_stats(this.__id)));
+    return JSON.parse(__callNative(() => __wjs2_quic_sess_stats(this.__id)));
   }
   close(code = 0) {
     if (typeof code !== "number" || !Number.isInteger(code) || code < 0) {
@@ -240,7 +240,7 @@ export class QuicSession extends EventEmitter {
       err.code = "ERR_OUT_OF_RANGE";
       throw err;
     }
-    __callNative(() => __wjs_quic_sess_close(this.__id, String(code)));
+    __callNative(() => __wjs2_quic_sess_close(this.__id, String(code)));
   }
   destroy(err) {
     void err;
@@ -256,7 +256,7 @@ export class QuicSession extends EventEmitter {
     const b64 = body === undefined || body === null ? ""
       : Buffer.isBuffer(body) ? body.toString("base64")
       : Buffer.from(body).toString("base64");
-    const sid = __callNative(() => __wjs_quic_h3_request(this.__id,
+    const sid = __callNative(() => __wjs2_quic_h3_request(this.__id,
       JSON.stringify({ method, path, headers, body: b64 })));
     const target = new EventEmitter();
     target.__ev = (kind, payload) => {
@@ -275,7 +275,7 @@ export class QuicSession extends EventEmitter {
     };
     const fail = () => target.emit("closed");
     this.__h3Pending.add(fail);
-    __wjs_quic_stream_attach(String(sid), target);
+    __wjs2_quic_stream_attach(String(sid), target);
     return new Promise((resolve, reject) => {
       target.once("response", resolve);
       target.once("error", reject);
@@ -288,7 +288,7 @@ export class QuicSession extends EventEmitter {
     return this.__openStream("uni");
   }
   __openStream(dir) {
-    const sid = __callNative(() => __wjs_quic_sess_open(this.__id, dir));
+    const sid = __callNative(() => __wjs2_quic_sess_open(this.__id, dir));
     const stream = new QuicStream(String(sid), { dir: dir === "bidi" ? "bidi" : "send", qid: null });
     return new Promise((resolve, reject) => {
       stream.__pendingOpen = { resolve, reject };
@@ -296,10 +296,10 @@ export class QuicSession extends EventEmitter {
   }
   sendDatagram(data) {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data ?? ""));
-    return Boolean(__callNative(() => __wjs_quic_sess_send_dgram(this.__id, buf)));
+    return Boolean(__callNative(() => __wjs2_quic_sess_send_dgram(this.__id, buf)));
   }
   get maxDatagramSize() {
-    return Number(__callNative(() => __wjs_quic_sess_max_dgram(this.__id)));
+    return Number(__callNative(() => __wjs2_quic_sess_max_dgram(this.__id)));
   }
 }
 
@@ -333,7 +333,7 @@ export class QuicStream extends EventEmitter {
     this.__closeCode = 0;
     this.__pendingOpen = null;
     this.__ev = this.__ev.bind(this);
-    __wjs_quic_stream_attach(__id, this);
+    __wjs2_quic_stream_attach(__id, this);
   }
   __ev(kind, payload) {
     if (kind === "opened") {
@@ -393,7 +393,7 @@ export class QuicStream extends EventEmitter {
       throw err;
     }
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ""), encoding ?? "utf8");
-    const ok = __callNative(() => __wjs_quic_stream_write(this.__id, buf));
+    const ok = __callNative(() => __wjs2_quic_stream_write(this.__id, buf));
     if (!ok) {
       const err = new Error("Write after end.");
       err.code = "ERR_STREAM_WRITE_AFTER_END";
@@ -404,16 +404,16 @@ export class QuicStream extends EventEmitter {
   end(data, encoding) {
     if (data !== undefined) this.write(data, encoding);
     this.__ended = true;
-    __callNative(() => __wjs_quic_stream_finish(this.__id));
+    __callNative(() => __wjs2_quic_stream_finish(this.__id));
     return this;
   }
   close() {
     this.__ended = true;
-    __callNative(() => __wjs_quic_stream_finish(this.__id));
+    __callNative(() => __wjs2_quic_stream_finish(this.__id));
   }
   destroy(err) {
-    __callNative(() => __wjs_quic_stream_reset(this.__id, 0));
-    __callNative(() => __wjs_quic_stream_stop(this.__id, 0));
+    __callNative(() => __wjs2_quic_stream_reset(this.__id, 0));
+    __callNative(() => __wjs2_quic_stream_stop(this.__id, 0));
     if (err !== undefined && err !== null) {
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
     }
@@ -421,11 +421,11 @@ export class QuicStream extends EventEmitter {
   }
   stopSending(code = 0) {
     const c = __normStreamCode(code, "code");
-    __callNative(() => __wjs_quic_stream_stop(this.__id, c));
+    __callNative(() => __wjs2_quic_stream_stop(this.__id, c));
   }
   resetStream(code = 0) {
     const c = __normStreamCode(code, "code");
-    __callNative(() => __wjs_quic_stream_reset(this.__id, c));
+    __callNative(() => __wjs2_quic_stream_reset(this.__id, c));
   }
 }
 
@@ -450,7 +450,7 @@ export async function listen(callback, options = {}) {
   // 校验提在 native 调用之外（包进 __callNative 会被重包成 ERR_QUIC_ERROR）。
   const idleMs = __normIdle(options.idleTimeout);
   const ccName = __normCc(options.cc);
-  const id = __callNative(() => __wjs_quic_listen(JSON.stringify({
+  const id = __callNative(() => __wjs2_quic_listen(JSON.stringify({
     host, port, alpn,
     key_pem: String(options.key), cert_pem: String(options.cert),
     idle_timeout_ms: idleMs, cc: ccName,
@@ -473,7 +473,7 @@ export async function connect(address, options = {}) {
   const caPem = options.ca === undefined ? undefined : String(options.ca);
   const idleMs = __normIdle(options.idleTimeout);
   const ccName = __normCc(options.cc);
-  const id = __callNative(() => __wjs_quic_connect(JSON.stringify({
+  const id = __callNative(() => __wjs2_quic_connect(JSON.stringify({
     host, port, alpn,
     servername,
     ca_pem: caPem,

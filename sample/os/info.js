@@ -1,6 +1,6 @@
 // node:os: platform / arch / cpus / memory / user / uptime / network.
 // 系统信息：平台、架构、CPU、内存、用户、运行时长与网卡。
-// Run / 运行: winterjs --run sample/os/info.js
+// Run / 运行: winterjs2 --run sample/os/info.js
 import os from 'node:os';
 
 console.log('[os] platform/arch/release:', os.platform(), os.arch(), typeof os.release());

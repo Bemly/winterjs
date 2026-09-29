@@ -130,7 +130,7 @@ export function readSync(fd, buffer, offsetOrOptions, length, position) {
   if (buffer.byteLength === 0) __fsEmptyBufferErr(buffer);
   __vOffsetLength(offset, length, buffer.byteLength);
   const chunk = __fsCall("read", "", () =>
-    __wjs_fs_read_fd(fd, length, typeof position === "bigint" ? Number(position) : position));
+    __wjs2_fs_read_fd(fd, length, typeof position === "bigint" ? Number(position) : position));
   buffer.set(chunk, offset);
   return chunk.length;
 }
@@ -181,7 +181,7 @@ export function writeSync(fd, buffer, offsetOrOptions, length, position) {
   } else {
     __vBuffer(buffer);
   }
-  return Number(__fsCall("write", "", () => __wjs_fs_write_fd(fd, data, pos)));
+  return Number(__fsCall("write", "", () => __wjs2_fs_write_fd(fd, data, pos)));
 }
 // node validateOffsetLengthWrite 逐字：length > byteLength - offset 即 OOR。
 function __fsValidateOffsetLengthWrite(offset, length, byteLength) {
@@ -206,30 +206,30 @@ function __fsValidateBufferArray(buffers) {
 export function ftruncateSync(fd, len) {
   __vFd(fd);
   const n = __fsLenArg(len);
-  __fsCall("ftruncate", "", () => __wjs_fs_ftruncate(fd, n));
+  __fsCall("ftruncate", "", () => __wjs2_fs_ftruncate(fd, n));
 }
 export function fsyncSync(fd) {
   __vFd(fd);
-  __fsCall("fsync", "", () => __wjs_fs_fsync(fd, false));
+  __fsCall("fsync", "", () => __wjs2_fs_fsync(fd, false));
 }
 export function fdatasyncSync(fd) {
   __vFd(fd);
-  __fsCall("fsync", "", () => __wjs_fs_fsync(fd, true));
+  __fsCall("fsync", "", () => __wjs2_fs_fsync(fd, true));
 }
 export function fstatSync(fd) {
   __vFd(fd);
   // throwIfNoEntry 只豁免路径 ENOENT——fd EBADF 恒抛（stat-bigint 套件逐项）。
   const __o = arguments[1];
-  return new __Stats(JSON.parse(__fsCall("fstat", "", () => __wjs_fs_fstat(fd))), __o?.bigint === true);
+  return new __Stats(JSON.parse(__fsCall("fstat", "", () => __wjs2_fs_fstat(fd))), __o?.bigint === true);
 }
 export function fchmodSync(fd, mode) {
   __vFd(fd);
   __vModeArg(mode);
-  __fsCall("fchmod", "", () => __wjs_fs_fchmod(fd, __fsModeNum(mode)));
+  __fsCall("fchmod", "", () => __wjs2_fs_fchmod(fd, __fsModeNum(mode)));
 }
 export function futimesSync(fd, atime, mtime) {
   __vFd(fd);
-  __fsCall("futimes", "", () => __wjs_fs_futimes(fd, __fsUtimeMs(atime, "atime"), __fsUtimeMs(mtime, "mtime")));
+  __fsCall("futimes", "", () => __wjs2_fs_futimes(fd, __fsUtimeMs(atime, "atime"), __fsUtimeMs(mtime, "mtime")));
 }
 // ---- 9c：opendir / Dir（惰性游标，readdir 底座，记档非真流式）----
 // node lib/internal/fs/dir.js 同构（10f 对拍）：path 原型 getter 带 brand 门
@@ -409,7 +409,7 @@ export class FileHandle extends EventEmitter {
     if (this.__closePromise) return this.__closePromise;
     const fd = this.fd;
     this.__closePromise = Promise.resolve()
-      .then(() => __fsCall("close", "", () => __wjs_fs_close(fd)))
+      .then(() => __fsCall("close", "", () => __wjs2_fs_close(fd)))
       .then(() => {
         this.fd = -1;
         this.emit("close");
@@ -462,7 +462,7 @@ export class FileHandle extends EventEmitter {
       const pos = typeof offset === "number" ? offset : -1;
       const enc = typeof length === "string" ? length : "utf8";
       const bytes = enc === "utf8" ? __fsData(buffer, "write") : Buffer.from(buffer, enc);
-      const n = __fsCall("write", "", () => __wjs_fs_write_fd(this.fd, bytes, pos));
+      const n = __fsCall("write", "", () => __wjs2_fs_write_fd(this.fd, bytes, pos));
       return { bytesWritten: n || 0, buffer };
     });
   }
@@ -543,7 +543,7 @@ export class FileHandle extends EventEmitter {
       if (st.size > __kIoMaxLength) throw __fsFileTooLarge(st.size);
       const parts = [];
       while (true) {
-        const chunk = __fsCall("read", "", () => __wjs_fs_read_fd(this.fd, 1 << 20, -1));
+        const chunk = __fsCall("read", "", () => __wjs2_fs_read_fd(this.fd, 1 << 20, -1));
         if (chunk.length === 0) break;
         parts.push(chunk);
       }
@@ -617,7 +617,7 @@ export class FileHandle extends EventEmitter {
           setTimeout(() => {
             try {
               if (signal.aborted) { reject(__fsAbortErr(signal.reason)); return; }
-              resolve(__fsCall("write", "", () => __wjs_fs_write_fd(this.fd, bytes, 0)));
+              resolve(__fsCall("write", "", () => __wjs2_fs_write_fd(this.fd, bytes, 0)));
             } catch (e) { reject(e); }
           }, 0);
         }),
@@ -628,7 +628,7 @@ export class FileHandle extends EventEmitter {
     }
     // position -1 = 当前位（writeFile 无 position；O_APPEND fd 落尾，
     // doWriteFileAndAppend 'HelloWorld' 点名）。
-    await Promise.resolve().then(() => __fsCall("write", "", () => __wjs_fs_write_fd(this.fd, bytes, -1)));
+    await Promise.resolve().then(() => __fsCall("write", "", () => __wjs2_fs_write_fd(this.fd, bytes, -1)));
   }
   // node：appendFile data 面 = writeFile 同族（iterable/asyncIterable + signal
   // abort 契约；promises-file-handle-append-file 套件逐项）。
@@ -665,7 +665,7 @@ export class FileHandle extends EventEmitter {
     if (signal && signal.aborted) throw __fsAbortErr(signal.reason);
     const doAppend = () => {
       const size = fstatSync(this.fd).size;
-      __fsCall("write", "", () => __wjs_fs_write_fd(this.fd, bytes, size));
+      __fsCall("write", "", () => __wjs2_fs_write_fd(this.fd, bytes, size));
     };
     if (signal) {
       // 写落宏任务 + abort 竞速（FileHandle.write 同构；bufferAndCancel 契约）。

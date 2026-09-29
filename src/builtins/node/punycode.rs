@@ -1,4 +1,4 @@
-//! `node:punycode`（算法核在 prelude `punycode.rs`，与 `WinterJS.punycode`
+//! `node:punycode`（算法核在 prelude `punycode.rs`，与 `WinterJS2.punycode`
 //! 同源；MIT，原 punycode.js 2.1.0 逐字移植）。
 //! 本模块只发 DEP0040 并重导出（CJS `module.exports = punycode` → ESM）。
 
@@ -14,7 +14,7 @@ if (typeof process === 'object' && typeof process.emitWarning === 'function') {
     'The `punycode` module is deprecated. Please use a userland alternative instead.',
     { type: 'DeprecationWarning', code: 'DEP0040' });
 }
-const __core = globalThis.__wjs_puny;
+const __core = globalThis.__wjs2_puny;
 if (!__core || typeof __core.encode !== 'function') throw new Error('punycode core missing (prelude)');
 
 /** Define the public API (same shape as the verbatim port) */

@@ -4,14 +4,14 @@ pub const EVENTS_JS: &str = r#"
 // Node 的 EventTarget 不实现捕获/冒泡 propagation path（官方文档明言）：
 // capture 选项仅为 removeEventListener 匹配保留；listener 收函数或 {handleEvent}。
 // 事件状态走共享 WeakMap（Event 与 EventTarget 跨类要读写字段，# 私有够不着；
-// 与既有 __wjs_abortState 同风格，前缀避免污染全局面）。
-const __wjs_eventState = new WeakMap();
-const __wjs_etState = new WeakMap();
+// 与既有 __wjs2_abortState 同风格，前缀避免污染全局面）。
+const __wjs2_eventState = new WeakMap();
+const __wjs2_etState = new WeakMap();
 globalThis.Event = class Event {
   constructor(type, options = {}) {
     if (arguments.length === 0) throw new TypeError("Event requires at least 1 argument, but only 0 were passed");
     const o = options ?? {};
-    __wjs_eventState.set(this, {
+    __wjs2_eventState.set(this, {
       type: String(type),
       bubbles: !!o.bubbles,
       cancelable: !!o.cancelable,
@@ -25,23 +25,23 @@ globalThis.Event = class Event {
       currentTarget: null,
     });
   }
-  get type() { return __wjs_eventState.get(this).type; }
-  get bubbles() { return __wjs_eventState.get(this).bubbles; }
-  get cancelable() { return __wjs_eventState.get(this).cancelable; }
-  get composed() { return __wjs_eventState.get(this).composed; }
-  get timeStamp() { return __wjs_eventState.get(this).timeStamp; }
-  get defaultPrevented() { return __wjs_eventState.get(this).defaultPrevented; }
-  get target() { return __wjs_eventState.get(this).target; }
-  get currentTarget() { return __wjs_eventState.get(this).currentTarget; }
-  get srcElement() { return __wjs_eventState.get(this).target; }
+  get type() { return __wjs2_eventState.get(this).type; }
+  get bubbles() { return __wjs2_eventState.get(this).bubbles; }
+  get cancelable() { return __wjs2_eventState.get(this).cancelable; }
+  get composed() { return __wjs2_eventState.get(this).composed; }
+  get timeStamp() { return __wjs2_eventState.get(this).timeStamp; }
+  get defaultPrevented() { return __wjs2_eventState.get(this).defaultPrevented; }
+  get target() { return __wjs2_eventState.get(this).target; }
+  get currentTarget() { return __wjs2_eventState.get(this).currentTarget; }
+  get srcElement() { return __wjs2_eventState.get(this).target; }
   get isTrusted() { return false; }
   preventDefault() {
-    const s = __wjs_eventState.get(this);
+    const s = __wjs2_eventState.get(this);
     if (s.cancelable) s.defaultPrevented = true;
   }
-  stopPropagation() { __wjs_eventState.get(this).stopped = true; }
+  stopPropagation() { __wjs2_eventState.get(this).stopped = true; }
   stopImmediatePropagation() {
-    const s = __wjs_eventState.get(this);
+    const s = __wjs2_eventState.get(this);
     s.stopped = true;
     s.immediate = true;
   }
@@ -58,7 +58,7 @@ globalThis.CustomEvent = class CustomEvent extends Event {
 // instanceOf 消息 = `"` + inspect(v, {quotes:'double'}) + `"`（"str" 形串自带
 // 双引号故现 `""str""`；数字/容器仅外包一对）；not-iterable 用裸 inspect。
 // 覆盖套件点名的形状（标量/空容器/数组/类实例），完整 inspect 面在 util。
-const __wjs_insp = (v) => {
+const __wjs2_insp = (v) => {
   if (v === null) return "null";
   if (v === undefined) return "undefined";
   const t = typeof v;
@@ -69,18 +69,18 @@ const __wjs_insp = (v) => {
   if (t === "number" || t === "boolean" || t === "bigint") return String(v);
   if (t === "symbol") return v.toString();
   if (t === "function") return `[Function: ${v.name || "(anonymous)"}]`;
-  if (Array.isArray(v)) return `[ ${v.map((x) => __wjs_insp(x)).join(", ")} ]`;
+  if (Array.isArray(v)) return `[ ${v.map((x) => __wjs2_insp(x)).join(", ")} ]`;
   const n = v.constructor && v.constructor.name && v.constructor.name !== "Object" ? v.constructor.name : null;
   const keys = Object.keys(v);
-  const body = keys.length === 0 ? "" : ` ${keys.map((k) => `${k}: ${__wjs_insp(v[k])}`).join(", ")} `;
+  const body = keys.length === 0 ? "" : ` ${keys.map((k) => `${k}: ${__wjs2_insp(v[k])}`).join(", ")} `;
   return n ? `${n} {${body}}` : `{${body}}`;
 };
-const __wjs_inspQuoted = (v) => `"${__wjs_insp(v)}"`;
+const __wjs2_inspQuoted = (v) => `"${__wjs2_insp(v)}"`;
 // Rust 侧取 symbol 描述（ToString 对 symbol 抛 TypeError；JS 侧 toString 合法）。
-globalThis.__wjs_symToString = (v) => (typeof v === "symbol") ? v.toString() : null;
+globalThis.__wjs2_symToString = (v) => (typeof v === "symbol") ? v.toString() : null;
 // 10f：全局 MessageEvent（node 26 主/worker 线程均全局；message-port/
 // message-event 套件逐项对拍）。source/ports 须 MessagePort 实例——品牌经
-// worker 模块求值期登记的 `__wjs_MessagePort` 隐藏槽判定（主线程无全局
+// worker 模块求值期登记的 `__wjs2_MessagePort` 隐藏槽判定（主线程无全局
 // MessagePort；求值前无从有端口，非 null source 即 TypeError 正确）。
 globalThis.MessageEvent = class MessageEvent extends Event {
   #data; #origin; #lastEventId; #source; #ports;
@@ -93,31 +93,31 @@ globalThis.MessageEvent = class MessageEvent extends Event {
     this.#lastEventId = String(o.lastEventId ?? "");
     const src = o.source ?? null;
     if (src !== null) {
-      const M = globalThis.__wjs_MessagePort;
+      const M = globalThis.__wjs2_MessagePort;
       if (!M || !(src instanceof M)) {
-        throw new TypeError(`MessageEvent constructor: Expected eventInitDict.source (${__wjs_inspQuoted(src)}) to be an instance of MessagePort.`);
+        throw new TypeError(`MessageEvent constructor: Expected eventInitDict.source (${__wjs2_inspQuoted(src)}) to be an instance of MessagePort.`);
       }
     }
     this.#source = src;
     let ports = o.ports;
     if (ports !== undefined && ports !== null) {
       if (typeof ports[Symbol.iterator] !== "function") {
-        throw new TypeError(`MessageEvent constructor: eventInitDict.ports (${__wjs_insp(ports)}) is not iterable.`);
+        throw new TypeError(`MessageEvent constructor: eventInitDict.ports (${__wjs2_insp(ports)}) is not iterable.`);
       }
       const list = [...ports];
       for (let i = 0; i < list.length; i++) {
-        const M2 = globalThis.__wjs_MessagePort;
+        const M2 = globalThis.__wjs2_MessagePort;
         if (!M2 || !(list[i] instanceof M2)) {
-          throw new TypeError(`MessageEvent constructor: Expected eventInitDict.ports[${i}] (${__wjs_inspQuoted(list[i])}) to be an instance of MessagePort.`);
+          throw new TypeError(`MessageEvent constructor: Expected eventInitDict.ports[${i}] (${__wjs2_inspQuoted(list[i])}) to be an instance of MessagePort.`);
         }
       }
       this.#ports = list;
     } else {
       this.#ports = [];
     }
-    // 内部派发目标（`__wjsTarget` 不属 WebIDL 字典面，仅宿主 port 桥使用）。
-    const tgt = o.__wjsTarget;
-    if (tgt) __wjs_eventState.get(this).target = tgt;
+    // 内部派发目标（`__wjs2Target` 不属 WebIDL 字典面，仅宿主 port 桥使用）。
+    const tgt = o.__wjs2Target;
+    if (tgt) __wjs2_eventState.get(this).target = tgt;
   }
   get data() { return this.#data; }
   get origin() { return this.#origin; }
@@ -143,7 +143,7 @@ globalThis.CloseEvent = class CloseEvent extends Event {
 };
 globalThis.EventTarget = class EventTarget {
   constructor() {
-    __wjs_etState.set(this, new Map());
+    __wjs2_etState.set(this, new Map());
   }
   addEventListener(type, listener, options = {}) {
     if (arguments.length < 2) throw new TypeError("addEventListener requires at least 2 arguments");
@@ -154,8 +154,8 @@ globalThis.EventTarget = class EventTarget {
     if (o.signal?.aborted) return;
     // Proxy 目标无表决不抛（mustNotMutate 包裹的 signal 形 addEventListener；
     // 监听记代理身份下，触发侧 miss 即 benign——abort 竞速由 aborted 轮询门覆盖）。
-    let st = __wjs_etState.get(this);
-    if (!st) { st = new Map(); __wjs_etState.set(this, st); }
+    let st = __wjs2_etState.get(this);
+    if (!st) { st = new Map(); __wjs2_etState.set(this, st); }
     const key = String(type);
     const list = st.get(key) ?? [];
     if (list.some((e) => e.listener === listener && e.capture === !!o.capture)) return;
@@ -166,7 +166,7 @@ globalThis.EventTarget = class EventTarget {
   }
   removeEventListener(type, listener, options = {}) {
     const o = typeof options === "boolean" ? { capture: options } : (options ?? {});
-    const st = __wjs_etState.get(this);
+    const st = __wjs2_etState.get(this);
     if (!st) return;
     const list = st.get(String(type));
     if (!list) return;
@@ -178,9 +178,9 @@ globalThis.EventTarget = class EventTarget {
   }
   dispatchEvent(event) {
     if (!(event instanceof Event)) throw new TypeError("dispatchEvent requires an Event instance");
-    const es = __wjs_eventState.get(event);
+    const es = __wjs2_eventState.get(event);
     if (es.dispatching) throw new Error("InvalidStateError: event is already being dispatched");
-    const st = __wjs_etState.get(this);
+    const st = __wjs2_etState.get(this);
     if (!st) throw new TypeError("dispatchEvent called on non-EventTarget");
     es.target = this;
     es.dispatching = true;

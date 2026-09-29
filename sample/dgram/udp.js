@@ -1,6 +1,6 @@
 // node:dgram UDP echo on loopback.
 // UDP 回声（回环）。
-// Run / 运行: winterjs --run sample/dgram/udp.js
+// Run / 运行: winterjs2 --run sample/dgram/udp.js
 import dgram from 'node:dgram';
 
 const server = dgram.createSocket('udp4');

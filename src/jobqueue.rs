@@ -71,7 +71,7 @@ unsafe extern "C" fn run_jobs(cx: *mut mozjs::jsapi::JSContext) { unsafe {
             drained += 1;
         }
     }
-    tracing::trace!(target: "winterjs::jobqueue", drained, swallowed, "microtasks drained");
+    tracing::trace!(target: "winterjs2::jobqueue", drained, swallowed, "microtasks drained");
 }}
 
 /// SAFETY: 引擎 GC 时回调；追踪队列里以 JS::Value 存放的非 JS microtask。
@@ -79,7 +79,7 @@ unsafe extern "C" fn trace_non_gc_thing_micro_task(trc: *mut JSTracer, value_ptr
     // CallValueTracer 的 C++ 形参是 JS::Heap<Value>*；glue 侧 vtable 传的是同一槽位的
     // JS::Value*（布局一致），按 servo 的用法原地转交
     let heap_ptr = value_ptr as *mut mozjs::jsapi::Heap<JSVal>;
-    CallValueTracer(trc, heap_ptr, c"winterjs-microtask".as_ptr());
+    CallValueTracer(trc, heap_ptr, c"winterjs2-microtask".as_ptr());
 }}
 
 static JOB_QUEUE_TRAPS: JobQueueTraps = JobQueueTraps {

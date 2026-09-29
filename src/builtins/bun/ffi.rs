@@ -56,7 +56,7 @@ fn ret_class(ty: &str) -> Option<u8> {
     }
 }
 
-/// UNSAFE-BOUNDARY: `__wjs_ffi_dlopen(path, namesJson)` → `{name: addr}` JSON。
+/// UNSAFE-BOUNDARY: `__wjs2_ffi_dlopen(path, namesJson)` → `{name: addr}` JSON。
 /// 加载失败/符号缺失即报错（Library 泄漏保地址稳定）。
 /// 前置：cx 在 realm 内；path 为合法动态库路径。
 /// 覆盖：`phase7_ffi_dylib`、`phase7_ffi_errors`（加载/符号/类型错）。
@@ -109,7 +109,7 @@ pub unsafe extern "C" fn ffi_dlopen(
     true
 }
 
-/// UNSAFE-BOUNDARY: `__wjs_ffi_ptr_str(s)` → 零结尾 UTF-8 拷贝地址（f64 数值）。
+/// UNSAFE-BOUNDARY: `__wjs2_ffi_ptr_str(s)` → 零结尾 UTF-8 拷贝地址（f64 数值）。
 /// 前置：cx 在 realm 内；实参为字符串。拷贝 Box::leak（进程退出回收）。
 /// 覆盖：`phase7_ffi_dylib`（字符串指针进 C）。
 pub unsafe extern "C" fn ffi_ptr_str(
@@ -132,7 +132,7 @@ pub unsafe extern "C" fn ffi_ptr_str(
     true
 }
 
-/// UNSAFE-BOUNDARY: `__wjs_ffi_ptr_view(u8view)` → 数据裸地址（f64 数值）。
+/// UNSAFE-BOUNDARY: `__wjs2_ffi_ptr_view(u8view)` → 数据裸地址（f64 数值）。
 /// 前置：cx 在 realm 内；实参为非共享 Uint8Array（JS 侧已归一化）。
 /// 地址稳定性：ArrayBuffer 数据 malloc'd 不随 GC 移动；同步调用期间调用帧保活。
 /// 覆盖：`phase7_ffi_dylib`（指针写回可见性）。
@@ -172,7 +172,7 @@ pub unsafe extern "C" fn ffi_ptr_view(
     true
 }
 
-/// UNSAFE-BOUNDARY: `__wjs_ffi_call(fnAddr, sigJson, ...args)` → 返回值。
+/// UNSAFE-BOUNDARY: `__wjs2_ffi_call(fnAddr, sigJson, ...args)` → 返回值。
 /// 前置：cx 在 realm 内；fnAddr 为已加载库的真实 C 函数地址；sig 与实参数一致。
 /// 覆盖：`phase7_ffi_dylib`（全类型矩阵）、`phase7_ffi_errors`（arity/类型错）。
 pub unsafe extern "C" fn ffi_call(
@@ -276,7 +276,7 @@ pub unsafe extern "C" fn ffi_call(
     }
 }
 
-/// UNSAFE-BOUNDARY: `__wjs_ffi_cstring(addr)` → 读零结尾 UTF-8 串。
+/// UNSAFE-BOUNDARY: `__wjs2_ffi_cstring(addr)` → 读零结尾 UTF-8 串。
 /// 前置：cx 在 realm 内；addr 必须指向有效、以 NUL 结尾的内存（用户契约，
 /// Bun 同款；悬垂即 UB —— 测试只读自家库返回的静态串/拷贝）。
 /// 覆盖：`phase7_ffi_dylib`（C 返回 char*）。
@@ -306,7 +306,7 @@ pub unsafe extern "C" fn ffi_cstring(
     true
 }
 
-/// UNSAFE-BOUNDARY: `__wjs_ffi_bytes(addr, len)` → [addr, addr+len) 的拷贝
+/// UNSAFE-BOUNDARY: `__wjs2_ffi_bytes(addr, len)` → [addr, addr+len) 的拷贝
 /// （Uint8Array）。前置：cx 在 realm 内；[addr, addr+len) 须为有效可读内存。
 /// 偏差：拷贝而非零拷贝 view（模块头注）。覆盖：`phase7_ffi_dylib`。
 pub unsafe extern "C" fn ffi_bytes(
@@ -347,22 +347,22 @@ const FFIType = Object.freeze({
   long: "long", ulong: "ulong", bool: "bool", ptr: "ptr", f32: "f32", f64: "f64", void: "void",
 });
 const suffix = process.platform === "win32" ? ".dll" : process.platform === "darwin" ? ".dylib" : ".so";
-function __wjs_normType(t) {
+function __wjs2_normType(t) {
   if (typeof t !== "string" || !(t in FFIType)) {
     throw new TypeError(`dlopen: unknown FFIType '${String(t)}'`);
   }
   return t;
 }
-function __wjs_normSig(decl) {
-  if (typeof decl === "string") return { a: [], r: __wjs_normType(decl) };
+function __wjs2_normSig(decl) {
+  if (typeof decl === "string") return { a: [], r: __wjs2_normType(decl) };
   if (decl && typeof decl === "object") {
     if (decl.args !== undefined && !Array.isArray(decl.args)) throw new TypeError("dlopen: symbol args must be an array of FFIType");
-    const a = (decl.args ?? []).map(__wjs_normType);
+    const a = (decl.args ?? []).map(__wjs2_normType);
     for (const t of a) {
       if (t === "void") throw new TypeError("dlopen: void is not a valid argument type");
       if (t === "f32") throw new TypeError("dlopen: f32 arguments are not supported yet (use f64)");
     }
-    return { a, r: __wjs_normType(decl.returns ?? "void") };
+    return { a, r: __wjs2_normType(decl.returns ?? "void") };
   }
   throw new TypeError("dlopen: symbol declaration must be an FFIType or {args, returns}");
 }
@@ -373,8 +373,8 @@ function dlopen(path, symbolsTable, opts) {
   }
   const names = Object.keys(symbolsTable);
   // 先校验全部声明再加载（否则 native dlsym 的报错会盖过声明错误）
-  const sigs = names.map((name) => __wjs_normSig(symbolsTable[name]));
-  const addrs = JSON.parse(__wjs_ffi_dlopen(path, JSON.stringify(names)));
+  const sigs = names.map((name) => __wjs2_normSig(symbolsTable[name]));
+  const addrs = JSON.parse(__wjs2_ffi_dlopen(path, JSON.stringify(names)));
   const symbols = {};
   for (const [i, name] of names.entries()) {
     const sig = sigs[i];
@@ -384,16 +384,16 @@ function dlopen(path, symbolsTable, opts) {
       if (args.length !== sig.a.length) {
         throw new TypeError(`FFI call '${name}': expected ${sig.a.length} argument(s), got ${args.length}`);
       }
-      return __wjs_ffi_call(addr, sigJson, ...args);
+      return __wjs2_ffi_call(addr, sigJson, ...args);
     };
   }
   return { symbols };
 }
 function ptr(v) {
-  if (typeof v === "string") return __wjs_ffi_ptr_str(v);
-  if (v instanceof ArrayBuffer) return __wjs_ffi_ptr_view(new Uint8Array(v));
+  if (typeof v === "string") return __wjs2_ffi_ptr_str(v);
+  if (v instanceof ArrayBuffer) return __wjs2_ffi_ptr_view(new Uint8Array(v));
   if (ArrayBuffer.isView(v)) {
-    return __wjs_ffi_ptr_view(v instanceof Uint8Array ? v : new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+    return __wjs2_ffi_ptr_view(v instanceof Uint8Array ? v : new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
   }
   if (typeof v === "number") {
     if (!Number.isFinite(v) || v < 0) throw new TypeError("ptr: bad address");
@@ -407,7 +407,7 @@ class CString {
   constructor(address) {
     if (typeof address !== "number") throw new TypeError("CString: address must be a number");
     this.ptr = address;
-    this.#s = __wjs_ffi_cstring(address);
+    this.#s = __wjs2_ffi_cstring(address);
     this.length = this.#s.length;
   }
   toString() { return this.#s; }
@@ -415,11 +415,11 @@ class CString {
 }
 function toArrayBuffer(address, byteLength) {
   if (typeof byteLength !== "number" || byteLength < 0) throw new TypeError("toArrayBuffer: byteLength required");
-  return __wjs_ffi_bytes(address, byteLength).buffer;
+  return __wjs2_ffi_bytes(address, byteLength).buffer;
 }
 function toBuffer(address, byteLength) {
   if (typeof byteLength !== "number" || byteLength < 0) throw new TypeError("toBuffer: byteLength required");
-  return __wjs_ffi_bytes(address, byteLength);
+  return __wjs2_ffi_bytes(address, byteLength);
 }
 export { dlopen, FFIType, suffix, ptr, CString, toArrayBuffer, toBuffer };
 "#;

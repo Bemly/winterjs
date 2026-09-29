@@ -19,7 +19,7 @@
 //!   不同步，vm 快照语义沿用）。
 //! - 无 `useGlobal`（恒隔离上下文）、无预览/高亮（无 completer 面）、
 //!   无 `reset` 方法（`.clear` 命令等价，`reset` 事件照发）。
-//! - 补全为保守子集（R3 口径，核心住 winterjs 底座 prelude，本模块薄包
+//! - 补全为保守子集（R3 口径，核心住 winterjs2 底座 prelude，本模块薄包
 //!   注入 vm 求值器反向复用）：成员链/串数下标/fs 路径/bare 上下文键；
 //!   调用·分组外结构一律拒答；路径求值 getter 拒入；Proxy 不可探测（
 //!   `util.types.isProxy` 恒 false，引擎缺口）；bare 词法作用域不可枚举；
@@ -83,14 +83,14 @@ function defaultWriter(value) {
 }
 defaultWriter.options = { ...inspect.defaultOptions, showProxy: true };
 
-// 补全薄壳（本体拥有核心）：调 winterjs 底座
-// `globalThis.__wjs_repl_default_complete`（prelude/repl_complete），
+// 补全薄壳（本体拥有核心）：调 winterjs2 底座
+// `globalThis.__wjs2_repl_default_complete`（prelude/repl_complete），
 // 注入 vm 上下文求值器；公开面保持 node 真机同形。
 // R3 保守子集口径见底座（成员链/串数下标/fs 路径/bare 上下文键；
 // 调用·分组外结构拒答；getter 拒入；Proxy 不可探测记档）。
 function __commonPrefix(list) {
-  if (typeof globalThis.__wjs_repl_common_prefix === 'function') {
-    try { return globalThis.__wjs_repl_common_prefix(list); } catch { /* fallthrough */ }
+  if (typeof globalThis.__wjs2_repl_common_prefix === 'function') {
+    try { return globalThis.__wjs2_repl_common_prefix(list); } catch { /* fallthrough */ }
   }
   if (!Array.isArray(list) || list.length === 0) return '';
   let p = list[0];
@@ -104,7 +104,7 @@ function __commonPrefix(list) {
   return p;
 }
 function __defaultComplete(context, line, callback) {
-  const core = globalThis.__wjs_repl_default_complete;
+  const core = globalThis.__wjs2_repl_default_complete;
   const s = typeof line === 'string' ? line : String(line);
   if (typeof core !== 'function') {
     callback(null, [[], s]);

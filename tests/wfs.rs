@@ -13,7 +13,7 @@ fn wfs_read_write_stat() {
     dir.child("p.mjs")
         .write_str(
             r#"
-console.log("wfs", typeof fs, typeof WinterJS.fs, fs === WinterJS.fs);
+console.log("wfs", typeof fs, typeof WinterJS2.fs, fs === WinterJS2.fs);
 await fs.writeFile("a.txt", "hello");
 await fs.writeFile("b.bin", new Uint8Array([1, 2, 255]));
 console.log("text", await fs.readTextFile("a.txt"));
@@ -29,7 +29,7 @@ console.log("rm", await fs.exists("b.bin"));
 "#,
         )
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", "p.mjs"])
         .current_dir(dir.path())
         .output()
@@ -64,7 +64,7 @@ console.log("gone", await fs.exists("sub"));
 "#,
         )
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", "p.mjs"])
         .current_dir(dir.path())
         .output()
@@ -97,12 +97,12 @@ await fs.mkdir("d", {});
 await fs.writeFile("d/f.txt", "x");
 await t("rmdir-nonempty", () => fs.remove("d", {}));
 console.log("exists-empty-throw-check", await fs.exists("d/f.txt"));
-try { __wjs_wfs_read("ok-but-native"); console.log("native-no-throw"); }
+try { __wjs2_wfs_read("ok-but-native"); console.log("native-no-throw"); }
 catch (e) { console.log("native-throw", e.constructor.name); }
 "#,
         )
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", "p.mjs"])
         .current_dir(dir.path())
         .output()

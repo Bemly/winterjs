@@ -12,13 +12,13 @@ static MDN: include_dir::Dir<'static> =
     include_dir::include_dir!("$CARGO_MANIFEST_DIR/content/mdn/files/en-us");
 
 /// 内嵌命名空间语料（`scripts/gen-ns-docs.py` 由上游 `.d.ts` TSDoc 抽取，
-/// `content/winterjs` 为手写 5 页；见各目录 `ATTRIBUTION.md`）。
+/// `content/winterjs2` 为手写 5 页；见各目录 `ATTRIBUTION.md`）。
 static BUN: include_dir::Dir<'static> =
     include_dir::include_dir!("$CARGO_MANIFEST_DIR/content/bun");
 static DENO: include_dir::Dir<'static> =
     include_dir::include_dir!("$CARGO_MANIFEST_DIR/content/deno");
 static WJS: include_dir::Dir<'static> =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/content/winterjs");
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/content/winterjs2");
 
 /// WinterCG 显式 slug（MDN 路径不规则，逐条实证；`web/api/` 下，`index.md` 省略）。
 fn explicit(topic: &str) -> Option<&'static str> {
@@ -169,10 +169,10 @@ fn slug(topic: &str) -> Option<String> {
     None
 }
 
-/// 命名空间语料路由（`Bun`/`Deno`/`WinterJS`/`fs` 头；`lookup` 用）。
+/// 命名空间语料路由（`Bun`/`Deno`/`WinterJS2`/`fs` 头；`lookup` 用）。
 /// `Bun.serve` → `content/bun/serve/index.md`，bare `Bun` → `index` 页；
-/// `WinterJS.fs.readFile` 双点形 → `content/winterjs/fs-readfile/index.md`
-/// （缺页回落 `fs` 组页）；`fs.readFile`（全局别名）同走 WinterJS 语料。
+/// `WinterJS2.fs.readFile` 双点形 → `content/winterjs2/fs-readfile/index.md`
+/// （缺页回落 `fs` 组页）；`fs.readFile`（全局别名）同走 WinterJS2 语料。
 /// 方法段限字母数字/`_`/`$`（`Bun.$` 的 `$` 在内；无 `..`，无路径穿越）。
 /// 存在性由 `lookup` 校验（缺页即未知条目，不猜）。
 fn ns_lookup(topic: &str) -> Option<&'static str> {
@@ -181,7 +181,7 @@ fn ns_lookup(topic: &str) -> Option<&'static str> {
     let t = topic.trim();
     let t = t.strip_prefix("globalThis.").unwrap_or(t);
     let t = t.strip_prefix("global.").unwrap_or(t);
-    // 裸 `Worker`（Web 全局，本仓面；MDN 无页，存在性走 WinterJS 语料）。
+    // 裸 `Worker`（Web 全局，本仓面；MDN 无页，存在性走 WinterJS2 语料）。
     if t == "Worker" {
         return WJS
             .get_file("worker/index.md")
@@ -194,19 +194,19 @@ fn ns_lookup(topic: &str) -> Option<&'static str> {
     let dir: &include_dir::Dir<'static> = match head {
         "Bun" | "bun" => &BUN,
         "Deno" | "deno" => &DENO,
-        "WinterJS" | "winterjs" => &WJS,
-        // 全局别名 `fs.readFile`：同走 WinterJS 语料（`fs-readfile`，回落 `fs`）。
+        "WinterJS2" | "winterjs2" => &WJS,
+        // 全局别名 `fs.readFile`：同走 WinterJS2 语料（`fs-readfile`，回落 `fs`）。
         "fs" => {
             return wjs_group_lookup(&WJS, "fs", method);
         }
-        // 未知头（含 `global.WinterJS.Bun.write` 形）：模糊回落找段内命名空间。
+        // 未知头（含 `global.WinterJS2.Bun.write` 形）：模糊回落找段内命名空间。
         _ => return ns_fuzzy(t),
     };
     if method.is_empty() {
         return ns_fuzzy(t);
     }
     // 双点形 `fs.readFile`：组-方法页优先，组页回落；仍缺页走模糊回落
-    // （如 `WinterJS.Bun.write` 找段内 `Bun.write`）。
+    // （如 `WinterJS2.Bun.write` 找段内 `Bun.write`）。
     if let Some((group, sub)) = method.split_once('.')
         && !group.is_empty()
         && !sub.is_empty()
@@ -233,7 +233,7 @@ fn ns_lookup(topic: &str) -> Option<&'static str> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
     {
-        // `WinterJS.Bun.write` 形（头对、方法段含点）：同走模糊回落。
+        // `WinterJS2.Bun.write` 形（头对、方法段含点）：同走模糊回落。
         return ns_fuzzy(t);
     }
     let path = format!("{}/index.md", method.to_lowercase());
@@ -241,7 +241,7 @@ fn ns_lookup(topic: &str) -> Option<&'static str> {
         .and_then(|f| f.contents_utf8())
 }
 
-/// WinterJS 组查表（`fs` 组：`fs-readfile` 优先，`fs` 组页回落；空方法即组页）。
+/// WinterJS2 组查表（`fs` 组：`fs-readfile` 优先，`fs` 组页回落；空方法即组页）。
 /// 大小写/穿越由调用方保证（仅字母数字/`_`/`$`，无点）。
 fn wjs_group_lookup(dir: &include_dir::Dir<'static>, group: &str, method: &str) -> Option<&'static str> {
     let ok = |s: &str| {
@@ -264,11 +264,11 @@ fn wjs_group_lookup(dir: &include_dir::Dir<'static>, group: &str, method: &str) 
 }
 
 /// 模糊回落（用户要的：主题含命名空间即命中；取位置最靠后的 `.` 分隔
-/// `Bun./Deno./WinterJS.` 段；`myBun.x` 这类段内出现（前驱非 `.`/串首）
+/// `Bun./Deno./WinterJS2.` 段；`myBun.x` 这类段内出现（前驱非 `.`/串首）
 /// 不认，避免用户自有命名误撞语料）。仍以存在性为唯一真相，缺页即 None。
 fn ns_fuzzy(t: &str) -> Option<&'static str> {
     let mut best: Option<(usize, &str)> = None;
-    for ns in ["Bun.", "Deno.", "WinterJS.", "bun.", "deno.", "winterjs."] {
+    for ns in ["Bun.", "Deno.", "WinterJS2.", "bun.", "deno.", "winterjs2."] {
         if let Some(pos) = t.rfind(ns)
             && (pos == 0 || t.as_bytes()[pos - 1] == b'.')
             && best.is_none_or(|(bp, _)| pos >= bp)
@@ -303,7 +303,7 @@ fn ns_fuzzy(t: &str) -> Option<&'static str> {
 ///   `web/api/a/b_static`（Web 静态方法惯例）；
 /// - bare → `reference/statements/t`、`reference/operators/t`、`web/api/t`。
 /// 段字符集限小写字母数字/`_`/`$`（无 `..`，无路径穿越）。
-/// 命名空间主题（`Bun`/`Deno`/`WinterJS` 头）走 `ns_lookup`（MDN 主规则之
+/// 命名空间主题（`Bun`/`Deno`/`WinterJS2` 头）走 `ns_lookup`（MDN 主规则之
 /// 后、fallback 试探之前；三语料互不串味）。
 pub fn lookup(topic: &str) -> Option<&'static str> {
     let t = topic.trim();
@@ -359,7 +359,7 @@ fn fallback_paths(topic: &str) -> Vec<String> {
     out
 }
 
-/// `__wjs_doc_summary(topic)`（补全桥用；缺页回 `undefined`，桥保留签名原文）。
+/// `__wjs2_doc_summary(topic)`（补全桥用；缺页回 `undefined`，桥保留签名原文）。
 ///
 /// SAFETY: 由引擎以有效调用帧调用（JSNative 约定）。
 pub unsafe extern "C" fn doc_summary(
@@ -526,7 +526,7 @@ fn strip_inline_macros(s: &mut String) {
     }
 }
 
-/// 去 `_斜体_` 标记（内含空格才算强调；`snake_case`/`__wjs_x` 保留）。
+/// 去 `_斜体_` 标记（内含空格才算强调；`snake_case`/`__wjs2_x` 保留）。
 /// 浮窗纯文本用（`.doc` 整篇走 termimad 原生斜体，不动）。
 fn strip_italics(s: &str) -> String {
     let ch: Vec<char> = s.chars().collect();
@@ -793,77 +793,77 @@ mod tests {
     fn strip_italics_keeps_identifiers() {
         assert_eq!(strip_italics("a _source object_ here"), "a source object here");
         assert_eq!(strip_italics("snake_case kept"), "snake_case kept");
-        assert_eq!(strip_italics("__wjs_x kept"), "__wjs_x kept");
+        assert_eq!(strip_italics("__wjs2_x kept"), "__wjs2_x kept");
         assert_eq!(strip_italics("a_b kept"), "a_b kept");
     }
 
     #[test]
-    fn ns_lookup_hits_winterjs_own_surface() {
-        // 本体自有面（wfs/mem 轮）：WinterJS.fs/memory/alloc/unsafe* 有页可查。
-        let wf = summary("WinterJS.fs").expect("WinterJS.fs documented");
+    fn ns_lookup_hits_winterjs2_own_surface() {
+        // 本体自有面（wfs/mem 轮）：WinterJS2.fs/memory/alloc/unsafe* 有页可查。
+        let wf = summary("WinterJS2.fs").expect("WinterJS2.fs documented");
         assert!(wf.contains("separate"), "{wf}");
-        let wm = summary("WinterJS.memory").expect("WinterJS.memory documented");
+        let wm = summary("WinterJS2.memory").expect("WinterJS2.memory documented");
         assert!(wm.contains("allocator"), "{wm}");
-        let wa = summary("WinterJS.alloc").expect("WinterJS.alloc documented");
+        let wa = summary("WinterJS2.alloc").expect("WinterJS2.alloc documented");
         assert!(wa.contains("zero-filled"), "{wa}");
-        let wu = summary("WinterJS.unsafeAlloc").expect("WinterJS.unsafeAlloc documented");
+        let wu = summary("WinterJS2.unsafeAlloc").expect("WinterJS2.unsafeAlloc documented");
         assert!(wu.contains("--allow-ffi"), "{wu}");
-        assert!(summary("winterjs.unsafefree").is_some());
-        assert!(summary("WinterJS.unsafelost").is_none());
-        // 双点成员形（浮窗 `WinterJS.fs.readFile`）：组-方法页优先。
-        let wfr = summary("WinterJS.fs.readFile").expect("WinterJS.fs.readFile documented");
+        assert!(summary("winterjs2.unsafefree").is_some());
+        assert!(summary("WinterJS2.unsafelost").is_none());
+        // 双点成员形（浮窗 `WinterJS2.fs.readFile`）：组-方法页优先。
+        let wfr = summary("WinterJS2.fs.readFile").expect("WinterJS2.fs.readFile documented");
         assert!(wfr.contains("Uint8Array"), "{wfr}");
-        let wfw = summary("WinterJS.fs.writeFile").expect("WinterJS.fs.writeFile documented");
+        let wfw = summary("WinterJS2.fs.writeFile").expect("WinterJS2.fs.writeFile documented");
         assert!(wfw.contains("truncating"), "{wfw}");
-        // 全局别名 `fs.readFile` 同走 WinterJS 语料。
+        // 全局别名 `fs.readFile` 同走 WinterJS2 语料。
         let fr = summary("fs.readFile").expect("fs.readFile documented");
         assert!(fr.contains("Uint8Array"), "{fr}");
         // 缺页成员回落组页（有文档，不裸签名）。
-        let fb = summary("WinterJS.fs.noSuchMethod").expect("falls back to fs group");
+        let fb = summary("WinterJS2.fs.noSuchMethod").expect("falls back to fs group");
         assert!(fb.contains("separate"), "{fb}");
-        // 压缩别名面（streams/zstd 轮）：类页 + WinterJS 索引含新成员。
-        let wc = summary("WinterJS.CompressionStream").expect("WinterJS.CompressionStream documented");
+        // 压缩别名面（streams/zstd 轮）：类页 + WinterJS2 索引含新成员。
+        let wc = summary("WinterJS2.CompressionStream").expect("WinterJS2.CompressionStream documented");
         assert!(wc.contains("zstd"), "{wc}");
-        let wd = summary("WinterJS.DecompressionStream").expect("WinterJS.DecompressionStream documented");
+        let wd = summary("WinterJS2.DecompressionStream").expect("WinterJS2.DecompressionStream documented");
         assert!(wd.contains("zstd"), "{wd}");
-        let wl = summary("WinterJS.localStorage").expect("WinterJS.localStorage documented");
+        let wl = summary("WinterJS2.localStorage").expect("WinterJS2.localStorage documented");
         assert!(wl.contains("turso"), "{wl}");
         // 小工具面（wstd 轮）：七组皆有页。
         for (topic, needle) in [
-            ("WinterJS.semver", "satisfies"),
-            ("WinterJS.yaml", "first document"),
-            ("WinterJS.jsonc", "trailing commas"),
-            ("WinterJS.ip", "CIDR"),
-            ("WinterJS.shlex", "argv"),
-            ("WinterJS.spdx", "license expression"),
-            ("WinterJS.qrcode", "2048"),
-            ("WinterJS.shell", "unallowed"),
-            ("WinterJS.hex", "hex codec"),
-            ("WinterJS.time", "epoch ms"),
-            ("WinterJS.retry", "backoff"),
-            ("WinterJS.graph", "id heap"),
-            ("WinterJS.git", "not included"),
-            ("WinterJS.oauth", "uses fetch"),
-            ("WinterJS.transpile", "file loader"),
-            ("WinterJS.log", "4k"),
-            ("WinterJS.mime", "static server"),
-            ("WinterJS.cookie", "Set-Cookie"),
-            ("WinterJS.httpdate", "IMF"),
-            ("WinterJS.assert", "prototypes"),
+            ("WinterJS2.semver", "satisfies"),
+            ("WinterJS2.yaml", "first document"),
+            ("WinterJS2.jsonc", "trailing commas"),
+            ("WinterJS2.ip", "CIDR"),
+            ("WinterJS2.shlex", "argv"),
+            ("WinterJS2.spdx", "license expression"),
+            ("WinterJS2.qrcode", "2048"),
+            ("WinterJS2.shell", "unallowed"),
+            ("WinterJS2.hex", "hex codec"),
+            ("WinterJS2.time", "epoch ms"),
+            ("WinterJS2.retry", "backoff"),
+            ("WinterJS2.graph", "id heap"),
+            ("WinterJS2.git", "not included"),
+            ("WinterJS2.oauth", "uses fetch"),
+            ("WinterJS2.transpile", "file loader"),
+            ("WinterJS2.log", "4k"),
+            ("WinterJS2.mime", "static server"),
+            ("WinterJS2.cookie", "Set-Cookie"),
+            ("WinterJS2.httpdate", "IMF"),
+            ("WinterJS2.assert", "prototypes"),
             ("Worker", "new thread"),
-            ("WinterJS.util", "same port"),
-            ("WinterJS.punycode", "DEP0040"),
-            ("WinterJS.tcp", "AsyncIterables"),
-            ("WinterJS.udp", "AsyncIterables"),
-            ("WinterJS.dns", "getaddrinfo"),
-            ("WinterJS.tls", "system roots"),
-            ("WinterJS.command", "captures output"),
-            ("WinterJS.cluster", "thread-based"),
-            ("WinterJS.vm", "transparently"),
-            ("WinterJS.os", "__wjs_os_"),
-            ("WinterJS.db", "turso"),
-            ("WinterJS.stream", "backpressure"),
-            ("WinterJS.serve", "shutdown"),
+            ("WinterJS2.util", "same port"),
+            ("WinterJS2.punycode", "DEP0040"),
+            ("WinterJS2.tcp", "AsyncIterables"),
+            ("WinterJS2.udp", "AsyncIterables"),
+            ("WinterJS2.dns", "getaddrinfo"),
+            ("WinterJS2.tls", "system roots"),
+            ("WinterJS2.command", "captures output"),
+            ("WinterJS2.cluster", "thread-based"),
+            ("WinterJS2.vm", "transparently"),
+            ("WinterJS2.os", "__wjs2_os_"),
+            ("WinterJS2.db", "turso"),
+            ("WinterJS2.stream", "backpressure"),
+            ("WinterJS2.serve", "shutdown"),
         ] {
             let s = summary(topic).unwrap_or_else(|| panic!("{topic} documented"));
             assert!(s.contains(needle), "{topic}: {s}");
@@ -879,11 +879,11 @@ mod tests {
         assert!(d.contains("function readFile("), "{d}");
         let b = summary("Bun.serve").expect("Bun.serve documented");
         assert!(b.contains("high-performance HTTP server"), "{b}");
-        let w = summary("WinterJS.version").expect("WinterJS.version documented");
-        assert!(w.contains("winterjs version"), "{w}");
+        let w = summary("WinterJS2.version").expect("WinterJS2.version documented");
+        assert!(w.contains("winterjs2 version"), "{w}");
         assert!(summary("Bun").is_some());
         assert!(summary("Deno").is_some());
-        assert!(summary("WinterJS").is_some());
+        assert!(summary("WinterJS2").is_some());
         assert!(summary("globalThis.Deno.args").is_some());
         assert!(summary("deno.readfile").is_some());
         assert!(summary("Bun.TOML").is_none());
@@ -895,12 +895,12 @@ mod tests {
         let rt = summary("Deno.readFile.toString").expect("group fallback to parent");
         assert!(rt.contains("entire contents"), "{rt}");
         // 模糊回落：嵌套命名空间取最靠后段；段内出现不认；缺页仍 None。
-        let fw = summary("global.WinterJS.Bun.write").expect("fuzzy hits Bun.write");
+        let fw = summary("global.WinterJS2.Bun.write").expect("fuzzy hits Bun.write");
         assert!(fw.contains("syscalls"), "{fw}");
-        let fd = summary("global.WinterJS.Deno.readFile").expect("fuzzy hits Deno.readFile");
+        let fd = summary("global.WinterJS2.Deno.readFile").expect("fuzzy hits Deno.readFile");
         assert!(fd.contains("entire contents"), "{fd}");
         assert!(summary("myBun.serve").is_none());
-        assert!(summary("global.WinterJS.Bun.TOML").is_none());
+        assert!(summary("global.WinterJS2.Bun.TOML").is_none());
     }
 
     #[test]

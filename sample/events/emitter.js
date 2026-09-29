@@ -1,6 +1,6 @@
 // node:events: on / once / emit / off / error routing / maxListeners.
 // 事件发射器：监听、一次、注销、错误路由与上限。
-// Run / 运行: winterjs --run sample/events/emitter.js
+// Run / 运行: winterjs2 --run sample/events/emitter.js
 import { EventEmitter } from 'node:events';
 
 const ee = new EventEmitter();

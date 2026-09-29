@@ -61,15 +61,15 @@ function StringDecoder(encoding) {
   if (this.encoding === undefined) {
     throw new ERR_UNKNOWN_ENCODING(encoding);
   }
-  this.__wjsId = encodingsMap[this.encoding];
-  if (this.__wjsId === undefined) {
+  this.__wjs2Id = encodingsMap[this.encoding];
+  if (this.__wjs2Id === undefined) {
     throw new ERR_UNKNOWN_ENCODING(encoding);
   }
-  this.__wjsDecoder = undefined;       // TextDecoder（utf8 流式）
-  this.__wjsStore = new Uint8Array(4); // 截断字节缓存（lastChar 面）
-  this.__wjsStored = 0;                // kBufferedBytes
-  this.__wjsMissing = 0;               // kMissingBytes（utf8 序列还差的字节数）
-  this.__wjsBase64Buf = undefined;     // base64 残组（1-2 字节）
+  this.__wjs2Decoder = undefined;       // TextDecoder（utf8 流式）
+  this.__wjs2Store = new Uint8Array(4); // 截断字节缓存（lastChar 面）
+  this.__wjs2Stored = 0;                // kBufferedBytes
+  this.__wjs2Missing = 0;               // kMissingBytes（utf8 序列还差的字节数）
+  this.__wjs2Base64Buf = undefined;     // base64 残组（1-2 字节）
 }
 
 StringDecoder.prototype.write = function write(buf) {
@@ -77,7 +77,7 @@ StringDecoder.prototype.write = function write(buf) {
   if (!ArrayBuffer.isView(buf)) {
     throw new ERR_INVALID_ARG_TYPE('buf', ['Buffer', 'TypedArray', 'DataView'], buf);
   }
-  if (this.__wjsId === undefined) {
+  if (this.__wjs2Id === undefined) {
     throw new ERR_INVALID_THIS('StringDecoder');
   }
   const view = buf instanceof Uint8Array ? buf :
@@ -89,13 +89,13 @@ StringDecoder.prototype.write = function write(buf) {
     err.code = 'ERR_STRING_TOO_LONG';
     throw err;
   }
-  switch (this.__wjsId) {
-    case 0: return this.__wjsWriteUtf8(view);
-    case 1: return this.__wjsWriteWide(view);
-    case 2: return this.__wjsWriteSingle(view, true);
-    case 3: return this.__wjsWriteSingle(view, false);
-    case 4: return __wjs_bufEncode(view, 'hex');
-    case 5: return this.__wjsWriteBase64(view);
+  switch (this.__wjs2Id) {
+    case 0: return this.__wjs2WriteUtf8(view);
+    case 1: return this.__wjs2WriteWide(view);
+    case 2: return this.__wjs2WriteSingle(view, true);
+    case 3: return this.__wjs2WriteSingle(view, false);
+    case 4: return __wjs2_bufEncode(view, 'hex');
+    case 5: return this.__wjs2WriteBase64(view);
   }
   throw new ERR_UNKNOWN_ENCODING(this.encoding);
 };
@@ -106,10 +106,10 @@ StringDecoder.prototype.text = function text(buf, offset) {
   if (!ArrayBuffer.isView(buf)) {
     throw new ERR_INVALID_ARG_TYPE('buf', ['Buffer', 'TypedArray', 'DataView'], buf);
   }
-  this.__wjsDecoder = undefined;
-  this.__wjsStored = 0;
-  this.__wjsMissing = 0;
-  this.__wjsBase64Buf = undefined;
+  this.__wjs2Decoder = undefined;
+  this.__wjs2Stored = 0;
+  this.__wjs2Missing = 0;
+  this.__wjs2Base64Buf = undefined;
   const view = buf instanceof Uint8Array ? buf :
     new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   const off = offset === undefined ? 0 : Number(offset) || 0;
@@ -118,41 +118,41 @@ StringDecoder.prototype.text = function text(buf, offset) {
 
 StringDecoder.prototype.end = function end(buf) {  const ret = buf === undefined ? '' : this.write(buf);
   let flushed = '';
-  switch (this.__wjsId) {
+  switch (this.__wjs2Id) {
     case 0: {
       // utf8 刷 stash（10f：引擎按构造不再持有跨写字节，stash 经终结解码；
       // 旧实现 finalize 空引擎，截断永不落定）。
-      if (this.__wjsDecoder !== undefined) {
-        if (this.__wjsStored > 0) {
-          flushed = this.__wjsDecoder.decode(this.__wjsStore.subarray(0, this.__wjsStored));
+      if (this.__wjs2Decoder !== undefined) {
+        if (this.__wjs2Stored > 0) {
+          flushed = this.__wjs2Decoder.decode(this.__wjs2Store.subarray(0, this.__wjs2Stored));
         }
-        this.__wjsDecoder = undefined;
+        this.__wjs2Decoder = undefined;
       }
-      this.__wjsStored = 0;
-      this.__wjsMissing = 0;
+      this.__wjs2Stored = 0;
+      this.__wjs2Missing = 0;
       break;
     }
     case 1: {
       // utf16le flush（对齐 C++ FlushData）：先丢单个奇尾字节，再刷剩余偶部
       //（lone 代理直通）；旧实现刷 FFFD，套件点名。
-      if (this.__wjsStored % 2 === 1) {
-        this.__wjsStored--;
-        this.__wjsMissing--;
+      if (this.__wjs2Stored % 2 === 1) {
+        this.__wjs2Stored--;
+        this.__wjs2Missing--;
       }
-      if (this.__wjsStored > 0) {
-        flushed = __wjs_decodeUtf16(this.__wjsStore.subarray(0, this.__wjsStored));
-        this.__wjsStored = 0;
-        this.__wjsMissing = 0;
+      if (this.__wjs2Stored > 0) {
+        flushed = __wjs2_decodeUtf16(this.__wjs2Store.subarray(0, this.__wjs2Stored));
+        this.__wjs2Stored = 0;
+        this.__wjs2Missing = 0;
       }
       break;
     }
     case 5: {
-      const rest = this.__wjsBase64Buf;
+      const rest = this.__wjs2Base64Buf;
       if (rest !== undefined) {
         // 10f：base64url 输出 url-safe 无填充（真机口径）。
-        flushed = __wjs_bufEncode(rest, this.encoding === 'base64url' ? 'base64url' : 'base64');
-        this.__wjsBase64Buf = undefined;
-        this.__wjsStored = 0;
+        flushed = __wjs2_bufEncode(rest, this.encoding === 'base64url' ? 'base64url' : 'base64');
+        this.__wjs2Base64Buf = undefined;
+        this.__wjs2Stored = 0;
       }
       break;
     }
@@ -160,50 +160,50 @@ StringDecoder.prototype.end = function end(buf) {  const ret = buf === undefined
   return ret + flushed;
 };
 
-StringDecoder.prototype.__wjsWriteUtf8 = function (view) {
+StringDecoder.prototype.__wjs2WriteUtf8 = function (view) {
   // utf8 真模型（10f 逐行对齐 C++ DecodeData；旧实现全量直喂引擎，
   // WHATWG 与 V8 对"截断/非法头"的持有语义不同，跨写即散）：
   // ① 有 pending 时先用新字节补齐——首个非续接字节出现即把已攒（含之前）
   // 经引擎刷出（V8 同口径，如 F6,9B+D1 → '��'）；② 只把完整前缀喂引擎，
   // 尾截断进 store（`utf8TailState`，C++ 尾扫逐行对齐）。
   // store 只增不 zero（lastChar 可见 stale 尾，真机同款，如 [D1,9B]）。
-  if (this.__wjsDecoder === undefined) {
-    this.__wjsDecoder = new TextDecoder('utf-8', { fatal: false });
+  if (this.__wjs2Decoder === undefined) {
+    this.__wjs2Decoder = new TextDecoder('utf-8', { fatal: false });
   }
   let out = '';
   let data = view;
-  if (this.__wjsMissing > 0) {
-    const need = this.__wjsMissing;
+  if (this.__wjs2Missing > 0) {
+    const need = this.__wjs2Missing;
     const lim = Math.min(data.length, need);
     let i = 0;
     while (i < lim && (data[i] & 0xC0) === 0x80) i++;
     if (i < lim) {
-      for (let k = 0; k < i; k++) this.__wjsStore[this.__wjsStored + k] = data[k];
-      this.__wjsStored += i;
-      this.__wjsMissing = 0;
+      for (let k = 0; k < i; k++) this.__wjs2Store[this.__wjs2Stored + k] = data[k];
+      this.__wjs2Stored += i;
+      this.__wjs2Missing = 0;
       data = data.subarray(i);
     } else {
-      for (let k = 0; k < lim; k++) this.__wjsStore[this.__wjsStored + k] = data[k];
-      this.__wjsStored += lim;
-      this.__wjsMissing -= lim;
+      for (let k = 0; k < lim; k++) this.__wjs2Store[this.__wjs2Stored + k] = data[k];
+      this.__wjs2Stored += lim;
+      this.__wjs2Missing -= lim;
       data = data.subarray(lim);
     }
-    if (this.__wjsMissing === 0) {
-      out += this.__wjsDecoder.decode(this.__wjsStore.subarray(0, this.__wjsStored), { stream: true });
-      this.__wjsStored = 0;
+    if (this.__wjs2Missing === 0) {
+      out += this.__wjs2Decoder.decode(this.__wjs2Store.subarray(0, this.__wjs2Stored), { stream: true });
+      this.__wjs2Stored = 0;
     }
   }
   if (data.length === 0) return out;
   const tail = utf8TailState(data);
   const feed = data.subarray(0, data.length - tail.buffered);
-  out += this.__wjsDecoder.decode(feed, { stream: true });
-  for (let k = 0; k < tail.buffered; k++) this.__wjsStore[k] = data[data.length - tail.buffered + k];
-  this.__wjsStored = tail.buffered;
-  this.__wjsMissing = tail.total - tail.buffered;
+  out += this.__wjs2Decoder.decode(feed, { stream: true });
+  for (let k = 0; k < tail.buffered; k++) this.__wjs2Store[k] = data[data.length - tail.buffered + k];
+  this.__wjs2Stored = tail.buffered;
+  this.__wjs2Missing = tail.total - tail.buffered;
   return out;
 };
 
-StringDecoder.prototype.__wjsWriteWide = function (view) {
+StringDecoder.prototype.__wjs2WriteWide = function (view) {
   // utf16le 真模型（10f 逐行对齐 node `src/string_decoder.cc` UCS2 分支；
   // 旧实现两次猜错 hold 规则）：① 先用新字节补齐 pending（恰好补满才拼出
   // prepend；不够则全攒）；② 只看**本轮剩余**尾：奇→hold 1 字节，偶且末单元
@@ -211,38 +211,38 @@ StringDecoder.prototype.__wjsWriteWide = function (view) {
   // （0→0，奇→1，偶hold→2），与 C++ 的 (1,1)/(2,2) 一致。
   let data = view;
   let out = '';
-  if (this.__wjsMissing > 0) {
-    const take = Math.min(data.length, this.__wjsMissing);
-    for (let i = 0; i < take; i++) this.__wjsStore[this.__wjsStored + i] = data[i];
-    this.__wjsStored += take;
-    this.__wjsMissing -= take;
+  if (this.__wjs2Missing > 0) {
+    const take = Math.min(data.length, this.__wjs2Missing);
+    for (let i = 0; i < take; i++) this.__wjs2Store[this.__wjs2Stored + i] = data[i];
+    this.__wjs2Stored += take;
+    this.__wjs2Missing -= take;
     data = data.subarray(take);
-    if (this.__wjsMissing === 0) {
-      out += __wjs_decodeUtf16(this.__wjsStore.subarray(0, this.__wjsStored));
-      this.__wjsStored = 0;
+    if (this.__wjs2Missing === 0) {
+      out += __wjs2_decodeUtf16(this.__wjs2Store.subarray(0, this.__wjs2Stored));
+      this.__wjs2Stored = 0;
     }
   }
   if (data.length === 0) return out;
   let buffered = 0;
   if (data.length % 2 === 1) {
     buffered = 1;
-    this.__wjsMissing = 1;
+    this.__wjs2Missing = 1;
   } else if ((data[data.length - 1] & 0xFC) === 0xD8) {
     buffered = 2;
-    this.__wjsMissing = 2;
+    this.__wjs2Missing = 2;
   }
   let body = data;
   if (buffered > 0) {
     body = data.subarray(0, data.length - buffered);
-    this.__wjsStore.set(data.subarray(data.length - buffered));
-    this.__wjsStored = buffered;
+    this.__wjs2Store.set(data.subarray(data.length - buffered));
+    this.__wjs2Stored = buffered;
   }
-  out += __wjs_decodeUtf16(body);
+  out += __wjs2_decodeUtf16(body);
   return out;
 };
 
 // utf16le 解码（astral 配对；lone 代理/BMP 直通；不做有效性替换）。
-function __wjs_decodeUtf16(units) {
+function __wjs2_decodeUtf16(units) {
   let s = '';
   for (let i = 0; i + 1 < units.length; i += 2) {
     const u = units[i] | (units[i + 1] << 8);
@@ -259,8 +259,8 @@ function __wjs_decodeUtf16(units) {
   return s;
 }
 
-StringDecoder.prototype.__wjsWriteSingle = function (view, ascii) {
-  this.__wjsStored = 0;
+StringDecoder.prototype.__wjs2WriteSingle = function (view, ascii) {
+  this.__wjs2Stored = 0;
   let s = '';
   for (let i = 0; i < view.length; i += 0x8000) {
     s += ascii
@@ -270,27 +270,27 @@ StringDecoder.prototype.__wjsWriteSingle = function (view, ascii) {
   return s;
 };
 
-StringDecoder.prototype.__wjsWriteBase64 = function (view) {
+StringDecoder.prototype.__wjs2WriteBase64 = function (view) {
   // 3 字节组缓存：完整组编码，残组缓存到 end()
-  const buf = this.__wjsBase64Buf;
+  const buf = this.__wjs2Base64Buf;
   const all = buf === undefined ? view : Buffer.concat([buf, view]);
   const completeLen = all.length - (all.length % 3);
   if (completeLen === 0) {
     if (all.length > 0) {
-      this.__wjsBase64Buf = Buffer.from(all);
-      this.__wjsStored = all.length;
+      this.__wjs2Base64Buf = Buffer.from(all);
+      this.__wjs2Stored = all.length;
     }
     return '';
   }
-  const out = __wjs_bufEncode(all.subarray(0, completeLen),
+  const out = __wjs2_bufEncode(all.subarray(0, completeLen),
     this.encoding === 'base64url' ? 'base64url' : 'base64');
   const rest = all.subarray(completeLen);
   if (rest.length > 0) {
-    this.__wjsBase64Buf = Buffer.from(rest);
-    this.__wjsStored = rest.length;
+    this.__wjs2Base64Buf = Buffer.from(rest);
+    this.__wjs2Stored = rest.length;
   } else {
-    this.__wjsBase64Buf = undefined;
-    this.__wjsStored = 0;
+    this.__wjs2Base64Buf = undefined;
+    this.__wjs2Stored = 0;
   }
   return out;
 };
@@ -304,7 +304,7 @@ Object.defineProperties(StringDecoder.prototype, {
     get() {
       // 10f：真机回 4 字节零填充 Buffer（`.equals` 可用；旧实现变长裸片，套件点名）。
       const out = Buffer.alloc(4);
-      out.set(this.__wjsStore.subarray(0, this.__wjsStored));
+      out.set(this.__wjs2Store.subarray(0, this.__wjs2Stored));
       return out;
     },
   },
@@ -313,7 +313,7 @@ Object.defineProperties(StringDecoder.prototype, {
     configurable: true,
     enumerable: true,
     get() {
-      return this.__wjsMissing;
+      return this.__wjs2Missing;
     },
   },
   lastTotal: {
@@ -321,7 +321,7 @@ Object.defineProperties(StringDecoder.prototype, {
     configurable: true,
     enumerable: true,
     get() {
-      return this.__wjsStored + this.__wjsMissing;
+      return this.__wjs2Stored + this.__wjs2Missing;
     },
   },
 });

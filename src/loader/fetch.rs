@@ -27,7 +27,7 @@ pub fn fetch(url: &Url) -> Result<Fetched, Error> {
                 .map_err(|_| Error::Other(format!("bad file URL: {url}")))?;
             let text = fs_err::read_to_string(&path)
                 .map_err(|source| Error::IoRead { path, source })?;
-            tracing::debug!(target: "winterjs::loader", url = url.as_str(), bytes = text.len(), "fetched file module");
+            tracing::debug!(target: "winterjs2::loader", url = url.as_str(), bytes = text.len(), "fetched file module");
             Ok(Fetched { text })
         }
         "data" => {
@@ -38,7 +38,7 @@ pub fn fetch(url: &Url) -> Result<Fetched, Error> {
                 .map_err(|e| Error::Other(format!("bad data: body ({e:?})")))?;
             let text = String::from_utf8(bytes)
                 .map_err(|e| Error::Other(format!("data: module is not UTF-8 ({e})")))?;
-            tracing::debug!(target: "winterjs::loader", bytes = text.len(), "fetched data module");
+            tracing::debug!(target: "winterjs2::loader", bytes = text.len(), "fetched data module");
             Ok(Fetched { text })
         }
         "http" | "https" => fetch_remote(url),
@@ -67,11 +67,11 @@ fn fetch_remote(url: &Url) -> Result<Fetched, Error> {
 async fn fetch_remote_async(url: &Url) -> Result<Fetched, Error> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let client = reqwest::Client::builder()
-        .user_agent(concat!("winterjs/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("winterjs2/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| Error::Other(format!("remote fetch client failed: {e}")))?;
-    tracing::info!(target: "winterjs::loader", url = url.as_str(), "fetching remote module");
+    tracing::info!(target: "winterjs2::loader", url = url.as_str(), "fetching remote module");
     let resp = client
         .get(url.clone())
         .header("Accept", "*/*")
@@ -96,6 +96,6 @@ async fn fetch_remote_async(url: &Url) -> Result<Fetched, Error> {
     }
     let text = String::from_utf8(bytes.into())
         .map_err(|e| Error::Other(format!("remote module '{url}' is not UTF-8 ({e})")))?;
-    tracing::debug!(target: "winterjs::loader", url = url.as_str(), bytes = text.len(), "fetched remote module");
+    tracing::debug!(target: "winterjs2::loader", url = url.as_str(), bytes = text.len(), "fetched remote module");
     Ok(Fetched { text })
 }

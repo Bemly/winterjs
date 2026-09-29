@@ -117,7 +117,7 @@ where
             Err(e) => {
                 // 可选边拉取失败即容忍（跳过整支；npm 口径）。
                 if via_optional {
-                    tracing::debug!(target: "winterjs::pm", package = name.as_str(), "optional fetch failed, skipping: {e}");
+                    tracing::debug!(target: "winterjs2::pm", package = name.as_str(), "optional fetch failed, skipping: {e}");
                     continue;
                 }
                 return Err(e);
@@ -127,7 +127,7 @@ where
             Ok(v) => v,
             Err(e) => {
                 if via_optional {
-                    tracing::debug!(target: "winterjs::pm", package = name.as_str(), "optional resolve failed, skipping: {e}");
+                    tracing::debug!(target: "winterjs2::pm", package = name.as_str(), "optional resolve failed, skipping: {e}");
                     continue;
                 }
                 return Err(e);
@@ -138,7 +138,7 @@ where
             meta.os.as_deref(),
             meta.cpu.as_deref(),
         ) {
-            tracing::debug!(target: "winterjs::pm", package = name.as_str(), version = version.as_str(), "platform skipped");
+            tracing::debug!(target: "winterjs2::pm", package = name.as_str(), version = version.as_str(), "platform skipped");
             continue;
         }
         pinned.insert(name.clone(), version.clone());

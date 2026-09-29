@@ -24,14 +24,14 @@ impl Drop for ServeGuard {
     }
 }
 
-/// 起 `winterjs serve . --port <free> [extra]`，轮询到 connect 成功（5s 超时）。
+/// 起 `winterjs2 serve . --port <free> [extra]`，轮询到 connect 成功（5s 超时）。
 pub(crate) fn spawn_serve(root: &std::path::Path) -> ServeGuard {
     spawn_serve_args(root, &[])
 }
 
 pub(crate) fn spawn_serve_args(root: &std::path::Path, extra: &[&str]) -> ServeGuard {
     let port = free_port();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs2"))
         .args(["--serve", ".", "--port"])
         .arg(port.to_string())
         .args(extra)
@@ -295,7 +295,7 @@ pub(crate) fn t2_handler_src() -> &'static str {
 pub(crate) fn t4_handler_src() -> &'static str {
     "export default { async fetch(req) { \
      if ((req.headers.get('upgrade') || '').toLowerCase() === 'websocket') { \
-     const ws = __wjs_serve_socket(req); ws.onmessage = (e) => { ws.send(e.data); }; return ws; } \
+     const ws = __wjs2_serve_socket(req); ws.onmessage = (e) => { ws.send(e.data); }; return ws; } \
      return new Response('http', { status: 200 }); } };"
 }
 

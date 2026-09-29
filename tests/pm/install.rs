@@ -10,7 +10,7 @@ fn phase5_install_dry_run_stub_registry() {
     let port = serve_registry();
     let reg = format!("http://127.0.0.1:{port}");
     let out = stdout_of(
-        winterjs()
+        winterjs2()
             .args(["--add", "left-pad@^1.0.0", "--dry-run", "--registry"])
             .arg(&reg),
     );
@@ -20,7 +20,7 @@ fn phase5_install_dry_run_stub_registry() {
         "dry-run single: {out}"
     );
     let out = stdout_of(
-        winterjs()
+        winterjs2()
             .args(["--add", "app", "--dry-run", "--registry"])
             .arg(&reg),
     );
@@ -36,13 +36,13 @@ fn phase5_install_dry_run_stub_registry() {
 #[test]
 fn phase5_install_errors() {
     // 空包列表（clap 拦：--add 至少 1 值）/ 未知包 / 无满足版本，皆非零且可读。
-    let out = winterjs().args(["--add", "--dry-run"]).output().unwrap();
+    let out = winterjs2().args(["--add", "--dry-run"]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("--add"), "stderr:\n{err}");
     let port = serve_registry();
     let reg = format!("http://127.0.0.1:{port}");
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--add", "no-such-pkg-xyz", "--dry-run", "--registry"])
         .arg(&reg)
         .output()
@@ -50,7 +50,7 @@ fn phase5_install_errors() {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("not found"), "stderr: {stderr}");
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--add", "left-pad@^9.0.0", "--dry-run", "--registry"])
         .arg(&reg)
         .output()
@@ -117,7 +117,7 @@ fn phase5_install_end_to_end_stub() {
     });
     let reg = format!("http://127.0.0.1:{port}");
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--add")
         .arg("tiny-pkg")
         .arg("--registry")
@@ -138,7 +138,7 @@ fn phase5_install_end_to_end_stub() {
             .is_file()
     );
     assert!(dir.path().join("node_modules/.bin/tiny-bin").exists());
-    let lock = std::fs::read_to_string(dir.path().join("winterjs-lock.json")).unwrap();
+    let lock = std::fs::read_to_string(dir.path().join("winterjs2-lock.json")).unwrap();
     assert!(
         lock.contains("\"tiny-pkg\"") && lock.contains("1.0.0") && lock.contains("sha512-"),
         "lock: {lock}"
@@ -147,7 +147,7 @@ fn phase5_install_end_to_end_stub() {
     let app = dir.child("app.cjs");
     app.write_str("const t = require(\"tiny-pkg\");\nconsole.log(t.add(19, 23));\n")
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())
@@ -244,7 +244,7 @@ fn phase5_install_dir_first_tarball_stub() {
     });
     let reg = format!("http://127.0.0.1:{port}");
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--add")
         .arg("oddball")
         .arg("--registry")
@@ -266,7 +266,7 @@ fn phase5_install_dir_first_tarball_stub() {
     let app = dir.child("app.cjs");
     app.write_str("const t = require(\"oddball\");\nconsole.log(t.add(19, 23));\n")
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())
@@ -343,12 +343,12 @@ fn phase5_stale_staging_recovered() {
     let nm = dir.path().join("node_modules");
     std::fs::create_dir_all(nm.join(".staging-999-deadbeef/package")).unwrap();
     std::fs::write(nm.join(".staging-999-deadbeef/package/junk.txt"), b"half").unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--add")
         .arg("stale-pkg")
         .arg("--registry")
         .arg(&reg)
-        .env("WINTERJS_CACHE", cache.path())
+        .env("WINTERJS2_CACHE", cache.path())
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -377,7 +377,7 @@ fn phase5_stale_staging_recovered() {
 
 #[test]
 fn pm_install_global_lands_in_global_root() {
-    // 全局：包落 `WINTERJS_GLOBAL_ROOT/node_modules`，cwd 保持干净；打 PATH 指引。
+    // 全局：包落 `WINTERJS2_GLOBAL_ROOT/node_modules`，cwd 保持干净；打 PATH 指引。
     use base64::Engine as _;
     use sha2::Digest as _;
     let tgz = make_tgz(&[
@@ -437,9 +437,9 @@ fn pm_install_global_lands_in_global_root() {
     let dir = assert_fs::TempDir::new().unwrap();
     let groot = assert_fs::TempDir::new().unwrap();
     // 长 flag `--add` 覆盖（短 flag `-a` 已在迁移用例里全覆盖）
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--install", "g-pkg", "--registry", &reg])
-        .env("WINTERJS_GLOBAL_ROOT", groot.path())
+        .env("WINTERJS2_GLOBAL_ROOT", groot.path())
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -464,7 +464,7 @@ fn pm_install_global_lands_in_global_root() {
         "cwd must stay clean"
     );
     assert!(
-        !dir.path().join("winterjs-lock.json").exists(),
+        !dir.path().join("winterjs2-lock.json").exists(),
         "lockfile goes to global root"
     );
     dir.close().unwrap();
@@ -478,7 +478,7 @@ fn pm_install_global_dry_run_writes_nothing() {
     let reg = format!("http://127.0.0.1:{port}");
     let groot = assert_fs::TempDir::new().unwrap();
     let target = groot.child("should-not-exist");
-    let out = winterjs()
+    let out = winterjs2()
         .args([
             "--install",
             "left-pad@^1.0.0",
@@ -486,7 +486,7 @@ fn pm_install_global_dry_run_writes_nothing() {
             "--registry",
             &reg,
         ])
-        .env("WINTERJS_GLOBAL_ROOT", target.path())
+        .env("WINTERJS2_GLOBAL_ROOT", target.path())
         .output()
         .unwrap();
     assert!(
@@ -505,7 +505,7 @@ fn pm_install_global_dry_run_writes_nothing() {
 #[test]
 fn pm_add_requires_packages_flag() {
     // 边界：--add 无值被 clap 直接拦（exit=2），到不了 pm
-    let out = winterjs().args(["--add", "--dry-run"]).output().unwrap();
+    let out = winterjs2().args(["--add", "--dry-run"]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("--add"), "stderr:\n{err}");
@@ -670,7 +670,7 @@ fn pm_optional_deps_platform_and_tolerance() {
     });
     let reg = format!("http://127.0.0.1:{port}");
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--add")
         .arg("tool-pkg")
         .arg("--registry")
@@ -703,13 +703,13 @@ fn pm_optional_deps_platform_and_tolerance() {
     assert!(!dir.path().join("node_modules/tool-bind-404").exists());
     assert!(!dir.path().join("node_modules/tool-bind-badtar").exists());
     assert!(dir.path().join("node_modules/.bin/tool-bin").exists());
-    let lock = std::fs::read_to_string(dir.path().join("winterjs-lock.json")).unwrap();
+    let lock = std::fs::read_to_string(dir.path().join("winterjs2-lock.json")).unwrap();
     assert!(
         lock.contains("tool-bind-ok") && !lock.contains("tool-bind-nope"),
         "lock: {lock}"
     );
     // 装完即跑（bin 链可用）。
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(dir.path().join("node_modules/tool-pkg/cli.js"))
         .current_dir(dir.path())

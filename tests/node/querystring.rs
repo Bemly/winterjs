@@ -25,7 +25,7 @@ console.log("fallback", qs.unescape("%E0%A4%A").includes("%"), qs.unescapeBuffer
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();

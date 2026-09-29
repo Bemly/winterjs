@@ -60,12 +60,12 @@ fn phase5_lifecycle_runs_in_order() {
     let reg = format!("http://127.0.0.1:{port}");
     let dir = assert_fs::TempDir::new().unwrap();
     let cache = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--add")
         .arg("life-pkg")
         .arg("--registry")
         .arg(&reg)
-        .env("WINTERJS_CACHE", cache.path())
+        .env("WINTERJS2_CACHE", cache.path())
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -139,12 +139,12 @@ fn phase5_lifecycle_failure_breaks_install() {
     let reg = format!("http://127.0.0.1:{port}");
     let dir = assert_fs::TempDir::new().unwrap();
     let cache = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--add")
         .arg("badlife")
         .arg("--registry")
         .arg(&reg)
-        .env("WINTERJS_CACHE", cache.path())
+        .env("WINTERJS2_CACHE", cache.path())
         .current_dir(dir.path())
         .output()
         .unwrap();

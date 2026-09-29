@@ -56,7 +56,7 @@ fn pm_release_binary_end_to_end() {
     // 跨平台 CI 上只验 asset 选择（dry-run 打印的 asset 名含本机 arch）。
     let api = format!("http://127.0.0.1:{port}");
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--add", "mytool@release:github/o/r@v1/mytool", "--dry-run"])
         .env("GITHUB_API", &api)
         .current_dir(dir.path())
@@ -73,7 +73,7 @@ fn pm_release_binary_end_to_end() {
         "dry-run must pick current-arch asset: {stdout}"
     );
     // 真装：同 asset 下载解包 → `.bin/mytool` 落盘可执行 → lockfile 落盘。
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--add", "mytool@release:github/o/r@v1/mytool"])
         .env("GITHUB_API", &api)
         .current_dir(dir.path())
@@ -91,7 +91,7 @@ fn pm_release_binary_end_to_end() {
     );
     let bin = dir.path().join("node_modules").join(".bin").join("mytool");
     assert!(bin.is_file(), ".bin/mytool must land");
-    let lock = std::fs::read_to_string(dir.path().join("winterjs-lock.json")).unwrap();
+    let lock = std::fs::read_to_string(dir.path().join("winterjs2-lock.json")).unwrap();
     assert!(lock.contains("github-release:o/r@v1/"), "lock: {lock}");
     assert!(lock.contains("sha512-"), "lock integrity: {lock}");
     dir.close().unwrap();
@@ -155,7 +155,7 @@ fn pm_release_binary_runs() {
     let api = format!("http://127.0.0.1:{port}");
     let dir = assert_fs::TempDir::new().unwrap();
     // fake 二进制是 sh 脚本，unix 通用（本用例已 #[cfg(unix)] 门控）。
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--add", "mytool@release:github/o/r@v1/mytool"])
         .env("GITHUB_API", &api)
         .current_dir(dir.path())

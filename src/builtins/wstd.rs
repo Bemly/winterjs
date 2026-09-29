@@ -1,6 +1,6 @@
-//! 本体小工具面（WinterJS.semver/yaml/jsonc/ip/shlex/spdx/qrcode）。
+//! 本体小工具面（WinterJS2.semver/yaml/jsonc/ip/shlex/spdx/qrcode）。
 //!
-//! 范围（用户拍板）：Web 标准与已有本体面跳过，真缺口全进 `WinterJS.*`。
+//! 范围（用户拍板）：Web 标准与已有本体面跳过，真缺口全进 `WinterJS2.*`。
 //! 全员纯函数、直用树内轮子（deno_semver/npm 语义 + yaml-rust2 + jsonc-parser +
 //! ipnet + shlex + spdx + qrcode），零新增依赖；错误 plain `TypeError`，
 //! 无 node 错误码口径。`matches` 的 tag range（如 `latest`）不 panic，
@@ -47,7 +47,7 @@ fn set_bool(frame: &Frame, b: bool) {
     frame.set_rval(mozjs::jsval::BooleanValue(b));
 }
 
-/// `__wjs_wstd_semver_valid(v)` → bool（npm 语义）。
+/// `__wjs2_wstd_semver_valid(v)` → bool（npm 语义）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_semver_faces`。
 pub unsafe extern "C" fn semver_valid(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -73,7 +73,7 @@ fn version_json(v: &deno_semver::Version) -> serde_json::Value {
     })
 }
 
-/// `__wjs_wstd_semver_parse(v)` → `{major,minor,patch,pre,build}` JSON 串。
+/// `__wjs2_wstd_semver_parse(v)` → `{major,minor,patch,pre,build}` JSON 串。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_semver_faces`。
 pub unsafe extern "C" fn semver_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -97,7 +97,7 @@ pub unsafe extern "C" fn semver_parse(
     }
 }
 
-/// `__wjs_wstd_semver_satisfies(v, range)` → bool（tag range 报可读错，不 panic）。
+/// `__wjs2_wstd_semver_satisfies(v, range)` → bool（tag range 报可读错，不 panic）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_semver_faces`。
 pub unsafe extern "C" fn semver_satisfies(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -169,7 +169,7 @@ fn cmp_version(a: &deno_semver::Version, b: &deno_semver::Version) -> i32 {
     }
 }
 
-/// `__wjs_wstd_semver_compare(a, b)` → -1|0|1。
+/// `__wjs2_wstd_semver_compare(a, b)` → -1|0|1。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_semver_faces`。
 pub unsafe extern "C" fn semver_compare(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -253,7 +253,7 @@ fn json_to_yaml(v: &serde_json::Value) -> yaml_rust2::Yaml {
     }
 }
 
-/// `__wjs_wstd_yaml_parse(s)` → 首文档 JSON 串（空即 `"null"`）。
+/// `__wjs2_wstd_yaml_parse(s)` → 首文档 JSON 串（空即 `"null"`）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_yaml_jsonc_faces`。
 pub unsafe extern "C" fn yaml_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -265,7 +265,7 @@ pub unsafe extern "C" fn yaml_parse(
     let Some(s) = arg_str(&mut cx, &frame, 0, "yaml parse") else {
         return false;
     };
-    tracing::debug!(target: "winterjs::wstd", src_len = s.len(), "yaml parse");
+    tracing::debug!(target: "winterjs2::wstd", src_len = s.len(), "yaml parse");
     match yaml_rust2::YamlLoader::load_from_str(&s) {
         Ok(docs) => {
             let v = match docs.first() {
@@ -288,7 +288,7 @@ pub unsafe extern "C" fn yaml_parse(
     }
 }
 
-/// `__wjs_wstd_yaml_stringify(json)`（JS 传 `JSON.stringify` 结果）。
+/// `__wjs2_wstd_yaml_stringify(json)`（JS 传 `JSON.stringify` 结果）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_yaml_jsonc_faces`。
 pub unsafe extern "C" fn yaml_stringify(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -319,7 +319,7 @@ pub unsafe extern "C" fn yaml_stringify(
     true
 }
 
-/// `__wjs_wstd_jsonc_parse(s)` → JSON 串（注释/尾逗号容忍）。
+/// `__wjs2_wstd_jsonc_parse(s)` → JSON 串（注释/尾逗号容忍）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_yaml_jsonc_faces`。
 pub unsafe extern "C" fn jsonc_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -331,7 +331,7 @@ pub unsafe extern "C" fn jsonc_parse(
     let Some(s) = arg_str(&mut cx, &frame, 0, "jsonc parse") else {
         return false;
     };
-    tracing::debug!(target: "winterjs::wstd", src_len = s.len(), "jsonc parse");
+    tracing::debug!(target: "winterjs2::wstd", src_len = s.len(), "jsonc parse");
     match jsonc_parser::parse_to_serde_value::<serde_json::Value>(&s, &Default::default()) {
         Ok(v) => {
             set_json(&mut cx, &frame, &v);
@@ -344,7 +344,7 @@ pub unsafe extern "C" fn jsonc_parse(
     }
 }
 
-/// `__wjs_wstd_ip_is_net(s)` / `__wjs_wstd_ip_is_addr(s)` → bool。
+/// `__wjs2_wstd_ip_is_net(s)` / `__wjs2_wstd_ip_is_addr(s)` → bool。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_ip_faces`。
 pub unsafe extern "C" fn ip_is_net(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -375,7 +375,7 @@ pub unsafe extern "C" fn ip_is_addr(
     true
 }
 
-/// `__wjs_wstd_ip_contains(net, ip)` → bool。
+/// `__wjs2_wstd_ip_contains(net, ip)` → bool。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_ip_faces`。
 pub unsafe extern "C" fn ip_contains(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -408,7 +408,7 @@ pub unsafe extern "C" fn ip_contains(
     true
 }
 
-/// `__wjs_wstd_ip_parse(net)` → `{network,prefixLen,broadcast?}` JSON 串。
+/// `__wjs2_wstd_ip_parse(net)` → `{network,prefixLen,broadcast?}` JSON 串。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_ip_faces`。
 pub unsafe extern "C" fn ip_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -442,7 +442,7 @@ pub unsafe extern "C" fn ip_parse(
     true
 }
 
-/// `__wjs_wstd_shlex_split(s)` → 参数数组 JSON 串（引号不配对即错）。
+/// `__wjs2_wstd_shlex_split(s)` → 参数数组 JSON 串（引号不配对即错）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_misc_faces`。
 pub unsafe extern "C" fn shlex_split(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -468,7 +468,7 @@ pub unsafe extern "C" fn shlex_split(
     }
 }
 
-/// `__wjs_wstd_spdx_valid(expr)` → bool。
+/// `__wjs2_wstd_spdx_valid(expr)` → bool。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_misc_faces`。
 pub unsafe extern "C" fn spdx_valid(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -484,7 +484,7 @@ pub unsafe extern "C" fn spdx_valid(
     true
 }
 
-/// `__wjs_wstd_qrcode(text)` → 终端块字符画（与 `--serve` LAN 码同渲染）。
+/// `__wjs2_wstd_qrcode(text)` → 终端块字符画（与 `--serve` LAN 码同渲染）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wstd.rs::wstd_misc_faces`。
 pub unsafe extern "C" fn qrcode(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -500,7 +500,7 @@ pub unsafe extern "C" fn qrcode(
         report_error(&mut cx, "TypeError: qrcode text must be 1..2048 bytes");
         return false;
     }
-    tracing::debug!(target: "winterjs::wstd", text_len = s.len(), "qrcode");
+    tracing::debug!(target: "winterjs2::wstd", text_len = s.len(), "qrcode");
     match qrcode::QrCode::new(s.as_bytes()) {
         Ok(code) => {
             let art = code

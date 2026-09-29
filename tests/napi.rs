@@ -102,7 +102,7 @@ console.log("typefn", typeof m.hello);
 "#
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())
@@ -165,7 +165,7 @@ console.log("dlsym", m.check());
 "#
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())
@@ -201,7 +201,7 @@ try {{
     ))
     .unwrap();
     // 沙箱开、ffi 未授 → 拒。
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", app.path().to_string_lossy().as_ref(), "--allow-read"])
         .current_dir(dir.path())
         .output()
@@ -214,7 +214,7 @@ try {{
     let so = String::from_utf8_lossy(&out.stdout);
     assert!(so.contains("denied PermissionError"), "stdout: {so}");
     // ffi 授予 → 通。
-    let out = winterjs()
+    let out = winterjs2()
         .args([
             "--run",
             app.path().to_string_lossy().as_ref(),
@@ -254,7 +254,7 @@ try {{
 "#
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())
@@ -292,7 +292,7 @@ console.log("coerce", v.coerce(), "pend", v.pendingException());
 "#
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())
@@ -328,7 +328,7 @@ console.log("defs", p.defineProperties(), "proto", p.prototypeAndArrayLen());
 "#
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())
@@ -374,7 +374,7 @@ try {{
 "#
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())
@@ -422,7 +422,7 @@ m.drain((c) => console.log("drain", c[1] >= Math.floor(a[0] / 2), c[3] >= Math.f
 "#
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())
@@ -465,7 +465,7 @@ console.log("buf", m.checkBuf(buf), buf.toString(), buf.length);
 "#
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())
@@ -512,7 +512,7 @@ console.log("end");
 "#
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())
@@ -557,7 +557,7 @@ const m = require({node:?});
 "#,
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(app.path())
         .current_dir(dir.path())
@@ -581,13 +581,13 @@ const m = require({node:?});
 #[ignore = "real network: installs rolldown via own pm (plan-napi M4 acceptance)"]
 fn phase_napi_m4_rolldown_bundle_real_network() {
     let dir = assert_fs::TempDir::new().unwrap();
-    let wjs = std::env::var("CARGO_BIN_EXE_winterjs")
-        .unwrap_or_else(|_| "target/debug/winterjs".to_string());
+    let wjs = std::env::var("CARGO_BIN_EXE_winterjs2")
+        .unwrap_or_else(|_| "target/debug/winterjs2".to_string());
     // 1) 自家 pm 真装 rolldown（连带 @rolldown/binding-darwin-arm64）
     let add = std::process::Command::new(&wjs)
         .args(["-a", "rolldown"])
         .current_dir(dir.path())
-        .env("WINTERJS_LOG", "warn")
+        .env("WINTERJS2_LOG", "warn")
         .output()
         .expect("pm add runs");
     assert!(
@@ -617,10 +617,10 @@ await bundle.close();
 "#,
         )
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", "bundle.mjs", "--allow-ffi", "--allow-env"])
         .current_dir(dir.path())
-        .env("WINTERJS_LOG", "warn")
+        .env("WINTERJS2_LOG", "warn")
         .output()
         .expect("bundle runs");
     assert!(
@@ -648,10 +648,10 @@ await bundle.close();
 "#,
         )
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", "bundle2.mjs", "--allow-ffi", "--allow-env"])
         .current_dir(dir.path())
-        .env("WINTERJS_LOG", "warn")
+        .env("WINTERJS2_LOG", "warn")
         .output()
         .expect("ts bundle runs");
     assert!(
@@ -677,13 +677,13 @@ fn phase_napi_m5_vite_build_real_network() {
     // 注：不带 --allow-ffi/--allow-env（权限沙箱会拒 fs 读，vite existsSync 门
     // 吞 EACCES 返 false——探针实录）；pm add 与 build 均在 tempdir 内（§4.20）。
     let dir = assert_fs::TempDir::new().unwrap();
-    let wjs = std::env::var("CARGO_BIN_EXE_winterjs")
-        .unwrap_or_else(|_| "target/debug/winterjs".to_string());
+    let wjs = std::env::var("CARGO_BIN_EXE_winterjs2")
+        .unwrap_or_else(|_| "target/debug/winterjs2".to_string());
     // 1) 自家 pm 真装 vite（连带 rolldown + binding-darwin-arm64）
     let add = std::process::Command::new(&wjs)
         .args(["-a", "vite"])
         .current_dir(dir.path())
-        .env("WINTERJS_LOG", "warn")
+        .env("WINTERJS2_LOG", "warn")
         .output()
         .expect("pm add runs");
     assert!(
@@ -716,10 +716,10 @@ console.log("BUILD-OK");
 "#,
         )
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", "build-probe.mjs"])
         .current_dir(dir.path())
-        .env("WINTERJS_LOG", "warn")
+        .env("WINTERJS2_LOG", "warn")
         .output()
         .expect("build runs");
     assert!(
@@ -739,11 +739,11 @@ console.log("BUILD-OK");
         }
     }
     let chunk = chunk.expect("dist chunk exists");
-    let run = winterjs()
+    let run = winterjs2()
         .args(["--run"])
         .arg(&chunk)
         .current_dir(dir.path())
-        .env("WINTERJS_LOG", "warn")
+        .env("WINTERJS2_LOG", "warn")
         .output()
         .expect("artifact runs");
     assert!(
@@ -768,12 +768,12 @@ fn phase_napi_m5_vite_dev_polling_real_network() {
     // （usePolling；默认 fsevents 路径真变更 139 隔离中，见 AGENTS §4.67）。
     // 注：与 build 测试同约束——不带 --allow-*（沙箱拒读）；tempdir 内（§4.20）。
     let dir = assert_fs::TempDir::new().unwrap();
-    let wjs = std::env::var("CARGO_BIN_EXE_winterjs")
-        .unwrap_or_else(|_| "target/debug/winterjs".to_string());
+    let wjs = std::env::var("CARGO_BIN_EXE_winterjs2")
+        .unwrap_or_else(|_| "target/debug/winterjs2".to_string());
     let add = std::process::Command::new(&wjs)
         .args(["-a", "vite"])
         .current_dir(dir.path())
-        .env("WINTERJS_LOG", "warn")
+        .env("WINTERJS2_LOG", "warn")
         .output()
         .expect("pm add runs");
     assert!(
@@ -811,10 +811,10 @@ setTimeout(() => { server.close().then(() => console.log("CLOSED")); }, 8000);
 "#,
         )
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", "dev-probe.mjs"])
         .current_dir(dir.path())
-        .env("WINTERJS_LOG", "warn")
+        .env("WINTERJS2_LOG", "warn")
         .output()
         .expect("dev probe runs");
     assert!(
@@ -887,7 +887,7 @@ console.log("official-ok");
 "#,
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())

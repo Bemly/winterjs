@@ -1,7 +1,7 @@
 // node:test runner: describe / it / subtests (runs under --run and --test).
 // 内置测试运行器：分组、用例与子测试。
-// Run / 运行: winterjs --run sample/test-runner/basics.js
-// Also / 也可: winterjs --test sample/test-runner/
+// Run / 运行: winterjs2 --run sample/test-runner/basics.js
+// Also / 也可: winterjs2 --test sample/test-runner/
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 

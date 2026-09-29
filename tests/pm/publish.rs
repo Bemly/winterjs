@@ -12,7 +12,7 @@ fn phase5_publish_dry_run_ok() {
         .unwrap();
     dir.child("index.js").write_str("exports.v = 1;\n").unwrap();
     let out = stdout_of(
-        winterjs()
+        winterjs2()
             .args([
                 "--publish",
                 "--dry-run",
@@ -37,7 +37,7 @@ fn phase5_publish_manifest_errors() {
     dir.child("package.json")
         .write_str(r#"{"version":"1.0.0"}"#)
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--publish", "--dry-run"])
         .current_dir(dir.path())
         .output()
@@ -51,7 +51,7 @@ fn phase5_publish_manifest_errors() {
     dir.child("package.json")
         .write_str(r#"{"name":"p","version":"1.0.0","license":"Not-A-License!!"}"#)
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--publish", "--dry-run"])
         .current_dir(dir.path())
         .output()
@@ -112,7 +112,7 @@ fn pm_publish_put_end_to_end() {
     dir.child(".npmrc")
         .write_str(&format!("registry={reg}\n//127.0.0.1/:_authToken=sekret\n"))
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--publish", "--registry", &reg])
         .current_dir(dir.path())
         .output()
@@ -150,7 +150,7 @@ fn pm_publish_errors() {
     dir.child("index.js").write_str("1").unwrap();
     // 无 token（HOME 隔离防污染真机 npmrc）
     let home = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--publish", "--registry", "http://127.0.0.1:9/"])
         .env("HOME", home.path())
         .current_dir(dir.path())
@@ -160,7 +160,7 @@ fn pm_publish_errors() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("--login"), "stderr:\n{err}");
     // dry-run 不碰网络（坏 registry 也过）
-    let out = winterjs()
+    let out = winterjs2()
         .args([
             "--publish",
             "--dry-run",

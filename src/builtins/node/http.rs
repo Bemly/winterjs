@@ -47,7 +47,7 @@ function Server(...args) {
     }
     const __base = Object.getPrototypeOf(fresh);
     if (typeof __base.__ev === "function") this.__ev = __base.__ev.bind(this);
-    try { (globalThis.__wjs_netXfer ??= new Map()).set(this, "net.Server"); } catch { /* guard */ }
+    try { (globalThis.__wjs2_netXfer ??= new Map()).set(this, "net.Server"); } catch { /* guard */ }
     __HttpServerBase.__initOn(this, args);
     const first = args[0];
     if (typeof first === "function") this.on("request", first);

@@ -38,7 +38,7 @@ try { types.isUint8Array(42) === false; console.log("num-ok"); } catch (e) { con
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();

@@ -22,5 +22,5 @@
 | `plan2.md` | Phase 9：deno 高度（已对齐完结，deno 不再作参照） |
 | `plan-napi.md` | napi M0–M6 |
 | `plan4.md` / `plan4-handover.md` | Phase 11 独立 serve（已合入 master） |
-| `bun-compat.md` | 2026-09-12 Bun 兼容表快照（winterjs 列停在 09-15；范围判定改用 `bun-scope.txt`） |
+| `bun-compat.md` | 2026-09-12 Bun 兼容表快照（winterjs2 列停在 09-15；范围判定改用 `bun-scope.txt`） |
 | `rolldown-napi-symbols.txt` | napi 符号名单（M 阶段参考） |

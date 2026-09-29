@@ -20,7 +20,7 @@ struct TlsServerOpts {
     key: Option<String>,
 }
 
-/// `__wjs_h2_listen(port, host, optsJson, target)` → server id。
+/// `__wjs2_h2_listen(port, host, optsJson, target)` → server id。
 pub unsafe extern "C" fn h2_listen(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

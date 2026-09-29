@@ -268,7 +268,7 @@ struct ListenOpts {
     key: Option<String>,
 }
 
-/// `__wjs_tls_connect(host, port, optsJson, target)` → id。
+/// `__wjs2_tls_connect(host, port, optsJson, target)` → id。
 pub unsafe extern "C" fn tls_connect(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -430,7 +430,7 @@ fn ca_certs_json(kind: &str) -> String {
     serde_json::to_string(&pems).unwrap_or_else(|_| "[]".into())
 }
 
-/// `__wjs_tls_ca_certs(kind)` → PEM 数组 JSON 串。
+/// `__wjs2_tls_ca_certs(kind)` → PEM 数组 JSON 串。
 ///
 /// UNSAFE-BOUNDARY: 前置——引擎回调 cx 有效；覆盖测试——`tests/node/tls.rs::phase11_tls_socket_surface`。
 pub unsafe extern "C" fn tls_ca_certs(
@@ -445,7 +445,7 @@ pub unsafe extern "C" fn tls_ca_certs(
     true
 }
 
-/// `__wjs_tls_listen(port, host, optsJson, target)` → id。
+/// `__wjs2_tls_listen(port, host, optsJson, target)` → id。
 pub unsafe extern "C" fn tls_listen(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

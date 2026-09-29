@@ -187,7 +187,7 @@ pub(crate) fn glob_match_impl(pat: &str, name: &str, base: &str, nocase: bool) -
     }
 }
 
-/// `__wjs_watch_start(path, recursiveBool, persistentBool, listener)` → id。
+/// `__wjs2_watch_start(path, recursiveBool, persistentBool, listener)` → id。
 /// 路径不存在即报（`watch` 前置校验；`notify` 自身错误走 Failed 事件）。
 pub unsafe extern "C" fn watch_start(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -306,7 +306,7 @@ pub unsafe extern "C" fn watch_start(
     match build {
         Ok(driver) => {
             state::watch_add(id, driver, listener, persistent);
-            tracing::info!(target: "winterjs::watch", id, path = path.as_str(), recursive, "watch started");
+            tracing::info!(target: "winterjs2::watch", id, path = path.as_str(), recursive, "watch started");
             frame.set_rval(mozjs::jsval::Int32Value(id as i32));
             true
         }
@@ -317,7 +317,7 @@ pub unsafe extern "C" fn watch_start(
     }
 }
 
-/// `__wjs_glob_match(pattern, filename, basename, nocaseBool)` → bool。
+/// `__wjs2_glob_match(pattern, filename, basename, nocaseBool)` → bool。
 /// fs.watch `ignore` 字符串面（minimatch 近似，见 `glob_match_impl`）。
 pub unsafe extern "C" fn glob_match(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -339,7 +339,7 @@ pub unsafe extern "C" fn glob_match(
     true
 }
 
-/// `__wjs_watch_close(id)`（幂等；残留事件落空）。
+/// `__wjs2_watch_close(id)`（幂等；残留事件落空）。
 pub unsafe extern "C" fn watch_close(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -357,7 +357,7 @@ pub unsafe extern "C" fn watch_close(
     true
 }
 
-/// `__wjs_watch_persistent(id, bool)`（ref/unref 续命位；幂等，不存在即 noop）。
+/// `__wjs2_watch_persistent(id, bool)`（ref/unref 续命位；幂等，不存在即 noop）。
 pub unsafe extern "C" fn watch_persistent(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -435,7 +435,7 @@ pub fn dispatch(
         WatchKind::Failed(message) => {
             // 溢出类错误：摘除该路（监听不再触发），WARN 留痕后继续循环。
             state::watch_remove(ev.id);
-            tracing::warn!(target: "winterjs::watch", id = ev.id, message = message.as_str(), "watch failed, removed");
+            tracing::warn!(target: "winterjs2::watch", id = ev.id, message = message.as_str(), "watch failed, removed");
             Ok(())
         }
     }

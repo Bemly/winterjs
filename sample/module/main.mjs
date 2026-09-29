@@ -1,6 +1,6 @@
 // node:module + CJS/ESM interop: require, createRequire, __dirname.
 // 模块互操作：require、CJS 变量与 createRequire。
-// Run / 运行: winterjs --run sample/module/main.mjs
+// Run / 运行: winterjs2 --run sample/module/main.mjs
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);

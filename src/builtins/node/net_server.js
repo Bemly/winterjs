@@ -22,7 +22,7 @@ class __ServerClass extends EventEmitter {
     this._handle = null;
     this.__pendingConnPayload = null;
     // transfer-guards：Server 同 Socket 不可 transfer（成功转移面另案，见 Socket 注）。
-    try { (globalThis.__wjs_netXfer ??= new Map()).set(this, "net.Server"); } catch {}
+    try { (globalThis.__wjs2_netXfer ??= new Map()).set(this, "net.Server"); } catch {}
     if (typeof options === "function") { cb = options; options = undefined; }
     if (typeof cb === "function") this.on("connection", cb);
     // 派发钩子预绑定（同 Socket 注）
@@ -102,18 +102,18 @@ class __ServerClass extends EventEmitter {
       }
       port.__adopted = true;
       if (port.__udsPath !== undefined) __boundPaths.delete(port.__udsPath);
-      if (port.__holdToken) { try { __wjs_net_unhold(port.__holdToken); } catch {} }
+      if (port.__holdToken) { try { __wjs2_net_unhold(port.__holdToken); } catch {} }
       if (cb) this.once("listening", cb);
       this.__setupHandle();
       if (port.__isPipe) {
         this.__port = 0; this.__udsPath = port.__udsPath;
-        this.__id = Number(__wjs_net_listen(0, "UDS:" + port.__udsPath, this));
+        this.__id = Number(__wjs2_net_listen(0, "UDS:" + port.__udsPath, this));
         this.__applyUnrefLatch();
       } else {
         this.__port = port.__boundPort;
         // reusePort 占位柄释放后重绑仍须带 SO_REUSEPORT（boundsocket reusePort
         // 双 listen 块；native 第 4 参 "1" 即开）。
-        this.__id = Number(__wjs_net_listen(port.__boundPort, port.__boundHost, this, port.__reusePort === true ? "1" : ""));
+        this.__id = Number(__wjs2_net_listen(port.__boundPort, port.__boundHost, this, port.__reusePort === true ? "1" : ""));
         this.__applyUnrefLatch();
       }
       return this;
@@ -135,7 +135,7 @@ class __ServerClass extends EventEmitter {
         if (cb) this.once("listening", cb);
         this.__port = 0; this.__udsPath = String(p);
         this.__setupHandle();
-        this.__id = Number(__wjs_net_listen(0, "UDS:" + String(p) + "\n" + modeBits, this));
+        this.__id = Number(__wjs2_net_listen(0, "UDS:" + String(p) + "\n" + modeBits, this));
         this.__applyUnrefLatch();
         return this;
       }
@@ -147,7 +147,7 @@ class __ServerClass extends EventEmitter {
     this.__setupHandle();
     // reusePort 直通 native 第 4 参（child reuseport 套件：fork 共享端口；
     // BoundSocket-adopt 路径早有同款，此处 direct 路径补齐）。
-    this.__id = Number(__wjs_net_listen(Number(port), host === null ? "0.0.0.0" : host, this, reusePort === true ? "1" : ""));
+    this.__id = Number(__wjs2_net_listen(Number(port), host === null ? "0.0.0.0" : host, this, reusePort === true ? "1" : ""));
     this.__applyUnrefLatch();
     return this;
   }
@@ -299,7 +299,7 @@ class __ServerClass extends EventEmitter {
     // unref 闩锁随柄消亡（node 口径：新 listen 即 fresh refed 柄；重听不继承）。
     this.__unrefLatched = false;
     if (this.__id) {
-      __wjs_net_destroy(this.__id);
+      __wjs2_net_destroy(this.__id);
       // 柄同步即清（node 口径：close 后 listen 立即可用，call-listen-multiple 第三段）。
       // __closing 旗拦 bind 窗口内已就绪的 Listening 派发（listen-close-server
       // 套件：close() 后 listening 回调必须永不触发）。
@@ -312,12 +312,12 @@ class __ServerClass extends EventEmitter {
   }
   // 10a：ref 真计数（同 Socket）。unref 闩锁（req-close-robust 套件：
   // listen 前 unref 在 __id 为 0 时被吞——真机两侧皆闩锁，listen 落定即补调）。
-  ref() { this.__unrefLatched = false; if (this.__id) __wjs_net_ref(this.__id); return this; }
-  unref() { this.__unrefLatched = true; if (this.__id) __wjs_net_unref(this.__id); return this; }
+  ref() { this.__unrefLatched = false; if (this.__id) __wjs2_net_ref(this.__id); return this; }
+  unref() { this.__unrefLatched = true; if (this.__id) __wjs2_net_unref(this.__id); return this; }
   // listen 落定即结算闩锁（各 __doListen 赋值点调用）。
   __applyUnrefLatch() {
     if (this.__unrefLatched === true && this.__id) {
-      try { __wjs_net_unref(this.__id); } catch { /* entry gone 即无事 */ }
+      try { __wjs2_net_unref(this.__id); } catch { /* entry gone 即无事 */ }
     }
   }
 }
@@ -334,7 +334,7 @@ Socket.prototype.__attachConn = function (info) {
   this.localAddress = info.localAddress;
   this.localPort = info.localPort;
   this.readable = true; this.writable = true;
-  __wjs_net_attach(this.__id, this);
+  __wjs2_net_attach(this.__id, this);
 };
 // Node Socket.unshift：字节塞回读流头部（ws setSocket 对升级残留用）；
 // 本仓读流无 JS 侧缓冲，以 data 事件回灌近似（先于后续 pump chunk——
@@ -348,7 +348,7 @@ Socket.prototype.__attachUds = function (info) {
   this.localAddress = undefined; this.localPort = undefined;
   this.remoteFamily = undefined;
   this.readable = true; this.writable = true;
-  __wjs_net_attach(this.__id, this);
+  __wjs2_net_attach(this.__id, this);
 };
 Socket.prototype.unshift = function (chunk) {
   if (chunk && chunk.length > 0) queueMicrotask(() => this.emit("data", chunk));
@@ -443,7 +443,7 @@ class BoundSocket {
           parts.pop();
           const parent = "/" + parts.join("/");
           let parentExists = false;
-          try { __wjs_fs_stat(parent, true); parentExists = true; } catch { parentExists = false; }
+          try { __wjs2_fs_stat(parent, true); parentExists = true; } catch { parentExists = false; }
           if (!parentExists) {
             const e = new Error(`bind EACCES ${String(path)}`);
             e.code = "EACCES"; e.syscall = "bind"; e.errno = -4092; throw e;
@@ -451,7 +451,7 @@ class BoundSocket {
         }
       }
       let bound;
-      try { bound = __wjs_net_bind("", 0, String(path)); }
+      try { bound = __wjs2_net_bind("", 0, String(path)); }
       catch (e) { throw __bindErr(String((e && e.message) || e)); }
       this.__udsPath = String(path);
       this.__boundPort = 0;
@@ -463,9 +463,9 @@ class BoundSocket {
       let bound;
       // reusePort → native 走 SO_REUSEPORT bind（真机 macOS/Linux 同支持；
       // 平台不支持由 native setsockopt 失败即 Err，套件 probe 落 first=null 跳过）。
-      try { bound = __wjs_net_bind(h, p, "", reusePort === true ? "1" : ""); }
+      try { bound = __wjs2_net_bind(h, p, "", reusePort === true ? "1" : ""); }
       catch (e) { throw __bindErr(String((e && e.message) || e)); }
-      // native 回 "port:token"（占位保活；close/adopt 时 __wjs_net_unhold(token) 释放）。
+      // native 回 "port:token"（占位保活；close/adopt 时 __wjs2_net_unhold(token) 释放）。
       const parts = String(bound).split(":");
       this.__boundHost = h;
       this.__boundPort = Number(parts[0]);
@@ -489,7 +489,7 @@ class BoundSocket {
       e.code = "ERR_SOCKET_HANDLE_ADOPTED"; throw e;
     }
     // 真 fd：占位 listener dup（unix；win 回 -1，套件 win 侧只断类型）。
-    if (this.__holdToken) return Number(__wjs_net_fd(this.__holdToken));
+    if (this.__holdToken) return Number(__wjs2_net_fd(this.__holdToken));
     return -1;
   }
   close() {
@@ -498,7 +498,7 @@ class BoundSocket {
       e.code = "ERR_SOCKET_HANDLE_ADOPTED"; throw e;
     }
     if (this.__udsPath !== undefined) __boundPaths.delete(this.__udsPath);
-    if (this.__holdToken) { try { __wjs_net_unhold(this.__holdToken); } catch {} }
+    if (this.__holdToken) { try { __wjs2_net_unhold(this.__holdToken); } catch {} }
     this.__adopted = true; // close 即失效（真机二次 close 同 ADOPTED 口径）
   }
 }

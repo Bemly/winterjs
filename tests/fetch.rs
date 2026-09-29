@@ -15,7 +15,7 @@ fn phase3_fetch_http_get() {
         r#"const r = await fetch("http://127.0.0.1:{port}/p?q=1"); console.log(r.status, r.ok, r.url, await r.text(), r.headers.get("x-echo"));"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         format!("200 true http://127.0.0.1:{port}/p?q=1 hello-http yes\n")
     );
 }
@@ -35,7 +35,7 @@ fn phase3_fetch_http_post_echo() {
     let code = format!(
         r#"const r = await fetch("http://127.0.0.1:{port}/echo", {{method: "POST", body: "a=1&b=2", headers: {{"content-type": "text/plain"}}}}); console.log(r.status, await r.text(), r.headers.get("x-ct"));"#
     );
-    let out = stdout_of(&mut winterjs().args(["--eval", &code]));
+    let out = stdout_of(&mut winterjs2().args(["--eval", &code]));
     assert!(
         out.starts_with("200 got:a=1&b=2 content-type: text/plain"),
         "post: {out}"
@@ -45,7 +45,7 @@ fn phase3_fetch_http_post_echo() {
 #[test]
 fn phase3_fetch_data_and_file() {
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval",
+        stdout_of(&mut winterjs2().args(["--eval",
             r#"const r = await fetch("data:text/plain,hello-fetch"); console.log(r.status, r.ok, await r.text());"#])),
         "200 true hello-fetch\n"
     );
@@ -54,7 +54,7 @@ fn phase3_fetch_data_and_file() {
     let url = format!("file://{}", dir.child("f.txt").path().display());
     let code = format!(r#"console.log(await (await fetch("{url}")).text());"#);
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         "hello-file\n"
     );
     dir.close().unwrap();
@@ -63,7 +63,7 @@ fn phase3_fetch_data_and_file() {
 #[test]
 fn phase3_fetch_errors_are_rejections() {
     // 不支持的 scheme 与连不上的地址都以 rejection 呈现（catch 可接住）
-    let out = stdout_of(&mut winterjs().args([
+    let out = stdout_of(&mut winterjs2().args([
         "--eval",
         r#"console.log(await fetch("blob:xyz").then(() => "no", () => "blob-err"))"#,
     ]));
@@ -78,14 +78,14 @@ fn phase3_fetch_errors_are_rejections() {
         r#"console.log(await fetch("http://127.0.0.1:{port}/").then(() => "no", (e) => String(e).includes("fetch failed") ? "net-err" : "other:" + e))"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         "net-err\n"
     );
 }
 
 #[test]
 fn phase3_headers_request_response_classes() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const h = new Headers([["X-A", "1"], ["x-a", "2"]]); console.log(h.get("x-a"), [...h.keys()].join(",")); const r = new Response("hi", { status: 201 }); console.log(r.status, r.ok, await r.text()); const q = new Request("https://ex.com/a", { method: "post", body: "x" }); console.log(q.method, q.url, await q.text());"#]));
     assert_eq!(
         out,
@@ -99,7 +99,7 @@ POST https://ex.com/a x
 
 #[test]
 fn phase3_abort_signal_pre_abort() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const c = new AbortController(); c.abort(); console.log(await fetch("http://127.0.0.1:9/x", { signal: c.signal }).then(() => 'no', () => 'abort-ok'));"#]));
     assert_eq!(
         out,
@@ -111,14 +111,14 @@ fn phase3_abort_signal_pre_abort() {
 
 #[test]
 fn phase3_streams_basic() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const rs = new ReadableStream({ start(c) { c.enqueue("a"); c.enqueue("b"); c.close(); } }); const out = []; for await (const x of rs) out.push(x); console.log(out.join(",")); const t = new TransformStream({ transform(c, ctl) { ctl.enqueue(String(c).toUpperCase()); } }); const w = t.writable.getWriter(); w.write("hi"); w.close(); const r = t.readable.getReader(); console.log((await r.read()).value, (await r.read()).done);"#]));
     assert_eq!(out, "a,b\nHI true\n", "streams: {out}");
 }
 
 #[test]
 fn phase3_streams_pipe_tee_body() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const rs = new ReadableStream({ start(c) { c.enqueue("x"); c.close(); } }); const ts = new TransformStream({ transform(c, ctl) { ctl.enqueue(c + "!"); } }); const out = []; await rs.pipeThrough(ts).pipeTo(new WritableStream({ write(c) { out.push(c); } })); console.log(out.join(",")); const [a, b] = new ReadableStream({ start(c) { c.enqueue(1); c.close(); } }).tee(); console.log(await a.getReader().read().then((x) => x.value), await b.getReader().read().then((x) => x.value)); const r = new Response("stream-me"); console.log(r.body === r.body, (await r.body.getReader().read()).value.length);"#]));
     assert_eq!(out, "x!\n1 1\ntrue 9\n", "pipe: {out}");
 }
@@ -134,7 +134,7 @@ fn phase3_fetch_in_flight_abort() {
         r#"const c = new AbortController(); const p = fetch("http://127.0.0.1:{port}/slow", {{ signal: c.signal }}); setTimeout(() => c.abort(), 50); try {{ await p; console.log("no-throw"); }} catch (e) {{ console.log("aborted:" + (e && e.name === "AbortError")); }}"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         "aborted:true\n"
     );
 }
@@ -150,10 +150,10 @@ fn phase3_fetch_abort_reason_and_late_abort_noop() {
         r#"const c = new AbortController(); const p = fetch("http://127.0.0.1:{port}/slow", {{ signal: c.signal }}); setTimeout(() => c.abort(new Error("custom-stop")), 50); try {{ await p; console.log("no-throw"); }} catch (e) {{ console.log(e.message); }}"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         "custom-stop\n"
     );
-    let ok = stdout_of(&mut winterjs().args(["--eval",
+    let ok = stdout_of(&mut winterjs2().args(["--eval",
         r#"const c = new AbortController(); const r = await fetch("data:text/plain,settled", { signal: c.signal }); c.abort(); console.log(await r.text());"#]));
     assert_eq!(ok, "settled\n", "late abort: {ok}");
 }
@@ -166,7 +166,7 @@ fn phase3_fetch_body_streams_chunks() {
         r#"const r = await fetch("http://127.0.0.1:{port}/split"); const rd = r.body.getReader(); const a = await rd.read(); const b = await rd.read(); const c = await rd.read(); console.log(new TextDecoder().decode(a.value), new TextDecoder().decode(b.value), c.done);"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         "abc def true\n"
     );
 }
@@ -179,7 +179,7 @@ fn phase3_fetch_body_stream_text_and_cancel() {
         r#"const r = await fetch("http://127.0.0.1:{port}/split"); console.log(await r.text());"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         "abcdef\n"
     );
     let port = serve_split();
@@ -187,7 +187,7 @@ fn phase3_fetch_body_stream_text_and_cancel() {
         r#"const r = await fetch("http://127.0.0.1:{port}/split"); const rd = r.body.getReader(); const a = await rd.read(); console.log(new TextDecoder().decode(a.value)); await rd.cancel(); console.log("cancelled");"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         "abc\ncancelled\n"
     );
 }
@@ -200,7 +200,7 @@ fn phase3_fetch_body_mid_stream_abort() {
         r#"const c = new AbortController(); const r = await fetch("http://127.0.0.1:{port}/split", {{ signal: c.signal }}); const rd = r.body.getReader(); const a = await rd.read(); console.log(new TextDecoder().decode(a.value)); c.abort(); try {{ await rd.read(); console.log("no-throw"); }} catch (e) {{ console.log("stream-aborted:" + String(e.message || e).includes("Abort")); }}"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         "abc\nstream-aborted:true\n"
     );
 }
@@ -231,7 +231,7 @@ if (new TextEncoder().encode("hi", { stream: true }).length !== 2) throw new Err
 console.log("td-stream-ok");
 "#;
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", code])),
+        stdout_of(&mut winterjs2().args(["--eval", code])),
         "td-stream-ok\n"
     );
 }
@@ -272,7 +272,7 @@ catch (e) { if (!String(e.message).includes("AbortSignal")) throw e; }
 console.log("abort-ev-ok");
 "#;
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", code])),
+        stdout_of(&mut winterjs2().args(["--eval", code])),
         "abort-ev-ok\n"
     );
 }
@@ -321,7 +321,7 @@ if (d5.done || [...d5.value].join(",") !== "9") throw new Error("default-on-byte
 console.log("byob-ok");
 "#;
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", code])),
+        stdout_of(&mut winterjs2().args(["--eval", code])),
         "byob-ok\n"
     );
 }
@@ -363,7 +363,7 @@ fn phase11_response_json_faces() {
     // 正常：缺省 200+json 头/体；init 改状态+自带 content-type 优先。
     // 报错：undefined/函数/BigInt 即 TypeError 同文案；坏 status 走 RangeError。
     // 边界：null data 体 "null"；null init 视作 {}。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const r = Response.json({a:1}); console.log(r.status, r.headers.get("content-type"), await r.text());
 const r2 = Response.json({a:1}, {status: 201, headers: {"content-type": "text/plain"}});
 console.log(r2.status, r2.headers.get("content-type"), await r2.text());
@@ -381,7 +381,7 @@ try { Response.json({a:1}, {status: 99}); console.log("NO-THROW"); } catch (e) {
 fn phase11_request_clone_faces() {
     // 正常：url/方法/头拷贝双可读；signal 永 fresh（无信号不 abort，有信号跟随）。
     // 报错：bodyUsed 后 clone 即 TypeError。边界：GET 无体 clone。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const q = new Request("https://ex.com/", {method: "POST", headers: {"x-a": "1"}, body: "payload"});
 const c = q.clone();
 console.log(c.url === q.url, c.method, c.headers.get("x-a"), await c.text(), await q.text());

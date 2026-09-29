@@ -24,24 +24,24 @@ pub fn effective_registry(cwd: &std::path::Path, cli: Option<&str>) -> String {
     let (src, url) = npmrc::resolve_registry(cli, &project, &home);
     // auth token 只查有无（值永不进日志；5d-d3 publish 才真正使用）。
     let has_auth = project.auth_token_for(&url).or_else(|| home.auth_token_for(&url)).is_some();
-    tracing::debug!(target: "winterjs::pm", source = src, registry = url.as_str(), has_auth, "registry resolved");
+    tracing::debug!(target: "winterjs2::pm", source = src, registry = url.as_str(), has_auth, "registry resolved");
     url
 }
 
-/// 全局安装根：`WINTERJS_GLOBAL_ROOT`（测试隔离/用户覆盖）> 系统数据目录
-///（`dirs::data_dir/winterjs/global`；macOS 下即 `~/Library/Application Support/...`）。
+/// 全局安装根：`WINTERJS2_GLOBAL_ROOT`（测试隔离/用户覆盖）> 系统数据目录
+///（`dirs::data_dir/winterjs2/global`；macOS 下即 `~/Library/Application Support/...`）。
 pub fn global_root() -> Result<std::path::PathBuf, Error> {
-    if let Ok(v) = std::env::var("WINTERJS_GLOBAL_ROOT")
+    if let Ok(v) = std::env::var("WINTERJS2_GLOBAL_ROOT")
         && !v.trim().is_empty()
     {
         return Ok(std::path::PathBuf::from(v));
     }
     let base = dirs::data_dir().ok_or_else(|| Error::Other("cannot find data directory".into()))?;
-    Ok(base.join("winterjs").join("global"))
+    Ok(base.join("winterjs2").join("global"))
 }
 
-/// `winterjs add -a <pkgs> [--dry-run] [--registry URL]`（工程本地，root=cwd）与
-/// `winterjs install -a <pkgs> ...`（全局，root=`global_root()`）共用体。
+/// `winterjs2 add -a <pkgs> [--dry-run] [--registry URL]`（工程本地，root=cwd）与
+/// `winterjs2 install -a <pkgs> ...`（全局，root=`global_root()`）共用体。
 /// registry 优先级：flag > `NPM_CONFIG_REGISTRY` env > 作用域镜像
 /// （`<root>/.npmrc` > `$HOME/.npmrc` 的 `@scope:registry`）> `<root>/.npmrc` >
 /// `$HOME/.npmrc` > 内建默认（见 `npmrc`）；token 按生效 registry host 透传。
@@ -149,7 +149,7 @@ async fn install_request(
             &home,
             &name,
         );
-        tracing::debug!(target: "winterjs::pm", package = name.as_str(), source = src, registry = url.as_str(), "registry resolved");
+        tracing::debug!(target: "winterjs2::pm", package = name.as_str(), source = src, registry = url.as_str(), "registry resolved");
         let token = project
             .auth_token_for(&url)
             .or_else(|| home.auth_token_for(&url));

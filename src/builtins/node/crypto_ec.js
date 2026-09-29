@@ -52,7 +52,7 @@ function __exportDer(kobj, options) {
   // DSA material 是信封 JSON（非 DER），经轮子编 pkcs8/spki
   if (kobj.__keyType === "dsa") {
     const envStr = Buffer.from(kobj.__material).toString("utf8");
-    const parts = JSON.parse(__cryptCall(() => __wjs_dsa_export(envStr)));
+    const parts = JSON.parse(__cryptCall(() => __wjs2_dsa_export(envStr)));
     if (kobj.__kind === "private") {
       if (!parts.privDer) {
         const err = new Error("DSA private key has no private material");
@@ -84,9 +84,9 @@ function __exportDer(kobj, options) {
       : kobj.__keyType === "x448" ? "X448"
       : "ED448";
     if (kobj.__kind === "private") {
-      return Buffer.from(__cryptCall(() => __wjs_okp_pkcs8_from_seed(kind, kobj.__material)));
+      return Buffer.from(__cryptCall(() => __wjs2_okp_pkcs8_from_seed(kind, kobj.__material)));
     }
-    return Buffer.from(__cryptCall(() => __wjs_okp_spki_from_pub(kind, kobj.__material)));
+    return Buffer.from(__cryptCall(() => __wjs2_okp_spki_from_pub(kind, kobj.__material)));
   }
   return kobj.__material;
 }
@@ -102,8 +102,8 @@ function __exportJwk(kobj) {
   const isPriv = kobj.__kind === "private";
   if (kobj.__keyType === "rsa") {
     const parts = isPriv
-      ? JSON.parse(__wjs_rsa_jwk(kobj.__material, __wjs_rsa_public(kobj.__material)))
-      : JSON.parse(__wjs_rsa_jwk_pub(kobj.__material));
+      ? JSON.parse(__wjs2_rsa_jwk(kobj.__material, __wjs2_rsa_public(kobj.__material)))
+      : JSON.parse(__wjs2_rsa_jwk_pub(kobj.__material));
     const jwk = { kty: "RSA", n: parts.n, e: parts.e };
     if (isPriv) { jwk.d = parts.d; jwk.p = parts.p; jwk.q = parts.q; jwk.dp = parts.dp; jwk.dq = parts.dq; jwk.qi = parts.qi; }
     return jwk;
@@ -111,8 +111,8 @@ function __exportJwk(kobj) {
   if (kobj.__keyType === "ec") {
     const curve = kobj.__detail.namedCurve;
     const parts = isPriv
-      ? JSON.parse(__wjs_ec_jwk(curve, kobj.__material, __wjs_ec_public(curve, kobj.__material)))
-      : JSON.parse(__wjs_ec_jwk_pub(curve, kobj.__material));
+      ? JSON.parse(__wjs2_ec_jwk(curve, kobj.__material, __wjs2_ec_public(curve, kobj.__material)))
+      : JSON.parse(__wjs2_ec_jwk_pub(curve, kobj.__material));
     const jwk = { kty: "EC", crv: curve, x: parts.x, y: parts.y };
     if (isPriv) jwk.d = parts.d;
     return jwk;
@@ -125,12 +125,12 @@ function __exportJwk(kobj) {
       : "Ed448";
     const pubBytes = isPriv
       ? (kobj.__keyType === "ed25519"
-        ? __wjs_ed_public(kobj.__material)
+        ? __wjs2_ed_public(kobj.__material)
         : kobj.__keyType === "x25519"
-          ? __wjs_x_public(kobj.__material)
+          ? __wjs2_x_public(kobj.__material)
           : kobj.__keyType === "x448"
-            ? __wjs_x448_public(kobj.__material)
-            : __wjs_ed448_public(kobj.__material))
+            ? __wjs2_x448_public(kobj.__material)
+            : __wjs2_ed448_public(kobj.__material))
       : kobj.__material;
     const jwk = { kty: "OKP", crv, x: b64u(pubBytes) };
     if (isPriv) jwk.d = b64u(kobj.__material);
@@ -154,8 +154,8 @@ function __exportJwk(kobj) {
     let pubBytes, seedB64 = null;
     if (isPriv) {
       const parts = JSON.parse(__cryptCall(() => (isKem
-        ? __wjs_mlkem_seed_from_pkcs8(kobj.__material)
-        : __wjs_mldsa_seed_from_pkcs8(kobj.__material))));
+        ? __wjs2_mlkem_seed_from_pkcs8(kobj.__material)
+        : __wjs2_mldsa_seed_from_pkcs8(kobj.__material))));
       const spki = Buffer.from(parts.spki, "base64");
       pubBytes = spki.subarray(spki.length - set[2]);
       seedB64 = parts.seed;
@@ -250,7 +250,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
         const d = __b64urlDec(key.d);
         let privDer;
         try {
-          privDer = __cryptCall(() => __wjs_rsa_import_priv(n, e, d));
+          privDer = __cryptCall(() => __wjs2_rsa_import_priv(n, e, d));
         } catch { __badRsaJwk(); }
         const k = new PrivateKeyObject("private", "rsa", Buffer.from(privDer));
         if (want === "public") return __derivePublic(k);
@@ -263,7 +263,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
       }
       let pubDer;
       try {
-        pubDer = __cryptCall(() => __wjs_rsa_import_pub(n, e));
+        pubDer = __cryptCall(() => __wjs2_rsa_import_pub(n, e));
       } catch { __badRsaJwk(); }
       return new PublicKeyObject("public", "rsa", Buffer.from(pubDer));
     }
@@ -295,9 +295,9 @@ function __parseKeyMaterial(key, format, type, want, options) {
         if (typeof key.d !== "string") badEc();
         let privDer, pubDer, pt;
         try {
-          privDer = __cryptCall(() => __wjs_ec_import_priv(curve, __b64urlDec(key.d)));
-          pubDer = __cryptCall(() => __wjs_ec_public(curve, privDer));
-          pt = JSON.parse(__cryptCall(() => __wjs_ec_jwk_pub(curve, pubDer)));
+          privDer = __cryptCall(() => __wjs2_ec_import_priv(curve, __b64urlDec(key.d)));
+          pubDer = __cryptCall(() => __wjs2_ec_public(curve, privDer));
+          pt = JSON.parse(__cryptCall(() => __wjs2_ec_jwk_pub(curve, pubDer)));
         } catch { badEc(); }
         try {
           if (!Buffer.from(dx).equals(Buffer.from(__b64urlDec(pt.x))) ||
@@ -315,7 +315,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
       if (want === "private") noPriv();
       let pubDer;
       try {
-        pubDer = __cryptCall(() => __wjs_ec_import_pub(curve, dx, dy));
+        pubDer = __cryptCall(() => __wjs2_ec_import_pub(curve, dx, dy));
       } catch { badEc(); }
       const k = new PublicKeyObject("public", "ec", Buffer.from(pubDer));
       k.__detail = { namedCurve: curve };
@@ -348,10 +348,10 @@ function __parseKeyMaterial(key, format, type, want, options) {
         : key.crv === "X448" ? "x448"
         : key.crv === "Ed448" ? "ed448" : null;
       if (kt === null) badOkp();
-      const derive = (d) => (kt === "ed25519" ? __wjs_ed_public(d)
-        : kt === "x25519" ? __wjs_x_public(d)
-        : kt === "x448" ? __wjs_x448_public(d)
-        : __wjs_ed448_public(d));
+      const derive = (d) => (kt === "ed25519" ? __wjs2_ed_public(d)
+        : kt === "x25519" ? __wjs2_x_public(d)
+        : kt === "x448" ? __wjs2_x448_public(d)
+        : __wjs2_ed448_public(d));
       if (key.d !== undefined) {
         if (typeof key.d !== "string" || typeof key.x !== "string") badOkp();
         let pubBytes, xBytes;
@@ -424,8 +424,8 @@ function __parseKeyMaterial(key, format, type, want, options) {
       let info;
       try {
         info = JSON.parse(__cryptCall(() => (isKem
-          ? __wjs_mlkem_seed_from_pkcs8(pkcs8)
-          : __wjs_mldsa_seed_from_pkcs8(pkcs8))));
+          ? __wjs2_mlkem_seed_from_pkcs8(pkcs8)
+          : __wjs2_mldsa_seed_from_pkcs8(pkcs8))));
       } catch { badAkp(); }
       const spki = Buffer.from(info.spki, "base64");
       if (!spki.subarray(spki.length - set[2]).equals(Buffer.from(pub))) badAkp();
@@ -494,7 +494,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
       };
       if (format === "raw-private") {
         let privDer;
-        try { privDer = __cryptCall(() => __wjs_ec_import_priv(curve, material)); } catch { bad(); }
+        try { privDer = __cryptCall(() => __wjs2_ec_import_priv(curve, material)); } catch { bad(); }
         const k = new PrivateKeyObject("private", "ec", Buffer.from(privDer));
         k.__detail = { namedCurve: curve };
         if (want === "public") return __derivePublic(k);
@@ -505,7 +505,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
       //（06/07 + 全坐标）与 04 同道；坏前缀/错长落 bad()（真机逐项）。
       if ((material[0] === 2 || material[0] === 3) && material.length === 1 + size) {
         let pubDer;
-        try { pubDer = __cryptCall(() => __wjs_ec_import_compressed(curve, material)); } catch { bad(); }
+        try { pubDer = __cryptCall(() => __wjs2_ec_import_compressed(curve, material)); } catch { bad(); }
         const k = new PublicKeyObject("public", "ec", Buffer.from(pubDer));
         k.__detail = { namedCurve: curve };
         return k;
@@ -513,7 +513,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
       if (material.length !== 1 + 2 * size || ![4, 6, 7].includes(material[0])) bad();
       const x = material.slice(1, 1 + size), y = material.slice(1 + size);
       let pubDer;
-      try { pubDer = __cryptCall(() => __wjs_ec_import_pub(curve, x, y)); } catch { bad(); }
+      try { pubDer = __cryptCall(() => __wjs2_ec_import_pub(curve, x, y)); } catch { bad(); }
       const k = new PublicKeyObject("public", "ec", Buffer.from(pubDer));
       k.__detail = { namedCurve: curve };
       return k;
@@ -647,8 +647,8 @@ function __parseKeyMaterial(key, format, type, want, options) {
     else if (pem.label === "EC PRIVATE KEY") type = type ?? "sec1";
     else if (pem.label === "ENCRYPTED PRIVATE KEY") type = type ?? "pbes2";
     else if (pem.label === "CERTIFICATE") {
-      // 10f crypto二轮：证书提 SPKI 作公钥（既有 `__wjs_x509_parse` 轮子，真机口径）。
-      const info = JSON.parse(__cryptCall(() => __wjs_x509_parse(Buffer.from(der))));
+      // 10f crypto二轮：证书提 SPKI 作公钥（既有 `__wjs2_x509_parse` 轮子，真机口径）。
+      const info = JSON.parse(__cryptCall(() => __wjs2_x509_parse(Buffer.from(der))));
       der = Buffer.from(info.spkiB64, "base64");
       type = type ?? "spki";
     }
@@ -707,12 +707,12 @@ function __parseKeyMaterial(key, format, type, want, options) {
     if (isPriv) {
       const pkcs8 = __derSeq(__derInt(new Uint8Array([0])), __derSeq(__RSA_OID, __DER_NULL),
         new Uint8Array([4, ...__derLen(der.length), ...der]));
-      __cryptCall(() => __wjs_rsa_public(pkcs8));
+      __cryptCall(() => __wjs2_rsa_public(pkcs8));
       return new PrivateKeyObject("private", "rsa", Buffer.from(pkcs8));
     }
     const bitStr = new Uint8Array([3, ...__derLen(der.length + 1), 0, ...der]);
     const spki = __derSeq(__derSeq(__RSA_OID, __DER_NULL), bitStr);
-    __cryptCall(() => __wjs_rsa_jwk_pub(spki));
+    __cryptCall(() => __wjs2_rsa_jwk_pub(spki));
     return new PublicKeyObject("public", "rsa", Buffer.from(spki));
   }
   if (type === "pkcs1-pub") {
@@ -725,7 +725,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
     } catch (e) { if (e && e.code) throw e; __badPkcs1(); }
     const bitStr = new Uint8Array([3, ...__derLen(der.length + 1), 0, ...der]);
     const spki = __derSeq(__derSeq(__RSA_OID, __DER_NULL), bitStr);
-    __cryptCall(() => __wjs_rsa_jwk_pub(spki));
+    __cryptCall(() => __wjs2_rsa_jwk_pub(spki));
     return new PublicKeyObject("public", "rsa", Buffer.from(spki));
   }
   if (type === "pkcs8") {
@@ -758,7 +758,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
         const norm = __tlv(0x30, new Uint8Array([
           2, 1, 0, ...__rsaEncAlgSeq(), ...__tlv(0x04, kids[2].body),
         ]));
-        __cryptCall(() => __wjs_rsa_public(norm));
+        __cryptCall(() => __wjs2_rsa_public(norm));
         const k = new PrivateKeyObject("private", "rsa-pss", Buffer.from(norm));
         if (pa.restrictions) {
           const d = __rsaDetailsFromMaterial("private", norm);
@@ -770,12 +770,12 @@ function __parseKeyMaterial(key, format, type, want, options) {
         }
         return k;
       }],
-      ["rsa", () => { __cryptCall(() => __wjs_rsa_public(der)); return new PrivateKeyObject("private", "rsa", der); }],
+      ["rsa", () => { __cryptCall(() => __wjs2_rsa_public(der)); return new PrivateKeyObject("private", "rsa", der); }],
       ["ec", () => {
         // SPKI 算法 OID 直判（试解靠坐标长度会把 secp256k1 误判成 P-256，同 32 字节）。
-        const g = __cryptCall(() => __wjs_ec_guess_curve(der));
+        const g = __cryptCall(() => __wjs2_ec_guess_curve(der));
         if (g === "") throw new Error("no");
-        __cryptCall(() => __wjs_ec_public(g, der));
+        __cryptCall(() => __wjs2_ec_public(g, der));
         const k = new PrivateKeyObject("private", "ec", der);
         k.__detail = { namedCurve: g };
         return k;
@@ -783,7 +783,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
       ["dsa", () => {
         const env = __parseDsaDer(der, "private");
         try {
-          __cryptCall(() => __wjs_dsa_export(JSON.stringify(env)));
+          __cryptCall(() => __wjs2_dsa_export(JSON.stringify(env)));
         } catch (e) {
           // 10f crypto六轮：轮子拒收非标准尺寸（如 1088/160，套件
           // dsa_private_encrypted_1025 指纹）——装载期纯解析建对象
@@ -799,7 +799,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
         for (const kt of ["ed25519", "x25519", "x448", "ed448"]) {
           try {
             const kind = kt === "ed25519" ? "ED25519" : kt === "x25519" ? "X25519" : kt === "x448" ? "X448" : "ED448";
-            const seed = __cryptCall(() => __wjs_okp_seed_from_pkcs8(kind, der));
+            const seed = __cryptCall(() => __wjs2_okp_seed_from_pkcs8(kind, der));
             return new PrivateKeyObject("private", kt, Buffer.from(seed));
           } catch {}
         }
@@ -807,12 +807,12 @@ function __parseKeyMaterial(key, format, type, want, options) {
       }],
       ["ml-kem", () => {
         // 9i-4：种子形 PKCS#8（LAMPS 口径，[0] 64B 种子；展开即校验）。
-        const parts = JSON.parse(__cryptCall(() => __wjs_mlkem_seed_from_pkcs8(der)));
+        const parts = JSON.parse(__cryptCall(() => __wjs2_mlkem_seed_from_pkcs8(der)));
         return new PrivateKeyObject("private", parts.kind, der);
       }],
       ["ml-dsa", () => {
         // 9i-6：种子形 PKCS#8（[0] 32B 种子；展开即校验）。
-        const parts = JSON.parse(__cryptCall(() => __wjs_mldsa_seed_from_pkcs8(der)));
+        const parts = JSON.parse(__cryptCall(() => __wjs2_mldsa_seed_from_pkcs8(der)));
         return new PrivateKeyObject("private", parts.kind, der);
       }],
       ["slh", () => {
@@ -861,7 +861,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
         const norm = __tlv(0x30, new Uint8Array([
           ...__rsaEncAlgSeq(), ...__tlv(0x03, kids[1].body),
         ]));
-        __cryptCall(() => __wjs_rsa_jwk_pub(norm));
+        __cryptCall(() => __wjs2_rsa_jwk_pub(norm));
         const k = new PublicKeyObject("public", "rsa-pss", Buffer.from(norm));
         if (pa.restrictions) {
           const d = __rsaDetailsFromMaterial("public", norm);
@@ -872,11 +872,11 @@ function __parseKeyMaterial(key, format, type, want, options) {
         }
         return k;
       },
-      () => { __cryptCall(() => __wjs_rsa_jwk_pub(der)); return new PublicKeyObject("public", "rsa", der); },
+      () => { __cryptCall(() => __wjs2_rsa_jwk_pub(der)); return new PublicKeyObject("public", "rsa", der); },
       () => {
-        const g = __cryptCall(() => __wjs_ec_guess_curve(der));
+        const g = __cryptCall(() => __wjs2_ec_guess_curve(der));
         if (g === "") throw new Error("no");
-        __cryptCall(() => __wjs_ec_jwk_pub(g, der));
+        __cryptCall(() => __wjs2_ec_jwk_pub(g, der));
         const k = new PublicKeyObject("public", "ec", der);
         k.__detail = { namedCurve: g };
         return k;
@@ -884,7 +884,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
       () => {
         const env = __parseDsaDer(der, "public");
         try {
-          __cryptCall(() => __wjs_dsa_export(JSON.stringify(env)));
+          __cryptCall(() => __wjs2_dsa_export(JSON.stringify(env)));
         } catch (e) {
           // 10f crypto六轮：同私钥侧（`__cryptErr` 全大写门，见上）。
           const m = String((e && e.message) || e);
@@ -896,19 +896,19 @@ function __parseKeyMaterial(key, format, type, want, options) {
         for (const kt of ["ed25519", "x25519", "x448", "ed448"]) {
           try {
             const kind = kt === "ed25519" ? "ED25519" : kt === "x25519" ? "X25519" : kt === "x448" ? "X448" : "ED448";
-            const pub = __cryptCall(() => __wjs_okp_pub_from_spki(kind, der));
+            const pub = __cryptCall(() => __wjs2_okp_pub_from_spki(kind, der));
             return new PublicKeyObject("public", kt, Buffer.from(pub));
           } catch {}
         }
         throw new Error("no");
       },
       () => {
-        const kind = __cryptCall(() => __wjs_mlkem_kind_from_spki(der));
+        const kind = __cryptCall(() => __wjs2_mlkem_kind_from_spki(der));
         if (kind === "") throw new Error("no");
         return new PublicKeyObject("public", kind, der);
       },
       () => {
-        const kind = __cryptCall(() => __wjs_mldsa_kind_from_spki(der));
+        const kind = __cryptCall(() => __wjs2_mldsa_kind_from_spki(der));
         if (kind === "") throw new Error("no");
         return new PublicKeyObject("public", kind, der);
       },
@@ -943,7 +943,7 @@ function __parseKeyMaterial(key, format, type, want, options) {
     } catch (e) { if (e && e.code) throw e; bad(); }
     const [p, q, g, y, x] = __dsaInts(kids.slice(1));
     const env = { p, q, g, y, x };
-    __cryptCall(() => __wjs_dsa_export(JSON.stringify(env)));
+    __cryptCall(() => __wjs2_dsa_export(JSON.stringify(env)));
     return __dsaKeyObject(env, "private");
   }
   if (type === "sec1") {

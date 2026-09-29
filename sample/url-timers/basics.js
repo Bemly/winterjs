@@ -1,6 +1,6 @@
 // node:url legacy + node:timers/promises: parse/format/resolve, sleep/once.
 //  legacy URL 与 Promise 化定时器。
-// Run / 运行: winterjs --run sample/url-timers/basics.js
+// Run / 运行: winterjs2 --run sample/url-timers/basics.js
 import legacy, { parse, format, resolve } from 'node:url';
 import { setTimeout as sleep, setImmediate as immediate } from 'node:timers/promises';
 

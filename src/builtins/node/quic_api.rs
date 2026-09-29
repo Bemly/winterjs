@@ -8,7 +8,7 @@ use crate::state;
 use super::quic::{arg_id, arg_json};
 use super::quic_driver::{h3_headers_json, QuicH3Cmd, QuicSessCmd, QuicStreamCmd};
 
-/// `__wjs_quic_h3_respond(sessId, streamId, json)` → undefined（服务端回 H3 响应；
+/// `__wjs2_quic_h3_respond(sessId, streamId, json)` → undefined（服务端回 H3 响应；
 /// json `{status, headers, body(b64)}`；会话已摘/非 H3 即 ERR_INVALID_STATE）。
 pub unsafe extern "C" fn quic_h3_respond(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -47,7 +47,7 @@ pub unsafe extern "C" fn quic_h3_respond(
     true
 }
 
-/// `__wjs_quic_h3_request(sessId, json)` → 流 id 串（客户端发 H3 请求；
+/// `__wjs2_quic_h3_request(sessId, json)` → 流 id 串（客户端发 H3 请求；
 /// json `{method, path, headers, body(b64)}`；响应经 `H3Response` 到流目标）。
 pub unsafe extern "C" fn quic_h3_request(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -87,7 +87,7 @@ pub unsafe extern "C" fn quic_h3_request(
     true
 }
 
-/// 本地开流。`__wjs_quic_sess_open(sessId, "bidi"|"uni")` → 流 id 串
+/// 本地开流。`__wjs2_quic_sess_open(sessId, "bidi"|"uni")` → 流 id 串
 /// （就绪经 `StreamOpened` 事件；会话已摘即 `ERR_INVALID_STATE` 错）。
 pub unsafe extern "C" fn quic_sess_open(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -129,7 +129,7 @@ pub unsafe extern "C" fn quic_sess_open(
     true
 }
 
-/// 登记流 JS 目标。`__wjs_quic_stream_attach(id, target)` → undefined。
+/// 登记流 JS 目标。`__wjs2_quic_stream_attach(id, target)` → undefined。
 pub unsafe extern "C" fn quic_stream_attach(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -151,7 +151,7 @@ pub unsafe extern "C" fn quic_stream_attach(
     true
 }
 
-/// 流写。`__wjs_quic_stream_write(id, uint8)` → boolean（流已收尾即 false）。
+/// 流写。`__wjs2_quic_stream_write(id, uint8)` → boolean（流已收尾即 false）。
 pub unsafe extern "C" fn quic_stream_write(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -178,7 +178,7 @@ pub unsafe extern "C" fn quic_stream_write(
     true
 }
 
-/// 写端 finish。`__wjs_quic_stream_finish(id)` → undefined（已收尾即无操作）。
+/// 写端 finish。`__wjs2_quic_stream_finish(id)` → undefined（已收尾即无操作）。
 pub unsafe extern "C" fn quic_stream_finish(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -215,7 +215,7 @@ fn arg_code(cx: &mut JSContext, frame: &Frame, i: u32) -> Option<u64> {
     Some(n as u64)
 }
 
-/// 写端 reset。`__wjs_quic_stream_reset(id, code)` → undefined。
+/// 写端 reset。`__wjs2_quic_stream_reset(id, code)` → undefined。
 pub unsafe extern "C" fn quic_stream_reset(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -240,7 +240,7 @@ pub unsafe extern "C" fn quic_stream_reset(
     true
 }
 
-/// 读端 stop。`__wjs_quic_stream_stop(id, code)` → undefined。
+/// 读端 stop。`__wjs2_quic_stream_stop(id, code)` → undefined。
 pub unsafe extern "C" fn quic_stream_stop(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -265,7 +265,7 @@ pub unsafe extern "C" fn quic_stream_stop(
     true
 }
 
-/// 发数据报（超限静默丢弃，Node 同款）。`__wjs_quic_sess_send_dgram(id, uint8)` → boolean。
+/// 发数据报（超限静默丢弃，Node 同款）。`__wjs2_quic_sess_send_dgram(id, uint8)` → boolean。
 pub unsafe extern "C" fn quic_sess_send_dgram(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -294,7 +294,7 @@ pub unsafe extern "C" fn quic_sess_send_dgram(
     true
 }
 
-/// 数据报上限（禁收发即 0，Node 同款）。`__wjs_quic_sess_max_dgram(id)` → 数字串。
+/// 数据报上限（禁收发即 0，Node 同款）。`__wjs2_quic_sess_max_dgram(id)` → 数字串。
 pub unsafe extern "C" fn quic_sess_max_dgram(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

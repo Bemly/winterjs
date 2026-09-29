@@ -44,7 +44,7 @@ fn phase3_websocket_echo_and_close() {
         r#"const log = []; const ws = new WebSocket("ws://127.0.0.1:{port}/c"); ws.onopen = () => ws.send("ping"); ws.onmessage = (e) => {{ if (typeof e.data === "string") {{ log.push(e.data); ws.send(new Uint8Array([7, 8])); }} else {{ log.push("bin:" + new Uint8Array(e.data).join(",")); ws.close(1000, "bye"); }} }}; ws.onclose = (e) => console.log(log.join("|") + "|close:" + e.code + ":" + e.wasClean); undefined;"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         "ping|bin:7,8|close:1000:true\n"
     );
 }
@@ -52,7 +52,7 @@ fn phase3_websocket_echo_and_close() {
 #[test]
 fn phase3_websocket_bad_url_and_send_while_connecting() {
     // 非 ws scheme 直接抛；CONNECTING 时 send 抛（连不上的端口测 readyState 报错面）
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval", r#"new WebSocket("http://x/")"#])
         .output()
         .unwrap();
@@ -66,7 +66,7 @@ fn phase3_websocket_bad_url_and_send_while_connecting() {
         r#"const ws = new WebSocket("ws://127.0.0.1:{port}/"); try {{ ws.send("early"); console.log("no-throw"); }} catch (e) {{ console.log("send-while-connecting-throws"); }}"#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         "send-while-connecting-throws\n"
     );
 }
@@ -74,7 +74,7 @@ fn phase3_websocket_bad_url_and_send_while_connecting() {
 #[test]
 fn phase3_websocket_wss_self_signed() {
     // rcgen 自签 127.0.0.1 → tokio-rustls wss 回显服务；客户端经
-    // WINTERJS_TEST_CA_PEMFILE 接缝信任（生产默认链不变，见 src/builtins/ws.rs）。
+    // WINTERJS2_TEST_CA_PEMFILE 接缝信任（生产默认链不变，见 src/builtins/ws.rs）。
     use base64::Engine as _;
     let certified = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).unwrap();
     let cert_der = certified.cert.der().to_vec();
@@ -131,8 +131,8 @@ fn phase3_websocket_wss_self_signed() {
     let code = format!(
         r#"const log = []; const ws = new WebSocket("wss://127.0.0.1:{port}/c"); ws.onopen = () => ws.send("secure-ping"); ws.onmessage = (e) => {{ log.push(e.data); ws.close(1000, "bye"); }}; ws.onclose = (e) => console.log(log.join("|") + "|close:" + e.code + ":" + e.wasClean); undefined;"#
     );
-    let out = winterjs()
-        .env("WINTERJS_TEST_CA_PEMFILE", &ca_path)
+    let out = winterjs2()
+        .env("WINTERJS2_TEST_CA_PEMFILE", &ca_path)
         .args(["--eval", &code])
         .output()
         .unwrap();

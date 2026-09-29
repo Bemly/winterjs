@@ -1,4 +1,4 @@
-//! B6 事件杂项门面 JS 面：`WinterJS.stream/diag/domain/trace/async/quic/crypto/ffi/serve`。
+//! B6 事件杂项门面 JS 面：`WinterJS2.stream/diag/domain/trace/async/quic/crypto/ffi/serve`。
 //!
 //! `stream.pipeline` 纯 Web 流实现；`diag/domain/trace/async/quic` 复用移植实现
 //!（util 同款复用模式）；`crypto/ffi` 同对象别名（ffi 门控随 `bun:ffi`）；
@@ -31,7 +31,7 @@ pub const WEVENT_JS: &str = r#"
     },
   };
   const serve = (o, handler) => {
-    const http = __wev_need("node:http", "WinterJS.serve");
+    const http = __wev_need("node:http", "WinterJS2.serve");
     let opts = o || {}, h = handler;
     if (typeof opts === "function") { h = opts; opts = {}; }
     if (typeof h !== "function") throw new TypeError("serve requires a fetch handler");
@@ -89,7 +89,7 @@ pub const WEVENT_JS: &str = r#"
     } catch {}
   };
   try {
-    const W = globalThis.WinterJS;
+    const W = globalThis.WinterJS2;
     if (W) {
       if (W.stream === undefined) W.stream = stream;
       if (W.serve === undefined) W.serve = serve;

@@ -1,7 +1,7 @@
-# AGENTS.md — winterjs 工作规约
+# AGENTS.md — winterjs2 工作规约
 
 > Bun-like JS runtime，直连 Mozilla SpiderMonkey（经 `servo/mozjs` Rust 绑定）。
-> 从 `winterjs-old`（WinterCG server + spiderfire）推倒重来，老项目只当参考，不合、不动。
+> 从 `winterjs2-old`（WinterCG server + spiderfire）推倒重来，老项目只当参考，不合、不动。
 >
 > **新会话开工顺序**：本文件 → `docs/plan3.md` §0（唯一进度入口）→ 动某域前
 > 在 `docs/pitfalls.md` 索引里 grep 该域条目。其余文档见 `docs/README.md`（多为存档，不必读）。
@@ -11,7 +11,7 @@
 1. **每次修改都要 `git commit`，提交后即 `git push`**：小步提交；提交前必看 `git status --short` +
    `git diff`，只 stage 意图内的文件，绝不提交 secrets；push 到 `origin/master`
   （用户已常设授权，今后无需再问；push 前确认工作区干净、无多余提交混入）。
-2. **先查证据再下结论**：读文件、跑构建、跑 `./target/debug/winterjs` 实测；
+2. **先查证据再下结论**：读文件、跑构建、跑 `./target/debug/winterjs2` 实测；
    与文档矛盾以实测为准并更新文档。
 3. **踩坑必记**：新坑追加到 `docs/pitfalls.md` 末尾（编号续排 `4.N`：症状 → 根因 →
    修法 → 复现 → 推广铁律）；只有**新的通用铁律**才在本文件 §4 摘要补一行。
@@ -50,9 +50,9 @@
 - 版本号用 CalVer `YY.MM.发版日`——**第三位是发版日不是顺序补丁号**（9 月 13 日发版即 `26.9.13`，9 月 27 日即 `26.9.27`；cargo 可解析；`^26.9.0` 即年内自动升）。
   依赖清单与 10-target 矩阵见 `docs/dependencies.md`。
 - 无 `rust-toolchain` pin、无 spiderfire/ion 依赖、无 server/request_handlers。
-- CLI（全 flag，§0.8）：`winterjs --run <file|script>`（带脚本后缀→文件直跑；
-  裸名→package.json `scripts` 优先、同名文件回落；JS bin 递归自身执行，零 node）/ `winterjs --eval <code>` /
-  `winterjs --config [--schema]` / `winterjs --completions <shell>` / `winterjs --man` 等，
+- CLI（全 flag，§0.8）：`winterjs2 --run <file|script>`（带脚本后缀→文件直跑；
+  裸名→package.json `scripts` 优先、同名文件回落；JS bin 递归自身执行，零 node）/ `winterjs2 --eval <code>` /
+  `winterjs2 --config [--schema]` / `winterjs2 --completions <shell>` / `winterjs2 --man` 等，
    见 `src/`（cli/runtime/dispatch/error/logging/settings/alloc 模块；`runner.rs` 已由 `runtime.rs` 接替，见 plan.md）。
 - 依赖 2026-09-10 起全量入库（docs/dependencies.md 头部决策记录），代码按 Phase 接线。
 
@@ -73,19 +73,19 @@ cargo build
 ```
 
 - `mozjs_sys` 走预构建 `libjs_static.a`，debug 全量约 25 秒，不用怕。
-- 验证：`./target/debug/winterjs --eval '40 + 2'` → `42`；
-  `./target/debug/winterjs --eval 'throw new Error("boom")'` → 非 TTY 下 node 形
+- 验证：`./target/debug/winterjs2 --eval '40 + 2'` → `42`；
+  `./target/debug/winterjs2 --eval 'throw new Error("boom")'` → 非 TTY 下 node 形
   （`eval.js:1` / 源行 / `^` / 空行 / `Error: boom` / `    at eval.js:1:7`），exit=1
   （TTY 下由 miette 图形渲染，带代码框，语义同；2026-09-25 D4）。
 
 ### 冒烟（每次构建后必跑，不过不提交）
 
 ```bash
-./target/debug/winterjs --eval '40 + 2'                                                    # → 42
-./target/debug/winterjs --eval 'await new Promise(r=>setTimeout(()=>r(1),10))'              # → 1
-./target/debug/winterjs --eval 'new URL("https://ex.com/?a=1").search'                     # → ?a=1
-./target/debug/winterjs --eval 'new TextEncoder().encode("hi").length'                     # → 2
-./target/debug/winterjs --eval 'await (await fetch("data:text/plain,x")).text()'         # → x
+./target/debug/winterjs2 --eval '40 + 2'                                                    # → 42
+./target/debug/winterjs2 --eval 'await new Promise(r=>setTimeout(()=>r(1),10))'              # → 1
+./target/debug/winterjs2 --eval 'new URL("https://ex.com/?a=1").search'                     # → ?a=1
+./target/debug/winterjs2 --eval 'new TextEncoder().encode("hi").length'                     # → 2
+./target/debug/winterjs2 --eval 'await (await fetch("data:text/plain,x")).text()'         # → x
 ```
 
 ## 4. 铁律摘要（全文见 `docs/pitfalls.md`，编号即 `§4.N`）
@@ -120,7 +120,7 @@ cargo build
 - node 文档写明异步的面（warning/写回调/destroy error）即使能同步完成也异步触发（4.74/4.102/4.187）。
 - 对接外部 JSON 一律显式 `serde(rename)` + 真实线名 roundtrip 单测（4.29/4.33）。
 - "JS 生成 JS"的模板块内禁内层模板字面量；`format!` 与 JS 同现改文件落盘（4.44/4.151）。
-- 新增 `__wjs_*` native 前 grep 重名（4.48）；"缓存了/传了"≠"用上了"，新选项要验到引擎（4.85/4.136/4.146）。
+- 新增 `__wjs2_*` native 前 grep 重名（4.48）；"缓存了/传了"≠"用上了"，新选项要验到引擎（4.85/4.136/4.146）。
 - 热路径禁现场 `Regex::new`（一律进程级预编译）；纯 fs 判定配 mtime 目录缓存；投机优化无计数差即回退（4.217）。
 - 密码学手工路径必须双向真机交叉，自交绿不算数（4.54/4.135）。
 
@@ -192,13 +192,13 @@ cargo build
   （microtask 出队计数）；WARN=降级/可疑（非常规但可恢复）。
   纪律：禁把用户脚本原文打进日志（只记长度等元信息）；禁在 `console.*` 内打日志
   （用户输出通道，避免刷屏/递归）；热路径昂贵构造先用 `tracing::enabled!` 守卫。
-  调试：`winterjs -vv …` / `WINTERJS_LOG=winterjs=debug …` /
-  `WINTERJS_LOG_FILE=…`（子 target `winterjs::xxx` 自动被 `winterjs=<level>` 覆盖）。
+  调试：`winterjs2 -vv …` / `WINTERJS2_LOG=winterjs2=debug …` /
+  `WINTERJS2_LOG_FILE=…`（子 target `winterjs2::xxx` 自动被 `winterjs2=<level>` 覆盖）。
 - 线程模型：`JSContext` 是 `!Send`，JS 永远跑在独占线程（tokio `LocalSet`），
   Rust 侧多线程只通过消息队列与 JS 线程通信，绝不跨线程共享 `&mut JSContext`
- （winterjs-old §7.9 的 aliasing-UB 教训）。
-- 模块方向（2026-09-28 用户拍板）：**CLI/产品能力是 winterjs 本体，`node:*`
+ （winterjs2-old §7.9 的 aliasing-UB 教训）。
+- 模块方向（2026-09-28 用户拍板）：**CLI/产品能力是 winterjs2 本体，`node:*`
   兼容面是下游包装**——兼容面骑自身底座（timers/buffer/sqlite/vm 等既例），
-  禁把 CLI/产品专用能力放进 `node:*` 公开导出面；跨面复用经 `__wjs_` 内部
-  注册面（如 `__wjs_repl_default_complete`）。JS 查表对象一律 `Object.create(null)`
+  禁把 CLI/产品专用能力放进 `node:*` 公开导出面；跨面复用经 `__wjs2_` 内部
+  注册面（如 `__wjs2_repl_default_complete`）。JS 查表对象一律 `Object.create(null)`
   （裸键沿原型链会撞 Object.prototype 同名方法）。

@@ -44,7 +44,7 @@ fn main() {
     // RUST_BACKTRACE=1 时自动回退标准 panic 输出，不吞调试信息）
     human_panic::setup_panic!();
 
-    // 双语：先定 locale（-l > WINTERJS_LANG > 系统 > en），再解析本地化 Command。
+    // 双语：先定 locale（-l > WINTERJS2_LANG > 系统 > en），再解析本地化 Command。
     // 两遍 argv 扫描（`i18n::prescan` 定语言 + clap 正式解析）是刻意设计：
     // clap 的 help 文本在解析前就要定死，不存在单遍解法。
     i18n::init_from_argv();
@@ -57,26 +57,26 @@ fn main() {
         // 套件无限递归（pitfalls 4.209）。
         for f in &stripped {
             if let Err(msg) = cli_node_flags::validate_node_flag(f) {
-                eprintln!("winterjs: {msg}");
+                eprintln!("winterjs2: {msg}");
                 std::process::exit(9);
             }
         }
         builtins::node::process_::record_node_compat(stripped);
         // 破例单横杠 banner 开关：摘 token 记静态开关（`--` 之后不动，见 cli::strip_banner_flags）。
         let mut filtered = cli::strip_banner_flags(&filtered);
-        // 裸启动（除 bin 外无任何参数）进 REPL（node/python 同款；`winterjs -v`
+        // 裸启动（除 bin 外无任何参数）进 REPL（node/python 同款；`winterjs2 -v`
         // 等带 flag 的照旧走 help/报错，不在此补动作）。
         if filtered.len() == 1 {
             filtered.push(std::ffi::OsString::from("--repl"));
         }
         filtered
     };
-    // 自 spawn 深度闸（pitfalls 4.209 防线二）：子进程链经 `WINTERJS_SPAWN_DEPTH` 逐层 +1
+    // 自 spawn 深度闸（pitfalls 4.209 防线二）：子进程链经 `WINTERJS2_SPAWN_DEPTH` 逐层 +1
     //（child_process 起自身时设置，见 node::child::tag_self_depth），超限即拒，
     // 任何未知的自递归形都止于有限深度而非吃光系统。
     if builtins::node::child::self_spawn_depth() > builtins::node::child::SELF_SPAWN_LIMIT {
         eprintln!(
-            "winterjs: self-spawn depth limit ({}) exceeded — recursive self-spawn aborted",
+            "winterjs2: self-spawn depth limit ({}) exceeded — recursive self-spawn aborted",
             builtins::node::child::SELF_SPAWN_LIMIT
         );
         std::process::exit(9);
@@ -106,7 +106,7 @@ fn main() {
     {
         if let Some(shell) = cli.completions {
             let mut cmd = cli::localized_command();
-            clap_complete::generate(shell, &mut cmd, "winterjs", &mut std::io::stdout().lock());
+            clap_complete::generate(shell, &mut cmd, "winterjs2", &mut std::io::stdout().lock());
             std::process::exit(0);
         }
         if cli.man {
@@ -171,9 +171,9 @@ fn main() {
         file: settings.log.file.clone(),
     });
     let version = &*cli::VERSION_TEXT;
-    tracing::debug!(target: "winterjs", %version, "starting");
+    tracing::debug!(target: "winterjs2", %version, "starting");
 
-    // 崩溃上报 opt-in（WINTERJS_SENTRY_DSN；未设零成本，plan Phase 8-c）
+    // 崩溃上报 opt-in（WINTERJS2_SENTRY_DSN；未设零成本，plan Phase 8-c）
     sentry_report::init();
 
     // JS 跑在独占线程（AGENTS §6）：CLI 生命周期内主线程即 JS 线程，
@@ -195,7 +195,7 @@ fn main() {
     // 结果（含错误渲染）就绪后直接 process::exit 跳过 teardown，由 dispatch 返回退出码。
     error::set_render_color(settings.log.color);
     let code = tokio_rt.block_on(dispatch(cli, &matches, &settings));
-    tracing::debug!(target: "winterjs", code, "finished");
+    tracing::debug!(target: "winterjs2", code, "finished");
     // §4.8：process::exit 跳过 teardown；上报事件先排空（panic 路径自身已 flush）
     sentry_report::flush();
     std::process::exit(code);
@@ -211,7 +211,7 @@ fn install_permissions(perms: &cli::PermissionArgs) {
         ffi: perms.allow_ffi,
         allow_all: perms.allow_all,
     };
-    tracing::debug!(target: "winterjs::permissions", sandbox = p.sandboxed(), "installed");
+    tracing::debug!(target: "winterjs2::permissions", sandbox = p.sandboxed(), "installed");
     permissions::install(p.clone());
     permissions::remember_cli(&p);
 }
@@ -220,7 +220,7 @@ async fn dispatch(cli: Cli, matches: &clap::ArgMatches, settings: &settings::Set
     let r = dispatch_inner(cli, matches, settings).await;
     match &r {
         Ok(()) => 0,
-        // 管道下游提前关闭（如 `winterjs --man | head`）静默退出，不刷错误
+        // 管道下游提前关闭（如 `winterjs2 --man | head`）静默退出，不刷错误
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
         // process.exit/exitCode：静默以指定码退出
         Err(Error::Exit(code)) => *code,
@@ -299,7 +299,7 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
     }
     if let Some(shell) = cli.completions {
         let mut cmd = cli::localized_command();
-        clap_complete::generate(shell, &mut cmd, "winterjs", &mut std::io::stdout().lock());
+        clap_complete::generate(shell, &mut cmd, "winterjs2", &mut std::io::stdout().lock());
         return Ok(());
     }
     if cli.man {
@@ -454,7 +454,7 @@ async fn db_inspect(path: &std::path::Path, exec: Option<&str>, dry_run: bool) -
             return Err(Error::Other(msg));
         }
     }
-    tracing::debug!(target: "winterjs::storage", path_len = path_s.len(), sql_len = sql.len(), "db inspect");
+    tracing::debug!(target: "winterjs2::storage", path_len = path_s.len(), sql_len = sql.len(), "db inspect");
     let db = turso::Builder::new_local(&path_s)
         .build()
         .await

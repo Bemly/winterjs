@@ -13349,7 +13349,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "winterjs"
+name = "winterjs2"
 version = "26.9.27"
 dependencies = [
  "aes 0.9.3",

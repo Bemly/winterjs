@@ -7,7 +7,7 @@ use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::rooted;
 use crate::jsapi_glue::{report_error, value_to_string, view_bytes, wrap_cx, Frame};
 
-/// `__wjs_ec_generate(curve)` → PKCS#8 DER 私钥（熵源 `getrandom`，失败即 `OperationError`）。
+/// `__wjs2_ec_generate(curve)` → PKCS#8 DER 私钥（熵源 `getrandom`，失败即 `OperationError`）。
 pub unsafe extern "C" fn ec_generate(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -49,7 +49,7 @@ pub unsafe extern "C" fn ec_generate(
         });
         match out {
             Ok(der) => {
-                tracing::debug!(target: "winterjs::crypto", curve = curve.as_str(), "EC key generated");
+                tracing::debug!(target: "winterjs2::crypto", curve = curve.as_str(), "EC key generated");
                 return set_rval_bytes(&mut cx, &frame, &der);
             }
             Err(e) if e.is_empty() => continue,
@@ -63,7 +63,7 @@ pub unsafe extern "C" fn ec_generate(
     false
 }
 
-/// `__wjs_ec_public(curve, privDer)` → SPKI DER 公钥。
+/// `__wjs2_ec_public(curve, privDer)` → SPKI DER 公钥。
 pub unsafe extern "C" fn ec_public(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -100,7 +100,7 @@ pub unsafe extern "C" fn ec_public(
     }
 }
 
-/// `__wjs_ecdsa_sign(curve, hash, privDer, data)` → 裸 `r‖s` 签名（WebCrypto 口径，非 DER）。
+/// `__wjs2_ecdsa_sign(curve, hash, privDer, data)` → 裸 `r‖s` 签名（WebCrypto 口径，非 DER）。
 pub unsafe extern "C" fn ecdsa_sign(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -153,7 +153,7 @@ pub unsafe extern "C" fn ecdsa_sign(
     }
 }
 
-/// `__wjs_ecdsa_verify(curve, hash, pubDer, sigRaw, data)` → boolean（裸 `r‖s` 口径）。
+/// `__wjs2_ecdsa_verify(curve, hash, pubDer, sigRaw, data)` → boolean（裸 `r‖s` 口径）。
 pub unsafe extern "C" fn ecdsa_verify(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -209,7 +209,7 @@ pub unsafe extern "C" fn ecdsa_verify(
     }
 }
 
-/// `__wjs_ecdh_derive(curve, privDer, pubDer)` → 原始共享秘密（定长：32/48/66）。
+/// `__wjs2_ecdh_derive(curve, privDer, pubDer)` → 原始共享秘密（定长：32/48/66）。
 pub unsafe extern "C" fn ecdh_derive(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -249,7 +249,7 @@ pub unsafe extern "C" fn ecdh_derive(
     }
 }
 
-/// `__wjs_ec_jwk(curve, privDer, pubDer)` → JWK 坐标 JSON（`{x,y,d?}`，base64url 定长）。
+/// `__wjs2_ec_jwk(curve, privDer, pubDer)` → JWK 坐标 JSON（`{x,y,d?}`，base64url 定长）。
 pub unsafe extern "C" fn ec_jwk(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -307,7 +307,7 @@ pub unsafe extern "C" fn ec_jwk(
     }
 }
 
-/// `__wjs_ec_jwk_pub(curve, pubDer)` → 公钥坐标 JSON（`{x,y}`；非导出私钥时用）。
+/// `__wjs2_ec_jwk_pub(curve, pubDer)` → 公钥坐标 JSON（`{x,y}`；非导出私钥时用）。
 pub unsafe extern "C" fn ec_jwk_pub(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -359,7 +359,7 @@ pub unsafe extern "C" fn ec_jwk_pub(
     }
 }
 
-/// `__wjs_ec_import_priv(curve, dU8)` → PKCS#8 DER（JWK `d` 进）。
+/// `__wjs2_ec_import_priv(curve, dU8)` → PKCS#8 DER（JWK `d` 进）。
 pub unsafe extern "C" fn ec_import_priv(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -427,7 +427,7 @@ pub(crate) fn ec_curve_name(der: &[u8]) -> &'static str {
     }
 }
 
-/// `__wjs_ec_guess_curve(der)` → 曲线名（SPKI/PKCS#8 的算法 OID 直判；
+/// `__wjs2_ec_guess_curve(der)` → 曲线名（SPKI/PKCS#8 的算法 OID 直判；
 /// 试解循环靠坐标长度会把 secp256k1 误判成 P-256（同 32 字节），必须看 OID）。
 /// 未知/非 EC 即空串（调用方继续试别的类型）。
 pub unsafe extern "C" fn ec_guess_curve(
@@ -451,7 +451,7 @@ pub unsafe extern "C" fn ec_guess_curve(
     true
 }
 
-/// `__wjs_ec_import_pub(curve, xU8, yU8)` → SPKI DER（JWK `x/y` 或 raw 公钥进）。
+/// `__wjs2_ec_import_pub(curve, xU8, yU8)` → SPKI DER（JWK `x/y` 或 raw 公钥进）。
 pub unsafe extern "C" fn ec_import_pub(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -502,7 +502,7 @@ pub unsafe extern "C" fn ec_import_pub(
     }
 }
 
-/// `__wjs_ec_import_compressed(curve, sec1)` → SPKI DER（10f crypto五轮：
+/// `__wjs2_ec_import_compressed(curve, sec1)` → SPKI DER（10f crypto五轮：
 /// 压缩/混合 SEC1 点导入——轮子内解压 + 上曲线校验；非法即 `DataError`。
 /// UNSAFE-BOUNDARY: 前置 = 同文件既有 ec 系 natives（`wrap_cx` + `Frame::from_raw`
 /// 边界块；`view_bytes` 越界断言）；覆盖 = `tests/node/crypto.rs`

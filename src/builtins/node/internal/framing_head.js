@@ -49,7 +49,7 @@ export const maxHeaderSize = 16384;
 // 覆写缺省；非法值回落 16384。http.maxHeaderSize 经 __api getter 同源。
 export function __defaultMaxHeaderSize() {
   try {
-    const __compat = globalThis.__wjs_nodeCompat;
+    const __compat = globalThis.__wjs2_nodeCompat;
     if (Array.isArray(__compat)) {
       for (let __i = 0; __i < __compat.length; __i++) {
         const __t = String(__compat[__i]);

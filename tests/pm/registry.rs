@@ -15,7 +15,7 @@ fn phase5_registry_flag_overrides_npmrc() {
         .write_str("registry=http://127.0.0.1:9/\n")
         .unwrap();
     let out = stdout_of(
-        winterjs()
+        winterjs2()
             .args(["--add", "left-pad@^1.0.0", "--dry-run", "--registry"])
             .arg(&reg)
             .env("HOME", home.path())
@@ -43,7 +43,7 @@ fn phase5_npm_config_registry_env_overrides_npmrc() {
         .write_str("registry=http://127.0.0.1:9/\n")
         .unwrap();
     let out = stdout_of(
-        winterjs()
+        winterjs2()
             .args(["--add", "left-pad@^1.0.0", "--dry-run"])
             .env("HOME", home.path())
             .env("NPM_CONFIG_REGISTRY", &reg)
@@ -67,7 +67,7 @@ fn phase5_login_token_writes_npmrc() {
         .write_str("registry=http://127.0.0.1:4873/\n")
         .unwrap();
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args([
             "--login",
             "--token",
@@ -103,7 +103,7 @@ fn phase5_login_oauth_prints_url() {
     let home = assert_fs::TempDir::new().unwrap();
     let dir = assert_fs::TempDir::new().unwrap();
     let out = stdout_of(
-        winterjs()
+        winterjs2()
             .args(["--login", "--oauth", "--registry", "http://127.0.0.1:4873/"])
             .env("HOME", home.path())
             .current_dir(dir.path()),

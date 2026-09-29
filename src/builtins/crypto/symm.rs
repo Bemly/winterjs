@@ -57,7 +57,7 @@ where
         .map_err(|e| e.to_string())
 }
 
-/// `__wjs_aesgcm_decrypt(keyU8, ivU8, aadU8?, dataU8)` → Uint8Array（认证失败抛 OperationError）。
+/// `__wjs2_aesgcm_decrypt(keyU8, ivU8, aadU8?, dataU8)` → Uint8Array（认证失败抛 OperationError）。
 pub unsafe extern "C" fn aesgcm_decrypt(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -110,8 +110,8 @@ where
         .map_err(|e| e.to_string())
 }
 
-/// AES-GCM 12B 裸加密（`__wjs_aesgcm_encrypt` 与 node 侧 `gcm_anyiv` 共用；
-/// 错误文案维持 `__wjs_aesgcm_*` 口径，调用方按需包装）。
+/// AES-GCM 12B 裸加密（`__wjs2_aesgcm_encrypt` 与 node 侧 `gcm_anyiv` 共用；
+/// 错误文案维持 `__wjs2_aesgcm_*` 口径，调用方按需包装）。
 pub(crate) fn gcm_encrypt_raw(
     key: &[u8],
     iv: &[u8],
@@ -137,7 +137,7 @@ pub(crate) fn gcm_encrypt_raw(
     })
 }
 
-/// AES-GCM 12B 裸解密（共用；失败文案与 `__wjs_aesgcm_decrypt` 一致）。
+/// AES-GCM 12B 裸解密（共用；失败文案与 `__wjs2_aesgcm_decrypt` 一致）。
 pub(crate) fn gcm_decrypt_raw(
     key: &[u8],
     iv: &[u8],
@@ -177,7 +177,7 @@ fn hmac_bytes(hash: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     }
 }
 
-/// `__wjs_hmac_sign(hash, keyU8, dataU8)` → Uint8Array。
+/// `__wjs2_hmac_sign(hash, keyU8, dataU8)` → Uint8Array。
 pub unsafe extern "C" fn hmac_sign(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -206,7 +206,7 @@ pub unsafe extern "C" fn hmac_sign(
     }
 }
 
-/// `__wjs_hmac_verify(hash, keyU8, sigU8, dataU8)` → boolean。
+/// `__wjs2_hmac_verify(hash, keyU8, sigU8, dataU8)` → boolean。
 pub unsafe extern "C" fn hmac_verify(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -276,13 +276,13 @@ macro_rules! try_fill {
                     *cell = <$Elem>::from_ne_bytes(chunk);
                 }
             }
-            tracing::trace!(target: "winterjs::crypto", bytes, "getRandomValues filled");
+            tracing::trace!(target: "winterjs2::crypto", bytes, "getRandomValues filled");
             return true;
         }
     }};
 }
 
-/// `__wjs_fill_random(view)`：就地填充（prelude 原样返回 view）。
+/// `__wjs2_fill_random(view)`：就地填充（prelude 原样返回 view）。
 pub unsafe extern "C" fn fill_random(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -324,7 +324,7 @@ pub unsafe extern "C" fn fill_random(
     false
 }
 
-/// `__wjs_random_uuid()` → v4 字符串。
+/// `__wjs2_random_uuid()` → v4 字符串。
 pub unsafe extern "C" fn random_uuid(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -340,7 +340,7 @@ pub unsafe extern "C" fn random_uuid(
     true
 }
 
-/// `__wjs_subtle_digest(alg, view)` → Uint8Array（SHA-1/256/384/512；`sha1`/`sha2` 轮子）。
+/// `__wjs2_subtle_digest(alg, view)` → Uint8Array（SHA-1/256/384/512；`sha1`/`sha2` 轮子）。
 /// prelude 包一层 async 即得规范的 Promise 返回（计算本身同步，无需事件循环改动）。
 pub unsafe extern "C" fn subtle_digest(
     cx_raw: *mut mozjs::jsapi::JSContext,

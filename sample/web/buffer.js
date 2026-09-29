@@ -1,6 +1,6 @@
 // Buffer global: alloc / from / concat / compare / encodings.
 // Buffer 全局：分配、构造、拼接、比较与编码。
-// Run / 运行: winterjs --run sample/web/buffer.js
+// Run / 运行: winterjs2 --run sample/web/buffer.js
 console.log('[buffer] isBuffer:', Buffer.isBuffer(Buffer.from('x')), Buffer.isEncoding('base64url'));
 
 const b = Buffer.from('hello');

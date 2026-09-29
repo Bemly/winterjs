@@ -1,6 +1,6 @@
 // console global + node:console Console class over custom streams.
 // console 全局与 node:console 的 Console 类（自定义流）。
-// Run / 运行: winterjs --run sample/web/console.js
+// Run / 运行: winterjs2 --run sample/web/console.js
 console.log('[console] log %s %d', 'fmt', 42);
 console.info('[console] info visible');
 console.warn('[console] warn visible');

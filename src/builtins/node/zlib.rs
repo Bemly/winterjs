@@ -117,7 +117,7 @@ const fn crc32_table() -> [u32; 256] {
 }
 pub(crate) static CRC32_TABLE: [u32; 256] = crc32_table();
 
-/// `__wjs_zlib_crc32(dataU8, seedU32)` → uint32（真机值对拍：
+/// `__wjs2_zlib_crc32(dataU8, seedU32)` → uint32（真机值对拍：
 /// crc32("hello")=907060870，链式与空串口径同）。
 /// JS 侧已验类型（ERR_INVALID_ARG_TYPE 原文），此处只做防御式取值。
 pub unsafe extern "C" fn zlib_crc32(
@@ -145,7 +145,7 @@ pub unsafe extern "C" fn zlib_crc32(
     true
 }
 
-/// `__wjs_zlib_deflate_lv(dataU8, level)`（level -1=默认；JS 侧已验 -1..9）。
+/// `__wjs2_zlib_deflate_lv(dataU8, level)`（level -1=默认；JS 侧已验 -1..9）。
 pub unsafe extern "C" fn zlib_deflate_lv(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -176,7 +176,7 @@ pub unsafe extern "C" fn zlib_deflate_lv(
     }
 }
 
-/// `__wjs_zlib_inflate(dataU8)`（zlib 包裹）。
+/// `__wjs2_zlib_inflate(dataU8)`（zlib 包裹）。
 pub unsafe extern "C" fn zlib_inflate(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -197,7 +197,7 @@ pub unsafe extern "C" fn zlib_inflate(
     }
 }
 
-/// `__wjs_zlib_deflate_raw(dataU8, level)`（裸 deflate）。
+/// `__wjs2_zlib_deflate_raw(dataU8, level)`（裸 deflate）。
 pub unsafe extern "C" fn zlib_deflate_raw(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -228,7 +228,7 @@ pub unsafe extern "C" fn zlib_deflate_raw(
     }
 }
 
-/// `__wjs_zlib_inflate_raw(dataU8)`（裸 deflate 解码）。
+/// `__wjs2_zlib_inflate_raw(dataU8)`（裸 deflate 解码）。
 pub unsafe extern "C" fn zlib_inflate_raw(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -249,7 +249,7 @@ pub unsafe extern "C" fn zlib_inflate_raw(
     }
 }
 
-/// `__wjs_zlib_gzip(dataU8, level)`。
+/// `__wjs2_zlib_gzip(dataU8, level)`。
 pub unsafe extern "C" fn zlib_gzip(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -280,7 +280,7 @@ pub unsafe extern "C" fn zlib_gzip(
     }
 }
 
-/// `__wjs_zlib_gunzip(dataU8)`。
+/// `__wjs2_zlib_gunzip(dataU8)`。
 pub unsafe extern "C" fn zlib_gunzip(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -312,7 +312,7 @@ fn gunzip_multi(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// `__wjs_zlib_unzip(dataU8)`（gzip 优先、zlib 兜底；Node Unzip 自动识别口径）。
+/// `__wjs2_zlib_unzip(dataU8)`（gzip 优先、zlib 兜底；Node Unzip 自动识别口径）。
 pub unsafe extern "C" fn zlib_unzip(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -368,7 +368,7 @@ thread_local! {
     static ZSTREAM_NEXT: std::cell::Cell<u32> = std::cell::Cell::new(1);
 }
 
-/// `__wjs_zlib_stream_new(kind, level, dict|null, pledged|-1, reject01)` → id。
+/// `__wjs2_zlib_stream_new(kind, level, dict|null, pledged|-1, reject01)` → id。
 pub unsafe extern "C" fn zlib_stream_new(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -427,7 +427,7 @@ pub unsafe extern "C" fn zlib_stream_new(
     true
 }
 
-/// `__wjs_zlib_stream_feed(id, dataU8, flag)` → JSON `{"c":n,"d":bool[,"code","msg"]}`。
+/// `__wjs2_zlib_stream_feed(id, dataU8, flag)` → JSON `{"c":n,"d":bool[,"code","msg"]}`。
 pub unsafe extern "C" fn zlib_stream_feed(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -475,7 +475,7 @@ pub unsafe extern "C" fn zlib_stream_feed(
     true
 }
 
-/// `__wjs_zlib_stream_out(id)` → Uint8Array（排空引擎累计输出）。
+/// `__wjs2_zlib_stream_out(id)` → Uint8Array（排空引擎累计输出）。
 pub unsafe extern "C" fn zlib_stream_out(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -499,7 +499,7 @@ pub unsafe extern "C" fn zlib_stream_out(
     set_rval_bytes(&mut cx, &frame, &out)
 }
 
-/// `__wjs_zlib_stream_free(id)`。
+/// `__wjs2_zlib_stream_free(id)`。
 pub unsafe extern "C" fn zlib_stream_free(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -519,7 +519,7 @@ pub unsafe extern "C" fn zlib_stream_free(
     true
 }
 
-/// `__wjs_zlib_stream_reset(id)`。
+/// `__wjs2_zlib_stream_reset(id)`。
 pub unsafe extern "C" fn zlib_stream_reset(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -753,7 +753,7 @@ mod tests {
     #[test]
     fn zlib_roundtrip_vectors() {
         use std::io::{Read as _, Write as _};
-        let data = b"hello winterjs zlib probe 0123456789".repeat(8);
+        let data = b"hello winterjs2 zlib probe 0123456789".repeat(8);
         // gzip
         let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         e.write_all(&data).unwrap();

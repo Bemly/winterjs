@@ -29,7 +29,7 @@ try { Module.register(); } catch (e) { console.log("reg", e.code); }
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())

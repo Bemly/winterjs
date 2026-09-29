@@ -1,9 +1,9 @@
 coffee:
   # NOTE (luolita 0.1.4): bridged data must be single-line valid JSON.
-  rules = [{ "text": "一次恰好一个动作：--run a.js --eval 1 直接报错。" }, { "text": "无裸子命令/无裸位置参数：winterjs a.js 是错的，写 --run a.js；脚本自己的参数放 -- 之后：winterjs --run app.js -- --port 8080。" }, { "text": "修饰 flag 只在对应动作下生效：--port 只配 --serve，--filter 只配 --test，--watch 配 --test/--run/--serve，--schema 只配 --config，--allow-* 只配 --run/--eval/--test/--repl。配错 exit=1。" }]
+  rules = [{ "text": "一次恰好一个动作：--run a.js --eval 1 直接报错。" }, { "text": "无裸子命令/无裸位置参数：winterjs2 a.js 是错的，写 --run a.js；脚本自己的参数放 -- 之后：winterjs2 --run app.js -- --port 8080。" }, { "text": "修饰 flag 只在对应动作下生效：--port 只配 --serve，--filter 只配 --test，--watch 配 --test/--run/--serve，--schema 只配 --config，--allow-* 只配 --run/--eval/--test/--repl。配错 exit=1。" }]
 
 template:
-  h1 winterjs 快速上手
+  h1 winterjs2 快速上手
   blockquote 5 分钟从零跑起 JS。English version: #[a(href='#/en/quickstart') Quickstart].
   h2 1. 构建与验证
   pre
@@ -12,13 +12,13 @@ template:
       $ export SDKROOT="$(xcrun --show-sdk-path)"          # macOS，每个新 shell 都要
       $ export LIBCLANG_PATH="/opt/homebrew/opt/llvm/lib"
       $ export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-      $ ./target/debug/winterjs --eval '40 + 2'            # → 42
+      $ ./target/debug/winterjs2 --eval '40 + 2'            # → 42
   h2 2. 跑文件、求值、进 REPL
   pre
     code.
-      $ ./target/debug/winterjs --run sample/web/timers.js  # 跑 JS 文件并打印完成值
-      $ ./target/debug/winterjs --eval 'await Promise.resolve(7)'  # → 7
-      $ ./target/debug/winterjs --repl                       # 交互式 REPL（Ctrl-D 退出）
+      $ ./target/debug/winterjs2 --run sample/web/timers.js  # 跑 JS 文件并打印完成值
+      $ ./target/debug/winterjs2 --eval 'await Promise.resolve(7)'  # → 7
+      $ ./target/debug/winterjs2 --repl                       # 交互式 REPL（Ctrl-D 退出）
   p 规矩（详见 #[a(href='#/zh/cli') CLI 参考]）：
   ul
     each r in rules
@@ -26,9 +26,9 @@ template:
   h2 REPL 速查
   pre
     code.
-      $ ./target/debug/winterjs                       # 裸启动也进 REPL
-      ❄&gt; WinterJS. + Tab                           # 补全 WinterJS.* 并附右侧文档
-      ❄&gt; .doc WinterJS.fs.readFile                 # 任意主题看整篇文档
+      $ ./target/debug/winterjs2                       # 裸启动也进 REPL
+      ❄&gt; WinterJS2. + Tab                           # 补全 WinterJS2.* 并附右侧文档
+      ❄&gt; .doc WinterJS2.fs.readFile                 # 任意主题看整篇文档
       ❄&gt; await fetch("data:text/plain,hi").then((r) => r.text())  # 顶层 await 可用
       ❄&gt; .help / .exit                             # 帮助、退出（.quit、exit()、Ctrl-D 同）
   p Tab 出补全菜单 + 右侧文档；括号未闭合自动续行；2 秒内连按两次 Ctrl-C 退出。
@@ -46,17 +46,17 @@ template:
       console.log(await res.text()); // hi
   pre
     code.
-      $ ./target/debug/winterjs --run hello.mjs
+      $ ./target/debug/winterjs2 --run hello.mjs
   p CommonJS 同样可用（#[code require]、#[code module.exports]、#[code __dirname]）。
   h2 4. 测试、lint、格式化与 serve
   pre
     code.
-      $ ./target/debug/winterjs --test sample/test-runner/   # 发现并跑测试文件
-      $ ./target/debug/winterjs --test sample/test-runner/ --filter 'basics*'
-      $ ./target/debug/winterjs --test sample/test-runner/ --watch   # 变更重跑（Ctrl-C 停止）
-      $ ./target/debug/winterjs --lint -- --help              # 原样转发给 oxlint
-      $ ./target/debug/winterjs --fmt                         # 转发给 oxfmt
-      $ ./target/debug/winterjs --serve sample/serve-hello/public --port 8080 \
+      $ ./target/debug/winterjs2 --test sample/test-runner/   # 发现并跑测试文件
+      $ ./target/debug/winterjs2 --test sample/test-runner/ --filter 'basics*'
+      $ ./target/debug/winterjs2 --test sample/test-runner/ --watch   # 变更重跑（Ctrl-C 停止）
+      $ ./target/debug/winterjs2 --lint -- --help              # 原样转发给 oxlint
+      $ ./target/debug/winterjs2 --fmt                         # 转发给 oxfmt
+      $ ./target/debug/winterjs2 --serve sample/serve-hello/public --port 8080 \
           --handler sample/serve-hello/handler.mjs            # 静态 + 动态 fetch + WS
   h2 5. 下一步
   ul

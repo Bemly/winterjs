@@ -1,4 +1,4 @@
-//! 测试运行器（plan Phase 7-e1）：`winterjs test [paths...] [--filter <glob>]`。
+//! 测试运行器（plan Phase 7-e1）：`winterjs2 test [paths...] [--filter <glob>]`。
 //!
 //! - 发现：无 paths 时 walk cwd（`ignore` 轮子：尊重 gitignore，跳过
 //!   `node_modules/target/.git`）；文件名 `*.test.{js,mjs,cjs,ts,mts,cts}`
@@ -26,7 +26,7 @@ pub struct TestOpts {
 }
 
 /// 名过滤 env 键（`node:test` prelude 读取；子串或 `/re/flags`）。
-pub const TEST_NAME_PATTERN_ENV: &str = "WINTERJS_TEST_NAME_PATTERN";
+pub const TEST_NAME_PATTERN_ENV: &str = "WINTERJS2_TEST_NAME_PATTERN";
 
 /// 可测后缀（`name.test.<ext>` / `test-name.<ext>` 的 `<ext>` 部）。
 const EXTS: &[&str] = &["js", "mjs", "cjs", "ts", "mts", "cts"];
@@ -114,7 +114,7 @@ pub async fn run_tests(root: &Path, opts: &TestOpts) -> Result<(), Error> {
         return watch_loop(root, opts).await;
     }
     let (_, fail) = run_once(root, opts).await?;
-    tracing::info!(target: "winterjs::test", fail, "done");
+    tracing::info!(target: "winterjs2::test", fail, "done");
     if fail > 0 {
         return Err(Error::Other(format!("{fail} test file(s) failed")));
     }
@@ -124,7 +124,7 @@ pub async fn run_tests(root: &Path, opts: &TestOpts) -> Result<(), Error> {
 /// 单轮执行（TAP 打印；返回 (pass, fail)，不映射退出码 —— watch 的失败不退出）。
 async fn run_once(root: &Path, opts: &TestOpts) -> Result<(u32, u32), Error> {
     let files = apply_filter(root, collect(root, &opts.paths)?, opts.filter.as_deref())?;
-    tracing::info!(target: "winterjs::test", count = files.len(), "discovered");
+    tracing::info!(target: "winterjs2::test", count = files.len(), "discovered");
     if files.is_empty() {
         println!("no test files found");
         return Ok((0, 0));
@@ -174,7 +174,7 @@ async fn run_once(root: &Path, opts: &TestOpts) -> Result<(u32, u32), Error> {
         }
     }
     println!("# pass {pass}, fail {fail}");
-    tracing::info!(target: "winterjs::test", pass, fail, "run done");
+    tracing::info!(target: "winterjs2::test", pass, fail, "run done");
     Ok((pass, fail))
 }
 
@@ -245,7 +245,7 @@ async fn watch_loop(root: &Path, opts: &TestOpts) -> Result<(), Error> {
     loop {
         tokio::select! {
             _ = crate::serve::shutdown_signal() => {
-                tracing::info!(target: "winterjs::test", "watch stopped");
+                tracing::info!(target: "winterjs2::test", "watch stopped");
                 return Ok(());
             }
             Some(n) = rx.recv() => {

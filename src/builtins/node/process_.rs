@@ -1,5 +1,5 @@
 //! `process` 全局 + `node:process`（argv/env/cwd/exit/exitCode/stdio…）。
-//! `exit()` 经 `__wjs_exit:<code>` 哨兵错 unwind（`runtime` 转 `Error::Exit`）；
+//! `exit()` 经 `__wjs2_exit:<code>` 哨兵错 unwind（`runtime` 转 `Error::Exit`）；
 //! 同时记 `process_exited` 旗，哨兵被用户 catch 也在检查点照退（文档记录）。
 
 use std::sync::OnceLock;
@@ -50,7 +50,7 @@ ids_native!(getgid, unsafe { libc::getgid() });
 ids_native!(geteuid, unsafe { libc::geteuid() });
 ids_native!(getegid, unsafe { libc::getegid() });
 
-/// `__wjs_process_getgroups()` → group id 数组（node 口径：缺 egid 即补）。
+/// `__wjs2_process_getgroups()` → group id 数组（node 口径：缺 egid 即补）。
 pub unsafe extern "C" fn getgroups(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -81,7 +81,7 @@ pub unsafe extern "C" fn getgroups(
     true
 }
 
-/// `__wjs_next_tick(cb, args)` → undefined：nextTick 入原生队列（pump 在
+/// `__wjs2_next_tick(cb, args)` → undefined：nextTick 入原生队列（pump 在
 /// RunJobs 前后各收割一轮——node 口径 tick/微任务双层调度，10f stream 对拍）。
 pub unsafe extern "C" fn next_tick_queue(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -119,7 +119,7 @@ pub fn emit_exit(cx: &mut mozjs::context::JSContext, global: *mut JSObject) {
     rooted!(&in(cx) let mut flag_v = UndefinedValue());
     true.to_jsval(cx, flag_v.handle_mut());
     set_prop_value(cx, proc_obj, c"_exiting", flag_v.get());
-    let Some(emit_v) = get_prop_value(cx, proc_obj, c"__wjs_emit") else {
+    let Some(emit_v) = get_prop_value(cx, proc_obj, c"__wjs2_emit") else {
         return;
     };
     if !emit_v.is_object() {
@@ -130,7 +130,7 @@ pub fn emit_exit(cx: &mut mozjs::context::JSContext, global: *mut JSObject) {
     (code as f64).to_jsval(cx, code_v.handle_mut());
     rooted!(&in(cx) let mut kind_v = UndefinedValue());
     "exit".to_jsval(cx, kind_v.handle_mut());
-    // this 必须是 process：`__wjs_emit` 读 `this.__wjs_listeners`（§4.97 this 基）。
+    // this 必须是 process：`__wjs2_emit` 读 `this.__wjs2_listeners`（§4.97 this 基）。
     // 修前以 global 为 this 调，取表即 TypeError 被吞——自然退出的 'exit' 监听从不触发，
     // node 套件 common 的 mustCall 退出核对形同虚设（假绿源，§4.126③）。
     rooted!(&in(cx) let proc_root: *mut JSObject = proc_obj);
@@ -150,7 +150,7 @@ pub fn queue_before_exit(cx: &mut mozjs::context::JSContext, global: *mut JSObje
         return false;
     }
     rooted!(&in(cx) let proc_root: *mut JSObject = proc_v.to_object());
-    let Some(f) = get_prop_value(cx, proc_root.get(), c"__wjs_queueBeforeExit") else {
+    let Some(f) = get_prop_value(cx, proc_root.get(), c"__wjs2_queueBeforeExit") else {
         return false;
     };
     if !f.is_object() {
@@ -164,7 +164,7 @@ pub fn queue_before_exit(cx: &mut mozjs::context::JSContext, global: *mut JSObje
 }
 
 /// 收割 nextTick 原生队列（pump 专用：RunJobs 前后各一轮）。
-/// 回调经 prelude `__wjs_call(cb, args)` 展开；抛错走 uncaughtException 路由
+/// 回调经 prelude `__wjs2_call(cb, args)` 展开；抛错走 uncaughtException 路由
 /// （有监听分发即吞，无监听保持 pending 走 fatal——fire_due 同款）。
 /// **逐条摘取立即 rooting**（fire_due 同款纪律）：批内裸 JSVal 横跨回调即
 /// 悬垂——回调可触发 GC（§4.80；实测 batch 形即 SIGSEGV）。node 语义核心：
@@ -228,7 +228,7 @@ pub fn drain_next_ticks(
     }
 }
 
-/// `__wjs_argv_json()` → argv 数组 JSON。
+/// `__wjs2_argv_json()` → argv 数组 JSON。
 pub unsafe extern "C" fn argv_json(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -257,7 +257,7 @@ pub fn record_node_compat(flags: Vec<String>) {
     }
 }
 
-/// `__wjs_node_compat_json()` → 剥下的 node 兼容旗 JSON 数组（execArgv 底座）。
+/// `__wjs2_node_compat_json()` → 剥下的 node 兼容旗 JSON 数组（execArgv 底座）。
 ///
 /// UNSAFE-BOUNDARY: 前置——引擎回调 cx 有效（调用约定）；覆盖测试——
 /// `process_::tests::node_compat_json_empty`（零参）+ 黑盒 execArgv 回显。
@@ -278,7 +278,7 @@ pub unsafe extern "C" fn node_compat_json(
     true
 }
 
-/// `__wjs_env_get(k)` → 值串；缺失置 undefined。
+/// `__wjs2_env_get(k)` → 值串；缺失置 undefined。
 pub unsafe extern "C" fn env_get(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -304,7 +304,7 @@ pub unsafe extern "C" fn env_get(
     true
 }
 
-/// `__wjs_env_set(k, v)`（`unsafe set_var`：JS 独占线程调用，见 SAFETY 内联注释）。
+/// `__wjs2_env_set(k, v)`（`unsafe set_var`：JS 独占线程调用，见 SAFETY 内联注释）。
 pub unsafe extern "C" fn env_set(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -329,7 +329,7 @@ pub unsafe extern "C" fn env_set(
     true
 }
 
-/// `__wjs_env_del(k)`。
+/// `__wjs2_env_del(k)`。
 pub unsafe extern "C" fn env_del(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -353,7 +353,7 @@ pub unsafe extern "C" fn env_del(
     true
 }
 
-/// `__wjs_env_keys()` → 键数组 JSON。
+/// `__wjs2_env_keys()` → 键数组 JSON。
 pub unsafe extern "C" fn env_keys(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -374,7 +374,7 @@ pub unsafe extern "C" fn env_keys(
     true
 }
 
-/// `__wjs_cwd()` → 当前目录（失败报，不吞）。
+/// `__wjs2_cwd()` → 当前目录（失败报，不吞）。
 pub unsafe extern "C" fn cwd(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -395,7 +395,7 @@ pub unsafe extern "C" fn cwd(
     }
 }
 
-/// `__wjs_chdir(dir)`（失败报）。
+/// `__wjs2_chdir(dir)`（失败报）。
 pub unsafe extern "C" fn chdir(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -421,7 +421,7 @@ pub unsafe extern "C" fn chdir(
     }
 }
 
-/// `__wjs_process_exit(optCode)`：记旗 + 哨兵错 unwind（无参用 exitCode，无则 0）。
+/// `__wjs2_process_exit(optCode)`：记旗 + 哨兵错 unwind（无参用 exitCode，无则 0）。
 pub unsafe extern "C" fn process_exit(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -443,12 +443,12 @@ pub unsafe extern "C" fn process_exit(
             p.process_exited = Some(code);
         }
     });
-    tracing::info!(target: "winterjs::process", code, "process.exit called");
-    report_error(&mut cx, &format!("__wjs_exit:{code}"));
+    tracing::info!(target: "winterjs2::process", code, "process.exit called");
+    report_error(&mut cx, &format!("__wjs2_exit:{code}"));
     false
 }
 
-/// `__wjs_exit_code_get()` → Int32（未设为 0）。
+/// `__wjs2_exit_code_get()` → Int32（未设为 0）。
 pub unsafe extern "C" fn exit_code_get(
     _cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -460,7 +460,7 @@ pub unsafe extern "C" fn exit_code_get(
     true
 }
 
-/// `__wjs_exit_code_set(n)`（prelude 已校验整数）。
+/// `__wjs2_exit_code_set(n)`（prelude 已校验整数）。
 pub unsafe extern "C" fn exit_code_set(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -478,7 +478,7 @@ pub unsafe extern "C" fn exit_code_set(
     true
 }
 
-/// `__wjs_exec_path()` → 可执行路径。
+/// `__wjs2_exec_path()` → 可执行路径。
 pub unsafe extern "C" fn exec_path(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -489,12 +489,12 @@ pub unsafe extern "C" fn exec_path(
     let frame = unsafe { Frame::from_raw(vp, argc) };
     let exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "winterjs".into());
+        .unwrap_or_else(|_| "winterjs2".into());
     set_rval_str(&mut cx, &frame, &exe);
     true
 }
 
-/// `__wjs_pid()` → Int32。
+/// `__wjs2_pid()` → Int32。
 pub unsafe extern "C" fn pid(
     _cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -506,7 +506,7 @@ pub unsafe extern "C" fn pid(
     true
 }
 
-/// `__wjs_umask()` → 旧掩码 Int32；`__wjs_umask(mask)` 置新掩码并回旧值。
+/// `__wjs2_umask()` → 旧掩码 Int32；`__wjs2_umask(mask)` 置新掩码并回旧值。
 /// 10f：unix 经 libc 真改（test/common load 期置 0o22，fs 模式测试依赖）；
 /// 非 unix 回 0o22 常量（记档）。
 pub unsafe extern "C" fn umask(
@@ -537,7 +537,7 @@ pub unsafe extern "C" fn umask(
     }
 }
 
-/// `__wjs_uptime()` → 启动至今秒（f64）。
+/// `__wjs2_uptime()` → 启动至今秒（f64）。
 pub unsafe extern "C" fn uptime(
     _cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -549,7 +549,7 @@ pub unsafe extern "C" fn uptime(
     true
 }
 
-/// `__wjs_hrtime_ns()` → 启动至今纳秒串（prelude 包 `BigInt`，避 BigInt FFI）。
+/// `__wjs2_hrtime_ns()` → 启动至今纳秒串（prelude 包 `BigInt`，避 BigInt FFI）。
 pub unsafe extern "C" fn hrtime_ns(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -562,7 +562,7 @@ pub unsafe extern "C" fn hrtime_ns(
     true
 }
 
-/// `__wjs_memory_usage()` → `{rss, heapTotal: 0, heapUsed: 0, external: 0}` JSON。
+/// `__wjs2_memory_usage()` → `{rss, heapTotal: 0, heapUsed: 0, external: 0}` JSON。
 /// 偏差：堆三数未接 SpiderMonkey GC 统计，恒 0（文档记录）；rss 经 sysinfo 实测。
 pub unsafe extern "C" fn memory_usage(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -591,7 +591,7 @@ pub unsafe extern "C" fn memory_usage(
     true
 }
 
-/// `__wjs_stdout_write(s)` → boolean（直写 fd，绕 `console` 通道）。
+/// `__wjs2_stdout_write(s)` → boolean（直写 fd，绕 `console` 通道）。
 pub unsafe extern "C" fn stdout_write(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -617,7 +617,7 @@ pub unsafe extern "C" fn stdout_write(
     true
 }
 
-/// `__wjs_stderr_write(s)` → boolean。
+/// `__wjs2_stderr_write(s)` → boolean。
 pub unsafe extern "C" fn stderr_write(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -641,7 +641,7 @@ pub unsafe extern "C" fn stderr_write(
     true
 }
 
-/// `__wjs_stdio_istty(fd)` → boolean（0=stdin，1=stdout，2=stderr；其余 false）。
+/// `__wjs2_stdio_istty(fd)` → boolean（0=stdin，1=stdout，2=stderr；其余 false）。
 pub unsafe extern "C" fn stdio_istty(
     _cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -665,7 +665,7 @@ pub unsafe extern "C" fn stdio_istty(
     true
 }
 
-/// `__wjs_stdin_poll()` → `"D"+b64（有数据）/ `"E"`（EOF 或 fd 坏）/ `""`（暂无）。
+/// `__wjs2_stdin_poll()` → `"D"+b64（有数据）/ `"E"`（EOF 或 fd 坏）/ `""`（暂无）。
 /// 非阻塞读 fd 0（首调置 O_NONBLOCK，幂等；读写经 nix safe 封装）。
 /// 唯一 unsafe 表达式是 `BorrowedFd::borrow_raw(0)`：fd 0 为进程生命期
 /// 标准输入，本仓永不关闭它；若宿主关了它，fcntl/read 只回 EBADF（→"E"），

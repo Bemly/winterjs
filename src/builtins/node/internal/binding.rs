@@ -27,7 +27,7 @@ const __table = {
   })(),
 };
 try {
-  globalThis.__wjs_bindHttpParser = __table.http_parser;
+  globalThis.__wjs2_bindHttpParser = __table.http_parser;
 } catch {}
 export function internalBinding(name) {
   const __e = __table[name];

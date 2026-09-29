@@ -1,4 +1,4 @@
-//! 本体第二批（WinterJS.shell/hex/time/retry/graph/git/oauth/transpile/log/mime/cookie/httpdate）。
+//! 本体第二批（WinterJS2.shell/hex/time/retry/graph/git/oauth/transpile/log/mime/cookie/httpdate）。
 //!
 //! 范围（用户拍板一口气全加）：首批（wstd）之后，真缺口中剩余可安全暴露面。
 //! 全员直用树内轮子，零新增依赖；错误 plain `TypeError`（权限类原样透传，
@@ -100,7 +100,7 @@ pub fn scan_vars(s: &str) -> Vec<String> {
     out
 }
 
-/// `__wjs_wsys_shell_expand(s)`（`~` + env；沙箱内未授权变量即拒）。
+/// `__wjs2_wsys_shell_expand(s)`（`~` + env；沙箱内未授权变量即拒）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_shell_hex_faces`。
 pub unsafe extern "C" fn shell_expand(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -118,7 +118,7 @@ pub unsafe extern "C" fn shell_expand(
             return false;
         }
     }
-    tracing::debug!(target: "winterjs::wsys", src_len = s.len(), "shell expand");
+    tracing::debug!(target: "winterjs2::wsys", src_len = s.len(), "shell expand");
     match shellexpand::full(&s) {
         Ok(out) => {
             set_str(&mut cx, &frame, &out);
@@ -133,7 +133,7 @@ pub unsafe extern "C" fn shell_expand(
 
 // ── hex（const-hex）────────────────────────────────────────────────────────
 
-/// `__wjs_wsys_hex_encode(u8)` → 小写 hex。
+/// `__wjs2_wsys_hex_encode(u8)` → 小写 hex。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_shell_hex_faces`。
 pub unsafe extern "C" fn hex_encode(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -153,7 +153,7 @@ pub unsafe extern "C" fn hex_encode(
     true
 }
 
-/// `__wjs_wsys_hex_decode(hexStr)` → Uint8Array。
+/// `__wjs2_wsys_hex_decode(hexStr)` → Uint8Array。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_shell_hex_faces`。
 pub unsafe extern "C" fn hex_decode(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -185,7 +185,7 @@ pub unsafe extern "C" fn hex_decode(
 
 // ── time（jiff）────────────────────────────────────────────────────────────
 
-/// `__wjs_wsys_time_now()` → 纪元毫秒.
+/// `__wjs2_wsys_time_now()` → 纪元毫秒.
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_time_retry_faces`。
 pub unsafe extern "C" fn time_now(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -198,7 +198,7 @@ pub unsafe extern "C" fn time_now(
     true
 }
 
-/// `__wjs_wsys_time_parse(s)` → RFC3339 纪元毫秒.
+/// `__wjs2_wsys_time_parse(s)` → RFC3339 纪元毫秒.
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_time_retry_faces`。
 pub unsafe extern "C" fn time_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -222,7 +222,7 @@ pub unsafe extern "C" fn time_parse(
     }
 }
 
-/// `__wjs_wsys_time_format(ms, fmt, tz?)`（strtime；缺省 UTC）。
+/// `__wjs2_wsys_time_format(ms, fmt, tz?)`（strtime；缺省 UTC）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_time_retry_faces`。
 pub unsafe extern "C" fn time_format(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -284,7 +284,7 @@ fn arg_u64(frame: &Frame, i: u32) -> Option<u64> {
     Some(n as u64)
 }
 
-/// `__wjs_wsys_retry_delay(kind, attempt, minMs, maxMs, factor?)` → ms 数。
+/// `__wjs2_wsys_retry_delay(kind, attempt, minMs, maxMs, factor?)` → ms 数。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_time_retry_faces`。
 pub unsafe extern "C" fn retry_delay(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -360,7 +360,7 @@ pub use crate::builtins::wsys_graph::{
 
 // ── oauth（oauth2 纯构造面；token HTTP 走 fetch 栈，见 prelude）──────────────
 
-/// `__wjs_wsys_oauth_authorize_url(authUrl, clientId, redirectUri, scope, state?)`
+/// `__wjs2_wsys_oauth_authorize_url(authUrl, clientId, redirectUri, scope, state?)`
 /// → `{url, state}` JSON。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_oauth_transpile_faces`。
 pub unsafe extern "C" fn oauth_authorize_url(
@@ -428,7 +428,7 @@ pub unsafe extern "C" fn oauth_authorize_url(
     true
 }
 
-/// `__wjs_wsys_oauth_pkce()` → `{challenge, verifier}`（S256）。
+/// `__wjs2_wsys_oauth_pkce()` → `{challenge, verifier}`（S256）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_oauth_transpile_faces`。
 pub unsafe extern "C" fn oauth_pkce(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -449,7 +449,7 @@ pub unsafe extern "C" fn oauth_pkce(
 
 // ── transpile（loader oxc 管线复用）─────────────────────────────────────────
 
-/// `__wjs_wsys_transpile(src, filename?)` → 转译后 JS（缺省 `input.ts`）。
+/// `__wjs2_wsys_transpile(src, filename?)` → 转译后 JS（缺省 `input.ts`）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_oauth_transpile_faces`。
 pub unsafe extern "C" fn transpile(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -470,7 +470,7 @@ pub unsafe extern "C" fn transpile(
         report_error(&mut cx, "TypeError: transpile requires a filename");
         return false;
     }
-    tracing::debug!(target: "winterjs::wsys", src_len = src.len(), filename_len = filename.len(), "transpile");
+    tracing::debug!(target: "winterjs2::wsys", src_len = src.len(), filename_len = filename.len(), "transpile");
     match crate::loader::transpile::load_js(&src, &filename, std::path::Path::new(&filename)) {
         Ok(loaded) => {
             set_str(&mut cx, &frame, &loaded.js);
@@ -488,14 +488,14 @@ pub unsafe extern "C" fn transpile(
 fn log_capped(level: &str, msg: &str) {
     let short = if msg.len() > 4096 { &msg[..4096] } else { msg };
     match level {
-        "debug" => tracing::debug!(target: "winterjs::js", "{short}"),
-        "info" => tracing::info!(target: "winterjs::js", "{short}"),
-        "warn" => tracing::warn!(target: "winterjs::js", "{short}"),
-        _ => tracing::error!(target: "winterjs::js", "{short}"),
+        "debug" => tracing::debug!(target: "winterjs2::js", "{short}"),
+        "info" => tracing::info!(target: "winterjs2::js", "{short}"),
+        "warn" => tracing::warn!(target: "winterjs2::js", "{short}"),
+        _ => tracing::error!(target: "winterjs2::js", "{short}"),
     }
 }
 
-/// `__wjs_wsys_log(level, msg)`（level 越界即错）。
+/// `__wjs2_wsys_log(level, msg)`（level 越界即错）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc2_faces`。
 pub unsafe extern "C" fn wlog(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -525,7 +525,7 @@ pub unsafe extern "C" fn wlog(
 
 // ── mime / cookie / httpdate ───────────────────────────────────────────────
 
-/// `__wjs_wsys_mime_lookup(path)` → MIME 串（fallback octet-stream）。
+/// `__wjs2_wsys_mime_lookup(path)` → MIME 串（fallback octet-stream）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc2_faces`。
 pub unsafe extern "C" fn mime_lookup(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -541,7 +541,7 @@ pub unsafe extern "C" fn mime_lookup(
     true
 }
 
-/// `__wjs_wsys_cookie_parse(header)` → 首 cookie `{name,value}` JSON。
+/// `__wjs2_wsys_cookie_parse(header)` → 首 cookie `{name,value}` JSON。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc2_faces`。
 pub unsafe extern "C" fn cookie_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -570,7 +570,7 @@ pub unsafe extern "C" fn cookie_parse(
     }
 }
 
-/// `__wjs_wsys_cookie_serialize(name, value, optsJson?)` 。
+/// `__wjs2_wsys_cookie_serialize(name, value, optsJson?)` 。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc2_faces`。
 pub unsafe extern "C" fn cookie_serialize(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -622,7 +622,7 @@ pub unsafe extern "C" fn cookie_serialize(
     true
 }
 
-/// `__wjs_wsys_httpdate_parse(s)` → 纪元毫秒.
+/// `__wjs2_wsys_httpdate_parse(s)` → 纪元毫秒.
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc2_faces`。
 pub unsafe extern "C" fn httpdate_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -652,7 +652,7 @@ pub unsafe extern "C" fn httpdate_parse(
     }
 }
 
-/// `__wjs_wsys_httpdate_format(ms)` → IMF 串.
+/// `__wjs2_wsys_httpdate_format(ms)` → IMF 串.
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc2_faces`。
 pub unsafe extern "C" fn httpdate_format(
     cx_raw: *mut mozjs::jsapi::JSContext,

@@ -3,7 +3,7 @@
 //! `t.plan`/`t.waitFor`/`t.assert`（全 assert 键 + snapshot/fileSnapshot 桩 +
 //! 模块级 `assert.register` 自定义断言）+ `t.tags`（校验/小写规范/父优先并集/冻结）+
 //! `getTestContext`（当前上下文栈，串行泵内跨 setImmediate 有效）+ 名过滤
-//! （`WINTERJS_TEST_NAME_PATTERN`：子串或 `/re/flags`，不命中即 skip）。
+//! （`WINTERJS2_TEST_NAME_PATTERN`：子串或 `/re/flags`，不命中即 skip）。
 //! 串行泵，失败记数并置 `exitCode=1`，队空打印小结。
 //! 口径（文档记录）：名过滤跳过测试本体与 Each 钩子，before/after 照跑；套件
 //! `after` 在整轮末尾按深度由内向外跑；hook 抛错：before 毒化其套件，Each 只

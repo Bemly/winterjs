@@ -123,7 +123,7 @@ use common::*;
 fn run_quic_file(dir: &assert_fs::TempDir, name: &str, source: &str) -> String {
     let file = dir.child(name);
     file.write_str(source).unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -214,7 +214,7 @@ fn phase9g_quic_errors_boundary() {
     // 校验错：缺 alpn / 坏 PEM / 坏地址，同步抛（listen async 拒因，进程 exit 1）。
     let bad = dir.child("bad.mjs");
     bad.write_str("import { listen } from \"node:quic\";\nawait listen(() => {}, { port: 0 });\n").unwrap();
-    let out = winterjs().arg("--run").arg(bad.path()).current_dir(dir.path()).output().unwrap();
+    let out = winterjs2().arg("--run").arg(bad.path()).current_dir(dir.path()).output().unwrap();
     assert!(!out.status.success(), "missing alpn must fail");
     assert!(String::from_utf8_lossy(&out.stderr).contains("alpn"), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     // 握手失败：ca 错配 → error + close(-1)，进程照活照退。

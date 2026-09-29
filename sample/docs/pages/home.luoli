@@ -5,7 +5,7 @@ coffee:
 
 template:
   .vp-hero
-    h1 winterjs docs
+    h1 winterjs2 docs
     p.tagline A Bun-like JavaScript runtime on SpiderMonkey
     p.tagline 类 Bun 的 JS 运行时（基于 SpiderMonkey）
     .actions
@@ -17,4 +17,4 @@ template:
         strong= c.title
         span= c.desc
   h2 Samples
-  p 128 runnable examples live in <code>sample/&lt;area&gt;/</code> — one per module, all offline-capable (<code>winterjs --run sample/&lt;area&gt;/&lt;file&gt;</code>). TLS samples use a local self-signed fixture. See the API reference for the per-module sample index.
+  p 128 runnable examples live in <code>sample/&lt;area&gt;/</code> — one per module, all offline-capable (<code>winterjs2 --run sample/&lt;area&gt;/&lt;file&gt;</code>). TLS samples use a local self-signed fixture. See the API reference for the per-module sample index.

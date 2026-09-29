@@ -7,7 +7,7 @@
 
 ```bash
 # 仓库根目录执行（端口按需改）
-./target/debug/winterjs --serve sample/serve-hello/public --port 8080 \
+./target/debug/winterjs2 --serve sample/serve-hello/public --port 8080 \
   --handler sample/serve-hello/handler.mjs
 ```
 
@@ -18,7 +18,7 @@
 | 请求 | 走向 | 期望 |
 |---|---|---|
 | `GET /` | 静态（`public/index.html`，不进 JS） | 200 `hi static` |
-| `GET /api/hello` | handler | 200 `hello from winterjs serve [http:]` |
+| `GET /api/hello` | handler | 200 `hello from winterjs2 serve [http:]` |
 | `POST /api/echo` | handler（请求体流式上行） | 201，原样回声 |
 | `GET /nope` | handler | 404 |
 | `GET /ws` + `Upgrade: websocket` | WS 接管（WS 优先于静态） | 101 |
@@ -67,7 +67,7 @@ EOF
 JS 侧写法（`handler.mjs` 已演示）：
 
 ```js
-const ws = __wjs_serve_socket(req); // 只能对 serve 请求调用
+const ws = __wjs2_serve_socket(req); // 只能对 serve 请求调用
 ws.onmessage = (e) => ws.send(e.data); // 文本/二进制都回声
 ws.onclose = (e) => console.log("bye", e.code);
 return ws; // 直接返回 socket 即接受升级；返回 Response 即拒绝（走普通 HTTP）
@@ -81,7 +81,7 @@ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 2 -nodes 
   -subj "/CN=127.0.0.1" -extensions v3_req \
   -config <(printf "[req]\ndistinguished_name=dn\n[v3_req]\nsubjectAltName=IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n[dn]")
 
-./target/debug/winterjs --serve sample/serve-hello/public --port 8443 \
+./target/debug/winterjs2 --serve sample/serve-hello/public --port 8443 \
   --cert cert.pem --key key.pem --handler sample/serve-hello/handler.mjs
 # https://127.0.0.1:8443/api/hello  → scheme 显示 https:
 # H1/H2 自动协商（curl 默认谈 H2）；H3 同端口 UDP（curl 需 http3 版，本机 SecureTransport 版 curl 不支持，用 harness 测）

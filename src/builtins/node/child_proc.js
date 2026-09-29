@@ -329,7 +329,7 @@ function __selfSeg(seg, env) {
   if (!selfBin) return seg;
   // node 运行时旗（`--flag` / `--flag=value` 整 token）原样保留在前，交 CLI
   // 剥除并记录（cli::strip_node_compat_args——getOptionValue/execArgv 读回）；
-  // 本仓动作旗在场即已是 winterjs 形，不动。
+  // 本仓动作旗在场即已是 winterjs2 形，不动。
   let rest = toks.slice(1);
   const flags = [];
   while (rest.length > 0 && /^--[a-z]/.test(rest[0])) {
@@ -384,7 +384,7 @@ export function execSync(cmd, opts) {
   // execSync 缺省 Buffer（真机实测；exec 异步缺省 utf8）：未显式给编码即改 buffer。
   if (typeof opts !== "string" && (opts === undefined || opts === null || opts.encoding === undefined)) o.encoding = "buffer";
   cmd = __selfCmd(String(cmd), o.env ?? process.env);
-  const r = JSON.parse(__wjs_cp_exec(cmd, JSON.stringify({
+  const r = JSON.parse(__wjs2_cp_exec(cmd, JSON.stringify({
     cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
     shell: !!o.shell, input_b64: o.inputB64, max_buffer: o.maxBuffer,
   })));
@@ -399,7 +399,7 @@ export function spawnSync(file, args, opts) {
   const f = String(file);
   const origArgs = [...(args || [])].map(String);
   const [f2, a2] = __selfArgv(f, origArgs);
-  const r = JSON.parse(__wjs_cp_spawn(f2, JSON.stringify(a2), JSON.stringify({
+  const r = JSON.parse(__wjs2_cp_spawn(f2, JSON.stringify(a2), JSON.stringify({
     cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
     shell: o.shell, shell_path: o.shellPath, kill_signo: o.killSigno,
     kill_signame: o.killSigname, argv0: o.argv0, detached: !!o.detached,
@@ -582,14 +582,14 @@ function __legacyWritable(id) {
     on(ev, cb) { (listeners[ev] ||= []).push(cb); return api; },
     once(ev, cb) {
       const w = (...a) => { api.off(ev, w); cb(...a); };
-      w.__wjs_orig = cb;
+      w.__wjs2_orig = cb;
       return api.on(ev, w);
     },
     off(ev, cb) {
       const l = listeners[ev];
       if (l) {
-        let i = l.findIndex((f) => f === cb || f.__wjs_orig === cb);
-        while (i >= 0) { l.splice(i, 1); i = l.findIndex((f) => f === cb || f.__wjs_orig === cb); }
+        let i = l.findIndex((f) => f === cb || f.__wjs2_orig === cb);
+        while (i >= 0) { l.splice(i, 1); i = l.findIndex((f) => f === cb || f.__wjs2_orig === cb); }
       }
       return api;
     },
@@ -608,7 +608,7 @@ function __legacyWritable(id) {
       }
       const u8 = typeof chunk === "string" ? new TextEncoder().encode(chunk)
         : (chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk?.buffer ?? chunk));
-      const ok = __wjs_child_stdin_write(id, __b64enc(u8));
+      const ok = __wjs2_child_stdin_write(id, __b64enc(u8));
       if (!ok) {
         const err = Object.assign(new Error("This socket has been ended by the other party"), { code: "EPIPE" });
         if (typeof cb === "function") queueMicrotask(() => cb(err));
@@ -631,7 +631,7 @@ function __legacyWritable(id) {
       if (chunk !== undefined && chunk !== null) api.write(chunk);
       if (ended) return api;
       ended = true;
-      __wjs_child_stdin_close(id);
+      __wjs2_child_stdin_close(id);
       queueMicrotask(() => emit("finish"));
       if (typeof cb === "function") queueMicrotask(() => cb());
       return api;
@@ -639,7 +639,7 @@ function __legacyWritable(id) {
     destroy() {
       if (destroyed) return api;
       destroyed = true;
-      __wjs_child_stdin_close(id);
+      __wjs2_child_stdin_close(id);
       emit("close");
       return api;
     },
@@ -694,7 +694,7 @@ export class ChildProcess {
     // node 口径：spawn 成功后 pid 为自有数据属性（hasOwn true）；
     // 未成功（id=0）保持原型 getter 的 undefined。
     if (id !== 0) {
-      try { Object.defineProperty(this, "pid", { value: __wjs_child_pid(id), writable: true, configurable: true, enumerable: true }); } catch {}
+      try { Object.defineProperty(this, "pid", { value: __wjs2_child_pid(id), writable: true, configurable: true, enumerable: true }); } catch {}
     }
     return this;
   }
@@ -738,7 +738,7 @@ export class ChildProcess {
   }
   // node 口径：spawn 未成功（#id=0 占位）pid 恒 undefined（execFile ENOENT
   // 套件 typeof 点名；真机 ChildProcess 在 spawn 成功前根本无 pid 属性）
-  get pid() { return this.#id === 0 ? undefined : __wjs_child_pid(this.#id); }
+  get pid() { return this.#id === 0 ? undefined : __wjs2_child_pid(this.#id); }
   get killed() { return this.#killed; }
   kill(signal) {
     if (this.__forkChild) {
@@ -761,7 +761,7 @@ export class ChildProcess {
         sig = String(hit.signo);
       }
     }
-    const ok = __wjs_child_kill(this.#id, sig);
+    const ok = __wjs2_child_kill(this.#id, sig);
     if (ok) this.#killed = true;
     return ok;
   }
@@ -886,11 +886,11 @@ export class ChildProcess {
     if (typeof cb !== "function") throw new TypeError("listener must be a function");
     const self = this;
     const wrapped = (...args) => { self.off(event, wrapped); cb(...args); };
-    wrapped.__wjs_orig = cb;
+    wrapped.__wjs2_orig = cb;
     return this.on(event, wrapped);
   }
   off(event, cb) {
-    const match = (fn) => fn === cb || (typeof fn === "function" && fn.__wjs_orig === cb);
+    const match = (fn) => fn === cb || (typeof fn === "function" && fn.__wjs2_orig === cb);
     const drop = (ls) => { const i = ls.findIndex(match); if (i >= 0) ls.splice(i, 1); };
     if (event === "exit") { drop(this.#exitL); this.__install("exit"); }
     else if (event === "close") { drop(this.#closeL); this.__install("close"); }

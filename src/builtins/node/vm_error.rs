@@ -2,12 +2,12 @@
 
 use crate::jsapi_glue::report_error;
 
-/// natives 抛错包络：`__wjs_vm_error:{name}\n{message}`（`%` 由 report 转义，
+/// natives 抛错包络：`__wjs2_vm_error:{name}\n{message}`（`%` 由 report 转义，
 /// 换行分隔——message 内换行只影响尾部显示，JS 侧按首行取 name）。
 /// JS 侧 `__vmCall` 剥包络重建同名 Error（§4.31 教训：不断言原文以外的形态）。
 pub(crate) fn throw_vm(cx: &mut mozjs::context::JSContext, name: &str, message: &str) {
     let clean = message.replace('\0', "");
-    report_error(cx, &format!("__wjs_vm_error:{name}\n{clean}"));
+    report_error(cx, &format!("__wjs2_vm_error:{name}\n{clean}"));
 }
 
 /// vm 求值路径的赋值类 TypeError 文案桥：SM 引擎文案 → node contextify 拦截器
@@ -34,7 +34,7 @@ fn bridge_vm_assign_message(message: &str) -> String {
     }
 }
 
-/// vm 运行期错误的信封消息：文案桥 + 位置标记（`__wjs_vm_stk:{json}`）。
+/// vm 运行期错误的信封消息：文案桥 + 位置标记（`__wjs2_vm_stk:{json}`）。
 /// node displayErrors 口径——vm 错误的 err.stack 以 `filename:line` 前缀开头
 /// （checkErr 类 `startsWith(filename)` 校验点名）；JS 侧 __vmUnwrap 剥标记
 /// 重建栈。栈内帧格式仍是引擎口径（SM `@` vs V8 `at`，记档偏离）。
@@ -46,5 +46,5 @@ pub(crate) fn vm_stk_envelope(filename: &str, code: &str, info: &mozjs::rust::Er
         .nth((line as usize).saturating_sub(1))
         .unwrap_or("");
     let stk = serde_json::json!({ "f": filename, "l": line, "c": col, "s": srcline }).to_string();
-    format!("{}\n__wjs_vm_stk:{stk}", bridge_vm_assign_message(&info.message))
+    format!("{}\n__wjs2_vm_stk:{stk}", bridge_vm_assign_message(&info.message))
 }

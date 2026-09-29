@@ -1,6 +1,6 @@
 // node:trace_events: create/enable/disable a tracing category.
 // trace_events：创建、开关追踪分类。
-// Run / 运行: winterjs --run sample/trace-events/basics.js
+// Run / 运行: winterjs2 --run sample/trace-events/basics.js
 import { createTracing, getEnabledCategories } from 'node:trace_events';
 
 const tracing = createTracing({ categories: ['node'] });

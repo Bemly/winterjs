@@ -36,7 +36,7 @@ fn parse_url(href: &str, base: Option<&str>) -> Result<String, String> {
     parsed.map(|u| u.to_string()).map_err(|e| format!("TypeError: Invalid URL: {e}"))
 }
 
-/// `__wjs_url_parse(href, base?)` → 规范 href；非法抛 TypeError。
+/// `__wjs2_url_parse(href, base?)` → 规范 href；非法抛 TypeError。
 pub unsafe extern "C" fn url_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -70,7 +70,7 @@ pub unsafe extern "C" fn url_parse(
     }
 }
 
-/// `__wjs_url_get(href, component)` → 分量字符串（href 已规范，前解析理论上必成功）。
+/// `__wjs2_url_get(href, component)` → 分量字符串（href 已规范，前解析理论上必成功）。
 pub unsafe extern "C" fn url_get(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -114,7 +114,7 @@ pub unsafe extern "C" fn url_get(
     true
 }
 
-/// `__wjs_url_set(href, component, value)` → 新 href（非法赋值按规范静默忽略，不抛）。
+/// `__wjs2_url_set(href, component, value)` → 新 href（非法赋值按规范静默忽略，不抛）。
 pub unsafe extern "C" fn url_set(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -205,7 +205,7 @@ fn set_host_port(u: &mut url::Url, value: &str) {
     }
 }
 
-/// `__wjs_usp_parse(query)` → `[[k,v],...]` JSON（`?` 前缀可带可不带）。
+/// `__wjs2_usp_parse(query)` → `[[k,v],...]` JSON（`?` 前缀可带可不带）。
 pub unsafe extern "C" fn usp_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -233,7 +233,7 @@ pub unsafe extern "C" fn usp_parse(
     }
 }
 
-/// `__wjs_usp_serialize(jsonPairs)` → 查询字符串（无 `?`）。
+/// `__wjs2_usp_serialize(jsonPairs)` → 查询字符串（无 `?`）。
 pub unsafe extern "C" fn usp_serialize(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -329,7 +329,7 @@ fn parse_base(s: &str) -> Option<url::Url> {
     url::Url::parse(s).ok()
 }
 
-/// `__wjs_urlpattern_parse(inputJson, baseJsonOrNull, ignoreCaseBool)`
+/// `__wjs2_urlpattern_parse(inputJson, baseJsonOrNull, ignoreCaseBool)`
 /// → `{id,protocol,username,password,hostname,port,pathname,search,hash,
 /// hasRegExpGroups}` JSON；非法抛 TypeError（原文，JS 侧包码）。
 pub unsafe extern "C" fn urlpattern_parse(
@@ -456,7 +456,7 @@ fn pattern_id(frame: &Frame) -> Option<u64> {
         })
 }
 
-/// `__wjs_urlpattern_test(idNum, inputJson, baseJsonOrNull)` → 布尔；
+/// `__wjs2_urlpattern_test(idNum, inputJson, baseJsonOrNull)` → 布尔；
 /// 输入非法一律回 false（真机口径；dict+base 的抛错由 JS 侧先行）。
 pub unsafe extern "C" fn urlpattern_test(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -513,7 +513,7 @@ fn component_json(c: &urlpattern::UrlPatternComponentResult) -> serde_json::Valu
     serde_json::json!({"input": c.input, "groups": groups})
 }
 
-/// `__wjs_urlpattern_exec(idNum, inputJson, baseJsonOrNull)`
+/// `__wjs2_urlpattern_exec(idNum, inputJson, baseJsonOrNull)`
 /// → 8 分量 JSON 或 `"null"`（未命中/输入非法；JS 侧组装 `inputs`）。
 pub unsafe extern "C" fn urlpattern_exec(
     cx_raw: *mut mozjs::jsapi::JSContext,

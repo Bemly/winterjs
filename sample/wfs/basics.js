@@ -1,6 +1,6 @@
-// WinterJS.fs:本体文件面（与 node:fs 分离，直用 fs-err）。
-// WinterJS.fs: own file surface (separate from node:fs).
-// Run / 运行: winterjs --run sample/wfs/basics.js
+// WinterJS2.fs:本体文件面（与 node:fs 分离，直用 fs-err）。
+// WinterJS2.fs: own file surface (separate from node:fs).
+// Run / 运行: winterjs2 --run sample/wfs/basics.js
 await fs.writeFile('.tmp-wfs-hello.txt', 'hello wfs');
 console.log('[wfs] text:', await fs.readTextFile('.tmp-wfs-hello.txt') === 'hello wfs');
 await fs.writeFile('.tmp-wfs-bin', new Uint8Array([1, 2, 255]));
@@ -9,7 +9,7 @@ console.log('[wfs] stat:', (await fs.stat('.tmp-wfs-hello.txt')).isFile === true
 await fs.mkdir('.tmp-wfs-dir', { recursive: true });
 await fs.writeFile('.tmp-wfs-dir/a.txt', 'a');
 console.log('[wfs] dir:', JSON.stringify(await fs.readdir('.tmp-wfs-dir')).includes('a.txt'));
-console.log('[wfs] winterjs-ns:', WinterJS.fs === fs);
+console.log('[wfs] winterjs2-ns:', WinterJS2.fs === fs);
 await fs.rename('.tmp-wfs-hello.txt', '.tmp-wfs-renamed.txt');
 console.log('[wfs] rename:', (await fs.exists('.tmp-wfs-renamed.txt')) === true);
 await fs.copyFile('.tmp-wfs-renamed.txt', '.tmp-wfs-copy.txt');

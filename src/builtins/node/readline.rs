@@ -160,9 +160,9 @@ function emitKeypressEvents(stream, iface) {
   if (stream === undefined || stream === null || typeof stream.on !== 'function') {
     throw new ERR_INVALID_ARG_TYPE('stream', 'object', stream);
   }
-  if (stream.__wjsKeypress) return undefined;
+  if (stream.__wjs2Keypress) return undefined;
   const state = { esc: '', pending: [] };
-  stream.__wjsKeypress = state;
+  stream.__wjs2Keypress = state;
   const feed = (chunk) => {
     const bytes = typeof chunk === 'string'
       ? Array.from(new TextEncoder().encode(chunk))

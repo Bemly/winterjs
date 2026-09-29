@@ -1,9 +1,9 @@
 coffee:
   # NOTE (luolita 0.1.4): bridged data must be single-line valid JSON.
-  rules = [{ "text": "Exactly one action per invocation: --run a.js --eval 1 is an error." }, { "text": "No bare subcommands / positional actions: winterjs a.js is an error — write winterjs --run a.js. Only script arguments go after --: winterjs --run app.js -- --port 8080." }, { "text": "Modifiers belong to their action: --port only works with --serve, --filter only with --test, --watch with --test/--run/--serve, --schema only with --config, --allow-* only with --run/--eval/--test/--repl. Mismatches exit 1." }]
+  rules = [{ "text": "Exactly one action per invocation: --run a.js --eval 1 is an error." }, { "text": "No bare subcommands / positional actions: winterjs2 a.js is an error — write winterjs2 --run a.js. Only script arguments go after --: winterjs2 --run app.js -- --port 8080." }, { "text": "Modifiers belong to their action: --port only works with --serve, --filter only with --test, --watch with --test/--run/--serve, --schema only with --config, --allow-* only with --run/--eval/--test/--repl. Mismatches exit 1." }]
 
 template:
-  h1 winterjs Quickstart
+  h1 winterjs2 Quickstart
   blockquote 5-minute path from zero to running JavaScript. 中文版见 #[a(href='#/zh/quickstart') 快速上手].
   h2 1. Install &amp; verify
   pre
@@ -12,13 +12,13 @@ template:
       $ export SDKROOT="$(xcrun --show-sdk-path)"          # macOS, needed every new shell
       $ export LIBCLANG_PATH="/opt/homebrew/opt/llvm/lib"
       $ export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-      $ ./target/debug/winterjs --eval '40 + 2'            # → 42
+      $ ./target/debug/winterjs2 --eval '40 + 2'            # → 42
   h2 2. Run a file, evaluate code, start a REPL
   pre
     code.
-      $ ./target/debug/winterjs --run sample/web/timers.js  # run a file, print completion value
-      $ ./target/debug/winterjs --eval 'await Promise.resolve(7)'  # → 7
-      $ ./target/debug/winterjs --repl                       # interactive REPL (Ctrl-D to exit)
+      $ ./target/debug/winterjs2 --run sample/web/timers.js  # run a file, print completion value
+      $ ./target/debug/winterjs2 --eval 'await Promise.resolve(7)'  # → 7
+      $ ./target/debug/winterjs2 --repl                       # interactive REPL (Ctrl-D to exit)
   p Rules (see #[a(href='#/en/cli') CLI reference]):
   ul
     each r in rules
@@ -26,9 +26,9 @@ template:
   h2 REPL cheat sheet
   pre
     code.
-      $ ./target/debug/winterjs                       # bare start also enters the REPL
-      ❄&gt; WinterJS. + Tab                           # complete WinterJS.* with a doc pane
-      ❄&gt; .doc WinterJS.fs.readFile                 # full doc page for any topic
+      $ ./target/debug/winterjs2                       # bare start also enters the REPL
+      ❄&gt; WinterJS2. + Tab                           # complete WinterJS2.* with a doc pane
+      ❄&gt; .doc WinterJS2.fs.readFile                 # full doc page for any topic
       ❄&gt; await fetch("data:text/plain,hi").then((r) => r.text())  # top-level await works
       ❄&gt; .help / .exit                             # help, quit (.quit, exit(), Ctrl-D too)
   p Tab shows a completion menu with a documentation pane on the right; unclosed brackets keep reading (multiline); Ctrl-C twice within 2s quits.
@@ -46,17 +46,17 @@ template:
       console.log(await res.text()); // hi
   pre
     code.
-      $ ./target/debug/winterjs --run hello.mjs
+      $ ./target/debug/winterjs2 --run hello.mjs
   p CommonJS also works (#[code require], #[code module.exports], #[code __dirname]).
   h2 4. Run tests, lint, format, serve
   pre
     code.
-      $ ./target/debug/winterjs --test sample/test-runner/   # discover + run test files
-      $ ./target/debug/winterjs --test sample/test-runner/ --filter 'basics*'
-      $ ./target/debug/winterjs --test sample/test-runner/ --watch   # re-run on change (Ctrl-C to stop)
-      $ ./target/debug/winterjs --lint -- --help              # forwarded to oxlint verbatim
-      $ ./target/debug/winterjs --fmt                         # forwarded to oxfmt
-      $ ./target/debug/winterjs --serve sample/serve-hello/public --port 8080 \
+      $ ./target/debug/winterjs2 --test sample/test-runner/   # discover + run test files
+      $ ./target/debug/winterjs2 --test sample/test-runner/ --filter 'basics*'
+      $ ./target/debug/winterjs2 --test sample/test-runner/ --watch   # re-run on change (Ctrl-C to stop)
+      $ ./target/debug/winterjs2 --lint -- --help              # forwarded to oxlint verbatim
+      $ ./target/debug/winterjs2 --fmt                         # forwarded to oxfmt
+      $ ./target/debug/winterjs2 --serve sample/serve-hello/public --port 8080 \
           --handler sample/serve-hello/handler.mjs            # static + dynamic fetch + WS
   h2 5. Next steps
   ul

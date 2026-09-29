@@ -121,9 +121,9 @@ function rethrowDecodeFailure(err, info, method) {
 }
 
 function __zipCrc32Native(data, seed) {
-  if (typeof __wjs_zlib_crc32 === 'function') {
+  if (typeof __wjs2_zlib_crc32 === 'function') {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    return __wjs_zlib_crc32(bytes, seed >>> 0);
+    return __wjs2_zlib_crc32(bytes, seed >>> 0);
   }
   return lazyZlib().crc32(data, seed);
 }

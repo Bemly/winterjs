@@ -1,4 +1,4 @@
-//! 本体内存面（WinterJS.memory/alloc/unsafe*）：分配器三件套。
+//! 本体内存面（WinterJS2.memory/alloc/unsafe*）：分配器三件套。
 //!
 //! 安全形态（§6 safe-first；裸指针禁出 JS，见 4.40/4.68）：
 //! 1. 只读可观测 `memory()`：rss（sysinfo 实测）+ 分配器种类 + 堆三数恒 0
@@ -89,7 +89,7 @@ fn rss_bytes() -> u64 {
 // 前置：调用方 realm 内 + 参数槽 rooted 后才分配；手动堆本身无 unsafe（纯 HashMap+Vec）；
 // 覆盖：`tests/mem.rs`（正常/报错/边界）+ 黑盒 panic 路径用例。
 
-/// `__wjs_mem_info()` → JSON `{rss,heapTotal:0,heapUsed:0,external:0,allocator}`。
+/// `__wjs2_mem_info()` → JSON `{rss,heapTotal:0,heapUsed:0,external:0,allocator}`。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/mem.rs::mem_info_and_alloc`。
 pub unsafe extern "C" fn mem_info(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -99,7 +99,7 @@ pub unsafe extern "C" fn mem_info(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
     let rss = rss_bytes();
-    tracing::debug!(target: "winterjs::mem", rss, allocator = ALLOC_KIND, "info");
+    tracing::debug!(target: "winterjs2::mem", rss, allocator = ALLOC_KIND, "info");
     let text = serde_json::json!({
         "rss": rss,
         "heapTotal": 0,
@@ -117,7 +117,7 @@ pub unsafe extern "C" fn mem_info(
     true
 }
 
-/// `__wjs_mem_alloc(size)` → 零填 Uint8Array（GC 托管）。
+/// `__wjs2_mem_alloc(size)` → 零填 Uint8Array（GC 托管）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/mem.rs::mem_info_and_alloc`。
 pub unsafe extern "C" fn mem_alloc(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -129,7 +129,7 @@ pub unsafe extern "C" fn mem_alloc(
     let Some(len) = arg_len(&mut cx, &frame, 0, "mem alloc", MAX_ALLOC) else {
         return false;
     };
-    tracing::debug!(target: "winterjs::mem", len, "alloc");
+    tracing::debug!(target: "winterjs2::mem", len, "alloc");
     let bytes = vec![0u8; len];
     match uint8_array(&mut cx, &bytes) {
         Some(obj) => {
@@ -143,7 +143,7 @@ pub unsafe extern "C" fn mem_alloc(
     }
 }
 
-/// `__wjs_mem_unsafe_alloc(size)` → id（`--allow-ffi` 门控）。
+/// `__wjs2_mem_unsafe_alloc(size)` → id（`--allow-ffi` 门控）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/mem.rs::mem_unsafe_heap`。
 pub unsafe extern "C" fn mem_unsafe_alloc(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -163,7 +163,7 @@ pub unsafe extern "C" fn mem_unsafe_alloc(
     match UNSAFE_HEAP.lock() {
         Ok(mut t) => {
             t.insert(id, vec![0u8; len]);
-            tracing::debug!(target: "winterjs::mem", id, len, "unsafeAlloc");
+            tracing::debug!(target: "winterjs2::mem", id, len, "unsafeAlloc");
             frame.set_rval(mozjs::jsval::DoubleValue(id as f64));
             true
         }
@@ -174,7 +174,7 @@ pub unsafe extern "C" fn mem_unsafe_alloc(
     }
 }
 
-/// `__wjs_mem_unsafe_size(id)` → size。
+/// `__wjs2_mem_unsafe_size(id)` → size。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/mem.rs::mem_unsafe_heap`。
 pub unsafe extern "C" fn mem_unsafe_size(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -208,7 +208,7 @@ pub unsafe extern "C" fn mem_unsafe_size(
     }
 }
 
-/// `__wjs_mem_unsafe_write(id, offset, u8)`.
+/// `__wjs2_mem_unsafe_write(id, offset, u8)`.
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/mem.rs::mem_unsafe_heap`。
 pub unsafe extern "C" fn mem_unsafe_write(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -264,7 +264,7 @@ pub unsafe extern "C" fn mem_unsafe_write(
     }
 }
 
-/// `__wjs_mem_unsafe_read(id, offset, len)` → Uint8Array 拷贝。
+/// `__wjs2_mem_unsafe_read(id, offset, len)` → Uint8Array 拷贝。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/mem.rs::mem_unsafe_heap`。
 pub unsafe extern "C" fn mem_unsafe_read(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -321,7 +321,7 @@ pub unsafe extern "C" fn mem_unsafe_read(
     }
 }
 
-/// `__wjs_mem_unsafe_free(id)`（幂等：重复 free 即错，不静默吞）。
+/// `__wjs2_mem_unsafe_free(id)`（幂等：重复 free 即错，不静默吞）。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/mem.rs::mem_errors_boundary`。
 pub unsafe extern "C" fn mem_unsafe_free(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -340,7 +340,7 @@ pub unsafe extern "C" fn mem_unsafe_free(
     match UNSAFE_HEAP.lock() {
         Ok(mut t) => {
             if t.remove(&id).is_some() {
-                tracing::debug!(target: "winterjs::mem", id, "unsafeFree");
+                tracing::debug!(target: "winterjs2::mem", id, "unsafeFree");
                 frame.set_rval(UndefinedValue());
                 true
             } else {
@@ -355,7 +355,7 @@ pub unsafe extern "C" fn mem_unsafe_free(
     }
 }
 
-/// `__wjs_mem_unsafe_list()` → id 数组 JSON。
+/// `__wjs2_mem_unsafe_list()` → id 数组 JSON。
 /// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/mem.rs::mem_errors_boundary`。
 pub unsafe extern "C" fn mem_unsafe_list(
     cx_raw: *mut mozjs::jsapi::JSContext,

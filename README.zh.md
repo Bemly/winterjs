@@ -1,18 +1,18 @@
 <p align="left">
-  <a href="https://github.com/Bemly/winterjs"><img src="assets/logo.jxl" width="110" height="110" alt="升级浏览器Update Browser，JXL支持Support Chrome155+、Firefox158+、Safari17+" /></a>&nbsp;&nbsp;
-  <a href="https://github.com/Bemly/winterjs"><img src="assets/winterjs.svg" width="415" alt="WinterJS" /></a>
+  <a href="https://github.com/Bemly/winterjs2"><img src="assets/logo.jxl" width="110" height="110" alt="升级浏览器Update Browser，JXL支持Support Chrome155+、Firefox158+、Safari17+" /></a>&nbsp;&nbsp;
+  <a href="https://github.com/Bemly/winterjs2"><img src="assets/winterjs2.svg" width="415" alt="WinterJS2" /></a>
 </p>
 
-# winterjs ❄️
+# winterjs2 ❄️
 
 [English](./README.md) · [文档站](https://winterjs.bemly.moe/) · [样例](./sample/) · [开发日志](./docs/plan3-journal.md)
 
-*winterjs 是跑在 **Mozilla SpiderMonkey** 上的**类 Bun JS 运行时**——一个二进制跑 JS 文件、
+*winterjs2 是跑在 **Mozilla SpiderMonkey** 上的**类 Bun JS 运行时**——一个二进制跑 JS 文件、
 `package.json` 脚本、测试、lint 与静态/动态 HTTP 服务，`node:` 兼容对标 **Bun 高度**。*
 
 ```bash
-./target/debug/winterjs --run sample/http/server-client.js
-./target/debug/winterjs --eval 'await (await fetch("data:text/plain,hi")).text()'  # → hi
+./target/debug/winterjs2 --run sample/http/server-client.js
+./target/debug/winterjs2 --eval 'await (await fetch("data:text/plain,hi")).text()'  # → hi
 ```
 
 > 说明：与 [wasmerio/winterjs](https://github.com/wasmerio/winterjs)（WinterCG server，已归档）
@@ -22,19 +22,19 @@
 
 **REPL：<kbd>Tab</kbd> 补全 + 右侧文档面板**（类似 Ruby 的 `irb`；`.doc <名字>` 看整篇文档）
 
-<img src="assets/screenshots/repl-completion.png" width="820" alt="winterjs REPL：WinterJS.image. 补全菜单与文档面板" />
+<img src="assets/screenshots/repl-completion.png" width="820" alt="winterjs2 REPL：WinterJS2.image. 补全菜单与文档面板" />
 
-**引擎版本一目了然**：`WinterJS.versions.mozjs` 即精确钉死的 SpiderMonkey（Gecko 153）
+**引擎版本一目了然**：`WinterJS2.versions.mozjs` 即精确钉死的 SpiderMonkey（Gecko 153）
 
-<img src="assets/screenshots/repl-versions.png" width="820" alt="winterjs REPL：WinterJS.versions 补全，mozjs 为 153" />
+<img src="assets/screenshots/repl-versions.png" width="820" alt="winterjs2 REPL：WinterJS2.versions 补全，mozjs 为 153" />
 
-**用 winterjs 驱动 Vue 3 + Vite**：`winterjs -r build` / `winterjs -r dev`，浏览器里 Vue DevTools 实时可用
+**用 winterjs2 驱动 Vue 3 + Vite**：`winterjs2 -r build` / `winterjs2 -r dev`，浏览器里 Vue DevTools 实时可用
 
-<img src="assets/screenshots/vue-build-dev.png" width="620" alt="winterjs 运行 vite build 与 vite dev，浏览器中的 Vue 应用与 DevTools" />
+<img src="assets/screenshots/vue-build-dev.png" width="620" alt="winterjs2 运行 vite build 与 vite dev，浏览器中的 Vue 应用与 DevTools" />
 
-**`WinterJS.media` 与小工具**：从 MP4 解出 FLAC 音轨、编码 AV1、在终端画二维码（Linux x86_64 构建实测）
+**`WinterJS2.media` 与小工具**：从 MP4 解出 FLAC 音轨、编码 AV1、在终端画二维码（Linux x86_64 构建实测）
 
-<img src="assets/screenshots/media-qrcode.png" width="820" alt="winterjs --run media.js 与 tools.js 的输出及终端二维码" />
+<img src="assets/screenshots/media-qrcode.png" width="820" alt="winterjs2 --run media.js 与 tools.js 的输出及终端二维码" />
 
 ## 快速开始
 
@@ -43,7 +43,7 @@ export SDKROOT="$(xcrun --show-sdk-path)"          # macOS，每个新 shell 都
 export LIBCLANG_PATH="/opt/homebrew/opt/llvm/lib" # bindgen 用
 export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 cargo build
-./target/debug/winterjs --eval '40 + 2'            # → 42
+./target/debug/winterjs2 --eval '40 + 2'            # → 42
 ```
 
 5 分钟上手：[English](https://winterjs.bemly.moe/#/en/quickstart) / [中文](https://winterjs.bemly.moe/#/zh/quickstart) ·
@@ -73,7 +73,7 @@ cargo build
 
 ## 原理
 
-winterjs 经 `servo/mozjs` 直连 **Mozilla SpiderMonkey**（`mozjs =0.26.0`，Gecko 153，精确钉版），
+winterjs2 经 `servo/mozjs` 直连 **Mozilla SpiderMonkey**（`mozjs =0.26.0`，Gecko 153，精确钉版），
 其余一切——事件循环、loader、Web/Node 内建、`node:` 兼容层——全是**纯 Rust**。
 `unsafe` 只存在于 mozjs 边界（rooting、`AutoRealm`、FFI）；JS 跑在独占线程，
 Rust 侧只经消息队列与之通信，绝不跨线程共享 `&mut JSContext`。
@@ -89,7 +89,7 @@ Rust 侧只经消息队列与之通信，绝不跨线程共享 `&mut JSContext`�
 | `crypto/zlib/buffer/stream/events/timers` | ✅ 稳定 | AEAD 套件、brotli、WHATWG 流 |
 | `child_process/cluster/worker_threads/vm/module/test` | ✅ 稳定 | 基于线程的 cluster/worker |
 | `sqlite`（`node:` + `bun:sqlite`）、`quic`、`readline/repl/tty` | ✅ / 🔶 | `quic` 回环握手超时（已知问题，后续处理） |
-| `storage` / `localStorage`（WinterCG 自有） | ✅ 稳定 | turso 单文件 KV（`--storage-path`，默认 `./winterjs-storage.db`）；经 `-b/--db` 查看 |
+| `storage` / `localStorage`（WinterCG 自有） | ✅ 稳定 | turso 单文件 KV（`--storage-path`，默认 `./winterjs2-storage.db`）；经 `-b/--db` 查看 |
 | `v8/inspector/trace_events/domain` | 🔶 桥接 | 有意裁剪（堆数字引擎口径不可比） |
 | `wasi`、`sea` | ❌ | 设计上不做 |
 
@@ -107,7 +107,7 @@ Web 全局（`fetch`、`URL`、`TextEncoder`、Web Streams、WebCrypto、`WebSoc
 
 ```bash
 cargo build                        # debug 全量约 25 秒（mozjs 走预构建静态库）
-./target/debug/winterjs --eval '40 + 2'   # 冒烟（AGENTS.md §3 有 5 条标准命令）
+./target/debug/winterjs2 --eval '40 + 2'   # 冒烟（AGENTS.md §3 有 5 条标准命令）
 cargo nextest run --profile strict # 全量约 2 分钟
 bash scripts/check-lines.sh        # 全部 .rs / 内嵌 JS ≤ 1000 行
 ```

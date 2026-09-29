@@ -1,4 +1,4 @@
-//! B5 系统门面 JS 面：`WinterJS.os/path/db/inspect/tty`。
+//! B5 系统门面 JS 面：`WinterJS2.os/path/db/inspect/tty`。
 //!
 //! `os/db/inspect` 直驱原生（JSON 桥）；`path` 复用移植实现（util 同款复用模式）。
 //! `tty` 纯面（isTTY 判定；raw 模式是 CLI 领地，文档记录）。
@@ -15,31 +15,31 @@ pub const WOS_JS: &str = r#"
     } catch { return null; }
   };
   const os = {
-    platform() { return __wjs_os_platform(); },
-    arch() { return __wjs_os_arch(); },
-    info() { return __wos_json(__wjs_os_info()); },
-    cpus() { return __wos_json(__wjs_os_cpus()); },
-    mem() { return __wos_json(__wjs_os_mem()); },
-    net() { return __wos_json(__wjs_os_net()); },
-    user() { return __wos_json(__wjs_os_user()); },
-    uptime() { return Number(__wjs_os_uptime()); },
-    load() { return __wos_json(__wjs_os_load()); },
-    locale() { return __wjs_os_locale(); },
+    platform() { return __wjs2_os_platform(); },
+    arch() { return __wjs2_os_arch(); },
+    info() { return __wos_json(__wjs2_os_info()); },
+    cpus() { return __wos_json(__wjs2_os_cpus()); },
+    mem() { return __wos_json(__wjs2_os_mem()); },
+    net() { return __wos_json(__wjs2_os_net()); },
+    user() { return __wos_json(__wjs2_os_user()); },
+    uptime() { return Number(__wjs2_os_uptime()); },
+    load() { return __wos_json(__wjs2_os_load()); },
+    locale() { return __wjs2_os_locale(); },
   };
   const db = {
     // open(path) → 同步 turso 库（node:sqlite 同底座；:memory: 可用）。
     open(path) {
       if (typeof path !== "string" || path === "") throw new TypeError("db.open requires a path");
-      const id = Number(__wjs_nsqlite_open(path));
+      const id = Number(__wjs2_nsqlite_open(path));
       const h = {
-        exec(sql) { __wjs_nsqlite_exec(id, String(sql)); },
+        exec(sql) { __wjs2_nsqlite_exec(id, String(sql)); },
         run(sql, params) {
-          return __wos_json(__wjs_nsqlite_run(id, String(sql), JSON.stringify(params ?? [])));
+          return __wos_json(__wjs2_nsqlite_run(id, String(sql), JSON.stringify(params ?? [])));
         },
         query(sql, params) {
-          return __wos_json(__wjs_nsqlite_rows(id, String(sql), JSON.stringify(params ?? [])));
+          return __wos_json(__wjs2_nsqlite_rows(id, String(sql), JSON.stringify(params ?? [])));
         },
-        close() { try { __wjs_nsqlite_close(id); } catch {} },
+        close() { try { __wjs2_nsqlite_close(id); } catch {} },
       };
       return h;
     },
@@ -48,7 +48,7 @@ pub const WOS_JS: &str = r#"
     // 同线程嵌套求值（inspector 会话口径；抛错透传）。
     evaluate(code) {
       if (typeof code !== "string") throw new TypeError("inspect.evaluate requires code");
-      return __wjs_inspector_eval(code);
+      return __wjs2_inspector_eval(code);
     },
   };
   const tty = {
@@ -80,7 +80,7 @@ pub const WOS_JS: &str = r#"
     } catch {}
   };
   try {
-    const W = globalThis.WinterJS;
+    const W = globalThis.WinterJS2;
     if (W) {
       if (W.os === undefined) W.os = os;
       __wos_lazy(W, "path", () => __wos_req("node:path"));

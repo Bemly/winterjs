@@ -10,12 +10,12 @@
 //! - `require.cache` 为每 `createRequire` 独立表（键 = `require.resolve` 的
 //!   URL 串；仅 extensions 钩子路径消费，native 路径缓存仍走 loader 注册表）。
 //! - `require.extensions`：空表起步、`createRequire` 系 require 按消费——命中
-//!   钩子走 `module._compile(code, filename)`（native `__wjs_cjs_compile`，
+//!   钩子走 `module._compile(code, filename)`（native `__wjs2_cjs_compile`，
 //!   CJS 包装口径与 require 全同；require 以文件自身为 base），`.js` 兜底同
 //!   vite `loaderExt` 口径。vite 配置打包链（loadConfigFromBundledFile）依赖。
 //!   全局 `require` 不消费（转译/加载走 loader）。
 //! - `Module.registerHooks()`（Node 22.15+ 同步 ESM 定制钩子）实做 resolve 面
-//!   （链式消费见 prelude `__wjs_module_resolve_chain`；`import.meta.resolve`
+//!   （链式消费见 prelude `__wjs2_module_resolve_chain`；`import.meta.resolve`
 //!   同链）；load 钩子与异步 `Module.register()` 抛 `ERR_METHOD_NOT_IMPLEMENTED`。
 //! - `stripTypeScriptTypes` 不导出（TS 由 loader 原生处理，无需剥离）。
 //! - `runMain`/`_load`/`_resolveFilename` 等下划线内部件不导出。
@@ -57,7 +57,7 @@ function makeRequire(base) {
     const hooks = require.extensions;
     if (hooks && typeof hooks === "object" && !Array.isArray(hooks)) {
       let resolved = null;
-      try { resolved = __wjs_require_resolve_from(base, spec); } catch { resolved = null; }
+      try { resolved = __wjs2_require_resolve_from(base, spec); } catch { resolved = null; }
       if (resolved !== null && resolved.startsWith("file://")) {
         if (Object.prototype.hasOwnProperty.call(require.cache, resolved)) {
           return require.cache[resolved].exports;
@@ -77,7 +77,7 @@ function makeRequire(base) {
             parent: null,
           };
           mod._compile = function (code, filenameArg) {
-            __wjs_cjs_compile(this, String(code), filenameArg != null ? String(filenameArg) : fsPath);
+            __wjs2_cjs_compile(this, String(code), filenameArg != null ? String(filenameArg) : fsPath);
           };
           require.cache[resolved] = mod;
           hook(mod, fsPath);
@@ -86,10 +86,10 @@ function makeRequire(base) {
         }
       }
     }
-    return __wjs_require_from(base, spec);
+    return __wjs2_require_from(base, spec);
   }
   require.resolve = function resolve(id) {
-    return __wjs_require_resolve_from(base, String(id));
+    return __wjs2_require_resolve_from(base, String(id));
   };
   require.cache = {};
   require.extensions = {};
@@ -108,7 +108,7 @@ export function createRequireFromPath(path) {
   return makeRequire(path);
 }
 
-export const builtinModules = JSON.parse(__wjs_builtin_modules());
+export const builtinModules = JSON.parse(__wjs2_builtin_modules());
 
 export function isBuiltin(moduleName) {
   return builtinModules.includes(String(moduleName));
@@ -125,7 +125,7 @@ export class Module {
     this.children = [];
   }
   require(id) {
-    return __wjs_require_from(this.filename, String(id));
+    return __wjs2_require_from(this.filename, String(id));
   }
   static createRequire(filename) {
     return createRequire(filename);
@@ -143,7 +143,7 @@ export class Module {
     throw new ERR_METHOD_NOT_IMPLEMENTED('Module.register');
   }
   // Node 22.15+ 的同步 ESM 定制钩子（进程内、当前线程；vite config 打包链的
-  // import.meta.resolve 走此面）。resolve 钩子链在 __wjs_module_resolve_chain
+  // import.meta.resolve 走此面）。resolve 钩子链在 __wjs2_module_resolve_chain
   // 消费（后注册者先跑，next = 链上已见部分，默认底座 = 本仓解析器）。
   // load 钩子未实现（无消费方，fail fast）；register()（异步 worker 形态）
   // 有 registerHooks 后 vite 不再到达，保持未实现。
@@ -161,10 +161,10 @@ export class Module {
       throw new ERR_METHOD_NOT_IMPLEMENTED('Module.registerHooks: load hook');
     }
     const entry = { resolve: specifiers.resolve };
-    globalThis.__wjs_module_hooks.push(entry);
+    globalThis.__wjs2_module_hooks.push(entry);
     return [
       function deregister() {
-        const hooks = globalThis.__wjs_module_hooks;
+        const hooks = globalThis.__wjs2_module_hooks;
         const i = hooks.indexOf(entry);
         if (i !== -1) hooks.splice(i, 1);
       },

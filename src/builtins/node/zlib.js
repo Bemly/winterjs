@@ -95,7 +95,7 @@ function __zThrowEngine(code, msg) {
   err.errno = __Z_ERRNO[code] ?? constants[code] ?? -1;
   throw err;
 }
-// 流类 native kind（__wjs_zlib_stream_new 的 ZKind 同值）。
+// 流类 native kind（__wjs2_zlib_stream_new 的 ZKind 同值）。
 // 默认终结档（_flush）：zlib 族 Z_FINISH=4；brotli FINISH=2 / zstd end=2。
 // flush() 无 kind 默认档：zlib 族 Z_FULL_FLUSH=3；brotli FLUSH=1 / zstd flush=1。
 function __zKindDefaultFinish(kind) { return kind <= 7 ? 4 : 2; }
@@ -120,16 +120,16 @@ function __zEngineOnce(kind, data, opts, dfltFinish, lv) {
   // pledgedSrcSize 仅 zstd 压缩侧（10）生效（Node 解压类校验器不含此键，忽略）。
   const dict = __zDictBytes(opts);
   const pledged = kind === 10 ? __zCheckPledged(opts) : -1;
-  const id = __wjs_zlib_stream_new(kind, lv ?? -1, dict, pledged, reject ? 1 : 0);
+  const id = __wjs2_zlib_stream_new(kind, lv ?? -1, dict, pledged, reject ? 1 : 0);
   try {
     const flag = (opts && opts.finishFlush !== undefined) ? opts.finishFlush : dfltFinish;
-    const r = JSON.parse(__wjs_zlib_stream_feed(id, data, flag));
-    const out = __wjs_zlib_stream_out(id);
-    __wjs_zlib_stream_free(id);
+    const r = JSON.parse(__wjs2_zlib_stream_feed(id, data, flag));
+    const out = __wjs2_zlib_stream_out(id);
+    __wjs2_zlib_stream_free(id);
     if (r.code !== undefined) __zThrowEngine(r.code, r.msg);
     return out;
   } catch (e) {
-    __wjs_zlib_stream_free(id);
+    __wjs2_zlib_stream_free(id);
     throw e;
   }
 }
@@ -278,7 +278,7 @@ export function crc32(data, value = 0) {
   if (typeof value !== "number") {
     throw new ERR_INVALID_ARG_TYPE("value", "number", value);
   }
-  return __wjs_zlib_crc32(bytes, value >>> 0);
+  return __wjs2_zlib_crc32(bytes, value >>> 0);
 }
 export function inflate(buf, opts, cb) {
   if (typeof opts === "function") { cb = opts; opts = undefined; }
@@ -412,7 +412,7 @@ export function zstdDecompress(buf, opts, cb) {
   const data = __zChecked(buf, "zstdDecompress");
   __zAsync((d) => zstdDecompressSync__core(d, opts), [data], cb);
 }
-// 流式类（G9-2：走 G9-1 的增量引擎 __wjs_zlib_stream_*，真增量语义——
+// 流式类（G9-2：走 G9-1 的增量引擎 __wjs2_zlib_stream_*，真增量语义——
 // write 即时压出、flush 档位即时出边界、finishFlush 容忍截断、
 // rejectGarbageAfterEnd 解压 junk 报错）。
 // 覆盖 12 类 + createXxx 工厂 + info 选项（{buffer, engine}）+ bytesWritten。
@@ -456,7 +456,7 @@ function __zStreamBase(opts, syncFn, kind) {
   const reject = __zCheckRejectOpt(opts) ? 1 : 0;
   const dict = __zDictBytes(opts);
   const pledged = kind === 10 ? __zCheckPledged(opts) : -1;
-  this.__zid = __wjs_zlib_stream_new(
+  this.__zid = __wjs2_zlib_stream_new(
     kind,
     Number.isInteger(opts?.level) ? opts.level : -1,
     dict, pledged, reject);
@@ -466,7 +466,7 @@ function __zStreamBase(opts, syncFn, kind) {
   this._handle = {
     reset: () => {
       if (self.__writeActive) throw new Error("Cannot reset zlib stream while a write is in progress");
-      __wjs_zlib_stream_reset(self.__zid);
+      __wjs2_zlib_stream_reset(self.__zid);
       self.__pend = 0;
     },
   };
@@ -482,11 +482,11 @@ Object.setPrototypeOf(__zStreamBase, Transform);
 // bytesWritten 只计引擎实际消费（feed 回 unconsumed，见构造器记账）。
 __zStreamBase.prototype.__zFeed = function (u8, flag) {
   const n = u8 ? u8.length : 0;
-  const r = JSON.parse(__wjs_zlib_stream_feed(this.__zid, u8 ?? null, flag));
+  const r = JSON.parse(__wjs2_zlib_stream_feed(this.__zid, u8 ?? null, flag));
   this.bytesWritten += n + this.__pend - (r.c || 0);
   this.__pend = r.c || 0;
   if (r.code !== undefined) __zThrowEngine(r.code, r.msg);
-  const out = __wjs_zlib_stream_out(this.__zid);
+  const out = __wjs2_zlib_stream_out(this.__zid);
   return out.length ? Buffer.from(out.buffer, out.byteOffset, out.byteLength) : null;
 };
 function __zToU8(chunk) {
@@ -568,7 +568,7 @@ __zStreamBase.prototype._destroy = function (err, cb) {
   this._closed = true;
   this._handle = null;
   if (this.__zid !== undefined) {
-    __wjs_zlib_stream_free(this.__zid);
+    __wjs2_zlib_stream_free(this.__zid);
     this.__zid = undefined;
   }
   if (typeof Transform.prototype._destroy === "function") Transform.prototype._destroy.call(this, err, cb);

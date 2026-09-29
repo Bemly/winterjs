@@ -24,7 +24,7 @@ try { createTracing({ categories: [42] }); } catch (e) { console.log("e3", e.cod
 "#,
     )
     .unwrap();
-    let out = winterjs().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
+    let out = winterjs2().args(["--run", file.path().to_str().unwrap()]).output().unwrap();
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let out = String::from_utf8(out.stdout).unwrap();
     assert!(out.contains("idle false node,v8 \"\""), "out: {out}");

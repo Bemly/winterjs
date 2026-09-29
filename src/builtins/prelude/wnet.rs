@@ -1,6 +1,6 @@
-//! B2 网络门面 JS 面：`WinterJS.tcp/udp/dns/tls`（Web 风 Promise）。
+//! B2 网络门面 JS 面：`WinterJS2.tcp/udp/dns/tls`（Web 风 Promise）。
 //!
-//! 直驱 `__wjs_net/dgram/dns/tls` 原生（`__ev` 自有 sink，不套 `node:` 移植层）。
+//! 直驱 `__wjs2_net/dgram/dns/tls` 原生（`__ev` 自有 sink，不套 `node:` 移植层）。
 //! 形状：connect/bind/listen 皆 Promise；字节流与消息皆 AsyncIterator；
 //! 写 fire-and-forget（背压不建模，文档记录）；错误带 `code`（`{code,msg}`
 //! 载荷直取，不做 node 文案重塑）。
@@ -51,11 +51,11 @@ pub const WNET_JS: &str = r#"
       get error() { return st.lastError; },
       write(data) {
         const u8 = __wnet_toU8(data, "socket.write");
-        __wjs_net_write(st.id, u8);
+        __wjs2_net_write(st.id, u8);
         return u8.length;
       },
-      end() { try { __wjs_net_end(st.id); } catch {} },
-      destroy() { try { __wjs_net_destroy(st.id); } catch {} st.closed = true; flush(); },
+      end() { try { __wjs2_net_end(st.id); } catch {} },
+      destroy() { try { __wjs2_net_destroy(st.id); } catch {} st.closed = true; flush(); },
       async *[Symbol.asyncIterator]() {
         for (;;) {
           if (st.queue.length) yield st.queue.shift();
@@ -104,7 +104,7 @@ pub const WNET_JS: &str = r#"
         const { sock, sink, st } = __wnet_stream();
         st.onConnect = () => resolve(sock);
         st.onError = (e) => reject(e);
-        st.id = Number(__wjs_net_connect(host, port, sink));
+        st.id = Number(__wjs2_net_connect(host, port, sink));
       });
     },
     listen(port, host) {
@@ -119,7 +119,7 @@ pub const WNET_JS: &str = r#"
         };
         const server = {
           address() { return addr; },
-          close() { try { __wjs_net_destroy(listenId); } catch {} ended = true; flushA(); },
+          close() { try { __wjs2_net_destroy(listenId); } catch {} ended = true; flushA(); },
           async *[Symbol.asyncIterator]() {
             for (;;) {
               if (acceptQ.length) yield acceptQ.shift();
@@ -143,7 +143,7 @@ pub const WNET_JS: &str = r#"
                 const o = JSON.parse(payload || "{}");
                 const c = __wnet_stream();
                 c.st.id = Number(o.connId);
-                __wjs_net_attach(c.st.id, c.sink);
+                __wjs2_net_attach(c.st.id, c.sink);
                 acceptQ.push(c.sock);
                 flushA();
               } else if (kind === "error") {
@@ -155,7 +155,7 @@ pub const WNET_JS: &str = r#"
             } catch {}
           },
         };
-        listenId = Number(__wjs_net_listen(port, h, sink));
+        listenId = Number(__wjs2_net_listen(port, h, sink));
       });
     },
   };
@@ -179,10 +179,10 @@ pub const WNET_JS: &str = r#"
               throw new TypeError("udp.send requires (data, port, host)");
             }
             const u8 = __wnet_toU8(data, "udp.send");
-            __wjs_dgram_send(id, u8, `${host}:${port}`, 0);
+            __wjs2_dgram_send(id, u8, `${host}:${port}`, 0);
             return u8.length;
           },
-          close() { try { __wjs_net_destroy(id); } catch {} ended = true; flush(); },
+          close() { try { __wjs2_net_destroy(id); } catch {} ended = true; flush(); },
           async *[Symbol.asyncIterator]() {
             for (;;) {
               if (queue.length) yield queue.shift();
@@ -218,19 +218,19 @@ pub const WNET_JS: &str = r#"
             } catch {}
           },
         };
-        id = Number(__wjs_dgram_bind(p, h, sink, 0));
+        id = Number(__wjs2_dgram_bind(p, h, sink, 0));
       });
     },
   };
   const dns = {
     lookup(host) {
       if (typeof host !== "string" || host === "") throw new TypeError("dns.lookup requires a hostname");
-      return Promise.resolve().then(() => JSON.parse(__wjs_dns_lookup(host)));
+      return Promise.resolve().then(() => JSON.parse(__wjs2_dns_lookup(host)));
     },
     resolve(host, type) {
       if (typeof host !== "string" || host === "") throw new TypeError("dns.resolve requires a hostname");
       const t = type === undefined ? "A" : String(type);
-      return Promise.resolve().then(() => JSON.parse(__wjs_dns_query(t, host)));
+      return Promise.resolve().then(() => JSON.parse(__wjs2_dns_query(t, host)));
     },
   };
   const tls = {
@@ -245,12 +245,12 @@ pub const WNET_JS: &str = r#"
         const { sock, sink, st } = __wnet_stream();
         st.onConnect = () => resolve(sock);
         st.onError = (e) => reject(e);
-        st.id = Number(__wjs_tls_connect(host, port, JSON.stringify(wire), sink));
+        st.id = Number(__wjs2_tls_connect(host, port, JSON.stringify(wire), sink));
       });
     },
   };
   try {
-    const W = globalThis.WinterJS;
+    const W = globalThis.WinterJS2;
     if (W && W.tcp === undefined) {
       W.tcp = tcp;
       W.udp = udp;

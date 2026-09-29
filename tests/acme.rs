@@ -9,7 +9,7 @@ fn serve_acme_dry_run_plan() {
     // 正常：dry-run 打印 domain/email/directory/cache，不碰网络不绑端口。
     let dir = assert_fs::TempDir::new().unwrap();
     let cache = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args([
             "--serve",
             ".",
@@ -33,7 +33,7 @@ fn serve_acme_dry_run_plan() {
     assert!(stdout.contains("winterjs.bemly.moe"), "stdout: {stdout}");
     assert!(stdout.contains("staging"), "default staging: {stdout}");
     // 生产旗标切换目录
-    let out = winterjs()
+    let out = winterjs2()
         .args([
             "--serve",
             ".",
@@ -63,7 +63,7 @@ fn serve_acme_dry_run_plan() {
 fn serve_acme_cert_conflict() {
     // 报错：--acme-* 与 --cert/--key 互斥（exit=1，可读）。
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--serve", ".", "--acme-email", "a@b.c", "--cert", "c.pem"])
         .current_dir(dir.path())
         .output()

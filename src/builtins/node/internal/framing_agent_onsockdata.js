@@ -574,9 +574,9 @@ Agent.prototype.__armKeylog = function (only, force) {
 // node lib/_http_common.js parsers freelist 口径：parser 对象全局回收复用
 //（parser-free 套件 maxSockets=1 串行 100 请求恒同一对象）；free 即字段置空
 // 回池，attach 即出池接线。
-const __wjsParserFreeList = [];
+const __wjs2ParserFreeList = [];
 Agent.prototype.__takeParser = function () {
-  const p = __wjsParserFreeList.pop();
+  const p = __wjs2ParserFreeList.pop();
   if (p !== undefined) {
     p.__inPool = false;
     return p;
@@ -594,7 +594,7 @@ Agent.prototype.__freeParser = function (p) {
   p.__inPool = true;
   p.onIncoming = null;
   p.joinDuplicateHeaders = null;
-  __wjsParserFreeList.push(p);
+  __wjs2ParserFreeList.push(p);
 };
 function Agent(options = {}) {
   if (!(this instanceof Agent)) return new Agent(options);

@@ -1,4 +1,4 @@
-//! WinterJS.image 底座：位图编解码（`image` 0.25）+ SVG 光栅（`resvg`）+
+//! WinterJS2.image 底座：位图编解码（`image` 0.25）+ SVG 光栅（`resvg`）+
 //! JXL 解码（`jxl-oxide`）。解码一律 RGBA8（`to_rgba8`，16 位截断记档）；
 //! 动画只取首帧（gif/webp 首帧；jxl animations 上游未实现，记档）。
 //! 约定：元信息走 JSON 桥，像素走 Uint8Array（`crypto/common.rs` 同款桥）。
@@ -249,7 +249,7 @@ fn decode_jxl(bytes: &[u8]) -> Result<image::RgbaImage, String> {
     Ok(rgba)
 }
 
-/// `__wjs_image_info(bytes, format?)` → `{format,width,height,mime}` JSON。
+/// `__wjs2_image_info(bytes, format?)` → `{format,width,height,mime}` JSON。
 pub unsafe extern "C" fn image_info(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -258,11 +258,11 @@ pub unsafe extern "C" fn image_info(
     // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(bytes) = arg_bytes(&mut cx, &frame, 0, "WinterJS.image.info") else {
+    let Some(bytes) = arg_bytes(&mut cx, &frame, 0, "WinterJS2.image.info") else {
         return false;
     };
     if bytes.is_empty() {
-        report_error(&mut cx, "TypeError: WinterJS.image.info requires non-empty bytes");
+        report_error(&mut cx, "TypeError: WinterJS2.image.info requires non-empty bytes");
         return false;
     }
     let fmt = if frame.argc() > 1 {
@@ -325,7 +325,7 @@ pub unsafe extern "C" fn image_info(
     true
 }
 
-/// `__wjs_image_pixels(bytes, format?)` → RGBA8 Uint8Array（元信息走 `image_info`）。
+/// `__wjs2_image_pixels(bytes, format?)` → RGBA8 Uint8Array（元信息走 `image_info`）。
 pub unsafe extern "C" fn image_pixels(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -334,11 +334,11 @@ pub unsafe extern "C" fn image_pixels(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let Some(bytes) = arg_bytes(&mut cx, &frame, 0, "WinterJS.image.decode") else {
+    let Some(bytes) = arg_bytes(&mut cx, &frame, 0, "WinterJS2.image.decode") else {
         return false;
     };
     if bytes.is_empty() {
-        report_error(&mut cx, "TypeError: WinterJS.image.decode requires non-empty bytes");
+        report_error(&mut cx, "TypeError: WinterJS2.image.decode requires non-empty bytes");
         return false;
     }
     let (fmt, scale) = if frame.argc() > 1 {
@@ -406,7 +406,7 @@ pub unsafe extern "C" fn image_pixels(
     true
 }
 
-/// `__wjs_image_encode(pixels, width, height, format, optionsJson)` → Uint8Array。
+/// `__wjs2_image_encode(pixels, width, height, format, optionsJson)` → Uint8Array。
 pub unsafe extern "C" fn image_encode(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -415,7 +415,7 @@ pub unsafe extern "C" fn image_encode(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    let what = "WinterJS.image.encode";
+    let what = "WinterJS2.image.encode";
     if frame.argc() < 4 {
         report_error(&mut cx, &format!("TypeError: {what} requires (pixels, width, height, format)"));
         return false;

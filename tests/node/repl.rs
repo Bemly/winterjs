@@ -227,8 +227,8 @@ setTimeout(() => {
 
 #[test]
 fn p2_repl_cli_complete_bridge() {
-    // 本体拥有补全核心（prelude/repl_complete）：`__wjs_cli_complete` 与
-    // `__wjs_repl_default_complete` 开箱即有，不依赖 `node:repl` 加载；
+    // 本体拥有补全核心（prelude/repl_complete）：`__wjs2_cli_complete` 与
+    // `__wjs2_repl_default_complete` 开箱即有，不依赖 `node:repl` 加载；
     // `node:repl` 仅薄包反向复用（注入 vm 求值器），公开面保持 node 同形
     // （无 cliComplete）。bare 真上下文键/成员链/大小写不敏感/调用形拒答/签名描述。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -236,26 +236,26 @@ fn p2_repl_cli_complete_bridge() {
         &dir,
         "o.mjs",
         r#"
-console.log("pre", typeof globalThis.__wjs_cli_complete === "function" && typeof globalThis.__wjs_repl_default_complete === "function");
+console.log("pre", typeof globalThis.__wjs2_cli_complete === "function" && typeof globalThis.__wjs2_repl_default_complete === "function");
 import repl from "node:repl";
-console.log("clean", repl.cliComplete === undefined && typeof globalThis.__wjs_repl_default_complete === "function");
-const b = __wjs_cli_complete("gl");
+console.log("clean", repl.cliComplete === undefined && typeof globalThis.__wjs2_repl_default_complete === "function");
+const b = __wjs2_cli_complete("gl");
 console.log("bare", b[0].some((e) => e[0] === "global") && b[0].some((e) => e[0] === "globalThis") && b[1] === "gl");
-const m = __wjs_cli_complete("globalThis.Array.fr");
+const m = __wjs2_cli_complete("globalThis.Array.fr");
 console.log("member", m[0].some((e) => e[0] === "globalThis.Array.from"));
-const sig = __wjs_cli_complete("globalThis.Object.assign");
+const sig = __wjs2_cli_complete("globalThis.Object.assign");
 // 右盒纯文档（有语料页的内建不再贴签名；签名表仅缺页回落）。
 console.log("sig", sig[0][0][0] === "globalThis.Object.assign" && sig[0][0][1].includes("copies all enumerable own properties"));
-const ci = __wjs_cli_complete("globalThis.arraybuf");
+const ci = __wjs2_cli_complete("globalThis.arraybuf");
 console.log("ci", ci[0].some((e) => e[0] === "globalThis.ArrayBuffer"));
-const call = __wjs_cli_complete("globalThis.Array().");
+const call = __wjs2_cli_complete("globalThis.Array().");
 console.log("call", call[0].length === 0);
-const e = __wjs_cli_complete("console.");
+const e = __wjs2_cli_complete("console.");
 // 右盒纯文档（候选框干净名；签名不进任何格）。
 console.log("dot-empty", e[0].some((p) => p[0] === "console.log" && (p[1] ?? "").includes("outputs a message")) && e[0].some((p) => p[0] === "console.trace" && (p[1] ?? "").includes("stack trace")) && e[1] === "console.");
-const g = __wjs_cli_complete("global.");
+const g = __wjs2_cli_complete("global.");
 console.log("global-dot", g[0].length > 0 && g[0].every((p) => p[0].startsWith("global.")) && g[1] === "global.");
-const v = __wjs_cli_complete("Object.p");
+const v = __wjs2_cli_complete("Object.p");
 console.log("value-sig", v[0].some((p) => p[0] === "Object.prototype" && p[1] === ": {}"));
 "#,
     );

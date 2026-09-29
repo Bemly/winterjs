@@ -55,7 +55,7 @@ fn dsa_envelope(env: &serde_json::Value, need_x: bool) -> Result<(dsa::Verifying
     Ok((vk, x))
 }
 
-/// `__wjs_dsa_generate(lBits, nBits)` → 信封 JSON（`{p,q,g,x,y}` b64）。
+/// `__wjs2_dsa_generate(lBits, nBits)` → 信封 JSON（`{p,q,g,x,y}` b64）。
 pub unsafe extern "C" fn dsa_generate(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -114,7 +114,7 @@ pub unsafe extern "C" fn dsa_generate(
     }
 }
 
-/// `__wjs_dsa_sign(hash, envJson, data)` → DER 签名（deterministic RFC6979）。
+/// `__wjs2_dsa_sign(hash, envJson, data)` → DER 签名（deterministic RFC6979）。
 pub unsafe extern "C" fn dsa_sign(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -161,7 +161,7 @@ pub unsafe extern "C" fn dsa_sign(
     }
 }
 
-/// `__wjs_dsa_verify(hash, envJson, sigDer, data)` → boolean（prehash 全哈希档）。
+/// `__wjs2_dsa_verify(hash, envJson, sigDer, data)` → boolean（prehash 全哈希档）。
 pub unsafe extern "C" fn dsa_verify(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -211,7 +211,7 @@ pub unsafe extern "C" fn dsa_verify(
     }
 }
 
-/// `__wjs_dsa_export(envJson)` → JSON `{privDer?, pubDer}`（b64；PKCS#8/SPKI）。
+/// `__wjs2_dsa_export(envJson)` → JSON `{privDer?, pubDer}`（b64；PKCS#8/SPKI）。
 pub unsafe extern "C" fn dsa_export(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

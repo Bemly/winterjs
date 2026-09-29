@@ -270,7 +270,7 @@ pub(crate) fn sock_addr(host: &str, port: u16) -> Result<SocketAddr, String> {
         .ok_or_else(|| format!("TypeError: bad address {host}:{port} (unresolvable)"))
 }
 
-/// 起监听。`__wjs_quic_listen(optsJson)` → endpoint id 串（bind 失败同步抛错）。
+/// 起监听。`__wjs2_quic_listen(optsJson)` → endpoint id 串（bind 失败同步抛错）。
 pub unsafe extern "C" fn quic_listen(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -385,7 +385,7 @@ pub unsafe extern "C" fn quic_listen(
     true
 }
 
-/// endpoint 本地地址。`__wjs_quic_ep_addr(id)` → `"ip:port"`。
+/// endpoint 本地地址。`__wjs2_quic_ep_addr(id)` → `"ip:port"`。
 pub unsafe extern "C" fn quic_ep_addr(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -412,7 +412,7 @@ pub unsafe extern "C" fn quic_ep_addr(
 }
 
 /// 关 endpoint（abort accept 环 + 发 `EndpointClosed`；派发后摘除）。
-/// `__wjs_quic_ep_close(id)` → undefined。
+/// `__wjs2_quic_ep_close(id)` → undefined。
 pub unsafe extern "C" fn quic_ep_close(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -441,7 +441,7 @@ pub unsafe extern "C" fn quic_ep_close(
     true
 }
 
-/// 登记 endpoint JS 目标。`__wjs_quic_ep_attach(id, target)` → undefined。
+/// 登记 endpoint JS 目标。`__wjs2_quic_ep_attach(id, target)` → undefined。
 pub unsafe extern "C" fn quic_ep_attach(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -463,7 +463,7 @@ pub unsafe extern "C" fn quic_ep_attach(
     true
 }
 
-/// 发起连接。`__wjs_quic_connect(optsJson)` → session id 串（握手异步）。
+/// 发起连接。`__wjs2_quic_connect(optsJson)` → session id 串（握手异步）。
 pub unsafe extern "C" fn quic_connect(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -589,7 +589,7 @@ pub unsafe extern "C" fn quic_connect(
     true
 }
 
-/// 登记会话 JS 目标。`__wjs_quic_sess_attach(id, target)` → undefined。
+/// 登记会话 JS 目标。`__wjs2_quic_sess_attach(id, target)` → undefined。
 pub unsafe extern "C" fn quic_sess_attach(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -611,7 +611,7 @@ pub unsafe extern "C" fn quic_sess_attach(
     true
 }
 
-/// 会话信息。`__wjs_quic_sess_info(id)` → JSON `{secure,local,remote,alpn,servername}`。
+/// 会话信息。`__wjs2_quic_sess_info(id)` → JSON `{secure,local,remote,alpn,servername}`。
 pub unsafe extern "C" fn quic_sess_info(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -645,7 +645,7 @@ pub unsafe extern "C" fn quic_sess_info(
     true
 }
 
-/// 会话统计（真值子集）。`__wjs_quic_sess_stats(id)` → JSON。
+/// 会话统计（真值子集）。`__wjs2_quic_sess_stats(id)` → JSON。
 pub unsafe extern "C" fn quic_sess_stats(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -685,7 +685,7 @@ pub unsafe extern "C" fn quic_sess_stats(
 }
 
 /// 关会话（`conn.close`；`SessionClose` 事件到后摘除）。
-/// `__wjs_quic_sess_close(id, code)` → undefined。
+/// `__wjs2_quic_sess_close(id, code)` → undefined。
 pub unsafe extern "C" fn quic_sess_close(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

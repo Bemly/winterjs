@@ -1,13 +1,13 @@
-//! B4 并发门面 JS 面：全局 `Worker`（Web 风）+ `WinterJS.cluster/test/vm`。
+//! B4 并发门面 JS 面：全局 `Worker`（Web 风）+ `WinterJS2.cluster/test/vm`。
 //!
-//! `Worker` 直驱 `__wjs_worker_*` 原生（`__ev` 自有 sink；消息走 JSON 文 disciplined：
+//! `Worker` 直驱 `__wjs2_worker_*` 原生（`__ev` 自有 sink；消息走 JSON 文 disciplined：
 //! 发侧 `JSON.stringify`，收侧最小包络解码 + `JSON.parse`；与本仓 plain-data
 //! structuredClone 口径一致）。`cluster/test` 复用移植实现（util 同款复用模式）。
-//! `vm` 直驱 `__wjs_vm_*`（completion 值透明回传）。
+//! `vm` 直驱 `__wjs2_vm_*`（completion 值透明回传）。
 pub const WCONC_JS: &str = r#"
 {
   // worker 消息包络解码（实测：parentPort.postMessage 经 __toWire 成
-  // `{__wjs_env, d}` 形；d 为 JSON 文即二次解析，否则原文直通。
+  // `{__wjs2_env, d}` 形；d 为 JSON 文即二次解析，否则原文直通。
   // 发侧一律 JSON 文 disciplined，与 plain-data structuredClone 口径一致）。
   const __wconc_unwrap = (payload) => {
     const msgErr = () => {
@@ -19,7 +19,7 @@ pub const WCONC_JS: &str = r#"
     try { raw = JSON.parse(String(payload)); }
     catch { throw msgErr(); }
     if (raw !== null && typeof raw === "object"
-        && typeof raw.__wjs_env === "string" && "d" in raw) {
+        && typeof raw.__wjs2_env === "string" && "d" in raw) {
       const d = raw.d;
       if (typeof d === "string") {
         try { return JSON.parse(d); }
@@ -36,7 +36,7 @@ pub const WCONC_JS: &str = r#"
       if (typeof src !== "string" || src === "") throw new TypeError("Worker requires a file path or code string");
       const evalFlag = (o && o.eval === true) ? "1" : "";
       const name = (o && typeof o.name === "string") ? o.name : "";
-      const ids = String(__wjs_worker_spawn(src, evalFlag, "", name)).split(" ");
+      const ids = String(__wjs2_worker_spawn(src, evalFlag, "", name)).split(" ");
       this.__id = ids[0];
       this.__onmessage = null;
       this.__onmessageerror = null;
@@ -44,7 +44,7 @@ pub const WCONC_JS: &str = r#"
       this.__done = false;
       this.__doneWaiters = [];
       const self = this;
-      __wjs_worker_attach(this.__id, {
+      __wjs2_worker_attach(this.__id, {
         __ev(kind, payload) {
           try {
             if (kind === "message") {
@@ -74,10 +74,10 @@ pub const WCONC_JS: &str = r#"
       for (const w of this.__doneWaiters.splice(0)) { try { w(); } catch {} }
     }
     postMessage(data) {
-      __wjs_worker_post(this.__id, JSON.stringify(data));
+      __wjs2_worker_post(this.__id, JSON.stringify(data));
     }
     terminate() {
-      try { __wjs_worker_terminate(this.__id); } catch {}
+      try { __wjs2_worker_terminate(this.__id); } catch {}
       this.__settleDone();
     }
     get onmessage() { return this.__onmessage; }
@@ -125,7 +125,7 @@ pub const WCONC_JS: &str = r#"
     } catch {}
   };
   try {
-    const W = globalThis.WinterJS;
+    const W = globalThis.WinterJS2;
     if (W) {
       __wconc_lazy(W, "cluster", () => __wconc_req("node:cluster"));
       __wconc_lazy(W, "test", () => __wconc_pick(__wconc_req("node:test"), ["test", "describe", "it"]));
@@ -135,11 +135,11 @@ pub const WCONC_JS: &str = r#"
           run(code, o) {
             if (typeof code !== "string") throw new TypeError("vm.run requires code");
             const filename = (o && o.filename !== undefined) ? String(o.filename) : "wjs-vm.js";
-            const id = Number(__wjs_vm_create());
+            const id = Number(__wjs2_vm_create());
             try {
-              return __wjs_vm_run(id, code, filename);
+              return __wjs2_vm_run(id, code, filename);
             } finally {
-              try { __wjs_vm_release(id); } catch {}
+              try { __wjs2_vm_release(id); } catch {}
             }
           },
         };

@@ -444,7 +444,7 @@ fn p2_crypto_cipher_setautopadding() {
     // P2 crypto MISSING-EXCEPTION 轮：setAutoPadding 透传 + CbcEnc autopad +
     // OSSL 错误 reason/码形 + GCM tag 长校验 + generateKey/keypair 头检
     //（正常 + 报错 + 边界；node 真机 26.8.2 口径逐项实测）。
-    // UNSAFE-BOUNDARY 覆盖：`__wjs_cipher_set_autopad`（前置见定义注释）——
+    // UNSAFE-BOUNDARY 覆盖：`__wjs2_cipher_set_autopad`（前置见定义注释）——
     // panic 路径经公开 API 触发（double-final → ERR_CRYPTO_INVALID_STATE）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

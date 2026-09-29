@@ -1,4 +1,4 @@
-# winterjs 依赖清单
+# winterjs2 依赖清单
 
 > 基线日期：2026-09-10（第三轮：ruzstd 全接管 / smmalloc 主分配器 / turso 定版 / TLS 豁免）。
 > 入选标准：有轮子不自造；库龄超一年；近一年有维护（冻结型小库：下载量大且功能稳定，标“冻结”后接受）。
@@ -217,7 +217,7 @@ Linux/unix/小端分支。`getrandom` 官方支持表行 `*-linux-*` 覆盖 OHOS
 | 自升级 | `self_update` | 1.3.0 | 2017-07-25 | 2026-09-02 | ✅（TLS 豁免） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | CLI 双语 | `rust-i18n` | 4.2.2 | 2021 | 2026 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 启动 banner SVG 光栅 | `resvg` | 0.48.1 | 2017-12-18 | 2026-08-02 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
-| 启动 banner 图像解码 | `image` | 0.25.10 | 2014-11-20 | 2026-03-10 | ✅（`png` 发射载荷编码；`avif` 纯 Rust 只管编码不管解码，禁 `avif-native`→dav1d 的 C，见 §14。2026-09-29 WinterJS.image 开闸 13 格式特性（bmp/exr/ff/gif/hdr/ico/jpeg/pnm/qoi/tga/tiff/webp；禁 avif/dds/default-formats）：新增传递 `exr/tiff/qoi`（+`bit_field/lebe/fax/pulp` 等，逐包验无 build.rs/links，`pulp` 的 build.rs 只生成 Rust 源码；`cc` 仍仅 turso-`aegis` 的 build-dep） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| 启动 banner 图像解码 | `image` | 0.25.10 | 2014-11-20 | 2026-03-10 | ✅（`png` 发射载荷编码；`avif` 纯 Rust 只管编码不管解码，禁 `avif-native`→dav1d 的 C，见 §14。2026-09-29 WinterJS2.image 开闸 13 格式特性（bmp/exr/ff/gif/hdr/ico/jpeg/pnm/qoi/tga/tiff/webp；禁 avif/dds/default-formats）：新增传递 `exr/tiff/qoi`（+`bit_field/lebe/fax/pulp` 等，逐包验无 build.rs/links，`pulp` 的 build.rs 只生成 Rust 源码；`cc` 仍仅 turso-`aegis` 的 build-dep） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 | 启动 banner JXL 解码 | `jxl-oxide` | 0.12.6 | 2023-05-16 | 2026-05-29 | ✅（default 特性；禁 `lcms2` 的 C） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
 
 备注：`rustyline`（退役留档）/`reedline`/`self_update` 的移动端格是“功能不需要”
@@ -242,7 +242,7 @@ C 档要 IRB 式右侧文档 pane（`IdeMenu`+`DescriptionMode::PreferRight`）�
 用户拍板引入，`rustyline` 同日退役移出 `Cargo.toml`/`Cargo.lock`（平移坑见 pitfalls 4.224）。
 `vergen-gitcl` 开 `build`（调 git CLI），禁 `git`（→`git2` 的 C）。
 `shlex` 做 `bunx` 式参数透传的 shell 切词；`humantime`/`bytesize` 解析 `--timeout 30s`/`--max-old-space 512MB`；
-`askama`（编译期模板）做 `winterjs init` 脚手架。
+`askama`（编译期模板）做 `winterjs2 init` 脚手架。
 `rust-i18n` 审计（2026-09-11，用户拍板引入）：longbridge 出品（2021 起，4.2.2），MIT；
 normal 依赖仅 `rust-i18n-support`（默认特性无 codegen，只剩 `arc-swap`/`base62`/`siphasher`/`triomphe`，
 全纯 Rust；`arc-swap` 本就在树内）+ `rust-i18n-macro`（proc-macro，host）+ `smallvec`（已在树内）；
@@ -272,7 +272,7 @@ OHOS 因 `target_os="linux"` 命中同一分支；`simd-json` 加速门控只看
 `phf` 做 op 名/状态码等静态表；`petgraph` 做模块图的环检测＋拓扑序；
 `target-lexicon` 给 `--target` 交叉构建参数用；`include_dir` 把 JS builtin 打进二进制。
 转译错误经 `miette` 渲染；快照用 `insta`（§11）；`oxc` 门面无 linter/formatter
-特性（`oxc_linter` 未发布、`oxc_formatter` 占位，见 §14），`winterjs lint/fmt`
+特性（`oxc_linter` 未发布、`oxc_formatter` 占位，见 §14），`winterjs2 lint/fmt`
 走外部 CLI 穿透（`src/lintfmt.rs`），不另引轮子。
 
 ## 6. Web API：fetch / 编码 / WebSocket / 重试 / Cookie / TLS 文件
@@ -620,7 +620,7 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
   若上游导出 writer 形 API 可再评估。
 - `oxc_linter`/`oxc_formatter`（2026-09-11 顺延，非否决）：oxc 门面无
   linter/formatter 特性；`oxc_linter` 未发布 crates.io，`oxc_formatter` 为
-  2023 年 0.0.0 占位。git vendor 需拖未发布 workspace，不入表。`winterjs
+  2023 年 0.0.0 占位。git vendor 需拖未发布 workspace，不入表。`winterjs2
   lint/fmt` 改走**命令穿透**（用户拍板）：转发外部 `oxlint`/`oxfmt` CLI
   （`src/lintfmt.rs`，零依赖，本地 node_modules/.bin 向上 + PATH 查找）；
   上游发布 crates.io 后可再评估直引。
@@ -654,7 +654,7 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
 4. CLI 启动 banner（2026-09-28 候选，用户问“avif+svg 进 CLI”时立项；**2026-09-28 用户拍板全套，
    后按源码证据把 `viuer` 撤回（见 §14），实引 `resvg`+`image/avif`**，
    §4 表格 resvg/image 两行已填，移动端格按惯例 ⚠️ 待 CI 转正）：
-   素材已在库（`assets/logo.jxl` 126KB 1261×1247·alpha + `assets/winterjs.svg` 1.6KB，
+   素材已在库（`assets/logo.jxl` 126KB 1261×1247·alpha + `assets/winterjs2.svg` 1.6KB，
    `include_bytes!` 零新文件）。   候选组合：`resvg`（SVG→像素）+ `image/avif`（→`ravif`→`rav1e` 纯 Rust，
    禁 `avif-native`→`dav1d` 的 C）；`viuer` 已筛掉（见 §14）。四问：resvg/image
    库龄均超十年且近一年有维护；传递闭包纯 Rust 口径成立（image 已在树内；

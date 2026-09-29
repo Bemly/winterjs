@@ -46,7 +46,7 @@ pub fn arch() -> &'static str {
     }
 }
 
-/// `__wjs_os_platform()` → 平台名。
+/// `__wjs2_os_platform()` → 平台名。
 pub unsafe extern "C" fn os_platform(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -59,7 +59,7 @@ pub unsafe extern "C" fn os_platform(
     true
 }
 
-/// `__wjs_os_arch()` → 架构名。
+/// `__wjs2_os_arch()` → 架构名。
 pub unsafe extern "C" fn os_arch(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -72,7 +72,7 @@ pub unsafe extern "C" fn os_arch(
     true
 }
 
-/// `__wjs_os_info()` → `{type, release, hostname, tmpdir, homedir}` JSON。
+/// `__wjs2_os_info()` → `{type, release, hostname, tmpdir, homedir}` JSON。
 pub unsafe extern "C" fn os_info(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -106,7 +106,7 @@ pub unsafe extern "C" fn os_info(
     true
 }
 
-/// `__wjs_os_cpus()` → `[{model, speed, times}]` JSON。
+/// `__wjs2_os_cpus()` → `[{model, speed, times}]` JSON。
 /// 偏差：`sysinfo` 只给总使用率 —— `times.user=usage 百分比取整、idle=100-user`，
 /// 其余 0（文档记录；lint 类脚本只读 model/speed）。
 pub unsafe extern "C" fn os_cpus(
@@ -138,7 +138,7 @@ pub unsafe extern "C" fn os_cpus(
     true
 }
 
-/// `__wjs_os_mem()` → `{total, free}` JSON（字节）。
+/// `__wjs2_os_mem()` → `{total, free}` JSON（字节）。
 pub unsafe extern "C" fn os_mem(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -158,7 +158,7 @@ pub unsafe extern "C" fn os_mem(
     true
 }
 
-/// `__wjs_os_net()` → `{iface: [{address, family, internal}]}` JSON。
+/// `__wjs2_os_net()` → `{iface: [{address, family, internal}]}` JSON。
 /// 偏差：mac 恒 `00:00:00:00:00:00`（逐 iface MAC 无可信纯 Rust 轮子，文档记录）。
 /// 10f：补 `netmask` + `cidr`（`address/prefixlen`，test-os.js 点名）。
 pub unsafe extern "C" fn os_net(
@@ -203,7 +203,7 @@ pub unsafe extern "C" fn os_net(
     true
 }
 
-/// `__wjs_os_user()` → `{uid, gid, username, homedir, shell}` JSON。
+/// `__wjs2_os_user()` → `{uid, gid, username, homedir, shell}` JSON。
 /// 非 unix（Windows 服务场景）uid/gid 置 -1、shell 置空（文档记录）。
 pub unsafe extern "C" fn os_user(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -251,7 +251,7 @@ pub unsafe extern "C" fn os_user(
     true
 }
 
-/// `__wjs_os_uptime()` → 秒（f64；`sysinfo::System::uptime`）。
+/// `__wjs2_os_uptime()` → 秒（f64；`sysinfo::System::uptime`）。
 pub unsafe extern "C" fn os_uptime(
     _cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -263,7 +263,7 @@ pub unsafe extern "C" fn os_uptime(
     true
 }
 
-/// `__wjs_os_load()` → `[1, 5, 15]` JSON（Windows 全 0，文档记录）。
+/// `__wjs2_os_load()` → `[1, 5, 15]` JSON（Windows 全 0，文档记录）。
 pub unsafe extern "C" fn os_load(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -278,7 +278,7 @@ pub unsafe extern "C" fn os_load(
     true
 }
 
-/// `__wjs_os_locale()` → BCP47（`sys-locale`；取不到回 `en-US`）。
+/// `__wjs2_os_locale()` → BCP47（`sys-locale`；取不到回 `en-US`）。
 pub unsafe extern "C" fn os_locale(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -311,7 +311,7 @@ fn machine_raw() -> &'static str {
     }
 }
 
-/// `__wjs_os_machine()` → 原始架构名。
+/// `__wjs2_os_machine()` → 原始架构名。
 pub unsafe extern "C" fn os_machine(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -338,7 +338,7 @@ fn uname_version() -> String {
     }
 }
 
-/// `__wjs_os_uname()` → `{"version": <uname -v>}` JSON（unix 经 libc；
+/// `__wjs2_os_uname()` → `{"version": <uname -v>}` JSON（unix 经 libc；
 /// 非 unix 回空串由 JS 侧回落，win 记档）。
 pub unsafe extern "C" fn os_uname(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -380,7 +380,7 @@ fn prio_err_json(errno: i32) -> String {
     .to_string()
 }
 
-/// `__wjs_os_prio_get(pid)` → `{"ok": prio}` / 错误体 JSON。
+/// `__wjs2_os_prio_get(pid)` → `{"ok": prio}` / 错误体 JSON。
 /// pid 由 JS 侧 validateInt32 保证 int32；unix 经 getpriority + 哨兵消毒
 /// （先 `close(-1)` 把 errno 钉成 getpriority 永不报的 EBADF：哨兵仍在即真值 -1，
 /// 否则为真错；成功 syscall 不动 errno，见 man 契约）；非 unix 回 ENOSYS 桩。
@@ -418,7 +418,7 @@ pub unsafe extern "C" fn os_prio_get(
     true
 }
 
-/// `__wjs_os_prio_set(pid, prio)` → `{"ok": true}` / 错误体 JSON
+/// `__wjs2_os_prio_set(pid, prio)` → `{"ok": true}` / 错误体 JSON
 /// （unix setpriority；非 unix ENOSYS 桩）。
 pub unsafe extern "C" fn os_prio_set(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -484,14 +484,14 @@ pub const SOURCE: &str = r#"
 import { validateInt32 } from 'node:internal/validators';
 import errors from 'node:internal/errors';
 const { ERR_SYSTEM_ERROR } = errors.codes;
-const __info = JSON.parse(__wjs_os_info());
-const __mem = () => JSON.parse(__wjs_os_mem());
-const __cpus = () => JSON.parse(__wjs_os_cpus());
-const __net = () => JSON.parse(__wjs_os_net());
-const __user = () => JSON.parse(__wjs_os_user());
-const __load = () => JSON.parse(__wjs_os_load());
-const __uname = () => JSON.parse(__wjs_os_uname());
-const isWin = __wjs_os_platform() === "win32";
+const __info = JSON.parse(__wjs2_os_info());
+const __mem = () => JSON.parse(__wjs2_os_mem());
+const __cpus = () => JSON.parse(__wjs2_os_cpus());
+const __net = () => JSON.parse(__wjs2_os_net());
+const __user = () => JSON.parse(__wjs2_os_user());
+const __load = () => JSON.parse(__wjs2_os_load());
+const __uname = () => JSON.parse(__wjs2_os_uname());
+const isWin = __wjs2_os_platform() === "win32";
 // Node lib/os.js signals 表（unix 全集 + Windows 子集；internal/validators 同款）。
 const signals = {
   SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGIOT: 6,
@@ -519,18 +519,18 @@ export function setPriority(pid, priority) {
   if (priority === undefined) { priority = pid; pid = 0; }
   validateInt32(pid, "pid");
   validateInt32(priority, "priority", -20, 19);
-  const r = JSON.parse(__wjs_os_prio_set(pid, priority));
+  const r = JSON.parse(__wjs2_os_prio_set(pid, priority));
   if (r.errno !== undefined) throw sysErr("uv_os_setpriority", r);
 }
 export function getPriority(pid) {
   if (pid === undefined) pid = 0;
   else validateInt32(pid, "pid");
-  const r = JSON.parse(__wjs_os_prio_get(pid));
+  const r = JSON.parse(__wjs2_os_prio_get(pid));
   if (r.errno !== undefined) throw sysErr("uv_os_getpriority", r);
   return r.ok;
 }
-export function platform() { return __wjs_os_platform(); }
-export function arch() { return __wjs_os_arch(); }
+export function platform() { return __wjs2_os_platform(); }
+export function arch() { return __wjs2_os_arch(); }
 export function release() { return __info.release; }
 export function type() { return __info.type; }
 export function hostname() { return __info.hostname; }
@@ -564,16 +564,16 @@ export function userInfo(options) {
   }
   return u;
 }
-export function uptime() { return __wjs_os_uptime(); }
+export function uptime() { return __wjs2_os_uptime(); }
 export function loadavg() { return __load(); }
-export function getLocale() { return __wjs_os_locale(); }
+export function getLocale() { return __wjs2_os_locale(); }
 // 可用并行度（M5 vitest 牵引：真机按 CPU 亲和/线程池上限打折，本仓恒回
 // cpus 数——单进程 JS 线程 + tokio 同步多线程，无亲和约束，记档）。
 export function availableParallelism() { return __cpus().length; }
 export function endianness() {
   return new Uint8Array(new Uint16Array([0x1234]).buffer)[0] === 0x34 ? "LE" : "BE";
 }
-export function machine() { return __wjs_os_machine(); }
+export function machine() { return __wjs2_os_machine(); }
 export function version() {
   const v = __uname().version;
   return v || __info.release || __info.type;

@@ -1,6 +1,6 @@
 // node:crypto ciphers: AES-GCM / AES-CCM / ChaCha20-Poly1305 round-trips.
 // 对称加解密：三种 AEAD 往返。
-// Run / 运行: winterjs --run sample/crypto/cipher.js
+// Run / 运行: winterjs2 --run sample/crypto/cipher.js
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 
 function roundtrip(algo, keyLen, ivLen, opts) {

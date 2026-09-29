@@ -2,7 +2,7 @@
 //! ZipFile。
 /// 来源：nodejs/node v26.8.2 `lib/internal/zip/file.js`（MIT）逐字内嵌；require → 垫片映射，
 /// primordials → node:internal/primordials。
-/// 偏差：`internalBinding('zlib').crc32` 走 `__wjs_zlib_crc32` 全局 native（见 dos/entry 内包装）。
+/// 偏差：`internalBinding('zlib').crc32` 走 `__wjs2_zlib_crc32` 全局 native（见 dos/entry 内包装）。
 pub const SOURCE: &str = r#"'use strict';
 import * as __m0 from 'node:buffer';
 import * as __m1 from 'node:fs';

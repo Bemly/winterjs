@@ -1,23 +1,23 @@
 function __derivePublic(priv) {
   if (priv.__keyType === "rsa" || priv.__keyType === "rsa-pss") {
-    return new PublicKeyObject("public", priv.__keyType, Buffer.from(__cryptCall(() => __wjs_rsa_public(priv.__material))));
+    return new PublicKeyObject("public", priv.__keyType, Buffer.from(__cryptCall(() => __wjs2_rsa_public(priv.__material))));
   }
   if (priv.__keyType === "ec") {
     const c = priv.__detail.namedCurve;
-    return Object.assign(new PublicKeyObject("public", "ec", Buffer.from(__cryptCall(() => __wjs_ec_public(c, priv.__material)))), { __detail: { namedCurve: c } });
+    return Object.assign(new PublicKeyObject("public", "ec", Buffer.from(__cryptCall(() => __wjs2_ec_public(c, priv.__material)))), { __detail: { namedCurve: c } });
   }
   if (priv.__keyType === "ed25519") {
-    return new PublicKeyObject("public", "ed25519", Buffer.from(__cryptCall(() => __wjs_ed_public(priv.__material))));
+    return new PublicKeyObject("public", "ed25519", Buffer.from(__cryptCall(() => __wjs2_ed_public(priv.__material))));
   }
   // 10e Ed448（OKP 同形）。
   if (priv.__keyType === "ed448") {
-    return new PublicKeyObject("public", "ed448", Buffer.from(__cryptCall(() => __wjs_ed448_public(priv.__material))));
+    return new PublicKeyObject("public", "ed448", Buffer.from(__cryptCall(() => __wjs2_ed448_public(priv.__material))));
   }
   if (priv.__keyType === "x25519") {
-    return new PublicKeyObject("public", "x25519", Buffer.from(__cryptCall(() => __wjs_x_public(priv.__material))));
+    return new PublicKeyObject("public", "x25519", Buffer.from(__cryptCall(() => __wjs2_x_public(priv.__material))));
   }
   if (priv.__keyType === "x448") {
-    return new PublicKeyObject("public", "x448", Buffer.from(__cryptCall(() => __wjs_x448_public(priv.__material))));
+    return new PublicKeyObject("public", "x448", Buffer.from(__cryptCall(() => __wjs2_x448_public(priv.__material))));
   }
   if (priv.__keyType === "dsa") {
     const env = JSON.parse(Buffer.from(priv.__material).toString("utf8"));
@@ -27,11 +27,11 @@ function __derivePublic(priv) {
     return k;
   }
   if (typeof priv.__keyType === "string" && priv.__keyType.startsWith("ml-kem-")) {
-    const parts = JSON.parse(__cryptCall(() => __wjs_mlkem_seed_from_pkcs8(priv.__material)));
+    const parts = JSON.parse(__cryptCall(() => __wjs2_mlkem_seed_from_pkcs8(priv.__material)));
     return new PublicKeyObject("public", priv.__keyType, Buffer.from(__b64dec(parts.spki)));
   }
   if (typeof priv.__keyType === "string" && priv.__keyType.startsWith("ml-dsa-")) {
-    const spki = __cryptCall(() => __wjs_mldsa_public(priv.__material));
+    const spki = __cryptCall(() => __wjs2_mldsa_public(priv.__material));
     return new PublicKeyObject("public", priv.__keyType, Buffer.from(spki));
   }
   const err = new Error("Cannot derive public key for this key type");
@@ -296,8 +296,8 @@ function __genPairSync(type, options) {
   __checkKeyPairHead(type, options);
   if (type === "rsa" || type === "rsa-pss") {
     const { bits, e } = __checkRsaKeyOptions(options);
-    const privDer = __cryptCall(() => __wjs_rsa_generate(bits, e));
-    const pubDer = __cryptCall(() => __wjs_rsa_public(privDer));
+    const privDer = __cryptCall(() => __wjs2_rsa_generate(bits, e));
+    const pubDer = __cryptCall(() => __wjs2_rsa_public(privDer));
     const kt = type === "rsa-pss" ? "rsa-pss" : "rsa";
     const priv = new PrivateKeyObject("private", kt, Buffer.from(privDer));
     const pub = new PublicKeyObject("public", kt, Buffer.from(pubDer));
@@ -357,8 +357,8 @@ function __genPairSync(type, options) {
       // 即 INVALID_CURVE；旧指引文案退役）。
       __badEcCurve();
     }
-    const privDer = __cryptCall(() => __wjs_ec_generate(curve));
-    const pubDer = __cryptCall(() => __wjs_ec_public(curve, privDer));
+    const privDer = __cryptCall(() => __wjs2_ec_generate(curve));
+    const pubDer = __cryptCall(() => __wjs2_ec_public(curve, privDer));
     const priv = new PrivateKeyObject("private", "ec", Buffer.from(privDer));
     priv.__detail = { namedCurve: curve };
     const pub = new PublicKeyObject("public", "ec", Buffer.from(pubDer));
@@ -367,8 +367,8 @@ function __genPairSync(type, options) {
   }
   if (type === "ed25519" || type === "x25519" || type === "x448" || type === "ed448") {
     const isEd = type === "ed25519", is448 = type === "ed448", isX448 = type === "x448";
-    const seed = __cryptCall(() => isEd ? __wjs_ed_generate() : is448 ? __wjs_ed448_generate() : isX448 ? __wjs_x448_generate() : __wjs_x_generate());
-    const pubB = __cryptCall(() => isEd ? __wjs_ed_public(seed) : is448 ? __wjs_ed448_public(seed) : isX448 ? __wjs_x448_public(seed) : __wjs_x_public(seed));
+    const seed = __cryptCall(() => isEd ? __wjs2_ed_generate() : is448 ? __wjs2_ed448_generate() : isX448 ? __wjs2_x448_generate() : __wjs2_x_generate());
+    const pubB = __cryptCall(() => isEd ? __wjs2_ed_public(seed) : is448 ? __wjs2_ed448_public(seed) : isX448 ? __wjs2_x448_public(seed) : __wjs2_x_public(seed));
     return {
       privateKey: new PrivateKeyObject("private", type, Buffer.from(seed)),
       publicKey: new PublicKeyObject("public", type, Buffer.from(pubB)),
@@ -381,7 +381,7 @@ function __genPairSync(type, options) {
     let divisorLength = div === -1
       ? (modulusLength === 1024 ? 160 : 256)
       : div;
-    const env = JSON.parse(__cryptCall(() => __wjs_dsa_generate(modulusLength, divisorLength)));
+    const env = JSON.parse(__cryptCall(() => __wjs2_dsa_generate(modulusLength, divisorLength)));
     const priv = new PrivateKeyObject("private", "dsa", Buffer.from(JSON.stringify(env)));
     priv.__detail = { modulusLength, divisorLength };
     const pubEnv = { p: env.p, q: env.q, g: env.g, y: env.y };
@@ -391,7 +391,7 @@ function __genPairSync(type, options) {
   }
   if (type === "ml-kem-512" || type === "ml-kem-768" || type === "ml-kem-1024") {
     // 9i-4：FIPS 203 PQ KEM（真机 generateKey 不收 ml-kem，此处 generateKeyPair 专属）。
-    const parts = JSON.parse(__cryptCall(() => __wjs_mlkem_gen(type)));
+    const parts = JSON.parse(__cryptCall(() => __wjs2_mlkem_gen(type)));
     return {
       privateKey: new PrivateKeyObject("private", type, Buffer.from(__b64dec(parts.pkcs8))),
       publicKey: new PublicKeyObject("public", type, Buffer.from(__b64dec(parts.spki))),
@@ -399,7 +399,7 @@ function __genPairSync(type, options) {
   }
   if (type === "ml-dsa-44" || type === "ml-dsa-65" || type === "ml-dsa-87") {
     // 9i-6：FIPS 204 PQ 签名（纯签名，hash=null）。
-    const parts = JSON.parse(__cryptCall(() => __wjs_mldsa_gen(type)));
+    const parts = JSON.parse(__cryptCall(() => __wjs2_mldsa_gen(type)));
     return {
       privateKey: new PrivateKeyObject("private", type, Buffer.from(__b64dec(parts.pkcs8))),
       publicKey: new PublicKeyObject("public", type, Buffer.from(__b64dec(parts.spki))),

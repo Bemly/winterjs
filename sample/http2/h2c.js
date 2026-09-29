@@ -1,6 +1,6 @@
 // node:http2 (h2c plaintext): compat server + client session in one file.
 // HTTP/2 明文：同一文件起兼容服务与客户端会话。
-// Run / 运行: winterjs --run sample/http2/h2c.js
+// Run / 运行: winterjs2 --run sample/http2/h2c.js
 import http2 from 'node:http2';
 
 const server = http2.createServer();

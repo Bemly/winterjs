@@ -1,4 +1,4 @@
-//! winterjs test 黑盒测试(对齐 src/testrun.rs:多文件/过滤/watch)。
+//! winterjs2 test 黑盒测试(对齐 src/testrun.rs:多文件/过滤/watch)。
 
 mod common;
 
@@ -10,7 +10,7 @@ use assert_fs::prelude::*;
 fn phase7_test_mixed_files() {
     // 正常：子测试 TAP 行透出 + runner 行 + 汇总，有挂则 exit=1。
     let dir = test_fixture();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--test", "."])
         .current_dir(dir.path())
         .output()
@@ -41,7 +41,7 @@ fn phase7_test_all_pass() {
     dir.child("o2.test.js")
         .write_str("console.log(\"two\");\n")
         .unwrap();
-    let out = stdout_of(winterjs().args(["--test", "."]).current_dir(dir.path()));
+    let out = stdout_of(winterjs2().args(["--test", "."]).current_dir(dir.path()));
     assert!(out.contains("ok - o.test.js"), "stdout:\n{out}");
     assert!(out.contains("ok - o2.test.js"), "stdout:\n{out}");
     assert!(out.contains("# pass 2, fail 0"), "stdout:\n{out}");
@@ -53,7 +53,7 @@ fn phase7_test_filter() {
     // 边界：--filter 只跑命中文件（此处零命中 → exit 0 提示行）。
     let dir = test_fixture();
     let out = stdout_of(
-        winterjs()
+        winterjs2()
             .args(["--test", ".", "--filter", "zzz*"])
             .current_dir(dir.path()),
     );
@@ -65,7 +65,7 @@ fn phase7_test_filter() {
 fn phase7_test_bad_path() {
     // 报错：不存在的路径 exit=1 且可读。
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--test", "no-such-dir"])
         .current_dir(dir.path())
         .output()
@@ -83,7 +83,7 @@ fn phase7_test_watch_reruns_on_change() {
     dir.child("a.test.js")
         .write_str("console.log(\"v1\");\n")
         .unwrap();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs2"))
         .args(["--test", "--watch"])
         .current_dir(dir.path())
         .stdout(std::process::Stdio::piped())

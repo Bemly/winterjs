@@ -57,7 +57,7 @@ fn register_timer(cx: &mut JSContext, frame: &Frame, interval: bool) -> bool {
             unrefed: false,
         });
     });
-    tracing::debug!(target: "winterjs::timers", id, delay_ms, interval, "timer registered");
+    tracing::debug!(target: "winterjs2::timers", id, delay_ms, interval, "timer registered");
     frame.set_rval(Int32Value(id as i32));
     true
 }
@@ -117,7 +117,7 @@ pub unsafe extern "C" fn clear_timeout(
             }
         })
     });
-    tracing::debug!(target: "winterjs::timers", id, removed, "timer cleared");
+    tracing::debug!(target: "winterjs2::timers", id, removed, "timer cleared");
     frame.set_rval(UndefinedValue());
     true
 }}
@@ -163,7 +163,7 @@ pub fn fire_due(
         // 摘除条目（回调期间 clear 不必再摘），值复制进 rooted 栈槽
         let entry = state::with_rooted(|s| s.timers.iter().position(|t| t.id == id).map(|i| s.timers.remove(i)));
         let Some(entry) = entry else { continue };
-        tracing::debug!(target: "winterjs::timers", id, "timer fired");
+        tracing::debug!(target: "winterjs2::timers", id, "timer fired");
         let (cb, args) = (entry.callback.get(), entry.args.get());
         let interval = entry.interval;
         let scheduled_at = entry.at;
@@ -171,7 +171,7 @@ pub fn fire_due(
             unrefed_fired += 1;
         }
 
-        // 经 prelude `__wjs_call(cb, args)` 展开实参（10a 修：此前直调
+        // 经 prelude `__wjs2_call(cb, args)` 展开实参（10a 修：此前直调
         // `fun(cb, args数组)`，定时器实参从未展开——旧用例全用闭包故未暴露；
         // 复现 `tests/builtins.rs::phase10a_immediate_and_timeout_class`）。
         // 10f起回调为 prelude 闭包（this=Timeout 实例/ALS 恢复在 JS 侧闭环），
@@ -245,7 +245,7 @@ pub fn fire_due(
                     unrefed: unrefed_now,
                 });
             });
-            tracing::trace!(target: "winterjs::timers", id, "interval rescheduled");
+            tracing::trace!(target: "winterjs2::timers", id, "interval rescheduled");
         }
     }
     Ok((fired, unrefed_fired))
@@ -286,7 +286,7 @@ pub unsafe extern "C" fn timer_ref(
                     p.unrefed_ids.insert(id);
                 }
             });
-            tracing::debug!(target: "winterjs::timers", id, refed, "timer ref flag");
+            tracing::debug!(target: "winterjs2::timers", id, refed, "timer ref flag");
         }
     }
     frame.set_rval(UndefinedValue());
@@ -315,7 +315,7 @@ pub unsafe extern "C" fn timer_refresh(
                     t.at = Instant::now() + t.period;
                 }
             });
-            tracing::debug!(target: "winterjs::timers", id, "timer refreshed");
+            tracing::debug!(target: "winterjs2::timers", id, "timer refreshed");
         }
     }
     frame.set_rval(UndefinedValue());

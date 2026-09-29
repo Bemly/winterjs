@@ -111,7 +111,7 @@ fn phase9d_net_http_stream_stubs() {
     // ws/vite 等库直调的流最小面：pause/resume/setTimeout/cork/uncork
     // no-op 链式返回自身，read 恒 null；net.isIP 三态。缺桩曾报
     // `stream.resume is not a function`（M5 dev 实测）。
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval",
         r#"const net = await import("node:net"); const http = await import("node:http");
 const s = new net.Socket();
@@ -263,7 +263,7 @@ srv.listen(0, "127.0.0.1", () => {
 #[test]
 fn phase10f_net_isip_zone_and_pending() {
     // 10f net 对拍：isIP zone 尾（%eth0 收 / %@ 拒）+ pending/readyState/connecting 三态。
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval",
         r#"const net = await import("node:net");
 console.log("zone", net.isIP("fe80::2008%eth0"), net.isIP("fe80::2008%eth0@1"), net.isIP("::1"), net.isIP("1.2.3.4"), net.isIP("nope"));

@@ -14,7 +14,7 @@
     }
     for (const c of curves) {
       try {
-        const privDer = __cryptCall(() => __wjs_ec_import_priv(c, scalar.body));
+        const privDer = __cryptCall(() => __wjs2_ec_import_priv(c, scalar.body));
         const k = new PrivateKeyObject("private", "ec", Buffer.from(privDer));
         k.__detail = { namedCurve: c };
         return k;

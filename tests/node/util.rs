@@ -24,7 +24,7 @@ console.log("promise-inp", util.inspect(Promise.resolve()));
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -86,7 +86,7 @@ assert.strictEqual(typeof promisify.custom, "symbol");
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -130,7 +130,7 @@ try { parseEnv(42); } catch (e) { console.log("pe-t", e.code); }
 "##,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -216,7 +216,7 @@ for (const [tag, fn] of [
 "##,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -285,7 +285,7 @@ console.log("same-cross", sysDefault === utilReq);
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())

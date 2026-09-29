@@ -1,6 +1,6 @@
 // node:crypto keys: RSA/ECDSA/Ed25519 generate + sign/verify, ECDH, random.
 // 非对称：密钥生成、签名验签、ECDH 与随机数。
-// Run / 运行: winterjs --run sample/crypto/keys.js
+// Run / 运行: winterjs2 --run sample/crypto/keys.js
 import { generateKeyPairSync, createSign, createVerify, createECDH, randomBytes, randomUUID, randomInt } from 'node:crypto';
 
 const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });

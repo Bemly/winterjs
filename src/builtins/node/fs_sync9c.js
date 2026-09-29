@@ -49,25 +49,25 @@ export function accessSync(p, mode = 0) {
     e.code = "ERR_INVALID_ARG_TYPE"; throw e;
   }
   p = __fsPath(p, "access");
-  __fsCall("access", p, () => __wjs_fs_access(p, mode));
+  __fsCall("access", p, () => __wjs2_fs_access(p, mode));
 }
 export function truncateSync(p, len) {
   p = __fsPath(p, "truncate");
   const n = __fsLenArg(len);
-  __fsCall("truncate", p, () => __wjs_fs_truncate(p, n));
+  __fsCall("truncate", p, () => __wjs2_fs_truncate(p, n));
 }
 export function utimesSync(p, atime, mtime) {
   p = __fsPath(p, "utimes");
-  __fsCall("utimes", p, () => __wjs_fs_utimes(p, __fsUtimeMs(atime, "atime"), __fsUtimeMs(mtime, "mtime")));
+  __fsCall("utimes", p, () => __wjs2_fs_utimes(p, __fsUtimeMs(atime, "atime"), __fsUtimeMs(mtime, "mtime")));
 }
 export function lutimesSync(p, atime, mtime) {
   p = __fsPath(p, "lutimes");
-  __fsCall("lutimes", p, () => __wjs_fs_lutimes(p, __fsUtimeMs(atime, "atime"), __fsUtimeMs(mtime, "mtime")));
+  __fsCall("lutimes", p, () => __wjs2_fs_lutimes(p, __fsUtimeMs(atime, "atime"), __fsUtimeMs(mtime, "mtime")));
 }
 export function chmodSync(p, mode) {
   p = __fsPath(p, "chmod");
   __vModeArg(mode);
-  __fsCall("chmod", p, () => __wjs_fs_chmod(p, __fsModeNum(mode)));
+  __fsCall("chmod", p, () => __wjs2_fs_chmod(p, __fsModeNum(mode)));
 }
 export function chownSync(p, uid, gid) {
   p = __fsPath(p, "chown");
@@ -75,43 +75,43 @@ export function chownSync(p, uid, gid) {
   // 非整数（Infinity/NaN）→ OUT_OF_RANGE 'It must be an integer'；-1 = 不变更。
   __vIntRange(uid, "uid", -1, 4294967295);
   __vIntRange(gid, "gid", -1, 4294967295);
-  __fsCall("chown", p, () => __wjs_fs_chown(p, uid, gid));
+  __fsCall("chown", p, () => __wjs2_fs_chown(p, uid, gid));
 }
 export function fchownSync(fd, uid, gid) {
   __vFd(fd);
   __vIntRange(uid, "uid", -1, 4294967295);
   __vIntRange(gid, "gid", -1, 4294967295);
-  __fsCall("fchown", "", () => __wjs_fs_fchown(fd, uid, gid));
+  __fsCall("fchown", "", () => __wjs2_fs_fchown(fd, uid, gid));
 }
 export function lchownSync(p, uid, gid) {
   p = __fsPath(p, "lchown");
   __vIntRange(uid, "uid", -1, 4294967295);
   __vIntRange(gid, "gid", -1, 4294967295);
-  __fsCall("lchown", p, () => __wjs_fs_lchown(p, uid, gid));
+  __fsCall("lchown", p, () => __wjs2_fs_lchown(p, uid, gid));
 }
 // node：fs.lchmod 仅 macOS 存在（native 仅 macOS 注册，非 macOS 导出 undefined）；
 // mode 走 parseFileMode（lchmod 套件校验矩阵）。
 function lchmodSyncImpl(p, mode) {
   p = __fsPath(p, "lchmod");
   const n = __fsModeNum(mode);
-  __fsCall("lchmod", p, () => __wjs_fs_lchmod(p, n));
+  __fsCall("lchmod", p, () => __wjs2_fs_lchmod(p, n));
 }
-export const lchmodSync = typeof __wjs_fs_lchmod === "function" ? lchmodSyncImpl : undefined;
+export const lchmodSync = typeof __wjs2_fs_lchmod === "function" ? lchmodSyncImpl : undefined;
 
 export function linkSync(a, b) {
   a = __fsPath(a, "link");
   b = __fsPath(b, "link");
-  __fsCall("link", a, () => __wjs_fs_link(a, b));
+  __fsCall("link", a, () => __wjs2_fs_link(a, b));
 }
 export function symlinkSync(target, p) {
   target = __fsPath(target, "symlink");
   p = __fsPath(p, "symlink");
-  __fsCall("symlink", p, () => __wjs_fs_symlink(target, p));
+  __fsCall("symlink", p, () => __wjs2_fs_symlink(target, p));
 }
 export function readlinkSync(p, opts) {
   p = __fsPath(p, "readlink");
   const enc = __fsEncoding(opts);
-  const link = __fsCall("readlink", p, () => __wjs_fs_read_link(p));
+  const link = __fsCall("readlink", p, () => __wjs2_fs_read_link(p));
   if (enc === "buffer") return Buffer.from(link);
   return link;
 }
@@ -258,7 +258,7 @@ function __cpOnDir(src, dst, o, destStat) {
     // 无 errorOnExist 则合并（逐项 force 门复用）。
     if (o.errorOnExist) __cpEexist(dst);
   }
-  __fsCall("cp", dst, () => __wjs_fs_mkdir(dst, true));
+  __fsCall("cp", dst, () => __wjs2_fs_mkdir(dst, true));
   for (const e of readdirSync(src, { withFileTypes: true })) {
     cpSync(__cpJoin(src, e.name), __cpJoin(dst, e.name), o);
   }
@@ -320,7 +320,7 @@ async function __cpOnDirA(src, dst, o, destStat) {
   if (destStat && !o.force) {
     if (o.errorOnExist) __cpEexist(dst);
   }
-  __fsCall("cp", dst, () => __wjs_fs_mkdir(dst, true));
+  __fsCall("cp", dst, () => __wjs2_fs_mkdir(dst, true));
   for (const e of readdirSync(src, { withFileTypes: true })) {
     await __cpAsync(__cpJoin(src, e.name), __cpJoin(dst, e.name), o);
   }
@@ -328,8 +328,8 @@ async function __cpOnDirA(src, dst, o, destStat) {
 function __cpOnFile(src, dst, o, destStat) {
   if (!destStat) {
     // Node cp 建缺失父目录（file-to-file 套件：dest 父级不存在仍成功）。
-    __fsCall("cp", dst, () => __wjs_fs_mkdir(__cpDirname(dst), true));
-    __fsCall("copyfile", src, () => __wjs_fs_copy_file(src, dst));
+    __fsCall("cp", dst, () => __wjs2_fs_mkdir(__cpDirname(dst), true));
+    __fsCall("copyfile", src, () => __wjs2_fs_copy_file(src, dst));
     return;
   }
   // 文件拷向目录 → NON_DIR_TO_DIR（file-to-dir 套件；直拷报 EISDIR 即错码）。
@@ -343,9 +343,9 @@ function __cpOnFile(src, dst, o, destStat) {
     let dl = null;
     try { dl = lstatSync(dst); } catch { dl = null; }
     if (dl && dl.isSymbolicLink()) {
-      __fsCall("unlink", dst, () => __wjs_fs_unlink(dst));
+      __fsCall("unlink", dst, () => __wjs2_fs_unlink(dst));
     }
-    __fsCall("copyfile", src, () => __wjs_fs_copy_file(src, dst));
+    __fsCall("copyfile", src, () => __wjs2_fs_copy_file(src, dst));
     return;
   }
   if (o.errorOnExist) __cpEexist(dst);
@@ -359,8 +359,8 @@ function __cpOnLink(src, dst, o, destStat) {
     resolvedSrc = __cpResolve(__cpDirname(src), resolvedSrc);
   }
   if (!destStat) {
-    __fsCall("cp", dst, () => __wjs_fs_mkdir(__cpDirname(dst), true));
-    __fsCall("symlink", dst, () => __wjs_fs_symlink(resolvedSrc, dst));
+    __fsCall("cp", dst, () => __wjs2_fs_mkdir(__cpDirname(dst), true));
+    __fsCall("symlink", dst, () => __wjs2_fs_symlink(resolvedSrc, dst));
     return;
   }
   let resolvedDest;
@@ -370,7 +370,7 @@ function __cpOnLink(src, dst, o, destStat) {
     if (err && (err.code === "EINVAL" || err.code === "UNKNOWN")) {
       // dest 存在但非链接：Node 原文直调 symlinkSync（不摘除）——
       // 恒 EEXIST（copy-symlink-over-file 套件 force 缺省仍 EEXIST）。
-      __fsCall("symlink", dst, () => __wjs_fs_symlink(resolvedSrc, dst));
+      __fsCall("symlink", dst, () => __wjs2_fs_symlink(resolvedSrc, dst));
       return;
     }
     throw err;
@@ -393,8 +393,8 @@ function __cpOnLink(src, dst, o, destStat) {
     const e = new Error(`cannot overwrite ${resolvedDest} with ${resolvedSrc}`);
     e.code = "ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY"; throw e;
   }
-  __fsCall("unlink", dst, () => __wjs_fs_unlink(dst));
-  __fsCall("symlink", dst, () => __wjs_fs_symlink(resolvedSrc, dst));
+  __fsCall("unlink", dst, () => __wjs2_fs_unlink(dst));
+  __fsCall("symlink", dst, () => __wjs2_fs_symlink(resolvedSrc, dst));
 }
 // posix 路径小件（cp 链接消解专用；.. 不出根）。
 function __cpIsAbs(p) { return String(p).startsWith("/"); }
@@ -428,9 +428,9 @@ export function openSync(p, flags, mode) {
   const f = __fsFlags(flags, "open");
   const m = __fsParseMode(mode, 0o666);
   p = __fsPath(p, "open");
-  return __fsCall("open", p, () => Number(__wjs_fs_open(p, f, m)));
+  return __fsCall("open", p, () => Number(__wjs2_fs_open(p, f, m)));
 }
 export function closeSync(fd) {
   __vFd(fd);
-  __fsCall("close", "", () => __wjs_fs_close(fd));
+  __fsCall("close", "", () => __wjs2_fs_close(fd));
 }

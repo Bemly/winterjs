@@ -1,8 +1,8 @@
-//! 脚手架（plan Phase 7-e2/c-4x）：`winterjs --init/-I [name] [--yes] [--force]`。
+//! 脚手架（plan Phase 7-e2/c-4x）：`winterjs2 --init/-I [name] [--yes] [--force]`。
 //!
 //! - 模板经 `askama` 内联渲染（单体二进制，不另建模板目录）。
 //! - 生成三件：`package.json` + `index.js` + `hello.test.js`
-//!   （init 后 `winterjs test` 即绿，闭环验收）。
+//!   （init 后 `winterjs2 test` 即绿，闭环验收）。
 //! - 无配置新建、有配置重建（2026-09-13 改，旧"冲突即整体报错"作废）：
 //!   `package.json` 不存在 → 三件全建；已存在 → 采用（名沿用其 `name` 字段，
 //!   文件本体非 `--force` 不碰），只补齐缺失的 `index.js`/`hello.test.js`，
@@ -65,7 +65,7 @@ pub fn check_name(name: &str) -> Result<(), String> {
   "version": "0.1.0",
   "main": "index.js",
   "scripts": {
-    "test": "winterjs test"
+    "test": "winterjs2 test"
   },
   "license": "MIT"
 }
@@ -195,7 +195,7 @@ pub async fn init(
         crate::pm::ManifestOutcome::UpToDate => println!("dependencies up to date"),
         crate::pm::ManifestOutcome::NoManifest => {}
     }
-    tracing::info!(target: "winterjs::init", package = name.as_str(), "initialized");
+    tracing::info!(target: "winterjs2::init", package = name.as_str(), "initialized");
     Ok(())
 }
 

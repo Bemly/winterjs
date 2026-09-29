@@ -1,4 +1,4 @@
-//! 静态文件服务（plan Phase 6-d1）：`winterjs serve [dir] [--host] [--port]`。
+//! 静态文件服务（plan Phase 6-d1）：`winterjs2 serve [dir] [--host] [--port]`。
 //!
 //! - `tower-http` `ServeDir` 直服目录：mime（`mime_guess` 内建）、etag、
 //!   range（206）全由轮子提供；目录自动拼 `index.html`（行为由黑盒钉住）。
@@ -106,14 +106,14 @@ impl axum::serve::Listener for TlsListener {
             let (tcp, addr) = match self.tcp.accept().await {
                 Ok(t) => t,
                 Err(e) => {
-                    tracing::warn!(target: "winterjs::serve", "accept failed: {e}");
+                    tracing::warn!(target: "winterjs2::serve", "accept failed: {e}");
                     continue;
                 }
             };
             match self.acceptor.accept(tcp).await {
                 Ok(tls) => return (tls, addr),
                 Err(e) => {
-                    tracing::warn!(target: "winterjs::serve", "TLS handshake failed: {e}");
+                    tracing::warn!(target: "winterjs2::serve", "TLS handshake failed: {e}");
                 }
             }
         }
@@ -133,7 +133,7 @@ pub(crate) fn notify_ready() {
     use std::os::linux::net::SocketAddrExt as _;
     use std::os::unix::net::{SocketAddr, UnixDatagram};
     let Some(raw) = std::env::var_os("NOTIFY_SOCKET") else {
-        tracing::debug!(target: "winterjs::serve", "not running under systemd (no NOTIFY_SOCKET)");
+        tracing::debug!(target: "winterjs2::serve", "not running under systemd (no NOTIFY_SOCKET)");
         return;
     };
     let raw = raw.to_string_lossy().into_owned();
@@ -142,7 +142,7 @@ pub(crate) fn notify_ready() {
         match SocketAddr::from_abstract_name(name.as_bytes()) {
             Ok(a) => a,
             Err(e) => {
-                tracing::debug!(target: "winterjs::serve", "systemd notify: bad abstract socket: {e}");
+                tracing::debug!(target: "winterjs2::serve", "systemd notify: bad abstract socket: {e}");
                 return;
             }
         }
@@ -150,21 +150,21 @@ pub(crate) fn notify_ready() {
         match SocketAddr::from_pathname(std::path::Path::new(&raw)) {
             Ok(a) => a,
             Err(e) => {
-                tracing::debug!(target: "winterjs::serve", "systemd notify: bad socket path: {e}");
+                tracing::debug!(target: "winterjs2::serve", "systemd notify: bad socket path: {e}");
                 return;
             }
         }
     };
     match UnixDatagram::unbound().and_then(|sock| sock.send_to_addr(b"READY=1", &addr)) {
-        Ok(_) => tracing::debug!(target: "winterjs::serve", "systemd READY notified"),
-        Err(e) => tracing::debug!(target: "winterjs::serve", "systemd notify failed: {e}"),
+        Ok(_) => tracing::debug!(target: "winterjs2::serve", "systemd READY notified"),
+        Err(e) => tracing::debug!(target: "winterjs2::serve", "systemd notify failed: {e}"),
     }
 }
 
 /// 指标名（named 指标文档见 `docs/metrics.md`）。
-pub const METRIC_REQUESTS: &str = "winterjs_serve_requests_total";
-pub const METRIC_DURATION: &str = "winterjs_serve_request_duration_seconds";
-pub const METRIC_IN_FLIGHT: &str = "winterjs_serve_in_flight";
+pub const METRIC_REQUESTS: &str = "winterjs2_serve_requests_total";
+pub const METRIC_DURATION: &str = "winterjs2_serve_request_duration_seconds";
+pub const METRIC_IN_FLIGHT: &str = "winterjs2_serve_in_flight";
 
 /// RPS → 配额（0 表关闭；否则每 `1/rps` 秒补 1，burst=1）。
 /// 纯函数，单测覆盖。
@@ -291,7 +291,7 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     }
     #[cfg(target_os = "linux")]
     notify_ready();
-    tracing::info!(target: "winterjs::serve", %addr, scheme, dir = %root.display(), "serving");
+    tracing::info!(target: "winterjs2::serve", %addr, scheme, dir = %root.display(), "serving");
     // Prometheus 注册为全局 recorder（同进程只许一次；双 serve 本就撞端口）。
     let metrics = metrics_exporter_prometheus::PrometheusBuilder::new()
         .install_recorder()
@@ -308,7 +308,7 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
             let (start_tx, start_rx) = std::sync::mpsc::channel::<Result<(), String>>();
             let handler = path.clone();
             let thread = std::thread::Builder::new()
-                .name("winterjs-serve-js".into())
+                .name("winterjs2-serve-js".into())
                 .stack_size(16 * 1024 * 1024)
                 .spawn(move || {
                     let tokio_rt = match tokio::runtime::Builder::new_current_thread()
@@ -327,7 +327,7 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
                     });
                     // Runtime 照 §4.8 在 end_session 泄漏；线程退出即清 CONTEXT/state TLS。
                     if let Err(e) = outcome {
-                        tracing::warn!(target: "winterjs::serve", error = %e, "serve JS session ended with error");
+                        tracing::warn!(target: "winterjs2::serve", error = %e, "serve JS session ended with error");
                     }
                 })
                 .map_err(|e| Error::Other(format!("cannot spawn serve JS thread: {e}")))?;
@@ -336,7 +336,7 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
                 Ok(Err(msg)) => return Err(Error::Other(msg)),
                 Err(_) => return Err(Error::Other("serve JS session failed to start".into())),
             }
-            tracing::info!(target: "winterjs::serve", handler = %path.display(), "handler ready");
+            tracing::info!(target: "winterjs2::serve", handler = %path.display(), "handler ready");
             crate::serve_bridge::publish_serve_tx(serve_tx);
             Some(thread)
         }
@@ -345,11 +345,11 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     // 层（后调用者居外，即外→内：CORS → 压缩 → 观测 → 追踪 → 路由）。
     // CORS 取 permissive（本地静态 dev 服务；上线反代后由网关收紧，文档记录）。
     // 追踪回调手写 target（默认回调打 `tower_http::trace`，会被默认 filter
-    // `winterjs=<level>` 静默，见 §4.19）。
+    // `winterjs2=<level>` 静默，见 §4.19）。
     let trace = TraceLayer::new_for_http()
         .on_request(|req: &http::Request<axum::body::Body>, _span: &tracing::Span| {
             tracing::debug!(
-                target: "winterjs::serve",
+                target: "winterjs2::serve",
                 method = %req.method(),
                 uri = %req.uri(),
                 "request"
@@ -358,7 +358,7 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
         .on_response(
             |res: &http::Response<axum::body::Body>, latency: std::time::Duration, _span: &tracing::Span| {
                 tracing::debug!(
-                    target: "winterjs::serve",
+                    target: "winterjs2::serve",
                     status = res.status().as_u16(),
                     latency_ms = latency.as_millis() as u64,
                     "response"
@@ -368,7 +368,7 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
         .on_failure(
             |err: tower_http::classify::ServerErrorsFailureClass, latency: std::time::Duration, _span: &tracing::Span| {
                 tracing::warn!(
-                    target: "winterjs::serve",
+                    target: "winterjs2::serve",
                     %err,
                     latency_ms = latency.as_millis() as u64,
                     "request failed"
@@ -413,23 +413,23 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
                     match quinn::Endpoint::server(qserver, udp_addr) {
                         Ok(ep) => {
                             let task = tokio::spawn(serve_h3(app.clone(), ep.clone()));
-                            tracing::info!(target: "winterjs::serve", %udp_addr, "h3 listening");
+                            tracing::info!(target: "winterjs2::serve", %udp_addr, "h3 listening");
                             Some((ep, task))
                         }
                         Err(e) => {
-                            tracing::warn!(target: "winterjs::serve", "H3 UDP bind failed: {e}");
+                            tracing::warn!(target: "winterjs2::serve", "H3 UDP bind failed: {e}");
                             None
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(target: "winterjs::serve", "H3 TLS config failed: {e}");
+                    tracing::warn!(target: "winterjs2::serve", "H3 TLS config failed: {e}");
                     None
                 }
             }
         }
         None => {
-            tracing::warn!(target: "winterjs::serve", "H3 skipped (no --cert/--key)");
+            tracing::warn!(target: "winterjs2::serve", "H3 skipped (no --cert/--key)");
             None
         }
     };
@@ -449,7 +449,7 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
     if let Some((ep, task)) = h3 {
         ep.close(0u32.into(), b"shutdown");
         if task.await.is_err() {
-            tracing::warn!(target: "winterjs::serve", "H3 task panicked");
+            tracing::warn!(target: "winterjs2::serve", "H3 task panicked");
         }
     }
     if let Some(thread) = js_session {
@@ -465,14 +465,14 @@ pub async fn serve(opts: &ServeOpts) -> Result<(), Error> {
         }
         if thread.is_finished() {
             if thread.join().is_err() {
-                tracing::warn!(target: "winterjs::serve", "serve JS thread panicked");
+                tracing::warn!(target: "winterjs2::serve", "serve JS thread panicked");
             }
         } else {
-            tracing::warn!(target: "winterjs::serve", open = crate::state::serve_open(), "serve JS session did not drain in time");
+            tracing::warn!(target: "winterjs2::serve", open = crate::state::serve_open(), "serve JS session did not drain in time");
         }
         crate::serve_bridge::unpublish_serve_tx();
     }
-    tracing::info!(target: "winterjs::serve", "stopped");
+    tracing::info!(target: "winterjs2::serve", "stopped");
     Ok(())
 }
 
@@ -534,7 +534,7 @@ async fn js_fallback(
         )
     }
     let Some(tx) = crate::serve_bridge::serve_tx_global() else {
-        tracing::warn!(target: "winterjs::serve", "serve session not ready");
+        tracing::warn!(target: "winterjs2::serve", "serve session not ready");
         return Ok(empty(axum::http::StatusCode::SERVICE_UNAVAILABLE));
     };
     // scheme 随 TLS 分支（T2）：明文 http、TLS https，handler 侧 `req.url` 口径。
@@ -578,7 +578,7 @@ async fn js_fallback(
     let head = match tokio::time::timeout(std::time::Duration::from_secs(30), head_rx).await {
         Ok(Ok(h)) => h,
         _ => {
-            tracing::warn!(target: "winterjs::serve", id, "serve response head timeout");
+            tracing::warn!(target: "winterjs2::serve", id, "serve response head timeout");
             return Ok(empty(axum::http::StatusCode::GATEWAY_TIMEOUT));
         }
     };
@@ -591,7 +591,7 @@ async fn js_fallback(
             (Ok(name), Ok(val)) => {
                 builder = builder.header(name, val);
             }
-            _ => tracing::warn!(target: "winterjs::serve", id, header = %k, "dropping invalid response header"),
+            _ => tracing::warn!(target: "winterjs2::serve", id, header = %k, "dropping invalid response header"),
         }
     }
     // 响应体流式写回（Fail 即提前截断记 warn；发送端随 handler 终结，流自收尾）。
@@ -604,7 +604,7 @@ async fn js_fallback(
                 }
                 crate::serve_bridge::ServeBodyMsg::End => break,
                 crate::serve_bridge::ServeBodyMsg::Fail(e) => {
-                    tracing::warn!(target: "winterjs::serve", id, error = %e, "serve response body failed");
+                    tracing::warn!(target: "winterjs2::serve", id, error = %e, "serve response body failed");
                     break;
                 }
             }
@@ -629,7 +629,7 @@ impl axum::serve::Listener for PlainListener {
             match self.tcp.accept().await {
                 Ok(t) => return t,
                 Err(e) => {
-                    tracing::warn!(target: "winterjs::serve", "accept failed: {e}");
+                    tracing::warn!(target: "winterjs2::serve", "accept failed: {e}");
                 }
             }
         }
@@ -654,7 +654,7 @@ async fn observe(
         if let Err(wait) = lim.check() {
             use governor::clock::Clock as _;
             let secs = retry_after_secs(wait.wait_time_from(lim.clock().now()));
-            tracing::debug!(target: "winterjs::serve", "rate limited");
+            tracing::debug!(target: "winterjs2::serve", "rate limited");
             return axum::response::Response::builder()
                 .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
                 .header("retry-after", secs.to_string())
@@ -698,7 +698,7 @@ pub(crate) async fn shutdown_signal() {
                 }
             }
             Err(e) => {
-                tracing::warn!(target: "winterjs::serve", "SIGTERM handler unavailable: {e}");
+                tracing::warn!(target: "winterjs2::serve", "SIGTERM handler unavailable: {e}");
                 ctrl_c.await;
             }
         }
@@ -730,12 +730,12 @@ pub async fn serve_watch(opts: &ServeOpts, verbose: u8) -> Result<(), Error> {
     let argv = child_argv(opts, verbose)?;
     loop {
         let mut child = spawn_child(&argv)?;
-        tracing::info!(target: "winterjs::serve", pid = child.id(), "watch child spawned");
+        tracing::info!(target: "winterjs2::serve", pid = child.id(), "watch child spawned");
         tokio::select! {
             // 子自己退了（bind 失败/配置错）：不再复活，退出码透传。
             status = child.wait() => {
                 let code = status.map(|s| s.code().unwrap_or(1)).unwrap_or(1);
-                tracing::info!(target: "winterjs::serve", code, "watch child exited");
+                tracing::info!(target: "winterjs2::serve", code, "watch child exited");
                 if code == 0 {
                     return Ok(());
                 }
@@ -744,7 +744,7 @@ pub async fn serve_watch(opts: &ServeOpts, verbose: u8) -> Result<(), Error> {
             _ = shutdown_signal() => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                tracing::info!(target: "winterjs::serve", "watch stopped");
+                tracing::info!(target: "winterjs2::serve", "watch stopped");
                 return Ok(());
             }
             n = async {
@@ -819,12 +819,12 @@ fn child_argv(opts: &ServeOpts, verbose: u8) -> Result<Vec<String>, Error> {
     Ok(argv)
 }
 
-/// 起子进程（stdio 继承；`WINTERJS_SPAWN_DEPTH` 清掉——这是监管的新进程，
+/// 起子进程（stdio 继承；`WINTERJS2_SPAWN_DEPTH` 清掉——这是监管的新进程，
 /// 不是自递归（§4.209 深度闸只防递归链），带旧深度会误杀长 watch 会话）。
 fn spawn_child(argv: &[String]) -> Result<tokio::process::Child, Error> {
     let mut cmd = tokio::process::Command::new(&argv[0]);
     cmd.args(&argv[1..]);
-    cmd.env_remove("WINTERJS_SPAWN_DEPTH");
+    cmd.env_remove("WINTERJS2_SPAWN_DEPTH");
     cmd.stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
@@ -842,7 +842,7 @@ mod tests {
         // 抽象套接字收 READY=1（@ 前缀路径与 systemd 默认形态一致）
         use std::os::linux::net::SocketAddrExt as _;
         use std::os::unix::net::UnixDatagram;
-        let name = format!("winterjs-test-{}", std::process::id());
+        let name = format!("winterjs2-test-{}", std::process::id());
         let rx = UnixDatagram::bind_addr(&std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes()).unwrap()).unwrap();
         // SAFETY: #[serial] 防并行；进程级 env 仅本测试读写
         unsafe { std::env::set_var("NOTIFY_SOCKET", format!("@{name}")) };

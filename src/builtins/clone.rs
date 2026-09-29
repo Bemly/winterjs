@@ -87,7 +87,7 @@ fn to_json(cx: &mut JSContext, v: JSVal, depth: usize) -> Result<serde_json::Val
         // 纯对象：Object.entries 经 prelude 辅助拿 [key, value] 数组（绕开 IdVector）
         let call_entries = state::with_rooted(|s| s.entries_fn.get());
         if call_entries.is_undefined() {
-            return Err("__wjs_entries unavailable (prelude missing?)".into());
+            return Err("__wjs2_entries unavailable (prelude missing?)".into());
         }
         rooted!(&in(cx) let fun = call_entries);
         // 单实参：用 Handle<Value> 直构（val_root 已 rooted）；

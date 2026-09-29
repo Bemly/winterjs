@@ -1,8 +1,8 @@
 //! 日志：tracing 家族接线。
 //! 默认走 fmt 层；`--features tokio-console` 时改走 console 观测（dev 按需，见 Cargo 注释）。
-//! 过滤优先级：`WINTERJS_LOG`（EnvFilter 语法）> 配置文件 `log.filter` > `-v` 计数
+//! 过滤优先级：`WINTERJS2_LOG`（EnvFilter 语法）> 配置文件 `log.filter` > `-v` 计数
 //! （0=warn, 1=info, 2=debug, ≥3=trace）。
-//! 输出：stderr（stdout 留给程序输出）；日志文件取 `WINTERJS_LOG_FILE` > 配置文件 `log.file`。
+//! 输出：stderr（stdout 留给程序输出）；日志文件取 `WINTERJS2_LOG_FILE` > 配置文件 `log.file`。
 //! `SubscriberInitExt::init()` 在 tracing-log 特性启用时会把 log crate 记录桥接进 tracing。
 
 use std::path::PathBuf;
@@ -31,10 +31,10 @@ use tracing_subscriber::util::SubscriberInitExt;
 pub struct LogOptions {
     /// `-v` 计数（0=warn, 1=info, 2=debug, ≥3=trace）
     pub verbosity: u8,
-    /// 配置文件里的 filter（`WINTERJS_LOG` 环境变量仍优先于它）
+    /// 配置文件里的 filter（`WINTERJS2_LOG` 环境变量仍优先于它）
     pub filter: Option<String>,
     pub color: ColorChoice,
-    /// 配置文件里的日志文件（`WINTERJS_LOG_FILE` 环境变量仍优先于它）
+    /// 配置文件里的日志文件（`WINTERJS2_LOG_FILE` 环境变量仍优先于它）
     pub file: Option<PathBuf>,
 }
 
@@ -59,7 +59,7 @@ pub fn init(opts: LogOptions) {
         ColorChoice::Never => false,
         ColorChoice::Auto => std::io::stderr().is_terminal() && env::var_os("NO_COLOR").is_none(),
     };
-    let file = env::var_os("WINTERJS_LOG_FILE").map(PathBuf::from).or(opts.file);
+    let file = env::var_os("WINTERJS2_LOG_FILE").map(PathBuf::from).or(opts.file);
     let registry = tracing_subscriber::registry()
         .with(env_filter(opts.verbosity, opts.filter))
         .with(ErrorLayer::default());
@@ -77,7 +77,7 @@ pub fn init(opts: LogOptions) {
 
 #[cfg(not(feature = "tokio-console"))]
 fn env_filter(verbosity: u8, configured: Option<String>) -> EnvFilter {
-    if let Ok(spec) = env::var("WINTERJS_LOG") {
+    if let Ok(spec) = env::var("WINTERJS2_LOG") {
         if let Ok(filter) = EnvFilter::try_new(&spec) {
             return filter;
         }
@@ -94,7 +94,7 @@ fn env_filter(verbosity: u8, configured: Option<String>) -> EnvFilter {
         _ => "trace",
     };
     // 默认只对本 crate 放行，依赖库保持安静
-    EnvFilter::new(format!("winterjs={level}"))
+    EnvFilter::new(format!("winterjs2={level}"))
 }
 
 #[cfg(not(feature = "tokio-console"))]

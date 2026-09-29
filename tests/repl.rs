@@ -1,11 +1,11 @@
-//! winterjs repl 黑盒测试(对齐 src/repl.rs)。
+//! winterjs2 repl 黑盒测试(对齐 src/repl.rs)。
 
 #[test]
 fn phase7_repl_persistent_ctx() {
     // 正常：跨行持久上下文（`const` 次行可用）+ banner + exit 0。
     let (stdout, _, code) = repl_session("const x = 21\nx * 2\n.exit\n");
     assert_eq!(code, 0);
-    assert!(stdout.starts_with("winterjs repl"), "banner:\n{stdout}");
+    assert!(stdout.starts_with("winterjs2 repl"), "banner:\n{stdout}");
     assert!(stdout.contains("42\n"), "stdout:\n{stdout}");
 }
 
@@ -55,7 +55,7 @@ fn repl_bare_invocation_enters_repl() {
     // 正常：裸启动（无任何参数）直接进 REPL（node/python 同款）。
     let (stdout, _, code) = repl_session_with_args("40 + 2\n.exit\n", &[]);
     assert_eq!(code, 0);
-    assert!(stdout.starts_with("winterjs repl"), "banner:\n{stdout}");
+    assert!(stdout.starts_with("winterjs2 repl"), "banner:\n{stdout}");
     assert!(stdout.contains("42\n"), "stdout:\n{stdout}");
 }
 
@@ -65,7 +65,7 @@ fn repl_exit_functions() {
     for (input, tag) in [("exit()\n", "exit"), ("quit()\n", "quit"), ("q()\n", "q")] {
         let (stdout, stderr, code) = repl_session(input);
         assert_eq!(code, 0, "{tag}");
-        assert!(stdout.starts_with("winterjs repl"), "{tag} banner:\n{stdout}");
+        assert!(stdout.starts_with("winterjs2 repl"), "{tag} banner:\n{stdout}");
         assert!(!stderr.contains("not defined"), "{tag} stderr:\n{stderr}");
     }
 }
@@ -88,7 +88,7 @@ fn repl_error_prints_stack() {
 fn repl_exit_functions_not_in_scripts() {
     // 边界：退出函数是 REPL 专属，脚本里不可见（不污染用户全局）。
     for name in ["exit", "quit", "q"] {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs2"))
             .args(["--eval", &format!("typeof {name}")])
             .output()
             .expect("eval runs");
@@ -109,7 +109,7 @@ fn repl_session(input: &str) -> (String, String, i32) {
 fn repl_session_with_args(input: &str, args: &[&str]) -> (String, String, i32) {
     use std::io::Write;
     let home = assert_fs::TempDir::new().unwrap();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs2"))
         .args(args)
         .env("HOME", home.path())
         .stdin(std::process::Stdio::piped())
@@ -225,7 +225,7 @@ fn repl_doc_ns_pages() {
     // `.doc` 命名空间页（上游 .d.ts TSDoc 抽取）：正常出首句+Syntax节；
     // 未别名（Bun.TOML/真机无 Bun.cwd）走未知提示；非 TTY 纯文本。
     let (stdout, stderr, code) = repl_session(
-        ".doc Deno.readFile\n.doc Bun.serve\n.doc WinterJS.version\n.doc WinterJS.image.decode\n.doc Bun.TOML\n.doc Bun.cwd\n.exit\n",
+        ".doc Deno.readFile\n.doc Bun.serve\n.doc WinterJS2.version\n.doc WinterJS2.image.decode\n.doc Bun.TOML\n.doc Bun.cwd\n.exit\n",
     );
     assert_eq!(code, 0);
     assert!(
@@ -236,7 +236,7 @@ fn repl_doc_ns_pages() {
         stdout.contains("high-performance HTTP server"),
         "stdout:\n{stdout}"
     );
-    assert!(stdout.contains("winterjs version"), "stdout:\n{stdout}");
+    assert!(stdout.contains("winterjs2 version"), "stdout:\n{stdout}");
     assert!(
         stdout.contains("decodes image bytes"),
         "stdout:\n{stdout}"
@@ -256,15 +256,15 @@ fn repl_doc_ns_pages() {
 #[test]
 fn repl_empty_line_lists_globals() {
     // 空行 Tab：全局全枚举（node 真机同形），不再 NO RECORDS。
-    // 正常：含 console/fetch/globalThis 且有序；边界：无 `__wjs_` 内部面、
+    // 正常：含 console/fetch/globalThis 且有序；边界：无 `__wjs2_` 内部面、
     // completeOn 为空；会话继续。
     let (stdout, _, code) = repl_session(
-        "const r = globalThis.__wjs_cli_complete(\"\");\n\
+        "const r = globalThis.__wjs2_cli_complete(\"\");\n\
          const names = r[0].map((p) => p[0]);\n\
          console.log(\"n\", names.length > 50);\n\
          console.log(\"has\", names.includes(\"console\") && names.includes(\"fetch\") && names.includes(\"globalThis\"));\n\
          console.log(\"sorted\", JSON.stringify(names) === JSON.stringify([...names].sort()));\n\
-         console.log(\"no-internal\", names.every((n) => !n.startsWith(\"__wjs_\")));\n\
+         console.log(\"no-internal\", names.every((n) => !n.startsWith(\"__wjs2_\")));\n\
          console.log(\"on\", JSON.stringify(r[1]));\n\
          .exit\n",
     );

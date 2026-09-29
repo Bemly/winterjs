@@ -47,7 +47,7 @@ pub struct NapiEnv {
     /// escape 产物槽（`napi_escape_handle` 的存活区——scope 截断不会波及；
     /// 由各宿主入口（trampoline/loader register）按进入时水位截断回收）。
     pub escape_slots: Vec<Box<Heap<JSVal>>>,
-    /// `napi_wrap` 隐藏键（`Symbol.for("__wjs_napi_wrap")`，会话缓存；traced）。
+    /// `napi_wrap` 隐藏键（`Symbol.for("__wjs2_napi_wrap")`，会话缓存；traced）。
     pub wrap_sym: Option<Box<Heap<JSVal>>>,
     /// `napi_adjust_external_memory` 累计（Node 口径返回累计值）。
     pub external_mem: i64,

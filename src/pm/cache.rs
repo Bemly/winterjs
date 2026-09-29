@@ -3,7 +3,7 @@
 //! - key：有 `integrity`（或 shasum）时按内容寻址（`blake3(integrity)`），
 //!   与 tarball URL/registry 端口无关，换镜像仍命中；无完整性元信息时退化为
 //!   `blake3(tarball URL)`（仍能命中同一 registry 的二次安装）。
-//! - 目录：`$WINTERJS_CACHE/pkgs` > 系统缓存 `winterjs/pkgs`；都没有则跳过缓存
+//! - 目录：`$WINTERJS2_CACHE/pkgs` > 系统缓存 `winterjs2/pkgs`；都没有则跳过缓存
 //!   （直下直装，正确性优先）。
 //! - 原子性：`tmp + rename` 落盘（同盘），半写文件永不以正式名可见；
 //!   读失败/解码失败一律当 miss（只记 trace/debug，不中断安装）。
@@ -14,17 +14,17 @@ use std::path::{Path, PathBuf};
 
 /// 缓存目录（`None` 表无可用目录，调用方跳过缓存）。
 pub fn cache_dir() -> Option<PathBuf> {
-    if let Some(d) = std::env::var_os("WINTERJS_CACHE") {
+    if let Some(d) = std::env::var_os("WINTERJS2_CACHE") {
         return Some(PathBuf::from(d).join("pkgs"));
     }
-    dirs::cache_dir().map(|d| d.join("winterjs").join("pkgs"))
+    dirs::cache_dir().map(|d| d.join("winterjs2").join("pkgs"))
 }
 
 /// 内容寻址 key（hex；调用方加 `.tgz` 后缀）。
 /// 有完整性串用它（跨 registry 稳定），否则用 tarball URL。
 pub fn key_for(tarball: &str, integrity: Option<&str>) -> String {
     let mut h = blake3::Hasher::new();
-    h.update(b"winterjs-pkgcache-v1");
+    h.update(b"winterjs2-pkgcache-v1");
     h.update(&[0]);
     match integrity {
         Some(s) => {
@@ -90,11 +90,11 @@ pub fn get(tarball: &str, integrity: Option<&str>) -> Option<Vec<u8>> {
     let bytes = std::fs::read(&path).ok()?;
     // 有完整性元信息时先复验，失败即删（投毒/半写兜底，rename 后理论不可达）。
     if integrity.is_some() && verify_bytes(integrity, &bytes).is_err() {
-        tracing::warn!(target: "winterjs::pm", "tarball cache corrupt, evicting");
+        tracing::warn!(target: "winterjs2::pm", "tarball cache corrupt, evicting");
         let _ = std::fs::remove_file(&path);
         return None;
     }
-    tracing::info!(target: "winterjs::pm", "tarball cache hit");
+    tracing::info!(target: "winterjs2::pm", "tarball cache hit");
     Some(bytes)
 }
 
@@ -104,10 +104,10 @@ pub fn put(tarball: &str, integrity: Option<&str>, bytes: &[u8]) {
         return;
     };
     if atomic_write(&path, bytes).is_err() {
-        tracing::trace!(target: "winterjs::pm", "tarball cache write skip");
+        tracing::trace!(target: "winterjs2::pm", "tarball cache write skip");
         return;
     }
-    tracing::debug!(target: "winterjs::pm", bytes = bytes.len(), "tarball cache stored");
+    tracing::debug!(target: "winterjs2::pm", bytes = bytes.len(), "tarball cache stored");
 }
 
 #[cfg(test)]
@@ -131,7 +131,7 @@ mod tests {
     fn put_get_roundtrip_and_corrupt_evict() {
         let dir = tempfile::tempdir().unwrap();
         // SAFETY: 单测串行化由调用方保证（见黑盒串行策略）；此处仅本线程读写。
-        unsafe { std::env::set_var("WINTERJS_CACHE", dir.path()) };
+        unsafe { std::env::set_var("WINTERJS2_CACHE", dir.path()) };
         let data = b"fake-tgz-bytes";
         // 无 integrity：按 URL 键往返。
         put("http://example/x.tgz", None, data);
@@ -141,7 +141,7 @@ mod tests {
         std::fs::write(&p, b"corrupt").unwrap();
         // 无 integrity 时不复验，仍返回损坏内容（调用方下载后校验会拒；此处不断言驱逐）。
         assert_eq!(get("http://example/x.tgz", None).unwrap(), b"corrupt");
-        unsafe { std::env::remove_var("WINTERJS_CACHE") };
+        unsafe { std::env::remove_var("WINTERJS2_CACHE") };
     }
 
     #[test]

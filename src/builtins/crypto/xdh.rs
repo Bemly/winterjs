@@ -5,7 +5,7 @@ use super::common::*;
 use mozjs::jsval::{JSVal};
 use crate::jsapi_glue::{report_error, view_bytes, wrap_cx, Frame};
 
-/// `__wjs_x_generate()` → 32B 私钥。
+/// `__wjs2_x_generate()` → 32B 私钥。
 pub unsafe extern "C" fn x_generate(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -22,11 +22,11 @@ pub unsafe extern "C" fn x_generate(
         report_error(&mut cx, "OperationError: cannot get random values");
         return false;
     }
-    tracing::debug!(target: "winterjs::crypto", "X25519 key generated");
+    tracing::debug!(target: "winterjs2::crypto", "X25519 key generated");
     set_rval_bytes(&mut cx, &frame, &privb)
 }
 
-/// `__wjs_x_public(privU8)` → 32B pub。
+/// `__wjs2_x_public(privU8)` → 32B pub。
 pub unsafe extern "C" fn x_public(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn x_public(
     set_rval_bytes(&mut cx, &frame, publ.as_bytes())
 }
 
-/// `__wjs_x_derive(privU8, pubU8)` → 32B 共享秘密（u 坐标原样，WebCrypto 口径）。
+/// `__wjs2_x_derive(privU8, pubU8)` → 32B 共享秘密（u 坐标原样，WebCrypto 口径）。
 pub unsafe extern "C" fn x_derive(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -81,7 +81,7 @@ pub unsafe extern "C" fn x_derive(
     set_rval_bytes(&mut cx, &frame, secret.as_bytes())
 }
 
-/// `__wjs_x448_generate()` → 56B 私钥（node 口径：生成即 RFC 7748 clamp，
+/// `__wjs2_x448_generate()` → 56B 私钥（node 口径：生成即 RFC 7748 clamp，
 /// raw-private 导出与真机同形——`b[0] &= 252; b[55] |= 128`）。
 pub unsafe extern "C" fn x448_generate(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -98,11 +98,11 @@ pub unsafe extern "C" fn x448_generate(
     }
     privb[0] &= 252;
     privb[55] |= 128;
-    tracing::debug!(target: "winterjs::crypto", "X448 key generated");
+    tracing::debug!(target: "winterjs2::crypto", "X448 key generated");
     set_rval_bytes(&mut cx, &frame, &privb)
 }
 
-/// `__wjs_x448_public(privU8)` → 56B pub。
+/// `__wjs2_x448_public(privU8)` → 56B pub。
 pub unsafe extern "C" fn x448_public(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -134,7 +134,7 @@ pub(crate) fn x448_dh(privb: &[u8], publ: &[u8]) -> Option<[u8; 56]> {
     x448::x448(privb, publ)
 }
 
-/// `__wjs_x448_derive(privU8, pubU8)` → 56B 共享秘密；低阶点/全零输出 None →
+/// `__wjs2_x448_derive(privU8, pubU8)` → 56B 共享秘密；低阶点/全零输出 None →
 /// node 口径 FAILED_DURING_DERIVATION（真机 26 实测文案）。
 pub unsafe extern "C" fn x448_derive(
     cx_raw: *mut mozjs::jsapi::JSContext,

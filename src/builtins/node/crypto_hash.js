@@ -131,7 +131,7 @@ class HashImpl {
         }
       }
     }
-    this.__id = Number(__cryptCall(() => __wjs_crypto_hash_new(algorithm, String(xofLen))));
+    this.__id = Number(__cryptCall(() => __wjs2_crypto_hash_new(algorithm, String(xofLen))));
     this.__finalized = false;
     this.__xof = isXof;
     this.__flat = flat;
@@ -149,7 +149,7 @@ class HashImpl {
       throw err;
     }
     const bytes = __cryptBytes(data, "data", inputEncoding);
-    __cryptCall(() => __wjs_crypto_hash_update(String(this.__id), bytes));
+    __cryptCall(() => __wjs2_crypto_hash_update(String(this.__id), bytes));
     return this;
   }
   digest(encoding) {
@@ -159,7 +159,7 @@ class HashImpl {
       throw err;
     }
     this.__finalized = true;
-    const out = __cryptCall(() => __wjs_crypto_hash_digest(String(this.__id)));
+    const out = __cryptCall(() => __wjs2_crypto_hash_digest(String(this.__id)));
     return __outBuf(out, encoding);
   }
   copy(options) {
@@ -180,14 +180,14 @@ class HashImpl {
       }
     }
     const h = Object.create(HashImpl.prototype);
-    h.__id = Number(__cryptCall(() => __wjs_crypto_hash_copy(String(this.__id))));
+    h.__id = Number(__cryptCall(() => __wjs2_crypto_hash_copy(String(this.__id))));
     h.__finalized = false;
     h.__xof = this.__xof;
     h.__flat = this.__flat;
     // XOF：无参 copy 回默认长（真机口径，套件点名）；有参则用给定值。
     if (h.__xof) {
       const dflt = h.__flat === "shake128" ? 16 : 32;
-      __cryptCall(() => __wjs_crypto_hash_set_len(String(h.__id), v === undefined ? dflt : v));
+      __cryptCall(() => __wjs2_crypto_hash_set_len(String(h.__id), v === undefined ? dflt : v));
     }
     return h;
   }
@@ -198,7 +198,7 @@ class HashImpl {
     if (this.__finalized) return this;
     if (chunk !== undefined) this.update(chunk, encoding);
     this.__finalized = true;
-    const out = __cryptCall(() => __wjs_crypto_hash_digest(String(this.__id)));
+    const out = __cryptCall(() => __wjs2_crypto_hash_digest(String(this.__id)));
     this.__streamOut = __outBuf(out, undefined);
     return this;
   }
@@ -237,14 +237,14 @@ function __hmacBlockLen(flat) {
 }
 // 通用 HMAC 构造（RFC 2104），架在自家流式 Hash natives 上：
 // sha3 系与 hmac 0.13 的 block-API 不兼容，故 SHA-2 系同样走此路（输出与
-// `__wjs_hmac_sign` 逐字节一致，黑盒以真 Node 向量钉住）。
+// `__wjs2_hmac_sign` 逐字节一致，黑盒以真 Node 向量钉住）。
 function __hmacGeneric(flat, keyBytes, dataBytes) {
   const block = __hmacBlockLen(flat);
   let key = keyBytes;
   if (key.length > block) {
-    const h = Number(__wjs_crypto_hash_new(flat));
-    __wjs_crypto_hash_update(String(h), key);
-    key = __wjs_crypto_hash_digest(String(h));
+    const h = Number(__wjs2_crypto_hash_new(flat));
+    __wjs2_crypto_hash_update(String(h), key);
+    key = __wjs2_crypto_hash_digest(String(h));
   }
   const padded = new Uint8Array(block);
   padded.set(key);
@@ -253,14 +253,14 @@ function __hmacGeneric(flat, keyBytes, dataBytes) {
   for (let i = 0; i < block; i++) { ipad[i] = padded[i] ^ 0x36; opad[i] = padded[i] ^ 0x5c; }
   const inner = new Uint8Array(block + dataBytes.length);
   inner.set(ipad, 0); inner.set(dataBytes, block);
-  const hi = Number(__wjs_crypto_hash_new(flat));
-  __wjs_crypto_hash_update(String(hi), inner);
-  const innerDigest = __wjs_crypto_hash_digest(String(hi));
+  const hi = Number(__wjs2_crypto_hash_new(flat));
+  __wjs2_crypto_hash_update(String(hi), inner);
+  const innerDigest = __wjs2_crypto_hash_digest(String(hi));
   const outer = new Uint8Array(block + innerDigest.length);
   outer.set(opad, 0); outer.set(innerDigest, block);
-  const ho = Number(__wjs_crypto_hash_new(flat));
-  __wjs_crypto_hash_update(String(ho), outer);
-  return __wjs_crypto_hash_digest(String(ho));
+  const ho = Number(__wjs2_crypto_hash_new(flat));
+  __wjs2_crypto_hash_update(String(ho), outer);
+  return __wjs2_crypto_hash_digest(String(ho));
 }
 
 class HmacImpl {
@@ -386,9 +386,9 @@ export function createHmac(hamc, key, options) {
 export function hash(algorithm, data, outputEncoding) {
   __needStr(algorithm, "algorithm");
   const bytes = __cryptBytes(data, "data");
-  const probe = __cryptCall(() => __wjs_crypto_hash_new(algorithm));
-  __cryptCall(() => __wjs_crypto_hash_update(probe, bytes));
-  const out = __cryptCall(() => __wjs_crypto_hash_digest(probe));
+  const probe = __cryptCall(() => __wjs2_crypto_hash_new(algorithm));
+  __cryptCall(() => __wjs2_crypto_hash_update(probe, bytes));
+  const out = __cryptCall(() => __wjs2_crypto_hash_digest(probe));
   if (outputEncoding === undefined) return __outBuf(out, undefined);
   // 10f crypto二轮：'buffer' 编码（大小写不敏感）即回 Buffer（真机口径）。
   if (String(outputEncoding).toLowerCase() === "buffer") return __outBuf(out, undefined);
@@ -416,7 +416,7 @@ function __randSize(size) {
   return size;
 }
 function __randFill(view) {
-  __wjs_fill_random(view);
+  __wjs2_fill_random(view);
   return view;
 }
 export function randomBytes(size, callback) {
@@ -544,7 +544,7 @@ function __checkUuidOptions(options) {
 }
 export function randomUUID(options) {
   __checkUuidOptions(options);
-  return __wjs_random_uuid();
+  return __wjs2_random_uuid();
 }
 export function randomUUIDv7(options) {
   __checkUuidOptions(options);

@@ -1,6 +1,6 @@
 // node:net TCP echo: server + client on loopback in one file.
 // TCP 回声：同一文件起服务与客户端（回环）。
-// Run / 运行: winterjs --run sample/net/tcp.js
+// Run / 运行: winterjs2 --run sample/net/tcp.js
 import net from 'node:net';
 
 const server = net.createServer((socket) => {

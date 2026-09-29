@@ -51,7 +51,7 @@ fn open_worker(path: String) -> Result<NodeSqliteWorker, String> {
     let (req_tx, req_rx) = crossbeam_channel::unbounded::<NodeSqliteOp>();
     let (resp_tx, resp_rx) = crossbeam_channel::unbounded::<Result<serde_json::Value, String>>();
     let spawned = std::thread::Builder::new()
-        .name("winterjs-nsqlite".into())
+        .name("winterjs2-nsqlite".into())
         .spawn(move || worker_main(path, req_rx, resp_tx));
     spawned.map_err(|e| format!("failed to spawn sqlite worker: {e}"))?;
     match resp_rx.recv() {
@@ -311,7 +311,7 @@ fn json_string(cx: &mut JSContext, v: &serde_json::Value) -> JSVal {
     r.get()
 }
 
-/// `__wjs_nsqlite_open(path)` → id。
+/// `__wjs2_nsqlite_open(path)` → id。
 pub unsafe extern "C" fn nsqlite_open(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -343,7 +343,7 @@ pub unsafe extern "C" fn nsqlite_open(
     }
 }
 
-/// `__wjs_nsqlite_exec(id, sql)`。
+/// `__wjs2_nsqlite_exec(id, sql)`。
 pub unsafe extern "C" fn nsqlite_exec(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -369,7 +369,7 @@ pub unsafe extern "C" fn nsqlite_exec(
     }
 }
 
-/// `__wjs_nsqlite_run(id, sql, paramsJson, named)` → `{changes, lastInsertRowid}`。
+/// `__wjs2_nsqlite_run(id, sql, paramsJson, named)` → `{changes, lastInsertRowid}`。
 pub unsafe extern "C" fn nsqlite_run(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -392,7 +392,7 @@ pub unsafe extern "C" fn nsqlite_run(
     }
 }
 
-/// `__wjs_nsqlite_rows(id, sql, paramsJson, named)` → `{columns, rows}`。
+/// `__wjs2_nsqlite_rows(id, sql, paramsJson, named)` → `{columns, rows}`。
 pub unsafe extern "C" fn nsqlite_rows(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -415,7 +415,7 @@ pub unsafe extern "C" fn nsqlite_rows(
     }
 }
 
-/// `__wjs_nsqlite_cols(id, sql)` → 列元数据数组。
+/// `__wjs2_nsqlite_cols(id, sql)` → 列元数据数组。
 pub unsafe extern "C" fn nsqlite_cols(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -441,7 +441,7 @@ pub unsafe extern "C" fn nsqlite_cols(
     }
 }
 
-/// `__wjs_nsqlite_close(id)`（幂等）。
+/// `__wjs2_nsqlite_close(id)`（幂等）。
 pub unsafe extern "C" fn nsqlite_close(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -579,7 +579,7 @@ function callNative(fn, ...a) {
   }
 }
 function ensureOpen(db) {
-  if (!db.__wjs_open) {
+  if (!db.__wjs2_open) {
     const e = new Error("database is not open");
     e.code = "ERR_INVALID_STATE";
     throw e;
@@ -593,33 +593,33 @@ export class StatementSync {
       e.code = "ERR_INVALID_ARG_VALUE";
       throw e;
     }
-    this.__wjs_db = db;
-    this.__wjs_sql = sql;
+    this.__wjs2_db = db;
+    this.__wjs2_sql = sql;
     __stmtFlags.set(this, { returnArrays: false, readBigInts: false, allowUnknown: false, allowBare: true });
   }
-  get sourceSQL() { return this.__wjs_sql; }
+  get sourceSQL() { return this.__wjs2_sql; }
   get expandedSQL() {
     // 未绑定时命名占位即 NULL（真机口径近似）
-    let out = this.__wjs_sql;
-    for (const k of namedKeys(this.__wjs_sql)) out = out.split(k).join("NULL");
+    let out = this.__wjs2_sql;
+    for (const k of namedKeys(this.__wjs2_sql)) out = out.split(k).join("NULL");
     return out;
   }
   __params(args) {
     const fl = __stmtFlags.get(this);
-    return buildParams(this.__wjs_sql, args, fl.allowUnknown);
+    return buildParams(this.__wjs2_sql, args, fl.allowUnknown);
   }
   __rows(args) {
-    const db = this.__wjs_db;
+    const db = this.__wjs2_db;
     ensureOpen(db);
     const { json, named } = this.__params(args);
-    const text = callNative(__wjs_nsqlite_rows, db.__wjs_id, this.__wjs_sql, json, named);
+    const text = callNative(__wjs2_nsqlite_rows, db.__wjs2_id, this.__wjs2_sql, json, named);
     return JSON.parse(text);
   }
   run(...args) {
-    const db = this.__wjs_db;
+    const db = this.__wjs2_db;
     ensureOpen(db);
     const { json, named } = this.__params(args);
-    const text = callNative(__wjs_nsqlite_run, db.__wjs_id, this.__wjs_sql, json, named);
+    const text = callNative(__wjs2_nsqlite_run, db.__wjs2_id, this.__wjs2_sql, json, named);
     return JSON.parse(text);
   }
   get(...args) {
@@ -647,9 +647,9 @@ export class StatementSync {
     for (const row of this.all(...args)) yield row;
   }
   columns() {
-    const db = this.__wjs_db;
+    const db = this.__wjs2_db;
     ensureOpen(db);
-    const text = callNative(__wjs_nsqlite_cols, db.__wjs_id, this.__wjs_sql);
+    const text = callNative(__wjs2_nsqlite_cols, db.__wjs2_id, this.__wjs2_sql);
     return JSON.parse(text);
   }
   setAllowBareNamedParameters(v) { __stmtFlags.get(this).allowBare = !!v; }
@@ -665,25 +665,25 @@ export class DatabaseSync {
       e.code = "ERR_INVALID_ARG_VALUE";
       throw e;
     }
-    this.__wjs_path = path;
-    this.__wjs_readonly = !!opts.readOnly;
-    this.__wjs_open = false;
-    this.__wjs_id = 0;
+    this.__wjs2_path = path;
+    this.__wjs2_readonly = !!opts.readOnly;
+    this.__wjs2_open = false;
+    this.__wjs2_id = 0;
     if (opts.open !== false) this.open();
   }
-  get isOpen() { return this.__wjs_open; }
-  location() { return this.__wjs_path === ":memory:" ? null : this.__wjs_path; }
+  get isOpen() { return this.__wjs2_open; }
+  location() { return this.__wjs2_path === ":memory:" ? null : this.__wjs2_path; }
   open() {
-    if (this.__wjs_open) return;
-    const id = callNative(__wjs_nsqlite_open, this.__wjs_path);
-    this.__wjs_id = Number(id);
-    this.__wjs_open = true;
+    if (this.__wjs2_open) return;
+    const id = callNative(__wjs2_nsqlite_open, this.__wjs2_path);
+    this.__wjs2_id = Number(id);
+    this.__wjs2_open = true;
   }
   close() {
-    if (!this.__wjs_open) return;
-    try { callNative(__wjs_nsqlite_close, this.__wjs_id); } catch {}
-    this.__wjs_open = false;
-    this.__wjs_id = 0;
+    if (!this.__wjs2_open) return;
+    try { callNative(__wjs2_nsqlite_close, this.__wjs2_id); } catch {}
+    this.__wjs2_open = false;
+    this.__wjs2_id = 0;
   }
   exec(sql) {
     ensureOpen(this);
@@ -692,13 +692,13 @@ export class DatabaseSync {
       e.code = "ERR_INVALID_ARG_VALUE";
       throw e;
     }
-    callNative(__wjs_nsqlite_exec, this.__wjs_id, sql);
+    callNative(__wjs2_nsqlite_exec, this.__wjs2_id, sql);
   }
   prepare(sql) {
     ensureOpen(this);
     const st = new StatementSync(this, sql);
     // 真机口径：坏 SQL 在 prepare 期即抛（turso 列元数据只备不步进，无副作用）
-    callNative(__wjs_nsqlite_cols, this.__wjs_id, sql);
+    callNative(__wjs2_nsqlite_cols, this.__wjs2_id, sql);
     return st;
   }
 }

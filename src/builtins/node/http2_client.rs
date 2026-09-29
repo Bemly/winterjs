@@ -372,7 +372,7 @@ async fn drive_session<S>(
     }
 }
 
-/// `__wjs_h2_connect(host, port, optsJson, target)` → session id。
+/// `__wjs2_h2_connect(host, port, optsJson, target)` → session id。
 pub unsafe extern "C" fn h2_connect(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

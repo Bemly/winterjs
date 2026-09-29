@@ -1,8 +1,8 @@
-//! `winterjs lint/fmt`：外部工具命令穿透（plan Phase 8-a，2026-09-11 用户拍板）。
+//! `winterjs2 lint/fmt`：外部工具命令穿透（plan Phase 8-a，2026-09-11 用户拍板）。
 //!
-//! `winterjs lint ...` → `oxlint ...`、`winterjs fmt ...` → `oxfmt ...`：
+//! `winterjs2 lint ...` → `oxlint ...`、`winterjs2 fmt ...` → `oxfmt ...`：
 //! 参数原样转发、stdout/stderr 继承、退出码透传（非零经 `Error::Exit` 静默退出）。
-//! 不在 winterjs 内重新定义语义（oxfmt 默认写回、`--check` 做 CI 检查，均为
+//! 不在 winterjs2 内重新定义语义（oxfmt 默认写回、`--check` 做 CI 检查，均为
 //! 上游语义直通）。
 //!
 //! 查找顺序：① 项目本地 `node_modules/.bin/`——从 cwd 逐级向上（monorepo：
@@ -65,11 +65,11 @@ fn resolve_in(
     path_lookup: impl Fn(&str) -> Option<PathBuf>,
 ) -> Result<PathBuf, Error> {
     if let Some(p) = find_local_from(base, tool) {
-        tracing::debug!(target: "winterjs::lintfmt", tool, exe = %p.display(), "local bin");
+        tracing::debug!(target: "winterjs2::lintfmt", tool, exe = %p.display(), "local bin");
         return Ok(p);
     }
     if let Some(p) = path_lookup(tool) {
-        tracing::debug!(target: "winterjs::lintfmt", tool, exe = %p.display(), "PATH bin");
+        tracing::debug!(target: "winterjs2::lintfmt", tool, exe = %p.display(), "PATH bin");
         return Ok(p);
     }
     Err(Error::Other(install_hint(tool)))
@@ -80,7 +80,7 @@ fn resolve_in(
 fn install_hint(tool: &str) -> String {
     format!(
         "{tool} was not found (looked in node_modules/.bin up the directory tree, then PATH).\n\
-         Install the standalone binary with:\n  winterjs --add '{tool}@release:github/oxc-project/oxc@<tag>/{tool}'\n\
+         Install the standalone binary with:\n  winterjs2 --add '{tool}@release:github/oxc-project/oxc@<tag>/{tool}'\n\
          (pick <tag> from https://github.com/oxc-project/oxc/releases;\n \
          the npm '{tool}' package needs node, do not use it without node)"
     )
@@ -90,7 +90,7 @@ fn install_hint(tool: &str) -> String {
 /// stdout/stderr 继承（用户终端直出）；退出码透传。
 pub fn run(tool: &str, args: &[String]) -> Result<(), Error> {
     let exe = resolve(tool, which_real)?;
-    tracing::info!(target: "winterjs::lintfmt", tool, exe = %exe.display(), argc = args.len(), "forwarding");
+    tracing::info!(target: "winterjs2::lintfmt", tool, exe = %exe.display(), argc = args.len(), "forwarding");
     let status = if cfg!(windows) && exe.extension().is_some_and(|e| e == "cmd" || e == "bat") {
         // .cmd/.bat 无法直接 exec，经 cmd /C 起子进程
         std::process::Command::new("cmd")
@@ -103,7 +103,7 @@ pub fn run(tool: &str, args: &[String]) -> Result<(), Error> {
     }
     .map_err(|e| Error::Other(format!("failed to run '{}': {e}", exe.display())))?;
     let code = status.code().unwrap_or(-1);
-    tracing::info!(target: "winterjs::lintfmt", tool, code, "forwarded exit");
+    tracing::info!(target: "winterjs2::lintfmt", tool, code, "forwarded exit");
     match status.code() {
         Some(0) => Ok(()),
         Some(c) => Err(Error::Exit(c)),

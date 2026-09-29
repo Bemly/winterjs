@@ -209,7 +209,7 @@ pub fn load_cwd_and_home(cwd: &Path) -> (Npmrc, Npmrc) {
     let project = Npmrc::load(&cwd.join(".npmrc"));
     let home = dirs::home_dir().map(|h| Npmrc::load(&h.join(".npmrc"))).unwrap_or_default();
     tracing::debug!(
-        target: "winterjs::pm",
+        target: "winterjs2::pm",
         has_project_registry = project.registry().is_some(),
         has_home_registry = home.registry().is_some(),
         has_scoped = project.has_scoped_registry() || home.has_scoped_registry(),

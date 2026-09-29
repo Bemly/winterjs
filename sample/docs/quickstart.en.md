@@ -5,7 +5,7 @@ lang: en
 stub: quickstart
 permalink: /en/quickstart/
 ---
-# winterjs Quickstart
+# winterjs2 Quickstart
 
 > 5-minute path from zero to running JavaScript. 中文版见 [快速上手](../zh/quickstart/).
 
@@ -17,23 +17,23 @@ export SDKROOT="$(xcrun --show-sdk-path)"          # macOS, needed every new she
 export LIBCLANG_PATH="/opt/homebrew/opt/llvm/lib"
 export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 
-./target/debug/winterjs --eval '40 + 2'            # → 42
+./target/debug/winterjs2 --eval '40 + 2'            # → 42
 ```
 
 ## 2. Run a file, evaluate code, start a REPL
 
 ```bash
-./target/debug/winterjs --run sample/web/timers.js  # run a JS file, print completion value
-./target/debug/winterjs --eval 'await Promise.resolve(7)'  # → 7
-./target/debug/winterjs --repl                       # interactive REPL (Ctrl-D to exit)
+./target/debug/winterjs2 --run sample/web/timers.js  # run a JS file, print completion value
+./target/debug/winterjs2 --eval 'await Promise.resolve(7)'  # → 7
+./target/debug/winterjs2 --repl                       # interactive REPL (Ctrl-D to exit)
 ```
 
 Rules (see [CLI reference](cli/)):
 
 * **Exactly one action per invocation**: `--run a.js --eval 1` is an error.
-* **No bare subcommands / positional actions**: `winterjs a.js` is an error —
-  write `winterjs --run a.js`. Only script arguments go after `--`: 
-  `winterjs --run app.js -- --port 8080`.
+* **No bare subcommands / positional actions**: `winterjs2 a.js` is an error —
+  write `winterjs2 --run a.js`. Only script arguments go after `--`: 
+  `winterjs2 --run app.js -- --port 8080`.
 * **Modifiers belong to their action**: `--port` only works with `--serve`,
   `--filter` only with `--test`, `--watch` with `--test/--run/--serve`,
   `--schema` only with `--config`,
@@ -54,7 +54,7 @@ console.log(await res.text()); // hi
 ```
 
 ```bash
-./target/debug/winterjs --run hello.mjs
+./target/debug/winterjs2 --run hello.mjs
 ```
 
 CommonJS also works (`require`, `module.exports`, `__dirname`).
@@ -62,12 +62,12 @@ CommonJS also works (`require`, `module.exports`, `__dirname`).
 ## 4. Run tests, lint, format, serve
 
 ```bash
-./target/debug/winterjs --test sample/test-runner/   # discover + run test files
-./target/debug/winterjs --test sample/test-runner/ --filter 'basics*'
-./target/debug/winterjs --test sample/test-runner/ --watch   # re-run on change (Ctrl-C to stop)
-./target/debug/winterjs --lint -- --help              # forwarded to oxlint verbatim
-./target/debug/winterjs --fmt                         # forwarded to oxfmt
-./target/debug/winterjs --serve sample/serve-hello/public --port 8080 \
+./target/debug/winterjs2 --test sample/test-runner/   # discover + run test files
+./target/debug/winterjs2 --test sample/test-runner/ --filter 'basics*'
+./target/debug/winterjs2 --test sample/test-runner/ --watch   # re-run on change (Ctrl-C to stop)
+./target/debug/winterjs2 --lint -- --help              # forwarded to oxlint verbatim
+./target/debug/winterjs2 --fmt                         # forwarded to oxfmt
+./target/debug/winterjs2 --serve sample/serve-hello/public --port 8080 \
   --handler sample/serve-hello/handler.mjs            # static + dynamic fetch + WS
 ```
 

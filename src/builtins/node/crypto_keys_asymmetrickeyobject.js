@@ -104,8 +104,8 @@ function __ecSec1Der(s) {
     err.code = "ERR_INVALID_ARG_VALUE";
     throw err;
   }
-  const pubDer = __cryptCall(() => __wjs_ec_public(curve, s.material));
-  const jwk = JSON.parse(__cryptCall(() => __wjs_ec_jwk(curve, s.material, pubDer)));
+  const pubDer = __cryptCall(() => __wjs2_ec_public(curve, s.material));
+  const jwk = JSON.parse(__cryptCall(() => __wjs2_ec_jwk(curve, s.material, pubDer)));
   const d = __b64urlDec(jwk.d);
   const point = Buffer.concat([Buffer.from([4]), __b64urlDec(jwk.x), __b64urlDec(jwk.y)]);
   const oid = Buffer.from(oidHex, "hex");

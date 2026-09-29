@@ -101,7 +101,7 @@ pub unsafe extern "C" fn napi_call_function(
     result: *mut napi_value,
 ) -> napi_status {
     // SAFETY：env 有效（前置）；helper 名为静态 CStr。
-    unsafe { call_impl(env, c"__wjs_napi_call", recv, func, argc, argv, result) }
+    unsafe { call_impl(env, c"__wjs2_napi_call", recv, func, argc, argv, result) }
 }
 
 /// # Safety
@@ -120,5 +120,5 @@ pub unsafe extern "C" fn napi_make_callback(
     // 不消费，M3 TSFN/async_work 再议）；调用语义与 call_function 一致。
     let _ = async_context;
     // SAFETY：同 call_function。
-    unsafe { call_impl(env, c"__wjs_napi_call", recv, func, argc, argv, result) }
+    unsafe { call_impl(env, c"__wjs2_napi_call", recv, func, argc, argv, result) }
 }

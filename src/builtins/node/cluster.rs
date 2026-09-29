@@ -4,7 +4,7 @@
 //! 真多进程语义不做（书面记档）：无独立进程/env 隔离/signal 语义；
 //! `worker.process` 为最小桩（pid=线程 id）；`listening` 事件不发
 //! （server 共享需 fd 传递，线程底座无此能力）；scheduling 仅存值。
-//! Worker 判定走 `workerData.__wjs_cluster`（不污染 `process.env`）；
+//! Worker 判定走 `workerData.__wjs2_cluster`（不污染 `process.env`）；
 //! `fork(env)` 的 env 在子端合入 `process.env`（底座 env 表进程共享，
 //! 可见性属偏差，测试用唯一键名隔离）。
 
@@ -52,35 +52,35 @@ function __clusterDoDisconnect(local) {
   if (!process.connected) return;
   process.connected = false;
   if (!local) {
-    try { parentPort.postMessage({ __wjs_cluster_ctl: "disconnect" }); } catch {}
+    try { parentPort.postMessage({ __wjs2_cluster_ctl: "disconnect" }); } catch {}
   }
   queueMicrotask(() => { try { parentPort.close(); } catch {} });
-  process.__wjs_emit("disconnect");
+  process.__wjs2_emit("disconnect");
 }
 process.disconnect = () => __clusterDoDisconnect(false);
 if (parentPort !== null) {
   parentPort.on("message", (message) => {
     if (message !== null && typeof message === "object" && !Array.isArray(message) &&
-        message.__wjs_cluster_ctl === "disconnect") {
+        message.__wjs2_cluster_ctl === "disconnect") {
       __clusterDoDisconnect(true);
       return;
     }
-    process.__wjs_emit("message", message);
+    process.__wjs2_emit("message", message);
   });
   parentPort.on("close", () => {
     if (process.connected) {
       process.connected = false;
-      process.__wjs_emit("disconnect");
+      process.__wjs2_emit("disconnect");
     }
   });
-  try { parentPort.postMessage({ __wjs_cluster_ctl: "online" }); } catch {}
+  try { parentPort.postMessage({ __wjs2_cluster_ctl: "online" }); } catch {}
 }
 await import(__mod);
 `;
 
 const __isClusterWorker =
-  !isMainThread && !!workerData && !!workerData.__wjs_cluster;
-const __myId = __isClusterWorker ? workerData.__wjs_cluster.id : 0;
+  !isMainThread && !!workerData && !!workerData.__wjs2_cluster;
+const __myId = __isClusterWorker ? workerData.__wjs2_cluster.id : 0;
 
 export const isWorker = __isClusterWorker;
 export const isPrimary = !__isClusterWorker;
@@ -132,7 +132,7 @@ class ClusterWorker extends EventEmitter {
   disconnect() {
     if (!this.__connected) return;
     this.suicide = true;
-    try { this.__w.postMessage({ __wjs_cluster_ctl: "disconnect" }); } catch {}
+    try { this.__w.postMessage({ __wjs2_cluster_ctl: "disconnect" }); } catch {}
     this.__onDisconnect();
   }
   kill(signal) {
@@ -239,16 +239,16 @@ class Cluster extends EventEmitter {
       .replace("__CLUSTER_MOD__", () => JSON.stringify(fileUrl))
       .replace("__CLUSTER_ARGS__", () => JSON.stringify(argsArr))
       .replace("__CLUSTER_ENV__", () => JSON.stringify(envObj));
-    const w = new ThreadWorker(src, { eval: true, workerData: { __wjs_cluster: { id } }, __wjs_forkChild: true });
+    const w = new ThreadWorker(src, { eval: true, workerData: { __wjs2_cluster: { id } }, __wjs2_forkChild: true });
     const worker = new ClusterWorker(id, w);
     __workers[id] = worker;
     w.on("message", (m) => {
-      if (m !== null && typeof m === "object" && !Array.isArray(m) && typeof m.__wjs_cluster_ctl === "string") {
-        if (m.__wjs_cluster_ctl === "online") {
+      if (m !== null && typeof m === "object" && !Array.isArray(m) && typeof m.__wjs2_cluster_ctl === "string") {
+        if (m.__wjs2_cluster_ctl === "online") {
           worker.__online = true;
           worker.emit("online");
           cluster.emit("online", worker);
-        } else if (m.__wjs_cluster_ctl === "disconnect") {
+        } else if (m.__wjs2_cluster_ctl === "disconnect") {
           worker.suicide = true;
           worker.__onDisconnect();
         }

@@ -1,4 +1,4 @@
-//! CLI 双语 locale 解析：`-l/--lang` > `WINTERJS_LANG` > 系统语言 > `en`。
+//! CLI 双语 locale 解析：`-l/--lang` > `WINTERJS2_LANG` > 系统语言 > `en`。
 //!
 //! 解析全是纯函数（argv/env/系统语言三源注入），可单测；唯一的副作用
 //! （`rust_i18n::set_locale`）只发生在 `init_from_argv`，由 `main` 在解析
@@ -9,7 +9,7 @@ pub const SUPPORTED: &[&str] = &["en", "zh"];
 /// 缺省/未知一律回英文（英文 yml 与 `cli.rs` 原文逐字节一致，默认输出不变）。
 pub const FALLBACK: &str = "en";
 /// 环境变量覆盖（优先级低于显式 flag，高于系统语言）。
-pub const ENV_VAR: &str = "WINTERJS_LANG";
+pub const ENV_VAR: &str = "WINTERJS2_LANG";
 
 /// `zh-CN`/`zh_HK` → `zh`，`en-US` → `en`，其余未知 → `en`（只做中英双语）。
 pub fn normalize(raw: &str) -> &'static str {

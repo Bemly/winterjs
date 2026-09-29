@@ -211,7 +211,7 @@ pub(crate) fn bind_tcp_reuseport(addr_str: &str) -> std::io::Result<std::net::Tc
     std::net::TcpListener::bind(addr_str)
 }
 
-/// `__wjs_net_unhold(token)`：释放 BoundSocket TCP 占位 listener（close/adopt；未知 token 静默）。
+/// `__wjs2_net_unhold(token)`：释放 BoundSocket TCP 占位 listener（close/adopt；未知 token 静默）。
 pub unsafe extern "C" fn net_unhold(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -227,7 +227,7 @@ pub unsafe extern "C" fn net_unhold(
     true
 }
 
-/// `__wjs_net_fd(token)` → fd 串（BoundSocket fd() 真 fd 面；未知回 "-1"）。
+/// `__wjs2_net_fd(token)` → fd 串（BoundSocket fd() 真 fd 面；未知回 "-1"）。
 pub unsafe extern "C" fn net_fd(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -243,7 +243,7 @@ pub unsafe extern "C" fn net_fd(
     true
 }
 
-/// `__wjs_net_ref(id)` / `__wjs_net_unref(id)`：ref 真计数（10a；未知 id 静默，
+/// `__wjs2_net_ref(id)` / `__wjs2_net_unref(id)`：ref 真计数（10a；未知 id 静默，
 /// Node 口径 ref/unref 不抛）。
 pub unsafe extern "C" fn net_ref(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -276,7 +276,7 @@ pub unsafe extern "C" fn net_unref(
     true
 }
 
-/// `__wjs_net_halfhold(id)`：半开摘续命（G11；对端 FIN 后 JS 侧半开持有即不续命，
+/// `__wjs2_net_halfhold(id)`：半开摘续命（G11；对端 FIN 后 JS 侧半开持有即不续命，
 /// 真机同款——读停转后空闲句柄不 ref 循环；写侧仍可用，收尾 Close 照常；
 /// 未知 id 静默，不抛）。
 /// SAFETY: 同 net_ref。

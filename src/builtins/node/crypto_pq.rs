@@ -156,7 +156,7 @@ pub(crate) fn mlkem_expand(kind: &str, seed: &[u8; 64]) -> Result<(Vec<u8>, Vec<
     Err("NotSupportedError: unsupported ml-kem parameter set".into())
 }
 
-/// `__wjs_mlkem_gen(kind)` → JSON `{pkcs8, spki}`（b64；种子 getrandom 自造）。
+/// `__wjs2_mlkem_gen(kind)` → JSON `{pkcs8, spki}`（b64；种子 getrandom 自造）。
 pub unsafe extern "C" fn mlkem_gen(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -193,7 +193,7 @@ pub unsafe extern "C" fn mlkem_gen(
     }
 }
 
-/// `__wjs_mlkem_seed_from_pkcs8(der)` → JSON `{kind, spki}`（b64；导入即展开校验）。
+/// `__wjs2_mlkem_seed_from_pkcs8(der)` → JSON `{kind, spki}`（b64；导入即展开校验）。
 pub unsafe extern "C" fn mlkem_seed_from_pkcs8(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -237,7 +237,7 @@ pub unsafe extern "C" fn mlkem_seed_from_pkcs8(
     }
 }
 
-/// `__wjs_mlkem_kind_from_spki(der)` → kind 串（OID + ek 长度校验，失败回空串）。
+/// `__wjs2_mlkem_kind_from_spki(der)` → kind 串（OID + ek 长度校验，失败回空串）。
 pub unsafe extern "C" fn mlkem_kind_from_spki(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -298,7 +298,7 @@ macro_rules! mlkem_decaps_case {
     };
 }
 
-/// `__wjs_mlkem_encaps(keyDer, isPriv)` → JSON `{ct, sk}`（b64）。
+/// `__wjs2_mlkem_encaps(keyDer, isPriv)` → JSON `{ct, sk}`（b64）。
 /// keyDer：isPriv=0 为 SPKI（ek 直用），=1 为 PKCS#8（种子展开）。
 pub unsafe extern "C" fn mlkem_encaps(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -376,7 +376,7 @@ pub unsafe extern "C" fn mlkem_encaps(
     }
 }
 
-/// `__wjs_mlkem_decaps(pkcs8Der, ct)` → 32B 共享密钥；长度不对报
+/// `__wjs2_mlkem_decaps(pkcs8Der, ct)` → 32B 共享密钥；长度不对报
 /// `ERR_CRYPTO_OPERATION_FAILED`（等长坏文按 FIPS 203 走隐式拒绝，不报错）。
 pub unsafe extern "C" fn mlkem_decaps(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -487,7 +487,7 @@ pub(crate) fn mldsa_expand(kind: &str, seed: &[u8; 32]) -> Result<(Vec<u8>, Vec<
     Err("NotSupportedError: unsupported ml-dsa parameter set".into())
 }
 
-/// `__wjs_mldsa_gen(kind)` → JSON `{pkcs8, spki}`（b64；种子 getrandom 自造）。
+/// `__wjs2_mldsa_gen(kind)` → JSON `{pkcs8, spki}`（b64；种子 getrandom 自造）。
 pub unsafe extern "C" fn mldsa_gen(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -524,7 +524,7 @@ pub unsafe extern "C" fn mldsa_gen(
     }
 }
 
-/// `__wjs_mldsa_seed_from_pkcs8(der)` → JSON `{kind, seed, spki}`（b64；导入即展开校验）。
+/// `__wjs2_mldsa_seed_from_pkcs8(der)` → JSON `{kind, seed, spki}`（b64；导入即展开校验）。
 pub unsafe extern "C" fn mldsa_seed_from_pkcs8(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -561,7 +561,7 @@ pub unsafe extern "C" fn mldsa_seed_from_pkcs8(
     }
 }
 
-/// `__wjs_mldsa_kind_from_spki(der)` → kind 串（OID + pk 长度校验，失败回空串）。
+/// `__wjs2_mldsa_kind_from_spki(der)` → kind 串（OID + pk 长度校验，失败回空串）。
 pub unsafe extern "C" fn mldsa_kind_from_spki(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -581,7 +581,7 @@ pub unsafe extern "C" fn mldsa_kind_from_spki(
     true
 }
 
-/// `__wjs_mldsa_public(pkcs8Der)` → SPKI DER（私钥派生公钥，createPublicKey 链用）。
+/// `__wjs2_mldsa_public(pkcs8Der)` → SPKI DER（私钥派生公钥，createPublicKey 链用）。
 pub unsafe extern "C" fn mldsa_public(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -608,7 +608,7 @@ pub unsafe extern "C" fn mldsa_public(
     }
 }
 
-/// `__wjs_mldsa_sign(pkcs8Der, data)` → 签名（确定性档，FIPS 204 可选形；空上下文）。
+/// `__wjs2_mldsa_sign(pkcs8Der, data)` → 签名（确定性档，FIPS 204 可选形；空上下文）。
 pub unsafe extern "C" fn mldsa_sign(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -657,7 +657,7 @@ pub unsafe extern "C" fn mldsa_sign(
     }
 }
 
-/// `__wjs_mldsa_verify(pubDer, sig, data)` → boolean。
+/// `__wjs2_mldsa_verify(pubDer, sig, data)` → boolean。
 pub unsafe extern "C" fn mldsa_verify(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

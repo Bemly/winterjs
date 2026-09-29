@@ -64,7 +64,7 @@ const {
   isUint8Array,
 } = require('internal/util/types');
 const { Buffer, kMaxLength } = require('buffer');
-function crc32Native(data, seed) { if (typeof __wjs_zlib_crc32 === 'function') { const bytes = data instanceof Uint8Array ? data : new Uint8Array(data.buffer, data.byteOffset, data.byteLength); return __wjs_zlib_crc32(bytes, seed >>> 0); } throw new Error('crc32 native unavailable'); }
+function crc32Native(data, seed) { if (typeof __wjs2_zlib_crc32 === 'function') { const bytes = data instanceof Uint8Array ? data : new Uint8Array(data.buffer, data.byteOffset, data.byteLength); return __wjs2_zlib_crc32(bytes, seed >>> 0); } throw new Error('crc32 native unavailable'); }
 const {
   EMPTY_BUFFER,
   SIG_LOCAL_FILE_HEADER,

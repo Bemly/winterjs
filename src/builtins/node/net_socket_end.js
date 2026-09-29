@@ -64,20 +64,20 @@
   }
   // 10a：ref 真计数（net/dgram 共用 natives；__id 为 0 时静默 no-op）。
   // unref 闩锁（connect 前 unref 同 server 侧：落定即补调，真机同）。
-  ref() { this.__unrefLatched = false; if (this.__id) __wjs_net_ref(this.__id); return this; }
+  ref() { this.__unrefLatched = false; if (this.__id) __wjs2_net_ref(this.__id); return this; }
   unref() {
     this.__unrefLatched = true;
-    if (this.__id) __wjs_net_unref(this.__id);
+    if (this.__id) __wjs2_net_unref(this.__id);
     return this;
   }
   // 原生写/FIN/销毁钩子（P2-tls-b）：net 本形直通原 native；TLSSocket 包裹面覆写
   // （写经 TLS 引擎出密文、end 带 close_notify、destroy 级联 wrapped socket）。
-  __nativeWrite(u8) { __wjs_net_write(this.__id, u8); }
+  __nativeWrite(u8) { __wjs2_net_write(this.__id, u8); }
   __nativeEnd() {
-    if (this.__id && this.__connected) __wjs_net_end(this.__id);
+    if (this.__id && this.__connected) __wjs2_net_end(this.__id);
     else this.__endAfterFlush = true;
   }
-  __nativeKill() { if (this.__id) __wjs_net_destroy(this.__id); }
+  __nativeKill() { if (this.__id) __wjs2_net_destroy(this.__id); }
   // node destroySoon 原文口径：end 后写队列空即销毁，否则挂 'finish'。
   destroySoon() {
     if (this.writable) this.end();

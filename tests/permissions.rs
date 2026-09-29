@@ -161,4 +161,4 @@ try {{ dlopen("./{libname}", {{ ffi_add: {{ args: [T.i32, T.i32], returns: T.i32
     dir.close().unwrap();
 }
 
-// ── Phase 8-a: winterjs lint/fmt（oxlint/oxfmt 命令穿透）────────────────────
+// ── Phase 8-a: winterjs2 lint/fmt（oxlint/oxfmt 命令穿透）────────────────────

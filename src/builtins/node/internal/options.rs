@@ -9,10 +9,10 @@ pub const SOURCE: &str = r#"const options = {
   '--max-http-header-size': 16384,
   hasIntl: false,
 };
-// CLI 起点剥下的 node 运行时旗（`__wjs_nodeCompat`，见 cli::strip_node_compat_args）
+// CLI 起点剥下的 node 运行时旗（`__wjs2_nodeCompat`，见 cli::strip_node_compat_args）
 // 覆盖缺省：`--k` 即 true、`--no-k` 即 k=false、`--k=v` 数字形转数、余为串。
 (() => {
-  const flags = Array.isArray(globalThis.__wjs_nodeCompat) ? globalThis.__wjs_nodeCompat : [];
+  const flags = Array.isArray(globalThis.__wjs2_nodeCompat) ? globalThis.__wjs2_nodeCompat : [];
   for (const f of flags) {
     const eq = f.indexOf('=');
     if (eq > 0) {

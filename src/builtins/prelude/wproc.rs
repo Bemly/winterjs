@@ -1,6 +1,6 @@
-//! B3 进程交互门面 JS 面：`WinterJS.command/terminal/repl`（Web 风 Promise）。
+//! B3 进程交互门面 JS 面：`WinterJS2.command/terminal/repl`（Web 风 Promise）。
 //!
-//! `command` 直驱 `__wjs_spawn_*/child_*` 原生（target 自有 sink：
+//! `command` 直驱 `__wjs2_spawn_*/child_*` 原生（target 自有 sink：
 //! `__pushOut/__pushErr/onexit/onclose`）；`terminal/repl` 复用移植实现
 //! （util 同款复用模式，用户侧无需 `node:` 前缀）。
 pub const WPROC_JS: &str = r#"
@@ -45,7 +45,7 @@ pub const WPROC_JS: &str = r#"
         if (exitR) { const r = exitR; exitR = null; r(exited); }
       },
     };
-    const id = Number(__wjs_spawn_start(String(file), JSON.stringify((args || []).map(String)),
+    const id = Number(__wjs2_spawn_start(String(file), JSON.stringify((args || []).map(String)),
       __wproc_opts(o), target, JSON.stringify(["pipe", "pipe", "pipe"])));
     const streamOf = (q, w) => ({
       async *[Symbol.asyncIterator]() {
@@ -62,10 +62,10 @@ pub const WPROC_JS: &str = r#"
     });
     return {
       id,
-      get pid() { try { return Number(__wjs_child_pid(id)); } catch { return -1; } },
+      get pid() { try { return Number(__wjs2_child_pid(id)); } catch { return -1; } },
       stdin: {
-        write(d) { return !!__wjs_child_stdin_write(id, __wproc_u8ToB64(__wproc_toU8(d, "stdin.write"))); },
-        close() { try { __wjs_child_stdin_close(id); } catch {} },
+        write(d) { return !!__wjs2_child_stdin_write(id, __wproc_u8ToB64(__wproc_toU8(d, "stdin.write"))); },
+        close() { try { __wjs2_child_stdin_close(id); } catch {} },
       },
       stdout: streamOf(outQ, outW),
       stderr: streamOf(errQ, errW),
@@ -73,7 +73,7 @@ pub const WPROC_JS: &str = r#"
         if (exited) return Promise.resolve(exited);
         return new Promise((r) => { exitR = r; });
       },
-      kill(sig) { try { return !!__wjs_child_kill(id, sig === undefined ? "SIGTERM" : String(sig)); } catch { return false; } },
+      kill(sig) { try { return !!__wjs2_child_kill(id, sig === undefined ? "SIGTERM" : String(sig)); } catch { return false; } },
     };
   };
   const command = {
@@ -118,19 +118,19 @@ pub const WPROC_JS: &str = r#"
   const terminal = {
     createInterface(...a) {
       const m = __wproc_req("node:readline");
-      if (!m || typeof m.createInterface !== "function") throw new Error("WinterJS.terminal requires node:readline");
+      if (!m || typeof m.createInterface !== "function") throw new Error("WinterJS2.terminal requires node:readline");
       return m.createInterface(...a);
     },
   };
   const wrepl = {
     start(...a) {
       const m = __wproc_req("node:repl");
-      if (!m || typeof m.start !== "function") throw new Error("WinterJS.repl requires node:repl");
+      if (!m || typeof m.start !== "function") throw new Error("WinterJS2.repl requires node:repl");
       return m.start(...a);
     },
   };
   try {
-    const W = globalThis.WinterJS;
+    const W = globalThis.WinterJS2;
     if (W && W.command === undefined) {
       W.command = command;
       W.terminal = terminal;

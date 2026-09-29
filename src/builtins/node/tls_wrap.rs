@@ -1,6 +1,6 @@
 //! TLSSocket 包裹引擎（P2-tls-b，2026-09-26）：rustls Connection 由 JS 字节驱动
 //! （内存 BIO 形）。`tls.connect({socket})` / `new TLSSocket(duplex[, opts])` 走此路：
-//! wrapped socket 的密文由 JS 经 `__wjs_tls_wrap_feed` 喂进 `process_new_packets`，
+//! wrapped socket 的密文由 JS 经 `__wjs2_tls_wrap_feed` 喂进 `process_new_packets`，
 //! 回程 JSON 一次带密文（写回 wrapped）/明文（交付 TLSSocket）/握手完成旗/校验捕获/
 //! 握手信息——握手节奏由 JS 侧事件序控制，pipe/IPC 等任意 duplex 包裹天然支持。
 //! 与直拨路径（tls.rs tokio-rustls）的差异：node TLSSocket 口径下证书校验失败
@@ -370,7 +370,7 @@ fn engine_result(e: &mut TlsWrapEngine, pre_plain: Vec<u8>) -> String {
     .to_string()
 }
 
-/// `__wjs_tls_wrap_open(isServer, cfgJson)` → id。
+/// `__wjs2_tls_wrap_open(isServer, cfgJson)` → id。
 ///
 /// UNSAFE-BOUNDARY: 前置——引擎回调 cx 有效；覆盖测试——`tests/node/tls.rs`（wrap 面）。
 pub unsafe extern "C" fn tls_wrap_open(
@@ -450,7 +450,7 @@ pub unsafe extern "C" fn tls_wrap_open(
     true
 }
 
-/// `__wjs_tls_wrap_feed(id, u8)` → 结果 JSON。
+/// `__wjs2_tls_wrap_feed(id, u8)` → 结果 JSON。
 pub unsafe extern "C" fn tls_wrap_feed(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -506,7 +506,7 @@ pub unsafe extern "C" fn tls_wrap_feed(
     }
 }
 
-/// `__wjs_tls_wrap_write(id, u8)` → 结果 JSON（明文入引擎，回程带密文飞行包）。
+/// `__wjs2_tls_wrap_write(id, u8)` → 结果 JSON（明文入引擎，回程带密文飞行包）。
 pub unsafe extern "C" fn tls_wrap_write(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -542,7 +542,7 @@ pub unsafe extern "C" fn tls_wrap_write(
     }
 }
 
-/// `__wjs_tls_wrap_eof(id)` → 结果 JSON（wrapped EOF 后排空残余明文）。
+/// `__wjs2_tls_wrap_eof(id)` → 结果 JSON（wrapped EOF 后排空残余明文）。
 pub unsafe extern "C" fn tls_wrap_eof(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -551,7 +551,7 @@ pub unsafe extern "C" fn tls_wrap_eof(
     unsafe { tls_wrap_call1(cx_raw, argc, vp, "eof") }
 }
 
-/// `__wjs_tls_wrap_shutdown(id)` → 结果 JSON（close_notify 出站）。
+/// `__wjs2_tls_wrap_shutdown(id)` → 结果 JSON（close_notify 出站）。
 pub unsafe extern "C" fn tls_wrap_shutdown(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -591,7 +591,7 @@ unsafe fn tls_wrap_call1(
     }
 }
 
-/// `__wjs_tls_wrap_kill(id)`：摘表（连接随即弃）。
+/// `__wjs2_tls_wrap_kill(id)`：摘表（连接随即弃）。
 pub unsafe extern "C" fn tls_wrap_kill(
     _cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

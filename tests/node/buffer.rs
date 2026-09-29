@@ -35,7 +35,7 @@ catch (e) { if (!String(e.message).includes("encoding")) throw e; }
 console.log("buffer-ok");
 "#;
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", code])),
+        stdout_of(&mut winterjs2().args(["--eval", code])),
         "buffer-ok\n"
     );
 }

@@ -71,7 +71,7 @@ pub(crate) fn hash_alloc(job: HashJob) -> u64 {
         })
     })
 }
-/// `__wjs_crypto_hash_new(alg)` → id 字符串；未知算法报无码原文（Node 同款）。
+/// `__wjs2_crypto_hash_new(alg)` → id 字符串；未知算法报无码原文（Node 同款）。
 pub unsafe extern "C" fn crypto_hash_new(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -105,7 +105,7 @@ pub unsafe extern "C" fn crypto_hash_new(
     }
 }
 
-/// `__wjs_crypto_hash_update(idStr, bytes)`；句柄已消费报 FINALIZED（Node 同款码）。
+/// `__wjs2_crypto_hash_update(idStr, bytes)`；句柄已消费报 FINALIZED（Node 同款码）。
 pub unsafe extern "C" fn crypto_hash_update(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -158,7 +158,7 @@ pub unsafe extern "C" fn crypto_hash_update(
     true
 }
 
-/// `__wjs_crypto_hash_digest(idStr)` → Uint8Array（消费句柄；二次调报 FINALIZED）。
+/// `__wjs2_crypto_hash_digest(idStr)` → Uint8Array（消费句柄；二次调报 FINALIZED）。
 pub unsafe extern "C" fn crypto_hash_digest(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -207,7 +207,7 @@ pub unsafe extern "C" fn crypto_hash_digest(
     }
 }
 
-/// `__wjs_crypto_hash_copy(idStr)` → 新 id 字符串（中间态克隆；已消费报 FINALIZED）。
+/// `__wjs2_crypto_hash_copy(idStr)` → 新 id 字符串（中间态克隆；已消费报 FINALIZED）。
 pub unsafe extern "C" fn crypto_hash_copy(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -252,7 +252,7 @@ pub unsafe extern "C" fn crypto_hash_copy(
     }
 }
 
-/// `__wjs_crypto_hash_set_len(idStr, lenNum)` → "1"（仅 Shake 改输出长；其余报态错）。
+/// `__wjs2_crypto_hash_set_len(idStr, lenNum)` → "1"（仅 Shake 改输出长；其余报态错）。
 /// 10f crypto首轮：`copy({ outputLength })` 改长通道（JS 侧已校验，见 `__checkOutputLength`）。
 pub unsafe extern "C" fn crypto_hash_set_len(
     cx_raw: *mut mozjs::jsapi::JSContext,

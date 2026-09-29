@@ -13,39 +13,39 @@ pub(crate) async fn serve_h3(app: axum::Router, endpoint: quinn::Endpoint) {
             let conn = match incoming.await {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::warn!(target: "winterjs::serve", "QUIC handshake failed: {e}");
+                    tracing::warn!(target: "winterjs2::serve", "QUIC handshake failed: {e}");
                     return;
                 }
             };
             let peer = conn.remote_address();
-            tracing::debug!(target: "winterjs::serve", %peer, "H3 QUIC connection");
+            tracing::debug!(target: "winterjs2::serve", %peer, "H3 QUIC connection");
             let h3_conn = match h3::server::builder().build(h3_quinn::Connection::new(conn)).await
             {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::warn!(target: "winterjs::serve", %peer, "H3 handshake failed: {e}");
+                    tracing::warn!(target: "winterjs2::serve", %peer, "H3 handshake failed: {e}");
                     return;
                 }
             };
-            tracing::debug!(target: "winterjs::serve", %peer, "H3 connection established");
+            tracing::debug!(target: "winterjs2::serve", %peer, "H3 connection established");
             tokio::pin!(h3_conn);
             loop {
                 match h3_conn.accept().await {
                     Ok(Some(resolver)) => {
-                        tracing::debug!(target: "winterjs::serve", %peer, "H3 request accepted");
+                        tracing::debug!(target: "winterjs2::serve", %peer, "H3 request accepted");
                         let app = app.clone();
                         tokio::spawn(async move {
                             if let Err(e) = h3_axum::serve_h3_with_axum(app, resolver).await {
-                                tracing::warn!(target: "winterjs::serve", %peer, "H3 request failed: {e}");
+                                tracing::warn!(target: "winterjs2::serve", %peer, "H3 request failed: {e}");
                             }
                         });
                     }
                     Ok(None) => break,
                     Err(e) => {
                         if h3_axum::is_graceful_h3_close(&e) {
-                            tracing::debug!(target: "winterjs::serve", %peer, "H3 closed gracefully");
+                            tracing::debug!(target: "winterjs2::serve", %peer, "H3 closed gracefully");
                         } else {
-                            tracing::warn!(target: "winterjs::serve", %peer, "H3 connection error: {e:?}");
+                            tracing::warn!(target: "winterjs2::serve", %peer, "H3 connection error: {e:?}");
                         }
                         break;
                     }

@@ -47,7 +47,7 @@ setTimeout(() => console.log("once-off", n === 0, c.kill() === false), 2500);
 "#,
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -94,7 +94,7 @@ c.on("exit", (code) => console.log("EXIT-EV", code !== 0, c.exitCode !== 0, c.ki
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -174,7 +174,7 @@ const self = process.execPath;
     dir.child("fork-slow-child.mjs")
         .write_str(r#"setTimeout(() => {}, 30000);"#)
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -202,7 +202,7 @@ fn phase10f_entry_failure_open_handle_exit() {
     // 句柄 = 事件循环永不 idle、循环尾收割永不到的 hang。修后 fatal 检查点提前
     // 跳出：eval 包装路径经 entry reactions 重抛挂载；模块路径经 unhandled 表
     // 检查点。内容断言不走退出码对拍（§4.126③）。
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval",
             r#"const { spawn } = await import("node:child_process"); spawn("sleep", ["30"]); throw new Error("boom-handle");"#])
         .output()
@@ -212,7 +212,7 @@ fn phase10f_entry_failure_open_handle_exit() {
     assert!(err.contains("boom-handle"), "err: {err}");
     assert!(!err.contains("unhandled"), "同步 throw 不走 unhandled 通道: {err}");
 
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval",
             r#"const { spawn } = await import("node:child_process"); spawn("sleep", ["30"]); Promise.reject(new Error("rej-handle"));"#])
         .output()
@@ -232,7 +232,7 @@ Promise.reject(new Error("mod-rej-handle"));
 "#,
     )
     .unwrap();
-    let out = winterjs().arg("--run").arg(file.path()).output().unwrap();
+    let out = winterjs2().arg("--run").arg(file.path()).output().unwrap();
     assert!(!out.status.success(), "模块路径必须非零退出");
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(err.contains("mod-rej-handle"), "err: {err}");
@@ -247,7 +247,7 @@ fn phase10f_fork_nonsilent_stdio_null() {
     dir.child("idle-child.mjs").write_str("process.on('message', () => {});\n").unwrap();
     let child_abs = dir.path().join("idle-child.mjs");
     let child_str = child_abs.to_string_lossy().into_owned();
-    let out = stdout_of(&mut winterjs().args(["--eval", &format!(
+    let out = stdout_of(&mut winterjs2().args(["--eval", &format!(
         r#"const {{ fork }} = await import("node:child_process");
 const c = fork({child_str:?});
 console.log("nonsilent", c.stdout === null, c.stderr === null, c.stdin === null);
@@ -268,7 +268,7 @@ fn phase10f_child_fork_env_and_internal() {
         .unwrap();
     let env_child = dir.path().join("env-child.mjs").to_string_lossy().into_owned();
     let int_child = dir.path().join("int-child.mjs").to_string_lossy().into_owned();
-    let out = stdout_of(&mut winterjs().args(["--eval", &format!(
+    let out = stdout_of(&mut winterjs2().args(["--eval", &format!(
         r#"const {{ fork }} = await import("node:child_process");
 const a = fork({env_child:?}, [], {{ env: {{ WJS_MARKER: "m42" }} }});
 a.on("message", (m) => {{ console.log("env", m.marker === "m42"); }});

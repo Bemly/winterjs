@@ -1,6 +1,6 @@
 // WebSocket client shape (offline-safe: bad URL throws synchronously).
 // WebSocket 客户端形态（离线可跑：非法 URL 同步抛错；常量可见）。
-// Run / 运行: winterjs --run sample/web/websocket.js
+// Run / 运行: winterjs2 --run sample/web/websocket.js
 console.log('[ws] constants:', WebSocket.CONNECTING === 0 && WebSocket.OPEN === 1 && WebSocket.CLOSED === 3);
 try {
   new WebSocket('not-a-url');

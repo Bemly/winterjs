@@ -57,7 +57,7 @@ fn open_worker(path: String) -> Result<SqliteWorker, String> {
     let (req_tx, req_rx) = crossbeam_channel::unbounded::<SqliteOp>();
     let (resp_tx, resp_rx) = crossbeam_channel::unbounded::<Result<serde_json::Value, String>>();
     let spawned = std::thread::Builder::new()
-        .name("winterjs-sqlite".into())
+        .name("winterjs2-sqlite".into())
         .spawn(move || worker_main(path, req_rx, resp_tx));
     spawned.map_err(|e| format!("failed to spawn sqlite worker: {e}"))?;
     match resp_rx.recv() {
@@ -229,7 +229,7 @@ fn arg_string(cx: &mut JSContext, frame: &Frame, i: u32, what: &str) -> Option<S
     Some(value_to_string(cx, frame.arg(i)))
 }
 
-/// `__wjs_sqlite_open(path)` → id。阻塞到 worker open 握手完成。
+/// `__wjs2_sqlite_open(path)` → id。阻塞到 worker open 握手完成。
 pub unsafe extern "C" fn sqlite_open(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -261,7 +261,7 @@ pub unsafe extern "C" fn sqlite_open(
     }
 }
 
-/// `__wjs_sqlite_exec(id, sql)`：多语句批量（无参数）。
+/// `__wjs2_sqlite_exec(id, sql)`：多语句批量（无参数）。
 pub unsafe extern "C" fn sqlite_exec(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -288,7 +288,7 @@ pub unsafe extern "C" fn sqlite_exec(
     }
 }
 
-/// `__wjs_sqlite_run(id, sql, paramsJson, named)` → `{changes, lastInsertRowid}` JSON。
+/// `__wjs2_sqlite_run(id, sql, paramsJson, named)` → `{changes, lastInsertRowid}` JSON。
 pub unsafe extern "C" fn sqlite_run(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -312,7 +312,7 @@ pub unsafe extern "C" fn sqlite_run(
     }
 }
 
-/// `__wjs_sqlite_rows(id, sql, paramsJson, named)` → `{columns, rows}` JSON。
+/// `__wjs2_sqlite_rows(id, sql, paramsJson, named)` → `{columns, rows}` JSON。
 pub unsafe extern "C" fn sqlite_rows(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -336,7 +336,7 @@ pub unsafe extern "C" fn sqlite_rows(
     }
 }
 
-/// `__wjs_sqlite_txn(id)` → 1/0（是否在事务内；即 SQLite 非 autocommit）。
+/// `__wjs2_sqlite_txn(id)` → 1/0（是否在事务内；即 SQLite 非 autocommit）。
 pub unsafe extern "C" fn sqlite_txn(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -361,7 +361,7 @@ pub unsafe extern "C" fn sqlite_txn(
     }
 }
 
-/// `__wjs_sqlite_close(id)`：worker 收尾退出；state 表摘除（幂等）。
+/// `__wjs2_sqlite_close(id)`：worker 收尾退出；state 表摘除（幂等）。
 pub unsafe extern "C" fn sqlite_close(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -436,52 +436,52 @@ pub const SOURCE: &str = r#"
 class SqliteError extends Error {
   constructor(message) { super(message); this.name = "SqliteError"; }
 }
-function __wjs_sqlite_u8(v) {
+function __wjs2_sqlite_u8(v) {
   if (v instanceof Uint8Array) return v;
   if (v instanceof ArrayBuffer) return new Uint8Array(v);
   if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
   return null;
 }
-function __wjs_sqlite_b64(u8) {
+function __wjs2_sqlite_b64(u8) {
   let s = "";
   for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
   return btoa(s);
 }
-function __wjs_sqlite_unb64(s) {
+function __wjs2_sqlite_unb64(s) {
   const bin = atob(s);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
-function __wjs_sqlite_revive(v) {
-  if (v !== null && typeof v === "object" && "$blob" in v) return __wjs_sqlite_unb64(v.$blob);
+function __wjs2_sqlite_revive(v) {
+  if (v !== null && typeof v === "object" && "$blob" in v) return __wjs2_sqlite_unb64(v.$blob);
   return v;
 }
-function __wjs_sqlite_param(v) {
+function __wjs2_sqlite_param(v) {
   if (v === null) return null;
   if (typeof v === "number") {
     if (!Number.isFinite(v)) throw new SqliteError("cannot bind non-finite number");
     return v;
   }
   if (typeof v === "string") return v;
-  const u8 = __wjs_sqlite_u8(v);
-  if (u8) return { $blob: __wjs_sqlite_b64(u8) };
+  const u8 = __wjs2_sqlite_u8(v);
+  if (u8) return { $blob: __wjs2_sqlite_b64(u8) };
   if (typeof v === "bigint") throw new TypeError("bigint parameters are not supported yet");
   throw new TypeError(`Unsupported parameter type: ${typeof v}`);
 }
 // 参数形态：单普通对象 → named（键须带 $/:/@ 前缀）；单数组 → positional；其余 → variadic positional
-function __wjs_sqlite_args(args) {
+function __wjs2_sqlite_args(args) {
   if (args.length === 1 && args[0] !== null && typeof args[0] === "object"
-      && !Array.isArray(args[0]) && !__wjs_sqlite_u8(args[0])) {
+      && !Array.isArray(args[0]) && !__wjs2_sqlite_u8(args[0])) {
     const named = [];
-    for (const [k, v] of Object.entries(args[0])) named.push([k, __wjs_sqlite_param(v)]);
+    for (const [k, v] of Object.entries(args[0])) named.push([k, __wjs2_sqlite_param(v)]);
     return { named: 1, params: named };
   }
   const list = (args.length === 1 && Array.isArray(args[0])) ? args[0] : args;
-  return { named: 0, params: Array.prototype.map.call(list, __wjs_sqlite_param) };
+  return { named: 0, params: Array.prototype.map.call(list, __wjs2_sqlite_param) };
 }
 // native 报错转 SqliteError（native 侧异常是普通 Error，message 带前缀）
-function __wjs_sqlite_wrap(fn) {
+function __wjs2_sqlite_wrap(fn) {
   try { return fn(); } catch (e) {
     const m = String((e && e.message) || e);
     // 权限拒绝直通（不转 SqliteError；fs 同款）
@@ -493,45 +493,45 @@ function __wjs_sqlite_wrap(fn) {
     throw new SqliteError(m.startsWith("SqliteError: ") ? m.slice("SqliteError: ".length) : m);
   }
 }
-const __wjs_sqlite_dbState = new WeakMap();
-const __wjs_sqlite_stmtState = new WeakMap();
-let __wjs_sqlite_savepoint = 0;
-function __wjs_sqlite_openCheck(st) {
+const __wjs2_sqlite_dbState = new WeakMap();
+const __wjs2_sqlite_stmtState = new WeakMap();
+let __wjs2_sqlite_savepoint = 0;
+function __wjs2_sqlite_openCheck(st) {
   if (!st || st.closed) throw new SqliteError("database is not open");
 }
 // 实例经 Object.create(prototype) 造（构造器非法），私有方法无 brand 槽不可用，
 // 状态一律走 WeakMap 自由函数。
-function __wjs_sqlite_stmtOf(st) { return __wjs_sqlite_stmtState.get(st); }
-function __wjs_sqlite_dbOf(st) { return __wjs_sqlite_dbState.get(st); }
+function __wjs2_sqlite_stmtOf(st) { return __wjs2_sqlite_stmtState.get(st); }
+function __wjs2_sqlite_dbOf(st) { return __wjs2_sqlite_dbState.get(st); }
 // 取 (dbId, 参数包)（statement 各方法共用；finalized/未开库即抛）
-function __wjs_sqlite_stmtId(stmt, args) {
-  const st = __wjs_sqlite_stmtOf(stmt);
+function __wjs2_sqlite_stmtId(stmt, args) {
+  const st = __wjs2_sqlite_stmtOf(stmt);
   if (st.finalized) throw new SqliteError("statement is finalized");
-  const dst = __wjs_sqlite_dbState.get(st.db);
-  __wjs_sqlite_openCheck(dst);
-  const { named, params } = __wjs_sqlite_args(args);
+  const dst = __wjs2_sqlite_dbState.get(st.db);
+  __wjs2_sqlite_openCheck(dst);
+  const { named, params } = __wjs2_sqlite_args(args);
   return { id: dst.id, named, json: JSON.stringify(params) };
 }
 class Statement {
   constructor() { throw new TypeError("Illegal constructor"); }
-  static __wjs_make(db, sql, mode) {
+  static __wjs2_make(db, sql, mode) {
     const stmt = Object.create(Statement.prototype);
-    __wjs_sqlite_stmtState.set(stmt, { db, sql, mode: mode ?? "object", finalized: false });
+    __wjs2_sqlite_stmtState.set(stmt, { db, sql, mode: mode ?? "object", finalized: false });
     return stmt;
   }
   as(mode) {
     if (mode !== "object" && mode !== "array" && mode !== "raw") {
       throw new TypeError(`as() mode must be 'object', 'array' or 'raw', got ${String(mode)}`);
     }
-    const st = __wjs_sqlite_stmtOf(this);
-    return Statement.__wjs_make(st.db, st.sql, mode);
+    const st = __wjs2_sqlite_stmtOf(this);
+    return Statement.__wjs2_make(st.db, st.sql, mode);
   }
   all(...args) {
-    const { id, named, json } = __wjs_sqlite_stmtId(this, args);
-    const resp = __wjs_sqlite_wrap(() => JSON.parse(__wjs_sqlite_rows(id, __wjs_sqlite_stmtOf(this).sql, json, named)));
-    const mode = __wjs_sqlite_stmtOf(this).mode;
+    const { id, named, json } = __wjs2_sqlite_stmtId(this, args);
+    const resp = __wjs2_sqlite_wrap(() => JSON.parse(__wjs2_sqlite_rows(id, __wjs2_sqlite_stmtOf(this).sql, json, named)));
+    const mode = __wjs2_sqlite_stmtOf(this).mode;
     return resp.rows.map((vals) => {
-      const v = vals.map(__wjs_sqlite_revive);
+      const v = vals.map(__wjs2_sqlite_revive);
       if (mode === "object") {
         const o = {};
         for (let i = 0; i < resp.columns.length; i++) o[resp.columns[i]] = v[i];
@@ -545,20 +545,20 @@ class Statement {
     return rows.length ? rows[0] : null;
   }
   values(...args) {
-    const { id, named, json } = __wjs_sqlite_stmtId(this, args);
-    const resp = __wjs_sqlite_wrap(() => JSON.parse(__wjs_sqlite_rows(id, __wjs_sqlite_stmtOf(this).sql, json, named)));
-    return resp.rows.map((vals) => vals.map(__wjs_sqlite_revive));
+    const { id, named, json } = __wjs2_sqlite_stmtId(this, args);
+    const resp = __wjs2_sqlite_wrap(() => JSON.parse(__wjs2_sqlite_rows(id, __wjs2_sqlite_stmtOf(this).sql, json, named)));
+    return resp.rows.map((vals) => vals.map(__wjs2_sqlite_revive));
   }
   *iterate(...args) { yield* this.all(...args); }
   run(...args) {
-    const { id, named, json } = __wjs_sqlite_stmtId(this, args);
-    return __wjs_sqlite_wrap(() => JSON.parse(__wjs_sqlite_run(id, __wjs_sqlite_stmtOf(this).sql, json, named)));
+    const { id, named, json } = __wjs2_sqlite_stmtId(this, args);
+    return __wjs2_sqlite_wrap(() => JSON.parse(__wjs2_sqlite_run(id, __wjs2_sqlite_stmtOf(this).sql, json, named)));
   }
   finalize() {
-    __wjs_sqlite_stmtOf(this).finalized = true;
+    __wjs2_sqlite_stmtOf(this).finalized = true;
     return this;
   }
-  get isFinalized() { return __wjs_sqlite_stmtOf(this).finalized; }
+  get isFinalized() { return __wjs2_sqlite_stmtOf(this).finalized; }
 }
 class Database {
   constructor(path, options) {
@@ -567,70 +567,70 @@ class Database {
       throw new TypeError("Database options must be an object");
     }
     // 偏差：readonly/create 等选项 turso 0.6.1 不支持，忽略（文档记录）。
-    const id = __wjs_sqlite_wrap(() => __wjs_sqlite_open(path));
-    __wjs_sqlite_dbState.set(this, { id, path, closed: false, cache: new Map() });
+    const id = __wjs2_sqlite_wrap(() => __wjs2_sqlite_open(path));
+    __wjs2_sqlite_dbState.set(this, { id, path, closed: false, cache: new Map() });
   }
-  get filename() { return __wjs_sqlite_dbOf(this).path; }
-  get isClosed() { return __wjs_sqlite_dbOf(this).closed; }
+  get filename() { return __wjs2_sqlite_dbOf(this).path; }
+  get isClosed() { return __wjs2_sqlite_dbOf(this).closed; }
   get inTransaction() {
-    const st = __wjs_sqlite_dbOf(this);
-    __wjs_sqlite_openCheck(st);
-    return __wjs_sqlite_wrap(() => __wjs_sqlite_txn(st.id)) === 1;
+    const st = __wjs2_sqlite_dbOf(this);
+    __wjs2_sqlite_openCheck(st);
+    return __wjs2_sqlite_wrap(() => __wjs2_sqlite_txn(st.id)) === 1;
   }
   query(sql) {
-    const st = __wjs_sqlite_dbOf(this);
-    __wjs_sqlite_openCheck(st);
+    const st = __wjs2_sqlite_dbOf(this);
+    __wjs2_sqlite_openCheck(st);
     if (typeof sql !== "string") throw new TypeError("query() requires a string");
     let stmt = st.cache.get(sql);
     if (!stmt) {
-      stmt = Statement.__wjs_make(this, sql, "object");
+      stmt = Statement.__wjs2_make(this, sql, "object");
       st.cache.set(sql, stmt);
     }
     return stmt;
   }
   prepare(sql) {
-    const st = __wjs_sqlite_dbOf(this);
-    __wjs_sqlite_openCheck(st);
+    const st = __wjs2_sqlite_dbOf(this);
+    __wjs2_sqlite_openCheck(st);
     if (typeof sql !== "string") throw new TypeError("prepare() requires a string");
-    return Statement.__wjs_make(this, sql, "object");
+    return Statement.__wjs2_make(this, sql, "object");
   }
   run(sql, ...args) {
-    const st = __wjs_sqlite_dbOf(this);
-    __wjs_sqlite_openCheck(st);
+    const st = __wjs2_sqlite_dbOf(this);
+    __wjs2_sqlite_openCheck(st);
     if (typeof sql !== "string") throw new TypeError("run() requires a string");
-    const { named, params } = __wjs_sqlite_args(args);
-    __wjs_sqlite_wrap(() => __wjs_sqlite_run(st.id, sql, JSON.stringify(params), named));
+    const { named, params } = __wjs2_sqlite_args(args);
+    __wjs2_sqlite_wrap(() => __wjs2_sqlite_run(st.id, sql, JSON.stringify(params), named));
     return this;
   }
   exec(sql) {
-    const st = __wjs_sqlite_dbOf(this);
-    __wjs_sqlite_openCheck(st);
+    const st = __wjs2_sqlite_dbOf(this);
+    __wjs2_sqlite_openCheck(st);
     if (typeof sql !== "string") throw new TypeError("exec() requires a string");
-    __wjs_sqlite_wrap(() => __wjs_sqlite_exec(st.id, sql));
+    __wjs2_sqlite_wrap(() => __wjs2_sqlite_exec(st.id, sql));
     return this;
   }
   transaction(fn) {
     if (typeof fn !== "function") throw new TypeError("transaction() requires a function");
     const db = this;
     const wrap = (mode) => (...args) => {
-      const st = __wjs_sqlite_dbState.get(db);
-      __wjs_sqlite_openCheck(st);
-      const nested = __wjs_sqlite_wrap(() => __wjs_sqlite_txn(st.id)) === 1;
-      const sp = nested ? `__wjs_sp_${++__wjs_sqlite_savepoint}` : null;
+      const st = __wjs2_sqlite_dbState.get(db);
+      __wjs2_sqlite_openCheck(st);
+      const nested = __wjs2_sqlite_wrap(() => __wjs2_sqlite_txn(st.id)) === 1;
+      const sp = nested ? `__wjs2_sp_${++__wjs2_sqlite_savepoint}` : null;
       try {
-        if (nested) __wjs_sqlite_wrap(() => __wjs_sqlite_exec(st.id, `SAVEPOINT ${sp}`));
-        else __wjs_sqlite_wrap(() => __wjs_sqlite_exec(st.id, mode ?? "BEGIN"));
+        if (nested) __wjs2_sqlite_wrap(() => __wjs2_sqlite_exec(st.id, `SAVEPOINT ${sp}`));
+        else __wjs2_sqlite_wrap(() => __wjs2_sqlite_exec(st.id, mode ?? "BEGIN"));
         const r = fn.call(db, ...args);
-        if (nested) __wjs_sqlite_wrap(() => __wjs_sqlite_exec(st.id, `RELEASE ${sp}`));
-        else __wjs_sqlite_wrap(() => __wjs_sqlite_exec(st.id, "COMMIT"));
+        if (nested) __wjs2_sqlite_wrap(() => __wjs2_sqlite_exec(st.id, `RELEASE ${sp}`));
+        else __wjs2_sqlite_wrap(() => __wjs2_sqlite_exec(st.id, "COMMIT"));
         return r;
       } catch (e) {
         try {
           if (nested) {
-            __wjs_sqlite_wrap(() => __wjs_sqlite_exec(st.id, `ROLLBACK TO ${sp}`));
-            __wjs_sqlite_wrap(() => __wjs_sqlite_exec(st.id, `RELEASE ${sp}`));
+            __wjs2_sqlite_wrap(() => __wjs2_sqlite_exec(st.id, `ROLLBACK TO ${sp}`));
+            __wjs2_sqlite_wrap(() => __wjs2_sqlite_exec(st.id, `RELEASE ${sp}`));
           } else {
-            __wjs_sqlite_wrap(() => __wjs_sqlite_exec(st.id, "ROLLBACK"));
+            __wjs2_sqlite_wrap(() => __wjs2_sqlite_exec(st.id, "ROLLBACK"));
           }
         } catch {}
         throw e;
@@ -643,9 +643,9 @@ class Database {
     return base;
   }
   close() {
-    const st = __wjs_sqlite_dbOf(this);
+    const st = __wjs2_sqlite_dbOf(this);
     if (st.closed) return;
-    __wjs_sqlite_wrap(() => __wjs_sqlite_close(st.id));
+    __wjs2_sqlite_wrap(() => __wjs2_sqlite_close(st.id));
     st.closed = true;
     st.cache.clear();
   }

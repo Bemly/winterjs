@@ -25,7 +25,7 @@ use mozjs::rooted;
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
 
 /// 默认库文件名（cwd 锚定，项目级隔离）。CLI `--storage-path` 覆盖，未设即此值。
-pub const DEFAULT_FILE: &str = "winterjs-storage.db";
+pub const DEFAULT_FILE: &str = "winterjs2-storage.db";
 
 /// 键规则（JS 层同判，native 侧再拦一道）：非空字符串，≤1024 字符。
 pub const MAX_KEY_LEN: usize = 1024;
@@ -127,7 +127,7 @@ fn open_worker(path: String) -> Result<StorageWorker, String> {
     let (req_tx, req_rx) = crossbeam_channel::unbounded::<StorageOp>();
     let (resp_tx, resp_rx) = crossbeam_channel::unbounded::<Result<serde_json::Value, String>>();
     let spawned = std::thread::Builder::new()
-        .name("winterjs-storage".into())
+        .name("winterjs2-storage".into())
         .spawn(move || worker_main(path, req_rx, resp_tx));
     spawned.map_err(|e| format!("failed to spawn storage worker: {e}"))?;
     match resp_rx.recv() {
@@ -302,7 +302,7 @@ fn json_string(cx: &mut JSContext, v: &serde_json::Value) -> JSVal {
     out.get()
 }
 
-/// `__wjs_storage_default_path()` → 默认库路径（CLI `--storage-path` 未给即 `winterjs-storage.db`）。
+/// `__wjs2_storage_default_path()` → 默认库路径（CLI `--storage-path` 未给即 `winterjs2-storage.db`）。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/storage.rs::storage_default_path_and_isolation`。
 pub unsafe extern "C" fn storage_default_path(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -312,7 +312,7 @@ pub unsafe extern "C" fn storage_default_path(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
     let path = default_path();
-    tracing::debug!(target: "winterjs::storage", path_len = path.len(), "default path");
+    tracing::debug!(target: "winterjs2::storage", path_len = path.len(), "default path");
     frame.set_rval({
         rooted!(&in(cx) let mut out = UndefinedValue());
         path.to_jsval(&mut cx, out.handle_mut());
@@ -321,7 +321,7 @@ pub unsafe extern "C" fn storage_default_path(
     true
 }
 
-/// `__wjs_storage_open(path)` → id。阻塞到 worker open 握手完成（含建表）。
+/// `__wjs2_storage_open(path)` → id。阻塞到 worker open 握手完成（含建表）。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/storage.rs::storage_crud_and_persist`。
 pub unsafe extern "C" fn storage_open(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -345,7 +345,7 @@ pub unsafe extern "C" fn storage_open(
         report_error(&mut cx, &msg);
         return false;
     }
-    tracing::debug!(target: "winterjs::storage", path_len = path.len(), "open");
+    tracing::debug!(target: "winterjs2::storage", path_len = path.len(), "open");
     match open_worker(path) {
         Ok(worker) => {
             let id = storage_add(worker);
@@ -359,7 +359,7 @@ pub unsafe extern "C" fn storage_open(
     }
 }
 
-/// `__wjs_storage_get(id, key)` → 值 JSON 串（缺失即 `"null"`）。
+/// `__wjs2_storage_get(id, key)` → 值 JSON 串（缺失即 `"null"`）。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/storage.rs::storage_crud_and_persist`。
 pub unsafe extern "C" fn storage_get(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -386,7 +386,7 @@ pub unsafe extern "C" fn storage_get(
     }
 }
 
-/// `__wjs_storage_set(id, key, valueJson)`。
+/// `__wjs2_storage_set(id, key, valueJson)`。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/storage.rs::storage_crud_and_persist`。
 pub unsafe extern "C" fn storage_set(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -403,7 +403,7 @@ pub unsafe extern "C" fn storage_set(
         return false;
     };
     tracing::debug!(
-        target: "winterjs::storage",
+        target: "winterjs2::storage",
         key_len = key.len(),
         json_len = json.len(),
         "set"
@@ -420,7 +420,7 @@ pub unsafe extern "C" fn storage_set(
     }
 }
 
-/// `__wjs_storage_delete(id, key)` → `"true"`/`"false"`（是否删到）。
+/// `__wjs2_storage_delete(id, key)` → `"true"`/`"false"`（是否删到）。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/storage.rs::storage_crud_and_persist`。
 pub unsafe extern "C" fn storage_delete(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -448,7 +448,7 @@ pub unsafe extern "C" fn storage_delete(
     }
 }
 
-/// `__wjs_storage_keys(id, prefix)` → 键数组 JSON 串（有序）。
+/// `__wjs2_storage_keys(id, prefix)` → 键数组 JSON 串（有序）。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/storage.rs::storage_keys_prefix_and_clear`。
 pub unsafe extern "C" fn storage_keys(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -475,7 +475,7 @@ pub unsafe extern "C" fn storage_keys(
     }
 }
 
-/// `__wjs_storage_clear(id)` → 清掉的条数。
+/// `__wjs2_storage_clear(id)` → 清掉的条数。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/storage.rs::storage_keys_prefix_and_clear`。
 pub unsafe extern "C" fn storage_clear(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -500,7 +500,7 @@ pub unsafe extern "C" fn storage_clear(
     }
 }
 
-/// `__wjs_storage_close(id)`：worker 收尾退出；state 表摘除（幂等）。
+/// `__wjs2_storage_close(id)`：worker 收尾退出；state 表摘除（幂等）。
 /// UNSAFE-BOUNDARY：见本文件 natives 头注；覆盖 `tests/storage.rs::storage_errors_boundary`。
 pub unsafe extern "C" fn storage_close(
     cx_raw: *mut mozjs::jsapi::JSContext,

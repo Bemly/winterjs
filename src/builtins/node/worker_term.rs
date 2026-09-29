@@ -168,7 +168,7 @@ pub(crate) fn worker_route(worker_id: u64) -> Option<(tokio::sync::mpsc::Unbound
     Some((inbox, parent))
 }
 
-/// 起 worker。`__wjs_worker_spawn(src, evalFlag, dataJson)` → `"workerId threadId"`。
+/// 起 worker。`__wjs2_worker_spawn(src, evalFlag, dataJson)` → `"workerId threadId"`。
 /// `src` 为文件路径（evalFlag=0）或源码（evalFlag=1）；dataJson 为空即无 workerData。
 pub unsafe extern "C" fn worker_spawn(
     cx_raw: *mut mozjs::jsapi::JSContext,

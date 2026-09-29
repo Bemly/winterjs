@@ -78,7 +78,7 @@ fn lookup_global(cx: &mut mozjs::context::JSContext, id: u64) -> Option<*mut JSO
 }
 
 /// 建上下文：新 global（新 compartment）+ 入表，返回 id 字符串。
-/// `__wjs_vm_create()` → id。
+/// `__wjs2_vm_create()` → id。
 pub unsafe extern "C" fn vm_create(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -108,7 +108,7 @@ pub unsafe extern "C" fn vm_create(
     true
 }
 
-/// `__wjs_vm_global(id)` → 该 context 的 global 对象本体（DONT_CONTEXTIFY 用：
+/// `__wjs2_vm_global(id)` → 该 context 的 global 对象本体（DONT_CONTEXTIFY 用：
 /// jsdom 29 拿它当 window 直装 DOM 全局，写入即落 vm global）。
 /// UNSAFE-BOUNDARY: id 为 vm 表有效 id；出参经 rooted（覆盖 tests/node/vm.rs）。
 pub unsafe extern "C" fn vm_global(
@@ -142,7 +142,7 @@ pub unsafe extern "C" fn vm_global(
 }
 
 /// 语法预检（`new Script`/`compileFunction` 构造期用，不执行）。
-/// `__wjs_vm_compile(code, filename)` → undefined；失败抛包络 SyntaxError。
+/// `__wjs2_vm_compile(code, filename)` → undefined；失败抛包络 SyntaxError。
 pub unsafe extern "C" fn vm_compile(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -175,7 +175,7 @@ pub unsafe extern "C" fn vm_compile(
 }
 
 /// 在指定上下文求值（`evaluate_script` 自进目标 realm；成功后同步排空一轮 microtask）。
-/// `__wjs_vm_run(id, code, filename)` → completion；失败抛包络错。
+/// `__wjs2_vm_run(id, code, filename)` → completion；失败抛包络错。
 pub unsafe extern "C" fn vm_run(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -238,7 +238,7 @@ pub unsafe extern "C" fn vm_run(
 }
 
 /// 主 global 求值（`runInThisContext`；inspector_eval 同款嵌套求值）。
-/// `__wjs_vm_run_this(code, filename)` → completion；失败抛包络错。
+/// `__wjs2_vm_run_this(code, filename)` → completion；失败抛包络错。
 pub unsafe extern "C" fn vm_run_this(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -289,7 +289,7 @@ pub unsafe extern "C" fn vm_run_this(
 }
 
 /// 编译函数（`compileFunction`；目标 realm 由 id 定，`""` 为主 global）。
-/// `__wjs_vm_compile_fn(idStr, paramsCsv, code, filename)` → function。
+/// `__wjs2_vm_compile_fn(idStr, paramsCsv, code, filename)` → function。
 pub unsafe extern "C" fn vm_compile_fn(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -335,7 +335,7 @@ pub unsafe extern "C" fn vm_compile_fn(
     // `});\n(function(){…})();\n(function() {` 套件点名）——真机 V8 以声明位
     // 包络编译，未闭合括号悬到 EOF 即错；声明位同构，预检失败即 SyntaxError。
     // 预检产物弃置，实编译仍走表达式包络（toString === `function (p) {\n…\n}`）。
-    let wrapped_chk = format!("function __wjs_vm_body_chk({params}) {{\n{code}\n}}");
+    let wrapped_chk = format!("function __wjs2_vm_body_chk({params}) {{\n{code}\n}}");
     {
         let mut src_chk = transform_str_to_source_text(&wrapped_chk);
         // SAFETY: cx 在 realm 内；options/src 存活到调用返回；空指针即语法失败
@@ -375,7 +375,7 @@ pub unsafe extern "C" fn vm_compile_fn(
 /// 语义：`define` 优先（可枚举数据描述符）；已有属性重定义失败回落赋值；
 /// 双失败（目标只读无 setter）即跳过——真机以目标描述符为准（`inherited_properties`
 /// 只读继承、`preserves-property` 等），源端不同步，不抛（10c-3 回落的静默形）。
-/// `__wjs_vm_set(id, key, value)` → undefined。
+/// `__wjs2_vm_set(id, key, value)` → undefined。
 pub unsafe extern "C" fn vm_set(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -418,7 +418,7 @@ pub unsafe extern "C" fn vm_set(
 }
 
 /// 读目标 global 属性（sync-out/探针用；跨 compartment 值透明为 CCW）。
-/// `__wjs_vm_get(id, key)` → value。
+/// `__wjs2_vm_get(id, key)` → value。
 pub unsafe extern "C" fn vm_get(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -453,7 +453,7 @@ pub unsafe extern "C" fn vm_get(
 }
 
 /// 目标 global 自有可枚举键（sync-out 差集用；目标 realm 内求值，JSON 串回传）。
-/// `__wjs_vm_keys(id)` → `'["a","b"]'`。
+/// `__wjs2_vm_keys(id)` → `'["a","b"]'`。
 pub unsafe extern "C" fn vm_keys(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -484,7 +484,7 @@ pub unsafe extern "C" fn vm_keys(
 }
 
 /// 目标 global 全部自有字符串键（sync-out/创建快照用；含不可枚举，JSON 数组回传）。
-/// `__wjs_vm_keys_all(id)` → `'["a","b"]'`。
+/// `__wjs2_vm_keys_all(id)` → `'["a","b"]'`。
 /// UNSAFE-BOUNDARY: 前置同 `vm_keys`；`GetPropertyKeys` 失败 None（覆盖测试同 `vm_keys`）。
 pub unsafe extern "C" fn vm_keys_all(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -517,7 +517,7 @@ pub unsafe extern "C" fn vm_keys_all(
 
 /// 目标 global 自有键计数快照（仅调试/探针用；`{"strings": [...], "symbols": n}` JSON 回传，
 /// symbol 只计数——跨 realm 无字符串身份，存在性由计数断言）。
-/// `__wjs_vm_keys_count(id)` → `'{"strings":[...],"symbols":0}'`。
+/// `__wjs2_vm_keys_count(id)` → `'{"strings":[...],"symbols":0}'`。
 /// UNSAFE-BOUNDARY: 前置同 `vm_keys`；枚举经 `own_keys_json` 同源（覆盖测试 `phase10f_vm_sync_all_keys`）。
 pub unsafe extern "C" fn vm_keys_count(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -569,7 +569,7 @@ pub unsafe extern "C" fn vm_keys_count(
     true
 }
 
-/// 跨 compartment SameValue 比较（sync-out 快照比较用；`__wjs_vm_same(a, b)` → boolean）。
+/// 跨 compartment SameValue 比较（sync-out 快照比较用；`__wjs2_vm_same(a, b)` → boolean）。
 /// UNSAFE-BOUNDARY: 前置——cx 在 realm 内；a/b 由 Frame rooted 后传入（§4.80）。
 /// 覆盖：`tests/node/vm.rs::phase10f_vm_sync_snapshot`。
 pub unsafe extern "C" fn vm_same(
@@ -597,7 +597,7 @@ pub unsafe extern "C" fn vm_same(
 }
 
 /// 摘除上下文（FinalizationRegistry/显式释放用；重复释放 false）。
-/// `__wjs_vm_release(id)` → boolean。
+/// `__wjs2_vm_release(id)` → boolean。
 pub unsafe extern "C" fn vm_release(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -616,7 +616,7 @@ pub unsafe extern "C" fn vm_release(
 }
 
 /// 取 vm_run/vm_run_this 暂存的原始异常对象并清槽：
-/// `__wjs_vm_take_error()` → value（无则 undefined）。
+/// `__wjs2_vm_take_error()` → value（无则 undefined）。
 /// UNSAFE-BOUNDARY: 槽值经 RootedState.vm_last_error（Heap，trace 覆盖）保活；
 /// JS 单线程专用；读后即清（信封/原物一一对应）。
 /// 覆盖：`tests/node/vm.rs` vm 对拍黑盒（跨域 SyntaxError instanceof）。
@@ -648,7 +648,7 @@ pub unsafe extern "C" fn vm_take_error(
 // （afterEvaluate 等效）；namespace 经 `GetModuleNamespace` 以 CCW 回主域。
 // 记录以 `Box<Heap>` 入 `state::vm_mods`（§4.40 定址），状态位防重复 link/evaluate。
 
-/// 编译模块：`__wjs_vm_compile_mod(ctxId, identifier, code)` → modId 字符串。
+/// 编译模块：`__wjs2_vm_compile_mod(ctxId, identifier, code)` → modId 字符串。
 /// 失败抛包络 SyntaxError（转译错/编译错，含行列信息）。
 pub unsafe extern "C" fn vm_mod_compile(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -713,7 +713,7 @@ pub unsafe extern "C" fn vm_mod_compile(
     true
 }
 
-/// 取静态依赖表：`__wjs_vm_mod_deps(modId)` → JSON 数组串。
+/// 取静态依赖表：`__wjs2_vm_mod_deps(modId)` → JSON 数组串。
 pub unsafe extern "C" fn vm_mod_deps(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -738,7 +738,7 @@ pub unsafe extern "C" fn vm_mod_deps(
     true
 }
 
-/// 链接模块：`__wjs_vm_link(modId)` → undefined。
+/// 链接模块：`__wjs2_vm_link(modId)` → undefined。
 /// 零导入恒过；带导入 v1 报 `ERR_VM_MODULE_LINK_FAILURE`（linker 切片后续）。
 pub unsafe extern "C" fn vm_mod_link(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -796,7 +796,7 @@ pub unsafe extern "C" fn vm_mod_link(
     true
 }
 
-/// 求值模块：`__wjs_vm_evaluate(modId)` → completion（promise 照常回调用方）。
+/// 求值模块：`__wjs2_vm_evaluate(modId)` → completion（promise 照常回调用方）。
 /// 未 link 即报 `ERR_VM_MODULE_STATUS`（Node 口径：先 link 后 evaluate）。
 pub unsafe extern "C" fn vm_mod_evaluate(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -846,7 +846,7 @@ pub unsafe extern "C" fn vm_mod_evaluate(
         unsafe { RunJobs(realm.raw_cx()) };
     }
     // 跨域求值恒异步（见 §4.57）：rval 为 promise 时结算未定，不置 evaluated 位，
-    // 由 JS 壳在 promise 落定后经 `__wjs_vm_mod_settled` 补记；同步完成值才即置。
+    // 由 JS 壳在 promise 落定后经 `__wjs2_vm_mod_settled` 补记；同步完成值才即置。
     let is_promise = if rval.is_object() {
         rooted!(&in(&mut realm) let rval_obj: *mut JSObject = rval.to_object());
         // SAFETY: rval_obj 为有效 rooted 对象
@@ -861,7 +861,7 @@ pub unsafe extern "C" fn vm_mod_evaluate(
     true
 }
 
-/// 取模块 namespace：`__wjs_vm_mod_ns(modId)` → namespace 对象（CCW 回主域）。
+/// 取模块 namespace：`__wjs2_vm_mod_ns(modId)` → namespace 对象（CCW 回主域）。
 pub unsafe extern "C" fn vm_mod_ns(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -908,7 +908,7 @@ pub unsafe extern "C" fn vm_mod_ns(
     true
 }
 
-/// 摘除模块：`__wjs_vm_mod_release(modId)` → boolean。
+/// 摘除模块：`__wjs2_vm_mod_release(modId)` → boolean。
 pub unsafe extern "C" fn vm_mod_release(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -930,7 +930,7 @@ pub unsafe extern "C" fn vm_mod_release(
     true
 }
 
-/// 异步落定补记：`__wjs_vm_mod_settled(modId)` → undefined。
+/// 异步落定补记：`__wjs2_vm_mod_settled(modId)` → undefined。
 /// 跨域求值恒异步（§4.57），promise 路径的 evaluated 位由 JS 壳在落定后补记。
 pub unsafe extern "C" fn vm_mod_settled(
     cx_raw: *mut mozjs::jsapi::JSContext,

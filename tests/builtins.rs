@@ -8,14 +8,14 @@ use common::*;
 #[test]
 fn phase1_microtask_order_before_timer() {
     // 规范顺序：同步 → 微任务（FIFO）→ 宏任务
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         "console.log('1'); setTimeout(()=>console.log('4'),0); Promise.resolve().then(()=>console.log('3')); queueMicrotask(()=>console.log('2'))"]));
     assert_eq!(out, "1\n3\n2\n4\n", "microtask/timer ordering: {out}");
 }
 
 #[test]
 fn phase1_promise_chain_three_hops() {
-    let out = stdout_of(&mut winterjs().args([
+    let out = stdout_of(&mut winterjs2().args([
         "--eval",
         "Promise.resolve(1).then(v=>v+1).then(v=>v+1).then(v=>console.log('chain:',v))",
     ]));
@@ -27,7 +27,7 @@ fn phase1_top_level_await_acceptance() {
     // docs/plan.md Phase 1 验收样例
     assert_eq!(
         stdout_of(
-            &mut winterjs().args(["--eval", "await new Promise(r=>setTimeout(()=>r(1),10))"])
+            &mut winterjs2().args(["--eval", "await new Promise(r=>setTimeout(()=>r(1),10))"])
         ),
         "1\n"
     );
@@ -35,14 +35,14 @@ fn phase1_top_level_await_acceptance() {
 
 #[test]
 fn phase1_interval_until_cleared() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         "let n=0; const id=setInterval(()=>{n++; console.log('tick',n); if(n>=3) clearInterval(id)},5)"]));
     assert_eq!(out, "tick 1\ntick 2\ntick 3\n", "interval: {out}");
 }
 
 #[test]
 fn phase1_nested_microtasks() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         "async function f(){ for(let i=0;i<3;i++){ await Promise.resolve(); console.log('micro',i);} } f()"]));
     assert_eq!(
         out, "micro 0\nmicro 1\nmicro 2\n[object Promise]\n",
@@ -52,20 +52,20 @@ fn phase1_nested_microtasks() {
 
 #[test]
 fn phase1_structured_clone_json_values() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         "const a={x:1,y:[1,2,{z:'s'}]}; const b=structuredClone(a); console.log(JSON.stringify(b), b===a)"]));
     assert_eq!(
         out, "{\"x\":1,\"y\":[1,2,{\"z\":\"s\"}]} false\n",
         "clone object: {out}"
     );
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         "console.log(JSON.stringify([structuredClone(42), structuredClone('s'), structuredClone(null)]))"]));
     assert_eq!(out, "[42,\"s\",null]\n");
 }
 
 #[test]
 fn phase1_unhandled_rejection_is_fatal() {
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval", "Promise.reject(new Error('nope'))"])
         .output()
         .unwrap();
@@ -80,7 +80,7 @@ fn phase1_unhandled_rejection_is_fatal() {
 
 #[test]
 fn phase1_console_count_and_time() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         "console.count('a'); console.count('a'); console.time('t'); console.timeLog('t'); console.timeEnd('t')"]));
     assert!(out.contains("a: 1") && out.contains("a: 2"), "count: {out}");
     assert!(
@@ -93,7 +93,7 @@ fn phase1_console_count_and_time() {
 
 #[test]
 fn phase3_url_components() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const u = new URL("https://user:pass@example.com:8080/p?q=1#h"); console.log([u.href, u.protocol, u.host, u.hostname, u.port, u.pathname, u.search, u.hash, u.origin].join("|"))"#]));
     assert_eq!(
         out,
@@ -105,14 +105,14 @@ fn phase3_url_components() {
 
 #[test]
 fn phase3_url_relative_and_can_parse() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"console.log(new URL("/p", "https://h.org/x").href, URL.canParse(':::'), URL.canParse('https://a.b'))"#]));
     assert_eq!(out, "https://h.org/p false true\n", "url base: {out}");
 }
 
 #[test]
 fn phase3_url_invalid_throws() {
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval", "new URL(':::')"])
         .output()
         .unwrap();
@@ -123,7 +123,7 @@ fn phase3_url_invalid_throws() {
 
 #[test]
 fn phase3_usp_live_view() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const u = new URL("https://ex.com/?b=2"); const sp = u.searchParams; sp.append("c", "3"); console.log(u.search, sp === u.searchParams); u.search = "?x=9"; console.log(sp.toString())"#]));
     assert_eq!(
         out,
@@ -136,7 +136,7 @@ x=9
 
 #[test]
 fn phase3_usp_ops() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const s = new URLSearchParams("z=1&a=2&a=3"); s.sort(); console.log(s.toString(), s.get("a"), s.getAll("a").length, s.size)"#]));
     assert_eq!(
         out,
@@ -148,7 +148,7 @@ fn phase3_usp_ops() {
 
 #[test]
 fn phase3_text_encoder_decoder() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const e = new TextEncoder(); console.log(e.encoding, e.encode("hi").length, JSON.stringify(new TextEncoder().encodeInto("hello", new Uint8Array(3)))); console.log(new TextDecoder().decode(new Uint8Array([104, 105])), new TextDecoder("utf-16le").decode(new Uint8Array([104, 0, 105, 0])));"#]));
     assert_eq!(
         out, "utf-8 2 {\"read\":3,\"written\":3}\nhi hi\n",
@@ -158,7 +158,7 @@ fn phase3_text_encoder_decoder() {
 
 #[test]
 fn phase3_text_decoder_fatal() {
-    let out = winterjs()
+    let out = winterjs2()
         .args([
             "--eval",
             "new TextDecoder('utf-8', {fatal:true}).decode(new Uint8Array([0xff]))",
@@ -166,7 +166,7 @@ fn phase3_text_decoder_fatal() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
-    let out = stdout_of(&mut winterjs().args([
+    let out = stdout_of(&mut winterjs2().args([
         "--eval",
         "console.log(new TextDecoder('utf-8').decode(new Uint8Array([0xff])).length)",
     ]));
@@ -180,14 +180,14 @@ fn phase3_text_decoder_fatal() {
 #[test]
 fn phase3_base64_roundtrip() {
     let out =
-        stdout_of(&mut winterjs().args(["--eval", "console.log(btoa('hello'), atob('aGVsbG8='))"]));
+        stdout_of(&mut winterjs2().args(["--eval", "console.log(btoa('hello'), atob('aGVsbG8='))"]));
     assert_eq!(
         out,
         "aGVsbG8= hello
 ",
         "base64: {out}"
     );
-    let out = winterjs().args(["--eval", "btoa('€')"]).output().unwrap();
+    let out = winterjs2().args(["--eval", "btoa('€')"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
 }
 
@@ -196,7 +196,7 @@ fn phase1_gc_pressure_keeps_rooted_targets() {
     // §4.39 回归：回调内的 nursery GC 不得收集 RootedState 的 Heap 目标。
     // 修前：2 万小对象分配触发 minor GC，读到 Vec 搬运后悬垂的 store-buffer 边，
     // 进程 SIGSEGV/SIGBUS（exit=138/139），t2 永不打印。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         "setTimeout(()=>{let acc=0; for(let i=0;i<20000;i++){acc+=({x:i,s:'pad-'+i}).x;} console.log('t1',acc)},50); setTimeout(()=>console.log('t2-ok'),400)"]));
     assert!(out.contains("t1 199990000"), "gc pressure t1: {out}");
     assert!(out.contains("t2-ok"), "gc pressure t2: {out}");
@@ -207,7 +207,7 @@ fn phase9m_global_dom_exception_file_message_channel_sab() {
     // jsdom/vitest 生态全局面（真机 26.8.2 对拍）：DOMException（legacy code
     // getter + 常量族）/File（Blob 子类）/MessageChannel·MessagePort 与
     // worker_threads 同一性/SharedArrayBuffer + Atomics。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         "const de = new DOMException('boom', 'AbortError');\n\
          console.log('domex', de.name, de.message, de instanceof Error, DOMException.ABORT_ERR, de.code, String(de));\n\
          console.log('codedef', new DOMException('x', 'NopeError').code);\n\
@@ -240,7 +240,7 @@ fn phase10a_immediate_and_timeout_class() {
     // 10a：全局 setImmediate/clearImmediate + Timeout/Immediate 真类。
     // 近似口径：setImmediate ≈ setTimeout(0)，同 delay(0) 队列 FIFO；
     // check 分层上线时改 order 断言。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         "console.log('noleak', typeof Timeout, typeof Immediate);\n\
          const order = [];\n\
          setTimeout(() => order.push('timeout'), 0);\n\
@@ -248,7 +248,7 @@ fn phase10a_immediate_and_timeout_class() {
          setImmediate((a, b) => console.log('args', a, b), 'x', 7);\n\
          const t = setTimeout(() => {}, 50);\n\
          console.log('cls', t.constructor.name, typeof t.unref, typeof t.ref, typeof t.hasRef, typeof t.refresh);\n\
-         console.log('prim', (t + 0) === t.__wjs_id, typeof (t + 0));\n\
+         console.log('prim', (t + 0) === t.__wjs2_id, typeof (t + 0));\n\
          console.log('chain', t.unref() === t, t.ref() === t, t.refresh() === t, t.hasRef());\n\
          const im = setImmediate(() => {});\n\
          console.log('imm', im.constructor.name, im.hasRef());\n\
@@ -278,7 +278,7 @@ fn phase10f_timer_face_unref_uncaught() {
     // （test-timers{,-this,-unref,-destroyed,-to-primitive,-throw-when-cb,
     //   -api-refs,-uncaught-exception,-immediate-queue-throw}/
     //  test-timers-clearImmediate-als/-nan-duration-warning 等）。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         "const tthis = await new Promise((res) => {\n\
          \x20 setTimeout(function () { res(this !== undefined && typeof this.hasRef === 'function' && this._destroyed === false); }, 1);\n\
          });\n\
@@ -369,7 +369,7 @@ fn phase10f_timer_face_unref_uncaught() {
 fn phase11_console_node_format() {
     // 2026-09-25：全局 console 走 util.format（修前原生 sink 只 ToString：`[object Object]`、
     // `%s` 原样）。正常：对象/数组/Map/Symbol/BigInt inspect；占位符；console.dir 深度。
-    let out = stdout_of(winterjs().args([
+    let out = stdout_of(winterjs2().args([
         "--eval",
         "console.log({x:1}, [1,2], new Map([[1,2]]), Symbol('s'), 10n, -0);\
          console.log('a %s b %d c %i %j %%', 'S', 4.5, 4.5, {x:1});\
@@ -386,7 +386,7 @@ fn phase11_console_node_format() {
         assert!(out.lines().any(|l| l == line), "missing {line:?}; out: {out}");
     }
     // 报错流：console.error 同样格式化（stderr）。
-    let o = winterjs().args(["--eval", "console.error('e %s', {k: 2})"]).output().unwrap();
+    let o = winterjs2().args(["--eval", "console.error('e %s', {k: 2})"]).output().unwrap();
     assert!(String::from_utf8_lossy(&o.stderr).contains("e { k: 2 }"));
 }
 
@@ -394,7 +394,7 @@ fn phase11_console_node_format() {
 fn phase11_console_global_unified() {
     // 2026-09-28 §7-②：全局 console 统一收尾（assert/trace 原文语义 + 8 缺失方法）。
     // 正常：方法表齐 + assert 格式化 + 多参/裸参 + trace 首行 + 别名/存根。
-    let out = stdout_of(winterjs().args([
+    let out = stdout_of(winterjs2().args([
         "--eval",
         "console.log(typeof console.table, typeof console.dirxml, typeof console.groupCollapsed,\
          typeof console.context, typeof console.createTask, typeof console.profile,\
@@ -418,7 +418,7 @@ fn phase11_console_global_unified() {
     }
     // 报错流（stderr）：assert 按 constructor.js 原文（首参字符串前缀/多参格式化/
     // 裸参/真值静默）+ trace 首行 `Trace: msg`。
-    let o = winterjs()
+    let o = winterjs2()
         .args(["--eval", "console.assert(false, '%s=%d', 'a', 1); console.assert(false, 'x', {k:1}); console.assert(false); console.assert(true, 'silent'); console.trace('%s', 't');"])
         .output()
         .unwrap();
@@ -429,7 +429,7 @@ fn phase11_console_global_unified() {
     assert!(!err.contains("silent"), "assert(true) must be silent; err: {err}");
     assert!(err.lines().any(|l| l == "Trace: t"), "trace head; err: {err}");
     // 边界：trace 无参 → 裸 `Trace`（空消息 V8 省略 `: `，真机同形）。
-    let o2 = winterjs().args(["--eval", "console.trace()"]).output().unwrap();
+    let o2 = winterjs2().args(["--eval", "console.trace()"]).output().unwrap();
     let err2 = String::from_utf8_lossy(&o2.stderr);
     assert!(err2.lines().any(|l| l == "Trace"), "trace() head; err: {err2}");
 }
@@ -438,15 +438,15 @@ fn phase11_console_global_unified() {
 fn phase11_repl_sig_js_docs() {
     // 2026-09-28 用户裁定：pane 只放签名，不搬运文档句（文档只读语料，经 `.doc`）。
     // 正常：R3 签名表命中 + 原生 toString 真形参；边界：用户自有同名方法显示自身。
-    let out = stdout_of(winterjs().args([
+    let out = stdout_of(winterjs2().args([
         "--eval",
         "const j = (o) => console.log(JSON.stringify(o));\
-         j(globalThis.__wjs_cli_complete('console.')[0].filter(p=>p[0]==='console.log'||p[0]==='console.trace'));\
-         j(globalThis.__wjs_cli_complete('fet')[0]);\
+         j(globalThis.__wjs2_cli_complete('console.')[0].filter(p=>p[0]==='console.log'||p[0]==='console.trace'));\
+         j(globalThis.__wjs2_cli_complete('fet')[0]);\
          const u = new URLSearchParams('a=1'); globalThis.u = u;\
-         j(globalThis.__wjs_cli_complete('u.')[0].filter(p=>p[0]==='u.get'));\
+         j(globalThis.__wjs2_cli_complete('u.')[0].filter(p=>p[0]==='u.get'));\
          globalThis.o = { assign(a, b) { return a; } };\
-         j(globalThis.__wjs_cli_complete('o.')[0].filter(p=>p[0]==='o.assign'));",
+         j(globalThis.__wjs2_cli_complete('o.')[0].filter(p=>p[0]==='o.assign'));",
     ]));
     // 桥对子 `[全文, 描述]`：候选框干净名，右盒纯文档（前两段 + 调用形状
     // + Parameters；`.doc` 同源）；缺页（用户自有）回签名。
@@ -490,28 +490,28 @@ fn phase11_set_immediate_not_clamped() {
 
 #[test]
 fn namespace_three_globals_present() {
-    // 正常：Deno/Bun/WinterJS 三命名空间存在 + 版本同源 + toStringTag。
-    let out = stdout_of(winterjs().args([
+    // 正常：Deno/Bun/WinterJS2 三命名空间存在 + 版本同源 + toStringTag。
+    let out = stdout_of(winterjs2().args([
         "--eval",
-        "console.log(JSON.stringify([typeof Deno, typeof Bun, typeof WinterJS]));\
-         console.log(JSON.stringify([Deno.version.deno, Bun.version, WinterJS.version]));\
-         console.log(JSON.stringify([Object.prototype.toString.call(Deno), Object.prototype.toString.call(Bun), Object.prototype.toString.call(WinterJS)]));",
+        "console.log(JSON.stringify([typeof Deno, typeof Bun, typeof WinterJS2]));\
+         console.log(JSON.stringify([Deno.version.deno, Bun.version, WinterJS2.version]));\
+         console.log(JSON.stringify([Object.prototype.toString.call(Deno), Object.prototype.toString.call(Bun), Object.prototype.toString.call(WinterJS2)]));",
     ]));
     assert!(out.contains(r#"["object","object","object"]"#), "out: {out}");
     assert!(out.contains(r#"["26.9.27","26.9.27","26.9.27"]"#), "out: {out}");
     assert!(out.contains("[object Deno]"), "out: {out}");
     assert!(out.contains("[object Bun]"), "out: {out}");
-    assert!(out.contains("[object WinterJS]"), "out: {out}");
+    assert!(out.contains("[object WinterJS2]"), "out: {out}");
 }
 
 #[test]
 fn namespace_frozen_vs_mutable() {
-    // 报错/语义：Deno 冻结（赋值不生效），Bun/WinterJS 可改（setter 生效）。
-    let out = stdout_of(winterjs().args([
+    // 报错/语义：Deno 冻结（赋值不生效），Bun/WinterJS2 可改（setter 生效）。
+    let out = stdout_of(winterjs2().args([
         "--eval",
         "Deno.version = 1; console.log('deno-mut:' + (Deno.version === 1));\
-         Bun.version = 'x'; WinterJS.version = 'y';\
-         console.log(JSON.stringify([Bun.version, WinterJS.version]));\
+         Bun.version = 'x'; WinterJS2.version = 'y';\
+         console.log(JSON.stringify([Bun.version, WinterJS2.version]));\
          console.log(JSON.stringify(Object.isFrozen(Deno)));",
     ]));
     assert!(out.contains("deno-mut:false"), "out: {out}");
@@ -522,14 +522,14 @@ fn namespace_frozen_vs_mutable() {
 #[test]
 fn namespace_full_surface_types() {
     // 全量别名存在性：一行多断言分参打印（§4.42）。
-    let out = stdout_of(winterjs().args([
+    let out = stdout_of(winterjs2().args([
         "--eval",
         "const d = ['readFile','writeFile','readTextFile','writeTextFile','open','stat','lstat','mkdir','remove','rename','copyFile','symlink','readLink','realPath','readDir','makeTempDir','truncate','chmod','chown','utime','watchFs','test','serve','connect','listen','listenDatagram','resolveDns','Command','permissions','errors','env','cwd','chdir','exit','hostname','osRelease','args','pid','version','build'];\n\
          const b = ['file','write','spawnSync','$','sleep','sleepSync','nanoseconds','randomUUIDv7','sha','serve','listen','connect','udpSocket','fileURLToPath','pathToFileURL','which','version','revision','argv','main','env'];\n\
          const w = ['version','versions','args','env','cwd','pid','storage','localStorage','CompressionStream','DecompressionStream','Deno','Bun'];\n\
          console.log('deno-missing:' + JSON.stringify(d.filter((k) => typeof Deno[k] === 'undefined')));\n\
          console.log('bun-missing:' + JSON.stringify(b.filter((k) => typeof Bun[k] === 'undefined')));\n\
-         console.log('wjs-missing:' + JSON.stringify(w.filter((k) => typeof WinterJS[k] === 'undefined')));",
+         console.log('wjs-missing:' + JSON.stringify(w.filter((k) => typeof WinterJS2[k] === 'undefined')));",
     ]));
     assert!(out.contains("deno-missing:[]"), "out: {out}");
     assert!(out.contains("bun-missing:[]"), "out: {out}");
@@ -543,11 +543,11 @@ fn namespace_delegation_spot() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("ns.js")
         .write_str(
-            "console.log('cwd:' + (Deno.cwd() === process.cwd() && WinterJS.cwd() === process.cwd()));\n\
+            "console.log('cwd:' + (Deno.cwd() === process.cwd() && WinterJS2.cwd() === process.cwd()));\n\
              await Bun.write('a.txt', 'bun');\n\
              console.log('file:' + (await Bun.file('a.txt').text() === 'bun' && Bun.file('a.txt').exists()));\n\
              Deno.env.set('WJS_NS_X', '9');\n\
-             console.log('env:' + (Deno.env.get('WJS_NS_X') === '9' && WinterJS.env.WJS_NS_X === '9' && Bun.env.WJS_NS_X === '9'));\n\
+             console.log('env:' + (Deno.env.get('WJS_NS_X') === '9' && WinterJS2.env.WJS_NS_X === '9' && Bun.env.WJS_NS_X === '9'));\n\
              const r = await new Deno.Command('echo', { args: ['hi'] }).output();\n\
              console.log('cmd:' + (r.code === 0 && String(r.stdout).trim() === 'hi'));\n\
              const q = await Bun.$`echo hi`;\n\
@@ -566,19 +566,19 @@ fn namespace_delegation_spot() {
 fn namespace_member_completion_after_sync() {
     // R3 getter 拒入纪律下值型成员须为数据属性：`Deno.version.` 等二级补全非空
     //（含 `global.` 前缀形）；活值与 process 同源。
-    let out = stdout_of(winterjs().args([
+    let out = stdout_of(winterjs2().args([
         "--eval",
-        "const j = (x) => console.log(x, JSON.stringify(globalThis.__wjs_cli_complete(x)[0].map((p) => p[0]).slice(0, 4)));\n\
+        "const j = (x) => console.log(x, JSON.stringify(globalThis.__wjs2_cli_complete(x)[0].map((p) => p[0]).slice(0, 4)));\n\
          j('Deno.version.');\n\
          j('global.Deno.version.');\n\
          j('Bun.argv.');\n\
-         j('WinterJS.versions.');\n\
-         console.log('live:' + JSON.stringify([Deno.pid === process.pid, WinterJS.pid === process.pid, Bun.main === String(process.argv[1] || '')]));",
+         j('WinterJS2.versions.');\n\
+         console.log('live:' + JSON.stringify([Deno.pid === process.pid, WinterJS2.pid === process.pid, Bun.main === String(process.argv[1] || '')]));",
     ]));
     assert!(out.contains("\"Deno.version.deno\""), "out: {out}");
     assert!(out.contains("\"global.Deno.version.deno\""), "out: {out}");
     assert!(out.contains("\"Bun.argv.length\""), "out: {out}");
-    assert!(out.contains("\"WinterJS.versions.winterjs\""), "out: {out}");
+    assert!(out.contains("\"WinterJS2.versions.winterjs2\""), "out: {out}");
     assert!(out.contains("live:[true,true,true]"), "out: {out}");
 }
 
@@ -588,7 +588,7 @@ fn namespace_args_flow_to_run() {
     use assert_fs::prelude::*;
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("args.js")
-        .write_str("console.log(JSON.stringify([Deno.args, WinterJS.args]))\n")
+        .write_str("console.log(JSON.stringify([Deno.args, WinterJS2.args]))\n")
         .unwrap();
     let (ok, out, _) = wjs(&["--run", "args.js", "--", "a", "b"], &dir);
     assert!(ok, "out: {out}");
@@ -598,22 +598,22 @@ fn namespace_args_flow_to_run() {
 #[test]
 fn image_roundtrip_and_params() {
     // 正常：多格式往返 + jpeg quality/png 压缩/gif repeat/pnm 子集/svg 矢量。
-    let out = stdout_of(winterjs().args([
+    let out = stdout_of(winterjs2().args([
         "--eval",
         "const px = new Uint8Array([255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,0,255]);\n\
          const img = { data: px, width: 2, height: 2 };\n\
-         const rt = (f, o) => { const e = WinterJS.image.encode(img, f, o); const d = WinterJS.image.decode(e, f); return d.format + ':' + d.width + 'x' + d.height + ':' + d.data.length; };\n\
+         const rt = (f, o) => { const e = WinterJS2.image.encode(img, f, o); const d = WinterJS2.image.decode(e, f); return d.format + ':' + d.width + 'x' + d.height + ':' + d.data.length; };\n\
          console.log('r:' + ['png','jpeg','gif','webp','tiff','bmp','qoi','pnm','farbfeld','tga','hdr','exr','ico'].map((f) => rt(f)).join(','));\n\
-         console.log('q:' + (WinterJS.image.encode(img, 'jpeg', { quality: 100 }).length > 0));\n\
-         console.log('c:' + (WinterJS.image.encode(img, 'png', { compression: 'best', filter: 'paeth' }).length > 0));\n\
-         console.log('g:' + (WinterJS.image.encode(img, 'gif', { speed: 10, repeat: 0 }).length > 0));\n\
-         console.log('p:' + (WinterJS.image.encode(img, 'pnm', { subtype: 'pgm', encoding: 'ascii' }).length > 0));\n\
+         console.log('q:' + (WinterJS2.image.encode(img, 'jpeg', { quality: 100 }).length > 0));\n\
+         console.log('c:' + (WinterJS2.image.encode(img, 'png', { compression: 'best', filter: 'paeth' }).length > 0));\n\
+         console.log('g:' + (WinterJS2.image.encode(img, 'gif', { speed: 10, repeat: 0 }).length > 0));\n\
+         console.log('p:' + (WinterJS2.image.encode(img, 'pnm', { subtype: 'pgm', encoding: 'ascii' }).length > 0));\n\
          const svg = new TextEncoder().encode('<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"3\"><rect width=\"4\" height=\"3\" fill=\"red\"/></svg>');\n\
-         const s = WinterJS.image.decode(svg);\n\
+         const s = WinterJS2.image.decode(svg);\n\
          console.log('s:' + s.format + ':' + s.width + 'x' + s.height + ':' + Array.from(s.data.slice(0, 4)).join(','));\n\
-         const s2 = WinterJS.image.decode(svg, 'svg', 2);\n\
+         const s2 = WinterJS2.image.decode(svg, 'svg', 2);\n\
          console.log('s2:' + s2.width + 'x' + s2.height + ':' + (s2.data.length === 8 * 6 * 4));\n\
-         console.log('i:' + JSON.stringify(WinterJS.image.info(svg)));",
+         console.log('i:' + JSON.stringify(WinterJS2.image.info(svg)));",
     ]));
     assert!(out.contains("r:png:2x2:16,jpeg:2x2:16,gif:2x2:16,webp:2x2:16,tiff:2x2:16,bmp:2x2:16,qoi:2x2:16,pnm:2x2:16,farbfeld:2x2:16,tga:2x2:16,hdr:2x2:16,exr:2x2:16,ico:2x2:16"), "out: {out}");
     assert!(out.contains("q:true"), "out: {out}");
@@ -629,28 +629,28 @@ fn image_roundtrip_and_params() {
 fn image_errors_and_bounds() {
     // 报错：垃圾字节/未知格式/dds 无编解码/svg 编码/jxl 编码/质量越界/像素长度错。
     // 边界：1x1 最小；dds 行标 unsupported。
-    let out = stdout_of(winterjs().args([
+    let out = stdout_of(winterjs2().args([
         "--eval",
         "const t = (f) => { try { f(); return 'NO-THROW'; } catch (e) { return e.message; } };\n\
-         console.log('e1:' + t(() => WinterJS.image.decode(new Uint8Array([1,2,3]))));\n\
-         console.log('e2:' + t(() => WinterJS.image.decode(new Uint8Array([1,2,3]), 'nope')));\n\
-         console.log('e3:' + t(() => WinterJS.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'dds')));\n\
-         console.log('e4:' + t(() => WinterJS.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'svg')));\n\
-         console.log('e5:' + t(() => WinterJS.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'jxl')));\n\
-         console.log('e6:' + t(() => WinterJS.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'jpeg', { quality: 101 })));\n\
-         console.log('e7:' + t(() => WinterJS.image.encode({ data: new Uint8Array(15), width: 2, height: 2 }, 'png')));\n\
-         console.log('e8:' + t(() => WinterJS.image.encode({ data: new Uint8Array(16), width: 0, height: 2 }, 'png')));\n\
-         console.log('e9:' + t(() => WinterJS.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'png', { compression: 'turbo' })));\n\
-         const one = WinterJS.image.decode(WinterJS.image.encode({ data: new Uint8Array([9,9,9,255]), width: 1, height: 1 }, 'qoi'));\n\
+         console.log('e1:' + t(() => WinterJS2.image.decode(new Uint8Array([1,2,3]))));\n\
+         console.log('e2:' + t(() => WinterJS2.image.decode(new Uint8Array([1,2,3]), 'nope')));\n\
+         console.log('e3:' + t(() => WinterJS2.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'dds')));\n\
+         console.log('e4:' + t(() => WinterJS2.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'svg')));\n\
+         console.log('e5:' + t(() => WinterJS2.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'jxl')));\n\
+         console.log('e6:' + t(() => WinterJS2.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'jpeg', { quality: 101 })));\n\
+         console.log('e7:' + t(() => WinterJS2.image.encode({ data: new Uint8Array(15), width: 2, height: 2 }, 'png')));\n\
+         console.log('e8:' + t(() => WinterJS2.image.encode({ data: new Uint8Array(16), width: 0, height: 2 }, 'png')));\n\
+         console.log('e9:' + t(() => WinterJS2.image.encode({ data: new Uint8Array(16), width: 2, height: 2 }, 'png', { compression: 'turbo' })));\n\
+         const one = WinterJS2.image.decode(WinterJS2.image.encode({ data: new Uint8Array([9,9,9,255]), width: 1, height: 1 }, 'qoi'));\n\
          console.log('b:' + (one.width === 1 && one.data[0] === 9));\n\
-         console.log('f:' + JSON.stringify(WinterJS.image.formats().find((r) => r.name === 'dds')));",
+         console.log('f:' + JSON.stringify(WinterJS2.image.formats().find((r) => r.name === 'dds')));",
     ]));
     for line in [
         "e1:TypeError: unsupported image format",
         "e2:TypeError: unsupported image format",
-        "e3:WinterJS.image.encode: 'dds' has no encoder",
-        "e4:WinterJS.image.encode: 'svg' has no encoder",
-        "e5:WinterJS.image.encode: 'jxl' has no encoder",
+        "e3:WinterJS2.image.encode: 'dds' has no encoder",
+        "e4:WinterJS2.image.encode: 'svg' has no encoder",
+        "e5:WinterJS2.image.encode: 'jxl' has no encoder",
         "e6:RangeError: jpeg quality must be an integer within 1..100",
         "e7:RangeError: pixel data length must equal width*height*4",
         "e8:RangeError: image dimensions must be at least 1x1",
@@ -673,13 +673,13 @@ fn media_mp4_fixture() {
         .write_str(&format!(
             "const fs = require('node:fs');\n\
              const b = new Uint8Array(fs.readFileSync('{fx}'));\n\
-             const info = WinterJS.media.mp4Info(b);\n\
+             const info = WinterJS2.media.mp4Info(b);\n\
              console.log('tracks:' + JSON.stringify(info.tracks.map((t) => [t.id, t.kind, t.codec, t.sampleCount])));\n\
-             const ss = WinterJS.media.mp4Samples(b, 1, 2);\n\
+             const ss = WinterJS2.media.mp4Samples(b, 1, 2);\n\
              console.log('ss:' + (ss.length === 2 && ss[0].index === 0 && ss[0].size > 0));\n\
-             const s0 = WinterJS.media.mp4Sample(b, 1, 0);\n\
+             const s0 = WinterJS2.media.mp4Sample(b, 1, 0);\n\
              console.log('s0:' + (s0.length === ss[0].size));\n\
-             const d = WinterJS.media.decodeAudio(b);\n\
+             const d = WinterJS2.media.decodeAudio(b);\n\
              console.log('dec:' + [d.format, d.codec, d.sampleRate, d.channels, d.data.length > 40000].join(','));\n"
         ))
         .unwrap();
@@ -695,22 +695,22 @@ fn media_mp4_fixture() {
 fn media_errors_and_bounds() {
     // 报错：垃圾音频/空字节/坏音量/坏视频维/坏帧数/越界样本/未知 id stop=false。
     // 边界：volume 0 可放（有设备）或干净无设备错（CI）。
-    let out = stdout_of(winterjs().args([
+    let out = stdout_of(winterjs2().args([
         "--eval",
         "const t = (f) => { try { f(); return 'NO-THROW'; } catch (e) { return e.message; } };\n\
-         console.log('e1:' + t(() => WinterJS.media.decodeAudio(new Uint8Array([1,2,3]))));\n\
-         console.log('e2:' + t(() => WinterJS.media.decodeAudio(new Uint8Array(0))));\n\
-         console.log('e3:' + t(() => WinterJS.media.play({ data: new Float32Array(8), sampleRate: 8000, channels: 1 }, { volume: -1 })));\n\
-         console.log('e4:' + t(() => WinterJS.media.videoEncode({ data: new Uint8Array(16), width: 3, height: 2, count: 1 })));\n\
-         console.log('e5:' + t(() => WinterJS.media.videoEncode({ data: new Uint8Array(16), width: 2, height: 2, count: 0 })));\n\
-         console.log('e6:' + t(() => WinterJS.media.mp4Sample(new Uint8Array([1,2,3]), 1, 0)));\n\
-         console.log('e7:' + t(() => WinterJS.media.videoEncode({ data: new Uint8Array(16), width: 2, height: 2, count: 1 }, { speed: 11 })));\n\
-         console.log('b:' + (WinterJS.media.stop(424242) === false));",
+         console.log('e1:' + t(() => WinterJS2.media.decodeAudio(new Uint8Array([1,2,3]))));\n\
+         console.log('e2:' + t(() => WinterJS2.media.decodeAudio(new Uint8Array(0))));\n\
+         console.log('e3:' + t(() => WinterJS2.media.play({ data: new Float32Array(8), sampleRate: 8000, channels: 1 }, { volume: -1 })));\n\
+         console.log('e4:' + t(() => WinterJS2.media.videoEncode({ data: new Uint8Array(16), width: 3, height: 2, count: 1 })));\n\
+         console.log('e5:' + t(() => WinterJS2.media.videoEncode({ data: new Uint8Array(16), width: 2, height: 2, count: 0 })));\n\
+         console.log('e6:' + t(() => WinterJS2.media.mp4Sample(new Uint8Array([1,2,3]), 1, 0)));\n\
+         console.log('e7:' + t(() => WinterJS2.media.videoEncode({ data: new Uint8Array(16), width: 2, height: 2, count: 1 }, { speed: 11 })));\n\
+         console.log('b:' + (WinterJS2.media.stop(424242) === false));",
     ]));
     for line in [
         "e1:TypeError: unsupported audio format",
         "e2:TypeError",
-        "e3:RangeError: WinterJS.media.play volume",
+        "e3:RangeError: WinterJS2.media.play volume",
         "e4:RangeError",
         "e5:RangeError",
         "e6:TypeError",
@@ -724,10 +724,10 @@ fn media_errors_and_bounds() {
 #[test]
 fn namespace_user_predefine_kept() {
     // 边界：用户在 prelude 后覆盖三命名空间不炸，会话继续。
-    let out = stdout_of(winterjs().args([
+    let out = stdout_of(winterjs2().args([
         "--eval",
-        "Bun.foo = 42; WinterJS.bar = 's';\
-         console.log(JSON.stringify([Bun.foo, WinterJS.bar, typeof Deno.args]));",
+        "Bun.foo = 42; WinterJS2.bar = 's';\
+         console.log(JSON.stringify([Bun.foo, WinterJS2.bar, typeof Deno.args]));",
     ]));
     assert!(out.contains(r#"[42,"s","object"]"#), "out: {out}");
 }

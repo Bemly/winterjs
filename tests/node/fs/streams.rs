@@ -44,7 +44,7 @@ fs.writeFile("w2.txt", "cb", { flush: true }, (e) => {
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -88,7 +88,7 @@ console.log("fs-stream-ok");
 "#;
     std::fs::write(dir.path().join("t.mjs"), code).unwrap();
     let out = stdout_of(
-        &mut winterjs()
+        &mut winterjs2()
             .arg("--run")
             .arg(dir.path().join("t.mjs"))
             .current_dir(dir.path()),
@@ -175,7 +175,7 @@ fs.closeSync(fd);
 
 #[test]
 fn phase10f_fs_stream_lifetime() {
-    // fs 流续命（__wjs_fs_stream_ref/unref + idle 门）：裸 end() 后挂监听仍收
+    // fs 流续命（__wjs2_fs_stream_ref/unref + idle 门）：裸 end() 后挂监听仍收
     // finish/close；只构造不用的流不续命（进程正常退出）；close 双调只释一次。
     // UNSAFE-BOUNDARY(fs_stream_ref/unref) 覆盖：饱和减无 panic 路径。
     let dir = assert_fs::TempDir::new().unwrap();

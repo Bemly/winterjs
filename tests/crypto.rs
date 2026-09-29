@@ -6,7 +6,7 @@ use common::*;
 
 #[test]
 fn phase3_crypto_random() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const v = new Uint8Array(16); console.log(crypto.getRandomValues(v) === v, v.length); const a = crypto.randomUUID(), b = crypto.randomUUID(); console.log(a.length, a !== b, /^[0-9a-f-]{36}$/.test(a))"#]));
     assert_eq!(
         out,
@@ -15,7 +15,7 @@ fn phase3_crypto_random() {
 ",
         "crypto: {out}"
     );
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval", "crypto.getRandomValues(new Uint8Array(70000))"])
         .output()
         .unwrap();
@@ -26,7 +26,7 @@ fn phase3_crypto_random() {
 
 #[test]
 fn phase3_subtle_digest_vectors() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const hex = async (a, d) => [...new Uint8Array(await crypto.subtle.digest(a, new TextEncoder().encode(d)))].map((b) => b.toString(16).padStart(2, "0")).join(""); console.log(await hex("SHA-256", "abc")); console.log(await hex("SHA-1", "abc"));"#]));
     assert_eq!(
         out,
@@ -37,7 +37,7 @@ fn phase3_subtle_digest_vectors() {
 
 #[test]
 fn phase3_subtle_digest_unsupported() {
-    let out = winterjs()
+    let out = winterjs2()
         .args([
             "--eval",
             r#"await crypto.subtle.digest("MD5", new Uint8Array(1))"#,
@@ -51,21 +51,21 @@ fn phase3_subtle_digest_unsupported() {
 
 #[test]
 fn phase3_aes_gcm_roundtrip() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const iv = new Uint8Array(12); const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]); const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode("secret")); const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct); console.log(ct.byteLength, new TextDecoder().decode(pt));"#]));
     assert_eq!(out, "22 secret\n", "aes: {out}");
 }
 
 #[test]
 fn phase3_hmac_sign_verify() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const hk = await crypto.subtle.importKey("raw", new TextEncoder().encode("k"), { name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]); const sig = await crypto.subtle.sign("HMAC", hk, new TextEncoder().encode("m")); console.log(new Uint8Array(sig).length, await crypto.subtle.verify("HMAC", hk, sig, new TextEncoder().encode("m")), await crypto.subtle.verify("HMAC", hk, sig, new TextEncoder().encode("x")), (await crypto.subtle.exportKey("jwk", hk)).kty);"#]));
     assert_eq!(out, "32 true false oct\n", "hmac: {out}");
 }
 
 #[test]
 fn phase3_rsa_pkcs1v15_sign_verify() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const {publicKey, privateKey} = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]); console.log(publicKey.type, privateKey.type, privateKey.algorithm.modulusLength); const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", privateKey, new TextEncoder().encode("m")); console.log(new Uint8Array(sig).length, await crypto.subtle.verify("RSASSA-PKCS1-v1_5", publicKey, sig, new TextEncoder().encode("m")), await crypto.subtle.verify("RSASSA-PKCS1-v1_5", publicKey, sig, new TextEncoder().encode("x")));"#]));
     assert_eq!(
         out, "public private 2048\n256 true false\n",
@@ -75,7 +75,7 @@ fn phase3_rsa_pkcs1v15_sign_verify() {
 
 #[test]
 fn phase3_rsa_oaep_roundtrip() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const {publicKey, privateKey} = await crypto.subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["encrypt", "decrypt"]); const ct = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, new TextEncoder().encode("secret")); const pt = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, privateKey, ct); console.log(ct.byteLength, new TextDecoder().decode(pt)); const spki = await crypto.subtle.exportKey("spki", publicKey); console.log(new Uint8Array(spki).length);"#]));
     assert_eq!(out, "256 secret\n294\n", "rsa-oaep: {out}");
 }
@@ -83,14 +83,14 @@ fn phase3_rsa_oaep_roundtrip() {
 #[test]
 fn phase3_rsa_jwk_roundtrip() {
     // 私钥 JWK 来回（n/e/d 进，p/q 恢复）+ 公钥 JWK 进；签名跨导入验证。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const {publicKey, privateKey} = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]); const jwk = await crypto.subtle.exportKey("jwk", privateKey); console.log(jwk.kty, typeof jwk.dp, typeof jwk.qi); const priv2 = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["sign"]); console.log(priv2.type); const pubJwk = await crypto.subtle.exportKey("jwk", publicKey); const pub2 = await crypto.subtle.importKey("jwk", pubJwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["verify"]); const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", priv2, new TextEncoder().encode("m")); console.log(await crypto.subtle.verify("RSASSA-PKCS1-v1_5", pub2, sig, new TextEncoder().encode("m")));"#]));
     assert_eq!(out, "RSA string string\nprivate\ntrue\n", "rsa-jwk: {out}");
 }
 
 #[test]
 fn phase3_ecdsa_p256_roundtrip() {
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const {publicKey, privateKey} = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]); console.log(publicKey.type, privateKey.algorithm.namedCurve); const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, privateKey, new TextEncoder().encode("hello")); console.log(new Uint8Array(sig).length, await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, publicKey, sig, new TextEncoder().encode("hello")), await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, publicKey, sig, new TextEncoder().encode("bye")));"#]));
     assert_eq!(out, "public P-256\n64 true false\n", "ecdsa: {out}");
 }
@@ -98,7 +98,7 @@ fn phase3_ecdsa_p256_roundtrip() {
 #[test]
 fn phase3_ecdh_derive_and_key() {
     // 共享秘密对称 + deriveKey 出 AES-GCM 可加解密；P-384 JWK/spki/raw 来回。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const a = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits", "deriveKey"]); const b = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]); const s1 = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: b.publicKey }, a.privateKey, 256)); const s2 = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: a.publicKey }, b.privateKey, 256)); console.log(s1.length, s1.join(",") === s2.join(",")); const dk = await crypto.subtle.deriveKey({ name: "ECDH", public: b.publicKey }, a.privateKey, { name: "AES-GCM", length: 128 }, false, ["encrypt"]); console.log(dk.type, dk.algorithm.length, dk.extractable); const kp = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]); const raw = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey)); console.log(raw.length, raw[0]); const imp = await crypto.subtle.importKey("spki", await crypto.subtle.exportKey("spki", kp.publicKey), { name: "ECDSA", namedCurve: "P-384" }, true, ["verify"]); console.log(imp.type);"#]));
     assert_eq!(
         out, "32 true\nsecret 128 false\n97 4\npublic\n",
@@ -109,7 +109,7 @@ fn phase3_ecdh_derive_and_key() {
 #[test]
 fn phase3_asymmetric_errors() {
     // c-4x 已收官：RSA-PSS 可生成（详见 subtle_c4x_*）；坏曲线/错用途/非私钥 derive 进报错面。
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval", r#"const k = await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign"]); console.log(k.publicKey.algorithm.name);"#])
         .output()
         .unwrap();
@@ -119,14 +119,14 @@ fn phase3_asymmetric_errors() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8(out.stdout).unwrap(), "RSA-PSS\n");
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--eval", r#"await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-192" }, true, ["sign"])"#])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("NotSupportedError"), "stderr: {stderr}");
-    let ok = stdout_of(&mut winterjs().args(["--eval",
+    let ok = stdout_of(&mut winterjs2().args(["--eval",
         r#"const k = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]); try { await crypto.subtle.sign("ECDSA", k.publicKey, new Uint8Array(1)); console.log("no-throw"); } catch (e) { console.log(String(e).includes("private key") ? "sign-needs-private" : e); }"#]));
     assert_eq!(ok, "sign-needs-private\n", "usage: {ok}");
 }
@@ -137,7 +137,7 @@ fn subtle_c4x_ed25519_vectors() {
     // 边界：64B 全零签（合法长度，验签 false 不抛）。
     let code = format!(
         r#"{C4X_HEXJS}
-const MSG = new TextEncoder().encode("winterjs-vector");
+const MSG = new TextEncoder().encode("winterjs2-vector");
 const SEED = "b12d94858bb317baa5d40f669a784aa878bb17ad25e149e89594d7d9855b58a0";
 const PUB = "a9a53ddffd0e9b2d2b83eb442fac6a95391d07160fe1926f51386d31e786c869";
 const SIG = "541366402670fd6d20dbecfb6932e2cb5efe69dc92521d577ba70e355112b6ae40d0cb55a0f839d9b97b2841548edd4bf85da2665da35005bc7f6619463f800e";
@@ -174,7 +174,7 @@ console.log("ed-ok");
 "#
     );
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", &code])),
+        stdout_of(&mut winterjs2().args(["--eval", &code])),
         "ed-ok\n"
     );
 }
@@ -216,7 +216,7 @@ if (jwk.kty !== "OKP" || jwk.crv !== "X25519" || "alg" in jwk) throw new Error("
 console.log("x-ok");
 "#
     );
-    assert_eq!(stdout_of(&mut winterjs().args(["--eval", &code])), "x-ok\n");
+    assert_eq!(stdout_of(&mut winterjs2().args(["--eval", &code])), "x-ok\n");
 }
 
 #[test]
@@ -242,7 +242,7 @@ catch (e) { if (!String(e.message).includes("private key")) throw e; }
 console.log("pss-ok");
 "#;
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", code])),
+        stdout_of(&mut winterjs2().args(["--eval", code])),
         "pss-ok\n"
     );
 }
@@ -265,7 +265,7 @@ catch (e) { if (!String(e.message).includes("128/192/256")) throw e; }
 console.log("aes192-ok");
 "#;
     assert_eq!(
-        stdout_of(&mut winterjs().args(["--eval", code])),
+        stdout_of(&mut winterjs2().args(["--eval", code])),
         "aes192-ok\n"
     );
 }

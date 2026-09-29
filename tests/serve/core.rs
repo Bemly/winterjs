@@ -77,7 +77,7 @@ fn phase6_serve_range() {
 fn phase6_serve_bad_dir_errors() {
     // 报错：不存在的目录 exit=1 且可读。
     let dir = assert_fs::TempDir::new().unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--serve", "no-such-dir", "--port", "18099"])
         .current_dir(dir.path())
         .output()
@@ -146,14 +146,14 @@ fn phase6_serve_cors() {
 
 #[test]
 fn phase6_serve_request_trace() {
-    // 正常：WINTERJS_LOG=winterjs=debug 下 stderr 有逐请求 method/uri/status 行。
+    // 正常：WINTERJS2_LOG=winterjs2=debug 下 stderr 有逐请求 method/uri/status 行。
     use std::io::Read;
     let dir = serve_fixture();
     let port = free_port();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_winterjs2"))
         .args(["--serve", ".", "--port"])
         .arg(port.to_string())
-        .env("WINTERJS_LOG", "winterjs=debug")
+        .env("WINTERJS2_LOG", "winterjs2=debug")
         .current_dir(dir.path())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -204,18 +204,18 @@ fn phase6_serve_metrics() {
     );
     let text = String::from_utf8_lossy(&body).into_owned();
     assert!(
-        text.contains("winterjs_serve_request_duration_seconds"),
+        text.contains("winterjs2_serve_request_duration_seconds"),
         "metrics:\n{text}"
     );
     assert!(
-        text.contains("winterjs_serve_in_flight"),
+        text.contains("winterjs2_serve_in_flight"),
         "metrics:\n{text}"
     );
     let line = text
         .lines()
         .find(|l| {
             l.starts_with(
-                "winterjs_serve_requests_total{method=\"GET\",path=\"/app.js\",status=\"200\"}",
+                "winterjs2_serve_requests_total{method=\"GET\",path=\"/app.js\",status=\"200\"}",
             )
         })
         .expect("counter line present");
@@ -265,7 +265,7 @@ fn phase6_serve_tls_half_args() {
     // 报错：只给 --cert 不给 --key，exit=1 且指路（不静默降级明文）。
     let dir = serve_fixture();
     let (cert, _, _) = make_self_signed(dir.path());
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--serve", ".", "--port", "18098", "--cert"])
         .arg(&cert)
         .current_dir(dir.path())
@@ -285,7 +285,7 @@ fn phase6_serve_tls_bad_pem() {
     let key = dir.path().join("k.pem");
     std::fs::write(&cert, b"not a pem\n").unwrap();
     std::fs::write(&key, b"not a pem\n").unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--serve", ".", "--port", "18097", "--cert"])
         .arg(&cert)
         .args(["--key"])
@@ -303,7 +303,7 @@ fn phase6_serve_tls_bad_pem() {
 fn phase11_serve_handler_missing_file_errors() {
     // 报错：`--handler` 缺文件即启动期可读错（plan4 §3 T1），exit=1。
     let dir = serve_fixture();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--serve", ".", "--port", "18098", "--handler", "nope.js"])
         .current_dir(dir.path())
         .output()
@@ -429,7 +429,7 @@ fn phase11_serve_handler_dual_shape() {
     dir.child("nofetch.mjs")
         .write_str("export const x = 1;")
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--serve", ".", "--port", "18097", "--handler", "nofetch.mjs"])
         .current_dir(dir.path())
         .output()

@@ -143,7 +143,7 @@ pub(crate) fn spawn_pumps<R, W>(
 
 // ── natives ─────────────────────────────────────────────────────────────────
 
-/// `__wjs_net_connect(host, port, target)` → id。target 为 prelude Socket 对象。
+/// `__wjs2_net_connect(host, port, target)` → id。target 为 prelude Socket 对象。
 pub unsafe extern "C" fn net_connect(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -344,7 +344,7 @@ pub(crate) async fn tcp_connect_resolved(
     Err((code.to_string(), format!("{code}: {e}")))
 }
 
-/// `__wjs_net_isip(s)` → "0"|"4"|"6"（`net.isIP` 底座；std::net 解析）。
+/// `__wjs2_net_isip(s)` → "0"|"4"|"6"（`net.isIP` 底座；std::net 解析）。
 pub unsafe extern "C" fn net_isip(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -369,7 +369,7 @@ pub unsafe extern "C" fn net_isip(
     true
 }
 
-/// `__wjs_net_listen(port, host, target)` → id。bind 错误经 ServerError 事件。
+/// `__wjs2_net_listen(port, host, target)` → id。bind 错误经 ServerError 事件。
 pub unsafe extern "C" fn net_listen(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -583,7 +583,7 @@ pub unsafe extern "C" fn net_listen(
     true
 }
 
-/// `__wjs_net_attach(connId, target)`：server 连接的 target 事后登记。
+/// `__wjs2_net_attach(connId, target)`：server 连接的 target 事后登记。
 pub unsafe extern "C" fn net_attach(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -603,7 +603,7 @@ pub unsafe extern "C" fn net_attach(
     true
 }
 
-/// `__wjs_net_write(id, dataBytes)`。
+/// `__wjs2_net_write(id, dataBytes)`。
 pub unsafe extern "C" fn net_write(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -630,7 +630,7 @@ pub unsafe extern "C" fn net_write(
     true
 }
 
-/// `__wjs_net_end(id)`：半关写端（FIN）。
+/// `__wjs2_net_end(id)`：半关写端（FIN）。
 pub unsafe extern "C" fn net_end(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -646,7 +646,7 @@ pub unsafe extern "C" fn net_end(
     true
 }
 
-/// `__wjs_net_destroy(id)`：硬关（socket 或 server 通用）。
+/// `__wjs2_net_destroy(id)`：硬关（socket 或 server 通用）。
 pub unsafe extern "C" fn net_destroy(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -662,7 +662,7 @@ pub unsafe extern "C" fn net_destroy(
     true
 }
 
-/// `__wjs_net_bind(host, port, path[, reuse])` → "port"（BoundSocket 同步 bind 底座）。
+/// `__wjs2_net_bind(host, port, path[, reuse])` → "port"（BoundSocket 同步 bind 底座）。
 /// 成功回绑定端口串；失败抛带 code/syscall 的 Error（EADDRINUSE/EACCES/EADDRNOTAVAIL/EINVAL）。
 /// path 非空即 UDS bind（返回 path 回显标记 "UDS:<path>"）；第 4 参 "1" 即
 /// SO_REUSEPORT bind（reusePort 选项；平台不支持时 setsockopt/bind 失败按既有错误面抛）。

@@ -110,7 +110,7 @@ export function pbkdf2Sync(password, salt, iterations, keylen, digest) {
     err.code = "ERR_OUT_OF_RANGE";
     throw err;
   }
-  const out = __cryptCall(() => __wjs_kdf_pbkdf2(
+  const out = __cryptCall(() => __wjs2_kdf_pbkdf2(
     __kdfHash(digest), __cryptBytes(password, "password"), __cryptBytes(salt, "salt"), it, Number(keylen)));
   return Buffer.from(out);
 }
@@ -140,7 +140,7 @@ function __scryptArgs(password, salt, keylen, options) {
 }
 export function scryptSync(password, salt, keylen, options) {
   const [pw, sa, kl, N, r, p, maxmem] = __scryptArgs(password, salt, keylen, options);
-  const out = __cryptCall(() => __wjs_kdf_scrypt(pw, sa, N, r, p, kl, maxmem));
+  const out = __cryptCall(() => __wjs2_kdf_scrypt(pw, sa, N, r, p, kl, maxmem));
   return Buffer.from(out);
 }
 export function scrypt(password, salt, keylen, options, callback) {
@@ -159,7 +159,7 @@ export function scrypt(password, salt, keylen, options, callback) {
   });
 }
 export function hkdfSync(hash, ikm, salt, info, keylen) {
-  const out = __cryptCall(() => __wjs_kdf_hkdf(
+  const out = __cryptCall(() => __wjs2_kdf_hkdf(
     __kdfHash(hash), __cryptBytes(ikm, "ikm"),
     salt === undefined || salt === null ? new Uint8Array(0) : __cryptBytes(salt, "salt"),
     info === undefined || info === null ? new Uint8Array(0) : __cryptBytes(info, "info"),
@@ -238,7 +238,7 @@ function __argon2Args(algorithm, parameters) {
 }
 export function argon2Sync(algorithm, parameters) {
   const a = __argon2Args(algorithm, parameters);
-  const out = __cryptCall(() => __wjs_kdf_argon2(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]));
+  const out = __cryptCall(() => __wjs2_kdf_argon2(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]));
   return Buffer.from(out);
 }
 export function argon2(algorithm, parameters, callback) {
@@ -252,7 +252,7 @@ export function argon2(algorithm, parameters, callback) {
   }
   queueMicrotask(() => {
     try {
-      const out = __cryptCall(() => __wjs_kdf_argon2(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]));
+      const out = __cryptCall(() => __wjs2_kdf_argon2(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]));
       callback(null, Buffer.from(out));
     } catch (e) {
       callback(e);

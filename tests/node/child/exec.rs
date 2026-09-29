@@ -201,7 +201,7 @@ if (process.argv[2] === "child") {
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -230,7 +230,7 @@ fn phase10f_child_g5_validators_and_readable() {
     // G5-3：\0 横向校验（file/args/env/cwd/shell/command 全面 code 名）+
     // `-p` 自举（promisified 套件）+ stdio ipc 门（单裸/双 ipc）+
     // paused read（flush-stdio 套件 readable+read 循环）。
-    let out = stdout_of(&mut winterjs().args(["--eval",
+    let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const cp = await import("node:child_process");
 const codes = [];
 const t = (fn) => { try { const c = fn(); if (c && c.on) c.on("error", () => {}); codes.push("no-throw"); } catch (e) { codes.push(e.code); } };
@@ -325,7 +325,7 @@ import assert from "node:assert";
     dir.child("g5b2-child.mjs")
         .write_str(r#"process.on("message", () => {}); setTimeout(() => {}, 30000);"#)
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())

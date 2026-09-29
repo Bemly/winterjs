@@ -28,7 +28,7 @@ async fn run_module(
 ) -> Result<(), Error> {
     use mozjs::rust::wrappers2::{ModuleEvaluate, ModuleLink};
 
-    tracing::info!(target: "winterjs::runtime", url = url.as_str(), "module run start");
+    tracing::info!(target: "winterjs2::runtime", url = url.as_str(), "module run start");
     rooted!(&in(rt.cx()) let mut rval = UndefinedValue());
     {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
@@ -64,7 +64,7 @@ async fn run_module(
                         raw_handle(rej_obj.as_ptr()),
                     );
                 }
-                tracing::debug!(target: "winterjs::runtime", "entry promise capture attached");
+                tracing::debug!(target: "winterjs2::runtime", "entry promise capture attached");
             }
         }
     }
@@ -144,13 +144,13 @@ async fn run_inner(
     mode: Mode,
     extra_args: &[String],
 ) -> Result<(), Error> {
-    tracing::info!(target: "winterjs::runtime", filename, source_len = source.len(), ?mode, "run start");
+    tracing::info!(target: "winterjs2::runtime", filename, source_len = source.len(), ?mode, "run start");
     // process.argv（prelude 求值前就绪；execPath 失败回退名）。
     // argv[0] 取真实 OS 值（spawn arg0 自举回显，spawn-argv0 套件点名），
     // 余下按模式拼（execPath 缺失才回退）。
     let exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "winterjs".into());
+        .unwrap_or_else(|_| "winterjs2".into());
     let argv0 = std::env::args().next().unwrap_or_else(|| exe.clone());
     let argv: Vec<String> = match mode {
         Mode::Script => std::iter::once(argv0)
@@ -213,11 +213,11 @@ async fn run_inner(
             Ok(url) => {
                 state::set_main_module(url.as_str().to_owned());
                 let main_src = format!(
-                    "__wjs_require_main({})",
+                    "__wjs2_require_main({})",
                     serde_json::to_string(url.as_str()).unwrap_or_else(|_| "\"\"".into())
                 );
-                // 引导脚本用 `__wjs_` 名：栈里这一帧属宿主管线，node 形渲染按前缀滤掉（D4）。
-                let options = CompileOptionsWrapper::new(rt.cx(), c"__wjs_main_bootstrap.js".into(), 1);
+                // 引导脚本用 `__wjs2_` 名：栈里这一帧属宿主管线，node 形渲染按前缀滤掉（D4）。
+                let options = CompileOptionsWrapper::new(rt.cx(), c"__wjs2_main_bootstrap.js".into(), 1);
                 let res = evaluate_script(rt.cx(), global.handle(), &main_src, rval.handle_mut(), options);
                 if res.is_err() {
                     let err = {
@@ -349,7 +349,7 @@ async fn run_inner(
                 && let Ok(path) = url.to_file_path()
                 && crate::loader::load_js(source, filename, &path).is_ok()
             {
-                tracing::info!(target: "winterjs::runtime", url = url.as_str(), "retrying as module");
+                tracing::info!(target: "winterjs2::runtime", url = url.as_str(), "retrying as module");
                 let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await
                     .map_err(|e| fatal_exit(&mut rt, &global, e));
                 end_session(rt, engine);
@@ -368,7 +368,7 @@ async fn run_inner(
     }
 
     // 未包装成功的场景（含全部 Script 与无顶层 await 的 Eval）：
-    // 完成值就是 rval（老行为）；仅 async IIFE 包装路径才读 __wjs_value。
+    // 完成值就是 rval（老行为）；仅 async IIFE 包装路径才读 __wjs2_value。
     if let Err(e) = event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await {
         let e = fatal_exit(&mut rt, &global, e);
         end_session(rt, engine);
@@ -394,7 +394,7 @@ async fn run_inner(
 pub fn run_isolated(source: String, filename: String, extra_args: Vec<String>) -> Result<(), Error> {
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
-        .name("winterjs-test-file".into())
+        .name("winterjs2-test-file".into())
         .stack_size(16 * 1024 * 1024)
         .spawn(move || {
             let tokio_rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {

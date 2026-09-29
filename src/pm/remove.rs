@@ -1,7 +1,7 @@
 //! 卸载（`--remove` 工程本地 / `--uninstall` 全局）：`add`/`install` 的对称逆操作。
 //!
 //! - 只动本地 state：`node_modules/<pkg>` 目录 + `.bin` 里指向它的链接 +
-//!   `winterjs-lock.json` 的 `packages` 条目；`package.json` 不碰（`add` 亦不写
+//!   `winterjs2-lock.json` 的 `packages` 条目；`package.json` 不碰（`add` 亦不写
 //!   依赖段，对称；见 `install.rs`）。
 //! - 原子性：先预检全部存在，任一缺失即整单报错不动盘；通过后再逐个删
 //!   （删是幂等单包操作，半路失败报第几个，前面删掉的不回滚——npm 同款）。
@@ -48,7 +48,7 @@ fn locked_version(root: &Path, name: &str) -> Option<String> {
     v.get("packages")?.get(name)?.get("version")?.as_str().map(str::to_owned)
 }
 
-/// `winterjs remove/uninstall <pkgs> [--dry-run]`（`root` = 工程 cwd / 全局根）。
+/// `winterjs2 remove/uninstall <pkgs> [--dry-run]`（`root` = 工程 cwd / 全局根）。
 pub async fn remove_from(root: &Path, packages: &[String], dry_run: bool) -> Result<(), Error> {
     if packages.is_empty() {
         return Err(Error::Other("specify packages with -R/--remove".into()));
@@ -121,7 +121,7 @@ fn prune_bins(nm: &Path, dest: &Path) {
         };
         if abs.starts_with(dest) {
             let _ = std::fs::remove_file(&link);
-            tracing::debug!(target: "winterjs::pm", link = %link.display(), "pruned bin link");
+            tracing::debug!(target: "winterjs2::pm", link = %link.display(), "pruned bin link");
         }
     }
 }

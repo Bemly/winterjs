@@ -56,7 +56,7 @@ fn bad_fd(cx: &mut mozjs::context::JSContext, syscall: &str) {
     report_error(cx, &format!("EBADF: {syscall}: bad file descriptor"));
 }
 
-/// `__wjs_fs_read_link(path)` → 目标字符串。
+/// `__wjs2_fs_read_link(path)` → 目标字符串。
 pub unsafe extern "C" fn fs_read_link(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -79,7 +79,7 @@ pub unsafe extern "C" fn fs_read_link(
     }
 }
 
-/// `__wjs_fs_link(src, dst)` → 硬链接。
+/// `__wjs2_fs_link(src, dst)` → 硬链接。
 pub unsafe extern "C" fn fs_link(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -102,7 +102,7 @@ pub unsafe extern "C" fn fs_link(
     }
 }
 
-/// `__wjs_fs_symlink(target, path)` → 符号链接（type 参数 unix 忽略，Node 同款）。
+/// `__wjs2_fs_symlink(target, path)` → 符号链接（type 参数 unix 忽略，Node 同款）。
 pub unsafe extern "C" fn fs_symlink(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -125,7 +125,7 @@ pub unsafe extern "C" fn fs_symlink(
     }
 }
 
-/// `__wjs_fs_truncate(path, len)` → 截断到 len（缺省 0）。
+/// `__wjs2_fs_truncate(path, len)` → 截断到 len（缺省 0）。
 pub unsafe extern "C" fn fs_truncate(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -162,7 +162,7 @@ fn ms_to_system_time(ms: f64) -> std::time::SystemTime {
     }
 }
 
-/// `__wjs_fs_utimes(path, atimeMs, mtimeMs)` → File::set_times（std 1.75+）。
+/// `__wjs2_fs_utimes(path, atimeMs, mtimeMs)` → File::set_times（std 1.75+）。
 pub unsafe extern "C" fn fs_utimes(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -212,7 +212,7 @@ pub unsafe extern "C" fn fs_utimes(
     }
 }
 
-/// `__wjs_fs_lutimes(path, atimeMs, mtimeMs)` → utimensat AT_SYMLINK_NOFOLLOW
+/// `__wjs2_fs_lutimes(path, atimeMs, mtimeMs)` → utimensat AT_SYMLINK_NOFOLLOW
 ///（符号链接本身；lutimes 套件）。
 #[cfg(unix)]
 pub unsafe extern "C" fn fs_lutimes(
@@ -250,7 +250,7 @@ pub unsafe extern "C" fn fs_lutimes(
     }
 }
 
-/// `__wjs_fs_chmod(path, mode)` → set_permissions（PermissionsExt mode 位）。
+/// `__wjs2_fs_chmod(path, mode)` → set_permissions（PermissionsExt mode 位）。
 pub unsafe extern "C" fn fs_chmod(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -271,7 +271,7 @@ pub unsafe extern "C" fn fs_chmod(
     }
 }
 
-/// `__wjs_fs_access(path, mode)` → 可达性判定（X_OK 近似 mode 搜索位，记档）。
+/// `__wjs2_fs_access(path, mode)` → 可达性判定（X_OK 近似 mode 搜索位，记档）。
 pub unsafe extern "C" fn fs_access(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -339,7 +339,7 @@ struct OpenFlags {
     mode: u32,
 }
 
-/// `__wjs_fs_open(path, flagsJson)` → 合成 fd。
+/// `__wjs2_fs_open(path, flagsJson)` → 合成 fd。
 pub unsafe extern "C" fn fs_open(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -408,7 +408,7 @@ pub unsafe extern "C" fn fs_open(
     }
 }
 
-/// `__wjs_fs_close(fd)`。
+/// `__wjs2_fs_close(fd)`。
 pub unsafe extern "C" fn fs_close(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -428,7 +428,7 @@ pub unsafe extern "C" fn fs_close(
     }
 }
 
-/// `__wjs_fs_read_fd(fd, length, positionMs)` → Uint8Array（新视图；position -1 = cursor）。
+/// `__wjs2_fs_read_fd(fd, length, positionMs)` → Uint8Array（新视图；position -1 = cursor）。
 pub unsafe extern "C" fn fs_read_fd(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -479,7 +479,7 @@ pub unsafe extern "C" fn fs_read_fd(
     set_rval_bytes(&mut cx, &frame, &buf)
 }
 
-/// `__wjs_fs_write_fd(fd, dataBytes, positionMs)` → 写入字节数（position -1 = cursor）。
+/// `__wjs2_fs_write_fd(fd, dataBytes, positionMs)` → 写入字节数（position -1 = cursor）。
 pub unsafe extern "C" fn fs_write_fd(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -528,7 +528,7 @@ pub unsafe extern "C" fn fs_write_fd(
     }
 }
 
-/// `__wjs_fs_ftruncate(fd, len)`。
+/// `__wjs2_fs_ftruncate(fd, len)`。
 pub unsafe extern "C" fn fs_ftruncate(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -554,7 +554,7 @@ pub unsafe extern "C" fn fs_ftruncate(
     }
 }
 
-/// `__wjs_fs_fstat(fd)` → 元 JSON（stat_json 复用）。
+/// `__wjs2_fs_fstat(fd)` → 元 JSON（stat_json 复用）。
 pub unsafe extern "C" fn fs_fstat(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -582,7 +582,7 @@ pub unsafe extern "C" fn fs_fstat(
     }
 }
 
-/// `__wjs_fs_chown(path, uid, gid)` → std chown（safe；-1 = 不变更）。
+/// `__wjs2_fs_chown(path, uid, gid)` → std chown（safe；-1 = 不变更）。
 pub unsafe extern "C" fn fs_chown(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -608,7 +608,7 @@ pub unsafe extern "C" fn fs_chown(
     }
 }
 
-/// `__wjs_fs_lchown(path, uid, gid)` → libc lchown（符号链接本身；
+/// `__wjs2_fs_lchown(path, uid, gid)` → libc lchown（符号链接本身；
 /// -1 = 不变更，lchown-negative-one 套件点名）。
 #[cfg(unix)]
 pub unsafe extern "C" fn fs_lchown(
@@ -640,7 +640,7 @@ pub unsafe extern "C" fn fs_lchown(
     }
 }
 
-/// `__wjs_fs_lchmod(path, mode)` → fchmodat(AT_FDCWD, …, AT_SYMLINK_NOFOLLOW)。
+/// `__wjs2_fs_lchmod(path, mode)` → fchmodat(AT_FDCWD, …, AT_SYMLINK_NOFOLLOW)。
 /// node 口径：fs.lchmod 仅 macOS 存在（Linux 下导出面 undefined）——
 /// 本 native 仅 macOS 注册。
 #[cfg(target_os = "macos")]
@@ -674,7 +674,7 @@ pub unsafe extern "C" fn fs_lchmod(
     }
 }
 
-/// `__wjs_fs_fchown(fd, uid, gid)` → libc fchown（UNSAFE-BOUNDARY：fd 来自
+/// `__wjs2_fs_fchown(fd, uid, gid)` → libc fchown（UNSAFE-BOUNDARY：fd 来自
 /// fd_table 的真实 fd，as_raw_fd 取裸号后立刻调用，不跨 GC/线程存活；
 /// 覆盖测试：tests/node/fs.rs phase10f fs chown/fchown 族 + 真机对拍）。
 pub unsafe extern "C" fn fs_fchown(
@@ -711,7 +711,7 @@ pub unsafe extern "C" fn fs_fchown(
     }
 }
 
-/// `__wjs_fs_fchmod(fd, mode)` → File::set_permissions。
+/// `__wjs2_fs_fchmod(fd, mode)` → File::set_permissions。
 pub unsafe extern "C" fn fs_fchmod(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -737,7 +737,7 @@ pub unsafe extern "C" fn fs_fchmod(
     }
 }
 
-/// `__wjs_fs_futimes(fd, atimeMs, mtimeMs)` → File::set_times。
+/// `__wjs2_fs_futimes(fd, atimeMs, mtimeMs)` → File::set_times。
 pub unsafe extern "C" fn fs_futimes(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -767,7 +767,7 @@ pub unsafe extern "C" fn fs_futimes(
     }
 }
 
-/// `__wjs_fs_fsync(fd, datasyncBool)` → sync_all/sync_data。
+/// `__wjs2_fs_fsync(fd, datasyncBool)` → sync_all/sync_data。
 pub unsafe extern "C" fn fs_fsync(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

@@ -24,7 +24,7 @@ class DiffieHellmanImpl {
     return new DiffieHellmanImpl(__cryptBytes(hex, "prime", "hex"), 2);
   }
   generateKeys() {
-    const r = JSON.parse(__cryptCall(() => __wjs_dh_genkey(this.__prime, this.__gen, this.__prime.length)));
+    const r = JSON.parse(__cryptCall(() => __wjs2_dh_genkey(this.__prime, this.__gen, this.__prime.length)));
     this.__priv = __b64dec(r.priv);
     this.__pub = __b64dec(r.pub);
     return this.getPublicKey();
@@ -67,7 +67,7 @@ class DiffieHellmanImpl {
       throw err;
     }
     const peerB = (typeof peer === "string") ? __cryptBytes(peer, "peer", inEnc) : __cryptBytes(peer, "peer");
-    const secret = __cryptCall(() => __wjs_dh_secret(this.__prime, this.__priv, peerB));
+    const secret = __cryptCall(() => __wjs2_dh_secret(this.__prime, this.__priv, peerB));
     if (outEnc === undefined) return Buffer.from(secret);
     return Buffer.from(secret).toString(outEnc);
   }
@@ -123,17 +123,17 @@ export function diffieHellman(options) {
   }
   if (__isKeyObject(priv) && __isKeyObject(pub)) {
     if (priv.__keyType === "x25519") {
-      const out = __cryptCall(() => __wjs_x_derive(priv.__material, pub.__material));
+      const out = __cryptCall(() => __wjs2_x_derive(priv.__material, pub.__material));
       return Buffer.from(out);
     }
     if (priv.__keyType === "x448") {
-      const out = __cryptCall(() => __wjs_x448_derive(priv.__material, pub.__material));
+      const out = __cryptCall(() => __wjs2_x448_derive(priv.__material, pub.__material));
       return Buffer.from(out);
     }
     if (priv.__keyType === "ec") {
       const curve = priv.__detail.namedCurve;
       const pubDer = pub.__kind === "private" ? __derivePublic(pub).__material : pub.__material;
-      const out = __cryptCall(() => __wjs_ecdh_derive(curve, priv.__material, pubDer));
+      const out = __cryptCall(() => __wjs2_ecdh_derive(curve, priv.__material, pubDer));
       return Buffer.from(out);
     }
     const err = new Error("diffieHellman needs DH/ECDH/X25519 keys");
@@ -165,7 +165,7 @@ function __bigintToBytes(v) {
 export function checkPrimeSync(candidate, options) {
   const bytes = __bigintToBytes(candidate);
   const checks = options?.checks ?? 64;
-  return __cryptCall(() => __wjs_prime_check(bytes, checks));
+  return __cryptCall(() => __wjs2_prime_check(bytes, checks));
 }
 export function checkPrime(candidate, options, callback) {
   if (typeof options === "function") { callback = options; options = undefined; }
@@ -189,7 +189,7 @@ export function generatePrimeSync(size, options) {
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
-  const out = __cryptCall(() => __wjs_prime_gen(bits, options?.checks ?? 64, options?.safe ? 1 : 0));
+  const out = __cryptCall(() => __wjs2_prime_gen(bits, options?.checks ?? 64, options?.safe ? 1 : 0));
   // bigint 经 16 进制桥（`BigInt("0x…")`，零 native 改动；§4.44 同类绕行）。
   if (options?.bigint === true) return BigInt("0x" + Buffer.from(out).toString("hex"));
   return Buffer.from(out);

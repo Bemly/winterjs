@@ -1,6 +1,6 @@
 // node:path (+ posix/win32): join / resolve / parse / relative / extname.
 // 路径：拼接、解析、相对路径与扩展名（含 posix/win32 子路径）。
-// Run / 运行: winterjs --run sample/path/basics.js
+// Run / 运行: winterjs2 --run sample/path/basics.js
 import path, { join, resolve, basename, dirname, extname } from 'node:path';
 import posix from 'node:path/posix';
 import win32 from 'node:path/win32';

@@ -290,9 +290,9 @@ class Socket extends EventEmitter {
       this.__addr = this.__resolveAddr(ip, false);
       // 用户原文地址（bind 错误形 e.address 用；归一化串在字面量下同值）。
       this.__bindAddr = address === null ? null : String(address);
-      this.__id = Number(__wjs_dgram_bind(Number(port), this.__addr, this, this.__bindFlags()));
+      this.__id = Number(__wjs2_dgram_bind(Number(port), this.__addr, this, this.__bindFlags()));
       // bind 前的 unref()（无句柄时只记旗）落到原生句柄（unref-in-cluster 套件）。
-      if (this.__id && this.__ref === false) __wjs_net_unref(this.__id);
+      if (this.__id && this.__ref === false) __wjs2_net_unref(this.__id);
     };
     if (this.__lookup) {
       try {
@@ -360,7 +360,7 @@ class Socket extends EventEmitter {
       throw __netErr("ERR_SOCKET_ALREADY_BOUND", "Socket is already bound");
     }
     const bindAddr = address ?? (this.type === "udp6" ? "::" : "0.0.0.0");
-    const res = JSON.parse(__wjs_dgram_bind_sync(Number(port), bindAddr, "", this, this.__bindFlags()));
+    const res = JSON.parse(__wjs2_dgram_bind_sync(Number(port), bindAddr, "", this, this.__bindFlags()));
     if (res.error) {
       const e = new Error(`${res.error}: ${bindAddr}`);
       e.code = res.error;
@@ -408,7 +408,7 @@ class Socket extends EventEmitter {
     this.__remote = { address, port, family };
     this.__connecting = false;
     this.__connected = true;
-    __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'connect', addr: `${address}:${port}` }));
+    __wjs2_dgram_sockopt(this.__id, JSON.stringify({ op: 'connect', addr: `${address}:${port}` }));
     // 'connect' 仍递延（先关即抑制，与 bindSync listening 同口径）。
     queueMicrotask(() => { if (!this.__closed) this.emit("connect"); });
   }
@@ -509,7 +509,7 @@ class Socket extends EventEmitter {
       const tip = target === "" ? this.__remote?.address : String(address ?? 'localhost');
       let dip = String(tip ?? "");
       try {
-        const entries = JSON.parse(__wjs_dns_lookup(dip));
+        const entries = JSON.parse(__wjs2_dns_lookup(dip));
         if (Array.isArray(entries) && entries.length) dip = entries[0].address;
       } catch {}
       const clean = dip.startsWith("[") && dip.endsWith("]") ? dip.slice(1, -1) : dip;
@@ -530,7 +530,7 @@ class Socket extends EventEmitter {
     const seq = ++this.__sendSeq;
     this.__sendTargets.set(seq, { address: address ?? this.__remote?.address, port: port ?? this.__remote?.port });
     this.__sendQueue.set(seq, u8.length);
-    __wjs_dgram_send(this.__id, u8, target, seq);
+    __wjs2_dgram_send(this.__id, u8, target, seq);
     if (cb) this.__sendCbs.set(seq, cb);
     return this;
   }
@@ -555,7 +555,7 @@ class Socket extends EventEmitter {
       const name = { setBroadcast: 'setBroadcast', setTtl: 'setTTL', setMulticastTtl: 'setMulticastTTL', setMulticastLoop: 'setMulticastLoopback', join: 'addMembership', leave: 'dropMembership', connect: 'connect', disconnect: 'disconnect' }[op.op] ?? op.op;
       throw __sysErr(name, 'EBADF');
     }
-    __wjs_dgram_sockopt(this.__id, JSON.stringify(op));
+    __wjs2_dgram_sockopt(this.__id, JSON.stringify(op));
   }
   connect(...args) {
     let port, address = 'localhost', cb = null;
@@ -579,7 +579,7 @@ class Socket extends EventEmitter {
     let dispAddr = String(address);
     let family = dispAddr.includes(':') ? 'IPv6' : 'IPv4';
     try {
-      const entries = JSON.parse(__wjs_dns_lookup(dispAddr));
+      const entries = JSON.parse(__wjs2_dns_lookup(dispAddr));
       if (Array.isArray(entries) && entries.length) {
         dispAddr = entries[0].address;
         family = entries[0].family === 6 ? 'IPv6' : 'IPv4';
@@ -601,7 +601,7 @@ class Socket extends EventEmitter {
     // 展示用远端（发送时 task 再解，见模块头注；解析已在黑名单检查前完成）。
     this.__remote = { address: dispAddr, port, family };
     // 窗口期内（lookup 未归）排队，listening 刷出；不直调（__id 未落）。
-    if (this.__id) __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'connect', addr: `${this.__resolveAddr(String(address))}:${port}` }));
+    if (this.__id) __wjs2_dgram_sockopt(this.__id, JSON.stringify({ op: 'connect', addr: `${this.__resolveAddr(String(address))}:${port}` }));
     else this.__pending.push({ op: 'connect', addr: `${this.__resolveAddr(String(address))}:${port}` });
   }
   disconnect() {
@@ -611,7 +611,7 @@ class Socket extends EventEmitter {
     this.__connected = false;
     this.__connecting = false;
     this.__remote = null;
-    if (this.__id) __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'disconnect' }));
+    if (this.__id) __wjs2_dgram_sockopt(this.__id, JSON.stringify({ op: 'disconnect' }));
   }
   remoteAddress() {
     if (!this.__connected || !this.__remote) {
@@ -627,14 +627,14 @@ class Socket extends EventEmitter {
     this.__healthCheck();
     const { multi, iface } = __membershipAddrs(multicastAddress, multicastInterface, this.type, 'addMembership');
     if (!this.__id && !this.__binding) this.bind();
-    if (this.__id) __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'join', multi, iface }));
+    if (this.__id) __wjs2_dgram_sockopt(this.__id, JSON.stringify({ op: 'join', multi, iface }));
     else this.__pending.push({ op: 'join', multi, iface });
   }
   dropMembership(multicastAddress, multicastInterface) {
     this.__healthCheck();
     const { multi, iface } = __membershipAddrs(multicastAddress, multicastInterface, this.type, 'dropMembership');
     if (!this.__id && !this.__binding) this.bind();
-    if (this.__id) __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'leave', multi, iface }));
+    if (this.__id) __wjs2_dgram_sockopt(this.__id, JSON.stringify({ op: 'leave', multi, iface }));
     else this.__pending.push({ op: 'leave', multi, iface });
   }
   // SSM 入组/退组（membership 套件点名校验；成功路径走 tasksetsockopt）。
@@ -666,14 +666,14 @@ class Socket extends EventEmitter {
     this.__healthCheck();
     const { source, group, v6 } = this.__ssmAddrs(sourceAddress, groupAddress, 'addSourceSpecificMembership');
     if (!this.__id && !this.__binding) this.bind();
-    if (this.__id) __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'joinSource', source, group, iface: interfaceAddress ?? (v6 ? '0' : '0.0.0.0') }));
+    if (this.__id) __wjs2_dgram_sockopt(this.__id, JSON.stringify({ op: 'joinSource', source, group, iface: interfaceAddress ?? (v6 ? '0' : '0.0.0.0') }));
     else this.__pending.push({ op: 'joinSource', source, group, iface: interfaceAddress ?? (v6 ? '0' : '0.0.0.0') });
   }
   dropSourceSpecificMembership(sourceAddress, groupAddress, interfaceAddress) {
     this.__healthCheck();
     const { source, group, v6 } = this.__ssmAddrs(sourceAddress, groupAddress, 'dropSourceSpecificMembership');
     if (!this.__id && !this.__binding) this.bind();
-    if (this.__id) __wjs_dgram_sockopt(this.__id, JSON.stringify({ op: 'leaveSource', source, group, iface: interfaceAddress ?? (v6 ? '0' : '0.0.0.0') }));
+    if (this.__id) __wjs2_dgram_sockopt(this.__id, JSON.stringify({ op: 'leaveSource', source, group, iface: interfaceAddress ?? (v6 ? '0' : '0.0.0.0') }));
     else this.__pending.push({ op: 'leaveSource', source, group, iface: interfaceAddress ?? (v6 ? '0' : '0.0.0.0') });
   }
   setMulticastInterface(interfaceAddress) {
@@ -704,7 +704,7 @@ class Socket extends EventEmitter {
   }
   __bufSize(kind, size) {
     if (!this.__bound) throw this.__bufSizeErr(kind);
-    const v = __wjs_dgram_bufsize(this.__id, kind, size);
+    const v = __wjs2_dgram_bufsize(this.__id, kind, size);
     if (v === "") throw this.__bufSizeErr(kind);
     return Number(v);
   }
@@ -744,14 +744,14 @@ class Socket extends EventEmitter {
         this.__rinfo = { address: o.addr, port: o.port };
         for (const p of this.__pending) {
           if (p.__send) this.__doSend(p.msg, p.port, p.address, p.cb);
-          else __wjs_dgram_sockopt(this.__id, JSON.stringify(p));
+          else __wjs2_dgram_sockopt(this.__id, JSON.stringify(p));
         }
         this.__pending = [];
         // 构造选项 buffer sizes（node：选项在 handle 创建期生效；此处绑后即设，
         // macOS getsockopt 精确回读，Linux 回读翻倍记平台差）。
         if (this.__opts) {
-          if (this.__opts.recvBufferSize !== undefined) __wjs_dgram_bufsize(this.__id, "recv", this.__opts.recvBufferSize);
-          if (this.__opts.sendBufferSize !== undefined) __wjs_dgram_bufsize(this.__id, "send", this.__opts.sendBufferSize);
+          if (this.__opts.recvBufferSize !== undefined) __wjs2_dgram_bufsize(this.__id, "recv", this.__opts.recvBufferSize);
+          if (this.__opts.sendBufferSize !== undefined) __wjs2_dgram_bufsize(this.__id, "send", this.__opts.sendBufferSize);
         }
         this.emit("listening");
         break;
@@ -836,7 +836,7 @@ class Socket extends EventEmitter {
   __resolveAddr(addr, bracket = true) {
     let s = String(addr);
     try {
-      const entries = JSON.parse(__wjs_dns_lookup(s));
+      const entries = JSON.parse(__wjs2_dns_lookup(s));
       if (Array.isArray(entries) && entries.length) {
         const fam = this.type === "udp4" ? 4 : 6;
         const hit = entries.find((e) => e.family === fam) ?? entries[0];
@@ -901,30 +901,30 @@ class Socket extends EventEmitter {
     // 从未绑定（无 task）即微任务派 close（真机未绑 close 仍异步派发；
     // 有 task 走 task Close 事件独派，不双发）。
     if (!this.__id) queueMicrotask(() => this.emit("close"));
-    else __wjs_net_destroy(this.__id);
+    else __wjs2_net_destroy(this.__id);
     return this;
   }
   ref() {
     this.__ref = true;
     if (this.__bound && !this.__closed) this.__resAdd();
-    if (this.__id) __wjs_net_ref(this.__id);
+    if (this.__id) __wjs2_net_ref(this.__id);
     return this;
   }
   unref() {
     this.__ref = false;
     this.__resDel();
-    if (this.__id) __wjs_net_unref(this.__id);
+    if (this.__id) __wjs2_net_unref(this.__id);
     return this;
   }
   // 存活资源登记（`process.getActiveResourcesInfo()` 读全局表；UDPWrap）。
   __resAdd() {
     if (this.__ref !== false && !this.__closed) {
-      globalThis.__wjsActiveResources ??= new Map();
-      globalThis.__wjsActiveResources.set(this, "UDPWrap");
+      globalThis.__wjs2ActiveResources ??= new Map();
+      globalThis.__wjs2ActiveResources.set(this, "UDPWrap");
     }
   }
   __resDel() {
-    globalThis.__wjsActiveResources?.delete(this);
+    globalThis.__wjs2ActiveResources?.delete(this);
   }
 }
 

@@ -25,7 +25,7 @@ console.log(ee.eventNames().map(String).join(","));
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -59,7 +59,7 @@ try { ee.emit("error", "str"); } catch (e) {
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -97,7 +97,7 @@ console.log("handled", handled);
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -140,7 +140,7 @@ try { EE.setMaxListeners(-1); } catch (e) {
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -188,7 +188,7 @@ try {
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();
@@ -220,7 +220,7 @@ try { getEventListeners(42, "a"); } catch (e) { console.log(e.code); }
 "#,
     )
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--run", file.path().to_str().unwrap()])
         .output()
         .unwrap();

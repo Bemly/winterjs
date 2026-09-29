@@ -152,7 +152,7 @@ async fn serve_loop(
             }
         }
     }
-    tracing::info!(target: "winterjs::runtime", open = state::serve_open(), "serve loop drained");
+    tracing::info!(target: "winterjs2::runtime", open = state::serve_open(), "serve loop drained");
 
     report_unhandled_rejections(rt, global)
 }
@@ -167,7 +167,7 @@ pub async fn run_serve_session(
 ) -> Result<(), Error> {
     let exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "winterjs".into());
+        .unwrap_or_else(|_| "winterjs2".into());
     let init = init_session(vec![exe])?;
     // 声明顺序即 drop 逆序（§4.22：`rt` 先于 `engine` drop 即炸；各返回点走 end_session）。
     let engine = init.engine;
@@ -186,7 +186,7 @@ pub async fn run_serve_session(
     let mut dispatch_rx = init.dispatch_rx;
     let url = crate::loader::resolve::entry_url(&handler)
         .map_err(|e| Error::Other(format!("cannot resolve --handler '{}': {e}", handler.display())))?;
-    tracing::info!(target: "winterjs::runtime", handler = %handler.display(), url = url.as_str(), "serve handler load");
+    tracing::info!(target: "winterjs2::runtime", handler = %handler.display(), url = url.as_str(), "serve handler load");
     let loaded = {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         crate::serve_bridge::load_serve_handler(&mut realm, global.get(), &url)

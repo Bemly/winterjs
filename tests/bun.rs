@@ -97,7 +97,7 @@ s.finalize();
 try { s.get(); } catch (e) { console.log("fin:", e.name); }
 console.log("done");
 "#).unwrap();
-    let out3 = winterjs()
+    let out3 = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -124,7 +124,7 @@ fn phase7_sqlite_unknown_spec() {
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("c.mjs");
     file.write_str("import \"bun:nosuch\";\n").unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -138,7 +138,7 @@ fn phase7_sqlite_unknown_spec() {
         "const { Database } = await import(\"bun:sqlite\");\nconsole.log(typeof Database);\n",
     )
     .unwrap();
-    let out2 = winterjs()
+    let out2 = winterjs2()
         .arg("--run")
         .arg(ok.path())
         .current_dir(dir.path())
@@ -193,7 +193,7 @@ console.log(typeof lib.symbols.ffi_add);
         libname = libname,
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -237,7 +237,7 @@ console.log("done");
         libname = libname,
     ))
     .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())
@@ -262,7 +262,7 @@ console.log("done");
 fn run_sqlite_file(dir: &assert_fs::TempDir, name: &str, source: &str) -> String {
     let file = dir.child(name);
     file.write_str(source).unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .arg("--run")
         .arg(file.path())
         .current_dir(dir.path())

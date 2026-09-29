@@ -189,7 +189,7 @@ fn load_js_uncached(
         (text.to_owned(), None)
     };
     tracing::debug!(
-        target: "winterjs::loader",
+        target: "winterjs2::loader",
         filename,
         is_module,
         deps = imports.len(),

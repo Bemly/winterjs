@@ -1,6 +1,6 @@
 // DecompressionStream: streaming decompression round-trip.
 // DecompressionStream：流式解压往返。
-// Run / 运行: winterjs --run sample/web/decompression-stream.js
+// Run / 运行: winterjs2 --run sample/web/decompression-stream.js
 async function roundtrip(format, text) {
   const cs = new CompressionStream(format);
   const writer = cs.writable.getWriter();
@@ -27,4 +27,4 @@ const src = 'hello compression '.repeat(20);
 console.log('[decompression-stream] gzip ok:', (await roundtrip('gzip', src)) === src);
 console.log('[decompression-stream] deflate ok:', (await roundtrip('deflate', src)) === src);
 console.log('[decompression-stream] zstd ok:', (await roundtrip('zstd', src)) === src);
-console.log('[decompression-stream] ns:', WinterJS.DecompressionStream === DecompressionStream);
+console.log('[decompression-stream] ns:', WinterJS2.DecompressionStream === DecompressionStream);

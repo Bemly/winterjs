@@ -234,7 +234,7 @@ class TLSSocket extends Socket {
     this.readable = true; this.writable = true;
     this.__handleClosed = false;
     this._handle = this.__makeHandle();
-    this.__id = Number(__wjs_tls_connect(this.__targetHost, this.__targetPort, JSON.stringify(wire), this));
+    this.__id = Number(__wjs2_tls_connect(this.__targetHost, this.__targetPort, JSON.stringify(wire), this));
     return this;
   }
   get bufferSize() {
@@ -250,7 +250,7 @@ class TLSSocket extends Socket {
     // node TLSSocket._destroySSL：仅弃 TLS 柄（引擎摘表），不连带底层 socket——
     // 随后用户 destroy() 收尾；直拨面 TLS 与流同体，引擎由 destroy 统一收。
     if (this.__tlsId !== undefined) {
-      try { __wjs_tls_wrap_kill(this.__tlsId); } catch { /* 已摘即无事 */ }
+      try { __wjs2_tls_wrap_kill(this.__tlsId); } catch { /* 已摘即无事 */ }
       this.__tlsId = undefined;
     }
     this._secureEstablished = false;
@@ -310,7 +310,7 @@ class TLSSocket extends Socket {
   }
 
   // ── P2-tls-b：TLSSocket 包裹面（node internal/tls/wrap 对应件）──────────
-  // rustls Connection 由 JS 字节驱动：wrapped socket 密文 → __wjs_tls_wrap_feed，
+  // rustls Connection 由 JS 字节驱动：wrapped socket 密文 → __wjs2_tls_wrap_feed，
   // 回程 JSON 带密文（写回 wrapped）/明文（交付本 socket）/握手状态/校验捕获。
   __wrapWire(wrapped, mo, forwardConnect) {
     this.__wrapped = wrapped;
@@ -390,14 +390,14 @@ class TLSSocket extends Socket {
     if (this.__tlsId !== undefined || this.destroyed) return;
     const mo = this.__wrapOpts ?? {};
     const wire = this.__wireConfig(mo, this.__wrapped);
-    this.__tlsId = Number(__wjs_tls_wrap_open(this.__isServer ? 1 : 0, JSON.stringify(wire)));
-    this.__pump(JSON.parse(__wjs_tls_wrap_feed(this.__tlsId, new Uint8Array(0))));
+    this.__tlsId = Number(__wjs2_tls_wrap_open(this.__isServer ? 1 : 0, JSON.stringify(wire)));
+    this.__pump(JSON.parse(__wjs2_tls_wrap_feed(this.__tlsId, new Uint8Array(0))));
   }
   __tlsIn(b) {
     if (this.__tlsId === undefined || this.destroyed) return;
     const u8 = typeof b === "string" ? Buffer.from(b, "utf8") : b;
     let r;
-    try { r = JSON.parse(__wjs_tls_wrap_feed(this.__tlsId, u8)); }
+    try { r = JSON.parse(__wjs2_tls_wrap_feed(this.__tlsId, u8)); }
     catch { this.destroy(); return; } // 引擎已摘即无事
     this.__pump(r);
   }
@@ -463,7 +463,7 @@ class TLSSocket extends Socket {
     this.__eofDone = true;
     if (this.__tlsId !== undefined) {
       let r = null;
-      try { r = JSON.parse(__wjs_tls_wrap_eof(this.__tlsId)); } catch { /* 引擎已走即无事 */ }
+      try { r = JSON.parse(__wjs2_tls_wrap_eof(this.__tlsId)); } catch { /* 引擎已走即无事 */ }
       if (r && r.plain) this.__ingestData(Buffer.from(r.plain, "base64"));
     }
     // 残余交付 + 'end' + 非 halfOpen 自动 end（close_notify 出站）复用 net 终结面。
@@ -474,7 +474,7 @@ class TLSSocket extends Socket {
     if (this.__tlsCloseDone) return;
     this.__tlsCloseDone = true;
     if (this.__tlsId !== undefined) {
-      try { __wjs_tls_wrap_kill(this.__tlsId); } catch { /* 已摘即无事 */ }
+      try { __wjs2_tls_wrap_kill(this.__tlsId); } catch { /* 已摘即无事 */ }
       this.__tlsId = undefined;
     }
     this.destroyed = true; this.writable = false; this.readable = false;
@@ -517,9 +517,9 @@ class TLSSocket extends Socket {
     this.emit("secureConnect");
   }
   __nativeWrite(u8) {
-    if (this.__tlsId === undefined) { __wjs_net_write(this.__id, u8); return; } // 直拨面直通
+    if (this.__tlsId === undefined) { __wjs2_net_write(this.__id, u8); return; } // 直拨面直通
     let r;
-    try { r = JSON.parse(__wjs_tls_wrap_write(this.__tlsId, u8)); }
+    try { r = JSON.parse(__wjs2_tls_wrap_write(this.__tlsId, u8)); }
     catch { this.destroy(); return; }
     if (r.err !== undefined && r.err !== null) {
       this.destroy(__handshakeErr(String(r.err), this.servername ?? this.__targetHost));
@@ -529,21 +529,21 @@ class TLSSocket extends Socket {
   }
   __nativeEnd() {
     if (this.__tlsId === undefined) {
-      if (this.__id && this.__connected) __wjs_net_end(this.__id);
+      if (this.__id && this.__connected) __wjs2_net_end(this.__id);
       else this.__endAfterFlush = true;
       return;
     }
     let r = null;
-    try { r = JSON.parse(__wjs_tls_wrap_shutdown(this.__tlsId)); } catch { /* 引擎已走即无事 */ }
+    try { r = JSON.parse(__wjs2_tls_wrap_shutdown(this.__tlsId)); } catch { /* 引擎已走即无事 */ }
     if (r && r.out) this.__wrapped.write(Buffer.from(r.out, "base64"));
     if (this.__wrapped && !this.__wrapped.destroyed) this.__wrapped.end();
   }
   __nativeKill() {
     if (this.__tlsId === undefined) {
       // 直拨面直通；包裹面（握手前 destroy）落穿销毁 wrapped。
-      if (this.__id) { __wjs_net_destroy(this.__id); return; }
+      if (this.__id) { __wjs2_net_destroy(this.__id); return; }
     } else {
-      try { __wjs_tls_wrap_kill(this.__tlsId); } catch { /* 已摘即无事 */ }
+      try { __wjs2_tls_wrap_kill(this.__tlsId); } catch { /* 已摘即无事 */ }
       this.__tlsId = undefined;
     }
     const w = this.__wrapped;
@@ -699,11 +699,11 @@ class Server extends EventEmitter {
       // node tls.Server.listen(path)：UDS（复用 net 的 UDS:" 前缀约定）。
       this.__udsPath = udsPath;
       this.__port = 0;
-      this.__id = Number(__wjs_tls_listen(0, "UDS:" + udsPath, JSON.stringify(this.__tlsOpts), this));
+      this.__id = Number(__wjs2_tls_listen(0, "UDS:" + udsPath, JSON.stringify(this.__tlsOpts), this));
       return this;
     }
     this.__port = Number(port);
-    this.__id = Number(__wjs_tls_listen(Number(port), host === null ? "0.0.0.0" : host, JSON.stringify(this.__tlsOpts), this));
+    this.__id = Number(__wjs2_tls_listen(Number(port), host === null ? "0.0.0.0" : host, JSON.stringify(this.__tlsOpts), this));
     return this;
   }
   __ev(kind, payload) {
@@ -759,7 +759,7 @@ class Server extends EventEmitter {
   }
   close(cb) {
     if (typeof cb === "function") this.once("close", cb);
-    if (this.__id) __wjs_net_destroy(this.__id);
+    if (this.__id) __wjs2_net_destroy(this.__id);
     return this;
   }
   addContext(hostname, context) {
@@ -816,7 +816,7 @@ class Server extends EventEmitter {
 // ── CA 面（SecureContext 见 tls_context.js）────────────────────────────────
 let __defaultCA = null;
 function __certsOf(kind) {
-  return JSON.parse(__wjs_tls_ca_certs(kind));
+  return JSON.parse(__wjs2_tls_ca_certs(kind));
 }
 export function getCACertificates(type = "default") {
   if (typeof type !== "string") {

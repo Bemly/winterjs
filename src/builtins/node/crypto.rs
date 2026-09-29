@@ -1,5 +1,5 @@
 //! `node:crypto` 9e-1a/9e-1b/9e-1c：Hash/Hmac/随机 + 对称密码 + 非对称。
-//! 复用全局 `__wjs_*`（随机/UUID/AES-GCM；零新 `UNSAFE-BOUNDARY`）；HMAC 经通用构造
+//! 复用全局 `__wjs2_*`（随机/UUID/AES-GCM；零新 `UNSAFE-BOUNDARY`）；HMAC 经通用构造
 //! 自架流式 Hash natives（sha3 与 hmac 0.13 的 block-API 不兼容，见修法记）；
 //! 新增仅增量 Hash/Cipher 注册表（`encoding.rs` `STREAM_DECODERS` 同款线程本地表）。
 //! 偏差记档（9e-1a）：
@@ -32,7 +32,7 @@
 //! - 对称集合：aes-128/192/256-cbc/ctr/gcm + chacha20-poly1305 + des-ede3-cbc
 //!   + aes-128/192/256-ccm（10e；`ccm` 0.6 直引，全档分发）。
 //!   GCM/ChaCha/CCM 系 AEAD 无流式（buffered，`final` 时 oneshot；http 体整收同款口径）。
-//! - GCM 任意 iv（10e-2：12B 内走 crate，其余 J0 手工 `__wjs_gcm_anyiv`；
+//! - GCM 任意 iv（10e-2：12B 内走 crate，其余 J0 手工 `__wjs2_gcm_anyiv`；
 //!   WebCrypto 共用面维持 12B，spec 口径）。
 //! - PKCS#7 填充校验非恒定时间实现（功能等价，侧信道记档）；`bf-cbc` 真机 26
 //!   `getCiphers()` 已无 bf 系（10e 删项，不做）；`ocb/wrap` 系不做（ocb 非 Node 面）。

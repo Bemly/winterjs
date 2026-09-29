@@ -1,6 +1,6 @@
-// WinterJS.media: audio decode/play + AV1 encode + MP4 demux (all offline).
-// WinterJS.media：音频解码/放音 + AV1 编码 + MP4 解复用（全离线）。
-// Run / 运行: winterjs --run sample/media/basics.js
+// WinterJS2.media: audio decode/play + AV1 encode + MP4 demux (all offline).
+// WinterJS2.media：音频解码/放音 + AV1 编码 + MP4 解复用（全离线）。
+// Run / 运行: winterjs2 --run sample/media/basics.js
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 // Synth 1s 440Hz mono 8kHz WAV in-JS (44-byte header + i16 PCM).
@@ -19,9 +19,9 @@ function synthWav() {
 }
 
 const wav = synthWav();
-const info = WinterJS.media.audioInfo(wav.bytes, 'wav');
+const info = WinterJS2.media.audioInfo(wav.bytes, 'wav');
 console.log('[media] info:', info.format === 'wav' && info.codec === 'pcm' && info.sampleRate === 8000 && info.channels === 1);
-const dec = WinterJS.media.decodeAudio(wav.bytes, 'wav');
+const dec = WinterJS2.media.decodeAudio(wav.bytes, 'wav');
 console.log('[media] decode:', dec.data.length === 8000 && dec.data.constructor.name === 'Float32Array');
 // Sine energy check: mean absolute value well above silence.
 let e = 0;
@@ -30,8 +30,8 @@ console.log('[media] energy:', e / dec.data.length > 0.2);
 
 // Playback is best-effort (headless CI has no device): id number or clean error.
 try {
-  const id = WinterJS.media.play({ data: dec.data.slice(0, 800), sampleRate: 8000, channels: 1 }, { volume: 0 });
-  console.log('[media] play:', typeof id === 'number' && WinterJS.media.stop(id) === true);
+  const id = WinterJS2.media.play({ data: dec.data.slice(0, 800), sampleRate: 8000, channels: 1 }, { volume: 0 });
+  console.log('[media] play:', typeof id === 'number' && WinterJS2.media.stop(id) === true);
 } catch (err) {
   console.log('[media] play:', String(err.message).includes('no audio output'));
 }
@@ -41,7 +41,7 @@ const w = 16, h = 16;
 const frame = new Uint8Array(w * h * 4).fill(128);
 const frames = new Uint8Array(frame.length * 2);
 frames.set(frame, 0); frames.set(frame, frame.length);
-const ivf = WinterJS.media.videoEncode({ data: frames, width: w, height: h, count: 2 }, { speed: 10, quantizer: 200 });
-console.log('[media] av1:', String.fromCharCode(...ivf.slice(0, 4)) === 'DKIF' && WinterJS.media.formats().find((f) => f.name === 'av1').encode);
+const ivf = WinterJS2.media.videoEncode({ data: frames, width: w, height: h, count: 2 }, { speed: 10, quantizer: 200 });
+console.log('[media] av1:', String.fromCharCode(...ivf.slice(0, 4)) === 'DKIF' && WinterJS2.media.formats().find((f) => f.name === 'av1').encode);
 
-console.log('[media] formats:', WinterJS.media.formats().filter((f) => f.decode).map((f) => f.name).join(','));
+console.log('[media] formats:', WinterJS2.media.formats().filter((f) => f.decode).map((f) => f.name).join(','));

@@ -6,7 +6,7 @@
 //! 构造器真机口径：fd 非 TTY 即 `ERR_TTY_INIT_FAILED`（含 WriteStream；
 //! `isatty(99)` 这类纯查询仍回 false，不抛）。
 //!
-//! 忠实面：isatty（走 `__wjs_stdio_istty` native，0/1/2 有效）、
+//! 忠实面：isatty（走 `__wjs2_stdio_istty` native，0/1/2 有效）、
 //! ReadStream/WriteStream（fd 校验/isTTY/isRaw/setRawMode 形态）、
 //! ReadStream/WriteStream 静态 isatty 便捷、getColorDepth/hasColors（internal/tty 面）。
 //!
@@ -30,7 +30,7 @@ static RAW_STASH: std::sync::LazyLock<
     parking_lot::Mutex<std::collections::HashMap<i32, nix::sys::termios::Termios>>,
 > = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
-/// `__wjs_tty_winsize(fd)` → `"COLSxROWS"`，失败回 `""`（JS 侧落 undefined）。
+/// `__wjs2_tty_winsize(fd)` → `"COLSxROWS"`，失败回 `""`（JS 侧落 undefined）。
 /// 前置：引擎回调提供的 raw cx 有效。
 pub unsafe extern "C" fn tty_winsize(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -77,7 +77,7 @@ fn errno_to_i32(e: nix::errno::Errno) -> i32 {
     e as i32
 }
 
-/// `__wjs_tty_set_raw_mode(fd, on)` → errno（0 = 成功；JS 侧经
+/// `__wjs2_tty_set_raw_mode(fd, on)` → errno（0 = 成功；JS 侧经
 /// `getSystemErrorName(-rc)` 组错）。
 pub unsafe extern "C" fn tty_set_raw_mode(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -151,13 +151,13 @@ const {
 
 function isatty(fd) {
   return Number.isInteger(fd) && fd >= 0 && fd <= 2147483647 &&
-         __wjs_stdio_istty(fd);
+         __wjs2_stdio_istty(fd);
 }
 
 // ioctl winsize（失败即 [undefined, undefined]；真机 COLUMNS/LINES 不认，只认
 // 内核尺寸——`COLUMNS=100` 管道下仍 undefined，已对拍）。
 function __readSize(fd) {
-  const m = /^(\d+)x(\d+)$/.exec(__wjs_tty_winsize(fd));
+  const m = /^(\d+)x(\d+)$/.exec(__wjs2_tty_winsize(fd));
   if (!m) return [undefined, undefined];
   const c = Number(m[1]), r = Number(m[2]);
   return [c > 0 ? c : undefined, r > 0 ? r : undefined];
@@ -186,7 +186,7 @@ class ReadStream extends Socket {
       rawMode = mode ? 'raw' : false;
     }
     // 真 termios（unix；win 回 ENOSYS，见模块头注）。
-    const rc = __wjs_tty_set_raw_mode(this.fd, rawMode === false ? 0 : 1);
+    const rc = __wjs2_tty_set_raw_mode(this.fd, rawMode === false ? 0 : 1);
     if (rc !== 0) {
       const name = getSystemErrorName(-rc);
       const err = new Error(`${name}: setRawMode ${rc}`);
@@ -214,8 +214,8 @@ class WriteStream extends Socket {
     this.columns = undefined;
     this.rows = undefined;
     this._refreshSize();
-    this._writable = fd === 1 ? (s) => __wjs_stdout_write(String(s)) :
-      fd === 2 ? (s) => __wjs_stderr_write(String(s)) :
+    this._writable = fd === 1 ? (s) => __wjs2_stdout_write(String(s)) :
+      fd === 2 ? (s) => __wjs2_stderr_write(String(s)) :
         null;
   }
   write(str) {

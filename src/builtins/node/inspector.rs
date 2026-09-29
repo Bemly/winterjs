@@ -20,7 +20,7 @@ use crate::state;
 /// 求值直透（表达式/语句皆可；`throw` 即 pending 异常转文案错）。
 /// 成功 → rval 为 completion 值（JS 侧再拼 CDP 形）；失败报
 /// `InspectorEval: <message>`（JS 侧剥前缀组 `exceptionDetails`）。
-/// `__wjs_inspector_eval(exprStr)` → completion 值（失败抛 `InspectorEval:` 错）。
+/// `__wjs2_inspector_eval(exprStr)` → completion 值（失败抛 `InspectorEval:` 错）。
 pub unsafe extern "C" fn inspector_eval(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -118,7 +118,7 @@ class Session extends EventEmitter {
       const expr = String(params.expression ?? "");
       let v;
       try {
-        v = __callNative(() => __wjs_inspector_eval(expr));
+        v = __callNative(() => __wjs2_inspector_eval(expr));
       } catch (e) {
         const m = String((e && e.message) || e).replace(/^InspectorEval: /, "");
         return {

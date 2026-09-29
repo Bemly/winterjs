@@ -81,10 +81,10 @@ class AsyncResource {
     validateNumber(triggerAsyncId_, 'options.triggerAsyncId');
     this[async_id_symbol] = newAsyncId();
     this[trigger_async_id_symbol] = triggerAsyncId_;
-    this.__wjsManualDestroy = requireManualDestroy;
-    this.__wjsDestroyed = false;
+    this.__wjs2ManualDestroy = requireManualDestroy;
+    this.__wjs2Destroyed = false;
     // 构造期 ALS 快照（跨作用域传播的唯一通道；跨 await 不支持，见头注）
-    this.__wjsContext = new Map(currentContext);
+    this.__wjs2Context = new Map(currentContext);
   }
 
   asyncId() { return this[async_id_symbol]; }
@@ -95,7 +95,7 @@ class AsyncResource {
     idStack.push(this[async_id_symbol]);
     resourceStack.push(this);
     const prevContext = currentContext;
-    currentContext = new Map(this.__wjsContext);
+    currentContext = new Map(this.__wjs2Context);
     try {
       const ret = fn.apply(thisArg, args);
       return ret;
@@ -103,8 +103,8 @@ class AsyncResource {
       currentContext = prevContext;
       resourceStack.pop();
       idStack.pop();
-      if (!this.__wjsManualDestroy && !this.__wjsDestroyed) {
-        this.__wjsDestroyed = true;
+      if (!this.__wjs2ManualDestroy && !this.__wjs2Destroyed) {
+        this.__wjs2Destroyed = true;
       }
     }
   }
@@ -118,7 +118,7 @@ class AsyncResource {
   }
 
   emitDestroy() {
-    this.__wjsDestroyed = true;
+    this.__wjs2Destroyed = true;
     return this;
   }
 
@@ -206,7 +206,7 @@ class AsyncLocalStorage {
 
   // Node 私有面（diagnostics_channel RunStoresScope 用）：
   // 作用域内设置 store，dispose 时恢复原值。
-  __wjsWithScope(store) {
+  __wjs2WithScope(store) {
     const SymbolDispose = Symbol.dispose ?? Symbol.for('Symbol.dispose');
     const als = this;
     const prev = currentContext.get(als);
@@ -238,9 +238,9 @@ const asyncWrapProviders = Object.freeze({ __proto__: null });
 // 触发时 restore（套件 clearImmediate-als）。快照拷贝 Map 外层（ALS→store 映射），
 // store 对象同一性保留（node 口径）；无活跃上下文时 capture 回 undefined，
 // 挂载侧（prelude timers）据此走零开销直调。
-globalThis.__wjs_als_capture = () =>
+globalThis.__wjs2_als_capture = () =>
   currentContext.size === 0 ? undefined : new Map(currentContext);
-globalThis.__wjs_als_restore = (snap, fn) => {
+globalThis.__wjs2_als_restore = (snap, fn) => {
   const prev = currentContext;
   currentContext = snap;
   try { return fn(); } finally { currentContext = prev; }

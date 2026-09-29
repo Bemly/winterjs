@@ -84,7 +84,7 @@ pub fn load(
             url: url_str(spec, path),
             exports: Heap::boxed(out),
         });
-        tracing::debug!(target: "winterjs::napi", spec, "native module loaded");
+        tracing::debug!(target: "winterjs2::napi", spec, "native module loaded");
         Ok(out)
     }
 }

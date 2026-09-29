@@ -10,7 +10,7 @@ export function encapsulate(key, ...rest) {
   }
   if (__isKeyObject(key) && __MLKEM_KINDS.includes(key.__keyType)) {
     const isPriv = key.type === "private" ? 1 : 0;
-    const r = JSON.parse(__cryptCall(() => __wjs_mlkem_encaps(key.__material, isPriv)));
+    const r = JSON.parse(__cryptCall(() => __wjs2_mlkem_encaps(key.__material, isPriv)));
     return { sharedKey: Buffer.from(__b64dec(r.sk)), ciphertext: Buffer.from(__b64dec(r.ct)) };
   }
   const err = new Error("unsupported key for encapsulation");
@@ -32,7 +32,7 @@ export function decapsulate(key, ciphertext) {
     // 真机：非 ml-kem 私钥 → 无码 Error。
     throw new Error("Decapsulation failed");
   }
-  const out = __cryptCall(() => __wjs_mlkem_decaps(key.__material, __cryptBytes(ciphertext, "ciphertext")));
+  const out = __cryptCall(() => __wjs2_mlkem_decaps(key.__material, __cryptBytes(ciphertext, "ciphertext")));
   return Buffer.from(out);
 }
 
@@ -51,7 +51,7 @@ class X509Certificate {
       der = __cryptBytes(pemOrDer, "cert");
     }
     this.__der = Buffer.from(der);
-    this.__info = JSON.parse(__cryptCall(() => __wjs_x509_parse(der)));
+    this.__info = JSON.parse(__cryptCall(() => __wjs2_x509_parse(der)));
   }
   get subject() { return this.__info.subject; }
   get issuer() { return this.__info.issuer; }
@@ -105,7 +105,7 @@ class X509Certificate {
       throw err;
     }
     const kt = publicKey.__keyType === "rsa-pss" ? "rsa" : publicKey.__keyType;
-    return __cryptCall(() => __wjs_x509_verify(this.__der, Buffer.from(publicKey.__material), kt)) === true;
+    return __cryptCall(() => __wjs2_x509_verify(this.__der, Buffer.from(publicKey.__material), kt)) === true;
   }
   checkHost(name) { return __x509Match(name, this.__info.sanDns, this.__info.sanIp, this.__info.subjectObj?.CN); }
   checkIssued(otherCert) {
@@ -115,7 +115,7 @@ class X509Certificate {
       err.code = "ERR_INVALID_ARG_TYPE";
       throw err;
     }
-    return __cryptCall(() => __wjs_x509_check_issued(this.__der, otherCert.__der)) === true;
+    return __cryptCall(() => __wjs2_x509_check_issued(this.__der, otherCert.__der)) === true;
   }
   checkPrivateKey(privateKey) {
     // 9i-7 真机口径：非 KeyObject → ERR_INVALID_ARG_TYPE；公钥 → ERR_INVALID_ARG_VALUE。
@@ -144,7 +144,7 @@ class X509Certificate {
       spki = Buffer.concat([Buffer.from(headHex, "hex"), Buffer.from(pub.__material)]);
     } else if (pub.__keyType === "dsa") {
       const env = JSON.parse(Buffer.from(pub.__material).toString("utf8"));
-      const parts = JSON.parse(__cryptCall(() => __wjs_dsa_export(JSON.stringify(env))));
+      const parts = JSON.parse(__cryptCall(() => __wjs2_dsa_export(JSON.stringify(env))));
       spki = Buffer.from(__b64dec(parts.pubDer));
     } else {
       spki = Buffer.from(pub.__material);

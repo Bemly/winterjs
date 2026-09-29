@@ -39,7 +39,7 @@ arg:
   login:
     help: "登录 registry（令牌存入 ~/.npmrc）"
   upgrade:
-    help: "自升级 winterjs（需要 WINTERJS_UPDATE_GITHUB=owner/repo）"
+    help: "自升级 winterjs2（需要 WINTERJS2_UPDATE_GITHUB=owner/repo）"
   init:
     help: "新建软件包脚手架（已有 package.json 依赖时自动安装）"
     value: "名称"
@@ -129,7 +129,7 @@ arg:
     help: "对数据库执行的 SQL（仅 db；默认列出全部表）"
     value: "SQL"
   storage_path:
-    help: "全局 storage/localStorage 的数据库文件（仅 run/eval/test/repl/serve；默认 ./winterjs-storage.db）"
+    help: "全局 storage/localStorage 的数据库文件（仅 run/eval/test/repl/serve；默认 ./winterjs2-storage.db）"
     value: "文件"
   allow_read:
     help: "允许文件系统读取（仅 run/eval/test/repl/db；可选：--allow-read=<路径>[,<路径>...]）"

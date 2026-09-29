@@ -129,7 +129,7 @@ unsafe fn define_value(
 }
 
 /// 访问器定义：getter/setter 建为 trampoline 函数对象，经 prelude
-/// `__wjs_napi_accessor`（Object.defineProperty）落地——setter 传 undefined
+/// `__wjs2_napi_accessor`（Object.defineProperty）落地——setter 传 undefined
 /// 即 Node getter-only 语义；免 JSAPI 访问器定义面（getter/setter 旗帜位
 /// 与 attrs 组合的断言雷区）。
 ///
@@ -188,7 +188,7 @@ unsafe fn define_accessor(
         let conf_v = mozjs::jsval::BooleanValue(
             attrs & sys::napi_property_attributes_napi_configurable != 0,
         );
-        let Some(helper) = get_prop_value(cx, crate::state::global(), c"__wjs_napi_accessor")
+        let Some(helper) = get_prop_value(cx, crate::state::global(), c"__wjs2_napi_accessor")
         else {
             return NAPI_GENERIC_FAILURE;
         };

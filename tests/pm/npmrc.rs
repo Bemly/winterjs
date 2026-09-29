@@ -15,7 +15,7 @@ fn phase5_npmrc_registry_mirror() {
         .write_str(&format!("registry={reg}/\n"))
         .unwrap();
     let out = stdout_of(
-        winterjs()
+        winterjs2()
             .args(["--add", "left-pad@^1.0.0", "--dry-run"])
             .env("HOME", home.path())
             .env_remove("NPM_CONFIG_REGISTRY")
@@ -39,7 +39,7 @@ fn phase5_npmrc_bad_registry_errors() {
     dir.child(".npmrc")
         .write_str("registry=http://127.0.0.1:9/\n")
         .unwrap();
-    let out = winterjs()
+    let out = winterjs2()
         .args(["--add", "left-pad@^1.0.0", "--dry-run"])
         .env("HOME", home.path())
         .env_remove("NPM_CONFIG_REGISTRY")

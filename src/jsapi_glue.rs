@@ -233,7 +233,7 @@ pub fn exc_name_is(cx: &mut JSContext, exc: JSVal, name: &str) -> bool {
 }
 
 /// 非对象异常值的原始值信封（10f worker 错误透传：throw 42/"boom"/7n/Symbol
-/// 经 `__wjs_prim:{json}` 跨线程还原，error-primitive 套件断同一性）。
+/// 经 `__wjs2_prim:{json}` 跨线程还原，error-primitive 套件断同一性）。
 /// 对象异常返回 None（走 `exc_name` 类名路径）。
 /// UNSAFE-BOUNDARY：JS_TypeOfValue 只读；exc 须已 rooted（调用方 rooted! 槽位
 /// `.get()` 传入）。覆盖测试：`tests/node/worker.rs` worker 错误形状。
@@ -242,26 +242,26 @@ pub fn exc_prim_marker(cx: &mut JSContext, exc: JSVal) -> Option<String> {
         return None;
     }
     if exc.is_null() {
-        return Some("__wjs_prim:{\"t\":\"nil\"}".into());
+        return Some("__wjs2_prim:{\"t\":\"nil\"}".into());
     }
     if exc.is_undefined() {
-        return Some("__wjs_prim:{\"t\":\"undef\"}".into());
+        return Some("__wjs2_prim:{\"t\":\"undef\"}".into());
     }
     if exc.is_boolean() {
-        return Some(format!("__wjs_prim:{{\"t\":\"bool\",\"v\":{}}}", exc.to_boolean()));
+        return Some(format!("__wjs2_prim:{{\"t\":\"bool\",\"v\":{}}}", exc.to_boolean()));
     }
     if exc.is_int32() {
-        return Some(format!("__wjs_prim:{{\"t\":\"num\",\"v\":\"{}\"}}", exc.to_int32()));
+        return Some(format!("__wjs2_prim:{{\"t\":\"num\",\"v\":\"{}\"}}", exc.to_int32()));
     }
     if exc.is_double() {
         let n = exc.to_number();
         let v = if n.is_finite() { n.to_string() } else { "null".into() };
-        return Some(format!("__wjs_prim:{{\"t\":\"num\",\"v\":\"{v}\"}}"));
+        return Some(format!("__wjs2_prim:{{\"t\":\"num\",\"v\":\"{v}\"}}"));
     }
     if exc.is_string() {
         let s = value_to_string(cx, exc);
         let json = serde_json::to_string(&s).unwrap_or_else(|_| "\"\"".into());
-        return Some(format!("__wjs_prim:{{\"t\":\"str\",\"v\":{json}}}"));
+        return Some(format!("__wjs2_prim:{{\"t\":\"str\",\"v\":{json}}}"));
     }
     // BigInt/Symbol：jsval 谓词不覆盖，走引擎 TypeOf。
     rooted!(&in(cx) let exc_root = exc);
@@ -270,21 +270,21 @@ pub fn exc_prim_marker(cx: &mut JSContext, exc: JSVal) -> Option<String> {
     use mozjs::jsapi::JSType;
     if t == JSType::JSTYPE_BIGINT {
         let s = value_to_string(cx, exc);
-        return Some(format!("__wjs_prim:{{\"t\":\"big\",\"v\":\"{s}\"}}"));
+        return Some(format!("__wjs2_prim:{{\"t\":\"big\",\"v\":\"{s}\"}}"));
     }
     if t == JSType::JSTYPE_SYMBOL {
-        // 描述经 prelude `__wjs_symToString`（JS 的 toString 合法；注册 Symbol
+        // 描述经 prelude `__wjs2_symToString`（JS 的 toString 合法；注册 Symbol
         // 跨线程同一性靠 Symbol.for(key)）。
         let g = state::global();
         rooted!(&in(cx) let g_root: *mut JSObject = g);
-        let s = get_prop_value(cx, g_root.get(), c"__wjs_symToString")
+        let s = get_prop_value(cx, g_root.get(), c"__wjs2_symToString")
             .and_then(|f| call_two(cx, g, f, exc_root.get(), UndefinedValue()))
             .filter(|r| r.is_string())
             .map(|r| value_to_string(cx, r))
             .unwrap_or_else(|| "Symbol()".into());
         let desc = s.strip_prefix("Symbol(").and_then(|r| r.strip_suffix(")")).unwrap_or("");
         let json = serde_json::to_string(desc).unwrap_or_else(|_| "\"\"".into());
-        return Some(format!("__wjs_prim:{{\"t\":\"sym\",\"v\":{json}}}"));
+        return Some(format!("__wjs2_prim:{{\"t\":\"sym\",\"v\":{json}}}"));
     }
     None
 }
@@ -403,7 +403,7 @@ pub fn promise_settled_value(cx: &mut JSContext, obj: *mut JSObject) -> Option<O
     }
 }
 
-/// UNSAFE-BOUNDARY: 取 TLA 包装 promise 的结算对（读 `__wjs_ok` + `v`/`e`，
+/// UNSAFE-BOUNDARY: 取 TLA 包装 promise 的结算对（读 `__wjs2_ok` + `v`/`e`，
 /// 属性读不触发 GC，obj 内部 rooted，一次调用无 GC 间隙）。
 /// 前置：cx 当前 realm 为对象所属 realm（主循环 global）；obj 为 Promise 结算值
 /// 对象且调用方 rooted。返回 Some((resolved, value_or_reason))。
@@ -411,7 +411,7 @@ pub fn promise_settled_value(cx: &mut JSContext, obj: *mut JSObject) -> Option<O
 pub fn tla_pack_take(cx: &mut JSContext, obj: *mut JSObject) -> Option<(bool, JSVal)> {
     rooted!(&in(cx) let mut obj_root: *mut JSObject = obj);
     let optr = obj_root.get();
-    let ok = get_prop_value(cx, optr, c"__wjs_ok")?;
+    let ok = get_prop_value(cx, optr, c"__wjs2_ok")?;
     let is_ok = ok.is_int32() && ok.to_int32() == 1;
     let field = if is_ok {
         get_prop_value(cx, optr, c"v")?
@@ -448,7 +448,7 @@ pub fn call_one(
     if ok { Some(rval.get()) } else { None }
 }
 
-/// UNSAFE-BOUNDARY: 调双参函数 `fun(a, b)`（timer fire 经 `__wjs_call(cb, args)`
+/// UNSAFE-BOUNDARY: 调双参函数 `fun(a, b)`（timer fire 经 `__wjs2_call(cb, args)`
 /// 展开实参；native 内禁 `Rooted<ValueArray>`，§4.9）。
 /// 前置：cx 在 realm 内；fun 为可调用；调用后 pending exception 由调用方处理。
 /// 覆盖：`phase3_fetch_http_get`、`phase3_fetch_data_and_file`（经 fetch deliver）、
@@ -482,7 +482,7 @@ pub fn call_two(
 }
 
 /// UNSAFE-BOUNDARY: 调三参函数 `fun(a, b, c)`（this=global；napi_call 的
-/// prelude helper `__wjs_napi_call(recv, fn, args)` 用）。
+/// prelude helper `__wjs2_napi_call(recv, fn, args)` 用）。
 /// 前置：cx 在 realm 内；调用后 pending exception 由调用方处理。
 /// 覆盖：`tests/napi.rs::phase_napi_m1_values`（经 napi_call_function）。
 pub fn call_three(
@@ -561,7 +561,7 @@ pub fn view_bytes(cx: &mut JSContext, v: JSVal, what: &str) -> Option<Vec<u8>> {
 }
 
 /// UNSAFE-BOUNDARY: 取对象全部自有键（含不可枚举字符串键；symbol 键以占位对象透传）。
-/// 以 JSON 数组回传（字符串键为 JSON 串、symbol 键为 `{"__wjs_symbol":true}` 占位；
+/// 以 JSON 数组回传（字符串键为 JSON 串、symbol 键为 `{"__wjs2_symbol":true}` 占位；
 /// 空对象回 `"[]"`）。占位无跨 realm 身份，调用方只做存在性/计数口径。
 /// 前置：cx 在 obj 所属 realm 内；obj 为有效对象；调用后 pending 由调用方处理。
 /// 覆盖：`tests/node/vm.rs::phase10f_vm_sync_all_keys`（经 vm sync-out/创建快照）。
@@ -598,7 +598,7 @@ pub fn own_keys_json(cx: &mut JSContext, obj: *mut JSObject) -> Option<String> {
                 out.push(',');
             }
             first = false;
-            out.push_str("{\"__wjs_symbol\":true}");
+            out.push_str("{\"__wjs2_symbol\":true}");
             continue;
         }
         let s = value_to_string(cx, v.get());

@@ -1,8 +1,8 @@
-//! 配置加载：config crate（TOML/JSON/INI/YAML + `WINTERJS_` 前缀环境变量覆盖），
+//! 配置加载：config crate（TOML/JSON/INI/YAML + `WINTERJS2_` 前缀环境变量覆盖），
 //! JSON Schema 输出用 schemars，取值枚举用 strum。
-//! 文件：cwd 下 `winterjs.toml` / `winterjs.json` / `winterjs.ini` / `winterjs.yaml`
+//! 文件：cwd 下 `winterjs2.toml` / `winterjs2.json` / `winterjs2.ini` / `winterjs2.yaml`
 //! （config 按扩展名探测，缺省不存在也可；yaml 特性 2026-09-10 经纯度审计启用）。
-//! 环境变量嵌套键用 `__` 分隔，如 `WINTERJS_LOG__FILTER=debug`。
+//! 环境变量嵌套键用 `__` 分隔，如 `WINTERJS2_LOG__FILTER=debug`。
 
 use std::path::PathBuf;
 
@@ -19,7 +19,7 @@ pub struct Settings {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct LogSettings {
-    /// EnvFilter 语法（如 `winterjs=debug,tokio=info`）；未设置时按 `-v` 计数
+    /// EnvFilter 语法（如 `winterjs2=debug,tokio=info`）；未设置时按 `-v` 计数
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
     /// 终端着色策略
@@ -41,11 +41,11 @@ pub enum ColorChoice {
 }
 
 /// 日志运行时的直读变量（`logging.rs` 直接读，不经 config）；见 `Settings::load`。
-const RUNTIME_LOG_VARS: &[&str] = &["WINTERJS_LOG", "WINTERJS_LOG_FILE"];
+const RUNTIME_LOG_VARS: &[&str] = &["WINTERJS2_LOG", "WINTERJS2_LOG_FILE"];
 
 impl Settings {
     pub fn load() -> Result<Self, config::ConfigError> {
-        // §4.10：`WINTERJS_LOG` / `WINTERJS_LOG_FILE` 是日志运行时的直读变量，
+        // §4.10：`WINTERJS2_LOG` / `WINTERJS2_LOG_FILE` 是日志运行时的直读变量，
         // 按前缀规则会被 config 误收进 `log` 表导致反序列化失败；加载期间暂存移出，完后恢复
         let stash: Vec<(String, std::ffi::OsString)> = RUNTIME_LOG_VARS
             .iter()
@@ -56,9 +56,9 @@ impl Settings {
             unsafe { std::env::remove_var(k) };
         }
         let built = Config::builder()
-            .add_source(File::with_name("winterjs").required(false))
+            .add_source(File::with_name("winterjs2").required(false))
             // 显式 prefix_separator("_")：config 会把 prefix 分隔符默认成 separator（"__"），
-            // 不显式给的话 WINTERJS_ 前缀永远匹配不上（WINTERJS__LOG__COLOR 才行）
+            // 不显式给的话 WINTERJS2_ 前缀永远匹配不上（WINTERJS2__LOG__COLOR 才行）
             .add_source(
                 Environment::with_prefix("WINTERJS")
                     .prefix_separator("_")

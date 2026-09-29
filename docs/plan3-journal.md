@@ -885,3 +885,15 @@ G1/G2/G3/G9 已收官。）
 - 验证：脚本新 invocation 重跑 29/29 + 53/53 零 diff（幂等成立）；`touch repl_doc.rs`
   重编（4.233）；`.doc fetch/Bun.serve/Deno.readFile/WinterJS.image.decode` 四路全中；
   repl 45/45 + 全量 strict **847/847** + 冒烟 5/5 + `check-lines` ok。
+
+## 2026-09-30 docs(site)：WinterJS sys 一行拆 12 行独立表示 + 独立 sample
+
+- 用户指认 `api-winterjs-sys` 把 shell/hex/time/retry/graph/git/oauth/transpile/log/
+  mime/cookie/httpdate 12 个模块挤在一行——中英 `api-*.luoli` 各拆 12 行
+  （`api-winterjs-<name>` 独立锚点/说明）+ `sample/wsys/<name>.js` 12 个独立样例
+  （双语头、全离线；`basics.js` 已 `git rm`）。
+- 联动：`app.luoli navWjs` 1 锚点补 12 个（侧栏按钮走 `data-anchor`，行列双向对上）；
+  中英 id 集合 diff 一致。
+- 验证：12 样例 `--run` 行行 true；`check-luoli.js` 8 页全 ok（coffeescript 装
+  `~/wjs-data/luoli-mod`，不进仓）；余下同类堆叠行（utils/cover/net/proc/conc/os/ev）
+  未动，后续同 pattern 跟进。

@@ -4,6 +4,7 @@ import { estimateTimeline, Timeline } from "./timeline";
 import { FPS, H, W } from "./theme";
 import { Promo } from "./Video";
 import { CastPreview } from "./components/CastPreview";
+import { Cover } from "./Cover";
 
 export type PromoProps = {
   timeline: Timeline | null;
@@ -33,6 +34,7 @@ const calculateMetadata: CalculateMetadataFunction<PromoProps> = async () => {
 
 export const RemotionRoot: React.FC = () => (
   <>
+  <Composition id="Cover" component={Cover} width={1920} height={1200} fps={FPS} durationInFrames={1} />
   <Composition
     id="CastPreview"
     component={CastPreview}

@@ -154,6 +154,7 @@ pub const SOURCE: &str = concat!(
     include_str!("crypto_hash.js"),
     include_str!("crypto_cipher.js"),
     include_str!("crypto_keys.js"),
+    include_str!("crypto_keys_asymmetrickeyobject.js"),
     include_str!("crypto_ec.js"),
     include_str!("crypto_ec_derivepublic.js"),
     include_str!("crypto_sign.js"),

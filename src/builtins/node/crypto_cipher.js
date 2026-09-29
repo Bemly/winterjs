@@ -125,6 +125,37 @@ function __badState() {
 function __unsupportedState() {
   throw new Error("Trying to add data in unsupported state");
 }
+// Cipher/Decipher 输出编码门（node lib/internal/crypto/cipher.js getDecoder 口径）：
+// 首个非 buffer 输出编码粘住（'utf-8' 归一为 'utf8'），再换即
+// ERR_INVALID_ARG_VALUE（`cannot be changed from 'xxx'`）；未知编码即
+// ERR_UNKNOWN_ENCODING；'buffer'/缺省不粘、直回 Buffer。
+function __normCipherEnc(enc) {
+  const s = String(enc).toLowerCase();
+  if (s === "utf8" || s === "utf-8") return "utf8";
+  if (s === "utf16le" || s === "utf-16le" || s === "ucs2" || s === "ucs-2") return "utf16le";
+  if (s === "latin1" || s === "binary") return "latin1";
+  if (s === "ascii" || s === "base64" || s === "base64url" || s === "hex") return s;
+  return undefined;
+}
+function __cipherOut(inst, u8, outputEncoding) {
+  const b = Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength);
+  if (outputEncoding === undefined || outputEncoding === "buffer") return b;
+  const norm = __normCipherEnc(outputEncoding);
+  if (norm === undefined) {
+    const err = new TypeError(`Unknown encoding: ${outputEncoding}`);
+    err.code = "ERR_UNKNOWN_ENCODING";
+    throw err;
+  }
+  if (inst.__decoder === null || inst.__decoder === undefined) {
+    inst.__decoder = norm;
+  } else if (inst.__decoder !== norm) {
+    const err = new TypeError(
+      `The argument 'outputEncoding' cannot be changed from '${inst.__decoder}'. Received '${outputEncoding}'`);
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  return b.toString(norm);
+}
 
 class CipherivImpl {
   constructor(cipher, key, iv, options) {
@@ -135,6 +166,7 @@ class CipherivImpl {
     this.__aadDone = false;
     this.__tag = null;
     this.__finalized = false;
+    this.__decoder = null;
     this.__autoPad = !(options && options.autoPadding === false);
     if (info.family === "cbc" || info.family === "ctr" || info.family === "ecb") {
       this.__id = Number(__cryptCall(() =>
@@ -194,7 +226,7 @@ class CipherivImpl {
       this.__parts.push(bytes);
       out = new Uint8Array(0);
     }
-    return __outBuf(out, outputEncoding);
+    return __cipherOut(this, out, outputEncoding);
   }
   final(outputEncoding) {
     if (this.__finalized) __badState();
@@ -225,7 +257,7 @@ class CipherivImpl {
       out = tagged.slice(0, tagged.length - 16);
       this.__tag = Buffer.from(tagged.slice(tagged.length - 16));
     }
-    return __outBuf(out, outputEncoding);
+    return __cipherOut(this, out, outputEncoding);
   }
   // 10f crypto首轮：最小流式鸭子面（同 HashImpl 记档）。
   // 注意 Cipher/Decipher 系 update 即增量吐块（CBC/CTR 真流式），end 须拼
@@ -258,6 +290,7 @@ class DecipherivImpl {
     this.__aad = null;
     this.__tag = null;
     this.__finalized = false;
+    this.__decoder = null;
     this.__autoPad = !(options && options.autoPadding === false);
     if (info.family === "cbc" || info.family === "ctr" || info.family === "ecb") {
       this.__id = Number(__cryptCall(() =>
@@ -329,7 +362,7 @@ class DecipherivImpl {
       this.__parts.push(bytes);
       out = new Uint8Array(0);
     }
-    return __outBuf(out, outputEncoding);
+    return __cipherOut(this, out, outputEncoding);
   }
   final(outputEncoding) {
     if (this.__finalized) __badState();
@@ -370,7 +403,7 @@ class DecipherivImpl {
       out = __cryptCall(() => __wjs_cipher_chacha(
         0, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), ct, this.__tag));
     }
-    return __outBuf(out, outputEncoding);
+    return __cipherOut(this, out, outputEncoding);
   }
   // 10f crypto首轮：最小流式鸭子面（同 HashImpl 记档）。
   write(chunk, inputEncoding) { this.update(chunk, inputEncoding); return true; }

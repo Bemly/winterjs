@@ -4281,3 +4281,16 @@
 - 推广铁律：**标量切片重解释（f32/u16/i16↔u8）一律走 `bytemuck::cast_slice`，
   禁手写 `from_raw_parts` + 裸指针强转**；凡在锁内已有的纯 Rust 轮子，直引即零成本，
   不要为"省一个直接依赖"造业务层 unsafe。
+
+### 4.237 单例头表勿凭名字猜，须逐行对 matchKnownFields 前缀（2026-09-30，P3-http）
+
+- 症状：`content-encoding`/`x-forwarded-host` 重复头被当单例首个赢，真机却是
+  `', '` 合并（`gzip, br` / `a, b`）。
+- 根因：`matchKnownFields` 以返回有无 `\u0000` 前缀区分单例/可合并——
+  `content-encoding`/`x-forwarded-host` 返回 `\u0000…`（joinable），仅 18 项无前缀
+  才是单例；旧表凭"看起来单值"手写，多收两项。
+- 修法：单例表删两项并注释列出 18 项来源；`~/wjs-data/probe/dup.mjs` 双侧对拍
+  （`authorization:1` 首个赢对照）。
+- 复现：raw socket 发双 `Content-Encoding` + 双 `X-Forwarded-Host`，修前丢第二个，
+  修后与真机同串。
+- 推广铁律：**移植 node 头表一律逐行对 `lib/` 原文前缀，不凭语义猜**（§4.115）。

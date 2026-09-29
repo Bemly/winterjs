@@ -165,11 +165,16 @@ function __afterSockFlush(stream, box, fn) {
 }
 // node _http_incoming.js matchKnownFields 无前缀单值表（重复头首个赢；
 // content-length 亦单值——重 CL 正常面由 HPE 门拒，lenient 下首个赢）。
+// node 26.8.2 matchKnownFields 单例 18 项（无前缀返回即首个赢）：
+// age/host/from/etag/server/referer/expires/location/user-agent/retry-after/
+// content-type/max-forwards/authorization/last-modified/content-length/
+// if-modified-since/proxy-authorization/if-unmodified-since。
+// 其余（含 content-encoding/x-forwarded-host/未知头）走 ', ' 合并（真机实测）。
 const __SINGLETON_HEADERS = new Set([
-  "age", "authorization", "content-encoding", "content-length", "content-type",
+  "age", "authorization", "content-length", "content-type",
   "etag", "expires", "from", "host", "if-modified-since", "if-unmodified-since",
   "last-modified", "location", "max-forwards", "proxy-authorization",
-  "referer", "retry-after", "server", "user-agent", "x-forwarded-host",
+  "referer", "retry-after", "server", "user-agent",
 ]);
 // __trunc：超限静默截断（node 客户端响应口径——lib/_http_common.js
 // parserOnHeaders "stop collecting"：maxHeaderPairs 上限后不再收集、

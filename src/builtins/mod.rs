@@ -294,6 +294,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs_cipher_new", Some(node::crypto::cipher_new), 5),
             ("__wjs_cipher_update", Some(node::crypto::cipher_update), 2),
             ("__wjs_cipher_final", Some(node::crypto::cipher_final), 1),
+            ("__wjs_cipher_set_autopad", Some(node::crypto::cipher_set_autopad), 2),
             ("__wjs_cipher_chacha", Some(node::crypto::cipher_chacha), 6),
             // 10e: AES-CCM oneshot（ccm 0.6 直引）
             ("__wjs_ccm_crypt", Some(node::crypto::ccm_crypt_native), 7),

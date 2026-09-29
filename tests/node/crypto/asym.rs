@@ -284,8 +284,8 @@ console.log("reimport", verify(null, Buffer.from("hello"), createPublicKey(priv2
 const jwkPriv = privateKey.export({ format: "jwk" });
 const priv3 = createPrivateKey({ key: jwkPriv, format: "jwk" });
 console.log("jwk-priv", verify(null, Buffer.from("hello"), createPublicKey(priv3), sig));
-// async 形态
-generateKeyPair("ed448", (e, pub, priv) => {
+// async 形态（真机口径：options 必给，二参省略即抛，见 keygen 77 行）
+generateKeyPair("ed448", {}, (e, pub, priv) => {
   console.log("async", e === null, pub.asymmetricKeyType === "ed448", priv.type === "private");
 });
 // 报错三件

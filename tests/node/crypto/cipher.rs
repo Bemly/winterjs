@@ -439,3 +439,104 @@ for (const len of [null, "", {}, [], true]) {
     dir.close().unwrap();
 }
 
+#[test]
+fn p2_crypto_cipher_setautopadding() {
+    // P2 crypto MISSING-EXCEPTION 轮：setAutoPadding 透传 + CbcEnc autopad +
+    // OSSL 错误 reason/码形 + GCM tag 长校验 + generateKey/keypair 头检
+    //（正常 + 报错 + 边界；node 真机 26.8.2 口径逐项实测）。
+    // UNSAFE-BOUNDARY 覆盖：`__wjs_cipher_set_autopad`（前置见定义注释）——
+    // panic 路径经公开 API 触发（double-final → ERR_CRYPTO_INVALID_STATE）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { createCipheriv, createDecipheriv, generateKeySync, generateKeyPairSync } from "node:crypto";
+const key = Buffer.alloc(32, 1), iv16 = Buffer.alloc(16, 2), iv12 = Buffer.alloc(12, 3);
+// 正常：默认填充回环
+{
+  const e = createCipheriv("aes-256-cbc", key, iv16);
+  const ct = Buffer.concat([e.update("hello world"), e.final()]);
+  const d = createDecipheriv("aes-256-cbc", key, iv16);
+  console.log("pad-rt", d.update(ct).toString() + d.final("utf8") === "hello world");
+}
+// 正常：构造后 setAutoPadding(false) + 整块回环（本轮根因：旧实现空转）
+{
+  const e = createCipheriv("aes-256-cbc", key, iv16);
+  e.setAutoPadding(false);
+  const pt = Buffer.alloc(32, 7);
+  const ct = Buffer.concat([e.update(pt), e.final()]);
+  const d = createDecipheriv("aes-256-cbc", key, iv16);
+  d.setAutoPadding(false);
+  console.log("nopad-rt", Buffer.concat([d.update(ct), d.final()]).equals(pt));
+}
+// 报错：enc 无填充非整块 → WRONG_FINAL_BLOCK_LENGTH（三件：message/code/reason）
+{
+  const e = createCipheriv("aes-256-cbc", key, iv16);
+  e.setAutoPadding(false);
+  e.update(Buffer.alloc(10));
+  try { e.final(); console.log("enc-nopad FAIL"); }
+  catch (err) { console.log("enc-nopad", err.code === "ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH" && /wrong final block length/i.test(err.message) && /wrong final block length/i.test(err.reason)); }
+}
+// 报错：dec 坏填充 → BAD_DECRYPT（与长度错区分）
+{
+  const d = createDecipheriv("aes-256-cbc", key, iv16);
+  d.update(Buffer.alloc(32, 9));
+  try { d.final(); console.log("dec-badpad FAIL"); }
+  catch (err) { console.log("dec-badpad", err.code === "ERR_OSSL_BAD_DECRYPT" && /bad decrypt/i.test(err.message)); }
+}
+// 报错：GCM 短 tag 无选项即 set → INVALID_AUTH_TAG；非法 tagLen 选项 → 同码
+{
+  const d = createDecipheriv("aes-256-gcm", key, iv12);
+  try { d.setAuthTag(Buffer.alloc(12)); console.log("gcm-tag FAIL"); }
+  catch (err) { console.log("gcm-tag", err.code === "ERR_CRYPTO_INVALID_AUTH_TAG"); }
+  try { createDecipheriv("aes-256-gcm", key, iv12, { authTagLength: 17 }); console.log("gcm-len FAIL"); }
+  catch (err) { console.log("gcm-len", err.code === "ERR_CRYPTO_INVALID_AUTH_TAG"); }
+  try { createCipheriv("aes-256-gcm", key, iv12, { authTagLength: 11 }); console.log("gcm-enc-len FAIL"); }
+  catch (err) { console.log("gcm-enc-len", err.code === "ERR_CRYPTO_INVALID_AUTH_TAG"); }
+}
+// 报错：generateKey 头检（type 非串 / options 非对象）
+{
+  try { generateKeySync(1, 1); console.log("gk-type FAIL"); }
+  catch (err) { console.log("gk-type", err.code === "ERR_INVALID_ARG_TYPE"); }
+  try { generateKeySync("aes", []); console.log("gk-opt FAIL"); }
+  catch (err) { console.log("gk-opt", err.code === "ERR_INVALID_ARG_TYPE"); }
+  const k = generateKeySync("hmac", { length: 123 });
+  console.log("gk-hmac", k.export().byteLength === 15);
+}
+// 报错：keypair 头检（未知串 / 非串 type）
+{
+  try { generateKeyPairSync("rsa2", {}); console.log("kp-type FAIL"); }
+  catch (err) { console.log("kp-type", err.code === "ERR_INVALID_ARG_VALUE"); }
+  try { generateKeyPairSync(0, {}); console.log("kp-nonstr FAIL"); }
+  catch (err) { console.log("kp-nonstr", err.code === "ERR_INVALID_ARG_TYPE"); }
+}
+// 边界：final 后 setAutoPadding → INVALID_STATE；double-final → INVALID_STATE（panic 路径）
+{
+  const e = createCipheriv("aes-256-cbc", key, iv16);
+  e.final();
+  try { e.setAutoPadding(true); console.log("late-autopad FAIL"); }
+  catch (err) { console.log("late-autopad", err.code === "ERR_CRYPTO_INVALID_STATE"); }
+  try { e.final(); console.log("dbl-final FAIL"); }
+  catch (err) { console.log("dbl-final", err.code === "ERR_CRYPTO_INVALID_STATE"); }
+}
+"#,
+    );
+    assert!(out.contains("pad-rt true"), "out: {out}");
+    assert!(out.contains("nopad-rt true"), "out: {out}");
+    assert!(out.contains("enc-nopad true"), "out: {out}");
+    assert!(out.contains("dec-badpad true"), "out: {out}");
+    assert!(out.contains("gcm-tag true"), "out: {out}");
+    assert!(out.contains("gcm-len true"), "out: {out}");
+    assert!(out.contains("gcm-enc-len true"), "out: {out}");
+    assert!(out.contains("gk-type true"), "out: {out}");
+    assert!(out.contains("gk-opt true"), "out: {out}");
+    assert!(out.contains("gk-hmac true"), "out: {out}");
+    assert!(out.contains("kp-type true"), "out: {out}");
+    assert!(out.contains("kp-nonstr true"), "out: {out}");
+    assert!(out.contains("late-autopad true"), "out: {out}");
+    assert!(out.contains("dbl-final true"), "out: {out}");
+    assert!(!out.contains("FAIL"), "out: {out}");
+    dir.close().unwrap();
+}
+

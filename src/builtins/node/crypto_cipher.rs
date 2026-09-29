@@ -83,7 +83,7 @@ impl CtrJob for CtrX {
 }
 
 enum CipherJob {
-    CbcEnc { job: Box<dyn CbcEncJob>, pending: Vec<u8>, block: usize },
+    CbcEnc { job: Box<dyn CbcEncJob>, pending: Vec<u8>, block: usize, autopad: bool },
     CbcDec { job: Box<dyn CbcDecJob>, pending: Vec<u8>, block: usize, autopad: bool },
     Ctr { job: Box<dyn CtrJob> },
     // 10f crypto首轮：ECB（`aes` 轮子已在树内；填充由 final 处理，解密 autopad 扣尾块）。
@@ -230,6 +230,7 @@ pub unsafe extern "C" fn cipher_new(
                     job: Box::new(CbcE(<cbc::Encryptor<$e>>::new(&ke, &ive))),
                     pending: Vec::new(),
                     block,
+                    autopad,
                 }
             } else {
                 CipherJob::CbcDec {
@@ -321,7 +322,7 @@ pub unsafe extern "C" fn cipher_update(
             return None;
         };
         Some(match job {
-            CipherJob::CbcEnc { job, pending, block } => {
+            CipherJob::CbcEnc { job, pending, block, .. } => {
                 pending.extend_from_slice(&data);
                 let n = pending.len() / *block * *block;
                 let mut chunk: Vec<u8> = pending.drain(..n).collect();
@@ -379,10 +380,18 @@ pub unsafe extern "C" fn cipher_final(
     };
     let out: Option<Result<Vec<u8>, String>> = CIPHERS.with(|m| {
         m.borrow_mut().remove(&id).map(|mut job| match &mut job {
-            CipherJob::CbcEnc { job, pending, block } => {
-                let mut chunk = pkcs7_pad(*block, std::mem::take(pending));
-                job.enc_blocks(&mut chunk);
-                Ok(chunk)
+            CipherJob::CbcEnc { job, pending, block, autopad } => {
+                if *autopad {
+                    let mut chunk = pkcs7_pad(*block, std::mem::take(pending));
+                    job.enc_blocks(&mut chunk);
+                    Ok(chunk)
+                } else if pending.len() % *block == 0 {
+                    let mut chunk = std::mem::take(pending);
+                    job.enc_blocks(&mut chunk);
+                    Ok(chunk)
+                } else {
+                    Err("ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: wrong final block length".into())
+                }
             }
             CipherJob::CbcDec { job, pending, block, autopad } => {
                 if pending.len() % *block != 0 || (*autopad && pending.is_empty()) {
@@ -391,8 +400,9 @@ pub unsafe extern "C" fn cipher_final(
                 let mut chunk = std::mem::take(pending);
                 job.dec_blocks(&mut chunk);
                 if *autopad {
+                    // 填充内容坏（非长度问题）→ 真机口径 BAD_DECRYPT（与长度错区分，见套件 109 行）。
                     pkcs7_unpad(*block, &chunk).ok_or_else(|| {
-                        "ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: wrong final block length".to_string()
+                        "ERR_OSSL_BAD_DECRYPT: bad decrypt".to_string()
                     })
                 } else {
                     Ok(chunk)
@@ -418,7 +428,7 @@ pub unsafe extern "C" fn cipher_final(
                     ecb_blocks(*kind, key, false, &mut chunk);
                     if *autopad {
                         pkcs7_unpad(16, &chunk).ok_or_else(|| {
-                            "ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: wrong final block length".to_string()
+                            "ERR_OSSL_BAD_DECRYPT: bad decrypt".to_string()
                         })
                     } else {
                         Ok(chunk)
@@ -438,6 +448,50 @@ pub unsafe extern "C" fn cipher_final(
             false
         }
     }
+}
+
+/// `__wjs_cipher_set_autopad(idStr, flagNum)` → undefined（原位改 flag，不消费句柄）。
+/// UNSAFE-BOUNDARY：前置条件 = 引擎回调提供的 raw cx 有效 + `Frame::from_raw(vp, argc)`
+/// 的调用约定成立（与本文件其余 cipher 系 natives 同）；覆盖测试
+/// `tests/node/crypto/cipher.rs::p2_crypto_cipher_setautopadding`（含非法 id 的
+/// panic 路径用例：`ERR_CRYPTO_INVALID_STATE`）。
+pub unsafe extern "C" fn cipher_set_autopad(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(id) = arg_id(&frame, 0, "cipher set autopad", &mut cx) else {
+        return false;
+    };
+    let flag = !(frame.argc() > 1 && frame.arg(1).is_number() && frame.arg(1).to_number() == 0.0);
+    let found = CIPHERS.with(|m| {
+        let mut m = m.borrow_mut();
+        match m.get_mut(&id) {
+            Some(CipherJob::CbcEnc { autopad, .. }) => {
+                *autopad = flag;
+                true
+            }
+            Some(CipherJob::CbcDec { autopad, .. }) => {
+                *autopad = flag;
+                true
+            }
+            Some(CipherJob::Ecb { autopad, .. }) => {
+                *autopad = flag;
+                true
+            }
+            Some(CipherJob::Ctr { .. }) => true,
+            None => false,
+        }
+    });
+    if !found {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_STATE: Invalid state");
+        return false;
+    }
+    frame.set_rval(mozjs::jsval::UndefinedValue());
+    true
 }
 
 /// `__wjs_cipher_chacha(encNum, keyU8, nonceU8, aadOrNull, dataU8, tagOrNull)`：

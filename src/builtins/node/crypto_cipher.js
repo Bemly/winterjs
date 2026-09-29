@@ -97,6 +97,26 @@ function __ccmTagLen(info, options) {
   }
   return tl;
 }
+// GCM tag 长（真机 26.8.2 实测）：缺省 16；有效集 {4,8,12,13,14,15,16}；
+// 非整数 → ERR_INVALID_ARG_VALUE（Received inspect 形），整数越界 →
+// ERR_CRYPTO_INVALID_AUTH_TAG（`Invalid authentication tag length: N`）。
+const __GCM_TAG_LENS = new Set([4, 8, 12, 13, 14, 15, 16]);
+function __gcmTagLen(options) {
+  const v = options ? options.authTagLength : undefined;
+  if (v === undefined) return 16;
+  if (!Number.isInteger(v)) {
+    const err = new TypeError(
+      `The property 'options.authTagLength' is invalid. Received ${typeof v === "string" ? `'${v}'` : String(v)}`);
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  if (!__GCM_TAG_LENS.has(v)) {
+    const err = new TypeError(`Invalid authentication tag length: ${v}`);
+    err.code = "ERR_CRYPTO_INVALID_AUTH_TAG";
+    throw err;
+  }
+  return v;
+}
 function __badState() {
   const err = new Error("Invalid state");
   err.code = "ERR_CRYPTO_INVALID_STATE";
@@ -115,9 +135,10 @@ class CipherivImpl {
     this.__aadDone = false;
     this.__tag = null;
     this.__finalized = false;
+    this.__autoPad = !(options && options.autoPadding === false);
     if (info.family === "cbc" || info.family === "ctr" || info.family === "ecb") {
       this.__id = Number(__cryptCall(() =>
-        __wjs_cipher_new(info.name, kb, ivb, 1, options && options.autoPadding === false ? 0 : 1)));
+        __wjs_cipher_new(info.name, kb, ivb, 1, this.__autoPad ? 1 : 0)));
       this.__parts = null;
     } else {
       // AEAD 无流式：buffered，final 时 oneshot（头注记档）
@@ -126,7 +147,8 @@ class CipherivImpl {
       this.__key = kb;
       this.__iv = ivb;
       // 10e CCM：authTagLength 必给（真机缺省即 ERR_CRYPTO_INVALID_AUTH_TAG）
-      this.__tagLen = info.family === "ccm" ? __ccmTagLen(info, options) : 16;
+      this.__tagLen = info.family === "ccm" ? __ccmTagLen(info, options)
+        : info.family === "gcm" ? __gcmTagLen(options) : 16;
     }
   }
   setAAD(aad, options) {
@@ -146,9 +168,11 @@ class CipherivImpl {
     return this;
   }
   setAutoPadding(autoPad) {
+    this.__autoPad = !!autoPad;
     if (this.__id !== null) {
-      // CBC native 侧创建期已定；此处仅守卫时序（final 后调即错，Node 同款）
+      // final 后调即错（Node 同款时序守卫），余者透传 native 改 flag。
       if (this.__finalized) __badState();
+      __cryptCall(() => __wjs_cipher_set_autopad(String(this.__id), this.__autoPad ? 1 : 0));
     }
     return this;
   }
@@ -184,7 +208,8 @@ class CipherivImpl {
       const tagged = __cryptCall(() =>
         __wjs_gcm_anyiv(1, this.__key, this.__iv, this.__aad ?? new Uint8Array(0), pt));
       out = tagged.slice(0, tagged.length - 16);
-      this.__tag = Buffer.from(tagged.slice(tagged.length - 16));
+      // 短 tag 取前导字节（GCM 截断口径；16 时与旧切片恒等）。
+      this.__tag = Buffer.from(tagged.slice(tagged.length - 16, tagged.length - 16 + this.__tagLen));
     } else if (this.__info.family === "ccm") {
       // 10e CCM：tag 长按实例 authTagLength 切分
       const pt = __joinParts(this.__parts);
@@ -244,7 +269,8 @@ class DecipherivImpl {
       this.__key = kb;
       this.__iv = ivb;
       // 10e CCM：解密侧同样必给 authTagLength（真机口径）
-      this.__tagLen = info.family === "ccm" ? __ccmTagLen(info, options) : 16;
+      this.__tagLen = info.family === "ccm" ? __ccmTagLen(info, options)
+        : info.family === "gcm" ? __gcmTagLen(options) : 16;
     }
   }
   setAAD(aad, options) {
@@ -269,12 +295,21 @@ class DecipherivImpl {
       err.code = "ERR_CRYPTO_INVALID_AUTH_TAG";
       throw err;
     }
+    // GCM：tag 长在 set 时即校验实例长度（真机 C++ 层口径；缺省 16）。
+    if (this.__info.family === "gcm" && tb.length !== this.__tagLen) {
+      const err = new TypeError(`Invalid authentication tag length: ${tb.length}`);
+      err.code = "ERR_CRYPTO_INVALID_AUTH_TAG";
+      throw err;
+    }
     this.__tag = tb;
     return this;
   }
   setAutoPadding(autoPad) {
     if (this.__finalized) __badState();
     this.__autoPad = !!autoPad;
+    if (this.__id !== null) {
+      __cryptCall(() => __wjs_cipher_set_autopad(String(this.__id), this.__autoPad ? 1 : 0));
+    }
     return this;
   }
   update(data, inputEncoding, outputEncoding) {
@@ -304,10 +339,10 @@ class DecipherivImpl {
       out = __cryptCall(() => __wjs_cipher_final(String(this.__id)));
     } else if (this.__info.family === "gcm") {
       const ct = __joinParts(this.__parts);
-      if (this.__tag === null || this.__tag.length !== 16) {
+      if (this.__tag === null || this.__tag.length !== this.__tagLen) {
         throw new Error("Unsupported state or unable to authenticate data");
       }
-      const input = new Uint8Array(ct.length + 16);
+      const input = new Uint8Array(ct.length + this.__tagLen);
       input.set(ct, 0); input.set(this.__tag, ct.length);
       try {
         // 10e-2：经 anyiv（iv 非空已在构造期校验）

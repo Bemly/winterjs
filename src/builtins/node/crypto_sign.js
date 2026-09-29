@@ -1,8 +1,9 @@
 export function generateKeyPair(type, options, ...rest) {
-  // 真机口径：generateKeyPair(type, callback) 二参合法（10e 修）。
+  // 真机 26.8.2 实测：二参（无 options）即抛 options-must-be-object（`Received undefined`），
+  // 不默认 {}（旧 10e“二参合法”注释按 4.65 翻转，以实测为准）。
   if (typeof options === "function") {
     rest = [options, ...rest];
-    options = {};
+    options = undefined;
   }
   let cb = rest.find((a) => typeof a === "function");
   let pubEnc, privEnc;
@@ -17,6 +18,22 @@ export function generateKeyPair(type, options, ...rest) {
     const err = new TypeError("generateKeyPair requires a callback for async form (use Sync variant otherwise)");
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
+  }
+  // 真机口径：type/options 同步抛（callback 不背锅），见 keygen 67/86 行。
+  // 注意 async 口径 options 不容 undefined（sync 才容，见 generateKeyPairSync 归一）。
+  if (options === undefined) {
+    const err = new TypeError('The "options" argument must be of type object. Received undefined');
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  __checkKeyPairHead(type, options);
+  __checkKeyPairTypeKnown(type);
+  if (typeof options === "object" && options !== null) {
+    __checkKeyPairEncs(type, options, options.publicKeyEncoding, options.privateKeyEncoding);
+  }
+  // RSA 参数同步预检（async 口径同样同步抛，见 keygen 303 行）。
+  if ((type === "rsa" || type === "rsa-pss") && typeof options === "object" && options !== null) {
+    __checkRsaKeyOptions(options);
   }
   queueMicrotask(() => {
     try {

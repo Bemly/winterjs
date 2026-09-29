@@ -1,27 +1,72 @@
-export function generateKey(options, ...rest) {
-  const cb = rest.find((a) => typeof a === "function");
-  if (typeof cb !== "function") {
-    const err = new TypeError("generateKey requires a callback for async form");
+function __genKeyType(type) {
+  if (typeof type !== "string") {
+    const err = new TypeError(
+      `The "type" argument must be of type string. Received type ${type === null ? "null" : typeof type} (${String(type)})`);
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
-  queueMicrotask(() => {
-    try {
-      const len = options?.length ?? 32;
-      cb(null, createSecretKey(randomBytes(len)));
-    } catch (e) {
-      cb(e);
+  if (type !== "hmac" && type !== "aes") {
+    const err = new TypeError(`The argument 'type' must be a supported key type. Received '${type}'`);
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  return type;
+}
+function __genKeyLength(type, options) {
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    // 真机口径：数组亦拒（`Received an instance of Array`）。
+    const recv = options === null ? "null"
+      : Array.isArray(options) ? "an instance of Array"
+      : `type ${typeof options} (${String(options)})`;
+    const err = new TypeError(`The "options" argument must be of type object. Received ${recv}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  const len = options.length;
+  if (type === "aes") {
+    if (len !== 128 && len !== 192 && len !== 256) {
+      const err = new TypeError(
+        `The property 'options.length' must be one of: 128, 192, 256. Received ${String(len)}`);
+      err.code = "ERR_INVALID_ARG_VALUE";
+      throw err;
     }
+    return len / 8;
+  }
+  // hmac：长度按位计，落盘 floor(len/8) 字节（真机 123→15）；aes 按位/8（128/192/256）。
+  if (!Number.isInteger(len)) {
+    const err = new TypeError(
+      `The "options.length" property must be of type number. Received ${String(len)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (len < 8 || len > 2147483647) {
+    const err = new RangeError(
+      `The value of "options.length" is out of range. It must be >= 8 && <= 2147483647. Received ${len}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  return type === "aes" ? len / 8 : Math.floor(len / 8);
+}
+export function generateKey(type, options, callback) {
+  const cb = typeof callback === "function" ? callback
+    : typeof options === "function" ? options : undefined;
+  if (typeof cb !== "function") {
+    const err = new TypeError(
+      `The "callback" argument must be of type function. Received ${callback === undefined ? "undefined" : typeof callback}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  // 真机口径：type/options 校验同步抛（callback 不背锅），生成本身排队。
+  const t = __genKeyType(type);
+  const n = __genKeyLength(t, options);
+  queueMicrotask(() => {
+    cb(null, createSecretKey(randomBytes(n)));
   });
 }
-export function generateKeySync(options) {
-  const len = options?.length ?? 32;
-  if (!Number.isInteger(len) || len <= 0) {
-    const err = new TypeError("generateKey length must be a positive integer");
-    err.code = "ERR_INVALID_ARG_TYPE";
-    throw err;
-  }
-  return createSecretKey(randomBytes(len));
+export function generateKeySync(type, options) {
+  const t = __genKeyType(type);
+  const n = __genKeyLength(t, options);
+  return createSecretKey(randomBytes(n));
 }
 export const constants = {
   RSA_PKCS1_PADDING: 1, RSA_SSLV23_PADDING: 2, RSA_NO_PADDING: 3,

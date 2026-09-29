@@ -5,6 +5,9 @@ function __cryptErr(e) {
   const rest = m.replace(/^[A-Z][A-Z0-9_]*: /, "");
   const err = new Error(rest || code);
   err.code = code;
+  // 真机 OpenSSL 系错误恒带 `reason`（与 message 同文案，node 口径）；
+  // 非 OSSL 码（ERR_CRYPTO_*/ERR_INVALID_ARG_TYPE 等）维持原形状。
+  if (code.startsWith("ERR_OSSL_")) err.reason = rest || code;
   throw err;
 }
 function __cryptCall(fn) {

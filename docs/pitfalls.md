@@ -4251,6 +4251,19 @@
 - 推广铁律：**无校验的部署链等于没有门**；前端 DSL 进仓即配校验脚本，
   今后推站前先等 Actions（用户令）再看站。
 
+### 4.236 async 形态的参数校验必须同步抛（2026-09-29，P2-crypto）
+
+- 症状：`generateKeyPair(type, badOptions, mustNotCall())` 不抛——校验写在
+  `queueMicrotask` 回调里，`assert.throws` 抓不到同步异常（MISSING-EXCEPTION 簇）。
+- 根因：真机口径是"校验同步抛、生成才排队"（实测 `generateKey('hmac',{length:-1},cb)`
+  为同步 `ERR_OUT_OF_RANGE`，callback 根本不背锅）；旧实现把校验和生成一起丢进 microtask。
+- 修法：入口先跑全套同步头检（type/options/编码形/算法参数；`__checkKeyPairHead/
+  TypeKnown/Encs/RsaKeyOptions`），再 `queueMicrotask` 只做生成。sync/async 双入口
+  共用同一套校验函数（`__genPairSync` 内再检一次防直调）。
+- 复现：keygen 67/86/303 行（async 校验三连）；改后 sync/async 同形全过。
+- 推广铁律：**凡 async 双形态 API，参数校验一律同步抛，microtask 内只留必成功的体力活**；
+  写 async 包装时先问"校验在哪"——在回调里即错。
+
 ### 4.235 业务层 f32→u8 重解释禁手写 from_raw_parts（2026-09-29，media 轮）
 
 - 症状：`src/builtins/media.rs set_rval_f32` 用

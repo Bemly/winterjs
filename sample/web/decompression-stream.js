@@ -1,6 +1,6 @@
-// CompressionStream / DecompressionStream round-trip (gzip + deflate + zstd).
-// 压缩/解压流往返（gzip + deflate + zstd，zstd 为 winterjs 扩展，由 ruzstd 提供）。
-// Run / 运行: winterjs --run sample/web/compression.js
+// DecompressionStream: streaming decompression round-trip.
+// DecompressionStream：流式解压往返。
+// Run / 运行: winterjs --run sample/web/decompression-stream.js
 async function roundtrip(format, text) {
   const cs = new CompressionStream(format);
   const writer = cs.writable.getWriter();
@@ -23,9 +23,8 @@ async function roundtrip(format, text) {
   for await (const chunk of ds.readable) out += new TextDecoder().decode(chunk);
   return out;
 }
-
 const src = 'hello compression '.repeat(20);
-console.log('[compression] gzip ok:', (await roundtrip('gzip', src)) === src);
-console.log('[compression] deflate ok:', (await roundtrip('deflate', src)) === src);
-console.log('[compression] zstd ok:', (await roundtrip('zstd', src)) === src);
-console.log('[compression] ns:', WinterJS.CompressionStream === CompressionStream, WinterJS.DecompressionStream === DecompressionStream);
+console.log('[decompression-stream] gzip ok:', (await roundtrip('gzip', src)) === src);
+console.log('[decompression-stream] deflate ok:', (await roundtrip('deflate', src)) === src);
+console.log('[decompression-stream] zstd ok:', (await roundtrip('zstd', src)) === src);
+console.log('[decompression-stream] ns:', WinterJS.DecompressionStream === DecompressionStream);

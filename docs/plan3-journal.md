@@ -874,3 +874,14 @@ G1/G2/G3/G9 已收官。）
 - 行数：keys 1025/ec 1016 超限 → `split-js.py` 切片（909+116 / 942+74，字节恒等，
   一文件一提交，域测试绿）。
 - 验证：crypto 域 62/62 strict + 冒烟 5/5 + `check-lines` ok。
+
+## 2026-09-30 chore：语料五目录并入 `content/`（用户点名根目录乱）
+
+- 布局（用户拍板）：`content/{bun,deno,mdn,winterjs,ns-dts}/`（mdn 内 `files/en-us`
+  不动；`vendor/` 消失；历史 pitfalls/journal 旧路径不动）。
+- 两提交：①纯搬移（`git mv`，字节不动）；②接线（`repl_doc.rs` 4 处 `include_dir!`+
+  注释、`gen-ns-docs.py` 用法 + `out/ns.lower()`、`ns-dts/README` 再生命令、
+  bun/deno `ATTRIBUTION.md` 源路径、`repl_complete.rs` 注释）。
+- 验证：脚本新 invocation 重跑 29/29 + 53/53 零 diff（幂等成立）；`touch repl_doc.rs`
+  重编（4.233）；`.doc fetch/Bun.serve/Deno.readFile/WinterJS.image.decode` 四路全中；
+  repl 45/45 + 全量 strict **847/847** + 冒烟 5/5 + `check-lines` ok。

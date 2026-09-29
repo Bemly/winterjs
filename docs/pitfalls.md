@@ -4326,3 +4326,17 @@
   全坏向量 `argon2bad2.mjs` 双侧 9/9 同码；`run1.sh test-crypto-argon2.js` 0。
 - 推广铁律：**KDF/密钥系 async 包装先问"校验在哪"（4.236）；区间门前先拦
   `undefined`（NaN 会偷渡错码）；文案/分码一律真机逐项实测，不凭记忆拼**。
+
+### 4.240 Cipher 系输出编码门缺失：首编码粘住 + 未知即抛（2026-09-30，P2-crypto）
+
+- 症状：`test-crypto-encoding-validation-error` 四断言全 NO-THROW（换编码/final
+  异编码/坏编码名全吞）。
+- 根因：`__outBuf`（hash 侧复用）未知编码吞回 Buffer，而 cipher 真机口径是独立
+  `getDecoder` 状态机：首个非 buffer 输出编码粘住（`utf-8` 归一 `utf8`），再换即
+  `ERR_INVALID_ARG_VALUE`（`cannot be changed from 'utf8'`），未知即
+  `ERR_UNKNOWN_ENCODING`，`buffer`/缺省不粘。
+- 修法：cipher 侧新 `__cipherOut(inst,…)` + 实例 `__decoder`（Cipher/Decipher 四处
+  `update/final` 全换；hash 侧 `__outBuf` 不动——digest 真机即吞码口径，见既有记档）。
+- 复现：`probe/encval.mjs` 四项双侧同码；`run1.sh` 0。
+- 推广铁律：**同名辅助跨域复用先对真机口径**——hash 与 cipher 的"非法编码"语义
+  相反（吞 vs 抛），复用即错；新事件/状态门一律实例级存放，不放模块级。

@@ -361,6 +361,69 @@ function __parseKeyMaterial(key, format, type, want, options) {
       try { xBytes = __b64urlDec(key.x); } catch { badOkp(); }
       return new PublicKeyObject("public", kt, Buffer.from(xBytes));
     }
+    // 10f crypto六轮：PQC AKP JWK（`{kty:'AKP', alg:'ML-DSA-*/ML-KEM-*', priv, pub}`；
+    // 真机 26 口径：alg 错/缺 → INVALID_JWK 'Unsupported JWK AKP "alg"'；
+    // 料坏/长错/pub 不匹 → INVALID_JWK 'Invalid JWK AKP key'；无 priv 作私钥 →
+    // INVALID_JWK 'JWK does not contain private key material'）。
+    // 零新 native：种子形 PKCS#8 自拼 + 既有 seed_from_pkcs8 展开派生比对 pub。
+    if (key.kty === "AKP") {
+      const badAkp = () => {
+        const err = new TypeError("Invalid JWK AKP key");
+        err.code = "ERR_CRYPTO_INVALID_JWK";
+        throw err;
+      };
+      const noPriv = () => {
+        const err = new TypeError("JWK does not contain private key material");
+        err.code = "ERR_CRYPTO_INVALID_JWK";
+        throw err;
+      };
+      const algMap = {
+        "ML-DSA-44": "ml-dsa-44", "ML-DSA-65": "ml-dsa-65", "ML-DSA-87": "ml-dsa-87",
+        "ML-KEM-512": "ml-kem-512", "ML-KEM-768": "ml-kem-768", "ML-KEM-1024": "ml-kem-1024",
+      };
+      const kind = algMap[key.alg];
+      if (kind === undefined) {
+        const err = new TypeError('Unsupported JWK AKP "alg"');
+        err.code = "ERR_CRYPTO_INVALID_JWK";
+        throw err;
+      }
+      const set = __ML_SETS[kind];
+      const isKem = kind.startsWith("ml-kem-");
+      let seed, pub;
+      try {
+        if (key.priv !== undefined) {
+          if (typeof key.priv !== "string") badAkp();
+          seed = __b64urlDec(key.priv);
+        }
+        if (typeof key.pub !== "string") badAkp();
+        pub = __b64urlDec(key.pub);
+      } catch (e) { if (e && e.code) throw e; badAkp(); }
+      if (seed !== undefined && seed.length !== set[1]) badAkp();
+      if (pub.length !== set[2]) badAkp();
+      const oidB = Buffer.from(set[0], "hex");
+      if (seed === undefined) {
+        if (want === "private") noPriv();
+        const algSeq = __tlv(0x30, __tlv(0x06, oidB));
+        const bit = Buffer.concat([Buffer.from([0]), Buffer.from(pub)]);
+        const spki = Buffer.from(__tlv(0x30, Buffer.concat([Buffer.from(algSeq), Buffer.from(__tlv(0x03, bit))])));
+        return new PublicKeyObject("public", kind, spki);
+      }
+      const pkcs8 = Buffer.from(__tlv(0x30, Buffer.concat([
+        Buffer.from(__tlv(0x02, new Uint8Array([0]))),
+        Buffer.from(__tlv(0x30, __tlv(0x06, oidB))),
+        Buffer.from(__tlv(0x04, __tlv(0x80, Buffer.from(seed)))),
+      ])));
+      let info;
+      try {
+        info = JSON.parse(__cryptCall(() => (isKem
+          ? __wjs_mlkem_seed_from_pkcs8(pkcs8)
+          : __wjs_mldsa_seed_from_pkcs8(pkcs8))));
+      } catch { badAkp(); }
+      const spki = Buffer.from(info.spki, "base64");
+      if (!spki.subarray(spki.length - set[2]).equals(Buffer.from(pub))) badAkp();
+      if (want === "public") return new PublicKeyObject("public", kind, spki);
+      return new PrivateKeyObject("private", kind, pkcs8);
+    }
     const err = new TypeError("Unsupported JWK kty");
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
@@ -658,6 +721,10 @@ function __parseKeyMaterial(key, format, type, want, options) {
     return new PublicKeyObject("public", "rsa", Buffer.from(spki));
   }
   if (type === "pkcs8") {
+    // PBES2 DER 先解密（显式 pkcs8 + 口令 + 加密体嗅探；PEM 侧由标签触发见上）。
+    if (options?.passphrase !== undefined && __sniffPbes2(der)) {
+      der = __pbes2Decrypt(der, options);
+    }
     // 以 RSA/EC/OKP 逐一试解（DER 自描述不足，顺序即优先级；失败信息统一）
     const tries = [
       ["rsa-pss", () => {

@@ -4340,3 +4340,21 @@
 - 复现：`probe/encval.mjs` 四项双侧同码；`run1.sh` 0。
 - 推广铁律：**同名辅助跨域复用先对真机口径**——hash 与 cipher 的"非法编码"语义
   相反（吞 vs 抛），复用即错；新事件/状态门一律实例级存放，不放模块级。
+
+### 4.241 pkcs8 加密导出须走 PBES2 + AKP JWK + DER 嗅探三件套（2026-09-30，P2-crypto）
+
+- 症状：`test-crypto-pqc-encrypted-pkcs8` 三连败——①导出 `PRIVATE KEY` 明文/传统
+  PEM（真机 `ENCRYPTED PRIVATE KEY`）；② fixture JWK `Unsupported JWK kty`
+  （`AKP` 未实现）；③ 自家 DER 加密体导入 `Invalid PKCS#8`（DER 无标签不嗅探）。
+- 根因：pkcs8+口令导出误复传统 PEM 路径（那只属 pkcs1/sec1）+ DER 完全不走
+  cipher；AKP（`{kty,alg,priv,pub}`）是 PQC 新面；导入只认 PEM 标签。
+- 修法：新 `__pbes2Encrypt`（PBKDF2-SHA256/2048/8B 盐 + AES/DES + PRF 带 NULL，
+  与 `__pbes2Decrypt` 对称，fixture/OpenSSL 互解）；pkcs8 私钥 +cipher 的
+  der/pem 同走 PBES2（pem 标签 `ENCRYPTED PRIVATE KEY`；pkcs1/sec1 传统路径不动）；
+  AKP 分支（alg 表 6 集 + 种子形 PKCS#8 自拼 + 既有展开派生比对 pub，零新 native；
+  文案 `Unsupported JWK AKP "alg"`/`Invalid JWK AKP key`/无 priv 三形逐字对真机）；
+  DER 显式 pkcs8 + 口令 + PBES2 OID 嗅探先解密（`__sniffPbes2`）。
+- 复现：自回环 pem/der 双绿 + fixture 双绿 + 错口令 `ERR_OSSL_BAD_DECRYPT`
+  （与真机同码）；`run1.sh` 0。
+- 推广铁律：**加解密对必须同批落地验双向**（解密先行、导出后补是半拉子）；
+  新 `kty`/`alg` 面先查 fixture 再写码；DER 无标签面一律配嗅探，不只认显式 type。

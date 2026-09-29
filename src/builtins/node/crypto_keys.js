@@ -395,8 +395,67 @@ function __pbes2Decrypt(der, options) {
     __pemBadDecrypt();
   }
 }
-function __pemEncryptTraditional(der, label, options) {
-  const table = __pemCipherTable();
+// 10f crypto六轮 counterpart：PBES2 加密（EncryptedPrivateKeyInfo；PBKDF2-SHA256
+// 2048 次 + 8B 盐 + AES-CBC/DES-EDE3，`__pbes2Decrypt` 对称可解；OpenSSL fixture
+// 侧只认标准结构——PRF SEQ 带 NULL 与 openssl 同形）。
+function __pbes2Encrypt(der, cipherOpt, passphrase) {
+  const name = String(cipherOpt).toLowerCase();
+  const entry = name === "aes-128-cbc" ? { native: "aes-128-cbc", keyLen: 16, ivLen: 16, oid: "608648016503040102" }
+    : name === "aes-192-cbc" ? { native: "aes-192-cbc", keyLen: 24, ivLen: 16, oid: "608648016503040116" }
+    : name === "aes-256-cbc" ? { native: "aes-256-cbc", keyLen: 32, ivLen: 16, oid: "60864801650304012a" }
+    : name === "des-ede3-cbc" ? { native: "des-ede3-cbc", keyLen: 24, ivLen: 8, oid: "2a864886f70d0307" }
+    : null;
+  if (!entry) {
+    const err = new Error("Unknown cipher");
+    err.code = "ERR_CRYPTO_UNKNOWN_CIPHER";
+    throw err;
+  }
+  if (passphrase === undefined) __pemMissingPassphrase();
+  const passB = __pemPassBytes(passphrase);
+  const salt = __randFill(new Uint8Array(8));
+  const iter = 2048;
+  const key = Buffer.from(__cryptCall(() =>
+    __wjs_kdf_pbkdf2("SHA-256", Buffer.from(passB), Buffer.from(salt), iter, entry.keyLen)));
+  const iv = __randFill(new Uint8Array(entry.ivLen));
+  const id = Number(__cryptCall(() =>
+    __wjs_cipher_new(entry.native, key, Buffer.from(iv), 1, 1)));
+  const head = __cryptCall(() => __wjs_cipher_update(String(id), Buffer.from(der)));
+  const tail = __cryptCall(() => __wjs_cipher_final(String(id)));
+  const ct = Buffer.concat([Buffer.from(head), Buffer.from(tail)]);
+  const oid = (hex) => __tlv(0x06, Buffer.from(hex, "hex"));
+  const oct = (b) => __tlv(0x04, b);
+  const nul = __tlv(0x05, new Uint8Array(0));
+  const cat = (...parts) => {
+    let total = 0;
+    for (const p of parts) total += p.length;
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  };
+  const seq = (...parts) => __tlv(0x30, cat(...parts));
+  const iterB = new Uint8Array([iter >> 8, iter & 255]);
+  const prf = seq(oid("2a864886f70d0209"), nul);
+  const kdf = seq(oid("2a864886f70d01050c"), seq(oct(salt), __derInt(iterB), prf));
+  const enc = seq(oid(entry.oid), oct(iv));
+  const pbes2 = seq(oid("2a864886f70d01050d"), seq(kdf, enc));
+  return Buffer.from(__tlv(0x30, cat(pbes2, oct(ct))));
+}
+// EncryptedPrivateKeyInfo 嗅探（DER 显式 pkcs8 用；PEM 侧由标签触发——
+// der 无标签，显式 pkcs8 + 口令 + PBES2 OID 即先解密；结构不合即 false，
+// 落常 pkcs8 试解链）。
+function __sniffPbes2(der) {
+  try {
+    const top = __derRead(der, 0);
+    if (top.tag !== 0x30) return false;
+    const kids = __derChildren(top.body);
+    if (kids.length !== 2 || kids[0].tag !== 0x30 || kids[1].tag !== 0x04) return false;
+    const alg = __derChildren(kids[0].body);
+    if (alg.length !== 2 || alg[0].tag !== 0x06) return false;
+    return Buffer.from(alg[0].body).toString("hex") === "2a864886f70d01050d";
+  } catch { return false; }
+}
+function __pemEncryptTraditional(der, label, options) {  const table = __pemCipherTable();
   const c = table[String(options.cipher).toUpperCase()];
   if (!c) {
     const err = new Error("Unknown cipher");
@@ -809,12 +868,16 @@ class KeyObject {
     if (s.keyType === "rsa-pss") {
       der = __pssReattach(s.kind, der, s.detail);
     }
+    // pkcs8 私钥加密导出走 PBES2（EncryptedPrivateKeyInfo；传统口令 PEM 只属
+    // pkcs1/sec1 分支，见上；der/pem 同构，pem 标签为 ENCRYPTED PRIVATE KEY）。
+    if (s.kind === "private" && options?.cipher !== undefined &&
+        (format === "der" || format === "pem")) {
+      der = __pbes2Encrypt(der, options.cipher, options.passphrase);
+    }
     if (format === "der") return Buffer.from(der);
     if (format === "pem") {
-      // 10f crypto二轮：pkcs8 私钥加密导出（dsa-legacy 沿 label）。
       if (options.cipher !== undefined && s.kind === "private") {
-        const label = t === "pkcs1" ? "RSA PRIVATE KEY" : "PRIVATE KEY";
-        return __pemEncryptTraditional(der, label, options);
+        return __pemEncode("ENCRYPTED PRIVATE KEY", der);
       }
       const label = s.kind === "private" ? "PRIVATE KEY" : "PUBLIC KEY";
       return __pemEncode(label, der);

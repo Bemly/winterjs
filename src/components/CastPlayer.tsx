@@ -13,7 +13,9 @@ const cache = new Map<string, Cast>();
 export const CastPlayer: React.FC<{
   name: string; x: number; y: number; w: number; h: number;
   start?: number; speed?: number; title?: string; skip?: number;
-}> = ({ name, x, y, w, h, start = 0, speed = 1, title, skip = 0 }) => {
+  /** 分段变速：[[场景帧, 录像秒], ...]，给了就忽略 start/speed/skip。 */
+  map?: [number, number][];
+}> = ({ name, x, y, w, h, start = 0, speed = 1, title, skip = 0, map }) => {
   const f = useCurrentFrame();
   const { fps } = useVideoConfig();
   const [cast, setCast] = useState<Cast | null>(cache.get(name) ?? null);
@@ -30,7 +32,7 @@ export const CastPlayer: React.FC<{
   }, [name, cast, handle]);
 
   const pop = spring({ frame: f, fps, config: { damping: 14 } });
-  const t = skip + Math.max(0, (f - start) / fps) * speed;
+  const t = map ? mapTime(map, f) : skip + Math.max(0, (f - start) / fps) * speed;
   let snap: Snap | null = null;
   if (cast) {
     let lo = 0, hi = cast.snaps.length - 1, idx = -1;
@@ -92,3 +94,12 @@ export const CastPlayer: React.FC<{
 
 /** 录像时长（秒），供场景排布参考。 */
 export const castDuration = (c: Cast) => c.dur;
+
+function mapTime(map: [number, number][], f: number): number {
+  if (f <= map[0][0]) return map[0][1];
+  for (let i = 1; i < map.length; i++) {
+    const [f0, t0] = map[i - 1], [f1, t1] = map[i];
+    if (f <= f1) return t0 + ((f - f0) / (f1 - f0)) * (t1 - t0);
+  }
+  return map[map.length - 1][1];
+}

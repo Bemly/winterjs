@@ -1,5 +1,6 @@
 import React from "react";
 import { spring, useCurrentFrame, useVideoConfig } from "remotion";
+import { Shot } from "../components/Shot";
 import { BigText, Chip, PopIn } from "../components/Ui";
 import { C, FONT, MONO } from "../theme";
 import type { SceneViewProps } from "../Video";
@@ -8,13 +9,18 @@ export const Outro: React.FC<SceneViewProps> = ({ starts }) => {
   const f = useCurrentFrame();
   const { fps } = useVideoConfig();
   const triple = f >= starts[3];
+  const docs = f >= starts[2] && f < starts[3];
   return (
     <>
-      <div style={{ position: "absolute", left: 0, right: 0, top: 120, display: "flex", flexDirection: "column", alignItems: "center" }}>
+      {docs && (
+        <Shot src="shots/docs.png" x={330} y={110} w={1260} h={660} at={starts[2]} title="winterjs.bemly.moe — API reference"
+          tag="● 文档站" zoom={[[starts[2], 1, 0.5, 0.3], [starts[3], 1.12, 0.4, 0.3]]} />
+      )}
+      <div style={{ position: "absolute", left: 0, right: 0, top: 120, display: docs ? "none" : "flex", flexDirection: "column", alignItems: "center" }}>
         <PopIn at={starts[0]} from="zoom" style={{ position: "relative" }}>
           <BigText size={120}>❄️ Winter<span style={{ color: C.ice }}>JS</span></BigText>
         </PopIn>
-        <div style={{ marginTop: 20, textAlign: "center", width: 1500 }}>
+        <div style={{ marginTop: 20, textAlign: "center", width: 1500, display: docs ? "none" : undefined }}>
           {[
             ["🦊 火狐的引擎", starts[0] + 10],
             ["🦀 Rust 的身体", starts[0] + 20],

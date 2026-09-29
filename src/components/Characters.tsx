@@ -25,8 +25,7 @@ export const Portrait: React.FC<Props> = ({ who, speaking }) => {
         filter: `brightness(${speaking ? 1 : 0.55}) drop-shadow(0 0 ${speaking ? 18 : 0}px ${left ? "rgba(124,200,255,0.8)" : "rgba(255,179,71,0.8)"})`,
       }}
     >
-      {/* Claude娘 原图朝右，翻转后朝向画面中央 */}
-      <Img src={staticFile(`cast/${who}.webp`)} style={{ height: h, transform: left ? undefined : "scaleX(-1)" }} />
+      <Img src={staticFile(`cast/${who}.webp`)} style={{ height: h }} />
     </div>
   );
 };

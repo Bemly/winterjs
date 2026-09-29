@@ -1,5 +1,7 @@
 import React from "react";
 import { interpolate, useCurrentFrame } from "remotion";
+import { CastPlayer } from "../components/CastPlayer";
+import { Shot } from "../components/Shot";
 import { BigText, Card, Chip, PopIn } from "../components/Ui";
 import { C, FONT, MONO } from "../theme";
 import type { SceneViewProps } from "../Video";
@@ -19,7 +21,9 @@ const Layer: React.FC<{ at: number; top: number; color: string; title: string; s
 export const Engine: React.FC<SceneViewProps> = ({ starts }) => {
   const f = useCurrentFrame();
   const showThreads = f >= starts[7];
-  const tlO = interpolate(f, [starts[7] - 6, starts[7]], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const tlO = interpolate(f, [starts[4] - 6, starts[4]], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const showVersions = f >= starts[4] && f < starts[5];
+  const showEval = f >= starts[5] && f < starts[7];
   return (
     <>
       {/* 左：历史时间线 → 线程模型 */}
@@ -43,6 +47,16 @@ export const Engine: React.FC<SceneViewProps> = ({ starts }) => {
           </div>
         </PopIn>
       </div>
+      {/* 第 4 句：作者真机 REPL 截图，versions.mozjs = "153" */}
+      {showVersions && (
+        <Shot src="shots/repl-versions.png" x={60} y={120} w={800} h={560} at={starts[4]} title="winterjs repl — macOS"
+          zoom={[[starts[4], 1, 0.3, 0.2], [starts[4] + 40, 1.55, 0.33, 0.22], [starts[5] - 20, 1.55, 0.33, 0.22]]} />
+      )}
+      {/* 第 5–6 句：实机 --eval 另两条（fetch / URL） */}
+      {showEval && (
+        <CastPlayer name="eval" x={60} y={120} w={800} h={560} title="zsh — winterjs"
+          map={[[starts[5], 3.3], [starts[7] - 20, 12.2]]} />
+      )}
       {showThreads && (
         <PopIn at={starts[7]} style={{ left: 90, top: 170, width: 740 }}>
           <Card accent={C.good}>

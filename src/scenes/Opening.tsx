@@ -1,5 +1,6 @@
 import React from "react";
 import { interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
+import { CastPlayer } from "../components/CastPlayer";
 import { BigText, Card, PopIn } from "../components/Ui";
 import { C, FONT } from "../theme";
 import type { SceneViewProps } from "../Video";
@@ -19,17 +20,24 @@ export const Opening: React.FC<SceneViewProps> = ({ starts }) => {
   const top = 250 - 170 * shrink;
   const origin = "50% 0%";
   const slogan = f >= starts[8];
+  // 第 1 句：实机 --eval（带 ASCII banner），期间隐藏动画 Logo
+  const realDemo = f >= starts[1] && f < starts[2];
 
   return (
     <>
       {/* 主 Logo */}
-      <div style={{ position: "absolute", left: 0, right: 0, top, display: "flex", flexDirection: "column", alignItems: "center", transform: `scale(${scale})`, transformOrigin: origin, opacity: slogan ? 0 : 1 }}>
+      <div style={{ position: "absolute", left: 0, right: 0, top, display: "flex", flexDirection: "column", alignItems: "center", transform: `scale(${scale})`, transformOrigin: origin, opacity: slogan || realDemo ? 0 : 1 }}>
         <div style={{ fontSize: 150, transform: `rotate(${f * 1.5}deg)` }}>❄️</div>
         <BigText size={170} color="#fff" stroke={C.iceDeep}>
           Winter<span style={{ color: C.ice }}>JS</span>
         </BigText>
         <div style={{ fontFamily: FONT, fontSize: 44, color: C.dim, marginTop: 16, fontWeight: 700 }}>SpiderMonkey × Rust 的 JavaScript 运行时</div>
       </div>
+
+      {realDemo && (
+        <CastPlayer name="eval" x={260} y={110} w={1400} h={560} title="zsh — winterjs"
+          map={[[starts[1], 0.6], [starts[1] + 75, 3.3]]} />
+      )}
 
       {/* 三巨头 */}
       {!slogan &&

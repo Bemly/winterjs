@@ -1,5 +1,6 @@
 import React from "react";
 import { useCurrentFrame } from "remotion";
+import { Shot } from "../components/Shot";
 import { schedule, Terminal, typedFrames } from "../components/Terminal";
 import { BigText, Card, PopIn } from "../components/Ui";
 import { C, FONT, MONO } from "../theme";
@@ -23,12 +24,6 @@ export const VueScene: React.FC<SceneViewProps> = ({ starts }) => {
     [2, 16 + typedFrames(CMD.create), { kind: "out", text: "Done.", color: C.good }],
     [3, 6, { kind: "cmd", text: CMD.init }],
     [3, 6 + typedFrames(CMD.init), { kind: "out", text: "✓ dependencies installed → node_modules", color: C.good }],
-    [6, 6, { kind: "cmd", text: CMD.build }],
-    [6, 6 + typedFrames(CMD.build), { kind: "out", text: "vite building for production..." }],
-    [6, 26 + typedFrames(CMD.build), { kind: "out", text: "✓ built  dist/index.html  dist/assets/*", color: C.good }],
-    [7, 6, { kind: "cmd", text: CMD.dev }],
-    [7, 6 + typedFrames(CMD.dev), { kind: "out", text: "  VITE  ready", color: C.vue }],
-    [7, 12 + typedFrames(CMD.dev), { kind: "out", text: "  ➜  Local:   http://localhost:5173/", color: "#fff" }],
   ]);
   return (
     <>
@@ -49,19 +44,15 @@ export const VueScene: React.FC<SceneViewProps> = ({ starts }) => {
           </Card>
         </PopIn>
       )}
-      {f >= starts[7] && (
-        <PopIn at={starts[7] + 30} from="right" style={{ left: 1210, top: 440, width: 640 }}>
-          <div style={{ borderRadius: 16, overflow: "hidden", border: "2px solid #ccd6e3", boxShadow: "0 20px 50px rgba(0,0,0,0.5)" }}>
-            <div style={{ background: "#e9edf3", padding: "8px 14px", fontFamily: MONO, fontSize: 20, color: "#445" }}>🔒 localhost:5173</div>
-            <div style={{ background: "#fff", padding: "34px 30px", fontFamily: FONT }}>
-              <div style={{ fontSize: 48, fontWeight: 900, color: C.vue }}>You did it!</div>
-              <div style={{ fontSize: 24, color: "#333", marginTop: 8 }}>You’ve successfully created a project with Vite + Vue 3.</div>
-              <div style={{ fontSize: 22, color: "#888", marginTop: 14 }}>served by ❄️ WinterJS</div>
-            </div>
-          </div>
-        </PopIn>
+      {f < starts[6] && <Terminal items={items} x={90} y={120} w={1080} h={620} fontSize={27} title="~/projects — winterjs" />}
+      {/* 第 6–8 句：作者真机 —— winterjs -r build / -r dev + 浏览器 Vue DevTools */}
+      {f >= starts[6] && (
+        <Shot src="shots/vue-mac.png" x={90} y={110} w={1080} h={650} at={starts[6]} title="vue-project — macOS 真机"
+          zoom={[
+            [starts[6], 1, 0.5, 0.5], [starts[6] + 40, 2.2, 0.3, 0.66], [starts[7] - 10, 2.2, 0.3, 0.66],
+            [starts[7] + 30, 2.2, 0.3, 0.93], [starts[7] + 110, 2.2, 0.3, 0.93], [starts[7] + 150, 1.6, 0.4, 0.2],
+          ]} />
       )}
-      <Terminal items={items} x={90} y={120} w={1080} h={620} fontSize={27} title="~/projects — winterjs" />
     </>
   );
 };

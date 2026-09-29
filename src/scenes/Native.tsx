@@ -1,24 +1,30 @@
 import React from "react";
-import { random, useCurrentFrame } from "remotion";
+import { useCurrentFrame } from "remotion";
+import { CastPlayer } from "../components/CastPlayer";
 import { CodePanel } from "../components/Code";
 import { BigText, Card, Chip, PopIn } from "../components/Ui";
 import { C, FONT, MONO } from "../theme";
 import type { SceneViewProps } from "../Video";
 
-const MEDIA_CODE = `const bytes = readFileSync("song.flac");
-const pcm = WinterJS.media.decodeAudio(bytes);
-// { sampleRate: 44100, channels: 2, data: Float32Array }
+const MEDIA_CODE = `// WinterJS.media 实机演示：解码真实 MP4 里的 FLAC 音轨 → PCM，再编码 AV1
+import { readFileSync } from "node:fs";
 
-const id = WinterJS.media.play(pcm, { volume: 0.8 });
+const mp4 = readFileSync(new URL("./beep.mp4", import.meta.url));
+const info = WinterJS.media.mp4Info(mp4);
+console.log("mp4Info →", info.tracks.map((t) => \`\${t.kind}/\${t.codec}\`).join(", "));
 
-const ivf = WinterJS.media.videoEncode(
-  { data: rgbaFrames, width: 640, height: 360, count: 60 },
-  { speed: 10 },
-); // → AV1 (IVF)
+const pcm = WinterJS.media.decodeAudio(mp4);
+console.log("decodeAudio →", { codec: pcm.codec, sampleRate: pcm.sampleRate, channels: pcm.channels, samples: pcm.data.length });
 
-const info = WinterJS.media.mp4Info(mp4Bytes);`;
+const w = 64, h = 36, n = 8;
+const frames = new Uint8Array(w * h * 4 * n);
+for (let i = 0; i < n; i++)
+  for (let p = 0; p < w * h; p++) frames.set([i * 30, 120, 255 - i * 30, 255], (i * w * h + p) * 4);
+const ivf = WinterJS.media.videoEncode({ data: frames, width: w, height: h, count: n }, { speed: 10 });
+console.log("videoEncode →", String.fromCharCode(...ivf.slice(0, 4)), ivf.length, "bytes (AV1)");
+console.log("formats →", WinterJS.media.formats().map((f) => f.name).join(" "));`;
 
-const IMG_FORMATS = ["PNG", "JPEG", "GIF", "WebP", "TIFF", "TGA", "BMP", "ICO", "HDR", "EXR", "PNM", "farbfeld", "QOI", "SVG", "JPEG XL"];
+const IMG_FORMATS = ["PNG", "JPEG", "GIF", "WebP", "TIFF", "TGA", "BMP", "ICO", "HDR", "EXR", "PNM", "farbfeld", "QOI", "SVG", "JPEG XL", "DDS"];
 const TOOLS = ["semver", "yaml", "jsonc", "qrcode", "ip", "shlex", "spdx", "git", "graph", "transpile", "mime", "cookie", "hex", "time", "retry", "log"];
 
 const Wave: React.FC<{ f: number }> = ({ f }) => {
@@ -30,28 +36,6 @@ const Wave: React.FC<{ f: number }> = ({ f }) => {
   return (
     <svg width={780} height={180}>
       <polyline points={pts} fill="none" stroke={C.ice} strokeWidth={4} />
-    </svg>
-  );
-};
-
-const QR: React.FC<{ size: number }> = ({ size }) => {
-  const n = 25;
-  const c = size / n;
-  const finder = (x: number, y: number) => x < 7 && y < 7 || x >= n - 7 && y < 7 || x < 7 && y >= n - 7;
-  const cells: React.ReactNode[] = [];
-  for (let y = 0; y < n; y++)
-    for (let x = 0; x < n; x++) {
-      let on: boolean;
-      if (finder(x, y)) {
-        const lx = x < 7 ? x : x - (n - 7);
-        const ly = y < 7 ? y : y - (n - 7);
-        on = lx === 0 || lx === 6 || ly === 0 || ly === 6 || (lx >= 2 && lx <= 4 && ly >= 2 && ly <= 4);
-      } else on = random(`qr${x}-${y}`) > 0.5;
-      if (on) cells.push(<rect key={`${x}-${y}`} x={x * c} y={y * c} width={c} height={c} fill="#0b1426" />);
-    }
-  return (
-    <svg width={size} height={size} style={{ background: "#fff", padding: 12, borderRadius: 12 }}>
-      {cells}
     </svg>
   );
 };
@@ -80,7 +64,11 @@ export const Native: React.FC<SceneViewProps> = ({ starts }) => {
 
       {mediaPhase && (
         <>
-          <CodePanel file="media.js" code={MEDIA_CODE} x={80} y={120} w={1000} reveal={2 + (f - starts[2]) / 6} fontSize={24} accent={C.gold} />
+          {f < starts[4] && <CodePanel file="demo/media.js" code={MEDIA_CODE} x={80} y={120} w={1000} reveal={2 + (f - starts[2]) / 5} fontSize={17} accent={C.gold} />}
+          {f >= starts[4] && (
+            <CastPlayer name="media" x={80} y={120} w={1000} h={640} title="winterjs --run media.js"
+              map={[[starts[4], 0], [starts[4] + 45, 1.6], [starts[5], 1.62], [starts[5] + 30, 3.66]]} />
+          )}
           <div style={{ position: "absolute", left: 1110, top: 120, width: 740, fontFamily: FONT, color: C.text }}>
             <PopIn at={starts[2]} style={{ position: "relative" }}>
               <Card accent={C.ice} style={{ padding: "12px 20px" }}>
@@ -125,11 +113,11 @@ export const Native: React.FC<SceneViewProps> = ({ starts }) => {
       {imgPhase && (
         <>
           <PopIn at={starts[7]} style={{ left: 0, right: 0, top: 120, textAlign: "center" }}>
-            <BigText size={64} color={C.gold}>🖼️ WinterJS.image · 15 种格式</BigText>
+            <BigText size={64} color={C.gold}>🖼️ WinterJS.image · 16 种格式</BigText>
           </PopIn>
           {IMG_FORMATS.map((t, i) => (
-            <PopIn key={t} at={starts[7] + 10 + i * 3} from="zoom" style={{ left: 190 + (i % 5) * 310, top: 260 + Math.floor(i / 5) * 140 }}>
-              <div style={{ width: 280, height: 110, borderRadius: 18, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, fontWeight: 900, fontSize: 40, color: "#0b1426", background: `hsl(${200 + i * 11},80%,${t === "JPEG XL" || t === "SVG" ? 70 : 82}%)`, border: "4px solid #0b1426" }}>
+            <PopIn key={t} at={starts[7] + 10 + i * 3} from="zoom" style={{ left: 330 + (i % 4) * 320, top: 230 + Math.floor(i / 4) * 105 }}>
+              <div style={{ width: 290, height: 90, borderRadius: 18, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: FONT, fontWeight: 900, fontSize: 40, color: "#0b1426", background: `hsl(${200 + i * 11},80%,${t === "JPEG XL" || t === "SVG" || t === "DDS" ? 70 : 82}%)`, border: "4px solid #0b1426" }}>
                 {t}
               </div>
             </PopIn>
@@ -144,21 +132,15 @@ export const Native: React.FC<SceneViewProps> = ({ starts }) => {
 
       {toolPhase && (
         <>
-          <div style={{ position: "absolute", left: 90, top: 140, width: 1100 }}>
+          <div style={{ position: "absolute", left: 90, top: 140, width: 960 }}>
             {TOOLS.map((t, i) => (
               <PopIn key={t} at={starts[9] + i * 3} from="zoom" style={{ position: "relative", display: "inline-block" }}>
                 <Chip size={36} color={t === "qrcode" ? C.gold : C.ice}>WinterJS.{t}</Chip>
               </PopIn>
             ))}
           </div>
-          {f >= starts[10] && (
-            <PopIn at={starts[10]} from="zoom" style={{ left: 1300, top: 150 }}>
-              <div style={{ textAlign: "center" }}>
-                <QR size={400} />
-                <div style={{ fontFamily: MONO, fontSize: 28, color: C.gold, marginTop: 12 }}>WinterJS.qrcode("hi")</div>
-              </div>
-            </PopIn>
-          )}
+          <CastPlayer name="media" x={1080} y={110} w={760} h={660} title="winterjs --run tools.js"
+            map={[[starts[9] + 20, 5.7], [starts[9] + 70, 7.26]]} />
         </>
       )}
     </>

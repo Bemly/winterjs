@@ -18,6 +18,24 @@
 > (a WinterCG server, now deprecated). This project is a general-purpose JS runtime
 > in the Bun/Node lane — rebuilt from scratch on `servo/mozjs`, no server framework inside.
 
+## Screenshots
+
+**REPL — <kbd>Tab</kbd> completion with an inline docs pane** (like Ruby's `irb`; `.doc <name>` prints the full page)
+
+<img src="assets/screenshots/repl-completion.png" width="820" alt="winterjs REPL: WinterJS.image. completion menu with docs pane" />
+
+**Engine versions at your fingertips** — `WinterJS.versions.mozjs` is the pinned SpiderMonkey (Gecko 153)
+
+<img src="assets/screenshots/repl-versions.png" width="820" alt="winterjs REPL: WinterJS.versions completion showing mozjs 153" />
+
+**Vue 3 + Vite driven by winterjs** — `winterjs -r build` / `winterjs -r dev`, Vue DevTools live in the browser
+
+<img src="assets/screenshots/vue-build-dev.png" width="620" alt="vite build and vite dev run through winterjs, Vue app with DevTools in the browser" />
+
+**`WinterJS.media` + utilities** — decode FLAC from an MP4, encode AV1, draw a QR code in the terminal (Linux x86_64 build)
+
+<img src="assets/screenshots/media-qrcode.png" width="820" alt="winterjs --run media.js and tools.js output with a terminal QR code" />
+
 ## Quick start
 
 ```bash

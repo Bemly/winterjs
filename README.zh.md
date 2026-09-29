@@ -18,6 +18,24 @@
 > 说明：与 [wasmerio/winterjs](https://github.com/wasmerio/winterjs)（WinterCG server，已归档）
 > 只是同名。本项目是 Bun/Node 赛道的通用运行时——基于 `servo/mozjs` 推倒重写，无 server 框架。
 
+## 截图
+
+**REPL：<kbd>Tab</kbd> 补全 + 右侧文档面板**（类似 Ruby 的 `irb`；`.doc <名字>` 看整篇文档）
+
+<img src="assets/screenshots/repl-completion.png" width="820" alt="winterjs REPL：WinterJS.image. 补全菜单与文档面板" />
+
+**引擎版本一目了然**：`WinterJS.versions.mozjs` 即精确钉死的 SpiderMonkey（Gecko 153）
+
+<img src="assets/screenshots/repl-versions.png" width="820" alt="winterjs REPL：WinterJS.versions 补全，mozjs 为 153" />
+
+**用 winterjs 驱动 Vue 3 + Vite**：`winterjs -r build` / `winterjs -r dev`，浏览器里 Vue DevTools 实时可用
+
+<img src="assets/screenshots/vue-build-dev.png" width="620" alt="winterjs 运行 vite build 与 vite dev，浏览器中的 Vue 应用与 DevTools" />
+
+**`WinterJS.media` 与小工具**：从 MP4 解出 FLAC 音轨、编码 AV1、在终端画二维码（Linux x86_64 构建实测）
+
+<img src="assets/screenshots/media-qrcode.png" width="820" alt="winterjs --run media.js 与 tools.js 的输出及终端二维码" />
+
 ## 快速开始
 
 ```bash

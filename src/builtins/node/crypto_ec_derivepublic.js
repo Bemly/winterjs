@@ -140,6 +140,30 @@ function __checkKeyPairEncs(keyType, options, publicEncoding, privateEncoding) {
   __checkKeyEncoding("options.privateKeyEncoding", options.privateKeyEncoding, sets && sets.priv);
   __checkKeyEncoding("options.publicKeyEncoding", publicEncoding, sets && sets.pub);
   __checkKeyEncoding("options.privateKeyEncoding", privateEncoding, sets && sets.priv);
+  // raw 槽位/类型兼容门（keygen-raw 套件；生成前拦截，免烧慢生成）：
+  // 公钥槽仅 raw-public，私钥槽禁 raw-public；rsa/dsa 系禁一切 raw；
+  // raw-seed 仅 ml 系，raw-private 不进 ml 系。
+  const __encFmt = (e) => e !== undefined && e !== null && typeof e === "object" ? e.format : undefined;
+  const pubF = __encFmt(publicEncoding) ?? __encFmt(options.publicKeyEncoding);
+  const privF = __encFmt(privateEncoding) ?? __encFmt(options.privateKeyEncoding);
+  const __badEncFmt = (prop, fmt) => {
+    const err = new TypeError(`The property '${prop}.format' is invalid. Received '${fmt}'`);
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  };
+  const __incompat = (fmt) => {
+    const err = new Error(`The selected key encoding ${fmt} is incompatible with key type ${keyType}`);
+    err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+    throw err;
+  };
+  if (pubF === "raw-private" || pubF === "raw-seed") __badEncFmt("options.publicKeyEncoding", pubF);
+  if (privF === "raw-public") __badEncFmt("options.privateKeyEncoding", privF);
+  const __isRaw = (f) => f === "raw-public" || f === "raw-private" || f === "raw-seed";
+  if ((__isRaw(pubF) || __isRaw(privF)) &&
+      (keyType === "rsa" || keyType === "rsa-pss" || keyType === "dsa")) __incompat(pubF ?? privF);
+  const __isMl = typeof keyType === "string" && (keyType.startsWith("ml-kem-") || keyType.startsWith("ml-dsa-"));
+  if (__isMl && privF === "raw-private") __incompat(privF);
+  if (privF === "raw-seed" && !__isMl) __incompat(privF);
   // 私钥 cipher/passphrase（rsa 系；真机口径：cipher 非串即 invalid，
   // 值错误交 export 报 UNKNOWN_CIPHER；有 cipher 时 passphrase 须为串/字节视图）。
   const priv = options.privateKeyEncoding;

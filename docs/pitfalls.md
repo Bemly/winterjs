@@ -4358,3 +4358,17 @@
   （与真机同码）；`run1.sh` 0。
 - 推广铁律：**加解密对必须同批落地验双向**（解密先行、导出后补是半拉子）；
   新 `kty`/`alg` 面先查 fixture 再写码；DER 无标签面一律配嗅探，不只认显式 type。
+
+### 4.242 async 包装调两次生成器即公钥私钥错配（2026-09-30，P2-crypto-R4）
+
+- 症状：crypto3 keygen-async 簇十余件同红——x-JWK 公私钥错配、RSA 解密失败、
+  DSA 超时，表象各异。
+- 根因：异步 `generateKeyPair` 回调里调了**两次** `__genPairSync`（公钥取自
+  第一次结果、私钥取自第二次）——两对毫不相干的键；另附带双倍慢（DSA 2048
+  两次生成即超时）。
+- 修法：microtask 内单次生成再分发编码（`const out = __applyEncoding(
+  __genPairSync(...)); cb(null, out.publicKey, out.privateKey)`）；R4 一并转绿 22 件。
+- 复现：`generateKeyPair('ed25519', {jwk/jwk}, cb)` 对比 `publicKey.x ===
+  privateKey.x`（修前恒 false，修后 true）。
+- 推广铁律：**凡"一次调用产一对"的 async 包装，生成器只调一次**；同簇多件同红
+  先疑共享上游（本轮另例：jwk 免 type/paramEncoding 翻正，一改带走 6 件）。

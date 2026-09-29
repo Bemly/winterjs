@@ -804,3 +804,28 @@ G1/G2/G3/G9 已收官。）
   future-incompat，皆预存非本轮）。
 - 文档顺带刷新：AGENTS 存量基线 615/1453（09-29 实测）、README pitfalls
   236 条到 4.235（4.232 重号两条如实注）、§0.4 加 W1 本体行。
+
+## 2026-09-29 P2-crypto R1：MISSING-EXCEPTION 9 簇（4 转绿，44/120）
+
+- crypto3 sweep（83 件 rerun 中 80 落本轮域）：SAME0=4（padding/gcm-implicit/
+  gcm-explicit/secret-keygen）+ TIMEOUT 1（keygen-async-dsa：校验过后跑真 DSA，
+  debug 慢超时）+ DIFF 75。crypto 域 40→**44/120**。
+- 根因三：① `CbcEnc` 无 autopad 字段 + 两侧 `setAutoPadding` 空转（构造期
+  options 亦丢）；② OSSL 错误缺 `reason`、解密坏填充错码（应 BAD_DECRYPT）；
+  ③ generateKey 旧 `(options)` 签名 + keypair 入口无同步校验 + 编码形/rsa
+  参数无校验。
+- 修法：CbcEnc.autopad + `__wjs_cipher_set_autopad` 新 native（UNSAFE-BOUNDARY
+  标签 + 注册；黑盒 double-final 覆盖 panic 路径）+ JS 两侧透传；`__cryptErr`
+  补 OSSL reason；CbcDec/Ecb 解密坏填充改 BAD_DECRYPT；generateKey 重做
+  `(type, options, cb)`（hmac 按位落盘、校验同步抛）；`__checkKeyPairHead/
+  TypeKnown/Encs/RsaKeyOptions` + sign.js 同步预检；GCM `__gcmTagLen`
+  （{4,8,12-16}）+ setAuthTag 即时校验 + enc 短 tag 前导切片（套件 379 行口径）。
+- 真机实测 10+ 处（tag 有效集/setAuthTag 码形/key lengths/inspect 形/async
+  同步抛/二参非法/modulus 无缺省…）；翻转旧断言两处（4.65）：sign.js 二参
+  默认 `{}`、rsa modulus 2048 缺省——自家 ed448 黑盒同步改显式 `{}`。
+- 验证：新黑盒 `p2_crypto_cipher_setautopadding` 14 断言一次过；crypto 域
+  30/30；冒烟 5/5；行数守门 ok。坑 4.236（async 同步校验）。
+- 留尾（下轮）：keygen 剩余（dsa/ec-curve/dh/pss 参数 + 4096 慢件策略：
+  **单件 4096 keygen debug 下 53s，sweep 天花板**，全绿需 release 探或分片）；
+  GCM 短 tag 解密验签（native，對称 CTR+GHASH 手工）；argon2 越界；
+  pqc 错口令；enc-validation legacy createCipher。

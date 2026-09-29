@@ -156,6 +156,7 @@ internal/repl（11）/ASSERT 散件，另轮 | 各按止损线 | 🟡 |
 | O2 | ✅ 2026-09-25 事故 | 基线 sweep 触发系统 panic：D1 前缀放行致 `test-promise-unhandled-flag` 自 spawn 无限递归（pitfalls 4.209）。已修三道防线（精确旗表 + 自 spawn 深度闸 32 + sweep 进程组/进程数封顶）；base10 基线作废重跑 | — | ✅ |
 | O1 | 观察 | `dgram::phase10a_dgram_multicast_connect` 本机挂死（2026-09-25 基线 stash 对照同挂，非本轮引入；疑本机组播路由/网卡环境），全量暂以 `--skip` 跑；再现于他机即升级为必查 | — | 👀 |
 | D4 | ✅ 2026-09-25 已做 | 非 TTY 未捕获错误改 node 形（`file:line` + 源行 + `^` + `Name: msg` + `    at …` 栈；SM 帧转 `at fn (loc)`、`__wjs_` 管线帧滤掉、TS 帧经 sourcemap 回映射；`throw 42` 打印值本身；ESM 入口同形）。`Display` 一行格式不动（worker 透传/退出码解析依赖）。转绿：`os-userinfo-handles-getter-errors`/`vm-api-handles-getter-errors`；`util-callbackify` 余 stderr 行数差（node 多 `processTicksAndRejections` 帧 + `Node.js vX` 尾行） | — | ✅ |
+| W1 | WinterJS 本体（§7 方向；09-28/29） | 🟡 进行中：repl 求值面统一（TLA + acorn vendored 声明提升；CLI 补全接真上下文 + `__wjs_` 内部面位置纠正）+ console 全局统一 + `.doc`/浮窗文档（mdn 语料 + Bun/Deno 命名空间页 + termimad/reedline）+ `WinterJS.image`（15 格式）+ `WinterJS.media`（symphonia/rodio/rav1e/mp4-rs；f32→u8 去 unsafe 见 4.235）+ wstd/wsys/wcover B1-B6 门面 + 站单源化（luoli 唯一真相 + 部署门）。明细只写 journal，本表只留状态 | — | 🟡 |
 
 ### 0.5 运行环境（系统盘仅剩 ~5GB，大数据一律外置盘）
 

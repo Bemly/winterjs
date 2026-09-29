@@ -170,11 +170,11 @@ cargo build
   （先走 §0.5 找轮子）？② 能把 `unsafe` 收敛进构造器、对外只暴露 safe 访问器吗
   （`Frame` 模式：`from_raw` unsafe，`arg`/`set_rval` safe + 越界断言）？
   ③ 前置条件写进注释了吗？
-- 存量基线（2026-09-15 实数，`rg` 文本值；`console_sink!` 宏展开后更多）：
-  `unsafe extern "C"` 450（C ABI 强制，不可去；其中 napi N-API 面 ~133，
+- 存量基线（2026-09-29 实测，`rg` 文本值；`console_sink!` 宏展开后更多）：
+  `unsafe extern "C"` 615（C ABI 强制，不可去；其中 napi N-API 面 ~133，
   其余随 native 数线性增长，每个 JSNative 入口 +1）、
   `unsafe impl Traceable` 17（GC 协议，不可去）；
-  `unsafe{}` 块 1067，其中每个 JSNative 入口固定 2 个边界块
+  `unsafe{}` 块 1453，其中每个 JSNative 入口固定 2 个边界块
   （`wrap_cx` + `Frame::from_raw`，随 native 数线性增长，结构性不可去）；
   `wrap_cx` 维持 unsafe（`from_ptr` 本质 unsafe）；
   其余 FFI 体（`JS_GetProperty`/`JS_CallFunctionValue`/`evaluate_script`/

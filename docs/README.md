@@ -8,7 +8,7 @@
 |---|---|
 | `plan3.md` | **唯一进度入口**（§0 口径/队列/环境）；Phase 10 Bun 高度 |
 | `plan3-journal.md` | plan3 逐轮日志（只追加） |
-| `pitfalls.md` | 踩坑全集 206 条（编号 = AGENTS `§4.N`），先看顶部索引再 grep |
+| `pitfalls.md` | 踩坑全集 236 条（编号到 `§4.235`，其中 `4.232` 重号两条），先看顶部索引再 grep |
 | `bun-scope.txt` | Bun 自带 node 测试清单（范围判定，plan3 §0.2） |
 | `bun-parity.md` | 逐模块对拍明细（查某套件历史定性时用） |
 | `dependencies.md` / `dependencies2.md` / `dependencies3.md` | 依赖清单与采购记录（§0.5 找轮子时查） |

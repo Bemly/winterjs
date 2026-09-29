@@ -1,6 +1,6 @@
 //! REPL `.doc` 整篇文档（irb `show_doc` 方向；CLI 本体面，`node:repl` 不动）。
 //!
-//! 语料：`mdn-content/files/en-us/**/*.md`（MDN Web Docs，© Mozilla contributors，
+//! 语料：`content/mdn/files/en-us/**/*.md`（MDN Web Docs，© Mozilla contributors，
 //! CC-BY-SA；见该目录 `ATTRIBUTION.md`），编译期经 `include_dir!` 打进二进制。
 //! slug 三路：① WinterCG 显式表（路径不规则，如 `fetch` 住 `Window/fetch`）；
 //! ② `console.X` 规则派生（`{x}_static`）；③ SM 内建规则派生
@@ -9,16 +9,16 @@
 
 /// 内嵌 MDN 语料（`files/en-us` 下，`index.md` 逐页）。
 static MDN: include_dir::Dir<'static> =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/mdn-content/files/en-us");
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/content/mdn/files/en-us");
 
 /// 内嵌命名空间语料（`scripts/gen-ns-docs.py` 由上游 `.d.ts` TSDoc 抽取，
-/// `winterjs-content` 为手写 5 页；见各目录 `ATTRIBUTION.md`）。
+/// `content/winterjs` 为手写 5 页；见各目录 `ATTRIBUTION.md`）。
 static BUN: include_dir::Dir<'static> =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/bun-content");
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/content/bun");
 static DENO: include_dir::Dir<'static> =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/deno-content");
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/content/deno");
 static WJS: include_dir::Dir<'static> =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/winterjs-content");
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/content/winterjs");
 
 /// WinterCG 显式 slug（MDN 路径不规则，逐条实证；`web/api/` 下，`index.md` 省略）。
 fn explicit(topic: &str) -> Option<&'static str> {
@@ -170,8 +170,8 @@ fn slug(topic: &str) -> Option<String> {
 }
 
 /// 命名空间语料路由（`Bun`/`Deno`/`WinterJS`/`fs` 头；`lookup` 用）。
-/// `Bun.serve` → `bun-content/serve/index.md`，bare `Bun` → `index` 页；
-/// `WinterJS.fs.readFile` 双点形 → `winterjs-content/fs-readfile/index.md`
+/// `Bun.serve` → `content/bun/serve/index.md`，bare `Bun` → `index` 页；
+/// `WinterJS.fs.readFile` 双点形 → `content/winterjs/fs-readfile/index.md`
 /// （缺页回落 `fs` 组页）；`fs.readFile`（全局别名）同走 WinterJS 语料。
 /// 方法段限字母数字/`_`/`$`（`Bun.$` 的 `$` 在内；无 `..`，无路径穿越）。
 /// 存在性由 `lookup` 校验（缺页即未知条目，不猜）。

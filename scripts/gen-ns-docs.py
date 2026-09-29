@@ -2,14 +2,14 @@
 """Bun/Deno .d.ts TSDoc -> REPL .doc corpus pages (stdlib only).
 
 Usage (repo root):
-  scripts/gen-ns-docs.py --bun vendor/ns-dts/bun.d.ts \
-      --bun vendor/ns-dts/bun.serve.d.ts --bun vendor/ns-dts/bun.shell.d.ts \
-      --deno vendor/ns-dts/deno.ns.d.ts --deno vendor/ns-dts/deno_net.d.ts \
-      --deno vendor/ns-dts/deno.unstable.d.ts --out .
+  scripts/gen-ns-docs.py --bun content/ns-dts/bun.d.ts \
+      --bun content/ns-dts/bun.serve.d.ts --bun content/ns-dts/bun.shell.d.ts \
+      --deno content/ns-dts/deno.ns.d.ts --deno content/ns-dts/deno_net.d.ts \
+      --deno content/ns-dts/deno.unstable.d.ts --out content
 
 Reads the two vendored .d.ts sources, extracts the TSDoc block + first
 overload signature for each aliased symbol, and writes
-  bun-content/<name>/index.md / deno-content/<name>/index.md
+  content/bun/<name>/index.md / content/deno/<name>/index.md
 shaped exactly like MDN pages (frontmatter, prose paras, ## Syntax fence,
 ### Parameters) so src/repl_doc.rs summary_inner works unchanged.
 
@@ -185,7 +185,7 @@ def main() -> int:
                 missing += 1
                 continue
             doc, decl = found[sym]
-            d = out / f"{ns.lower()}-content" / sym.lower()
+            d = out / ns.lower() / sym.lower()
             d.mkdir(parents=True, exist_ok=True)
             (d / "index.md").write_text(page(ns, sym, doc, decl))
         print(f"{ns}: {len(found)}/{len(syms)} pages", file=sys.stderr)

@@ -12,4 +12,4 @@
 | `deno.unstable.d.ts` | 同上 `cli/tsc/dts/lib.deno.unstable.d.ts` | `listenDatagram`（unstable） |
 
 - 拉取日期：2026-09-28/29（main 快照；MIT license，两仓皆 MIT）。
-- 再生：`scripts/gen-ns-docs.py --bun vendor/ns-dts/bun.d.ts --bun vendor/ns-dts/bun.serve.d.ts --bun vendor/ns-dts/bun.shell.d.ts --deno vendor/ns-dts/deno.ns.d.ts --deno vendor/ns-dts/deno_net.d.ts --deno vendor/ns-dts/deno.unstable.d.ts --out .`（根目录执行；输出逐字节确定性，重跑无 diff）。
+- 再生：`scripts/gen-ns-docs.py --bun content/ns-dts/bun.d.ts --bun content/ns-dts/bun.serve.d.ts --bun content/ns-dts/bun.shell.d.ts --deno content/ns-dts/deno.ns.d.ts --deno content/ns-dts/deno_net.d.ts --deno content/ns-dts/deno.unstable.d.ts --out content`（根目录执行；输出逐字节确定性，重跑无 diff）。

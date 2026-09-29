@@ -1,12 +1,12 @@
 # Bun API 语料（REPL `.doc` 命令用，离线内置）
 
 来源：`github.com/oven-sh/bun`（MIT license）下 TypeScript 类型声明的 TSDoc 注释
-（源文件进仓见 `vendor/ns-dts/README.md`），经 `scripts/gen-ns-docs.py` 抽取为
+（源文件进仓见 `content/ns-dts/README.md`），经 `scripts/gen-ns-docs.py` 抽取为
 MDN 形状页面（散文 + `## Syntax` + `### Parameters`）：
 
-- `vendor/ns-dts/bun.d.ts` ← `packages/bun-types/bun.d.ts`
-- `vendor/ns-dts/bun.serve.d.ts` ← `packages/bun-types/serve.d.ts`
-- `vendor/ns-dts/bun.shell.d.ts` ← `packages/bun-types/shell.d.ts`
+- `content/ns-dts/bun.d.ts` ← `packages/bun-types/bun.d.ts`
+- `content/ns-dts/bun.serve.d.ts` ← `packages/bun-types/serve.d.ts`
+- `content/ns-dts/bun.shell.d.ts` ← `packages/bun-types/shell.d.ts`
 
 只收 winterjs 已别名的符号（29 页）；沿用上游原文，不编撰。缺页的 `.doc`
 主题走未知条目提示（见 `src/repl_doc.rs`）。

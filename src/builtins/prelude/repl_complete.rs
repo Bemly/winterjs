@@ -310,7 +310,7 @@ globalThis.__wjs_cli_complete = (line) => {
 // propertyIsEnumerable/toString 等 hits 自身，实测踩过）。
 // 匹配序（`__sigDesc`）：精确 dotted 路径或 completed 名的表项优先——
 // toString/Ctor 全兜底；用户自有同名方法因键不命中而不受遮蔽（4.227）。
-// 整篇文档走 `mdn-content/` 语料（`.doc` 直读），此处禁贴文档句（2026-09-28
+// 整篇文档走 `content/mdn/` 语料（`.doc` 直读），此处禁贴文档句（2026-09-28
 // 用户裁定：右盒纯文档，候选框干净名，文档更新只动语料）。
 const __wjsReplSig = Object.assign(Object.create(null), {
   'Object.assign': '(target, ...sources) → object',

@@ -369,7 +369,7 @@ export class Worker extends EventEmitter {
       // （error-primitive 套件断 err === 42 / Symbol.for('a') 等）。
       const text = String(payload);
       if (text.startsWith("__wjs2_prim:")) {
-        this.emit("error", __wjs2_primFromText(text.slice(11)));
+        this.emit("error", __wjs2_primFromText(text.slice("__wjs2_prim:".length)));
         return;
       }
       const m = /^(SyntaxError|TypeError|RangeError|EvalError|ReferenceError|URIError|AggregateError): ([\s\S]*)$/.exec(text);

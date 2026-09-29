@@ -112,7 +112,7 @@ fn main() {
         if cli.man {
             use std::io::Write as _;
             let cmd = cli::localized_command();
-            let man = clap_mangen::Man::new(cmd).title("WINTERJS");
+            let man = clap_mangen::Man::new(cmd).title("WINTERJS2");
             let mut buf = Vec::new();
             match man.render(&mut buf) {
                 Ok(()) => match std::io::stdout().write_all(&buf) {
@@ -306,7 +306,7 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
         use std::io::Write as _;
 
         let cmd = cli::localized_command();
-        let man = clap_mangen::Man::new(cmd).title("WINTERJS");
+        let man = clap_mangen::Man::new(cmd).title("WINTERJS2");
         let mut buf = Vec::new();
         man.render(&mut buf)?;
         std::io::stdout().write_all(&buf)?;

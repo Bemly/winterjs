@@ -60,7 +60,7 @@ impl Settings {
             // 显式 prefix_separator("_")：config 会把 prefix 分隔符默认成 separator（"__"），
             // 不显式给的话 WINTERJS2_ 前缀永远匹配不上（WINTERJS2__LOG__COLOR 才行）
             .add_source(
-                Environment::with_prefix("WINTERJS")
+                Environment::with_prefix("WINTERJS2")
                     .prefix_separator("_")
                     .separator("__"),
             )

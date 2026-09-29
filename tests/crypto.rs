@@ -137,7 +137,7 @@ fn subtle_c4x_ed25519_vectors() {
     // 边界：64B 全零签（合法长度，验签 false 不抛）。
     let code = format!(
         r#"{C4X_HEXJS}
-const MSG = new TextEncoder().encode("winterjs2-vector");
+const MSG = new TextEncoder().encode("winterjs-vector");
 const SEED = "b12d94858bb317baa5d40f669a784aa878bb17ad25e149e89594d7d9855b58a0";
 const PUB = "a9a53ddffd0e9b2d2b83eb442fac6a95391d07160fe1926f51386d31e786c869";
 const SIG = "541366402670fd6d20dbecfb6932e2cb5efe69dc92521d577ba70e355112b6ae40d0cb55a0f839d9b97b2841548edd4bf85da2665da35005bc7f6619463f800e";

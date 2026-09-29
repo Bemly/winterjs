@@ -47,7 +47,7 @@ cargo build
 ```
 
 5 分钟上手：[English](https://winterjs.bemly.moe/#/en/quickstart) / [中文](https://winterjs.bemly.moe/#/zh/quickstart) ·
-[`sample/`](./sample/) 下 50 个可运行样例（每个 API 域一件，全离线可跑）。
+[`sample/`](./sample/) 下 128 个可运行样例（每个模块一件，全离线可跑）。
 
 ## 用法
 

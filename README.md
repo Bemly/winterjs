@@ -47,7 +47,7 @@ cargo build
 ```
 
 5-minute path: [English](https://winterjs.bemly.moe/#/en/quickstart) / [中文](https://winterjs.bemly.moe/#/zh/quickstart) ·
-50 runnable examples in [`sample/`](./sample/) (every API area, all offline-capable).
+128 runnable examples in [`sample/`](./sample/) (one per module, all offline-capable).
 
 ## Usage
 

@@ -788,3 +788,19 @@ G1/G2/G3/G9 已收官。）
   jxl 成功路径 fixture 同款缺口：mp4 用上游自带 beep-flac 进仓
   （tests/fixtures/media/，Apache-2.0）。
 - 验证：模块单测 + 黑盒正常/报错/边界 + 冒烟；全量 strict 待收尾跑。
+
+## 2026-09-29 media 去 unsafe 跟进（bytemuck 直引；W1 收尾 strict 846/846）
+
+- 用户指认 `src/builtins/media.rs set_rval_f32` 业务层
+  `from_raw_parts` unsafe 违规（§6 + §0.6）——§6 三问第①问即证伪：
+  `bytemuck 1.25.2` 已在锁内（image/jxl-oxide/resvg 带入），直引零新增传递。
+- 修法：`Cargo.toml` §12 加 `bytemuck = "1"` + 该行改
+  `bytemuck::cast_slice(out)`；余下 `TypedArray::create` 块是 §6 引擎边界
+  （不可去），注释正名。`docs/dependencies.md` §16-6 跟进；坑 4.235。
+- 验证：模块单测 6/6 + `sample/media/basics.js` 全 true +
+  报错路径干净 TypeError + 冒烟 5/5 + 全量
+  `cargo nextest run --profile strict` **846 passed / 5 skipped**
+  （repl 死代码 3 警告 + linker 环境音 + proc-macro-error2
+  future-incompat，皆预存非本轮）。
+- 文档顺带刷新：AGENTS 存量基线 615/1453（09-29 实测）、README pitfalls
+  236 条到 4.235（4.232 重号两条如实注）、§0.4 加 W1 本体行。

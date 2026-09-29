@@ -859,3 +859,18 @@ G1/G2/G3/G9 已收官。）
   冒烟 5/5；行数守门 ok。
 - 全量 strict 附记：P3 后首跑 846 passed + `phase9e_crypto_asym_errors` 1 超时；
   单跑该件 2.2s 绿，判负载 flake（非本轮回归），下轮收尾重跑确认。
+
+## 2026-09-30 P2-crypto R3：enc-validation + pqc-encrypted-pkcs8 转绿（45→47/120）
+
+- `enc-validation`：`__outBuf` 复用吞非法编码（hash 口径），cipher 真机是独立
+  粘住门——新 `__cipherOut` + 实例 `__decoder`（首编码粘、`buffer` 不粘、再换
+  `cannot be changed`、未知 `ERR_UNKNOWN_ENCODING`；hash 侧不动）。坑 4.240。
+- `pqc-encrypted-pkcs8` 三连：① pkcs8+口令导出误走传统 PEM——新 `__pbes2Encrypt`
+  （PBKDF2-SHA256/2048/8B 盐 + AES/DES，PRF 带 NULL 与解密对称；der/pem 同构，
+  `ENCRYPTED PRIVATE KEY`）；② JWK `AKP` 未实现——`alg` 表 6 集 + 种子形 PKCS#8
+  自拼 + 既有展开派生比对 pub（零新 native；三形文案逐字对真机）；③ DER 加密体
+  导入不嗅探——显式 pkcs8 + 口令 + PBES2 OID 即先解密。坑 4.241。
+- `gcm-*-short-tag`：crypto3 复验双 0（R1 已修，非本轮欠账）。
+- 行数：keys 1025/ec 1016 超限 → `split-js.py` 切片（909+116 / 942+74，字节恒等，
+  一文件一提交，域测试绿）。
+- 验证：crypto 域 62/62 strict + 冒烟 5/5 + `check-lines` ok。

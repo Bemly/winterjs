@@ -912,3 +912,17 @@ G1/G2/G3/G9 已收官。）
 - 样例数 50→128：home/quickstart 中英 + 中英 README 同步（"每个模块一件"）。
 - 验证：新样例 `--run` 行行 true；`check-luoli.js` 8 页 ok；分三批提交推送
  （`9ce38e6` web / `bbc11bd` wjs / `872b857` core+计数）。
+
+## 2026-09-30 feat(fetch)：Request.clone + Response.json 对齐真机
+
+- 归属确认（用户问"是谁的"）：皆 WHATWG fetch 标准（四家全有），node 26.8.2
+  双 `function`，本仓双 `undefined`——引擎真缺口，非文档误标。
+- 真机抠出口径三则：① clone().signal 永 fresh（无信号即新未 abort，有信号即跟随
+  abort，`addEventListener once` 转接）；② `json(undefined/函数/BigInt)` 即
+  `TypeError: Value is not JSON serializable`（`JSON.stringify` 抛错/回 undefined
+  一律吞为该错，用户 toJSON 抛错亦同）；③ `json(null)` 体 `"null"`，init 未给
+  content-type 才补 `application/json`，坏 status 走构造器 RangeError。
+- 实现（`prelude/http.rs` 纯 JS，零新 native）：`Response.json` 静态 + `Request.clone`
+  （快照切片/serve 流 tee 源流；bodyUsed 即 TypeError）。
+- 验证：黑盒 `phase11_response_json_faces` + `phase11_request_clone_faces` 双绿；
+  serve 流 tee 探针绿；fetch+stream 域 48/48；样例回填 + 站偏离注去掉；冒烟 5/5。

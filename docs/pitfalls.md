@@ -4406,3 +4406,20 @@
   `wjs` 字段是唯一真相（proc1 指向旧名）。
 - 推广铁律：**改名后先 `ls target/debug` 看双二进制，再跑任何 sweep/探针**；
   工具链默认路径与 pgrep/pkill 模式进改名 checklist（4.243）必查项。
+
+### 4.245 macOS 无 RUSAGE_THREAD + errors 端口无 RangeError 子构造（2026-10-03，P2-process-R2）
+
+- 症状：`threadCpuUsage` 在 macOS 无 `RUSAGE_THREAD`（libc apple 只有
+  SELF/CHILDREN），`ERR_INVALID_ARG_VALUE.RangeError` 在本仓 errors 端口为
+  `undefined`；另 `THREAD_BASIC_INFO` 是 i32 而 flavor 要 u32。
+- 根因：① Darwn 线程 CPU 须走 Mach `thread_info`（libc 有 `thread_basic_info`/
+  `mach_thread_self`/`thread_info`，独缺 `mach_port_deallocate`）；② 本仓 errors
+  宏只建主构造，node 的 `.RangeError`  flavor 不存在。
+- 修法：`thread_info(mach_thread_self(), THREAD_BASIC_INFO)` 取 user/system_time
+ （`as u32` + 小 extern 块补 `mach_port_deallocate`，§6 三问注释；Linux 走
+  `RUSAGE_THREAD`，其余回零记档）；范围错按 `RangeError` 名 +
+  `ERR_INVALID_ARG_VALUE` 码 + 真机文案逐字手拼（`The property 'x' is invalid…`）。
+- 复现：`run1.sh test-process-threadCpuUsage-main-thread.js` 0；
+  `process.cpuUsage({user:-1,system:2})` 与真机三元组逐字同。
+- 推广铁律：**拿轮子先 grep 目标符号在该平台真有**（registry 源码为准，不抄文档）；
+  errors 新 flavor 先 `--eval typeof` 探存在性，不存在即手拼码名文案三件。

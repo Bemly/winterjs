@@ -69,6 +69,29 @@ function __wjs2_stdio_stream(fd) {
   };
 }
 
+// cpu 面 prevValue 校验（node 口径 per_thread.js previousValueIsValid +
+// validateObject/validateNumber；范围错为 RangeError 名 + ERR_INVALID_ARG_VALUE 码，
+// 本仓 errors 端口无 RangeError 子构造，此处按文案逐字手拼）。
+function __wjs2_checkUsagePrev(prevValue) {
+  if (!prevValue) return;
+  const E = require("internal/errors").codes;
+  const valid = (n) => typeof n === "number" && n <= Number.MAX_SAFE_INTEGER && n >= 0;
+  if (!valid(prevValue.user)) {
+    const v = prevValue;
+    if (v === null || Array.isArray(v) || typeof v !== "object") throw new E.ERR_INVALID_ARG_TYPE("prevValue", "Object", v);
+    if (typeof v.user !== "number") throw new E.ERR_INVALID_ARG_TYPE("prevValue.user", "number", v.user);
+    const e = new RangeError(`The property 'prevValue.user' is invalid. Received ${String(v.user)}`);
+    e.code = "ERR_INVALID_ARG_VALUE";
+    throw e;
+  }
+  if (!valid(prevValue.system)) {
+    if (typeof prevValue.system !== "number") throw new E.ERR_INVALID_ARG_TYPE("prevValue.system", "number", prevValue.system);
+    const e = new RangeError(`The property 'prevValue.system' is invalid. Received ${String(prevValue.system)}`);
+    e.code = "ERR_INVALID_ARG_VALUE";
+    throw e;
+  }
+}
+
 globalThis.process = {
   argv: JSON.parse(__wjs2_argv_json()),
   // 真机口径：argv0 缺省即 argv[0]（spawn-argv0 套件点名自举回显）。
@@ -201,10 +224,21 @@ globalThis.process = {
   // 回填——common.js 自举 respawn 的 flags 可见性，真机口径）。
   execArgv: JSON.parse(__wjs2_node_compat_json()),
   pid: __wjs2_pid(),
-  // 文件创建掩码（10f：读无参回当前，置数回旧值；真机口径）。
+  // 文件创建掩码（node 口径 lib/internal/bootstrap/switches/does_own_process_state.js：
+  // 串形按八进制解析（非法即 ERR_INVALID_ARG_VALUE），数形走 uint32 门）。
   umask(mask) {
     if (mask === undefined) return __wjs2_umask();
-    return __wjs2_umask(Number(mask));
+    const E = require("internal/errors").codes;
+    if (typeof mask === "string") {
+      if (!/^[0-7]+$/.test(mask)) throw new E.ERR_INVALID_ARG_VALUE("mask", mask, "must be a 32-bit unsigned integer or an octal string");
+      mask = parseInt(mask, 8);
+    } else if (typeof mask !== "number") {
+      throw new E.ERR_INVALID_ARG_TYPE("mask", "number", mask);
+    } else {
+      if (!Number.isInteger(mask)) throw new E.ERR_OUT_OF_RANGE("mask", "an integer", mask);
+      if (mask < 0 || mask > 4294967295) throw new E.ERR_OUT_OF_RANGE("mask", ">= 0 && <= 4294967295", mask);
+    }
+    return __wjs2_umask(mask);
   },
   uptime() { return __wjs2_uptime(); },
   hrtime: Object.assign(
@@ -229,6 +263,27 @@ globalThis.process = {
     { bigint: () => BigInt(__wjs2_hrtime_ns()) },
   ),
   memoryUsage() { return JSON.parse(__wjs2_memory_usage()); },
+  // abort 为箭头函数：无 prototype（套件点名），new 即 TypeError；调用即 SIGABRT。
+  abort: () => { __wjs2_process_abort(); },
+  availableMemory() { return __wjs2_available_memory(); },
+  constrainedMemory() { return __wjs2_constrained_memory(); },
+  // cpu 面校验（node 口径 lib/internal/process/per_thread.js wrapProcessMethods）：
+  // prevValue 非法形逐级抛（对象门 → user 数门 → user 范围门 → system 同序）。
+  cpuUsage(prevValue) {
+    __wjs2_checkUsagePrev(prevValue);
+    const cur = JSON.parse(__wjs2_cpu_usage());
+    if (prevValue) return { user: cur.user - prevValue.user, system: cur.system - prevValue.system };
+    return { user: cur.user, system: cur.system };
+  },
+  threadCpuUsage(prevValue) {
+    if (globalThis.process && globalThis.process.platform === "sunos") {
+      throw new (require("internal/errors").codes.ERR_OPERATION_FAILED)("threadCpuUsage is not available on SunOS");
+    }
+    __wjs2_checkUsagePrev(prevValue);
+    const cur = JSON.parse(__wjs2_thread_cpu_usage());
+    if (prevValue) return { user: cur.user - prevValue.user, system: cur.system - prevValue.system };
+    return { user: cur.user, system: cur.system };
+  },
   // Node 22.3+（vite 用 getBuiltinModule('node:module').Module 做互操作）；
   // 裸名（'module'）与 'node:module' 双形均收（Node 口径），非内置走 require
   // 的可读报错；require 的 ESM-default 口径（node:module default 导出带 Module 类）。

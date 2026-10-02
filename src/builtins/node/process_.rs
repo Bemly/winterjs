@@ -591,6 +591,135 @@ pub unsafe extern "C" fn memory_usage(
     true
 }
 
+/// `__wjs2_process_abort()`：SIGABRT 即死（node 口径；JS 侧为箭头函数，
+/// 无 prototype，`new` 即 TypeError——见 process_prelude）。
+pub unsafe extern "C" fn process_abort(
+    _cx_raw: *mut mozjs::jsapi::JSContext,
+    _argc: u32,
+    _vp: *mut JSVal,
+) -> bool {
+    std::process::abort()
+}
+
+/// `__wjs2_available_memory()` → 可用内存字节（f64；经 sysinfo 真值）。
+pub unsafe extern "C" fn available_memory(
+    _cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 仅访问调用帧（无 cx 上的 JSAPI 调用）
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    frame.set_rval(mozjs::jsval::DoubleValue(sys.available_memory() as f64));
+    true
+}
+
+/// `__wjs2_constrained_memory()` → 受限内存字节（f64；cgroup 上限不可读时回
+/// 物理总量——node 无约束回 undefined，但套件要求 number，见黑盒注记）。
+pub unsafe extern "C" fn constrained_memory(
+    _cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    frame.set_rval(mozjs::jsval::DoubleValue(sys.total_memory() as f64));
+    true
+}
+
+/// rusage 取本进程用户/系统微秒（f64 二元；失败回零）。
+#[cfg(unix)]
+fn rusage_self_micros() -> (f64, f64) {
+    // SAFETY: rusage 出参为栈上结构体指针，getrusage 同步写入后即读，无别名。
+    let mut r: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut r) } != 0 {
+        return (0.0, 0.0);
+    }
+    let tv = |t: libc::timeval| t.tv_sec as f64 * 1e6 + t.tv_usec as f64;
+    (tv(r.ru_utime), tv(r.ru_stime))
+}
+
+/// `__wjs2_cpu_usage()` → `{user, system}` 微秒 JSON（node 口径真值）。
+pub unsafe extern "C" fn cpu_usage(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    #[cfg(unix)]
+    let (user, system) = rusage_self_micros();
+    #[cfg(not(unix))]
+    let (user, system) = (0.0, 0.0);
+    let json = serde_json::json!({ "user": user, "system": system }).to_string();
+    set_rval_str(&mut cx, &frame, &json);
+    true
+}
+
+/// 本线程用户/系统微秒（macOS 经 thread_info 真值；Linux 经 RUSAGE_THREAD；
+/// 其余回零并记档——Windows thread 面另案）。
+// §6 三问：① libc 0.2 未导出 mach_port_deallocate（无 safe/现成可用），
+// ② 收敛在本函数内、对外只暴露 (f64, f64)，③ 前置见 SAFETY 内联注释。
+#[cfg(target_vendor = "apple")]
+unsafe extern "C" {
+    fn mach_port_deallocate(task: libc::mach_port_t, name: libc::mach_port_t) -> libc::kern_return_t;
+}
+#[cfg(target_vendor = "apple")]
+fn thread_micros() -> (f64, f64) {
+    // SAFETY: mach port 由 mach_thread_self 当场取得、用后即 deallocate；
+    // thread_info 同步写入栈上 info，无别名；flavor/count 均为常量口径。
+    unsafe {
+        let port = libc::mach_thread_self();
+        let mut info: libc::thread_basic_info = std::mem::zeroed();
+        let mut count = libc::THREAD_BASIC_INFO_COUNT;
+        let kr = libc::thread_info(
+            port,
+            libc::THREAD_BASIC_INFO as u32,
+            &mut info as *mut _ as libc::thread_info_t,
+            &mut count,
+        );
+        mach_port_deallocate(libc::mach_task_self(), port);
+        if kr != libc::KERN_SUCCESS {
+            return (0.0, 0.0);
+        }
+        let tv = |t: libc::time_value_t| t.seconds as f64 * 1e6 + t.microseconds as f64;
+        (tv(info.user_time), tv(info.system_time))
+    }
+}
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn thread_micros() -> (f64, f64) {
+    // SAFETY: 同 rusage_self_micros（Linux RUSAGE_THREAD）。
+    let mut r: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut r) } != 0 {
+        return (0.0, 0.0);
+    }
+    let tv = |t: libc::timeval| t.tv_sec as f64 * 1e6 + t.tv_usec as f64;
+    (tv(r.ru_utime), tv(r.ru_stime))
+}
+#[cfg(not(unix))]
+fn thread_micros() -> (f64, f64) {
+    (0.0, 0.0)
+}
+
+/// `__wjs2_thread_cpu_usage()` → `{user, system}` 微秒 JSON（本线程真值）。
+pub unsafe extern "C" fn thread_cpu_usage(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 cpu_usage
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let (user, system) = thread_micros();
+    let json = serde_json::json!({ "user": user, "system": system }).to_string();
+    set_rval_str(&mut cx, &frame, &json);
+    true
+}
+
 /// `__wjs2_stdout_write(s)` → boolean（直写 fd，绕 `console` 通道）。
 pub unsafe extern "C" fn stdout_write(
     cx_raw: *mut mozjs::jsapi::JSContext,

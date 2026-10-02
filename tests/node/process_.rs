@@ -327,6 +327,60 @@ fn phase11_process_validation_faces() {
 }
 
 #[test]
+fn phase11_process_resource_faces() {
+    // P2-process R2: abort/内存/cpu/umask 面（node 原文口径）。
+    // 正常：abort 无 prototype；内存两数；cpu/thread 双数非负；umask 串数互通。
+    // 报错：cpu prevValue 非对象/坏字段码；umask 非法串/对象码。
+    // 边界：umask 高位（0o10000）被内核截断；cpu 差值非负（同值自减）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (ok, out, _) = wjs(
+        &[
+            "--eval",
+            "console.log('abort', typeof process.abort === 'function' && process.abort.prototype === undefined);\
+             try { new process.abort(); console.log('abort-new NO-THROW'); } catch (e) { console.log('abort-new', e.name); }\
+             console.log('mem', typeof process.availableMemory() === 'number' && typeof process.constrainedMemory() === 'number');\
+             const r = process.cpuUsage();\
+             console.log('cpu', Number.isFinite(r.user) && r.user >= 0 && Number.isFinite(r.system) && r.system >= 0);\
+             const t = process.threadCpuUsage();\
+             console.log('tcpu', Number.isFinite(t.user) && t.user >= 0 && Number.isFinite(t.system) && t.system >= 0);\
+             const d = process.cpuUsage(r);\
+             console.log('cpu-diff', d.user >= 0 && d.system >= 0);\
+             const o = process.umask(); process.umask('0664');\
+             console.log('umask-str', process.umask().toString(8) === '664');\
+             process.umask(o); console.log('umask-back', process.umask() === o);\
+             process.umask(0o664 | 0o10000); console.log('umask-trunc', process.umask().toString(8) === '664'); process.umask(o);\
+             const code = (f) => { try { f(); } catch (e) { return e.code; } return 'NO-THROW'; };\
+             console.log('cpu-num', code(() => process.cpuUsage(1)));\
+             console.log('cpu-user', code(() => process.cpuUsage({ user: 'a' })));\
+             console.log('cpu-range', code(() => process.cpuUsage({ user: -1, system: 2 })));\
+             console.log('umask-obj', code(() => process.umask({})));\
+             console.log('umask-bad', code(() => process.umask('999')));",
+        ],
+        &dir,
+    );
+    assert!(ok, "out: {out}");
+    for line in [
+        "abort true",
+        "abort-new TypeError",
+        "mem true",
+        "cpu true",
+        "tcpu true",
+        "cpu-diff true",
+        "umask-str true",
+        "umask-back true",
+        "umask-trunc true",
+        "cpu-num ERR_INVALID_ARG_TYPE",
+        "cpu-user ERR_INVALID_ARG_TYPE",
+        "cpu-range ERR_INVALID_ARG_VALUE",
+        "umask-obj ERR_INVALID_ARG_TYPE",
+        "umask-bad ERR_INVALID_ARG_VALUE",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase11_emit_warning_node_semantics() {
     // 2026-09-26：emitWarning 按 node lib/internal/process/warning.js 移植——缺省打印是表内
     // 普通监听（可 off 摘除）；once 监听只触发一次；noDeprecation/throwDeprecation 门控；

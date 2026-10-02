@@ -282,6 +282,51 @@ fn phase11_before_exit_and_fatal_exit_event() {
 }
 
 #[test]
+fn phase11_process_validation_faces() {
+    // P2-process R1: hrtime/nextTick/chdir 参数校验 + release 面（node 原文口径）。
+    // 正常：hrtime 无参/差值元组 + 借位非负；chdir 来回；release name/lts。
+    // 报错：三处 code 精确（ERR_INVALID_ARG_TYPE/ERR_OUT_OF_RANGE/ENOENT）。
+    // 边界：hrtime 三元数组；chdir 缺参。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (ok, out, _) = wjs(
+        &[
+            "--eval",
+            "const t = process.hrtime(); console.log('tuple', Array.isArray(t) && t.length === 2);\
+             const d = process.hrtime([0, 1e9 - 1]); console.log('borrow', d[1] >= 0);\
+             const c0 = process.cwd(); process.chdir('..'); process.chdir(c0);\
+             console.log('chdir-roundtrip', process.cwd() === c0);\
+             console.log('release', process.release.name === 'node' && process.release.lts === 'Jod');\
+             const code = (f) => { try { f(); } catch (e) { return e.code; } return 'NO-THROW'; };\
+             console.log('hrtime-num', code(() => process.hrtime(1)));\
+             console.log('hrtime-empty', code(() => process.hrtime([])));\
+             console.log('hrtime-three', code(() => process.hrtime([1, 2, 3])));\
+             console.log('nexttick', code(() => process.nextTick(1)));\
+             console.log('chdir-obj', code(() => process.chdir({})));\
+             console.log('chdir-missing', code(() => process.chdir()));\
+             console.log('chdir-enoent', code(() => process.chdir('does-not-exist-wjs2')));",
+        ],
+        &dir,
+    );
+    assert!(ok, "out: {out}");
+    for line in [
+        "tuple true",
+        "borrow true",
+        "chdir-roundtrip true",
+        "release true",
+        "hrtime-num ERR_INVALID_ARG_TYPE",
+        "hrtime-empty ERR_OUT_OF_RANGE",
+        "hrtime-three ERR_OUT_OF_RANGE",
+        "nexttick ERR_INVALID_ARG_TYPE",
+        "chdir-obj ERR_INVALID_ARG_TYPE",
+        "chdir-missing ERR_INVALID_ARG_TYPE",
+        "chdir-enoent ENOENT",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase11_emit_warning_node_semantics() {
     // 2026-09-26：emitWarning 按 node lib/internal/process/warning.js 移植——缺省打印是表内
     // 普通监听（可 off 摘除）；once 监听只触发一次；noDeprecation/throwDeprecation 门控；

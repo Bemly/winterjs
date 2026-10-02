@@ -123,7 +123,20 @@ globalThis.process = {
     });
   })(),
   cwd() { return __wjs2_cwd(); },
-  chdir(d) { __wjs2_chdir(String(d)); },
+  chdir(d) {
+    if (typeof d !== "string") throw new (require("internal/errors").codes.ERR_INVALID_ARG_TYPE)("directory", "string", d);
+    try { __wjs2_chdir(d); } catch (e) {
+      if (e && typeof e.code === "string" && e.code !== "" && e.code !== "UNKNOWN") throw e;
+      const cwd = __wjs2_cwd();
+      const err = new Error(`ENOENT: no such file or directory, chdir '${cwd}' -> '${d}'`);
+      err.code = "ENOENT";
+      err.errno = -2;
+      err.syscall = "chdir";
+      err.path = cwd;
+      err.dest = d;
+      throw err;
+    }
+  },
   exit(code) {
     // node 口径：'exit' 监听同步派发后再 unwind（mustCall 计数在监听内结算；
     // _exiting 置位，监听内再 mustCall 即抛，真机同）。
@@ -163,6 +176,7 @@ globalThis.process = {
   // openssl/sqlite 为兼容水位（套件门控 `hasCrypto/hasSQLite` 用；TLS 底座实为
   // rustls/ring、DB 实为 turso，引擎差异见模块头注；10f 跑 test/common 前置）。
   versions: { node: "22.12.0", winterjs2: "26.9.27", mozjs: "153", openssl: "3.6.4", sqlite: "3.53.4" },
+  release: { name: "node", lts: "Jod", sourceUrl: "https://nodejs.org/download/release/v22.12.0/node-v22.12.0.tar.gz", headersUrl: "https://nodejs.org/download/release/v22.12.0/node-v22.12.0-headers.tar.gz" },
   // 构建配置（10f 跑 test/common 前置；键集按套件读取面收敛，非全量 115 键）。
   config: {
     target_defaults: { default_configuration: "Release" },
@@ -195,14 +209,22 @@ globalThis.process = {
   uptime() { return __wjs2_uptime(); },
   hrtime: Object.assign(
     (t) => {
+      if (t !== undefined) {
+        if (!Array.isArray(t)) throw new (require("internal/errors").codes.ERR_INVALID_ARG_TYPE)("time", "Array", t);
+        if (t.length !== 2) throw new (require("internal/errors").codes.ERR_OUT_OF_RANGE)("time", 2, t.length);
+      }
       const now = BigInt(__wjs2_hrtime_ns());
       if (t === undefined) {
         const s = now / 1000000000n;
         return [Number(s), Number(now - s * 1000000000n)];
       }
-      const base = BigInt(t[0]) * 1000000000n + BigInt(t[1]);
-      const d = now - base;
-      return [Number(d / 1000000000n), Number(d % 1000000000n)];
+      // node 口径（lib/internal/process/per_thread.js）：秒/纳秒分开减，
+      // 纳秒借位（nsec<0 即 sec-1、nsec+1e9）——diff[1] 恒 ∈ [0,1e9），
+      // 未来时刻 diff[0] 可为负（nodejs/node#4751；单 BigInt 取余会带负号）。
+      let sec = now / 1000000000n - BigInt(t[0]);
+      let nsec = now % 1000000000n - BigInt(t[1]);
+      if (nsec < 0n) { sec -= 1n; nsec += 1000000000n; }
+      return [Number(sec), Number(nsec)];
     },
     { bigint: () => BigInt(__wjs2_hrtime_ns()) },
   ),
@@ -302,7 +324,7 @@ globalThis.process = {
   getegid() { return __wjs2_process_getegid(); },
   getgroups() { return __wjs2_process_getgroups(); },
   nextTick(cb, ...args) {
-    if (typeof cb !== "function") throw new TypeError("nextTick: callback must be a function");
+    if (typeof cb !== "function") throw new (require("internal/errors").codes.ERR_INVALID_ARG_TYPE)("callback", "Function", cb);
     // 原生队列（node 口径）：tick 由 pump 在 RunJobs 前后收割——同步期入队的
     // tick 先于微任务、微任务期入队的等整轮微任务排空（V8 checkpoint 原子性）。
     // 回调抛错经 drain 侧 uncaughtException 路由（destroy/emitErrorNT 等内建

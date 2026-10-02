@@ -972,3 +972,19 @@ G1/G2/G3/G9 已收官。）
 - 验证：run1.sh 4/5（hrtime 记档）；黑盒 `phase11_process_validation_faces`
   （正常+报错+边界 11 断言）；process 域 nextest 13/13 strict；冒烟 5/5；
   `check-lines` ok。
+
+## 2026-10-03 P2-process R2：abort/内存/cpu/umask 面（25→32/82）
+
+- 真机口径：abort 箭头函数（无 prototype/new 即 TypeError，实际 abort 由套件
+  行为外保证）；available/constrainedMemory 经 sysinfo 真值（后者无约束回总量，
+  套件要 number）；cpuUsage/threadCpuUsage 逐字移植 wrapProcessMethods
+  （对象门→user 数门→user 范围门→system 同序）；umask 串形八进制门+数形
+  uint32 门（`parseFileMode` 逐字）。
+- 底座三事（坑 4.245）：macOS 无 `RUSAGE_THREAD`，线程 CPU 走 Mach `thread_info`
+  真值（`mach_port_deallocate` 需手补 extern，§6 三问）；`THREAD_BASIC_INFO`
+  i32→u32；errors 端口无 RangeError 子构造，范围错手拼码名文案三件。
+- 余 thread-worker：卡 `crypto.randomBytes` 64KiB 配额（proc2 旧红同源），
+  crypto 配额域另案，时间盒止损。
+- 验证：run1.sh 7/8；黑盒 `phase11_process_resource_faces`（14 断言）；
+  process 域 nextest 14/14 strict；proc3 sweep 25→32/82；冒烟 5/5；
+  `check-lines` ok。

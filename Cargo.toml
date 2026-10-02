@@ -1,6 +1,6 @@
 [package]
 name = "winterjs2"
-version = "26.9.27"   # CalVer YY.MM.发版日（26.9.27 = 2026-09-27），见 AGENTS.md §1
+version = "26.10.3"   # CalVer YY.MM.发版日（26.10.3 = 2026-10-03），见 AGENTS.md §1
 edition = "2024"
 description = "A Bun-like JS runtime on Mozilla SpiderMonkey (via servo/mozjs)"
 license = "NPL-1.1"

@@ -498,7 +498,7 @@ fn namespace_three_globals_present() {
          console.log(JSON.stringify([Object.prototype.toString.call(Deno), Object.prototype.toString.call(Bun), Object.prototype.toString.call(WinterJS2)]));",
     ]));
     assert!(out.contains(r#"["object","object","object"]"#), "out: {out}");
-    assert!(out.contains(r#"["26.9.27","26.9.27","26.9.27"]"#), "out: {out}");
+    assert!(out.contains(r#"["26.10.3","26.10.3","26.10.3"]"#), "out: {out}");
     assert!(out.contains("[object Deno]"), "out: {out}");
     assert!(out.contains("[object Bun]"), "out: {out}");
     assert!(out.contains("[object WinterJS2]"), "out: {out}");

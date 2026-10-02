@@ -84,9 +84,9 @@ pub mod zlib;
 mod zlib_engine;
 
 /// 全局 `process` 等启动期求值的 JS（`runtime` 在主 PRELUDE 后求值）。
-/// 版本占位 `26.9.27` 在求值前替换为 `CARGO_PKG_VERSION`（发版时两处同步改，不漂移）。
+/// 版本占位 `26.10.3` 在求值前替换为 `CARGO_PKG_VERSION`（发版时两处同步改，不漂移）。
 pub fn node_prelude() -> String {
-    let base = process_::PROCESS_PRELUDE.replace("26.9.27", env!("CARGO_PKG_VERSION"));
+    let base = process_::PROCESS_PRELUDE.replace("26.10.3", env!("CARGO_PKG_VERSION"));
     // 本体命名空间活值刷新 + Deno 冻结（`__wjs2_` 内部面，下游调本体钩，§7 顺向）。
     format!(
         "{base}\n{}\ntry{{globalThis.__wjs2_ns_sync()}}catch(e){{}}",

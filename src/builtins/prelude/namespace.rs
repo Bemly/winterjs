@@ -14,7 +14,7 @@ pub const NAMESPACE_JS: &str = r#"
       const v = globalThis.process && globalThis.process.versions;
       if (v && typeof v.winterjs2 === "string") return v.winterjs2;
     } catch {}
-    return "26.9.27";
+    return "26.10.3";
   };
   const __wjs2_ns_req = (spec) => {
     try {

@@ -4389,3 +4389,20 @@
 - 复现：本轮 `__wjs222`/`WinterJS22` 三连击 + `rg` lookahead 静默失败。
 - 推广铁律：**批量改名前先列"禁区 + 守卫 pattern + 校验命令"三件套**；fixture
   数据与前缀长度常量逐个过目，不进机械替换。
+
+### 4.244 改名后工具链默认二进制路径漏网：sweep 跑的仍是旧名 stale 件（2026-10-03，P2-process）
+
+- 症状：process 首簇 `--eval` 探针全绿，`run1.sh` 五件却全红且报错全是旧行为
+  （`can't convert undefined to BigInt`、`process.release is undefined`）——
+  探针与套件用了两个二进制。
+- 根因：改名只改了仓内码，`scripts/sweep-bg.py` 默认 `target/debug/winterjs`
+  （glob 精确路径）+ `~/wjs-data/probe/run1.sh` 默认同路径仍指旧名；
+  `target/` 下新旧两份 308M 共存，旧件 09-30 02:59 一直被 sweep/run1 命中；
+  proc1（21/82）即旧二进制跑出的无效基线。
+- 修法：sweep-bg.py 默认路径/pgrep/pkill 全 `winterjs→winterjs2` +
+  run1.sh 默认路径/pkill 同改 + 删 stale `target/debug/winterjs`（含 `.d`）；
+  重跑 proc2（`target/debug/winterjs2`）21→25/82 方为有效基线。
+- 复现：`ls -lh target/debug/winterjs*` 双二进制共存即中招；`status.json` 的
+  `wjs` 字段是唯一真相（proc1 指向旧名）。
+- 推广铁律：**改名后先 `ls target/debug` 看双二进制，再跑任何 sweep/探针**；
+  工具链默认路径与 pgrep/pkill 模式进改名 checklist（4.243）必查项。

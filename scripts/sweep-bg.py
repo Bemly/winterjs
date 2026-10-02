@@ -134,30 +134,30 @@ def resolve_wjs(explicit):
             die(f"--wjs 不可执行: {p}")
         return p
     hits = [
-        h for h in _glob.glob("/Volumes/*/Projects/winterjs/target/debug/winterjs")
+        h for h in _glob.glob("/Volumes/*/Projects/winterjs/target/debug/winterjs2")
         if os.access(h, os.X_OK)
     ]
     if not hits:
-        die("glob /Volumes/*/Projects/winterjs 未命中可执行 winterjs——先 cargo build（§4.145）")
+        die("glob /Volumes/*/Projects/winterjs 未命中可执行 winterjs2——先 cargo build（§4.145）")
     if len(hits) > 1:
         die("glob 命中多份二进制，用 --wjs 显式指定:\n  " + "\n  ".join(hits))
     return hits[0]
 
 
 def orphan_warning():
-    # 实测坑（2026-09-25）：上一轮 sweep 挂死留下的孤儿 winterjs 进程会
+    # 实测坑（2026-09-25）：上一轮 sweep 挂死留下的孤儿 winterjs2 进程会
     # 占端口/状态，污染本轮与后续 node 基线——start 前预警。
     try:
         out = subprocess.run(
-            ["pgrep", "-f", "winterjs"], capture_output=True, timeout=5
+            ["pgrep", "-f", "winterjs2"], capture_output=True, timeout=5
         ).stdout.split()
     except (OSError, subprocess.TimeoutExpired):
         return
     if out:
         print(
-            f"WARNING: 检测到 {len(out)} 个残留 winterjs 进程 (pgrep pid:"
+            f"WARNING: 检测到 {len(out)} 个残留 winterjs2 进程 (pgrep pid:"
             f" {','.join(p.decode() for p in out[:5])})——孤儿会污染基线，"
-            "建议 pkill -f winterjs 后再 start",
+            "建议 pkill -f winterjs2 后再 start",
             flush=True,
         )
 
@@ -168,7 +168,7 @@ RUNNING = set()
 RUN_LOCK = _th.Lock()
 ABORT = _th.Event()
 PAUSE = _th.Event()
-# 阈值：系统盘 < 3GB / 数据盘 < 5GB / 内存压力 critical 或空闲 < 10% / winterjs 进程 > 80 → 中止；
+# 阈值：系统盘 < 3GB / 数据盘 < 5GB / 内存压力 critical 或空闲 < 10% / winterjs2 进程 > 80 → 中止；
 # 内存压力 warn → 暂停发新件，回落再继续。
 LIMITS = {"sys_gb": 3.0, "data_gb": 5.0, "free_pct": 10,
           "wjs_procs": int(os.environ.get("WJS_SWEEP_MAX_PROCS", "80"))}
@@ -201,7 +201,7 @@ def _free_pct():
 
 def _wjs_procs():
     try:
-        return len(subprocess.run(["pgrep", "-f", "target/debug/winterjs"], capture_output=True,
+        return len(subprocess.run(["pgrep", "-f", "target/debug/winterjs2"], capture_output=True,
                                   timeout=5).stdout.split())
     except (OSError, subprocess.TimeoutExpired):
         return -1
@@ -215,7 +215,7 @@ def _kill_all_running():
             os.killpg(pg, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
-    subprocess.run(["pkill", "-9", "-f", "target/debug/winterjs"], capture_output=True)
+    subprocess.run(["pkill", "-9", "-f", "target/debug/winterjs2"], capture_output=True)
 
 
 def watchdog(st, log_path):
@@ -237,7 +237,7 @@ def watchdog(st, log_path):
             elif lvl >= 4 or 0 <= freep < LIMITS["free_pct"]:
                 reason = f"内存压力 critical（level={lvl} free={freep}%）"
             elif procs > LIMITS["wjs_procs"]:
-                reason = f"winterjs 进程 {procs} > {LIMITS['wjs_procs']}（疑自 spawn 失控）"
+                reason = f"winterjs2 进程 {procs} > {LIMITS['wjs_procs']}（疑自 spawn 失控）"
             if tick % 3 == 0 or reason:
                 log.write(f"{time.strftime('%H:%M:%S')} done={st.get('done')} procs={procs} "
                           f"free={freep}% pressure={lvl} sys={sysg:.1f}GB data={datag:.1f}GB "

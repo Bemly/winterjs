@@ -954,3 +954,21 @@ G1/G2/G3/G9 已收官。）
   `slice(11)` 未跟前缀变长、c4x 向量消息串误改（fixture 禁改名）。见坑 4.243。
 - 验证：全量 strict 849/849；冒烟 5/5；站 132/132 + 门绿；`gh repo rename`
   winterjs→winterjs2，remote 已切，RAW_BASE 200，Pages 成功，站 200 且新品牌。
+
+## 2026-10-03 P2-process R1：hrtime/nextTick/chdir 校验 + release 面（21→25/82）
+
+- 真机口径（node 原文：`lib/internal/process/per_thread.js` hrtime/
+  `task_queues.js` nextTick/`does_own_process_state.js` chdir）：hrtime 非数组→
+  `ERR_INVALID_ARG_TYPE`、非 2 元→`ERR_OUT_OF_RANGE`；nextTick 非函数→
+  `ERR_INVALID_ARG_TYPE`；chdir 非串→`ERR_INVALID_ARG_TYPE` + 缺失路径→`ENOENT`
+  （code/errno/syscall/path/dest 五件）；release `{name:'node',lts:'Jod',…}`
+  （versions.node 22.12 口径）。
+- hrtime 差值借位：单 BigInt 取余带负号致 `diff[1]<0`（真机秒/纳秒分开减+借位，
+  nodejs/node#4751）——改分减后 `d[1]` 恒 ∈ [0,1e9）。
+- hrtime 余 `%PrepareFunctionForOptimization` 行：V8 私有语法，SM 永 SyntaxError——
+  引擎边界记档（hrtime-bigint.js 同理），时间盒止损。
+- 工具链事故：改名漏了 sweep-bg.py/run1.sh 默认二进制路径，proc1（21/82）系旧
+  二进制无效基线；修后 proc2（`target/debug/winterjs2`）25/82 方有效（坑 4.244）。
+- 验证：run1.sh 4/5（hrtime 记档）；黑盒 `phase11_process_validation_faces`
+  （正常+报错+边界 11 断言）；process 域 nextest 13/13 strict；冒烟 5/5；
+  `check-lines` ok。

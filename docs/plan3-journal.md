@@ -1115,3 +1115,25 @@ G1/G2/G3/G9 已收官。）
   consumers 锁码 + TextDecoder 码（Web 面改码涉 whatwg 回归，R2 先对真机）/
   duplex/pipeline-preprocess/readable 系（R2 逐件）/ destroy/pipeline TIMEOUT×3
   （挂死型，R2 末）。
+
+## 2026-10-03 P2-stream R2：stream/iter 门控面落地（162→184/215）
+
+- 内容（`1e5dfdf`）：`stream/iter` + `zlib/iter` 旗门控注册（无旗即未注册，
+  双路真机文案 4.260）+ `internal/streams/iter/*` 12 件逐字移植（生成器
+  `scripts/gen-iter-ports.py`；pull 超限切两片 include_str 字节恒等）+
+  管道件：primordials +26 / validators +2 / internal/util +3 /
+  task_queues 新件 / E() 变体类 4.256 / fatal 首行 `[码]` 穿透 /
+  internal/types 跨 realm 4.258 / classic 可选链改 `__reg` 4.257。
+  黑盒 r2（门控双形 + 回环 + 跨 realm + 变体类）+ cli `[码]` 三件。
+- 验证：stream3 sweep（stream2 红 54 重跑）SAME0 22 → **184/215（86%）**；
+  全量 nextest strict **863/863**；冒烟 5/5；`check-lines` ok。
+- 转绿 22：iter broadcast/from/namespace/pipeto/pull/push/share
+  基础簇 20 + disabled×2 + cross-realm + readable-interop-disabled。
+- 附带修（全量回归抓出）：http upgrade 黑盒 stale 监听改 once（4.259，
+  真机同败）；timers 黑盒按真机改 CJS 双取比法；path/require 黑盒文案翻转。
+- 余 32 定性：transform×5 + interop/to-readable 的 zlib 块 + fs-pull 的
+  zlib 块（**R3-zlib 句柄 shim**：`internalBinding('zlib')` 原生流协议，
+  另轮）/ node 侧红×7（node 自败，我方过，版本漂移记档）/ SAME1×5
+  （双红不计欠账）/ 非 iter 旧红 12（consumers 锁码、destroy/pipeline
+  TIMEOUT×3、duplex、finished-RST、preprocess、readable 系、writable 系，
+  R3 逐件）。

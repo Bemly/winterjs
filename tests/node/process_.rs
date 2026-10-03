@@ -327,6 +327,42 @@ fn phase11_process_validation_faces() {
 }
 
 #[test]
+fn phase11_process_execve_faces() {
+    // P2-process R6: execve 校验面（node 原文口径；真调替换测试进程，
+    // 此处只验报错面 + 失败形 ENOENT，不做成功替换）。
+    // 正常：无（成功不返回，不断言）。
+    // 报错：execPath 非串、args 非数组/坏元素、env 非对象/坏键值、ENOENT 形状。
+    // 边界：空 env 对象（校验过，调后 ENOENT——路径必不存在）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (ok, out, _) = wjs(
+        &[
+            "--eval",
+            "const code = (f) => { try { f(); } catch (e) { return e.code || 'THREW'; } return 'NO-THROW'; };\
+             console.log('path', code(() => process.execve(123)));\
+             console.log('args', code(() => process.execve(process.execPath, '123')));\
+             console.log('args-elem', code(() => process.execve(process.execPath, [123])));\
+             console.log('env', code(() => process.execve(process.execPath, [], '123')));\
+             console.log('env-val', code(() => process.execve(process.execPath, [], { abc: 123 })));\
+             try { process.execve('/wjs2-no-such-bin-xyz', ['x']); }\
+             catch (e) { console.log('enoent', e.code, e.syscall, typeof e.errno, /xyz$/.test(e.path)); }",
+        ],
+        &dir,
+    );
+    assert!(ok, "out: {out}");
+    for line in [
+        "path ERR_INVALID_ARG_TYPE",
+        "args ERR_INVALID_ARG_TYPE",
+        "args-elem ERR_INVALID_ARG_VALUE",
+        "env ERR_INVALID_ARG_TYPE",
+        "env-val ERR_INVALID_ARG_VALUE",
+        "enoent ENOENT execve number true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase11_process_spawn_faces() {
     // P2-process R5: ppid + reallyExit 路由 + execPath canonical（node 原文口径）。
     // 正常：ppid 为正整数；子进程 ppid 即父 pid；exit 经 reallyExit（mock 可截）。

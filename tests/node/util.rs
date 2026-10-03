@@ -370,3 +370,27 @@ console.log("depth0", util.inspect({ a: [1] }, { depth: 0 }));
     assert!(out.contains("depth0 { a: [Array] }"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_inspect_control_escapes() {
+    // P2-process R6 附带：inspect 控制字符转义与真机 meta 表一致
+    //（\0 → \x00，\x07 → \x07，\v → \x0B，\x1b → \x1B；旧表误用 \0/\a/\v/\e）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = stdout_of(&mut winterjs2().args([
+        "--eval",
+        "const util = require('node:util');\
+         console.log(JSON.stringify(util.inspect('a\\0b')));\
+         console.log(JSON.stringify(util.inspect('\\x07')));\
+         console.log(JSON.stringify(util.inspect('\\v')));\
+         console.log(JSON.stringify(util.inspect('\\x1b')));",
+    ]));
+    for line in [
+        "\"'a\\\\x00b'\"",
+        "\"'\\\\x07'\"",
+        "\"'\\\\x0B'\"",
+        "\"'\\\\x1B'\"",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

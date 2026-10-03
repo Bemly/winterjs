@@ -1,10 +1,20 @@
-//! POSIX 身份设置 natives（setuid/setgid/seteuid/setegid/setgroups/initgroups）。
+//! POSIX 进程控制 natives（身份设置/信号投递/镜像替换：setuid 系 + kill + execve）。
 //! 从 `process_.rs` 拆出（§0.9 单文件 ≤1000 行；纯搬移，行为不变，
 //! 调用方经 `node::process_cred::` 原位改址）。
 
 use mozjs::jsval::JSVal;
+use mozjs::rooted;
 
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
+
+/// 字符串返回值（`process_.rs` 同款小 helper，不跨模块引，保持单文件自洽）。
+fn set_rval_str(cx: &mut mozjs::context::JSContext, frame: &Frame, s: &str) {
+    use mozjs::conversions::ToJSValConvertible as _;
+    use mozjs::jsval::UndefinedValue;
+    rooted!(&in(cx) let mut v = UndefinedValue());
+    s.to_jsval(cx, v.handle_mut());
+    frame.set_rval(v.get());
+}
 
 /// POSIX credential 查询：用户名→uid（unknown 即 None；数字直通 u32）。
 #[cfg(unix)]
@@ -215,3 +225,125 @@ pub unsafe extern "C" fn initgroups(
         false
     }
 }
+
+/// `__wjs2_kill(pidJson, sigJson)` → 0 成功 / 正 errno（pid 接受数形与数字串，
+/// 与 JS 侧 `pid != (pid|0)` 门对应；非法输入 JS 侧先拦，此处兜底 EINVAL）。
+pub unsafe extern "C" fn kill(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: kill needs pid and signal");
+        return false;
+    }
+    let (p_json, s_json) = (
+        value_to_string(&mut cx, frame.arg(0)),
+        value_to_string(&mut cx, frame.arg(1)),
+    );
+    let pid: i64 = serde_json::from_str::<serde_json::Value>(&p_json)
+        .ok()
+        .and_then(|v| match &v {
+            serde_json::Value::Number(n) => n.as_i64(),
+            serde_json::Value::String(s) => s.parse::<i64>().ok(),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let sig: i32 = serde_json::from_str::<serde_json::Value>(&s_json)
+        .ok()
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+    #[cfg(unix)]
+    {
+        // SAFETY: 纯数值 syscall，无指针，无别名；errno 当场取。
+        if unsafe { libc::kill(pid as libc::pid_t, sig as libc::c_int) } == 0 {
+            frame.set_rval(mozjs::jsval::Int32Value(0));
+        } else {
+            let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EPERM);
+            frame.set_rval(mozjs::jsval::Int32Value(e));
+        }
+        true
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, sig);
+        report_error(&mut cx, "Error: kill is not available on this platform");
+        false
+    }
+}
+
+/// `__wjs2_execve(path, argsJson, envJson)` → 成功不返回（镜像替换）；
+/// 失败回 errno 正数 + strerror 文 —— `{"errno":N,"text":"..."}` JSON（JS 侧成错）。
+pub unsafe extern "C" fn execve(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: execve needs path, args and env");
+        return false;
+    }
+    let (p, a_json, e_json) = (
+        value_to_string(&mut cx, frame.arg(0)),
+        value_to_string(&mut cx, frame.arg(1)),
+        value_to_string(&mut cx, frame.arg(2)),
+    );
+    let mut fail = |errno: i32, text: String| {
+        let json = serde_json::json!({ "errno": errno, "text": text }).to_string();
+        set_rval_str(&mut cx, &frame, &json);
+    };
+    #[cfg(unix)]
+    {
+        let Ok(args) = serde_json::from_str::<Vec<String>>(&a_json) else {
+            fail(libc::EINVAL, "Invalid argument".into());
+            return true;
+        };
+        let Ok(env) = serde_json::from_str::<Vec<String>>(&e_json) else {
+            fail(libc::EINVAL, "Invalid argument".into());
+            return true;
+        };
+        // SAFETY: CStrings 存活到 execve 调用（成功不返回；失败当场取 errno）。
+        let (Ok(path_c), args_c, env_c) = (
+            std::ffi::CString::new(p.as_str()),
+            args.iter()
+                .map(|s| std::ffi::CString::new(s.as_str()))
+                .collect::<Result<Vec<_>, _>>(),
+            env.iter()
+                .map(|s| std::ffi::CString::new(s.as_str()))
+                .collect::<Result<Vec<_>, _>>(),
+        ) else {
+            fail(libc::EINVAL, "Invalid argument".into());
+            return true;
+        };
+        let (Ok(args_c), Ok(env_c)) = (args_c, env_c) else {
+            fail(libc::EINVAL, "Invalid argument".into());
+            return true;
+        };
+        let mut argv: Vec<*const libc::c_char> =
+            args_c.iter().map(|s| s.as_ptr()).collect();
+        argv.push(std::ptr::null());
+        let mut envp: Vec<*const libc::c_char> = env_c.iter().map(|s| s.as_ptr()).collect();
+        envp.push(std::ptr::null());
+        // SAFETY: 同上；成功不返回，返回即失败。
+        unsafe { libc::execve(path_c.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
+        let e = std::io::Error::last_os_error();
+        let errno = e.raw_os_error().unwrap_or(libc::ENOENT);
+        let text = e.to_string();
+        let text = text.split(" (os error").next().unwrap_or(&text).to_owned();
+        fail(errno, text);
+        true
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (p, a_json, e_json);
+        fail(38, "Function not implemented".into());
+        true
+    }
+}
+

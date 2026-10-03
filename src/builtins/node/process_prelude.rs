@@ -8,6 +8,8 @@ pub const PROCESS_PRELUDE: &str = r#"
 function __wjs2_stdio_stream(fd) {
   return {
     __wjs2_fd: fd,
+    // 可写恒真（execve-throws 套件点名 stdout/stderr.writable；真机流面）。
+    writable: true,
     write(s, ...rest) {
       const r = fd === 1 ? __wjs2_stdout_write(String(s)) : __wjs2_stderr_write(String(s));
       const cb = rest.find((a) => typeof a === "function");
@@ -306,6 +308,57 @@ globalThis.process = {
   },
   // 默认投递器（可被用户 mock，见 kill-pid 套件；返回 errno 数，0 即成）。
   _kill(pid, sig) { return __wjs2_kill(JSON.stringify(pid), JSON.stringify(sig)); },
+  // 镜像替换（node 口径 per_thread.js execve 逐字：worker/平台门 + 校验 +
+  // 成功不返回；自身软链/直链补 --run 自举，__selfArgv 同口径）。
+  execve(execPath, args = [], env = process.env) {
+    const E = require("internal/errors").codes;
+    const { isMainThread } = require("node:worker_threads");
+    if (!isMainThread) {
+      throw new E.ERR_WORKER_UNSUPPORTED_OPERATION("Calling process.execve");
+    }
+    if (process.platform === "win32" || process.platform === "os400") {
+      throw new E.ERR_FEATURE_UNAVAILABLE_ON_PLATFORM("process.execve");
+    }
+    if (typeof execPath !== "string") throw new E.ERR_INVALID_ARG_TYPE("execPath", "string", execPath);
+    if (!Array.isArray(args)) throw new E.ERR_INVALID_ARG_TYPE("args", "Array", args);
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (typeof arg !== "string" || arg.includes("\0")) {
+        throw new E.ERR_INVALID_ARG_VALUE(`args[${i}]`, arg, "must be a string without null bytes");
+      }
+    }
+    if (env === null || Array.isArray(env) || typeof env !== "object") {
+      throw new E.ERR_INVALID_ARG_TYPE("env", "Object", env);
+    }
+    const envArray = [];
+    for (const [key, value] of Object.entries(env)) {
+      if (typeof key !== "string" || typeof value !== "string" ||
+          key.includes("\0") || value.includes("\0")) {
+        throw new E.ERR_INVALID_ARG_VALUE("env", env, "must be an object with string keys and values without null bytes");
+      }
+      envArray.push(`${key}=${value}`);
+    }
+    // 自身：裸文件形补 --run（子进程 argv 保持 node 形，execve 套件点名）。
+    let argv = args;
+    try {
+      const fs = require("node:fs");
+      if (fs.realpathSync(execPath) === fs.realpathSync(process.execPath)) {
+        const a = [...args];
+        if (a[1] === "-e" || a[1] === "-p") a.splice(1, 1, "--eval");
+        else if (a[1] !== undefined && !String(a[1]).startsWith("-")) a.splice(1, 0, "--run");
+        argv = a;
+      }
+    } catch {}
+    const r = JSON.parse(__wjs2_execve(execPath, JSON.stringify(argv), JSON.stringify(envArray)));
+    // 到此即失败（成功不返回）：成系统错（ENOENT 口径 `ENOENT, text 'path'`）。
+    const code = { 1: "EPERM", 2: "ENOENT", 8: "ENOEXEC", 13: "EACCES", 20: "ENOTDIR", 22: "EINVAL", 40: "ELOOP", 63: "ENAMETOOLONG" }[r.errno] ?? `ERRNO_${r.errno}`;
+    const e = new Error(`${code}, ${r.text} '${execPath}'`);
+    e.code = code;
+    e.errno = r.errno;
+    e.syscall = "execve";
+    e.path = execPath;
+    throw e;
+  },
   // 文件创建掩码（node 口径 lib/internal/bootstrap/switches/does_own_process_state.js：
   // 串形按八进制解析（非法即 ERR_INVALID_ARG_VALUE），数形走 uint32 门）。
   umask(mask) {

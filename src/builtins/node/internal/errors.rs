@@ -396,6 +396,7 @@ E('ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL',
   (arg) => `Unexpected argument '${arg}'. This command does not take positional arguments`,
   TypeError, HideStackFramesError);
 E('ERR_UNKNOWN_SIGNAL', 'Unknown signal: %s', TypeError, HideStackFramesError);
+E('ERR_WORKER_UNSUPPORTED_OPERATION', '%s is not supported in workers', TypeError);
 E('ERR_USE_AFTER_CLOSE', '%s was closed', Error, HideStackFramesError);
 
 // ── Phase 9b：streams 系错误码（定义逐字自 node internal/errors.js）────────

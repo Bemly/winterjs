@@ -498,7 +498,7 @@ pub unsafe extern "C" fn process_exit(
     false
 }
 
-/// `__wjs2_exit_code_get()` → Int32（未设为 0）。
+/// `__wjs2_exit_code_get()` → Int32 或 undefined（未设回 undefined，真机口径）。
 pub unsafe extern "C" fn exit_code_get(
     _cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -506,7 +506,23 @@ pub unsafe extern "C" fn exit_code_get(
 ) -> bool {
     // SAFETY: 仅访问调用帧（无 cx 上的 JSAPI 调用）
     let frame = unsafe { Frame::from_raw(vp, argc) };
-    frame.set_rval(mozjs::jsval::Int32Value(state::exit_code().unwrap_or(0)));
+    match state::exit_code() {
+        Some(c) => frame.set_rval(mozjs::jsval::Int32Value(c)),
+        None => frame.set_rval(UndefinedValue()),
+    }
+    true
+}
+
+/// `__wjs2_exit_code_unset()` → undefined（`exitCode = undefined/null` 清除，真机口径）。
+pub unsafe extern "C" fn exit_code_unset(
+    _cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 仅访问调用帧
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    state::set_exit_code(None);
+    frame.set_rval(UndefinedValue());
     true
 }
 
@@ -523,7 +539,7 @@ pub unsafe extern "C" fn exit_code_set(
         report_error(&mut cx, "TypeError: exitCode needs a number");
         return false;
     }
-    state::set_exit_code(frame.arg(0).to_number() as i32);
+    state::set_exit_code(Some(frame.arg(0).to_number() as i32));
     frame.set_rval(UndefinedValue());
     true
 }

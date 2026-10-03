@@ -112,7 +112,7 @@ fn fatal_exit(rt: &mut Runtime, global: &RootedGuard<'_, *mut JSObject>, e: Erro
         return e;
     }
     let _ = e.render(color);
-    state::set_exit_code(1);
+    state::set_exit_code(Some(1));
     {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         crate::builtins::node::process_::emit_exit(&mut realm, global.get());

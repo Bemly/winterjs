@@ -12,7 +12,8 @@
 /// 内嵌 ESM 源。
 pub const SOURCE: &str = r#"
 // node:timers — callback timers over the global timer face (see module docs).
-import * as promises from 'node:timers/promises';
+import __promisesDefault from 'node:timers/promises';
+const promises = __promisesDefault;
 
 // 全局函数在模块求值期捕获值（套件 api-refs：delete globalThis.setTimeout 等
 // 之后 node:timers 面仍须可用——模块面不依赖全局可达，Node 同款口径）。

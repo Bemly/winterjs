@@ -189,6 +189,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_process_exit", Some(node::process_::process_exit), 1),
             ("__wjs2_exit_code_get", Some(node::process_::exit_code_get), 0),
             ("__wjs2_exit_code_set", Some(node::process_::exit_code_set), 1),
+            ("__wjs2_exit_code_unset", Some(node::process_::exit_code_unset), 0),
             ("__wjs2_exec_path", Some(node::process_::exec_path), 0),
             ("__wjs2_pid", Some(node::process_::pid), 0),
             ("__wjs2_ppid", Some(node::process_::ppid), 0),

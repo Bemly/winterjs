@@ -862,9 +862,9 @@ pub fn exit_code() -> Option<i32> {
     with_plain(|p| p.exit_code)
 }
 
-/// `process.exitCode = n`（截断 i32；Node 要求整数，此处由 prelude 校验）。
-pub fn set_exit_code(code: i32) {
-    with_plain(|p| p.exit_code = Some(code));
+/// `process.exitCode = n`（Some；None 即清除，真机口径 R9；整数由 prelude 校验）。
+pub fn set_exit_code(code: Option<i32>) {
+    with_plain(|p| p.exit_code = code);
 }
 
 // ── CJS 缓存 / ESM 求值集 / 主模块（`require` 用，见 plan Phase 4d）─────────

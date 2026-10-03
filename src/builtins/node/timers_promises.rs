@@ -130,7 +130,11 @@ export {
   setInterval,
   scheduler,
 };
-// 无 default 导出（10f 对拍定案）：require('node:timers/promises') 走
-// namespace 回落，与 node:timers 的 .promises（同 namespace）deepStrictEqual
-// 一致（真机 require(esm) 返回 namespace 本体）。
+const __api = {
+  setTimeout: timersSetTimeout,
+  setImmediate: timersSetImmediate,
+  setInterval,
+  scheduler,
+};
+export default __api;
 "#;

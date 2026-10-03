@@ -723,8 +723,19 @@ pub unsafe extern "C" fn builtin_modules_json(
     let frame = unsafe { Frame::from_raw(vp, argc) };
     let mut names: Vec<&str> = Vec::new();
     for canonical in crate::builtins::node::available() {
-        names.push(canonical.strip_prefix("node:").unwrap_or(canonical));
-        names.push(canonical);
+        // R9：新风格仅前缀模块（真机 builtinModules 仅 `node:` 形，无裸名；
+        // `getBuiltinModule('test')` 必须 undefined，而本仓 require 裸名可达）。
+        // 跳过裸形：test / sqlite / quic（本仓三件；sea/ffi 无 canonical 不涉及）。
+        match canonical {
+            "node:test" | "node:test/reporters" | "node:sqlite" | "node:quic"
+            | "node:sea" | "node:ffi" | "node:vfs" => {
+                names.push(canonical);
+            }
+            _ => {
+                names.push(canonical.strip_prefix("node:").unwrap_or(canonical));
+                names.push(canonical);
+            }
+        }
     }
     let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".into());
     rooted!(&in(cx) let mut v = UndefinedValue());

@@ -675,3 +675,65 @@ fn phase11_emit_warning_node_semantics() {
     assert!(String::from_utf8_lossy(&out.stdout).trim() == "0", "{out:?}");
     assert!(!String::from_utf8_lossy(&out.stderr).contains("Warning: x"));
 }
+
+#[test]
+fn phase11_process_r9_misc_faces() {
+    // P2-process R9-A: exitCode 校验 + binding/config/_rawDebug/setSourceMaps/
+    // ref-unref/getBuiltin（node 原文口径）。
+    // 正常：exitCode 合法串/清零；binding util 16 键恒等；config 冻结；
+    //   ref/unref 双形；getBuiltin 双形同引用。
+    // 报错：exitCode 非法三形码；binding 未知模块；setSourceMaps 非布尔；
+    //   getBuiltin 非串。
+    // 边界：exitCode delete 不可删；getBuiltin('test')/internal/* 回 undefined。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (ok, out, _) = wjs(
+        &[
+            "--eval",
+            "console.log('exit-str', (process.exitCode = '2', process.exitCode === 2));\
+             process.exitCode = undefined; console.log('exit-undef', process.exitCode === undefined);\
+             const b = process.binding('util');\
+             console.log('bind-keys', Object.keys(b).length === 16 && b.isPromise === require('node:util').types.isPromise);\
+             console.log('config-frozen', Object.isFrozen(process.config));\
+             let rc = 0, uc = 0;\
+             const o = { ref() { rc++; }, unref() { uc++; } }; process.ref(o); process.unref(o);\
+             console.log('ref-legacy', rc === 1 && uc === 1);\
+             let rc2 = 0; const o2 = { [Symbol.for('nodejs.ref')]() { rc2++; } }; process.ref(o2);\
+             console.log('ref-sym', rc2 === 1);\
+             console.log('gb-same', process.getBuiltinModule('node:os') === require('node:os'));\
+             const code = (f) => { try { f(); } catch (e) { return e.code; } return 'NO-THROW'; };\
+             console.log('exit-empty', code(() => { process.exitCode = ''; }));\
+             console.log('exit-obj', code(() => { process.exitCode = {}; }));\
+             console.log('exit-float', code(() => { process.exitCode = 2.1; }));\
+             console.log('bind-miss', (() => { try { process.binding('test'); } catch (e) { return e.message; } return ''; })());\
+             console.log('sms-num', code(() => process.setSourceMapsEnabled(1)));\
+             console.log('gb-num', code(() => process.getBuiltinModule(1)));\
+             console.log('exit-del', (() => { try { delete process.exitCode; } catch (e) { return e.message; } return ''; })());\
+             console.log('gb-test', process.getBuiltinModule('test') === undefined);\
+             console.log('gb-internal', process.getBuiltinModule('internal/util') === undefined);\
+             process.exitCode = undefined;",
+        ],
+        &dir,
+    );
+    assert!(ok, "out: {out}");
+    for line in [
+        "exit-str true",
+        "exit-undef true",
+        "bind-keys true",
+        "config-frozen true",
+        "ref-legacy true",
+        "ref-sym true",
+        "gb-same true",
+        "exit-empty ERR_INVALID_ARG_TYPE",
+        "exit-obj ERR_INVALID_ARG_TYPE",
+        "exit-float ERR_OUT_OF_RANGE",
+        "bind-miss No such module: test",
+        "sms-num ERR_INVALID_ARG_TYPE",
+        "gb-num ERR_INVALID_ARG_TYPE",
+        "exit-del Cannot delete property 'exitCode' of #<process>",
+        "gb-test true",
+        "gb-internal true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

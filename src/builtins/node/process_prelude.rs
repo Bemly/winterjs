@@ -269,10 +269,25 @@ globalThis.process = {
   // 本仓现收录 UDPWrap（dgram 侧登记/摘除），其余底座另案记档）。
   getActiveResourcesInfo() { return [...(globalThis.__wjs2ActiveResources?.values() ?? [])]; },
   get exitCode() { return __wjs2_exit_code_get(); },
-  set exitCode(v) {
-    const n = Number(v);
-    if (!Number.isInteger(n)) throw new TypeError("process.exitCode must be an integer");
-    __wjs2_exit_code_set(n);
+  set exitCode(code) {
+    // node 口径 internal/bootstrap/node.js：null/undefined 清除；非空串先
+    // Number() 试转（NaN 则保留原串进校验）；validateInteger 分两错
+    //（非 number 即 ERR_INVALID_ARG_TYPE，散件.pattern 点名；非整数即
+    // ERR_OUT_OF_RANGE，2.1/Infinity/NaN 点名）。
+    if (code === null || code === undefined) { __wjs2_exit_code_unset(); return; }
+    const E = require("internal/errors").codes;
+    let value = code;
+    if (typeof code === "string" && code !== "") {
+      const n = Number(code);
+      if (!Number.isNaN(n)) value = n;
+    }
+    if (typeof value !== "number") throw new E.ERR_INVALID_ARG_TYPE("code", "number", value);
+    if (!Number.isInteger(value)) {
+      const e = new RangeError(`The value of "code" is out of range. It must be an integer. Received ${String(value)}`);
+      e.code = "ERR_OUT_OF_RANGE";
+      throw e;
+    }
+    __wjs2_exit_code_set(value);
   },
   get platform() { return __wjs2_os_platform(); },
   get arch() { return __wjs2_os_arch(); },
@@ -461,11 +476,67 @@ globalThis.process = {
     return { user: cur.user, system: cur.system };
   },
   // Node 22.3+（vite 用 getBuiltinModule('node:module').Module 做互操作）；
-  // 裸名（'module'）与 'node:module' 双形均收（Node 口径），非内置走 require
-  // 的可读报错；require 的 ESM-default 口径（node:module default 导出带 Module 类）。
+  // 真机 internal/modules/helpers.js：非串即 ERR_INVALID_ARG_TYPE；
+  // 归一化失败（'test'/'sea'/internal/* 等）回 undefined 不抛（R9）。
+  // 注意：不做裸名→node: 前缀拼接——'test' 必须 undefined 而 'fs' 本就
+  // 经 require 别名可达（builtinModules 混合表，真机同）。
   getBuiltinModule(id) {
-    const spec = String(id);
-    return globalThis.require(spec.startsWith("node:") ? spec : `node:${spec}`);
+    const E = require("internal/errors").codes;
+    if (typeof id !== "string") throw new E.ERR_INVALID_ARG_TYPE("id", "string", id);
+    // R9：裸 'test' 在 node builtinModules 无此项（仅 'node:test'），必须
+    // undefined（本仓注册表含裸 'test' 别名，require 可达，真机不可）；
+    // 'internal/*' 同理（本仓内部件 require 可达，真机归一化回 undefined）。
+    // 新风格裸名（sqlite/quic/sea/ffi/vfs）同理（真机仅前缀形）。
+    if (id === "test" || id === "sqlite" || id === "quic" || id === "sea"
+      || id === "ffi" || id === "vfs" || id.startsWith("internal/")) return undefined;
+    try {
+      return globalThis.require(id);
+    } catch {
+      return undefined;
+    }
+  },
+  // 内部绑定（realm.js 口径最小集：'util' 回 16 键与 util.types 恒等对象，
+  // 他名即 `No such module`；String() 归一，真机同）。
+  binding(mod) {
+    mod = String(mod);
+    if (mod === "util") {
+      const t = require("node:util").types;
+      const out = {};
+      for (const k of ["isAnyArrayBuffer","isArrayBuffer","isArrayBufferView",
+        "isAsyncFunction","isDataView","isDate","isExternal","isMap",
+        "isMapIterator","isNativeError","isPromise","isRegExp","isSet",
+        "isSetIterator","isTypedArray","isUint8Array"]) out[k] = t[k];
+      return out;
+    }
+    throw new Error(`No such module: ${mod}`);
+  },
+  // 裸调试输出（per_thread.js 口径：util.format 后直写 fd，不走 stderr.write；
+  // hijack 套件点名绕过）。
+  _rawDebug(...args) {
+    try {
+      const { format } = require("node:util");
+      __wjs2_stderr_write(`${format(...args)}\n`);
+    } catch {
+      try { __wjs2_stderr_write(`${args.join(" ")}\n`); } catch {}
+    }
+  },
+  // sourcemaps 开关（bootstrap/node.js 口径：布尔门；存根只收不兑现）。
+  setSourceMapsEnabled(val) {
+    if (typeof val !== "boolean") {
+      throw new (require("internal/errors").codes.ERR_INVALID_ARG_TYPE)("enabled", "boolean", val);
+    }
+  },
+  // 存活引用（per_thread.js 口径：Symbol.for('nodejs.ref/unref') 优先，
+  // 回落 .ref/.unref；null/undefined 即返）。
+  ref(m) {
+    if (m === null || m === undefined) return;
+    const fn = m[Symbol.for("nodejs.ref")] || m.ref;
+    if (typeof fn === "function") Reflect.apply(fn, m, []);
+  },
+  unref(m) {
+    if (m === null || m === undefined) return;
+    const fn = m[Symbol.for("nodejs.unref")] || m.unref;
+    if (typeof fn === "function") Reflect.apply(fn, m, []);
   },
   // stdout/stderr 富流（真 node 是 Socket；10f 起 helper 造形：直写 fd +
   // EE 全表面——pipe 的 dest.on/emit('pipe')/close/finish 登记接得住；
@@ -880,6 +951,36 @@ try {
     __wjs2_stderr_write(`Setting the NODE_DEBUG environment variable to '${__sec}' can expose sensitive data (such as passwords, tokens and authentication headers) in the resulting log.\n`);
   }
 } catch { /* 环境不可读即跳过 */ }
+// R9：config 冻结 + exitCode 不可删除（真机 bootstrap 口径：config 经 reviver
+// 深冻；exitCode configurable:false，严格模式 delete 即抛）。
+try {
+  const __pc = globalThis.process.config;
+  if (__pc && typeof __pc === "object") {
+    try { if (__pc.target_defaults) Object.freeze(__pc.target_defaults); } catch {}
+    try { if (__pc.variables) Object.freeze(__pc.variables); } catch {}
+    Object.freeze(__pc);
+  }
+} catch {}
+try {
+  const __d = Object.getOwnPropertyDescriptor(globalThis.process, "exitCode");
+  if (__d) Object.defineProperty(globalThis.process, "exitCode", { ...__d, configurable: false });
+} catch {}
+// R9：SM 删除不可配置属性的文案与 V8 不同（`property "exitCode" is ...` vs
+// 真机 `Cannot delete property 'exitCode' of #<process>`，validation 套件点名
+// 正则）。Proxy 只拦 deleteProperty，其余默认透传（get/set 经 target，
+// this 为 proxy 时读写 __wjs2_* 表经转发一致；PROTO_FIXUP 的 setPrototypeOf
+// 亦默认透传）。
+try {
+  const __target = globalThis.process;
+  globalThis.process = new Proxy(__target, {
+    deleteProperty(t, p) {
+      if (p === "exitCode") {
+        throw new TypeError("Cannot delete property 'exitCode' of #<process>");
+      }
+      return Reflect.deleteProperty(t, p);
+    },
+  });
+} catch {}
 "#;
 
 /// EventEmitter 原型链修正（test-process-prototype 口径；须在 `require` 可用后执行，

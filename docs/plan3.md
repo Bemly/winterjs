@@ -164,7 +164,10 @@ phase11_process_validation_faces 11 断言；process 域 13/13、冒烟 5/5）�
 真值 4.245；thread-worker 余 crypto 配额记档；黑盒 phase11_process_resource_faces
 14 断言；process 域 14/14、冒烟 5/5）。**process R3** ✅ 2026-10-03 POSIX 身份
 4 转绿 36/82（EPERM==1 撞码 4.246；process_cred.rs 拆分；黑盒
-phase11_process_credential_faces；process 域 15/15、冒烟 5/5） | 各按止损线 | 🟡 |
+phase11_process_credential_faces；process 域 15/15、冒烟 5/5）。
+**process R4** ✅ 2026-10-03 kill/原型/title 5 转绿 41/82（_kill 可 mock；
+黑盒 phase11_process_kill_prototype_title_faces；process 域 16/16、冒烟 5/5；
+R5 续啃 ppid/reallyExit/execpath 系） | 各按止损线 | 🟡 |
 | P3 | http 冻结收口 | ✅ 2026-09-30 R1：`matchKnownFields`（单例表删 content-encoding/x-forwarded-host，4.237）+ `outgoing-finished`（ServerResponse 补 OM 品牌五项等 close，4.238）转绿，`1.0-keep-alive` 复验绿；http 相关 52/52 strict；余 8 件按原定性记档不再开轮 | ≤1 天 | ✅ |
 | D1 | ✅ 2026-09-25 已做 | node 运行时旗改**精确名单**（`src/cli_node_flags.rs`，取自 `node --help`；前缀族方案致 4.209 事故后废弃；winterjs2 自有同名旗与改执行模式的旗不收，必须带值的旗只认 `--k=v`、值非法 exit 9）+ `internal/options` getOptionValue 读真实旗值 + DEP0005 认 `--pending-deprecation` + shell 串自举保旗交 CLI。实测：位置参数本就已通（旧"~18 件"口径过期）；`buffer-constructor-node-modules` 转绿；余红与 spawn 无关，已拆成 D4/P2 项（错误输出形状、`process.stdin/stdout` 非 Stream、`node:stream/iter` 未实现、vm-sigint stdio null） | — | ✅ |
 | D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |

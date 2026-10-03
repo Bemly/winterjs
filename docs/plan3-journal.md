@@ -1003,3 +1003,17 @@ G1/G2/G3/G9 已收官。）
 - 验证：run1.sh 4/4；黑盒 `phase11_process_credential_faces`（无副作用路径 9 断言）；
   process 域 nextest 15/15 strict；proc4 sweep 32→36/82；冒烟 5/5；
   `check-lines` ok。
+
+## 2026-10-03 P2-process R4：kill/原型/title 面（36→41/82）
+
+- 真机口径：kill 逐字移植（`pid != (pid|0)` 松散门 + 信号数形直通/名形查 os 表/
+  `this._kill` 可 mock + errno 成错；native 纯数值 kill）；原型链按真机五断言
+  复刻（proto≠EE.prototype 但链上含之 + 自有 constructor 槽；fixup 拼在
+  REQUIRE_PRELUDE 之后，prelude 主体求值时 require 尚无）；title 零 Rust 改动
+  （--title 末个赢读 execArgv，缺省回 execPath 基名，set 透写）。
+- 附带转绿：remove-all-signal-listeners（自发 SIGINT 面；自 spawn 可用，
+  先前"CLI 裸参家族不可为"的判断被证伪——execpath/ppid/really-exit 等系
+  缺 API（ppid/reallyExit）而非 CLI 挡道，R5 续啃）。
+- 验证：run1.sh 4/4；黑盒 `phase11_process_kill_prototype_title_faces`（8 断言，
+  kill 只验参+自检不真发信号）；process 域 nextest 16/16 strict；proc5 sweep
+  36→41/82；冒烟 5/5；`check-lines` ok。

@@ -4464,3 +4464,27 @@
   capture 路径 `cap foo` + rc=0 不变。
 - 推广铁律：**任何 JS 调用前先确认 pending 已清**（take 即清场语义）；
   新分发点必配"无人接"裸错渲染对照（stash 二进制 40 秒即得）。
+
+### 4.249 Rust set_var 遇空键 panic：node 口径是静默忽略（2026-10-03，P2-process-R8）
+
+- 症状：env.js 全程崩（rc=139）：`failed to set environment variable '""' to
+  '""'`，native 帧直接 abort（panic in nounwind 区，连栈都抓瞎）。
+- 根因：套件自带 `process.env[''] = ''`（还有 `TEST=` 一行）；Rust `set_var`
+  遇空键/`=`/NUL 即 panic，真机（libuv）静默无操作——也不是 throw。
+- 修法：native 先拦（空/`=`/NUL，含值 NUL）→ 回 undefined 不写；裸赋值在严格
+  模式下亦不抛（套件即裸写后读 undefined）。
+- 复现：修前 rc=139，修后 rc=0；定位靠给 native 加临时 eprintln 看调用序列
+  （复现后即删；JS 侧包 `__wjs2_env_set` 抓栈亦可，见 R8 过程）。
+- 推广铁律：**凡 Rust 标准库会 panic 的前置（set_var/remove？unwrap），native
+  入口一律先拦**；`env['']=x` 这类"合法 JS、非法 OS"键，真机行为是忽略不是抛。
+
+### 4.250 SpiderMonkey 时区缓存清不动（2026-10-03，P2-process-R8，记档）
+
+- 症状：`process.env.TZ='Europe/Amsterdam'` 后 `Date` 仍旧区；启动前置 TZ
+  则生效（首用即缓存）。
+- 根因：SM 另有引擎侧时区缓存（启动/首 Date 即定）；`tzset` 只刷 C 库，
+  对 SM 无效；mozjs/mozjs_sys 均无时区重置口（grep 空），ICU 动刀超出边界。
+- 修法：env-tz 记档（引擎边界）；`tzset` 保留（POSIX hygiene，无害）。
+- 复现：`TZ=... --eval Date` 生效 vs 运行期置 TZ 不生效，两行即判。
+- 推广铁律：**"启动生效、运行期不生效" = 引擎侧缓存**，先 grep 绑定层有无
+  重置口，无则记档不动（§6 mozjs 是墙）。

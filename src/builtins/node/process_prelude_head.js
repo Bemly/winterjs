@@ -247,10 +247,14 @@ globalThis.process = {
   exit(code) {
     // node 口径：显式传参即经 exitCode setter（非法同步抛）；'exit' 同步派发后
     // 走可 mock 的 reallyExit（really-exit 套件点名；默认即哨兵退出）。
-    if (code !== undefined) this.exitCode = code;
-    this._exiting = true;
-    try { this.__wjs2_emit("exit", this.exitCode || 0); } catch {}
-    this.reallyExit(this.exitCode || 0);
+    // 真机 process.exit 与 receiver 无关（cluster-net-listen 套件裸传当 listen
+    // 回调，this=server）——this 无 reallyExit 即回落全局真身（§4.97 二选一）。
+    const p = (this !== undefined && this !== null &&
+      typeof this.reallyExit === "function") ? this : globalThis.process;
+    if (code !== undefined) p.exitCode = code;
+    p._exiting = true;
+    try { p.__wjs2_emit("exit", p.exitCode || 0); } catch {}
+    p.reallyExit(p.exitCode || 0);
   },
   reallyExit(code) {
     __wjs2_process_exit(code === undefined ? undefined : Number(code));
@@ -780,7 +784,13 @@ globalThis.process = {
     }
     if (warning.name === "DeprecationWarning") {
       if (this.noDeprecation) return;
-      if (this.throwDeprecation) throw warning;
+      // 真机 warning.js 口径：throwDeprecation 不走同步抛——nextTick 异步抛，
+      // 经 uncaughtException 路由交付（test4 点名；同步抛致套件 catch 误杀）。
+      if (this.throwDeprecation) {
+        const __self = this;
+        __self.nextTick(() => { throw warning; });
+        return;
+      }
     }
     this.nextTick(() => this.emit("warning", warning));
   },

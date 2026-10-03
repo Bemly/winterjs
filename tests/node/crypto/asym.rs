@@ -356,3 +356,25 @@ catch (e) { console.log("sig-alg", e.code === "ERR_CRYPTO_INVALID_DIGEST"); }
     dir.close().unwrap();
 }
 
+
+#[test]
+fn p2_crypto_keygen_no_options() {
+    // base16回归：async generateKeyPair 缺省 options 即 {}（真机实测直通；
+    // 旧"async 不容 undefined"注释按 §4.65 翻转）。未知类型仍同步抛。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import crypto from "node:crypto";
+crypto.generateKeyPair("ed25519", (e, pub, priv) => {
+    console.log("cb", e, pub.type, priv.type);
+});
+try { crypto.generateKeyPair("nope-type", (e) => console.log("cb-unreach")); console.log("sync-no-throw BAD"); }
+catch (e) { console.log("sync-throw", e.code === "ERR_CRYPTO_UNKNOWN_CIPHER" || e.code === "ERR_INVALID_ARG_VALUE" || !!e.code); }
+"#,
+    );
+    assert!(out.contains("cb null public private"), "no-options passthrough: {out}");
+    assert!(out.contains("sync-throw true"), "unknown type still throws sync: {out}");
+    dir.close().unwrap();
+}

@@ -314,3 +314,30 @@ server.listen(0, () => {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn p2_http2_lookup_and_promisify_custom() {
+    // base16回归：connect 尊选自定义 lookup（错原样 error）+ promisify.custom
+    //（node internal/http2/core.js 原文口径；正常 connect 面由 P1 trailer 测试覆盖）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http2 from "node:http2";
+import util from "node:util";
+const error = new Error("Unable to resolve hostname");
+const lookup = (h, o, cb) => cb(error);
+const sess = http2.connect("http://hostname", { lookup });
+sess.on("error", (e) => console.log("raw-error", e.message === "Unable to resolve hostname"));
+const connect = util.promisify(http2.connect);
+connect("http://hostname", { lookup }).then(
+    () => console.log("FAIL resolved"),
+    (e) => console.log("rejected", e.message === "Unable to resolve hostname"));
+"#,
+    );
+    assert!(out.contains("raw-error true"), "lookup error passthrough: {out}");
+    assert!(out.contains("rejected true"), "promisify.custom rejects: {out}");
+    assert!(!out.contains("FAIL"), "must not resolve: {out}");
+    dir.close().unwrap();
+}

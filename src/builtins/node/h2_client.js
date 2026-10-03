@@ -419,6 +419,29 @@ class ClientHttp2Session extends EventEmitter {
       if (t.rejectUnauthorized !== undefined) wire.tls.rejectUnauthorized = !!t.rejectUnauthorized;
       if (t.servername !== undefined) wire.tls.servername = String(t.servername);
     }
+    // node：connect 经 net.connect，自定义 lookup 优先解析（promisify-
+    // connect-error 套件：lookup 错原样 error；base16 回归）。
+    const __lk = this.__options.lookup;
+    if (typeof __lk === "function") {
+      const self = this;
+      let __done = false;
+      try {
+        __lk(host, { family: 0, hints: 0 }, (err, address) => {
+          if (__done) return;
+          __done = true;
+          if (err) {
+            self.connecting = false;
+            queueMicrotask(() => { if (!self.destroyed) self.emit("error", err); });
+            return;
+          }
+          self.__id = Number(__wjs2_h2_connect(String(address ?? host), port, JSON.stringify(wire), self));
+        });
+      } catch (e) {
+        this.connecting = false;
+        queueMicrotask(() => { if (!this.destroyed) this.emit("error", e); });
+      }
+      return this;
+    }
     this.__id = Number(__wjs2_h2_connect(host, port, JSON.stringify(wire), this));
     return this;
   }
@@ -706,6 +729,18 @@ export function connect(authority, options, listener) {
   session.__start(port, url.hostname);
   return session;
 }
+
+// node internal/http2/core.js 原文口径：connect 的 promisify 定制——
+// 'error' 即 reject（connect 监听到即摘 error 监听后 resolve）。
+connect[Symbol.for("nodejs.util.promisify.custom")] = function (authority, options) {
+  return new Promise((resolve, reject) => {
+    const server = connect(authority, options, () => {
+      server.removeListener("error", reject);
+      return resolve(server);
+    });
+    server.once("error", reject);
+  });
+};
 
 // connect(options.signal)：abort → 会话 ABORT_ERR 销毁（AbortSignal 套件）
 function wireSessionSignal(session, options) {

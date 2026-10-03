@@ -20,12 +20,9 @@ export function generateKeyPair(type, options, ...rest) {
     throw err;
   }
   // 真机口径：type/options 同步抛（callback 不背锅），见 keygen 67/86 行。
-  // 注意 async 口径 options 不容 undefined（sync 才容，见 generateKeyPairSync 归一）。
-  if (options === undefined) {
-    const err = new TypeError('The "options" argument must be of type object. Received undefined');
-    err.code = "ERR_INVALID_ARG_TYPE";
-    throw err;
-  }
+  // options 缺省即 {}（真机实测 generateKeyPair('ed25519', cb) 直通，base16
+  // 回归；旧"async 不容 undefined"注释按 §4.65 翻转，以实测为准）。
+  if (options === undefined) options = {};
   __checkKeyPairHead(type, options);
   __checkKeyPairTypeKnown(type);
   if (typeof options === "object" && options !== null) {

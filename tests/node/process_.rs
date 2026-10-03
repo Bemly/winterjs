@@ -784,3 +784,28 @@ fn phase11_process_r9b_faces() {
     assert_eq!(out.status.code(), Some(6), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     dir.close().unwrap();
 }
+
+#[test]
+fn p2_process_exit_detached_receiver() {
+    // base16回归：process.exit 裸传当回调（cluster-net-listen 套件 listen(process.exit)，
+    // this=server）——真机与 receiver 无关；mock reallyExit 仍生效（really-exit 口径）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("e.mjs").write_str("const e = process.exit; e(3);\n").unwrap();
+    let out = winterjs2().arg("--run").arg(dir.child("e.mjs").path()).output().unwrap();
+    assert_eq!(out.status.code(), Some(3), "detached exit code");
+    let out = winterjs2().args(["--eval",
+        "process.reallyExit = (c) => console.log('mocked', c); process.exit(7);"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("mocked 7"),
+        "reallyExit mock still honored: {}", String::from_utf8_lossy(&out.stdout));
+    dir.close().unwrap();
+}
+
+#[test]
+fn p2_process_warning_throw_deprecation_async() {
+    // base16回归：throwDeprecation 不走同步抛——nextTick 异步抛经 uncaughtException
+    // 交付（真机实测；旧同步抛致套件 catch 误杀）。
+    let out = stdout_of(&mut winterjs2().args(["--eval",
+        "process.throwDeprecation = true; process.on('uncaughtException', (e) => console.log('caught', String(e))); try { process.emitWarning('test', 'DeprecationWarning'); console.log('no-sync-throw'); } catch { console.log('sync-throw BAD'); } process.throwDeprecation = false;"]));
+    assert!(out.contains("no-sync-throw"), "must not throw sync: {out}");
+    assert!(out.contains("caught DeprecationWarning: test"), "async uncaught delivery: {out}");
+}

@@ -1017,3 +1017,15 @@ G1/G2/G3/G9 已收官。）
 - 验证：run1.sh 4/4；黑盒 `phase11_process_kill_prototype_title_faces`（8 断言，
   kill 只验参+自检不真发信号）；process 域 nextest 16/16 strict；proc5 sweep
   36→41/82；冒烟 5/5；`check-lines` ok。
+
+## 2026-10-03 P2-process R5：ppid/reallyExit/软链自举面（41→44/82）
+
+- 真机口径：ppid（getppid 原生 + 模块双导出）；exit 经 exitCode setter 再派发
+  后走可 mock 的 reallyExit（默认哨兵退出；mock 后代码继续跑，真机同）；
+  软链自身按 canonical 进 `--run` 自举（execpath 套件）；execPath 原生侧
+  canonical（软链起亦与 realpath 同）。
+- 验证：run1.sh 3/3；黑盒 `phase11_process_spawn_faces`（ppid/路由/canonical
+  4 断言）；process 域 nextest 17/17 strict；proc6 sweep 41→44/82；冒烟 5/5；
+  `check-lines` ok。
+- 余 35 件分簇（R6 候选）：execve×7（实验面）/ exception-capture×4 /
+  env×6 / redirect-warnings×2 / 散件（binding/config/spawn 系/V8 私有语法）。

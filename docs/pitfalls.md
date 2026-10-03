@@ -4540,3 +4540,30 @@
 - 推广铁律：**"经 require 可达"≠"真机 builtin"**，凡涉及模块名单（builtinModules/
   getBuiltinModule/isBuiltin）以 `node -e builtinModules` 实表为准，不以自家
   注册表为准。
+
+### 4.254 同源双实例状态分叉：internal 门面须重导出锚定公开实例（2026-10-03，P2-stream-R1）
+
+- 症状：`enabledHooksExist` 已在 `node:async_hooks` 导出，eos 内部分支与三个
+  finished 套件仍全假——`require('internal/async_hooks')` 读到空状态。
+- 根因：`node:async_hooks` 与 `node:internal/async_hooks` 同 SOURCE 字符串但
+  各自求值，模块级状态（ALS Map/enable 集）两份分叉；eos 的 AsyncResource
+ （公开实例）快照的 ALS 上下文，internal 实例永远看不见。
+- 修法：`node:internal/async_hooks` 改门面源（重导出公开实例的
+  `enabledHooksExist`，状态锚定一处）；eos 垫片 `internal/async_hooks` 改引
+  真门面（移植体 `require('internal/async_hooks')` 原文不动，只改胶水映射）。
+- 复现：ALS 测试修前 `false !== true`，修后绿；门面改回同源即复现。
+- 推广铁律：**凡模块级 JS 状态（Map/Set/计数器），`node:X` 与
+  `node:internal/X` 同源注册即分叉**——后来者一律门面重导出，不再同源注册。
+
+### 4.255 internal 连字符/下划线双拼写：精确优先、失配回落（2026-10-03，P2-stream-R1）
+
+- 症状：套件直引真机形 `internal/streams/end-of-stream` /
+  `internal/streams/add-abort-signal`，本仓表内 `end_of_stream` /
+  `add_abort_signal`，两件"未映射"红。
+- 根因：本仓 internal 表为 Rust 标识符友好用下划线，真机全连字符；
+  `normalize_internal` 只做精确匹配。
+- 修法：精确命中优先，失配且含 `-` 再试下划线形（zip 系原生连字符精确命中，
+  不受影响）；单测断言两例回落。
+- 复现：修前两件 `unmapped internal require`，修后绿。
+- 推广铁律：**凡"本仓为实现方便改名"的注册表，对外规范名须双向可达**——
+  精确优先 + 回落，而非改名即断。

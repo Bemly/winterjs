@@ -4423,3 +4423,16 @@
   `process.cpuUsage({user:-1,system:2})` 与真机三元组逐字同。
 - 推广铁律：**拿轮子先 grep 目标符号在该平台真有**（registry 源码为准，不抄文档）；
   errors 新 flavor 先 `--eval typeof` 探存在性，不存在即手拼码名文案三件。
+
+### 4.246 返回码命名空间撞车：EPERM 本体即 1（2026-10-03，P2-process-R3）
+
+- 症状：`seteuid('nobody')`（本机存在，uid 4294967294）报
+  `ERR_UNKNOWN_CREDENTIAL` 而非 EPERM；连 `root` 都"不存在"。
+- 根因：native 返回码 0=成功/1=未知身份/正数 errno 三义共用一 int——EPERM
+  的 errno 本体就是 1，非 root 下所有 set*id 调用的 EPERM 全被 JS 读成"未知身份"；
+  探针逐段无辜（JSON 层、getpwnam 均对，`getpwnam("nobody")` 非空），错在编码层。
+- 修法：成功 0 / 未知 1 / 失败 `-errno`（setgroups/initgroups 早就是负 errno，
+  统一；JS 侧 `r < 0` 取反成错）。
+- 复现：`process.seteuid('nobody')` 修前 UNKNOWN 修后 EPERM，与真机逐字同。
+- 推广铁律：**凡"成功/分类失败/errno"三义通道，errno 恒走负值**（EPERM=1、
+  EINVAL=22 等正数会撞分类码）；先 `id nobody` 确认环境，再疑代码。

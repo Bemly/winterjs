@@ -216,7 +216,13 @@ function __nullCheck(s, name, reason) {
 // （`-e`/`-p` 脚本/裸文件）映射到本仓全 flag CLI；他家二进制原样透传。
 // `-e` extras 透传（本仓 --eval 尾参作脚本 argv，最佳 effort）。
 function __selfArgv(file, args) {
-  if (file !== process.execPath) return [file, args];
+  if (file !== process.execPath) {
+    // 软链自身（execpath 套件：symlinked-node）：比 canonical，命中即自身走 --run。
+    try {
+      const fs = require("node:fs");
+      if (fs.realpathSync(file) !== fs.realpathSync(process.execPath)) return [file, args];
+    } catch { return [file, args]; }
+  }
   const a = [...args];
   // 前导 node 运行时旗（`--pending-deprecation file`/`--experimental-x -e …`）原样
   // 透传，CLI 起点剥除 + 补 --run/-e→--eval（cli::strip_node_compat_args）。

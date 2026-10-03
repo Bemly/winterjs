@@ -327,6 +327,41 @@ fn phase11_process_validation_faces() {
 }
 
 #[test]
+fn phase11_process_spawn_faces() {
+    // P2-process R5: ppid + reallyExit 路由 + execPath canonical（node 原文口径）。
+    // 正常：ppid 为正整数；子进程 ppid 即父 pid；exit 经 reallyExit（mock 可截）。
+    // 报错：不适用（本轮三件皆正常面；非法码走 exitCode setter 门，另案）。
+    // 边界：execPath === realpath（软链起亦然）；reallyExit mock 后代码继续跑。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (ok, out, _) = wjs(
+        &[
+            "--eval",
+            "console.log('ppid', Number.isInteger(process.ppid) && process.ppid > 0);\
+             const fs = require('fs');\
+             console.log('execpath', process.execPath === fs.realpathSync(process.execPath));\
+             let hit = null;\
+             process.reallyExit = (c) => { hit = c; };\
+             process.exitCode = 0; process.exit();\
+             console.log('exit-mock', hit === 0);\
+             const cp = require('child_process');\
+             const out = cp.spawnSync(process.execPath, ['-e', 'console.log(process.ppid)']);\
+             console.log('child-ppid', Number(out.stdout.toString().trim()) === process.pid);",
+        ],
+        &dir,
+    );
+    assert!(ok, "out: {out}");
+    for line in [
+        "ppid true",
+        "execpath true",
+        "exit-mock true",
+        "child-ppid true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase11_process_kill_prototype_title_faces() {
     // P2-process R4: kill 校验/_kill 可 mock + 原型链 + title（node 原文口径）。
     // 正常：kill 自检真；_kill mock 透传（pid/信号数值化）；原型链五断言；title 读写。

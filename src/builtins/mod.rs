@@ -190,6 +190,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_exit_code_set", Some(node::process_::exit_code_set), 1),
             ("__wjs2_exec_path", Some(node::process_::exec_path), 0),
             ("__wjs2_pid", Some(node::process_::pid), 0),
+            ("__wjs2_ppid", Some(node::process_::ppid), 0),
             // 10f：process.umask（unix 真改，test/common 前置）
             ("__wjs2_umask", Some(node::process_::umask), 1),
             ("__wjs2_uptime", Some(node::process_::uptime), 0),

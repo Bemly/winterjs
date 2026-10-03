@@ -478,7 +478,8 @@ pub unsafe extern "C" fn exit_code_set(
     true
 }
 
-/// `__wjs2_exec_path()` → 可执行路径。
+/// `__wjs2_exec_path()` → 可执行路径（canonical 真路；execpath 套件点名
+/// execPath === realpathSync(execPath)，软链起亦然）。
 pub unsafe extern "C" fn exec_path(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -488,7 +489,12 @@ pub unsafe extern "C" fn exec_path(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
     let exe = std::env::current_exe()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| {
+            std::fs::canonicalize(&p)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .into_owned()
+        })
         .unwrap_or_else(|_| "winterjs2".into());
     set_rval_str(&mut cx, &frame, &exe);
     true
@@ -503,6 +509,22 @@ pub unsafe extern "C" fn pid(
     // SAFETY: 仅访问调用帧（无 cx 上的 JSAPI 调用）
     let frame = unsafe { Frame::from_raw(vp, argc) };
     frame.set_rval(mozjs::jsval::Int32Value(std::process::id() as i32));
+    true
+}
+
+/// `__wjs2_ppid()` → 父进程 pid（Int32；ppid 套件点名）。
+pub unsafe extern "C" fn ppid(
+    _cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 仅访问调用帧（无 cx 上的 JSAPI 调用）
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    #[cfg(unix)]
+    let ppid = unsafe { libc::getppid() };
+    #[cfg(not(unix))]
+    let ppid = 0;
+    frame.set_rval(mozjs::jsval::Int32Value(ppid as i32));
     true
 }
 
@@ -907,6 +929,7 @@ export default p;
 export const argv = p.argv;
 export const env = p.env;
 export const pid = p.pid;
+export const ppid = p.ppid;
 export const platform = p.platform;
 export const arch = p.arch;
 export const version = p.version;

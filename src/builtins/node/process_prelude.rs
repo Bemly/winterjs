@@ -198,10 +198,14 @@ globalThis.process = {
     }
   },
   exit(code) {
-    // node 口径：'exit' 监听同步派发后再 unwind（mustCall 计数在监听内结算；
-    // _exiting 置位，监听内再 mustCall 即抛，真机同）。
+    // node 口径：显式传参即经 exitCode setter（非法同步抛）；'exit' 同步派发后
+    // 走可 mock 的 reallyExit（really-exit 套件点名；默认即哨兵退出）。
+    if (code !== undefined) this.exitCode = code;
     this._exiting = true;
-    try { this.__wjs2_emit("exit", code === undefined ? (this.exitCode || 0) : Number(code)); } catch {}
+    try { this.__wjs2_emit("exit", this.exitCode || 0); } catch {}
+    this.reallyExit(this.exitCode || 0);
+  },
+  reallyExit(code) {
     __wjs2_process_exit(code === undefined ? undefined : Number(code));
   },
   // node 口径：循环排空即派发 'beforeExit'（exitCode 为参；监听可再排任务续命，
@@ -261,6 +265,7 @@ globalThis.process = {
   // 回填——common.js 自举 respawn 的 flags 可见性，真机口径）。
   execArgv: JSON.parse(__wjs2_node_compat_json()),
   pid: __wjs2_pid(),
+  ppid: __wjs2_ppid(),
   // 标题（get 缺省回 execPath 基名；set 透写 store，真机读写口径）。
   get title() {
     const t = globalThis.__wjs2_processTitle;

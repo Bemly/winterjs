@@ -250,6 +250,11 @@ fn require_value(
             .map_err(|e| Error::Other(format!("bad builtin URL: {e}")))?;
         return require_esm_default(cx, global, &url).map_err(Error::Other);
     }
+    // R2-iter：`node:` 前缀非内建即真机文案（CJS/ESM 同文；外层再包
+    // "Cannot find module" 前缀，正则子串仍命中，见 disabled 套件）。
+    if spec.starts_with("node:") {
+        return Err(Error::Other(format!("No such built-in module: {spec}")));
+    }
     let url = resolve_require(spec, base.as_ref()).map_err(|e| {
         Error::Other(format!("Cannot find module '{spec}' ({e})"))
     })?;

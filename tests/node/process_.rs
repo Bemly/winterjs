@@ -85,7 +85,8 @@ fn phase4_process_stdio_nexttick_cwd() {
 
 #[test]
 fn phase4_node_errors() {
-    // 未知内建（静态/动态）给可用列表；exitCode 非整数 TypeError。
+    // 未知内建真机文案（R2-iter 按 4.65 翻转：`No such built-in module: node:nope`，
+    // 旧断言编码的是自带可用列表的自家文案）；exitCode 非整数 TypeError。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -95,7 +96,7 @@ fn phase4_node_errors() {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("node:nope") && stderr.contains("node:path"),
+        stderr.contains("No such built-in module: node:nope"),
         "stderr: {stderr}"
     );
     let out = winterjs2()

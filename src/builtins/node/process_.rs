@@ -263,6 +263,15 @@ pub fn record_node_compat(flags: Vec<String>) {
     }
 }
 
+/// 剥下的 node 运行时旗是否含 `flag`（R2-iter：`stream/iter` 注册门控；
+/// worker 线程共享父记录，记档与 `record_node_compat` 同）。
+pub fn has_node_compat_flag(flag: &str) -> bool {
+    node_compat_store()
+        .lock()
+        .map(|m| m.iter().any(|f| f == flag))
+        .unwrap_or(false)
+}
+
 /// `__wjs2_node_compat_json()` → 剥下的 node 兼容旗 JSON 数组（execArgv 底座）。
 ///
 /// UNSAFE-BOUNDARY: 前置——引擎回调 cx 有效（调用约定）；覆盖测试——

@@ -277,6 +277,34 @@ const validateThisInternalField = hideStackFrames((object, fieldKey, className) 
   }
 });
 
+// R2-iter（node 原文逐字）：undefined/NaN 回 false，余下走 validateNumber +
+// 无穷即 ERR_OUT_OF_RANGE（checkRanges 系 budget 门用）。
+const validateFiniteNumber = hideStackFrames((number, name) => {
+  if (number === undefined) {
+    return false;
+  }
+  if (Number.isFinite(number)) {
+    return true;
+  }
+  if (Number.isNaN(number)) {
+    return false;
+  }
+  validateNumber(number, name);
+  throw new ERR_OUT_OF_RANGE(name, 'a finite number', number);
+});
+
+const checkRangesOrGetDefault = hideStackFrames(
+  (number, name, lower, upper, def) => {
+    if (!validateFiniteNumber(number, name)) {
+      return def;
+    }
+    if (number < lower || number > upper) {
+      throw new ERR_OUT_OF_RANGE(name, `>= ${lower} and <= ${upper}`, number);
+    }
+    return number;
+  },
+);
+
 export {
   isInt32,
   isUint32,
@@ -310,6 +338,8 @@ export {
   validateUnion,
   validateAbortSignal,
   validateThisInternalField,
+  validateFiniteNumber,
+  checkRangesOrGetDefault,
 };
-export default { isInt32, isUint32, parseFileMode, validateArray, validateStringArray, validateBooleanArray, validateAbortSignalArray, validateBoolean, validateBuffer, validateDictionary, validateFunction, validateInt32, validateInteger, validateNumber, validateObject, kValidateObjectNone, kValidateObjectAllowNullable, kValidateObjectAllowArray, kValidateObjectAllowFunction, kValidateObjectAllowObjects, kValidateObjectAllowObjectsAndNull, validateOneOf, validatePlainFunction, validatePort, validateSignalName, validateString, validateStringWithoutNullBytes, validateUint32, validateUndefined, validateUnion, validateAbortSignal, validateThisInternalField };
+export default { isInt32, isUint32, parseFileMode, validateArray, validateStringArray, validateBooleanArray, validateAbortSignalArray, validateBoolean, validateBuffer, validateDictionary, validateFunction, validateInt32, validateInteger, validateNumber, validateObject, kValidateObjectNone, kValidateObjectAllowNullable, kValidateObjectAllowArray, kValidateObjectAllowFunction, kValidateObjectAllowObjects, kValidateObjectAllowObjectsAndNull, validateOneOf, validatePlainFunction, validatePort, validateSignalName, validateString, validateStringWithoutNullBytes, validateUint32, validateUndefined, validateUnion, validateAbortSignal, validateThisInternalField, validateFiniteNumber, checkRangesOrGetDefault };
 "#;

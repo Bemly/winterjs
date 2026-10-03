@@ -1,3 +1,4 @@
+import __reg from 'node:internal/registry';
 
 function updateReadableListening(self) {
   const state = self._readableState;
@@ -842,3 +843,4 @@ Readable.wrap = function(src, options) {
 }
 
 export default module.exports;
+__reg.set('node:internal/streams/readable', module.exports);

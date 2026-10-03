@@ -70,6 +70,37 @@ const primordials = {
   StringFromCharCode: String.fromCharCode,
   StringPrototypeEndsWith: (s, x, p) => s.endsWith(x, p),
   SymbolToStringTag: Symbol.toStringTag,
+  // R2-iter：stream/iter 面 26 项（node 原文名逐项对位；Safe* 系无硬化直别名，
+  // 与既有 SafeSet: Set 同口径；Array.fromAsync 经引擎真值，见 4.65 实测）。
+  Array,
+  String,
+  ObjectEntries: Object.entries,
+  ObjectFreeze: Object.freeze,
+  ArrayBufferIsView: ArrayBuffer.isView,
+  ArrayBufferPrototypeGetByteLength: (b) => b.byteLength,
+  ArrayBufferPrototypeSlice: (b, s, e) => b.slice(s, e),
+  ArrayFromAsync: Array.fromAsync,
+  ArrayPrototypeEvery: (a, f) => a.every(f),
+  ArrayPrototypeMap: (a, f) => a.map(f),
+  ArrayPrototypeShift: (a) => a.shift(),
+  DataViewPrototypeGetBuffer: (d) => d.buffer,
+  DataViewPrototypeGetByteLength: (d) => d.byteLength,
+  DataViewPrototypeGetByteOffset: (d) => d.byteOffset,
+  SafeMap: Map,
+  SafeWeakMap: WeakMap,
+  SafePromiseAllReturnVoid: (arr) => Promise.all(arr).then(() => undefined),
+  SafePromisePrototypeFinally: (p, f) => p.finally(f),
+  SafePromiseRace: (arr) => Promise.race(arr),
+  StringPrototypeStartsWith: (s, x, p) => s.startsWith(x, p),
+  TypedArrayPrototypeFill: (ta, v, s, e) => ta.fill(v, s, e),
+  TypedArrayPrototypeGetBuffer: (ta) => ta.buffer,
+  TypedArrayPrototypeGetByteLength: (ta) => ta.byteLength,
+  TypedArrayPrototypeGetByteOffset: (ta) => ta.byteOffset,
+  TypedArrayPrototypeSlice: (ta, s, e) => ta.slice(s, e),
+  Uint32Array,
+  // R2-iter：unhandled 误报抑制（utils/consumers 管线中转 promise 先挂空
+  // reject 分支，真处理器随后即到；与 V8 AddPromiseRejectHandler 同向）。
+  markPromiseAsHandled: (p) => { Promise.prototype.then.call(p, undefined, () => {}); },
 };
 
 export default primordials;

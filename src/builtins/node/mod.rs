@@ -63,6 +63,7 @@ mod require_cjs;
 pub mod sqlite;
 pub mod stream;
 pub mod stream_consumers;
+pub mod stream_iter;
 pub mod stream_promises;
 pub mod stream_web;
 pub mod string_decoder;
@@ -84,6 +85,7 @@ pub mod worker;
 mod worker_term;
 pub mod zlib;
 mod zlib_engine;
+pub mod zlib_iter;
 
 /// 全局 `process` 等启动期求值的 JS（`runtime` 在主 PRELUDE 后求值）。
 /// 版本占位 `26.10.3` 在求值前替换为 `CARGO_PKG_VERSION`（发版时两处同步改，不漂移）。
@@ -146,6 +148,8 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:stream/promises", stream_promises::SOURCE),
     ("node:stream/consumers", stream_consumers::SOURCE),
     ("node:stream/web", stream_web::SOURCE),
+    // R2-iter：`stream/iter`（`--experimental-stream-iter` 门控，见 normalize_spec）。
+    ("node:stream/iter", stream_iter::SOURCE),
     ("node:timers/promises", timers_promises::SOURCE),
     // M5 vitest 牵引：回调形态
     ("node:timers", timers::SOURCE),
@@ -156,6 +160,8 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:tty", tty::SOURCE),
     // Phase 9d-5
     ("node:zlib", zlib::SOURCE),
+    // R2-iter：`zlib/iter`（同门控）。
+    ("node:zlib/iter", zlib_iter::SOURCE),
     // Phase 9e-3
     ("node:perf_hooks", perf_hooks::SOURCE),
     // Phase 9e-4
@@ -241,11 +247,28 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "stream/promises" => Some("node:stream/promises"),
         "stream/consumers" => Some("node:stream/consumers"),
         "stream/web" => Some("node:stream/web"),
+        // R2-iter：`stream/iter` 仅旗开时可见（无旗即未注册，CJS/ESM 双路
+        // 报真机 `No such built-in module` / `Cannot find module`，见 disabled 套件）。
+        "stream/iter" => {
+            if crate::builtins::node::process_::has_node_compat_flag("--experimental-stream-iter") {
+                Some("node:stream/iter")
+            } else {
+                None
+            }
+        }
         "timers/promises" => Some("node:timers/promises"),
         // M5 vitest 牵引：回调形态
         "timers" => Some("node:timers"),
         // Phase 9d-5
         "zlib" => Some("node:zlib"),
+        // R2-iter：`zlib/iter` 同门控。
+        "zlib/iter" => {
+            if crate::builtins::node::process_::has_node_compat_flag("--experimental-stream-iter") {
+                Some("node:zlib/iter")
+            } else {
+                None
+            }
+        }
         // Phase 9e-3
         "perf_hooks" => Some("node:perf_hooks"),
         // Phase 9e-4

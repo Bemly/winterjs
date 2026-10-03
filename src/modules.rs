@@ -91,11 +91,16 @@ fn prepare(url: &Url) -> Result<Prepared, Error> {
             (crate::builtins::bun::source(url.as_str()), crate::builtins::bun::available())
         };
         let Some(text) = table.0 else {
-            return Err(Error::Other(format!(
-                "'{}' is not a builtin (available: {})",
-                url.as_str(),
-                table.1.join(", ")
-            )));
+            // R2-iter：node: 面真机口径（4.65 翻转）；bun: 面沿旧自家文案。
+            return Err(Error::Other(if url.scheme() == "node" {
+                format!("No such built-in module: {}", url.as_str())
+            } else {
+                format!(
+                    "'{}' is not a builtin (available: {})",
+                    url.as_str(),
+                    table.1.join(", ")
+                )
+            }));
         };
         let text = text.to_owned();
         let path = PathBuf::from(format!("{}.js", url.as_str().replace(':', "_")));

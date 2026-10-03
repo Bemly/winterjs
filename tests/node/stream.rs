@@ -2,6 +2,7 @@
 
 use crate::common::*;
 use crate::helpers::*;
+use assert_fs::prelude::*;
 
 #[test]
 fn phase9b_stream_readable_writable_core() {
@@ -458,5 +459,58 @@ console.log("hyphen-aas", ok);
         &dir,
     );
     assert!(ok && out.contains("tty-enum true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_stream_r2_iter_faces() {
+    // P2-stream R2：`stream/iter` 门控面（node 原文口径）。
+    // 正常（旗开）：push/write/end + text() 回环；Stream 命名空间冻结 + 工厂齐备；
+    //   fromSync 跨 realm 按结构收（internal/types 口径）。
+    // 报错：无旗下 `require("node:stream/iter")` 即 `No such built-in module`，
+    //   裸名即 `Cannot find module`（disabled 套件同构）。
+    // 边界：ERR 变体类构造器（`ERR_INVALID_STATE.TypeError` 可 new，R2-errors 面）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    // 旗开面（显式子进程带旗；文件直写，不经无旗 run_node_file）。
+    dir.child("r2.mjs")
+        .write_str(
+            r#"
+import { push, text, fromSync } from "node:stream/iter";
+import streamIter from "node:stream/iter";
+const { writer, readable } = push();
+writer.write("hello");
+writer.end();
+console.log("roundtrip", await text(readable) === "hello");
+console.log("ns-frozen", Object.isFrozen(streamIter.Stream));
+console.log("factories", ["push", "duplex", "from", "fromSync", "pull", "bytes", "text"].every((k) => typeof streamIter[k] === "function"));
+import vm from "node:vm";
+const cross = vm.runInNewContext("new Uint8Array([1,2,3])");
+console.log("xrealm", (await text(fromSync([cross]))).length === 3);
+const E = (await import("node:internal/errors")).codes;
+console.log("err-variant", new E.ERR_INVALID_STATE.TypeError("x").code === "ERR_INVALID_STATE");
+"#,
+        )
+        .unwrap();
+    let out = winterjs2()
+        .args(["--experimental-stream-iter", "--run", "r2.mjs"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in ["roundtrip true", "ns-frozen true", "factories true", "xrealm true", "err-variant true"] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    // 无旗面（报错双形）。
+    let (ok, out, _) = wjs(
+        &["--eval", "try { require('node:stream/iter'); } catch (e) { console.log('gated-node', e.message); }"],
+        &dir,
+    );
+    assert!(ok && out.contains("gated-node No such built-in module: node:stream/iter"), "out: {out}");
+    let (ok, out, _) = wjs(
+        &["--eval", "try { require('stream/iter'); } catch (e) { console.log('gated-bare', e.message.slice(0, 27)); }"],
+        &dir,
+    );
+    assert!(ok && out.contains("gated-bare Cannot find module 'stream"), "out: {out}");
     dir.close().unwrap();
 }

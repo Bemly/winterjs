@@ -59,6 +59,31 @@ fn uncaught_error_node_shape_kinds_and_values() {
 }
 
 #[test]
+fn uncaught_error_code_bracket() {
+    // R2-iter：带 `code` 的 fatal 首行 `Name [CODE]: msg`（真机 toString 形）；
+    // 无码旧形不变（D4 回归锚）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (ok, _, err) = wjs(
+        &["--eval", "throw Object.assign(new TypeError(\"boom\"), { code: \"ERR_DEMO\" })"],
+        &dir,
+    );
+    assert!(!ok);
+    assert!(err.contains("\nTypeError [ERR_DEMO]: boom\n"), "stderr: {err}");
+    // 报错：自带 `[码]` 前缀的 message 不重复补码。
+    let (ok, _, err) = wjs(&["--eval", "throw new Error(\"boom\")"], &dir);
+    assert!(!ok);
+    assert!(err.contains("\nError: boom\n") && !err.contains("[ERR"), "stderr: {err}");
+    // 边界：空串 code 即无码。
+    let (ok, _, err) = wjs(
+        &["--eval", "throw Object.assign(new Error(\"x\"), { code: \"\" })"],
+        &dir,
+    );
+    assert!(!ok);
+    assert!(err.contains("\nError: x\n"), "stderr: {err}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn run_missing_file_reports_chain() {
     let out = winterjs2()
         .args(["--run", "/nope/such.js"])

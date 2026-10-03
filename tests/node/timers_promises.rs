@@ -61,8 +61,9 @@ console.log("default", typeof tp.setTimeout === "function", typeof tp.scheduler 
 
 #[test]
 fn phase10f_timers_promises_namespace_scheduler() {
-    // 10f 对拍：去 default 后 require(esm) 走 namespace 回落，与 node:timers
-    // 的 .promises 同一对象（套件 test-timers-promises 的 deepStrictEqual）；
+    // 10f 对拍：CJS 双取同一对象（真机 `require(tp) === require(timers).promises`；
+    // ESM namespace 恒带 default 键、与对象不等，真机同——黑盒按真机比法；
+    // R2-iter 翻转：旧断言 `import * === .promises` 超真机严格，4.65）。
     // scheduler 不可 new（ERR_ILLEGAL_CONSTRUCTOR）+ this 校验（ERR_INVALID_THIS）
     // + 已中止信号同步拒绝（套件 test-timers-promises-scheduler）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -71,14 +72,16 @@ fn phase10f_timers_promises_namespace_scheduler() {
         "p.mjs",
         r#"
 import timers from "node:timers";
-import * as tp from "node:timers/promises";
-console.log("ident", tp === timers.promises);
-try { new (tp.scheduler.constructor)(); } catch (e) { console.log("ctor", e.code); }
-try { tp.scheduler.yield.call({}); } catch (e) { console.log("this", e.code); }
-try { await tp.scheduler.wait(10000, { signal: AbortSignal.abort() }); }
+import tpDefault from "node:timers/promises";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+console.log("ident", tpDefault === timers.promises && require("node:timers/promises") === require("node:timers").promises);
+try { new (tpDefault.scheduler.constructor)(); } catch (e) { console.log("ctor", e.code); }
+try { tpDefault.scheduler.yield.call({}); } catch (e) { console.log("this", e.code); }
+try { await tpDefault.scheduler.wait(10000, { signal: AbortSignal.abort() }); }
 catch (e) { console.log("preabort", e.code, e.message); }
 const ac = new AbortController();
-const w = tp.scheduler.wait(10000, { signal: ac.signal });
+const w = tpDefault.scheduler.wait(10000, { signal: ac.signal });
 ac.abort();
 try { await w; } catch (e) { console.log("postabort", e.code); }
 "#,

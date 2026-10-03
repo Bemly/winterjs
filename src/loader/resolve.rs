@@ -247,10 +247,9 @@ fn resolve_cond(cond: Cond, specifier: &str, base: Option<&Url>) -> Result<Url, 
                     tracing::debug!(target: "winterjs2::loader", specifier, canonical, "builtin module");
                     Url::parse(canonical).map_err(|e| Error::Other(format!("bad builtin URL: {e}")))
                 }
-                None => Err(Error::Other(format!(
-                    "'{specifier}' is not a builtin (available: {})",
-                    crate::builtins::node::available().join(", ")
-                ))),
+                // R2-iter：真机口径 `No such built-in module: X`（CJS/ESM 同文，
+                // ERR_UNKNOWN_BUILTIN_MODULE；旧自家文案按 4.65 翻转）。
+                None => Err(Error::Other(format!("No such built-in module: {specifier}"))),
             },
             "bun" => match crate::builtins::bun::normalize_spec(specifier) {
                 Some(canonical) => {

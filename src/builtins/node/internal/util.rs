@@ -121,6 +121,24 @@ function assignFunctionName(name, fn, descriptor = {}) {
   });
 }
 
-export { normalizeEncoding, spliceOne, setOwnProperty, kEmptyObject, promisify, once, sleep, assignFunctionName };
-export default { normalizeEncoding, spliceOne, setOwnProperty, kEmptyObject, promisify, once, sleep, assignFunctionName };
+// R2-iter（node 原文口径）：错误判定 + 实验警告 + 懒 DOMException。
+// isError 取 instanceof 近似（跨 realm 原生错记档，见 4.57）；
+// lazyDOMException 直构全局 DOMException（无 messaging 绑定，记档）。
+function isError(e) {
+  return e instanceof Error;
+}
+const __experimentalWarned = new Set();
+function emitExperimentalWarning(feature, messagePrefix, code, ctor) {
+  if (__experimentalWarned.has(feature)) return;
+  __experimentalWarned.add(feature);
+  let msg = `${feature} is an experimental feature and might change at any time`;
+  if (messagePrefix) {
+    msg = messagePrefix + msg;
+  }
+  process.emitWarning(msg, 'ExperimentalWarning', code, ctor);
+}
+const lazyDOMException = (message, name) => new DOMException(String(message), String(name));
+
+export { normalizeEncoding, spliceOne, setOwnProperty, kEmptyObject, promisify, once, sleep, assignFunctionName, isError, emitExperimentalWarning, lazyDOMException };
+export default { normalizeEncoding, spliceOne, setOwnProperty, kEmptyObject, promisify, once, sleep, assignFunctionName, isError, emitExperimentalWarning, lazyDOMException };
 "#;

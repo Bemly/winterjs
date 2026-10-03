@@ -29,6 +29,7 @@ pub mod http_framing;
 pub mod inspect;
 pub mod options;
 pub mod primordials;
+pub mod process_task_queues;
 pub mod querystring;
 pub mod registry;
 pub mod snapshot;
@@ -62,6 +63,7 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/timers", timers::SOURCE),
     ("node:internal/snapshot", snapshot::SOURCE),
     ("node:internal/blob", blob::SOURCE),
+    ("node:internal/process/task_queues", process_task_queues::SOURCE),
     ("node:internal/abort_controller", abort_controller::SOURCE),
     ("node:internal/async_context_frame", async_context_frame::SOURCE),
     ("node:internal/async_hooks_int", async_hooks_int::SOURCE),
@@ -106,6 +108,16 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/streams/operators", streams::operators::SOURCE),
     ("node:internal/streams/iter_classic", streams::iter_classic::SOURCE),
     ("node:internal/streams/iter_types", streams::iter_types::SOURCE),
+    ("node:internal/streams/iter_ringbuffer", streams::iter_ringbuffer::SOURCE),
+    ("node:internal/streams/iter_utils", streams::iter_utils::SOURCE),
+    ("node:internal/streams/iter_from", streams::iter_from::SOURCE),
+    ("node:internal/streams/iter_pull", streams::iter_pull::SOURCE),
+    ("node:internal/streams/iter_push", streams::iter_push::SOURCE),
+    ("node:internal/streams/iter_duplex", streams::iter_duplex::SOURCE),
+    ("node:internal/streams/iter_share", streams::iter_share::SOURCE),
+    ("node:internal/streams/iter_broadcast", streams::iter_broadcast::SOURCE),
+    ("node:internal/streams/iter_transform", streams::iter_transform::SOURCE),
+    ("node:internal/streams/iter_consumers", streams::iter_consumers::SOURCE),
     // Phase 9d-6：http/https 共享帧层
     ("node:internal/http_framing", http_framing::SOURCE),
     // 10g：http2 内部 util（套件直引 `internal/http2/util`；kSocket 符号跨模块同源）
@@ -179,8 +191,8 @@ mod tests {
             normalize_internal("internal/streams/end-of-stream"),
             Some("node:internal/streams/end_of_stream")
         );
-        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；增删同步改此数）。
-        assert_eq!(INTERNALS.len(), 67);
+        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；R2-iter + task_queues +1 + iter 系 +10；增删同步改此数）。
+        assert_eq!(INTERNALS.len(), 78);
         for (name, src) in INTERNALS {
             assert!(source(name).is_some(), "{name} missing");
             assert!(!src.is_empty(), "{name} empty source");

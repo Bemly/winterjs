@@ -841,7 +841,7 @@ fn entry_reason_string(cx: &mut JSContext, reason: JSVal) -> String {
     let map = with_plain(|p| p.module_debug.get(&debug_key(&file)).and_then(|d| d.map.clone()));
     let (line, col) = remap_location(map.as_deref(), line, col);
     if let Some(st) = get_prop_string(cx, obj_root.get(), c"stack") {
-        crate::error::note_stack(&message, remap_stack(&st), get_prop_string(cx, obj_root.get(), c"name"));
+        crate::error::note_stack(&message, remap_stack(&st), get_prop_string(cx, obj_root.get(), c"name"), get_prop_string(cx, obj_root.get(), c"code"));
     }
     format!("{file}:{line}:{col}: {message}")
 }

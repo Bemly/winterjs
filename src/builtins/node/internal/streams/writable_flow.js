@@ -1,3 +1,4 @@
+import __reg from 'node:internal/registry';
 
 // If we're already writing something, then just put this
 // in the queue, and wait our turn.  Otherwise, call _write
@@ -622,3 +623,4 @@ Writable.prototype[SymbolAsyncDispose] = async function() {
 };
 
 export default module.exports;
+__reg.set('node:internal/streams/writable', module.exports);

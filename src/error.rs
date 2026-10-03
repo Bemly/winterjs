@@ -51,6 +51,9 @@ pub enum Error {
         /// 异常类名（"SyntaxError"/"TypeError"/…；10f worker 错误形状透传用，
         /// 主进程渲染不感知）。None = 引擎侧未取（旧路径）。
         kind: Option<String>,
+        /// 异常 `code` 属性（R2-iter：`TypeError [ERR_X]:` 首行口径；None 即无码，
+        /// 渲染与旧一致；仅 JS 提取点实填，其余 None）。
+        code: Option<String>,
         #[label("uncaught here")]
         span: SourceSpan,
         #[source_code]
@@ -100,19 +103,20 @@ fn span_for(source: &str, line: u32, col: u32) -> SourceSpan {
 thread_local! {
     /// 最近一次报错点记下的（message, stack）——`jsapi_glue::fill_message` 写，
     /// `script_with_kind` 按 message 相等取走（不等即丢弃，防串到别的错误上）。
-    static NOTED_STACK: std::cell::RefCell<Option<(String, String, Option<String>)>> =
+    /// 元组尾为 (kind, code)：渲染首行 `Name [code]:` 用，不参与配对。
+    static NOTED_STACK: std::cell::RefCell<Option<(String, String, Option<String>, Option<String>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// 报错点记下异常栈 + 类名（见 `NOTED_STACK`）。
-pub fn note_stack(message: &str, stack: String, kind: Option<String>) {
-    NOTED_STACK.with(|c| *c.borrow_mut() = Some((message.to_owned(), stack, kind)));
+/// 报错点记下异常栈 + 类名 + 码（见 `NOTED_STACK`）。
+pub fn note_stack(message: &str, stack: String, kind: Option<String>, code: Option<String>) {
+    NOTED_STACK.with(|c| *c.borrow_mut() = Some((message.to_owned(), stack, kind, code)));
 }
 
-fn take_noted(message: &str) -> Option<(String, Option<String>)> {
+fn take_noted(message: &str) -> Option<(String, Option<String>, Option<String>)> {
     NOTED_STACK.with(|c| {
         let got = c.borrow_mut().take()?;
-        (got.0 == message).then_some((got.1, got.2))
+        (got.0 == message).then_some((got.1, got.2, got.3))
     })
 }
 
@@ -158,6 +162,7 @@ fn render_script_node_style(
     col: u32,
     message: &str,
     kind: Option<&str>,
+    code: Option<&str>,
     source: &str,
     stack: Option<&str>,
 ) -> String {
@@ -191,7 +196,8 @@ fn render_script_node_style(
         out.push_str("^\n");
     }
     out.push('\n');
-    // 头行：`Name: msg`；message 已自带同名前缀（native report_error 形）则不重复。
+    // 头行：`Name [code]: msg`（真机 toString 形；无码即 `Name: msg`）；
+    // message 已自带同名前缀（native report_error 形）则不重复。
     // 非对象抛出（`throw 42`）：node 直接打印值本身。
     if kind.is_none() {
         if let Some(v) = message.strip_prefix("uncaught exception: ") {
@@ -201,13 +207,18 @@ fn render_script_node_style(
         }
     }
     let name = kind.unwrap_or("Error");
-    if message.starts_with(&format!("{name}:")) || message.starts_with(&format!("{name} [")) {
-        out.push_str(message);
+    // R2-iter：已带 `[码]` 即直接用（worker 还原/透传形）；否则有码即补
+    // （`TypeError [ERR_X]:` 真机首行口径，见 interop-disabled 套件）。
+    let head = if message.starts_with(&format!("{name}:")) || message.starts_with(&format!("{name} [")) {
+        message.to_owned()
     } else if message.is_empty() {
-        out.push_str(name);
+        name.to_owned()
+    } else if let Some(c) = code.filter(|c| !c.is_empty()) {
+        format!("{name} [{c}]: {message}")
     } else {
-        out.push_str(&format!("{name}: {message}"));
-    }
+        format!("{name}: {message}")
+    };
+    out.push_str(&head);
     out.push('\n');
     for l in frames {
         out.push_str(&l);
@@ -238,7 +249,8 @@ impl Error {
             span: span_for(source, line, col),
             source_code: NamedSource::new(filename, source.to_owned()),
             stack: noted.as_ref().map(|n| n.0.clone()),
-            kind: kind.or_else(|| noted.and_then(|n| n.1)),
+            kind: kind.or_else(|| noted.as_ref().and_then(|n| n.1.clone())),
+            code: noted.and_then(|n| n.2),
             message,
         }
     }
@@ -264,9 +276,9 @@ impl Error {
             let mut out = String::new();
             let _ = handler.render_report(&mut out, self);
             out
-        } else if let Error::Script { filename, line, col, message, kind, source_code, stack, .. } = self {
+        } else if let Error::Script { filename, line, col, message, kind, code, source_code, stack, .. } = self {
             render_script_node_style(
-                filename, *line, *col, message, kind.as_deref(), source_code.inner(), stack.as_deref(),
+                filename, *line, *col, message, kind.as_deref(), code.as_deref(), source_code.inner(), stack.as_deref(),
             )
         } else {
             let mut out = format!("Error: {self}\n");
@@ -304,21 +316,24 @@ mod node_shape_tests {
 
     #[test]
     fn render_block_shapes() {
-        let out = render_script_node_style("a.js", 1, 7, "boom", None, "throw new Error(\"boom\")", Some("@a.js:1:7"));
+        let out = render_script_node_style("a.js", 1, 7, "boom", None, None, "throw new Error(\"boom\")", Some("@a.js:1:7"));
         assert_eq!(out, "a.js:1\nthrow new Error(\"boom\")\n      ^\n\nError: boom\n    at a.js:1:7\n");
         // 报错：message 自带同名前缀不重复；无源行不出代码框。
-        let out = render_script_node_style("x", 2, 1, "TypeError: t", Some("TypeError"), "", None);
+        let out = render_script_node_style("x", 2, 1, "TypeError: t", Some("TypeError"), None, "", None);
         assert_eq!(out, "x:2\n\nTypeError: t\n");
         // 边界：非对象抛出直接打印值。
-        let out = render_script_node_style("e.js", 1, 1, "uncaught exception: 42", None, "throw 42", None);
+        let out = render_script_node_style("e.js", 1, 1, "uncaught exception: 42", None, None, "throw 42", None);
         assert!(out.ends_with("^\n\n42\n"), "{out}");
+        // R2-iter：有码即 `[码]`（真机 toString 形）。
+        let out = render_script_node_style("e.js", 1, 1, "boom", Some("TypeError"), Some("ERR_DEMO"), "throw 1", None);
+        assert!(out.contains("\nTypeError [ERR_DEMO]: boom\n"), "{out}");
     }
 
     #[test]
     fn header_follows_stack_top_when_report_disagrees() {
         // 引擎报告行列（9:5，内建模块构造点）与栈顶不符 → 头行取栈顶帧，他文件不出代码框。
         let out = render_script_node_style(
-            "t.js", 9, 5, "boom", Some("AssertionError"), "l1\n",
+            "t.js", 9, 5, "boom", Some("AssertionError"), None, "l1\n",
             Some("AssertionError@node:assert:9:5\n@file:///x/t.js:26:16"),
         );
         assert!(out.starts_with("node:assert:9\n\nAssertionError: boom"), "{out}");

@@ -175,8 +175,14 @@ function makeNodeErrorForHideStackFrame(Base, clazz) {
 function E(sym, val, def, ...otherClasses) {
   messages.set(sym, val);
   const ErrClass = makeNodeErrorWithCode(def ?? Error, sym);
-  if (otherClasses.includes(HideStackFramesError)) {
-    ErrClass.HideStackFramesError = makeNodeErrorForHideStackFrame(ErrClass, def ?? Error);
+  for (const clazz of otherClasses) {
+    // R2-iter：变体类直挂（`ERR_X.TypeError`/`RangeError` 构造器，stream/iter 面点名；
+    // node 原文同形，旧实现只处理 HideStackFrames 致变体 undefined）。
+    if (clazz === HideStackFramesError) {
+      ErrClass.HideStackFramesError = makeNodeErrorForHideStackFrame(ErrClass, def ?? Error);
+    } else if (typeof clazz === 'function' && clazz.name) {
+      ErrClass[clazz.name] = makeNodeErrorWithCode(clazz, sym);
+    }
   }
   codes[sym] = ErrClass;
 }

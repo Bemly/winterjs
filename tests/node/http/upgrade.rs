@@ -88,7 +88,7 @@ setTimeout(() => { console.log("HANG"); process.exit(1); }, 15000).unref();
   srv.on("request", () => console.log("BAD-request2"));
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   await new Promise((resolve) => {
-    process.on("uncaughtException", (e) => {
+    process.once("uncaughtException", (e) => {
       assert.strictEqual(e.message, "cb boom");
       resolve();
     });
@@ -160,7 +160,7 @@ setTimeout(() => { console.log("HANG"); process.exit(1); }, 15000).unref();
   });
   await new Promise((r) => srv.listen(0, "127.0.0.1", r));
   await new Promise((resolve) => {
-    process.on("uncaughtException", (e) => {
+    process.once("uncaughtException", (e) => {
       assert.strictEqual(e.message, "sim err");
       resolve();
     });

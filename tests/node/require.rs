@@ -54,10 +54,12 @@ fn phase4_require_cycle_partial_exports() {
 #[test]
 fn phase4_require_errors() {
     // 缺失模块 / ESM 拒绝 / resolve 直给。
-    let out = winterjs2().args(["--eval", "try { require(\"node:nope-xyz\"); } catch (e) { console.log(e.message.slice(0, 30)); }"]).output().unwrap();
+    // R2-iter 按 4.65 翻转：`node:` 前缀非内建即 `No such built-in module`
+    //（旧断言编码的是 "Cannot find module" 包裹形）。
+    let out = winterjs2().args(["--eval", "try { require(\"node:nope-xyz\"); } catch (e) { console.log(e.message.slice(0, 40)); }"]).output().unwrap();
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.contains("Cannot find module"), "missing: {stdout}");
+    assert!(stdout.contains("No such built-in module: node:nope-xyz"), "missing: {stdout}");
     let dir = assert_fs::TempDir::new().unwrap();
     let mod_ = dir.child("m.mjs");
     mod_.write_str("export const x = 1;\n").unwrap();

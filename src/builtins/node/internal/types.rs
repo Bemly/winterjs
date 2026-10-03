@@ -17,11 +17,11 @@ function tagOf(value) {
 
 function isDataView(value) {
   // V8 internalBinding 语义：DataView 非 TypedArray（isDataView true / isTypedArray false）
-  return ArrayBuffer.isView(value) && value instanceof DataView;
+  return ArrayBuffer.isView(value) && tagOf(value) === '[object DataView]';
 }
 
 function isTypedArray(value) {
-  return ArrayBuffer.isView(value) && !(value instanceof DataView);
+  return ArrayBuffer.isView(value) && tagOf(value) !== '[object DataView]';
 }
 
 const typedTags = [
@@ -52,16 +52,19 @@ function isArrayBufferView(value) {
 }
 
 function isAnyArrayBuffer(value) {
-  return value instanceof ArrayBuffer ||
-    (typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer);
+  // R2-iter：跨 realm 按结构判（4.57；instanceof 跨 compartment 恒 false，
+  // cross-realm 套件点名）。伪造 toStringTag 的误判记档（真机品牌检查无此问题）。
+  const t = tagOf(value);
+  return t === '[object ArrayBuffer]' || t === '[object SharedArrayBuffer]';
 }
 
 function isArrayBuffer(value) {
-  return value instanceof ArrayBuffer;
+  return tagOf(value) === '[object ArrayBuffer]';
 }
 
 function isSharedArrayBuffer(value) {
-  return typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer;
+  // R2-iter：同上跨 realm 口径。
+  return tagOf(value) === '[object SharedArrayBuffer]';
 }
 
 function isAsyncFunction(value) {

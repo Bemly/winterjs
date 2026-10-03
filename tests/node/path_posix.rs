@@ -30,7 +30,9 @@ console.log("timeout-obj", typeof t.unref === "function" && t.unref() === t && t
 ct(t);
 si(() => console.log("immediate-ok"));
 try { await import("node:path/nope"); console.log("NO-ERR"); }
-catch (e) { console.log("subpath-err", String(e.message).includes("is not a builtin")); }
+// R2-iter 按 4.65 翻转：真机文案 `No such built-in module: node:path/nope`
+//（旧断言编码的是自家文案 "is not a builtin"）。
+catch (e) { console.log("subpath-err", String(e.message).includes("No such built-in module: node:path/nope")); }
 "#,
     );
     assert!(

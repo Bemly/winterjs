@@ -4633,3 +4633,51 @@
 - 复现：`node -e 'require("node:path/nope")'` 首行即文案。
 - 推广铁律：**"经 require 可达"≠文案一致**——缺失路径的文案须对真机逐字抠，
   前缀形/裸形分开断言。
+
+### 4.261 transform 要的是句柄协议不是算法：缓冲式 shim 只译协议（2026-10-03，P2-stream-R3a）
+
+- 症状：`zlib/iter` 全灭（`internalBinding is not defined`，transform 顶层直调）。
+- 根因：transform 经裸 `internalBinding('zlib')` 取 C++ 流式句柄（init/
+  write/writeSync/close + writeState 双槽 + processCallback）；轮子只有算法
+  无此协议层（crates.io 无 Node 私有 ABI 轮子，预期内）。
+- 修法：新 `iter_zlib_binding` 模块实现同协议（攒输入、FINISH 整包同步压、
+  writeState 分次吐、`processCallback` 微任务回；`ZSTD_e_flush` 按 PROCESS 攒；
+  常量取真机值，缺失档补 `zlib.js`）；transform 体逐字不动，头补局部
+  `internalBinding` 映射（无全局污染）；另补 `ERR_ZSTD_INVALID_PARAM` +
+  `ZSTD_c/d_*` 族（coverage 按名定界）。
+- 复现：gzip 回环 31B↔"hello world"；transform×5 + interop/to-readable 转绿。
+- 推广铁律：**"轮子只管算法，协议层手写适配"**（tls wrap 同构）；körper 用量
+  先数协议动词（init/write/close/回调），再估行数——本例约 200 行。
+
+### 4.262 end-again 归属错文件：OM 行为安到 Writable 头上（2026-10-03，P2-stream-R3b）
+
+- 症状：writable-destroy（node 套件原文）要恒 DESTROYED，与既有
+  `state.errored ?? DESTROYED` 偏离行冲突。
+- 根因：9 月 http 轮把 OM（ClientRequest/ServerResponse）的 end-again
+  同值语义修进了共享的 `Writable.prototype.end`；node 原文该行无条件
+  DESTROYED（套件即证）；OM 的 end-again 走自家 `__omErrored` 路（且 http
+  已冻结，writableFinished 系既有红另案）。
+- 修法：writable_flow 回滚逐字；OM 侧不动（冻结域）。
+- 复现：双套件对打即现（一方要恒值一方要已记错，必有一方是错文件）。
+- 推广铁律：**共享基类函数的"特例分支"必须有inctance 判据跟行**（本例
+  `this.__omErrored`）；裸改共享行即跨域互斥——先问"谁也在调它"。
+
+### 4.263 console 无回调即无 tick：复用 errorHandler 才是真机形（2026-10-03，P2-stream-R3b）
+
+- 症状：samecb-singletick 要 1 次 TickObject init，实测 0 次。
+- 根因：自家 Console 调 `stream.write(text)` 无回调（nop 路 needTick 恒假）；
+  真机传复用 errorHandler（同对象百次）→ 首写 1 次 nextTick + 合批计数。
+- 修法：实例复用空回调（错误仍走 emit，不拦截，行为不变）。
+- 复现：包 process.nextTick 计数器，真机 5 写 1 tick。
+- 推广铁律：**"无回调"与"复用空回调"在合批语义下不等价**——凡涉及
+  nextTick 合批的调用点，回调同一性是可观测行为。
+
+### 4.264 BOM 默认剥：WHATWG 与 fs/StringDecoder 分家（2026-10-03，P2-stream-R3b）
+
+- 症状：preprocess 套件 `readFileSync(..., 'utf8')` 丢 BOM（要保留）。
+- 根因：`__fsDecode` 直调 WHATWG TextDecoder（默认剥）；真机 fs 经 Buffer
+  路不剥。流式侧同理（StringDecoder 内建 TextDecoder 默认剥）。
+- 修法：两处加 `ignoreBOM: true`（readFileSync 侧 + StringDecoder 构造）。
+- 复现：BOM 文件 `read(1)` 真机 `"\uFEFF"`，修前 `"a"`。
+- 推广铁律：**凡"读文件/流转串"的解码点，先问 BOM 留不留**（WHATWG 默认
+  与 Node fs/stream 默认相反）。

@@ -66,8 +66,9 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/async_context_frame", async_context_frame::SOURCE),
     ("node:internal/async_hooks_int", async_hooks_int::SOURCE),
     ("node:internal/test/binding", binding::SOURCE),
-    // `internal/async_hooks` 即公开面同源（immediate-error 套件直引）。
-    ("node:internal/async_hooks", super::async_hooks::SOURCE),
+    // `internal/async_hooks` 经门面与公开实例同源（分实例即 ALS/enable 状态分叉，
+    // eos 分支与套件直调读空即假；immediate-error 套件直引）。
+    ("node:internal/async_hooks", super::async_hooks::INTERNAL_ASYNC_HOOKS_FACADE_SOURCE),
     ("node:internal/debuglog", debuglog::SOURCE),
     ("node:internal/encoding", encoding::SOURCE),
     ("node:internal/buffer", buffer::SOURCE),
@@ -122,15 +123,29 @@ pub const INTERNALS: &[(&str, &str)] = &[
 
 /// internal 规范名（`internal/errors` 与 `node:internal/errors` 皆收 → `node:internal/errors`；
 /// 非 internal 返回 None）。
+/// R9-stream：连字符回落下划线——本仓表内 `streams/*` 等用下划线
+/// （`end_of_stream`），真机全连字符（`end-of-stream`）；精确命中优先，
+/// 失配再试下划线形（zip 系原生连字符不受影响）。
 pub fn normalize_internal(spec: &str) -> Option<&'static str> {
     let rest = spec
         .strip_prefix("node:")
         .and_then(|s| s.strip_prefix("internal/"))
         .or_else(|| spec.strip_prefix("internal/"))?;
-    INTERNALS
+    if let Some(hit) = INTERNALS
         .iter()
         .find(|(name, _)| name.strip_prefix("node:internal/") == Some(rest))
         .map(|(name, _)| *name)
+    {
+        return Some(hit);
+    }
+    if rest.contains('-') {
+        let under: String = rest.replace('-', "_");
+        return INTERNALS
+            .iter()
+            .find(|(name, _)| name.strip_prefix("node:internal/") == Some(under.as_str()))
+            .map(|(name, _)| *name);
+    }
+    None
 }
 
 /// internal 源。
@@ -155,6 +170,15 @@ mod tests {
         assert_eq!(normalize_internal("internal/nope"), None);
         assert_eq!(normalize_internal("errors"), None);
         assert_eq!(normalize_internal("node:internal/errors"), Some("node:internal/errors"));
+        // R9-stream：连字符回落（套件直引真机形）。
+        assert_eq!(
+            normalize_internal("internal/streams/add-abort-signal"),
+            Some("node:internal/streams/add_abort_signal")
+        );
+        assert_eq!(
+            normalize_internal("internal/streams/end-of-stream"),
+            Some("node:internal/streams/end_of_stream")
+        );
         // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；增删同步改此数）。
         assert_eq!(INTERNALS.len(), 67);
         for (name, src) in INTERNALS {

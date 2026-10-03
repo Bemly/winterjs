@@ -43,7 +43,11 @@ function executionAsyncResource() { return resourceStack[resourceStack.length - 
 function triggerAsyncId() { return executionAsyncId(); }
 function getDefaultTriggerAsyncId() { return idStack[idStack.length - 1]; }
 
-// ── createHook（stub：验签名，钩子永不触发）─────────────────────────────
+// ── createHook（半 stub：签名校验 + enable 计数 + init 触发；before/after/
+// destroy/promiseResolve 永不触发，跨 await 传播不支持，见头注）────────────
+// R-stream：enable 计数供 `enabledHooksExist`（eos 三套件点名）；AsyncResource
+// 构造期同步触发已 enable 钩子的 init（STREAM_END_OF_STREAM 上下文传播点名）。
+const __enabledHooks = new Set();
 class AsyncHook {
   constructor({ init, before, after, destroy, promiseResolve, trackPromises } = kEmptyObject) {
     if (init !== undefined && typeof init !== 'function') throw new ERR_ASYNC_CALLBACK('hook.init');
@@ -54,9 +58,17 @@ class AsyncHook {
       throw new ERR_ASYNC_CALLBACK('hook.promiseResolve');
     }
     if (trackPromises !== undefined) validateBoolean(trackPromises, 'trackPromises');
+    this.__wjs2_fns = { init, before, after, destroy, promiseResolve };
+    this.__wjs2_on = false;
   }
-  enable() { return this; }
-  disable() { return this; }
+  enable() {
+    if (!this.__wjs2_on) { this.__wjs2_on = true; __enabledHooks.add(this); }
+    return this;
+  }
+  disable() {
+    if (this.__wjs2_on) { this.__wjs2_on = false; __enabledHooks.delete(this); }
+    return this;
+  }
 }
 
 function createHook(fns) {
@@ -85,6 +97,14 @@ class AsyncResource {
     this.__wjs2Destroyed = false;
     // 构造期 ALS 快照（跨作用域传播的唯一通道；跨 await 不支持，见头注）
     this.__wjs2Context = new Map(currentContext);
+    // R-stream：同步触发已 enable 钩子的 init（node 口径 init(asyncId, type,
+    // triggerAsyncId, resource)；用户回调走 Reflect.apply，抛错吞掉不中断构造）。
+    for (const h of __enabledHooks) {
+      const fn = h.__wjs2_fns && h.__wjs2_fns.init;
+      if (typeof fn === 'function') {
+        try { Reflect.apply(fn, h, [this[async_id_symbol], type, triggerAsyncId_, this]); } catch {}
+      }
+    }
   }
 
   asyncId() { return this[async_id_symbol]; }
@@ -246,10 +266,20 @@ globalThis.__wjs2_als_restore = (snap, fn) => {
   try { return fn(); } finally { currentContext = prev; }
 };
 
+// R-stream：eos 分支 + 套件直调。`internal/async_hooks` 经门面与本实例同源
+// （见 `INTERNAL_ASYNC_HOOKS_FACADE_SOURCE`），故此处单实例状态即全局真相：
+// hook 开集合非空或 ALS 上下文非空即真（default-path 无钩无 ALS 即假）。
+// 注意：ALS 非空即真属近似（真机只看 hooks；本仓无 AsyncContextFrame 引擎
+// 原语，ALS 测试靠此分支，记档）。
+function enabledHooksExist() {
+  return __enabledHooks.size > 0 || currentContext.size > 0;
+}
+
 export {
   AsyncLocalStorage,
   AsyncResource,
   createHook,
+  enabledHooksExist,
   executionAsyncId,
   executionAsyncResource,
   triggerAsyncId,
@@ -257,5 +287,14 @@ export {
   newAsyncId,
   symbols,
 };
-export default { AsyncLocalStorage, AsyncResource, createHook, executionAsyncId, executionAsyncResource, triggerAsyncId, asyncWrapProviders, newAsyncId, symbols };
+export default { AsyncLocalStorage, AsyncResource, createHook, enabledHooksExist, executionAsyncId, executionAsyncResource, triggerAsyncId, asyncWrapProviders, newAsyncId, symbols };
+"#;
+
+/// `node:internal/async_hooks` 门面（与 `node:async_hooks` 同实例状态）。
+/// 背景：两 canonical 各自求值即两份模块级状态（ALS Map/enable 集）分叉——eos
+/// 内部分支与套件直调读到空状态即假。门面只做重导出，状态锚定公开实例。
+pub const INTERNAL_ASYNC_HOOKS_FACADE_SOURCE: &str = r#"
+import { enabledHooksExist } from 'node:async_hooks';
+export { enabledHooksExist };
+export default { enabledHooksExist };
 "#;

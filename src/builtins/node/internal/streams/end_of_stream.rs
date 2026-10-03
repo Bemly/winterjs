@@ -4,7 +4,7 @@
 pub const SOURCE: &str = r#"import { primordials } from 'node:internal/primordials';
 import * as __m0 from 'node:async_hooks';
 import * as __m1 from 'node:internal/async_context_frame';
-import * as __m2 from 'node:internal/async_hooks_int';
+import * as __m2 from 'node:internal/async_hooks';
 import * as __m3 from 'node:internal/errors';
 import * as __m4 from 'node:internal/events/abort_listener';
 import * as __m5 from 'node:internal/streams/utils';

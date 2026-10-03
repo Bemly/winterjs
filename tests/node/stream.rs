@@ -1,5 +1,6 @@
 //! tests/node/stream.rs — 对齐 src/builtins/node/stream.rs（node:stream 系（含 consumers/web））。
 
+use crate::common::*;
 use crate::helpers::*;
 
 #[test]
@@ -393,5 +394,69 @@ process.nextTick(() => { throw new Error("tickboom"); });
             "missing: {line}\nout: {text}"
         );
     }
+    dir.close().unwrap();
+}
+
+#[test]
+fn phase11_stream_r1_eos_hooks_faces() {
+    // P2-stream R1：eos 三套件 + 连字符回落 + tty_wrap（node 原文口径）。
+    // 正常：finished 回调触发；AsyncResource 构造触发 init（STREAM_END_OF_STREAM
+    //   上下文传播）；enable 后 enabledHooksExist 真。
+    // 报错：internal 连字符形可解（add-abort-signal/end-of-stream 不抛未映射）。
+    // 边界：无钩无 ALS 即 enabledHooksExist 假；tty_wrap.TTY 三键不可枚举。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "r1.mjs",
+        r#"
+import { Readable, finished } from "node:stream";
+import { createHook, executionAsyncId } from "node:async_hooks";
+const { enabledHooksExist } = await import("node:internal/async_hooks").then((m) => m.default ?? m);
+
+// 正常：init 触发 + 上下文传播（bindAsyncResource-path 套件同构）
+const cmap = new Map();
+cmap.set(executionAsyncId(), "abc-123");
+createHook({
+  init(asyncId, type, triggerAsyncId) {
+    if (type === "STREAM_END_OF_STREAM") cmap.set(asyncId, cmap.get(triggerAsyncId));
+  },
+}).enable();
+console.log("hooks-exist", enabledHooksExist() === true);
+const r = new Readable({ read() {} });
+finished(r, () => {
+  console.log("fin-ctx", cmap.get(executionAsyncId()) === "abc-123");
+});
+r.destroy();
+// 报错面：连字符形可解
+let ok = true;
+try { await import("node:internal/streams/end-of-stream"); } catch { ok = false; }
+console.log("hyphen-eos", ok);
+try { await import("node:internal/streams/add-abort-signal"); } catch { ok = false; }
+console.log("hyphen-aas", ok);
+"#,
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in ["hooks-exist true", "fin-ctx true", "hyphen-eos true", "hyphen-aas true"] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    // 边界（独立进程面）：无钩无 ALS 即假；tty_wrap 三键不可枚举。
+    let (ok, out, _) = wjs(
+        &[
+            "--eval",
+            "import('node:internal/async_hooks').then((m) => { const f = (m.default ?? m).enabledHooksExist; console.log('no-hooks', f() === false); });",
+        ],
+        &dir,
+    );
+    assert!(ok && out.contains("no-hooks true"), "out: {out}");
+    let (ok, out, _) = wjs(
+        &["--expose-internals", "--eval",
+            "const { internalBinding } = require('internal/test/binding');\
+             const TTY = internalBinding('tty_wrap').TTY;\
+             const f = Object.prototype.propertyIsEnumerable.bind(TTY);\
+             console.log('tty-enum', f('bytesRead') === false && f('fd') === false && f('_externalStream') === false);"],
+        &dir,
+    );
+    assert!(ok && out.contains("tty-enum true"), "out: {out}");
     dir.close().unwrap();
 }

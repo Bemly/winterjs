@@ -15,6 +15,10 @@ const __table = {
   uv: { UV_ENETUNREACH: -51 },
   // R9：binding.js 套件 internalBinding('buffer') 只断不断言值（空对象即绿）。
   buffer: {},
+  // R-stream：base-prototype-accessors 套件点名 `internalBinding('tty_wrap').TTY`
+  // 的 bytesRead/fd/_externalStream 不可枚举——类原型访问器默认即不可枚举，
+  // 空类即绿（真机 StreamBase::AddMethods 语义，值面另案）。
+  tty_wrap: { TTY: class TTY {} },
   // tcp_wrap：localaddress 套件经 common/net.hasMultiLocalhost 探环回多地址。
   // 保守口径：仅标准环回（127.0.0.1/localhost/::1）回 0，其余非零即跳过套件
   // （与真机在不支持平台的行为一致；有 127.0.0.2 的机器上保守跳过，记档）。

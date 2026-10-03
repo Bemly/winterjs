@@ -4567,3 +4567,69 @@
 - 复现：修前两件 `unmapped internal require`，修后绿。
 - 推广铁律：**凡"本仓为实现方便改名"的注册表，对外规范名须双向可达**——
   精确优先 + 回落，而非改名即断。
+
+### 4.256 E() 吞变体类：`ERR_X.TypeError` 须逐类挂载（2026-10-03，P2-stream-R2）
+
+- 症状：iter 面 `new ERR_INVALID_STATE.TypeError(...)` 报
+  `ERR_INVALID_STATE.TypeError is not a constructor`。
+- 根因：自家 `E(sym, val, def, ...otherClasses)` 只处理了
+  HideStackFramesError 标记，其余变体类（TypeError/RangeError/URIError）
+  被忽略；真机逐类挂 `ErrClass[Clazz.name]`。
+- 修法：循环挂载（标记类走 HideStackFrames 分支，余下按名挂载）。
+  纯加法：旧 `codes[sym]` 基类不变，既有 `instanceof` 断言不受影响。
+- 复现：`new (require('node:internal/errors').codes.ERR_INVALID_STATE.TypeError)('x')`。
+- 推广铁律：**移植"注册器"函数（E/defineProperty 循环）须逐行对原文**，
+  丢分支即整族面静默缺失（87 个 E() 共用，无单件可观察）。
+
+### 4.257 ESM 环的新边：移植体顶层 import 即建边，懒 require 也救不了（2026-10-03，P2-stream-R2）
+
+- 症状：classic 引入后 `import('node:stream/iter')` 报
+  `can't access lexical declaration '"default"'`，栈顶在 duplex:67
+  `require('internal/streams/readable')`。
+- 根因：classic 为懒函数配了顶层 ESM import（readable/writable），新建
+  classic→readable 边；DFS 到达 compose→duplex 时 readable 尚在环中，
+  duplex 顶层解构即 TDZ。旧图无此边故一直绿——新边是唯一变量。
+- 修法：classic 改 `__reg` 运行时解析（duplex/duplexify 同款），并给
+  readable/writable 补 `__reg.set` 尾（加法）；移植体懒函数体不动。
+- 复现：直引 classic 即现；摘掉两 import 即消（对照实锤）。
+- 推广铁律：**新移植文件的顶层 import 即新边**——凡原文有 lazy-require
+  注释（"defer the require"/"avoid circular"）处，一律走 `__reg`
+  运行时解析，不建静态边。
+
+### 4.258 同名双实例之外：`instanceof` 跨 realm 恒 false，ArrayBuffer 系须结构判（2026-10-03，P2-stream-R2）
+
+- 症状：cross-realm 套件 `fromSync(crossRealmAB)` 抛
+  `Received an instance of ArrayBuffer`——判定说不是，文案说认识。
+- 根因：`isArrayBuffer/isAnyArrayBuffer/isSharedArrayBuffer/isDataView/
+  isTypedArray` 用 `instanceof`，跨 compartment 恒 false（4.57 本例）。
+- 修法：改 `Object.prototype.toString` tag 比对（DataView/TypedArray 同理；
+  伪造 tag 误判记档，真机品牌检查无此问题）。
+- 复现：`vm.runInNewContext` 造 AB 调 `isAnyArrayBuffer`。
+- 推广铁律：**凡 `internal/util/types` 的形态判定，默认写跨 realm 安全形**
+  （tag/isView），`instanceof` 出现即 suspicious。
+
+### 4.259 自家黑盒 stale handler：uncaught 监听不摘即交叉开火（2026-10-03，P2-stream-R2）
+
+- 症状：http upgrade 黑盒 `'sim err' !== 'cb boom'`，干净 HEAD 同败，
+  真机跑同文件亦败——与实现无关，测试设计缺陷。
+- 根因：u4/u6 两块各 `process.on('uncaughtException')` 永不摘除；
+  第二个未捕获到时两监听全跑，先注册的断言先炸（真机 emit 同样不捕获，
+  照样败）。
+- 修法：两处 `on` 改 `once`（意图不变：各收一次即撤）。
+- 复现：双运行时同败即实锤测试问题（4.65 先实测再定责的用例）。
+- 推广铁律：**一个文件内多个 uncaughtException 断言必须 `once` 或手动摘**；
+  新红先双运行时对照，再动手（本轮另两例 node 侧红亦同理记档）。
+
+### 4.260 真机文案 `No such built-in module`：CJS/ESM 同文，裸名/前缀双形（2026-10-03，P2-stream-R2）
+
+- 症状：iter-disabled 套件要求无旗下 `require("node:stream/iter")` 报
+  `No such built-in module`，自家报 `Cannot find module ... is not a builtin`。
+- 根因：真机 CJS（ERR_UNKNOWN_BUILTIN_MODULE）/ESM 解析器同文案；
+  自家三处（resolve/prepare/require）各写各的旧文案；另裸名形仍
+  `Cannot find module`（真机同，双形并存）。
+- 修法：`node:` 前缀三处统改新文案（`bun:` 沿旧）；`require()` 内
+  `node:` 先拦（外层 "Cannot find module" 包裹仍在，正则子串命中）；
+  旧黑盒两处按 4.65 翻转。
+- 复现：`node -e 'require("node:path/nope")'` 首行即文案。
+- 推广铁律：**"经 require 可达"≠文案一致**——缺失路径的文案须对真机逐字抠，
+  前缀形/裸形分开断言。

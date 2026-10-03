@@ -660,8 +660,8 @@ pub unsafe extern "C" fn cpu_usage(
     true
 }
 
-/// 本线程用户/系统微秒（macOS 经 thread_info 真值；Linux 经 RUSAGE_THREAD；
-/// 其余回零并记档——Windows thread 面另案）。
+// 本线程用户/系统微秒（macOS 经 thread_info 真值；Linux 经 RUSAGE_THREAD；
+// 其余回零并记档——Windows thread 面另案）。
 // §6 三问：① libc 0.2 未导出 mach_port_deallocate（无 safe/现成可用），
 // ② 收敛在本函数内、对外只暴露 (f64, f64)，③ 前置见 SAFETY 内联注释。
 #[cfg(target_vendor = "apple")]
@@ -669,6 +669,9 @@ unsafe extern "C" {
     fn mach_port_deallocate(task: libc::mach_port_t, name: libc::mach_port_t) -> libc::kern_return_t;
 }
 #[cfg(target_vendor = "apple")]
+// libc 的 mach_thread_self/thread_info 系标记 deprecate（指向上游 mach2 轮子；
+// 引新 crate 须 §0.5 用户点头，libc 仍可用，属预期告警，允许）。
+#[allow(deprecated)]
 fn thread_micros() -> (f64, f64) {
     // SAFETY: mach port 由 mach_thread_self 当场取得、用后即 deallocate；
     // thread_info 同步写入栈上 info，无别名；flavor/count 均为常量口径。

@@ -92,6 +92,43 @@ function __wjs2_checkUsagePrev(prevValue) {
   }
 }
 
+// POSIX 身份参数门（node 口径 does_own_process_state.js validateId）。
+function __wjs2_validateId(id, name) {
+  const E = require("internal/errors").codes;
+  if (typeof id === "number") {
+    if (!Number.isInteger(id)) throw new E.ERR_OUT_OF_RANGE(name, "an integer", id);
+    if (id < 0 || id > 4294967295) throw new E.ERR_OUT_OF_RANGE(name, ">= 0 && <= 4294967295", id);
+  } else if (typeof id !== "string") {
+    throw new E.ERR_INVALID_ARG_TYPE(name, ["number", "string"], id);
+  }
+}
+
+// 未知身份错（node 口径 `X identifier does not exist: id`）。
+function __wjs2_unknownCredential(type, id) {
+  const e = new Error(`${type} identifier does not exist: ${id}`);
+  e.code = "ERR_UNKNOWN_CREDENTIAL";
+  throw e;
+}
+
+// set*id syscall 失败错（EPERM 等；String(err) 形如 `Error: EPERM, …`，套件正则口径）。
+function __wjs2_credSysErr(errno, syscall, id) {
+  const name = { 1: "EPERM", 13: "EACCES", 22: "EINVAL" }[errno] ?? `errno-${errno}`;
+  const e = new Error(`${name}, ${syscall} '${id}'`);
+  e.code = name;
+  e.errno = errno;
+  e.syscall = syscall;
+  throw e;
+}
+
+// wrapIdSetter 口径：校验 → 数形归一 → 未知身份错 → syscall 错。
+function __wjs2_credIdSetter(type, syscall, native, id) {
+  __wjs2_validateId(id, "id");
+  if (typeof id === "number") id >>>= 0;
+  const r = native(JSON.stringify(id));
+  if (r === 1) __wjs2_unknownCredential(type, id);
+  if (r < 0) __wjs2_credSysErr(-r, syscall, id);
+}
+
 globalThis.process = {
   argv: JSON.parse(__wjs2_argv_json()),
   // 真机口径：argv0 缺省即 argv[0]（spawn-argv0 套件点名自举回显）。
@@ -378,6 +415,28 @@ globalThis.process = {
   geteuid() { return __wjs2_process_geteuid(); },
   getegid() { return __wjs2_process_getegid(); },
   getgroups() { return __wjs2_process_getgroups(); },
+  // POSIX 身份设置（node 口径 wrapPosixCredentialSetters；unix-only native，
+  // Windows 面记档——本仓 Windows 构建本就不含 process_.rs 身份系）。
+  setuid(id) { __wjs2_credIdSetter("User", "setuid", (v) => __wjs2_setuid(v), id); },
+  setgid(id) { __wjs2_credIdSetter("Group", "setgid", (v) => __wjs2_setgid(v), id); },
+  seteuid(id) { __wjs2_credIdSetter("User", "seteuid", (v) => __wjs2_seteuid(v), id); },
+  setegid(id) { __wjs2_credIdSetter("Group", "setegid", (v) => __wjs2_setegid(v), id); },
+  setgroups(groups) {
+    const E = require("internal/errors").codes;
+    if (!Array.isArray(groups)) throw new E.ERR_INVALID_ARG_TYPE("groups", "Array", groups);
+    for (let i = 0; i < groups.length; i++) __wjs2_validateId(groups[i], `groups[${i}]`);
+    const r = __wjs2_setgroups(JSON.stringify(groups));
+    if (r > 0) __wjs2_unknownCredential("Group", groups[r - 1]);
+    if (r !== 0) __wjs2_credSysErr(-r, "setgroups", groups.join(","));
+  },
+  initgroups(user, extraGroup) {
+    __wjs2_validateId(user, "user");
+    __wjs2_validateId(extraGroup, "extraGroup");
+    const r = __wjs2_initgroups(JSON.stringify(user), JSON.stringify(extraGroup));
+    if (r === 1) __wjs2_unknownCredential("User", user);
+    if (r === 2) __wjs2_unknownCredential("Group", extraGroup);
+    if (r !== 0) __wjs2_credSysErr(-r, "initgroups", user);
+  },
   nextTick(cb, ...args) {
     if (typeof cb !== "function") throw new (require("internal/errors").codes.ERR_INVALID_ARG_TYPE)("callback", "Function", cb);
     // 原生队列（node 口径）：tick 由 pump 在 RunJobs 前后收割——同步期入队的

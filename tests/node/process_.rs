@@ -327,6 +327,52 @@ fn phase11_process_validation_faces() {
 }
 
 #[test]
+fn phase11_process_credential_faces() {
+    // P2-process R3: setuid/setgid/seteuid/setegid/setgroups/initgroups
+    //（node wrapPosixCredentialSetters 口径；只走无副作用路径——校验错/
+    // 未知身份/自身份 no-op，不改测试进程身份）。
+    // 正常：自身份 no-op；未知身份码精确。
+    // 报错：id 非数串、数组缺省、组元素非法、initgroups 缺参。
+    // 边界：setgroups 空数组（调 syscall， EPERM 或成功皆不断言码，只不断言崩）；
+    // 数字形未知大 id（只断言抛错，不定码）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (ok, out, _) = wjs(
+        &[
+            "--eval",
+            "process.seteuid(process.geteuid()); console.log('self-noop true');\
+             const code = (f) => { try { f(); } catch (e) { return e.code || 'THREW'; } return 'NO-THROW'; };\
+             console.log('uid-unknown', code(() => process.setuid('fhq-no-such-user-wjs2')));\
+             console.log('gid-unknown', code(() => process.setgroups([1, 'fhq-no-such-group-wjs2'])));\
+             console.log('init-unknown', code(() => process.initgroups('fhq-no-wjs2', 'fhq-no-wjs2')));\
+             console.log('id-obj', code(() => process.setuid({})));\
+             console.log('groups-missing', code(() => process.setgroups()));\
+             console.log('groups-elem', code(() => process.setgroups([true])));\
+             console.log('init-user', code(() => process.initgroups(null, 'x')));\
+             try { process.setgroups([]); console.log('groups-empty THREW-NONE'); } catch (e) { console.log('groups-empty', e.code || 'THREW'); }",
+        ],
+        &dir,
+    );
+    assert!(ok, "out: {out}");
+    for line in [
+        "self-noop true",
+        "uid-unknown ERR_UNKNOWN_CREDENTIAL",
+        "gid-unknown ERR_UNKNOWN_CREDENTIAL",
+        "init-unknown ERR_UNKNOWN_CREDENTIAL",
+        "id-obj ERR_INVALID_ARG_TYPE",
+        "groups-missing ERR_INVALID_ARG_TYPE",
+        "groups-elem ERR_INVALID_ARG_TYPE",
+        "init-user ERR_INVALID_ARG_TYPE",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    assert!(
+        out.lines().any(|l| l == "groups-empty THREW-NONE" || l.starts_with("groups-empty ")),
+        "groups-empty line missing\nout: {out}"
+    );
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase11_process_resource_faces() {
     // P2-process R2: abort/内存/cpu/umask 面（node 原文口径）。
     // 正常：abort 无 prototype；内存两数；cpu/thread 双数非负；umask 串数互通。

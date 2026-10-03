@@ -46,6 +46,7 @@ pub mod path_posix;
 pub mod path_win32;
 pub mod perf_hooks;
 pub mod process_;
+pub mod process_cred;
 mod process_prelude;
 pub mod punycode;
 pub mod querystring;

@@ -167,6 +167,17 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_process_geteuid", Some(node::process_::geteuid), 0),
             ("__wjs2_process_getegid", Some(node::process_::getegid), 0),
             ("__wjs2_process_getgroups", Some(node::process_::getgroups), 0),
+            // POSIX 身份设置（unix-only 实现；Windows 面记档，见 process_prelude）。
+            #[cfg(unix)]
+            ("__wjs2_setuid", Some(node::process_cred::setuid), 1),
+            #[cfg(unix)]
+            ("__wjs2_setgid", Some(node::process_cred::setgid), 1),
+            #[cfg(unix)]
+            ("__wjs2_seteuid", Some(node::process_cred::seteuid), 1),
+            #[cfg(unix)]
+            ("__wjs2_setegid", Some(node::process_cred::setegid), 1),
+            ("__wjs2_setgroups", Some(node::process_cred::setgroups), 1),
+            ("__wjs2_initgroups", Some(node::process_cred::initgroups), 2),
             ("__wjs2_env_get", Some(node::process_::env_get), 1),
             ("__wjs2_env_set", Some(node::process_::env_set), 2),
             ("__wjs2_env_del", Some(node::process_::env_del), 1),

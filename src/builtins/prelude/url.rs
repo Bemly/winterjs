@@ -312,6 +312,11 @@ globalThis.TextDecoder = class TextDecoder {
       throw new TypeError("TextDecoder.decode does not accept SharedArrayBuffer views yet");
     } else if (ArrayBuffer.isView(view) && !(view instanceof Uint8Array)) {
       view = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    } else if (view !== undefined && view !== null && !(view instanceof Uint8Array)) {
+      // R3b：非 BufferSource 即 ERR_INVALID_ARG_TYPE（真机文案逐字；consumers 套件点名码）。
+      const e = new TypeError(`The "list" argument must be an instance of SharedArrayBuffer, ArrayBuffer or ArrayBufferView. Received ${view === null ? "null" : typeof view}`);
+      e.code = "ERR_INVALID_ARG_TYPE";
+      throw e;
     }
     if (options && options.stream) {
       // 流式：有状态解码器攒截断序列（跨片多字节/stateful 编码正确）；

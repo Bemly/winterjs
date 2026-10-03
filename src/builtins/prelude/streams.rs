@@ -176,7 +176,7 @@ globalThis.ReadableStream = class ReadableStream {
   get locked() { return !!__wjs2_rsState.get(this).reader; }
   cancel(reason) {
     const st = __wjs2_rsState.get(this);
-    if (st.reader) throw new TypeError("stream is locked");
+    if (st.reader) { const e = new TypeError("stream is locked"); e.code = "ERR_INVALID_STATE"; throw e; }
     st.queue.length = 0; st.closed = true;
     st.byteQ.length = 0; st.byteLen = 0;
     const c = st.source.cancel ? st.source.cancel(reason) : undefined;
@@ -185,7 +185,7 @@ globalThis.ReadableStream = class ReadableStream {
   }
   getReader(options) {
     const st = __wjs2_rsState.get(this);
-    if (st.reader) throw new TypeError("stream is locked");
+    if (st.reader) { const e = new TypeError("stream is locked"); e.code = "ERR_INVALID_STATE"; throw e; }
     const mode = options ? options.mode : undefined;
     if (mode !== undefined && mode !== "byob") throw new TypeError(`Unknown reader mode '${mode}'`);
     const stream = this;
@@ -284,7 +284,7 @@ globalThis.ReadableStream = class ReadableStream {
   }
   tee() {
     const st = __wjs2_rsState.get(this);
-    if (st.reader) throw new TypeError("stream is locked");
+    if (st.reader) { const e = new TypeError("stream is locked"); e.code = "ERR_INVALID_STATE"; throw e; }
     // 简化 tee：顺序读源，两分支各收一份（引用共享；无背压，见文档）。
     const q1 = [], q2 = [];
     const mkBranch = (q) => new ReadableStream({
@@ -346,19 +346,19 @@ globalThis.WritableStream = class WritableStream {
   get locked() { return !!__wjs2_wsState.get(this).writer; }
   abort(reason) {
     const st = __wjs2_wsState.get(this);
-    if (st.writer) throw new TypeError("stream is locked");
+    if (st.writer) { const e = new TypeError("stream is locked"); e.code = "ERR_INVALID_STATE"; throw e; }
     const a = st.sink.abort ? st.sink.abort(reason) : undefined;
     __wjs2_wsError(this, reason);
     return Promise.resolve(a).then(() => undefined);
   }
   close() {
     const st = __wjs2_wsState.get(this);
-    if (st.writer) throw new TypeError("stream is locked");
+    if (st.writer) { const e = new TypeError("stream is locked"); e.code = "ERR_INVALID_STATE"; throw e; }
     return __wjs2_wsCloseReq(this);
   }
   getWriter() {
     const st = __wjs2_wsState.get(this);
-    if (st.writer) throw new TypeError("stream is locked");
+    if (st.writer) { const e = new TypeError("stream is locked"); e.code = "ERR_INVALID_STATE"; throw e; }
     const stream = this;
     const writer = {
       get closed() {

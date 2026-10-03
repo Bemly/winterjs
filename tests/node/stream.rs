@@ -514,3 +514,49 @@ console.log("err-variant", new E.ERR_INVALID_STATE.TypeError("x").code === "ERR_
     assert!(ok && out.contains("gated-bare Cannot find module 'stream"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_stream_r3_shim_faces() {
+    // P2-stream R3：zlib 句柄 shim + Web 锁码 + 同批单 tick（node 原文口径）。
+    // 正常：gzip 回环（缓冲式 shim 经同步引擎）；同 cb 百写仅一次 TickObject。
+    // 报错：web 锁错带 ERR_INVALID_STATE；TextDecoder 非源带 ERR_INVALID_ARG_TYPE。
+    // 边界：BOM 经 readFileSync 原样保留（fs 口径，preprocess 套件同构）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("r3.mjs")
+        .write_str(
+            r#"
+import S from "node:stream/iter";
+import Z from "node:zlib/iter";
+const comp = await S.bytes(S.pull(S.from([Buffer.from("hello world")]), Z.compressGzip()));
+console.log("rt", await S.text(S.pull(S.from([comp]), Z.decompressGzip())) === "hello world");
+const rs = new ReadableStream({ start(c) { c.enqueue("x"); c.close(); } });
+rs.getReader();
+try { rs.getReader(); } catch (e) { console.log("locked", e.code); }
+try { new TextDecoder().decode(123); } catch (e) { console.log("td", e.code); }
+import { createHook } from "node:async_hooks";
+import { Console } from "node:console";
+import { Writable } from "node:stream";
+let n = 0;
+createHook({ init(id, t) { if (t === "TickObject") n++; } }).enable();
+const c = new Console(new Writable({ write(chunk, enc, cb) { cb(); } }));
+for (let i = 0; i < 20; i++) c.log(i);
+setTimeout(() => console.log("ticks", n === 1), 50);
+"#,
+        )
+        .unwrap();
+    let out = winterjs2()
+        .args(["--experimental-stream-iter", "--run", "r3.mjs"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    for line in ["rt true", "locked ERR_INVALID_STATE", "td ERR_INVALID_ARG_TYPE", "ticks true"] {
+        assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    // 边界：fs BOM 保留（preprocess 第一块同构；JSON 不转义 U+FEFF，原样比对）。
+    dir.child("bom.txt").write_str("\u{FEFF}abc").unwrap();
+    let (ok, out, _) = wjs(&["--eval", "console.log(JSON.stringify(require('node:fs').readFileSync('bom.txt', 'utf8')))"], &dir);
+    assert!(ok && out.trim() == "\"\u{FEFF}abc\"", "out: {out}");
+    dir.close().unwrap();
+}

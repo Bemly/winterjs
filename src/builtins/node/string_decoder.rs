@@ -168,7 +168,9 @@ StringDecoder.prototype.__wjs2WriteUtf8 = function (view) {
   // 尾截断进 store（`utf8TailState`，C++ 尾扫逐行对齐）。
   // store 只增不 zero（lastChar 可见 stale 尾，真机同款，如 [D1,9B]）。
   if (this.__wjs2Decoder === undefined) {
-    this.__wjs2Decoder = new TextDecoder('utf-8', { fatal: false });
+    // R3b：BOM 不剥（真机 StringDecoder 原样返回 `\uFEFF`；WHATWG 默认剥，
+    // preprocess/fs 流套件点名保留）。
+    this.__wjs2Decoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true });
   }
   let out = '';
   let data = view;

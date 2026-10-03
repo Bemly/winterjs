@@ -275,6 +275,13 @@ function enabledHooksExist() {
   return __enabledHooks.size > 0 || currentContext.size > 0;
 }
 
+// R3b：nextTick TickObject 可观测（samecb-singletick 套件：同 cb 合批仅一次
+// nextTick 即一次 init；无钩子零开销，见守卫）。
+globalThis.__wjs2_tickInit = () => {
+  if (__enabledHooks.size === 0) return;
+  new AsyncResource('TickObject');
+};
+
 export {
   AsyncLocalStorage,
   AsyncResource,

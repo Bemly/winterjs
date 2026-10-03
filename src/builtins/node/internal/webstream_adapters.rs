@@ -12,6 +12,24 @@ import * as __duplex_ns from 'node:internal/streams/duplex';
 const Readable = () => __readable_ns.default;
 const Writable = () => __writable_ns.default;
 function newReadableStreamFromStreamReadable(streamReadable, options = {}) {
+  // R3b：node 原文校验（adapters.js：_readableState 形态门 + options 对象门 +
+  // type 仅收 'bytes'/undefined，其余 ERR_INVALID_ARG_VALUE；旧实现无校验全收）。
+  if (typeof streamReadable !== 'object' || streamReadable === null ||
+      typeof streamReadable._readableState !== 'object') {
+    const e = new TypeError(`The "streamReadable" argument must be of type stream.Readable. Received ${streamReadable === null ? 'null' : typeof streamReadable}`);
+    e.code = 'ERR_INVALID_ARG_TYPE';
+    throw e;
+  }
+  if (options !== undefined && (typeof options !== 'object' || options === null)) {
+    const e = new TypeError(`The "options" argument must be of type object. Received ${options === null ? 'null' : typeof options}`);
+    e.code = 'ERR_INVALID_ARG_TYPE';
+    throw e;
+  }
+  if (options.type !== undefined && options.type !== 'bytes') {
+    const e = new TypeError(`The "options.type" property must be one of 'bytes' or undefined. Received ${String(options.type)}`);
+    e.code = 'ERR_INVALID_ARG_VALUE';
+    throw e;
+  }
   const strategy = options.strategy ??
     { highWaterMark: streamReadable.readableHighWaterMark };
   const highWaterMark = typeof strategy === 'number' ? strategy : strategy.highWaterMark;
@@ -115,6 +133,16 @@ function newReadableWritablePairFromDuplex(duplex, options = {}) {
     throw err;
   }
   const readableType = options.readableType ?? options.type;
+  // R3b：`options.type` 别名告警（node 原文 getDeprecationWarningEmitter DEP0201；
+  // 进程内一次；duplex 套件 expectWarning 点名文案 + 码）。
+  if (options.readableType == null && options.type != null) {
+    if (!globalThis.__wjs2_dep0201_warned) {
+      globalThis.__wjs2_dep0201_warned = true;
+      process.emitWarning(
+        "Passing 'options.type' to Duplex.toWeb() is deprecated. To specify the ReadableStream type, use 'options.readableType'.",
+        'DeprecationWarning', 'DEP0201');
+    }
+  }
   const isRd = typeof duplex.read === "function" && duplex.readable !== false;
   const isWr = typeof duplex.write === "function" && duplex.writable !== false;
   if (duplex.destroyed) {

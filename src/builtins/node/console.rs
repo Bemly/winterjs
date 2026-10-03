@@ -40,7 +40,9 @@ class Console {
   _w(stream, text, fb) {
     if (stream !== null && typeof stream.write === "function") {
       try {
-        stream.write(text + "\n");
+        // R3b：复用写回调（真机 errorHandler 同形；同 cb 合批即单 TickObject，
+        // samecb-singletick 套件点名一次 init）。
+        stream.write(text + "\n", this._wCb ??= () => {});
       } catch {
         if (!this._ignoreErrors) throw new Error("Console: stream write failed");
       }

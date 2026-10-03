@@ -194,7 +194,9 @@ function __fsDecode(bytes, encoding, what) {
   if (enc === "latin1" || enc === "binary") {
     return Buffer.from(bytes).toString("latin1");
   }
-  return new TextDecoder(String(encoding)).decode(bytes);
+  // R3b：BOM 不剥（真机 readFileSync 原样返回 `\uFEFF…`；WHATWG 默认剥，
+  // preprocess 套件点名保留）。
+  return new TextDecoder(String(encoding), { ignoreBOM: true }).decode(bytes);
 }
 // node 口径：Stats 可无 new 调用（DEP0180 弃用警告 + 位置参数形；
 // stat 套件 `fs.Stats(dev, mode, ...)` 直调 + instanceof 断言）。

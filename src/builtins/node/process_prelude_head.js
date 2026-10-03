@@ -59,6 +59,13 @@ function __wjs2_stdio_stream(fd) {
     end(...rest) {
       const cb = rest.find((a) => typeof a === "function");
       if (cb) queueMicrotask(() => cb());
+      // R3b：end 即收尾（pipeline-process 套件：stdin→stdout 管线须 finish/close
+      // 结算；真机 Socket 同序；单次触发，重复 end 不重发）。
+      if (!this.__wjs2_ended) {
+        this.__wjs2_ended = true;
+        queueMicrotask(() => this.emit("finish"));
+        queueMicrotask(() => this.emit("close"));
+      }
       return this;
     },
     destroy() { return this; },
@@ -604,6 +611,13 @@ globalThis.process = {
     read() { return null; },
     pause() { return this; },
     resume() { return this; },
+    // R3b：pipeline(process.stdin, …) 须过 isReadableNodeStream（pipe+on 形；
+    // 真机 stdin 即 Socket，鸭子类型此处补齐；数据走既有轮询 data 事件直写）。
+    pipe(dest) {
+      this.on("data", (c) => { try { dest.write(c); } catch {} });
+      this.on("end", () => { try { if (typeof dest.end === "function") dest.end(); } catch {} });
+      return dest;
+    },
     setRawMode() { return this; },
     unref() { return this; },
     ref() { return this; },
@@ -646,6 +660,9 @@ globalThis.process = {
   },
   nextTick(cb, ...args) {
     if (typeof cb !== "function") throw new (require("internal/errors").codes.ERR_INVALID_ARG_TYPE)("callback", "Function", cb);
+    // R3b：TickObject init 可观测（async_hooks 侧守卫，无钩子零开销；真机
+    // task_queues 口径，入队即 init）。
+    try { if (typeof globalThis.__wjs2_tickInit === "function") globalThis.__wjs2_tickInit(); } catch {}
     // 原生队列（node 口径）：tick 由 pump 在 RunJobs 前后收割——同步期入队的
     // tick 先于微任务、微任务期入队的等整轮微任务排空（V8 checkpoint 原子性）。
     // 回调抛错经 drain 侧 uncaughtException 路由（destroy/emitErrorNT 等内建

@@ -604,6 +604,20 @@
 
 ## stream
 
+> P2-stream R1–R3（2026-10-03，Bun 清单 215 件）：162 → 184 → **198/215（92%）**，
+> 余 17 按 0.2 止损线收官（TIMEOUT×3 记档 / finished-RST net 偏离 /
+> byob 读 hang 另案 / node 侧红×7 记档 / SAME1×5 / fs-pull×3 另案）。
+> R1：eos init 触发 + internal 门面 + 连字符回落 + tty_wrap（6 件）。
+> R2：stream/iter 12 件逐字移植 + 旗门控 + 管道件（primordials/validators/
+> E 变体/fatal `[码]`/跨 realm/ESM 环解；22 件，含 disabled×2 复验绿）。
+> R3：zlib 缓冲句柄 shim（transform×5 + interop/to-readable/cross-realm，8 件）
+> + 语义 6 件（writable-destroy 回滚逐字 / duplex DEP0201 / pipeline-process /
+> preprocess BOM / consumers 锁码 / samecb 单 tick）。
+> 本节下表 10f 口径（2026-09-18）过期件以本轮探针为准：consumers、
+> iter-disabled、readable-interop-disabled、pipeline-process、preprocess、
+> duplex、writable-destroy、samecb-singletick、transform×5、interop、
+> to-readable、cross-realm 均已转绿（run1.sh rc=0，见 journal R1–R3）。
+>
 > 10f 收官（本轮）：250 点名 = 190 ✅ + 50 ⏭️（全 `--expose-internals`）+ 10 🟡 偏离，
 > 红 0（真机同条件亦红的全对齐）。本轮改动主体：**process.nextTick 原生队列**
 > （node 双层调度语义——同步期入队的 tick 先于微任务、微任务期入队的 tick 等整轮
@@ -1562,6 +1576,14 @@ pull/writer ×3（需 stream/iter+zlib/iter 新模块，另轮）；read-worker 
 
 > 首轮点名（2026-09-18，276 件，`/tmp/wjs-10f-http1/2.txt`）：
 > 同绿 7 → **8**；SAME1=30；DIFF 239 → **238**。
+> P1 首轮（2026-09-25，Bun 清单 256 件）：64 → **88**（mustCall 真实口径；
+> v1 证书/trailer 有体挂死/请求体流式化/GET 缺省 endStream/会话随连接/
+> compat 告警/参数校验六批）。余 168 聚类（base15）：push 系 8 /
+> ALTSVC-ORIGIN 2 / settings 6 / tls 系 3 / session-connect 大盘 ~100。
+> P1 决策（2026-10-03，待 base16 定量拍板，见 journal 双分支 scope）：
+> A. h2 裸库直驱（hyper 高层→h2 0.4 直驱；push/settings/GOAWAY-窗口-RST
+> 可达，ALTSVC-ORIGIN 仍偏离；约 1 周）；B. 书面偏离冻结（88/256+增量）。
+> 拍板线：base16 中"h2 可达且非 tls"件 ≥20 → A，否则 B。
 > 主簇（~105 件）：compat 层 `Http2ServerRequest/Response` 为 EventEmitter 薄壳
 > （整收口径直发 data/end），缺 resume/setEncoding/pipe/背压全流面——与 10b
 > http 流式化同型工程，另轮；次簇：`stream.respond/respondWithFile` 等

@@ -220,6 +220,18 @@ async fn run_inner(
                 let options = CompileOptionsWrapper::new(rt.cx(), c"__wjs2_main_bootstrap.js".into(), 1);
                 let res = evaluate_script(rt.cx(), global.handle(), &main_src, rval.handle_mut(), options);
                 if res.is_err() {
+                    // P2-process R7：入口抛错先走 uncaught 分发（capture→监听），
+                    // 接住即转事件循环（脚本中止但进程续活）；无人接才走原 fatal。
+                    let entry_handled = {
+                        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+                        crate::builtins::node::process_::dispatch_entry_throw(
+                            &mut realm,
+                            global.get(),
+                        )
+                    };
+                    if entry_handled {
+                        // 转下方事件循环。
+                    } else {
                     let err = {
                         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
                         rooted!(&in(&mut realm) let mut exc = UndefinedValue());
@@ -253,6 +265,7 @@ async fn run_inner(
                     let err = fatal_exit(&mut rt, &global, err);
                     end_session(rt, engine);
                     return Err(err);
+                    }
                 }
                 if let Err(e) = event_loop(&mut rt, &global, ErrorSource::Script { source, filename }, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await {
                     let e = fatal_exit(&mut rt, &global, e);
@@ -329,41 +342,55 @@ async fn run_inner(
             // 模块重试：经典 SyntaxError 且能按模块解析 → 改走模块求值。
             // （`await` 在参数位置按标识符解析，报的不是 await 错而是 missing-paren，
             // 故不能只认 await 文案；真语法错误则保留原始经典报错。见 §4.17。）
-            let (info_opt, is_syntax, kind, prim) = {
+            let (info_opt, is_syntax, kind, prim, entry_handled) = {
                 let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
                 rooted!(&in(&mut realm) let mut exc = UndefinedValue());
                 // SAFETY: realm 内读取 pending exception（消费异常值）
                 let info = { let i = error_info_from_exception_stack(&mut realm, exc.handle_mut()); crate::jsapi_glue::fill_message(&mut realm, i, exc.get()) };
                 let kind = exc_name(&mut realm, exc.get());
                 let is_syntax = kind.as_deref() == Some("SyntaxError");
+                // P2-process R7：入口抛错先走 uncaught 分发（capture→监听），
+                // 接住即转事件循环（脚本中止但进程续活）；语法错照旧走重试/渲染。
+                let entry_handled = if !is_syntax {
+                    crate::builtins::node::process_::dispatch_entry_throw(
+                        &mut realm,
+                        global.get(),
+                    )
+                } else {
+                    false
+                };
                 // 10f：worker 内非对象异常走原始值信封（同模块路径）。
                 let prim = if !state::worker_is_main() {
                     crate::jsapi_glue::exc_prim_marker(&mut realm, exc.get())
                 } else {
                     None
                 };
-                (info, is_syntax, kind, prim)
+                (info, is_syntax, kind, prim, entry_handled)
             };
-            if is_syntax
-                && let Ok(url) = crate::loader::resolve::entry_url(std::path::Path::new(filename))
-                && let Ok(path) = url.to_file_path()
-                && crate::loader::load_js(source, filename, &path).is_ok()
-            {
-                tracing::info!(target: "winterjs2::runtime", url = url.as_str(), "retrying as module");
-                let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await
-                    .map_err(|e| fatal_exit(&mut rt, &global, e));
+            if entry_handled {
+                // 脚本中止但进程续活：落到下方的事件循环（mustCall 在 exit 结算）。
+            } else {
+                if is_syntax
+                    && let Ok(url) = crate::loader::resolve::entry_url(std::path::Path::new(filename))
+                    && let Ok(path) = url.to_file_path()
+                    && crate::loader::load_js(source, filename, &path).is_ok()
+                {
+                    tracing::info!(target: "winterjs2::runtime", url = url.as_str(), "retrying as module");
+                    let r = run_module(&mut rt, &global, &url, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await
+                        .map_err(|e| fatal_exit(&mut rt, &global, e));
+                    end_session(rt, engine);
+                    return r;
+                }
+                let err = match info_opt {
+                    Some(info) => Error::script_with_kind(
+                        filename, source, info.line.max(1), info.col,
+                        prim.unwrap_or(info.message), kind),
+                    None => Error::Other("uncaught JS exception (no stack info)".into()),
+                };
+                let err = fatal_exit(&mut rt, &global, err);
                 end_session(rt, engine);
-                return r;
+                return Err(err);
             }
-            let err = match info_opt {
-                Some(info) => Error::script_with_kind(
-                    filename, source, info.line.max(1), info.col,
-                    prim.unwrap_or(info.message), kind),
-                None => Error::Other("uncaught JS exception (no stack info)".into()),
-            };
-            let err = fatal_exit(&mut rt, &global, err);
-            end_session(rt, engine);
-            return Err(err);
         }
     }
 

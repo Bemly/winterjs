@@ -27,6 +27,12 @@ const startupSnapshot = {
   },
 };
 
-export { startupSnapshot };
-export default { startupSnapshot };
+// V8 旗串（P2-process R7：exception-capture 套件点名；收下即返，
+// --abort-on-uncaught-exception 等不兑现——capture 截获后面本无 abort，另案记档）。
+function setFlagsFromString(flags) {
+  return undefined;
+}
+
+export { startupSnapshot, setFlagsFromString };
+export default { startupSnapshot, setFlagsFromString };
 "#;

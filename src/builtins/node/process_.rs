@@ -228,6 +228,37 @@ pub fn drain_next_ticks(
     }
 }
 
+/// 入口抛错走 uncaught 分发（capture 优先，其次 uncaughtException 监听；
+/// 分发体见 bootstrap `__wjs2_uncaught`，Rust 异步回调侧（本文件 drain/timers）
+/// 与入口共用同一语义）。
+/// 返回 true 即已接住——调用方转事件循环（脚本中止但进程续活，真机口径），
+/// 不 fatal。无人接则异常已放回 pending，走原 fatal 路径（文案/栈无损）。
+/// 前置：cx 已进 global realm；刚一次失败的 evaluate（pending 即入口异常）。
+/// UNSAFE-BOUNDARY: take-调-放回三段（带 pending 进 JS 调用非法，直调即吞错，
+/// 见 4.248）；覆盖测试——`tests/node/process_.rs::phase11_process_capture_faces`。
+/// （SyntaxError 照旧走重试/渲染，不进分发。）
+pub fn dispatch_entry_throw(
+    cx: &mut mozjs::context::JSContext,
+    global: *mut JSObject,
+) -> bool {
+    // 先取走 pending：带 pending 进 JS_CallFunctionValue 非法（引擎静默吞错，
+    // 后续 error_info 读空、渲染成 `undefined`）。
+    let Some(taken) = crate::jsapi_glue::take_pending_exception(cx) else {
+        return false;
+    };
+    rooted!(&in(cx) let err_root = taken);
+    let f = state::with_rooted(|s| s.uncaught_fn.get());
+    rooted!(&in(cx) let f_root = f);
+    let handled = crate::jsapi_glue::call_one(cx, global, f_root.get(), err_root.get())
+        .map(|v| v.is_boolean() && v.to_boolean())
+        .unwrap_or(false);
+    if !handled {
+        // 无人接：放回 pending，原 fatal 路径重读（与未分发字节一致）。
+        crate::jsapi_glue::set_pending_exception(cx, err_root.get());
+    }
+    handled
+}
+
 /// `__wjs2_argv_json()` → argv 数组 JSON。
 pub unsafe extern "C" fn argv_json(
     cx_raw: *mut mozjs::jsapi::JSContext,

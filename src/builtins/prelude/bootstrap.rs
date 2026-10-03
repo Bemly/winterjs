@@ -181,6 +181,13 @@ globalThis.__wjs2_uncaught_count = () => {
 };
 globalThis.__wjs2_uncaught = (err) => {
   const p = globalThis.process;
+  // P2-process R7：capture 回调优先（setUncaughtExceptionCaptureCallback 面）——
+  // 接住即吞（uncaughtException 监听不发、fatal 不走）；抛错冒泡由调用方按 fatal 收。
+  const cap = p ? p.__wjs2_captureCb : undefined;
+  if (typeof cap === "function") {
+    cap(err);
+    return true;
+  }
   if (p && typeof p.__wjs2_emit === "function") {
     return p.__wjs2_emit("uncaughtException", err, "uncaughtException") > 0;
   }

@@ -327,6 +327,56 @@ fn phase11_process_validation_faces() {
 }
 
 #[test]
+fn phase11_process_capture_faces() {
+    // P2-process R7: uncaught capture 路由（node execution.js 口径）。
+    // 正常：capture 接住入口抛错（uncaughtException 不发、exit 0）；null 清除。
+    // 报错：非函数非 null 入参码；重复设置码。
+    // 边界：无 capture 时入口抛错仍 fatal（exit 1）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("cap.js")
+        .write_str(
+            "console.log('has', process.hasUncaughtExceptionCaptureCallback());\n\
+             process.setUncaughtExceptionCaptureCallback((e) => console.log('cap', e.message));\n\
+             console.log('has2', process.hasUncaughtExceptionCaptureCallback());\n\
+             process.on('uncaughtException', () => console.log('BAD'));\n\
+             process.setUncaughtExceptionCaptureCallback(null);\n\
+             console.log('has3', process.hasUncaughtExceptionCaptureCallback());\n\
+             process.setUncaughtExceptionCaptureCallback((e) => console.log('cap', e.message));\n\
+             throw new Error('foo');\n",
+        )
+        .unwrap();
+    let (ok, out, _) = wjs(&["--run", "cap.js"], &dir);
+    assert!(ok, "out: {out}");
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        ["has false", "has2 true", "has3 false", "cap foo"]
+    );
+    // 报错面经 --eval（进程存活可连断言）。
+    let (ok, out, _) = wjs(
+        &[
+            "--eval",
+            "const code = (f) => { try { f(); } catch (e) { return e.code || 'THREW'; } return 'NO-THROW'; };\n\
+             console.log('badarg', code(() => process.setUncaughtExceptionCaptureCallback(42)));\n\
+             process.setUncaughtExceptionCaptureCallback(() => {});\n\
+             console.log('twice', code(() => process.setUncaughtExceptionCaptureCallback(() => {})));",
+        ],
+        &dir,
+    );
+    assert!(ok, "out: {out}");
+    assert!(out.contains("badarg ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(
+        out.contains("twice ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET"),
+        "out: {out}"
+    );
+    // 边界：无 capture 的入口抛错仍 fatal。
+    dir.child("nocap.js").write_str("throw new Error('nope');\n").unwrap();
+    let out = winterjs2().args(["--run", "nocap.js"]).current_dir(dir.path()).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Error: nope"));
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase11_process_execve_faces() {
     // P2-process R6: execve 校验面（node 原文口径；真调替换测试进程，
     // 此处只验报错面 + 失败形 ENOENT，不做成功替换）。

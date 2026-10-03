@@ -593,6 +593,22 @@ globalThis.process = {
     return this;
   },
   listenerCount(type) { return (this.__wjs2_listeners[String(type)] ?? []).length; },
+  // 未捕获异常捕获回调（node 口径 execution.js：null 清除；重复设置即抛；
+  // 接住后 uncaughtException 不发、进程不 fatal，见 bootstrap __wjs2_uncaught）。
+  __wjs2_captureCb: null,
+  hasUncaughtExceptionCaptureCallback() { return typeof this.__wjs2_captureCb === "function"; },
+  setUncaughtExceptionCaptureCallback(fn) {
+    const E = require("internal/errors").codes;
+    if (fn === null) {
+      this.__wjs2_captureCb = null;
+      return;
+    }
+    if (typeof fn !== "function") throw new E.ERR_INVALID_ARG_TYPE("fn", ["Function", "null"], fn);
+    if (typeof this.__wjs2_captureCb === "function") {
+      throw new E.ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET();
+    }
+    this.__wjs2_captureCb = fn;
+  },
   // EventEmitter 读表（M5 vitest 牵引：init 链 `process.listeners(..).bind(..)`）。
   listeners(type) { return [...(this.__wjs2_listeners[String(type)] ?? [])]; },
   rawListeners(type) { return this.listeners(type); },

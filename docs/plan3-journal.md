@@ -1075,3 +1075,26 @@ G1/G2/G3/G9 已收官。）
   process 域 nextest 20/20；proc9 sweep 55→60/82；冒烟 5/5；`check-lines` ok。
 - 余 19 件分簇（R9 候选）：binding×2/config/exit×2/spawn 系散件/finalization/
   get-builtin/setsourcemaps/ref-unref/warnings（+既有三记档）。
+
+## 2026-10-03 P2-process R9：杂项收尾 11 转绿（60→71/82）
+
+- R9A（8 件，`30fd3f3`）：exitCode 校验（validateInteger 双错口径 + null/unset +
+  delete 不可删经 Proxy 对 V8 文案 4.251）/ `process.binding`（util 16 键恒等 +
+  未知即 `No such module`）/ config 深冻 / `_rawDebug`（直写 fd 绕 hijack）/
+  `setSourceMapsEnabled` 布尔门 / ref-unref（Symbol.for 优先）/
+  `getBuiltinModule`（非串抛、归一化失败回 undefined 4.253；裸 test/internal
+  显式拦；builtinModules 新风格六件只发前缀形）/ timers/promises 补 default
+  （`import.default===require` 4.253）/ binding 表补 buffer。黑盒 r9（16 断言）。
+- R9B（3 件，`bbc5bb0`）：spawn stdio 数字形收 inherit / `--disable-warning`
+  按 code/name 过滤（含 NODE_OPTIONS 同源，逗号串天然不支持）/ monitor 路由
+  （先行 throwing 版 emit + count 含 capture/monitor；监听再抛即新错 exit 7、
+  `_fatalException=undefined` 即 6，fatal 保留 6/7 余下盖 1，4.252）。
+  黑盒 r9b（monitor 双触发 + disable 精确过滤 + fatal6 exit 6）。
+- 拆分（§0.9）：`process_ids.rs`（身份族 53 行字节恒等）+ prelude 切三片
+  `concat!(include_str!)`（48176 字节恒等）；`state/mod.rs` 压回 1000。
+- 验证：proc10 sweep（proc9 红 22 重跑）SAME0 11 → **71/82**；process 域
+  nextest strict 14/14；冒烟 5/5；`check-lines` ok。
+- 余 11 定性：既有记档 6（env-tz 4.250/hrtime×2 V8 私有/redirect×2 fork-infra/
+  thread-worker crypto 配额）+ **另案 2**（P2-R10a spawn-ipc 通道 infra；
+  P2-R10b 真 GC native + finalization 语义）+ 双红 SAME1 3（dlopen/features/
+  load-env-file 环境漂移，不计欠账）。

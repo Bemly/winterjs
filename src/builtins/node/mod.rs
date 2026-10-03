@@ -90,8 +90,9 @@ pub fn node_prelude() -> String {
     let base = process_::PROCESS_PRELUDE.replace("26.10.3", env!("CARGO_PKG_VERSION"));
     // 本体命名空间活值刷新 + Deno 冻结（`__wjs2_` 内部面，下游调本体钩，§7 顺向）。
     format!(
-        "{base}\n{}\ntry{{globalThis.__wjs2_ns_sync()}}catch(e){{}}",
-        require::REQUIRE_PRELUDE
+        "{base}\n{}\n{}\ntry{{globalThis.__wjs2_ns_sync()}}catch(e){{}}",
+        require::REQUIRE_PRELUDE,
+        process_::PROCESS_PROTO_FIXUP,
     )
 }
 

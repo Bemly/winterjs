@@ -261,6 +261,46 @@ globalThis.process = {
   // 回填——common.js 自举 respawn 的 flags 可见性，真机口径）。
   execArgv: JSON.parse(__wjs2_node_compat_json()),
   pid: __wjs2_pid(),
+  // 标题（get 缺省回 execPath 基名；set 透写 store，真机读写口径）。
+  get title() {
+    const t = globalThis.__wjs2_processTitle;
+    if (typeof t === "string") return t;
+    try {
+      const exe = String(__wjs2_exec_path());
+      const base = exe.split(/[\\/]/).pop().replace(/\.exe$/, "");
+      return base || exe;
+    } catch { return ""; }
+  },
+  set title(v) { globalThis.__wjs2_processTitle = String(v); },
+  // 信号投递（node 口径 per_thread.js kill 逐字：pid 松散门 + 信号名/数双形 +
+  // _kill 可 mock 点 + errno 成错；sig 数形直通，名形查 os 表）。
+  kill(pid, sig) {
+    const E = require("internal/errors").codes;
+    if (pid != (pid | 0)) throw new E.ERR_INVALID_ARG_TYPE("pid", "number", pid);
+    let err;
+    if (sig === (sig | 0)) {
+      err = this._kill(pid, sig);
+    } else {
+      sig ||= "SIGTERM";
+      const SIG = require("node:os").constants.signals;
+      if (SIG[sig]) {
+        err = this._kill(pid, SIG[sig]);
+      } else {
+        throw new E.ERR_UNKNOWN_SIGNAL(sig);
+      }
+    }
+    if (err) {
+      const name = { 1: "EPERM", 3: "ESRCH", 22: "EINVAL" }[err] ?? `errno-${err}`;
+      const e = new Error(`kill ${name}`);
+      e.code = name;
+      e.errno = err;
+      e.syscall = "kill";
+      throw e;
+    }
+    return true;
+  },
+  // 默认投递器（可被用户 mock，见 kill-pid 套件；返回 errno 数，0 即成）。
+  _kill(pid, sig) { return __wjs2_kill(JSON.stringify(pid), JSON.stringify(sig)); },
   // 文件创建掩码（node 口径 lib/internal/bootstrap/switches/does_own_process_state.js：
   // 串形按八进制解析（非法即 ERR_INVALID_ARG_VALUE），数形走 uint32 门）。
   umask(mask) {
@@ -584,6 +624,11 @@ try {
     globalThis.gc = async function gc() { return undefined; };
   }
 } catch { globalThis.__wjs2_nodeCompat = []; }
+// 标题（node 口径：--title=v 末个赢；缺省回 execPath 基名；set 透写同 store）。
+try {
+  const __tf = globalThis.__wjs2_nodeCompat.filter((a) => a.startsWith("--title="));
+  globalThis.__wjs2_processTitle = __tf.length ? __tf[__tf.length - 1].slice("--title=".length) : null;
+} catch { globalThis.__wjs2_processTitle = null; }
 // 告警旗（node 口径：旗在才定义属性）+ 缺省打印监听（--no-warnings / NODE_NO_WARNINGS=1 不登记）。
 {
   const __f = globalThis.__wjs2_nodeCompat;
@@ -607,4 +652,18 @@ try {
     __wjs2_stderr_write(`Setting the NODE_DEBUG environment variable to '${__sec}' can expose sensitive data (such as passwords, tokens and authentication headers) in the resulting log.\n`);
   }
 } catch { /* 环境不可读即跳过 */ }
+"#;
+
+/// EventEmitter 原型链修正（test-process-prototype 口径；须在 `require` 可用后执行，
+/// 由 `node_prelude()` 拼在 REQUIRE_PRELUDE 之后——prelude 主体求值时 require 尚无。
+/// 真机形态：proto ≠ EE.prototype 本身但链上含之；constructor 为 proto 自有不可枚举槽）。
+pub const PROCESS_PROTO_FIXUP: &str = r#"
+{
+  const EE = require("node:events").EventEmitter;
+  const processProto = Object.create(EE.prototype);
+  const ProcessCtor = function Process() {};
+  ProcessCtor.prototype = processProto;
+  Object.defineProperty(processProto, "constructor", { value: ProcessCtor, writable: true, enumerable: false, configurable: true });
+  Object.setPrototypeOf(globalThis.process, processProto);
+}
 "#;

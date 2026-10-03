@@ -178,6 +178,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_setegid", Some(node::process_cred::setegid), 1),
             ("__wjs2_setgroups", Some(node::process_cred::setgroups), 1),
             ("__wjs2_initgroups", Some(node::process_cred::initgroups), 2),
+            ("__wjs2_kill", Some(node::process_::kill), 2),
             ("__wjs2_env_get", Some(node::process_::env_get), 1),
             ("__wjs2_env_set", Some(node::process_::env_set), 2),
             ("__wjs2_env_del", Some(node::process_::env_del), 1),

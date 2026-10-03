@@ -327,6 +327,47 @@ fn phase11_process_validation_faces() {
 }
 
 #[test]
+fn phase11_process_kill_prototype_title_faces() {
+    // P2-process R4: kill 校验/_kill 可 mock + 原型链 + title（node 原文口径）。
+    // 正常：kill 自检真；_kill mock 透传（pid/信号数值化）；原型链五断言；title 读写。
+    // 报错：pid 非数、未知信号名、987 数值信号码。
+    // 边界：kill 字符串 pid '0'；title 空串。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (ok, out, _) = wjs(
+        &[
+            "--eval",
+            "console.log('self', process.kill(process.pid, 0) === true);\
+             const orig = process._kill; let got = null;\
+             process._kill = (pid, sig) => { got = [pid, sig]; process._kill = orig; return 0; };\
+             process.kill('0', 'SIGHUP'); console.log('mock', JSON.stringify(got));\
+             const EE = require('events'); const proto = Object.getPrototypeOf(process);\
+             console.log('proto', (proto !== EE.prototype) && (proto instanceof EE) && (process.constructor !== EE));\
+             console.log('ctor', process instanceof process.constructor);\
+             console.log('title-rw', (() => { const t = process.title; process.title = ''; const r = process.title === ''; process.title = t; return typeof t === 'string' && r; })());\
+             const code = (f) => { try { f(); } catch (e) { return e.code || 'THREW'; } return 'NO-THROW'; };\
+             console.log('pid-str', code(() => process.kill('SIGTERM')));\
+             console.log('sig-name', code(() => process.kill(0, 'test')));\
+             console.log('sig-num', code(() => process.kill(0, 987)));",
+        ],
+        &dir,
+    );
+    assert!(ok, "out: {out}");
+    for line in [
+        "self true",
+        "mock [\"0\",1]",
+        "proto true",
+        "ctor true",
+        "title-rw true",
+        "pid-str ERR_INVALID_ARG_TYPE",
+        "sig-name ERR_UNKNOWN_SIGNAL",
+        "sig-num EINVAL",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase11_process_credential_faces() {
     // P2-process R3: setuid/setgid/seteuid/setegid/setgroups/initgroups
     //（node wrapPosixCredentialSetters 口径；只走无副作用路径——校验错/

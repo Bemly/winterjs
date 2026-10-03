@@ -12,7 +12,7 @@ use mozjs::rooted;
 use crate::jsapi_glue::{call_one, call_two, report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
 
-pub use super::process_prelude::PROCESS_PRELUDE;
+pub use super::process_prelude::{PROCESS_PRELUDE, PROCESS_PROTO_FIXUP};
 
 /// 进程启动时刻（uptime/hrtime 基准）。
 fn start() -> std::time::Instant {
@@ -721,6 +721,55 @@ pub unsafe extern "C" fn thread_cpu_usage(
     let json = serde_json::json!({ "user": user, "system": system }).to_string();
     set_rval_str(&mut cx, &frame, &json);
     true
+}
+
+/// `__wjs2_kill(pidJson, sigJson)` → 0 成功 / 正 errno（pid 接受数形与数字串，
+/// 与 JS 侧 `pid != (pid|0)` 门对应；非法输入 JS 侧先拦，此处兜底 EINVAL）。
+pub unsafe extern "C" fn kill(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: kill needs pid and signal");
+        return false;
+    }
+    let (p_json, s_json) = (
+        value_to_string(&mut cx, frame.arg(0)),
+        value_to_string(&mut cx, frame.arg(1)),
+    );
+    let pid: i64 = serde_json::from_str::<serde_json::Value>(&p_json)
+        .ok()
+        .and_then(|v| match &v {
+            serde_json::Value::Number(n) => n.as_i64(),
+            serde_json::Value::String(s) => s.parse::<i64>().ok(),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let sig: i32 = serde_json::from_str::<serde_json::Value>(&s_json)
+        .ok()
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+    #[cfg(unix)]
+    {
+        // SAFETY: 纯数值 syscall，无指针，无别名；errno 当场取。
+        if unsafe { libc::kill(pid as libc::pid_t, sig as libc::c_int) } == 0 {
+            frame.set_rval(mozjs::jsval::Int32Value(0));
+        } else {
+            let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EPERM);
+            frame.set_rval(mozjs::jsval::Int32Value(e));
+        }
+        true
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, sig);
+        report_error(&mut cx, "Error: kill is not available on this platform");
+        false
+    }
 }
 
 /// `__wjs2_stdout_write(s)` → boolean（直写 fd，绕 `console` 通道）。

@@ -4449,3 +4449,18 @@
 - 复现：`node -e "console.log(require('util').inspect('\0'))"` 即出 `\x00`。
 - 推广铁律：**凡"表驱动"的移植（转义/信号/errno/状态码），表按原文逐项 diff**，
   不凭记忆手写；配黑盒逐项钉表。
+
+### 4.248 带 pending 进 JS 调用非法：分发前须 take（2026-10-03，P2-process-R7）
+
+- 症状：入口分发接上后，无接管的入口抛错渲染成 `undefined`（无文案无栈）——
+  有接管路径全绿，裸错路径全崩。
+- 根因：`dispatch_entry_throw` 里 `call_one` 跑在 pending 未清的状态下；
+  SpiderMonkey 带 pending 进 `JS_CallFunctionValue` 非法（静默吞错），后续
+  `error_info` 读空。
+- 修法：分发内 take-调-放回三段：先 `take_pending_exception` 再调
+  `__wjs2_uncaught`；无人接则 `set_pending_exception` 放回，原 fatal 重读
+  （与未分发字节一致，stash 对照实锤）。
+- 复现：`--run throw-new-Error.js` 修前渲染 `undefined`，修后 `Error: …` + 栈；
+  capture 路径 `cap foo` + rc=0 不变。
+- 推广铁律：**任何 JS 调用前先确认 pending 已清**（take 即清场语义）；
+  新分发点必配"无人接"裸错渲染对照（stash 二进制 40 秒即得）。

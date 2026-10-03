@@ -4436,3 +4436,16 @@
 - 复现：`process.seteuid('nobody')` 修前 UNKNOWN 修后 EPERM，与真机逐字同。
 - 推广铁律：**凡"成功/分类失败/errno"三义通道，errno 恒走负值**（EPERM=1、
   EINVAL=22 等正数会撞分类码）；先 `id nobody` 确认环境，再疑代码。
+
+### 4.247 inspect 转义表照抄要逐项对 meta（2026-10-03，P2-process-R6 附带）
+
+- 症状：`process.execve(path, ['123', 'abc\0cde'])` 校验文案差一个转义——我方
+  `Received 'abc\0cde'`，真机 `Received 'abc\x00cde'`。
+- 根因：inspect 转义表 0/7/11/27 四项与真机 `meta` 表不同（我方 `\0`/`\a`/
+  `\v`/`\e`，真机 `\x00`/`\x07`/`\x0B`/`\x1B`）；转义是"看起来对"的重灾区，
+  肉眼 review 过不了。
+- 修法：逐项对 node `lib/internal/util/inspect.js` 的 `meta` 表改四项；
+  黑盒 `phase11_inspect_control_escapes` 四断言钉住。
+- 复现：`node -e "console.log(require('util').inspect('\0'))"` 即出 `\x00`。
+- 推广铁律：**凡"表驱动"的移植（转义/信号/errno/状态码），表按原文逐项 diff**，
+  不凭记忆手写；配黑盒逐项钉表。

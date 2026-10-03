@@ -1098,3 +1098,20 @@ G1/G2/G3/G9 已收官。）
   thread-worker crypto 配额）+ **另案 2**（P2-R10a spawn-ipc 通道 infra；
   P2-R10b 真 GC native + finalization 语义）+ 双红 SAME1 3（dlopen/features/
   load-env-file 环境漂移，不计欠账）。
+
+## 2026-10-03 P2-stream R1：eos/连字符簇 6 转绿（stream 156→162/215）
+
+- 内容（`48ce7fd`）：`enabledHooksExist` 导出 + AsyncResource 构造期同步触发
+  init（STREAM_END_OF_STREAM 上下文传播）+ `node:internal/async_hooks` 门面
+  （同源双实例分叉 4.254）+ internal 连字符回落（精确优先 4.255）+
+  `tty_wrap.TTY` 空类（不可枚举即绿）+ 黑盒 `phase11_stream_r1_eos_hooks_faces`。
+- 验证：stream2 sweep（stream1 红 60 重跑）SAME0 6 → **162/215**（75%）；
+  stream/async_hooks/process/binding 域 nextest 68/68；冒烟 5/5；`check-lines` ok。
+- 转绿 6：finished-als/bindAsyncResource-path/default-path、add-abort-signal、
+  base-prototype-accessors、stream2-httpclient-response-end（搭车：res-end 经
+  finished 内部，ALS 修复连带）。
+- 余件定性：finished.js（http RST 联动，net 底座偏离 4.x 既有记档）/
+  **R2-iter 专项**（~40 件：flag 门控 + 12 文件 7.5k 行移植，另轮）/
+  consumers 锁码 + TextDecoder 码（Web 面改码涉 whatwg 回归，R2 先对真机）/
+  duplex/pipeline-preprocess/readable 系（R2 逐件）/ destroy/pipeline TIMEOUT×3
+  （挂死型，R2 末）。

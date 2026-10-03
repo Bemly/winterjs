@@ -131,6 +131,17 @@ function __wjs2_credIdSetter(type, syscall, native, id) {
   if (r < 0) __wjs2_credSysErr(-r, syscall, id);
 }
 
+// env 非串/数/布尔赋值即 DEP0104（env-deprecation 套件；文案逐字）。
+function __wjs2_emitEnvDeprecation(v) {
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return;
+  try {
+    globalThis.process.emitWarning(
+      "Assigning any value other than a string, number, or boolean to a process.env property is deprecated. " +
+      "Please make sure to convert the value to a string before setting process.env with it.",
+      "DeprecationWarning", "DEP0104");
+  } catch {}
+}
+
 globalThis.process = {
   argv: JSON.parse(__wjs2_argv_json()),
   // 真机口径：argv0 缺省即 argv[0]（spawn-argv0 套件点名自举回显）。
@@ -142,26 +153,56 @@ globalThis.process = {
     const snap = __wjs2_worker_env_snapshot();
     if (snap === undefined) {
       return new Proxy({}, {
-        get(_, k) {
+        get(t, k) {
           if (typeof k !== "string") return undefined;
           const v = __wjs2_env_get(k);
-          return v === undefined ? undefined : v;
+          // 非变量键回原型（hasOwnProperty 等；env.js 套件点名）。
+          return v === undefined ? t[k] : v;
         },
-        set(_, k, v) { __wjs2_env_set(String(k), String(v)); return true; },
+        set(_, k, v) {
+          // 符号键/值不收（严格模式即 TypeError；env-symbols 套件点名）。
+          if (typeof k !== "string" || typeof v === "symbol") return false;
+          __wjs2_emitEnvDeprecation(v);
+          __wjs2_env_set(String(k), String(v));
+          return true;
+        },
         deleteProperty(_, k) { __wjs2_env_del(String(k)); return true; },
-        has(_, k) { return __wjs2_env_get(String(k)) !== undefined; },
+        has(t, k) { return (typeof k === "string" && __wjs2_env_get(k) !== undefined) || k in t; },
         ownKeys() { return JSON.parse(__wjs2_env_keys()); },
         getOwnPropertyDescriptor(_, k) {
           const v = __wjs2_env_get(String(k));
           if (v === undefined) return undefined;
           return { value: v, writable: true, enumerable: true, configurable: true };
         },
+        // node 口径：env 只收 configurable+writable+enumerable 齐备的数据描述符
+        //（process-env 套件 defineProperty {value:42} 即抛，message 逐字）。
+        defineProperty(_, k, desc) {
+          if (desc !== null && typeof desc === "object" &&
+            desc.writable === true && desc.enumerable === true && desc.configurable === true &&
+            !("get" in desc) && !("set" in desc)) {
+            __wjs2_emitEnvDeprecation(desc.value);
+            __wjs2_env_set(String(k), String(desc.value));
+            return true;
+          }
+          const isAccessor = desc !== null && typeof desc === "object" &&
+            ("get" in desc || "set" in desc);
+          const e = new TypeError(isAccessor
+            ? "'process.env' does not accept an accessor(getter/setter) descriptor"
+            : "'process.env' only accepts a configurable, writable, and enumerable data descriptor");
+          e.code = "ERR_INVALID_OBJECT_DEFINE_PROPERTY";
+          throw e;
+        },
       });
     }
     const store = JSON.parse(snap);
     return new Proxy({}, {
       get(_, k) { return typeof k === "string" ? store[k] : undefined; },
-      set(_, k, v) { store[k] = String(v); return true; },
+      set(_, k, v) {
+        if (typeof k !== "string" || typeof v === "symbol") return false;
+        __wjs2_emitEnvDeprecation(v);
+        store[k] = String(v);
+        return true;
+      },
       deleteProperty(_, k) { delete store[k]; return true; },
       has(_, k) { return typeof k === "string" && k in store; },
       ownKeys() { return Object.keys(store); },
@@ -685,6 +726,119 @@ globalThis.process = {
 // 真机口径：process[Symbol.toStringTag] = "process"（不可枚举，实测 getter 面），
 // String(process) → '[object process]'（vm basic 套件 / util.inspect 点名）。
 Object.defineProperty(globalThis.process, Symbol.toStringTag, { value: "process" });
+// NODE_OPTIONS 白名单（node 口径 per_thread.js buildAllowedFlags：
+// 数据表取自真机 node 26.10.0 `process.allowedNodeEnvironmentFlags` 全量 dump（310 项）；
+// has() 按原文归一化（下划线转横线、前导横线去 `=值`、无横线比去横线表），add/delete/clear no-op。
+// 惰性首读构造并替换本属性（真机同）；可整体覆写。
+Object.defineProperty(globalThis.process, "allowedNodeEnvironmentFlags", {
+  get() {
+    const __flags = [
+    "--node-memory-debug", "--bench-warmup", "--perf-basic-prof-only-functions", "--cpu-prof", "--no-cpu-prof", "--max-heap-size",
+    "--watch-path", "--experimental-eventsource", "--no-experimental-eventsource", "--perf-prof-unwinding-info", "--experimental-shadow-realm", "--no-experimental-shadow-realm",
+    "--perf-basic-prof", "--heap-prof-interval", "--allow-ffi", "--no-allow-ffi", "--warnings", "--no-warnings",
+    "--experimental-modules", "--experimental-package-map", "--perf-prof", "--test-shard", "--report-exclude-env", "--no-report-exclude-env",
+    "--test-global-setup", "--redirect-warnings", "--tls-min-v1.2", "--no-tls-min-v1.2", "--tls-min-v1.1", "--no-tls-min-v1.1",
+    "--disallow-code-generation-from-strings", "--tls-max-v1.2", "--no-tls-max-v1.2", "--preserve-symlinks-main", "--no-preserve-symlinks-main", "--enable-etw-stack-walking",
+    "--watch-kill-signal", "--unhandled-rejections", "--use-system-ca", "--no-use-system-ca", "--stack-trace-limit", "--trace-require-module",
+    "--inspect-wait", "--no-inspect-wait", "--entry-url", "--no-entry-url", "--test-coverage-include-all", "--no-test-coverage-include-all",
+    "--trace-exit", "--no-trace-exit", "--throw-deprecation", "--no-throw-deprecation", "--report-on-signal", "--no-report-on-signal",
+    "--test-coverage-exclude", "--abort-on-uncaught-exception", "--inspect-publish-uid", "--test-reporter-destination", "--test-reporter", "--trace-env-native-stack",
+    "--no-trace-env-native-stack", "--require", "--experimental-report", "--bench-reporter", "--verify-base-objects", "--no-verify-base-objects",
+    "--interpreted-frames-native-stack", "--test-randomize", "--no-test-randomize", "--test-only", "--no-test-only", "--test-skip-pattern",
+    "--tls-keylog", "--bench-isolation", "--bench-reporter-destination", "--max-http-header-size", "--trace-env-js-stack", "--no-trace-env-js-stack",
+    "--preserve-symlinks", "--no-preserve-symlinks", "--permission-audit", "--no-permission-audit", "--use-env-proxy", "--no-use-env-proxy",
+    "--test-coverage-lines", "--experimental-websocket", "--no-experimental-websocket", "--force-node-api-uncaught-exceptions-policy", "--no-force-node-api-uncaught-exceptions-policy", "--insecure-http-parser",
+    "--no-insecure-http-parser", "--tls-min-v1.3", "--no-tls-min-v1.3", "--trace-tls", "--no-trace-tls", "--expose-gc",
+    "--experimental-loader", "--http-parser", "--allow-openssl-store", "--no-allow-openssl-store", "--test-isolation", "--inspect-port",
+    "--disable-wasm-trap-handler", "--no-disable-wasm-trap-handler", "--experimental-top-level-await", "--heapsnapshot-near-heap-limit", "--report-exclude-network", "--no-report-exclude-network",
+    "--tls-max-v1.3", "--no-tls-max-v1.3", "--async-context-frame", "--no-async-context-frame", "--watch", "--no-watch",
+    "--experimental-wasi-unstable-preview1", "--cpu-prof-name", "--experimental-vm-modules", "--no-experimental-vm-modules", "--experimental-print-required-tla", "--no-experimental-print-required-tla",
+    "--experimental-repl-await", "--no-experimental-repl-await", "--trace-uncaught", "--no-trace-uncaught", "--allow-worker", "--no-allow-worker",
+    "--trace-sigint", "--no-trace-sigint", "--test-coverage-include", "--allow-child-process", "--no-allow-child-process", "--test-coverage-functions",
+    "--heap-prof", "--no-heap-prof", "--heap-prof-name", "--report-compact", "--no-report-compact", "--cpu-prof-dir",
+    "--track-heap-objects", "--no-track-heap-objects", "--disable-proto", "--trace-env", "--no-trace-env", "--frozen-intrinsics",
+    "--no-frozen-intrinsics", "--allow-wasi", "--no-allow-wasi", "--experimental-dtls", "--experimental-abortcontroller", "--allow-fs-read",
+    "--experimental-import-text", "--no-experimental-import-text", "--allow-net", "--no-allow-net", "--permission", "--no-permission",
+    "--disable-sigusr1", "--no-disable-sigusr1", "--deprecation", "--no-deprecation", "--experimental-wasm-modules", "--cpu-prof-interval",
+    "--bench-name-pattern", "--addons", "--no-addons", "--trace-sync-io", "--no-trace-sync-io", "--experimental-json-modules",
+    "--allow-inspector", "--no-allow-inspector", "--trace-promises", "--no-trace-promises", "--global-search-paths", "--no-global-search-paths",
+    "--require-module", "--no-require-module", "--experimental-webstorage", "--no-experimental-webstorage", "--experimental-web-worker", "--no-experimental-web-worker",
+    "--experimental-bench", "--no-experimental-bench", "--disable-warning", "--experimental-vfs", "--no-experimental-vfs", "--dns-result-order",
+    "--jitless", "--experimental-sqlite", "--no-experimental-sqlite", "--inspect", "--no-inspect", "--heapsnapshot-signal",
+    "--experimental-import-meta-resolve", "--no-experimental-import-meta-resolve", "--test-coverage-branches", "--localstorage-file", "--experimental-ffi", "--no-experimental-ffi",
+    "--report-signal", "--test-random-seed", "--experimental-fetch", "--bench-samples", "--experimental-global-customevent", "--network-family-autoselection",
+    "--no-network-family-autoselection", "--max-old-space-size", "--experimental-quic", "--inspect-brk", "--no-inspect-brk", "--test-name-pattern",
+    "--experimental-addon-modules", "--no-experimental-addon-modules", "--strip-types", "--no-strip-types", "--openssl-legacy-provider", "--no-openssl-legacy-provider",
+    "--use-largepages", "--experimental-detect-module", "--no-experimental-detect-module", "--max-semi-space-size", "--vfs-mount", "--network-family-autoselection-attempt-timeout",
+    "--allow-fs-write", "--extra-info-on-fatal-exception", "--no-extra-info-on-fatal-exception", "--enable-fips-indicator-events", "--no-enable-fips-indicator-events", "--snapshot-blob",
+    "--experimental-require-module", "--no-experimental-require-module", "--secure-heap-min", "--diagnostic-dir", "--title", "--experimental-global-navigator",
+    "--no-experimental-global-navigator", "--napi-modules", "--import", "--force-context-aware", "--no-force-context-aware", "--enable-fips",
+    "--no-enable-fips", "--watch-preserve-output", "--no-watch-preserve-output", "--enable-source-maps", "--no-enable-source-maps", "--use-openssl-ca",
+    "--no-use-openssl-ca", "--openssl-config", "--icu-data-dir", "--experimental-specifier-resolution", "--v8-pool-size", "--report-on-fatalerror",
+    "--no-report-on-fatalerror", "--secure-heap", "--test-rerun-failures", "--experimental-stream-iter", "--no-experimental-stream-iter", "--trace-deprecation",
+    "--no-trace-deprecation", "--trace-warnings", "--no-trace-warnings", "--force-async-hooks-checks", "--no-force-async-hooks-checks", "--tls-min-v1.0",
+    "--no-tls-min-v1.0", "--zero-fill-buffers", "--no-zero-fill-buffers", "--report-dir", "--use-bundled-ca", "--no-use-bundled-ca",
+    "--pending-deprecation", "--no-pending-deprecation", "--allow-fs-vfs", "--no-allow-fs-vfs", "--max-old-space-size-percentage", "--experimental-global-webcrypto",
+    "--force-fips", "--no-force-fips", "--report-filename", "--report-uncaught-exception", "--no-report-uncaught-exception", "--tls-cipher-list",
+    "--node-snapshot", "--no-node-snapshot", "--debug-arraybuffer-allocations", "--no-debug-arraybuffer-allocations", "--trace-event-file-pattern", "--conditions",
+    "--allow-addons", "--no-allow-addons", "--worker-snapshot", "--no-worker-snapshot", "--openssl-shared-config", "--no-openssl-shared-config",
+    "--input-type", "--heap-prof-dir", "--experimental-worker", "--trace-event-categories", "--debug-port", "-r",
+    "--es-module-specifier-resolution", "--prof-process", "-C", "--loader", "--webstorage", "--experimental-strip-types",
+    "--enable-network-family-autoselection", "--experimental-test-isolation", "--report-directory", "--trace-events-enabled",
+    ];
+    const __noDash = __flags.map((f) => f.replace(/^--?/, ""));
+    // 真机结构（per_thread.js）：Set 本体恒空，迭代/数量全走内部数组
+    // （`Set.prototype.add.call(set,"foo")` 写进的内部槽永不被访问）；
+    // forEach 逐数组项回（v, v, set）；size 取数组长。嵌入表为真机 dump 去重后
+    // 310 项（真机数组 314 含 4 重项，size/forEach 计数差 4，无套件可观察）。
+    class NodeEnvironmentFlagsSet extends Set {
+      constructor() {
+        super();
+        // 冻结后仍可写内部盒（真机 kInternal 同构；实例冻结，盒不冻结）。
+        this.__wjs2_box = { arr: __flags, noDash: __noDash, set: null };
+      }
+      add() { return this; }
+      delete() { return false; }
+      clear() {}
+      has(key) {
+        if (typeof key !== "string") return false;
+        key = key.replace(/_/g, "-");
+        if (/^--?/.test(key)) {
+          key = key.replace(/=.*$/, "");
+          return this.__wjs2_box.arr.includes(key);
+        }
+        return this.__wjs2_box.noDash.includes(key);
+      }
+      __wjs2_iter() {
+        const b = this.__wjs2_box;
+        if (b.set === null) b.set = new Set(b.arr);
+        return b.set;
+      }
+      entries() { return this.__wjs2_iter().entries(); }
+      values() { return this.__wjs2_iter().values(); }
+      keys() { return this.values(); }
+      [Symbol.iterator]() { return this.values(); }
+      forEach(cb, thisArg) {
+        for (const v of this.__wjs2_box.arr) cb.call(thisArg, v, v, this);
+      }
+      get size() { return this.__wjs2_box.arr.length; }
+    }
+    const set = new NodeEnvironmentFlagsSet();
+    // 真机同：Set 本体冻结（add/delete/clear 已是 no-op，freeze 防覆写）。
+    Object.freeze(set);
+    Object.defineProperty(globalThis.process, "allowedNodeEnvironmentFlags", {
+      value: set, writable: true, enumerable: true, configurable: true,
+    });
+    return set;
+  },
+  set(v) {
+    Object.defineProperty(globalThis.process, "allowedNodeEnvironmentFlags", {
+      value: v, writable: true, enumerable: true, configurable: true,
+    });
+  },
+  enumerable: true,
+  configurable: true,
+});
 // Node 兼容旗语义（CLI 起点剥下，见 cli::strip_node_compat_args）：
 // --expose-gc 即暴露 globalThis.gc（async no-op——真收集另案，调用形状先行；
 // 无旗不暴露，真机口径）；名单挂内部位供 http 默认宽松等消费（不进 process.env）。

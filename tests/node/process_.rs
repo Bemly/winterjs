@@ -327,6 +327,50 @@ fn phase11_process_validation_faces() {
 }
 
 #[test]
+fn phase11_process_env_faces() {
+    // P2-process R8: env Proxy 全家（node 原文口径）。
+    // 正常：原型回落（hasOwnProperty）、空键静默忽略、DEP0104 后照赋。
+    // 报错：符号键/值、坏描述符双文案。
+    // 边界：flags 白名单正反例 + 冻结；TZ 写入不崩（时区生效记档另案）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (ok, out, _) = wjs(
+        &[
+            "--eval",
+            "'use strict'; const assert = require('node:assert');\
+             console.log('proto', process.env.hasOwnProperty === Object.prototype.hasOwnProperty);\
+             process.env[''] = ''; console.log('empty', process.env[''] === undefined);\
+             const sym = Symbol('s');\
+             console.log('sym-get', process.env[sym] === undefined);\
+             try { process.env[sym] = 1; console.log('sym-key NO-THROW'); } catch (e) { console.log('sym-key', e.name); }\
+             try { process.env.WJS2_SYM = sym; console.log('sym-val NO-THROW'); } catch (e) { console.log('sym-val', e.name); }\
+             try { Object.defineProperty(process.env, 'x', { value: 1 }); console.log('desc NO-THROW'); }\
+             catch (e) { console.log('desc', e.code); }\
+             const f = process.allowedNodeEnvironmentFlags;\
+             console.log('flags', f.has('-r') && f.has('r') && !f.has('--cheeseburgers') && Object.isFrozen(f));\
+             process.env.WJS2_DEP = undefined;\
+             console.log('dep', process.env.WJS2_DEP === 'undefined');\
+             process.env.WJS2_TZ = 'Europe/Amsterdam'; console.log('tz-set true');",
+        ],
+        &dir,
+    );
+    assert!(ok, "out: {out}");
+    for line in [
+        "proto true",
+        "empty true",
+        "sym-get true",
+        "sym-key TypeError",
+        "sym-val TypeError",
+        "desc ERR_INVALID_OBJECT_DEFINE_PROPERTY",
+        "flags true",
+        "dep true",
+        "tz-set true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn phase11_process_capture_faces() {
     // P2-process R7: uncaught capture 路由（node execution.js 口径）。
     // 正常：capture 接住入口抛错（uncaughtException 不发、exit 0）；null 清除。

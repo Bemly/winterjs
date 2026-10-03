@@ -349,6 +349,12 @@ pub unsafe extern "C" fn env_set(
         return false;
     }
     let (key, val) = (value_to_string(&mut cx, frame.arg(0)), value_to_string(&mut cx, frame.arg(1)));
+    // node 口径：非法键（空/`=`/NUL，含值 NUL）静默忽略（env.js 空键套件点名；
+    // Rust set_var 遇之 panic，必须先拦——与 throw/TypeError 都不符，真机即无操作）。
+    if key.is_empty() || key.contains('=') || key.contains('\0') || val.contains('\0') {
+        frame.set_rval(UndefinedValue());
+        return true;
+    }
     if let Err(msg) = crate::permissions::check_env(&key) {
         report_error(&mut cx, &msg);
         return false;
@@ -356,6 +362,19 @@ pub unsafe extern "C" fn env_set(
     // SAFETY: 全进程环境表；写入只发生在 JS 独占线程，启动期配置读取早已完成，
     // 其余并发读（tokio 任务）与写不同 key；同 key 竞争语义与 Node 等价（后写赢）。
     unsafe { std::env::set_var(&key, &val) };
+    // P2-process R8：TZ 写入即刷新 C 库时区缓存（标准 POSIX hygiene；
+    // 但 SpiderMonkey 另有引擎侧时区缓存（启动/首用即定，无 JSAPI 可清，
+    // mozjs/mozjs_sys 均无时区口），运行时改 TZ 仍不影响 Date——env-tz 记档）。
+    // SAFETY: tzset 无参、无指针，只重读进程环境，无别名。
+    // §6 三问：libc 0.2 的 tzset 只在 windows 模块有（unix 缺），无现成可用。
+    #[cfg(unix)]
+    unsafe extern "C" {
+        fn tzset();
+    }
+    #[cfg(unix)]
+    if key == "TZ" {
+        unsafe { tzset() };
+    }
     frame.set_rval(UndefinedValue());
     true
 }

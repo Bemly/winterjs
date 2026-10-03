@@ -1029,3 +1029,19 @@ G1/G2/G3/G9 已收官。）
   `check-lines` ok。
 - 余 35 件分簇（R6 候选）：execve×7（实验面）/ exception-capture×4 /
   env×6 / redirect-warnings×2 / 散件（binding/config/spawn 系/V8 私有语法）。
+
+## 2026-10-03 P2-process R6：execve 镜像替换簇（44→51/82）
+
+- 真机口径：execve 逐字移植（worker/平台双门 + 路径/参数/env 三校验 +
+  成功不返回；自身软链/直链补 --run，argv 保持 node 形；失败成系统错，
+  ENOENT 口径 `ENOENT, text 'path'`）。
+- 附带两修：inspect 转义表 0/7/11/27 按真机 `meta` 对齐（坑 4.247；
+  全局影响，全量回归 cover）；errors 端口按需加 `ERR_WORKER_UNSUPPORTED_OPERATION`
+  （"按需追加"既定纪律）；kill/execve natives 续搬 `process_cred.rs`
+  （kill 块字节恒等；`process_.rs` 纯删）。
+- redirect-warnings×2 记档：fork 线程底座吞 execArgv（校验过即弃），属 G6
+  infra 族，另案。
+- 验证：run1.sh 7/7；黑盒 `phase11_process_execve_faces`（报错面 6 断言，
+  真调替换测试进程故不做成功面）+ `phase11_inspect_control_escapes`；
+  全量 nextest strict 856/856；proc7 sweep 44→51/82；冒烟 5/5；
+  `check-lines` ok。

@@ -988,3 +988,18 @@ G1/G2/G3/G9 已收官。）
 - 验证：run1.sh 7/8；黑盒 `phase11_process_resource_faces`（14 断言）；
   process 域 nextest 14/14 strict；proc3 sweep 25→32/82；冒烟 5/5；
   `check-lines` ok。
+
+## 2026-10-03 P2-process R3：POSIX 身份设置簇（32→36/82）
+
+- 真机口径（`does_own_process_state.js` wrapPosixCredentialSetters 逐字）：
+  setuid/setgid/seteuid/setegid（validateId 数串双形 + 未知身份错 +
+  EPERM 系错）/setgroups（数组门 + 逐元素门 + 未知组位错）/initgroups
+  （双门 + 先解组后解用户，双未知报组错）。
+- 真凶一枚（坑 4.246）：native 返回码 0/1/errno 三义共 int，EPERM 本体即 1——
+  非 root 下全被误读成"未知身份"；改 0/1/-errno，setgroups/initgroups 早同口径。
+- 拆分（§0.9 超限）：`process_.rs` 1104→897，身份系整块搬
+  `process_cred.rs`（217 行，字节恒等，注册改址；另顺手清 `///`-on-extern
+  与 mach deprecate 两告警，dsa.rs 同款 allow）。
+- 验证：run1.sh 4/4；黑盒 `phase11_process_credential_faces`（无副作用路径 9 断言）；
+  process 域 nextest 15/15 strict；proc4 sweep 32→36/82；冒烟 5/5；
+  `check-lines` ok。

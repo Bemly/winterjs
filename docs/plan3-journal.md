@@ -1060,3 +1060,18 @@ G1/G2/G3/G9 已收官。）
   冒烟 5/5；`check-lines` ok。
 - 余 24 件分簇（R8 候选）：env×6 / 散件（binding/config/exit/spawn 系/
   redirect 记档/V8 私有语法记档/thread-worker 配额记档）。
+
+## 2026-10-03 P2-process R8：env Proxy 全家簇（55→60/82）
+
+- 真机口径（同源五件一处改）：原型回落（hasOwnProperty 等走 target）、符号键值
+  纪律（读 undefined/写严格抛）、defineProperty 双文案门、DEP0104 警告后照赋、
+  空键静默忽略；allowedNodeEnvironmentFlags 按 per_thread.js 结构移植
+  （310 表真机 dump + 定制 has 归一化 + 空本体/过滤迭代 + 冻结）。
+- 真凶一枚（坑 4.249）：Rust `set_var` 遇空键 panic（rc=139），真机静默忽略——
+  native 先拦；定位靠临时 eprintln 看序列（删）+ 包 native 抓 JS 栈。
+- 记档两件：env-tz（SM 引擎侧时区缓存清不动，坑 4.250；`tzset` 保留作 hygiene）、
+  redirect-warnings×2（沿 R6 记档）。
+- 验证：run1.sh 5/6；黑盒 `phase11_process_env_faces`（9 断言，补 `use strict`）；
+  process 域 nextest 20/20；proc9 sweep 55→60/82；冒烟 5/5；`check-lines` ok。
+- 余 19 件分簇（R9 候选）：binding×2/config/exit×2/spawn 系散件/finalization/
+  get-builtin/setsourcemaps/ref-unref/warnings（+既有三记档）。

@@ -174,7 +174,9 @@ phase11_process_spawn_faces；process 域 17/17、冒烟 5/5；余 35 件分簇�
 redirect-warnings 记档 fork-infra；黑盒 execve 报错面 + inspect 转义；
 全量 856/856、冒烟 5/5）。
 **process R7** ✅ 2026-10-03 capture 4 转绿 55/82（入口改道 + take-调-放回
-4.248；黑盒 capture 三件；全量 857/857、冒烟 5/5；余 24 件分簇见 journal） | 各按止损线 | 🟡 |
+4.248；黑盒 capture 三件；全量 857/857、冒烟 5/5；余 24 件分簇见 journal）。
+**process R8** ✅ 2026-10-03 env 全家 5 转绿 60/82（空键 panic 4.249；时区
+记档 4.250；黑盒 env 九件；process 域 20/20、冒烟 5/5；余 19 件分簇见 journal） | 各按止损线 | 🟡 |
 | P3 | http 冻结收口 | ✅ 2026-09-30 R1：`matchKnownFields`（单例表删 content-encoding/x-forwarded-host，4.237）+ `outgoing-finished`（ServerResponse 补 OM 品牌五项等 close，4.238）转绿，`1.0-keep-alive` 复验绿；http 相关 52/52 strict；余 8 件按原定性记档不再开轮 | ≤1 天 | ✅ |
 | D1 | ✅ 2026-09-25 已做 | node 运行时旗改**精确名单**（`src/cli_node_flags.rs`，取自 `node --help`；前缀族方案致 4.209 事故后废弃；winterjs2 自有同名旗与改执行模式的旗不收，必须带值的旗只认 `--k=v`、值非法 exit 9）+ `internal/options` getOptionValue 读真实旗值 + DEP0005 认 `--pending-deprecation` + shell 串自举保旗交 CLI。实测：位置参数本就已通（旧"~18 件"口径过期）；`buffer-constructor-node-modules` 转绿；余红与 spawn 无关，已拆成 D4/P2 项（错误输出形状、`process.stdin/stdout` 非 Stream、`node:stream/iter` 未实现、vm-sigint stdio null） | — | ✅ |
 | D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |

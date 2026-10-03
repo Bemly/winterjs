@@ -446,6 +446,7 @@ E('ERR_SYSTEM_ERROR',
   (syscall, code, message) => `A system error occurred: ${syscall} returned ${code} (${message})`,
   SystemError, HideStackFramesError);
 E('ERR_BROTLI_INVALID_PARAM', '%s is not a valid Brotli parameter', RangeError, HideStackFramesError);
+E('ERR_ZSTD_INVALID_PARAM', '%s is not a valid zstd parameter', RangeError, HideStackFramesError);
 E('ERR_ZLIB_INITIALIZATION_FAILED', 'Initialization failed', Error, HideStackFramesError);
 E('ERR_BUFFER_TOO_LARGE', 'Cannot create a Buffer larger than %s bytes', RangeError, HideStackFramesError);
 E('ERR_ZIP_ARCHIVE_TOO_LARGE', 'ZIP archive structure exceeds the allowed size: %s', RangeError, HideStackFramesError);

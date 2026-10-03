@@ -820,8 +820,22 @@ export const constants = {
   BROTLI_PARAM_SIZE_HINT: 5, BROTLI_PARAM_LARGE_WINDOW: 6,
   BROTLI_MODE_GENERIC: 0, BROTLI_MODE_TEXT: 1, BROTLI_MODE_FONT: 2,
   BROTLI_DEFAULT_QUALITY: 11, BROTLI_MIN_QUALITY: 0, BROTLI_MAX_QUALITY: 11,
-  BROTLI_DECODE: 0, BROTLI_ENCODE: 1,
+  BROTLI_DECODE: 8, BROTLI_ENCODE: 9,
+  // R3a：绑定层模式常量（真机值；旧 BROTLI_DECODE:0/ENCODE:1 系本仓流向自定，
+  // 无他处引用，按真机 8/9 纠正）+ 缺失档补齐。
+  DEFLATE: 1, INFLATE: 2, GZIP: 3, GUNZIP: 4,
+  ZSTD_COMPRESS: 10, ZSTD_DECOMPRESS: 11,
+  Z_MIN_CHUNK: 64, Z_MIN_LEVEL: -1, Z_MAX_LEVEL: 9,
   ZSTD_e_continue: 0, ZSTD_e_flush: 1, ZSTD_e_end: 2,
+  // R3a：zstd param 族（真机值；iter/transform 按名取最大值定参数数组界）。
+  ZSTD_c_compressionLevel: 100, ZSTD_c_windowLog: 101, ZSTD_c_hashLog: 102,
+  ZSTD_c_chainLog: 103, ZSTD_c_searchLog: 104, ZSTD_c_minMatch: 105,
+  ZSTD_c_targetLength: 106, ZSTD_c_strategy: 107,
+  ZSTD_c_enableLongDistanceMatching: 160, ZSTD_c_ldmHashLog: 161,
+  ZSTD_c_ldmMinMatch: 162, ZSTD_c_ldmBucketSizeLog: 163,
+  ZSTD_c_ldmHashRateLog: 164, ZSTD_c_contentSizeFlag: 200,
+  ZSTD_c_checksumFlag: 201, ZSTD_c_dictIDFlag: 202, ZSTD_c_nbWorkers: 400,
+  ZSTD_c_jobSize: 401, ZSTD_c_overlapLog: 402, ZSTD_d_windowLogMax: 100,
   // ZSTD 错误码族（真机 26.8.2 zlib.constants 逐项导出为准；pledged 套件
   // 取 ZSTD_error_srcSize_wrong=72）。
   ZSTD_error_no_error: 0, ZSTD_error_GENERIC: 1,

@@ -118,6 +118,8 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/streams/iter_broadcast", streams::iter_broadcast::SOURCE),
     ("node:internal/streams/iter_transform", streams::iter_transform::SOURCE),
     ("node:internal/streams/iter_consumers", streams::iter_consumers::SOURCE),
+    // R3a：transform 用的缓冲式 zlib 句柄 shim（体部经局部 internalBinding 映射）。
+    ("node:internal/streams/iter_zlib_binding", streams::iter_zlib_binding::SOURCE),
     // Phase 9d-6：http/https 共享帧层
     ("node:internal/http_framing", http_framing::SOURCE),
     // 10g：http2 内部 util（套件直引 `internal/http2/util`；kSocket 符号跨模块同源）
@@ -191,8 +193,8 @@ mod tests {
             normalize_internal("internal/streams/end-of-stream"),
             Some("node:internal/streams/end_of_stream")
         );
-        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；R2-iter + task_queues +1 + iter 系 +10；增删同步改此数）。
-        assert_eq!(INTERNALS.len(), 78);
+        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；R2-iter + task_queues +1 + iter 系 +10；R3a + zlib_binding +1；增删同步改此数）。
+        assert_eq!(INTERNALS.len(), 79);
         for (name, src) in INTERNALS {
             assert!(source(name).is_some(), "{name} missing");
             assert!(!src.is_empty(), "{name} empty source");

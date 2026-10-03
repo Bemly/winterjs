@@ -22,6 +22,7 @@ pub mod iter_share;
 pub mod iter_broadcast;
 pub mod iter_transform;
 pub mod iter_consumers;
+pub mod iter_zlib_binding;
 pub mod lazy_transform;
 pub mod legacy;
 pub mod operators;

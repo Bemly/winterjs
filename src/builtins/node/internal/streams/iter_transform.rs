@@ -23,6 +23,15 @@ function __requireMap(spec) {
   }
 }
 
+import * as __mzb from 'node:internal/streams/iter_zlib_binding';
+// R3a：裸 internalBinding('zlib'/'constants') 本仓无此 C++ 全局层——局部映射
+// 到缓冲式 shim（transform 体逐字不动，见 iter_zlib_binding）。
+function internalBinding(name) {
+  if (name === 'zlib') return __mzb.default;
+  if (name === 'constants') return { zlib: __mzb.constants };
+  throw new Error(`No such binding: ${name}`);
+}
+
 const module = { exports: { __proto__: null } };
 
 'use strict';

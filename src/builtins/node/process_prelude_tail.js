@@ -26,6 +26,23 @@ try {
   if (__f.includes("--trace-warnings")) __p.traceProcessWarnings = true;
   const __rw = __f.find((a) => a.startsWith("--redirect-warnings="));
   if (__rw) __p.__wjs2_warningFile = __rw.slice("--redirect-warnings=".length);
+  // R9：--disable-warning=CODE|TYPE（多旗累加；NODE_OPTIONS 同源；逗号串整体
+  // 比对即天然不支持，真机同）。
+  const __dis = [];
+  for (const a of __f) {
+    if (typeof a === "string" && a.startsWith("--disable-warning=")) {
+      __dis.push(a.slice("--disable-warning=".length));
+    }
+  }
+  try {
+    const __no = __wjs2_env_get("NODE_OPTIONS");
+    if (typeof __no === "string") {
+      for (const tok of __no.trim().split(/\s+/)) {
+        if (tok.startsWith("--disable-warning=")) __dis.push(tok.slice("--disable-warning=".length));
+      }
+    }
+  } catch {}
+  __p.__wjs2_disabledWarnings = __dis;
   let __nw = false;
   try { __nw = __wjs2_env_get("NODE_NO_WARNINGS") === "1"; } catch {}
   if (!__f.includes("--no-warnings") && !__nw) __p.on("warning", __p.__wjs2_onWarning);

@@ -1,6 +1,5 @@
 //! 启动期全局 `process` JS（对齐 process_.rs；求值见 node/mod.rs `node_prelude`）。
 
-/// 启动期全局 `process`（`NODE_PRELUDE` 经 `runtime` 在主 PRELUDE 后求值）。
 /// 启动期全局 `process`（§0.9 三段切片经 `concat!(include_str!…)` 拼回，字节恒等）。
 pub const PROCESS_PRELUDE: &str = concat!(
     include_str!("process_prelude_head.js"),

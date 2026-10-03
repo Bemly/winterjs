@@ -112,7 +112,12 @@ fn fatal_exit(rt: &mut Runtime, global: &RootedGuard<'_, *mut JSObject>, e: Erro
         return e;
     }
     let _ = e.render(color);
-    state::set_exit_code(Some(1));
+    // R9：monitor 抛错已置 7、_fatalException 置 undefined 置 6（分发侧），
+    // 此处保留；余下一律落 1（含预设 exitCode，exit-code 套件点名覆盖）。
+    let __keep: Option<i32> = state::exit_code();
+    if __keep != Some(7) && __keep != Some(6) {
+        state::set_exit_code(Some(1));
+    }
     {
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         crate::builtins::node::process_::emit_exit(&mut realm, global.get());

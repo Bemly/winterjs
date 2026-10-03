@@ -737,3 +737,49 @@ fn phase11_process_r9_misc_faces() {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn phase11_process_r9b_faces() {
+    // P2-process R9-B：--disable-warning 过滤 + uncaughtExceptionMonitor 先行 +
+    // _fatalException=undefined 即 exit 6（node 原文口径）。
+    // 正常：monitor 与 uncaughtException 同 err 同 origin 依次触发。
+    // 报错：monitor 内再抛即新错 fatal（退出码 7）。
+    // 边界：--disable-warning 按 code/name 精确过滤；_fatalException 置 undefined
+    //   即回落默认 exit 6。
+    let dir = assert_fs::TempDir::new().unwrap();
+    // 正常：in-process monitor/uncaught 双触发（timer 抛错走 drain 分发）。
+    let (ok, out, _) = wjs(
+        &[
+            "--eval",
+            "process.on('uncaughtExceptionMonitor', (e, o) => console.log('mon', e.message, o));\
+             process.on('uncaughtException', (e, o) => console.log('un', e.message, o));\
+             setTimeout(() => { throw new Error('boom'); }, 5);",
+        ],
+        &dir,
+    );
+    assert!(ok, "out: {out}");
+    assert!(out.lines().any(|l| l == "mon boom uncaughtException"), "out: {out}");
+    assert!(out.lines().any(|l| l == "un boom uncaughtException"), "out: {out}");
+    // 边界：--disable-warning=DEP1 只滤 DEP1（DEP2 照打）。
+    let out = winterjs2()
+        .args([
+            "--disable-warning=DEP1",
+            "--eval",
+            "process.emitWarning('a', { code: 'DEP1', type: 'DeprecationWarning' });\
+             process.emitWarning('b', { code: 'DEP2', type: 'DeprecationWarning' });",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let se = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stderr: {se}");
+    assert!(!se.contains("[DEP1]") && se.contains("[DEP2]"), "stderr: {se}");
+    // 边界：_fatalException 置 undefined 即 exit 6（CJS 入口抛错回落默认；
+    // .mjs 走模块路径无分发，套件本体亦为 .js）。
+    dir.child("fatal6.js")
+        .write_str("process._fatalException = undefined;\nthrow new Error('ok');\n")
+        .unwrap();
+    let out = winterjs2().arg("--run").arg("fatal6.js").current_dir(dir.path()).output().unwrap();
+    assert_eq!(out.status.code(), Some(6), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    dir.close().unwrap();
+}

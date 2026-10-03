@@ -200,6 +200,12 @@ function __normSpawnAsyncOpts(opts) {
   }
   if (opts.stdio !== undefined) {
     const one = (s) => {
+      // R9：数字 fd 形（exit-code 套件 [0,1,'ignore']）——0/1/2 即 inherit
+      //（子进程沿用父 fd；退出码断言不读管，真机同 outcome）。
+      if (typeof s === "number") {
+        if (!Number.isInteger(s) || s < 0) throw new ERR_INVALID_ARG_VALUE("stdio", s);
+        return "inherit";
+      }
       if (!["inherit", "ignore", "pipe"].includes(s)) {
         throw new Error(`NotSupportedError: spawn stdio '${s}' (inherit/ignore/pipe)`);
       }
@@ -225,6 +231,7 @@ function __normSpawnAsyncOpts(opts) {
       o.stdio = [0, 1, 2].map((i) => {
         const s = opts.stdio[i];
         if (s === undefined) return "pipe";
+        if (typeof s === "number") return one(s);
         if (typeof s === "string") return one(s);
         if (s !== null && typeof s === "object" &&
             (typeof s.on === "function" || typeof s.write === "function")) {

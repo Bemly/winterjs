@@ -176,11 +176,27 @@ globalThis.__wjs2_timer_id = (id) => {
 // __wjs2_uncaught 逐个调用（Node 口径第二参 origin='uncaughtException'）。
 globalThis.__wjs2_uncaught_count = () => {
   const p = globalThis.process;
-  const ls = p && p.__wjs2_listeners ? p.__wjs2_listeners["uncaughtException"] : undefined;
-  return ls ? ls.length : 0;
+  if (p && typeof p.__wjs2_captureCb === "function") return 1;
+  const ls = p && p.__wjs2_listeners ? p.__wjs2_listeners : undefined;
+  // R9：monitor 亦计入（仅 monitor 监听即须分发，否则 drain 跳过致 stdout 空）。
+  const n = ls && ls["uncaughtException"] ? ls["uncaughtException"].length : 0;
+  const m = ls && ls["uncaughtExceptionMonitor"] ? ls["uncaughtExceptionMonitor"].length : 0;
+  return n + m;
 };
 globalThis.__wjs2_uncaught = (err) => {
   const p = globalThis.process;
+  // R9：`process._fatalException = undefined`（exit-code 套件 exitWithUndefinedFatal-
+  // Exception 点名）——真机 C++ 回落默认致 exit 6；此处置 6 后返回 false 走 fatal
+  //（fatal 侧保留 6/7，其余盖 1）。初始 process 无此属性（`in` 区分未置/置 undefined）。
+  if (p && ("_fatalException" in p) && p._fatalException === undefined) {
+    try { p.exitCode = 6; } catch {}
+    return false;
+  }
+  // R9：monitor 先行（execution.js 口径：`process.emit('uncaughtExceptionMonitor', er, type)`；
+  // 用 throwing 版 emit——监听抛错即冒泡，Rust 侧按新 pending + 退出码 7 收尾，真机同）。
+  if (p && typeof p.emit === "function") {
+    p.emit("uncaughtExceptionMonitor", err, "uncaughtException");
+  }
   // P2-process R7：capture 回调优先（setUncaughtExceptionCaptureCallback 面）——
   // 接住即吞（uncaughtException 监听不发、fatal 不走）；抛错冒泡由调用方按 fatal 收。
   const cap = p ? p.__wjs2_captureCb : undefined;
@@ -188,8 +204,11 @@ globalThis.__wjs2_uncaught = (err) => {
     cap(err);
     return true;
   }
-  if (p && typeof p.__wjs2_emit === "function") {
-    return p.__wjs2_emit("uncaughtException", err, "uncaughtException") > 0;
+  // R9：uncaughtException 用 throwing 版 emit（exitWithThrowInUncaughtHandler
+  // 套件：监听内再抛即冒泡，Rust 侧按新 pending + 退出码 7 收尾，真机同；
+  // 旧 __wjs2_emit 吞错致 exit 0，偏差）。
+  if (p && typeof p.emit === "function") {
+    return p.emit("uncaughtException", err, "uncaughtException");
   }
   return false;
 };

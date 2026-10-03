@@ -772,6 +772,12 @@ globalThis.process = {
     const p = globalThis.process;
     const isDeprecation = warning.name === "DeprecationWarning";
     if (isDeprecation && p.noDeprecation) return;
+    // R9：--disable-warning=CODE|TYPE（可多旗；逗号串整体比对即天然不支持，
+    // 真机同）+ NODE_OPTIONS 同源（warnings 套件点名）。
+    try {
+      const __dis = p.__wjs2_disabledWarnings || [];
+      if (__dis.includes(warning.code) || __dis.includes(warning.name)) return;
+    } catch {}
     const trace = p.traceProcessWarnings || (isDeprecation && p.traceDeprecation);
     let msg = `(node:${__wjs2_pid()}) `;
     if (warning.code) msg += `[${warning.code}] `;

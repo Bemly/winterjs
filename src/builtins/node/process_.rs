@@ -152,10 +152,26 @@ pub fn drain_next_ticks(
                         Some(err_v) => {
                             rooted!(&in(cx) let err_root = err_v);
                             let uncaught_fn = state::with_rooted(|s| s.uncaught_fn.get());
-                            matches!(
-                                call_two(cx, global, uncaught_fn, err_root.get(), UndefinedValue()),
-                                Some(r) if r.is_boolean() && r.to_boolean()
-                            )
+                            match call_two(cx, global, uncaught_fn, err_root.get(), UndefinedValue()) {
+                                Some(r) if r.is_boolean() && r.to_boolean() => true,
+                                Some(_) => {
+                                    // 返回 false：无人接——原 pending 已取走，
+                                    // Err(pending_exception_error) 将读空栈；
+                                    // 此处放回原错再读（entry 路径同口径）。
+                                    crate::jsapi_glue::set_pending_exception(cx, err_root.get());
+                                    false
+                                }
+                                // R9：分发抛错（monitor 监听抛的新错）——新 pending
+                                // 即 fatal 本体，退出码 7（entry 路径同口径）。
+                                None => {
+                                    if crate::jsapi_glue::exception_pending(cx) {
+                                        state::set_exit_code(Some(7));
+                                    } else {
+                                        crate::jsapi_glue::set_pending_exception(cx, err_root.get());
+                                    }
+                                    false
+                                }
+                            }
                         }
                         None => false,
                     }
@@ -198,14 +214,24 @@ pub fn dispatch_entry_throw(
     rooted!(&in(cx) let err_root = taken);
     let f = state::with_rooted(|s| s.uncaught_fn.get());
     rooted!(&in(cx) let f_root = f);
-    let handled = crate::jsapi_glue::call_one(cx, global, f_root.get(), err_root.get())
-        .map(|v| v.is_boolean() && v.to_boolean())
-        .unwrap_or(false);
-    if !handled {
-        // 无人接：放回 pending，原 fatal 路径重读（与未分发字节一致）。
-        crate::jsapi_glue::set_pending_exception(cx, err_root.get());
+    match crate::jsapi_glue::call_one(cx, global, f_root.get(), err_root.get()) {
+        Some(v) if v.is_boolean() && v.to_boolean() => true,
+        Some(_) => {
+            // 返回 false：无人接，放回原 pending，原 fatal 路径重读。
+            crate::jsapi_glue::set_pending_exception(cx, err_root.get());
+            false
+        }
+        // R9：分发抛错（monitor 监听抛的新错，真机口径）——保留新 pending
+        //（不恢复原错），退出码 7（monitor2 套件点名；原错路径为 1）。
+        None => {
+            if !crate::jsapi_glue::exception_pending(cx) {
+                crate::jsapi_glue::set_pending_exception(cx, err_root.get());
+            } else {
+                state::set_exit_code(Some(7));
+            }
+            false
+        }
     }
-    handled
 }
 
 /// `__wjs2_argv_json()` → argv 数组 JSON。

@@ -4488,3 +4488,55 @@
 - 复现：`TZ=... --eval Date` 生效 vs 运行期置 TZ 不生效，两行即判。
 - 推广铁律：**"启动生效、运行期不生效" = 引擎侧缓存**，先 grep 绑定层有无
   重置口，无则记档不动（§6 mozjs 是墙）。
+
+### 4.251 SM 删不可配置属性的文案与 V8 不同：Proxy 拦 deleteProperty 回真机形（2026-10-03，P2-process-R9）
+
+- 症状：exit-code-validation 套件 `delete process.exitCode` 断言正则
+  `/Cannot delete property 'exitCode' of #<process>/`，本仓抛
+  `property "exitCode" is non-configurable and can't be deleted` 即红。
+- 根因：exitCode 按真机 `configurable:false` 后，delete 错文案是引擎实现定义——
+  SM 与 V8 逐字不同；断言锁的是 V8 形。
+- 修法：`globalThis.process` 包一层 Proxy，只拦 `deleteProperty`（exitCode 即抛
+  真机形文案），余下默认透传（get/set 经 target；PROTO_FIXUP 的 setPrototypeOf
+  亦透传；回归 prototype/ppid/title 全绿）。
+- 复现：`--eval 'try{delete process.exitCode}catch(e){console.log(e.message)}'`。
+- 推广铁律：**凡断言锁引擎报错文案的，先对真机逐字抠，SM 形不同即在边界层
+ （Proxy/包装）对齐，不动引擎**。
+
+### 4.252 uncaught 三段路由：monitor 先行 + 监听再抛即 exit 7 + _fatalException 置空即 6（2026-10-03，P2-process-R9）
+
+- 症状：monitor 套件 stdout 空（仅 monitor 监听时 count=0 致 drain 跳过）；
+  exit-code 套件 exitWithThrowInUncaughtHandler 期 7 得 0（旧 `__wjs2_emit`
+  吞监听抛错）、exitWithUndefinedFatalException 期 6 得 1。
+- 根因（execution.js 原文）：`process.emit('uncaughtExceptionMonitor', er, type)`
+  恒先行（throwing）；capture 次之；`emit('uncaughtException')` 抛错冒泡；
+  `_fatalException` 置空即 C++ 回落默认 exit 6；monitor/监听抛的新错替代原错
+  exit 7。旧实现三处偏离：count 只数 uncaughtException、__wjs2_emit 吞错、
+  fatal_exit 无条件盖 1（连预设 99 一并盖掉后又连 7 一并盖掉）。
+- 修法：`__wjs2_uncaught_count` 含 capture/monitor；`__wjs2_uncaught` 先 throwing
+  版 emit monitor，再 capture，再 throwing 版 emit uncaughtException；
+  `_fatalException in p && === undefined` 即置 exitCode 6 回 false；
+  Rust 分发抛错（call None + 新 pending）即置 7 并保留新 pending（不恢复原错）；
+  fatal_exit 保留 6/7、余下盖 1（含预设码覆盖，exitWithOneOnUncaught 点名）。
+- 复现：monitor1/2 fixture 真机 rc=1/7 对拍；`p._fatalException=undefined` 黑盒断 6。
+- 推广铁律：**宿主吞错（__wjs2_emit）与用户可见抛错（emit）是两条路，分发链
+  上按 node 原文逐段选用**；fatal 收尾的置码须列出保留集（6/7），不得无条件覆盖。
+
+### 4.253 本仓 builtinModules 双形表 vs 真机混合表 + ESM 无 default 即 import.default 失配（2026-10-03，P2-process-R9）
+
+- 症状：get-builtin 套件连环三红：`getBuiltinModule(1)` 走 `String(id)` 前缀拼出
+  `node:1` 抛错（应 ERR_INVALID_ARG_TYPE）；`getBuiltinModule('test')` 回模块
+  （真机 builtinModules 无裸 `test`，应 undefined）；`node:timers/promises` 的
+  `import().default` 为 undefined（无 default 导出）而 require 有值。
+- 根因：本仓 `builtin_modules_json` 对每 canonical 发裸名+`node:`双形，真机是
+  裸名（老模块）/`node:`专形（test/sqlite/sea/ffi/quic/vfs 新模块）混合；
+  `getBuiltinModule` 照抄 require 别名语义即越界；timers/promises 刻意无 default
+  致 ESM/CJS 双面不等。
+- 修法：`getBuiltinModule` 非串先 ERR_INVALID_ARG_TYPE，裸 test/sqlite/quic/sea/
+  ffi/vfs 与 `internal/*` 直回 undefined（require 别名不动）；双形表对新风格
+  六件只发前缀形；timers/promises 补 `export default __api`（timers 的
+  `import * as promises` 同步改 default 引用，deepStrictEqual 不散）。
+- 复现：自写 probe 扫 51 裸名 `getBuiltin===import.default`（修前 1 坏，修后 0 坏）。
+- 推广铁律：**"经 require 可达"≠"真机 builtin"**，凡涉及模块名单（builtinModules/
+  getBuiltinModule/isBuiltin）以 `node -e builtinModules` 实表为准，不以自家
+  注册表为准。

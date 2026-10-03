@@ -1154,3 +1154,67 @@ G1/G2/G3/G9 已收官。）
   SAME1×5（双红不计）/ fs-pull×3（FileHandle.pull，fs 域另案）。
 - 域止损：92% 未达 95% 线，但可转绿件已空（余件皆 infra/另域/双红），
   按 0.2 时间盒收官，余件批量记档。
+
+## 2026-10-03 W1 本体盘点（只读探针 + 门面回归）
+
+- 探针（单发 `--eval`，无构建）：`WinterJS2.image.formats()` 16 项 /
+  `WinterJS2.media.formats()` 12 项（`decode/encode`、`audioInfo/decodeAudio/
+  play/stop/videoEncode/mp4Info/mp4Samples/mp4Sample` 具在）/
+  `WinterJS2` 命名空间 60+（semver/yaml/jsonc/ip/shlex/spdx/qrcode/shell/
+  hex/time/retry/graph/git/oauth/transpile/log/mime/cookie/httpdate 等，
+  即 wstd/wsys/wcover B1-B6 门面落点）/ `sample/wsys/shell.js` 全 true。
+- 回归：`cargo nextest run -E 'test(wstd) or test(wsys) or test(wcover) or test(repl)'`
+  **71/71**（wstd 11 + wsys 15 + wcover 21 黑盒 + repl 面；R3 后代码亦绿）。
+- 余项（W1 行 🟡 未动）：`.doc`/浮窗文档语料增量、` WinterJS2.image` 15→16
+  格式计数行文同步（plan3 W1 行写 15，实测 16）、站单源化部署门。
+  repl 求值面（TLA + acorn 声明提升）与 console 统一既判 ✅（§7），不再复验。
+
+## 2026-10-03 另案 tickets（R10a/b + fs-pull + byob）
+
+- **R10a spawn-ipc 通道**：`test-process-external-stdio-close-spawn`
+  （`spawn(..., {stdio:['pipe','pipe','pipe','ipc']})` + `child.send('go')`）。
+  现状：spawn 四元 ipc 占位忽略，真 IPC 只走 fork（parentPort 桥）。
+  入口：`src/builtins/node/child_spawn.js __normSpawnAsyncOpts` +
+  `child.rs` spawn 通道。验收：套件绿 + fork 回归。
+- **R10b 真 GC + finalization**：`test-process-finalization.mjs` 6 fixtures
+  （close/before-exit/cleanup/gc-not-close/unregister/per-thread）+
+  `register(undefined)` 校验。现状：`process.finalization` undefined、
+  `--expose-gc` 系 async no-op。入口：SM GC 可观测点（`JS_GC` 触发 +
+  FinalizationRegistry 对接）+ `bootstrap/node.js` 惰性 getter 移植。
+  验收：6 fixtures rc=0 + `register(undefined)` 抛物校验。
+- **fs-pull×3**（`file-handle-pull/pullsync/writer`）：`FileHandle.prototype.
+  pull/pullSync/writer` 未实现（`fh.pull is not a function`）。入口：
+  `src/builtins/node/fs.js` FileHandle 类 + stream/iter pull 桥接。
+  验收：三件绿 + fs 域回归（fs 333 件）。
+- **byob 读 hang**（`test-stream-readable-to-web-byob`）：`type` 校验已补
+  （R3b），残 BYOB `read(view)` 永挂（泵用 enqueue 无 respondWithNewView）。
+  入口：`prelude/streams.rs` 字节流 BYOB 分支。验收：单件绿 + webstreams
+  域回归（现 100%）。
+
+## 2026-10-03 http2 决策双分支 scope（P1，待 base16 定量后拍板）
+
+- 现状锚点：P1 首轮 88/256（34%）；base15 红 168 聚类：push 系 8 /
+  ALTSVC-ORIGIN 2 / settings 6 / tls 系 3 / session-connect-server-client
+  大盘 ~100（待 base16 新鲜 `wjs_err` 重聚，9-25 后共享底座动过）。
+- **分支 A：h2 裸库直驱**（hyper 高层→h2 0.4 `Connection` 直驱；轮子已在树
+  内零新增）。改动面：`http2_client.rs`（`hyper::client::conn::http2`
+  → h2 client 握手 + `push_promises` 接 `pushStream` + `send_data/trailer/
+  reset` 直调）/`http2_server.rs`（h2 server accept + `push_request` 接
+  `pushStream` + SETTINGS 出入 + GOAWAY/窗口/RST 码映射）/ compat JS
+  薄层保留。覆盖：push 8 + settings 半数 + GOAWAY-窗口-RST 映射簇；
+  不覆盖：ALTSVC/ORIGIN（h2 无此帧，仍偏离）。预算：约 1 周（含 h2c/H3
+  回归 + compat 黑盒）。
+- **分支 B：书面偏离**：http2 冻结 88/256（+base16 增量），bun-parity
+  `## http2` 记一行"hyper 底座不可达：PUSH/ALTSVC-ORIGIN/对端 SETTINGS
+  内省/原始帧错映射"，P1 收官。零工时。
+- 拍板条件：base16 http2 红中"h2 可达且非 tls"件 ≥20 → A；否则 B。
+
+## 2026-10-03 终局前置核对表（数字待 base16 回填标 *）
+
+| 验收项 | 状态 |
+|---|---|
+| §1 矩阵 Bun 🟢 全✅ | 待 base16：http* / http2（决策中）/ stream 92%（止损收官）/ 其余域上次全绿待刷新 |
+| §1 矩阵 Bun 🟡 parity 确认 | 待补：逐域一行（现有 bun-parity 明细可直接转正，仅 http2/process/stream 三行待本轮数） |
+| 10f 对拍报告入库 | bun-parity.md 现 1795 行可用；缺 base16 一轮 + http2 决策附录（本批已写 scope，结论待补） |
+| `cargo test` 全绿 0 警告 | ✅ 当前（strict 863/863；警告剩预存 5：repl 死代码×3 + linker + future-incompat） |
+| 冒烟 5/5 | ✅ 当前 |

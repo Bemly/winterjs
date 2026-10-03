@@ -1815,3 +1815,19 @@ TlsCleanEof（rustls FIN-无-close_notify → 干净 EOF）+ 手动升级监听 
   paused/readable 模式缺口，net 域共性另案）。
 - `test-async-wrap-tlssocket-asyncreset`：ca 链另案（"unable to verify the first
   certificate"，非 socket 包裹根因）。
+
+## base16 附录（2026-10-04，§0.3 新鲜数）
+
+- 总 2313/3574（65%）。域级见 plan3 §0.3；本附录只记 R16  determinism 结论：
+- 修 4 件 5 处（转绿单件已验）：cluster-net-listen / process-warning /
+  crypto-keygen-eddsa / http2-client-promisify-connect-error（+ lookup 成功路）/
+  （exit receiver 守卫顺带覆盖 worker-handle-close？未，另案）。
+- 记档 10：TLS 双派发×4 / 1.0-keep-alive / catch-hang / tlswrap-segfault /
+  worker-handle-close（fd 传递）/ FLAKY×3（http-1.0/http-byteswritten/dns-channel-timeout）。
+- http2 169 红名簇统计：push 6 / ALTSVC-ORIGIN 2 / settings 6 / tls 3 /
+  帧流控映射 19 / connect隧道 10 / compat 26 / session大盘 97；
+  123 DIFF 的 wjs_err 逐条在 `~/wjs-data/sweep/base16/results.log`（`grep test-http2-`）。
+  底座 bound 约 35（push/ALTSVC-ORIGIN/帧错映射/tls）拟 B 偏离；余下 compat 壳 gap
+  拟 C 轮（不动 hyper），待拍板。
+- stream R1-R3 附录（既有）：198→197 系 TIMEOUT 归属口径（pull 切片恢复后 fs-pull×3
+  仍在 fs 域）；process R9 附录：71→69（warning 已修，余 SAME1 件以复验为准）。

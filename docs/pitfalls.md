@@ -231,6 +231,12 @@
 - 4.223 allowBlockingCompletions 是 fs 补全面开关，无之回空（2026-09-27，P2-repl）
 - 4.224 TUI 行编辑替换三坑：管道分流/prompt 拼接/Display 单行（2026-09-28，REPL C 档）
 - 4.225 读行线程持 raw mode 时他线程直写终端：多行 LF 阶梯 + prompt 竞争（2026-09-27，REPL 渲染修复）
+- 4.265 process.exit 裸传当回调即 receiver 错位（2026-10-04，base16）
+- 4.266 throwDeprecation 同步抛是伪语义：真机 nextTick 异步走 uncaught（2026-10-04，base16）
+- 4.267 注释写的"真机实测"与套件矛盾时以套件为准（2026-10-04，base16）
+- 4.268 http2.connect 无视 lookup + 缺 promisify.custom（2026-10-04，base16）
+- 4.269 TLS 服务端同字节双派发：单 st 双 __feed（2026-10-04，base16·记档未修）
+- 4.270 修好即多活：DIFF 快败翻 TIMEOUT 挂死（2026-10-04，base16）
 
 ## 条目
 
@@ -4681,3 +4687,73 @@
 - 复现：BOM 文件 `read(1)` 真机 `"\uFEFF"`，修前 `"a"`。
 - 推广铁律：**凡"读文件/流转串"的解码点，先问 BOM 留不留**（WHATWG 默认
   与 Node fs/stream 默认相反）。
+
+### 4.265 process.exit 裸传当回调即 receiver 错位（2026-10-04，base16）
+
+- 症状：cluster-net-listen（worker 内 `net.createServer().listen(process.exit)`）
+  `TypeError: this.reallyExit is not a function`（base15 绿 → base16 红）。
+- 根因：自家 `exit()` 方法体走 `this.reallyExit`；裸传后 this=server。
+  真机 process.exit 与 receiver 无关（C++ 绑定）；此前绿因 worker 内 server
+  根本起不来（R 前 listen 即死 → 进程正常退出），stream R 修好 server 后现形。
+- 修法：`exit()` 内 receiver 守卫（有 reallyExit 用 this，否则回落
+  `globalThis.process`；§4.97 二选一；mock reallyExit 照常走同对象）。
+- 复现：`http.Server.listen(process.exit)` 最小形；黑盒 `p2_process_exit_detached_receiver`。
+- 推广铁律：**"修好 A 即现形 B"是常态**——base 轮后转红件先问"是不是之前死太早"。
+
+### 4.266 throwDeprecation 同步抛是伪语义：真机 nextTick 异步走 uncaught（2026-10-04，base16）
+
+- 症状：process-warning test4 `assert.fail('Unreachable')` 被触发。
+- 根因：自家 `throwDeprecation` 分支同步 `throw`；真机 `node -e` 实测无同步抛，
+  警告经 nextTick 异步抛 → uncaughtException 交付。
+- 修法：改 nextTick 异步抛（`this.nextTick`，§4.97 this 基）。
+- 复现：`node -e` 三行探针；黑盒 `p2_process_warning_throw_deprecation_async`。
+- 推广铁律：**"抛"有同步/异步两种，真机探针先定是哪种**（uncaught 类面默认疑异步）。
+
+### 4.267 注释写的"真机实测"与套件矛盾时以套件为准（2026-10-04，base16）
+
+- 症状：crypto-keygen-eddsa（`generateKeyPair('ed25519', cb)` 无 options）
+  base15 绿 → base16 红；代码注释称"真机二参即抛"。
+- 根因：R4 校验凭一次手误实测写死注释；套件本身在真机绿（`node -e` 三秒可证）。
+- 修法：options 缺省即 `{}`；注释按 §4.65 翻转（黑盒 `p2_crypto_keygen_no_options`）。
+- 复现：`node -e "require('crypto').generateKeyPair('ed25519',cb)"`。
+- 推广铁律：**注释不是证据**——与套件/实测矛盾时注释是错的，先翻转注释再改码。
+
+### 4.268 http2.connect 无视 lookup + 缺 promisify.custom（2026-10-04，base16）
+
+- 症状：promisify-connect-error（自定义 lookup 回错）base15 绿 → base16 红，
+  自家报 UNKNOWN DNS 文案（Rust 直拨无视 lookup）。
+- 根因两件：① `__start` 直调 `__wjs2_h2_connect`，options.lookup 从未读；
+  ② 缺 node internal/http2/core.js 末尾的 `connect[promisify.custom]`
+ （once error→reject），致 session error 无人接变 unhandled。
+- 修法：`__start` 内 lookup 优先（错原样 error、成拨解析地址）+ 逐字补
+  promisify.custom（黑盒 `p2_http2_lookup_and_promisify_custom`）。
+- 复现：套件本体即最小形。
+- 推广铁律：**"直拨 native"即绕过 node 选项层**——凡 native 直拨面，逐项核对
+  options 透传表（lookup/signal/custom promisify 三件最易漏）。
+
+### 4.269 TLS 服务端同字节双派发：单 st 双 __feed（2026-10-04，base16·记档未修）
+
+- 症状：https 迭代四件（default-port/request-agent/url.parse-https.request/
+  set-default-ca-precedence-empty）`ERR_HTTP_HEADERS_SENT`——同一请求 handler
+  进两次，第二次 writeHead 炸。
+- 根因（定位到界为止）：connection=1（单 st），userland data 事件=1，
+  但 `__srvDataListener→__feed` 跑两次（第二次 buf 已消费完又拼回同字节重解析；
+  plain-http 单派发正常，TLS 服务端独有；JS 层 ingest/flush/listener 皆单投，
+  疑 Rust `tls_listen` 派发层同明文推两次）。
+- 复现：`probe/dbg/p9-count.js`（3/3 稳定：nc=1 nr=2）。
+- 推广铁律：**"userland 只见一次"≠"只派一次"**——复现探针要同时数三层
+  （connection/request/userland-data），差值即分层定界。
+- 状态：未修（Rust 派发深水 + https/timeout 件另案），本轮记档。
+
+### 4.270 修好即多活：DIFF 快败翻 TIMEOUT 挂死（2026-10-04，base16）
+
+- 症状：base16 新增 TIMEOUT 107，其中 105 在 base15 是 DIFF（`wjs=1` 快败 →
+  `wjs=142` 挂死），聚集 cluster×26/http2×40/tls×24。
+- 根因：P2 把 server/socket 做"更对"（worker 内 http 可 listen、TLS 握手可过），
+  套件多活到"等一个永不到的事件"（cluster 'listening' 中继本就未实现，
+  见 cluster.rs 头注；此前 worker 早死 → exit 断言快败）。
+- 修法：不修（形态翻转，仍是红；队列口径不变）；真新 hang 仅 2 件
+  （dns-channel-timeout/http-catch-uncaughtexception，其中 dns 系 FLAKY）。
+- 复现：base15/base16 results.log `TIMEOUT∩DIFF` 交集脚本。
+- 推广铁律：**全域基线对比先算"形态翻转矩阵"再算涨跌**——DIFF→TIMEOUT 不是回归，
+  是修好的副作用；真回归只看绿→红。

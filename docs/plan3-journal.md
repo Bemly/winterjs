@@ -1218,3 +1218,37 @@ G1/G2/G3/G9 已收官。）
 | 10f 对拍报告入库 | bun-parity.md 现 1795 行可用；缺 base16 一轮 + http2 决策附录（本批已写 scope，结论待补） |
 | `cargo test` 全绿 0 警告 | ✅ 当前（strict 863/863；警告剩预存 5：repl 死代码×3 + linker + future-incompat） |
 | 冒烟 5/5 | ✅ 当前 |
+
+## 2026-10-04 base16 全域基线（2136→2313，+177）+ R16 真回归分诊
+
+- base16（`~/wjs-data/sweep/base16/`，3574 件，2 并发 + 看门狗，~41min，资源正常）：
+  SAME0 **2313** / SAME1 27 / DIFF 1103 / TIMEOUT 131。§0.3 表已按
+  `sweep-report.py base16` 全量回填（base15 表 queries 经 git 历史可查）。
+- TIMEOUT 25→131 分诊（先算形态翻转矩阵再算涨跌，4.270）：107 新增中 **105 系
+  base15-DIFF 翻转**（`wjs=1` 快败 → `wjs=142` 挂死；P2 把 server/socket 做对后
+  套件多活到等永不到的事件，cluster 'listening' 中继本就未实现），真新 hang
+  仅 2（dns-channel-timeout 系 FLAKY 单跑绿；http-catch-uncaughtexception 真 hang 另案）。
+- 真回归（绿→红）15 件：单跑复验 3 FLAKY（http-1.0/byetzswritten/dns-channel-timeout，
+  记档不追）+ 12 确定性。
+- **R16a 修 4 件 5 处**（黑盒各配，strict 待终检）：exit receiver 守卫
+ （cluster-net-listen，4.265）/ throwDeprecation 改 nextTick 异步抛
+ （process-warning，4.266）/ eddsa options 缺省 `{}`（注释翻转 4.267）/
+  h2 lookup 透传 + promisify.custom 逐字补（promisify-connect-error，4.268）。
+- **R16c 记档 10**：TLS 服务端同字节双派发（default-port/request-agent/
+  url.parse-https/set-default-ca，单 st 双 __feed，p9-count 复现，4.269 未修）/
+  1.0-keep-alive（1.0+TE:chunked 响应缺终结 `0\r\n\r\n`）/ catch-hang（uncaught
+  后 req close 不到，p11 复现）/ tlswrap-segfault（ssl.fd 生命周期）/
+  worker-handle-close（fd 传递 internalMessage 另案家族）/ 3 FLAKY。
+- stream 197（自称 198 差 1 = TIMEOUT 件归属口径）/ process 69（自称 71 差 2，
+  warning 已修 + SAME1 件）。
+- R16a 验证口径：5 件逐件 `run1.sh` 单跑转绿（新二进制）+ 黑盒 4/4（nextest），
+  未跑全量 `--rerun-red`（1261 红件约 20 分钟，单件证据已足；下轮域 sweep 自然复验）。
+- http2 169 红名簇：push 6 / ALTSVC-ORIGIN 2 / settings 6 / tls 3 /
+  帧流控映射 19 / connect隧道 10 / compat 26 / session大盘 97（含 ECONNREFUSED×6、
+  原始方法缺失 performServerHandshake/internal/http2/core×2、头形 strictEqual 簇）。
+  123 DIFF 皆有 wjs_err 可复核（见 parity 附录）。
+- **http2 拍板输入（待用户）**：原 A（h2 直驱 ~1 周）/B（书面偏离）之外，base16
+  证据支持 **C（compat-JS 轮，不动底座）**——compat 26 + session 大盘中头形/
+  方法缺失/ECONNREFUSED 约 50+ 件属 JS 壳可修面，与"hyper 底座不可达"两回事；
+  真底座 bound（push/ALTSVC-ORIGIN/帧错映射/tls ≈ 35）走 B 偏离。
+  建议：B（35 件偏离）+ C（compat 轮按名簇逐批），A 否决（h2 直驱不解决壳 gap）。

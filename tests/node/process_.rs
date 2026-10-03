@@ -638,6 +638,8 @@ fn phase11_emit_warning_node_semantics() {
     // 2026-09-26：emitWarning 按 node lib/internal/process/warning.js 移植——缺省打印是表内
     // 普通监听（可 off 摘除）；once 监听只触发一次；noDeprecation/throwDeprecation 门控；
     // CJS 栈帧是绝对路径（node 口径，stack.includes(__filename)）。
+    // 2026-10-04 翻转（§4.65/4.266，真机实测）：throwDeprecation 不走同步抛——nextTick
+    // 异步抛经 uncaughtException 交付；旧"thrown DeprecationWarning"同步断言作废。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("w.js")
         .write_str(
@@ -649,7 +651,8 @@ fn phase11_emit_warning_node_semantics() {
                process.emitWarning('silent');\n\
                process.noDeprecation = true; process.emitWarning('d', 'DeprecationWarning');\n\
                process.noDeprecation = false; process.throwDeprecation = true;\n\
-               try { process.emitWarning('t', 'DeprecationWarning'); } catch (e) { console.log('thrown', e.name); }\n\
+               process.once('uncaughtException', (e) => console.log('thrown-async', e.name));\n\
+               try { process.emitWarning('t', 'DeprecationWarning'); console.log('no-sync'); } catch (e) { console.log('thrown', e.name); }\n\
              }, 5);\n",
         )
         .unwrap();
@@ -657,7 +660,7 @@ fn phase11_emit_warning_node_semantics() {
     let out = winterjs2().args(["--run", "w.js"]).current_dir(dir.path()).output().unwrap();
     let (so, se) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success(), "stderr: {se}");
-    assert_eq!(so.lines().collect::<Vec<_>>(), ["once CustomWarning C1 true", "thrown DeprecationWarning"]);
+    assert_eq!(so.lines().collect::<Vec<_>>(), ["once CustomWarning C1 true", "no-sync", "thrown-async DeprecationWarning"]);
     assert!(se.contains("[C1] CustomWarning: a") && se.contains("Warning: b"), "stderr: {se}");
     assert_eq!(se.matches("--trace-warnings").count(), 1, "stderr: {se}");
     assert!(!se.contains("silent") && !se.contains("DeprecationWarning: d"), "stderr: {se}");

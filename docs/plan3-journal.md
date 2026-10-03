@@ -1137,3 +1137,20 @@ G1/G2/G3/G9 已收官。）
   （双红不计欠账）/ 非 iter 旧红 12（consumers 锁码、destroy/pipeline
   TIMEOUT×3、duplex、finished-RST、preprocess、readable 系、writable 系，
   R3 逐件）。
+
+## 2026-10-03 P2-stream R3：zlib shim + 语义收尾（184→198/215，92%）
+
+- R3a（`e0b8cc0`，+8）：缓冲式 zlib 句柄 shim（协议对真机 C++、压缩经同步
+  引擎；`ZSTD_e_flush` 按 PROCESS 攒；常量/缺失档补齐；坑 4.261）。
+  转绿：cross-realm（顺带）、interop、to-readable、transform×5。
+- R3b（`7759429`，+6）：writable-destroy 回滚逐字（OM 归属纠正 4.262，
+  http writableFinished 系既有红另案，http 冻结不动）/ duplex DEP0201 /
+  to-web type 校验（文件滞留 BYOB 读 hang 另案）/ pipeline-process（stdin
+  pipe + stdout finish/close）/ preprocess（BOM 双处 4.264）/ consumers
+  （锁码 + TD 码）/ samecb（console 复用回调 4.263）/ pull 切片恢复。
+  黑盒 r3（shim 回环 + 锁码 + tick + BOM）；全量 strict 863/863；冒烟 5/5。
+- 余 17 定性：TIMEOUT×3（时间盒记档）/ finished-RST（net 底座偏离）/
+  byob 读 hang（字节流 plumbing 另案）/ node 侧红×7（node 自败记档）/
+  SAME1×5（双红不计）/ fs-pull×3（FileHandle.pull，fs 域另案）。
+- 域止损：92% 未达 95% 线，但可转绿件已空（余件皆 infra/另域/双红），
+  按 0.2 时间盒收官，余件批量记档。

@@ -186,7 +186,11 @@ prelude 切三片 include_str；余 11=既有记档 6 + redirect 2 + ipc/finaliz
 4.254 + 连字符回落 4.255 + tty_wrap；黑盒 r1；余件分簇见 journal，R2-iter 专项）。
 **stream R2** ✅ 2026-10-03 iter 门控面 22 转绿 **184/215**（12 件逐字移植 +
 门控注册 + 管道件；坑 4.256-4.260；黑盒 r2 + cli 码件；全量 863/863；
-余 32 = R3-zlib×~10 + node 侧红 7 + SAME1×5 + 非 iter 旧红 12，见 journal） | 各按止损线 | 🟡 |
+余 32 = R3-zlib×~10 + node 侧红 7 + SAME1×5 + 非 iter 旧红 12，见 journal）。
+**stream R3** ✅ 2026-10-03 shim + 语义 14 转绿 **198/215（92%）**（R3a shim
+4.261 + R3b 语义 6；坑 4.262-4.264；黑盒 r3；全量 863/863；可转绿件已空，
+余 17 = TIMEOUT×3 + RST/byob Hang 另案 + node 侧红 7 + SAME1×5 + fs-pull×3，
+按止损线收官） | 各按止损线 | 🟡 |
 | P3 | http 冻结收口 | ✅ 2026-09-30 R1：`matchKnownFields`（单例表删 content-encoding/x-forwarded-host，4.237）+ `outgoing-finished`（ServerResponse 补 OM 品牌五项等 close，4.238）转绿，`1.0-keep-alive` 复验绿；http 相关 52/52 strict；余 8 件按原定性记档不再开轮 | ≤1 天 | ✅ |
 | D1 | ✅ 2026-09-25 已做 | node 运行时旗改**精确名单**（`src/cli_node_flags.rs`，取自 `node --help`；前缀族方案致 4.209 事故后废弃；winterjs2 自有同名旗与改执行模式的旗不收，必须带值的旗只认 `--k=v`、值非法 exit 9）+ `internal/options` getOptionValue 读真实旗值 + DEP0005 认 `--pending-deprecation` + shell 串自举保旗交 CLI。实测：位置参数本就已通（旧"~18 件"口径过期）；`buffer-constructor-node-modules` 转绿；余红与 spawn 无关，已拆成 D4/P2 项（错误输出形状、`process.stdin/stdout` 非 Stream、`node:stream/iter` 未实现、vm-sigint stdio null） | — | ✅ |
 | D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |

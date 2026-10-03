@@ -1045,3 +1045,18 @@ G1/G2/G3/G9 已收官。）
   真调替换测试进程故不做成功面）+ `phase11_inspect_control_escapes`；
   全量 nextest strict 856/856；proc7 sweep 44→51/82；冒烟 5/5；
   `check-lines` ok。
+
+## 2026-10-03 P2-process R7：uncaught capture 路由簇（51→55/82）
+
+- 真机口径（execution.js）：set/has + null 清除 + 重复设置错 +
+  capture 优先于 uncaughtException + 接住后进程续活（exit 0）；v8 桩
+  `setFlagsFromString`（收下不兑现；abort 变体 node 侧亦 rc=0，行为一致）。
+- 入口改道（CJS/经典双路）：失败先走 `dispatch_entry_throw`（与 Rust 异步侧
+  共语义），接住转事件循环，无人接放回 pending 走原 fatal（文案/栈无损）。
+- 真凶一枚（坑 4.248）：带 pending 进 JS_CallFunctionValue 非法致裸错渲染
+  `undefined`——take-调-放回三段，stash 对照实锤。
+- 验证：run1.sh 4/4；黑盒 `phase11_process_capture_faces`（正常+报错+边界）；
+  process 域 19/19、全量 nextest strict 857/857；proc8 sweep 51→55/82；
+  冒烟 5/5；`check-lines` ok。
+- 余 24 件分簇（R8 候选）：env×6 / 散件（binding/config/exit/spawn 系/
+  redirect 记档/V8 私有语法记档/thread-worker 配额记档）。
